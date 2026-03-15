@@ -1,0 +1,49 @@
+name: Feature Request
+description: Propose a new feature or improvement.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - New capability
+        - Enhancement to existing feature
+        - Developer experience
+        - Performance
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What pain point does this address?
+      placeholder: Today, when I try to ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How should this work?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: willing
+    attributes:
+      label: Would you submit a PR?
+      options:
+        - "Yes"
+        - "Yes — with guidance"
+        - "No — but happy to test"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context

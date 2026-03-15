@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/goondocks-co/myco/blob/main/docs/quickstart.md
+    about: Check the quick start guide before opening an issue.
