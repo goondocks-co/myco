@@ -182,7 +182,6 @@ jobs:
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           jq --arg v "$VERSION" '.version = $v' .claude-plugin/plugin.json > tmp.json && mv tmp.json .claude-plugin/plugin.json
           jq --arg v "$VERSION" '.version = $v' .cursor-plugin/plugin.json > tmp.json && mv tmp.json .cursor-plugin/plugin.json
-          jq --arg v "$VERSION" '.version = $v' .github/plugin.json > tmp.json && mv tmp.json .github/plugin.json
 
       - run: npm ci
       - run: npm run build
