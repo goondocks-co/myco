@@ -16,4 +16,6 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm run lint
+      - run: npm run build
+      - run: cp src/prompts/*.md dist/src/prompts/
       - run: npm test

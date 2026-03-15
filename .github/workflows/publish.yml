@@ -61,7 +61,7 @@ jobs:
         env:
           VERSION: ${{ needs.validate-tag.outputs.version }}
         run: |
-          npm version "$VERSION" --no-git-tag-version
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
           jq --arg v "$VERSION" '.version = $v' .claude-plugin/plugin.json > tmp.json && mv tmp.json .claude-plugin/plugin.json
           jq --arg v "$VERSION" '.version = $v' .cursor-plugin/plugin.json > tmp.json && mv tmp.json .cursor-plugin/plugin.json
           jq --arg v "$VERSION" '.version = $v' .github/plugin.json > tmp.json && mv tmp.json .github/plugin.json
@@ -69,8 +69,9 @@ jobs:
 
       - run: npm ci --ignore-scripts
       - run: npm run lint
-      - run: npm test
       - run: npm run build
+      - run: cp src/prompts/*.md dist/src/prompts/
+      - run: npm test
 
       - name: Pack npm tarball
         run: npm pack
@@ -179,13 +180,14 @@ jobs:
         env:
           VERSION: ${{ needs.validate-tag.outputs.version }}
         run: |
-          npm version "$VERSION" --no-git-tag-version
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
           jq --arg v "$VERSION" '.version = $v' .claude-plugin/plugin.json > tmp.json && mv tmp.json .claude-plugin/plugin.json
           jq --arg v "$VERSION" '.version = $v' .cursor-plugin/plugin.json > tmp.json && mv tmp.json .cursor-plugin/plugin.json
           jq --arg v "$VERSION" '.version = $v' .github/plugin.json > tmp.json && mv tmp.json .github/plugin.json
 
       - run: npm ci --ignore-scripts
       - run: npm run build
+      - run: cp src/prompts/*.md dist/src/prompts/
 
       - name: Publish package
         env:
