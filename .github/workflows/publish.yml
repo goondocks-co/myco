@@ -64,8 +64,7 @@ jobs:
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           jq --arg v "$VERSION" '.version = $v' .claude-plugin/plugin.json > tmp.json && mv tmp.json .claude-plugin/plugin.json
           jq --arg v "$VERSION" '.version = $v' .cursor-plugin/plugin.json > tmp.json && mv tmp.json .cursor-plugin/plugin.json
-          jq --arg v "$VERSION" '.version = $v' .github/plugin.json > tmp.json && mv tmp.json .github/plugin.json
-          echo "Synced version $VERSION across package.json + Claude/Cursor/VS Code plugin manifests"
+          echo "Synced version $VERSION across package.json + Claude/Cursor plugin manifests"
 
       - run: npm ci
       - run: npm run lint
