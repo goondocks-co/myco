@@ -34,7 +34,7 @@
   "dependencies": {
     "better-sqlite3": "^11.0.0",
     "sqlite-vec": "^0.1.0",
-    "chokidar": "^4.0.0",
+    "chokidar": "^5.0.0",
     "gray-matter": "^4.0.3",
     "yaml": "^2.4.0",
     "zod": "^3.23.0",
