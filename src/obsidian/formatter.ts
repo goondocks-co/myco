@@ -85,9 +85,9 @@ export interface SessionBodyInput {
     prompt: string;
     toolCount: number;
     aiResponse?: string;
+    /** Filenames of images in the vault attachments folder */
+    images?: string[];
   }>;
-  existingTurnCount?: number;
-  existingConversation?: string;
   tags?: string[];
 }
 
@@ -117,51 +117,31 @@ export function formatSessionBody(input: SessionBodyInput): string {
     sections.push(`## Related Memories\n${links.join('\n')}`);
   }
 
-  // Conversation turns — preserve existing + append new
-  if (input.existingConversation) {
-    // Existing conversation already has ## Conversation heading and prior turns.
-    // Format new turns and append.
-    const newTurnLines: string[] = [];
-    const startNum = (input.existingTurnCount ?? 0) + 1;
-    for (let i = 0; i < input.turns.length; i++) {
-      const turn = input.turns[i];
-      const turnNum = startNum + i;
-      newTurnLines.push(`### Turn ${turnNum}`);
-      if (turn.prompt) {
-        newTurnLines.push(callout('user', 'Prompt', turn.prompt));
-      }
-      if (turn.toolCount > 0) {
-        newTurnLines.push(`**Tools**: ${turn.toolCount} calls`);
-      }
-      if (turn.aiResponse) {
-        newTurnLines.push(callout('assistant', 'Response', turn.aiResponse));
-      }
-    }
-    if (newTurnLines.length > 0) {
-      sections.push(input.existingConversation.replace(/\n+$/, '') + '\n\n' + newTurnLines.join('\n\n'));
-    } else {
-      sections.push(input.existingConversation);
-    }
-  } else {
-    // First write — generate conversation from scratch
+  // Conversation turns — always rebuilt from the full transcript.
+  // The transcript is the source of truth for the complete conversation.
+  if (input.turns.length > 0) {
     const turnLines: string[] = [];
     for (let i = 0; i < input.turns.length; i++) {
       const turn = input.turns[i];
       const turnNum = i + 1;
       turnLines.push(`### Turn ${turnNum}`);
-      if (turn.prompt) {
-        turnLines.push(callout('user', 'Prompt', turn.prompt));
-      }
-      if (turn.toolCount > 0) {
-        turnLines.push(`**Tools**: ${turn.toolCount} calls`);
+      if (turn.prompt || turn.images?.length) {
+        // Build prompt content: text + images + tool count
+        const parts: string[] = [];
+        if (turn.prompt) parts.push(turn.prompt);
+        if (turn.images?.length) {
+          parts.push(turn.images.map((f) => `![[${f}]]`).join('\n'));
+        }
+        if (turn.toolCount > 0) parts.push(`*${turn.toolCount} tool calls*`);
+        turnLines.push(callout('user', 'Prompt', parts.join('\n\n')));
+      } else if (turn.toolCount > 0) {
+        turnLines.push(callout('user', 'Prompt', `*${turn.toolCount} tool calls*`));
       }
       if (turn.aiResponse) {
         turnLines.push(callout('assistant', 'Response', turn.aiResponse));
       }
     }
-    if (turnLines.length > 0) {
-      sections.push(`## Conversation\n\n${turnLines.join('\n\n')}`);
-    }
+    sections.push(`## Conversation\n\n${turnLines.join('\n\n')}`);
   }
 
   // Footer tags

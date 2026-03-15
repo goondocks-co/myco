@@ -130,27 +130,29 @@ describe('formatSessionBody', () => {
     expect(body).toContain('[[gotcha-c5220-123|Stop Hook Throws]]');
     expect(body).toContain('### Turn 1');
     expect(body).toContain('> [!user] Prompt');
-    expect(body).toContain('**Tools**: 5 calls');
+    expect(body).toContain('*5 tool calls*');
     expect(body).toContain('> [!assistant] Response');
     expect(body).toContain('#type/session');
     expect(body).toContain('#user/chris');
   });
 
-  it('preserves existing conversation and appends new turns', () => {
-    const existing = '## Conversation\n\n### Turn 1\n\n> [!user] Prompt\n> First thing\n\n### Turn 2\n\n> [!user] Prompt\n> Second thing\n\n### Turn 3\n\n> [!user] Prompt\n> Third thing';
+  it('rebuilds all turns from full transcript', () => {
     const body = formatSessionBody({
       title: 'Continued',
       narrative: '',
       sessionId: 'abc',
-      turns: [{ prompt: 'Next thing', toolCount: 0 }],
-      existingTurnCount: 3,
-      existingConversation: existing,
+      turns: [
+        { prompt: 'First thing', toolCount: 0 },
+        { prompt: 'Second thing', toolCount: 0 },
+        { prompt: 'Third thing', toolCount: 0 },
+        { prompt: 'Next thing', toolCount: 0 },
+      ],
     });
 
-    expect(body).toContain('### Turn 4');
     expect(body).toContain('### Turn 1');
     expect(body).toContain('### Turn 2');
     expect(body).toContain('### Turn 3');
+    expect(body).toContain('### Turn 4');
     expect(body).toContain('Next thing');
   });
 

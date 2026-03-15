@@ -17,8 +17,10 @@ import type { RegisteredSession } from './lifecycle.js';
 import { PlanWatcher } from './watcher.js';
 import { buildSimilarityPrompt } from '../prompts/index.js';
 import { extractNumber } from '../intelligence/response.js';
-import { EMBEDDING_INPUT_LIMIT, PROMPT_PREVIEW_CHARS, CONTENT_SNIPPET_CHARS, CHARS_PER_TOKEN, STALE_BUFFER_MAX_AGE_MS, LINEAGE_RECENT_SESSIONS_LIMIT, RELATED_MEMORIES_LIMIT, CANDIDATE_CONTENT_PREVIEW, SESSION_CONTEXT_MAX_PLANS, PROMPT_CONTEXT_MAX_MEMORIES, PROMPT_CONTEXT_MIN_SIMILARITY, PROMPT_CONTEXT_MIN_LENGTH, CONTEXT_SESSION_PREVIEW_CHARS } from '../constants.js';
-import { TranscriptMiner } from '../capture/transcript-miner.js';
+import { EMBEDDING_INPUT_LIMIT, CONTENT_SNIPPET_CHARS, CHARS_PER_TOKEN, STALE_BUFFER_MAX_AGE_MS, LINEAGE_RECENT_SESSIONS_LIMIT, RELATED_MEMORIES_LIMIT, CANDIDATE_CONTENT_PREVIEW, SESSION_CONTEXT_MAX_PLANS, PROMPT_CONTEXT_MAX_MEMORIES, PROMPT_CONTEXT_MIN_SIMILARITY, PROMPT_CONTEXT_MIN_LENGTH, CONTEXT_SESSION_PREVIEW_CHARS } from '../constants.js';
+import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-miner.js';
+import { createPerProjectAdapter } from '../agents/adapter.js';
+import { claudeCodeAdapter } from '../agents/claude-code.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { formatSessionBody } from '../obsidian/formatter.js';
 import { writeObservationNotes } from '../vault/observations.js';
@@ -102,30 +104,6 @@ async function captureArtifacts(
     // Future sessions referencing this artifact ID link as children.
     lineage?.registerArtifactForSession(sessionId, artifactId);
   }
-}
-
-interface Turn {
-  prompt: string;
-  toolCount: number;
-  aiResponse?: string;
-}
-
-function extractTurns(events: BatchEvent[]): Turn[] {
-  const turns: Turn[] = [];
-  let current: Turn | null = null;
-
-  for (const event of events) {
-    if (event.type === 'user_prompt') {
-      if (current) turns.push(current);
-      current = { prompt: String(event.prompt ?? '').slice(0, PROMPT_PREVIEW_CHARS), toolCount: 0 };
-    } else if (event.type === 'ai_response') {
-      if (current) current.aiResponse = String((event as Record<string, unknown>).content ?? '');
-    } else {
-      if (current) current.toolCount++;
-    }
-  }
-  if (current) turns.push(current);
-  return turns;
 }
 
 export function migrateMemoryFiles(vaultDir: string): number {
@@ -214,7 +192,9 @@ async function main(): Promise<void> {
   const index = new MycoIndex(path.join(vaultDir, 'index.db'));
   const lineageGraph = new LineageGraph(vaultDir);
   const transcriptMiner = new TranscriptMiner({
-    additionalPaths: config.capture.transcript_paths,
+    additionalAdapters: config.capture.transcript_paths.map((p) =>
+      createPerProjectAdapter(p, claudeCodeAdapter.parseTurns),
+    ),
   });
 
   let activeStopProcessing: Promise<void> | null = null;
@@ -435,23 +415,10 @@ async function main(): Promise<void> {
 
   async function processStopEvent(sessionId: string, user: string | undefined, sessionMeta: RegisteredSession | undefined): Promise<void> {
 
-    // Mine the last AI response from the transcript and inject as an event.
-    // This keeps transcript mining in the daemon (authority) rather than the hook.
-    try {
-      const aiResponse = transcriptMiner.getLastAssistantResponse(sessionId);
-      if (aiResponse) {
-        batchManager.addEvent({
-          type: 'ai_response',
-          content: aiResponse,
-          session_id: sessionId,
-          timestamp: new Date().toISOString(),
-        } as BatchEvent);
-      }
-    } catch (err) {
-      logger.debug('hooks', 'Transcript mining failed', { session_id: sessionId, error: (err as Error).message });
-    }
-
-    // Finalize the last open batch and process it
+    // Finalize the last open batch and process it for observation extraction.
+    // Observations come from user prompts and tool uses in the batch — AI responses
+    // are not needed here. The full conversation (including AI responses) is read
+    // from the Claude transcript file below.
     const lastBatch = batchManager.finalize(sessionId);
 
     if (lastBatch.length > 0) {
@@ -477,101 +444,95 @@ async function main(): Promise<void> {
           .catch((err) => logger.warn('processor', 'Artifact capture failed', { session_id: sessionId, error: (err as Error).message }))
       : Promise.resolve();
 
-    // Build turns from ALL events since the last session write.
-    // The buffer has every event; we filter to those after the existing file's `ended` timestamp.
-    const allBufferEvents = sessionBuffers.get(sessionId)?.readAll() ?? [];
+    // Tiered turn extraction:
+    // 1. Try agent transcripts via registry (Claude Code, Cursor, etc.) — complete with AI responses
+    // 2. Fall back to buffer events — prompts + tool counts only, no AI responses
+    const transcriptResult = transcriptMiner.getAllTurnsWithSource(sessionId);
+    let allTurns = transcriptResult.turns;
+    let turnSource = transcriptResult.source;
+    if (allTurns.length === 0) {
+      const bufferEvents = sessionBuffers.get(sessionId)?.readAll() ?? [];
+      allTurns = extractTurnsFromBuffer(bufferEvents);
+      turnSource = 'buffer';
+    }
     const ended = new Date().toISOString();
-    let started = allBufferEvents.length > 0 ? String(allBufferEvents[0].timestamp ?? ended) : ended;
+    let started = allTurns.length > 0 ? allTurns[0].timestamp : ended;
 
-    // Find existing session file — may be in a different date directory if session spans days.
-    // First pass: read existing content and extract the original started timestamp.
-    let existingContent: string | undefined;
+    // Find existing session file and clean up cross-date duplicates in one pass.
+    // The session file may be in a different date directory if the session spans days.
     const sessionsDir = path.join(vaultDir, 'sessions');
+    const sessionFileName = `${sessionNoteId(sessionId)}.md`;
+    let existingContent: string | undefined;
+    const duplicatePaths: string[] = [];
     try {
       for (const dateDir of fs.readdirSync(sessionsDir)) {
-        const candidate = path.join(sessionsDir, dateDir, `${sessionNoteId(sessionId)}.md`);
-        if (!fs.existsSync(candidate)) continue;
-        const content = fs.readFileSync(candidate, 'utf-8');
-        if (!existingContent || content.length > existingContent.length) {
-          existingContent = content;
-        }
+        const candidate = path.join(sessionsDir, dateDir, sessionFileName);
+        try {
+          const content = fs.readFileSync(candidate, 'utf-8');
+          if (!existingContent || content.length > existingContent.length) {
+            existingContent = content;
+          }
+          duplicatePaths.push(candidate);
+        } catch { /* file doesn't exist in this date dir */ }
       }
     } catch { /* sessions dir may not exist yet */ }
 
-    let existingTurnCount = 0;
-    let existingConversation: string | undefined;
-    let existingEnded: string | undefined;
     if (existingContent) {
-      const turnMatches = existingContent.match(/^### Turn \d+/gm);
-      existingTurnCount = turnMatches?.length ?? 0;
-      // Extract started and ended from frontmatter
+      // Preserve the original started timestamp from existing frontmatter
       const startedMatch = existingContent.match(/^started:\s*"?(.+?)"?\s*$/m);
       if (startedMatch) started = startedMatch[1];
-      const endedMatch = existingContent.match(/^ended:\s*"?(.+?)"?\s*$/m);
-      if (endedMatch) existingEnded = endedMatch[1];
-      const bodyStart = existingContent.indexOf('---', 3);
-      const body = bodyStart >= 0 ? existingContent.slice(bodyStart + 3).replace(/^\n+/, '') : existingContent;
-      const convIdx = body.indexOf('## Conversation');
-      if (convIdx >= 0) {
-        // Extract ONLY the conversation section — stop before any footer tags or next section.
-        // Footer tags are lines starting with # that aren't markdown headings (##).
-        let convContent = body.slice(convIdx);
-        // Find where the conversation content ends (before footer tags)
-        const lines = convContent.split('\n');
-        let endIdx = lines.length;
-        // Scan backward to find where footer tags start
-        for (let i = lines.length - 1; i >= 0; i--) {
-          const trimmed = lines[i].trim();
-          if (!trimmed) { endIdx = i; continue; }
-          if (trimmed.startsWith('#') && !trimmed.startsWith('##')) {
-            // This is a footer tag line (e.g., "#type/session #session/ended")
-            endIdx = i;
-          } else {
-            break; // Hit actual content — stop scanning
-          }
-        }
-        existingConversation = lines.slice(0, endIdx).join('\n').replace(/\n+$/, '');
-      }
     }
 
     // Compute the canonical path AFTER started is resolved from existing frontmatter.
-    // This ensures the session file stays in its original date directory.
     const date = started.slice(0, 10);
     const relativePath = sessionRelativePath(sessionId, date);
     const targetFullPath = path.join(vaultDir, relativePath);
 
-    // Second pass: remove any copies that aren't at the canonical path.
-    try {
-      for (const dateDir of fs.readdirSync(sessionsDir)) {
-        const candidate = path.join(sessionsDir, dateDir, `${sessionNoteId(sessionId)}.md`);
-        if (fs.existsSync(candidate) && candidate !== targetFullPath) {
-          fs.unlinkSync(candidate);
-          logger.debug('lifecycle', 'Removed duplicate session file', { path: candidate });
-        }
+    // Remove duplicates that aren't at the canonical path
+    for (const dup of duplicatePaths) {
+      if (dup !== targetFullPath) {
+        try {
+          fs.unlinkSync(dup);
+          logger.debug('lifecycle', 'Removed duplicate session file', { path: dup });
+        } catch { /* already gone */ }
       }
-    } catch { /* sessions dir may not exist yet */ }
+    }
 
-    // Extract turns from ALL buffer events that are newer than the existing session's ended timestamp.
-    // This captures every prompt/response cycle since the last write, not just the last batch.
-    const newEvents = existingEnded
-      ? allBufferEvents.filter((e) => String(e.timestamp ?? '') > existingEnded!)
-      : allBufferEvents;
-    const batchTurns = extractTurns(newEvents as BatchEvent[]);
+    // Write any images from turns into the vault attachments folder.
+    // Images are stored as session-{id}-turn-{n}-{i}.{ext} and referenced via Obsidian embeds.
+    const attachmentsDir = path.join(vaultDir, 'attachments');
+    const turnImageNames: Map<number, string[]> = new Map();
+    for (let i = 0; i < allTurns.length; i++) {
+      const turn = allTurns[i];
+      if (!turn.images?.length) continue;
+      const names: string[] = [];
+      for (let j = 0; j < turn.images.length; j++) {
+        const img = turn.images[j];
+        const ext = img.mediaType === 'image/jpeg' ? 'jpg' : 'png';
+        const filename = `${bareSessionId(sessionId)}-t${i + 1}-${j + 1}.${ext}`;
+        const filePath = path.join(attachmentsDir, filename);
+        // Only write if not already present (idempotent)
+        if (!fs.existsSync(filePath)) {
+          fs.mkdirSync(attachmentsDir, { recursive: true });
+          fs.writeFileSync(filePath, Buffer.from(img.data, 'base64'));
+          logger.debug('processor', 'Image saved', { filename, turn: i + 1 });
+        }
+        names.push(filename);
+      }
+      turnImageNames.set(i, names);
+    }
 
-    // Build the full conversation for re-summarization (existing + new turns as plain text)
-    const newTurnText = batchTurns.map((t, i) => {
-      const num = existingTurnCount + i + 1;
-      const parts = [`### Turn ${num}`];
+    // Build plain-text conversation for summarization (all turns)
+    const conversationText = allTurns.map((t, i) => {
+      const parts = [`### Turn ${i + 1}`];
       if (t.prompt) parts.push(`Prompt: ${t.prompt}`);
       if (t.toolCount > 0) parts.push(`Tools: ${t.toolCount} calls`);
       if (t.aiResponse) parts.push(`Response: ${t.aiResponse}`);
       return parts.join('\n');
     }).join('\n\n');
-    const conversationSection = existingConversation
-      ? `${existingConversation}\n\n${newTurnText}`
-      : `## Conversation\n\n${newTurnText}`;
+    const conversationSection = `## Conversation\n\n${conversationText}`;
 
-    // Re-summarize the full session from the complete conversation
+    // Summarize the full session conversation
     let title = `Session ${sessionId}`;
     let narrative = '';
     try {
@@ -590,6 +551,8 @@ async function main(): Promise<void> {
       })
       .map((n) => ({ id: n.id, title: n.title }));
 
+    // The formatter always gets the full turn list — no more partial appending.
+    // existingConversation is no longer needed; we rebuild from the transcript each time.
     const summary = formatSessionBody({
       title,
       narrative,
@@ -599,9 +562,12 @@ async function main(): Promise<void> {
       ended,
       branch: sessionMeta?.branch,
       relatedMemories,
-      turns: batchTurns.map((t) => ({ prompt: t.prompt, toolCount: t.toolCount, aiResponse: t.aiResponse })),
-      existingTurnCount,
-      existingConversation,
+      turns: allTurns.map((t, i) => ({
+        prompt: t.prompt,
+        toolCount: t.toolCount,
+        aiResponse: t.aiResponse,
+        images: turnImageNames.get(i),
+      })),
     });
 
     const parentId = lineageGraph.getParent(sessionId);
@@ -615,11 +581,13 @@ async function main(): Promise<void> {
       branch: sessionMeta?.branch,
       parent: parentId ? sessionWikilink(parentId) : undefined,
       parent_reason: parentLink?.signal,
-      tools_used: batchTurns.reduce((sum, t) => sum + t.toolCount, 0),
+      tools_used: allTurns.reduce((sum, t) => sum + t.toolCount, 0),
       summary,
     });
     indexAndEmbed(relativePath, sessionNoteId(sessionId), narrative,
       { type: 'session', session_id: sessionId }, indexDeps);
+
+    logger.debug('processor', 'Session turns', { source: turnSource, total: allTurns.length });
 
     // Wait for artifact capture (started concurrently with session building)
     await artifactPromise;
