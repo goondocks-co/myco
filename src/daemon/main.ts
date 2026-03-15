@@ -217,6 +217,7 @@ async function main(): Promise<void> {
     additionalPaths: config.capture.transcript_paths,
   });
 
+  let activeStopProcessing: Promise<void> | null = null;
   const indexDeps: IndexDeps = { index, vaultDir, vectorIndex, embeddingProvider, logger };
 
   const bufferDir = path.join(vaultDir, 'buffer');
@@ -381,6 +382,12 @@ async function main(): Promise<void> {
     const event = { ...validated, timestamp: validated.timestamp ?? new Date().toISOString() } as BatchEvent;
     logger.debug('hooks', 'Event received', { type: event.type, session_id: event.session_id });
 
+    // Ensure session is registered (idempotent — handles daemon restarts mid-session)
+    if (!registry.getSession(event.session_id)) {
+      registry.register(event.session_id, { started_at: event.timestamp });
+      logger.debug('lifecycle', 'Auto-registered session from event', { session_id: event.session_id });
+    }
+
     // Persist to disk so events survive daemon restarts
     if (!sessionBuffers.has(event.session_id)) {
       sessionBuffers.set(event.session_id, new EventBuffer(bufferDir, event.session_id));
@@ -407,8 +414,26 @@ async function main(): Promise<void> {
 
   server.registerRoute('POST', '/events/stop', async (body: unknown) => {
     const { session_id: sessionId, user } = StopBody.parse(body);
+    // Ensure session is registered (handles daemon restarts mid-session)
+    if (!registry.getSession(sessionId)) {
+      registry.register(sessionId, { started_at: new Date().toISOString() });
+      logger.debug('lifecycle', 'Auto-registered session from stop event', { session_id: sessionId });
+    }
     const sessionMeta = registry.getSession(sessionId);
     logger.info('hooks', 'Stop received', { session_id: sessionId });
+
+    // Respond immediately — the hook should not block on LLM processing.
+    // All heavy work (observation extraction, summarization, artifact capture,
+    // lineage detection) runs asynchronously after the response.
+    // Track active processing so shutdown can wait for completion.
+    activeStopProcessing = processStopEvent(sessionId, user, sessionMeta).catch((err) => {
+      logger.error('processor', 'Stop processing failed', { session_id: sessionId, error: (err as Error).message });
+    }).finally(() => { activeStopProcessing = null; });
+
+    return { ok: true };
+  });
+
+  async function processStopEvent(sessionId: string, user: string | undefined, sessionMeta: RegisteredSession | undefined): Promise<void> {
 
     // Mine the last AI response from the transcript and inject as an event.
     // This keeps transcript mining in the daemon (authority) rather than the hook.
@@ -452,57 +477,86 @@ async function main(): Promise<void> {
           .catch((err) => logger.warn('processor', 'Artifact capture failed', { session_id: sessionId, error: (err as Error).message }))
       : Promise.resolve();
 
-    // Build the new turn from this batch
-    const batchTurns = extractTurns(lastBatch);
+    // Build turns from ALL events since the last session write.
+    // The buffer has every event; we filter to those after the existing file's `ended` timestamp.
+    const allBufferEvents = sessionBuffers.get(sessionId)?.readAll() ?? [];
     const ended = new Date().toISOString();
-    let started = lastBatch.length > 0 ? String(lastBatch[0].timestamp) : ended;
+    let started = allBufferEvents.length > 0 ? String(allBufferEvents[0].timestamp ?? ended) : ended;
 
     // Find existing session file — may be in a different date directory if session spans days.
-    // Search by session ID across all date directories to avoid creating duplicates.
-    const date = started.slice(0, 10);
-    const relativePath = sessionRelativePath(sessionId, date);
-    const targetFullPath = path.join(vaultDir, relativePath);
-
-    // Find ALL existing session files across date directories.
-    // Read the best content (largest file) and remove all duplicates.
+    // First pass: read existing content and extract the original started timestamp.
     let existingContent: string | undefined;
     const sessionsDir = path.join(vaultDir, 'sessions');
     try {
       for (const dateDir of fs.readdirSync(sessionsDir)) {
         const candidate = path.join(sessionsDir, dateDir, `${sessionNoteId(sessionId)}.md`);
         if (!fs.existsSync(candidate)) continue;
-
-        // Read content from the largest file (most complete version)
         const content = fs.readFileSync(candidate, 'utf-8');
         if (!existingContent || content.length > existingContent.length) {
           existingContent = content;
-        }
-
-        // Remove any copy that isn't the target path
-        if (candidate !== targetFullPath) {
-          fs.unlinkSync(candidate);
-          logger.debug('lifecycle', 'Removed duplicate session file', { path: candidate });
         }
       }
     } catch { /* sessions dir may not exist yet */ }
 
     let existingTurnCount = 0;
     let existingConversation: string | undefined;
+    let existingEnded: string | undefined;
     if (existingContent) {
-      // Count existing turns
       const turnMatches = existingContent.match(/^### Turn \d+/gm);
       existingTurnCount = turnMatches?.length ?? 0;
-      // Extract started from frontmatter (preserves original start time)
+      // Extract started and ended from frontmatter
       const startedMatch = existingContent.match(/^started:\s*"?(.+?)"?\s*$/m);
       if (startedMatch) started = startedMatch[1];
-      // Extract existing conversation section to preserve prior turns
+      const endedMatch = existingContent.match(/^ended:\s*"?(.+?)"?\s*$/m);
+      if (endedMatch) existingEnded = endedMatch[1];
       const bodyStart = existingContent.indexOf('---', 3);
       const body = bodyStart >= 0 ? existingContent.slice(bodyStart + 3).replace(/^\n+/, '') : existingContent;
       const convIdx = body.indexOf('## Conversation');
       if (convIdx >= 0) {
-        existingConversation = body.slice(convIdx).replace(/\n+$/, '');
+        // Extract ONLY the conversation section — stop before any footer tags or next section.
+        // Footer tags are lines starting with # that aren't markdown headings (##).
+        let convContent = body.slice(convIdx);
+        // Find where the conversation content ends (before footer tags)
+        const lines = convContent.split('\n');
+        let endIdx = lines.length;
+        // Scan backward to find where footer tags start
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const trimmed = lines[i].trim();
+          if (!trimmed) { endIdx = i; continue; }
+          if (trimmed.startsWith('#') && !trimmed.startsWith('##')) {
+            // This is a footer tag line (e.g., "#type/session #session/ended")
+            endIdx = i;
+          } else {
+            break; // Hit actual content — stop scanning
+          }
+        }
+        existingConversation = lines.slice(0, endIdx).join('\n').replace(/\n+$/, '');
       }
     }
+
+    // Compute the canonical path AFTER started is resolved from existing frontmatter.
+    // This ensures the session file stays in its original date directory.
+    const date = started.slice(0, 10);
+    const relativePath = sessionRelativePath(sessionId, date);
+    const targetFullPath = path.join(vaultDir, relativePath);
+
+    // Second pass: remove any copies that aren't at the canonical path.
+    try {
+      for (const dateDir of fs.readdirSync(sessionsDir)) {
+        const candidate = path.join(sessionsDir, dateDir, `${sessionNoteId(sessionId)}.md`);
+        if (fs.existsSync(candidate) && candidate !== targetFullPath) {
+          fs.unlinkSync(candidate);
+          logger.debug('lifecycle', 'Removed duplicate session file', { path: candidate });
+        }
+      }
+    } catch { /* sessions dir may not exist yet */ }
+
+    // Extract turns from ALL buffer events that are newer than the existing session's ended timestamp.
+    // This captures every prompt/response cycle since the last write, not just the last batch.
+    const newEvents = existingEnded
+      ? allBufferEvents.filter((e) => String(e.timestamp ?? '') > existingEnded!)
+      : allBufferEvents;
+    const batchTurns = extractTurns(newEvents as BatchEvent[]);
 
     // Build the full conversation for re-summarization (existing + new turns as plain text)
     const newTurnText = batchTurns.map((t, i) => {
@@ -621,8 +675,7 @@ async function main(): Promise<void> {
     }
 
     logger.info('processor', 'Session note written', { session_id: sessionId, path: relativePath });
-    return { ok: true, path: relativePath };
-  });
+  }
 
   // Session-start context: structural facts only — active plans + parent session.
   // Memories are injected per-prompt (more targeted, less noise).
@@ -731,6 +784,11 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string) => {
     logger.info('daemon', `${signal} received`);
+    // Wait for any active stop processing to finish before shutting down
+    if (activeStopProcessing) {
+      logger.info('daemon', 'Waiting for active stop processing to complete...');
+      await activeStopProcessing;
+    }
     planWatcher.stopFileWatcher();
     registry.destroy();
     await server.stop();

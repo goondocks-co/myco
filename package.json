@@ -32,21 +32,21 @@
     "url": "https://github.com/goondocks-co/myco.git"
   },
   "dependencies": {
-    "better-sqlite3": "^11.0.0",
-    "sqlite-vec": "^0.1.0",
-    "chokidar": "^4.0.0",
+    "@anthropic-ai/sdk": "^0.78.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "better-sqlite3": "^12.8.0",
+    "chokidar": "^5.0.0",
     "gray-matter": "^4.0.3",
+    "sqlite-vec": "^0.1.0",
     "yaml": "^2.4.0",
-    "zod": "^3.23.0",
-    "@anthropic-ai/sdk": "^0.40.0",
-    "@modelcontextprotocol/sdk": "^1.12.0"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.0",
-    "@types/node": "^22.0.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.5.0",
     "tsup": "^8.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.5.0",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.0"
   }
 }

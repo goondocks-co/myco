@@ -44,7 +44,7 @@ const ContextLayersSchema = z.object({
 
 const ContextSchema = z.object({
   max_tokens: z.number().int().positive().default(1200),
-  layers: ContextLayersSchema.default({}),
+  layers: ContextLayersSchema.default({ plans: 200, sessions: 500, memories: 300, team: 200 }),
 });
 
 const TeamSchema = z.object({
@@ -56,10 +56,10 @@ const TeamSchema = z.object({
 export const MycoConfigSchema = z.object({
   version: z.literal(2),
   intelligence: IntelligenceSchema,
-  daemon: DaemonSchema.default({}),
-  capture: CaptureSchema.default({}),
-  context: ContextSchema.default({}),
-  team: TeamSchema.default({}),
+  daemon: DaemonSchema.default({ log_level: 'info', grace_period: 30, max_log_size: 5_242_880 }),
+  capture: CaptureSchema.default({ transcript_paths: [], artifact_watch: ['.claude/plans/', '.cursor/plans/'], artifact_extensions: ['.md'], buffer_max_events: 500 }),
+  context: ContextSchema.default({ max_tokens: 1200, layers: { plans: 200, sessions: 500, memories: 300, team: 200 } }),
+  team: TeamSchema.default({ enabled: false, user: '', sync: 'git' }),
 });
 
 export type MycoConfig = z.infer<typeof MycoConfigSchema>;
