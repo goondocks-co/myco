@@ -4,7 +4,7 @@ import { MycoIndex } from './index/sqlite.js';
 import { VectorIndex } from './index/vectors.js';
 import { searchFts } from './index/fts.js';
 import { loadConfig } from './config/loader.js';
-import { createLlmBackend } from './intelligence/llm.js';
+import { createEmbeddingProvider } from './intelligence/llm.js';
 import { generateEmbedding } from './intelligence/embeddings.js';
 import { rebuildIndex } from './index/rebuild.js';
 import { initFts } from './index/fts.js';
@@ -140,8 +140,8 @@ async function search(vaultDir: string, query: string): Promise<void> {
   if (fs.existsSync(vecDb)) {
     try {
       const config = loadConfig(vaultDir);
-      const backend = await createLlmBackend(config.intelligence);
-      const emb = await generateEmbedding(backend, query);
+      const embeddingProvider = createEmbeddingProvider(config.intelligence.embedding);
+      const emb = await generateEmbedding(embeddingProvider, query);
       const vec = new VectorIndex(vecDb, emb.dimensions);
 
       console.log(`=== Semantic Search: "${query}" ===`);
@@ -183,8 +183,8 @@ async function vectors(vaultDir: string, query: string): Promise<void> {
   if (!query) { console.error('Usage: myco vectors <query>'); process.exit(1); }
 
   const config = loadConfig(vaultDir);
-  const backend = await createLlmBackend(config.intelligence);
-  const emb = await generateEmbedding(backend, query);
+  const embeddingProvider = createEmbeddingProvider(config.intelligence.embedding);
+  const emb = await generateEmbedding(embeddingProvider, query);
 
   const vecDb = path.join(vaultDir, 'vectors.db');
   if (!fs.existsSync(vecDb)) { console.error('No vector index found'); process.exit(1); }
@@ -320,8 +320,8 @@ async function rebuild(vaultDir: string): Promise<void> {
   const vecDb = path.join(vaultDir, 'vectors.db');
   try {
     const config = loadConfig(vaultDir);
-    const backend = await createLlmBackend(config.intelligence);
-    const testEmbed = await backend.embed('test');
+    const embeddingProvider = createEmbeddingProvider(config.intelligence.embedding);
+    const testEmbed = await embeddingProvider.embed('test');
     const vec = new VectorIndex(vecDb, testEmbed.dimensions);
 
     const allNotes = index.query({});
@@ -329,7 +329,7 @@ async function rebuild(vaultDir: string): Promise<void> {
     for (const note of allNotes) {
       const text = `${note.title}\n${note.content}`.slice(0, 8000);
       try {
-        const emb = await generateEmbedding(backend, text);
+        const emb = await generateEmbedding(embeddingProvider, text);
         vec.upsert(note.id, emb.embedding, {
           type: note.type,
           session_id: (note.frontmatter as Record<string, unknown>)?.session as string ?? '',

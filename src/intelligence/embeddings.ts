@@ -1,7 +1,7 @@
-import type { LlmBackend, EmbeddingResponse } from './llm.js';
+import type { EmbeddingProvider, EmbeddingResponse } from './llm.js';
 
 export async function generateEmbedding(
-  backend: LlmBackend,
+  backend: EmbeddingProvider,
   text: string,
 ): Promise<EmbeddingResponse> {
   const raw = await backend.embed(text);

@@ -1,25 +1,29 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { LlmBackend, LlmResponse, EmbeddingResponse } from './llm.js';
+import type { LlmProvider, LlmResponse, EmbeddingResponse, LlmRequestOptions } from './llm.js';
 
-interface HaikuConfig {
+interface AnthropicConfig {
+  model?: string;
+  // Legacy fields
   summary_model?: string;
   embedding_provider?: string;
 }
 
-export class HaikuBackend implements LlmBackend {
-  readonly name = 'haiku';
+export class AnthropicBackend implements LlmProvider {
+  readonly name = 'anthropic';
   private client: Anthropic;
   private model: string;
 
-  constructor(config?: HaikuConfig) {
+  constructor(config?: AnthropicConfig) {
     this.client = new Anthropic();
-    this.model = config?.summary_model ?? 'claude-haiku-4-5-20251001';
+    this.model = config?.model ?? config?.summary_model ?? 'claude-haiku-4-5-20251001';
   }
 
-  async summarize(prompt: string): Promise<LlmResponse> {
+  async summarize(prompt: string, opts?: LlmRequestOptions): Promise<LlmResponse> {
+    const maxTokens = opts?.maxTokens ?? 1024;
+
     const response = await this.client.messages.create({
       model: this.model,
-      max_tokens: 1024,
+      max_tokens: maxTokens,
       messages: [{ role: 'user', content: prompt }],
     });
 
@@ -33,7 +37,7 @@ export class HaikuBackend implements LlmBackend {
 
   async embed(_text: string): Promise<EmbeddingResponse> {
     throw new Error(
-      'HaikuBackend does not support embeddings directly. Use the embeddings module with Voyage AI.'
+      'AnthropicBackend does not support embeddings. Use a local provider (Ollama or LM Studio) for embeddings.'
     );
   }
 

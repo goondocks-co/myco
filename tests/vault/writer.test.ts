@@ -73,7 +73,7 @@ describe('VaultWriter', () => {
       content: '# CORS Gotcha\n\nProxy strips headers.',
     });
 
-    expect(notePath).toBe('memories/gotcha-cors.md');
+    expect(notePath).toBe('memories/gotcha/gotcha-cors.md');
     const note = reader.readNote(notePath);
     expect(note.frontmatter.type).toBe('memory');
     expect((note.frontmatter as any).observation_type).toBe('gotcha');

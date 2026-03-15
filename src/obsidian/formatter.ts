@@ -2,6 +2,7 @@
  * Pure formatting functions for Obsidian-native vault notes.
  * No I/O, no external dependencies — just string transforms.
  */
+import type { ArtifactType } from '../vault/types.js';
 
 // Callout type mapping for observation types
 const CALLOUT_MAP: Record<string, string> = {
@@ -75,6 +76,7 @@ export interface SessionBodyInput {
     aiResponse?: string;
   }>;
   existingTurnCount?: number;
+  existingConversation?: string;
   tags?: string[];
 }
 
@@ -104,25 +106,51 @@ export function formatSessionBody(input: SessionBodyInput): string {
     sections.push(`## Related Memories\n${links.join('\n')}`);
   }
 
-  // Conversation turns
-  const turnLines: string[] = [];
-  const startNum = (input.existingTurnCount ?? 0) + 1;
-  for (let i = 0; i < input.turns.length; i++) {
-    const turn = input.turns[i];
-    const turnNum = startNum + i;
-    turnLines.push(`### Turn ${turnNum}`);
-    if (turn.prompt) {
-      turnLines.push(callout('user', 'Prompt', turn.prompt));
+  // Conversation turns — preserve existing + append new
+  if (input.existingConversation) {
+    // Existing conversation already has ## Conversation heading and prior turns.
+    // Format new turns and append.
+    const newTurnLines: string[] = [];
+    const startNum = (input.existingTurnCount ?? 0) + 1;
+    for (let i = 0; i < input.turns.length; i++) {
+      const turn = input.turns[i];
+      const turnNum = startNum + i;
+      newTurnLines.push(`### Turn ${turnNum}`);
+      if (turn.prompt) {
+        newTurnLines.push(callout('user', 'Prompt', turn.prompt));
+      }
+      if (turn.toolCount > 0) {
+        newTurnLines.push(`**Tools**: ${turn.toolCount} calls`);
+      }
+      if (turn.aiResponse) {
+        newTurnLines.push(callout('assistant', 'Response', turn.aiResponse));
+      }
     }
-    if (turn.toolCount > 0) {
-      turnLines.push(`**Tools**: ${turn.toolCount} calls`);
+    if (newTurnLines.length > 0) {
+      sections.push(input.existingConversation.replace(/\n+$/, '') + '\n\n' + newTurnLines.join('\n\n'));
+    } else {
+      sections.push(input.existingConversation);
     }
-    if (turn.aiResponse) {
-      turnLines.push(callout('assistant', 'Response', turn.aiResponse));
+  } else {
+    // First write — generate conversation from scratch
+    const turnLines: string[] = [];
+    for (let i = 0; i < input.turns.length; i++) {
+      const turn = input.turns[i];
+      const turnNum = i + 1;
+      turnLines.push(`### Turn ${turnNum}`);
+      if (turn.prompt) {
+        turnLines.push(callout('user', 'Prompt', turn.prompt));
+      }
+      if (turn.toolCount > 0) {
+        turnLines.push(`**Tools**: ${turn.toolCount} calls`);
+      }
+      if (turn.aiResponse) {
+        turnLines.push(callout('assistant', 'Response', turn.aiResponse));
+      }
     }
-  }
-  if (turnLines.length > 0) {
-    sections.push(`## Conversation\n\n${turnLines.join('\n\n')}`);
+    if (turnLines.length > 0) {
+      sections.push(`## Conversation\n\n${turnLines.join('\n\n')}`);
+    }
   }
 
   // Footer tags
@@ -227,7 +255,7 @@ export function formatPlanBody(input: PlanBodyInput): string {
 export interface ArtifactBodyInput {
   id: string;
   title: string;
-  artifact_type: string;
+  artifact_type: ArtifactType;
   source_path: string;
   sessionId: string;
   content: string;

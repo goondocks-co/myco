@@ -1,11 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { generateEmbedding } from '@myco/intelligence/embeddings';
-import type { LlmBackend } from '@myco/intelligence/llm';
+import type { EmbeddingProvider } from '@myco/intelligence/llm';
 
 describe('Embeddings', () => {
-  const mockBackend: LlmBackend = {
+  const mockBackend: EmbeddingProvider = {
     name: 'mock',
-    async summarize() { return { text: '', model: 'mock' }; },
     async embed(text: string) {
       const dim = 4;
       const embedding = Array.from({ length: dim }, (_, i) => text.length * 0.01 + i * 0.1);

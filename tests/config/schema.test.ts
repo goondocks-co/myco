@@ -1,87 +1,84 @@
 import { describe, it, expect } from 'vitest';
-import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema';
+import { MycoConfigSchema } from '@myco/config/schema';
 
-describe('MycoConfigSchema', () => {
-  it('accepts minimal valid config', () => {
-    const config = { version: 1, intelligence: { backend: 'local' as const } };
-    const result = MycoConfigSchema.safeParse(config);
+describe('MycoConfigSchema v2', () => {
+  const minimal = {
+    version: 2,
+    intelligence: {
+      llm: { provider: 'ollama', model: 'gpt-oss' },
+      embedding: { provider: 'ollama', model: 'bge-m3' },
+    },
+  };
+
+  it('accepts minimal valid v2 config', () => {
+    const result = MycoConfigSchema.safeParse(minimal);
     expect(result.success).toBe(true);
   });
 
-  it('applies defaults for omitted sections', () => {
-    const config = { version: 1, intelligence: { backend: 'cloud' as const } };
-    const result = MycoConfigSchema.parse(config);
-    expect(result.capture.buffer_max_events).toBe(500);
-    expect(result.context.max_tokens).toBe(1200);
-    expect(result.team.enabled).toBe(false);
+  it('applies defaults for context_window and max_tokens', () => {
+    const config = MycoConfigSchema.parse(minimal);
+    expect(config.intelligence.llm.context_window).toBe(8192);
+    expect(config.intelligence.llm.max_tokens).toBe(1024);
   });
 
-  it('rejects invalid backend value', () => {
-    const config = { version: 1, intelligence: { backend: 'invalid' } };
-    const result = MycoConfigSchema.safeParse(config);
-    expect(result.success).toBe(false);
-  });
-
-  it('validates local intelligence config', () => {
-    const config = {
-      version: 1,
-      intelligence: {
-        backend: 'local' as const,
-        local: {
-          provider: 'ollama' as const,
-          embedding_model: 'nomic-embed-text',
-          summary_model: 'llama3.2',
-          base_url: 'http://localhost:11434',
-        },
-      },
-    };
-    const result = MycoConfigSchema.safeParse(config);
-    expect(result.success).toBe(true);
-  });
-
-  it('validates cloud intelligence config', () => {
-    const config = {
-      version: 1,
-      intelligence: {
-        backend: 'cloud' as const,
-        cloud: {
-          summary_model: 'claude-haiku-4-5-20251001',
-          embedding_provider: 'voyage' as const,
-        },
-      },
-    };
-    const result = MycoConfigSchema.safeParse(config);
-    expect(result.success).toBe(true);
-  });
-
-  it('validates context layer token budgets', () => {
-    const config = {
-      version: 1,
-      intelligence: { backend: 'local' as const },
-      context: {
-        max_tokens: 1200,
-        layers: { plans: 200, sessions: 500, memories: 300, team: 200 },
-      },
-    };
-    const result = MycoConfigSchema.safeParse(config);
-    expect(result.success).toBe(true);
-  });
-
-  it('accepts daemon config with defaults', () => {
-    const config = MycoConfigSchema.parse({
+  it('rejects version 1 config', () => {
+    const result = MycoConfigSchema.safeParse({
       version: 1,
       intelligence: { backend: 'local' },
     });
-    expect(config.daemon.log_level).toBe('info');
-    expect(config.daemon.grace_period).toBe(30);
-    expect(config.daemon.max_log_size).toBe(5242880);
+    expect(result.success).toBe(false);
   });
 
-  it('accepts intelligence context_window', () => {
-    const config = MycoConfigSchema.parse({
-      version: 1,
-      intelligence: { backend: 'local', context_window: 4096 },
+  it('rejects anthropic as embedding provider', () => {
+    const result = MycoConfigSchema.safeParse({
+      version: 2,
+      intelligence: {
+        llm: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+        embedding: { provider: 'anthropic', model: 'nope' },
+      },
     });
-    expect(config.intelligence.context_window).toBe(4096);
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts anthropic as LLM provider', () => {
+    const config = MycoConfigSchema.parse({
+      version: 2,
+      intelligence: {
+        llm: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+        embedding: { provider: 'ollama', model: 'bge-m3' },
+      },
+    });
+    expect(config.intelligence.llm.provider).toBe('anthropic');
+  });
+
+  it('accepts custom context_window and max_tokens', () => {
+    const config = MycoConfigSchema.parse({
+      version: 2,
+      intelligence: {
+        llm: { provider: 'ollama', model: 'gpt-oss', context_window: 4096, max_tokens: 512 },
+        embedding: { provider: 'lm-studio', model: 'bge-m3' },
+      },
+    });
+    expect(config.intelligence.llm.context_window).toBe(4096);
+    expect(config.intelligence.llm.max_tokens).toBe(512);
+  });
+
+  it('accepts optional base_url on providers', () => {
+    const config = MycoConfigSchema.parse({
+      version: 2,
+      intelligence: {
+        llm: { provider: 'ollama', model: 'gpt-oss', base_url: 'http://gpu-box:11434' },
+        embedding: { provider: 'ollama', model: 'bge-m3', base_url: 'http://gpu-box:11434' },
+      },
+    });
+    expect(config.intelligence.llm.base_url).toBe('http://gpu-box:11434');
+  });
+
+  it('applies defaults for omitted sections', () => {
+    const config = MycoConfigSchema.parse(minimal);
+    expect(config.capture.buffer_max_events).toBe(500);
+    expect(config.context.max_tokens).toBe(1200);
+    expect(config.daemon.log_level).toBe('info');
+    expect(config.team.enabled).toBe(false);
   });
 });

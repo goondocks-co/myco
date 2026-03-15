@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { buildTags, formatTeamBody, formatPlanBody, formatArtifactBody } from '../obsidian/formatter.js';
+import type { ArtifactType } from './types.js';
 
 interface WriteSessionInput {
   id: string;
@@ -37,7 +38,7 @@ interface WriteMemoryInput {
 
 interface WriteArtifactInput {
   id: string;
-  artifact_type: string;
+  artifact_type: ArtifactType;
   source_path: string;
   title: string;
   session: string;
@@ -107,7 +108,8 @@ export class VaultWriter {
   }
 
   writeMemory(input: WriteMemoryInput): string {
-    const relativePath = `memories/${input.id}.md`;
+    const normalizedType = input.observation_type.replace(/_/g, '-');
+    const relativePath = `memories/${normalizedType}/${input.id}.md`;
 
     const frontmatter: Record<string, unknown> = {
       type: 'memory',
@@ -126,17 +128,20 @@ export class VaultWriter {
   writeArtifact(input: WriteArtifactInput): string {
     const relativePath = `artifacts/${input.id}.md`;
     const fullPath = path.join(this.vaultDir, relativePath);
+    const now = new Date().toISOString();
 
-    let created = new Date().toISOString();
+    let created = now;
 
     // Preserve created from existing file (latest-wins update)
-    if (fs.existsSync(fullPath)) {
+    try {
       const existing = fs.readFileSync(fullPath, 'utf-8');
       const fmMatch = existing.match(/^---\n([\s\S]*?)\n---/);
       if (fmMatch) {
         const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
         if (typeof parsed.created === 'string') created = parsed.created;
       }
+    } catch {
+      // File doesn't exist yet — created = now
     }
 
     const frontmatter: Record<string, unknown> = {
@@ -147,7 +152,7 @@ export class VaultWriter {
       title: input.title,
       last_captured_by: `session-${input.session}`,
       created,
-      updated: new Date().toISOString(),
+      updated: now,
       tags: buildTags('artifact', input.artifact_type, input.tags ?? []),
     };
 

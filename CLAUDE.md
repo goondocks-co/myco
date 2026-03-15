@@ -32,7 +32,7 @@ Permanent installs register the plugin globally. `--plugin-dir .` is for develop
 
 - This is NOT a general-purpose knowledge base or note-taking app. Do not add user-facing UI, web dashboards, or REST APIs.
 - This is NOT a framework. Do not add plugin systems, extensibility hooks, or abstraction layers for hypothetical consumers.
-- Do not add dependencies on cloud services. All intelligence runs locally (Ollama, LM Studio) or via lightweight API (Haiku).
+- Do not add dependencies on cloud services. All intelligence runs locally (Ollama, LM Studio) or via lightweight API (Anthropic).
 
 ## Architecture
 
@@ -44,8 +44,9 @@ src/
   daemon/        # Long-lived HTTP daemon: batch processing, session lifecycle, plan watching
   hooks/         # Claude Code hook entry points (thin — delegate to daemon)
   index/         # SQLite FTS5 + sqlite-vec vector search
-  intelligence/  # LLM backend abstraction (Ollama, LM Studio, Haiku)
+  intelligence/  # LLM backend abstraction (Ollama, LM Studio, Anthropic)
   mcp/           # MCP server + tool handlers
+  prompts/       # LLM prompt templates (extraction, summary, title, classification)
   vault/         # Reader, writer, Zod schemas for vault notes
 tests/           # Mirrors src/ structure: tests/<module>.test.ts
 hooks/           # Hook registration shell scripts (invoke dist/src/hooks/*.js)
@@ -77,9 +78,34 @@ Do not tie state management to hook lifecycle events (SessionEnd, SessionStart).
 
 React to the **content** of hook payloads, not the event type.
 
+## Idempotence by Default
+
+Every write operation MUST be safe to run twice with the same input. No "first-time" vs "subsequent" branching that produces different structures — the output MUST be identical regardless of how many times the operation runs.
+
+Concrete requirements:
+
+- `writeMemory`, `writeArtifact`, `writeSession`, `writePlan`, `writeTeamMember` MUST produce the same file content given the same input, whether or not the file already exists.
+- Startup tasks (migration, buffer cleanup, index rebuild) MUST be idempotent. Running the daemon startup sequence twice in a row MUST NOT move, duplicate, or corrupt data.
+- `indexNote` and `indexAndEmbed` MUST upsert, not insert. Re-indexing an already-indexed note MUST NOT create duplicates.
+
+If an operation cannot be made idempotent, it MUST be guarded by an explicit check (e.g., "skip if already migrated") and that guard MUST be documented in the code.
+
+## No Magic Literals
+
+Numeric and string constants MUST NOT appear inline in logic. Extract them as named constants at module scope or in a shared constants file.
+
+This applies to:
+
+- **Truncation limits:** Every `.slice(0, N)` MUST reference a named constant (e.g., `EMBEDDING_INPUT_LIMIT`, `PROMPT_PREVIEW_CHARS`, `CANDIDATE_CONTENT_PREVIEW`). The constant name documents the intent; the number alone does not.
+- **Timeouts and thresholds:** Durations (e.g., `24 * 60 * 60 * 1000` for buffer cleanup), retry counts, similarity thresholds — all MUST be named constants.
+- **Token estimates:** The `chars / 4` heuristic MUST use a named constant (`CHARS_PER_TOKEN = 4`) so it can be found and updated in one place.
+- **Config defaults:** Zod `.default()` values are acceptable as-is — the schema IS the documentation. But defaults used outside Zod schemas (e.g., fallback values in constructors) MUST be named constants.
+
+Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO date prefix), and loop bounds derived from data (`i < items.length`) are not magic literals.
+
 ## Naming Conventions
 
-- **Memory files:** `{observation_type}-{session_id_last_6}-{timestamp}.md` (e.g., `gotcha-ac5220-1773416089650.md`)
+- **Memory files:** `memories/{normalized_type}/{observation_type}-{session_id_last_6}-{timestamp}.md` (e.g., `memories/gotcha/gotcha-ac5220-1773416089650.md`). The subdirectory name normalizes underscores to hyphens (`bug_fix` → `bug-fix/`).
 - **Session files:** `sessions/{YYYY-MM-DD}/session-{session_id}.md`
 - **Imports:** Use `@myco/*` path aliases mapping to `src/*`
 - **Tests:** `tests/<module>.test.ts` mirroring `src/<module>.ts`
@@ -94,7 +120,7 @@ React to the **content** of hook payloads, not the event type.
   vectors.db         # sqlite-vec vector embeddings
   buffer/            # Per-session JSONL event buffers (ephemeral)
   sessions/          # Session notes by date
-  memories/          # Observation notes
+  memories/          # Observation notes (subdirectories by type: gotcha/, decision/, etc.)
   plans/             # Plan notes
   artifacts/         # Artifact references
   team/              # Team member notes

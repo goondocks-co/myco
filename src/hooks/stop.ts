@@ -6,9 +6,9 @@ import { VaultWriter } from '../vault/writer.js';
 import { MycoIndex } from '../index/sqlite.js';
 import { indexNote } from '../index/rebuild.js';
 import { loadConfig } from '../config/loader.js';
-import { createLlmBackend } from '../intelligence/llm.js';
+import { createLlmProvider } from '../intelligence/llm.js';
 import { resolveVaultDir } from '../vault/resolve.js';
-import { formatMemoryBody } from '../obsidian/formatter.js';
+import { writeObservationNotes } from '../vault/observations.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -40,8 +40,8 @@ async function main() {
     const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
     if (!buffer.exists() || buffer.count() === 0) return;
 
-    const backend = await createLlmBackend(config.intelligence);
-    const processor = new BufferProcessor(backend);
+    const llmProvider = createLlmProvider(config.intelligence.llm);
+    const processor = new BufferProcessor(llmProvider, config.intelligence.llm.context_window);
     const events = buffer.readAll();
     const processed = await processor.process(events, sessionId);
 
@@ -58,29 +58,7 @@ async function main() {
     const index = new MycoIndex(path.join(VAULT_DIR, 'index.db'));
     indexNote(index, VAULT_DIR, sessionPath);
 
-    for (const obs of processed.observations) {
-      const body = formatMemoryBody({
-        title: obs.title,
-        observationType: obs.type,
-        content: obs.content,
-        sessionId,
-        root_cause: obs.root_cause,
-        fix: obs.fix,
-        rationale: obs.rationale,
-        alternatives_rejected: obs.alternatives_rejected,
-        gained: obs.gained,
-        sacrificed: obs.sacrificed,
-        tags: obs.tags,
-      });
-      const memPath = writer.writeMemory({
-        id: `${obs.type}-${sessionId.slice(-6)}-${Date.now()}`,
-        observation_type: obs.type,
-        session: `session-${sessionId}`,
-        tags: obs.tags,
-        content: body,
-      });
-      indexNote(index, VAULT_DIR, memPath);
-    }
+    writeObservationNotes(processed.observations, sessionId, writer, index, VAULT_DIR);
 
     index.close();
   } catch (error) {

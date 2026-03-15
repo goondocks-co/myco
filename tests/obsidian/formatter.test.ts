@@ -126,17 +126,22 @@ describe('formatSessionBody', () => {
     expect(body).toContain('#user/chris');
   });
 
-  it('respects existingTurnCount for turn numbering', () => {
+  it('preserves existing conversation and appends new turns', () => {
+    const existing = '## Conversation\n\n### Turn 1\n\n> [!user] Prompt\n> First thing\n\n### Turn 2\n\n> [!user] Prompt\n> Second thing\n\n### Turn 3\n\n> [!user] Prompt\n> Third thing';
     const body = formatSessionBody({
       title: 'Continued',
       narrative: '',
       sessionId: 'abc',
       turns: [{ prompt: 'Next thing', toolCount: 0 }],
       existingTurnCount: 3,
+      existingConversation: existing,
     });
 
     expect(body).toContain('### Turn 4');
-    expect(body).not.toContain('### Turn 1');
+    expect(body).toContain('### Turn 1');
+    expect(body).toContain('### Turn 2');
+    expect(body).toContain('### Turn 3');
+    expect(body).toContain('Next thing');
   });
 
   it('handles missing optional fields gracefully', () => {

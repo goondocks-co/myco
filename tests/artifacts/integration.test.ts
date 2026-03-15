@@ -33,14 +33,11 @@ describe('Artifact capture integration', () => {
     const specFile = path.join(specDir, 'auth-design.md');
     fs.writeFileSync(specFile, '# Auth Design\n\nRedesign the auth layer for JWT support.');
 
-    const events = [
-      { type: 'tool_use', tool_name: 'Write', tool_input: { file_path: specFile } },
-      { type: 'tool_use', tool_name: 'Read', tool_input: { file_path: specFile } },
-    ];
+    const filePaths = new Set([specFile]);
 
     // Pre-filter
     const candidates = collectArtifactCandidates(
-      events,
+      filePaths,
       { artifact_extensions: ['.md'] },
       projectRoot,
     );

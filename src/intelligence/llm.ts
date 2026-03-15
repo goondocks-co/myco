@@ -1,4 +1,10 @@
-import type { MycoConfig } from '../config/schema.js';
+import { OllamaBackend } from './ollama.js';
+import { LmStudioBackend } from './lm-studio.js';
+import { AnthropicBackend } from './anthropic.js';
+
+export interface LlmRequestOptions {
+  maxTokens?: number;
+}
 
 export interface LlmResponse {
   text: string;
@@ -11,25 +17,46 @@ export interface EmbeddingResponse {
   dimensions: number;
 }
 
-export interface LlmBackend {
+export interface LlmProvider {
   name: string;
-  summarize(prompt: string): Promise<LlmResponse>;
+  summarize(prompt: string, opts?: LlmRequestOptions): Promise<LlmResponse>;
+  isAvailable(): Promise<boolean>;
+}
+
+export interface EmbeddingProvider {
+  name: string;
   embed(text: string): Promise<EmbeddingResponse>;
   isAvailable(): Promise<boolean>;
 }
 
-export async function createLlmBackend(intelligence: MycoConfig['intelligence']): Promise<LlmBackend> {
-  if (intelligence.backend === 'cloud') {
-    const { HaikuBackend } = await import('./haiku.js');
-    return new HaikuBackend(intelligence.cloud);
-  }
+interface ProviderConfig {
+  provider: string;
+  model: string;
+  base_url?: string;
+  context_window?: number;
+  max_tokens?: number;
+}
 
-  const provider = intelligence.local?.provider ?? 'ollama';
-  if (provider === 'lm-studio') {
-    const { LmStudioBackend } = await import('./lm-studio.js');
-    return new LmStudioBackend(intelligence.local);
+export function createLlmProvider(config: ProviderConfig): LlmProvider {
+  switch (config.provider) {
+    case 'ollama':
+      return new OllamaBackend(config);
+    case 'lm-studio':
+      return new LmStudioBackend(config);
+    case 'anthropic':
+      return new AnthropicBackend(config);
+    default:
+      throw new Error(`Unknown LLM provider: ${config.provider}`);
   }
+}
 
-  const { OllamaBackend } = await import('./ollama.js');
-  return new OllamaBackend(intelligence.local);
+export function createEmbeddingProvider(config: ProviderConfig): EmbeddingProvider {
+  switch (config.provider) {
+    case 'ollama':
+      return new OllamaBackend(config);
+    case 'lm-studio':
+      return new LmStudioBackend(config);
+    default:
+      throw new Error(`Provider "${config.provider}" does not support embeddings. Use ollama or lm-studio.`);
+  }
 }

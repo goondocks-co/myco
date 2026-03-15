@@ -1,22 +1,22 @@
 import { z } from 'zod';
 
-const LocalIntelligenceSchema = z.object({
-  provider: z.enum(['ollama', 'lm-studio']).default('ollama'),
-  embedding_model: z.string().default('nomic-embed-text'),
-  summary_model: z.string().default('gpt-oss'),
-  base_url: z.string().url().default('http://localhost:11434'),
+const LlmProviderSchema = z.object({
+  provider: z.enum(['ollama', 'lm-studio', 'anthropic']),
+  model: z.string(),
+  base_url: z.string().url().optional(),
+  context_window: z.number().int().positive().default(8192),
+  max_tokens: z.number().int().positive().default(1024),
 });
 
-const CloudIntelligenceSchema = z.object({
-  summary_model: z.string().default('claude-haiku-4-5-20251001'),
-  embedding_provider: z.enum(['voyage']).default('voyage'),
+const EmbeddingProviderSchema = z.object({
+  provider: z.enum(['ollama', 'lm-studio']),
+  model: z.string(),
+  base_url: z.string().url().optional(),
 });
 
 const IntelligenceSchema = z.object({
-  backend: z.enum(['local', 'cloud']),
-  local: LocalIntelligenceSchema.optional(),
-  cloud: CloudIntelligenceSchema.optional(),
-  context_window: z.number().int().positive().default(8192),
+  llm: LlmProviderSchema,
+  embedding: EmbeddingProviderSchema,
 });
 
 const DaemonSchema = z.object({
@@ -54,7 +54,7 @@ const TeamSchema = z.object({
 });
 
 export const MycoConfigSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   intelligence: IntelligenceSchema,
   daemon: DaemonSchema.default({}),
   capture: CaptureSchema.default({}),
@@ -63,3 +63,5 @@ export const MycoConfigSchema = z.object({
 });
 
 export type MycoConfig = z.infer<typeof MycoConfigSchema>;
+export type LlmProviderConfig = z.infer<typeof LlmProviderSchema>;
+export type EmbeddingProviderConfig = z.infer<typeof EmbeddingProviderSchema>;

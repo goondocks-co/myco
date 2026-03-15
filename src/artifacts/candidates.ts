@@ -8,59 +8,56 @@ export interface ArtifactCandidate {
 }
 
 /**
- * Scans tool events for Write/Edit file paths, filters by gitignore and
- * configured extensions, reads final content from disk.
+ * Filters a set of written/edited file paths by extension and gitignore,
+ * then reads final content from disk.
  *
  * Uses execFileSync (not exec) for git check-ignore — arguments are passed
  * as an array, so no shell injection risk.
  */
 export function collectArtifactCandidates(
-  events: Array<Record<string, unknown>>,
+  filePaths: Set<string>,
   config: { artifact_extensions: string[] },
   projectRoot: string,
 ): ArtifactCandidate[] {
-  const seen = new Set<string>();
+  if (filePaths.size === 0) return [];
 
-  for (const event of events) {
-    const toolName = String(event.tool_name ?? event.tool ?? '');
-    if (toolName !== 'Write' && toolName !== 'Edit') continue;
+  // Filter by extension first (cheap)
+  const extFiltered = [...filePaths].filter((absPath) =>
+    config.artifact_extensions.includes(path.extname(absPath)),
+  );
 
-    const input = event.tool_input as Record<string, unknown> | undefined;
-    const filePath = input?.file_path as string | undefined;
-    if (!filePath) continue;
+  if (extFiltered.length === 0) return [];
 
-    seen.add(filePath);
-  }
-
-  if (seen.size === 0) return [];
+  // Batch git check-ignore: one subprocess instead of N
+  const ignoredSet = getGitIgnored(extFiltered, projectRoot);
 
   const candidates: ArtifactCandidate[] = [];
 
-  for (const absPath of seen) {
-    const ext = path.extname(absPath);
-    if (!config.artifact_extensions.includes(ext)) continue;
+  for (const absPath of extFiltered) {
+    if (ignoredSet.has(absPath)) continue;
 
-    if (isGitIgnored(absPath, projectRoot)) continue;
-
-    if (!fs.existsSync(absPath)) continue;
-
-    const content = fs.readFileSync(absPath, 'utf-8');
-    const relativePath = path.relative(projectRoot, absPath);
-
-    candidates.push({ path: relativePath, content });
+    try {
+      const content = fs.readFileSync(absPath, 'utf-8');
+      const relativePath = path.relative(projectRoot, absPath);
+      candidates.push({ path: relativePath, content });
+    } catch {
+      // File was deleted between event capture and now — skip
+    }
   }
 
   return candidates;
 }
 
-function isGitIgnored(filePath: string, cwd: string): boolean {
+function getGitIgnored(filePaths: string[], cwd: string): Set<string> {
   try {
-    execFileSync('git', ['check-ignore', '-q', filePath], {
+    const result = execFileSync('git', ['check-ignore', ...filePaths], {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      encoding: 'utf-8',
     });
-    return true; // exit 0 = file is ignored
+    return new Set(result.trim().split('\n').filter(Boolean));
   } catch {
-    return false; // exit 1 = file is not ignored
+    // exit 1 = none are ignored (or git not available)
+    return new Set();
   }
 }

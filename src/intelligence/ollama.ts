@@ -1,31 +1,42 @@
-import type { LlmBackend, LlmResponse, EmbeddingResponse } from './llm.js';
+import type { LlmProvider, EmbeddingProvider, LlmResponse, EmbeddingResponse, LlmRequestOptions } from './llm.js';
 
 interface OllamaConfig {
+  model?: string;
+  base_url?: string;
+  context_window?: number;
+  max_tokens?: number;
+  // Legacy fields (ignored, kept for backward compat during migration)
   embedding_model?: string;
   summary_model?: string;
-  base_url?: string;
 }
 
-export class OllamaBackend implements LlmBackend {
+export class OllamaBackend implements LlmProvider, EmbeddingProvider {
   readonly name = 'ollama';
   private baseUrl: string;
-  private summaryModel: string;
-  private embeddingModel: string;
+  private model: string;
+  private contextWindow: number;
+  private defaultMaxTokens: number;
 
   constructor(config?: OllamaConfig) {
     this.baseUrl = config?.base_url ?? 'http://localhost:11434';
-    this.summaryModel = config?.summary_model ?? 'llama3.2';
-    this.embeddingModel = config?.embedding_model ?? 'nomic-embed-text';
+    this.model = config?.model ?? config?.summary_model ?? 'llama3.2';
+    this.contextWindow = config?.context_window ?? 8192;
+    this.defaultMaxTokens = config?.max_tokens ?? 1024;
   }
 
-  async summarize(prompt: string): Promise<LlmResponse> {
+  async summarize(prompt: string, opts?: LlmRequestOptions): Promise<LlmResponse> {
+    const maxTokens = opts?.maxTokens ?? this.defaultMaxTokens;
+    const promptTokens = Math.ceil(prompt.length / 4);
+    const numCtx = Math.max(promptTokens + maxTokens, this.contextWindow);
+
     const response = await fetch(`${this.baseUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: this.summaryModel,
+        model: this.model,
         prompt,
         stream: false,
+        options: { num_ctx: numCtx },
       }),
     });
 
@@ -42,7 +53,7 @@ export class OllamaBackend implements LlmBackend {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: this.embeddingModel,
+        model: this.model,
         input: text,
       }),
     });

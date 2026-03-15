@@ -36,10 +36,13 @@ export const MemoryFrontmatterSchema = z.object({
   tags: z.array(z.string()).default([]),
 });
 
+export const ARTIFACT_TYPES = ['spec', 'plan', 'rfc', 'doc', 'other'] as const;
+export type ArtifactType = (typeof ARTIFACT_TYPES)[number];
+
 export const ArtifactFrontmatterSchema = z.object({
   type: z.literal('artifact'),
   id: z.string(),
-  artifact_type: z.enum(['spec', 'plan', 'rfc', 'doc', 'other']).default('other'),
+  artifact_type: z.enum(ARTIFACT_TYPES).default('other'),
   source_path: z.string(),
   title: z.string(),
   last_captured_by: z.string(),

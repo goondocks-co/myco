@@ -66,10 +66,28 @@ This dashboard requires the Dataview community plugin in Obsidian. Without it, t
 
 ## Step 2: Choose intelligence backend
 
-- **Cloud** (Claude Haiku) — uses existing ANTHROPIC_API_KEY, no setup needed
-- **Local** (Ollama or LM Studio) — auto-detect running instances, offer to install Ollama if missing
-  - For Ollama, recommend `gpt-oss` as the default summary model
-  - For Ollama, recommend `nomic-embed-text` as the default embedding model
+Configure LLM and embedding providers independently:
+
+### LLM provider
+
+Ask the user to choose an LLM provider:
+
+- **Ollama** — detect at `http://localhost:11434/api/tags`, list available models, recommend `gpt-oss`
+- **LM Studio** — detect at `http://localhost:1234/v1/models`, list available models
+- **Claude Anthropic** — uses existing `ANTHROPIC_API_KEY`, verify it's set
+
+For the selected provider, list available models and let the user choose. Also set:
+- `context_window` (default 8192)
+- `max_tokens` (default 1024)
+
+### Embedding provider
+
+Ask the user to choose an embedding provider. **Anthropic is not an option here** — it doesn't support embeddings.
+
+- **Ollama** — detect at `http://localhost:11434/api/tags`, list available models, recommend `bge-m3` or `nomic-embed-text`
+- **LM Studio** — detect at `http://localhost:1234/v1/models`, list available models
+
+For the selected provider, list available models and let the user choose.
 
 ## Step 3: Team / solo setup
 
@@ -81,7 +99,52 @@ Ask whether this is a team or solo project. If `MYCO_VAULT_DIR` is set in the en
 
 ## Step 4: Write `myco.yaml`
 
-Write the config file with chosen settings. Use the resolved vault path if it differs from the default.
+Write a `version: 2` config file with chosen settings. All configurable values must be explicit. Example output:
+
+```yaml
+version: 2
+
+intelligence:
+  llm:
+    provider: ollama
+    model: gpt-oss
+    base_url: http://localhost:11434
+    context_window: 8192
+    max_tokens: 1024
+  embedding:
+    provider: ollama
+    model: bge-m3
+    base_url: http://localhost:11434
+
+daemon:
+  log_level: info
+  grace_period: 30
+  max_log_size: 5242880
+
+capture:
+  transcript_paths: []
+  artifact_watch:
+    - docs/superpowers/specs/
+    - .claude/plans/
+  artifact_extensions:
+    - .md
+  buffer_max_events: 500
+
+context:
+  max_tokens: 1200
+  layers:
+    plans: 200
+    sessions: 500
+    memories: 300
+    team: 200
+
+team:
+  enabled: false
+  user: ""
+  sync: git
+```
+
+Substitute the user's chosen LLM provider, model, and base URL into the `intelligence.llm` section, and the chosen embedding provider, model, and base URL into the `intelligence.embedding` section. Set `team.enabled` and `team.user` based on Step 3.
 
 ## Step 5: Write `.myco/.gitignore` (or `<vault>/.gitignore`)
 
@@ -98,7 +161,8 @@ After setup, display a summary including:
 | Setting | Value |
 |---------|-------|
 | Vault path | `<resolved path>` (`<vault path source>`) |
-| Backend | `<chosen backend>` |
+| LLM provider | `<provider>` / `<model>` |
+| Embedding provider | `<provider>` / `<model>` |
 | Team mode | `<enabled/disabled>` |
 
 Then confirm everything is working by running a test query against the vault.

@@ -3,68 +3,94 @@ import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger } from './logger.js';
 import { loadConfig } from '../config/loader.js';
 import { BatchManager, type BatchEvent } from './batch.js';
-import { BufferProcessor, type Observation } from './processor.js';
+import { BufferProcessor, type Observation, type ClassifiedArtifact } from './processor.js';
 import { VaultWriter } from '../vault/writer.js';
 import { MycoIndex } from '../index/sqlite.js';
-import { indexNote } from '../index/rebuild.js';
-import { createLlmBackend } from '../intelligence/llm.js';
-import type { LlmBackend } from '../intelligence/llm.js';
+import { indexNote, rebuildIndex } from '../index/rebuild.js';
+import { initFts } from '../index/fts.js';
+import { createLlmProvider, createEmbeddingProvider } from '../intelligence/llm.js';
+import type { EmbeddingProvider } from '../intelligence/llm.js';
 import { VectorIndex } from '../index/vectors.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
 import { PlanWatcher } from './watcher.js';
 import { buildInjectedContext } from '../context/injector.js';
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { EventBuffer } from '../capture/buffer.js';
-import { formatMemoryBody, formatSessionBody } from '../obsidian/formatter.js';
+import { formatSessionBody } from '../obsidian/formatter.js';
+import { writeObservationNotes } from '../vault/observations.js';
 import { collectArtifactCandidates } from '../artifacts/candidates.js';
 import { slugifyPath } from '../artifacts/slugify.js';
+import { z } from 'zod';
+import YAML from 'yaml';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+interface IndexDeps {
+  index: MycoIndex;
+  vaultDir: string;
+  vectorIndex: VectorIndex | null;
+  embeddingProvider: EmbeddingProvider;
+  logger: DaemonLogger;
+}
+
+function indexAndEmbed(
+  relativePath: string,
+  noteId: string,
+  embeddingText: string,
+  metadata: Record<string, string>,
+  deps: IndexDeps,
+): void {
+  indexNote(deps.index, deps.vaultDir, relativePath);
+  if (deps.vectorIndex && embeddingText) {
+    generateEmbedding(deps.embeddingProvider, embeddingText.slice(0, 8000))
+      .then((emb) => deps.vectorIndex!.upsert(noteId, emb.embedding, metadata))
+      .catch((err) => deps.logger.debug('embeddings', 'Embedding failed', { id: noteId, error: (err as Error).message }));
+  }
+}
 
 function writeObservations(
   observations: Observation[],
   sessionId: string,
-  deps: {
-    vault: VaultWriter;
-    index: MycoIndex;
-    vaultDir: string;
-    vectorIndex: VectorIndex | null;
-    llmBackend: LlmBackend;
-    logger: DaemonLogger;
-  },
+  deps: IndexDeps & { vault: VaultWriter },
 ): void {
-  for (const obs of observations) {
-    const obsId = `${obs.type}-${sessionId.slice(-6)}-${Date.now()}`;
-    const body = formatMemoryBody({
-      title: obs.title,
-      observationType: obs.type,
-      content: obs.content,
-      sessionId,
-      root_cause: obs.root_cause,
-      fix: obs.fix,
-      rationale: obs.rationale,
-      alternatives_rejected: obs.alternatives_rejected,
-      gained: obs.gained,
-      sacrificed: obs.sacrificed,
-      tags: obs.tags,
-    });
-    const relativePath = deps.vault.writeMemory({
-      id: obsId,
-      observation_type: obs.type,
-      session: `session-${sessionId}`,
-      tags: obs.tags,
-      content: body,
-    });
-    indexNote(deps.index, deps.vaultDir, relativePath);
-    deps.logger.info('processor', 'Observation written', { type: obs.type, title: obs.title, session_id: sessionId });
+  const written = writeObservationNotes(observations, sessionId, deps.vault, deps.index, deps.vaultDir);
+  for (const note of written) {
+    indexAndEmbed(note.path, note.id, `${note.observation.title}\n${note.observation.content}`,
+      { type: 'memory', importance: 'high', session_id: sessionId }, deps);
+    deps.logger.info('processor', 'Observation written', { type: note.observation.type, title: note.observation.title, session_id: sessionId });
+  }
+}
 
-    if (deps.vectorIndex) {
-      generateEmbedding(deps.llmBackend, `${obs.title}\n${obs.content}`)
-        .then((emb) => deps.vectorIndex!.upsert(obsId, emb.embedding,
-          { type: 'memory', importance: 'high', session_id: sessionId }))
-        .catch((err) => deps.logger.debug('embeddings', 'Observation embedding failed',
-          { obs_id: obsId, error: (err as Error).message }));
-    }
+async function captureArtifacts(
+  candidates: Array<{ path: string; content: string }>,
+  classified: ClassifiedArtifact[],
+  sessionId: string,
+  deps: IndexDeps & { vault: VaultWriter },
+): Promise<void> {
+  const candidateMap = new Map(candidates.map((c) => [c.path, c]));
+
+  for (const artifact of classified) {
+    const candidate = candidateMap.get(artifact.source_path);
+    if (!candidate) continue;
+
+    const artifactId = slugifyPath(artifact.source_path);
+    const artifactPath = deps.vault.writeArtifact({
+      id: artifactId,
+      artifact_type: artifact.artifact_type,
+      source_path: artifact.source_path,
+      title: artifact.title,
+      session: sessionId,
+      tags: artifact.tags,
+      content: candidate.content,
+    });
+    indexAndEmbed(artifactPath, artifactId, `${artifact.title}\n${candidate.content}`,
+      { type: 'artifact', artifact_type: artifact.artifact_type, session_id: sessionId }, deps);
+    deps.logger.info('processor', 'Artifact captured', {
+      id: artifactId,
+      type: artifact.artifact_type,
+      source: artifact.source_path,
+    });
   }
 }
 
@@ -90,6 +116,40 @@ function extractTurns(events: BatchEvent[]): Turn[] {
   }
   if (current) turns.push(current);
   return turns;
+}
+
+export function migrateMemoryFiles(vaultDir: string): number {
+  const memoriesDir = path.join(vaultDir, 'memories');
+  if (!fs.existsSync(memoriesDir)) return 0;
+
+  let moved = 0;
+  const entries = fs.readdirSync(memoriesDir);
+
+  for (const entry of entries) {
+    const fullPath = path.join(memoriesDir, entry);
+    if (!entry.endsWith('.md')) continue;
+    if (fs.statSync(fullPath).isDirectory()) continue;
+
+    try {
+      const content = fs.readFileSync(fullPath, 'utf-8');
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      if (!fmMatch) continue;
+
+      const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
+      const obsType = parsed.observation_type as string | undefined;
+      if (!obsType) continue;
+
+      const normalizedType = obsType.replace(/_/g, '-');
+      const targetDir = path.join(memoriesDir, normalizedType);
+      fs.mkdirSync(targetDir, { recursive: true });
+      fs.renameSync(fullPath, path.join(targetDir, entry));
+      moved++;
+    } catch {
+      // Skip files that can't be read or parsed
+    }
+  }
+
+  return moved;
 }
 
 async function main(): Promise<void> {
@@ -123,26 +183,30 @@ async function main(): Promise<void> {
   });
 
   // Batch processing setup
-  const llmBackend = await createLlmBackend(config.intelligence);
+  const llmProvider = createLlmProvider(config.intelligence.llm);
+  const embeddingProvider = createEmbeddingProvider(config.intelligence.embedding);
 
   let vectorIndex: VectorIndex | null = null;
   try {
-    const testEmbed = await llmBackend.embed('test');
+    const testEmbed = await embeddingProvider.embed('test');
     vectorIndex = new VectorIndex(path.join(vaultDir, 'vectors.db'), testEmbed.dimensions);
     logger.info('embeddings', 'Vector index initialized', { dimensions: testEmbed.dimensions });
   } catch (error) {
     logger.warn('embeddings', 'Vector index unavailable', { error: (error as Error).message });
   }
 
-  const processor = new BufferProcessor(llmBackend);
+  const processor = new BufferProcessor(llmProvider, config.intelligence.llm.context_window);
   const vault = new VaultWriter(vaultDir);
   const index = new MycoIndex(path.join(vaultDir, 'index.db'));
   const transcriptMiner = new TranscriptMiner({
     additionalPaths: config.capture.transcript_paths,
   });
 
+  const indexDeps: IndexDeps = { index, vaultDir, vectorIndex, embeddingProvider, logger };
+
   const bufferDir = path.join(vaultDir, 'buffer');
   const sessionBuffers = new Map<string, EventBuffer>();
+  const sessionFilePaths = new Map<string, Set<string>>();
 
   // Clean up stale buffer files (>24h) on startup
   if (fs.existsSync(bufferDir)) {
@@ -157,27 +221,41 @@ async function main(): Promise<void> {
     }
   }
 
+  // Migrate flat memory files into type subdirectories
+  const migrated = migrateMemoryFiles(vaultDir);
+  if (migrated > 0) {
+    logger.info('daemon', 'Migrated memory files to type subdirectories', { count: migrated });
+    // Rebuild FTS index to update stored paths (vectors are keyed by ID, unaffected)
+    initFts(index);
+    rebuildIndex(index, vaultDir);
+  }
+
+  // Route body schemas
+  const RegisterBody = z.object({ session_id: z.string() });
+  const UnregisterBody = z.object({ session_id: z.string() });
+  const EventBody = z.object({ type: z.string(), session_id: z.string() }).passthrough();
+  const StopBody = z.object({ session_id: z.string(), user: z.string().optional() });
+  const ContextBody = z.object({
+    session_id: z.string().optional(),
+    branch: z.string().optional(),
+    files: z.array(z.string()).optional(),
+  });
+
   const planWatcher = new PlanWatcher({
     projectRoot: process.cwd(),
     watchPaths: config.capture.artifact_watch,
     onPlan: (event) => {
       logger.info('watcher', 'Plan detected', { source: event.source, file: event.filePath });
 
-      // Index and embed plan files
-      if (event.filePath && fs.existsSync(event.filePath)) {
+      if (event.filePath) {
         try {
+          const content = fs.readFileSync(event.filePath, 'utf-8');
           const relativePath = path.relative(vaultDir, event.filePath);
-          indexNote(index, vaultDir, relativePath);
+          const title = content.match(/^#\s+(.+)$/m)?.[1] ?? path.basename(event.filePath);
+          const planId = `plan-${path.basename(event.filePath, '.md')}`;
+          indexAndEmbed(relativePath, planId, `${title}\n${content}`, { type: 'plan' },
+            indexDeps);
           logger.info('watcher', 'Plan indexed', { path: relativePath });
-
-          if (vectorIndex) {
-            const content = fs.readFileSync(event.filePath, 'utf-8');
-            const title = content.match(/^#\s+(.+)$/m)?.[1] ?? path.basename(event.filePath);
-            const planId = `plan-${path.basename(event.filePath, '.md')}`;
-            generateEmbedding(llmBackend, `${title}\n${content}`.slice(0, 8000))
-              .then((emb) => vectorIndex!.upsert(planId, emb.embedding, { type: 'plan' }))
-              .catch((err) => logger.debug('embeddings', 'Plan embedding failed', { error: (err as Error).message }));
-          }
         } catch (err) {
           logger.debug('watcher', 'Plan index failed', { error: (err as Error).message });
         }
@@ -196,7 +274,7 @@ async function main(): Promise<void> {
     const result = await processor.process(asRecords, sessionId);
 
     if (!result.degraded) {
-      writeObservations(result.observations, sessionId, { vault, index, vaultDir, vectorIndex, llmBackend, logger });
+      writeObservations(result.observations, sessionId, { vault, ...indexDeps });
     }
 
     logger.debug('processor', 'Batch processed', {
@@ -208,26 +286,32 @@ async function main(): Promise<void> {
   });
 
   // Session routes
-  server.registerRoute('POST', '/sessions/register', async (body: any) => {
-    registry.register(body.session_id);
+  server.registerRoute('POST', '/sessions/register', async (body: unknown) => {
+    const { session_id } = RegisterBody.parse(body);
+    registry.register(session_id);
     server.updateDaemonJsonSessions(registry.sessions);
-    logger.info('lifecycle', 'Session registered', { session_id: body.session_id });
+    logger.info('lifecycle', 'Session registered', { session_id });
     return { ok: true, sessions: registry.sessions };
   });
 
-  server.registerRoute('POST', '/sessions/unregister', async (body: any) => {
-    registry.unregister(body.session_id);
-    // Note: we do NOT delete the buffer here. Session reload (SessionEnd → SessionStart)
+  server.registerRoute('POST', '/sessions/unregister', async (body: unknown) => {
+    const { session_id } = UnregisterBody.parse(body);
+    registry.unregister(session_id);
+    // Note: we do NOT delete buffer FILES on disk. Session reload (SessionEnd → SessionStart)
     // reuses the same session_id, and deleting would wipe all prior events.
-    // Buffers are cleaned up by age during rebuild or daemon startup.
+    // Buffer files are cleaned up by age during daemon startup.
+    // We DO prune the in-memory Map entries to avoid unbounded growth.
+    sessionBuffers.delete(session_id);
+    sessionFilePaths.delete(session_id);
     server.updateDaemonJsonSessions(registry.sessions);
-    logger.info('lifecycle', 'Session unregistered', { session_id: body.session_id });
+    logger.info('lifecycle', 'Session unregistered', { session_id });
     return { ok: true, sessions: registry.sessions };
   });
 
   // Event routes
-  server.registerRoute('POST', '/events', async (body: any) => {
-    const event = { ...body, timestamp: body.timestamp ?? new Date().toISOString() } as BatchEvent;
+  server.registerRoute('POST', '/events', async (body: unknown) => {
+    const validated = EventBody.parse(body);
+    const event = { ...validated, timestamp: validated.timestamp ?? new Date().toISOString() } as BatchEvent;
     logger.debug('hooks', 'Event received', { type: event.type, session_id: event.session_id });
 
     // Persist to disk so events survive daemon restarts
@@ -237,14 +321,25 @@ async function main(): Promise<void> {
     sessionBuffers.get(event.session_id)!.append(event as Record<string, unknown>);
 
     batchManager.addEvent(event);
-    if (body.type === 'tool_use') {
-      planWatcher.checkToolEvent({ tool_name: body.tool_name, tool_input: body.tool_input, session_id: body.session_id });
+    if (validated.type === 'tool_use') {
+      const v = validated as Record<string, unknown>;
+      planWatcher.checkToolEvent({ tool_name: String(v.tool_name ?? ''), tool_input: v.tool_input, session_id: validated.session_id });
+      const toolName = String(v.tool_name ?? '');
+      if (toolName === 'Write' || toolName === 'Edit') {
+        const filePath = (v.tool_input as Record<string, unknown> | undefined)?.file_path as string | undefined;
+        if (filePath) {
+          if (!sessionFilePaths.has(event.session_id)) {
+            sessionFilePaths.set(event.session_id, new Set());
+          }
+          sessionFilePaths.get(event.session_id)!.add(filePath);
+        }
+      }
     }
     return { ok: true };
   });
 
-  server.registerRoute('POST', '/events/stop', async (body: any) => {
-    const { session_id: sessionId, user } = body as { session_id: string; user?: string };
+  server.registerRoute('POST', '/events/stop', async (body: unknown) => {
+    const { session_id: sessionId, user } = StopBody.parse(body);
     logger.info('hooks', 'Stop received', { session_id: sessionId });
 
     // Mine the last AI response from the transcript and inject as an event.
@@ -271,130 +366,66 @@ async function main(): Promise<void> {
       const result = await processor.process(asRecords, sessionId);
 
       if (!result.degraded) {
-        writeObservations(result.observations, sessionId, { vault, index, vaultDir, vectorIndex, llmBackend, logger });
+        writeObservations(result.observations, sessionId, { vault, ...indexDeps });
       }
     }
 
-    // --- Artifact capture ---
-    try {
-      const allEvents = sessionBuffers.get(sessionId)?.readAll() ?? [];
-      const artifactCandidates = collectArtifactCandidates(
-        allEvents,
-        { artifact_extensions: config.capture.artifact_extensions },
-        process.cwd(),
-      );
+    // --- Artifact capture (runs concurrently with session building below) ---
+    const writtenFiles = sessionFilePaths.get(sessionId) ?? new Set<string>();
+    const artifactCandidates = collectArtifactCandidates(
+      writtenFiles,
+      { artifact_extensions: config.capture.artifact_extensions },
+      process.cwd(),
+    );
 
-      if (artifactCandidates.length > 0) {
-        const classified = await processor.classifyArtifacts(artifactCandidates, sessionId);
-
-        for (const artifact of classified) {
-          const candidate = artifactCandidates.find((c) => c.path === artifact.source_path);
-          if (!candidate) continue;
-
-          const validTypes = new Set(['spec', 'plan', 'rfc', 'doc', 'other']);
-          if (!validTypes.has(artifact.artifact_type)) {
-            logger.warn('processor', 'Skipping artifact with invalid type', {
-              source_path: artifact.source_path,
-              artifact_type: artifact.artifact_type,
-            });
-            continue;
-          }
-
-          const artifactId = slugifyPath(artifact.source_path);
-          const artifactPath = vault.writeArtifact({
-            id: artifactId,
-            artifact_type: artifact.artifact_type,
-            source_path: artifact.source_path,
-            title: artifact.title,
-            session: sessionId,
-            tags: artifact.tags,
-            content: candidate.content,
-          });
-
-          indexNote(index, vaultDir, artifactPath);
-
-          if (vectorIndex) {
-            generateEmbedding(llmBackend, `${artifact.title}\n${candidate.content}`.slice(0, 8000))
-              .then((emb) =>
-                vectorIndex!.upsert(artifactId, emb.embedding, {
-                  type: 'artifact',
-                  artifact_type: artifact.artifact_type,
-                  session_id: sessionId,
-                }),
-              )
-              .catch((err) =>
-                logger.debug('embeddings', 'Artifact embedding failed', {
-                  id: artifactId,
-                  error: (err as Error).message,
-                }),
-              );
-          }
-
-          logger.info('processor', 'Artifact captured', {
-            id: artifactId,
-            type: artifact.artifact_type,
-            source: artifact.source_path,
-          });
-        }
-      }
-    } catch (err) {
-      logger.warn('processor', 'Artifact capture failed', {
-        session_id: sessionId,
-        error: (err as Error).message,
-      });
-    }
+    const artifactPromise = artifactCandidates.length > 0
+      ? processor.classifyArtifacts(artifactCandidates, sessionId)
+          .then((classified) => captureArtifacts(artifactCandidates, classified, sessionId, { vault, ...indexDeps }))
+          .catch((err) => logger.warn('processor', 'Artifact capture failed', { session_id: sessionId, error: (err as Error).message }))
+      : Promise.resolve();
 
     // Build the new turn from this batch
     const batchTurns = extractTurns(lastBatch);
     const ended = new Date().toISOString();
+    let started = lastBatch.length > 0 ? String(lastBatch[0].timestamp) : ended;
 
     // Read existing session file to preserve prior turns
-    const date = new Date().toISOString().slice(0, 10);
+    // Use started date for path — consistent with VaultWriter.writeSession
+    const date = started.slice(0, 10);
     const relativePath = `sessions/${date}/session-${sessionId}.md`;
     const fullPath = path.join(vaultDir, relativePath);
 
-    let existingContent = '';
     let existingTurnCount = 0;
-    let started = ended;
+    let existingConversation: string | undefined;
     if (fs.existsSync(fullPath)) {
-      existingContent = fs.readFileSync(fullPath, 'utf-8');
+      const existingContent = fs.readFileSync(fullPath, 'utf-8');
       // Count existing turns
       const turnMatches = existingContent.match(/^### Turn \d+/gm);
       existingTurnCount = turnMatches?.length ?? 0;
-      // Extract started from frontmatter
+      // Extract started from frontmatter (preserves original start time)
       const startedMatch = existingContent.match(/^started:\s*"?(.+?)"?\s*$/m);
       if (startedMatch) started = startedMatch[1];
-    } else {
-      started = lastBatch.length > 0 ? String(lastBatch[0].timestamp) : ended;
-    }
-
-    // Build new turn lines
-    const newTurnLines: string[] = [];
-    for (let i = 0; i < batchTurns.length; i++) {
-      const turn = batchTurns[i];
-      const turnNum = existingTurnCount + i + 1;
-      newTurnLines.push(`\n\n### Turn ${turnNum}\n`);
-      if (turn.prompt) newTurnLines.push(`**Prompt**: ${turn.prompt}\n`);
-      if (turn.toolCount > 0) newTurnLines.push(`**Tools**: ${turn.toolCount} calls\n`);
-      if (turn.aiResponse) newTurnLines.push(`**Response**: ${turn.aiResponse}`);
-    }
-
-    // Build the conversation section: preserve existing turns + append new
-    let conversationSection: string;
-    if (existingTurnCount > 0 && existingContent) {
-      // Extract existing conversation (everything from ## Conversation onward, without frontmatter)
+      // Extract existing conversation section to preserve prior turns
       const bodyStart = existingContent.indexOf('---', 3);
       const body = bodyStart >= 0 ? existingContent.slice(bodyStart + 3).replace(/^\n+/, '') : existingContent;
-      // Find the conversation section
       const convIdx = body.indexOf('## Conversation');
       if (convIdx >= 0) {
-        conversationSection = body.slice(convIdx).replace(/\n+$/, '') + newTurnLines.join('\n');
-      } else {
-        conversationSection = '## Conversation\n' + newTurnLines.join('\n');
+        existingConversation = body.slice(convIdx).replace(/\n+$/, '');
       }
-    } else {
-      conversationSection = '## Conversation\n' + newTurnLines.join('\n');
     }
+
+    // Build the full conversation for re-summarization (existing + new turns as plain text)
+    const newTurnText = batchTurns.map((t, i) => {
+      const num = existingTurnCount + i + 1;
+      const parts = [`### Turn ${num}`];
+      if (t.prompt) parts.push(`Prompt: ${t.prompt}`);
+      if (t.toolCount > 0) parts.push(`Tools: ${t.toolCount} calls`);
+      if (t.aiResponse) parts.push(`Response: ${t.aiResponse}`);
+      return parts.join('\n');
+    }).join('\n\n');
+    const conversationSection = existingConversation
+      ? `${existingConversation}\n\n${newTurnText}`
+      : `## Conversation\n\n${newTurnText}`;
 
     // Re-summarize the full session from the complete conversation
     let title = `Session ${sessionId}`;
@@ -424,7 +455,8 @@ async function main(): Promise<void> {
       ended,
       relatedMemories,
       turns: batchTurns.map((t) => ({ prompt: t.prompt, toolCount: t.toolCount, aiResponse: t.aiResponse })),
-      existingTurnCount: existingTurnCount,
+      existingTurnCount,
+      existingConversation,
     });
 
     vault.writeSession({
@@ -432,30 +464,26 @@ async function main(): Promise<void> {
       user,
       started,
       ended,
-      tools_used: existingTurnCount + batchTurns.length,
+      tools_used: batchTurns.reduce((sum, t) => sum + t.toolCount, 0),
       summary,
     });
-    indexNote(index, vaultDir, relativePath);
+    indexAndEmbed(relativePath, `session-${sessionId}`, narrative,
+      { type: 'session', session_id: sessionId }, indexDeps);
 
-    if (vectorIndex && narrative) {
-      try {
-        const emb = await generateEmbedding(llmBackend, narrative);
-        vectorIndex.upsert(`session-${sessionId}`, emb.embedding, { type: 'session', session_id: sessionId });
-      } catch (err) {
-        logger.debug('embeddings', 'Session embedding failed', { session_id: sessionId, error: (err as Error).message });
-      }
-    }
+    // Wait for artifact capture (started concurrently with session building)
+    await artifactPromise;
 
     logger.info('processor', 'Session note written', { session_id: sessionId, path: relativePath });
     return { ok: true, path: relativePath };
   });
 
-  server.registerRoute('POST', '/context', async (body: any) => {
-    logger.debug('hooks', 'Context query', { session_id: body.session_id });
+  server.registerRoute('POST', '/context', async (body: unknown) => {
+    const { session_id, branch, files } = ContextBody.parse(body);
+    logger.debug('hooks', 'Context query', { session_id });
     try {
-      if (vectorIndex && body.branch) {
-        const queryText = `branch: ${body.branch} files: ${(body.files ?? []).join(' ')}`;
-        const emb = await generateEmbedding(llmBackend, queryText);
+      if (vectorIndex && branch) {
+        const queryText = `branch: ${branch} files: ${(files ?? []).join(' ')}`;
+        const emb = await generateEmbedding(embeddingProvider, queryText);
         const results = vectorIndex.search(emb.embedding, {
           limit: 10,
         });
@@ -482,7 +510,7 @@ async function main(): Promise<void> {
           if (parts.length > 0) return { text: `### Myco Context\n${parts.join('\n')}` };
         }
       }
-      const injected = buildInjectedContext(index, config, { branch: body.branch, files: body.files });
+      const injected = buildInjectedContext(index, config, { branch, files });
       return { text: injected.text };
     } catch (error) {
       logger.error('daemon', 'Context query failed', { error: (error as Error).message });
@@ -508,7 +536,11 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-main().catch((err) => {
-  process.stderr.write(`[mycod] Fatal: ${(err as Error).message}\n`);
-  process.exit(1);
-});
+// Entry point guard — only run when executed directly, not when imported in tests
+const __filename = fileURLToPath(import.meta.url);
+if (process.argv[1] === __filename) {
+  main().catch((err) => {
+    process.stderr.write(`[mycod] Fatal: ${(err as Error).message}\n`);
+    process.exit(1);
+  });
+}

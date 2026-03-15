@@ -1,45 +1,70 @@
-import { describe, it, expect, vi } from 'vitest';
-import type { LlmBackend, LlmResponse, EmbeddingResponse } from '@myco/intelligence/llm';
-import { createLlmBackend } from '@myco/intelligence/llm';
+import { describe, it, expect } from 'vitest';
+import type { LlmProvider, LlmResponse, EmbeddingProvider, EmbeddingResponse, LlmRequestOptions } from '@myco/intelligence/llm';
+import { createLlmProvider, createEmbeddingProvider } from '@myco/intelligence/llm';
 
-describe('LLM Abstraction', () => {
-  it('defines LlmBackend interface with summarize and embed', () => {
-    const mock: LlmBackend = {
+describe('LlmProvider interface', () => {
+  it('defines summarize with optional LlmRequestOptions', () => {
+    const mock: LlmProvider = {
       name: 'mock',
-      async summarize(prompt: string): Promise<LlmResponse> {
-        return { text: 'summary', model: 'mock-model' };
+      async summarize(prompt: string, opts?: LlmRequestOptions): Promise<LlmResponse> {
+        return { text: 'result', model: 'mock' };
       },
-      async embed(text: string): Promise<EmbeddingResponse> {
-        return { embedding: [0.1, 0.2], model: 'mock-embed', dimensions: 2 };
-      },
-      async isAvailable(): Promise<boolean> {
-        return true;
-      },
+      async isAvailable() { return true; },
     };
     expect(mock.name).toBe('mock');
   });
+});
 
-  it('createLlmBackend returns ollama backend for local config', async () => {
-    const backend = await createLlmBackend({
-      backend: 'local',
-      local: {
-        provider: 'ollama',
-        embedding_model: 'nomic-embed-text',
-        summary_model: 'llama3.2',
-        base_url: 'http://localhost:11434',
+describe('EmbeddingProvider interface', () => {
+  it('defines embed', () => {
+    const mock: EmbeddingProvider = {
+      name: 'mock',
+      async embed(text: string): Promise<EmbeddingResponse> {
+        return { embedding: [0.1], model: 'mock', dimensions: 1 };
       },
-    });
+      async isAvailable() { return true; },
+    };
+    expect(mock.name).toBe('mock');
+  });
+});
+
+describe('createLlmProvider', () => {
+  it('returns OllamaBackend for ollama provider', () => {
+    const backend = createLlmProvider({ provider: 'ollama', model: 'gpt-oss' });
     expect(backend.name).toBe('ollama');
   });
 
-  it('createLlmBackend returns haiku backend for cloud config', async () => {
-    const backend = await createLlmBackend({
-      backend: 'cloud',
-      cloud: {
-        summary_model: 'claude-haiku-4-5-20251001',
-        embedding_provider: 'voyage',
-      },
-    });
-    expect(backend.name).toBe('haiku');
+  it('returns LmStudioBackend for lm-studio provider', () => {
+    const backend = createLlmProvider({ provider: 'lm-studio', model: 'gpt-oss' });
+    expect(backend.name).toBe('lm-studio');
+  });
+
+  it('returns AnthropicBackend for anthropic provider', () => {
+    const backend = createLlmProvider({ provider: 'anthropic', model: 'claude-haiku-4-5-20251001' });
+    expect(backend.name).toBe('anthropic');
+  });
+
+  it('throws for unknown provider', () => {
+    expect(() => createLlmProvider({ provider: 'unknown' as any, model: 'x' })).toThrow(/Unknown LLM provider/);
+  });
+});
+
+describe('createEmbeddingProvider', () => {
+  it('returns OllamaBackend for ollama provider', () => {
+    const backend = createEmbeddingProvider({ provider: 'ollama', model: 'bge-m3' });
+    expect(backend.name).toBe('ollama');
+  });
+
+  it('returns LmStudioBackend for lm-studio provider', () => {
+    const backend = createEmbeddingProvider({ provider: 'lm-studio', model: 'bge-m3' });
+    expect(backend.name).toBe('lm-studio');
+  });
+
+  it('throws for anthropic provider', () => {
+    expect(() => createEmbeddingProvider({ provider: 'anthropic', model: 'x' })).toThrow(/does not support embeddings/);
+  });
+
+  it('throws for unknown provider', () => {
+    expect(() => createEmbeddingProvider({ provider: 'unknown' as any, model: 'x' })).toThrow(/does not support embeddings/);
   });
 });

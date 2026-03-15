@@ -10,8 +10,11 @@ describe('buildInjectedContext', () => {
   let tmpDir: string;
   let index: MycoIndex;
   const config = MycoConfigSchema.parse({
-    version: 1,
-    intelligence: { backend: 'local' },
+    version: 2,
+    intelligence: {
+      llm: { provider: 'ollama', model: 'gpt-oss' },
+      embedding: { provider: 'ollama', model: 'bge-m3' },
+    },
   });
 
   beforeEach(() => {

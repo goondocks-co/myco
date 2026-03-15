@@ -2,6 +2,7 @@
 
 build: check
 	npm run build
+	cp src/prompts/*.md dist/src/prompts/
 
 check: lint test
 

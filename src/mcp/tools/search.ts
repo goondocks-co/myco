@@ -2,7 +2,7 @@ import type { MycoIndex } from '../../index/sqlite.js';
 import { searchFts } from '../../index/fts.js';
 import type { VectorIndex } from '../../index/vectors.js';
 import { generateEmbedding } from '../../intelligence/embeddings.js';
-import type { LlmBackend } from '../../intelligence/llm.js';
+import type { EmbeddingProvider } from '../../intelligence/llm.js';
 
 interface SearchInput {
   query: string;
@@ -23,7 +23,7 @@ export async function handleMycoSearch(
   index: MycoIndex,
   input: SearchInput,
   vectorIndex?: VectorIndex,
-  backend?: LlmBackend,
+  backend?: EmbeddingProvider,
 ): Promise<SearchResult[]> {
   const type = input.type === 'all' ? undefined : input.type;
   const limit = input.limit ?? 10;
