@@ -15,3 +15,9 @@ dist/
 
 # Dev tooling
 .worktrees/
+
+# Specs and plans — captured in Myco vault, not the repo
+docs/superpowers/
+docs/plans/
+docs/specs/
+.superpowers/
