@@ -154,7 +154,7 @@ jobs:
           cat release-notes.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2.5.0
         with:
           name: v${{ needs.validate-tag.outputs.version }}
           body_path: release-notes.md
