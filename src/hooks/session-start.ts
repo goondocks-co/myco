@@ -1,45 +1,78 @@
+import { DaemonClient } from './client.js';
 import { loadConfig } from '../config/loader.js';
 import { MycoIndex } from '../index/sqlite.js';
 import { buildInjectedContext } from '../context/injector.js';
 import { resolveVaultDir } from '../vault/resolve.js';
-// execSync is safe here: command is fully static, no user input is interpolated
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
 async function main() {
   const VAULT_DIR = resolveVaultDir();
-
-  // Graceful cold start — if vault doesn't exist, skip silently
-  if (!fs.existsSync(path.join(VAULT_DIR, 'myco.yaml'))) {
-    return;
-  }
+  if (!fs.existsSync(path.join(VAULT_DIR, 'myco.yaml'))) return;
 
   try {
     const config = loadConfig(VAULT_DIR);
-    const index = new MycoIndex(path.join(VAULT_DIR, 'index.db'));
+    const client = new DaemonClient(VAULT_DIR);
 
-    // Detect current git branch
+    if (!(await client.isHealthy())) {
+      spawnDaemon(VAULT_DIR);
+      // Wait for daemon to become healthy (up to 3s with backoff)
+      let healthy = false;
+      for (const delay of [100, 200, 400, 800, 1500]) {
+        await new Promise((r) => setTimeout(r, delay));
+        if (await client.isHealthy()) { healthy = true; break; }
+      }
+      if (!healthy) {
+        // Daemon didn't start — fall through to degraded mode
+      }
+    }
+
+    const input = JSON.parse(await readStdin());
+    const sessionId = input.session_id ?? `s-${Date.now()}`;
+
+    await client.post('/sessions/register', { session_id: sessionId });
+
     let branch: string | undefined;
     try {
-      branch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf-8' }).trim();
-    } catch {
-      // Not a git repo or git not available
+      branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf-8' }).trim();
+    } catch { /* not a git repo */ }
+
+    const contextResult = await client.post('/context', { session_id: sessionId, branch });
+
+    if (contextResult.ok && contextResult.data?.text) {
+      process.stdout.write(contextResult.data.text);
+    } else {
+      const index = new MycoIndex(path.join(VAULT_DIR, 'index.db'));
+      const injected = buildInjectedContext(index, config, { branch });
+      if (injected.text) process.stdout.write(injected.text);
+      index.close();
     }
-
-    // Build and inject context
-    const injected = buildInjectedContext(index, config, { branch });
-
-    if (injected.text) {
-      // Output context for Claude Code to inject
-      console.log(injected.text);
-    }
-
-    index.close();
   } catch (error) {
-    // OAK lesson: hooks must never crash the host agent
-    console.error(`[myco] session-start error: ${(error as Error).message}`);
+    process.stderr.write(`[myco] session-start error: ${(error as Error).message}\n`);
   }
+}
+
+function spawnDaemon(vaultDir: string): void {
+  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ?? path.resolve(import.meta.dirname, '..', '..');
+  const daemonScript = path.join(pluginRoot, 'dist', 'src', 'daemon', 'main.js');
+  if (!fs.existsSync(daemonScript)) return;
+
+  const child = spawn('node', [daemonScript, '--vault', vaultDir], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+}
+
+function readStdin(): Promise<string> {
+  return new Promise((resolve) => {
+    let data = '';
+    process.stdin.on('data', (chunk: Buffer) => { data += chunk; });
+    process.stdin.on('end', () => resolve(data));
+    setTimeout(() => resolve(data || '{}'), 100);
+  });
 }
 
 main();

@@ -81,4 +81,37 @@ describe('Vault Note Types', () => {
   it('parseNoteFrontmatter rejects unknown type', () => {
     expect(() => parseNoteFrontmatter({ type: 'invalid' })).toThrow();
   });
+
+  it('accepts new observation types', () => {
+    for (const type of ['gotcha', 'bug_fix', 'decision', 'discovery', 'trade_off']) {
+      const result = MemoryFrontmatterSchema.safeParse({
+        type: 'memory', id: 'test', observation_type: type, created: '2026-01-01',
+      });
+      expect(result.success, `${type} should be valid`).toBe(true);
+    }
+  });
+
+  it('rejects removed observation type cross-cutting', () => {
+    const result = MemoryFrontmatterSchema.safeParse({
+      type: 'memory', id: 'test', observation_type: 'cross-cutting', created: '2026-01-01',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts plans array on session frontmatter', () => {
+    const result = SessionFrontmatterSchema.safeParse({
+      type: 'session', id: 's1', agent: 'claude', user: 'chris',
+      started: '2026-01-01', plans: ['plan-a', 'plan-b'],
+    });
+    expect(result.success).toBe(true);
+    expect(result.data?.plans).toEqual(['plan-a', 'plan-b']);
+  });
+
+  it('handles backward compat: single plan string still accepted', () => {
+    const result = SessionFrontmatterSchema.safeParse({
+      type: 'session', id: 's1', agent: 'claude', user: 'chris',
+      started: '2026-01-01', plan: 'plan-a',
+    });
+    expect(result.success).toBe(true);
+  });
 });

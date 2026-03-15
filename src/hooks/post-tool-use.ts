@@ -1,3 +1,4 @@
+import { DaemonClient } from './client.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import fs from 'node:fs';
@@ -11,26 +12,33 @@ async function main() {
     const input = JSON.parse(await readStdin());
     const sessionId = input.session_id ?? process.env.MYCO_SESSION_ID ?? `s-${Date.now()}`;
 
-    // Hot path: append to JSONL buffer — fast, no processing
-    const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
-    buffer.append({
+    const client = new DaemonClient(VAULT_DIR);
+    const result = await client.post('/events', {
       type: 'tool_use',
-      tool: input.tool_name,
-      input: input.tool_input,
-      output_preview: typeof input.tool_output === 'string'
-        ? input.tool_output.slice(0, 200)
-        : undefined,
+      tool_name: input.tool_name,
+      tool_input: input.tool_input,
+      output_preview: typeof input.tool_output === 'string' ? input.tool_output.slice(0, 200) : undefined,
+      session_id: sessionId,
     });
+
+    if (!result.ok) {
+      const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
+      buffer.append({
+        type: 'tool_use',
+        tool: input.tool_name,
+        input: input.tool_input,
+        output_preview: typeof input.tool_output === 'string' ? input.tool_output.slice(0, 200) : undefined,
+      });
+    }
   } catch (error) {
-    // OAK lesson: never let hook failure block the agent
-    console.error(`[myco] post-tool-use error: ${(error as Error).message}`);
+    process.stderr.write(`[myco] post-tool-use error: ${(error as Error).message}\n`);
   }
 }
 
 function readStdin(): Promise<string> {
   return new Promise((resolve) => {
     let data = '';
-    process.stdin.on('data', (chunk) => { data += chunk; });
+    process.stdin.on('data', (chunk: Buffer) => { data += chunk; });
     process.stdin.on('end', () => resolve(data));
     setTimeout(() => resolve(data || '{}'), 100);
   });

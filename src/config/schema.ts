@@ -16,6 +16,14 @@ const IntelligenceSchema = z.object({
   backend: z.enum(['local', 'cloud']),
   local: LocalIntelligenceSchema.optional(),
   cloud: CloudIntelligenceSchema.optional(),
+  context_window: z.number().int().positive().default(8192),
+  similarity_floor: z.number().min(0).max(1).default(0.7),
+});
+
+const DaemonSchema = z.object({
+  log_level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  grace_period: z.number().int().positive().default(30),
+  max_log_size: z.number().int().positive().default(5_242_880),
 });
 
 const CaptureSchema = z.object({
@@ -48,6 +56,7 @@ const TeamSchema = z.object({
 export const MycoConfigSchema = z.object({
   version: z.literal(1),
   intelligence: IntelligenceSchema,
+  daemon: DaemonSchema.default({}),
   capture: CaptureSchema.default({}),
   context: ContextSchema.default({}),
   team: TeamSchema.default({}),

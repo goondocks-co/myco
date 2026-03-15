@@ -9,7 +9,7 @@ interface WriteSessionInput {
   started: string;
   ended?: string;
   parent?: string;
-  plan?: string;
+  plans?: string[];
   branch?: string;
   tags?: string[];
   tools_used?: number;
@@ -66,7 +66,7 @@ export class VaultWriter {
     };
     if (input.ended) frontmatter.ended = input.ended;
     if (input.parent) frontmatter.parent = input.parent;
-    if (input.plan) frontmatter.plan = input.plan;
+    if (input.plans?.length) frontmatter.plans = input.plans;
     if (input.branch) frontmatter.branch = input.branch;
     if (input.tags?.length) frontmatter.tags = input.tags;
     if (input.tools_used != null) frontmatter.tools_used = input.tools_used;

@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 
 interface RememberInput {
   content: string;
-  type: 'decision' | 'gotcha' | 'discovery' | 'cross-cutting';
+  type: 'gotcha' | 'bug_fix' | 'decision' | 'discovery' | 'trade_off';
   tags?: string[];
   related_plan?: string;
 }

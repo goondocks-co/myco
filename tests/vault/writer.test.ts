@@ -107,4 +107,22 @@ describe('VaultWriter', () => {
     freshWriter.writePlan({ id: 'test', content: '# Test' });
     expect(fs.existsSync(path.join(freshDir, 'plans', 'test.md'))).toBe(true);
   });
+
+  it('writes plans array to session frontmatter', () => {
+    const sessionPath = writer.writeSession({
+      id: 's1', started: '2026-01-01', summary: 'Test', plans: ['plan-a', 'plan-b'],
+    });
+    const content = fs.readFileSync(path.join(vaultDir, sessionPath), 'utf-8');
+    expect(content).toContain('plans:');
+    expect(content).toContain('plan-a');
+    expect(content).toContain('plan-b');
+  });
+
+  it('omits plans when array is empty', () => {
+    const sessionPath = writer.writeSession({
+      id: 's2', started: '2026-01-01', summary: 'Test', plans: [],
+    });
+    const content = fs.readFileSync(path.join(vaultDir, sessionPath), 'utf-8');
+    expect(content).not.toContain('plans:');
+  });
 });

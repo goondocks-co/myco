@@ -8,7 +8,8 @@ export const SessionFrontmatterSchema = z.object({
   started: z.string(),
   ended: z.string().optional(),
   parent: z.string().optional(),
-  plan: z.string().optional(),
+  plan: z.string().optional(),          // backward compat read path
+  plans: z.array(z.string()).optional(), // new: multiple plans
   branch: z.string().optional(),
   spawned_by: z.string().nullable().optional(),
   tags: z.array(z.string()).default([]),
@@ -28,7 +29,7 @@ export const PlanFrontmatterSchema = z.object({
 export const MemoryFrontmatterSchema = z.object({
   type: z.literal('memory'),
   id: z.string(),
-  observation_type: z.enum(['decision', 'gotcha', 'discovery', 'cross-cutting']),
+  observation_type: z.enum(['gotcha', 'bug_fix', 'decision', 'discovery', 'trade_off']),
   session: z.string().optional(),
   plan: z.string().optional(),
   created: z.string(),

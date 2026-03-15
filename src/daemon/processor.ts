@@ -43,6 +43,33 @@ export class BufferProcessor {
     }
   }
 
+  async summarize(
+    events: Array<Record<string, unknown>>,
+    sessionId: string,
+    user?: string,
+  ): Promise<{ summary: string; title: string }> {
+    const summaryPrompt = this.buildSummaryPrompt(events, sessionId, user ?? 'unknown');
+
+    let summaryText: string;
+    try {
+      const response = await this.backend.summarize(summaryPrompt);
+      summaryText = response.text;
+    } catch (error) {
+      summaryText = `Session ${sessionId} — ${events.length} events captured. LLM summarization failed: ${(error as Error).message}`;
+    }
+
+    const titlePrompt = this.buildTitlePrompt(summaryText, sessionId);
+    let title: string;
+    try {
+      const response = await this.backend.summarize(titlePrompt);
+      title = response.text.trim();
+    } catch {
+      title = `Session ${sessionId}`;
+    }
+
+    return { summary: summaryText, title };
+  }
+
   private buildExtractionPrompt(
     events: Array<Record<string, unknown>>,
     sessionId: string,
@@ -85,6 +112,35 @@ Routine activity (file reads, searches, test runs, navigation) goes in the summa
 Target 0-5 observations. Err on fewer, higher-quality observations.
 
 Respond with valid JSON only, no markdown fences.`;
+  }
+
+  private buildSummaryPrompt(
+    events: Array<Record<string, unknown>>,
+    sessionId: string,
+    user: string,
+  ): string {
+    const toolSummary = this.summarizeEvents(events);
+
+    return `You are summarizing a complete coding session for user "${user}" (session "${sessionId}").
+
+## Events (${events.length} total)
+${toolSummary}
+
+## Task
+Write a concise narrative summary of this session (3-6 sentences). Describe what was accomplished, key decisions made, and any problems encountered. Focus on outcomes rather than individual tool calls.
+
+Respond with plain text only, no JSON or markdown fences.`;
+  }
+
+  private buildTitlePrompt(summary: string, sessionId: string): string {
+    return `Given this session summary, produce a short, descriptive title (5-10 words) suitable for a vault note heading.
+
+Summary:
+${summary}
+
+Session ID: ${sessionId}
+
+Respond with the title text only, no quotes, no punctuation at the end.`;
   }
 
   private summarizeEvents(events: Array<Record<string, unknown>>): string {

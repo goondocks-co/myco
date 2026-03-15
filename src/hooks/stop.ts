@@ -1,3 +1,4 @@
+import { DaemonClient } from './client.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { BufferProcessor } from '../capture/processor.js';
 import { VaultWriter } from '../vault/writer.js';
@@ -18,33 +19,34 @@ async function main() {
     const sessionId = input.session_id ?? process.env.MYCO_SESSION_ID;
     if (!sessionId) return;
 
+    const client = new DaemonClient(VAULT_DIR);
+    const result = await client.post('/events/stop', { session_id: sessionId });
+    if (result.ok) return; // Daemon handled it
+
+    // Degraded: process locally
     const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
     if (!buffer.exists() || buffer.count() === 0) return;
 
     const config = loadConfig(VAULT_DIR);
     const backend = await createLlmBackend(config.intelligence);
-
-    // Process buffer through LLM
     const processor = new BufferProcessor(backend);
     const events = buffer.readAll();
-    const result = await processor.process(events, sessionId);
+    const processed = await processor.process(events, sessionId);
 
-    // Write session note
     const writer = new VaultWriter(VAULT_DIR);
+    const title = `Session ${sessionId}`;
     const sessionPath = writer.writeSession({
       id: sessionId,
       user: config.team.user || undefined,
       started: events[0]?.timestamp as string ?? new Date().toISOString(),
       tags: [],
-      summary: `# Session ${sessionId}\n\n## Summary\n${result.summary}`,
+      summary: `# ${title}\n\n## Summary\n${processed.summary}`,
     });
 
-    // Update index
     const index = new MycoIndex(path.join(VAULT_DIR, 'index.db'));
     indexNote(index, VAULT_DIR, sessionPath);
 
-    // Write promoted observations as memory notes and index each one
-    for (const obs of result.observations) {
+    for (const obs of processed.observations) {
       const memPath = writer.writeMemory({
         id: `${obs.type}-${sessionId.slice(-6)}-${Date.now()}`,
         observation_type: obs.type,
@@ -56,20 +58,16 @@ async function main() {
     }
 
     index.close();
-
-    // Clean up buffer (unless degraded — preserve for retry)
-    if (!result.degraded) {
-      buffer.delete();
-    }
+    if (!processed.degraded) buffer.delete();
   } catch (error) {
-    console.error(`[myco] stop error: ${(error as Error).message}`);
+    process.stderr.write(`[myco] stop error: ${(error as Error).message}\n`);
   }
 }
 
 function readStdin(): Promise<string> {
   return new Promise((resolve) => {
     let data = '';
-    process.stdin.on('data', (chunk) => { data += chunk; });
+    process.stdin.on('data', (chunk: Buffer) => { data += chunk; });
     process.stdin.on('end', () => resolve(data));
     setTimeout(() => resolve(data || '{}'), 100);
   });

@@ -51,7 +51,7 @@ const TOOL_DEFINITIONS = [
       type: 'object' as const,
       properties: {
         content: { type: 'string' },
-        type: { type: 'string', enum: ['decision', 'gotcha', 'discovery', 'cross-cutting'] },
+        type: { type: 'string', enum: ['gotcha', 'bug_fix', 'decision', 'discovery', 'trade_off'] },
         tags: { type: 'array', items: { type: 'string' } },
         related_plan: { type: 'string' },
       },
