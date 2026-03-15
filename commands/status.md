@@ -14,7 +14,7 @@ Find the vault directory:
 - Check `.claude/settings.json` under the `env` key for `MYCO_VAULT_DIR`
 - Fall back to `~/.myco/vaults/<project-name>/`
 
-If no vault is found, report: "No Myco vault configured. Run `/myco:init` to set up."
+If no vault is found, report: "No Myco vault configured. Run `/myco-init` to set up."
 
 ## Step 2: Config health
 
@@ -52,7 +52,7 @@ Test connectivity to the configured providers:
 
 - **LLM provider**: call `isAvailable()` — report reachable or not
 - **Embedding provider**: call `isAvailable()` — report reachable or not
-- If either is unreachable, suggest running `/myco:setup-llm`
+- If either is unreachable, suggest running `/myco-setup-llm`
 
 ## Step 6: Pending issues
 

@@ -24,7 +24,7 @@ body:
     attributes:
       label: Steps to reproduce
       placeholder: |
-        1. Run `/myco:init` with Ollama
+        1. Run `/myco-init` with Ollama
         2. Start a session
         3. Observe error in daemon logs
     validations:

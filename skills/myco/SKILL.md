@@ -31,7 +31,7 @@ The MCP tools below are for going deeper than the automatic context injection pr
 
 ## Setup
 
-If the vault isn't configured, run `/myco:init` to set up. To change LLM providers, run `/myco:setup-llm`. To check health, run `/myco:status`.
+If the vault isn't configured, run `/myco-init` to set up. To change LLM providers, run `/myco-setup-llm`. To check health, run `/myco-status`.
 
 ## MCP Tools Reference
 

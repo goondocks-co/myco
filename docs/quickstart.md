@@ -1,6 +1,6 @@
 # Myco Quick Start
 
-Myco is a collective agent intelligence plugin that captures session knowledge — events, observations, decisions, trade-offs — into a Markdown vault and serves it back via MCP tools. Install it in your coding agent, run `/myco:init` to set up your vault, and start building institutional memory.
+Myco is a collective agent intelligence plugin that captures session knowledge — events, observations, decisions, trade-offs — into a Markdown vault and serves it back via MCP tools. Install it in your coding agent, run `/myco-init` to set up your vault, and start building institutional memory.
 
 ## Requirements
 
@@ -70,7 +70,7 @@ Then register as a local plugin:
 After installing, run the init command in your project:
 
 ```
-/myco:init
+/myco-init
 ```
 
 This guides you through:
@@ -138,9 +138,9 @@ Myco exposes these tools to your coding agent via MCP:
 
 | Command | What it does |
 |---------|-------------|
-| `/myco:init` | Initialize Myco in your project |
-| `/myco:setup-llm` | Configure or change LLM providers |
-| `/myco:status` | Show vault health and daemon status |
+| `/myco-init` | Initialize Myco in your project |
+| `/myco-setup-llm` | Configure or change LLM providers |
+| `/myco-status` | Show vault health and daemon status |
 
 ## Troubleshooting
 
