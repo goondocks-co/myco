@@ -1,0 +1,89 @@
+import { z } from 'zod';
+
+export const SessionFrontmatterSchema = z.object({
+  type: z.literal('session'),
+  id: z.string(),
+  agent: z.string(),
+  user: z.string(),
+  started: z.string(),
+  ended: z.string().optional(),
+  parent: z.string().optional(),
+  plan: z.string().optional(),
+  branch: z.string().optional(),
+  spawned_by: z.string().nullable().optional(),
+  tags: z.array(z.string()).default([]),
+  tools_used: z.number().int().optional(),
+  files_changed: z.number().int().optional(),
+});
+
+export const PlanFrontmatterSchema = z.object({
+  type: z.literal('plan'),
+  id: z.string(),
+  status: z.enum(['active', 'in_progress', 'completed', 'abandoned']).default('active'),
+  created: z.string(),
+  author: z.string().optional(),
+  tags: z.array(z.string()).default([]),
+});
+
+export const MemoryFrontmatterSchema = z.object({
+  type: z.literal('memory'),
+  id: z.string(),
+  observation_type: z.enum(['decision', 'gotcha', 'discovery', 'cross-cutting']),
+  session: z.string().optional(),
+  plan: z.string().optional(),
+  created: z.string(),
+  tags: z.array(z.string()).default([]),
+});
+
+export const ArtifactRefFrontmatterSchema = z.object({
+  type: z.literal('artifact-ref'),
+  source: z.string(),
+  artifact_type: z.enum(['spec', 'plan', 'rfc', 'doc', 'other']).default('other'),
+  detected_via: z.enum(['file-watch', 'manual', 'transcript']).default('file-watch'),
+  session: z.string().optional(),
+  created: z.string(),
+  tags: z.array(z.string()).default([]),
+});
+
+export const TeamMemberFrontmatterSchema = z.object({
+  type: z.literal('team-member'),
+  user: z.string(),
+  joined: z.string(),
+  role: z.string().optional(),
+});
+
+export type SessionFrontmatter = z.infer<typeof SessionFrontmatterSchema>;
+export type PlanFrontmatter = z.infer<typeof PlanFrontmatterSchema>;
+export type MemoryFrontmatter = z.infer<typeof MemoryFrontmatterSchema>;
+export type ArtifactRefFrontmatter = z.infer<typeof ArtifactRefFrontmatterSchema>;
+export type TeamMemberFrontmatter = z.infer<typeof TeamMemberFrontmatterSchema>;
+
+export type NoteFrontmatter =
+  | SessionFrontmatter
+  | PlanFrontmatter
+  | MemoryFrontmatter
+  | ArtifactRefFrontmatter
+  | TeamMemberFrontmatter;
+
+export interface VaultNote<T extends NoteFrontmatter = NoteFrontmatter> {
+  path: string;
+  frontmatter: T;
+  content: string;
+}
+
+const schemasByType: Record<string, z.ZodSchema> = {
+  session: SessionFrontmatterSchema,
+  plan: PlanFrontmatterSchema,
+  memory: MemoryFrontmatterSchema,
+  'artifact-ref': ArtifactRefFrontmatterSchema,
+  'team-member': TeamMemberFrontmatterSchema,
+};
+
+export function parseNoteFrontmatter(data: Record<string, unknown>): NoteFrontmatter {
+  const type = data.type as string;
+  const schema = schemasByType[type];
+  if (!schema) {
+    throw new Error(`Unknown note type: ${type}`);
+  }
+  return schema.parse(data) as NoteFrontmatter;
+}

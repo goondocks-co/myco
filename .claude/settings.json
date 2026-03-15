@@ -1,0 +1,5 @@
+{
+  "env": {
+    "MYCO_VAULT_DIR": "~/.myco-vaults/myco"
+  }
+}

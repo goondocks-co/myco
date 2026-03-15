@@ -1,0 +1,15 @@
+{
+  "name": "myco-dev",
+  "description": "Myco — collective agent intelligence for AI-assisted development teams",
+  "owner": {
+    "name": "Chris"
+  },
+  "plugins": [
+    {
+      "name": "myco",
+      "description": "Collective agent intelligence — captures session knowledge and serves it back to your team via MCP",
+      "version": "0.1.0",
+      "source": "./"
+    }
+  ]
+}

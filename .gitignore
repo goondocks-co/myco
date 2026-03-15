@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.myco/index.db
+.myco/index.db-wal
+.myco/index.db-shm
+.myco/buffer/
+.myco/service.pid
+.myco/.obsidian/
+.worktrees/
