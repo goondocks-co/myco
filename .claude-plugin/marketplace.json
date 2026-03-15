@@ -1,10 +1,10 @@
 {
-  "name": "goondocks-plugins",
+  "name": "myco-plugins",
   "owner": {
     "name": "goondocks-co"
   },
   "metadata": {
-    "description": "Goondocks collective intelligence plugins"
+    "description": "Myco — collective agent intelligence plugins"
   },
   "plugins": [
     {
