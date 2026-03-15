@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 
 interface DaemonInfo {
   pid: number;
@@ -27,7 +28,7 @@ export class DaemonClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
 
       if (!res.ok) return { ok: false };
@@ -44,7 +45,7 @@ export class DaemonClient {
       if (!info) return { ok: false };
 
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
 
       if (!res.ok) return { ok: false };

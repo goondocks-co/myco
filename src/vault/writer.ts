@@ -85,9 +85,22 @@ export class VaultWriter {
 
   writePlan(input: WritePlanInput): string {
     const relativePath = `plans/${input.id}.md`;
+    const fullPath = path.join(this.vaultDir, relativePath);
 
     const status = input.status ?? 'active';
-    const created = new Date().toISOString();
+    let created = new Date().toISOString();
+
+    // Preserve created from existing file (idempotent)
+    try {
+      const existing = fs.readFileSync(fullPath, 'utf-8');
+      const fmMatch = existing.match(/^---\n([\s\S]*?)\n---/);
+      if (fmMatch) {
+        const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
+        if (typeof parsed.created === 'string') created = parsed.created;
+      }
+    } catch {
+      // File doesn't exist yet
+    }
     const frontmatter: Record<string, unknown> = {
       type: 'plan',
       id: input.id,
@@ -113,12 +126,27 @@ export class VaultWriter {
   writeMemory(input: WriteMemoryInput): string {
     const normalizedType = input.observation_type.replace(/_/g, '-');
     const relativePath = `memories/${normalizedType}/${input.id}.md`;
+    const fullPath = path.join(this.vaultDir, relativePath);
+    const now = new Date().toISOString();
+
+    // Preserve created from existing file (idempotent)
+    let created = now;
+    try {
+      const existing = fs.readFileSync(fullPath, 'utf-8');
+      const fmMatch = existing.match(/^---\n([\s\S]*?)\n---/);
+      if (fmMatch) {
+        const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
+        if (typeof parsed.created === 'string') created = parsed.created;
+      }
+    } catch {
+      // File doesn't exist yet — created = now
+    }
 
     const frontmatter: Record<string, unknown> = {
       type: 'memory',
       id: input.id,
       observation_type: input.observation_type,
-      created: new Date().toISOString(),
+      created,
     };
     if (input.session) frontmatter.session = input.session;
     if (input.plan) frontmatter.plan = input.plan;
@@ -194,10 +222,11 @@ export class VaultWriter {
   }
 
   /**
-   * Update specific frontmatter fields on an existing session note without touching the body.
+   * Update frontmatter fields on an existing note without touching the body.
+   * By default only adds fields that don't exist. Set overwrite=true to replace existing values.
    * Returns true if the update was applied, false if the file doesn't exist.
    */
-  updateSessionFrontmatter(relativePath: string, fields: Record<string, unknown>): boolean {
+  updateNoteFrontmatter(relativePath: string, fields: Record<string, unknown>, overwrite = false): boolean {
     const fullPath = path.join(this.vaultDir, relativePath);
     let fileContent: string;
     try {
@@ -211,7 +240,7 @@ export class VaultWriter {
 
     const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
     for (const [key, value] of Object.entries(fields)) {
-      if (parsed[key] === undefined) {
+      if (overwrite || parsed[key] === undefined) {
         parsed[key] = value;
       }
     }
@@ -220,6 +249,11 @@ export class VaultWriter {
     const fmYaml = YAML.stringify(parsed, { defaultStringType: 'QUOTE_DOUBLE', defaultKeyType: 'PLAIN' }).trim();
     fs.writeFileSync(fullPath, `---\n${fmYaml}\n---${body}`, 'utf-8');
     return true;
+  }
+
+  /** @deprecated Use updateNoteFrontmatter instead */
+  updateSessionFrontmatter(relativePath: string, fields: Record<string, unknown>): boolean {
+    return this.updateNoteFrontmatter(relativePath, fields);
   }
 
   private writeMarkdown(relativePath: string, frontmatter: Record<string, unknown>, content: string): void {

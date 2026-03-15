@@ -26,12 +26,18 @@ export const PlanFrontmatterSchema = z.object({
   tags: z.array(z.string()).default([]),
 });
 
+export const MEMORY_STATUSES = ['active', 'superseded', 'archived'] as const;
+export type MemoryStatus = (typeof MEMORY_STATUSES)[number];
+
 export const MemoryFrontmatterSchema = z.object({
   type: z.literal('memory'),
   id: z.string(),
   observation_type: z.string(),
+  status: z.enum(MEMORY_STATUSES).default('active'),
   session: z.string().optional(),
   plan: z.string().optional(),
+  superseded_by: z.string().optional(),
+  consolidated_from: z.array(z.string()).optional(),
   created: z.string(),
   tags: z.array(z.string()).default([]),
 });

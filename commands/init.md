@@ -9,21 +9,25 @@ Set up Myco for this project. Guide the user through:
 
 ## Step 0: Detect vault location
 
-Before prompting the user for anything, check whether `MYCO_VAULT_DIR` is set:
+The vault defaults to `.myco/` in the project root — the team's intelligence lives with the code and is committed to git.
+
+Check whether `MYCO_VAULT_DIR` is set as an override:
 
 - Check the process environment for `MYCO_VAULT_DIR`
 - Also check `.claude/settings.json` under the `env` key for `MYCO_VAULT_DIR`
-- If found and non-empty, use that path as the vault location — **do not ask the user where to put the vault**
-- If not found, default to `.myco/` in the current project root
+- If found and non-empty, use that path instead — **do not ask the user where to put the vault**
+- If not found, use `.myco/` in the project root (the default)
+
+The `MYCO_VAULT_DIR` override is for public repos or cases where the vault should be kept separate from the codebase. For most private projects, the default is correct.
 
 Record the **vault path source** for use in the setup summary:
-- `"from MYCO_VAULT_DIR env"` — if the env var was set
-- `"default (.myco/)"` — if falling back to the project root default
+- `"from MYCO_VAULT_DIR env"` — if the env var override was set
+- `"default (.myco/)"` — project-local vault (recommended for private repos)
 
 ## Step 1: Create vault directory
 
 Create the vault directory (at the resolved path from Step 0) with subdirectories:
-`sessions`, `plans`, `memories`, `artifacts`, `team`, `buffer`
+`sessions`, `plans`, `memories`, `artifacts`, `team`, `buffer`, `logs`
 
 Also create a `_dashboard.md` file in the vault root with the following Dataview-powered content:
 
@@ -74,10 +78,10 @@ Ask the user to choose an LLM provider:
 
 - **Ollama** — detect at `http://localhost:11434/api/tags`, list available models, recommend `gpt-oss`
 - **LM Studio** — detect at `http://localhost:1234/v1/models`, list available models
-- **Claude Anthropic** — uses existing `ANTHROPIC_API_KEY`, verify it's set
+- **Anthropic** — uses existing `ANTHROPIC_API_KEY`, verify it's set
 
 For the selected provider, list available models and let the user choose. Also set:
-- `context_window` (default 8192)
+- `context_window` (default 8192) — only for local providers, not Anthropic
 - `max_tokens` (default 1024)
 
 ### Embedding provider
@@ -91,15 +95,17 @@ For the selected provider, list available models and let the user choose.
 
 ## Step 3: Team / solo setup
 
-Ask whether this is a team or solo project. If `MYCO_VAULT_DIR` is set in the environment, also offer:
+Ask whether this is a team or solo project:
 
 - **Solo** — vault stays local, not tracked by git
-- **Team** — set up git tracking for the vault directory
-- **Use MYCO_VAULT_DIR from env** _(only shown if env var is set)_ — treat the env-specified vault as a shared/external vault managed outside this repo; skip git tracking for the vault in this project
+- **Team** — set up git tracking for the vault directory, ask for username
+
+If `MYCO_VAULT_DIR` is set in the environment, also offer:
+- **Use MYCO_VAULT_DIR from env** — treat the env-specified vault as a shared/external vault managed outside this repo; skip git tracking
 
 ## Step 4: Write `myco.yaml`
 
-Write a `version: 2` config file with chosen settings. All configurable values must be explicit. Example output:
+Write a `version: 2` config file with chosen settings. **All configurable values must be explicit** — no hidden schema defaults. Example output:
 
 ```yaml
 version: 2
@@ -124,8 +130,8 @@ daemon:
 capture:
   transcript_paths: []
   artifact_watch:
-    - docs/superpowers/specs/
     - .claude/plans/
+    - .cursor/plans/
   artifact_extensions:
     - .md
   buffer_max_events: 500
@@ -144,25 +150,63 @@ team:
   sync: git
 ```
 
-Substitute the user's chosen LLM provider, model, and base URL into the `intelligence.llm` section, and the chosen embedding provider, model, and base URL into the `intelligence.embedding` section. Set `team.enabled` and `team.user` based on Step 3.
+Substitute the user's chosen providers, models, and base URLs. Set `team.enabled`, `team.user`, and `team.sync` based on Step 3.
 
-## Step 5: Write `.myco/.gitignore` (or `<vault>/.gitignore`)
+## Step 5: Write vault `.gitignore`
 
-Exclude `index.db`, buffers, `.obsidian/` from git.
+Create a `.gitignore` inside the `.myco/` vault directory to exclude runtime artifacts while committing the knowledge:
 
-## Step 6: Register MCP server
+```
+# Runtime — rebuilt on daemon startup
+index.db
+index.db-wal
+index.db-shm
+vectors.db
 
-Register the MCP server in the project's `.mcp.json`.
+# Daemon state — per-machine, ephemeral
+daemon.json
+buffer/
+logs/
+
+# Obsidian — per-user workspace config
+.obsidian/
+```
+
+Everything else is committed: `myco.yaml`, `sessions/`, `memories/`, `plans/`, `artifacts/`, `team/`, `lineage.json`, `_dashboard.md`. This is the project's institutional memory — it travels with the code.
+
+## Step 6: Vault discovery and MCP
+
+The default `.myco/` vault location requires no configuration — the vault resolver finds it automatically in the project root.
+
+### If the user chose an external vault (MYCO_VAULT_DIR override)
+
+Set `MYCO_VAULT_DIR` in the agent's settings so hooks and the MCP server can find the vault:
+
+**Claude Code** — write to `.claude/settings.json`:
+```json
+{ "env": { "MYCO_VAULT_DIR": "<external vault path>" } }
+```
+
+**Cursor / VS Code** — instruct the user to set `MYCO_VAULT_DIR` in their shell profile (`~/.zshrc`, `~/.bashrc`), or set it in the MCP server's env block if configuring manually.
+
+### MCP server registration
+
+All three agents (Claude Code, Cursor, VS Code Copilot) auto-discover the MCP server from the plugin manifest when installed via the marketplace. No manual `.mcp.json` editing is needed.
 
 ## Step 7: Setup summary
 
-After setup, display a summary including:
+After setup, display a summary:
 
 | Setting | Value |
 |---------|-------|
 | Vault path | `<resolved path>` (`<vault path source>`) |
 | LLM provider | `<provider>` / `<model>` |
 | Embedding provider | `<provider>` / `<model>` |
+| Context window | `<context_window>` |
 | Team mode | `<enabled/disabled>` |
 
-Then confirm everything is working by running a test query against the vault.
+Then confirm everything is working:
+1. Verify the LLM provider is reachable (call `isAvailable()`)
+2. Verify the embedding provider is reachable (call `isAvailable()`)
+3. Run a test embedding to confirm dimensions
+4. Report success or issues found

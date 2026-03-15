@@ -28,8 +28,8 @@ const DaemonSchema = z.object({
 const CaptureSchema = z.object({
   transcript_paths: z.array(z.string()).default([]),
   artifact_watch: z.array(z.string()).default([
-    'docs/superpowers/specs/',
     '.claude/plans/',
+    '.cursor/plans/',
   ]),
   artifact_extensions: z.array(z.string()).default(['.md']),
   buffer_max_events: z.number().int().positive().default(500),

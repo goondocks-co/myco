@@ -111,6 +111,11 @@ export class VectorIndex {
       .slice(0, limit);
   }
 
+  delete(id: string): void {
+    this.db.prepare('DELETE FROM vec_metadata WHERE id = ?').run(id);
+    this.db.prepare('DELETE FROM vec_embeddings WHERE id = ?').run(id);
+  }
+
   count(): number {
     return (this.db.prepare('SELECT COUNT(*) as c FROM vec_metadata').get() as { c: number }).c;
   }

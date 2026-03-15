@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440 80" fill="none">
+  <!-- M mark scaled to 56px — light mode colors -->
+  <g transform="translate(4, 4) scale(0.35)" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M30,130 L30,40 L80,85 L130,40 L130,130" stroke="#0d1f17" stroke-width="8" opacity="0.85"/>
+    <circle cx="30" cy="130" r="7" fill="#0d1f17" opacity="0.9"/>
+    <circle cx="30" cy="40" r="7" fill="#166534" opacity="0.8"/>
+    <circle cx="80" cy="85" r="8" fill="#0d1f17" opacity="0.95"/>
+    <circle cx="130" cy="40" r="7" fill="#166534" opacity="0.8"/>
+    <circle cx="130" cy="130" r="7" fill="#0d1f17" opacity="0.9"/>
+    <line x1="30" y1="85" x2="80" y2="85" stroke="#166534" stroke-width="2" opacity="0.2"/>
+    <line x1="80" y1="85" x2="130" y2="85" stroke="#166534" stroke-width="2" opacity="0.2"/>
+    <circle cx="30" cy="85" r="4" fill="#166534" opacity="0.35"/>
+    <circle cx="130" cy="85" r="4" fill="#166534" opacity="0.35"/>
+  </g>
+  <!-- Wordmark -->
+  <text x="96" y="42" font-family="'Geist Mono', 'SF Mono', 'Fira Code', monospace" font-size="42" font-weight="700" fill="#0a0f0a" letter-spacing="-2">myco</text>
+  <!-- Tagline -->
+  <text x="96" y="62" font-family="-apple-system, system-ui, sans-serif" font-size="12" fill="#166534" letter-spacing="0.5">The connected intelligence layer for agents</text>
+  <text x="96" y="76" font-family="-apple-system, system-ui, sans-serif" font-size="12" fill="#166534" letter-spacing="0.5">and AI-assisted teams</text>
+</svg>
