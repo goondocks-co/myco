@@ -23,7 +23,7 @@ claude plugin install myco@myco-plugins
 
 Then initialize in your project:
 ```
-> /myco:init
+> /myco-init
 ```
 
 The agent sets up your vault, configures intelligence, and starts capturing. Works with Claude Code and Cursor out of the box.
