@@ -3,6 +3,7 @@
  * No I/O, no external dependencies — just string transforms.
  */
 import type { ArtifactType } from '../vault/types.js';
+import { sessionNoteId } from '../vault/session-id.js';
 
 // Callout type mapping for observation types
 const CALLOUT_MAP: Record<string, string> = {
@@ -38,6 +39,16 @@ function tagNormalize(s: string): string {
   return s.replace(/_/g, '-');
 }
 
+/**
+ * Sanitize a user/LLM-provided tag for Obsidian compatibility.
+ * Obsidian tags cannot contain spaces — replace with slash (nested tag).
+ * Strips leading # if present.
+ */
+function sanitizeTag(raw: string): string {
+  const stripped = raw.startsWith('#') ? raw.slice(1) : raw;
+  return stripped.replace(/\s+/g, '/');
+}
+
 export function buildTags(type: string, subtype: string, extraTags: string[] = []): string[] {
   const tags: string[] = [`type/${type}`];
 
@@ -46,7 +57,7 @@ export function buildTags(type: string, subtype: string, extraTags: string[] = [
   }
 
   for (const tag of extraTags) {
-    const normalized = tag.startsWith('#') ? tag.slice(1) : tag;
+    const normalized = sanitizeTag(tag);
     if (normalized && !tags.includes(normalized)) {
       tags.push(normalized);
     }
@@ -91,7 +102,7 @@ export function formatSessionBody(input: SessionBodyInput): string {
 
   // Inline fields
   const fields: string[] = [];
-  fields.push(inlineField('Session', wikilink(`session-${input.sessionId}`)));
+  fields.push(inlineField('Session', wikilink(sessionNoteId(input.sessionId))));
   if (input.user) fields.push(inlineField('User', input.user));
   if (input.started && input.ended) {
     const duration = formatDuration(input.started, input.ended);
@@ -190,7 +201,7 @@ export function formatMemoryBody(input: MemoryBodyInput): string {
   // Inline fields
   const fields: string[] = [];
   if (input.sessionId) {
-    fields.push(inlineField('Session', wikilink(`session-${input.sessionId}`)));
+    fields.push(inlineField('Session', wikilink(sessionNoteId(input.sessionId))));
   }
   fields.push(inlineField('Observation', input.observationType));
   if (fields.length > 0) sections.push(fields.join('\n'));
@@ -238,7 +249,7 @@ export function formatPlanBody(input: PlanBodyInput): string {
 
   // Sessions section
   if (input.sessions?.length) {
-    const links = input.sessions.map((s) => `- ${wikilink(`session-${s.id}`, s.title)}`);
+    const links = input.sessions.map((s) => `- ${wikilink(sessionNoteId(s.id), s.title)}`);
     sections.push(`## Sessions\n${links.join('\n')}`);
   }
 
@@ -270,7 +281,7 @@ export function formatArtifactBody(input: ArtifactBodyInput): string {
   fields.push(inlineField('Artifact', wikilink(input.id)));
   fields.push(inlineField('Source', `\`${input.source_path}\``));
   fields.push(inlineField('Type', input.artifact_type));
-  fields.push(inlineField('Session', wikilink(`session-${input.sessionId}`)));
+  fields.push(inlineField('Session', wikilink(sessionNoteId(input.sessionId))));
   sections.push(fields.join('\n'));
 
   // Body: full content from disk
@@ -305,7 +316,7 @@ export function formatTeamBody(input: TeamBodyInput): string {
 
   // Recent sessions
   if (input.recentSessions?.length) {
-    const links = input.recentSessions.map((s) => `- ${wikilink(`session-${s.id}`, s.title)}`);
+    const links = input.recentSessions.map((s) => `- ${wikilink(sessionNoteId(s.id), s.title)}`);
     sections.push(`## Recent Sessions\n${links.join('\n')}`);
   }
 

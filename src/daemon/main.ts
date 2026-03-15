@@ -12,14 +12,18 @@ import { createLlmProvider, createEmbeddingProvider } from '../intelligence/llm.
 import type { EmbeddingProvider } from '../intelligence/llm.js';
 import { VectorIndex } from '../index/vectors.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
+import { LineageGraph, LINEAGE_SIMILARITY_THRESHOLD, LINEAGE_SIMILARITY_HIGH_CONFIDENCE, LINEAGE_SIMILARITY_CANDIDATES, LINEAGE_SIMILARITY_MAX_TOKENS, type LineageLink } from './lineage.js';
+import type { RegisteredSession } from './lifecycle.js';
 import { PlanWatcher } from './watcher.js';
 import { buildInjectedContext } from '../context/injector.js';
+import { buildSimilarityPrompt, CANDIDATE_CONTENT_PREVIEW } from '../prompts/index.js';
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { formatSessionBody } from '../obsidian/formatter.js';
 import { writeObservationNotes } from '../vault/observations.js';
 import { collectArtifactCandidates } from '../artifacts/candidates.js';
 import { slugifyPath } from '../artifacts/slugify.js';
+import { sessionNoteId, bareSessionId, sessionWikilink, sessionRelativePath } from '../vault/session-id.js';
 import { z } from 'zod';
 import YAML from 'yaml';
 import fs from 'node:fs';
@@ -142,7 +146,11 @@ export function migrateMemoryFiles(vaultDir: string): number {
       const normalizedType = obsType.replace(/_/g, '-');
       const targetDir = path.join(memoriesDir, normalizedType);
       fs.mkdirSync(targetDir, { recursive: true });
-      fs.renameSync(fullPath, path.join(targetDir, entry));
+      const targetPath = path.join(targetDir, entry);
+      fs.renameSync(fullPath, targetPath);
+      // Touch the file so Obsidian detects the move and re-indexes backlinks
+      const now = new Date();
+      fs.utimesSync(targetPath, now, now);
       moved++;
     } catch {
       // Skip files that can't be read or parsed
@@ -198,6 +206,7 @@ async function main(): Promise<void> {
   const processor = new BufferProcessor(llmProvider, config.intelligence.llm.context_window);
   const vault = new VaultWriter(vaultDir);
   const index = new MycoIndex(path.join(vaultDir, 'index.db'));
+  const lineageGraph = new LineageGraph(vaultDir);
   const transcriptMiner = new TranscriptMiner({
     additionalPaths: config.capture.transcript_paths,
   });
@@ -231,7 +240,11 @@ async function main(): Promise<void> {
   }
 
   // Route body schemas
-  const RegisterBody = z.object({ session_id: z.string() });
+  const RegisterBody = z.object({
+    session_id: z.string(),
+    branch: z.string().optional(),
+    started_at: z.string().optional(),
+  });
   const UnregisterBody = z.object({ session_id: z.string() });
   const EventBody = z.object({ type: z.string(), session_id: z.string() }).passthrough();
   const StopBody = z.object({ session_id: z.string(), user: z.string().optional() });
@@ -287,10 +300,34 @@ async function main(): Promise<void> {
 
   // Session routes
   server.registerRoute('POST', '/sessions/register', async (body: unknown) => {
-    const { session_id } = RegisterBody.parse(body);
-    registry.register(session_id);
+    const { session_id, branch, started_at } = RegisterBody.parse(body);
+    const resolvedStartedAt = started_at ?? new Date().toISOString();
+    registry.register(session_id, { started_at: resolvedStartedAt, branch });
     server.updateDaemonJsonSessions(registry.sessions);
-    logger.info('lifecycle', 'Session registered', { session_id });
+
+    // Heuristic lineage detection
+    try {
+      const recentSessions = index.query({ type: 'session', limit: 5 })
+        .map((n) => {
+          const fm = n.frontmatter as Record<string, unknown>;
+          return { id: bareSessionId(n.id), ended: fm.ended as string | undefined, branch: fm.branch as string | undefined };
+        });
+      const activeSessions = registry.sessions
+        .filter((s) => s !== session_id)
+        .map((s) => registry.getSession(s))
+        .filter((s): s is RegisteredSession => s !== undefined);
+      const link = lineageGraph.detectHeuristicParent(session_id, {
+        started_at: resolvedStartedAt,
+        branch,
+      }, recentSessions, activeSessions);
+      if (link) {
+        logger.info('lineage', 'Heuristic parent detected', { child: session_id, parent: link.parent, signal: link.signal });
+      }
+    } catch (err) {
+      logger.debug('lineage', 'Heuristic detection failed', { error: (err as Error).message });
+    }
+
+    logger.info('lifecycle', 'Session registered', { session_id, branch });
     return { ok: true, sessions: registry.sessions };
   });
 
@@ -340,6 +377,7 @@ async function main(): Promise<void> {
 
   server.registerRoute('POST', '/events/stop', async (body: unknown) => {
     const { session_id: sessionId, user } = StopBody.parse(body);
+    const sessionMeta = registry.getSession(sessionId);
     logger.info('hooks', 'Stop received', { session_id: sessionId });
 
     // Mine the last AI response from the transcript and inject as an event.
@@ -389,16 +427,31 @@ async function main(): Promise<void> {
     const ended = new Date().toISOString();
     let started = lastBatch.length > 0 ? String(lastBatch[0].timestamp) : ended;
 
-    // Read existing session file to preserve prior turns
-    // Use started date for path — consistent with VaultWriter.writeSession
+    // Find existing session file — may be in a different date directory if session spans days.
+    // Search by session ID across all date directories to avoid creating duplicates.
     const date = started.slice(0, 10);
-    const relativePath = `sessions/${date}/session-${sessionId}.md`;
-    const fullPath = path.join(vaultDir, relativePath);
+    const relativePath = sessionRelativePath(sessionId, date);
+    const targetFullPath = path.join(vaultDir, relativePath);
+
+    let existingContent: string | undefined;
+    const sessionsDir = path.join(vaultDir, 'sessions');
+    try {
+      for (const dateDir of fs.readdirSync(sessionsDir)) {
+        const candidate = path.join(sessionsDir, dateDir, `${sessionNoteId(sessionId)}.md`);
+        if (fs.existsSync(candidate)) {
+          existingContent = fs.readFileSync(candidate, 'utf-8');
+          // If the file is in a different date dir, remove the old copy to avoid duplicates
+          if (candidate !== targetFullPath) {
+            fs.unlinkSync(candidate);
+          }
+          break;
+        }
+      }
+    } catch { /* sessions dir may not exist yet */ }
 
     let existingTurnCount = 0;
     let existingConversation: string | undefined;
-    if (fs.existsSync(fullPath)) {
-      const existingContent = fs.readFileSync(fullPath, 'utf-8');
+    if (existingContent) {
       // Count existing turns
       const turnMatches = existingContent.match(/^### Turn \d+/gm);
       existingTurnCount = turnMatches?.length ?? 0;
@@ -442,7 +495,7 @@ async function main(): Promise<void> {
     const relatedMemories = index.query({ type: 'memory', limit: 50 })
       .filter((n) => {
         const fm = n.frontmatter as Record<string, unknown>;
-        return fm.session === `session-${sessionId}` || fm.session === sessionId;
+        return fm.session === sessionNoteId(sessionId) || fm.session === sessionId;
       })
       .map((n) => ({ id: n.id, title: n.title }));
 
@@ -459,19 +512,74 @@ async function main(): Promise<void> {
       existingConversation,
     });
 
+    const parentId = lineageGraph.getParent(sessionId);
+    const parentLink = parentId ? lineageGraph.getLinks().find((l) => l.child === sessionId) : undefined;
+
     vault.writeSession({
       id: sessionId,
       user,
       started,
       ended,
+      branch: sessionMeta?.branch,
+      parent: parentId ? sessionWikilink(parentId) : undefined,
+      parent_reason: parentLink?.signal,
       tools_used: batchTurns.reduce((sum, t) => sum + t.toolCount, 0),
       summary,
     });
-    indexAndEmbed(relativePath, `session-${sessionId}`, narrative,
+    indexAndEmbed(relativePath, sessionNoteId(sessionId), narrative,
       { type: 'session', session_id: sessionId }, indexDeps);
 
     // Wait for artifact capture (started concurrently with session building)
     await artifactPromise;
+
+    // Phase 2: LLM similarity detection (fire-and-forget, only if no heuristic parent)
+    if (!parentId && vectorIndex && narrative) {
+      generateEmbedding(embeddingProvider, narrative)
+        .then(async (emb) => {
+          const candidates = vectorIndex!.search(emb.embedding, { limit: LINEAGE_SIMILARITY_CANDIDATES })
+            .filter((r) => r.metadata.type === 'session' && r.id !== sessionNoteId(sessionId));
+          if (candidates.length === 0) return;
+
+          // Score all candidates in parallel
+          const candidateNotes = index.queryByIds(candidates.map((c) => c.id));
+          const noteMap = new Map(candidateNotes.map((n) => [n.id, n]));
+
+          const scores = await Promise.all(candidates.map(async (candidate) => {
+            const note = noteMap.get(candidate.id);
+            if (!note) return { id: candidate.id, score: 0 };
+            try {
+              const prompt = buildSimilarityPrompt(narrative, note.content.slice(0, CANDIDATE_CONTENT_PREVIEW));
+              const response = await llmProvider.summarize(prompt, { maxTokens: LINEAGE_SIMILARITY_MAX_TOKENS });
+              const score = parseFloat(response.text.trim());
+              return { id: candidate.id, score: isNaN(score) ? 0 : score };
+            } catch { return { id: candidate.id, score: 0 }; }
+          }));
+
+          const best = scores.reduce((a, b) => (b.score > a.score ? b : a));
+
+          if (best.score >= LINEAGE_SIMILARITY_THRESHOLD) {
+            const bestParentId = bareSessionId(best.id);
+            const confidence: LineageLink['confidence'] = best.score >= LINEAGE_SIMILARITY_HIGH_CONFIDENCE ? 'high' : 'medium';
+            lineageGraph.addLink({
+              parent: bestParentId,
+              child: sessionId,
+              signal: 'semantic_similarity',
+              confidence: confidence as 'high' | 'medium',
+            });
+            // Retroactively update session frontmatter with parent
+            try {
+              vault.updateSessionFrontmatter(relativePath, {
+                parent: sessionWikilink(bestParentId),
+                parent_reason: 'semantic_similarity',
+              });
+            } catch { /* frontmatter update failed — link still in lineage.json */ }
+            logger.info('lineage', 'LLM similarity parent detected', {
+              child: sessionId, parent: bestParentId, score: best.score,
+            });
+          }
+        })
+        .catch((err) => logger.debug('lineage', 'Similarity detection failed', { error: (err as Error).message }));
+    }
 
     logger.info('processor', 'Session note written', { session_id: sessionId, path: relativePath });
     return { ok: true, path: relativePath };

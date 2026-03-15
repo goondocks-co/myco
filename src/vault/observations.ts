@@ -1,4 +1,5 @@
 import { formatMemoryBody } from '../obsidian/formatter.js';
+import { sessionNoteId } from './session-id.js';
 import { indexNote } from '../index/rebuild.js';
 import type { Observation } from '../daemon/processor.js';
 import type { VaultWriter } from './writer.js';
@@ -37,7 +38,7 @@ export function writeObservationNotes(
     const relativePath = writer.writeMemory({
       id: obsId,
       observation_type: obs.type,
-      session: `session-${sessionId}`,
+      session: sessionNoteId(sessionId),
       tags: obs.tags,
       content: body,
     });

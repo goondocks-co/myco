@@ -67,3 +67,11 @@ See what teammates have been working on.
 ```json
 { "plan": "auth-redesign" }
 ```
+
+### myco_logs
+View daemon logs for debugging. Use when sessions aren't being captured, observations are missing, embeddings fail, or the daemon seems unhealthy.
+```json
+{ "level": "warn", "limit": 20 }
+```
+
+Common components: `daemon` (lifecycle), `processor` (session/observation processing), `hooks` (hook events), `lifecycle` (session registration), `embeddings` (vector operations).

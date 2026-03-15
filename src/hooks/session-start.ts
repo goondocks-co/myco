@@ -33,12 +33,16 @@ async function main() {
     const input = JSON.parse(await readStdin());
     const sessionId = input.session_id ?? `s-${Date.now()}`;
 
-    await client.post('/sessions/register', { session_id: sessionId });
-
     let branch: string | undefined;
     try {
       branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf-8' }).trim();
     } catch { /* not a git repo */ }
+
+    await client.post('/sessions/register', {
+      session_id: sessionId,
+      branch,
+      started_at: new Date().toISOString(),
+    });
 
     const contextResult = await client.post('/context', { session_id: sessionId, branch });
 

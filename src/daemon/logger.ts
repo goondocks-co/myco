@@ -9,9 +9,9 @@ export interface LogEntry {
   [key: string]: unknown;
 }
 
-type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
-const LEVEL_ORDER: Record<LogLevel, number> = {
+export const LEVEL_ORDER: Record<LogLevel, number> = {
   debug: 0, info: 1, warn: 2, error: 3,
 };
 

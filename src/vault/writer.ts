@@ -3,6 +3,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { buildTags, formatTeamBody, formatPlanBody, formatArtifactBody } from '../obsidian/formatter.js';
 import type { ArtifactType } from './types.js';
+import { sessionNoteId, sessionRelativePath } from './session-id.js';
 
 interface WriteSessionInput {
   id: string;
@@ -11,6 +12,7 @@ interface WriteSessionInput {
   started: string;
   ended?: string;
   parent?: string;
+  parent_reason?: string;
   plans?: string[];
   branch?: string;
   tags?: string[];
@@ -56,7 +58,7 @@ export class VaultWriter {
 
   writeSession(input: WriteSessionInput): string {
     const date = input.started.slice(0, 10);
-    const relativePath = `sessions/${date}/session-${input.id}.md`;
+    const relativePath = sessionRelativePath(input.id, date);
 
     const frontmatter: Record<string, unknown> = {
       type: 'session',
@@ -67,6 +69,7 @@ export class VaultWriter {
     };
     if (input.ended) frontmatter.ended = input.ended;
     if (input.parent) frontmatter.parent = input.parent;
+    if (input.parent_reason) frontmatter.parent_reason = input.parent_reason;
     if (input.plans?.length) frontmatter.plans = input.plans;
     if (input.branch) frontmatter.branch = input.branch;
     frontmatter.tags = buildTags('session', 'ended', [
@@ -150,7 +153,7 @@ export class VaultWriter {
       artifact_type: input.artifact_type,
       source_path: input.source_path,
       title: input.title,
-      last_captured_by: `session-${input.session}`,
+      last_captured_by: sessionNoteId(input.session),
       created,
       updated: now,
       tags: buildTags('artifact', input.artifact_type, input.tags ?? []),
@@ -188,6 +191,35 @@ export class VaultWriter {
 
     this.writeMarkdown(relativePath, frontmatter, body);
     return relativePath;
+  }
+
+  /**
+   * Update specific frontmatter fields on an existing session note without touching the body.
+   * Returns true if the update was applied, false if the file doesn't exist.
+   */
+  updateSessionFrontmatter(relativePath: string, fields: Record<string, unknown>): boolean {
+    const fullPath = path.join(this.vaultDir, relativePath);
+    let fileContent: string;
+    try {
+      fileContent = fs.readFileSync(fullPath, 'utf-8');
+    } catch {
+      return false;
+    }
+
+    const fmMatch = fileContent.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) return false;
+
+    const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(fields)) {
+      if (parsed[key] === undefined) {
+        parsed[key] = value;
+      }
+    }
+
+    const body = fileContent.slice(fmMatch[0].length);
+    const fmYaml = YAML.stringify(parsed, { defaultStringType: 'QUOTE_DOUBLE', defaultKeyType: 'PLAIN' }).trim();
+    fs.writeFileSync(fullPath, `---\n${fmYaml}\n---${body}`, 'utf-8');
+    return true;
   }
 
   private writeMarkdown(relativePath: string, frontmatter: Record<string, unknown>, content: string): void {

@@ -54,4 +54,32 @@ describe('SessionRegistry', () => {
     registry.register('s1');
     expect(registry.sessions).toEqual(['s1']);
   });
+
+  it('stores session metadata on register', () => {
+    const onEmpty = vi.fn();
+    const registry = new SessionRegistry({ gracePeriod: 30, onEmpty });
+
+    registry.register('s1', { started_at: '2026-03-14T10:00:00Z', branch: 'feat/auth' });
+    const session = registry.getSession('s1');
+    expect(session).toBeDefined();
+    expect(session!.started_at).toBe('2026-03-14T10:00:00Z');
+    expect(session!.branch).toBe('feat/auth');
+  });
+
+  it('returns undefined for unknown session', () => {
+    const onEmpty = vi.fn();
+    const registry = new SessionRegistry({ gracePeriod: 30, onEmpty });
+
+    expect(registry.getSession('unknown')).toBeUndefined();
+  });
+
+  it('preserves metadata on re-register', () => {
+    const onEmpty = vi.fn();
+    const registry = new SessionRegistry({ gracePeriod: 30, onEmpty });
+
+    registry.register('s1', { started_at: '2026-03-14T10:00:00Z', branch: 'main' });
+    registry.register('s1', { started_at: '2026-03-14T11:00:00Z', branch: 'other' });
+    const session = registry.getSession('s1');
+    expect(session!.started_at).toBe('2026-03-14T10:00:00Z'); // preserved, not overwritten
+  });
 });

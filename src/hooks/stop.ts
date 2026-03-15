@@ -8,6 +8,7 @@ import { indexNote } from '../index/rebuild.js';
 import { loadConfig } from '../config/loader.js';
 import { createLlmProvider } from '../intelligence/llm.js';
 import { resolveVaultDir } from '../vault/resolve.js';
+import { sessionRelativePath } from '../vault/session-id.js';
 import { writeObservationNotes } from '../vault/observations.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -34,7 +35,7 @@ async function main() {
     // The daemon's append logic is authoritative; the degraded path only creates
     // a session file when one doesn't exist yet (true cold start).
     const date = new Date().toISOString().slice(0, 10);
-    const sessionFile = path.join(VAULT_DIR, 'sessions', date, `session-${sessionId}.md`);
+    const sessionFile = path.join(VAULT_DIR, sessionRelativePath(sessionId, date));
     if (fs.existsSync(sessionFile)) return; // Daemon will handle it when it's back
 
     const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);

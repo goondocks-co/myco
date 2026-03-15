@@ -81,6 +81,16 @@ describe('buildTags', () => {
     const tags = buildTags('team', '');
     expect(tags).toEqual(['type/team']);
   });
+
+  it('replaces spaces with slashes in extra tags', () => {
+    const tags = buildTags('artifact', 'spec', ['daemon logs']);
+    expect(tags).toEqual(['type/artifact', 'artifact/spec', 'daemon/logs']);
+  });
+
+  it('handles multiple spaces in a tag', () => {
+    const tags = buildTags('artifact', 'spec', ['log viewer design']);
+    expect(tags).toEqual(['type/artifact', 'artifact/spec', 'log/viewer/design']);
+  });
 });
 
 describe('footerTags', () => {

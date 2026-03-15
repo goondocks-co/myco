@@ -10,8 +10,15 @@ import { ARTIFACT_TYPES } from '../vault/types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+const promptCache = new Map<string, string>();
+
 function loadPrompt(name: string): string {
-  return fs.readFileSync(path.join(__dirname, `${name}.md`), 'utf-8').trim();
+  let cached = promptCache.get(name);
+  if (!cached) {
+    cached = fs.readFileSync(path.join(__dirname, `${name}.md`), 'utf-8').trim();
+    promptCache.set(name, cached);
+  }
+  return cached;
 }
 
 function interpolate(template: string, vars: Record<string, string>): string {
@@ -68,6 +75,16 @@ const ARTIFACT_TYPE_DESCRIPTIONS = [
 
 /** Max chars of file content to include per candidate in the prompt. */
 export const CANDIDATE_CONTENT_PREVIEW = 2000;
+
+export function buildSimilarityPrompt(
+  currentSummary: string,
+  candidateSummary: string,
+): string {
+  return interpolate(loadPrompt('session-similarity'), {
+    currentSummary,
+    candidateSummary,
+  });
+}
 
 export function buildClassificationPrompt(
   sessionId: string,

@@ -13,6 +13,7 @@ import { handleMycoPlans } from './tools/plans.js';
 import { handleMycoSessions } from './tools/sessions.js';
 import { handleMycoTeam } from './tools/team.js';
 import { handleMycoGraph, handleMycoOrphans } from './tools/graph.js';
+import { handleMycoLogs } from './tools/logs.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { loadConfig } from '../config/loader.js';
 import { MemoryFrontmatterSchema, PlanFrontmatterSchema } from '../vault/types.js';
@@ -126,6 +127,20 @@ const TOOL_DEFINITIONS = [
       properties: {},
     },
   },
+  {
+    name: 'myco_logs',
+    description: 'View daemon logs with filtering — useful for debugging capture, lifecycle, and embedding issues',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        limit: { type: 'number', description: 'Max entries to return (default 50)' },
+        level: { type: 'string', enum: ['debug', 'info', 'warn', 'error'], description: 'Minimum log level' },
+        component: { type: 'string', description: 'Filter by component (daemon, processor, hooks, lifecycle, embeddings)' },
+        since: { type: 'string', description: 'ISO timestamp — entries after this time' },
+        until: { type: 'string', description: 'ISO timestamp — entries before this time' },
+      },
+    },
+  },
 ];
 
 export interface MycoServer {
@@ -177,6 +192,8 @@ export function createMycoServer(config: ServerConfig): MycoServer {
         return { content: [{ type: 'text', text: JSON.stringify(await handleMycoGraph(idx, input as any)) }] };
       case 'myco_orphans':
         return { content: [{ type: 'text', text: JSON.stringify(await handleMycoOrphans(idx)) }] };
+      case 'myco_logs':
+        return { content: [{ type: 'text', text: JSON.stringify(await handleMycoLogs(config.vaultDir, input as any)) }] };
       default:
         throw new Error(`Unknown tool: ${name}`);
     }

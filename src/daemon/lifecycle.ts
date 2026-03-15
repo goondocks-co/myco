@@ -1,10 +1,19 @@
+export interface SessionMetadata {
+  started_at: string;
+  branch?: string;
+}
+
+export interface RegisteredSession extends SessionMetadata {
+  id: string;
+}
+
 interface RegistryOptions {
   gracePeriod: number;
   onEmpty: () => void;
 }
 
 export class SessionRegistry {
-  private _sessions: Set<string> = new Set();
+  private _sessions: Map<string, SessionMetadata> = new Map();
   private graceTimer: ReturnType<typeof setTimeout> | null = null;
   private gracePeriod: number;
   private onEmpty: () => void;
@@ -15,12 +24,20 @@ export class SessionRegistry {
   }
 
   get sessions(): string[] {
-    return [...this._sessions];
+    return [...this._sessions.keys()];
   }
 
-  register(sessionId: string): void {
-    this._sessions.add(sessionId);
+  register(sessionId: string, metadata?: SessionMetadata): void {
+    if (!this._sessions.has(sessionId)) {
+      this._sessions.set(sessionId, metadata ?? { started_at: new Date().toISOString() });
+    }
     this.cancelGrace();
+  }
+
+  getSession(sessionId: string): RegisteredSession | undefined {
+    const meta = this._sessions.get(sessionId);
+    if (!meta) return undefined;
+    return { id: sessionId, ...meta };
   }
 
   unregister(sessionId: string): void {

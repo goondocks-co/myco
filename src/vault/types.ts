@@ -8,10 +8,10 @@ export const SessionFrontmatterSchema = z.object({
   started: z.string(),
   ended: z.string().optional(),
   parent: z.string().optional(),
+  parent_reason: z.string().optional(),
   plan: z.string().optional(),          // backward compat read path
   plans: z.array(z.string()).optional(), // new: multiple plans
   branch: z.string().optional(),
-  spawned_by: z.string().nullable().optional(),
   tags: z.array(z.string()).default([]),
   tools_used: z.number().int().optional(),
   files_changed: z.number().int().optional(),
