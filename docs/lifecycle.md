@@ -7,8 +7,9 @@ Myco runs a long-lived background daemon that processes session events, extracts
 ```mermaid
 sequenceDiagram
     participant User
-    participant Hook as Claude Code Hooks
+    participant Hook as Agent Hooks
     participant Daemon
+    participant Transcript as Agent Transcript
     participant Vault
     participant LLM
 
@@ -29,15 +30,19 @@ sequenceDiagram
     User->>Hook: Tool used
     Hook->>Daemon: POST /events {tool_use}
 
-    Note over Hook,Daemon: Session End
+    Note over Hook,Daemon: Session End (async — hook returns immediately)
     Hook->>Daemon: POST /events/stop
-    Daemon->>LLM: Extract observations
-    Daemon->>LLM: Summarize session
+    Daemon-->>Hook: {ok: true}
+    Daemon->>LLM: Extract observations from last batch
+    Daemon->>Transcript: Read agent transcript (Claude Code, Cursor)
+    Note right of Transcript: Tiered: transcript → buffer fallback
+    Daemon->>Vault: Write images to attachments/
+    Daemon->>LLM: Summarize full conversation
     Daemon->>LLM: Classify artifacts
-    Daemon->>Vault: Write session note
+    Daemon->>Vault: Write session note (full rebuild from transcript)
     Daemon->>Vault: Write memory notes
     Daemon->>Vault: Write artifact notes
-    Daemon->>LLM: Detect lineage (similarity)
+    Daemon->>LLM: Detect lineage (semantic similarity)
     Hook->>Daemon: POST /sessions/unregister
 ```
 
@@ -215,3 +220,19 @@ Or via MCP:
 | `logs/daemon.log` | Daemon structured logs (JSONL) |
 | `logs/mcp.jsonl` | MCP tool activity log |
 | `buffer/*.jsonl` | Per-session event buffers (ephemeral) |
+| `attachments/*.png` | Images extracted from session transcripts (Obsidian embeds) |
+
+## Transcript Sourcing
+
+Session conversation turns are built from the agent's native transcript file — not from Myco's event buffer. The buffer only captures what hooks send (user prompts, tool uses) and has no AI responses.
+
+The agent adapter registry (`src/agents/`) tries each adapter in priority order:
+
+| Agent | Transcript Location | Format |
+|-------|-------------------|--------|
+| Claude Code | `~/.claude/projects/<project>/<session>.jsonl` | JSONL (`type` field) |
+| Cursor (newer) | `~/.cursor/projects/<project>/agent-transcripts/<session>/<session>.jsonl` | JSONL (`role` field) |
+| Cursor (older) | `~/.cursor/projects/<project>/agent-transcripts/<session>.txt` | Plain text (`user:`/`assistant:` markers) |
+| Buffer fallback | `buffer/<session>.jsonl` | Myco's own event buffer (no AI responses) |
+
+Images in transcripts are decoded and saved to `attachments/` as `{session-id}-t{turn}-{index}.{ext}`, then embedded in the session note with `![[filename]]`.
