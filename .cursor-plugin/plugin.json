@@ -1,0 +1,20 @@
+{
+  "name": "myco",
+  "version": "0.1.0",
+  "description": "Collective agent intelligence — captures session knowledge and serves it back to your team via MCP",
+  "author": {
+    "name": "goondocks-co"
+  },
+  "license": "MIT",
+  "keywords": ["intelligence", "memory", "mcp", "sessions", "team", "knowledge"],
+  "mcpServers": {
+    "myco": {
+      "command": "node",
+      "args": ["${CURSOR_PLUGIN_ROOT}/dist/src/mcp/server.js"],
+      "env": {}
+    }
+  },
+  "hooks": "hooks/",
+  "skills": "skills/",
+  "commands": "commands/"
+}

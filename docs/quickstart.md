@@ -1,0 +1,170 @@
+# Myco Quick Start
+
+Myco is a collective agent intelligence plugin that captures session knowledge — events, observations, decisions, trade-offs — into a Markdown vault and serves it back via MCP tools. Install it in your coding agent, run `/myco:init` to set up your vault, and start building institutional memory.
+
+## Requirements
+
+- **Node.js 22+**
+- **Local LLM** (recommended): [Ollama](https://ollama.com) with `gpt-oss` and `bge-m3` models, or [LM Studio](https://lmstudio.ai)
+- **Cloud LLM** (alternative): Anthropic API key for Claude Haiku
+- **Obsidian** (optional): For browsing your vault with backlinks, Dataview, and graph view
+
+## Install
+
+### Claude Code
+
+```bash
+# From the Goondocks marketplace
+claude plugin marketplace add goondocks-co/myco
+claude plugin install myco@goondocks-plugins
+
+# Or install directly from the repo
+claude plugin add goondocks-co/myco
+```
+
+### Cursor
+
+Search for **myco** in the Cursor marketplace panel, or install from settings:
+
+```
+Settings → Extensions → Marketplace → Search "myco" → Install
+```
+
+### VS Code Copilot
+
+Open the Extensions view and search for agent plugins:
+
+1. Press `Ctrl+Shift+X` (or `Cmd+Shift+X` on macOS)
+2. Type `@agentPlugins myco` in the search box
+3. Click **Install**
+
+Or add the marketplace source manually in your VS Code settings:
+
+```json
+{
+  "chat.plugins.marketplaces": [
+    "goondocks-co/myco"
+  ]
+}
+```
+
+### Manual (any agent)
+
+Clone and install from source:
+
+```bash
+git clone https://github.com/goondocks-co/myco.git
+cd myco
+npm install
+npm run build
+```
+
+Then register as a local plugin:
+
+- **Claude Code**: `claude plugin add /path/to/myco`
+- **Cursor**: Add to `.cursor-plugin/` or install via settings
+- **VS Code**: Add path to `chat.plugins.paths` in settings
+
+## Set Up Your Vault
+
+After installing, run the init command in your project:
+
+```
+/myco:init
+```
+
+This guides you through:
+
+1. **Vault location** — where to store your knowledge (default: `~/.myco/vaults/<project>/`)
+2. **Intelligence backend** — choose your LLM and embedding providers
+3. **Team or solo** — whether to share the vault via git
+
+### Pull Ollama Models (if using local LLM)
+
+```bash
+ollama pull gpt-oss
+ollama pull bge-m3
+```
+
+## What Happens Next
+
+Once installed and initialized, Myco works automatically:
+
+- **Session start**: Myco injects relevant context from your vault into the conversation
+- **During the session**: Events (tool calls, prompts, responses) are buffered
+- **Session end**: The daemon processes events, extracts observations, writes session notes, and detects session lineage
+
+You don't need to do anything — Myco captures knowledge in the background.
+
+## Browse Your Vault
+
+### In Obsidian
+
+Open your vault directory in Obsidian (e.g., `~/.myco/vaults/myco/`). You'll see:
+
+```
+sessions/          → Session notes organized by date
+memories/          → Observations organized by type (decisions, gotchas, etc.)
+plans/             → Plan documents
+artifacts/         → Captured design docs and specs
+_dashboard.md      → Dataview-powered overview (requires Dataview plugin)
+```
+
+Use the graph view to see how sessions, memories, and plans connect through backlinks.
+
+### From the CLI
+
+```bash
+node dist/src/cli.js stats        # Vault health and counts
+node dist/src/cli.js search "auth" # Semantic + FTS search
+node dist/src/cli.js rebuild      # Rebuild indexes
+```
+
+## MCP Tools
+
+Myco exposes these tools to your coding agent via MCP:
+
+| Tool | What it does |
+|------|-------------|
+| `myco_recall` | Retrieve relevant memories for the current context |
+| `myco_remember` | Capture a new observation or decision |
+| `myco_search` | Search the vault by keyword or semantic similarity |
+| `myco_sessions` | List recent sessions with summaries |
+| `myco_graph` | Traverse relationships between notes |
+| `myco_plans` | List and read plan documents |
+| `myco_team` | View team member activity |
+
+## Slash Commands
+
+| Command | What it does |
+|---------|-------------|
+| `/myco:init` | Initialize Myco in your project |
+| `/myco:setup-llm` | Configure or change LLM providers |
+| `/myco:status` | Show vault health and daemon status |
+
+## Troubleshooting
+
+### Daemon not starting
+
+The daemon spawns automatically on session start. If it fails:
+
+```bash
+node dist/src/cli.js restart    # Manual restart
+node dist/src/cli.js stats      # Check status
+```
+
+### No observations being captured
+
+Check that your LLM backend is running:
+
+```bash
+# For Ollama
+curl http://localhost:11434/api/tags
+
+# For LM Studio
+curl http://localhost:1234/v1/models
+```
+
+### Missing backlinks in Obsidian
+
+If you recently migrated or updated Myco, close and reopen the vault in Obsidian to rebuild its link cache.

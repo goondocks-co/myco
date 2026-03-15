@@ -52,7 +52,10 @@ tests/           # Mirrors src/ structure: tests/<module>.test.ts
 hooks/           # Hook registration shell scripts (invoke dist/src/hooks/*.js)
 commands/        # Slash command markdown files
 skills/          # Skill markdown files (subdirectory per skill)
-.claude-plugin/  # plugin.json manifest (includes mcpServers config)
+.claude-plugin/  # Claude Code plugin manifest + marketplace catalog
+.cursor-plugin/  # Cursor plugin manifest + marketplace catalog
+.github/         # VS Code Copilot agent plugin manifest (also CI workflows)
+.mcp.json        # MCP server config for VS Code (servers format)
 ```
 
 ### Module Boundaries
