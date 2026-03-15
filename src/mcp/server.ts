@@ -12,12 +12,22 @@ import { handleMycoRemember } from './tools/remember.js';
 import { handleMycoPlans } from './tools/plans.js';
 import { handleMycoSessions } from './tools/sessions.js';
 import { handleMycoTeam } from './tools/team.js';
+import { handleMycoGraph, handleMycoOrphans } from './tools/graph.js';
+import { resolveVaultDir } from '../vault/resolve.js';
+import { loadConfig } from '../config/loader.js';
+import { MemoryFrontmatterSchema, PlanFrontmatterSchema } from '../vault/types.js';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import fs from 'node:fs';
 
 interface ServerConfig {
   vaultDir: string;
   teamUser?: string;
 }
+
+// Common observation types shown as hints in the tool schema; the vault accepts any string
+const OBSERVATION_TYPES = ['gotcha', 'bug_fix', 'decision', 'discovery', 'trade_off', 'cross-cutting'];
+const PLAN_STATUSES = [...PlanFrontmatterSchema.shape.status._def.innerType.options, 'all'];
 
 const TOOL_DEFINITIONS = [
   {
@@ -51,7 +61,7 @@ const TOOL_DEFINITIONS = [
       type: 'object' as const,
       properties: {
         content: { type: 'string' },
-        type: { type: 'string', enum: ['gotcha', 'bug_fix', 'decision', 'discovery', 'trade_off'] },
+        type: { type: 'string', enum: OBSERVATION_TYPES },
         tags: { type: 'array', items: { type: 'string' } },
         related_plan: { type: 'string' },
       },
@@ -64,7 +74,7 @@ const TOOL_DEFINITIONS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        status: { type: 'string', enum: ['active', 'completed', 'all'] },
+        status: { type: 'string', enum: PLAN_STATUSES },
         id: { type: 'string' },
       },
     },
@@ -93,6 +103,27 @@ const TOOL_DEFINITIONS = [
         plan: { type: 'string' },
         since: { type: 'string' },
       },
+    },
+  },
+  {
+    name: 'myco_graph',
+    description: 'Traverse vault connections via wikilinks — find related notes by following links',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        note_id: { type: 'string', description: 'Note ID to start from (e.g. "session-abc123")' },
+        direction: { type: 'string', enum: ['incoming', 'outgoing', 'both'], description: 'Link direction (default: both)' },
+        depth: { type: 'number', description: 'Traversal depth 1-3 (default: 1)' },
+      },
+      required: ['note_id'],
+    },
+  },
+  {
+    name: 'myco_orphans',
+    description: 'Find vault notes with no incoming or outgoing wikilinks',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
     },
   },
 ];
@@ -125,22 +156,27 @@ export function createMycoServer(config: ServerConfig): MycoServer {
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
+    const { name, arguments: args = {} } = request.params;
     const idx = getIndex();
+    const input = args as Record<string, unknown>;
 
     switch (name) {
       case 'myco_search':
-        return { content: [{ type: 'text', text: JSON.stringify(await handleMycoSearch(idx, args as any)) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(await handleMycoSearch(idx, input as any)) }] };
       case 'myco_recall':
-        return { content: [{ type: 'text', text: JSON.stringify(await handleMycoRecall(idx, args as any)) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(await handleMycoRecall(idx, input as any)) }] };
       case 'myco_remember':
-        return { content: [{ type: 'text', text: JSON.stringify(await handleMycoRemember(config.vaultDir, idx, args as any)) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(await handleMycoRemember(config.vaultDir, idx, input as any)) }] };
       case 'myco_plans':
-        return { content: [{ type: 'text', text: JSON.stringify(await handleMycoPlans(idx, args as any)) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(await handleMycoPlans(idx, input as any)) }] };
       case 'myco_sessions':
-        return { content: [{ type: 'text', text: JSON.stringify(await handleMycoSessions(idx, args as any)) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(await handleMycoSessions(idx, input as any)) }] };
       case 'myco_team':
-        return { content: [{ type: 'text', text: JSON.stringify(await handleMycoTeam(idx, args as any, config.teamUser)) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(await handleMycoTeam(idx, input as any, config.teamUser)) }] };
+      case 'myco_graph':
+        return { content: [{ type: 'text', text: JSON.stringify(await handleMycoGraph(idx, input as any)) }] };
+      case 'myco_orphans':
+        return { content: [{ type: 'text', text: JSON.stringify(await handleMycoOrphans(idx)) }] };
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -156,4 +192,27 @@ export function createMycoServer(config: ServerConfig): MycoServer {
       await server.connect(transport);
     },
   };
+}
+
+// Entry point — invoked by .mcp.json: node dist/src/mcp/server.js
+const __filename = fileURLToPath(import.meta.url);
+if (process.argv[1] === __filename) {
+  main().catch((err) => {
+    process.stderr.write(`[myco-mcp] Fatal: ${(err as Error).message}\n`);
+    process.exit(1);
+  });
+}
+
+async function main(): Promise<void> {
+  const vaultDir = resolveVaultDir();
+
+  const config = fs.existsSync(path.join(vaultDir, 'myco.yaml'))
+    ? loadConfig(vaultDir)
+    : undefined;
+
+  const server = createMycoServer({
+    vaultDir,
+    teamUser: config?.team?.user,
+  });
+  await server.start();
 }

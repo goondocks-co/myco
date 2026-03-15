@@ -1,4 +1,5 @@
 import type { MycoIndex } from '../../index/sqlite.js';
+import { sessionFm } from '../../vault/frontmatter.js';
 
 interface TeamInput {
   files?: string[];
@@ -17,7 +18,7 @@ interface TeamActivity {
 export async function handleMycoTeam(
   index: MycoIndex,
   input: TeamInput,
-  currentUser?: string,  // From config.team.user, injected by server
+  currentUser?: string,
 ): Promise<TeamActivity[]> {
   const sessions = index.query({
     type: 'session',
@@ -25,26 +26,25 @@ export async function handleMycoTeam(
     limit: 50,
   });
 
-  // Exclude current user's sessions
-  const teamSessions = sessions.filter((s) => {
-    const user = (s.frontmatter as any)?.user;
-    return user && user !== currentUser;
+  // Filter out current user and optionally by plan
+  const filtered = sessions.filter((s) => {
+    const f = sessionFm(s);
+    if (!f.user || f.user === currentUser) return false;
+    if (input.plan) {
+      const planRef = f.plan;
+      if (planRef !== `[[${input.plan}]]` && planRef !== input.plan) return false;
+    }
+    return true;
   });
 
-  // Filter by plan if specified
-  let filtered = teamSessions;
-  if (input.plan) {
-    filtered = filtered.filter((s) => {
-      const planRef = (s.frontmatter as any)?.plan;
-      return planRef === `[[${input.plan}]]` || planRef === input.plan;
-    });
-  }
-
-  return filtered.map((s) => ({
-    user: String((s.frontmatter as any)?.user ?? ''),
-    session_id: s.id,
-    summary: s.content.slice(0, 200),
-    files_changed: [],  // Would be extracted from session content
-    decisions: [],       // Would be extracted from linked memories
-  }));
+  return filtered.map((s) => {
+    const f = sessionFm(s);
+    return {
+      user: f.user ?? '',
+      session_id: s.id,
+      summary: s.content.slice(0, 200),
+      files_changed: [],
+      decisions: [],
+    };
+  });
 }

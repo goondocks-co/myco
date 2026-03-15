@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { BufferProcessor, type ProcessorResult } from '@myco/capture/processor';
+import { BufferProcessor, type ProcessorResult } from '@myco/daemon/processor';
 import type { LlmBackend } from '@myco/intelligence/llm';
 
 describe('BufferProcessor', () => {

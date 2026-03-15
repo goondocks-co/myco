@@ -1,5 +1,5 @@
 import type { MycoIndex } from '../../index/sqlite.js';
-import { searchFts, type FtsResult } from '../../index/fts.js';
+import { searchFts } from '../../index/fts.js';
 import type { VectorIndex } from '../../index/vectors.js';
 import { generateEmbedding } from '../../intelligence/embeddings.js';
 import type { LlmBackend } from '../../intelligence/llm.js';
@@ -33,22 +33,27 @@ export async function handleMycoSearch(
     try {
       const emb = await generateEmbedding(backend, input.query);
       const results = vectorIndex.search(emb.embedding, {
-        limit: input.limit ?? 10,
-        similarityFloor: 0.7,
-        type: type,
+        limit,
+        type,
       });
       if (results.length > 0) {
-        return results.map((r) => {
-          const note = index.query({ id: r.id, limit: 1 })[0];
-          return {
-            note_path: note?.path ?? r.id,
-            type: r.metadata.type || note?.type || 'unknown',
-            title: note?.title ?? r.id,
-            snippet: note?.content?.slice(0, 120) ?? '',
-            score: r.similarity,
-            frontmatter: note?.frontmatter ?? {},
-          };
-        }).filter((r) => r.snippet);
+        // Batch-fetch all notes in one query
+        const noteMap = new Map(
+          index.queryByIds(results.map((r) => r.id)).map((n) => [n.id, n]),
+        );
+        return results
+          .map((r) => {
+            const note = noteMap.get(r.id);
+            return {
+              note_path: note?.path ?? r.id,
+              type: r.metadata.type || note?.type || 'unknown',
+              title: note?.title ?? r.id,
+              snippet: note?.content?.slice(0, 120) ?? '',
+              score: r.similarity,
+              frontmatter: note?.frontmatter ?? {},
+            };
+          })
+          .filter((r) => r.snippet);
       }
     } catch {
       // Fall through to FTS

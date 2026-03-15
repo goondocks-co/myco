@@ -16,6 +16,8 @@ export interface QueryOptions {
   id?: string;
   limit?: number;
   since?: string;
+  /** Filter by frontmatter fields using json_extract. Applied before LIMIT. */
+  frontmatter?: Record<string, string>;
 }
 
 export class MycoIndex {
@@ -105,6 +107,12 @@ export class MycoIndex {
       conditions.push('created >= ?');
       params.push(options.since);
     }
+    if (options.frontmatter) {
+      for (const [key, value] of Object.entries(options.frontmatter)) {
+        conditions.push(`json_extract(frontmatter, '$.' || ?) = ?`);
+        params.push(key, value);
+      }
+    }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const limitClause = options.limit ? 'LIMIT ?' : '';
@@ -112,6 +120,14 @@ export class MycoIndex {
     const sql = `SELECT * FROM notes ${where} ORDER BY created DESC ${limitClause}`;
 
     const rows = this.db.prepare(sql).all(...params) as any[];
+    return rows.map((row) => ({ ...row, frontmatter: JSON.parse(row.frontmatter) }));
+  }
+
+  queryByIds(ids: string[]): IndexedNote[] {
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => '?').join(',');
+    const sql = `SELECT * FROM notes WHERE id IN (${placeholders})`;
+    const rows = this.db.prepare(sql).all(...ids) as any[];
     return rows.map((row) => ({ ...row, frontmatter: JSON.parse(row.frontmatter) }));
   }
 

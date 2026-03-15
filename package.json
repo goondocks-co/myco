@@ -1,16 +1,35 @@
 {
-  "name": "@myco/core",
+  "name": "@goondocks-co/myco",
   "version": "0.1.0",
   "description": "Collective agent intelligence — Claude Code plugin",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "myco": "dist/src/cli.js"
+  },
+  "files": [
+    "dist/",
+    "commands/",
+    "skills/",
+    "hooks/",
+    ".claude-plugin/",
+    "CONTRIBUTING.md"
+  ],
   "scripts": {
+    "prepare": "npm run build",
     "build": "tsc",
     "build:watch": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/goondocks-co/myco.git"
   },
   "dependencies": {
     "better-sqlite3": "^11.0.0",

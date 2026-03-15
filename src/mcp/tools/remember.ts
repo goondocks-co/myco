@@ -1,11 +1,12 @@
 import { VaultWriter } from '../../vault/writer.js';
 import { indexNote } from '../../index/rebuild.js';
 import type { MycoIndex } from '../../index/sqlite.js';
+import type { ObservationType } from '../../vault/types.js';
 import { randomBytes } from 'node:crypto';
 
 interface RememberInput {
   content: string;
-  type: 'gotcha' | 'bug_fix' | 'decision' | 'discovery' | 'trade_off';
+  type: ObservationType;
   tags?: string[];
   related_plan?: string;
 }
@@ -26,7 +27,7 @@ export async function handleMycoRemember(
   const notePath = writer.writeMemory({
     id,
     observation_type: input.type,
-    plan: input.related_plan ? `[[${input.related_plan}]]` : undefined,
+    plan: input.related_plan ?? undefined,
     tags: input.tags,
     content: input.content,
   });

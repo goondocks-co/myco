@@ -3,7 +3,7 @@ import {
   SessionFrontmatterSchema,
   PlanFrontmatterSchema,
   MemoryFrontmatterSchema,
-  ArtifactRefFrontmatterSchema,
+  ArtifactFrontmatterSchema,
   TeamMemberFrontmatterSchema,
   parseNoteFrontmatter,
 } from '@myco/vault/types';
@@ -48,17 +48,19 @@ describe('Vault Note Types', () => {
     expect(result.success).toBe(true);
   });
 
-  it('validates artifact-ref frontmatter', () => {
+  it('validates artifact frontmatter', () => {
     const fm = {
-      type: 'artifact-ref',
-      source: 'docs/specs/design.md',
+      type: 'artifact',
+      id: 'docs-specs-design',
+      source_path: 'docs/specs/design.md',
       artifact_type: 'spec',
-      detected_via: 'file-watch',
-      session: '[[session-a1b2c3]]',
+      title: 'Design Specification',
+      last_captured_by: 'session-a1b2c3',
       created: '2026-03-12T10:30:00Z',
+      updated: '2026-03-12T10:30:00Z',
       tags: ['design'],
     };
-    const result = ArtifactRefFrontmatterSchema.safeParse(fm);
+    const result = ArtifactFrontmatterSchema.safeParse(fm);
     expect(result.success).toBe(true);
   });
 
@@ -91,11 +93,11 @@ describe('Vault Note Types', () => {
     }
   });
 
-  it('rejects removed observation type cross-cutting', () => {
+  it('accepts arbitrary observation types like cross-cutting', () => {
     const result = MemoryFrontmatterSchema.safeParse({
       type: 'memory', id: 'test', observation_type: 'cross-cutting', created: '2026-01-01',
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 
   it('accepts plans array on session frontmatter', () => {

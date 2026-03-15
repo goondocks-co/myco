@@ -1,10 +1,17 @@
 import type { LlmBackend } from '../intelligence/llm.js';
+import type { ObservationType } from '../vault/types.js';
 
 export interface Observation {
-  type: 'gotcha' | 'bug_fix' | 'decision' | 'discovery' | 'trade_off';
+  type: ObservationType;
   title: string;
   content: string;
   tags: string[];
+  root_cause?: string;
+  fix?: string;
+  rationale?: string;
+  alternatives_rejected?: string;
+  gained?: string;
+  sacrificed?: string;
 }
 
 export interface ProcessorResult {
@@ -12,6 +19,17 @@ export interface ProcessorResult {
   observations: Observation[];
   degraded: boolean;
 }
+
+export interface ClassifiedArtifact {
+  source_path: string;
+  artifact_type: 'spec' | 'plan' | 'rfc' | 'doc' | 'other';
+  title: string;
+  tags: string[];
+}
+
+const SUMMARY_TASK = `Write a concise narrative summary of this session (3-6 sentences). Describe what was accomplished, key decisions made, and any problems encountered. Focus on outcomes rather than individual tool calls.
+
+Respond with plain text only, no JSON or markdown fences.`;
 
 export class BufferProcessor {
   constructor(private backend: LlmBackend) {}
@@ -43,33 +61,6 @@ export class BufferProcessor {
     }
   }
 
-  async summarize(
-    events: Array<Record<string, unknown>>,
-    sessionId: string,
-    user?: string,
-  ): Promise<{ summary: string; title: string }> {
-    const summaryPrompt = this.buildSummaryPrompt(events, sessionId, user ?? 'unknown');
-
-    let summaryText: string;
-    try {
-      const response = await this.backend.summarize(summaryPrompt);
-      summaryText = response.text;
-    } catch (error) {
-      summaryText = `Session ${sessionId} — ${events.length} events captured. LLM summarization failed: ${(error as Error).message}`;
-    }
-
-    const titlePrompt = this.buildTitlePrompt(summaryText, sessionId);
-    let title: string;
-    try {
-      const response = await this.backend.summarize(titlePrompt);
-      title = response.text.trim();
-    } catch {
-      title = `Session ${sessionId}`;
-    }
-
-    return { summary: summaryText, title };
-  }
-
   private buildExtractionPrompt(
     events: Array<Record<string, unknown>>,
     sessionId: string,
@@ -95,6 +86,15 @@ Analyze these events and produce a JSON response with exactly this structure:
   ]
 }
 
+## Type-Specific Fields
+Include these additional fields when appropriate for the observation type:
+
+- **bug_fix**: add "root_cause" (what caused the bug) and "fix" (what resolved it)
+- **decision**: add "rationale" (why this choice) and "alternatives_rejected" (what was considered and why not)
+- **trade_off**: add "gained" (what was achieved) and "sacrificed" (what was given up)
+
+These fields are optional — only include them when the session provides clear evidence.
+
 ## Observation Guidelines
 Only include observations that meet ALL criteria:
 - Valuable to a teammate encountering the same code/problem
@@ -114,22 +114,49 @@ Target 0-5 observations. Err on fewer, higher-quality observations.
 Respond with valid JSON only, no markdown fences.`;
   }
 
-  private buildSummaryPrompt(
-    events: Array<Record<string, unknown>>,
+  async summarizeSession(
+    conversationMarkdown: string,
     sessionId: string,
-    user: string,
-  ): string {
-    const toolSummary = this.summarizeEvents(events);
+    user?: string,
+  ): Promise<{ summary: string; title: string }> {
+    const summaryPrompt = `You are summarizing a coding session for user "${user ?? 'unknown'}" (session "${sessionId}").
 
-    return `You are summarizing a complete coding session for user "${user}" (session "${sessionId}").
-
-## Events (${events.length} total)
-${toolSummary}
+## Session Content
+${conversationMarkdown.slice(0, 8000)}
 
 ## Task
-Write a concise narrative summary of this session (3-6 sentences). Describe what was accomplished, key decisions made, and any problems encountered. Focus on outcomes rather than individual tool calls.
+${SUMMARY_TASK}`;
 
-Respond with plain text only, no JSON or markdown fences.`;
+    let summaryText: string;
+    try {
+      const response = await this.backend.summarize(summaryPrompt);
+      summaryText = response.text;
+    } catch (error) {
+      summaryText = `Session ${sessionId} — summarization failed: ${(error as Error).message}`;
+    }
+
+    const titlePrompt = this.buildTitlePrompt(summaryText, sessionId);
+    let title: string;
+    try {
+      const response = await this.backend.summarize(titlePrompt);
+      title = response.text.trim();
+    } catch {
+      title = `Session ${sessionId}`;
+    }
+
+    return { summary: summaryText, title };
+  }
+
+  async classifyArtifacts(
+    candidates: Array<{ path: string; content: string }>,
+    sessionId: string,
+  ): Promise<ClassifiedArtifact[]> {
+    if (candidates.length === 0) return [];
+
+    const prompt = this.buildClassificationPrompt(candidates, sessionId);
+    const response = await this.backend.summarize(prompt);
+    const parsed = JSON.parse(response.text) as { artifacts: ClassifiedArtifact[] };
+    return parsed.artifacts ?? [];
   }
 
   private buildTitlePrompt(summary: string, sessionId: string): string {
@@ -143,21 +170,88 @@ Session ID: ${sessionId}
 Respond with the title text only, no quotes, no punctuation at the end.`;
   }
 
+  private buildClassificationPrompt(
+    candidates: Array<{ path: string; content: string }>,
+    sessionId: string,
+  ): string {
+    const fileList = candidates
+      .map((c) => {
+        const truncated = c.content.slice(0, 2000);
+        return `### ${c.path}\n\`\`\`\n${truncated}\n\`\`\``;
+      })
+      .join('\n\n');
+
+    return `You are classifying files from coding session "${sessionId}" to determine which are substantive artifacts worth preserving in a knowledge vault.
+
+## Candidate Files
+
+${fileList}
+
+## Task
+
+For each file that is a substantive artifact (design doc, specification, implementation plan, RFC, or documentation), classify it. Skip implementation code, test files, config files, and generated output.
+
+Artifact types:
+- "spec" — Design specifications, architecture documents
+- "plan" — Implementation plans, roadmaps
+- "rfc" — Requests for comment, proposals
+- "doc" — Documentation, guides, READMEs
+- "other" — Other substantive documents
+
+Respond with valid JSON only, no markdown fences:
+{
+  "artifacts": [
+    {
+      "source_path": "exact/path/from/above",
+      "artifact_type": "spec|plan|rfc|doc|other",
+      "title": "Human-readable title",
+      "tags": ["relevant", "tags"]
+    }
+  ]
+}
+
+If none of the candidates are artifacts, respond with: {"artifacts": []}`;
+  }
+
   private summarizeEvents(events: Array<Record<string, unknown>>): string {
     const toolCounts = new Map<string, number>();
     const filesAccessed = new Set<string>();
+    const prompts: string[] = [];
+    const aiResponses: string[] = [];
 
     for (const event of events) {
-      const tool = String(event.tool ?? 'unknown');
+      if (event.type === 'user_prompt') {
+        const prompt = String(event.prompt ?? '');
+        if (prompt) prompts.push(prompt.slice(0, 300));
+        continue;
+      }
+
+      if (event.type === 'ai_response') {
+        const content = String(event.content ?? '');
+        if (content) aiResponses.push(content.slice(0, 500));
+        continue;
+      }
+
+      // Hooks send tool_name/tool_input; also support legacy tool/input
+      const tool = String(event.tool_name ?? event.tool ?? 'unknown');
       toolCounts.set(tool, (toolCounts.get(tool) ?? 0) + 1);
 
-      const input = event.input as Record<string, unknown> | undefined;
+      const input = (event.tool_input ?? event.input) as Record<string, unknown> | undefined;
       if (input?.path) filesAccessed.add(String(input.path));
       if (input?.file_path) filesAccessed.add(String(input.file_path));
+      if (input?.command) filesAccessed.add(`[cmd] ${String(input.command).slice(0, 80)}`);
     }
 
     const lines: string[] = [];
-    lines.push('### Tool Usage');
+
+    if (prompts.length > 0) {
+      lines.push('### User Prompts');
+      for (const p of prompts) {
+        lines.push(`- "${p}"`);
+      }
+    }
+
+    lines.push('\n### Tool Usage');
     for (const [tool, count] of toolCounts) {
       lines.push(`- ${tool}: ${count} calls`);
     }
@@ -166,6 +260,13 @@ Respond with the title text only, no quotes, no punctuation at the end.`;
       lines.push('\n### Files Accessed');
       for (const file of filesAccessed) {
         lines.push(`- ${file}`);
+      }
+    }
+
+    if (aiResponses.length > 0) {
+      lines.push('\n### AI Responses');
+      for (const r of aiResponses) {
+        lines.push(`- "${r}"`);
       }
     }
 

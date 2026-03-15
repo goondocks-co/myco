@@ -1,15 +1,23 @@
 {
-  "name": "myco-dev",
+  "name": "myco",
   "description": "Myco — collective agent intelligence for AI-assisted development teams",
   "owner": {
-    "name": "Chris"
+    "name": "goondocks-co",
+    "url": "https://github.com/goondocks-co"
   },
+  "homepage": "https://github.com/goondocks-co/myco",
+  "license": "MIT",
+  "categories": ["intelligence", "memory", "team"],
   "plugins": [
     {
       "name": "myco",
       "description": "Collective agent intelligence — captures session knowledge and serves it back to your team via MCP",
       "version": "0.1.0",
-      "source": "./"
+      "source": {
+        "source": "npm",
+        "package": "@goondocks-co/myco",
+        "version": "^0.1.0"
+      }
     }
   ]
 }

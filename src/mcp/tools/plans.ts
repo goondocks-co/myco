@@ -1,7 +1,8 @@
 import type { MycoIndex } from '../../index/sqlite.js';
+import { planFm, sessionFm } from '../../vault/frontmatter.js';
 
 interface PlansInput {
-  status?: 'active' | 'completed' | 'all';
+  status?: 'active' | 'in_progress' | 'completed' | 'abandoned' | 'all';
   id?: string;
 }
 
@@ -30,19 +31,19 @@ export async function handleMycoPlans(
   let plans = allPlans;
 
   if (input.status && input.status !== 'all') {
-    plans = allPlans.filter((p) => {
-      const status = (p.frontmatter as any)?.status;
-      return status === input.status;
-    });
+    plans = allPlans.filter((p) => planFm(p).status === input.status);
   }
 
-  return plans.map((p) => ({
-    id: p.id,
-    title: p.title,
-    status: String((p.frontmatter as any)?.status ?? 'active'),
-    progress: extractProgress(p.content),
-    tags: ((p.frontmatter as any)?.tags as string[]) ?? [],
-  }));
+  return plans.map((p) => {
+    const f = planFm(p);
+    return {
+      id: p.id,
+      title: p.title,
+      status: f.status ?? 'active',
+      progress: extractProgress(p.content),
+      tags: f.tags ?? [],
+    };
+  });
 }
 
 function getPlanDetail(index: MycoIndex, planId: string): PlanDetail {
@@ -52,26 +53,33 @@ function getPlanDetail(index: MycoIndex, planId: string): PlanDetail {
   }
 
   const plan = plans[0];
+  const f = planFm(plan);
 
-  // Derive sessions that reference this plan (unidirectional: session → plan)
-  const allSessions = index.query({ type: 'session' });
+  // Query sessions that reference this plan — use SQL to avoid loading all sessions
+  const allSessions = index.query({ type: 'session', limit: 100 });
   const linkedSessions = allSessions.filter((s) => {
-    const planRef = (s.frontmatter as any)?.plan;
-    return planRef === `[[${planId}]]` || planRef === planId;
+    const sf = sessionFm(s);
+    const planRef = sf.plan;
+    const plansArr = sf.plans;
+    return planRef === `[[${planId}]]` || planRef === planId
+      || plansArr?.includes(planId) || plansArr?.includes(`[[${planId}]]`);
   });
 
   return {
     id: plan.id,
     title: plan.title,
-    status: String((plan.frontmatter as any)?.status ?? 'active'),
+    status: f.status ?? 'active',
     progress: extractProgress(plan.content),
-    tags: ((plan.frontmatter as any)?.tags as string[]) ?? [],
+    tags: f.tags ?? [],
     content: plan.content,
-    sessions: linkedSessions.map((s) => ({
-      id: s.id,
-      title: s.title,
-      started: String((s.frontmatter as any)?.started ?? s.created),
-    })),
+    sessions: linkedSessions.map((s) => {
+      const sf = sessionFm(s);
+      return {
+        id: s.id,
+        title: s.title,
+        started: sf.started ?? s.created,
+      };
+    }),
   };
 }
 

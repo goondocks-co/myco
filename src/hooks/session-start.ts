@@ -1,4 +1,5 @@
 import { DaemonClient } from './client.js';
+import { readStdin } from './read-stdin.js';
 import { loadConfig } from '../config/loader.js';
 import { MycoIndex } from '../index/sqlite.js';
 import { buildInjectedContext } from '../context/injector.js';
@@ -64,15 +65,6 @@ function spawnDaemon(vaultDir: string): void {
     stdio: 'ignore',
   });
   child.unref();
-}
-
-function readStdin(): Promise<string> {
-  return new Promise((resolve) => {
-    let data = '';
-    process.stdin.on('data', (chunk: Buffer) => { data += chunk; });
-    process.stdin.on('end', () => resolve(data));
-    setTimeout(() => resolve(data || '{}'), 100);
-  });
 }
 
 main();

@@ -37,13 +37,16 @@ describe('VectorIndex', () => {
     idx.close();
   });
 
-  it('applies similarity floor', () => {
+  it('applies relative threshold', () => {
     const idx = new VectorIndex(dbPath, 3);
     idx.upsert('close', [0.9, 0.1, 0.0], { type: 'memory' });
     idx.upsert('far', [0.0, 0.0, 1.0], { type: 'memory' });
 
-    const results = idx.search([1.0, 0.0, 0.0], { limit: 5, similarityFloor: 0.5 });
-    expect(results.every((r) => r.similarity >= 0.5)).toBe(true);
+    // With a high relative threshold, only results near the top score survive
+    const results = idx.search([1.0, 0.0, 0.0], { limit: 5, relativeThreshold: 0.8 });
+    expect(results.length).toBeGreaterThan(0);
+    const topScore = results[0].similarity;
+    expect(results.every((r) => r.similarity >= topScore * 0.8)).toBe(true);
     idx.close();
   });
 

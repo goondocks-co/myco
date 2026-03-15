@@ -1,4 +1,5 @@
 import type { MycoIndex } from '../../index/sqlite.js';
+import { planFm, sessionFm, memoryFm } from '../../vault/frontmatter.js';
 
 interface RecallInput {
   branch?: string;
@@ -18,16 +19,13 @@ export async function handleMycoRecall(
 ): Promise<RecallResult> {
   const allPlans = index.query({ type: 'plan' });
   const activePlans = allPlans.filter((p) => {
-    const status = (p.frontmatter as any)?.status;
+    const status = planFm(p).status;
     return status === 'active' || status === 'in_progress';
   });
 
   let sessions = index.query({ type: 'session', limit: 10 });
   if (input.branch) {
-    sessions = sessions.filter((s) => {
-      const branch = (s.frontmatter as any)?.branch;
-      return branch === input.branch;
-    });
+    sessions = sessions.filter((s) => sessionFm(s).branch === input.branch);
   }
 
   const memories = index.query({ type: 'memory', limit: 5 });
@@ -36,7 +34,7 @@ export async function handleMycoRecall(
     active_plans: activePlans.map((p) => ({
       id: p.id,
       title: p.title,
-      status: String((p.frontmatter as any)?.status ?? 'active'),
+      status: planFm(p).status ?? 'active',
     })),
     recent_sessions: sessions.slice(0, 5).map((s) => ({
       id: s.id,
@@ -46,7 +44,7 @@ export async function handleMycoRecall(
     relevant_memories: memories.map((m) => ({
       id: m.id,
       title: m.title,
-      type: String((m.frontmatter as any)?.observation_type ?? 'discovery'),
+      type: memoryFm(m).observation_type ?? 'discovery',
     })),
     team_activity: [],
   };

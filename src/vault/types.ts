@@ -29,20 +29,22 @@ export const PlanFrontmatterSchema = z.object({
 export const MemoryFrontmatterSchema = z.object({
   type: z.literal('memory'),
   id: z.string(),
-  observation_type: z.enum(['gotcha', 'bug_fix', 'decision', 'discovery', 'trade_off']),
+  observation_type: z.string(),
   session: z.string().optional(),
   plan: z.string().optional(),
   created: z.string(),
   tags: z.array(z.string()).default([]),
 });
 
-export const ArtifactRefFrontmatterSchema = z.object({
-  type: z.literal('artifact-ref'),
-  source: z.string(),
+export const ArtifactFrontmatterSchema = z.object({
+  type: z.literal('artifact'),
+  id: z.string(),
   artifact_type: z.enum(['spec', 'plan', 'rfc', 'doc', 'other']).default('other'),
-  detected_via: z.enum(['file-watch', 'manual', 'transcript']).default('file-watch'),
-  session: z.string().optional(),
+  source_path: z.string(),
+  title: z.string(),
+  last_captured_by: z.string(),
   created: z.string(),
+  updated: z.string(),
   tags: z.array(z.string()).default([]),
 });
 
@@ -51,19 +53,21 @@ export const TeamMemberFrontmatterSchema = z.object({
   user: z.string(),
   joined: z.string(),
   role: z.string().optional(),
+  tags: z.array(z.string()).default([]),
 });
 
 export type SessionFrontmatter = z.infer<typeof SessionFrontmatterSchema>;
 export type PlanFrontmatter = z.infer<typeof PlanFrontmatterSchema>;
 export type MemoryFrontmatter = z.infer<typeof MemoryFrontmatterSchema>;
-export type ArtifactRefFrontmatter = z.infer<typeof ArtifactRefFrontmatterSchema>;
+export type ObservationType = MemoryFrontmatter['observation_type'];
+export type ArtifactFrontmatter = z.infer<typeof ArtifactFrontmatterSchema>;
 export type TeamMemberFrontmatter = z.infer<typeof TeamMemberFrontmatterSchema>;
 
 export type NoteFrontmatter =
   | SessionFrontmatter
   | PlanFrontmatter
   | MemoryFrontmatter
-  | ArtifactRefFrontmatter
+  | ArtifactFrontmatter
   | TeamMemberFrontmatter;
 
 export interface VaultNote<T extends NoteFrontmatter = NoteFrontmatter> {
@@ -76,7 +80,7 @@ const schemasByType: Record<string, z.ZodSchema> = {
   session: SessionFrontmatterSchema,
   plan: PlanFrontmatterSchema,
   memory: MemoryFrontmatterSchema,
-  'artifact-ref': ArtifactRefFrontmatterSchema,
+  artifact: ArtifactFrontmatterSchema,
   'team-member': TeamMemberFrontmatterSchema,
 };
 

@@ -1,6 +1,7 @@
 import type { MycoIndex } from '../index/sqlite.js';
 import type { MycoConfig } from '../config/schema.js';
-import { scoreRelevance, type ScoredNote } from './relevance.js';
+import { planFm, memoryFm } from '../vault/frontmatter.js';
+import { scoreRelevance } from './relevance.js';
 
 interface InjectionContext {
   branch?: string;
@@ -28,11 +29,11 @@ export function buildInjectedContext(
   // Layer 1: Active plans
   const plans = index.query({ type: 'plan' });
   const activePlans = plans.filter((p) =>
-    ['active', 'in_progress'].includes(String((p.frontmatter as any)?.status ?? '')),
+    ['active', 'in_progress'].includes(planFm(p).status ?? ''),
   );
   const plansText = formatLayer(
     'Active Plans',
-    activePlans.map((p) => `- **${p.title}** (${(p.frontmatter as any)?.status}): ${p.content.slice(0, 100)}`),
+    activePlans.map((p) => `- **${p.title}** (${planFm(p).status}): ${p.content.slice(0, 100)}`),
     budgets.plans,
   );
 
@@ -60,7 +61,7 @@ export function buildInjectedContext(
   const memoriesText = formatLayer(
     'Relevant Memories',
     scoredMemories.slice(0, 5).map((m) =>
-      `- **${m.note.title}** (${(m.note.frontmatter as any)?.observation_type}): ${m.note.content.slice(0, 80)}`,
+      `- **${m.note.title}** (${memoryFm(m.note).observation_type}): ${m.note.content.slice(0, 80)}`,
     ),
     budgets.memories,
   );
@@ -111,6 +112,5 @@ function formatLayer(heading: string, items: string[], budget: number): string {
 }
 
 function estimateTokens(text: string): number {
-  // Rough estimate: ~4 chars per token
   return Math.ceil(text.length / 4);
 }

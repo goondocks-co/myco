@@ -45,6 +45,6 @@ describe('myco_remember', () => {
     });
 
     const note = index.getNoteByPath(result.note_path);
-    expect((note!.frontmatter as any).plan).toBe('[[auth-redesign]]');
+    expect((note!.frontmatter as any).plan).toBe('auth-redesign');
   });
 });

@@ -17,7 +17,6 @@ const IntelligenceSchema = z.object({
   local: LocalIntelligenceSchema.optional(),
   cloud: CloudIntelligenceSchema.optional(),
   context_window: z.number().int().positive().default(8192),
-  similarity_floor: z.number().min(0).max(1).default(0.7),
 });
 
 const DaemonSchema = z.object({
@@ -32,6 +31,7 @@ const CaptureSchema = z.object({
     'docs/superpowers/specs/',
     '.claude/plans/',
   ]),
+  artifact_extensions: z.array(z.string()).default(['.md']),
   buffer_max_events: z.number().int().positive().default(500),
 });
 

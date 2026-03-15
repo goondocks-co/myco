@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
+import { buildTags, formatTeamBody, formatPlanBody, formatArtifactBody } from '../obsidian/formatter.js';
 
 interface WriteSessionInput {
   id: string;
@@ -34,15 +35,14 @@ interface WriteMemoryInput {
   content: string;
 }
 
-interface WriteArtifactRefInput {
+interface WriteArtifactInput {
   id: string;
-  source: string;
   artifact_type: string;
-  detected_via: string;
-  session?: string;
+  source_path: string;
+  title: string;
+  session: string;
   tags?: string[];
-  copySource?: boolean;
-  projectRoot?: string;
+  content: string;
 }
 
 interface WriteTeamMemberInput {
@@ -68,7 +68,10 @@ export class VaultWriter {
     if (input.parent) frontmatter.parent = input.parent;
     if (input.plans?.length) frontmatter.plans = input.plans;
     if (input.branch) frontmatter.branch = input.branch;
-    if (input.tags?.length) frontmatter.tags = input.tags;
+    frontmatter.tags = buildTags('session', 'ended', [
+      ...(input.user ? [`user/${input.user}`] : []),
+      ...(input.tags ?? []),
+    ]);
     if (input.tools_used != null) frontmatter.tools_used = input.tools_used;
     if (input.files_changed != null) frontmatter.files_changed = input.files_changed;
 
@@ -79,16 +82,27 @@ export class VaultWriter {
   writePlan(input: WritePlanInput): string {
     const relativePath = `plans/${input.id}.md`;
 
+    const status = input.status ?? 'active';
+    const created = new Date().toISOString();
     const frontmatter: Record<string, unknown> = {
       type: 'plan',
       id: input.id,
-      status: input.status ?? 'active',
-      created: new Date().toISOString(),
+      status,
+      created,
     };
     if (input.author) frontmatter.author = input.author;
-    if (input.tags?.length) frontmatter.tags = input.tags;
+    frontmatter.tags = buildTags('plan', status, input.tags ?? []);
 
-    this.writeMarkdown(relativePath, frontmatter, input.content);
+    const body = formatPlanBody({
+      id: input.id,
+      status,
+      author: input.author,
+      created,
+      content: input.content,
+      tags: input.tags,
+    });
+
+    this.writeMarkdown(relativePath, frontmatter, body);
     return relativePath;
   }
 
@@ -103,36 +117,49 @@ export class VaultWriter {
     };
     if (input.session) frontmatter.session = input.session;
     if (input.plan) frontmatter.plan = input.plan;
-    if (input.tags?.length) frontmatter.tags = input.tags;
+    frontmatter.tags = buildTags('memory', input.observation_type, input.tags ?? []);
 
     this.writeMarkdown(relativePath, frontmatter, input.content);
     return relativePath;
   }
 
-  writeArtifactRef(input: WriteArtifactRefInput): string {
+  writeArtifact(input: WriteArtifactInput): string {
     const relativePath = `artifacts/${input.id}.md`;
+    const fullPath = path.join(this.vaultDir, relativePath);
 
-    const frontmatter: Record<string, unknown> = {
-      type: 'artifact-ref',
-      source: input.source,
-      artifact_type: input.artifact_type,
-      detected_via: input.detected_via,
-      created: new Date().toISOString(),
-    };
-    if (input.session) frontmatter.session = input.session;
-    if (input.tags?.length) frontmatter.tags = input.tags;
+    let created = new Date().toISOString();
 
-    let body = `External artifact: \`${input.source}\``;
-
-    if (input.copySource) {
-      const absSource = input.projectRoot
-        ? path.resolve(input.projectRoot, input.source)
-        : input.source;
-      if (fs.existsSync(absSource)) {
-        const sourceContent = fs.readFileSync(absSource, 'utf-8');
-        body = sourceContent;
+    // Preserve created from existing file (latest-wins update)
+    if (fs.existsSync(fullPath)) {
+      const existing = fs.readFileSync(fullPath, 'utf-8');
+      const fmMatch = existing.match(/^---\n([\s\S]*?)\n---/);
+      if (fmMatch) {
+        const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
+        if (typeof parsed.created === 'string') created = parsed.created;
       }
     }
+
+    const frontmatter: Record<string, unknown> = {
+      type: 'artifact',
+      id: input.id,
+      artifact_type: input.artifact_type,
+      source_path: input.source_path,
+      title: input.title,
+      last_captured_by: `session-${input.session}`,
+      created,
+      updated: new Date().toISOString(),
+      tags: buildTags('artifact', input.artifact_type, input.tags ?? []),
+    };
+
+    const body = formatArtifactBody({
+      id: input.id,
+      title: input.title,
+      artifact_type: input.artifact_type,
+      source_path: input.source_path,
+      sessionId: input.session,
+      content: input.content,
+      tags: input.tags,
+    });
 
     this.writeMarkdown(relativePath, frontmatter, body);
     return relativePath;
@@ -145,10 +172,16 @@ export class VaultWriter {
       type: 'team-member',
       user: input.user,
       joined: new Date().toISOString(),
+      tags: buildTags('team', '', [`user/${input.user}`]),
     };
     if (input.role) frontmatter.role = input.role;
 
-    this.writeMarkdown(relativePath, frontmatter, `# ${input.user}\n\nTeam member.`);
+    const body = formatTeamBody({
+      user: input.user,
+      role: input.role,
+    });
+
+    this.writeMarkdown(relativePath, frontmatter, body);
     return relativePath;
   }
 

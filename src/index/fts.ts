@@ -49,33 +49,24 @@ export function initFts(index: MycoIndex): void {
 export function searchFts(index: MycoIndex, query: string, options: FtsSearchOptions = {}): FtsResult[] {
   const db = index.getDb();
   const limit = options.limit ?? 20;
-
-  let sql: string;
   const params: unknown[] = [query];
 
+  let typeFilter = '';
   if (options.type) {
-    sql = `
-      SELECT path, type, id, title,
-             snippet(notes_fts, 4, '<mark>', '</mark>', '...', 40) AS snippet,
-             rank
-      FROM notes_fts
-      WHERE notes_fts MATCH ? AND type = ?
-      ORDER BY rank
-      LIMIT ?
-    `;
-    params.push(options.type, limit);
-  } else {
-    sql = `
-      SELECT path, type, id, title,
-             snippet(notes_fts, 4, '<mark>', '</mark>', '...', 40) AS snippet,
-             rank
-      FROM notes_fts
-      WHERE notes_fts MATCH ?
-      ORDER BY rank
-      LIMIT ?
-    `;
-    params.push(limit);
+    typeFilter = ' AND type = ?';
+    params.push(options.type);
   }
+  params.push(limit);
+
+  const sql = `
+    SELECT path, type, id, title,
+           snippet(notes_fts, 4, '<mark>', '</mark>', '...', 40) AS snippet,
+           rank
+    FROM notes_fts
+    WHERE notes_fts MATCH ?${typeFilter}
+    ORDER BY rank
+    LIMIT ?
+  `;
 
   return db.prepare(sql).all(...params) as FtsResult[];
 }

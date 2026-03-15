@@ -1,4 +1,5 @@
 import type { MycoIndex } from '../../index/sqlite.js';
+import { sessionFm } from '../../vault/frontmatter.js';
 
 interface SessionsInput {
   plan?: string;
@@ -23,39 +24,36 @@ export async function handleMycoSessions(
   index: MycoIndex,
   input: SessionsInput,
 ): Promise<SessionSummary[]> {
+  const frontmatter: Record<string, string> = {};
+  if (input.branch) frontmatter.branch = input.branch;
+  if (input.user) frontmatter.user = input.user;
+
   let sessions = index.query({
     type: 'session',
     since: input.since,
     limit: input.limit ?? 20,
+    frontmatter,
   });
 
+  // Plan filtering needs special handling for [[wikilink]] format
   if (input.plan) {
     sessions = sessions.filter((s) => {
-      const planRef = (s.frontmatter as any)?.plan;
+      const planRef = sessionFm(s).plan;
       return planRef === `[[${input.plan}]]` || planRef === input.plan;
     });
   }
 
-  if (input.branch) {
-    sessions = sessions.filter((s) =>
-      (s.frontmatter as any)?.branch === input.branch,
-    );
-  }
-
-  if (input.user) {
-    sessions = sessions.filter((s) =>
-      (s.frontmatter as any)?.user === input.user,
-    );
-  }
-
-  return sessions.map((s) => ({
-    id: s.id,
-    summary: s.content.slice(0, 300),
-    user: String((s.frontmatter as any)?.user ?? ''),
-    agent: String((s.frontmatter as any)?.agent ?? ''),
-    started: String((s.frontmatter as any)?.started ?? s.created),
-    parent: ((s.frontmatter as any)?.parent as string) ?? null,
-    plan: ((s.frontmatter as any)?.plan as string) ?? null,
-    tags: ((s.frontmatter as any)?.tags as string[]) ?? [],
-  }));
+  return sessions.map((s) => {
+    const f = sessionFm(s);
+    return {
+      id: s.id,
+      summary: s.content.slice(0, 300),
+      user: f.user ?? '',
+      agent: f.agent ?? '',
+      started: f.started ?? s.created,
+      parent: f.parent ?? null,
+      plan: f.plan ?? null,
+      tags: f.tags ?? [],
+    };
+  });
 }

@@ -28,18 +28,19 @@ function indexVaultNote(index: MycoIndex, note: VaultNote): void {
 }
 
 export function rebuildIndex(index: MycoIndex, vaultDir: string): number {
-  // Clear existing data
   const db = index.getDb();
   db.exec('DELETE FROM notes');
 
   const reader = new VaultReader(vaultDir);
   const notes = reader.readAllNotes();
+  let count = 0;
 
   for (const note of notes) {
     indexVaultNote(index, note);
+    count++;
   }
 
-  return notes.length;
+  return count;
 }
 
 function extractTitle(content: string): string {

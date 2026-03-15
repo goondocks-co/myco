@@ -77,12 +77,11 @@ describe('MycoConfigSchema', () => {
     expect(config.daemon.max_log_size).toBe(5242880);
   });
 
-  it('accepts intelligence context_window and similarity_floor', () => {
+  it('accepts intelligence context_window', () => {
     const config = MycoConfigSchema.parse({
       version: 1,
-      intelligence: { backend: 'local', context_window: 4096, similarity_floor: 0.65 },
+      intelligence: { backend: 'local', context_window: 4096 },
     });
     expect(config.intelligence.context_window).toBe(4096);
-    expect(config.intelligence.similarity_floor).toBe(0.65);
   });
 });

@@ -25,6 +25,45 @@ Record the **vault path source** for use in the setup summary:
 Create the vault directory (at the resolved path from Step 0) with subdirectories:
 `sessions`, `plans`, `memories`, `artifacts`, `team`, `buffer`
 
+Also create a `_dashboard.md` file in the vault root with the following Dataview-powered content:
+
+```markdown
+# Myco Vault
+
+## Active Plans
+\`\`\`dataview
+TABLE status, tags FROM #type/plan
+WHERE status = "active" OR status = "in_progress"
+SORT created DESC
+\`\`\`
+
+## Recent Sessions
+\`\`\`dataview
+TABLE user, started, tools_used FROM #type/session
+SORT started DESC LIMIT 10
+\`\`\`
+
+## Recent Memories
+\`\`\`dataview
+TABLE observation_type AS "Type", created FROM #type/memory
+SORT created DESC LIMIT 15
+\`\`\`
+
+## Memories by Type
+\`\`\`dataview
+TABLE WITHOUT ID observation_type AS "Type", length(rows) AS "Count"
+FROM #type/memory GROUP BY observation_type
+SORT length(rows) DESC
+\`\`\`
+
+## Gotchas
+\`\`\`dataview
+LIST FROM #memory/gotcha SORT created DESC LIMIT 10
+\`\`\`
+```
+
+This dashboard requires the Dataview community plugin in Obsidian. Without it, the code blocks are visible but still readable as plain markdown.
+
 ## Step 2: Choose intelligence backend
 
 - **Cloud** (Claude Haiku) — uses existing ANTHROPIC_API_KEY, no setup needed

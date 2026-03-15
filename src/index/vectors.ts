@@ -9,7 +9,8 @@ export interface VectorSearchResult {
 
 export interface VectorSearchOptions {
   limit?: number;
-  similarityFloor?: number;
+  /** Drop results below this fraction of the top result's score (0-1). Default 0.5. */
+  relativeThreshold?: number;
   type?: string;
   importance?: string;
 }
@@ -56,7 +57,6 @@ export class VectorIndex {
 
   search(query: number[], options: VectorSearchOptions = {}): VectorSearchResult[] {
     const limit = options.limit ?? 10;
-    const floor = options.similarityFloor ?? 0;
 
     // vec0 KNN queries require LIMIT to be a direct constraint on the virtual table.
     // JOINs with additional WHERE filters confuse the query planner, so we use a
@@ -87,7 +87,7 @@ export class VectorIndex {
 
     const metaMap = new Map(metaRows.map((m) => [m.id, m]));
 
-    return knnRows
+    const scored = knnRows
       .filter((r) => metaMap.has(r.id))
       .map((r) => {
         const m = metaMap.get(r.id)!;
@@ -96,7 +96,17 @@ export class VectorIndex {
           similarity: 1 - r.distance,
           metadata: { type: m.type, importance: m.importance, session_id: m.session_id, file_path: m.file_path, branch: m.branch },
         };
-      })
+      });
+
+    if (scored.length === 0) return [];
+
+    // Relative threshold: drop results below a fraction of the best score.
+    // Adapts automatically to any embedding model's score distribution.
+    const topScore = scored[0].similarity;
+    const threshold = options.relativeThreshold ?? 0.5;
+    const floor = topScore * threshold;
+
+    return scored
       .filter((r) => r.similarity >= floor)
       .slice(0, limit);
   }

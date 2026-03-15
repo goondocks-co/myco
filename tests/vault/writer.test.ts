@@ -20,7 +20,7 @@ describe('VaultWriter', () => {
     fs.rmSync(vaultDir, { recursive: true, force: true });
   });
 
-  it('writes a session note', () => {
+  it('writes a session note with hierarchical tags', () => {
     const notePath = writer.writeSession({
       id: 'abc123',
       agent: 'claude-code',
@@ -34,9 +34,14 @@ describe('VaultWriter', () => {
     const note = reader.readNote(notePath);
     expect(note.frontmatter.type).toBe('session');
     expect(note.content).toContain('Auth Session');
+    const tags = (note.frontmatter as any).tags as string[];
+    expect(tags).toContain('type/session');
+    expect(tags).toContain('session/ended');
+    expect(tags).toContain('user/chris');
+    expect(tags).toContain('auth');
   });
 
-  it('writes a plan note', () => {
+  it('writes a plan note with inline fields and tags', () => {
     const notePath = writer.writePlan({
       id: 'auth-redesign',
       author: 'chris',
@@ -47,13 +52,23 @@ describe('VaultWriter', () => {
     expect(notePath).toBe('plans/auth-redesign.md');
     const note = reader.readNote(notePath);
     expect(note.frontmatter.type).toBe('plan');
+    // Inline fields in body
+    expect(note.content).toContain('Plan:: [[auth-redesign]]');
+    expect(note.content).toContain('Status:: active');
+    expect(note.content).toContain('Author:: chris');
+    // Hierarchical tags
+    const tags = (note.frontmatter as any).tags as string[];
+    expect(tags).toContain('type/plan');
+    expect(tags).toContain('plan/active');
+    expect(tags).toContain('auth');
+    expect(tags).toContain('security');
   });
 
-  it('writes a memory note', () => {
+  it('writes a memory note with hierarchical tags', () => {
     const notePath = writer.writeMemory({
       id: 'gotcha-cors',
       observation_type: 'gotcha',
-      session: '[[session-abc123]]',
+      session: 'session-abc123',
       tags: ['cors'],
       content: '# CORS Gotcha\n\nProxy strips headers.',
     });
@@ -62,35 +77,74 @@ describe('VaultWriter', () => {
     const note = reader.readNote(notePath);
     expect(note.frontmatter.type).toBe('memory');
     expect((note.frontmatter as any).observation_type).toBe('gotcha');
+    expect((note.frontmatter as any).session).toBe('session-abc123');
+    const tags = (note.frontmatter as any).tags as string[];
+    expect(tags).toContain('type/memory');
+    expect(tags).toContain('memory/gotcha');
+    expect(tags).toContain('cors');
   });
 
-  it('writes an artifact reference with copy', () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-proj-'));
-    const specDir = path.join(projectRoot, 'docs', 'specs');
-    fs.mkdirSync(specDir, { recursive: true });
-    fs.writeFileSync(path.join(specDir, 'design.md'), '# Design Spec\n\nThe spec content.');
-
-    const notePath = writer.writeArtifactRef({
-      id: 'spec-design',
-      source: 'docs/specs/design.md',
+  it('writes a new artifact with full content', () => {
+    const notePath = writer.writeArtifact({
+      id: 'docs-specs-auth-design',
       artifact_type: 'spec',
-      detected_via: 'file-watch',
-      session: '[[session-abc123]]',
-      tags: ['design'],
-      copySource: true,
-      projectRoot,
+      source_path: 'docs/specs/auth-design.md',
+      title: 'Auth Redesign Specification',
+      session: 'abc123',
+      tags: ['auth', 'api'],
+      content: '# Auth Redesign\n\nRedesign the auth layer.',
     });
 
-    expect(notePath).toBe('artifacts/spec-design.md');
+    expect(notePath).toBe('artifacts/docs-specs-auth-design.md');
     const note = reader.readNote(notePath);
-    expect(note.frontmatter.type).toBe('artifact-ref');
-    expect((note.frontmatter as any).source).toBe('docs/specs/design.md');
-    expect(note.content).toContain('Design Spec');
-
-    fs.rmSync(projectRoot, { recursive: true, force: true });
+    expect(note.frontmatter.type).toBe('artifact');
+    expect((note.frontmatter as any).id).toBe('docs-specs-auth-design');
+    expect((note.frontmatter as any).artifact_type).toBe('spec');
+    expect((note.frontmatter as any).source_path).toBe('docs/specs/auth-design.md');
+    expect((note.frontmatter as any).title).toBe('Auth Redesign Specification');
+    expect((note.frontmatter as any).last_captured_by).toBe('session-abc123');
+    expect((note.frontmatter as any).created).toBeDefined();
+    expect((note.frontmatter as any).updated).toBeDefined();
+    expect(note.content).toContain('Auth Redesign');
+    expect(note.content).toContain('Redesign the auth layer.');
+    const tags = (note.frontmatter as any).tags as string[];
+    expect(tags).toContain('type/artifact');
+    expect(tags).toContain('artifact/spec');
+    expect(tags).toContain('auth');
+    expect(tags).toContain('api');
   });
 
-  it('writes a team member note', () => {
+  it('preserves created date on artifact update', () => {
+    writer.writeArtifact({
+      id: 'docs-specs-auth-design',
+      artifact_type: 'spec',
+      source_path: 'docs/specs/auth-design.md',
+      title: 'Auth Redesign v1',
+      session: 's1',
+      content: '# V1',
+    });
+
+    const firstNote = reader.readNote('artifacts/docs-specs-auth-design.md');
+    const originalCreated = (firstNote.frontmatter as any).created;
+
+    writer.writeArtifact({
+      id: 'docs-specs-auth-design',
+      artifact_type: 'spec',
+      source_path: 'docs/specs/auth-design.md',
+      title: 'Auth Redesign v2',
+      session: 's2',
+      content: '# V2 — Updated',
+    });
+
+    const updatedNote = reader.readNote('artifacts/docs-specs-auth-design.md');
+    expect((updatedNote.frontmatter as any).created).toBe(originalCreated);
+    expect((updatedNote.frontmatter as any).title).toBe('Auth Redesign v2');
+    expect((updatedNote.frontmatter as any).last_captured_by).toBe('session-s2');
+    expect(updatedNote.content).toContain('V2 — Updated');
+    expect(updatedNote.content).not.toContain('# V1');
+  });
+
+  it('writes a team member note with callout and tags', () => {
     const notePath = writer.writeTeamMember({
       user: 'chris',
       role: 'lead',
@@ -99,6 +153,14 @@ describe('VaultWriter', () => {
     expect(notePath).toBe('team/chris.md');
     const note = reader.readNote(notePath);
     expect(note.frontmatter.type).toBe('team-member');
+    // Callout and inline fields in body
+    expect(note.content).toContain('> [!info] Team Member');
+    expect(note.content).toContain('User:: chris');
+    expect(note.content).toContain('Role:: lead');
+    // Hierarchical tags
+    const tags = (note.frontmatter as any).tags as string[];
+    expect(tags).toContain('type/team');
+    expect(tags).toContain('user/chris');
   });
 
   it('creates vault directories on first write', () => {

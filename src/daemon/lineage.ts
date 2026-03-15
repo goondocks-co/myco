@@ -20,6 +20,7 @@ export class LineageGraph {
 
   constructor(vaultDir: string) {
     this.filePath = path.join(vaultDir, 'lineage.json');
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     this.state = this.load();
   }
 
@@ -62,7 +63,6 @@ export class LineageGraph {
 
   private persist(): void {
     const tmp = this.filePath + '.tmp';
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     fs.writeFileSync(tmp, JSON.stringify(this.state, null, 2));
     fs.renameSync(tmp, this.filePath);
   }

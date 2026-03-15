@@ -1,4 +1,5 @@
 import { DaemonClient } from './client.js';
+import { readStdin } from './read-stdin.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import fs from 'node:fs';
@@ -33,15 +34,6 @@ async function main() {
   } catch (error) {
     process.stderr.write(`[myco] post-tool-use error: ${(error as Error).message}\n`);
   }
-}
-
-function readStdin(): Promise<string> {
-  return new Promise((resolve) => {
-    let data = '';
-    process.stdin.on('data', (chunk: Buffer) => { data += chunk; });
-    process.stdin.on('end', () => resolve(data));
-    setTimeout(() => resolve(data || '{}'), 100);
-  });
 }
 
 main();
