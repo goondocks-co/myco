@@ -15,8 +15,8 @@ import { generateEmbedding } from '../intelligence/embeddings.js';
 import { LineageGraph, LINEAGE_SIMILARITY_THRESHOLD, LINEAGE_SIMILARITY_HIGH_CONFIDENCE, LINEAGE_SIMILARITY_CANDIDATES, LINEAGE_SIMILARITY_MAX_TOKENS, type LineageLink } from './lineage.js';
 import type { RegisteredSession } from './lifecycle.js';
 import { PlanWatcher } from './watcher.js';
-import { buildSimilarityPrompt } from '../prompts/index.js';
-import { EMBEDDING_INPUT_LIMIT, PROMPT_PREVIEW_CHARS, CONTENT_SNIPPET_CHARS, CHARS_PER_TOKEN, STALE_BUFFER_MAX_AGE_MS, LINEAGE_RECENT_SESSIONS_LIMIT, RELATED_MEMORIES_LIMIT, CANDIDATE_CONTENT_PREVIEW, SESSION_CONTEXT_MAX_PLANS, PROMPT_CONTEXT_MAX_MEMORIES, PROMPT_CONTEXT_MIN_SIMILARITY, PROMPT_CONTEXT_MIN_LENGTH, CONTEXT_SESSION_PREVIEW_CHARS } from '../constants.js';
+import { buildInjectedContext } from '../context/injector.js';
+import { buildSimilarityPrompt, CANDIDATE_CONTENT_PREVIEW } from '../prompts/index.js';
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { formatSessionBody } from '../obsidian/formatter.js';
@@ -47,7 +47,7 @@ function indexAndEmbed(
 ): void {
   indexNote(deps.index, deps.vaultDir, relativePath);
   if (deps.vectorIndex && embeddingText) {
-    generateEmbedding(deps.embeddingProvider, embeddingText.slice(0, EMBEDDING_INPUT_LIMIT))
+    generateEmbedding(deps.embeddingProvider, embeddingText.slice(0, 8000))
       .then((emb) => deps.vectorIndex!.upsert(noteId, emb.embedding, metadata))
       .catch((err) => deps.logger.debug('embeddings', 'Embedding failed', { id: noteId, error: (err as Error).message }));
   }
@@ -71,7 +71,6 @@ async function captureArtifacts(
   classified: ClassifiedArtifact[],
   sessionId: string,
   deps: IndexDeps & { vault: VaultWriter },
-  lineage?: LineageGraph,
 ): Promise<void> {
   const candidateMap = new Map(candidates.map((c) => [c.path, c]));
 
@@ -96,10 +95,6 @@ async function captureArtifacts(
       type: artifact.artifact_type,
       source: artifact.source_path,
     });
-
-    // Register artifact-session association for lineage detection.
-    // Future sessions referencing this artifact ID link as children.
-    lineage?.registerArtifactForSession(sessionId, artifactId);
   }
 }
 
@@ -116,7 +111,7 @@ function extractTurns(events: BatchEvent[]): Turn[] {
   for (const event of events) {
     if (event.type === 'user_prompt') {
       if (current) turns.push(current);
-      current = { prompt: String(event.prompt ?? '').slice(0, PROMPT_PREVIEW_CHARS), toolCount: 0 };
+      current = { prompt: String(event.prompt ?? '').slice(0, 300), toolCount: 0 };
     } else if (event.type === 'ai_response') {
       if (current) current.aiResponse = String((event as Record<string, unknown>).content ?? '');
     } else {
@@ -224,7 +219,7 @@ async function main(): Promise<void> {
 
   // Clean up stale buffer files (>24h) on startup
   if (fs.existsSync(bufferDir)) {
-    const cutoff = Date.now() - STALE_BUFFER_MAX_AGE_MS;
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
     for (const file of fs.readdirSync(bufferDir)) {
       const filePath = path.join(bufferDir, file);
       const stat = fs.statSync(filePath);
@@ -273,15 +268,6 @@ async function main(): Promise<void> {
           const planId = `plan-${path.basename(event.filePath, '.md')}`;
           indexAndEmbed(relativePath, planId, `${title}\n${content}`, { type: 'plan' },
             indexDeps);
-
-          // Register plan-session association for lineage detection.
-          // When a future session's first prompt mentions this plan ID,
-          // detectHeuristicParent links it as a child of this session.
-          if (event.sessionId) {
-            lineageGraph.registerArtifactForSession(event.sessionId, planId);
-            logger.debug('lineage', 'Plan registered for session', { planId, session: event.sessionId });
-          }
-
           logger.info('watcher', 'Plan indexed', { path: relativePath });
         } catch (err) {
           logger.debug('watcher', 'Plan index failed', { error: (err as Error).message });
@@ -321,7 +307,7 @@ async function main(): Promise<void> {
 
     // Heuristic lineage detection
     try {
-      const recentSessions = index.query({ type: 'session', limit: LINEAGE_RECENT_SESSIONS_LIMIT })
+      const recentSessions = index.query({ type: 'session', limit: 5 })
         .map((n) => {
           const fm = n.frontmatter as Record<string, unknown>;
           return { id: bareSessionId(n.id), ended: fm.ended as string | undefined, branch: fm.branch as string | undefined };
@@ -432,7 +418,7 @@ async function main(): Promise<void> {
 
     const artifactPromise = artifactCandidates.length > 0
       ? processor.classifyArtifacts(artifactCandidates, sessionId)
-          .then((classified) => captureArtifacts(artifactCandidates, classified, sessionId, { vault, ...indexDeps }, lineageGraph))
+          .then((classified) => captureArtifacts(artifactCandidates, classified, sessionId, { vault, ...indexDeps }))
           .catch((err) => logger.warn('processor', 'Artifact capture failed', { session_id: sessionId, error: (err as Error).message }))
       : Promise.resolve();
 
@@ -447,25 +433,18 @@ async function main(): Promise<void> {
     const relativePath = sessionRelativePath(sessionId, date);
     const targetFullPath = path.join(vaultDir, relativePath);
 
-    // Find ALL existing session files across date directories.
-    // Read the best content (largest file) and remove all duplicates.
     let existingContent: string | undefined;
     const sessionsDir = path.join(vaultDir, 'sessions');
     try {
       for (const dateDir of fs.readdirSync(sessionsDir)) {
         const candidate = path.join(sessionsDir, dateDir, `${sessionNoteId(sessionId)}.md`);
-        if (!fs.existsSync(candidate)) continue;
-
-        // Read content from the largest file (most complete version)
-        const content = fs.readFileSync(candidate, 'utf-8');
-        if (!existingContent || content.length > existingContent.length) {
-          existingContent = content;
-        }
-
-        // Remove any copy that isn't the target path
-        if (candidate !== targetFullPath) {
-          fs.unlinkSync(candidate);
-          logger.debug('lifecycle', 'Removed duplicate session file', { path: candidate });
+        if (fs.existsSync(candidate)) {
+          existingContent = fs.readFileSync(candidate, 'utf-8');
+          // If the file is in a different date dir, remove the old copy to avoid duplicates
+          if (candidate !== targetFullPath) {
+            fs.unlinkSync(candidate);
+          }
+          break;
         }
       }
     } catch { /* sessions dir may not exist yet */ }
@@ -513,7 +492,7 @@ async function main(): Promise<void> {
     }
 
     // Query related memories for this session
-    const relatedMemories = index.query({ type: 'memory', limit: RELATED_MEMORIES_LIMIT })
+    const relatedMemories = index.query({ type: 'memory', limit: 50 })
       .filter((n) => {
         const fm = n.frontmatter as Record<string, unknown>;
         return fm.session === sessionNoteId(sessionId) || fm.session === sessionId;
@@ -527,7 +506,6 @@ async function main(): Promise<void> {
       user,
       started,
       ended,
-      branch: sessionMeta?.branch,
       relatedMemories,
       turns: batchTurns.map((t) => ({ prompt: t.prompt, toolCount: t.toolCount, aiResponse: t.aiResponse })),
       existingTurnCount,
@@ -588,13 +566,12 @@ async function main(): Promise<void> {
               signal: 'semantic_similarity',
               confidence: confidence as 'high' | 'medium',
             });
-            // Retroactively update session frontmatter with parent + re-index
+            // Retroactively update session frontmatter with parent
             try {
-              vault.updateNoteFrontmatter(relativePath, {
+              vault.updateSessionFrontmatter(relativePath, {
                 parent: sessionWikilink(bestParentId),
                 parent_reason: 'semantic_similarity',
               });
-              indexNote(index, vaultDir, relativePath);
             } catch { /* frontmatter update failed — link still in lineage.json */ }
             logger.info('lineage', 'LLM similarity parent detected', {
               child: sessionId, parent: bestParentId, score: best.score,
@@ -608,104 +585,43 @@ async function main(): Promise<void> {
     return { ok: true, path: relativePath };
   });
 
-  // Session-start context: structural facts only — active plans + parent session.
-  // Memories are injected per-prompt (more targeted, less noise).
   server.registerRoute('POST', '/context', async (body: unknown) => {
-    const { session_id, branch } = ContextBody.parse(body);
-    logger.debug('hooks', 'Session context query', { session_id });
+    const { session_id, branch, files } = ContextBody.parse(body);
+    logger.debug('hooks', 'Context query', { session_id });
     try {
-      const parts: string[] = [];
-
-      // Active plans — the agent needs to know what's in flight
-      const plans = index.query({ type: 'plan' });
-      const activePlans = plans.filter((p) => {
-        const status = (p.frontmatter as Record<string, unknown>).status as string;
-        return status === 'active' || status === 'in_progress';
-      });
-      if (activePlans.length > 0) {
-        const planLines = activePlans.slice(0, SESSION_CONTEXT_MAX_PLANS).map((p) => {
-          const status = (p.frontmatter as Record<string, unknown>).status as string;
-          return `- **${p.title}** (${status}) \`[${p.id}]\``;
+      if (vectorIndex && branch) {
+        const queryText = `branch: ${branch} files: ${(files ?? []).join(' ')}`;
+        const emb = await generateEmbedding(embeddingProvider, queryText);
+        const results = vectorIndex.search(emb.embedding, {
+          limit: 10,
         });
-        parts.push(`### Active Plans\n${planLines.join('\n')}`);
-      }
-
-      // Parent session summary — lineage continuity
-      if (session_id) {
-        const parentId = lineageGraph.getParent(session_id);
-        if (parentId) {
-          const parentNotes = index.queryByIds([sessionNoteId(parentId)]);
-          if (parentNotes.length > 0) {
-            const parent = parentNotes[0];
-            parts.push(`### Previous Session\n- **${parent.title}**: ${parent.content.slice(0, CONTEXT_SESSION_PREVIEW_CHARS)} \`[${parent.id}]\``);
+        if (results.length > 0) {
+          // Batch-fetch all notes in one query instead of N+1
+          const noteMap = new Map(
+            index.queryByIds(results.map((r) => r.id)).map((n) => [n.id, n]),
+          );
+          const parts: string[] = [];
+          let budget = config.context.max_tokens;
+          const sorted = results.sort((a, b) => {
+            const imp = { high: 0, medium: 1, low: 2 } as Record<string, number>;
+            return (imp[a.metadata.importance] ?? 1) - (imp[b.metadata.importance] ?? 1) || b.similarity - a.similarity;
+          });
+          for (const r of sorted) {
+            const note = noteMap.get(r.id);
+            if (!note) continue;
+            const snippet = `- **${note.title}** (${r.metadata.type}): ${note.content.slice(0, 120)}`;
+            const tokens = Math.ceil(snippet.length / 4);
+            if (tokens > budget) break;
+            parts.push(snippet);
+            budget -= tokens;
           }
+          if (parts.length > 0) return { text: `### Myco Context\n${parts.join('\n')}` };
         }
       }
-
-      // Branch info for awareness
-      if (branch) {
-        parts.push(`Branch:: \`${branch}\``);
-      }
-
-      if (parts.length > 0) {
-        return { text: parts.join('\n\n') };
-      }
-      return { text: '' };
+      const injected = buildInjectedContext(index, config, { branch, files });
+      return { text: injected.text };
     } catch (error) {
-      logger.error('daemon', 'Session context failed', { error: (error as Error).message });
-      return { text: '' };
-    }
-  });
-
-  // Per-prompt context: semantic search for memories relevant to THIS specific prompt.
-  // This is the primary intelligence delivery — targeted, high-confidence, token-efficient.
-  const PromptContextBody = z.object({
-    prompt: z.string(),
-    session_id: z.string().optional(),
-  });
-
-  server.registerRoute('POST', '/context/prompt', async (body: unknown) => {
-    const { prompt, session_id } = PromptContextBody.parse(body);
-    if (!prompt || prompt.length < PROMPT_CONTEXT_MIN_LENGTH || !vectorIndex) {
-      return { text: '' };
-    }
-
-    try {
-      const emb = await generateEmbedding(embeddingProvider, prompt.slice(0, EMBEDDING_INPUT_LIMIT));
-      const results = vectorIndex.search(emb.embedding, {
-        limit: PROMPT_CONTEXT_MAX_MEMORIES,
-        type: 'memory',
-        relativeThreshold: PROMPT_CONTEXT_MIN_SIMILARITY,
-      });
-
-      if (results.length === 0) return { text: '' };
-
-      const noteMap = new Map(
-        index.queryByIds(results.map((r) => r.id)).map((n) => [n.id, n]),
-      );
-
-      const lines: string[] = [];
-      for (const r of results) {
-        const note = noteMap.get(r.id);
-        if (!note) continue;
-        const fm = note.frontmatter as Record<string, unknown>;
-        if (fm.status === 'superseded' || fm.status === 'archived') continue;
-        const obsType = fm.observation_type as string ?? 'note';
-        lines.push(`- [${obsType}] ${note.title}: ${note.content.slice(0, CONTENT_SNIPPET_CHARS)} \`[${note.id}]\``);
-      }
-
-      if (lines.length === 0) return { text: '' };
-
-      const injected = `**Relevant memories for this task:**\n${lines.join('\n')}`;
-      logger.debug('context', 'Prompt context injected', {
-        session_id,
-        memories: lines.length,
-        prompt_preview: prompt.slice(0, 50),
-      });
-
-      return { text: injected };
-    } catch (err) {
-      logger.debug('context', 'Prompt context failed', { error: (err as Error).message });
+      logger.error('daemon', 'Context query failed', { error: (error as Error).message });
       return { text: '' };
     }
   });

@@ -1,6 +1,5 @@
 import type { MycoIndex } from '../../index/sqlite.js';
 import { planFm, sessionFm, memoryFm } from '../../vault/frontmatter.js';
-import { RECALL_SUMMARY_PREVIEW_CHARS } from '../../constants.js';
 
 interface RecallInput {
   branch?: string;
@@ -29,8 +28,7 @@ export async function handleMycoRecall(
     sessions = sessions.filter((s) => sessionFm(s).branch === input.branch);
   }
 
-  const memories = index.query({ type: 'memory', limit: 5 })
-    .filter((m) => memoryFm(m).status !== 'superseded' && memoryFm(m).status !== 'archived');
+  const memories = index.query({ type: 'memory', limit: 5 });
 
   return {
     active_plans: activePlans.map((p) => ({
@@ -41,7 +39,7 @@ export async function handleMycoRecall(
     recent_sessions: sessions.slice(0, 5).map((s) => ({
       id: s.id,
       title: s.title,
-      summary: s.content.slice(0, RECALL_SUMMARY_PREVIEW_CHARS),
+      summary: s.content.slice(0, 200),
     })),
     relevant_memories: memories.map((m) => ({
       id: m.id,

@@ -3,7 +3,6 @@ import { searchFts } from '../../index/fts.js';
 import type { VectorIndex } from '../../index/vectors.js';
 import { generateEmbedding } from '../../intelligence/embeddings.js';
 import type { EmbeddingProvider } from '../../intelligence/llm.js';
-import { CONTENT_SNIPPET_CHARS } from '../../constants.js';
 
 interface SearchInput {
   query: string;
@@ -49,16 +48,12 @@ export async function handleMycoSearch(
               note_path: note?.path ?? r.id,
               type: r.metadata.type || note?.type || 'unknown',
               title: note?.title ?? r.id,
-              snippet: note?.content?.slice(0, CONTENT_SNIPPET_CHARS) ?? '',
+              snippet: note?.content?.slice(0, 120) ?? '',
               score: r.similarity,
               frontmatter: note?.frontmatter ?? {},
             };
           })
-          .filter((r) => r.snippet)
-          .filter((r) => {
-            const status = (r.frontmatter as Record<string, unknown>).status as string | undefined;
-            return status !== 'superseded' && status !== 'archived';
-          });
+          .filter((r) => r.snippet);
       }
     } catch {
       // Fall through to FTS
@@ -67,20 +62,15 @@ export async function handleMycoSearch(
 
   const ftsResults = searchFts(index, input.query, { type, limit });
 
-  return ftsResults
-    .map((r) => {
-      const note = index.getNoteByPath(r.path);
-      return {
-        note_path: r.path,
-        type: r.type,
-        title: r.title,
-        snippet: r.snippet,
-        score: Math.abs(r.rank),
-        frontmatter: note?.frontmatter ?? {},
-      };
-    })
-    .filter((r) => {
-      const status = (r.frontmatter as Record<string, unknown>).status as string | undefined;
-      return status !== 'superseded' && status !== 'archived';
-    });
+  return ftsResults.map((r) => {
+    const note = index.getNoteByPath(r.path);
+    return {
+      note_path: r.path,
+      type: r.type,
+      title: r.title,
+      snippet: r.snippet,
+      score: Math.abs(r.rank),
+      frontmatter: note?.frontmatter ?? {},
+    };
+  });
 }

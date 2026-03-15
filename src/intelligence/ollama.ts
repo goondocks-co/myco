@@ -1,5 +1,4 @@
 import type { LlmProvider, EmbeddingProvider, LlmResponse, EmbeddingResponse, LlmRequestOptions } from './llm.js';
-import { CHARS_PER_TOKEN } from '../constants.js';
 
 interface OllamaConfig {
   model?: string;
@@ -27,7 +26,7 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
 
   async summarize(prompt: string, opts?: LlmRequestOptions): Promise<LlmResponse> {
     const maxTokens = opts?.maxTokens ?? this.defaultMaxTokens;
-    const promptTokens = Math.ceil(prompt.length / CHARS_PER_TOKEN);
+    const promptTokens = Math.ceil(prompt.length / 4);
     const numCtx = Math.max(promptTokens + maxTokens, this.contextWindow);
 
     const response = await fetch(`${this.baseUrl}/api/generate`, {

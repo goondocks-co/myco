@@ -33,10 +33,7 @@ export interface LineageLink {
 
 interface LineageState {
   links: LineageLink[];
-  /** Maps session IDs to the artifact/plan IDs they produced. Used for plan_reference lineage detection. */
-  sessionArtifacts: Record<string, string[]>;
-  /** @deprecated Alias for sessionArtifacts — kept for backward compat with existing lineage.json files */
-  sessionPlans?: Record<string, string[]>;
+  sessionPlans: Record<string, string[]>;
 }
 
 export class LineageGraph {
@@ -55,25 +52,19 @@ export class LineageGraph {
     this.persist();
   }
 
-  /** Register an artifact (plan, spec, doc) as produced by a session. */
-  registerArtifactForSession(sessionId: string, artifactId: string): void {
-    if (!this.state.sessionArtifacts[sessionId]) this.state.sessionArtifacts[sessionId] = [];
-    if (!this.state.sessionArtifacts[sessionId].includes(artifactId)) {
-      this.state.sessionArtifacts[sessionId].push(artifactId);
+  registerPlanForSession(sessionId: string, planId: string): void {
+    if (!this.state.sessionPlans[sessionId]) this.state.sessionPlans[sessionId] = [];
+    if (!this.state.sessionPlans[sessionId].includes(planId)) {
+      this.state.sessionPlans[sessionId].push(planId);
       this.persist();
     }
   }
 
-  /** @deprecated Use registerArtifactForSession instead */
-  registerPlanForSession(sessionId: string, planId: string): void {
-    this.registerArtifactForSession(sessionId, planId);
-  }
-
   detectLineage(childSessionId: string, firstPrompt: string): LineageLink | null {
-    for (const [sessionId, artifactIds] of Object.entries(this.state.sessionArtifacts)) {
+    for (const [sessionId, planIds] of Object.entries(this.state.sessionPlans)) {
       if (sessionId === childSessionId) continue;
-      for (const artifactId of artifactIds) {
-        if (firstPrompt.includes(artifactId)) {
+      for (const planId of planIds) {
+        if (firstPrompt.includes(planId)) {
           const link: LineageLink = { parent: sessionId, child: childSessionId, signal: 'plan_reference', confidence: 'high' };
           this.addLink(link);
           return link;
@@ -140,13 +131,8 @@ export class LineageGraph {
   getParent(sessionId: string): string | undefined { return this.state.links.find((l) => l.child === sessionId)?.parent; }
 
   private load(): LineageState {
-    try {
-      const raw = JSON.parse(fs.readFileSync(this.filePath, 'utf-8')) as Record<string, unknown>;
-      // Migrate from old sessionPlans to sessionArtifacts
-      const sessionArtifacts = (raw.sessionArtifacts ?? raw.sessionPlans ?? {}) as Record<string, string[]>;
-      return { links: (raw.links ?? []) as LineageLink[], sessionArtifacts };
-    }
-    catch { return { links: [], sessionArtifacts: {} }; }
+    try { return JSON.parse(fs.readFileSync(this.filePath, 'utf-8')); }
+    catch { return { links: [], sessionPlans: {} }; }
   }
 
   private persist(): void {

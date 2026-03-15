@@ -2,10 +2,10 @@ import type { MycoIndex } from '../index/sqlite.js';
 import type { MycoConfig } from '../config/schema.js';
 import { planFm, memoryFm } from '../vault/frontmatter.js';
 import { scoreRelevance } from './relevance.js';
-import { CHARS_PER_TOKEN, CONTEXT_PLAN_PREVIEW_CHARS, CONTEXT_SESSION_PREVIEW_CHARS, CONTEXT_MEMORY_PREVIEW_CHARS } from '../constants.js';
 
 interface InjectionContext {
   branch?: string;
+  files?: string[];
 }
 
 interface InjectedContext {
@@ -33,7 +33,7 @@ export function buildInjectedContext(
   );
   const plansText = formatLayer(
     'Active Plans',
-    activePlans.map((p) => `- **${p.title}** (${planFm(p).status}): ${p.content.slice(0, CONTEXT_PLAN_PREVIEW_CHARS)}`),
+    activePlans.map((p) => `- **${p.title}** (${planFm(p).status}): ${p.content.slice(0, 100)}`),
     budgets.plans,
   );
 
@@ -47,17 +47,13 @@ export function buildInjectedContext(
   const sessionsText = formatLayer(
     'Recent Sessions',
     scoredSessions.slice(0, 5).map((s) =>
-      `- **${s.note.title}**: ${s.note.content.slice(0, CONTEXT_SESSION_PREVIEW_CHARS)} (${s.reason})`,
+      `- **${s.note.title}**: ${s.note.content.slice(0, 80)} (${s.reason})`,
     ),
     budgets.sessions,
   );
 
-  // Layer 3: Relevant memories (exclude superseded/archived)
-  const memories = index.query({ type: 'memory', limit: 20 })
-    .filter((m) => {
-      const status = memoryFm(m).status;
-      return status !== 'superseded' && status !== 'archived';
-    });
+  // Layer 3: Relevant memories
+  const memories = index.query({ type: 'memory', limit: 20 });
   const scoredMemories = scoreRelevance(memories, {
     branch: context.branch,
     activePlanIds,
@@ -65,7 +61,7 @@ export function buildInjectedContext(
   const memoriesText = formatLayer(
     'Relevant Memories',
     scoredMemories.slice(0, 5).map((m) =>
-      `- **${m.note.title}** (${memoryFm(m.note).observation_type}): ${m.note.content.slice(0, CONTEXT_MEMORY_PREVIEW_CHARS)}`,
+      `- **${m.note.title}** (${memoryFm(m.note).observation_type}): ${m.note.content.slice(0, 80)}`,
     ),
     budgets.memories,
   );
@@ -116,5 +112,5 @@ function formatLayer(heading: string, items: string[], budget: number): string {
 }
 
 function estimateTokens(text: string): number {
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
+  return Math.ceil(text.length / 4);
 }

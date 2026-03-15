@@ -1,7 +1,6 @@
 import { z } from 'zod';
-import type { LlmProvider } from '../intelligence/llm.js';
+import type { LlmProvider, LlmRequestOptions } from '../intelligence/llm.js';
 import { ARTIFACT_TYPES } from '../vault/types.js';
-import { CHARS_PER_TOKEN, EXTRACTION_MAX_TOKENS, SUMMARY_MAX_TOKENS, TITLE_MAX_TOKENS, CLASSIFICATION_MAX_TOKENS, PROMPT_PREVIEW_CHARS, AI_RESPONSE_PREVIEW_CHARS, COMMAND_PREVIEW_CHARS } from '../constants.js';
 import type { ObservationType, ArtifactType } from '../vault/types.js';
 import { buildExtractionPrompt, buildSummaryPrompt, buildTitlePrompt, buildClassificationPrompt } from '../prompts/index.js';
 
@@ -45,9 +44,9 @@ export class BufferProcessor {
 
   private truncateForContext(data: string, maxTokens: number): string {
     const available = this.contextWindow - maxTokens;
-    const dataTokens = Math.ceil(data.length / CHARS_PER_TOKEN);
+    const dataTokens = Math.ceil(data.length / 4);
     if (dataTokens <= available) return data;
-    const charBudget = available * CHARS_PER_TOKEN;
+    const charBudget = available * 4;
     return data.slice(0, charBudget);
   }
 
@@ -56,10 +55,10 @@ export class BufferProcessor {
     sessionId: string,
   ): Promise<ProcessorResult> {
     const rawPrompt = this.buildPromptForExtraction(events, sessionId);
-    const prompt = this.truncateForContext(rawPrompt, EXTRACTION_MAX_TOKENS);
+    const prompt = this.truncateForContext(rawPrompt, 2048);
 
     try {
-      const response = await this.backend.summarize(prompt, { maxTokens: EXTRACTION_MAX_TOKENS });
+      const response = await this.backend.summarize(prompt, { maxTokens: 2048 });
       const parsed = JSON.parse(response.text) as {
         summary: string;
         observations: Observation[];
@@ -92,12 +91,12 @@ export class BufferProcessor {
     sessionId: string,
     user?: string,
   ): Promise<{ summary: string; title: string }> {
-    const truncatedContent = this.truncateForContext(conversationMarkdown, SUMMARY_MAX_TOKENS);
+    const truncatedContent = this.truncateForContext(conversationMarkdown, 512);
     const summaryPrompt = buildSummaryPrompt(sessionId, user ?? 'unknown', truncatedContent);
 
     let summaryText: string;
     try {
-      const response = await this.backend.summarize(summaryPrompt, { maxTokens: SUMMARY_MAX_TOKENS });
+      const response = await this.backend.summarize(summaryPrompt, { maxTokens: 512 });
       summaryText = response.text;
     } catch (error) {
       summaryText = `Session ${sessionId} — summarization failed: ${(error as Error).message}`;
@@ -106,7 +105,7 @@ export class BufferProcessor {
     const titlePrompt = buildTitlePrompt(summaryText, sessionId);
     let title: string;
     try {
-      const response = await this.backend.summarize(titlePrompt, { maxTokens: TITLE_MAX_TOKENS });
+      const response = await this.backend.summarize(titlePrompt, { maxTokens: 32 });
       title = response.text.trim();
     } catch {
       title = `Session ${sessionId}`;
@@ -122,7 +121,7 @@ export class BufferProcessor {
     if (candidates.length === 0) return [];
 
     const prompt = this.buildPromptForClassification(candidates, sessionId);
-    const response = await this.backend.summarize(prompt, { maxTokens: CLASSIFICATION_MAX_TOKENS });
+    const response = await this.backend.summarize(prompt, { maxTokens: 1024 });
     const raw = JSON.parse(response.text);
     const parsed = ClassificationResponseSchema.parse(raw);
     return parsed.artifacts;
@@ -144,13 +143,13 @@ export class BufferProcessor {
     for (const event of events) {
       if (event.type === 'user_prompt') {
         const prompt = String(event.prompt ?? '');
-        if (prompt) prompts.push(prompt.slice(0, PROMPT_PREVIEW_CHARS));
+        if (prompt) prompts.push(prompt.slice(0, 300));
         continue;
       }
 
       if (event.type === 'ai_response') {
         const content = String(event.content ?? '');
-        if (content) aiResponses.push(content.slice(0, AI_RESPONSE_PREVIEW_CHARS));
+        if (content) aiResponses.push(content.slice(0, 500));
         continue;
       }
 
@@ -161,7 +160,7 @@ export class BufferProcessor {
       const input = (event.tool_input ?? event.input) as Record<string, unknown> | undefined;
       if (input?.path) filesAccessed.add(String(input.path));
       if (input?.file_path) filesAccessed.add(String(input.file_path));
-      if (input?.command) filesAccessed.add(`[cmd] ${String(input.command).slice(0, COMMAND_PREVIEW_CHARS)}`);
+      if (input?.command) filesAccessed.add(`[cmd] ${String(input.command).slice(0, 80)}`);
     }
 
     const lines: string[] = [];

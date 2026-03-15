@@ -1,6 +1,5 @@
 import type { MycoIndex } from '../../index/sqlite.js';
 import { sessionFm } from '../../vault/frontmatter.js';
-import { SESSION_SUMMARY_PREVIEW_CHARS } from '../../constants.js';
 
 interface SessionsInput {
   plan?: string;
@@ -48,7 +47,7 @@ export async function handleMycoSessions(
     const f = sessionFm(s);
     return {
       id: s.id,
-      summary: s.content.slice(0, SESSION_SUMMARY_PREVIEW_CHARS),
+      summary: s.content.slice(0, 300),
       user: f.user ?? '',
       agent: f.agent ?? '',
       started: f.started ?? s.created,

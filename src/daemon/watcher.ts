@@ -1,7 +1,6 @@
 import { watch } from 'chokidar';
 import type { FSWatcher } from 'chokidar';
 import path from 'node:path';
-import { FILE_WATCH_STABILITY_MS } from '../constants.js';
 
 export interface PlanEvent {
   source: 'tool' | 'hook' | 'filesystem' | 'transcript';
@@ -60,7 +59,7 @@ export class PlanWatcher {
       ignoreInitial: true,
       persistent: true,
       depth: 3,
-      awaitWriteFinish: { stabilityThreshold: FILE_WATCH_STABILITY_MS },
+      awaitWriteFinish: { stabilityThreshold: 1000 },
     });
     this.fsWatcher.on('add', (fp) => this.onFileChange(fp, 'created'));
     this.fsWatcher.on('change', (fp) => this.onFileChange(fp, 'modified'));
@@ -69,6 +68,10 @@ export class PlanWatcher {
   stopFileWatcher(): void {
     this.fsWatcher?.close();
     this.fsWatcher = null;
+  }
+
+  getKnownPlans(): string[] {
+    return [...this.knownPlans];
   }
 
   private onFileChange(absolutePath: string, action: string): void {

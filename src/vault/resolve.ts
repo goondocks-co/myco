@@ -1,35 +1,24 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 
 /**
  * Resolve the vault directory.
- *
- * Priority:
- * 1. MYCO_VAULT_DIR env var (override for public repos or shared vaults)
- * 2. .myco/ in the repo root (default — vault lives with the project)
- *
- * The default is project-local: the vault is committed to git alongside
- * the code, so the team's institutional memory travels with the repo.
- * For public repos or cases where the vault should be separate, set
- * MYCO_VAULT_DIR to an external path.
+ * Priority: MYCO_VAULT_DIR env var > .myco/ in repo root.
  *
  * Uses git to find the repo root so this works correctly in
  * git worktrees — worktree agents resolve to the same vault
  * as the main working tree.
  */
 export function resolveVaultDir(cwd = process.cwd()): string {
-  // Override: external vault location
   if (process.env.MYCO_VAULT_DIR) {
     const dir = process.env.MYCO_VAULT_DIR;
+    // Expand ~ to home directory (env vars don't get shell expansion)
     if (dir.startsWith('~/')) {
       return path.join(os.homedir(), dir.slice(2));
     }
     return dir;
   }
-
-  // Default: .myco/ in the project root
   return path.join(resolveRepoRoot(cwd), '.myco');
 }
 

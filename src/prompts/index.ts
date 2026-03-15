@@ -7,7 +7,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ARTIFACT_TYPES } from '../vault/types.js';
-import { CANDIDATE_CONTENT_PREVIEW } from '../constants.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -73,6 +72,9 @@ const ARTIFACT_TYPE_DESCRIPTIONS = [
   '"doc" — Documentation, guides, READMEs',
   '"other" — Other substantive documents',
 ];
+
+/** Max chars of file content to include per candidate in the prompt. */
+export const CANDIDATE_CONTENT_PREVIEW = 2000;
 
 export function buildSimilarityPrompt(
   currentSummary: string,

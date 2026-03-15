@@ -85,22 +85,9 @@ export class VaultWriter {
 
   writePlan(input: WritePlanInput): string {
     const relativePath = `plans/${input.id}.md`;
-    const fullPath = path.join(this.vaultDir, relativePath);
 
     const status = input.status ?? 'active';
-    let created = new Date().toISOString();
-
-    // Preserve created from existing file (idempotent)
-    try {
-      const existing = fs.readFileSync(fullPath, 'utf-8');
-      const fmMatch = existing.match(/^---\n([\s\S]*?)\n---/);
-      if (fmMatch) {
-        const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
-        if (typeof parsed.created === 'string') created = parsed.created;
-      }
-    } catch {
-      // File doesn't exist yet
-    }
+    const created = new Date().toISOString();
     const frontmatter: Record<string, unknown> = {
       type: 'plan',
       id: input.id,
@@ -126,27 +113,12 @@ export class VaultWriter {
   writeMemory(input: WriteMemoryInput): string {
     const normalizedType = input.observation_type.replace(/_/g, '-');
     const relativePath = `memories/${normalizedType}/${input.id}.md`;
-    const fullPath = path.join(this.vaultDir, relativePath);
-    const now = new Date().toISOString();
-
-    // Preserve created from existing file (idempotent)
-    let created = now;
-    try {
-      const existing = fs.readFileSync(fullPath, 'utf-8');
-      const fmMatch = existing.match(/^---\n([\s\S]*?)\n---/);
-      if (fmMatch) {
-        const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
-        if (typeof parsed.created === 'string') created = parsed.created;
-      }
-    } catch {
-      // File doesn't exist yet — created = now
-    }
 
     const frontmatter: Record<string, unknown> = {
       type: 'memory',
       id: input.id,
       observation_type: input.observation_type,
-      created,
+      created: new Date().toISOString(),
     };
     if (input.session) frontmatter.session = input.session;
     if (input.plan) frontmatter.plan = input.plan;
