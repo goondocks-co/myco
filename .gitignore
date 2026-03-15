@@ -2,18 +2,16 @@ node_modules/
 dist/
 *.tsbuildinfo
 .env
+
+# Vault runtime artifacts (also in .myco/.gitignore for user projects)
 .myco/index.db
 .myco/index.db-wal
 .myco/index.db-shm
 .myco/vectors.db
 .myco/buffer/
 .myco/daemon.json
-.myco/lineage.json
 .myco/logs/
-.myco/service.pid
 .myco/.obsidian/
+
+# Dev tooling
 .worktrees/
-docs/superpowers/
-.superpowers/
-docs/plans/
-docs/specs/
