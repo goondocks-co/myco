@@ -99,5 +99,22 @@ export function parseNoteFrontmatter(data: Record<string, unknown>): NoteFrontma
   if (!schema) {
     throw new Error(`Unknown note type: ${type}`);
   }
-  return schema.parse(data) as NoteFrontmatter;
+  // gray-matter and YAML.parse return Date objects for ISO date strings.
+  // Coerce them to strings before Zod validation.
+  const coerced = coerceDatesToStrings(data);
+  return schema.parse(coerced) as NoteFrontmatter;
+}
+
+function coerceDatesToStrings(obj: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value instanceof Date) {
+      result[key] = value.toISOString();
+    } else if (Array.isArray(value)) {
+      result[key] = value.map((item) => item instanceof Date ? item.toISOString() : item);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
 }
