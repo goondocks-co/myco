@@ -16,11 +16,14 @@
 </p>
 
 ```bash
-# Claude Code
-claude plugin add myco
+# Add the Myco marketplace and install
+claude plugin marketplace add goondocks-co/myco
+claude plugin install myco@myco-plugins
+```
 
-# Then initialize your vault
-> /myco-init
+Then initialize in your project:
+```
+> /myco:init
 ```
 
 The agent sets up your vault, configures intelligence, and starts capturing. Works with Claude Code and Cursor out of the box.

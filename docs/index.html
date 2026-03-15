@@ -369,12 +369,11 @@
     </div>
 
     <div class="tab-panel active" id="panel-claude-code">
-      <div class="code-block"><code><span class="comment"># From the Goondocks marketplace</span>
+      <div class="code-block"><code><span class="comment"># Add the Myco marketplace</span>
 claude plugin marketplace add goondocks-co/myco
-claude plugin install myco@goondocks-plugins
 
-<span class="comment"># Or install directly from the repo</span>
-claude plugin add goondocks-co/myco</code></div>
+<span class="comment"># Install the myco plugin</span>
+claude plugin install myco@myco-plugins</code></div>
       <p class="install-note">Then initialize in your project:</p>
       <div class="code-block"><code>/myco:init</code></div>
     </div>
@@ -391,7 +390,7 @@ claude plugin add goondocks-co/myco</code></div>
     </div>
 
     <div class="tab-panel" id="panel-vscode">
-      <p class="install-note">Add Myco as a plugin marketplace in VS Code settings:</p>
+      <p class="install-note">VS Code agent plugins use the same marketplace format as Claude Code. Add the marketplace in your settings:</p>
       <div class="code-block"><code><span class="comment">// In settings.json, add the marketplace:</span>
 {
   "chat.plugins.marketplaces": [
@@ -400,7 +399,7 @@ claude plugin add goondocks-co/myco</code></div>
 }</code></div>
       <p class="install-note">Then initialize in your project:</p>
       <div class="code-block"><code>/myco:init</code></div>
-      <p class="install-note" style="margin-top: 16px; font-size: 13px;">See the <a href="https://code.visualstudio.com/docs/copilot/customization/agent-plugins" style="color: var(--accent-muted);">VS Code agent plugin docs</a> for details. Agent plugins are currently in preview.</p>
+      <p class="install-note" style="margin-top: 16px; font-size: 13px;">VS Code reads from <code>.claude-plugin/</code> — no separate manifest needed. See the <a href="https://code.visualstudio.com/docs/copilot/customization/agent-plugins" style="color: var(--accent-muted);">VS Code agent plugin docs</a> for details. Agent plugins are currently in preview.</p>
     </div>
   </section>
 
