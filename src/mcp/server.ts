@@ -22,7 +22,8 @@ import { createEmbeddingProvider } from '../intelligence/llm.js';
 import type { EmbeddingProvider } from '../intelligence/llm.js';
 import { VectorIndex } from '../index/vectors.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
-import { MemoryFrontmatterSchema, PlanFrontmatterSchema } from '../vault/types.js';
+import { PlanFrontmatterSchema } from '../vault/types.js';
+import { EMBEDDING_INPUT_LIMIT } from '../constants.js';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -200,8 +201,6 @@ export function createMycoServer(config: ServerConfig): MycoServer {
     }
     return index;
   }
-
-  const EMBEDDING_INPUT_LIMIT = 8000;
 
   /** Embed a note and upsert into vector index (fire-and-forget). */
   function embedNote(noteId: string, text: string, metadata: Record<string, string>): void {

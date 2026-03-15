@@ -8,9 +8,20 @@ export interface ScoredNote {
 
 interface RelevanceInput {
   branch?: string;
-  files?: string[];
   activePlanIds?: string[];
 }
+
+// --- Recency thresholds (hours) and score weights ---
+const RECENCY_TIERS = [
+  { maxHours: 24, score: 3, label: 'recent (<24h)' },
+  { maxHours: 72, score: 2, label: 'recent (<72h)' },
+  { maxHours: 168, score: 1, label: 'recent (<1w)' },
+] as const;
+
+const BRANCH_MATCH_SCORE = 3;
+const PLAN_MATCH_SCORE = 2;
+
+const MS_PER_HOUR = 3_600_000;
 
 export function scoreRelevance(
   notes: IndexedNote[],
@@ -25,21 +36,18 @@ export function scoreRelevance(
 
       // Recency boost
       const age = Date.now() - new Date(note.created).getTime();
-      const hoursOld = age / (1000 * 60 * 60);
-      if (hoursOld < 24) {
-        score += 3;
-        reasons.push('recent (<24h)');
-      } else if (hoursOld < 72) {
-        score += 2;
-        reasons.push('recent (<72h)');
-      } else if (hoursOld < 168) {
-        score += 1;
-        reasons.push('recent (<1w)');
+      const hoursOld = age / MS_PER_HOUR;
+      for (const tier of RECENCY_TIERS) {
+        if (hoursOld < tier.maxHours) {
+          score += tier.score;
+          reasons.push(tier.label);
+          break;
+        }
       }
 
       // Branch match
       if (input.branch && fm.branch === input.branch) {
-        score += 3;
+        score += BRANCH_MATCH_SCORE;
         reasons.push('same branch');
       }
 
@@ -49,7 +57,7 @@ export function scoreRelevance(
         if (planRef && input.activePlanIds.some((id) =>
           planRef === `[[${id}]]` || planRef === id,
         )) {
-          score += 2;
+          score += PLAN_MATCH_SCORE;
           reasons.push('active plan');
         }
       }

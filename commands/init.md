@@ -9,16 +9,20 @@ Set up Myco for this project. Guide the user through:
 
 ## Step 0: Detect vault location
 
-Before prompting the user for anything, check whether `MYCO_VAULT_DIR` is set:
+The vault defaults to `.myco/` in the project root — the team's intelligence lives with the code and is committed to git.
+
+Check whether `MYCO_VAULT_DIR` is set as an override:
 
 - Check the process environment for `MYCO_VAULT_DIR`
 - Also check `.claude/settings.json` under the `env` key for `MYCO_VAULT_DIR`
-- If found and non-empty, use that path as the vault location — **do not ask the user where to put the vault**
-- If not found, default to `~/.myco/vaults/<project-name>/`
+- If found and non-empty, use that path instead — **do not ask the user where to put the vault**
+- If not found, use `.myco/` in the project root (the default)
+
+The `MYCO_VAULT_DIR` override is for public repos or cases where the vault should be kept separate from the codebase. For most private projects, the default is correct.
 
 Record the **vault path source** for use in the setup summary:
-- `"from MYCO_VAULT_DIR env"` — if the env var was set
-- `"default (~/.myco/vaults/<name>/)"` — if falling back to the default
+- `"from MYCO_VAULT_DIR env"` — if the env var override was set
+- `"default (.myco/)"` — project-local vault (recommended for private repos)
 
 ## Step 1: Create vault directory
 
@@ -72,22 +76,41 @@ Configure LLM and embedding providers independently:
 
 Ask the user to choose an LLM provider:
 
-- **Ollama** — detect at `http://localhost:11434/api/tags`, list available models, recommend `gpt-oss`
+- **Ollama** — detect at `http://localhost:11434/api/tags`, list available models
 - **LM Studio** — detect at `http://localhost:1234/v1/models`, list available models
 - **Anthropic** — uses existing `ANTHROPIC_API_KEY`, verify it's set
+
+Recommended summarization models by hardware tier:
+
+| Tier | Models | RAM | Notes |
+|------|--------|-----|-------|
+| **High** (best quality) | `gpt-oss` (~20B), `gemma3:27b`, `qwen3.5:14b` | 16GB+ | Best observation extraction and structured JSON output |
+| **Mid** (good balance) | `qwen3.5:8b`, `gemma3:12b` | 8GB+ | Good quality, reasonable speed |
+| **Light** (resource constrained) | `gemma3:4b`, `qwen3.5:4b` | 4GB+ | Faster, may miss nuanced observations |
+
+If the user already has a model loaded, prefer using what they have — any instruction-tuned model that handles JSON output well will work. The model only needs to produce structured JSON (observation extraction) and short text (summaries, titles).
 
 For the selected provider, list available models and let the user choose. Also set:
 - `context_window` (default 8192) — only for local providers, not Anthropic
 - `max_tokens` (default 1024)
 
+If the recommended model isn't available, offer to pull it:
+- **Ollama**: `ollama pull gpt-oss` (pulls latest tag automatically)
+- **LM Studio**: `lms get openai/gpt-oss-20b` (uses `owner/model` format)
+
+Ask the user before pulling — models can be large (hundreds of MB to several GB).
+
 ### Embedding provider
 
 Ask the user to choose an embedding provider. **Anthropic is not an option here** — it doesn't support embeddings.
 
-- **Ollama** — detect at `http://localhost:11434/api/tags`, list available models, recommend `bge-m3` or `nomic-embed-text`
-- **LM Studio** — detect at `http://localhost:1234/v1/models`, list available models
+- **Ollama** — detect at `http://localhost:11434/api/tags`, list available models, recommend `bge-m3` or `nomic-embed-text`. Ollama is the recommended provider for embeddings.
+- **LM Studio** — possible but not recommended for embeddings. LM Studio is better suited for LLM/summarization work.
 
 For the selected provider, list available models and let the user choose.
+
+If the recommended embedding model isn't installed, offer to pull it — embedding models are typically small (~300-700MB):
+- **Ollama**: `ollama pull bge-m3`
 
 ## Step 3: Team / solo setup
 
@@ -150,33 +173,44 @@ Substitute the user's chosen providers, models, and base URLs. Set `team.enabled
 
 ## Step 5: Write vault `.gitignore`
 
-Create a `.gitignore` in the vault directory to exclude runtime artifacts:
+Create a `.gitignore` inside the `.myco/` vault directory to exclude runtime artifacts while committing the knowledge:
 
 ```
+# Runtime — rebuilt on daemon startup
 index.db
 index.db-wal
 index.db-shm
 vectors.db
+
+# Daemon state — per-machine, ephemeral
 daemon.json
-lineage.json
 buffer/
 logs/
+
+# Obsidian — per-user workspace config
 .obsidian/
 ```
 
-## Step 6: Register MCP server
+Everything else is committed: `myco.yaml`, `sessions/`, `memories/`, `plans/`, `artifacts/`, `team/`, `lineage.json`, `_dashboard.md`. This is the project's institutional memory — it travels with the code.
 
-If a `.claude/settings.json` exists in the project, ensure the `MYCO_VAULT_DIR` env var is set there so hooks and the MCP server can find the vault:
+## Step 6: Vault discovery and MCP
 
+The default `.myco/` vault location requires no configuration — the vault resolver finds it automatically in the project root.
+
+### If the user chose an external vault (MYCO_VAULT_DIR override)
+
+Set `MYCO_VAULT_DIR` in the agent's settings so hooks and the MCP server can find the vault:
+
+**Claude Code** — write to `.claude/settings.json`:
 ```json
-{
-  "env": {
-    "MYCO_VAULT_DIR": "<resolved vault path>"
-  }
-}
+{ "env": { "MYCO_VAULT_DIR": "<external vault path>" } }
 ```
 
-The MCP server is registered via the plugin manifest (`.claude-plugin/plugin.json`), not `.mcp.json`. No manual MCP registration is needed for plugin installs.
+**Cursor / VS Code** — instruct the user to set `MYCO_VAULT_DIR` in their shell profile (`~/.zshrc`, `~/.bashrc`), or set it in the MCP server's env block if configuring manually.
+
+### MCP server registration
+
+All three agents (Claude Code, Cursor, VS Code Copilot) auto-discover the MCP server from the plugin manifest when installed via the marketplace. No manual `.mcp.json` editing is needed.
 
 ## Step 7: Setup summary
 

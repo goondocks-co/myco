@@ -25,13 +25,27 @@ Report which are available and which are not.
 
 Ask the user to select from available providers:
 
-- **Ollama** — list available models, recommend **`gpt-oss`**
-- **LM Studio** — list available models, let user choose
+- **Ollama** — list available models
+- **LM Studio** — list available models
 - **Anthropic** — verify API key works, default model `claude-haiku-4-5-20251001`
+
+Recommended summarization models by hardware tier:
+
+| Tier | Models | RAM |
+|------|--------|-----|
+| **High** | `gpt-oss` (~20B), `gemma3:27b`, `qwen3.5:14b` | 16GB+ |
+| **Mid** | `qwen3.5:8b`, `gemma3:12b` | 8GB+ |
+| **Light** | `gemma3:4b`, `qwen3.5:4b` | 4GB+ |
+
+Any instruction-tuned model that handles JSON output works. Prefer what the user already has loaded.
 
 For local providers (Ollama, LM Studio), also configure:
 - `context_window` — ask or accept default of 8192
 - `max_tokens` — ask or accept default of 1024
+
+If the chosen model isn't installed, offer to pull it:
+- **Ollama**: `ollama pull gpt-oss` (pulls latest tag automatically)
+- **LM Studio**: `lms get openai/gpt-oss-20b` (uses `owner/model` format)
 
 These settings do not apply to Anthropic (API-managed).
 
@@ -39,8 +53,10 @@ These settings do not apply to Anthropic (API-managed).
 
 Ask the user to select from available providers — **Anthropic is not an option** (it doesn't support embeddings):
 
-- **Ollama** — list available models, recommend **`bge-m3`** or `nomic-embed-text`
-- **LM Studio** — list available models, let user choose
+- **Ollama** (recommended for embeddings) — list available models, recommend **`bge-m3`** or `nomic-embed-text`
+- **LM Studio** — possible but not recommended for embeddings; better suited for LLM work
+
+If the embedding model isn't installed: `ollama pull bge-m3`
 
 **Important:** If the user changes the embedding model, the vector index must be rebuilt. Warn them:
 > "Changing the embedding model will require a full rebuild of the vector index. Run `node dist/src/cli.js rebuild` after this change."

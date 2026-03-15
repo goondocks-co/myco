@@ -85,9 +85,22 @@ export class VaultWriter {
 
   writePlan(input: WritePlanInput): string {
     const relativePath = `plans/${input.id}.md`;
+    const fullPath = path.join(this.vaultDir, relativePath);
 
     const status = input.status ?? 'active';
-    const created = new Date().toISOString();
+    let created = new Date().toISOString();
+
+    // Preserve created from existing file (idempotent)
+    try {
+      const existing = fs.readFileSync(fullPath, 'utf-8');
+      const fmMatch = existing.match(/^---\n([\s\S]*?)\n---/);
+      if (fmMatch) {
+        const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
+        if (typeof parsed.created === 'string') created = parsed.created;
+      }
+    } catch {
+      // File doesn't exist yet
+    }
     const frontmatter: Record<string, unknown> = {
       type: 'plan',
       id: input.id,
@@ -113,12 +126,27 @@ export class VaultWriter {
   writeMemory(input: WriteMemoryInput): string {
     const normalizedType = input.observation_type.replace(/_/g, '-');
     const relativePath = `memories/${normalizedType}/${input.id}.md`;
+    const fullPath = path.join(this.vaultDir, relativePath);
+    const now = new Date().toISOString();
+
+    // Preserve created from existing file (idempotent)
+    let created = now;
+    try {
+      const existing = fs.readFileSync(fullPath, 'utf-8');
+      const fmMatch = existing.match(/^---\n([\s\S]*?)\n---/);
+      if (fmMatch) {
+        const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
+        if (typeof parsed.created === 'string') created = parsed.created;
+      }
+    } catch {
+      // File doesn't exist yet — created = now
+    }
 
     const frontmatter: Record<string, unknown> = {
       type: 'memory',
       id: input.id,
       observation_type: input.observation_type,
-      created: new Date().toISOString(),
+      created,
     };
     if (input.session) frontmatter.session = input.session;
     if (input.plan) frontmatter.plan = input.plan;
@@ -219,7 +247,7 @@ export class VaultWriter {
 
     const body = fileContent.slice(fmMatch[0].length);
     const fmYaml = YAML.stringify(parsed, { defaultStringType: 'QUOTE_DOUBLE', defaultKeyType: 'PLAIN' }).trim();
-    fs.writeFileSync(fullPath, `---\n${fmYaml}\n---${body}`, 'utf-8');
+    this.atomicWrite(fullPath, `---\n${fmYaml}\n---${body}`);
     return true;
   }
 
@@ -234,6 +262,13 @@ export class VaultWriter {
 
     const fmYaml = YAML.stringify(frontmatter, { defaultStringType: 'QUOTE_DOUBLE', defaultKeyType: 'PLAIN' }).trim();
     const file = `---\n${fmYaml}\n---\n\n${content}\n`;
-    fs.writeFileSync(fullPath, file, 'utf-8');
+    this.atomicWrite(fullPath, file);
+  }
+
+  /** Write to a temp file then rename — prevents Obsidian from seeing a truncated file mid-write. */
+  private atomicWrite(fullPath: string, content: string): void {
+    const tmp = `${fullPath}.tmp`;
+    fs.writeFileSync(tmp, content, 'utf-8');
+    fs.renameSync(tmp, fullPath);
   }
 }

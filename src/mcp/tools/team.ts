@@ -1,5 +1,6 @@
 import type { MycoIndex } from '../../index/sqlite.js';
 import { sessionFm } from '../../vault/frontmatter.js';
+import { RECALL_SUMMARY_PREVIEW_CHARS } from '../../constants.js';
 
 interface TeamInput {
   files?: string[];
@@ -42,7 +43,7 @@ export async function handleMycoTeam(
     return {
       user: f.user ?? '',
       session_id: s.id,
-      summary: s.content.slice(0, 200),
+      summary: s.content.slice(0, RECALL_SUMMARY_PREVIEW_CHARS),
       files_changed: [],
       decisions: [],
     };
