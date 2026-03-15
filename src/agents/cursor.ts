@@ -1,5 +1,6 @@
 import type { AgentAdapter } from './adapter.js';
 import type { TranscriptTurn, TranscriptImage } from './adapter.js';
+import { mimeTypeForExtension, parseJsonlTurns } from './adapter.js';
 import { PROMPT_PREVIEW_CHARS } from '../constants.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -64,55 +65,13 @@ export const cursorAdapter: AgentAdapter = {
   },
 };
 
-/**
- * Parse Cursor's newer JSONL format — similar to Claude's API format
- * but uses 'role' field instead of 'type'.
- */
+/** Parse Cursor's newer JSONL format — same structure as Claude's but uses 'role' field */
 function parseCursorJsonl(content: string): TranscriptTurn[] {
-  const lines = content.split('\n').filter(Boolean);
-  const turns: TranscriptTurn[] = [];
-  let current: TranscriptTurn | null = null;
-
-  for (const line of lines) {
-    let entry: Record<string, unknown>;
-    try { entry = JSON.parse(line); } catch { continue; }
-
-    const role = entry.role as string;
-
-    if (role === 'user') {
-      const msg = entry.message as { content?: Array<{ type: string; text?: string; source?: { type?: string; data?: string; media_type?: string } }> } | undefined;
-      const blocks = Array.isArray(msg?.content) ? msg!.content : [];
-      const hasText = blocks.some((b) => b.type === 'text' && b.text?.trim());
-
-      if (hasText) {
-        if (current) turns.push(current);
-
-        const promptText = blocks
-          .filter((b) => b.type === 'text' && b.text)
-          .map((b) => b.text!)
-          .join('\n')
-          .trim()
-          .slice(0, PROMPT_PREVIEW_CHARS);
-
-        const images: TranscriptImage[] = blocks
-          .filter((b) => b.type === 'image' && b.source?.type === 'base64' && b.source.data)
-          .map((b) => ({ data: b.source!.data!, mediaType: b.source!.media_type ?? 'image/png' }));
-
-        current = { prompt: promptText, toolCount: 0, timestamp: '', ...(images.length > 0 ? { images } : {}) };
-      }
-    } else if (role === 'assistant' && current) {
-      const msg = entry.message as { content?: Array<{ type: string; text?: string }> } | undefined;
-      if (Array.isArray(msg?.content)) {
-        const textParts = msg!.content.filter((b) => b.type === 'text' && b.text).map((b) => b.text!);
-        const text = textParts.join('\n').trim();
-        if (text) current.aiResponse = text;
-        current.toolCount += msg!.content.filter((b) => b.type === 'tool_use').length;
-      }
-    }
-  }
-
-  if (current) turns.push(current);
-  return turns;
+  return parseJsonlTurns(content, {
+    roleField: 'role',
+    extractTimestamp: false,
+    skipToolResultUsers: false,
+  });
 }
 
 /** Parse Cursor's older plain-text transcript format. */
@@ -143,11 +102,7 @@ function parseCursorText(content: string): TranscriptTurn[] {
           const imagePath = match[1].trim();
           try {
             const data = fs.readFileSync(imagePath).toString('base64');
-            const ext = path.extname(imagePath).toLowerCase();
-            const mediaType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
-              : ext === '.gif' ? 'image/gif'
-              : ext === '.webp' ? 'image/webp'
-              : 'image/png';
+            const mediaType = mimeTypeForExtension(path.extname(imagePath));
             images.push({ data, mediaType });
           } catch {
             // Image file not accessible — skip

@@ -38,7 +38,8 @@ Permanent installs register the plugin globally. `--plugin-dir .` is for develop
 
 ```
 src/
-  capture/       # Event buffering (EventBuffer) and transcript mining
+  agents/        # Agent adapters (Claude Code, Cursor) for transcript discovery, parsing, and image capture
+  capture/       # Event buffering (EventBuffer) and buffer-based turn fallback
   config/        # Vault config loading and Zod schema
   context/       # Context injection for UserPromptSubmit hook
   daemon/        # Long-lived HTTP daemon: batch processing, session lifecycle, plan watching
@@ -70,7 +71,7 @@ skills/          # Skill markdown files (subdirectory per skill)
 
 This is Myco's core contract. Violations:
 
-- Session notes MUST append new turns to the existing `## Conversation` section. The `writeSession` call rebuilds frontmatter but MUST preserve all prior turn content.
+- Session notes are rebuilt from the agent's authoritative transcript on each stop event. The transcript file (e.g., Claude's `.jsonl`) is the source of truth — all turns are re-parsed and the `## Conversation` section is regenerated in full. Data preservation is guaranteed by the transcript being append-only, not by the session note's write logic.
 - The degraded stop path (`src/hooks/stop.ts`) MUST NOT write a session file if one already exists. It returns early; the daemon handles it when it's back.
 - Buffer files (`buffer/<session-id>.jsonl`) MUST NOT be deleted on session unregister. Session reload (SessionEnd → SessionStart) reuses the same session ID. Buffers are cleaned up by age (>24h) on daemon startup only.
 - `observation_type` in memory frontmatter accepts any string (`z.string()`). The LLM prompt guides types; the schema MUST NOT reject unexpected values.
@@ -126,6 +127,7 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
   memories/          # Observation notes (subdirectories by type: gotcha/, decision/, etc.)
   plans/             # Plan notes
   artifacts/         # Artifact references
+  attachments/       # Images extracted from session transcripts (Obsidian embeds)
   team/              # Team member notes
   logs/              # Daemon logs
 ```

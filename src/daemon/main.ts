@@ -19,7 +19,7 @@ import { buildSimilarityPrompt } from '../prompts/index.js';
 import { extractNumber } from '../intelligence/response.js';
 import { EMBEDDING_INPUT_LIMIT, CONTENT_SNIPPET_CHARS, CHARS_PER_TOKEN, STALE_BUFFER_MAX_AGE_MS, LINEAGE_RECENT_SESSIONS_LIMIT, RELATED_MEMORIES_LIMIT, CANDIDATE_CONTENT_PREVIEW, SESSION_CONTEXT_MAX_PLANS, PROMPT_CONTEXT_MAX_MEMORIES, PROMPT_CONTEXT_MIN_SIMILARITY, PROMPT_CONTEXT_MIN_LENGTH, CONTEXT_SESSION_PREVIEW_CHARS } from '../constants.js';
 import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-miner.js';
-import { createPerProjectAdapter } from '../agents/adapter.js';
+import { createPerProjectAdapter, extensionForMimeType } from '../agents/adapter.js';
 import { claudeCodeAdapter } from '../agents/claude-code.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { formatSessionBody } from '../obsidian/formatter.js';
@@ -456,7 +456,7 @@ async function main(): Promise<void> {
       turnSource = 'buffer';
     }
     const ended = new Date().toISOString();
-    let started = allTurns.length > 0 ? allTurns[0].timestamp : ended;
+    let started = (allTurns.length > 0 && allTurns[0].timestamp) ? allTurns[0].timestamp : ended;
 
     // Find existing session file and clean up cross-date duplicates in one pass.
     // The session file may be in a different date directory if the session spans days.
@@ -508,7 +508,7 @@ async function main(): Promise<void> {
       const names: string[] = [];
       for (let j = 0; j < turn.images.length; j++) {
         const img = turn.images[j];
-        const ext = img.mediaType === 'image/jpeg' ? 'jpg' : 'png';
+        const ext = extensionForMimeType(img.mediaType);
         const filename = `${bareSessionId(sessionId)}-t${i + 1}-${j + 1}.${ext}`;
         const filePath = path.join(attachmentsDir, filename);
         // Only write if not already present (idempotent)

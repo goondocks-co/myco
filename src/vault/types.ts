@@ -112,6 +112,8 @@ function coerceDatesToStrings(obj: Record<string, unknown>): Record<string, unkn
       result[key] = value.toISOString();
     } else if (Array.isArray(value)) {
       result[key] = value.map((item) => item instanceof Date ? item.toISOString() : item);
+    } else if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      result[key] = coerceDatesToStrings(value as Record<string, unknown>);
     } else {
       result[key] = value;
     }
