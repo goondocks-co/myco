@@ -32,7 +32,7 @@
     "url": "https://github.com/goondocks-co/myco.git"
   },
   "dependencies": {
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "^12.8.0",
     "sqlite-vec": "^0.1.0",
     "chokidar": "^4.0.0",
     "gray-matter": "^4.0.3",
