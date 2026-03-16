@@ -11,7 +11,8 @@
       "name": "myco",
       "source": {
         "source": "npm",
-        "package": "@goondocks-co/myco"
+        "package": "@goondocks-co/myco",
+        "registry": "https://npm.pkg.github.com"
       },
       "description": "Collective agent intelligence — captures session knowledge and serves it back via MCP",
       "license": "MIT",
