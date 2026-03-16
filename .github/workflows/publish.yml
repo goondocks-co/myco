@@ -175,7 +175,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
 
       - name: Set version in all manifests from tag
         env:
@@ -192,7 +191,7 @@ jobs:
       - name: Publish package
         env:
           NPM_TAG: ${{ needs.validate-tag.outputs.npm_tag }}
-        run: npm publish --tag "$NPM_TAG" --provenance --access public
+        run: npm publish --tag "$NPM_TAG" --provenance --access public --registry https://registry.npmjs.org
 
       - name: Publish summary
         env:
@@ -228,6 +227,9 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: cp src/prompts/*.md dist/src/prompts/
+
+      - name: Override scope registry for GitHub Packages
+        run: npm config set @goondocks:registry https://npm.pkg.github.com
 
       - name: Publish package
         env:
