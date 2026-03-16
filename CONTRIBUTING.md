@@ -1,14 +1,12 @@
 # Contributing to Myco
 
-Myco is a Claude Code plugin for collective agent intelligence. This guide covers both the development setup (dogfooding) and how end users install from the public repo.
+Myco is a plugin for collective agent intelligence, supporting Claude Code and Cursor. This guide covers development setup and project conventions. For architecture details, see [Lifecycle docs](docs/lifecycle.md).
 
 ## Installing Myco (End Users)
 
-### From GitHub Packages
-
 ```bash
-claude plugins marketplace add goondocks-co/myco
-claude plugins install myco
+claude plugin marketplace add goondocks-co/myco
+claude plugin install myco@myco-plugins
 ```
 
 Then in any project:
@@ -22,7 +20,7 @@ This sets up the vault, configures your LLM backend, and starts capturing sessio
 ### Requirements
 
 - Node.js 22+
-- Claude Code CLI
+- Claude Code or Cursor
 - An LLM backend: [Ollama](https://ollama.com) (recommended) or an Anthropic API key
 
 For Ollama, pull the recommended models:
@@ -31,17 +29,6 @@ For Ollama, pull the recommended models:
 ollama pull gpt-oss
 ollama pull nomic-embed-text
 ```
-
-## Distribution
-
-Myco is published as `@goondocks-co/myco` on [GitHub Packages](https://github.com/goondocks-co/myco/packages). The `marketplace.json` uses the `npm` source type, so Claude Code runs `npm install` when installing the plugin — this triggers the `prepare` script which builds from source. No pre-built `dist/` in git.
-
-**Publishing flow:**
-
-1. Push to `main` — CI runs lint + tests
-2. Create a GitHub release — triggers the publish workflow
-3. `npm publish` builds and pushes to GitHub Packages
-4. Users get the new version on next `claude plugins install`
 
 ## Development Setup
 
@@ -53,9 +40,7 @@ cd myco
 npm install
 ```
 
-`npm install` triggers `prepare` which runs the full build automatically.
-
-### 2. Install the plugin locally
+### 2. Run locally
 
 For **active development** (per-session, no install needed):
 
@@ -66,21 +51,17 @@ claude --plugin-dir /path/to/myco
 For **persistent local dev** (survives across sessions):
 
 ```bash
-claude plugins marketplace add /path/to/myco/.claude-plugin
-claude plugins install myco
+claude plugin marketplace add /path/to/myco/.claude-plugin
+claude plugin install myco
 ```
 
 ### 3. Initialize the vault
-
-Start a Claude Code session in the myco project directory, then run:
 
 ```
 /myco-init
 ```
 
-This detects the `MYCO_VAULT_DIR` env var from `.claude/settings.json` (set to `~/.myco/vaults/myco`), creates the vault structure, and configures the LLM backend.
-
-The vault lives outside the repo to keep the git history clean. Other projects using Myco can keep their vault in-repo (the default `.myco/` location).
+For dogfooding, the vault lives at `~/.myco/vaults/myco/` (configured via `MYCO_VAULT_DIR` in `.claude/settings.json`).
 
 ### 4. Verify
 
@@ -90,110 +71,73 @@ The vault lives outside the repo to keep the git history clean. Other projects u
 
 ## Development Workflow
 
-### Build
+### Build and test
 
 ```bash
 make build             # lint + test + tsc + copy templates
-make check             # lint + test only
-make clean             # remove dist/
+make check             # lint + test only (pre-commit gate)
 make watch             # tsc watch mode
+make clean             # remove dist/
 ```
 
-Or directly:
+### After code changes
+
+Hooks pick up new code on the next invocation. The daemon must be restarted separately:
 
 ```bash
-npm run build          # tsc + copy prompt templates to dist/
-npm run lint           # tsc --noEmit
-npm test               # vitest run
+make build && node dist/src/cli.js restart
 ```
-
-After building, the next Claude Code hook invocation picks up the new code automatically. There is no daemon to restart — each hook runs as a fresh `node` process against `dist/`.
 
 ## Project Structure
 
 ```
 myco/
-├── .claude-plugin/        # Plugin metadata (plugin.json, marketplace.json)
-├── .claude/settings.json  # Project-level env (sets MYCO_VAULT_DIR)
-├── .github/workflows/     # CI + publish to GitHub Packages
-├── .mcp.json              # MCP server registration
-├── hooks/hooks.json       # Hook event registrations
+├── .claude-plugin/        # Claude Code + VS Code plugin manifest + marketplace
+├── .cursor-plugin/        # Cursor plugin manifest + marketplace
+├── hooks/                 # Hook registration shell scripts
 ├── commands/              # Slash commands (/myco-init, /myco-status, /myco-setup-llm)
-├── skills/                # Agent skills (myco.md)
+├── skills/                # Agent skills
 ├── src/
-│   ├── capture/           # Event buffer, processor, prompt templates
-│   │   └── prompts/       # Markdown templates + schema.yaml
+│   ├── agents/            # Agent adapters (Claude Code, Cursor) — transcript parsing + image capture
+│   ├── capture/           # Event buffering + buffer-based turn fallback
 │   ├── config/            # Config schema and loader
-│   ├── hooks/             # Hook entry points (session-start, stop, etc.)
-│   ├── index/             # SQLite full-text index
-│   ├── intelligence/      # LLM backends (Ollama, LM Studio, Haiku)
-│   ├── mcp/               # MCP server (tools for querying the vault)
-│   └── vault/             # Vault reader/writer, path resolution
-├── dist/                  # Compiled output (gitignored, built by npm prepare)
+│   ├── context/           # Context injection for UserPromptSubmit hook
+│   ├── daemon/            # Long-lived HTTP daemon: session lifecycle, batch processing, plan watching
+│   ├── hooks/             # Hook entry points (thin — delegate to daemon)
+│   ├── index/             # SQLite FTS5 + sqlite-vec vector search
+│   ├── intelligence/      # LLM backends (Ollama, LM Studio, Anthropic)
+│   ├── mcp/               # MCP server + tool handlers
+│   ├── prompts/           # LLM prompt templates
+│   └── vault/             # Reader, writer, Zod schemas for vault notes
+├── tests/                 # Mirrors src/ structure
+├── docs/                  # Lifecycle, quickstart, doc site
 └── Makefile               # Dev shortcuts
 ```
 
 ## Architecture
 
-### Hook Pipeline
+See [docs/lifecycle.md](docs/lifecycle.md) for the full lifecycle with diagrams. Key points:
 
-Hooks fire at key points in a Claude Code session:
+- **Hooks are thin** — they delegate to the daemon via HTTP. No business logic in hooks.
+- **The daemon is the authority** — all event processing, session note writing, and observation extraction happen there.
+- **Transcripts are the source of truth** — session conversation turns are read from the agent's native transcript file (Claude Code `.jsonl`, Cursor `.txt`/`.jsonl`), not from Myco's event buffer. The buffer is the fallback when no transcript is available.
+- **Session notes are rebuilt** — on each stop event, the full conversation is re-parsed from the transcript and the session note is regenerated. Data preservation is guaranteed by the transcript being append-only.
 
-| Hook | File | Purpose |
-|------|------|---------|
-| `SessionStart` | `session-start.ts` | Initialize session buffer |
-| `UserPromptSubmit` | `user-prompt-submit.ts` | Inject vault context into prompts |
-| `PostToolUse` | `post-tool-use.ts` | Capture tool events to buffer |
-| `Stop` | `stop.ts` | Process buffer → extract observations → write to vault |
-| `SessionEnd` | `session-end.ts` | Cleanup |
+## Distribution
 
-### Two-Phase Processing (Stop Hook)
+Published as `@goondocks-co/myco` on [GitHub Packages](https://github.com/goondocks-co/myco/packages).
 
-When a session ends, the buffer is processed in two phases:
-
-1. **Extract observations** — selects a prompt template based on activity pattern (debugging if errors, implementation if >30% edits, exploration if >50% reads, general otherwise), sends to LLM, validates against schema
-2. **Generate summary + title** — sends session data through `session-summary.md` and `session-title.md` templates
-
-Only high and medium importance observations are promoted to vault memory notes.
-
-### Prompt Template System
-
-Templates live in `src/capture/prompts/` as markdown files with YAML frontmatter:
-
-```markdown
----
-name: debugging
-description: For debugging sessions with errors
-activity_filter: Read,Edit,Bash
-min_activities: 2
----
-
-Your prompt content with {{placeholders}}...
-```
-
-`schema.yaml` is the single source of truth for observation types (`gotcha`, `bug_fix`, `decision`, `discovery`, `trade_off`) and activity classifications.
-
-### Vault Location
-
-Resolved by `src/vault/resolve.ts`:
-
-1. `MYCO_VAULT_DIR` env var (with `~/` expansion) — highest priority
-2. `.myco/` in the project root — default
-
-For this project, `.claude/settings.json` sets `MYCO_VAULT_DIR=~/.myco/vaults/myco` to keep the vault out of the repo.
-
-### LLM Backends
-
-Configured in `myco.yaml` under `intelligence`:
-
-- **Ollama** — `gpt-oss` for summaries, `nomic-embed-text` for embeddings
-- **LM Studio** — user picks models from running instance
-- **Cloud** — Claude Haiku via Anthropic API
+1. Push to `main` — CI runs lint + tests
+2. Tag a release (`v0.x.y`) — triggers the publish workflow
+3. `npm publish` builds and pushes to GitHub Packages
+4. Users get the new version via `claude plugin update myco`
 
 ## Conventions
 
-- TypeScript with strict mode
-- ES modules (`"type": "module"` in package.json)
-- Plain `tsc` for build (not bundled — native deps like `better-sqlite3` can't be bundled)
-- Prompt templates are markdown with `{{placeholder}}` syntax, not Handlebars/Mustache
+- TypeScript strict mode, ES modules
+- Plain `tsc` for build (native deps like `better-sqlite3` can't be bundled)
+- `make check` must pass before committing
+- Prompt templates are markdown with `{{placeholder}}` syntax
 - Config is YAML (`myco.yaml`), vault notes are markdown with YAML frontmatter
+- No magic literals — extract named constants
+- Idempotent operations by default

@@ -67,7 +67,7 @@ Myco reads conversation transcripts from Claude Code, Cursor, and any agent that
 
 ## Contributing
 
-Contributions welcome. Please open an issue to discuss before submitting a PR.
+Contributions welcome. See the [Contributing Guide](CONTRIBUTING.md) for development setup, and the [Lifecycle docs](docs/lifecycle.md) for architecture details. Please open an issue to discuss before submitting a PR.
 
 ## License
 
