@@ -6,6 +6,7 @@ import { initFts } from '../index/fts.js';
 import { loadConfig } from '../config/loader.js';
 import { createEmbeddingProvider } from '../intelligence/llm.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
+import { batchExecute, EMBEDDING_BATCH_CONCURRENCY } from '../intelligence/batch.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -30,23 +31,30 @@ export async function run(_args: string[], vaultDir: string): Promise<void> {
       const status = (n.frontmatter as Record<string, unknown>)?.status as string | undefined;
       return status !== 'superseded' && status !== 'archived';
     });
-    let embedded = 0;
-    for (const note of activeNotes) {
-      const text = `${note.title}\n${note.content}`.slice(0, EMBEDDING_INPUT_LIMIT);
-      try {
+
+    console.log(`Embedding ${activeNotes.length} notes (concurrency: ${EMBEDDING_BATCH_CONCURRENCY})...`);
+
+    const result = await batchExecute(
+      activeNotes,
+      async (note) => {
+        const text = `${note.title}\n${note.content}`.slice(0, EMBEDDING_INPUT_LIMIT);
         const emb = await generateEmbedding(embeddingProvider, text);
         vec.upsert(note.id, emb.embedding, {
           type: note.type,
           session_id: (note.frontmatter as Record<string, unknown>)?.session as string ?? '',
         });
-        embedded++;
-        process.stdout.write(`\rEmbedded ${embedded}/${activeNotes.length}`);
-      } catch (e) {
-        console.error(`\nFailed to embed ${note.id}: ${(e as Error).message}`);
-      }
+      },
+      {
+        concurrency: EMBEDDING_BATCH_CONCURRENCY,
+        onProgress: (done, total) => process.stdout.write(`\rEmbedded ${done}/${total}`),
+      },
+    );
+
+    console.log(`\nEmbedded ${result.succeeded} notes (vectors)`);
+    if (result.failed > 0) {
+      console.log(`Failed: ${result.failed}`);
     }
-    console.log(`\nEmbedded ${embedded} notes (vectors)
-Skipped ${allNotes.length - activeNotes.length} superseded/archived`);
+    console.log(`Skipped ${allNotes.length - activeNotes.length} superseded/archived`);
     vec.close();
   } catch (e) {
     console.log(`Vector rebuild skipped: ${(e as Error).message}`);

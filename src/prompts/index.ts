@@ -9,14 +9,35 @@ import { fileURLToPath } from 'node:url';
 import { ARTIFACT_TYPES } from '../vault/types.js';
 import { CANDIDATE_CONTENT_PREVIEW } from '../constants.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+/**
+ * Resolve the prompts directory. With tsup code-splitting, import.meta.url
+ * points to a chunk file (dist/chunk-XXXX.js), not dist/src/prompts/.
+ * Walk up from the current file to find package.json, then use dist/src/prompts/.
+ */
+function resolvePromptsDir(): string {
+  let dir = path.dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 5; i++) {
+    if (fs.existsSync(path.join(dir, 'package.json'))) {
+      return path.join(dir, 'dist', 'src', 'prompts');
+    }
+    // Also check if we're already in the right place (tsc output or dev mode)
+    if (fs.existsSync(path.join(dir, 'extraction.md'))) {
+      return dir;
+    }
+    dir = path.dirname(dir);
+  }
+  // Final fallback: adjacent to current file (works with tsc)
+  return path.dirname(fileURLToPath(import.meta.url));
+}
+
+const PROMPTS_DIR = resolvePromptsDir();
 
 const promptCache = new Map<string, string>();
 
 function loadPrompt(name: string): string {
   let cached = promptCache.get(name);
   if (!cached) {
-    cached = fs.readFileSync(path.join(__dirname, `${name}.md`), 'utf-8').trim();
+    cached = fs.readFileSync(path.join(PROMPTS_DIR, `${name}.md`), 'utf-8').trim();
     promptCache.set(name, cached);
   }
   return cached;

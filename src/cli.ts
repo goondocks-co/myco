@@ -20,6 +20,7 @@ Commands:
   logs [options]           View daemon logs
   restart                  Restart the daemon
   rebuild                  Reindex the entire vault
+  reprocess [options]      Re-extract observations and re-index sessions
 `;
 
 async function main(): Promise<void> {
@@ -47,6 +48,7 @@ async function main(): Promise<void> {
     case 'session': return (await import('./cli/session.js')).run(args, vaultDir);
     case 'restart': return (await import('./cli/restart.js')).run(args, vaultDir);
     case 'rebuild': return (await import('./cli/rebuild.js')).run(args, vaultDir);
+    case 'reprocess': return (await import('./cli/reprocess.js')).run(args, vaultDir);
     case 'logs': return (await import('./cli/logs.js')).run(args, vaultDir);
     default:
       console.error(`Unknown command: ${cmd}`);
