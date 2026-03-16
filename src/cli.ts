@@ -9,6 +9,7 @@ import { createEmbeddingProvider } from './intelligence/llm.js';
 import { generateEmbedding } from './intelligence/embeddings.js';
 import { rebuildIndex } from './index/rebuild.js';
 import { initFts } from './index/fts.js';
+import { AgentRegistry } from './agents/registry.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -498,6 +499,29 @@ logs/
 .obsidian/
 `;
 
+/** Set MYCO_VAULT_DIR in the active agent's config, falling back to all known agents. */
+function configureVaultEnv(projectRoot: string, vaultDir: string): void {
+  const registry = new AgentRegistry();
+  const active = registry.detectActiveAgent();
+
+  if (active) {
+    if (active.configureVaultEnv(projectRoot, vaultDir)) {
+      console.log(`Set MYCO_VAULT_DIR for ${active.displayName}`);
+    }
+  } else {
+    // No active agent detected — try all adapters
+    for (const name of registry.adapterNames) {
+      const adapter = registry.getAdapter(name);
+      if (adapter?.configureVaultEnv(projectRoot, vaultDir)) {
+        console.log(`Set MYCO_VAULT_DIR for ${adapter.displayName}`);
+      }
+    }
+  }
+
+  console.log(`\nFor other agents, add to your shell profile:`);
+  console.log(`  export MYCO_VAULT_DIR="${vaultDir}"\n`);
+}
+
 async function initVault(args: string[]): Promise<void> {
   const vaultPath = parseStringFlag(args, '--vault');
   const llmProvider = parseStringFlag(args, '--llm-provider') ?? 'ollama';
@@ -594,18 +618,11 @@ async function initVault(args: string[]): Promise<void> {
   if (user) console.log(`User:               ${user}`);
   console.log('');
 
-  // Check if vault is outside the project (needs env var)
+  // If vault is outside the project, configure MYCO_VAULT_DIR for the current agent
   const projectRoot = path.resolve('.');
   const isProjectLocal = vaultDir.startsWith(projectRoot);
   if (!isProjectLocal) {
-    console.log('Vault is outside the project directory.');
-    console.log('Set MYCO_VAULT_DIR so hooks and the MCP server can find it:');
-    console.log('');
-    console.log(`  export MYCO_VAULT_DIR="${vaultDir}"`);
-    console.log('');
-    console.log('For Claude Code, add to .claude/settings.json:');
-    console.log(`  { "env": { "MYCO_VAULT_DIR": "${vaultDir}" } }`);
-    console.log('');
+    configureVaultEnv(projectRoot, vaultDir);
   }
 
   console.log('Next: start a coding session — Myco will begin capturing automatically.');

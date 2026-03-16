@@ -153,7 +153,7 @@ make build
 
 | Target | What it does |
 |--------|-------------|
-| `make build` | Runs `check`, then `npm run build` (tsc emit) |
+| `make build` | Runs `check`, then `npm run build` (tsup bundle) |
 | `make check` | Runs `lint` + `test` — the pre-commit gate |
 | `make lint` | `tsc --noEmit` — type checking only, strict mode |
 | `make test` | `vitest run` — all tests |

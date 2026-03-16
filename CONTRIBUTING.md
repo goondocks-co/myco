@@ -135,7 +135,7 @@ Published as `@goondocks/myco` on [npmjs.org](https://www.npmjs.com/package/@goo
 ## Conventions
 
 - TypeScript strict mode, ES modules
-- Plain `tsc` for build (native deps like `better-sqlite3` can't be bundled)
+- `tsup` for bundled builds (native deps `better-sqlite3`/`sqlite-vec` are external, installed at runtime)
 - `make check` must pass before committing
 - Prompt templates are markdown with `{{placeholder}}` syntax
 - Config is YAML (`myco.yaml`), vault notes are markdown with YAML frontmatter

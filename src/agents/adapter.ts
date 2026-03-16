@@ -61,6 +61,13 @@ export interface AgentAdapter {
    * Each adapter handles its agent's specific format.
    */
   parseTurns(content: string): TranscriptTurn[];
+
+  /**
+   * Write MYCO_VAULT_DIR into this agent's project-level config file.
+   * Called during init when the vault is outside the project root.
+   * Returns true if the config was written, false if not applicable.
+   */
+  configureVaultEnv(projectRoot: string, vaultDir: string): boolean;
 }
 
 /**
@@ -97,6 +104,7 @@ export function createPerProjectAdapter(
     hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
     findTranscript: (sessionId) => findJsonlInSubdirs(baseDir, sessionId),
     parseTurns,
+    configureVaultEnv: () => false,
   };
 }
 

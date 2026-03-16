@@ -7,22 +7,17 @@ description: Initialize Myco in the current project — sets up vault, config, a
 
 Set up Myco for this project. Guide the user through:
 
-## Step 0: Detect vault location
+## Step 0: Choose vault location
 
-The vault defaults to `.myco/` in the project root — the team's intelligence lives with the code and is committed to git.
+Ask the user where they want the vault:
 
-Check whether `MYCO_VAULT_DIR` is set as an override:
+> Where would you like to store the Myco vault?
+>
+> 1. **In the project** (`.myco/`) — vault lives with the code, can be committed to git for team sharing
+> 2. **Centralized** (`~/.myco/vaults/<project-name>/`) — vault stays outside the repo, good for public repos or personal use
+> 3. **Custom path** — specify your own location
 
-- Check the process environment for `MYCO_VAULT_DIR`
-- Also check `.claude/settings.json` under the `env` key for `MYCO_VAULT_DIR`
-- If found and non-empty, use that path instead — **do not ask the user where to put the vault**
-- If not found, use `.myco/` in the project root (the default)
-
-The `MYCO_VAULT_DIR` override is for public repos or cases where the vault should be kept separate from the codebase. For most private projects, the default is correct.
-
-Record the **vault path source** for use in the setup summary:
-- `"from MYCO_VAULT_DIR env"` — if the env var override was set
-- `"default (.myco/)"` — project-local vault (recommended for private repos)
+Pass the chosen path to the CLI via `--vault <path>`. The CLI handles all vault setup, env configuration, and agent detection.
 
 ## Step 1: Create vault directory
 
@@ -195,20 +190,9 @@ Everything else is committed: `myco.yaml`, `sessions/`, `memories/`, `plans/`, `
 
 ## Step 6: Vault discovery and MCP
 
-The default `.myco/` vault location requires no configuration — the vault resolver finds it automatically in the project root.
+The `MYCO_VAULT_DIR` env var (if needed) was already set in Step 0. No additional configuration is required.
 
-### If the user chose an external vault (MYCO_VAULT_DIR override)
-
-Set `MYCO_VAULT_DIR` in the agent's settings so hooks and the MCP server can find the vault:
-
-**Claude Code** — write to `.claude/settings.json`:
-```json
-{ "env": { "MYCO_VAULT_DIR": "<external vault path>" } }
-```
-
-**Cursor / VS Code** — instruct the user to set `MYCO_VAULT_DIR` in their shell profile (`~/.zshrc`, `~/.bashrc`), or set it in the MCP server's env block if configuring manually.
-
-### MCP server registration
+**Cursor / VS Code** — if the user chose an external vault path, instruct them to also set `MYCO_VAULT_DIR` in their shell profile (`~/.zshrc`, `~/.bashrc`) so other agents can find it.
 
 All three agents (Claude Code, Cursor, VS Code Copilot) auto-discover the MCP server from the plugin manifest when installed via the marketplace. No manual `.mcp.json` editing is needed.
 
