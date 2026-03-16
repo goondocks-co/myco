@@ -207,19 +207,20 @@ The vault should get sharper over time, not just bigger. Every session should le
 
 ## Maintenance
 
-The CLI is at `dist/src/cli.js` inside the plugin root. The plugin root env var depends on the agent: `CLAUDE_PLUGIN_ROOT` (Claude Code), `CURSOR_PLUGIN_ROOT` (Cursor), etc. Use whichever is set in your environment. Examples below use `MYCO_CLI` as shorthand:
+All CLI commands use `node` with the CLI script inside the plugin root. Run commands as:
 
-```bash
-# Resolve the CLI path (use the appropriate env var for your agent)
-MYCO_CLI="node ${CLAUDE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT}}/dist/src/cli.js"
 ```
+node <plugin-root>/dist/src/cli.js <command> [args]
+```
+
+Where `<plugin-root>` is the agent's plugin root environment variable (e.g., the value of `CLAUDE_PLUGIN_ROOT` or `CURSOR_PLUGIN_ROOT`).
 
 ### Reprocessing sessions
 
-If observations were lost due to a bug, or if you want to re-extract observations with a different LLM:
+If observations were lost due to a bug, or if you want to re-extract observations with a different LLM, run the `reprocess` command:
 
-```bash
-$MYCO_CLI reprocess
+```
+node <plugin-root>/dist/src/cli.js reprocess
 ```
 
 This re-reads all session transcripts, re-extracts observations, and re-indexes everything. Existing memories are preserved — new observations are additive.
@@ -230,11 +231,11 @@ Options:
 
 ### Other maintenance commands
 
-```bash
-$MYCO_CLI version            # Check plugin version
-$MYCO_CLI rebuild            # Re-index all vault notes (FTS + vectors)
-$MYCO_CLI stats              # Check vault health
-$MYCO_CLI verify             # Test provider connectivity
-$MYCO_CLI config get intelligence.llm.model   # View config
-$MYCO_CLI config set intelligence.llm.model gpt-oss  # Change config
+```
+node <plugin-root>/dist/src/cli.js version     # Check plugin version
+node <plugin-root>/dist/src/cli.js rebuild     # Re-index all vault notes
+node <plugin-root>/dist/src/cli.js stats       # Check vault health
+node <plugin-root>/dist/src/cli.js verify      # Test provider connectivity
+node <plugin-root>/dist/src/cli.js config get intelligence.llm.model
+node <plugin-root>/dist/src/cli.js config set intelligence.llm.model gpt-oss
 ```
