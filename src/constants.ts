@@ -48,10 +48,10 @@ export const CLASSIFICATION_MAX_TOKENS = 1024;
 export const DAEMON_CLIENT_TIMEOUT_MS = 2000;
 /** Health check timeout (ms) — fail fast if daemon isn't responding. */
 export const DAEMON_HEALTH_CHECK_TIMEOUT_MS = 500;
-/** LLM request timeout (ms) — prevents hung requests from blocking stop processing. */
-export const LLM_REQUEST_TIMEOUT_MS = 30_000;
-/** Embedding request timeout (ms). */
-export const EMBEDDING_REQUEST_TIMEOUT_MS = 10_000;
+/** LLM request timeout (ms). All LLM calls are background daemon work — no need to be aggressive. */
+export const LLM_REQUEST_TIMEOUT_MS = 180_000;
+/** Embedding request timeout (ms). Embeddings run in background batch processing — generous timeout. */
+export const EMBEDDING_REQUEST_TIMEOUT_MS = 60_000;
 /** Stdin read timeout for hooks (ms). */
 export const STDIN_TIMEOUT_MS = 100;
 /** Chokidar write stability threshold (ms). */
@@ -98,3 +98,11 @@ export const SESSION_CONTEXT_MAX_TOKENS = 500;
 export const PROMPT_CONTEXT_MAX_TOKENS = 300;
 /** Minimum prompt length to trigger context search. */
 export const PROMPT_CONTEXT_MIN_LENGTH = 10;
+
+// --- MCP tool defaults ---
+/** Default result limit for myco_search. */
+export const MCP_SEARCH_DEFAULT_LIMIT = 10;
+/** Default result limit for myco_sessions. */
+export const MCP_SESSIONS_DEFAULT_LIMIT = 20;
+/** Default result limit for myco_logs. */
+export const MCP_LOGS_DEFAULT_LIMIT = 50;

@@ -40,9 +40,14 @@ async function main() {
       session_id: sessionId,
     });
 
-    if (contextResult.ok && contextResult.data?.text) {
-      process.stdout.write(contextResult.data.text);
-    }
+    // Always include the session ID so the agent can pass it to myco_remember.
+    // Uses Session:: format consistent with daemon context injection (Branch::, Session::).
+    const sessionLine = `Session:: \`${sessionId}\``;
+    const contextText = contextResult.ok && contextResult.data?.text
+      ? `${contextResult.data.text}\n${sessionLine}`
+      : sessionLine;
+
+    process.stdout.write(contextText);
   } catch (error) {
     process.stderr.write(`[myco] user-prompt-submit error: ${(error as Error).message}\n`);
   }

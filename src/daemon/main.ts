@@ -790,6 +790,9 @@ export async function main(): Promise<void> {
         parts.push(`Branch:: \`${branch}\``);
       }
 
+      // Always include the session ID so the agent can pass it to myco_remember
+      parts.push(`Session:: \`${session_id}\``);
+
       if (parts.length > 0) {
         return { text: parts.join('\n\n') };
       }
