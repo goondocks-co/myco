@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/goondocks-co/myco/actions/workflows/ci.yml"><img src="https://github.com/goondocks-co/myco/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/goondocks-co/myco/actions/workflows/publish.yml"><img src="https://github.com/goondocks-co/myco/actions/workflows/publish.yml/badge.svg" alt="Release"></a>
-  <a href="https://github.com/goondocks-co/myco/releases/latest"><img src="https://img.shields.io/github/v/release/goondocks-co/myco?label=version&color=22c55e" alt="Version"></a>
+  <a href="https://www.npmjs.com/package/@goondocks/myco"><img src="https://img.shields.io/npm/v/@goondocks/myco?label=npm&color=22c55e" alt="npm"></a>
   <a href="https://github.com/goondocks-co/myco/blob/main/LICENSE"><img src="https://img.shields.io/github/license/goondocks-co/myco?color=22c55e" alt="License"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D22-22c55e" alt="Node 22+">
   <img src="https://img.shields.io/badge/agents-Claude%20%7C%20Cursor%20%7C%20VS%20Code-22c55e" alt="Claude | Cursor | VS Code">
