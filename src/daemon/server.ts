@@ -2,6 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DaemonLogger } from './logger.js';
+import { getPluginVersion } from '../version.js';
 
 export interface DaemonServerConfig {
   vaultDir: string;
@@ -12,6 +13,7 @@ type RouteHandler = (body: unknown) => Promise<unknown>;
 
 export class DaemonServer {
   port = 0;
+  readonly version: string;
   private server: http.Server | null = null;
   private vaultDir: string;
   private logger: DaemonLogger;
@@ -20,6 +22,7 @@ export class DaemonServer {
   constructor(config: DaemonServerConfig) {
     this.vaultDir = config.vaultDir;
     this.logger = config.logger;
+    this.version = getPluginVersion();
     this.registerDefaultRoutes();
   }
 
@@ -59,6 +62,7 @@ export class DaemonServer {
   private registerDefaultRoutes(): void {
     this.registerRoute('GET', '/health', async () => ({
       myco: true,
+      version: this.version,
       pid: process.pid,
       uptime: process.uptime(),
     }));

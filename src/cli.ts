@@ -21,6 +21,7 @@ Commands:
   restart                  Restart the daemon
   rebuild                  Reindex the entire vault
   reprocess [options]      Re-extract observations and re-index sessions
+  version                  Show plugin version
 `;
 
 async function main(): Promise<void> {
@@ -32,6 +33,11 @@ async function main(): Promise<void> {
 
   if (cmd === 'init') return (await import('./cli/init.js')).run(args);
   if (cmd === 'detect-providers') return (await import('./cli/detect-providers.js')).run(args);
+  if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
+    const { getPluginVersion } = await import('./version.js');
+    console.log(getPluginVersion());
+    return;
+  }
 
   const vaultDir = resolveVaultDir();
   if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {

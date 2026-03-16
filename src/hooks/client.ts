@@ -3,10 +3,16 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { DAEMON_CLIENT_TIMEOUT_MS, DAEMON_HEALTH_CHECK_TIMEOUT_MS, DAEMON_HEALTH_RETRY_DELAYS } from '../constants.js';
 import { AgentRegistry } from '../agents/registry.js';
+import { getPluginVersion } from '../version.js';
 
 interface DaemonInfo {
   pid: number;
   port: number;
+}
+
+interface HealthResponse {
+  myco: boolean;
+  version?: string;
 }
 
 interface ClientResult {
@@ -63,13 +69,11 @@ export class DaemonClient {
       const info = this.readDaemonJson();
       if (!info) return false;
 
-      // Health checks use a shorter timeout than regular requests —
-      // if the daemon doesn't respond in 500ms it's effectively down.
       const res = await fetch(`http://127.0.0.1:${info.port}/health`, {
         signal: AbortSignal.timeout(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
       });
       if (!res.ok) return false;
-      const data = await res.json() as Record<string, unknown>;
+      const data = await res.json() as HealthResponse;
       return data.myco === true;
     } catch {
       return false;
@@ -77,11 +81,57 @@ export class DaemonClient {
   }
 
   /**
-   * Ensure the daemon is running. Spawns it if unhealthy and waits for it
-   * to become ready. Returns true if the daemon is healthy after this call.
+   * Check if the daemon is running a stale version.
+   * Returns true if the daemon's version doesn't match the current plugin version.
+   */
+  private async isStale(): Promise<boolean> {
+    try {
+      const info = this.readDaemonJson();
+      if (!info) return false;
+
+      const res = await fetch(`http://127.0.0.1:${info.port}/health`, {
+        signal: AbortSignal.timeout(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
+      });
+      if (!res.ok) return false;
+      const data = await res.json() as HealthResponse;
+      if (!data.myco) return false;
+
+      // No version in response = old daemon that predates this check
+      if (!data.version) return true;
+
+      return data.version !== getPluginVersion();
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Kill the running daemon process.
+   */
+  private killDaemon(): void {
+    try {
+      const info = this.readDaemonJson();
+      if (!info) return;
+      process.kill(info.pid, 'SIGTERM');
+    } catch { /* already dead */ }
+    try {
+      fs.unlinkSync(path.join(this.vaultDir, 'daemon.json'));
+    } catch { /* already gone */ }
+  }
+
+  /**
+   * Ensure the daemon is running the current version. Spawns it if unhealthy
+   * or restarts it if the version is stale. Returns true if healthy after this call.
    */
   async ensureRunning(): Promise<boolean> {
-    if (await this.isHealthy()) return true;
+    // Check if daemon is running but stale (version mismatch)
+    if (await this.isStale()) {
+      this.killDaemon();
+      // Brief pause for port release
+      await new Promise((r) => setTimeout(r, 200));
+    } else if (await this.isHealthy()) {
+      return true;
+    }
 
     this.spawnDaemon();
 
@@ -93,8 +143,6 @@ export class DaemonClient {
   }
 
   spawnDaemon(): void {
-    // Resolve daemon script via agent registry (checks all known agent env vars)
-    // or fall back to relative path from this module.
     const pluginRoot = new AgentRegistry().resolvePluginRoot();
     const daemonScript = pluginRoot
       ? path.join(pluginRoot, 'dist', 'src', 'daemon', 'main.js')

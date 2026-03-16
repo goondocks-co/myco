@@ -2,24 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-function getPackageVersion(): string {
-  try {
-    // Walk up from current file to find package.json (works with both tsc and tsup)
-    let dir = path.dirname(fileURLToPath(import.meta.url));
-    for (let i = 0; i < 5; i++) {
-      const pkgPath = path.join(dir, 'package.json');
-      if (fs.existsSync(pkgPath)) {
-        return (JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as { version: string }).version;
-      }
-      dir = path.dirname(dir);
-    }
-    return '0.0.0';
-  } catch {
-    return '0.0.0';
-  }
-}
+import { getPluginVersion } from '../version.js';
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
@@ -204,7 +187,7 @@ export interface MycoServer {
 
 export function createMycoServer(config: ServerConfig): MycoServer {
   const server = new Server(
-    { name: 'myco', version: getPackageVersion() },
+    { name: 'myco', version: getPluginVersion() },
     { capabilities: { tools: {} } },
   );
 
