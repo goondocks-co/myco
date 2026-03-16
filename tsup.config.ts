@@ -9,9 +9,10 @@ export default defineConfig({
     'src/hooks/stop': 'src/hooks/stop.ts',
     'src/hooks/user-prompt-submit': 'src/hooks/user-prompt-submit.ts',
     'src/hooks/post-tool-use': 'src/hooks/post-tool-use.ts',
-    // Entry wrappers — dynamic import so main() is called explicitly
-    // (tsup code-splitting moves the module into a chunk whose filename
-    // differs from process.argv[1], so inline entry-point guards break)
+    // Entry wrappers — ensureNativeDeps() before dynamic import, then
+    // call main() explicitly (tsup code-splitting moves the module into
+    // a chunk whose filename differs from process.argv[1], so inline
+    // entry-point guards break)
     'src/hooks/session-start': 'src/entries/session-start.ts',
     'src/mcp/server': 'src/entries/mcp-server.ts',
     'src/cli': 'src/entries/cli.ts',
@@ -28,8 +29,7 @@ export default defineConfig({
     js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);",
   },
   // Native modules cannot be bundled — they need platform-specific binaries.
-  // Claude Code installs node_modules (including native deps) when loading
-  // plugins from the marketplace, so they're available at runtime.
+  // These are installed at runtime via ensureNativeDeps() on first use.
   external: ['better-sqlite3', 'sqlite-vec'],
   // Do not generate .d.ts — this is a plugin, not a library
   dts: false,

@@ -203,6 +203,7 @@ export async function main(): Promise<void> {
   const bufferDir = path.join(vaultDir, 'buffer');
   const sessionBuffers = new Map<string, EventBuffer>();
   const sessionFilePaths = new Map<string, Set<string>>();
+  const capturedArtifactPaths = new Map<string, Set<string>>();
 
   // Clean up stale buffer files (>24h) on startup
   if (fs.existsSync(bufferDir)) {
@@ -297,6 +298,38 @@ export async function main(): Promise<void> {
       observations: result.observations.length,
       degraded: result.degraded,
     });
+
+    // Incremental artifact capture: process new markdown files at turn boundaries
+    // instead of waiting for session end. Only classify files not yet captured.
+    const allPaths = sessionFilePaths.get(sessionId);
+    const alreadyCaptured = capturedArtifactPaths.get(sessionId) ?? new Set<string>();
+    if (allPaths && allPaths.size > alreadyCaptured.size) {
+      const newPaths = new Set([...allPaths].filter((p) => !alreadyCaptured.has(p)));
+      const candidates = collectArtifactCandidates(
+        newPaths,
+        { artifact_extensions: config.capture.artifact_extensions },
+        process.cwd(),
+      );
+      if (candidates.length > 0) {
+        processor.classifyArtifacts(candidates, sessionId)
+          .then((classified) => captureArtifacts(candidates, classified, sessionId, { vault, ...indexDeps }, lineageGraph))
+          .then(() => {
+            // Mark these paths as captured so we don't re-classify them
+            if (!capturedArtifactPaths.has(sessionId)) {
+              capturedArtifactPaths.set(sessionId, new Set());
+            }
+            const captured = capturedArtifactPaths.get(sessionId)!;
+            for (const c of candidates) {
+              // candidates have relative paths; sessionFilePaths has absolute paths
+              const absPath = path.resolve(process.cwd(), c.path);
+              captured.add(absPath);
+            }
+          })
+          .catch((err) => logger.warn('processor', 'Incremental artifact capture failed', {
+            session_id: sessionId, error: (err as Error).message,
+          }));
+      }
+    }
   });
 
   // Session routes
@@ -356,6 +389,7 @@ export async function main(): Promise<void> {
     // We DO prune the in-memory Map entries to avoid unbounded growth.
     sessionBuffers.delete(session_id);
     sessionFilePaths.delete(session_id);
+    capturedArtifactPaths.delete(session_id);
     server.updateDaemonJsonSessions(registry.sessions);
     logger.info('lifecycle', 'Session unregistered', { session_id });
     return { ok: true, sessions: registry.sessions };
@@ -391,6 +425,9 @@ export async function main(): Promise<void> {
             sessionFilePaths.set(event.session_id, new Set());
           }
           sessionFilePaths.get(event.session_id)!.add(filePath);
+          // Invalidate captured status so edits to already-captured files
+          // trigger re-classification on the next turn boundary
+          capturedArtifactPaths.get(event.session_id)?.delete(filePath);
         }
       }
     }
@@ -507,10 +544,12 @@ export async function main(): Promise<void> {
       existingTurnCount = turnMatches?.length ?? 0;
     }
 
-    // Collect artifact candidates (no LLM yet)
+    // Collect artifact candidates (no LLM yet) — only files not already captured incrementally
     const writtenFiles = sessionFilePaths.get(sessionId) ?? new Set<string>();
+    const alreadyCaptured = capturedArtifactPaths.get(sessionId) ?? new Set<string>();
+    const uncapturedFiles = new Set([...writtenFiles].filter((p) => !alreadyCaptured.has(p)));
     const artifactCandidates = collectArtifactCandidates(
-      writtenFiles,
+      uncapturedFiles,
       { artifact_extensions: config.capture.artifact_extensions },
       process.cwd(),
     );
