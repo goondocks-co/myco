@@ -163,6 +163,16 @@ describe('isExcludedPath', () => {
   it('does not exclude legitimate docs', () => {
     expect(isExcludedPath('docs/spec.md')).toBe(false);
     expect(isExcludedPath('docs/superpowers/plans/plan.md')).toBe(false);
-    expect(isExcludedPath('src/README.md')).toBe(false);
+  });
+
+  it('excludes common project files that are not artifacts', () => {
+    expect(isExcludedPath('README.md')).toBe(true);
+    expect(isExcludedPath('src/README.md')).toBe(true);
+    expect(isExcludedPath('CONTRIBUTING.md')).toBe(true);
+    expect(isExcludedPath('.github/pull_request_template.md')).toBe(true);
+  });
+
+  it('excludes cursor plugin directory', () => {
+    expect(isExcludedPath('.cursor-plugin/plugin.json')).toBe(true);
   });
 });

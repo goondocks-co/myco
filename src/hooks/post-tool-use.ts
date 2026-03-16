@@ -15,6 +15,9 @@ async function main() {
     const sessionId = input.session_id ?? process.env.MYCO_SESSION_ID ?? `s-${Date.now()}`;
 
     const client = new DaemonClient(VAULT_DIR);
+
+    // PostToolUse fires frequently — don't spawn the daemon here.
+    // If it's down, buffer to disk. The stop or prompt hook will respawn it.
     const result = await client.post('/events', {
       type: 'tool_use',
       tool_name: input.tool_name,

@@ -34,6 +34,11 @@ export const cursorAdapter: AgentAdapter = {
   name: 'cursor',
   displayName: 'Cursor',
   pluginRootEnvVar: 'CURSOR_PLUGIN_ROOT',
+  hookFields: {
+    transcriptPath: 'transcript_path',
+    lastResponse: 'last_assistant_message',
+    sessionId: 'conversation_id',
+  },
 
   findTranscript(sessionId: string): string | null {
     try {
@@ -71,6 +76,7 @@ function parseCursorJsonl(content: string): TranscriptTurn[] {
     roleField: 'role',
     extractTimestamp: false,
     skipToolResultUsers: false,
+    stripImageTextRefs: false,
   });
 }
 

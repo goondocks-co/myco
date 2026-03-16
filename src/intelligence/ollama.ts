@@ -1,5 +1,5 @@
 import type { LlmProvider, EmbeddingProvider, LlmResponse, EmbeddingResponse, LlmRequestOptions } from './llm.js';
-import { CHARS_PER_TOKEN } from '../constants.js';
+import { CHARS_PER_TOKEN, LLM_REQUEST_TIMEOUT_MS, EMBEDDING_REQUEST_TIMEOUT_MS, DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 
 interface OllamaConfig {
   model?: string;
@@ -39,6 +39,7 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
         stream: false,
         options: { num_ctx: numCtx },
       }),
+      signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -57,6 +58,7 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
         model: this.model,
         input: text,
       }),
+      signal: AbortSignal.timeout(EMBEDDING_REQUEST_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -70,7 +72,9 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/tags`);
+      const response = await fetch(`${this.baseUrl}/api/tags`, {
+        signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
+      });
       return response.ok;
     } catch {
       return false;

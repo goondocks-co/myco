@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
+import { spawn } from 'node:child_process';
+import { DAEMON_CLIENT_TIMEOUT_MS, DAEMON_HEALTH_CHECK_TIMEOUT_MS, DAEMON_HEALTH_RETRY_DELAYS } from '../constants.js';
+import { AgentRegistry } from '../agents/registry.js';
 
 interface DaemonInfo {
   pid: number;
@@ -57,8 +59,53 @@ export class DaemonClient {
   }
 
   async isHealthy(): Promise<boolean> {
-    const result = await this.get('/health');
-    return result.ok && result.data?.myco === true;
+    try {
+      const info = this.readDaemonJson();
+      if (!info) return false;
+
+      // Health checks use a shorter timeout than regular requests —
+      // if the daemon doesn't respond in 500ms it's effectively down.
+      const res = await fetch(`http://127.0.0.1:${info.port}/health`, {
+        signal: AbortSignal.timeout(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
+      });
+      if (!res.ok) return false;
+      const data = await res.json() as Record<string, unknown>;
+      return data.myco === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Ensure the daemon is running. Spawns it if unhealthy and waits for it
+   * to become ready. Returns true if the daemon is healthy after this call.
+   */
+  async ensureRunning(): Promise<boolean> {
+    if (await this.isHealthy()) return true;
+
+    this.spawnDaemon();
+
+    for (const delay of DAEMON_HEALTH_RETRY_DELAYS) {
+      await new Promise((r) => setTimeout(r, delay));
+      if (await this.isHealthy()) return true;
+    }
+    return false;
+  }
+
+  spawnDaemon(): void {
+    // Resolve daemon script via agent registry (checks all known agent env vars)
+    // or fall back to relative path from this module.
+    const pluginRoot = new AgentRegistry().resolvePluginRoot();
+    const daemonScript = pluginRoot
+      ? path.join(pluginRoot, 'dist', 'src', 'daemon', 'main.js')
+      : path.resolve(import.meta.dirname, '..', 'daemon', 'main.js');
+    if (!fs.existsSync(daemonScript)) return;
+
+    const child = spawn('node', [daemonScript, '--vault', this.vaultDir], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
   }
 
   private readDaemonJson(): DaemonInfo | null {

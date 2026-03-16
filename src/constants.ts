@@ -45,7 +45,13 @@ export const CLASSIFICATION_MAX_TOKENS = 1024;
 
 // --- Timeouts ---
 /** Daemon client HTTP request timeout (ms). */
-export const DAEMON_CLIENT_TIMEOUT_MS = 5000;
+export const DAEMON_CLIENT_TIMEOUT_MS = 2000;
+/** Health check timeout (ms) — fail fast if daemon isn't responding. */
+export const DAEMON_HEALTH_CHECK_TIMEOUT_MS = 500;
+/** LLM request timeout (ms) — prevents hung requests from blocking stop processing. */
+export const LLM_REQUEST_TIMEOUT_MS = 30_000;
+/** Embedding request timeout (ms). */
+export const EMBEDDING_REQUEST_TIMEOUT_MS = 10_000;
 /** Stdin read timeout for hooks (ms). */
 export const STDIN_TIMEOUT_MS = 100;
 /** Chokidar write stability threshold (ms). */

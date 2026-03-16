@@ -169,14 +169,21 @@ For detailed patterns on when and how to consolidate, read `references/wisdom.md
 
 ## Wisdom — Keeping the Vault Clean
 
-As the vault grows, the agent should notice and act on these signals:
+Memories are injected into every prompt via the `UserPromptSubmit` hook. Each injected memory includes its ID (e.g., `[decision-abc123]`). When you see an injected memory that contradicts what you just did or know to be outdated, **supersede it immediately** — don't wait to be asked. This is how the vault stays accurate.
 
-- **Conflicting memories**: `myco_search` returns memories that disagree — supersede the outdated one
-- **Recurring gotchas**: the same problem keeps being recorded — consolidate into one definitive note
-- **Stale decisions**: a decision references a component that's been significantly refactored — supersede it
-- **Overlapping content**: a `myco_remember` call produces content similar to an existing memory — consider superseding instead of creating a duplicate
+**Proactive superseding during normal work:**
 
-Don't wait to be asked. When you notice these patterns during normal work, act on them proactively. The vault should get sharper over time, not just bigger.
+- You just changed how the stop hook works → an injected memory says it works the old way → `myco_supersede` with the old ID and a new `myco_remember` capturing the current behavior
+- You see two injected memories that say conflicting things → supersede the older one
+- An injected gotcha references code that was refactored → supersede it
+
+**Other signals to act on:**
+
+- **Recurring gotchas**: the same problem keeps being recorded → `myco_consolidate` into one definitive note
+- **Overlapping content**: a `myco_remember` would duplicate an existing memory → `myco_supersede` with updated content instead
+- **Stale decisions**: a decision references a deleted component or reversed approach → supersede it
+
+The vault should get sharper over time, not just bigger. Every session should leave the vault more accurate than it found it.
 
 ## Patterns
 

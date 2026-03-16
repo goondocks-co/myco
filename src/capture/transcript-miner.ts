@@ -1,6 +1,7 @@
 import { AgentRegistry } from '../agents/registry.js';
 import type { AgentAdapter } from '../agents/adapter.js';
 import { PROMPT_PREVIEW_CHARS } from '../constants.js';
+import fs from 'node:fs';
 
 // Re-export TranscriptTurn from its canonical home in agents/adapter.ts
 export type { TranscriptTurn } from '../agents/adapter.js';
@@ -19,20 +20,25 @@ export class TranscriptMiner {
   }
 
   /**
-   * Extract all conversation turns from a session's transcript.
-   * Tries each registered agent adapter in priority order.
-   * Returns turns in chronological order, or empty if no transcript found.
+   * Extract all conversation turns for a session.
+   * Convenience wrapper — delegates to getAllTurnsWithSource.
    */
   getAllTurns(sessionId: string): TranscriptTurn[] {
-    const result = this.registry.getTranscriptTurns(sessionId);
-    return result?.turns ?? [];
+    return this.getAllTurnsWithSource(sessionId).turns;
   }
 
   /**
-   * Extract turns and report which agent's transcript was used.
-   * The daemon uses the source for logging.
+   * Extract turns using the hook-provided transcript path first (fast, no scanning),
+   * then fall back to adapter registry scanning if the path isn't provided.
    */
-  getAllTurnsWithSource(sessionId: string): { turns: TranscriptTurn[]; source: string } {
+  getAllTurnsWithSource(sessionId: string, transcriptPath?: string): { turns: TranscriptTurn[]; source: string } {
+    // Primary: use the path provided by the hook (no directory scanning needed)
+    if (transcriptPath) {
+      const result = this.registry.parseTurnsFromPath(transcriptPath);
+      if (result) return result;
+    }
+
+    // Fallback: scan known agent directories
     const result = this.registry.getTranscriptTurns(sessionId);
     if (result) return result;
     return { turns: [], source: 'none' };

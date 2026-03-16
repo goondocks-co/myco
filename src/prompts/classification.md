@@ -14,7 +14,9 @@ For each file that is a substantive project artifact (design doc, specification,
 - Configuration files, dotfiles, settings
 - Implementation code, test files, generated output
 - Prompt templates used by the tool/plugin itself
-- README files that describe tool usage rather than project architecture
+- README, CONTRIBUTING, CHANGELOG, LICENSE files
+- GitHub/CI templates: pull request templates, issue templates, workflow files
+- Documentation that describes how to use the tool or repo (quickstart guides, lifecycle docs)
 
 **DO classify these — they are project artifacts:**
 - Design specifications and architecture documents
