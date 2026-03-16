@@ -12,15 +12,22 @@ const EXCLUDED_FILENAMES = new Set([
   'claude.md',
   'agents.md',
   'gemini.md',
+  'readme.md',
+  'contributing.md',
+  'changelog.md',
+  'license.md',
+  'pull_request_template.md',
 ]);
 
-/** Directory prefixes (relative to project root) that contain plugin/agent components. */
+/** Directory prefixes (relative to project root) that contain plugin/agent components or repo infrastructure. */
 const EXCLUDED_PREFIXES = [
   'commands/',
   'skills/',
   'hooks/',
   '.claude-plugin/',
+  '.cursor-plugin/',
   '.claude/',
+  '.github/',
 ];
 
 /**

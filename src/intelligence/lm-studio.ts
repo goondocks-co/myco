@@ -1,4 +1,5 @@
 import type { LlmProvider, EmbeddingProvider, LlmResponse, EmbeddingResponse, LlmRequestOptions } from './llm.js';
+import { LLM_REQUEST_TIMEOUT_MS, EMBEDDING_REQUEST_TIMEOUT_MS, DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 
 interface LmStudioConfig {
   model?: string;
@@ -32,6 +33,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
         messages: [{ role: 'user', content: prompt }],
         max_tokens: maxTokens,
       }),
+      signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -53,6 +55,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
         model: this.model,
         input: text,
       }),
+      signal: AbortSignal.timeout(EMBEDDING_REQUEST_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -69,7 +72,9 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.baseUrl}/v1/models`);
+      const response = await fetch(`${this.baseUrl}/v1/models`, {
+        signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
+      });
       return response.ok;
     } catch {
       return false;

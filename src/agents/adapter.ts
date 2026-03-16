@@ -27,6 +27,19 @@ export interface TranscriptTurn {
   images?: TranscriptImage[];
 }
 
+/**
+ * Maps agent-specific hook field names to normalized names.
+ * Each agent's hook system uses different field names for the same data.
+ */
+export interface HookFieldNames {
+  /** Field name for the transcript file path (e.g., 'transcript_path') */
+  transcriptPath: string;
+  /** Field name for the last AI response text (e.g., 'last_assistant_message') */
+  lastResponse: string;
+  /** Field name for the session ID (e.g., 'session_id') */
+  sessionId: string;
+}
+
 export interface AgentAdapter {
   /** Agent identifier (matches plugin directory names) */
   readonly name: string;
@@ -34,6 +47,8 @@ export interface AgentAdapter {
   readonly displayName: string;
   /** Environment variable for the plugin root directory */
   readonly pluginRootEnvVar: string;
+  /** Maps agent-specific hook body field names to normalized names */
+  readonly hookFields: HookFieldNames;
 
   /**
    * Find the transcript file for a given session ID.
@@ -79,6 +94,7 @@ export function createPerProjectAdapter(
     name: name ?? `custom:${path.basename(baseDir)}`,
     displayName: `Custom (${baseDir})`,
     pluginRootEnvVar: '',
+    hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
     findTranscript: (sessionId) => findJsonlInSubdirs(baseDir, sessionId),
     parseTurns,
   };
@@ -111,6 +127,9 @@ export function mimeTypeForExtension(ext: string): string {
 
 import { PROMPT_PREVIEW_CHARS } from '../constants.js';
 
+/** Claude Code injects [Image: source: /path] text alongside base64 image blocks. Strip these since the actual images are captured as Obsidian embeds. */
+const IMAGE_TEXT_REF_PATTERN = /\[Image: source: [^\]]+\]\n*/g;
+
 export interface ParseJsonlOptions {
   /** Field name containing the message role ('type' for Claude Code, 'role' for Cursor) */
   roleField: 'type' | 'role';
@@ -118,6 +137,8 @@ export interface ParseJsonlOptions {
   extractTimestamp: boolean;
   /** Whether to check for text-only user messages (Claude Code has tool_result user messages to skip) */
   skipToolResultUsers: boolean;
+  /** Whether to strip [Image: source: ...] text references from prompts (Claude Code-specific) */
+  stripImageTextRefs: boolean;
 }
 
 /**
@@ -146,10 +167,12 @@ export function parseJsonlTurns(content: string, opts: ParseJsonlOptions): Trans
 
       if (current) turns.push(current);
 
-      const promptText = blocks
+      const rawPrompt = blocks
         .filter((b) => b.type === 'text' && b.text)
         .map((b) => b.text!)
-        .join('\n')
+        .join('\n');
+
+      const promptText = (opts.stripImageTextRefs ? rawPrompt.replace(IMAGE_TEXT_REF_PATTERN, '') : rawPrompt)
         .trim()
         .slice(0, PROMPT_PREVIEW_CHARS);
 

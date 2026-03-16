@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { LlmProvider, LlmResponse, EmbeddingResponse, LlmRequestOptions } from './llm.js';
+import { LLM_REQUEST_TIMEOUT_MS } from '../constants.js';
 
 interface AnthropicConfig {
   model?: string;
@@ -25,7 +26,7 @@ export class AnthropicBackend implements LlmProvider {
       model: this.model,
       max_tokens: maxTokens,
       messages: [{ role: 'user', content: prompt }],
-    });
+    }, { timeout: LLM_REQUEST_TIMEOUT_MS });
 
     const text = response.content
       .filter((block): block is Anthropic.TextBlock => block.type === 'text')

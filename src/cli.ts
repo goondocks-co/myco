@@ -279,6 +279,7 @@ function session(vaultDir: string, idOrLatest?: string): void {
 async function restart(vaultDir: string): Promise<void> {
   const daemonPath = path.join(vaultDir, 'daemon.json');
 
+  // Kill existing daemon if running
   if (fs.existsSync(daemonPath)) {
     try {
       const daemon = JSON.parse(fs.readFileSync(daemonPath, 'utf-8'));
@@ -289,40 +290,26 @@ async function restart(vaultDir: string): Promise<void> {
         console.log(`Daemon pid ${daemon.pid} was already dead`);
       }
     } catch { /* ignore */ }
-    fs.unlinkSync(daemonPath);
+    try { fs.unlinkSync(daemonPath); } catch { /* already gone */ }
   }
 
-  // Spawn new daemon
-  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ?? path.resolve(import.meta.dirname, '..', '..');
-  const daemonScript = path.join(pluginRoot, 'dist', 'src', 'daemon', 'main.js');
-
-  if (!fs.existsSync(daemonScript)) {
-    console.error(`Daemon script not found: ${daemonScript}`);
-    console.log('Run npm run build first');
-    process.exit(1);
-  }
-
-  const { spawn } = await import('node:child_process');
-  const child = spawn('node', [daemonScript, '--vault', vaultDir], {
-    detached: true,
-    stdio: 'ignore',
-  });
-  child.unref();
-
-  console.log(`Spawned new daemon (pid ${child.pid})`);
-  console.log('Waiting for health check...');
-
+  // Spawn and wait for health using the shared client
+  // (handles CLAUDE_PLUGIN_ROOT + CURSOR_PLUGIN_ROOT resolution)
   const { DaemonClient } = await import('./hooks/client.js');
   const client = new DaemonClient(vaultDir);
-  for (const delay of [200, 400, 800, 1500]) {
-    await new Promise((r) => setTimeout(r, delay));
-    if (await client.isHealthy()) {
+
+  console.log('Waiting for health check...');
+  const healthy = await client.ensureRunning();
+  if (healthy) {
+    try {
       const info = JSON.parse(fs.readFileSync(daemonPath, 'utf-8'));
       console.log(`Daemon healthy on port ${info.port}`);
-      return;
+    } catch {
+      console.log('Daemon healthy');
     }
+  } else {
+    console.error('Daemon failed to become healthy');
   }
-  console.error('Daemon failed to become healthy');
 }
 
 async function rebuild(vaultDir: string): Promise<void> {

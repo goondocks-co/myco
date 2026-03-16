@@ -1,5 +1,6 @@
 import { DaemonClient } from './client.js';
 import { readStdin } from './read-stdin.js';
+import { EventBuffer } from '../capture/buffer.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,6 +15,11 @@ async function main() {
     const sessionId = input.session_id ?? `s-${Date.now()}`;
 
     const client = new DaemonClient(VAULT_DIR);
+    // Spawn daemon if needed but don't block on full health check backoff.
+    // The event POST will fail fast if daemon isn't ready — buffer absorbs it.
+    if (!(await client.isHealthy())) {
+      client.spawnDaemon();
+    }
 
     // Forward prompt as event for capture
     const eventResult = await client.post('/events', {
@@ -21,12 +27,9 @@ async function main() {
     });
 
     if (!eventResult.ok) {
-      const bufferDir = path.join(VAULT_DIR, 'buffer');
-      fs.mkdirSync(bufferDir, { recursive: true });
-      fs.appendFileSync(
-        path.join(bufferDir, `${sessionId}.jsonl`),
-        JSON.stringify({ type: 'user_prompt', prompt, timestamp: new Date().toISOString() }) + '\n',
-      );
+      // Daemon still unreachable — write directly to buffer for later processing
+      const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
+      buffer.append({ type: 'user_prompt', prompt });
     }
 
     // Search for relevant memories to inject as context for this prompt.

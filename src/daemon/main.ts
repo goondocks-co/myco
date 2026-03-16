@@ -234,7 +234,12 @@ async function main(): Promise<void> {
   });
   const UnregisterBody = z.object({ session_id: z.string() });
   const EventBody = z.object({ type: z.string(), session_id: z.string() }).passthrough();
-  const StopBody = z.object({ session_id: z.string(), user: z.string().optional() });
+  const StopBody = z.object({
+    session_id: z.string(),
+    user: z.string().optional(),
+    transcript_path: z.string().optional(),
+    last_assistant_message: z.string().optional(),
+  });
   const ContextBody = z.object({
     session_id: z.string().optional(),
     branch: z.string().optional(),
@@ -393,73 +398,90 @@ async function main(): Promise<void> {
   });
 
   server.registerRoute('POST', '/events/stop', async (body: unknown) => {
-    const { session_id: sessionId, user } = StopBody.parse(body);
+    const { session_id: sessionId, user, transcript_path: hookTranscriptPath, last_assistant_message: lastAssistantMessage } = StopBody.parse(body);
     // Ensure session is registered (handles daemon restarts mid-session)
     if (!registry.getSession(sessionId)) {
       registry.register(sessionId, { started_at: new Date().toISOString() });
       logger.debug('lifecycle', 'Auto-registered session from stop event', { session_id: sessionId });
     }
     const sessionMeta = registry.getSession(sessionId);
-    logger.info('hooks', 'Stop received', { session_id: sessionId });
+    logger.info('hooks', 'Stop received', { session_id: sessionId, has_transcript_path: !!hookTranscriptPath, has_response: !!lastAssistantMessage });
 
     // Respond immediately — the hook should not block on LLM processing.
-    // All heavy work (observation extraction, summarization, artifact capture,
-    // lineage detection) runs asynchronously after the response.
-    // Track active processing so shutdown can wait for completion.
-    activeStopProcessing = processStopEvent(sessionId, user, sessionMeta).catch((err) => {
+    // Serialize stop processing: if a previous stop is still running, chain
+    // the new one to run after it completes. This prevents concurrent
+    // processStopEvent calls from racing on the same session file.
+    const run = () => processStopEvent(sessionId, user, sessionMeta, hookTranscriptPath, lastAssistantMessage).catch((err) => {
       logger.error('processor', 'Stop processing failed', { session_id: sessionId, error: (err as Error).message });
-    }).finally(() => { activeStopProcessing = null; });
+    });
+
+    // Chain onto any in-flight processing. Only the tail of the chain clears the variable.
+    const prev = activeStopProcessing ?? Promise.resolve();
+    activeStopProcessing = prev.then(run).finally(() => { activeStopProcessing = null; });
 
     return { ok: true };
   });
 
-  async function processStopEvent(sessionId: string, user: string | undefined, sessionMeta: RegisteredSession | undefined): Promise<void> {
+  async function processStopEvent(
+    sessionId: string,
+    user: string | undefined,
+    sessionMeta: RegisteredSession | undefined,
+    hookTranscriptPath?: string,
+    lastAssistantMessage?: string,
+  ): Promise<void> {
 
-    // Finalize the last open batch and process it for observation extraction.
-    // Observations come from user prompts and tool uses in the batch — AI responses
-    // are not needed here. The full conversation (including AI responses) is read
-    // from the Claude transcript file below.
+    // --- Phase 1: Gather data (I/O only, no LLM) ---
+
     const lastBatch = batchManager.finalize(sessionId);
 
-    if (lastBatch.length > 0) {
-      const asRecords = lastBatch as Array<Record<string, unknown>>;
-      const result = await processor.process(asRecords, sessionId);
+    // Tiered turn extraction:
+    // 1. Read transcript for complete turns (with AI responses)
+    // 2. Check buffer for prompts newer than the transcript's last turn
+    //    (captures turns the transcript missed, e.g., after context compaction)
+    // 3. Fall back to buffer entirely if no transcript found
+    const transcriptResult = transcriptMiner.getAllTurnsWithSource(sessionId, hookTranscriptPath);
+    let allTurns = transcriptResult.turns;
+    let turnSource = transcriptResult.source;
 
-      if (!result.degraded) {
-        writeObservations(result.observations, sessionId, { vault, ...indexDeps });
+    const bufferEvents = sessionBuffers.get(sessionId)?.readAll() ?? [];
+
+    if (allTurns.length === 0) {
+      // No transcript — use buffer as primary source
+      allTurns = extractTurnsFromBuffer(bufferEvents);
+      turnSource = 'buffer';
+    } else if (bufferEvents.length > 0) {
+      // Transcript exists — check for buffer events newer than the last transcript turn.
+      // These are prompts the transcript missed (e.g., after context compaction).
+      const lastTranscriptTs = allTurns[allTurns.length - 1].timestamp;
+      if (lastTranscriptTs) {
+        const newerEvents = bufferEvents.filter((e) =>
+          String(e.timestamp ?? '') > lastTranscriptTs,
+        );
+        if (newerEvents.length > 0) {
+          const bufferTurns = extractTurnsFromBuffer(newerEvents);
+          allTurns = [...allTurns, ...bufferTurns];
+          turnSource = `${transcriptResult.source}+buffer`;
+          logger.info('processor', 'Appended buffer turns missing from transcript', {
+            session_id: sessionId, transcriptTurns: transcriptResult.turns.length, bufferTurns: bufferTurns.length,
+          });
+        }
       }
     }
 
-    // --- Artifact capture (runs concurrently with session building below) ---
-    const writtenFiles = sessionFilePaths.get(sessionId) ?? new Set<string>();
-    const artifactCandidates = collectArtifactCandidates(
-      writtenFiles,
-      { artifact_extensions: config.capture.artifact_extensions },
-      process.cwd(),
-    );
-
-    const artifactPromise = artifactCandidates.length > 0
-      ? processor.classifyArtifacts(artifactCandidates, sessionId)
-          .then((classified) => captureArtifacts(artifactCandidates, classified, sessionId, { vault, ...indexDeps }, lineageGraph))
-          .catch((err) => logger.warn('processor', 'Artifact capture failed', { session_id: sessionId, error: (err as Error).message }))
-      : Promise.resolve();
-
-    // Tiered turn extraction:
-    // 1. Try agent transcripts via registry (Claude Code, Cursor, etc.) — complete with AI responses
-    // 2. Fall back to buffer events — prompts + tool counts only, no AI responses
-    const transcriptResult = transcriptMiner.getAllTurnsWithSource(sessionId);
-    let allTurns = transcriptResult.turns;
-    let turnSource = transcriptResult.source;
-    if (allTurns.length === 0) {
-      const bufferEvents = sessionBuffers.get(sessionId)?.readAll() ?? [];
-      allTurns = extractTurnsFromBuffer(bufferEvents);
-      turnSource = 'buffer';
+    // Attach the last assistant message from the hook to the most recent turn
+    // that doesn't already have an AI response. This captures the response
+    // for turns the transcript missed (post-compaction) or buffer-sourced turns.
+    if (lastAssistantMessage && allTurns.length > 0) {
+      const lastTurn = allTurns[allTurns.length - 1];
+      if (!lastTurn.aiResponse) {
+        lastTurn.aiResponse = lastAssistantMessage;
+      }
     }
+
     const ended = new Date().toISOString();
     let started = (allTurns.length > 0 && allTurns[0].timestamp) ? allTurns[0].timestamp : ended;
 
     // Find existing session file and clean up cross-date duplicates in one pass.
-    // The session file may be in a different date directory if the session spans days.
     const sessionsDir = path.join(vaultDir, 'sessions');
     const sessionFileName = `${sessionNoteId(sessionId)}.md`;
     let existingContent: string | undefined;
@@ -477,30 +499,90 @@ async function main(): Promise<void> {
       }
     } catch { /* sessions dir may not exist yet */ }
 
+    let existingTurnCount = 0;
     if (existingContent) {
-      // Preserve the original started timestamp from existing frontmatter
       const startedMatch = existingContent.match(/^started:\s*"?(.+?)"?\s*$/m);
       if (startedMatch) started = startedMatch[1];
+      const turnMatches = existingContent.match(/^### Turn \d+/gm);
+      existingTurnCount = turnMatches?.length ?? 0;
     }
 
-    // Compute the canonical path AFTER started is resolved from existing frontmatter.
+    // Collect artifact candidates (no LLM yet)
+    const writtenFiles = sessionFilePaths.get(sessionId) ?? new Set<string>();
+    const artifactCandidates = collectArtifactCandidates(
+      writtenFiles,
+      { artifact_extensions: config.capture.artifact_extensions },
+      process.cwd(),
+    );
+
+    // Guard: never overwrite an existing session with zero turns — the transcript
+    // is temporarily unreadable (daemon restart, file locked, etc.)
+    if (allTurns.length === 0 && existingTurnCount > 0) {
+      logger.warn('processor', 'Transcript unreadable, skipping rewrite to preserve existing data', { session_id: sessionId, existingTurns: existingTurnCount });
+      return;
+    }
+
+    // Skip if no new turns AND no batch to process AND no artifacts to classify
+    if (allTurns.length > 0 && allTurns.length === existingTurnCount && lastBatch.length === 0 && artifactCandidates.length === 0) {
+      logger.debug('processor', 'No new turns, skipping session rewrite', { session_id: sessionId, turns: allTurns.length });
+      return;
+    }
+
+    // --- Phase 2: LLM calls in parallel ---
+
+    // Build conversation text for summarization (pure string, no LLM)
+    const conversationText = allTurns.map((t, i) => {
+      const parts = [`### Turn ${i + 1}`];
+      if (t.prompt) parts.push(`Prompt: ${t.prompt}`);
+      if (t.toolCount > 0) parts.push(`Tools: ${t.toolCount} calls`);
+      if (t.aiResponse) parts.push(`Response: ${t.aiResponse}`);
+      return parts.join('\n');
+    }).join('\n\n');
+    const conversationSection = `## Conversation\n\n${conversationText}`;
+
+    // Launch all LLM calls concurrently
+    const observationPromise = lastBatch.length > 0
+      ? processor.process(lastBatch as Array<Record<string, unknown>>, sessionId)
+          .catch((err) => { logger.warn('processor', 'Observation extraction failed', { session_id: sessionId, error: (err as Error).message }); return null; })
+      : Promise.resolve(null);
+
+    const artifactPromise = artifactCandidates.length > 0
+      ? processor.classifyArtifacts(artifactCandidates, sessionId)
+          .then((classified) => captureArtifacts(artifactCandidates, classified, sessionId, { vault, ...indexDeps }, lineageGraph))
+          .catch((err) => { logger.warn('processor', 'Artifact capture failed', { session_id: sessionId, error: (err as Error).message }); })
+      : Promise.resolve();
+
+    const summaryPromise = processor.summarizeSession(conversationSection, sessionId, user)
+      .catch((err) => { logger.warn('processor', 'Session summarization failed', { session_id: sessionId, error: (err as Error).message }); return null; });
+
+    // Wait for all LLM calls to complete
+    const [observationResult, , summaryResult] = await Promise.all([observationPromise, artifactPromise, summaryPromise]);
+
+    // --- Phase 3: Write results to vault ---
+
+    // Write observations
+    if (observationResult && !observationResult.degraded) {
+      writeObservations(observationResult.observations, sessionId, { vault, ...indexDeps });
+    }
+
+    // Compute canonical path
     const date = started.slice(0, 10);
     const relativePath = sessionRelativePath(sessionId, date);
     const targetFullPath = path.join(vaultDir, relativePath);
 
-    // Remove duplicates that aren't at the canonical path
+    // Remove cross-date duplicates
     for (const dup of duplicatePaths) {
       if (dup !== targetFullPath) {
-        try {
-          fs.unlinkSync(dup);
-          logger.debug('lifecycle', 'Removed duplicate session file', { path: dup });
-        } catch { /* already gone */ }
+        try { fs.unlinkSync(dup); logger.debug('lifecycle', 'Removed duplicate session file', { path: dup }); } catch { /* already gone */ }
       }
     }
 
-    // Write any images from turns into the vault attachments folder.
-    // Images are stored as session-{id}-turn-{n}-{i}.{ext} and referenced via Obsidian embeds.
+    // Write images to attachments
     const attachmentsDir = path.join(vaultDir, 'attachments');
+    const hasImages = allTurns.some((t) => t.images?.length);
+    if (hasImages) {
+      fs.mkdirSync(attachmentsDir, { recursive: true });
+    }
     const turnImageNames: Map<number, string[]> = new Map();
     for (let i = 0; i < allTurns.length; i++) {
       const turn = allTurns[i];
@@ -511,9 +593,7 @@ async function main(): Promise<void> {
         const ext = extensionForMimeType(img.mediaType);
         const filename = `${bareSessionId(sessionId)}-t${i + 1}-${j + 1}.${ext}`;
         const filePath = path.join(attachmentsDir, filename);
-        // Only write if not already present (idempotent)
         if (!fs.existsSync(filePath)) {
-          fs.mkdirSync(attachmentsDir, { recursive: true });
           fs.writeFileSync(filePath, Buffer.from(img.data, 'base64'));
           logger.debug('processor', 'Image saved', { filename, turn: i + 1 });
         }
@@ -522,25 +602,12 @@ async function main(): Promise<void> {
       turnImageNames.set(i, names);
     }
 
-    // Build plain-text conversation for summarization (all turns)
-    const conversationText = allTurns.map((t, i) => {
-      const parts = [`### Turn ${i + 1}`];
-      if (t.prompt) parts.push(`Prompt: ${t.prompt}`);
-      if (t.toolCount > 0) parts.push(`Tools: ${t.toolCount} calls`);
-      if (t.aiResponse) parts.push(`Response: ${t.aiResponse}`);
-      return parts.join('\n');
-    }).join('\n\n');
-    const conversationSection = `## Conversation\n\n${conversationText}`;
-
-    // Summarize the full session conversation
+    // Build and write session note
     let title = `Session ${sessionId}`;
     let narrative = '';
-    try {
-      const result = await processor.summarizeSession(conversationSection, sessionId, user);
-      narrative = result.summary;
-      title = result.title;
-    } catch (err) {
-      logger.warn('processor', 'Session summarization failed', { session_id: sessionId, error: (err as Error).message });
+    if (summaryResult) {
+      title = summaryResult.title;
+      narrative = summaryResult.summary;
     }
 
     // Query related memories for this session
