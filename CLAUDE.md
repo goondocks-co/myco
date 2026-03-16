@@ -61,7 +61,7 @@ skills/          # Skill markdown files (subdirectory per skill)
 
 ### Module Boundaries
 
-- **Hooks MUST be thin.** Hook entry points in `src/hooks/` MUST delegate to the daemon via `DaemonClient`. Hooks MUST NOT contain business logic, LLM calls, or complex processing. The only exception is the degraded fallback path in `stop.ts`, which runs when the daemon is unreachable.
+- **Hooks MUST be thin.** Hook entry points in `src/hooks/` MUST delegate to the daemon via `DaemonClient`. Hooks MUST NOT contain business logic, LLM calls, or complex processing. If the daemon is unreachable, hooks spawn it via `client.ensureRunning()` and buffer events to disk for later processing.
 - **The daemon is the authority.** All event processing, session note writing, observation extraction, and embedding happen in the daemon (`src/daemon/main.ts`). Hooks send events; the daemon decides what to do with them.
 - **MCP server config MUST be in `plugin.json`.** The `mcpServers` field in `.claude-plugin/plugin.json` is the only way to register MCP servers for plugins loaded via `--plugin-dir`. Do NOT use standalone `.mcp.json` for plugin MCP servers.
 
