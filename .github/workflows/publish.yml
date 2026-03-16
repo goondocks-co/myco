@@ -175,6 +175,10 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Update npm for OIDC trusted publishing support
+        run: npm install -g npm@latest
 
       - name: Set version in all manifests from tag
         env:
@@ -191,7 +195,7 @@ jobs:
       - name: Publish package
         env:
           NPM_TAG: ${{ needs.validate-tag.outputs.npm_tag }}
-        run: npm publish --tag "$NPM_TAG" --provenance --access public --registry https://registry.npmjs.org
+        run: npm publish --tag "$NPM_TAG" --provenance --access public
 
       - name: Publish summary
         env:
@@ -228,12 +232,15 @@ jobs:
       - run: npm run build
       - run: cp src/prompts/*.md dist/src/prompts/
 
-      - name: Override scope registry for GitHub Packages
-        run: npm config set @goondocks:registry https://npm.pkg.github.com
+      - name: Configure GitHub Packages auth
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npm config set @goondocks:registry https://npm.pkg.github.com
+          npm config set //npm.pkg.github.com/:_authToken "$NODE_AUTH_TOKEN"
 
       - name: Publish package
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TAG: ${{ needs.validate-tag.outputs.npm_tag }}
         run: npm publish --tag "$NPM_TAG"
 
