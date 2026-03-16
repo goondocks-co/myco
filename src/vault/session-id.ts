@@ -5,7 +5,6 @@
  * The vault stores it with a "session-" prefix (e.g., "session-abc123").
  * These helpers convert between the two forms.
  */
-
 const SESSION_PREFIX = 'session-';
 
 /** Convert a bare session ID to a vault note ID: "abc123" → "session-abc123" */
@@ -29,3 +28,4 @@ export function sessionWikilink(bareId: string): string {
 export function sessionRelativePath(bareId: string, date: string): string {
   return `sessions/${date}/${sessionNoteId(bareId)}.md`;
 }
+

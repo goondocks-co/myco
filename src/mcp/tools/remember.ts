@@ -8,6 +8,7 @@ interface RememberInput {
   content: string;
   type: ObservationType;
   tags?: string[];
+  session?: string;
   related_plan?: string;
 }
 
@@ -27,6 +28,7 @@ export async function handleMycoRemember(
   const notePath = writer.writeMemory({
     id,
     observation_type: input.type,
+    session: input.session,
     plan: input.related_plan ?? undefined,
     tags: input.tags,
     content: input.content,

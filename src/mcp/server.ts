@@ -25,7 +25,6 @@ import { createEmbeddingProvider } from '../intelligence/llm.js';
 import type { EmbeddingProvider } from '../intelligence/llm.js';
 import { VectorIndex } from '../index/vectors.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
-import { PlanFrontmatterSchema } from '../vault/types.js';
 import { EMBEDDING_INPUT_LIMIT } from '../constants.js';
 
 interface ServerConfig {
@@ -36,148 +35,12 @@ interface ServerConfig {
 }
 
 // Common observation types shown as hints in the tool schema; the vault accepts any string
-const OBSERVATION_TYPES = ['gotcha', 'bug_fix', 'decision', 'discovery', 'trade_off', 'cross-cutting'];
-const PLAN_STATUSES = [...PlanFrontmatterSchema.shape.status._def.innerType.options, 'all'];
 
-const TOOL_DEFINITIONS = [
-  {
-    name: 'myco_search',
-    description: 'Combined semantic + full-text search across the vault',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        query: { type: 'string', description: 'Search query' },
-        type: { type: 'string', enum: ['session', 'plan', 'memory', 'all'] },
-        limit: { type: 'number', default: 10 },
-      },
-      required: ['query'],
-    },
-  },
-  {
-    name: 'myco_recall',
-    description: 'Automatic context retrieval based on current work',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        branch: { type: 'string' },
-        files: { type: 'array', items: { type: 'string' } },
-      },
-    },
-  },
-  {
-    name: 'myco_remember',
-    description: 'Store an observation as a memory note',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        content: { type: 'string' },
-        type: { type: 'string', enum: OBSERVATION_TYPES },
-        tags: { type: 'array', items: { type: 'string' } },
-        related_plan: { type: 'string' },
-      },
-      required: ['content', 'type'],
-    },
-  },
-  {
-    name: 'myco_plans',
-    description: 'List active plans with progress',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        status: { type: 'string', enum: PLAN_STATUSES },
-        id: { type: 'string' },
-      },
-    },
-  },
-  {
-    name: 'myco_sessions',
-    description: 'Query session history with filters',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        plan: { type: 'string' },
-        branch: { type: 'string' },
-        user: { type: 'string' },
-        since: { type: 'string' },
-        limit: { type: 'number' },
-      },
-    },
-  },
-  {
-    name: 'myco_team',
-    description: 'Teammate activity on same files or plan',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        files: { type: 'array', items: { type: 'string' } },
-        plan: { type: 'string' },
-        since: { type: 'string' },
-      },
-    },
-  },
-  {
-    name: 'myco_graph',
-    description: 'Traverse vault connections via wikilinks — find related notes by following links',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        note_id: { type: 'string', description: 'Note ID to start from (e.g. "session-abc123")' },
-        direction: { type: 'string', enum: ['incoming', 'outgoing', 'both'], description: 'Link direction (default: both)' },
-        depth: { type: 'number', description: 'Traversal depth 1-3 (default: 1)' },
-      },
-      required: ['note_id'],
-    },
-  },
-  {
-    name: 'myco_orphans',
-    description: 'Find vault notes with no incoming or outgoing wikilinks',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {},
-    },
-  },
-  {
-    name: 'myco_logs',
-    description: 'View daemon and MCP activity logs with filtering — useful for debugging and auditing',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        limit: { type: 'number', description: 'Max entries to return (default 50)' },
-        level: { type: 'string', enum: ['debug', 'info', 'warn', 'error'], description: 'Minimum log level' },
-        component: { type: 'string', description: 'Filter by component (daemon, processor, hooks, lifecycle, embeddings, mcp, lineage, watcher)' },
-        since: { type: 'string', description: 'ISO timestamp — entries after this time' },
-        until: { type: 'string', description: 'ISO timestamp — entries before this time' },
-      },
-    },
-  },
-  {
-    name: 'myco_supersede',
-    description: 'Mark a memory as superseded by a newer one — use when an older observation is outdated, incorrect, or replaced by better understanding',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        old_memory_id: { type: 'string', description: 'ID of the memory to supersede' },
-        new_memory_id: { type: 'string', description: 'ID of the memory that replaces it' },
-        reason: { type: 'string', description: 'Why this memory is being superseded' },
-      },
-      required: ['old_memory_id', 'new_memory_id'],
-    },
-  },
-  {
-    name: 'myco_consolidate',
-    description: 'Merge multiple related memories into a single wisdom note — use when several observations describe aspects of the same insight or pattern',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        source_memory_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of memories to consolidate' },
-        consolidated_content: { type: 'string', description: 'The merged, comprehensive content for the wisdom note' },
-        observation_type: { type: 'string', enum: OBSERVATION_TYPES, description: 'Type for the consolidated note' },
-        tags: { type: 'array', items: { type: 'string' }, description: 'Tags for the wisdom note' },
-      },
-      required: ['source_memory_ids', 'consolidated_content', 'observation_type'],
-    },
-  },
-];
+import {
+  TOOL_DEFINITIONS,
+  TOOL_SEARCH, TOOL_RECALL, TOOL_REMEMBER, TOOL_PLANS, TOOL_SESSIONS,
+  TOOL_TEAM, TOOL_GRAPH, TOOL_ORPHANS, TOOL_LOGS, TOOL_SUPERSEDE, TOOL_CONSOLIDATE,
+} from './tool-definitions.js';
 
 export interface MycoServer {
   name: string;
@@ -230,37 +93,37 @@ export function createMycoServer(config: ServerConfig): MycoServer {
     const input = args as Record<string, unknown>;
 
     switch (name) {
-      case 'myco_search':
+      case TOOL_SEARCH:
         return { content: [{ type: 'text', text: JSON.stringify(await handleMycoSearch(idx, input as any, config.vectorIndex, config.embeddingProvider)) }] };
-      case 'myco_recall':
+      case TOOL_RECALL:
         return { content: [{ type: 'text', text: JSON.stringify(await handleMycoRecall(idx, input as any)) }] };
-      case 'myco_remember': {
+      case TOOL_REMEMBER: {
         const result = await handleMycoRemember(config.vaultDir, idx, input as any);
         embedNote(result.id, String(input.content), { type: 'memory', observation_type: String(input.type ?? ''), importance: 'high' });
-        logActivity('myco_remember', { id: result.id, observation_type: input.type, path: result.note_path });
+        logActivity(TOOL_REMEMBER, { id: result.id, observation_type: input.type, path: result.note_path });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
-      case 'myco_plans':
+      case TOOL_PLANS:
         return { content: [{ type: 'text', text: JSON.stringify(await handleMycoPlans(idx, input as any)) }] };
-      case 'myco_sessions':
+      case TOOL_SESSIONS:
         return { content: [{ type: 'text', text: JSON.stringify(await handleMycoSessions(idx, input as any)) }] };
-      case 'myco_team':
+      case TOOL_TEAM:
         return { content: [{ type: 'text', text: JSON.stringify(await handleMycoTeam(idx, input as any, config.teamUser)) }] };
-      case 'myco_graph':
+      case TOOL_GRAPH:
         return { content: [{ type: 'text', text: JSON.stringify(await handleMycoGraph(idx, input as any)) }] };
-      case 'myco_orphans':
+      case TOOL_ORPHANS:
         return { content: [{ type: 'text', text: JSON.stringify(await handleMycoOrphans(idx)) }] };
-      case 'myco_logs':
+      case TOOL_LOGS:
         return { content: [{ type: 'text', text: JSON.stringify(await handleMycoLogs(config.vaultDir, input as any)) }] };
-      case 'myco_supersede': {
+      case TOOL_SUPERSEDE: {
         const result = await handleMycoSupersede(config.vaultDir, idx, input as any);
         if (result.status === 'superseded' && config.vectorIndex) {
           config.vectorIndex.delete(result.old_memory);
         }
-        logActivity('myco_supersede', { old: result.old_memory, new: result.new_memory, status: result.status });
+        logActivity(TOOL_SUPERSEDE, { old: result.old_memory, new: result.new_memory, status: result.status });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
-      case 'myco_consolidate': {
+      case TOOL_CONSOLIDATE: {
         const result = await handleMycoConsolidate(config.vaultDir, idx, input as any);
         embedNote(result.wisdom_id, String(input.consolidated_content), { type: 'memory', observation_type: String(input.observation_type ?? ''), importance: 'high' });
         if (config.vectorIndex && Array.isArray(input.source_memory_ids)) {
@@ -268,7 +131,7 @@ export function createMycoServer(config: ServerConfig): MycoServer {
             config.vectorIndex.delete(id);
           }
         }
-        logActivity('myco_consolidate', { wisdom_id: result.wisdom_id, sources: input.source_memory_ids, archived: result.sources_archived });
+        logActivity(TOOL_CONSOLIDATE, { wisdom_id: result.wisdom_id, sources: input.source_memory_ids, archived: result.sources_archived });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       default:
