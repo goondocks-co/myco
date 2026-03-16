@@ -7,35 +7,56 @@ description: Initialize Myco in the current project — sets up vault, config, a
 
 Guide the user through setup, then run the CLI to create the vault. **Do NOT create files manually — the CLI handles all vault creation, config writing, and env configuration.**
 
+**Ask each question one at a time using AskUserQuestion with selectable options.** Wait for the user's answer before proceeding to the next question. Do NOT combine multiple questions into one message.
+
 ## Step 1: Choose vault location
 
-Ask the user where they want the vault:
+Ask the user:
 
-> Where would you like to store the Myco vault?
->
-> 1. **In the project** (`.myco/`) — vault lives with the code, can be committed to git for team sharing
-> 2. **Centralized** (`~/.myco/vaults/<project-name>/`) — vault stays outside the repo, good for public repos or personal use
-> 3. **Custom path** — specify your own location
+**Question:** "Where would you like to store the Myco vault?"
 
-## Step 2: Choose intelligence backend
+**Options:**
+- "In the project (.myco/)" — vault lives with the code, can be committed to git for team sharing
+- "Centralized (~/.myco/vaults/<project-name>/)" — vault stays outside the repo, good for public repos or personal use
+- "Custom path" — specify your own location
 
-Detect available providers by checking local endpoints:
+If the user picks "Custom path", ask them to type the path.
+
+## Step 2: Choose LLM provider
+
+First, detect available providers by checking local endpoints:
 
 - **Ollama** — `curl -s http://localhost:11434/api/tags` — list model names
 - **LM Studio** — `curl -s http://localhost:1234/v1/models` — list model IDs
 - **Anthropic** — check if `ANTHROPIC_API_KEY` is set
 
-Show the user what's available and recommend:
-- **LLM**: `gpt-oss` on Ollama or LM Studio (best for structured JSON output)
-- **Embeddings**: `bge-m3` on Ollama (Anthropic does not support embeddings)
+Then ask the user:
 
-Let the user choose their LLM provider/model and embedding provider/model.
+**Question:** "Which LLM provider for summarization?"
 
-If the recommended model isn't available, offer to pull it:
-- **Ollama**: `ollama pull <model>`
-- **LM Studio**: `lms get <owner/model>`
+**Options:** List only providers that are actually running, with recommended models noted. Example:
+- "Ollama — gpt-oss (recommended)"
+- "LM Studio — openai/gpt-oss-20b"
+- "Anthropic"
 
-## Step 3: Run the CLI
+After the user picks a provider, ask them to choose a specific model from the available models on that provider.
+
+## Step 3: Choose embedding provider
+
+Ask the user:
+
+**Question:** "Which embedding provider?"
+
+**Options:** List only providers that are running and support embeddings (Anthropic does not). Example:
+- "Ollama — bge-m3 (recommended)"
+- "LM Studio — text-embedding-bge-m3"
+
+After the user picks a provider, ask them to choose a specific embedding model.
+
+If the recommended embedding model isn't available, offer to pull it:
+- **Ollama**: `ollama pull bge-m3`
+
+## Step 4: Run the CLI
 
 Run the init command with all gathered inputs. The CLI creates the vault, writes config, sets up the FTS index, and configures `MYCO_VAULT_DIR` if the vault is external:
 
@@ -50,7 +71,7 @@ node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js init \
   --embedding-url <base-url>
 ```
 
-## Step 4: Verify
+## Step 5: Verify
 
 After the CLI completes, confirm providers are reachable:
 
