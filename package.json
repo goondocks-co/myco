@@ -18,8 +18,9 @@
   ],
   "scripts": {
     "prepare": "npm run build",
-    "build": "tsc",
+    "build": "tsup",
     "build:watch": "tsc --watch",
+    "build:types": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit"
