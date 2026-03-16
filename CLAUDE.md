@@ -21,7 +21,8 @@ This sets `${CLAUDE_PLUGIN_ROOT}` to the repo root. The vault lives at `~/.myco/
 **How end users install Myco (not how we run it):**
 
 ```sh
-claude plugin add @goondocks-co/myco     # from marketplace
+claude plugin marketplace add goondocks-co/myco
+claude plugin install myco@myco-plugins
 # or
 claude plugin add /path/to/myco          # local permanent install
 ```

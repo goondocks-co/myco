@@ -11,6 +11,7 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write
 
 jobs:
   validate-tag:
@@ -79,7 +80,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: npm-package
-          path: goondocks-co-myco-*.tgz
+          path: goondocks-myco-*.tgz
 
   create-release:
     name: Create GitHub Release
@@ -165,6 +166,47 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   publish:
+    name: Publish to npmjs.org
+    runs-on: ubuntu-latest
+    needs: [validate-tag, create-release]
+    environment: npm-publish
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Set version in all manifests from tag
+        env:
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+        run: |
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          jq --arg v "$VERSION" '.version = $v' .claude-plugin/plugin.json > tmp.json && mv tmp.json .claude-plugin/plugin.json
+          jq --arg v "$VERSION" '.version = $v' .cursor-plugin/plugin.json > tmp.json && mv tmp.json .cursor-plugin/plugin.json
+
+      - run: npm ci
+      - run: npm run build
+      - run: cp src/prompts/*.md dist/src/prompts/
+
+      - name: Publish package
+        env:
+          NPM_TAG: ${{ needs.validate-tag.outputs.npm_tag }}
+        run: npm publish --tag "$NPM_TAG" --provenance --access public
+
+      - name: Publish summary
+        env:
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+          IS_PRERELEASE: ${{ needs.validate-tag.outputs.is_prerelease }}
+          NPM_TAG: ${{ needs.validate-tag.outputs.npm_tag }}
+        run: |
+          echo "## Published to npmjs.org" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Version:** $VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "**npm tag:** $NPM_TAG" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Pre-release:** $IS_PRERELEASE" >> "$GITHUB_STEP_SUMMARY"
+
+  publish-github:
     name: Publish to GitHub Packages
     runs-on: ubuntu-latest
     needs: [validate-tag, create-release]
@@ -196,11 +238,9 @@ jobs:
       - name: Publish summary
         env:
           VERSION: ${{ needs.validate-tag.outputs.version }}
-          IS_PRERELEASE: ${{ needs.validate-tag.outputs.is_prerelease }}
           NPM_TAG: ${{ needs.validate-tag.outputs.npm_tag }}
         run: |
-          echo "## Published Successfully" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Published to GitHub Packages" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Version:** $VERSION" >> "$GITHUB_STEP_SUMMARY"
           echo "**npm tag:** $NPM_TAG" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Pre-release:** $IS_PRERELEASE" >> "$GITHUB_STEP_SUMMARY"

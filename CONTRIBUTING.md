@@ -125,11 +125,11 @@ See [docs/lifecycle.md](docs/lifecycle.md) for the full lifecycle with diagrams.
 
 ## Distribution
 
-Published as `@goondocks-co/myco` on [GitHub Packages](https://github.com/goondocks-co/myco/packages).
+Published as `@goondocks/myco` on [npmjs.org](https://www.npmjs.com/package/@goondocks/myco).
 
 1. Push to `main` — CI runs lint + tests
 2. Tag a release (`v0.x.y`) — triggers the publish workflow
-3. `npm publish` builds and pushes to GitHub Packages
+3. `npm publish` builds and pushes to npmjs.org
 4. Users get the new version via `claude plugin update myco`
 
 ## Conventions
