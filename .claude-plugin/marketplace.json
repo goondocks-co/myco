@@ -12,11 +12,18 @@
       "source": {
         "source": "npm",
         "package": "@goondocks/myco",
-        "version": "0.2.9"
+        "version": "0.2.10"
       },
       "description": "Collective agent intelligence — captures session knowledge and serves it back via MCP",
       "license": "MIT",
-      "keywords": ["intelligence", "memory", "mcp", "sessions", "team", "knowledge"],
+      "keywords": [
+        "intelligence",
+        "memory",
+        "mcp",
+        "sessions",
+        "team",
+        "knowledge"
+      ],
       "category": "productivity"
     }
   ]
