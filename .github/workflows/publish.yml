@@ -10,7 +10,6 @@ on:
 
 permissions:
   contents: write
-  packages: write
   id-token: write
 
 jobs:
@@ -208,42 +207,3 @@ jobs:
           echo "**Version:** $VERSION" >> "$GITHUB_STEP_SUMMARY"
           echo "**npm tag:** $NPM_TAG" >> "$GITHUB_STEP_SUMMARY"
           echo "**Pre-release:** $IS_PRERELEASE" >> "$GITHUB_STEP_SUMMARY"
-
-  publish-github:
-    name: Publish to GitHub Packages
-    runs-on: ubuntu-latest
-    needs: [validate-tag, create-release]
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          registry-url: https://npm.pkg.github.com
-
-      - name: Set version in all manifests from tag
-        env:
-          VERSION: ${{ needs.validate-tag.outputs.version }}
-        run: |
-          npm version "$VERSION" --no-git-tag-version --allow-same-version
-          jq --arg v "$VERSION" '.version = $v' .claude-plugin/plugin.json > tmp.json && mv tmp.json .claude-plugin/plugin.json
-          jq --arg v "$VERSION" '.version = $v' .cursor-plugin/plugin.json > tmp.json && mv tmp.json .cursor-plugin/plugin.json
-
-      - run: npm ci
-      - run: npm run build
-      - run: cp src/prompts/*.md dist/src/prompts/
-
-      - name: Publish package
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TAG: ${{ needs.validate-tag.outputs.npm_tag }}
-        run: npm publish --tag "$NPM_TAG" --registry https://npm.pkg.github.com
-
-      - name: Publish summary
-        env:
-          VERSION: ${{ needs.validate-tag.outputs.version }}
-          NPM_TAG: ${{ needs.validate-tag.outputs.npm_tag }}
-        run: |
-          echo "## Published to GitHub Packages" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Version:** $VERSION" >> "$GITHUB_STEP_SUMMARY"
-          echo "**npm tag:** $NPM_TAG" >> "$GITHUB_STEP_SUMMARY"
