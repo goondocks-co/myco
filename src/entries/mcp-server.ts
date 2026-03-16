@@ -1,3 +1,3 @@
-import { ensureNativeDeps } from '../native-deps.js';
-ensureNativeDeps();
-await import('../mcp/server.js');
+export {};
+const { main } = await import('../mcp/server.js');
+await main();

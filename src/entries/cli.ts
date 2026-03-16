@@ -1,4 +1,3 @@
 #!/usr/bin/env node
-import { ensureNativeDeps } from '../native-deps.js';
-ensureNativeDeps();
+export {};
 await import('../cli.js');

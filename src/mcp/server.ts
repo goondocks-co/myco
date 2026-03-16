@@ -34,7 +34,7 @@ import { VectorIndex } from '../index/vectors.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
 import { PlanFrontmatterSchema } from '../vault/types.js';
 import { EMBEDDING_INPUT_LIMIT } from '../constants.js';
-import { fileURLToPath } from 'node:url';
+
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -298,16 +298,7 @@ export function createMycoServer(config: ServerConfig): MycoServer {
   };
 }
 
-// Entry point — invoked by .mcp.json: node dist/src/mcp/server.js
-const __filename = fileURLToPath(import.meta.url);
-if (process.argv[1] === __filename) {
-  main().catch((err) => {
-    process.stderr.write(`[myco-mcp] Fatal: ${(err as Error).message}\n`);
-    process.exit(1);
-  });
-}
-
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const vaultDir = resolveVaultDir();
 
   const config = fs.existsSync(path.join(vaultDir, 'myco.yaml'))

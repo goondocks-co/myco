@@ -31,7 +31,7 @@ import { z } from 'zod';
 import YAML from 'yaml';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+
 
 interface IndexDeps {
   index: MycoIndex;
@@ -144,7 +144,7 @@ export function migrateMemoryFiles(vaultDir: string): number {
   return moved;
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const vaultArg = process.argv.find((_, i) => process.argv[i - 1] === '--vault');
   if (!vaultArg) {
     process.stderr.write('Usage: mycod --vault <path>\n');
@@ -837,11 +837,3 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-// Entry point guard — only run when executed directly, not when imported in tests
-const __filename = fileURLToPath(import.meta.url);
-if (process.argv[1] === __filename) {
-  main().catch((err) => {
-    process.stderr.write(`[mycod] Fatal: ${(err as Error).message}\n`);
-    process.exit(1);
-  });
-}
