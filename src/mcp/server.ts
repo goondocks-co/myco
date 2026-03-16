@@ -1,5 +1,15 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { createRequire } from 'node:module';
+
+function getPackageVersion(): string {
+  try {
+    const require = createRequire(import.meta.url);
+    return (require('../../../package.json') as { version: string }).version;
+  } catch {
+    return '0.0.0';
+  }
+}
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
@@ -187,7 +197,7 @@ export interface MycoServer {
 
 export function createMycoServer(config: ServerConfig): MycoServer {
   const server = new Server(
-    { name: 'myco', version: '0.1.0' },
+    { name: 'myco', version: getPackageVersion() },
     { capabilities: { tools: {} } },
   );
 
