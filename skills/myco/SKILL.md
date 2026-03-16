@@ -204,3 +204,36 @@ The vault should get sharper over time, not just bigger. Every session should le
 1. `myco_search` for prior decisions on the same component
 2. If you find relevant context, factor it into your recommendation
 3. After the decision is made, `myco_remember` the rationale
+
+## Maintenance
+
+### Reprocessing sessions
+
+If observations were lost due to a bug, or if you want to re-extract observations with a different LLM, use the CLI reprocess command:
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js reprocess
+```
+
+This re-reads all session transcripts, re-extracts observations, and re-indexes everything. Existing memories are preserved — new observations are additive.
+
+Options:
+- `--session <id>` — reprocess a single session (partial ID match)
+- `--index-only` — skip LLM extraction, just re-index and re-embed existing notes
+
+### Other maintenance commands
+
+```bash
+# Re-index all vault notes (FTS + vectors)
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js rebuild
+
+# Check vault health
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js stats
+
+# Test provider connectivity
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js verify
+
+# View/change config
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js config get intelligence.llm.model
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js config set intelligence.llm.model gpt-oss
+```
