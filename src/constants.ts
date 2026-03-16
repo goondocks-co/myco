@@ -56,6 +56,8 @@ export const EMBEDDING_REQUEST_TIMEOUT_MS = 10_000;
 export const STDIN_TIMEOUT_MS = 100;
 /** Chokidar write stability threshold (ms). */
 export const FILE_WATCH_STABILITY_MS = 1000;
+/** Provider detection timeout for detect-providers CLI command (ms). */
+export const PROVIDER_DETECT_TIMEOUT_MS = 3000;
 
 // --- Buffer cleanup ---
 /** Max age for stale buffer files before cleanup (ms). */

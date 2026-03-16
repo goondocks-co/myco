@@ -12,6 +12,7 @@ interface OllamaConfig {
 }
 
 export class OllamaBackend implements LlmProvider, EmbeddingProvider {
+  static readonly DEFAULT_BASE_URL = 'http://localhost:11434';
   readonly name = 'ollama';
   private baseUrl: string;
   private model: string;
@@ -19,7 +20,7 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
   private defaultMaxTokens: number;
 
   constructor(config?: OllamaConfig) {
-    this.baseUrl = config?.base_url ?? 'http://localhost:11434';
+    this.baseUrl = config?.base_url ?? OllamaBackend.DEFAULT_BASE_URL;
     this.model = config?.model ?? config?.summary_model ?? 'llama3.2';
     this.contextWindow = config?.context_window ?? 8192;
     this.defaultMaxTokens = config?.max_tokens ?? 1024;
@@ -78,6 +79,19 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
       return response.ok;
     } catch {
       return false;
+    }
+  }
+
+  /** List available models on this Ollama instance. */
+  async listModels(timeoutMs?: number): Promise<string[]> {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/tags`, {
+        signal: AbortSignal.timeout(timeoutMs ?? DAEMON_CLIENT_TIMEOUT_MS),
+      });
+      const data = await response.json() as { models: Array<{ name: string }> };
+      return data.models.map((m) => m.name);
+    } catch {
+      return [];
     }
   }
 }
