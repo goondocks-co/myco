@@ -5,11 +5,21 @@ description: Initialize Myco in the current project — sets up vault, config, a
 
 # Initialize Myco
 
-Guide the user through setup, then run the CLI to create the vault. **Do NOT create files manually — the CLI handles all vault creation, config writing, and env configuration.**
+Guide the user through setup using the composable CLI commands. **Do NOT create files manually — the CLI handles all vault creation, config writing, and env configuration.**
 
 **Ask each question one at a time using AskUserQuestion with selectable options.** Wait for the user's answer before proceeding to the next question. Do NOT combine multiple questions into one message.
 
-## Step 1: Choose vault location
+## Step 1: Detect available providers
+
+Run the provider detection command to see what's available:
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js detect-providers
+```
+
+Parse the JSON output. This tells you which providers are running and what models are available.
+
+## Step 2: Choose vault location
 
 Ask the user:
 
@@ -22,32 +32,26 @@ Ask the user:
 
 If the user picks "Custom path", ask them to type the path.
 
-## Step 2: Choose LLM provider
+## Step 3: Choose LLM provider
 
-First, detect available providers by checking local endpoints:
-
-- **Ollama** — `curl -s http://localhost:11434/api/tags` — list model names
-- **LM Studio** — `curl -s http://localhost:1234/v1/models` — list model IDs
-- **Anthropic** — check if `ANTHROPIC_API_KEY` is set
-
-Then ask the user:
+Using the detected providers from Step 1, ask the user:
 
 **Question:** "Which LLM provider for summarization?"
 
-**Options:** List only providers that are actually running, with recommended models noted. Example:
+**Options:** List only providers where `available` is `true`, with recommended models. Example:
 - "Ollama — gpt-oss (recommended)"
 - "LM Studio — openai/gpt-oss-20b"
 - "Anthropic"
 
-After the user picks a provider, ask them to choose a specific model from the available models on that provider.
+After the user picks a provider, ask them to choose a specific model from that provider's model list (from the detect-providers output).
 
-## Step 3: Choose embedding provider
+## Step 4: Choose embedding provider
 
 Ask the user:
 
 **Question:** "Which embedding provider?"
 
-**Options:** List only providers that are running and support embeddings (Anthropic does not). Example:
+**Options:** List only providers where `available` is `true` and that support embeddings (Anthropic does not). Example:
 - "Ollama — bge-m3 (recommended)"
 - "LM Studio — text-embedding-bge-m3"
 
@@ -56,9 +60,9 @@ After the user picks a provider, ask them to choose a specific embedding model.
 If the recommended embedding model isn't available, offer to pull it:
 - **Ollama**: `ollama pull bge-m3`
 
-## Step 4: Run the CLI
+## Step 5: Run init with all gathered inputs
 
-Run the init command with all gathered inputs. The CLI creates the vault, writes config, sets up the FTS index, and configures `MYCO_VAULT_DIR` if the vault is external:
+Pass everything to the init command in a single call:
 
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js init \
@@ -71,17 +75,24 @@ node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js init \
   --embedding-url <base-url>
 ```
 
-## Step 5: Verify
+The CLI creates the vault structure, writes myco.yaml, .gitignore, _dashboard.md, initializes the FTS index, and configures MYCO_VAULT_DIR if the vault is external.
 
-After the CLI completes, confirm providers are reachable:
+## Step 6: Verify connectivity
 
-1. Test the LLM — send a short prompt and verify a response
-2. Test embeddings — generate a test embedding and report dimensions
-3. Display a setup summary table
+Run the verify command to confirm providers are reachable:
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js verify
+```
+
+If verification fails, help the user troubleshoot (check if the provider is running, model is loaded, etc.).
+
+## Step 7: Display summary
+
+Show the user a setup summary table:
 
 | Setting | Value |
 |---------|-------|
 | Vault path | `<resolved path>` |
 | LLM provider | `<provider>` / `<model>` |
 | Embedding provider | `<provider>` / `<model>` |
-| Context window | `<context_window>` |

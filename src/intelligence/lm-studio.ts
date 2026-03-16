@@ -11,13 +11,14 @@ interface LmStudioConfig {
 }
 
 export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
+  static readonly DEFAULT_BASE_URL = 'http://localhost:1234';
   readonly name = 'lm-studio';
   private baseUrl: string;
   private model: string;
   private defaultMaxTokens: number;
 
   constructor(config?: LmStudioConfig) {
-    this.baseUrl = config?.base_url ?? 'http://localhost:1234';
+    this.baseUrl = config?.base_url ?? LmStudioBackend.DEFAULT_BASE_URL;
     this.model = config?.model ?? config?.summary_model ?? 'llama3.2';
     this.defaultMaxTokens = config?.max_tokens ?? 1024;
   }
@@ -78,6 +79,19 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
       return response.ok;
     } catch {
       return false;
+    }
+  }
+
+  /** List available models on this LM Studio instance. */
+  async listModels(timeoutMs?: number): Promise<string[]> {
+    try {
+      const response = await fetch(`${this.baseUrl}/v1/models`, {
+        signal: AbortSignal.timeout(timeoutMs ?? DAEMON_CLIENT_TIMEOUT_MS),
+      });
+      const data = await response.json() as { data: Array<{ id: string }> };
+      return data.data.map((m) => m.id);
+    } catch {
+      return [];
     }
   }
 }
