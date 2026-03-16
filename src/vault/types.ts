@@ -17,14 +17,18 @@ export const SessionFrontmatterSchema = z.object({
   files_changed: z.number().int().optional(),
 });
 
+export const PLAN_STATUSES = ['active', 'in_progress', 'completed', 'abandoned'] as const;
+
 export const PlanFrontmatterSchema = z.object({
   type: z.literal('plan'),
   id: z.string(),
-  status: z.enum(['active', 'in_progress', 'completed', 'abandoned']).default('active'),
+  status: z.enum(PLAN_STATUSES).default('active'),
   created: z.string(),
   author: z.string().optional(),
   tags: z.array(z.string()).default([]),
 });
+
+export const OBSERVATION_TYPES = ['gotcha', 'bug_fix', 'decision', 'discovery', 'trade_off', 'cross-cutting'] as const;
 
 export const MEMORY_STATUSES = ['active', 'superseded', 'archived'] as const;
 export type MemoryStatus = (typeof MEMORY_STATUSES)[number];
