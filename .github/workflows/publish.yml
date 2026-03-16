@@ -232,17 +232,11 @@ jobs:
       - run: npm run build
       - run: cp src/prompts/*.md dist/src/prompts/
 
-      - name: Configure GitHub Packages auth
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          npm config set @goondocks:registry https://npm.pkg.github.com
-          npm config set //npm.pkg.github.com/:_authToken "$NODE_AUTH_TOKEN"
-
       - name: Publish package
         env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TAG: ${{ needs.validate-tag.outputs.npm_tag }}
-        run: npm publish --tag "$NPM_TAG"
+        run: npm publish --tag "$NPM_TAG" --registry https://npm.pkg.github.com
 
       - name: Publish summary
         env:
