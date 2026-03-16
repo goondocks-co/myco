@@ -207,12 +207,19 @@ The vault should get sharper over time, not just bigger. Every session should le
 
 ## Maintenance
 
-### Reprocessing sessions
-
-If observations were lost due to a bug, or if you want to re-extract observations with a different LLM, use the CLI reprocess command:
+The CLI is at `dist/src/cli.js` inside the plugin root. The plugin root env var depends on the agent: `CLAUDE_PLUGIN_ROOT` (Claude Code), `CURSOR_PLUGIN_ROOT` (Cursor), etc. Use whichever is set in your environment. Examples below use `MYCO_CLI` as shorthand:
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js reprocess
+# Resolve the CLI path (use the appropriate env var for your agent)
+MYCO_CLI="node ${CLAUDE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT}}/dist/src/cli.js"
+```
+
+### Reprocessing sessions
+
+If observations were lost due to a bug, or if you want to re-extract observations with a different LLM:
+
+```bash
+$MYCO_CLI reprocess
 ```
 
 This re-reads all session transcripts, re-extracts observations, and re-indexes everything. Existing memories are preserved — new observations are additive.
@@ -224,16 +231,10 @@ Options:
 ### Other maintenance commands
 
 ```bash
-# Re-index all vault notes (FTS + vectors)
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js rebuild
-
-# Check vault health
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js stats
-
-# Test provider connectivity
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js verify
-
-# View/change config
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js config get intelligence.llm.model
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js config set intelligence.llm.model gpt-oss
+$MYCO_CLI version            # Check plugin version
+$MYCO_CLI rebuild            # Re-index all vault notes (FTS + vectors)
+$MYCO_CLI stats              # Check vault health
+$MYCO_CLI verify             # Test provider connectivity
+$MYCO_CLI config get intelligence.llm.model   # View config
+$MYCO_CLI config set intelligence.llm.model gpt-oss  # Change config
 ```
