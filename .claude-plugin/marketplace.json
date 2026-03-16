@@ -9,7 +9,10 @@
   "plugins": [
     {
       "name": "myco",
-      "source": "./",
+      "source": {
+        "source": "npm",
+        "package": "@goondocks-co/myco"
+      },
       "description": "Collective agent intelligence — captures session knowledge and serves it back via MCP",
       "license": "MIT",
       "keywords": ["intelligence", "memory", "mcp", "sessions", "team", "knowledge"],
