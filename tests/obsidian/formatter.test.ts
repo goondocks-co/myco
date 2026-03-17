@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   callout,
+  escapeHtmlTags,
   inlineField,
   wikilink,
   observationCalloutType,
@@ -13,6 +14,31 @@ import {
   formatArtifactBody,
 } from '../../src/obsidian/formatter.js';
 
+describe('escapeHtmlTags', () => {
+  it('escapes opening HTML tags', () => {
+    expect(escapeHtmlTags('in <module>')).toBe('in \\<module>');
+  });
+
+  it('escapes closing HTML tags', () => {
+    expect(escapeHtmlTags('</div>')).toBe('\\</div>');
+  });
+
+  it('escapes HTML comments', () => {
+    expect(escapeHtmlTags('<!-- comment -->')).toBe('\\<!-- comment -->');
+  });
+
+  it('leaves comparison operators alone', () => {
+    expect(escapeHtmlTags('x < 5 and x <= 10')).toBe('x < 5 and x <= 10');
+  });
+
+  it('handles Python tracebacks', () => {
+    const traceback = 'File "dev_console.py", line 387, in <module>\n    main()';
+    expect(escapeHtmlTags(traceback)).toBe(
+      'File "dev_console.py", line 387, in \\<module>\n    main()',
+    );
+  });
+});
+
 describe('callout', () => {
   it('wraps content in Obsidian callout syntax', () => {
     const result = callout('warning', 'Watch Out', 'This is tricky.');
@@ -22,6 +48,11 @@ describe('callout', () => {
   it('handles multiline content', () => {
     const result = callout('info', 'Note', 'Line 1\nLine 2');
     expect(result).toBe('> [!info] Note\n> Line 1\n> Line 2');
+  });
+
+  it('escapes HTML-like tags in content', () => {
+    const result = callout('user', 'Prompt', 'in <module>\n    main()');
+    expect(result).toBe('> [!user] Prompt\n> in \\<module>\n>     main()');
   });
 });
 
