@@ -18,8 +18,17 @@ export function observationCalloutType(observationType: string): string {
   return CALLOUT_MAP[observationType] ?? 'note';
 }
 
+/**
+ * Escape angle brackets that Obsidian would interpret as HTML tags.
+ * Matches `<` followed by a letter, `/`, or `!` (opening/closing tags, comments).
+ */
+export function escapeHtmlTags(text: string): string {
+  return text.replace(/<(?=[a-zA-Z/!])/g, '\\<');
+}
+
 export function callout(type: string, title: string, content: string): string {
-  const indented = content.split('\n').map((line) => `> ${line}`).join('\n');
+  const safe = escapeHtmlTags(content);
+  const indented = safe.split('\n').map((line) => `> ${line}`).join('\n');
   return `> [!${type}] ${title}\n${indented}`;
 }
 
