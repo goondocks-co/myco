@@ -66,3 +66,26 @@ export class EventBuffer {
     return this.filePath;
   }
 }
+
+/**
+ * Find the most recently active session by buffer file mtime.
+ * The UserPromptSubmit hook appends to the session's buffer on every prompt,
+ * so the most recently modified buffer is the calling session.
+ */
+export function resolveSessionFromBuffer(bufferDir: string): string | undefined {
+  try {
+    let bestSession: string | undefined;
+    let bestMtime = 0;
+    for (const file of fs.readdirSync(bufferDir)) {
+      if (!file.endsWith('.jsonl')) continue;
+      const mtime = fs.statSync(path.join(bufferDir, file)).mtimeMs;
+      if (mtime > bestMtime) {
+        bestMtime = mtime;
+        bestSession = file.replace('.jsonl', '');
+      }
+    }
+    return bestSession;
+  } catch {
+    return undefined;
+  }
+}
