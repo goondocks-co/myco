@@ -143,17 +143,41 @@ export class DaemonClient {
   }
 
   spawnDaemon(): void {
-    const pluginRoot = new AgentRegistry().resolvePluginRoot();
-    const daemonScript = pluginRoot
-      ? path.join(pluginRoot, 'dist', 'src', 'daemon', 'main.js')
-      : path.resolve(import.meta.dirname, '..', 'daemon', 'main.js');
-    if (!fs.existsSync(daemonScript)) return;
+    const daemonScript = this.resolveDaemonScript();
+    if (!daemonScript || !fs.existsSync(daemonScript)) return;
 
     const child = spawn('node', [daemonScript, '--vault', this.vaultDir], {
       detached: true,
       stdio: 'ignore',
     });
     child.unref();
+  }
+
+  /**
+   * Resolve the daemon entry script path.
+   * Priority:
+   * 1. Plugin root env var (set by the agent host) → dist/src/daemon/main.js
+   * 2. Walk up from the current file to find the dist/ directory containing
+   *    the daemon entry. This handles both chunk files (dist/chunk-*.js) and
+   *    thin entry points (dist/src/hooks/*.js) after bundling.
+   */
+  private resolveDaemonScript(): string | undefined {
+    const pluginRoot = new AgentRegistry().resolvePluginRoot();
+    if (pluginRoot) {
+      return path.join(pluginRoot, 'dist', 'src', 'daemon', 'main.js');
+    }
+
+    // Walk up from import.meta.dirname looking for the daemon entry
+    let dir = import.meta.dirname;
+    for (let i = 0; i < 5; i++) {
+      const candidate = path.join(dir, 'dist', 'src', 'daemon', 'main.js');
+      if (fs.existsSync(candidate)) return candidate;
+      // Also check if we're already inside dist/
+      const inDist = path.join(dir, 'src', 'daemon', 'main.js');
+      if (fs.existsSync(inDist)) return inDist;
+      dir = path.dirname(dir);
+    }
+    return undefined;
   }
 
   private readDaemonJson(): DaemonInfo | null {
