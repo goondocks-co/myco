@@ -55,14 +55,14 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: TOOL_REMEMBER,
-    description: 'Save a decision, gotcha, bug fix, discovery, or trade-off as a permanent memory. Use after making a key decision, fixing a tricky bug, discovering something non-obvious, or encountering a gotcha. Always include the session ID from your context.',
+    description: 'Save a decision, gotcha, bug fix, discovery, or trade-off as a permanent memory. Use after making a key decision, fixing a tricky bug, discovering something non-obvious, or encountering a gotcha.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         content: { type: 'string', description: 'The observation — include context, reasoning, and what someone encountering this in the future needs to know' },
         type: { type: 'string', enum: OBSERVATION_TYPES, description: `Observation type: ${OBSERVATION_TYPES.join(', ')}` },
         tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
-        session: { type: 'string', description: 'Your session ID (from "Session::" in your context) — links this memory to the current session' },
+        session: { type: 'string', description: 'Your current session ID — auto-detected if omitted' },
         related_plan: { type: 'string', description: 'Plan ID if this observation relates to an active plan' },
       },
       required: ['content', 'type'],

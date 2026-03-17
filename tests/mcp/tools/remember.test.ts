@@ -47,4 +47,62 @@ describe('myco_remember', () => {
     const note = index.getNoteByPath(result.note_path);
     expect((note!.frontmatter as any).plan).toBe('auth-redesign');
   });
+
+  it('uses explicit session when provided', async () => {
+    const result = await handleMycoRemember(tmpDir, index, {
+      content: 'Explicit session test',
+      type: 'discovery',
+      session: 'sess-explicit',
+    });
+
+    expect(result.session).toBe('sess-explicit');
+    const note = index.getNoteByPath(result.note_path);
+    expect((note!.frontmatter as any).session).toContain('sess-explicit');
+  });
+
+  it('auto-resolves session from most recent buffer file', async () => {
+    const bufferDir = path.join(tmpDir, 'buffer');
+    fs.mkdirSync(bufferDir);
+
+    // Older buffer
+    fs.writeFileSync(path.join(bufferDir, 'old-session.jsonl'), '{}');
+    const past = new Date(Date.now() - 60000);
+    fs.utimesSync(path.join(bufferDir, 'old-session.jsonl'), past, past);
+
+    // Most recent buffer — the calling session
+    fs.writeFileSync(path.join(bufferDir, 'active-session.jsonl'), '{}');
+
+    const result = await handleMycoRemember(tmpDir, index, {
+      content: 'Auto-resolved session',
+      type: 'gotcha',
+    });
+
+    expect(result.session).toBe('active-session');
+    const note = index.getNoteByPath(result.note_path);
+    expect((note!.frontmatter as any).session).toContain('active-session');
+  });
+
+  it('prefers explicit session over buffer heuristic', async () => {
+    const bufferDir = path.join(tmpDir, 'buffer');
+    fs.mkdirSync(bufferDir);
+    fs.writeFileSync(path.join(bufferDir, 'buffer-session.jsonl'), '{}');
+
+    const result = await handleMycoRemember(tmpDir, index, {
+      content: 'Explicit wins',
+      type: 'decision',
+      session: 'explicit-session',
+    });
+
+    expect(result.session).toBe('explicit-session');
+  });
+
+  it('handles missing buffer directory gracefully', async () => {
+    const result = await handleMycoRemember(tmpDir, index, {
+      content: 'No buffer dir',
+      type: 'gotcha',
+    });
+
+    expect(result.session).toBeUndefined();
+    expect(result.note_path).toContain('memories/');
+  });
 });

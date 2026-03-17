@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { EventBuffer } from '@myco/capture/buffer';
+import { EventBuffer, resolveSessionFromBuffer } from '@myco/capture/buffer';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -62,5 +62,43 @@ describe('EventBuffer', () => {
       buffer.append({ type: 'tool_use', tool: `tool-${i}` });
     }
     expect(buffer.isOverflow()).toBe(true);
+  });
+});
+
+describe('resolveSessionFromBuffer', () => {
+  let tmpDir: string;
+  let bufferDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-resolve-'));
+    bufferDir = path.join(tmpDir, 'buffer');
+    fs.mkdirSync(bufferDir);
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns most recently modified buffer session', () => {
+    fs.writeFileSync(path.join(bufferDir, 'older.jsonl'), '{}');
+    const past = new Date(Date.now() - 60000);
+    fs.utimesSync(path.join(bufferDir, 'older.jsonl'), past, past);
+
+    fs.writeFileSync(path.join(bufferDir, 'newer.jsonl'), '{}');
+
+    expect(resolveSessionFromBuffer(bufferDir)).toBe('newer');
+  });
+
+  it('returns undefined for empty buffer directory', () => {
+    expect(resolveSessionFromBuffer(bufferDir)).toBeUndefined();
+  });
+
+  it('returns undefined for missing buffer directory', () => {
+    expect(resolveSessionFromBuffer('/nonexistent/path')).toBeUndefined();
+  });
+
+  it('ignores non-jsonl files', () => {
+    fs.writeFileSync(path.join(bufferDir, 'notes.txt'), 'not a buffer');
+    expect(resolveSessionFromBuffer(bufferDir)).toBeUndefined();
   });
 });
