@@ -11,7 +11,7 @@ Check and report the health of the Myco vault and daemon. Use the CLI (`node dis
 
 Find the vault directory:
 - Check `MYCO_VAULT_DIR` in the environment
-- Check `.claude/settings.json` under the `env` key for `MYCO_VAULT_DIR`
+- Check `.claude/settings.user.json` (or `.claude/settings.json`) under the `env` key for `MYCO_VAULT_DIR`
 - Fall back to `~/.myco/vaults/<project-name>/`
 
 If no vault is found, report: "No Myco vault configured. Run `/myco-init` to set up."
