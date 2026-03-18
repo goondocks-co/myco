@@ -13,6 +13,9 @@ dist/
 .myco/logs/
 .myco/.obsidian/
 
+# User-local settings (vault paths contain home directory)
+.claude/settings.user.json
+
 # Dev tooling
 .worktrees/
 

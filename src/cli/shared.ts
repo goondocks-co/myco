@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { AgentRegistry } from '../agents/registry.js';
 import { OllamaBackend } from '../intelligence/ollama.js';
 import { LmStudioBackend } from '../intelligence/lm-studio.js';
@@ -77,25 +78,36 @@ logs/
 .obsidian/
 `;
 
+/** Collapse an absolute home-dir path to its `~/` form for portable config storage. */
+export function collapseHomePath(absPath: string): string {
+  const home = os.homedir();
+  if (absPath.startsWith(home + path.sep) || absPath === home) {
+    return '~' + absPath.slice(home.length);
+  }
+  return absPath;
+}
+
 /** Set MYCO_VAULT_DIR in the active agent's config, falling back to all known agents. */
 export function configureVaultEnv(projectRoot: string, vaultDir: string): void {
   const registry = new AgentRegistry();
   const active = registry.detectActiveAgent();
+  // Store the portable ~/... form so config files don't leak the username
+  const portableDir = collapseHomePath(vaultDir);
 
   if (active) {
-    if (active.configureVaultEnv(projectRoot, vaultDir)) {
+    if (active.configureVaultEnv(projectRoot, portableDir)) {
       console.log(`Set MYCO_VAULT_DIR for ${active.displayName}`);
     }
   } else {
     // No active agent detected — try all adapters
     for (const name of registry.adapterNames) {
       const adapter = registry.getAdapter(name);
-      if (adapter?.configureVaultEnv(projectRoot, vaultDir)) {
+      if (adapter?.configureVaultEnv(projectRoot, portableDir)) {
         console.log(`Set MYCO_VAULT_DIR for ${adapter.displayName}`);
       }
     }
   }
 
   console.log(`\nFor other agents, add to your shell profile:`);
-  console.log(`  export MYCO_VAULT_DIR="${vaultDir}"\n`);
+  console.log(`  export MYCO_VAULT_DIR="${portableDir}"\n`);
 }
