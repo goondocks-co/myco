@@ -79,7 +79,7 @@ logs/
 `;
 
 /** Collapse an absolute home-dir path to its `~/` form for portable config storage. */
-function collapseHomePath(absPath: string): string {
+export function collapseHomePath(absPath: string): string {
   const home = os.homedir();
   if (absPath.startsWith(home + path.sep) || absPath === home) {
     return '~' + absPath.slice(home.length);
