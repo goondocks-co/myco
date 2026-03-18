@@ -29,7 +29,9 @@ export const claudeCodeAdapter: AgentAdapter = {
     const settingsDir = path.join(projectRoot, '.claude');
     if (!fs.existsSync(settingsDir)) return false;
 
-    const settingsPath = path.join(settingsDir, 'settings.json');
+    // Write to settings.user.json (gitignored) — vault paths contain the
+    // user's home directory and should not be committed to the repository.
+    const settingsPath = path.join(settingsDir, 'settings.user.json');
     let settings: Record<string, unknown> = {};
     if (fs.existsSync(settingsPath)) {
       try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')); } catch { /* fresh */ }
