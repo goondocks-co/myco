@@ -11,6 +11,11 @@ interface OllamaConfig {
   summary_model?: string;
 }
 
+// Ollama API endpoints
+const ENDPOINT_GENERATE = '/api/generate';
+const ENDPOINT_EMBED = '/api/embed';
+const ENDPOINT_TAGS = '/api/tags';
+
 export class OllamaBackend implements LlmProvider, EmbeddingProvider {
   static readonly DEFAULT_BASE_URL = 'http://localhost:11434';
   readonly name = 'ollama';
@@ -57,7 +62,7 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
       body.keep_alive = opts.keepAlive;
     }
 
-    const response = await fetch(`${this.baseUrl}/api/generate`, {
+    const response = await fetch(`${this.baseUrl}${ENDPOINT_GENERATE}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -74,7 +79,7 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
   }
 
   async embed(text: string): Promise<EmbeddingResponse> {
-    const response = await fetch(`${this.baseUrl}/api/embed`, {
+    const response = await fetch(`${this.baseUrl}${ENDPOINT_EMBED}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -95,7 +100,7 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/tags`, {
+      const response = await fetch(`${this.baseUrl}${ENDPOINT_TAGS}`, {
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
       return response.ok;
@@ -107,7 +112,7 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
   /** List available models on this Ollama instance. */
   async listModels(timeoutMs?: number): Promise<string[]> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/tags`, {
+      const response = await fetch(`${this.baseUrl}${ENDPOINT_TAGS}`, {
         signal: AbortSignal.timeout(timeoutMs ?? DAEMON_CLIENT_TIMEOUT_MS),
       });
       const data = await response.json() as { models: Array<{ name: string }> };

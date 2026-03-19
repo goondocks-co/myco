@@ -11,6 +11,13 @@ interface LmStudioConfig {
   summary_model?: string;
 }
 
+// LM Studio API endpoints
+const ENDPOINT_CHAT = '/api/v1/chat';
+const ENDPOINT_MODELS_LOAD = '/api/v1/models/load';
+const ENDPOINT_MODELS_UNLOAD = '/api/v1/models/unload';
+const ENDPOINT_MODELS_LIST = '/v1/models';
+const ENDPOINT_EMBEDDINGS = '/v1/embeddings';
+
 export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
   static readonly DEFAULT_BASE_URL = 'http://localhost:1234';
   readonly name = 'lm-studio';
@@ -60,7 +67,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
       body.reasoning = opts.reasoning;
     }
 
-    const response = await fetch(`${this.baseUrl}/api/v1/chat`, {
+    const response = await fetch(`${this.baseUrl}${ENDPOINT_CHAT}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -86,7 +93,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
    * (The native API doesn't have an embedding endpoint — OpenAI-compat is fine here.)
    */
   async embed(text: string): Promise<EmbeddingResponse> {
-    const response = await fetch(`${this.baseUrl}/v1/embeddings`, {
+    const response = await fetch(`${this.baseUrl}${ENDPOINT_EMBEDDINGS}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -116,7 +123,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
    */
   async ensureLoaded(contextLength?: number, gpuKvCache?: boolean): Promise<void> {
     try {
-      await fetch(`${this.baseUrl}/api/v1/models/unload`, {
+      await fetch(`${this.baseUrl}${ENDPOINT_MODELS_UNLOAD}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: this.model }),
@@ -134,7 +141,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
       body.context_length = ctx;
     }
 
-    const response = await fetch(`${this.baseUrl}/api/v1/models/load`, {
+    const response = await fetch(`${this.baseUrl}${ENDPOINT_MODELS_LOAD}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -155,7 +162,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.baseUrl}/v1/models`, {
+      const response = await fetch(`${this.baseUrl}${ENDPOINT_MODELS_LIST}`, {
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
       return response.ok;
@@ -167,7 +174,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
   /** List available models on this LM Studio instance. */
   async listModels(timeoutMs?: number): Promise<string[]> {
     try {
-      const response = await fetch(`${this.baseUrl}/v1/models`, {
+      const response = await fetch(`${this.baseUrl}${ENDPOINT_MODELS_LIST}`, {
         signal: AbortSignal.timeout(timeoutMs ?? DAEMON_CLIENT_TIMEOUT_MS),
       });
       const data = await response.json() as { data: Array<{ id: string }> };
