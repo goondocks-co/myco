@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   SessionFrontmatterSchema,
   PlanFrontmatterSchema,
-  MemoryFrontmatterSchema,
+  SporeFrontmatterSchema,
   ArtifactFrontmatterSchema,
   TeamMemberFrontmatterSchema,
   parseNoteFrontmatter,
@@ -35,16 +35,16 @@ describe('Vault Note Types', () => {
     expect(result.success).toBe(true);
   });
 
-  it('validates memory frontmatter', () => {
+  it('validates spore frontmatter', () => {
     const fm = {
-      type: 'memory',
+      type: 'spore',
       id: 'gotcha-cors',
       observation_type: 'gotcha',
       session: '[[session-a1b2c3]]',
       created: '2026-03-12T10:00:00Z',
       tags: ['cors'],
     };
-    const result = MemoryFrontmatterSchema.safeParse(fm);
+    const result = SporeFrontmatterSchema.safeParse(fm);
     expect(result.success).toBe(true);
   });
 
@@ -86,16 +86,16 @@ describe('Vault Note Types', () => {
 
   it('accepts new observation types', () => {
     for (const type of ['gotcha', 'bug_fix', 'decision', 'discovery', 'trade_off']) {
-      const result = MemoryFrontmatterSchema.safeParse({
-        type: 'memory', id: 'test', observation_type: type, created: '2026-01-01',
+      const result = SporeFrontmatterSchema.safeParse({
+        type: 'spore', id: 'test', observation_type: type, created: '2026-01-01',
       });
       expect(result.success, `${type} should be valid`).toBe(true);
     }
   });
 
   it('accepts arbitrary observation types like cross-cutting', () => {
-    const result = MemoryFrontmatterSchema.safeParse({
-      type: 'memory', id: 'test', observation_type: 'cross-cutting', created: '2026-01-01',
+    const result = SporeFrontmatterSchema.safeParse({
+      type: 'spore', id: 'test', observation_type: 'cross-cutting', created: '2026-01-01',
     });
     expect(result.success).toBe(true);
   });
