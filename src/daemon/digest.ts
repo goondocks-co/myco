@@ -71,6 +71,7 @@ export class DigestEngine {
   private config: MycoConfig;
   private log: DigestLogFn;
   private lastCycleTimestampCache: string | null | undefined = undefined;
+  private cycleInProgress = false;
 
   constructor(engineConfig: DigestEngineConfig) {
     this.vaultDir = engineConfig.vaultDir;
@@ -241,6 +242,20 @@ export class DigestEngine {
    * Returns the cycle result, or null if no substrate was found.
    */
   async runCycle(): Promise<DigestCycleResult | null> {
+    if (this.cycleInProgress) {
+      this.log('debug', 'Cycle already in progress — skipping');
+      return null;
+    }
+    this.cycleInProgress = true;
+
+    try {
+      return await this.runCycleInternal();
+    } finally {
+      this.cycleInProgress = false;
+    }
+  }
+
+  private async runCycleInternal(): Promise<DigestCycleResult | null> {
     const startTime = Date.now();
     const lastTimestamp = this.getLastCycleTimestamp();
     const substrate = this.discoverSubstrate(lastTimestamp);
