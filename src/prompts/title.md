@@ -1,4 +1,4 @@
-Given this session summary, produce a short, descriptive title (5-10 words) suitable for a vault note heading.
+Given this session summary, produce a short, descriptive title (5-10 words) that captures the primary accomplishment or focus of the session.
 
 Summary:
 {{summary}}

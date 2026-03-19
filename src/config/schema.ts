@@ -35,8 +35,8 @@ const CaptureSchema = z.object({
   buffer_max_events: z.number().int().positive().default(500),
   /** Max output tokens for spore/observation extraction per batch. */
   extraction_max_tokens: z.number().int().positive().default(2048),
-  /** Max output tokens for session summary generation. */
-  summary_max_tokens: z.number().int().positive().default(512),
+  /** Max output tokens for session summary generation. Higher = richer summaries for digest. */
+  summary_max_tokens: z.number().int().positive().default(1024),
   /** Max output tokens for session title generation. */
   title_max_tokens: z.number().int().positive().default(32),
   /** Max output tokens for artifact classification. */

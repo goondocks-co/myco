@@ -96,7 +96,7 @@ export class BufferProcessor {
     sessionId: string,
   ): string {
     const toolSummary = this.summarizeEvents(events);
-    return buildExtractionPrompt(sessionId, events.length, toolSummary);
+    return buildExtractionPrompt(sessionId, events.length, toolSummary, this.extractionMaxTokens);
   }
 
   async summarizeSession(
@@ -105,7 +105,7 @@ export class BufferProcessor {
     user?: string,
   ): Promise<{ summary: string; title: string }> {
     const truncatedContent = this.truncateForContext(conversationMarkdown, this.summaryMaxTokens);
-    const summaryPrompt = buildSummaryPrompt(sessionId, user ?? 'unknown', truncatedContent);
+    const summaryPrompt = buildSummaryPrompt(sessionId, user ?? 'unknown', truncatedContent, this.summaryMaxTokens);
 
     let summaryText: string;
     try {
@@ -144,7 +144,7 @@ export class BufferProcessor {
     candidates: Array<{ path: string; content: string }>,
     sessionId: string,
   ): string {
-    return buildClassificationPrompt(sessionId, candidates);
+    return buildClassificationPrompt(sessionId, candidates, this.classificationMaxTokens);
   }
 
   private summarizeEvents(events: Array<Record<string, unknown>>): string {
