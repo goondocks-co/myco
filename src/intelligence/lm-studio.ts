@@ -64,8 +64,8 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
     });
 
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new Error(`LM Studio summarize failed: ${response.status} ${text}`);
+      const errorBody = await response.text().catch(() => '');
+      throw new Error(`LM Studio summarize failed: ${response.status} ${errorBody.slice(0, 500)}`);
     }
 
     const data = await response.json() as {

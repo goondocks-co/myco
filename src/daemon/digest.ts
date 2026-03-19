@@ -55,6 +55,9 @@ export interface DigestEngineConfig {
 /** Token overhead estimate for previous extract section wrapper. */
 const PREVIOUS_EXTRACT_OVERHEAD_TOKENS = 50;
 
+/** Safety margin for context window — our chars-per-token heuristic underestimates by ~10-15%. */
+const CONTEXT_SAFETY_MARGIN = 0.85;
+
 /** Types that are digest output — excluded from substrate to avoid self-digestion. */
 const EXTRACT_TYPE = 'extract';
 
@@ -291,7 +294,8 @@ export class DigestEngine {
       const previousExtractTokens = previousExtract
         ? Math.ceil(previousExtract.length / CHARS_PER_TOKEN) + PREVIOUS_EXTRACT_OVERHEAD_TOKENS
         : 0;
-      const substrateBudget = contextWindow - tier - systemTokens - tierPromptTokens - previousExtractTokens;
+      const availableTokens = Math.floor(contextWindow * CONTEXT_SAFETY_MARGIN);
+      const substrateBudget = availableTokens - tier - systemTokens - tierPromptTokens - previousExtractTokens;
 
       if (substrateBudget <= 0) continue;
 
