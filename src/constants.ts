@@ -8,6 +8,11 @@
 /** Approximate characters per token for the chars/4 heuristic. */
 export const CHARS_PER_TOKEN = 4;
 
+/** Estimate token count from character length using the CHARS_PER_TOKEN heuristic. */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
 // --- Embedding ---
 /** Max characters of text sent to the embedding model. */
 export const EMBEDDING_INPUT_LIMIT = 8000;

@@ -2,7 +2,7 @@ import type { MycoIndex } from '../index/sqlite.js';
 import type { MycoConfig } from '../config/schema.js';
 import { planFm, sporeFm } from '../vault/frontmatter.js';
 import { scoreRelevance } from './relevance.js';
-import { CHARS_PER_TOKEN, CONTEXT_PLAN_PREVIEW_CHARS, CONTEXT_SESSION_PREVIEW_CHARS, CONTEXT_SPORE_PREVIEW_CHARS } from '../constants.js';
+import { estimateTokens, CONTEXT_PLAN_PREVIEW_CHARS, CONTEXT_SESSION_PREVIEW_CHARS, CONTEXT_SPORE_PREVIEW_CHARS } from '../constants.js';
 
 interface InjectionContext {
   branch?: string;
@@ -115,6 +115,3 @@ function formatLayer(heading: string, items: string[], budget: number): string {
   return text.trim();
 }
 
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
-}

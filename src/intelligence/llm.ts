@@ -30,6 +30,8 @@ export interface LlmProvider {
   name: string;
   summarize(prompt: string, opts?: LlmRequestOptions): Promise<LlmResponse>;
   isAvailable(): Promise<boolean>;
+  /** Pre-load the model with specific settings. Optional — only LM Studio implements this. */
+  ensureLoaded?(contextLength?: number, gpuKvCache?: boolean): Promise<void>;
 }
 
 export interface EmbeddingProvider {

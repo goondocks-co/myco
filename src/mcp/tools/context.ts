@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import YAML from 'yaml';
+import { stripFrontmatter } from '../../vault/frontmatter.js';
 import { DIGEST_TIERS } from '../../constants.js';
 
 /** Default tier when none is requested. */
@@ -29,17 +29,8 @@ function tryReadExtract(filePath: string, tier: number, fallback: boolean): Cont
     return null;
   }
 
-  let generated: string | undefined;
-  let body = raw;
-
-  const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n*/);
-  if (fmMatch) {
-    try {
-      const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
-      generated = parsed.generated as string | undefined;
-    } catch { /* ignore malformed frontmatter */ }
-    body = raw.slice(fmMatch[0].length).trim();
-  }
+  const { body, frontmatter } = stripFrontmatter(raw);
+  const generated = frontmatter.generated as string | undefined;
 
   return {
     content: body,

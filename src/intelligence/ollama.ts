@@ -1,5 +1,5 @@
 import type { LlmProvider, EmbeddingProvider, LlmResponse, EmbeddingResponse, LlmRequestOptions } from './llm.js';
-import { CHARS_PER_TOKEN, LLM_REQUEST_TIMEOUT_MS, EMBEDDING_REQUEST_TIMEOUT_MS, DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
+import { estimateTokens, LLM_REQUEST_TIMEOUT_MS, EMBEDDING_REQUEST_TIMEOUT_MS, DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 
 interface OllamaConfig {
   model?: string;
@@ -29,7 +29,7 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
   async summarize(prompt: string, opts?: LlmRequestOptions): Promise<LlmResponse> {
     const maxTokens = opts?.maxTokens ?? this.defaultMaxTokens;
     const contextLength = opts?.contextLength ?? this.contextWindow;
-    const promptTokens = Math.ceil(prompt.length / CHARS_PER_TOKEN);
+    const promptTokens = estimateTokens(prompt);
     const numCtx = Math.max(promptTokens + maxTokens, contextLength);
 
     const body: Record<string, unknown> = {

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { LlmProvider } from '../intelligence/llm.js';
 import { ARTIFACT_TYPES } from '../vault/types.js';
-import { CHARS_PER_TOKEN, PROMPT_PREVIEW_CHARS, AI_RESPONSE_PREVIEW_CHARS, COMMAND_PREVIEW_CHARS } from '../constants.js';
+import { estimateTokens, CHARS_PER_TOKEN, PROMPT_PREVIEW_CHARS, AI_RESPONSE_PREVIEW_CHARS, COMMAND_PREVIEW_CHARS } from '../constants.js';
 import type { MycoConfig } from '../config/schema.js';
 import type { ObservationType, ArtifactType } from '../vault/types.js';
 import { buildExtractionPrompt, buildSummaryPrompt, buildTitlePrompt, buildClassificationPrompt } from '../prompts/index.js';
@@ -57,7 +57,7 @@ export class BufferProcessor {
 
   private truncateForContext(data: string, maxTokens: number): string {
     const available = this.contextWindow - maxTokens;
-    const dataTokens = Math.ceil(data.length / CHARS_PER_TOKEN);
+    const dataTokens = estimateTokens(data);
     if (dataTokens <= available) return data;
     const charBudget = available * CHARS_PER_TOKEN;
     return data.slice(0, charBudget);

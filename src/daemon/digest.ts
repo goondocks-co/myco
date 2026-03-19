@@ -13,7 +13,9 @@ import type { LlmProvider, LlmRequestOptions } from '@myco/intelligence/llm.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { loadPrompt } from '@myco/prompts/index.js';
 import { stripReasoningTokens } from '@myco/intelligence/response.js';
+import { stripFrontmatter } from '@myco/vault/frontmatter.js';
 import {
+  estimateTokens,
   CHARS_PER_TOKEN,
   DIGEST_TIER_MIN_CONTEXT,
   DIGEST_SUBSTRATE_TYPE_WEIGHTS,
@@ -153,12 +155,7 @@ export class DigestEngine {
       return null;
     }
 
-    // Strip YAML frontmatter
-    const fmMatch = content.match(/^---\n[\s\S]*?\n---\n*/);
-    if (fmMatch) {
-      return content.slice(fmMatch[0].length).trim();
-    }
-    return content.trim();
+    return stripFrontmatter(content).body;
   }
 
   /**
@@ -260,10 +257,10 @@ export class DigestEngine {
 
   private async runCycleInternal(): Promise<DigestCycleResult | null> {
     // Ensure model is loaded with correct settings — one-time on first cycle
-    if (!this.modelReady && 'ensureLoaded' in this.llm && typeof (this.llm as { ensureLoaded: unknown }).ensureLoaded === 'function') {
+    if (!this.modelReady && this.llm.ensureLoaded) {
       const { context_window: contextWindow, gpu_kv_cache: gpuKvCache } = this.config.digest.intelligence;
       this.log('debug', 'Ensuring model is loaded', { contextWindow, gpuKvCache });
-      await (this.llm as { ensureLoaded: (ctx?: number, gpuKv?: boolean) => Promise<void> }).ensureLoaded(contextWindow, gpuKvCache);
+      await this.llm.ensureLoaded(contextWindow, gpuKvCache);
       this.modelReady = true;
     }
 
@@ -316,10 +313,10 @@ export class DigestEngine {
       // Calculate token budget for substrate:
       // (context_window * safety_margin) - output - system_prompt - tier_prompt - previous_extract
       const contextWindow = this.config.digest.intelligence.context_window;
-      const systemPromptTokens = Math.ceil(systemPrompt.length / CHARS_PER_TOKEN);
-      const tierPromptTokens = Math.ceil(tierPrompt.length / CHARS_PER_TOKEN);
+      const systemPromptTokens = estimateTokens(systemPrompt);
+      const tierPromptTokens = estimateTokens(tierPrompt);
       const previousExtractTokens = previousExtract
-        ? Math.ceil(previousExtract.length / CHARS_PER_TOKEN) + PREVIOUS_EXTRACT_OVERHEAD_TOKENS
+        ? estimateTokens(previousExtract) + PREVIOUS_EXTRACT_OVERHEAD_TOKENS
         : 0;
       const availableTokens = Math.floor(contextWindow * CONTEXT_SAFETY_MARGIN);
       const substrateBudget = availableTokens - tier - systemPromptTokens - tierPromptTokens - previousExtractTokens;
@@ -343,7 +340,7 @@ export class DigestEngine {
       );
 
       const userPrompt = promptParts.join('\n');
-      const promptTokens = Math.ceil((systemPrompt.length + userPrompt.length) / CHARS_PER_TOKEN);
+      const promptTokens = estimateTokens(systemPrompt + userPrompt);
       this.log('debug', `Tier ${tier}: sending LLM request`, { promptTokens, maxTokens: tier, substrateBudget });
 
       const tierStart = Date.now();
@@ -362,7 +359,7 @@ export class DigestEngine {
       // Strip reasoning tokens if present (some models output chain-of-thought)
       const extractText = stripReasoningTokens(response.text);
       model = response.model;
-      const responseTokens = Math.ceil(extractText.length / CHARS_PER_TOKEN);
+      const responseTokens = estimateTokens(extractText);
       totalTokensUsed += promptTokens + responseTokens;
 
       this.log('info', `Tier ${tier}: completed`, { durationMs: tierDuration, responseTokens, model: response.model });
