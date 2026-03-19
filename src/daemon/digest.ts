@@ -72,6 +72,7 @@ export class DigestEngine {
   private log: DigestLogFn;
   private lastCycleTimestampCache: string | null | undefined = undefined;
   private cycleInProgress = false;
+  private modelReady = false;
 
   constructor(engineConfig: DigestEngineConfig) {
     this.vaultDir = engineConfig.vaultDir;
@@ -256,19 +257,19 @@ export class DigestEngine {
   }
 
   private async runCycleInternal(): Promise<DigestCycleResult | null> {
+    // Ensure model is loaded with correct settings — one-time on first cycle
+    if (!this.modelReady && 'ensureLoaded' in this.llm && typeof (this.llm as { ensureLoaded: unknown }).ensureLoaded === 'function') {
+      const { context_window: contextWindow, gpu_kv_cache: gpuKvCache } = this.config.digest.intelligence;
+      this.log('debug', 'Ensuring model is loaded', { contextWindow, gpuKvCache });
+      await (this.llm as { ensureLoaded: (ctx?: number, gpuKv?: boolean) => Promise<void> }).ensureLoaded(contextWindow, gpuKvCache);
+      this.modelReady = true;
+    }
+
     const startTime = Date.now();
     const lastTimestamp = this.getLastCycleTimestamp();
     const substrate = this.discoverSubstrate(lastTimestamp);
 
     this.log('debug', 'Discovering substrate', { lastTimestamp: lastTimestamp ?? 'cold start', substrateCount: substrate.length });
-
-    // Ensure the LLM model is loaded with the configured context window.
-    // For LM Studio, this calls /api/v1/models/load with context_length.
-    if ('ensureLoaded' in this.llm && typeof (this.llm as { ensureLoaded: unknown }).ensureLoaded === 'function') {
-      const { context_window: contextWindow, gpu_kv_cache: gpuKvCache } = this.config.digest.intelligence;
-      this.log('debug', 'Ensuring model is loaded', { contextWindow, gpuKvCache });
-      await (this.llm as { ensureLoaded: (ctx?: number, gpuKv?: boolean) => Promise<void> }).ensureLoaded(contextWindow, gpuKvCache);
-    }
     if (substrate.length === 0) {
       this.log('debug', 'No substrate found — skipping cycle');
       return null;
