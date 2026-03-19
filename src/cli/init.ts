@@ -7,6 +7,7 @@ import {
   VAULT_GITIGNORE,
   configureVaultEnv,
 } from './shared.js';
+import { MycoConfigSchema } from '../config/schema.js';
 import { run as setupLlm } from './setup-llm.js';
 import { run as setupDigest } from './setup-digest.js';
 import fs from 'node:fs';
@@ -38,42 +39,18 @@ export async function run(args: string[]): Promise<void> {
     fs.mkdirSync(path.join(vaultDir, dir), { recursive: true });
   }
 
-  // Write minimal myco.yaml — provider settings are written by setup-llm/setup-digest
-  const config: Record<string, unknown> = {
-    version: 2,
+  // Write myco.yaml — pass only required fields, let Zod schema populate defaults.
+  // intelligence.llm and intelligence.embedding are required (no defaults),
+  // everything else has Zod defaults.
+  const minimal = {
+    version: 2 as const,
     intelligence: {
-      llm: {
-        provider: 'ollama',
-        model: 'qwen3.5',
-        context_window: 8192,
-        max_tokens: 1024,
-      },
-      embedding: {
-        provider: 'ollama',
-        model: 'bge-m3',
-      },
+      llm: { provider: 'ollama' as const, model: 'qwen3.5' },
+      embedding: { provider: 'ollama' as const, model: 'bge-m3' },
     },
-    daemon: {
-      log_level: 'info',
-      grace_period: 30,
-      max_log_size: 5242880,
-    },
-    capture: {
-      transcript_paths: [],
-      artifact_watch: ['.claude/plans/', '.cursor/plans/'],
-      artifact_extensions: ['.md'],
-      buffer_max_events: 500,
-    },
-    context: {
-      max_tokens: 1200,
-      layers: { plans: 200, sessions: 500, spores: 300, team: 200 },
-    },
-    team: {
-      enabled: teamEnabled,
-      user,
-      sync: 'git',
-    },
+    team: { user, enabled: teamEnabled },
   };
+  const config = MycoConfigSchema.parse(minimal);
 
   fs.writeFileSync(
     path.join(vaultDir, 'myco.yaml'),
