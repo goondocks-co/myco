@@ -9,8 +9,10 @@ export interface LlmRequestOptions {
   contextLength?: number;
   /** Control reasoning/thinking output. 'off' suppresses chain-of-thought. LM Studio native API only. */
   reasoning?: 'off' | 'low' | 'medium' | 'high' | 'on';
-  /** System prompt, sent separately from user content. LM Studio native API only. */
+  /** System prompt, sent separately from user content. Supported by LM Studio and Ollama native APIs. */
   systemPrompt?: string;
+  /** Keep model loaded for this duration after request (e.g., "10m"). Ollama only. */
+  keepAlive?: string;
 }
 
 export interface LlmResponse {

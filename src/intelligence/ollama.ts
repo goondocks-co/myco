@@ -28,23 +28,46 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
 
   async summarize(prompt: string, opts?: LlmRequestOptions): Promise<LlmResponse> {
     const maxTokens = opts?.maxTokens ?? this.defaultMaxTokens;
+    const contextLength = opts?.contextLength ?? this.contextWindow;
     const promptTokens = Math.ceil(prompt.length / CHARS_PER_TOKEN);
-    const numCtx = Math.max(promptTokens + maxTokens, this.contextWindow);
+    const numCtx = Math.max(promptTokens + maxTokens, contextLength);
+
+    const body: Record<string, unknown> = {
+      model: this.model,
+      prompt,
+      stream: false,
+      options: {
+        num_ctx: numCtx,
+        num_predict: maxTokens,
+      },
+    };
+
+    // System prompt — sent as a separate field instead of concatenated into prompt
+    if (opts?.systemPrompt) {
+      body.system = opts.systemPrompt;
+    }
+
+    // Thinking control — false suppresses chain-of-thought for reasoning models
+    if (opts?.reasoning) {
+      body.think = opts.reasoning === 'off' ? false : opts.reasoning;
+    }
+
+    // Keep model loaded between requests (useful for digest cycles)
+    if (opts?.keepAlive) {
+      body.keep_alive = opts.keepAlive;
+    }
 
     const response = await fetch(`${this.baseUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.model,
-        prompt,
-        stream: false,
-        options: { num_ctx: numCtx },
-      }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(opts?.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS),
+      keepalive: true,
     });
 
     if (!response.ok) {
-      throw new Error(`Ollama summarize failed: ${response.status} ${response.statusText}`);
+      const errorBody = await response.text().catch(() => '');
+      throw new Error(`Ollama summarize failed: ${response.status} ${errorBody.slice(0, 500)}`);
     }
 
     const data = await response.json() as { response: string; model: string };
