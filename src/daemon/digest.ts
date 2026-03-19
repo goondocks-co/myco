@@ -12,6 +12,7 @@ import type { MycoIndex, IndexedNote } from '@myco/index/sqlite.js';
 import type { LlmProvider, LlmRequestOptions } from '@myco/intelligence/llm.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { loadPrompt } from '@myco/prompts/index.js';
+import { stripReasoningTokens } from '@myco/intelligence/response.js';
 import {
   CHARS_PER_TOKEN,
   DIGEST_TIER_MIN_CONTEXT,
@@ -308,6 +309,8 @@ export class DigestEngine {
         '',
         '---',
         'Produce your updated synthesis now. Stay within the token budget specified above.',
+        'Output ONLY the synthesis — no thinking process, no analysis, no planning. Start directly with the content.',
+        '/no_think',
       );
 
       const fullPrompt = promptParts.join('\n');
@@ -319,12 +322,14 @@ export class DigestEngine {
       const response = await this.llm.summarize(fullPrompt, opts);
       const tierDuration = Date.now() - tierStart;
 
+      // Strip reasoning tokens if present (some models output chain-of-thought)
+      const extractText = stripReasoningTokens(response.text);
       model = response.model;
-      const responseTokens = Math.ceil(response.text.length / CHARS_PER_TOKEN);
+      const responseTokens = Math.ceil(extractText.length / CHARS_PER_TOKEN);
       totalTokensUsed += promptTokens + responseTokens;
 
       this.log('info', `Tier ${tier}: completed`, { durationMs: tierDuration, responseTokens, model: response.model });
-      this.writeExtract(tier, response.text, cycleId, response.model, substrate.length);
+      this.writeExtract(tier, extractText, cycleId, response.model, substrate.length);
       tiersGenerated.push(tier);
     }
 
