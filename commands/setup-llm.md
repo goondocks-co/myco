@@ -69,7 +69,7 @@ Write both `intelligence.llm` and `intelligence.embedding` sections with all val
 intelligence:
   llm:
     provider: ollama
-    model: gpt-oss
+    model: qwen3.5
     base_url: http://localhost:11434
     context_window: 8192
     max_tokens: 1024
@@ -105,24 +105,40 @@ Ask the user:
 - "Customize" — let the user pick tiers, context window, and optionally a separate model
 - "Disable" — set `digest.enabled: false`
 
-If customizing:
-- **Tiers**: which token budgets to generate (1500, 3000, 5000, 10000)
-- **Context window**: how much context the digest model can handle
-- **Separate model**: optionally use a different (larger/reasoning) model for digest than for hook-based extraction. Show available models from the detected providers.
-- **Inject tier**: which tier to auto-inject at session start (or null for MCP-tool-only)
+If customizing, ask these one at a time:
 
-Write the `digest` section to `myco.yaml`:
+1. **Tiers**: "Which tiers to generate?" — options: [1500], [1500, 3000], [1500, 3000, 5000], [1500, 3000, 5000, 10000]
+2. **Inject tier**: "Which tier to auto-inject at session start?" — options: 1500, 3000, 5000, 10000, or "None (MCP tool only)"
+3. **Separate model**: "Use a different model for digestion?" — if yes, ask provider and model from the detected providers. This allows a larger/better model for digest while keeping a fast model for hooks.
+4. **Context window**: "Context window for digest?" — suggest based on RAM tier from the table above. If using LM Studio, note that the model will be pre-loaded with this context size.
+5. **KV cache**: "Offload KV cache to GPU?" — default No (safer for large contexts). Only relevant for LM Studio.
+6. **Keep alive**: "How long to keep model loaded between cycles?" — default "30m". Only relevant for Ollama.
+
+Also ask about capture token budgets:
+
+7. **Extraction tokens**: "Max tokens for spore extraction?" — default 2048
+8. **Summary tokens**: "Max tokens for session summaries?" — default 1024
+
+Write all settings to `myco.yaml`. Example with all fields explicit:
 
 ```yaml
+capture:
+  extraction_max_tokens: 2048
+  summary_max_tokens: 1024
+  title_max_tokens: 32
+  classification_max_tokens: 1024
+
 digest:
   enabled: true
   tiers: [1500, 3000, 5000, 10000]
   inject_tier: 3000
   intelligence:
-    provider: null     # null = inherit from main LLM
-    model: null        # null = inherit from main LLM
-    base_url: null     # null = inherit from main LLM
+    provider: null          # null = inherit from main LLM
+    model: null             # null = inherit from main LLM
+    base_url: null          # null = inherit from main LLM
     context_window: 32768
+    keep_alive: 30m         # Ollama: keep model loaded between cycles
+    gpu_kv_cache: false     # LM Studio: KV cache in system RAM
   metabolism:
     active_interval: 300
     cooldown_intervals: [900, 1800, 3600]
