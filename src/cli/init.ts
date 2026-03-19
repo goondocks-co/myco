@@ -39,18 +39,11 @@ export async function run(args: string[]): Promise<void> {
     fs.mkdirSync(path.join(vaultDir, dir), { recursive: true });
   }
 
-  // Write myco.yaml — pass only required fields, let Zod schema populate defaults.
-  // intelligence.llm and intelligence.embedding are required (no defaults),
-  // everything else has Zod defaults.
-  const minimal = {
-    version: 2 as const,
-    intelligence: {
-      llm: { provider: 'ollama' as const, model: 'qwen3.5' },
-      embedding: { provider: 'ollama' as const, model: 'bge-m3' },
-    },
+  // Write myco.yaml — only version is truly required, everything else has Zod defaults
+  const config = MycoConfigSchema.parse({
+    version: 2,
     team: { user, enabled: teamEnabled },
-  };
-  const config = MycoConfigSchema.parse(minimal);
+  });
 
   fs.writeFileSync(
     path.join(vaultDir, 'myco.yaml'),

@@ -1,22 +1,22 @@
 import { z } from 'zod';
 
 const LlmProviderSchema = z.object({
-  provider: z.enum(['ollama', 'lm-studio', 'anthropic']),
-  model: z.string(),
+  provider: z.enum(['ollama', 'lm-studio', 'anthropic']).default('ollama'),
+  model: z.string().default('qwen3.5'),
   base_url: z.string().url().optional(),
   context_window: z.number().int().positive().default(8192),
   max_tokens: z.number().int().positive().default(1024),
 });
 
 const EmbeddingProviderSchema = z.object({
-  provider: z.enum(['ollama', 'lm-studio']),
-  model: z.string(),
+  provider: z.enum(['ollama', 'lm-studio']).default('ollama'),
+  model: z.string().default('bge-m3'),
   base_url: z.string().url().optional(),
 });
 
 const IntelligenceSchema = z.object({
-  llm: LlmProviderSchema,
-  embedding: EmbeddingProviderSchema,
+  llm: LlmProviderSchema.default(() => LlmProviderSchema.parse({})),
+  embedding: EmbeddingProviderSchema.default(() => EmbeddingProviderSchema.parse({})),
 });
 
 const DaemonSchema = z.object({
