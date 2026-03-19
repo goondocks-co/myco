@@ -81,7 +81,59 @@ intelligence:
 
 If migrating from a v1 config (has `backend: local/cloud` structure), bump `version` to `2` and rewrite the entire intelligence section. The loader auto-maps `provider: haiku` to `anthropic`.
 
-## Step 5: Verify and restart
+## Step 5: Configure digest (continuous reasoning)
+
+Myco's digest engine continuously synthesizes vault knowledge into pre-computed context extracts. It runs in the daemon on an adaptive timer.
+
+**Detect system capabilities** to recommend appropriate settings:
+- **macOS**: `sysctl -n hw.memsize` (bytes → GB)
+- **Linux**: parse `/proc/meminfo` for `MemTotal`
+
+| Available Memory | Recommended Tiers | Context Window |
+|-----------------|-------------------|----------------|
+| < 16GB | `[1500]` | 8192 |
+| 16–32GB | `[1500, 3000]` | 16384 |
+| 32–64GB | `[1500, 3000, 5000]` | 24576 |
+| 64GB+ | `[1500, 3000, 5000, 10000]` | 32768 |
+
+Ask the user:
+
+**Question:** "Configure digest (continuous reasoning)?"
+
+**Options:**
+- "Accept recommended settings" — use the RAM-based recommendation above
+- "Customize" — let the user pick tiers, context window, and optionally a separate model
+- "Disable" — set `digest.enabled: false`
+
+If customizing:
+- **Tiers**: which token budgets to generate (1500, 3000, 5000, 10000)
+- **Context window**: how much context the digest model can handle
+- **Separate model**: optionally use a different (larger/reasoning) model for digest than for hook-based extraction. Show available models from the detected providers.
+- **Inject tier**: which tier to auto-inject at session start (or null for MCP-tool-only)
+
+Write the `digest` section to `myco.yaml`:
+
+```yaml
+digest:
+  enabled: true
+  tiers: [1500, 3000, 5000, 10000]
+  inject_tier: 3000
+  intelligence:
+    provider: null     # null = inherit from main LLM
+    model: null        # null = inherit from main LLM
+    base_url: null     # null = inherit from main LLM
+    context_window: 32768
+  metabolism:
+    active_interval: 300
+    cooldown_intervals: [900, 1800, 3600]
+    dormancy_threshold: 7200
+  substrate:
+    max_notes_per_cycle: 50
+```
+
+Only write fields the user explicitly changed — Zod defaults handle the rest.
+
+## Step 6: Verify and restart
 
 1. Test the LLM provider with a simple prompt
 2. Test the embedding provider with a test embedding

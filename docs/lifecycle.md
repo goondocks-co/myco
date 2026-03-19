@@ -24,8 +24,8 @@ sequenceDiagram
     User->>Hook: Prompt submitted
     Hook->>Daemon: POST /events {user_prompt}
     Hook->>Daemon: POST /context/prompt {prompt}
-    Daemon-->>Hook: Relevant memories (vector search)
-    Hook-->>User: Memories injected
+    Daemon-->>Hook: Relevant spores (vector search)
+    Hook-->>User: Spores injected
 
     User->>Hook: Tool used
     Hook->>Daemon: POST /events {tool_use}
@@ -40,7 +40,7 @@ sequenceDiagram
     Daemon->>LLM: Summarize full conversation
     Daemon->>LLM: Classify artifacts
     Daemon->>Vault: Write session note (full rebuild from transcript)
-    Daemon->>Vault: Write memory notes
+    Daemon->>Vault: Write spore notes
     Daemon->>Vault: Write artifact notes
     Daemon->>LLM: Detect lineage (semantic similarity)
     Hook->>Daemon: POST /sessions/unregister
@@ -73,7 +73,7 @@ flowchart LR
 | Artifacts | Stop handler | ✅ `indexAndEmbed` | ✅ fire-and-forget | `{slugified-path}` |
 | Plans (file watcher) | Real-time | ✅ `indexAndEmbed` | ✅ fire-and-forget | `plan-{filename}` |
 | Wisdom notes (`myco_consolidate`) | On tool call | ✅ `indexNote` | ✅ `embedNote` | `{type}-wisdom-{hex}` |
-| Superseded memories | On supersede | ✅ (updated) | ❌ (embedding deleted) | — |
+| Superseded spores | On supersede | ✅ (updated) | ❌ (embedding deleted) | — |
 
 ### Embedding is Fire-and-Forget
 
@@ -100,7 +100,7 @@ Two injection points, each with a different purpose:
 ```mermaid
 flowchart TD
     SS[SessionStart] --> Struct[Structural Context<br/>Active plans + parent session<br/>Branch name + IDs as breadcrumbs]
-    UP[UserPromptSubmit] --> Sem[Semantic Context<br/>Vector search against prompt<br/>Top 3 relevant memories + IDs]
+    UP[UserPromptSubmit] --> Sem[Semantic Context<br/>Vector search against prompt<br/>Top 3 relevant spores + IDs]
 
     Struct --> Agent[Agent Context Window]
     Sem --> Agent
@@ -119,8 +119,8 @@ flowchart TD
 
 **Per-prompt** — injected on every prompt, targeted intelligence:
 - Vector similarity search against the prompt text (~20ms, no LLM)
-- Top 3 memories, filtered for superseded/archived
-- Each result includes the memory ID for follow-up
+- Top 3 spores, filtered for superseded/archived
+- Each result includes the spore ID for follow-up
 - Short prompts (<10 chars) skip the search
 
 ## Daemon Startup
@@ -146,7 +146,7 @@ The daemon initializes in this order:
 4. Initialize vector index (test embedding for dimensions)
 5. Initialize FTS index
 6. Initialize lineage graph
-7. Migrate flat memory files to type subdirectories (if needed)
+7. Migrate flat spore files to type subdirectories (if needed)
 8. Start plan file watcher
 9. Start HTTP server
 10. Write `daemon.json` with PID and port
@@ -175,7 +175,7 @@ If the daemon is unreachable, hooks fall back gracefully:
 | `SessionStart` | Context injection via local FTS query (no semantic search) |
 | `UserPromptSubmit` | Events buffered to disk (JSONL files), no context injection |
 | `PostToolUse` | Events buffered to disk |
-| `Stop` | Local LLM processing: session/memory writes (no embeddings, no lineage) |
+| `Stop` | Local LLM processing: session/spore writes (no embeddings, no lineage) |
 | `SessionEnd` | No-op |
 
 Buffered events are processed by the daemon when it next starts. Buffer files are cleaned up after 24 hours.

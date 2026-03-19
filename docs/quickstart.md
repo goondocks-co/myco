@@ -104,13 +104,13 @@ Open your vault directory in Obsidian (e.g., `~/.myco/vaults/myco/`). You'll see
 
 ```
 sessions/          → Session notes organized by date
-memories/          → Observations organized by type (decisions, gotchas, etc.)
+spores/            → Observations organized by type (decisions, gotchas, etc.)
 plans/             → Plan documents
 artifacts/         → Captured design docs and specs
 _dashboard.md      → Dataview-powered overview (requires Dataview plugin)
 ```
 
-Use the graph view to see how sessions, memories, and plans connect through backlinks.
+Use the graph view to see how sessions, spores, and plans connect through backlinks.
 
 ### From the CLI
 
@@ -126,7 +126,7 @@ Myco exposes these tools to your coding agent via MCP:
 
 | Tool | What it does |
 |------|-------------|
-| `myco_recall` | Retrieve relevant memories for the current context |
+| `myco_recall` | Retrieve relevant spores for the current context |
 | `myco_remember` | Capture a new observation or decision |
 | `myco_search` | Search the vault by keyword or semantic similarity |
 | `myco_sessions` | List recent sessions with summaries |

@@ -39,7 +39,7 @@ myco_recall("migration plan")           → full decision history with session l
 myco_remember(observation)              → persist a discovery for the team
 ```
 
-**For humans** — open the vault in Obsidian and browse the intelligence graph visually. Sessions link to plans, plans link to decisions, decisions link to memories. It's all Markdown with backlinks — your team's connected knowledge, navigable and searchable.
+**For humans** — open the vault in Obsidian and browse the intelligence graph visually. Sessions link to plans, plans link to decisions, decisions link to spores. It's all Markdown with backlinks — your team's connected knowledge, navigable and searchable.
 
 **For teams** — the vault is a Git-friendly directory of Markdown files. Share it through your existing Git workflow.
 
@@ -55,11 +55,11 @@ Every note is indexed for both keyword search (SQLite FTS5) and semantic search 
 
 ### Serve
 
-An MCP server exposes the vault to any agent runtime. Relevant memories are injected into every prompt automatically — no manual lookup needed. Agents build on your team's accumulated knowledge without being told to.
+An MCP server exposes the vault to any agent runtime. Relevant spores are injected into every prompt automatically — no manual lookup needed. Agents build on your team's accumulated knowledge without being told to.
 
 ### Connect
 
-Sessions link to plans. Plans link to decisions. Decisions link to memories. Obsidian backlinks and metadata create a navigable graph of your team's institutional knowledge. Open the vault in [Obsidian](https://obsidian.md) to browse it visually, or let agents traverse it via MCP tools.
+Sessions link to plans. Plans link to decisions. Decisions link to spores. Obsidian backlinks and metadata create a navigable graph of your team's institutional knowledge. Open the vault in [Obsidian](https://obsidian.md) to browse it visually, or let agents traverse it via MCP tools.
 
 ### Multi-agent
 

@@ -60,7 +60,33 @@ After the user picks a provider, ask them to choose a specific embedding model.
 If the recommended embedding model isn't available, offer to pull it:
 - **Ollama**: `ollama pull bge-m3`
 
-## Step 5: Run init with all gathered inputs
+## Step 5: Configure digest
+
+Myco's digest engine continuously synthesizes vault knowledge into pre-computed context extracts, giving agents rich project understanding at session start.
+
+**Detect system RAM** to recommend settings:
+- **macOS**: `sysctl -n hw.memsize` (bytes → GB)
+- **Linux**: parse `/proc/meminfo` for `MemTotal`
+
+| Available Memory | Recommended Tiers | Context Window |
+|-----------------|-------------------|----------------|
+| < 16GB | `[1500]` | 8192 |
+| 16–32GB | `[1500, 3000]` | 16384 |
+| 32–64GB | `[1500, 3000, 5000]` | 24576 |
+| 64GB+ | `[1500, 3000, 5000, 10000]` | 32768 |
+
+Present the recommendation and ask:
+
+**Question:** "Digest will continuously synthesize your vault into context extracts. Accept recommended settings?"
+
+**Options:**
+- "Yes — use recommended settings" (default)
+- "Customize tiers and model"
+- "Disable digest"
+
+Store the user's choice to include in the init command. Digest is enabled by default — the user must explicitly disable it.
+
+## Step 6: Run init with all gathered inputs
 
 Pass everything to the init command in a single call:
 
@@ -77,7 +103,9 @@ node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js init \
 
 The CLI creates the vault structure, writes myco.yaml, .gitignore, _dashboard.md, initializes the FTS index, and configures MYCO_VAULT_DIR if the vault is external.
 
-## Step 6: Verify connectivity
+After init completes, if the user chose custom digest settings, update the `digest` section in the newly created `myco.yaml` with their choices. If they accepted defaults, Zod handles it automatically — no YAML mutation needed.
+
+## Step 7: Verify connectivity
 
 Run the verify command to confirm providers are reachable:
 
@@ -87,7 +115,7 @@ node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js verify
 
 If verification fails, help the user troubleshoot (check if the provider is running, model is loaded, etc.).
 
-## Step 7: Display summary
+## Step 8: Display summary
 
 Show the user a setup summary table:
 
@@ -96,3 +124,6 @@ Show the user a setup summary table:
 | Vault path | `<resolved path>` |
 | LLM provider | `<provider>` / `<model>` |
 | Embedding provider | `<provider>` / `<model>` |
+| Digest | enabled / disabled |
+| Digest tiers | `[1500, 3000, ...]` |
+| Digest inject tier | `3000` (or "MCP tool only") |
