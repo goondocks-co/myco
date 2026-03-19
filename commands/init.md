@@ -58,10 +58,8 @@ If the model isn't installed, offer to pull it:
 **Question:** "Which embedding model?"
 
 **Options:** List only providers that support embeddings (Anthropic does not):
-- "Ollama — bge-m3 (recommended)"
-- "LM Studio — text-embedding-bge-m3"
-
-If not installed: `ollama pull bge-m3`
+- **Ollama** — recommend `bge-m3` or `nomic-embed-text`. If not installed: `ollama pull bge-m3`
+- **LM Studio** — list models with `text-embedding` in the name from the detect-providers output (e.g., `text-embedding-nomic-embed-text-v1.5`, `text-embedding-qwen3-embedding-8b`). These load on demand.
 
 ## Step 5: Choose digest inject tier
 
