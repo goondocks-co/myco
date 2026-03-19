@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { MycoConfigSchema, type MycoConfig } from './schema.js';
+import { runMigrations, CURRENT_MIGRATION_VERSION } from './migrations.js';
 
 const CONFIG_FILENAME = 'myco.yaml';
 
@@ -29,25 +30,22 @@ export function loadConfig(vaultDir: string): MycoConfig {
     llm.provider = 'anthropic';
   }
 
-  // Auto-migrate context.layers.memories → context.layers.spores
-  const context = parsed.context as Record<string, unknown> | undefined;
-  const layers = context?.layers as Record<string, unknown> | undefined;
-  if (layers && 'memories' in layers && !('spores' in layers)) {
-    layers.spores = layers.memories;
-    delete layers.memories;
-    // Write the migrated config back so the user sees the updated key
-    fs.writeFileSync(configPath, YAML.stringify(parsed), 'utf-8');
-  }
+  // Run numbered migrations
+  const migrationsRan = runMigrations(parsed, vaultDir, (msg) => {
+    // Log to stderr since this runs during config loading (before logger is available)
+    process.stderr.write(`[myco migration] ${msg}\n`);
+  });
 
-  // Parse with Zod to fill in any missing defaults (new config sections like digest, capture tokens)
+  // Parse with Zod to fill in defaults for new config sections
   const config = MycoConfigSchema.parse(parsed);
 
-  // Write back if Zod added defaults that weren't in the original file
-  // This ensures new config sections (digest, capture token limits) are visible to the user
-  const fullConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
-  const originalKeys = Object.keys(parsed);
-  const fullKeys = Object.keys(fullConfig);
-  if (fullKeys.length > originalKeys.length || !originalKeys.includes('digest')) {
+  // Write back if migrations ran or new defaults were added
+  const needsWrite = migrationsRan
+    || (parsed.config_version as number ?? 0) < CURRENT_MIGRATION_VERSION
+    || !('digest' in parsed);
+
+  if (needsWrite) {
+    const fullConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     fs.writeFileSync(configPath, YAML.stringify(fullConfig), 'utf-8');
   }
 

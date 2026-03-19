@@ -93,6 +93,8 @@ const DigestSchema = z.object({
 
 export const MycoConfigSchema = z.object({
   version: z.literal(2),
+  /** Tracks which migrations have been applied. Managed automatically. */
+  config_version: z.number().int().nonnegative().default(0),
   intelligence: IntelligenceSchema.default(() => IntelligenceSchema.parse({})),
   daemon: DaemonSchema.default(() => DaemonSchema.parse({})),
   capture: CaptureSchema.default(() => CaptureSchema.parse({})),
