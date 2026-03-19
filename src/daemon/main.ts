@@ -190,7 +190,7 @@ export async function main(): Promise<void> {
     logger.warn('embeddings', 'Vector index unavailable', { error: (error as Error).message });
   }
 
-  const processor = new BufferProcessor(llmProvider, config.intelligence.llm.context_window);
+  const processor = new BufferProcessor(llmProvider, config.intelligence.llm.context_window, config.capture);
   const vault = new VaultWriter(vaultDir);
   const index = new MycoIndex(path.join(vaultDir, 'index.db'));
   const lineageGraph = new LineageGraph(vaultDir);

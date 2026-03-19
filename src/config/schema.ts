@@ -33,6 +33,14 @@ const CaptureSchema = z.object({
   ]),
   artifact_extensions: z.array(z.string()).default(['.md']),
   buffer_max_events: z.number().int().positive().default(500),
+  /** Max output tokens for spore/observation extraction per batch. */
+  extraction_max_tokens: z.number().int().positive().default(2048),
+  /** Max output tokens for session summary generation. */
+  summary_max_tokens: z.number().int().positive().default(512),
+  /** Max output tokens for session title generation. */
+  title_max_tokens: z.number().int().positive().default(32),
+  /** Max output tokens for artifact classification. */
+  classification_max_tokens: z.number().int().positive().default(1024),
 });
 
 const ContextLayersSchema = z.object({
@@ -87,7 +95,7 @@ export const MycoConfigSchema = z.object({
   version: z.literal(2),
   intelligence: IntelligenceSchema,
   daemon: DaemonSchema.default({ log_level: 'info', grace_period: 30, max_log_size: 5_242_880 }),
-  capture: CaptureSchema.default({ transcript_paths: [], artifact_watch: ['.claude/plans/', '.cursor/plans/'], artifact_extensions: ['.md'], buffer_max_events: 500 }),
+  capture: CaptureSchema.default(() => CaptureSchema.parse({})),
   context: ContextSchema.default({ max_tokens: 1200, layers: { plans: 200, sessions: 500, spores: 300, team: 200 } }),
   team: TeamSchema.default({ enabled: false, user: '', sync: 'git' }),
   digest: DigestSchema.default(() => DigestSchema.parse({})),
