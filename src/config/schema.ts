@@ -93,11 +93,11 @@ const DigestSchema = z.object({
 
 export const MycoConfigSchema = z.object({
   version: z.literal(2),
-  intelligence: IntelligenceSchema,
-  daemon: DaemonSchema.default({ log_level: 'info', grace_period: 30, max_log_size: 5_242_880 }),
+  intelligence: IntelligenceSchema.default(() => IntelligenceSchema.parse({})),
+  daemon: DaemonSchema.default(() => DaemonSchema.parse({})),
   capture: CaptureSchema.default(() => CaptureSchema.parse({})),
-  context: ContextSchema.default({ max_tokens: 1200, layers: { plans: 200, sessions: 500, spores: 300, team: 200 } }),
-  team: TeamSchema.default({ enabled: false, user: '', sync: 'git' }),
+  context: ContextSchema.default(() => ContextSchema.parse({})),
+  team: TeamSchema.default(() => TeamSchema.parse({})),
   digest: DigestSchema.default(() => DigestSchema.parse({})),
 });
 
