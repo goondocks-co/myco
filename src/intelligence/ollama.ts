@@ -40,7 +40,7 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
         stream: false,
         options: { num_ctx: numCtx },
       }),
-      signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(opts?.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS),
     });
 
     if (!response.ok) {

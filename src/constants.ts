@@ -52,6 +52,8 @@ export const DAEMON_HEALTH_CHECK_TIMEOUT_MS = 500;
 export const LLM_REQUEST_TIMEOUT_MS = 180_000;
 /** Embedding request timeout (ms). Embeddings run in background batch processing — generous timeout. */
 export const EMBEDDING_REQUEST_TIMEOUT_MS = 60_000;
+/** Digest LLM request timeout (ms). Digest cycles use large context windows and may need model loading time. */
+export const DIGEST_LLM_REQUEST_TIMEOUT_MS = 600_000;
 /** Stdin read timeout for hooks (ms). */
 export const STDIN_TIMEOUT_MS = 100;
 /** Chokidar write stability threshold (ms). */

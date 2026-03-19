@@ -34,7 +34,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
         messages: [{ role: 'user', content: prompt }],
         max_tokens: maxTokens,
       }),
-      signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(opts?.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS),
     });
 
     if (!response.ok) {

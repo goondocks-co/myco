@@ -17,6 +17,7 @@ import {
   DIGEST_TIER_MIN_CONTEXT,
   DIGEST_SUBSTRATE_TYPE_WEIGHTS,
   DIGEST_SYSTEM_PROMPT_TOKENS,
+  DIGEST_LLM_REQUEST_TIMEOUT_MS,
 } from '@myco/constants.js';
 
 // --- Interfaces ---
@@ -298,7 +299,7 @@ export class DigestEngine {
       );
 
       const fullPrompt = promptParts.join('\n');
-      const opts: LlmRequestOptions = { maxTokens: tier };
+      const opts: LlmRequestOptions = { maxTokens: tier, timeoutMs: DIGEST_LLM_REQUEST_TIMEOUT_MS };
       const response = await this.llm.summarize(fullPrompt, opts);
 
       model = response.model;

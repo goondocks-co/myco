@@ -4,6 +4,7 @@ import { AnthropicBackend } from './anthropic.js';
 
 export interface LlmRequestOptions {
   maxTokens?: number;
+  timeoutMs?: number;
 }
 
 export interface LlmResponse {
