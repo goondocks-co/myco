@@ -1,6 +1,6 @@
 # Daemon Lifecycle
 
-Myco runs a long-lived background daemon that processes session events, extracts observations, and maintains the vault index. The daemon is fully automatic — users never start, stop, or restart it manually.
+Myco runs a long-lived background daemon that processes session events, extracts observations (spores), maintains the vault index, and continuously synthesizes knowledge into digest extracts. The daemon is fully automatic — users never start, stop, or restart it manually.
 
 ## Session Flow
 
@@ -17,7 +17,7 @@ sequenceDiagram
     Hook->>Daemon: POST /sessions/register {session_id, branch}
     Daemon-->>Hook: Heuristic lineage detection
     Hook->>Daemon: POST /context {branch}
-    Daemon-->>Hook: Active plans + parent session
+    Daemon-->>Hook: Digest extract (or layer-based fallback)
     Hook-->>User: Context injected
 
     Note over Hook,Daemon: During Session
@@ -33,7 +33,7 @@ sequenceDiagram
     Note over Hook,Daemon: Session End (async — hook returns immediately)
     Hook->>Daemon: POST /events/stop
     Daemon-->>Hook: {ok: true}
-    Daemon->>LLM: Extract observations from last batch
+    Daemon->>LLM: Extract spores from last batch
     Daemon->>Transcript: Read agent transcript (Claude Code, Cursor)
     Note right of Transcript: Tiered: transcript → buffer fallback
     Daemon->>Vault: Write images to attachments/
@@ -45,6 +45,74 @@ sequenceDiagram
     Daemon->>LLM: Detect lineage (semantic similarity)
     Hook->>Daemon: POST /sessions/unregister
 ```
+
+## Digest System
+
+The digest engine runs continuously inside the daemon, synthesizing accumulated vault knowledge into tiered context extracts. These pre-computed summaries are served instantly at session start — no LLM call needed at read time.
+
+```mermaid
+flowchart TD
+    Timer[Metabolism Timer] --> Check{New<br/>Substrate?}
+    Check -->|Yes| Discover[Discover Substrate<br/>updatedSince filter]
+    Check -->|No| Backoff[Metabolic Slowdown<br/>15m → 30m → 1h → dormancy]
+    Discover --> Load[Load Model<br/>ensureLoaded with context_window]
+    Load --> Tiers[Generate Extracts<br/>Sequential: 1500 → 3000 → 5000 → 10000]
+    Tiers --> Write[Write Extracts<br/>vault/digest/extract-tier.md]
+    Write --> Trace[Append Trace<br/>vault/digest/trace.jsonl]
+    Trace --> Reset[Reset to Active Metabolism]
+
+    Session[New Session Registered] --> Activate[Activate Metabolism]
+    Activate --> Timer
+
+    style Timer fill:#e8f5e9
+    style Backoff fill:#fff3e0
+    style Tiers fill:#e1f5fe
+```
+
+### Metabolism States
+
+The digest engine adapts its processing rate based on activity:
+
+| State | Interval | Trigger |
+|-------|----------|---------|
+| **Active** | 5 minutes | Substrate found, or session registered |
+| **Cooling** | 15m → 30m → 1h | Empty cycles (no new substrate) |
+| **Dormant** | Suspended | No substrate for 2+ hours |
+
+New session registrations activate the metabolism from any state.
+
+### Tiered Extracts
+
+Each tier serves a different use case and gets its own purpose-built prompt:
+
+| Tier | Character | Use Case |
+|------|-----------|----------|
+| **1,500** | Executive briefing | Quick orientation — what is this, what's active, what to avoid |
+| **3,000** | Team standup | Enough to start contributing — decisions, plans, conventions |
+| **5,000** | Deep onboarding | Full context — trade-offs, patterns, team dynamics |
+| **10,000** | Institutional knowledge | Everything — thread history, design tensions, lessons learned |
+
+### Context Injection with Digest
+
+When digest is enabled, the session-start hook serves the pre-computed extract instead of the layer-based system:
+
+```mermaid
+flowchart TD
+    Start[Session Start] --> DigestEnabled{Digest<br/>Enabled?}
+    DigestEnabled -->|Yes| ExtractExists{Extract<br/>File Exists?}
+    ExtractExists -->|Yes| Inject[Inject Digest Extract<br/>at configured tier]
+    ExtractExists -->|No| Fallback[Layer-Based Injection<br/>plans + sessions + spores + team]
+    DigestEnabled -->|No| Fallback
+
+    Prompt[User Prompt] --> VectorSearch[Vector Search<br/>Top 3 relevant spores]
+    VectorSearch --> InjectSpores[Inject Spores<br/>per-prompt context]
+
+    style Inject fill:#e8f5e9
+    style Fallback fill:#fff3e0
+    style InjectSpores fill:#fff3e0
+```
+
+Per-prompt spore injection continues unchanged alongside digest — the extract provides the big picture, spore injection provides targeted relevance for each specific prompt.
 
 ## Indexing & Embedding Pipeline
 
@@ -67,13 +135,13 @@ flowchart LR
 
 | Content | When | FTS Indexed | Embedded | Vector ID |
 |---------|------|-------------|----------|-----------|
-| Session notes | Stop handler | ✅ `indexAndEmbed` | ✅ fire-and-forget | `session-{id}` |
-| Observations (daemon) | Stop handler | ✅ `indexAndEmbed` | ✅ fire-and-forget | `{type}-{session}-{ts}` |
-| Observations (MCP `myco_remember`) | On tool call | ✅ `indexNote` | ✅ `embedNote` | `{type}-{hex}` |
-| Artifacts | Stop handler | ✅ `indexAndEmbed` | ✅ fire-and-forget | `{slugified-path}` |
-| Plans (file watcher) | Real-time | ✅ `indexAndEmbed` | ✅ fire-and-forget | `plan-{filename}` |
-| Wisdom notes (`myco_consolidate`) | On tool call | ✅ `indexNote` | ✅ `embedNote` | `{type}-wisdom-{hex}` |
-| Superseded spores | On supersede | ✅ (updated) | ❌ (embedding deleted) | — |
+| Session notes | Stop handler | indexAndEmbed | fire-and-forget | `session-{id}` |
+| Spores (daemon) | Stop handler | indexAndEmbed | fire-and-forget | `{type}-{session}-{ts}` |
+| Spores (MCP `myco_remember`) | On tool call | indexNote | embedNote | `{type}-{hex}` |
+| Artifacts | Stop handler | indexAndEmbed | fire-and-forget | `{slugified-path}` |
+| Plans (file watcher) | Real-time | indexAndEmbed | fire-and-forget | `plan-{filename}` |
+| Wisdom notes (`myco_consolidate`) | On tool call | indexNote | embedNote | `{type}-wisdom-{hex}` |
+| Superseded spores | On supersede | updated | embedding deleted | — |
 
 ### Embedding is Fire-and-Forget
 
@@ -99,7 +167,7 @@ Two injection points, each with a different purpose:
 
 ```mermaid
 flowchart TD
-    SS[SessionStart] --> Struct[Structural Context<br/>Active plans + parent session<br/>Branch name + IDs as breadcrumbs]
+    SS[SessionStart] --> Struct[Digest Extract<br/>Pre-computed project understanding<br/>or layer-based fallback]
     UP[UserPromptSubmit] --> Sem[Semantic Context<br/>Vector search against prompt<br/>Top 3 relevant spores + IDs]
 
     Struct --> Agent[Agent Context Window]
@@ -111,11 +179,10 @@ flowchart TD
     style Sem fill:#fff3e0
 ```
 
-**Session start** — injected once, structural framing:
-- Active plans (what's in flight)
-- Parent session summary (lineage continuity)
-- Git branch name
-- IDs as breadcrumbs for MCP tool follow-up
+**Session start** — injected once, project understanding:
+- Digest extract at the configured tier (when digest is enabled and extracts exist)
+- Fallback: active plans, parent session summary, git branch, IDs as breadcrumbs
+- Session ID and branch name always appended
 
 **Per-prompt** — injected on every prompt, targeted intelligence:
 - Vector similarity search against the prompt text (~20ms, no LLM)
@@ -136,6 +203,7 @@ flowchart TD
     Ready -->|No| Degraded[Degraded Mode<br/>Local FTS only]
     Register --> Lineage[Heuristic Lineage Detection]
     Register --> Context[Inject Session Context]
+    Register --> Activate[Activate Digest Metabolism]
 ```
 
 The daemon initializes in this order:
@@ -147,9 +215,11 @@ The daemon initializes in this order:
 5. Initialize FTS index
 6. Initialize lineage graph
 7. Migrate flat spore files to type subdirectories (if needed)
-8. Start plan file watcher
-9. Start HTTP server
-10. Write `daemon.json` with PID and port
+8. Migrate `memories/` → `spores/` (if upgrading from older version)
+9. Start plan file watcher
+10. Initialize digest engine + metabolism (if enabled)
+11. Start HTTP server
+12. Write `daemon.json` with PID and port
 
 ## Shutdown
 
@@ -161,7 +231,7 @@ flowchart LR
     Grace --> Check{New Session<br/>Registered?}
     Check -->|Yes| Cancel[Cancel Timer]
     Check -->|No| Shutdown[Clean Shutdown]
-    Shutdown --> Close[Close Indexes<br/>Stop Watchers<br/>Flush Logs]
+    Shutdown --> Close[Close Indexes<br/>Stop Watchers<br/>Stop Metabolism<br/>Flush Logs]
 ```
 
 The grace period prevents the daemon from cycling on/off during rapid session reloads (e.g., clearing context → new session within seconds).
@@ -172,7 +242,7 @@ If the daemon is unreachable, hooks fall back gracefully:
 
 | Hook | Degraded behavior |
 |------|-------------------|
-| `SessionStart` | Context injection via local FTS query (no semantic search) |
+| `SessionStart` | Context injection via local FTS query (no digest, no semantic search) |
 | `UserPromptSubmit` | Events buffered to disk (JSONL files), no context injection |
 | `PostToolUse` | Events buffered to disk |
 | `Stop` | Local LLM processing: session/spore writes (no embeddings, no lineage) |
@@ -195,18 +265,41 @@ daemon:
   log_level: info          # debug | info | warn | error
   grace_period: 30         # seconds before shutdown after last session ends
   max_log_size: 5242880    # log rotation threshold (bytes)
+
+capture:
+  extraction_max_tokens: 2048    # spore extraction budget per batch
+  summary_max_tokens: 1024       # session summary budget
+  title_max_tokens: 32           # session title budget
+  classification_max_tokens: 1024 # artifact classification budget
+
+digest:
+  enabled: true                          # opt-out (enabled by default)
+  tiers: [1500, 3000, 5000, 10000]       # which tiers to generate
+  inject_tier: 3000                      # auto-inject at session start
+  intelligence:
+    provider: null                       # null = inherit from main LLM
+    model: null                          # null = inherit from main LLM
+    context_window: 32768                # override for digest operations
+    keep_alive: 30m                      # keep model loaded (Ollama)
+    gpu_kv_cache: false                  # KV cache in RAM (LM Studio)
+  metabolism:
+    active_interval: 300                 # seconds between active cycles
+    cooldown_intervals: [900, 1800, 3600] # backoff schedule (seconds)
+    dormancy_threshold: 7200             # seconds before dormancy
+  substrate:
+    max_notes_per_cycle: 50              # cap substrate per cycle
 ```
 
 ## Monitoring
 
 ```bash
-node dist/src/cli.js stats    # PID, port, active sessions, vault stats
+node dist/src/cli.js stats    # PID, port, active sessions, vault stats, digest status
 node dist/src/cli.js logs     # Tail daemon + MCP activity logs
 ```
 
 Or via MCP:
 ```json
-{ "tool": "myco_logs", "level": "info", "component": "lifecycle" }
+{ "tool": "myco_logs", "level": "info", "component": "digest" }
 ```
 
 ## Files
@@ -221,6 +314,8 @@ Or via MCP:
 | `logs/mcp.jsonl` | MCP tool activity log |
 | `buffer/*.jsonl` | Per-session event buffers (ephemeral) |
 | `attachments/*.png` | Images extracted from session transcripts (Obsidian embeds) |
+| `digest/extract-*.md` | Pre-computed context extracts per tier |
+| `digest/trace.jsonl` | Digest cycle audit trail |
 
 ## Transcript Sourcing
 
