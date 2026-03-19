@@ -101,9 +101,11 @@ Ask the user:
 **Question:** "Configure digest (continuous reasoning)?"
 
 **Options:**
-- "Accept recommended settings" — use the RAM-based recommendation above
-- "Customize" — let the user pick tiers, context window, and optionally a separate model
+- "Accept recommended settings" — use the RAM-based recommendation above, same model as main LLM
+- "Customize" — pick tiers, context window, and optionally a separate model/provider
 - "Disable" — set `digest.enabled: false`
+
+**Important guidance for Ollama users:** When using Ollama, recommend the **same model** for both main LLM and digest. Ollama defaults to 2 concurrent models, and the embedding model takes one slot. Using a separate digest model would require 3 slots, causing constant model swapping (~22GB+ per swap). Ollama handles different context windows per-request on the same model natively, so the same model works at 8K for hooks and 32K+ for digest without any issues.
 
 If customizing, ask these one at a time:
 
