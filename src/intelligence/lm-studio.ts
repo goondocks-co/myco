@@ -116,25 +116,13 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
   }
 
   /**
-   * Load the model with the correct settings for digest operations.
-   * If we previously loaded an instance, unloads it first to prevent stacking
-   * across daemon restarts. Only unloads OUR instance — leaves other instances
-   * (user-loaded or hook-loaded) untouched.
-   * Captures the instance_id so subsequent chat requests target this exact instance.
+   * Load the model with specific settings for digest operations.
+   * Creates a dedicated instance and captures the instance_id so subsequent
+   * chat requests target it directly (avoiding auto-load side effects).
+   * Does not unload other instances — hooks and other providers may be
+   * using the same model with different settings.
    */
   async ensureLoaded(contextLength?: number, gpuKvCache?: boolean): Promise<void> {
-    // Unload only our previously loaded instance, not all instances of this model
-    if (this.loadedInstanceId) {
-      try {
-        await fetch(`${this.baseUrl}${ENDPOINT_MODELS_UNLOAD}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ instance_id: this.loadedInstanceId }),
-          signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
-        });
-      } catch { /* already unloaded — fine */ }
-      this.loadedInstanceId = null;
-    }
 
     const ctx = contextLength ?? this.contextWindow;
     const body: Record<string, unknown> = {
