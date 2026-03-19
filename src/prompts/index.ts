@@ -34,7 +34,7 @@ const PROMPTS_DIR = resolvePromptsDir();
 
 const promptCache = new Map<string, string>();
 
-function loadPrompt(name: string): string {
+export function loadPrompt(name: string): string {
   let cached = promptCache.get(name);
   if (!cached) {
     cached = fs.readFileSync(path.join(PROMPTS_DIR, `${name}.md`), 'utf-8').trim();
