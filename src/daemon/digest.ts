@@ -270,13 +270,14 @@ export class DigestEngine {
       const previousExtract = this.readPreviousExtract(tier);
 
       // Calculate token budget for substrate:
-      // tier budget - system prompt - tier prompt - previous extract - overhead
+      // context_window - output_tokens - system_prompt - tier_prompt - previous_extract
+      const contextWindow = this.config.digest.intelligence.context_window;
       const systemTokens = DIGEST_SYSTEM_PROMPT_TOKENS;
       const tierPromptTokens = Math.ceil(tierPrompt.length / CHARS_PER_TOKEN);
       const previousExtractTokens = previousExtract
         ? Math.ceil(previousExtract.length / CHARS_PER_TOKEN) + PREVIOUS_EXTRACT_OVERHEAD_TOKENS
         : 0;
-      const substrateBudget = tier - systemTokens - tierPromptTokens - previousExtractTokens;
+      const substrateBudget = contextWindow - tier - systemTokens - tierPromptTokens - previousExtractTokens;
 
       if (substrateBudget <= 0) continue;
 
