@@ -109,11 +109,24 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
   }
 
   /**
-   * Ensure the model is loaded with the specified context length.
-   * Uses LM Studio's native /api/v1/models/load endpoint.
-   * If the model is already loaded, this is a no-op on LM Studio's side.
+   * Ensure the model is loaded with the correct settings.
+   * Unloads any existing instances first to prevent duplicates with wrong settings,
+   * then loads with the specified context length and KV cache config.
    */
   async ensureLoaded(contextLength?: number, gpuKvCache?: boolean): Promise<void> {
+    // Unload any existing instances of this model to prevent duplicates
+    // with default settings (wrong context size, KV cache on GPU)
+    try {
+      await fetch(`${this.baseUrl}/api/v1/models/unload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: this.model }),
+        signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
+      });
+    } catch {
+      // Model may not be loaded — that's fine
+    }
+
     const ctx = contextLength ?? this.contextWindow;
     const body: Record<string, unknown> = {
       model: this.model,
