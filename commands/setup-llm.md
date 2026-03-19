@@ -50,8 +50,10 @@ If the chosen model isn't installed, offer to pull it:
 
 Ask the user to select an embedding model — **Anthropic is not an option** (it doesn't support embeddings):
 
-- **Ollama** — recommend `bge-m3` or `nomic-embed-text`. If not installed: `ollama pull bge-m3`
-- **LM Studio** — list models with `text-embedding` in the name from the detected providers (e.g., `text-embedding-nomic-embed-text-v1.5`, `text-embedding-qwen3-embedding-8b`). These load on demand.
+- **Ollama** — list available embedding models. If none are available, offer to pull one (e.g., `bge-m3` or `nomic-embed-text`).
+- **LM Studio** — filter the model list for names containing `text-embedding`. If none are available, guide the user to search for and download an embedding model through LM Studio's model browser.
+
+If no embedding models are available on the chosen provider, help the user get one before proceeding.
 
 **Important:** If the user changes the embedding model, warn them:
 > "Changing the embedding model will require a full rebuild of the vector index. Run `node dist/src/cli.js rebuild` after this change."
