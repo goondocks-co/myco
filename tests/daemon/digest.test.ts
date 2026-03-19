@@ -628,6 +628,33 @@ describe('DigestEngine', () => {
       expect(fs.existsSync(path.join(vaultDir, 'digest', 'extract-1500.md'))).toBe(true);
       expect(fs.existsSync(path.join(vaultDir, 'digest', 'extract-3000.md'))).toBe(true);
     });
+
+    it('tier gating: context_window 8192 produces only tier 1500', async () => {
+      // 1500 needs 6500 (fits), 3000 needs 11500 (does not fit in 8192)
+      const notes = [makeNote({ id: 's1', type: 'session', title: 'Auth work', content: 'Fixed auth.' })];
+      const index = makeMockIndex(notes);
+      const llm = makeMockLlm();
+
+      const engine = new DigestEngine({
+        vaultDir,
+        index,
+        llmProvider: llm,
+        config: makeConfig({
+          tiers: [1500, 3000, 5000, 10000],
+          intelligence: { provider: null, model: null, base_url: null, context_window: 8192 },
+        }),
+      });
+
+      const result = await engine.runCycle();
+
+      expect(result).not.toBeNull();
+      expect(result!.tiersGenerated).toEqual([1500]);
+      expect(llm.summarize).toHaveBeenCalledTimes(1);
+
+      // Only tier 1500 file should exist
+      expect(fs.existsSync(path.join(vaultDir, 'digest', 'extract-1500.md'))).toBe(true);
+      expect(fs.existsSync(path.join(vaultDir, 'digest', 'extract-3000.md'))).toBe(false);
+    });
   });
 });
 
