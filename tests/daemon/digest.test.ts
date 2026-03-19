@@ -566,11 +566,13 @@ describe('DigestEngine', () => {
       const tracePath = path.join(vaultDir, 'digest', 'trace.jsonl');
       expect(fs.existsSync(tracePath)).toBe(true);
 
-      // Verify LLM was called with a prompt containing system + tier + substrate
+      // Verify LLM was called with user prompt + opts containing system prompt
       expect(llm.summarize).toHaveBeenCalledTimes(1);
       const promptArg = (llm.summarize as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
-      expect(promptArg).toContain('digest engine');
+      const optsArg = (llm.summarize as ReturnType<typeof vi.fn>).mock.calls[0][1] as Record<string, unknown>;
       expect(promptArg).toContain('New Substrate');
+      expect(optsArg.systemPrompt).toContain('digest engine');
+      expect(optsArg.reasoning).toBe('off');
     });
 
     it('includes previous extract in prompt when available', async () => {

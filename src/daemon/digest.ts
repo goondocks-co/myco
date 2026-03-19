@@ -297,8 +297,8 @@ export class DigestEngine {
 
       const formattedSubstrate = this.formatSubstrate(substrate, substrateBudget);
 
-      // Build full prompt as a single string
-      const promptParts = [systemPrompt, '', tierPrompt];
+      // Build user prompt (system prompt sent separately via LlmRequestOptions)
+      const promptParts = [tierPrompt];
 
       if (previousExtract) {
         promptParts.push('', '## Previous Synthesis', '', previousExtract);
@@ -309,27 +309,28 @@ export class DigestEngine {
         '',
         '---',
         'Produce your updated synthesis now. Stay within the token budget specified above.',
-        'Output ONLY the synthesis — no thinking process, no analysis, no planning. Start directly with the content.',
-        '/no_think',
       );
 
-      const fullPrompt = promptParts.join('\n');
-      const promptTokens = Math.ceil(fullPrompt.length / CHARS_PER_TOKEN);
+      const userPrompt = promptParts.join('\n');
+      const promptTokens = Math.ceil((systemPrompt.length + userPrompt.length) / CHARS_PER_TOKEN);
       this.log('debug', `Tier ${tier}: sending LLM request`, { promptTokens, maxTokens: tier, substrateBudget });
 
       const tierStart = Date.now();
-      // Request 3x the tier budget to accommodate reasoning model thinking overhead.
-      // The thinking tokens will be stripped from the response; only the synthesis is kept.
-      const REASONING_OVERHEAD_MULTIPLIER = 3;
-      const opts: LlmRequestOptions = { maxTokens: tier * REASONING_OVERHEAD_MULTIPLIER, timeoutMs: DIGEST_LLM_REQUEST_TIMEOUT_MS };
-      const response = await this.llm.summarize(fullPrompt, opts);
+      const opts: LlmRequestOptions = {
+        maxTokens: tier,
+        timeoutMs: DIGEST_LLM_REQUEST_TIMEOUT_MS,
+        contextLength: contextWindow,
+        reasoning: 'off',
+        systemPrompt,
+      };
+      const response = await this.llm.summarize(userPrompt, opts);
       const tierDuration = Date.now() - tierStart;
 
       // Strip reasoning tokens if present (some models output chain-of-thought)
       const extractText = stripReasoningTokens(response.text);
       model = response.model;
       const responseTokens = Math.ceil(extractText.length / CHARS_PER_TOKEN);
-      totalTokensUsed += promptTokens + responseTokens;
+      totalTokensUsed += promptTokens + Math.ceil(extractText.length / CHARS_PER_TOKEN);
 
       this.log('info', `Tier ${tier}: completed`, { durationMs: tierDuration, responseTokens, model: response.model });
       this.writeExtract(tier, extractText, cycleId, response.model, substrate.length);

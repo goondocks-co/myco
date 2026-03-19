@@ -5,6 +5,12 @@ import { AnthropicBackend } from './anthropic.js';
 export interface LlmRequestOptions {
   maxTokens?: number;
   timeoutMs?: number;
+  /** Per-request context length (tokens). Supported by LM Studio and Ollama. */
+  contextLength?: number;
+  /** Control reasoning/thinking output. 'off' suppresses chain-of-thought. LM Studio native API only. */
+  reasoning?: 'off' | 'low' | 'medium' | 'high' | 'on';
+  /** System prompt, sent separately from user content. LM Studio native API only. */
+  systemPrompt?: string;
 }
 
 export interface LlmResponse {

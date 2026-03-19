@@ -4,6 +4,7 @@ import { LLM_REQUEST_TIMEOUT_MS, EMBEDDING_REQUEST_TIMEOUT_MS, DAEMON_CLIENT_TIM
 interface LmStudioConfig {
   model?: string;
   base_url?: string;
+  context_window?: number;
   max_tokens?: number;
   // Legacy fields
   embedding_model?: string;
@@ -15,41 +16,69 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
   readonly name = 'lm-studio';
   private baseUrl: string;
   private model: string;
+  private contextWindow: number | undefined;
   private defaultMaxTokens: number;
 
   constructor(config?: LmStudioConfig) {
     this.baseUrl = config?.base_url ?? LmStudioBackend.DEFAULT_BASE_URL;
     this.model = config?.model ?? config?.summary_model ?? 'llama3.2';
+    this.contextWindow = config?.context_window;
     this.defaultMaxTokens = config?.max_tokens ?? 1024;
   }
 
+  /**
+   * Generate text using LM Studio's native REST API (/api/v1/chat).
+   * Supports per-request context_length, reasoning control, and system_prompt.
+   */
   async summarize(prompt: string, opts?: LlmRequestOptions): Promise<LlmResponse> {
     const maxTokens = opts?.maxTokens ?? this.defaultMaxTokens;
 
-    const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+    const body: Record<string, unknown> = {
+      model: this.model,
+      input: prompt,
+      max_output_tokens: maxTokens,
+      store: false,
+    };
+
+    // Per-request context length (from opts or constructor config)
+    const contextLength = opts?.contextLength ?? this.contextWindow;
+    if (contextLength) {
+      body.context_length = contextLength;
+    }
+
+    // System prompt — sent separately from user content
+    if (opts?.systemPrompt) {
+      body.system_prompt = opts.systemPrompt;
+    }
+
+    // Reasoning control — 'off' suppresses chain-of-thought for reasoning models
+    if (opts?.reasoning) {
+      body.reasoning = opts.reasoning;
+    }
+
+    const response = await fetch(`${this.baseUrl}/api/v1/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.model,
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: maxTokens,
-        // Suppress visible chain-of-thought for reasoning models (Qwen 3.5, etc.)
-        chat_template_kwargs: { enable_thinking: false },
-      }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(opts?.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS),
     });
 
     if (!response.ok) {
-      throw new Error(`LM Studio summarize failed: ${response.status}`);
+      const text = await response.text().catch(() => '');
+      throw new Error(`LM Studio summarize failed: ${response.status} ${text}`);
     }
 
     const data = await response.json() as {
-      choices: Array<{ message: { content: string } }>;
+      message: string;
       model: string;
     };
-    return { text: data.choices[0].message.content, model: data.model };
+    return { text: data.message, model: data.model };
   }
 
+  /**
+   * Generate embeddings using LM Studio's OpenAI-compatible endpoint.
+   * (The native API doesn't have an embedding endpoint — OpenAI-compat is fine here.)
+   */
   async embed(text: string): Promise<EmbeddingResponse> {
     const response = await fetch(`${this.baseUrl}/v1/embeddings`, {
       method: 'POST',
