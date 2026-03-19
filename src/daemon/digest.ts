@@ -318,7 +318,10 @@ export class DigestEngine {
       this.log('debug', `Tier ${tier}: sending LLM request`, { promptTokens, maxTokens: tier, substrateBudget });
 
       const tierStart = Date.now();
-      const opts: LlmRequestOptions = { maxTokens: tier, timeoutMs: DIGEST_LLM_REQUEST_TIMEOUT_MS };
+      // Request 3x the tier budget to accommodate reasoning model thinking overhead.
+      // The thinking tokens will be stripped from the response; only the synthesis is kept.
+      const REASONING_OVERHEAD_MULTIPLIER = 3;
+      const opts: LlmRequestOptions = { maxTokens: tier * REASONING_OVERHEAD_MULTIPLIER, timeoutMs: DIGEST_LLM_REQUEST_TIMEOUT_MS };
       const response = await this.llm.summarize(fullPrompt, opts);
       const tierDuration = Date.now() - tierStart;
 
