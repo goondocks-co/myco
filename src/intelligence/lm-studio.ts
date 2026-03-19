@@ -33,6 +33,8 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
         model: this.model,
         messages: [{ role: 'user', content: prompt }],
         max_tokens: maxTokens,
+        // Suppress visible chain-of-thought for reasoning models (Qwen 3.5, etc.)
+        chat_template_kwargs: { enable_thinking: false },
       }),
       signal: AbortSignal.timeout(opts?.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS),
     });
