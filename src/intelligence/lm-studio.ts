@@ -104,6 +104,33 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
     return { embedding, model: data.model, dimensions: embedding.length };
   }
 
+  /**
+   * Ensure the model is loaded with the specified context length.
+   * Uses LM Studio's native /api/v1/models/load endpoint.
+   * If the model is already loaded, this is a no-op on LM Studio's side.
+   */
+  async ensureLoaded(contextLength?: number): Promise<void> {
+    const body: Record<string, unknown> = {
+      model: this.model,
+      flash_attention: true,
+    };
+    if (contextLength ?? this.contextWindow) {
+      body.context_length = contextLength ?? this.contextWindow;
+    }
+
+    const response = await fetch(`${this.baseUrl}/api/v1/models/load`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => '');
+      throw new Error(`LM Studio model load failed: ${response.status} ${errorBody.slice(0, 200)}`);
+    }
+  }
+
   async isAvailable(): Promise<boolean> {
     try {
       const response = await fetch(`${this.baseUrl}/v1/models`, {
