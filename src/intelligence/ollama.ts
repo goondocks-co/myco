@@ -62,7 +62,6 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(opts?.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS),
-      keepalive: true,
     });
 
     if (!response.ok) {

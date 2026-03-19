@@ -60,15 +60,11 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
       body.reasoning = opts.reasoning;
     }
 
-    // keepalive: true prevents Node.js from closing the connection at its
-    // default 5-minute idle timeout. Digest requests can take 5+ minutes
-    // for large context windows on local models.
     const response = await fetch(`${this.baseUrl}/api/v1/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(opts?.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS),
-      keepalive: true,
     });
 
     if (!response.ok) {
@@ -114,23 +110,9 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
 
   /**
    * Ensure the model is loaded with the correct settings.
-   * Unloads any existing instances first to prevent duplicates with wrong settings,
-   * then loads with the specified context length and KV cache config.
+   * Captures the instance_id so subsequent chat requests target this exact instance.
    */
   async ensureLoaded(contextLength?: number, gpuKvCache?: boolean): Promise<void> {
-    // Unload any existing instances of this model to prevent duplicates
-    // with default settings (wrong context size, KV cache on GPU)
-    try {
-      await fetch(`${this.baseUrl}/api/v1/models/unload`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: this.model }),
-        signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
-      });
-    } catch {
-      // Model may not be loaded — that's fine
-    }
-
     const ctx = contextLength ?? this.contextWindow;
     const body: Record<string, unknown> = {
       model: this.model,

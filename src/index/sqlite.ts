@@ -48,6 +48,7 @@ export class MycoIndex {
       CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(type);
       CREATE INDEX IF NOT EXISTS idx_notes_id ON notes(id);
       CREATE INDEX IF NOT EXISTS idx_notes_created ON notes(created);
+      CREATE INDEX IF NOT EXISTS idx_notes_updated_at ON notes(updated_at);
     `);
   }
 
@@ -110,11 +111,9 @@ export class MycoIndex {
       params.push(options.since);
     }
     if (options.updatedSince) {
-      // Normalize ISO 8601 (e.g., "2026-03-19T16:40:08.582Z") to SQLite datetime format
-      // ("2026-03-19 16:40:08") for correct string comparison
-      const normalized = options.updatedSince.replace('T', ' ').replace(/\.\d+Z$/, '').replace(/Z$/, '');
-      conditions.push('updated_at >= ?');
-      params.push(normalized);
+      // Use SQLite datetime() to handle ISO 8601 formats (Z-suffix, offsets, milliseconds)
+      conditions.push('updated_at >= datetime(?)');
+      params.push(options.updatedSince);
     }
     if (options.frontmatter) {
       for (const [key, value] of Object.entries(options.frontmatter)) {

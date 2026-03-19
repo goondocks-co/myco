@@ -93,6 +93,8 @@ export class DigestEngine {
       ? this.index.query({ updatedSince: lastCycleTimestamp, limit: maxNotes })
       : this.index.query({ limit: maxNotes });
 
+    // Guard against self-digestion: extract files are not currently indexed,
+    // but this filter prevents feedback loops if they ever are (e.g., via rebuild)
     const filtered = notes.filter((n) => n.type !== EXTRACT_TYPE);
 
     // Sort by type weight (descending) then by recency (descending)
@@ -361,7 +363,7 @@ export class DigestEngine {
       const extractText = stripReasoningTokens(response.text);
       model = response.model;
       const responseTokens = Math.ceil(extractText.length / CHARS_PER_TOKEN);
-      totalTokensUsed += promptTokens + Math.ceil(extractText.length / CHARS_PER_TOKEN);
+      totalTokensUsed += promptTokens + responseTokens;
 
       this.log('info', `Tier ${tier}: completed`, { durationMs: tierDuration, responseTokens, model: response.model });
       this.writeExtract(tier, extractText, cycleId, response.model, substrate.length);
@@ -439,9 +441,14 @@ export class Metabolism {
     }
   }
 
-  /** Return to active from any state, resetting timers. */
+  /** Return to active from any state, resetting timers and rescheduling immediately. */
   activate(): void {
     this.onSubstrateFound();
+    // Reschedule with the new active interval — without this, the old
+    // (possibly dormant) timer continues ticking at the wrong rate
+    if (this.callback) {
+      this.reschedule();
+    }
   }
 
   /** Set lastSubstrateTime explicitly (for testing). */
@@ -451,15 +458,8 @@ export class Metabolism {
 
   /** Begin scheduling digest cycles with adaptive intervals. */
   start(callback: () => Promise<void>): void {
-    this.stop();
-    const schedule = (): void => {
-      this.timer = setTimeout(async () => {
-        await callback();
-        schedule();
-      }, this.currentIntervalMs);
-      this.timer.unref();
-    };
-    schedule();
+    this.callback = callback;
+    this.reschedule();
   }
 
   /** Stop the timer. */
@@ -468,5 +468,21 @@ export class Metabolism {
       clearTimeout(this.timer);
       this.timer = null;
     }
+  }
+
+  private callback: (() => Promise<void>) | null = null;
+
+  private reschedule(): void {
+    this.stop();
+    if (!this.callback) return;
+    const cb = this.callback;
+    const schedule = (): void => {
+      this.timer = setTimeout(async () => {
+        await cb();
+        schedule();
+      }, this.currentIntervalMs);
+      this.timer.unref();
+    };
+    schedule();
   }
 }
