@@ -15,6 +15,8 @@ import { generateEmbedding } from '../intelligence/embeddings.js';
 import { LineageGraph, LINEAGE_SIMILARITY_THRESHOLD, LINEAGE_SIMILARITY_HIGH_CONFIDENCE, LINEAGE_SIMILARITY_CANDIDATES, LINEAGE_SIMILARITY_MAX_TOKENS, type LineageLink } from './lineage.js';
 import type { RegisteredSession } from './lifecycle.js';
 import { PlanWatcher } from './watcher.js';
+import { DigestEngine, Metabolism } from './digest.js';
+import { handleMycoContext } from '../mcp/tools/context.js';
 import { buildSimilarityPrompt } from '../prompts/index.js';
 import { extractNumber } from '../intelligence/response.js';
 import { EMBEDDING_INPUT_LIMIT, CONTENT_SNIPPET_CHARS, CHARS_PER_TOKEN, STALE_BUFFER_MAX_AGE_MS, LINEAGE_RECENT_SESSIONS_LIMIT, RELATED_SPORES_LIMIT, CANDIDATE_CONTENT_PREVIEW, SESSION_CONTEXT_MAX_PLANS, PROMPT_CONTEXT_MAX_SPORES, PROMPT_CONTEXT_MIN_SIMILARITY, PROMPT_CONTEXT_MIN_LENGTH, CONTEXT_SESSION_PREVIEW_CHARS } from '../constants.js';
@@ -165,6 +167,7 @@ export async function main(): Promise<void> {
     gracePeriod: config.daemon.grace_period,
     onEmpty: async () => {
       logger.info('daemon', 'Grace period expired, shutting down');
+      metabolism?.stop();
       planWatcher.stopFileWatcher();
       await server.stop();
       vectorIndex?.close();
@@ -279,6 +282,60 @@ export async function main(): Promise<void> {
   });
   planWatcher.startFileWatcher();
 
+  // Digest engine: synthesizes vault knowledge into tiered context extracts
+  let metabolism: Metabolism | null = null;
+
+  if (config.digest.enabled) {
+    const digestLlmConfig = {
+      provider: config.digest.intelligence.provider ?? config.intelligence.llm.provider,
+      model: config.digest.intelligence.model ?? config.intelligence.llm.model,
+      base_url: config.digest.intelligence.base_url ?? config.intelligence.llm.base_url,
+      context_window: config.digest.intelligence.context_window,
+    };
+    const digestLlm = (config.digest.intelligence.model || config.digest.intelligence.provider)
+      ? createLlmProvider(digestLlmConfig)
+      : llmProvider;
+
+    const digestEngine = new DigestEngine({
+      vaultDir,
+      index,
+      llmProvider: digestLlm,
+      config,
+    });
+
+    metabolism = new Metabolism(config.digest.metabolism);
+
+    // Run initial cycle
+    try {
+      const result = await digestEngine.runCycle();
+      if (result) {
+        metabolism.onSubstrateFound();
+        logger.info('digest', `Initial digest cycle: ${result.tiersGenerated.length} tiers, ${result.durationMs}ms`);
+      }
+    } catch (err) {
+      logger.warn('digest', 'Initial digest cycle failed', { error: (err as Error).message });
+    }
+
+    // Start metabolism timer
+    metabolism.start(async () => {
+      try {
+        const cycleResult = await digestEngine.runCycle();
+        if (cycleResult) {
+          metabolism!.onSubstrateFound();
+          logger.info('digest', `Digest cycle ${cycleResult.cycleId}: ${cycleResult.tiersGenerated.length} tiers`);
+        } else {
+          metabolism!.onEmptyCycle();
+          logger.debug('digest', 'No substrate, backing off');
+        }
+      } catch (err) {
+        logger.warn('digest', 'Digest cycle failed', { error: (err as Error).message });
+        metabolism!.onEmptyCycle();
+      }
+    });
+
+    logger.info('digest', 'Digest enabled — starting metabolism');
+  }
+
   const batchManager = new BatchManager(async (closedBatch: BatchEvent[]) => {
     if (closedBatch.length === 0) return;
 
@@ -360,6 +417,9 @@ export async function main(): Promise<void> {
     } catch (err) {
       logger.debug('lineage', 'Heuristic detection failed', { error: (err as Error).message });
     }
+
+    // Wake digest metabolism when a new session starts
+    metabolism?.activate();
 
     logger.info('lifecycle', 'Session registered', { session_id, branch });
     return { ok: true, sessions: registry.sessions };
@@ -751,12 +811,28 @@ export async function main(): Promise<void> {
     logger.info('processor', 'Session note written', { session_id: sessionId, path: relativePath });
   }
 
-  // Session-start context: structural facts only — active plans + parent session.
+  // Session-start context: digest extract (if available) or structural facts.
   // Memories are injected per-prompt (more targeted, less noise).
   server.registerRoute('POST', '/context', async (body: unknown) => {
     const { session_id, branch } = ContextBody.parse(body);
     logger.debug('hooks', 'Session context query', { session_id });
     try {
+      // Digest-first: serve pre-computed extract if available
+      if (config.digest.enabled && config.digest.inject_tier) {
+        const result = handleMycoContext(vaultDir, { tier: config.digest.inject_tier });
+
+        if (!result.content.includes('not yet available')) {
+          // Append session metadata that the agent needs regardless of context source
+          const meta: string[] = [result.content];
+          if (branch) meta.push(`\nBranch:: \`${branch}\``);
+          meta.push(`Session:: \`${session_id}\``);
+
+          logger.debug('context', `Injecting digest extract (tier ${result.tier})`, { session_id, fallback: result.fallback });
+          return { text: meta.join('\n\n'), source: 'digest', tier: result.tier };
+        }
+        // Fall through to layer-based injection if no extract exists yet
+      }
+
       const parts: string[] = [];
 
       // Active plans — the agent needs to know what's in flight
@@ -866,6 +942,7 @@ export async function main(): Promise<void> {
       logger.info('daemon', 'Waiting for active stop processing to complete...');
       await activeStopProcessing;
     }
+    metabolism?.stop();
     planWatcher.stopFileWatcher();
     registry.destroy();
     await server.stop();
