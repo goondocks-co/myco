@@ -108,6 +108,55 @@ async function captureArtifacts(
   }
 }
 
+/**
+ * Migrate memories/ directory to spores/ for vaults created before the rename.
+ * Renames directory, updates frontmatter type: memory → type: spore, reindexes.
+ */
+export function migrateMemoriesToSpores(vaultDir: string): number {
+  const memoriesDir = path.join(vaultDir, 'memories');
+  const sporesDir = path.join(vaultDir, 'spores');
+
+  if (!fs.existsSync(memoriesDir)) return 0;
+
+  if (fs.existsSync(sporesDir)) {
+    // Both exist (interrupted migration) — move remaining files from memories/ to spores/
+    const moveRemaining = (srcDir: string, destDir: string): void => {
+      for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+        const srcPath = path.join(srcDir, entry.name);
+        const destPath = path.join(destDir, entry.name);
+        if (entry.isDirectory()) {
+          if (!fs.existsSync(destPath)) fs.mkdirSync(destPath, { recursive: true });
+          moveRemaining(srcPath, destPath);
+        } else if (!fs.existsSync(destPath)) {
+          fs.renameSync(srcPath, destPath);
+        }
+      }
+    };
+    moveRemaining(memoriesDir, sporesDir);
+    fs.rmSync(memoriesDir, { recursive: true, force: true });
+  } else {
+    fs.renameSync(memoriesDir, sporesDir);
+  }
+
+  // Update frontmatter type: memory → type: spore in all .md files
+  let count = 0;
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walk(fullPath); continue; }
+      if (!entry.name.endsWith('.md')) continue;
+      const content = fs.readFileSync(fullPath, 'utf-8');
+      if (content.includes('type: memory')) {
+        fs.writeFileSync(fullPath, content.replace(/type: memory/g, 'type: spore'));
+        count++;
+      }
+    }
+  };
+  walk(sporesDir);
+
+  return count;
+}
+
 export function migrateSporeFiles(vaultDir: string): number {
   const sporesDir = path.join(vaultDir, 'spores');
   if (!fs.existsSync(sporesDir)) return 0;
@@ -219,6 +268,12 @@ export async function main(): Promise<void> {
         logger.debug('daemon', 'Cleaned stale buffer', { file });
       }
     }
+  }
+
+  // Migrate memories/ → spores/ for vaults created before the rename
+  const memoriesMigrated = migrateMemoriesToSpores(vaultDir);
+  if (memoriesMigrated > 0) {
+    logger.info('daemon', 'Migrated memories to spores', { count: memoriesMigrated });
   }
 
   // Migrate flat spore files into type subdirectories
