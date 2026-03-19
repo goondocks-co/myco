@@ -49,7 +49,7 @@ describe('Index Rebuild', () => {
       started: '2026-03-12T10:00:00Z', summary: '# S2',
     });
     writer.writePlan({ id: 'p1', content: '# Plan' });
-    writer.writeMemory({
+    writer.writeSpore({
       id: 'm1', observation_type: 'gotcha',
       content: '# Gotcha',
     });

@@ -8,6 +8,11 @@
 /** Approximate characters per token for the chars/4 heuristic. */
 export const CHARS_PER_TOKEN = 4;
 
+/** Estimate token count from character length using the CHARS_PER_TOKEN heuristic. */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
 // --- Embedding ---
 /** Max characters of text sent to the embedding model. */
 export const EMBEDDING_INPUT_LIMIT = 8000;
@@ -31,7 +36,7 @@ export const RECALL_SUMMARY_PREVIEW_CHARS = 200;
 // --- Context injection layer budgets (chars, not tokens — used with .slice()) ---
 export const CONTEXT_PLAN_PREVIEW_CHARS = 100;
 export const CONTEXT_SESSION_PREVIEW_CHARS = 80;
-export const CONTEXT_MEMORY_PREVIEW_CHARS = 80;
+export const CONTEXT_SPORE_PREVIEW_CHARS = 80;
 
 // --- Processor maxTokens budgets ---
 /** Response token budget for observation extraction. */
@@ -52,6 +57,8 @@ export const DAEMON_HEALTH_CHECK_TIMEOUT_MS = 500;
 export const LLM_REQUEST_TIMEOUT_MS = 180_000;
 /** Embedding request timeout (ms). Embeddings run in background batch processing — generous timeout. */
 export const EMBEDDING_REQUEST_TIMEOUT_MS = 60_000;
+/** Digest LLM request timeout (ms). Digest cycles use large context windows and may need model loading time. */
+export const DIGEST_LLM_REQUEST_TIMEOUT_MS = 600_000;
 /** Stdin read timeout for hooks (ms). */
 export const STDIN_TIMEOUT_MS = 100;
 /** Chokidar write stability threshold (ms). */
@@ -82,14 +89,14 @@ export const MIN_TRANSCRIPT_CONTENT_LENGTH = 10;
 // --- Query limits ---
 /** Max recent sessions to check for lineage heuristics. */
 export const LINEAGE_RECENT_SESSIONS_LIMIT = 5;
-/** Max related memories to query for session notes. */
-export const RELATED_MEMORIES_LIMIT = 50;
+/** Max related spores to query for session notes. */
+export const RELATED_SPORES_LIMIT = 50;
 
 // --- Context injection ---
 /** Max active plans to inject at session start. */
 export const SESSION_CONTEXT_MAX_PLANS = 3;
-/** Max memories to inject per prompt. */
-export const PROMPT_CONTEXT_MAX_MEMORIES = 3;
+/** Max spores to inject per prompt. */
+export const PROMPT_CONTEXT_MAX_SPORES = 3;
 /** Minimum similarity score for prompt context injection (0-1). */
 export const PROMPT_CONTEXT_MIN_SIMILARITY = 0.3;
 /** Max token budget for session-start context injection. */
@@ -106,3 +113,29 @@ export const MCP_SEARCH_DEFAULT_LIMIT = 10;
 export const MCP_SESSIONS_DEFAULT_LIMIT = 20;
 /** Default result limit for myco_logs. */
 export const MCP_LOGS_DEFAULT_LIMIT = 50;
+
+// --- Digest — Tiers ---
+/** Available token-budget tiers for digest synthesis. */
+export const DIGEST_TIERS = [1500, 3000, 5000, 10000] as const;
+export type DigestTier = (typeof DIGEST_TIERS)[number];
+
+// --- Digest — Context window minimums per tier ---
+/** Minimum context window (tokens) required to run a digest at a given tier. */
+export const DIGEST_TIER_MIN_CONTEXT: Record<number, number> = {
+  1500: 6500,
+  3000: 11500,
+  5000: 18500,
+  10000: 30500,
+};
+
+// --- Digest — Substrate ---
+/** Scoring weights by note type when selecting substrate for synthesis. */
+export const DIGEST_SUBSTRATE_TYPE_WEIGHTS: Record<string, number> = {
+  session: 3,
+  spore: 3,
+  plan: 2,
+  artifact: 1,
+  team: 1,
+};
+
+// --- Digest — System prompt overhead estimate ---

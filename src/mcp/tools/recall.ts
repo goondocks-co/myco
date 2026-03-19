@@ -1,5 +1,5 @@
 import type { MycoIndex } from '../../index/sqlite.js';
-import { planFm, sessionFm, memoryFm } from '../../vault/frontmatter.js';
+import { planFm, sessionFm, sporeFm } from '../../vault/frontmatter.js';
 import { RECALL_SUMMARY_PREVIEW_CHARS } from '../../constants.js';
 
 interface RecallInput {
@@ -10,7 +10,7 @@ interface RecallInput {
 interface RecallResult {
   active_plans: Array<{ id: string; title: string; status: string }>;
   recent_sessions: Array<{ id: string; title: string; summary: string }>;
-  relevant_memories: Array<{ id: string; title: string; type: string }>;
+  relevant_spores: Array<{ id: string; title: string; type: string }>;
   team_activity: Array<{ user: string; session_id: string; summary: string }>;
 }
 
@@ -29,8 +29,8 @@ export async function handleMycoRecall(
     sessions = sessions.filter((s) => sessionFm(s).branch === input.branch);
   }
 
-  const memories = index.query({ type: 'memory', limit: 5 })
-    .filter((m) => memoryFm(m).status !== 'superseded' && memoryFm(m).status !== 'archived');
+  const spores = index.query({ type: 'spore', limit: 5 })
+    .filter((m) => sporeFm(m).status !== 'superseded' && sporeFm(m).status !== 'archived');
 
   return {
     active_plans: activePlans.map((p) => ({
@@ -43,10 +43,10 @@ export async function handleMycoRecall(
       title: s.title,
       summary: s.content.slice(0, RECALL_SUMMARY_PREVIEW_CHARS),
     })),
-    relevant_memories: memories.map((m) => ({
+    relevant_spores: spores.map((m) => ({
       id: m.id,
       title: m.title,
-      type: memoryFm(m).observation_type ?? 'discovery',
+      type: sporeFm(m).observation_type ?? 'discovery',
     })),
     team_activity: [],
   };

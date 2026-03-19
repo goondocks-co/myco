@@ -27,7 +27,7 @@ Rules files contain **project invariants** — things every agent must follow ev
 | Belongs in Rules File | Does NOT Belong |
 |----------------------|-----------------|
 | Hard constraints: "All API routes go through `src/routes/`" | Situational context (use Myco context injection) |
-| Golden paths: step-by-step standard procedures | Decision rationale (use Myco memory) |
+| Golden paths: step-by-step standard procedures | Decision rationale (use Myco spore) |
 | Quality gates: specific commands that must pass | Code documentation (that's the codebase) |
 | Non-goals: what the project is NOT | Anything starting with "try to" or "when possible" |
 
@@ -166,15 +166,15 @@ Good rule: "better-sqlite3 MUST be installed with native bindings, not WASM. The
 1. Myco surfaces a pattern: "Your team has hit 3 gotchas about X. Should this become a rule?"
 2. If the developer approves:
    - Craft the rule from the observation
-   - The rule states the **what** — the observation (in Myco memory) stores the **why**
+   - The rule states the **what** — the observation (in Myco spore) stores the **why**
    - Place it in the correct file and section
 3. If the developer dismisses: the observation stays as context, not a rule
 
-### What stays as memory, NOT a rule
+### What stays as a spore, NOT a rule
 
 Reject promotion for:
 - One-off gotchas unlikely to recur (< 3 occurrences)
-- Decision rationale (the rule states what; memory stores why)
+- Decision rationale (the rule states what; spore stores why)
 - Branch-specific or time-limited knowledge
 - Anything that would only matter during a specific initiative
 

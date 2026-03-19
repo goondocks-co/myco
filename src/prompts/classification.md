@@ -1,4 +1,5 @@
 You are classifying files from coding session "{{sessionId}}" to determine which are substantive **project** artifacts worth preserving in a knowledge vault.
+You have a budget of ~{{maxTokens}} tokens for your response.
 
 ## Candidate Files
 

@@ -61,11 +61,11 @@ describe('MycoIndex', () => {
 
   it('deletes a note', () => {
     index.upsertNote({
-      path: 'memories/m.md', type: 'memory', id: 'm', title: 'Memory',
+      path: 'spores/m.md', type: 'spore', id: 'm', title: 'Spore',
       content: 'test', frontmatter: {}, created: '2026-03-12T00:00:00Z',
     });
-    index.deleteNote('memories/m.md');
-    expect(index.getNoteByPath('memories/m.md')).toBeNull();
+    index.deleteNote('spores/m.md');
+    expect(index.getNoteByPath('spores/m.md')).toBeNull();
   });
 
   it('queries notes by type', () => {
@@ -87,5 +87,38 @@ describe('MycoIndex', () => {
     const results = index.query({ type: 'session' });
     expect(results).toEqual([]);
     expect(index.getNoteByPath('nonexistent.md')).toBeNull();
+  });
+
+  it('filters notes by updatedSince', () => {
+    // Insert two notes, then manually backdate the first one so we can
+    // query with a known boundary between their updated_at values.
+    index.upsertNote({
+      path: 'sessions/early.md', type: 'session', id: 'early', title: 'Early',
+      content: 'first', frontmatter: {}, created: '2026-01-01T00:00:00Z',
+    });
+    index.upsertNote({
+      path: 'sessions/late.md', type: 'session', id: 'late', title: 'Late',
+      content: 'second', frontmatter: {}, created: '2026-02-01T00:00:00Z',
+    });
+
+    // Backdate the early note so there is a known gap between the two updated_at values
+    const EARLY_TS = '2026-01-01 00:00:00';
+    const LATE_TS = '2026-02-01 00:00:00';
+    const BOUNDARY_TS = '2026-01-15 00:00:00';
+    index.getDb().prepare("UPDATE notes SET updated_at = ? WHERE id = 'early'").run(EARLY_TS);
+    index.getDb().prepare("UPDATE notes SET updated_at = ? WHERE id = 'late'").run(LATE_TS);
+
+    // Query with updatedSince = boundary: should return only the late note
+    const results = index.query({ updatedSince: BOUNDARY_TS });
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe('late');
+
+    // Query with updatedSince before both: should return both
+    const all = index.query({ updatedSince: '2025-01-01 00:00:00' });
+    expect(all).toHaveLength(2);
+
+    // Query with a far-future timestamp — should return nothing
+    const none = index.query({ updatedSince: '2099-01-01 00:00:00' });
+    expect(none).toHaveLength(0);
   });
 });

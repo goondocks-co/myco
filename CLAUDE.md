@@ -43,7 +43,7 @@ src/
   capture/       # Event buffering (EventBuffer) and buffer-based turn fallback
   config/        # Vault config loading and Zod schema
   context/       # Context injection for UserPromptSubmit hook
-  daemon/        # Long-lived HTTP daemon: batch processing, session lifecycle, plan watching
+  daemon/        # Long-lived HTTP daemon: batch processing, session lifecycle, plan watching, digest
   hooks/         # Claude Code hook entry points (thin — delegate to daemon)
   index/         # SQLite FTS5 + sqlite-vec vector search
   intelligence/  # LLM backend abstraction (Ollama, LM Studio, Anthropic)
@@ -65,6 +65,7 @@ skills/          # Skill markdown files (subdirectory per skill)
 - **Hooks MUST be thin.** Hook entry points in `src/hooks/` MUST delegate to the daemon via `DaemonClient`. Hooks MUST NOT contain business logic, LLM calls, or complex processing. If the daemon is unreachable, hooks spawn it via `client.ensureRunning()` and buffer events to disk for later processing.
 - **The daemon is the authority.** All event processing, session note writing, observation extraction, and embedding happen in the daemon (`src/daemon/main.ts`). Hooks send events; the daemon decides what to do with them.
 - **MCP server config MUST be in `plugin.json`.** The `mcpServers` field in `.claude-plugin/plugin.json` is the only way to register MCP servers for plugins loaded via `--plugin-dir`. Do NOT use standalone `.mcp.json` for plugin MCP servers.
+- **Digest is a daemon task.** The digest engine runs inside the daemon process alongside batch processing and plan watching. It is NOT a hook or MCP server — it produces vault files that are read by hooks and MCP tools at serve time.
 
 ## Data Preservation
 
@@ -75,7 +76,7 @@ This is Myco's core contract. Violations:
 - Session notes are rebuilt from the agent's authoritative transcript on each stop event. The transcript file (e.g., Claude's `.jsonl`) is the source of truth — all turns are re-parsed and the `## Conversation` section is regenerated in full. Data preservation is guaranteed by the transcript being append-only, not by the session note's write logic.
 - The degraded stop path (`src/hooks/stop.ts`) MUST NOT write a session file if one already exists. It returns early; the daemon handles it when it's back.
 - Buffer files (`buffer/<session-id>.jsonl`) MUST NOT be deleted on session unregister. Session reload (SessionEnd → SessionStart) reuses the same session ID. Buffers are cleaned up by age (>24h) on daemon startup only.
-- `observation_type` in memory frontmatter accepts any string (`z.string()`). The LLM prompt guides types; the schema MUST NOT reject unexpected values.
+- `observation_type` in spore frontmatter accepts any string (`z.string()`). The LLM prompt guides types; the schema MUST NOT reject unexpected values.
 
 ## Session ID Is the Source of Truth
 
@@ -89,7 +90,7 @@ Every write operation MUST be safe to run twice with the same input. No "first-t
 
 Concrete requirements:
 
-- `writeMemory`, `writeArtifact`, `writeSession`, `writePlan`, `writeTeamMember` MUST produce the same file content given the same input, whether or not the file already exists.
+- `writeSpore`, `writeArtifact`, `writeSession`, `writePlan`, `writeTeamMember` MUST produce the same file content given the same input, whether or not the file already exists.
 - Startup tasks (migration, buffer cleanup, index rebuild) MUST be idempotent. Running the daemon startup sequence twice in a row MUST NOT move, duplicate, or corrupt data.
 - `indexNote` and `indexAndEmbed` MUST upsert, not insert. Re-indexing an already-indexed note MUST NOT create duplicates.
 
@@ -110,10 +111,23 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
 
 ## Naming Conventions
 
-- **Memory files:** `memories/{normalized_type}/{observation_type}-{session_id_last_6}-{timestamp}.md` (e.g., `memories/gotcha/gotcha-ac5220-1773416089650.md`). The subdirectory name normalizes underscores to hyphens (`bug_fix` → `bug-fix/`).
+- **Spore files:** `spores/{normalized_type}/{observation_type}-{session_id_last_6}-{timestamp}.md` (e.g., `spores/gotcha/gotcha-ac5220-1773416089650.md`). The subdirectory name normalizes underscores to hyphens (`bug_fix` → `bug-fix/`).
 - **Session files:** `sessions/{YYYY-MM-DD}/session-{session_id}.md`
 - **Imports:** Use `@myco/*` path aliases mapping to `src/*`
 - **Tests:** `tests/<module>.test.ts` mirroring `src/<module>.ts`
+
+## Glossary
+
+| Term | Definition |
+|------|-----------|
+| **Digest** | Continuous reasoning process that synthesizes vault knowledge into pre-computed context extracts. Runs as a daemon task on an adaptive timer. |
+| **Extract** | Tiered context representation at a specific token budget (1500/3000/5000/10000). Stored in `vault/digest/`. |
+| **Substrate** | New or updated vault notes not yet digested. Input to a digest cycle. |
+| **Trace** | Append-only audit chain of digest cycles. Stored as JSONL in `vault/digest/trace.jsonl`. |
+| **Metabolism** | Adaptive processing rate of the digest system. Active → cooling → dormant. |
+| **Dormancy** | Digest timer suspended when no new substrate arrives for an extended period. |
+| **Activation** | Return from dormancy to active metabolism, triggered by new session events. |
+| **Spore** | Discrete observation extracted from session activity (gotcha, decision, discovery, trade-off, bug fix). Stored in `vault/spores/`. |
 
 ## Vault Structure
 
@@ -125,11 +139,12 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
   vectors.db         # sqlite-vec vector embeddings
   buffer/            # Per-session JSONL event buffers (ephemeral)
   sessions/          # Session notes by date
-  memories/          # Observation notes (subdirectories by type: gotcha/, decision/, etc.)
+  spores/            # Observation notes (subdirectories by type: gotcha/, decision/, etc.)
   plans/             # Plan notes
   artifacts/         # Artifact references
   attachments/       # Images extracted from session transcripts (Obsidian embeds)
   team/              # Team member notes
+  digest/            # Pre-computed context extracts and digest trace
   logs/              # Daemon logs
 ```
 
@@ -194,6 +209,13 @@ Use the CLI: `node dist/src/cli.js <command>`
 - `vectors <query>` — raw similarity scores for threshold tuning
 - `rebuild` — reindex all vault notes (FTS + vectors)
 - `restart` — kill and respawn the daemon with current code
+
+### Modify digest behavior
+
+1. Prompt templates in `src/prompts/digest-*.md` — change what the LLM focuses on per tier
+2. Substrate formatting in `src/daemon/digest.ts` `formatSubstrate()` — change how notes are presented to the LLM
+3. Metabolism timing in `src/daemon/digest.ts` `Metabolism` class — change active/cooldown/dormancy intervals
+4. Config in `src/config/schema.ts` `DigestSchema` — change defaults or add new options
 
 ### Restart daemon after code changes
 

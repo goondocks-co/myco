@@ -3,7 +3,7 @@ import path from 'node:path';
 import matter from 'gray-matter';
 import { parseNoteFrontmatter, type VaultNote } from './types.js';
 
-const VAULT_SUBDIRS = ['sessions', 'plans', 'memories', 'artifacts', 'team'];
+const VAULT_SUBDIRS = ['sessions', 'plans', 'spores', 'artifacts', 'team'];
 
 export class VaultReader {
   constructor(private vaultDir: string) {}

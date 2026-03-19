@@ -20,9 +20,9 @@ describe('FTS5 Search', () => {
       frontmatter: { type: 'session' }, created: '2026-03-12T09:00:00Z',
     });
     index.upsertNote({
-      path: 'memories/m1.md', type: 'memory', id: 'm1', title: 'CORS Proxy Gotcha',
+      path: 'spores/m1.md', type: 'spore', id: 'm1', title: 'CORS Proxy Gotcha',
       content: 'The CORS proxy strips auth headers. Must add X-Forwarded-Auth.',
-      frontmatter: { type: 'memory' }, created: '2026-03-12T10:00:00Z',
+      frontmatter: { type: 'spore' }, created: '2026-03-12T10:00:00Z',
     });
     index.upsertNote({
       path: 'plans/p1.md', type: 'plan', id: 'p1', title: 'Auth Redesign',

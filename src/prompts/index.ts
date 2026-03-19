@@ -34,7 +34,7 @@ const PROMPTS_DIR = resolvePromptsDir();
 
 const promptCache = new Map<string, string>();
 
-function loadPrompt(name: string): string {
+export function loadPrompt(name: string): string {
   let cached = promptCache.get(name);
   if (!cached) {
     cached = fs.readFileSync(path.join(PROMPTS_DIR, `${name}.md`), 'utf-8').trim();
@@ -57,11 +57,13 @@ export function buildExtractionPrompt(
   sessionId: string,
   eventCount: number,
   toolSummary: string,
+  maxTokens?: number,
 ): string {
   return interpolate(loadPrompt('extraction'), {
     sessionId,
     eventCount: String(eventCount),
     toolSummary,
+    maxTokens: String(maxTokens ?? 2048),
   });
 }
 
@@ -69,11 +71,13 @@ export function buildSummaryPrompt(
   sessionId: string,
   user: string,
   content: string,
+  maxTokens?: number,
 ): string {
   return interpolate(loadPrompt('summary'), {
     sessionId,
     user,
     content,
+    maxTokens: String(maxTokens ?? 1024),
   });
 }
 
@@ -108,6 +112,7 @@ export function buildSimilarityPrompt(
 export function buildClassificationPrompt(
   sessionId: string,
   candidates: Array<{ path: string; content: string }>,
+  maxTokens?: number,
 ): string {
   const fileList = candidates
     .map((c) => {
@@ -121,5 +126,6 @@ export function buildClassificationPrompt(
     fileList,
     artifactTypes: ARTIFACT_TYPE_DESCRIPTIONS.map((d) => `- ${d}`).join('\n'),
     validTypes: ARTIFACT_TYPES.join('|'),
+    maxTokens: String(maxTokens ?? 1024),
   });
 }

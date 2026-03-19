@@ -40,7 +40,7 @@ describe('myco init', () => {
   it('creates all required subdirectories', () => {
     runInit(testDir, ['--llm-provider', 'ollama', '--llm-model', 'gpt-oss', '--embedding-model', 'bge-m3']);
 
-    const dirs = ['sessions', 'plans', 'memories', 'artifacts', 'team', 'buffer', 'logs'];
+    const dirs = ['sessions', 'plans', 'spores', 'artifacts', 'team', 'buffer', 'logs'];
     for (const dir of dirs) {
       expect(fs.existsSync(path.join(testDir, '.myco', dir))).toBe(true);
     }
@@ -80,8 +80,8 @@ describe('myco init', () => {
     expect(config.team.user).toBe('chris');
   });
 
-  it('uses correct base_url defaults per provider', () => {
-    runInit(testDir, ['--llm-provider', 'lm-studio', '--llm-model', 'gpt-oss', '--embedding-provider', 'ollama', '--embedding-model', 'bge-m3']);
+  it('uses correct base_url when explicitly passed', () => {
+    runInit(testDir, ['--llm-provider', 'lm-studio', '--llm-model', 'test', '--llm-url', 'http://localhost:1234', '--embedding-model', 'bge-m3', '--embedding-url', 'http://localhost:11434']);
 
     const config = YAML.parse(fs.readFileSync(path.join(testDir, '.myco', 'myco.yaml'), 'utf-8'));
     expect(config.intelligence.llm.base_url).toBe('http://localhost:1234');
@@ -116,7 +116,7 @@ describe('myco init', () => {
     expect(dashboard).toContain('dataview');
     expect(dashboard).toContain('#type/plan');
     expect(dashboard).toContain('#type/session');
-    expect(dashboard).toContain('#memory/gotcha');
+    expect(dashboard).toContain('#spore/gotcha');
   });
 
   it('is idempotent — does not overwrite existing vault', () => {

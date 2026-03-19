@@ -21,20 +21,20 @@ describe('myco_remember', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('creates a memory note and indexes it', async () => {
+  it('creates a spore note and indexes it', async () => {
     const result = await handleMycoRemember(tmpDir, index, {
       content: 'CORS proxy strips auth headers',
       type: 'gotcha',
       tags: ['cors', 'auth'],
     });
 
-    expect(result.note_path).toContain('memories/');
+    expect(result.note_path).toContain('spores/');
     expect(result.id).toContain('gotcha-');
 
     // Verify it was indexed
     const note = index.getNoteByPath(result.note_path);
     expect(note).toBeTruthy();
-    expect(note!.type).toBe('memory');
+    expect(note!.type).toBe('spore');
   });
 
   it('links to a related plan', async () => {
@@ -103,6 +103,6 @@ describe('myco_remember', () => {
     });
 
     expect(result.session).toBeUndefined();
-    expect(result.note_path).toContain('memories/');
+    expect(result.note_path).toContain('spores/');
   });
 });

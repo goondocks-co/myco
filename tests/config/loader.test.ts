@@ -70,7 +70,7 @@ intelligence:
         embedding: { provider: 'ollama' as const, model: 'bge-m3' },
       },
       capture: { transcript_paths: [], artifact_watch: [], artifact_extensions: ['.md'], buffer_max_events: 500 },
-      context: { max_tokens: 1200, layers: { plans: 200, sessions: 500, memories: 300, team: 200 } },
+      context: { max_tokens: 1200, layers: { plans: 200, sessions: 500, spores: 300, team: 200 } },
       daemon: { log_level: 'info' as const, grace_period: 30, max_log_size: 5242880 },
       team: { enabled: false, user: '', sync: 'git' as const },
     };

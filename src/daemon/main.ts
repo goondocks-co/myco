@@ -15,9 +15,11 @@ import { generateEmbedding } from '../intelligence/embeddings.js';
 import { LineageGraph, LINEAGE_SIMILARITY_THRESHOLD, LINEAGE_SIMILARITY_HIGH_CONFIDENCE, LINEAGE_SIMILARITY_CANDIDATES, LINEAGE_SIMILARITY_MAX_TOKENS, type LineageLink } from './lineage.js';
 import type { RegisteredSession } from './lifecycle.js';
 import { PlanWatcher } from './watcher.js';
+import { DigestEngine, Metabolism } from './digest.js';
+import { handleMycoContext } from '../mcp/tools/context.js';
 import { buildSimilarityPrompt } from '../prompts/index.js';
 import { extractNumber } from '../intelligence/response.js';
-import { EMBEDDING_INPUT_LIMIT, CONTENT_SNIPPET_CHARS, CHARS_PER_TOKEN, STALE_BUFFER_MAX_AGE_MS, LINEAGE_RECENT_SESSIONS_LIMIT, RELATED_MEMORIES_LIMIT, CANDIDATE_CONTENT_PREVIEW, SESSION_CONTEXT_MAX_PLANS, PROMPT_CONTEXT_MAX_MEMORIES, PROMPT_CONTEXT_MIN_SIMILARITY, PROMPT_CONTEXT_MIN_LENGTH, CONTEXT_SESSION_PREVIEW_CHARS } from '../constants.js';
+import { EMBEDDING_INPUT_LIMIT, CONTENT_SNIPPET_CHARS, CHARS_PER_TOKEN, STALE_BUFFER_MAX_AGE_MS, LINEAGE_RECENT_SESSIONS_LIMIT, RELATED_SPORES_LIMIT, CANDIDATE_CONTENT_PREVIEW, SESSION_CONTEXT_MAX_PLANS, PROMPT_CONTEXT_MAX_SPORES, PROMPT_CONTEXT_MIN_SIMILARITY, PROMPT_CONTEXT_MIN_LENGTH, CONTEXT_SESSION_PREVIEW_CHARS } from '../constants.js';
 import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter, extensionForMimeType } from '../agents/adapter.js';
 import { claudeCodeAdapter } from '../agents/claude-code.js';
@@ -64,7 +66,7 @@ function writeObservations(
   const written = writeObservationNotes(observations, sessionId, deps.vault, deps.index, deps.vaultDir);
   for (const note of written) {
     indexAndEmbed(note.path, note.id, `${note.observation.title}\n${note.observation.content}`,
-      { type: 'memory', importance: 'high', session_id: sessionId }, deps);
+      { type: 'spore', importance: 'high', session_id: sessionId }, deps);
     deps.logger.info('processor', 'Observation written', { type: note.observation.type, title: note.observation.title, session_id: sessionId });
   }
 }
@@ -106,15 +108,15 @@ async function captureArtifacts(
   }
 }
 
-export function migrateMemoryFiles(vaultDir: string): number {
-  const memoriesDir = path.join(vaultDir, 'memories');
-  if (!fs.existsSync(memoriesDir)) return 0;
+export function migrateSporeFiles(vaultDir: string): number {
+  const sporesDir = path.join(vaultDir, 'spores');
+  if (!fs.existsSync(sporesDir)) return 0;
 
   let moved = 0;
-  const entries = fs.readdirSync(memoriesDir);
+  const entries = fs.readdirSync(sporesDir);
 
   for (const entry of entries) {
-    const fullPath = path.join(memoriesDir, entry);
+    const fullPath = path.join(sporesDir, entry);
     if (!entry.endsWith('.md')) continue;
     if (fs.statSync(fullPath).isDirectory()) continue;
 
@@ -128,7 +130,7 @@ export function migrateMemoryFiles(vaultDir: string): number {
       if (!obsType) continue;
 
       const normalizedType = obsType.replace(/_/g, '-');
-      const targetDir = path.join(memoriesDir, normalizedType);
+      const targetDir = path.join(sporesDir, normalizedType);
       fs.mkdirSync(targetDir, { recursive: true });
       const targetPath = path.join(targetDir, entry);
       fs.renameSync(fullPath, targetPath);
@@ -165,6 +167,7 @@ export async function main(): Promise<void> {
     gracePeriod: config.daemon.grace_period,
     onEmpty: async () => {
       logger.info('daemon', 'Grace period expired, shutting down');
+      metabolism?.stop();
       planWatcher.stopFileWatcher();
       await server.stop();
       vectorIndex?.close();
@@ -187,7 +190,7 @@ export async function main(): Promise<void> {
     logger.warn('embeddings', 'Vector index unavailable', { error: (error as Error).message });
   }
 
-  const processor = new BufferProcessor(llmProvider, config.intelligence.llm.context_window);
+  const processor = new BufferProcessor(llmProvider, config.intelligence.llm.context_window, config.capture);
   const vault = new VaultWriter(vaultDir);
   const index = new MycoIndex(path.join(vaultDir, 'index.db'));
   const lineageGraph = new LineageGraph(vaultDir);
@@ -218,10 +221,10 @@ export async function main(): Promise<void> {
     }
   }
 
-  // Migrate flat memory files into type subdirectories
-  const migrated = migrateMemoryFiles(vaultDir);
+  // Migrate flat spore files into type subdirectories
+  const migrated = migrateSporeFiles(vaultDir);
   if (migrated > 0) {
-    logger.info('daemon', 'Migrated memory files to type subdirectories', { count: migrated });
+    logger.info('daemon', 'Migrated spore files to type subdirectories', { count: migrated });
     // Rebuild FTS index to update stored paths (vectors are keyed by ID, unaffected)
     initFts(index);
     rebuildIndex(index, vaultDir);
@@ -278,6 +281,65 @@ export async function main(): Promise<void> {
     },
   });
   planWatcher.startFileWatcher();
+
+  // Digest engine: synthesizes vault knowledge into tiered context extracts
+  let metabolism: Metabolism | null = null;
+
+  if (config.digest.enabled) {
+    const digestLlmConfig = {
+      provider: config.digest.intelligence.provider ?? config.intelligence.llm.provider,
+      model: config.digest.intelligence.model ?? config.intelligence.llm.model,
+      base_url: config.digest.intelligence.base_url ?? config.intelligence.llm.base_url,
+      context_window: config.digest.intelligence.context_window,
+    };
+    logger.debug('digest', 'Digest LLM config', digestLlmConfig);
+    const digestLlm = (config.digest.intelligence.model || config.digest.intelligence.provider)
+      ? createLlmProvider(digestLlmConfig)
+      : llmProvider;
+    logger.debug('digest', `Using ${digestLlm.name} provider for digest`);
+
+    const digestEngine = new DigestEngine({
+      vaultDir,
+      index,
+      llmProvider: digestLlm,
+      config,
+      log: (level, message, data) => logger[level]('digest', message, data),
+    });
+
+    metabolism = new Metabolism(config.digest.metabolism);
+
+    // Fire initial cycle in the background — don't block server readiness
+    logger.debug('digest', 'Firing initial digest cycle (background)');
+    digestEngine.runCycle()
+      .then((result) => {
+        if (result) {
+          metabolism!.onSubstrateFound();
+          logger.info('digest', `Initial digest cycle: ${result.tiersGenerated.length} tiers, ${result.durationMs}ms`);
+        }
+      })
+      .catch((err) => {
+        logger.warn('digest', 'Initial digest cycle failed', { error: (err as Error).message });
+      });
+
+    // Start metabolism timer
+    metabolism.start(async () => {
+      try {
+        const cycleResult = await digestEngine.runCycle();
+        if (cycleResult) {
+          metabolism!.onSubstrateFound();
+          logger.info('digest', `Digest cycle ${cycleResult.cycleId}: ${cycleResult.tiersGenerated.length} tiers`);
+        } else {
+          metabolism!.onEmptyCycle();
+          logger.debug('digest', 'No substrate, backing off');
+        }
+      } catch (err) {
+        logger.warn('digest', 'Digest cycle failed', { error: (err as Error).message });
+        metabolism!.onEmptyCycle();
+      }
+    });
+
+    logger.info('digest', 'Digest enabled — starting metabolism');
+  }
 
   const batchManager = new BatchManager(async (closedBatch: BatchEvent[]) => {
     if (closedBatch.length === 0) return;
@@ -360,6 +422,9 @@ export async function main(): Promise<void> {
     } catch (err) {
       logger.debug('lineage', 'Heuristic detection failed', { error: (err as Error).message });
     }
+
+    // Wake digest metabolism when a new session starts
+    metabolism?.activate();
 
     logger.info('lifecycle', 'Session registered', { session_id, branch });
     return { ok: true, sessions: registry.sessions };
@@ -649,8 +714,8 @@ export async function main(): Promise<void> {
       narrative = summaryResult.summary;
     }
 
-    // Query related memories for this session
-    const relatedMemories = index.query({ type: 'memory', limit: RELATED_MEMORIES_LIMIT })
+    // Query related spores for this session
+    const relatedMemories = index.query({ type: 'spore', limit: RELATED_SPORES_LIMIT })
       .filter((n) => {
         const fm = n.frontmatter as Record<string, unknown>;
         return fm.session === sessionNoteId(sessionId) || fm.session === sessionId;
@@ -751,12 +816,28 @@ export async function main(): Promise<void> {
     logger.info('processor', 'Session note written', { session_id: sessionId, path: relativePath });
   }
 
-  // Session-start context: structural facts only — active plans + parent session.
+  // Session-start context: digest extract (if available) or structural facts.
   // Memories are injected per-prompt (more targeted, less noise).
   server.registerRoute('POST', '/context', async (body: unknown) => {
     const { session_id, branch } = ContextBody.parse(body);
     logger.debug('hooks', 'Session context query', { session_id });
     try {
+      // Digest-first: serve pre-computed extract if available
+      if (config.digest.enabled && config.digest.inject_tier) {
+        const result = handleMycoContext(vaultDir, { tier: config.digest.inject_tier });
+
+        if (result.generated !== undefined) {
+          // Append session metadata that the agent needs regardless of context source
+          const meta: string[] = [result.content];
+          if (branch) meta.push(`\nBranch:: \`${branch}\``);
+          meta.push(`Session:: \`${session_id}\``);
+
+          logger.debug('context', `Injecting digest extract (tier ${result.tier})`, { session_id, fallback: result.fallback });
+          return { text: meta.join('\n\n'), source: 'digest', tier: result.tier };
+        }
+        // Fall through to layer-based injection if no extract exists yet
+      }
+
       const parts: string[] = [];
 
       // Active plans — the agent needs to know what's in flight
@@ -803,7 +884,7 @@ export async function main(): Promise<void> {
     }
   });
 
-  // Per-prompt context: semantic search for memories relevant to THIS specific prompt.
+  // Per-prompt context: semantic search for spores relevant to THIS specific prompt.
   // This is the primary intelligence delivery — targeted, high-confidence, token-efficient.
   const PromptContextBody = z.object({
     prompt: z.string(),
@@ -819,8 +900,8 @@ export async function main(): Promise<void> {
     try {
       const emb = await generateEmbedding(embeddingProvider, prompt.slice(0, EMBEDDING_INPUT_LIMIT));
       const results = vectorIndex.search(emb.embedding, {
-        limit: PROMPT_CONTEXT_MAX_MEMORIES,
-        type: 'memory',
+        limit: PROMPT_CONTEXT_MAX_SPORES,
+        type: 'spore',
         relativeThreshold: PROMPT_CONTEXT_MIN_SIMILARITY,
       });
 
@@ -842,10 +923,10 @@ export async function main(): Promise<void> {
 
       if (lines.length === 0) return { text: '' };
 
-      const injected = `**Relevant memories for this task:**\n${lines.join('\n')}`;
+      const injected = `**Relevant spores for this task:**\n${lines.join('\n')}`;
       logger.debug('context', 'Prompt context injected', {
         session_id,
-        memories: lines.length,
+        spores: lines.length,
         prompt_preview: prompt.slice(0, 50),
       });
 
@@ -866,6 +947,7 @@ export async function main(): Promise<void> {
       logger.info('daemon', 'Waiting for active stop processing to complete...');
       await activeStopProcessing;
     }
+    metabolism?.stop();
     planWatcher.stopFileWatcher();
     registry.destroy();
     await server.stop();

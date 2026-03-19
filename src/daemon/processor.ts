@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import type { LlmProvider } from '../intelligence/llm.js';
 import { ARTIFACT_TYPES } from '../vault/types.js';
-import { CHARS_PER_TOKEN, EXTRACTION_MAX_TOKENS, SUMMARY_MAX_TOKENS, TITLE_MAX_TOKENS, CLASSIFICATION_MAX_TOKENS, PROMPT_PREVIEW_CHARS, AI_RESPONSE_PREVIEW_CHARS, COMMAND_PREVIEW_CHARS } from '../constants.js';
+import { estimateTokens, CHARS_PER_TOKEN, PROMPT_PREVIEW_CHARS, AI_RESPONSE_PREVIEW_CHARS, COMMAND_PREVIEW_CHARS } from '../constants.js';
+import type { MycoConfig } from '../config/schema.js';
 import type { ObservationType, ArtifactType } from '../vault/types.js';
 import { buildExtractionPrompt, buildSummaryPrompt, buildTitlePrompt, buildClassificationPrompt } from '../prompts/index.js';
 import { extractJson, stripReasoningTokens } from '../intelligence/response.js';
@@ -42,11 +43,21 @@ const ClassificationResponseSchema = z.object({
 });
 
 export class BufferProcessor {
-  constructor(private backend: LlmProvider, private contextWindow: number = 8192) {}
+  private extractionMaxTokens: number;
+  private summaryMaxTokens: number;
+  private titleMaxTokens: number;
+  private classificationMaxTokens: number;
+
+  constructor(private backend: LlmProvider, private contextWindow: number = 8192, captureConfig?: MycoConfig['capture']) {
+    this.extractionMaxTokens = captureConfig?.extraction_max_tokens ?? 2048;
+    this.summaryMaxTokens = captureConfig?.summary_max_tokens ?? 512;
+    this.titleMaxTokens = captureConfig?.title_max_tokens ?? 32;
+    this.classificationMaxTokens = captureConfig?.classification_max_tokens ?? 1024;
+  }
 
   private truncateForContext(data: string, maxTokens: number): string {
     const available = this.contextWindow - maxTokens;
-    const dataTokens = Math.ceil(data.length / CHARS_PER_TOKEN);
+    const dataTokens = estimateTokens(data);
     if (dataTokens <= available) return data;
     const charBudget = available * CHARS_PER_TOKEN;
     return data.slice(0, charBudget);
@@ -57,10 +68,10 @@ export class BufferProcessor {
     sessionId: string,
   ): Promise<ProcessorResult> {
     const rawPrompt = this.buildPromptForExtraction(events, sessionId);
-    const prompt = this.truncateForContext(rawPrompt, EXTRACTION_MAX_TOKENS);
+    const prompt = this.truncateForContext(rawPrompt, this.extractionMaxTokens);
 
     try {
-      const response = await this.backend.summarize(prompt, { maxTokens: EXTRACTION_MAX_TOKENS });
+      const response = await this.backend.summarize(prompt, { maxTokens: this.extractionMaxTokens });
       const parsed = extractJson(response.text) as {
         summary: string;
         observations: Observation[];
@@ -85,7 +96,7 @@ export class BufferProcessor {
     sessionId: string,
   ): string {
     const toolSummary = this.summarizeEvents(events);
-    return buildExtractionPrompt(sessionId, events.length, toolSummary);
+    return buildExtractionPrompt(sessionId, events.length, toolSummary, this.extractionMaxTokens);
   }
 
   async summarizeSession(
@@ -93,12 +104,12 @@ export class BufferProcessor {
     sessionId: string,
     user?: string,
   ): Promise<{ summary: string; title: string }> {
-    const truncatedContent = this.truncateForContext(conversationMarkdown, SUMMARY_MAX_TOKENS);
-    const summaryPrompt = buildSummaryPrompt(sessionId, user ?? 'unknown', truncatedContent);
+    const truncatedContent = this.truncateForContext(conversationMarkdown, this.summaryMaxTokens);
+    const summaryPrompt = buildSummaryPrompt(sessionId, user ?? 'unknown', truncatedContent, this.summaryMaxTokens);
 
     let summaryText: string;
     try {
-      const response = await this.backend.summarize(summaryPrompt, { maxTokens: SUMMARY_MAX_TOKENS });
+      const response = await this.backend.summarize(summaryPrompt, { maxTokens: this.summaryMaxTokens });
       summaryText = stripReasoningTokens(response.text);
     } catch (error) {
       summaryText = `Session ${sessionId} — summarization failed: ${(error as Error).message}`;
@@ -107,7 +118,7 @@ export class BufferProcessor {
     const titlePrompt = buildTitlePrompt(summaryText, sessionId);
     let title: string;
     try {
-      const response = await this.backend.summarize(titlePrompt, { maxTokens: TITLE_MAX_TOKENS });
+      const response = await this.backend.summarize(titlePrompt, { maxTokens: this.titleMaxTokens });
       title = stripReasoningTokens(response.text).trim();
     } catch {
       title = `Session ${sessionId}`;
@@ -123,7 +134,7 @@ export class BufferProcessor {
     if (candidates.length === 0) return [];
 
     const prompt = this.buildPromptForClassification(candidates, sessionId);
-    const response = await this.backend.summarize(prompt, { maxTokens: CLASSIFICATION_MAX_TOKENS });
+    const response = await this.backend.summarize(prompt, { maxTokens: this.classificationMaxTokens });
     const raw = extractJson(response.text);
     const parsed = ClassificationResponseSchema.parse(raw);
     return parsed.artifacts;
@@ -133,7 +144,7 @@ export class BufferProcessor {
     candidates: Array<{ path: string; content: string }>,
     sessionId: string,
   ): string {
-    return buildClassificationPrompt(sessionId, candidates);
+    return buildClassificationPrompt(sessionId, candidates, this.classificationMaxTokens);
   }
 
   private summarizeEvents(events: Array<Record<string, unknown>>): string {

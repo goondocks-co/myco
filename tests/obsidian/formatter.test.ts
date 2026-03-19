@@ -8,7 +8,7 @@ import {
   buildTags,
   footerTags,
   formatSessionBody,
-  formatMemoryBody,
+  formatSporeBody,
   formatPlanBody,
   formatTeamBody,
   formatArtifactBody,
@@ -89,13 +89,13 @@ describe('observationCalloutType', () => {
 
 describe('buildTags', () => {
   it('produces hierarchical tags', () => {
-    const tags = buildTags('memory', 'bug_fix', ['auth', 'jwt']);
-    expect(tags).toEqual(['type/memory', 'memory/bug-fix', 'auth', 'jwt']);
+    const tags = buildTags('spore', 'bug_fix', ['auth', 'jwt']);
+    expect(tags).toEqual(['type/spore', 'spore/bug-fix', 'auth', 'jwt']);
   });
 
   it('normalizes underscores to hyphens in subtype', () => {
-    const tags = buildTags('memory', 'trade_off');
-    expect(tags).toEqual(['type/memory', 'memory/trade-off']);
+    const tags = buildTags('spore', 'trade_off');
+    expect(tags).toEqual(['type/spore', 'spore/trade-off']);
   });
 
   it('deduplicates extra tags', () => {
@@ -104,8 +104,8 @@ describe('buildTags', () => {
   });
 
   it('strips # prefix from extra tags', () => {
-    const tags = buildTags('memory', 'gotcha', ['#auth']);
-    expect(tags).toEqual(['type/memory', 'memory/gotcha', 'auth']);
+    const tags = buildTags('spore', 'gotcha', ['#auth']);
+    expect(tags).toEqual(['type/spore', 'spore/gotcha', 'auth']);
   });
 
   it('skips empty subtype', () => {
@@ -157,7 +157,7 @@ describe('formatSessionBody', () => {
     expect(body).toContain('User:: chris');
     expect(body).toContain('Duration:: 1h 22m');
     expect(body).toContain('Branch:: `feat/auth`');
-    expect(body).toContain('## Related Memories');
+    expect(body).toContain('## Related Spores');
     expect(body).toContain('[[gotcha-c5220-123|Stop Hook Throws]]');
     expect(body).toContain('### Turn 1');
     expect(body).toContain('> [!user] Prompt');
@@ -199,14 +199,14 @@ describe('formatSessionBody', () => {
     expect(body).toContain('Session:: [[session-xyz]]');
     expect(body).not.toContain('Duration');
     expect(body).not.toContain('Branch');
-    expect(body).not.toContain('## Related Memories');
+    expect(body).not.toContain('## Related Spores');
     expect(body).not.toContain('## Conversation');
   });
 });
 
-describe('formatMemoryBody', () => {
-  it('produces memory body with typed callout', () => {
-    const body = formatMemoryBody({
+describe('formatSporeBody', () => {
+  it('produces spore body with typed callout', () => {
+    const body = formatSporeBody({
       title: 'RS256 over HS256',
       observationType: 'decision',
       content: 'Chose RS256 for key rotation.',
@@ -222,12 +222,12 @@ describe('formatMemoryBody', () => {
     expect(body).toContain('Observation:: decision');
     expect(body).toContain('## Rationale');
     expect(body).toContain('## Alternatives Rejected');
-    expect(body).toContain('#type/memory');
-    expect(body).toContain('#memory/decision');
+    expect(body).toContain('#type/spore');
+    expect(body).toContain('#spore/decision');
   });
 
   it('produces bug_fix body with root cause and fix sections', () => {
-    const body = formatMemoryBody({
+    const body = formatSporeBody({
       title: 'NPE in stop hook',
       observationType: 'bug_fix',
       content: 'Null check missing.',
@@ -241,7 +241,7 @@ describe('formatMemoryBody', () => {
   });
 
   it('produces trade_off body with gained/sacrificed', () => {
-    const body = formatMemoryBody({
+    const body = formatSporeBody({
       title: 'Dropped SQLite for FTS',
       observationType: 'trade_off',
       content: 'Simplified index.',
@@ -255,7 +255,7 @@ describe('formatMemoryBody', () => {
   });
 
   it('handles missing optional fields', () => {
-    const body = formatMemoryBody({
+    const body = formatSporeBody({
       title: 'Simple note',
       observationType: 'discovery',
       content: 'Found a thing.',
@@ -264,8 +264,8 @@ describe('formatMemoryBody', () => {
     expect(body).toContain('> [!tip] Discovery');
     expect(body).not.toContain('Session::');
     expect(body).not.toContain('## Root Cause');
-    expect(body).toContain('#type/memory');
-    expect(body).toContain('#memory/discovery');
+    expect(body).toContain('#type/spore');
+    expect(body).toContain('#spore/discovery');
   });
 });
 

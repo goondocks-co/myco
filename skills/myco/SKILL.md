@@ -1,6 +1,6 @@
 ---
 name: myco
-description: Use when making design decisions, debugging non-obvious issues, encountering gotchas, wondering why code is structured a certain way, or when you need context about prior work on the same feature or component. Myco captures the reasoning, trade-offs, and lessons behind the codebase — things the code itself doesn't show. Also use when the user mentions vault, memories, sessions, team knowledge, institutional memory, or prior decisions.
+description: Use when making design decisions, debugging non-obvious issues, encountering gotchas, wondering why code is structured a certain way, or when you need context about prior work on the same feature or component. Myco captures the reasoning, trade-offs, and lessons behind the codebase — things the code itself doesn't show. Also use when the user mentions vault, spores, sessions, team knowledge, institutional memory, or prior decisions.
 ---
 
 # Myco — Collective Agent Intelligence
@@ -13,7 +13,7 @@ Use Myco tools proactively in these situations — don't wait to be asked:
 
 - **Before making a design decision** — search for prior reasoning on the same component. Someone may have already evaluated the approach you're considering, or documented why an alternative was rejected.
 - **When debugging a non-obvious issue** — search for the error message, component name, or symptom. A prior session may have hit the same problem and documented the root cause.
-- **When wondering why code is structured a certain way** — decisions and trade-offs behind the architecture are captured as memories.
+- **When wondering why code is structured a certain way** — decisions and trade-offs behind the architecture are captured as spores.
 - **When continuing work on a feature** — check session history and plan progress for context on what's been done and what's pending.
 - **After discovering a gotcha, making a key decision, or fixing a tricky bug** — save it so future sessions benefit from the knowledge.
 - **When starting work on a branch** — context is injected automatically at session start, but you can call `myco_recall` for deeper context on specific files.
@@ -37,17 +37,17 @@ If the vault isn't configured, run `/myco-init` to set up. To change LLM provide
 
 ### myco_search — Find knowledge across the vault
 
-Combined semantic + full-text search across sessions, plans, and memories.
+Combined semantic + full-text search across sessions, plans, and spores.
 
 ```json
-{ "query": "why did we choose JWT over session cookies", "type": "memory", "limit": 5 }
+{ "query": "why did we choose JWT over session cookies", "type": "spore", "limit": 5 }
 ```
 
-**When to use**: searching for prior decisions, debugging context, or understanding rationale. The `type` filter narrows results — use `"memory"` for decisions/gotchas, `"session"` for session history, `"plan"` for plans, or omit for all.
+**When to use**: searching for prior decisions, debugging context, or understanding rationale. The `type` filter narrows results — use `"spore"` for decisions/gotchas, `"session"` for session history, `"plan"` for plans, or omit for all.
 
 **Example**: before choosing an authentication approach, search for prior decisions:
 ```json
-{ "query": "authentication approach JWT session", "type": "memory" }
+{ "query": "authentication approach JWT session", "type": "spore" }
 ```
 
 ### myco_recall — Get context for current work
@@ -106,13 +106,13 @@ Filter by `plan`, `branch`, `user`, or `since` (ISO timestamp). Useful for under
 
 ### myco_graph — Traverse vault connections
 
-Follow wikilink connections between notes — find related sessions, memories, and plans.
+Follow wikilink connections between notes — find related sessions, spores, and plans.
 
 ```json
 { "note_id": "session-abc123", "direction": "both", "depth": 2 }
 ```
 
-**When to use**: exploring how a decision connects to sessions and other memories, or understanding the lineage of a feature's development across multiple sessions.
+**When to use**: exploring how a decision connects to sessions and other spores, or understanding the lineage of a feature's development across multiple sessions.
 
 ### myco_orphans — Find disconnected notes
 
@@ -140,47 +140,47 @@ View daemon logs for debugging when sessions aren't being captured, observations
 
 Components: `daemon`, `processor`, `hooks`, `lifecycle`, `embeddings`, `lineage`, `watcher`.
 
-### myco_supersede — Mark a memory as replaced
+### myco_supersede — Mark a spore as replaced
 
-When a newer observation makes an older one obsolete, supersede it. The old memory stays in the vault (data is never deleted) but is marked `status: superseded`.
+When a newer observation makes an older one obsolete, supersede it. The old spore stays in the vault (data is never deleted) but is marked `status: superseded`.
 
 ```json
-{ "old_memory_id": "decision-abc123", "new_memory_id": "decision-def456", "reason": "Migrated from bcrypt to argon2" }
+{ "old_spore_id": "decision-abc123", "new_spore_id": "decision-def456", "reason": "Migrated from bcrypt to argon2" }
 ```
 
 **When to use**: a decision was reversed, a gotcha was fixed, a discovery turned out to be wrong, or the codebase changed and an observation no longer applies.
 
-### myco_consolidate — Merge memories into wisdom
+### myco_consolidate — Merge spores into wisdom
 
-When multiple memories describe aspects of the same insight, consolidate them into a single comprehensive note. Source memories are marked superseded with links to the new wisdom note.
+When multiple spores describe aspects of the same insight, consolidate them into a single comprehensive note. Source spores are marked superseded with links to the new wisdom note.
 
 ```json
 {
-  "source_memory_ids": ["gotcha-aaa111", "gotcha-bbb222", "gotcha-ccc333"],
+  "source_spore_ids": ["gotcha-aaa111", "gotcha-bbb222", "gotcha-ccc333"],
   "consolidated_content": "# SQLite Operational Gotchas\n\n1. WAL mode requires shared memory...\n2. Single writer lock...\n3. FTS5 tokenization...",
   "observation_type": "gotcha",
   "tags": ["sqlite", "infrastructure"]
 }
 ```
 
-**When to use**: 3+ memories share a root cause, describe the same pattern from different angles, or would be more useful as a single comprehensive reference.
+**When to use**: 3+ spores share a root cause, describe the same pattern from different angles, or would be more useful as a single comprehensive reference.
 
 For detailed patterns on when and how to consolidate, read `references/wisdom.md`.
 
 ## Wisdom — Keeping the Vault Clean
 
-Memories are injected into every prompt via the `UserPromptSubmit` hook. Each injected memory includes its ID (e.g., `[decision-abc123]`). When you see an injected memory that contradicts what you just did or know to be outdated, **supersede it immediately** — don't wait to be asked. This is how the vault stays accurate.
+Spores are injected into every prompt via the `UserPromptSubmit` hook. Each injected spore includes its ID (e.g., `[decision-abc123]`). When you see an injected spore that contradicts what you just did or know to be outdated, **supersede it immediately** — don't wait to be asked. This is how the vault stays accurate.
 
 **Proactive superseding during normal work:**
 
-- You just changed how the stop hook works → an injected memory says it works the old way → `myco_supersede` with the old ID and a new `myco_remember` capturing the current behavior
-- You see two injected memories that say conflicting things → supersede the older one
+- You just changed how the stop hook works → an injected spore says it works the old way → `myco_supersede` with the old ID and a new `myco_remember` capturing the current behavior
+- You see two injected spores that say conflicting things → supersede the older one
 - An injected gotcha references code that was refactored → supersede it
 
 **Other signals to act on:**
 
 - **Recurring gotchas**: the same problem keeps being recorded → `myco_consolidate` into one definitive note
-- **Overlapping content**: a `myco_remember` would duplicate an existing memory → `myco_supersede` with updated content instead
+- **Overlapping content**: a `myco_remember` would duplicate an existing spore → `myco_supersede` with updated content instead
 - **Stale decisions**: a decision references a deleted component or reversed approach → supersede it
 
 The vault should get sharper over time, not just bigger. Every session should leave the vault more accurate than it found it.
@@ -223,7 +223,7 @@ If observations were lost due to a bug, or if you want to re-extract observation
 node <plugin-root>/dist/src/cli.js reprocess
 ```
 
-This re-reads all session transcripts, re-extracts observations, and re-indexes everything. Existing memories are preserved — new observations are additive.
+This re-reads all session transcripts, re-extracts observations, and re-indexes everything. Existing spores are preserved — new observations are additive.
 
 Options:
 - `--session <id>` — reprocess a single session (partial ID match)

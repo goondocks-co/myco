@@ -17,7 +17,7 @@ describe('VectorIndex', () => {
 
   it('stores and retrieves embeddings', () => {
     const idx = new VectorIndex(dbPath, 3);
-    idx.upsert('mem-1', [0.1, 0.2, 0.3], { type: 'memory', importance: 'high' });
+    idx.upsert('mem-1', [0.1, 0.2, 0.3], { type: 'spore', importance: 'high' });
 
     const results = idx.search([0.1, 0.2, 0.3], { limit: 5 });
     expect(results).toHaveLength(1);
@@ -28,10 +28,10 @@ describe('VectorIndex', () => {
 
   it('filters by metadata type', () => {
     const idx = new VectorIndex(dbPath, 3);
-    idx.upsert('mem-1', [0.1, 0.2, 0.3], { type: 'memory' });
+    idx.upsert('mem-1', [0.1, 0.2, 0.3], { type: 'spore' });
     idx.upsert('sess-1', [0.1, 0.2, 0.3], { type: 'session' });
 
-    const results = idx.search([0.1, 0.2, 0.3], { limit: 5, type: 'memory' });
+    const results = idx.search([0.1, 0.2, 0.3], { limit: 5, type: 'spore' });
     expect(results).toHaveLength(1);
     expect(results[0].id).toBe('mem-1');
     idx.close();
@@ -39,8 +39,8 @@ describe('VectorIndex', () => {
 
   it('applies relative threshold', () => {
     const idx = new VectorIndex(dbPath, 3);
-    idx.upsert('close', [0.9, 0.1, 0.0], { type: 'memory' });
-    idx.upsert('far', [0.0, 0.0, 1.0], { type: 'memory' });
+    idx.upsert('close', [0.9, 0.1, 0.0], { type: 'spore' });
+    idx.upsert('far', [0.0, 0.0, 1.0], { type: 'spore' });
 
     // With a high relative threshold, only results near the top score survive
     const results = idx.search([1.0, 0.0, 0.0], { limit: 5, relativeThreshold: 0.8 });
@@ -52,8 +52,8 @@ describe('VectorIndex', () => {
 
   it('upserts existing id', () => {
     const idx = new VectorIndex(dbPath, 3);
-    idx.upsert('mem-1', [0.1, 0.2, 0.3], { type: 'memory' });
-    idx.upsert('mem-1', [0.4, 0.5, 0.6], { type: 'memory' });
+    idx.upsert('mem-1', [0.1, 0.2, 0.3], { type: 'spore' });
+    idx.upsert('mem-1', [0.4, 0.5, 0.6], { type: 'spore' });
 
     expect(idx.count()).toBe(1);
     idx.close();

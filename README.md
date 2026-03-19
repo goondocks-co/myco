@@ -37,9 +37,10 @@ Myco captures everything your AI agents do — sessions, decisions, plans, disco
 myco_search("how did we handle auth?")  → semantically matched sessions, decisions, and linked context
 myco_recall("migration plan")           → full decision history with session lineage
 myco_remember(observation)              → persist a discovery for the team
+myco_context(tier: 3000)                → pre-computed project understanding, instantly available
 ```
 
-**For humans** — open the vault in Obsidian and browse the intelligence graph visually. Sessions link to plans, plans link to decisions, decisions link to memories. It's all Markdown with backlinks — your team's connected knowledge, navigable and searchable.
+**For humans** — open the vault in Obsidian and browse the intelligence graph visually. Sessions link to plans, plans link to decisions, decisions link to spores. It's all Markdown with backlinks — your team's connected knowledge, navigable and searchable.
 
 **For teams** — the vault is a Git-friendly directory of Markdown files. Share it through your existing Git workflow.
 
@@ -47,7 +48,11 @@ myco_remember(observation)              → persist a discovery for the team
 
 ### Capture
 
-A background daemon reads your agent's conversation transcript after each turn — the full dialogue including prompts, AI responses, tool calls, and screenshots. Observations (decisions, gotchas, discoveries) are extracted automatically via a local LLM and written as linked vault notes.
+A background daemon reads your agent's conversation transcript after each turn — the full dialogue including prompts, AI responses, tool calls, and screenshots. Observations called **spores** (decisions, gotchas, discoveries, trade-offs, bug fixes) are extracted automatically via a local LLM and written as linked vault notes.
+
+### Digest
+
+A **continuous reasoning engine** runs inside the daemon, periodically synthesizing all accumulated knowledge into tiered context extracts. These pre-computed summaries give agents an instant, rich understanding of the project at session start — no searching required. Four tiers serve different needs: executive briefing (1.5K tokens), team standup (3K), deep onboarding (5K), and institutional knowledge (10K).
 
 ### Index
 
@@ -55,11 +60,11 @@ Every note is indexed for both keyword search (SQLite FTS5) and semantic search 
 
 ### Serve
 
-An MCP server exposes the vault to any agent runtime. Relevant memories are injected into every prompt automatically — no manual lookup needed. Agents build on your team's accumulated knowledge without being told to.
+An MCP server exposes the vault to any agent runtime. The digest extract is injected at session start for immediate context, and relevant spores are injected per-prompt for targeted intelligence. Agents build on your team's accumulated knowledge without being told to.
 
 ### Connect
 
-Sessions link to plans. Plans link to decisions. Decisions link to memories. Obsidian backlinks and metadata create a navigable graph of your team's institutional knowledge. Open the vault in [Obsidian](https://obsidian.md) to browse it visually, or let agents traverse it via MCP tools.
+Sessions link to plans. Plans link to decisions. Decisions link to spores. Obsidian backlinks and metadata create a navigable graph of your team's institutional knowledge. Open the vault in [Obsidian](https://obsidian.md) to browse it visually, or let agents traverse it via MCP tools.
 
 ### Multi-agent
 

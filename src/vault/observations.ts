@@ -1,4 +1,4 @@
-import { formatMemoryBody } from '../obsidian/formatter.js';
+import { formatSporeBody } from '../obsidian/formatter.js';
 import { sessionNoteId } from './session-id.js';
 import { indexNote } from '../index/rebuild.js';
 import type { Observation } from '../daemon/processor.js';
@@ -22,7 +22,7 @@ export function writeObservationNotes(
 
   for (const obs of observations) {
     const obsId = `${obs.type}-${sessionId.slice(-6)}-${Date.now()}`;
-    const body = formatMemoryBody({
+    const body = formatSporeBody({
       title: obs.title,
       observationType: obs.type,
       content: obs.content,
@@ -35,7 +35,7 @@ export function writeObservationNotes(
       sacrificed: obs.sacrificed,
       tags: obs.tags,
     });
-    const relativePath = writer.writeMemory({
+    const relativePath = writer.writeSpore({
       id: obsId,
       observation_type: obs.type,
       session: sessionNoteId(sessionId),

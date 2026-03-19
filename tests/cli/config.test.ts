@@ -18,7 +18,7 @@ const VALID_CONFIG = {
     artifact_extensions: ['.md'],
     buffer_max_events: 500,
   },
-  context: { max_tokens: 1200, layers: { plans: 200, sessions: 500, memories: 300, team: 200 } },
+  context: { max_tokens: 1200, layers: { plans: 200, sessions: 500, spores: 300, team: 200 } },
   team: { enabled: false, user: '', sync: 'git' },
 };
 

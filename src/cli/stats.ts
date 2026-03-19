@@ -8,7 +8,7 @@ export function run(_args: string[], vaultDir: string): void {
   const index = new MycoIndex(path.join(vaultDir, 'index.db'));
 
   const sessions = index.query({ type: 'session' });
-  const memories = index.query({ type: 'memory' });
+  const spores = index.query({ type: 'spore' });
   const plans = index.query({ type: 'plan' });
 
   console.log('=== Myco Vault ===');
@@ -16,17 +16,17 @@ export function run(_args: string[], vaultDir: string): void {
   console.log();
   console.log('--- Index ---');
   console.log(`Sessions:  ${sessions.length}`);
-  console.log(`Memories:  ${memories.length}`);
+  console.log(`Spores:    ${spores.length}`);
   console.log(`Plans:     ${plans.length}`);
 
-  // Memory breakdown by type
+  // Spore breakdown by type
   const types: Record<string, number> = {};
-  for (const m of memories) {
+  for (const m of spores) {
     const t = (m.frontmatter as Record<string, unknown>)?.observation_type as string || 'unknown';
     types[t] = (types[t] || 0) + 1;
   }
   if (Object.keys(types).length > 0) {
-    console.log('\n--- Memories by Type ---');
+    console.log('\n--- Spores by Type ---');
     for (const [t, c] of Object.entries(types).sort((a, b) => b[1] - a[1])) {
       console.log(`  ${t}: ${c}`);
     }
