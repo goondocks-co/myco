@@ -29,7 +29,29 @@ export function loadConfig(vaultDir: string): MycoConfig {
     llm.provider = 'anthropic';
   }
 
-  return MycoConfigSchema.parse(parsed);
+  // Auto-migrate context.layers.memories → context.layers.spores
+  const context = parsed.context as Record<string, unknown> | undefined;
+  const layers = context?.layers as Record<string, unknown> | undefined;
+  if (layers && 'memories' in layers && !('spores' in layers)) {
+    layers.spores = layers.memories;
+    delete layers.memories;
+    // Write the migrated config back so the user sees the updated key
+    fs.writeFileSync(configPath, YAML.stringify(parsed), 'utf-8');
+  }
+
+  // Parse with Zod to fill in any missing defaults (new config sections like digest, capture tokens)
+  const config = MycoConfigSchema.parse(parsed);
+
+  // Write back if Zod added defaults that weren't in the original file
+  // This ensures new config sections (digest, capture token limits) are visible to the user
+  const fullConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
+  const originalKeys = Object.keys(parsed);
+  const fullKeys = Object.keys(fullConfig);
+  if (fullKeys.length > originalKeys.length || !originalKeys.includes('digest')) {
+    fs.writeFileSync(configPath, YAML.stringify(fullConfig), 'utf-8');
+  }
+
+  return config;
 }
 
 export function saveConfig(vaultDir: string, config: MycoConfig): void {

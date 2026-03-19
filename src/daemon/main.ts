@@ -274,6 +274,10 @@ export async function main(): Promise<void> {
   const memoriesMigrated = migrateMemoriesToSpores(vaultDir);
   if (memoriesMigrated > 0) {
     logger.info('daemon', 'Migrated memories to spores', { count: memoriesMigrated });
+    // Rebuild FTS index — type field changed from 'memory' to 'spore', paths changed
+    initFts(index);
+    rebuildIndex(index, vaultDir);
+    logger.info('daemon', 'Rebuilt index after memories→spores migration');
   }
 
   // Migrate flat spore files into type subdirectories
