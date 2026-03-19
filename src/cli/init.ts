@@ -3,11 +3,12 @@ import { initFts } from '../index/fts.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import {
   parseStringFlag,
-  PROVIDER_DEFAULTS,
   DASHBOARD_CONTENT,
   VAULT_GITIGNORE,
   configureVaultEnv,
 } from './shared.js';
+import { run as setupLlm } from './setup-llm.js';
+import { run as setupDigest } from './setup-digest.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -15,12 +16,6 @@ import YAML from 'yaml';
 
 export async function run(args: string[]): Promise<void> {
   const vaultPath = parseStringFlag(args, '--vault');
-  const llmProvider = parseStringFlag(args, '--llm-provider') ?? 'ollama';
-  const llmModel = parseStringFlag(args, '--llm-model') ?? 'gpt-oss';
-  const llmUrl = parseStringFlag(args, '--llm-url') ?? PROVIDER_DEFAULTS[llmProvider]?.base_url;
-  const embeddingProvider = parseStringFlag(args, '--embedding-provider') ?? 'ollama';
-  const embeddingModel = parseStringFlag(args, '--embedding-model') ?? 'bge-m3';
-  const embeddingUrl = parseStringFlag(args, '--embedding-url') ?? PROVIDER_DEFAULTS[embeddingProvider]?.base_url;
   const user = parseStringFlag(args, '--user') ?? '';
   const teamEnabled = args.includes('--team');
 
@@ -43,21 +38,19 @@ export async function run(args: string[]): Promise<void> {
     fs.mkdirSync(path.join(vaultDir, dir), { recursive: true });
   }
 
-  // Write myco.yaml — all values explicit, no hidden defaults
+  // Write minimal myco.yaml — provider settings are written by setup-llm/setup-digest
   const config: Record<string, unknown> = {
     version: 2,
     intelligence: {
       llm: {
-        provider: llmProvider,
-        model: llmModel,
-        ...(llmUrl ? { base_url: llmUrl } : {}),
+        provider: 'ollama',
+        model: 'qwen3.5',
         context_window: 8192,
         max_tokens: 1024,
       },
       embedding: {
-        provider: embeddingProvider,
-        model: embeddingModel,
-        ...(embeddingUrl ? { base_url: embeddingUrl } : {}),
+        provider: 'ollama',
+        model: 'bge-m3',
       },
     },
     daemon: {
@@ -99,12 +92,42 @@ export async function run(args: string[]): Promise<void> {
   initFts(index);
   index.close();
 
+  // Apply LLM provider settings from flags (if any were passed)
+  const llmFlags: string[] = [];
+  const llmProvider = parseStringFlag(args, '--llm-provider');
+  const llmModel = parseStringFlag(args, '--llm-model');
+  const llmUrl = parseStringFlag(args, '--llm-url');
+  if (llmProvider) llmFlags.push('--llm-provider', llmProvider);
+  if (llmModel) llmFlags.push('--llm-model', llmModel);
+  if (llmUrl) llmFlags.push('--llm-url', llmUrl);
+  const embeddingProvider = parseStringFlag(args, '--embedding-provider');
+  const embeddingModel = parseStringFlag(args, '--embedding-model');
+  const embeddingUrl = parseStringFlag(args, '--embedding-url');
+  if (embeddingProvider) llmFlags.push('--embedding-provider', embeddingProvider);
+  if (embeddingModel) llmFlags.push('--embedding-model', embeddingModel);
+  if (embeddingUrl) llmFlags.push('--embedding-url', embeddingUrl);
+
+  if (llmFlags.length > 0) {
+    await setupLlm(llmFlags, vaultDir);
+  }
+
+  // Apply digest settings from flags (if any were passed)
+  const digestFlags: string[] = [];
+  const tiers = parseStringFlag(args, '--tiers');
+  const injectTier = parseStringFlag(args, '--inject-tier');
+  const contextWindow = parseStringFlag(args, '--context-window');
+  if (tiers) digestFlags.push('--tiers', tiers);
+  if (injectTier) digestFlags.push('--inject-tier', injectTier);
+  if (contextWindow) digestFlags.push('--context-window', contextWindow);
+
+  if (digestFlags.length > 0) {
+    await setupDigest(digestFlags, vaultDir);
+  }
+
   // Summary
   console.log('');
   console.log('=== Myco Vault Initialized ===');
   console.log(`Path:               ${vaultDir}`);
-  console.log(`LLM provider:       ${llmProvider} / ${llmModel}`);
-  console.log(`Embedding provider: ${embeddingProvider} / ${embeddingModel}`);
   console.log(`Team mode:          ${teamEnabled ? 'enabled' : 'disabled'}`);
   if (user) console.log(`User:               ${user}`);
   console.log('');
