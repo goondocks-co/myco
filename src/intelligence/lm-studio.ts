@@ -16,6 +16,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
   readonly name = 'lm-studio';
   private baseUrl: string;
   private model: string;
+  private loadedInstanceId: string | null = null;
   private contextWindow: number | undefined;
   private defaultMaxTokens: number;
 
@@ -34,16 +35,19 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
     const maxTokens = opts?.maxTokens ?? this.defaultMaxTokens;
 
     const body: Record<string, unknown> = {
-      model: this.model,
+      model: this.loadedInstanceId ?? this.model,
       input: prompt,
       max_output_tokens: maxTokens,
       store: false,
     };
 
-    // Per-request context length (from opts or constructor config)
-    const contextLength = opts?.contextLength ?? this.contextWindow;
-    if (contextLength) {
-      body.context_length = contextLength;
+    // Only set context_length if we haven't pre-loaded the model
+    // (pre-loaded models already have the correct context via ensureLoaded)
+    if (!this.loadedInstanceId) {
+      const contextLength = opts?.contextLength ?? this.contextWindow;
+      if (contextLength) {
+        body.context_length = contextLength;
+      }
     }
 
     // System prompt — sent separately from user content
@@ -147,6 +151,12 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
     if (!response.ok) {
       const errorBody = await response.text().catch(() => '');
       throw new Error(`LM Studio model load failed: ${response.status} ${errorBody.slice(0, 200)}`);
+    }
+
+    // Capture the instance ID so chat requests target this specific loaded instance
+    const loadResult = await response.json() as { instance_id?: string };
+    if (loadResult.instance_id) {
+      this.loadedInstanceId = loadResult.instance_id;
     }
   }
 
