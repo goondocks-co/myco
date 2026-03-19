@@ -292,20 +292,24 @@ export async function main(): Promise<void> {
       base_url: config.digest.intelligence.base_url ?? config.intelligence.llm.base_url,
       context_window: config.digest.intelligence.context_window,
     };
+    logger.debug('digest', 'Digest LLM config', digestLlmConfig);
     const digestLlm = (config.digest.intelligence.model || config.digest.intelligence.provider)
       ? createLlmProvider(digestLlmConfig)
       : llmProvider;
+    logger.debug('digest', `Using ${digestLlm.name} provider for digest`);
 
     const digestEngine = new DigestEngine({
       vaultDir,
       index,
       llmProvider: digestLlm,
       config,
+      log: (level, message, data) => logger[level]('digest', message, data),
     });
 
     metabolism = new Metabolism(config.digest.metabolism);
 
     // Fire initial cycle in the background — don't block server readiness
+    logger.debug('digest', 'Firing initial digest cycle (background)');
     digestEngine.runCycle()
       .then((result) => {
         if (result) {

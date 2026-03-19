@@ -38,11 +38,15 @@ export interface DigestCycleResult {
   tokensUsed: number;
 }
 
+/** Simple log function signature for digest progress reporting. */
+export type DigestLogFn = (level: 'debug' | 'info' | 'warn', message: string, data?: Record<string, unknown>) => void;
+
 export interface DigestEngineConfig {
   vaultDir: string;
   index: MycoIndex;
   llmProvider: LlmProvider;
   config: MycoConfig;
+  log?: DigestLogFn;
 }
 
 // --- Constants ---
@@ -60,6 +64,7 @@ export class DigestEngine {
   private index: MycoIndex;
   private llm: LlmProvider;
   private config: MycoConfig;
+  private log: DigestLogFn;
   private lastCycleTimestampCache: string | null | undefined = undefined;
 
   constructor(engineConfig: DigestEngineConfig) {
@@ -67,6 +72,7 @@ export class DigestEngine {
     this.index = engineConfig.index;
     this.llm = engineConfig.llmProvider;
     this.config = engineConfig.config;
+    this.log = engineConfig.log ?? (() => {});
   }
 
   /**
@@ -234,10 +240,16 @@ export class DigestEngine {
     const lastTimestamp = this.getLastCycleTimestamp();
     const substrate = this.discoverSubstrate(lastTimestamp);
 
-    if (substrate.length === 0) return null;
+    this.log('debug', 'Discovering substrate', { lastTimestamp: lastTimestamp ?? 'cold start', substrateCount: substrate.length });
+    if (substrate.length === 0) {
+      this.log('debug', 'No substrate found — skipping cycle');
+      return null;
+    }
 
+    this.log('info', `Starting digest cycle`, { substrateCount: substrate.length });
     const cycleId = crypto.randomUUID();
     const eligibleTiers = this.getEligibleTiers();
+    this.log('debug', `Eligible tiers: [${eligibleTiers.join(', ')}]`);
     const tiersGenerated: number[] = [];
     let totalTokensUsed = 0;
     let model = '';
@@ -299,12 +311,19 @@ export class DigestEngine {
       );
 
       const fullPrompt = promptParts.join('\n');
+      const promptTokens = Math.ceil(fullPrompt.length / CHARS_PER_TOKEN);
+      this.log('debug', `Tier ${tier}: sending LLM request`, { promptTokens, maxTokens: tier, substrateBudget });
+
+      const tierStart = Date.now();
       const opts: LlmRequestOptions = { maxTokens: tier, timeoutMs: DIGEST_LLM_REQUEST_TIMEOUT_MS };
       const response = await this.llm.summarize(fullPrompt, opts);
+      const tierDuration = Date.now() - tierStart;
 
       model = response.model;
-      totalTokensUsed += Math.ceil(fullPrompt.length / CHARS_PER_TOKEN) + Math.ceil(response.text.length / CHARS_PER_TOKEN);
+      const responseTokens = Math.ceil(response.text.length / CHARS_PER_TOKEN);
+      totalTokensUsed += promptTokens + responseTokens;
 
+      this.log('info', `Tier ${tier}: completed`, { durationMs: tierDuration, responseTokens, model: response.model });
       this.writeExtract(tier, response.text, cycleId, response.model, substrate.length);
       tiersGenerated.push(tier);
     }

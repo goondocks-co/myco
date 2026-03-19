@@ -110,8 +110,11 @@ export class MycoIndex {
       params.push(options.since);
     }
     if (options.updatedSince) {
+      // Normalize ISO 8601 (e.g., "2026-03-19T16:40:08.582Z") to SQLite datetime format
+      // ("2026-03-19 16:40:08") for correct string comparison
+      const normalized = options.updatedSince.replace('T', ' ').replace(/\.\d+Z$/, '').replace(/Z$/, '');
       conditions.push('updated_at >= ?');
-      params.push(options.updatedSince);
+      params.push(normalized);
     }
     if (options.frontmatter) {
       for (const [key, value] of Object.entries(options.frontmatter)) {
