@@ -4,6 +4,15 @@ import { AnthropicBackend } from './anthropic.js';
 
 export interface LlmRequestOptions {
   maxTokens?: number;
+  timeoutMs?: number;
+  /** Per-request context length (tokens). Supported by LM Studio and Ollama. */
+  contextLength?: number;
+  /** Control reasoning/thinking output. 'off' suppresses chain-of-thought. LM Studio native API only. */
+  reasoning?: 'off' | 'low' | 'medium' | 'high' | 'on';
+  /** System prompt, sent separately from user content. Supported by LM Studio and Ollama native APIs. */
+  systemPrompt?: string;
+  /** Keep model loaded for this duration after request (e.g., "10m"). Ollama only. */
+  keepAlive?: string;
 }
 
 export interface LlmResponse {
@@ -21,6 +30,8 @@ export interface LlmProvider {
   name: string;
   summarize(prompt: string, opts?: LlmRequestOptions): Promise<LlmResponse>;
   isAvailable(): Promise<boolean>;
+  /** Pre-load the model with specific settings. Optional — only LM Studio implements this. */
+  ensureLoaded?(contextLength?: number, gpuKvCache?: boolean): Promise<void>;
 }
 
 export interface EmbeddingProvider {

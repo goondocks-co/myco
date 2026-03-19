@@ -69,8 +69,8 @@ describe('VaultReader', () => {
     writeNote(vaultDir, 'sessions/2026-03-12/s.md', {
       type: 'session', id: 's', agent: 'claude-code', user: 'chris', started: '2026-03-12T09:00:00Z',
     }, '');
-    writeNote(vaultDir, 'memories/m.md', {
-      type: 'memory', id: 'm', observation_type: 'gotcha', created: '2026-03-12T10:00:00Z',
+    writeNote(vaultDir, 'spores/m.md', {
+      type: 'spore', id: 'm', observation_type: 'gotcha', created: '2026-03-12T10:00:00Z',
     }, '');
 
     const all = reader.readAllNotes();

@@ -64,8 +64,8 @@ describe('VaultWriter', () => {
     expect(tags).toContain('security');
   });
 
-  it('writes a memory note with hierarchical tags', () => {
-    const notePath = writer.writeMemory({
+  it('writes a spore note with hierarchical tags', () => {
+    const notePath = writer.writeSpore({
       id: 'gotcha-cors',
       observation_type: 'gotcha',
       session: 'session-abc123',
@@ -73,14 +73,14 @@ describe('VaultWriter', () => {
       content: '# CORS Gotcha\n\nProxy strips headers.',
     });
 
-    expect(notePath).toBe('memories/gotcha/gotcha-cors.md');
+    expect(notePath).toBe('spores/gotcha/gotcha-cors.md');
     const note = reader.readNote(notePath);
-    expect(note.frontmatter.type).toBe('memory');
+    expect(note.frontmatter.type).toBe('spore');
     expect((note.frontmatter as any).observation_type).toBe('gotcha');
     expect((note.frontmatter as any).session).toBe('session-abc123');
     const tags = (note.frontmatter as any).tags as string[];
-    expect(tags).toContain('type/memory');
-    expect(tags).toContain('memory/gotcha');
+    expect(tags).toContain('type/spore');
+    expect(tags).toContain('spore/gotcha');
     expect(tags).toContain('cors');
   });
 

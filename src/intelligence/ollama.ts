@@ -1,5 +1,5 @@
 import type { LlmProvider, EmbeddingProvider, LlmResponse, EmbeddingResponse, LlmRequestOptions } from './llm.js';
-import { CHARS_PER_TOKEN, LLM_REQUEST_TIMEOUT_MS, EMBEDDING_REQUEST_TIMEOUT_MS, DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
+import { estimateTokens, LLM_REQUEST_TIMEOUT_MS, EMBEDDING_REQUEST_TIMEOUT_MS, DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 
 interface OllamaConfig {
   model?: string;
@@ -10,6 +10,11 @@ interface OllamaConfig {
   embedding_model?: string;
   summary_model?: string;
 }
+
+// Ollama API endpoints
+const ENDPOINT_GENERATE = '/api/generate';
+const ENDPOINT_EMBED = '/api/embed';
+const ENDPOINT_TAGS = '/api/tags';
 
 export class OllamaBackend implements LlmProvider, EmbeddingProvider {
   static readonly DEFAULT_BASE_URL = 'http://localhost:11434';
@@ -28,23 +33,45 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
 
   async summarize(prompt: string, opts?: LlmRequestOptions): Promise<LlmResponse> {
     const maxTokens = opts?.maxTokens ?? this.defaultMaxTokens;
-    const promptTokens = Math.ceil(prompt.length / CHARS_PER_TOKEN);
-    const numCtx = Math.max(promptTokens + maxTokens, this.contextWindow);
+    const contextLength = opts?.contextLength ?? this.contextWindow;
+    const promptTokens = estimateTokens(prompt);
+    const numCtx = Math.max(promptTokens + maxTokens, contextLength);
 
-    const response = await fetch(`${this.baseUrl}/api/generate`, {
+    const body: Record<string, unknown> = {
+      model: this.model,
+      prompt,
+      stream: false,
+      options: {
+        num_ctx: numCtx,
+        num_predict: maxTokens,
+      },
+    };
+
+    // System prompt — sent as a separate field instead of concatenated into prompt
+    if (opts?.systemPrompt) {
+      body.system = opts.systemPrompt;
+    }
+
+    // Thinking control — false suppresses chain-of-thought for reasoning models
+    if (opts?.reasoning) {
+      body.think = opts.reasoning === 'off' ? false : opts.reasoning;
+    }
+
+    // Keep model loaded between requests (useful for digest cycles)
+    if (opts?.keepAlive) {
+      body.keep_alive = opts.keepAlive;
+    }
+
+    const response = await fetch(`${this.baseUrl}${ENDPOINT_GENERATE}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.model,
-        prompt,
-        stream: false,
-        options: { num_ctx: numCtx },
-      }),
-      signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(opts?.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS),
     });
 
     if (!response.ok) {
-      throw new Error(`Ollama summarize failed: ${response.status} ${response.statusText}`);
+      const errorBody = await response.text().catch(() => '');
+      throw new Error(`Ollama summarize failed: ${response.status} ${errorBody.slice(0, 500)}`);
     }
 
     const data = await response.json() as { response: string; model: string };
@@ -52,7 +79,7 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
   }
 
   async embed(text: string): Promise<EmbeddingResponse> {
-    const response = await fetch(`${this.baseUrl}/api/embed`, {
+    const response = await fetch(`${this.baseUrl}${ENDPOINT_EMBED}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -73,7 +100,7 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/tags`, {
+      const response = await fetch(`${this.baseUrl}${ENDPOINT_TAGS}`, {
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
       return response.ok;
@@ -85,7 +112,7 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
   /** List available models on this Ollama instance. */
   async listModels(timeoutMs?: number): Promise<string[]> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/tags`, {
+      const response = await fetch(`${this.baseUrl}${ENDPOINT_TAGS}`, {
         signal: AbortSignal.timeout(timeoutMs ?? DAEMON_CLIENT_TIMEOUT_MS),
       });
       const data = await response.json() as { models: Array<{ name: string }> };

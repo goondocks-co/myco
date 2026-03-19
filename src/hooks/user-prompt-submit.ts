@@ -32,9 +32,9 @@ async function main() {
       buffer.append({ type: 'user_prompt', prompt });
     }
 
-    // Search for relevant memories to inject as context for this prompt.
+    // Search for relevant spores to inject as context for this prompt.
     // The daemon does a vector search against the prompt text and returns
-    // any high-relevance memories. This is fast (~20ms) — no LLM call.
+    // any high-relevance spores. This is fast (~20ms) — no LLM call.
     const contextResult = await client.post('/context/prompt', {
       prompt,
       session_id: sessionId,

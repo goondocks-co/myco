@@ -19,28 +19,28 @@ describe('myco_graph', () => {
       type: 'session',
       id: 'session-abc',
       title: 'Auth Refactor',
-      content: '# Auth Refactor\n\nSession:: [[session-abc]]\n\n## Related Memories\n- [[gotcha-abc-123|CORS issue]]',
+      content: '# Auth Refactor\n\nSession:: [[session-abc]]\n\n## Related Spores\n- [[gotcha-abc-123|CORS issue]]',
       frontmatter: { type: 'session', id: 'session-abc' },
       created: '2026-03-13T10:00:00Z',
     });
 
     index.upsertNote({
-      path: 'memories/gotcha-abc-123.md',
-      type: 'memory',
+      path: 'spores/gotcha-abc-123.md',
+      type: 'spore',
       id: 'gotcha-abc-123',
       title: 'CORS issue',
       content: '# CORS issue\n\nSession:: [[session-abc]]',
-      frontmatter: { type: 'memory', id: 'gotcha-abc-123', session: 'session-abc' },
+      frontmatter: { type: 'spore', id: 'gotcha-abc-123', session: 'session-abc' },
       created: '2026-03-13T10:05:00Z',
     });
 
     index.upsertNote({
-      path: 'memories/decision-xyz-456.md',
-      type: 'memory',
+      path: 'spores/decision-xyz-456.md',
+      type: 'spore',
       id: 'decision-xyz-456',
       title: 'Chose RS256',
       content: '# Chose RS256\n\nNo wikilinks here.',
-      frontmatter: { type: 'memory', id: 'decision-xyz-456' },
+      frontmatter: { type: 'spore', id: 'decision-xyz-456' },
       created: '2026-03-13T10:10:00Z',
     });
   });
@@ -98,22 +98,22 @@ describe('myco_orphans', () => {
     });
 
     index.upsertNote({
-      path: 'memories/gotcha-abc.md',
-      type: 'memory',
+      path: 'spores/gotcha-abc.md',
+      type: 'spore',
       id: 'gotcha-abc',
       title: 'CORS',
       content: '# CORS\n\nSession:: [[session-abc]]',
-      frontmatter: { type: 'memory', id: 'gotcha-abc', session: 'session-abc' },
+      frontmatter: { type: 'spore', id: 'gotcha-abc', session: 'session-abc' },
       created: '2026-03-13T10:05:00Z',
     });
 
     index.upsertNote({
-      path: 'memories/orphan-note.md',
-      type: 'memory',
+      path: 'spores/orphan-note.md',
+      type: 'spore',
       id: 'orphan-note',
       title: 'Orphan',
       content: '# Orphan\n\nNo links at all.',
-      frontmatter: { type: 'memory', id: 'orphan-note' },
+      frontmatter: { type: 'spore', id: 'orphan-note' },
       created: '2026-03-13T10:10:00Z',
     });
   });

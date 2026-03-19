@@ -3,7 +3,7 @@
  * for existing sessions. Useful after bugs or when the LLM backend changes.
  *
  * Reads transcripts (the source of truth), re-extracts observations, regenerates
- * summaries, and re-indexes everything. Existing memory files from those sessions
+ * summaries, and re-indexes everything. Existing spore files from those sessions
  * are preserved — new observations are additive.
  */
 import fs from 'node:fs';
@@ -145,7 +145,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
             embedJobs.push({
               id: `${o.type}-${task.bare.slice(-6)}-${Date.now()}`,
               text: `${o.title}\n${o.content}`.slice(0, EMBEDDING_INPUT_LIMIT),
-              metadata: { type: 'memory', session_id: task.bare },
+              metadata: { type: 'spore', session_id: task.bare },
             });
           }
         }

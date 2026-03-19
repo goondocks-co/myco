@@ -36,11 +36,11 @@ describe('writeObservationNotes', () => {
     const results = writeObservationNotes(observations, 'test-session', writer, index, vaultDir);
 
     expect(results).toHaveLength(1);
-    expect(results[0].path).toContain('memories/gotcha/');
+    expect(results[0].path).toContain('spores/gotcha/');
     expect(results[0].path).toContain('.md');
 
     const note = reader.readNote(results[0].path);
-    expect(note.frontmatter.type).toBe('memory');
+    expect(note.frontmatter.type).toBe('spore');
     expect(note.content).toContain('CORS Issue');
   });
 

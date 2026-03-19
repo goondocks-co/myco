@@ -19,6 +19,7 @@ import { handleMycoGraph, handleMycoOrphans } from './tools/graph.js';
 import { handleMycoLogs } from './tools/logs.js';
 import { handleMycoSupersede } from './tools/supersede.js';
 import { handleMycoConsolidate } from './tools/consolidate.js';
+import { handleMycoContext } from './tools/context.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { loadConfig } from '../config/loader.js';
 import { createEmbeddingProvider } from '../intelligence/llm.js';
@@ -40,6 +41,7 @@ import {
   TOOL_DEFINITIONS,
   TOOL_SEARCH, TOOL_RECALL, TOOL_REMEMBER, TOOL_PLANS, TOOL_SESSIONS,
   TOOL_TEAM, TOOL_GRAPH, TOOL_ORPHANS, TOOL_LOGS, TOOL_SUPERSEDE, TOOL_CONSOLIDATE,
+  TOOL_CONTEXT,
 } from './tool-definitions.js';
 
 export interface MycoServer {
@@ -99,7 +101,7 @@ export function createMycoServer(config: ServerConfig): MycoServer {
         return { content: [{ type: 'text', text: JSON.stringify(await handleMycoRecall(idx, input as any)) }] };
       case TOOL_REMEMBER: {
         const result = await handleMycoRemember(config.vaultDir, idx, input as any);
-        embedNote(result.id, String(input.content), { type: 'memory', observation_type: String(input.type ?? ''), importance: 'high' });
+        embedNote(result.id, String(input.content), { type: 'spore', observation_type: String(input.type ?? ''), importance: 'high' });
         logActivity(TOOL_REMEMBER, { id: result.id, observation_type: input.type, path: result.note_path });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
@@ -118,21 +120,25 @@ export function createMycoServer(config: ServerConfig): MycoServer {
       case TOOL_SUPERSEDE: {
         const result = await handleMycoSupersede(config.vaultDir, idx, input as any);
         if (result.status === 'superseded' && config.vectorIndex) {
-          config.vectorIndex.delete(result.old_memory);
+          config.vectorIndex.delete(result.old_spore);
         }
-        logActivity(TOOL_SUPERSEDE, { old: result.old_memory, new: result.new_memory, status: result.status });
+        logActivity(TOOL_SUPERSEDE, { old: result.old_spore, new: result.new_spore, status: result.status });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_CONSOLIDATE: {
         const result = await handleMycoConsolidate(config.vaultDir, idx, input as any);
-        embedNote(result.wisdom_id, String(input.consolidated_content), { type: 'memory', observation_type: String(input.observation_type ?? ''), importance: 'high' });
-        if (config.vectorIndex && Array.isArray(input.source_memory_ids)) {
-          for (const id of input.source_memory_ids as string[]) {
+        embedNote(result.wisdom_id, String(input.consolidated_content), { type: 'spore', observation_type: String(input.observation_type ?? ''), importance: 'high' });
+        if (config.vectorIndex && Array.isArray(input.source_spore_ids)) {
+          for (const id of input.source_spore_ids as string[]) {
             config.vectorIndex.delete(id);
           }
         }
-        logActivity(TOOL_CONSOLIDATE, { wisdom_id: result.wisdom_id, sources: input.source_memory_ids, archived: result.sources_archived });
+        logActivity(TOOL_CONSOLIDATE, { wisdom_id: result.wisdom_id, sources: input.source_spore_ids, archived: result.sources_archived });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+      case TOOL_CONTEXT: {
+        const result = handleMycoContext(config.vaultDir, args as { tier?: number });
+        return { content: [{ type: 'text', text: result.content }] };
       }
       default:
         throw new Error(`Unknown tool: ${name}`);

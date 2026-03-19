@@ -5,7 +5,7 @@ Myco is a collective agent intelligence plugin that captures session knowledge �
 ## Requirements
 
 - **Node.js 22+**
-- **Local LLM** (recommended): [Ollama](https://ollama.com) with `gpt-oss` and `bge-m3` models, or [LM Studio](https://lmstudio.ai)
+- **Local LLM** (recommended): [Ollama](https://ollama.com) with `qwen3.5` and `bge-m3` models, or [LM Studio](https://lmstudio.ai)
 - **Cloud LLM** (alternative): Anthropic API key for Claude Haiku
 - **Obsidian** (optional): For browsing your vault with backlinks, Dataview, and graph view
 
@@ -82,7 +82,7 @@ This guides you through:
 ### Pull Ollama Models (if using local LLM)
 
 ```bash
-ollama pull gpt-oss
+ollama pull qwen3.5
 ollama pull bge-m3
 ```
 
@@ -104,13 +104,13 @@ Open your vault directory in Obsidian (e.g., `~/.myco/vaults/myco/`). You'll see
 
 ```
 sessions/          → Session notes organized by date
-memories/          → Observations organized by type (decisions, gotchas, etc.)
+spores/            → Observations organized by type (decisions, gotchas, etc.)
 plans/             → Plan documents
 artifacts/         → Captured design docs and specs
 _dashboard.md      → Dataview-powered overview (requires Dataview plugin)
 ```
 
-Use the graph view to see how sessions, memories, and plans connect through backlinks.
+Use the graph view to see how sessions, spores, and plans connect through backlinks.
 
 ### From the CLI
 
@@ -126,7 +126,7 @@ Myco exposes these tools to your coding agent via MCP:
 
 | Tool | What it does |
 |------|-------------|
-| `myco_recall` | Retrieve relevant memories for the current context |
+| `myco_recall` | Retrieve relevant spores for the current context |
 | `myco_remember` | Capture a new observation or decision |
 | `myco_search` | Search the vault by keyword or semantic similarity |
 | `myco_sessions` | List recent sessions with summaries |

@@ -1,8 +1,8 @@
 import type { MycoIndex } from '../index/sqlite.js';
 import type { MycoConfig } from '../config/schema.js';
-import { planFm, memoryFm } from '../vault/frontmatter.js';
+import { planFm, sporeFm } from '../vault/frontmatter.js';
 import { scoreRelevance } from './relevance.js';
-import { CHARS_PER_TOKEN, CONTEXT_PLAN_PREVIEW_CHARS, CONTEXT_SESSION_PREVIEW_CHARS, CONTEXT_MEMORY_PREVIEW_CHARS } from '../constants.js';
+import { estimateTokens, CONTEXT_PLAN_PREVIEW_CHARS, CONTEXT_SESSION_PREVIEW_CHARS, CONTEXT_SPORE_PREVIEW_CHARS } from '../constants.js';
 
 interface InjectionContext {
   branch?: string;
@@ -14,7 +14,7 @@ interface InjectedContext {
   layers: {
     plans: string;
     sessions: string;
-    memories: string;
+    spores: string;
     team: string;
   };
 }
@@ -52,29 +52,29 @@ export function buildInjectedContext(
     budgets.sessions,
   );
 
-  // Layer 3: Relevant memories (exclude superseded/archived)
-  const memories = index.query({ type: 'memory', limit: 20 })
+  // Layer 3: Relevant spores (exclude superseded/archived)
+  const spores = index.query({ type: 'spore', limit: 20 })
     .filter((m) => {
-      const status = memoryFm(m).status;
+      const status = sporeFm(m).status;
       return status !== 'superseded' && status !== 'archived';
     });
-  const scoredMemories = scoreRelevance(memories, {
+  const scoredSpores = scoreRelevance(spores, {
     branch: context.branch,
     activePlanIds,
   });
-  const memoriesText = formatLayer(
-    'Relevant Memories',
-    scoredMemories.slice(0, 5).map((m) =>
-      `- **${m.note.title}** (${memoryFm(m.note).observation_type}): ${m.note.content.slice(0, CONTEXT_MEMORY_PREVIEW_CHARS)}`,
+  const sporesText = formatLayer(
+    'Relevant Spores',
+    scoredSpores.slice(0, 5).map((m) =>
+      `- **${m.note.title}** (${sporeFm(m.note).observation_type}): ${m.note.content.slice(0, CONTEXT_SPORE_PREVIEW_CHARS)}`,
     ),
-    budgets.memories,
+    budgets.spores,
   );
 
   // Layer 4: Team activity
   const teamText = formatLayer('Team Activity', [], budgets.team);
 
   // Enforce total max_tokens budget
-  const allLayers = [plansText, sessionsText, memoriesText, teamText].filter(Boolean);
+  const allLayers = [plansText, sessionsText, sporesText, teamText].filter(Boolean);
   const parts: string[] = [];
   let totalTokens = 0;
 
@@ -93,7 +93,7 @@ export function buildInjectedContext(
     layers: {
       plans: plansText,
       sessions: sessionsText,
-      memories: memoriesText,
+      spores: sporesText,
       team: teamText,
     },
   };
@@ -115,6 +115,3 @@ function formatLayer(heading: string, items: string[], budget: number): string {
   return text.trim();
 }
 
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
-}

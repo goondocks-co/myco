@@ -29,7 +29,7 @@ interface WritePlanInput {
   content: string;
 }
 
-interface WriteMemoryInput {
+interface WriteSporeInput {
   id: string;
   observation_type: string;
   session?: string;
@@ -123,9 +123,9 @@ export class VaultWriter {
     return relativePath;
   }
 
-  writeMemory(input: WriteMemoryInput): string {
+  writeSpore(input: WriteSporeInput): string {
     const normalizedType = input.observation_type.replace(/_/g, '-');
-    const relativePath = `memories/${normalizedType}/${input.id}.md`;
+    const relativePath = `spores/${normalizedType}/${input.id}.md`;
     const fullPath = path.join(this.vaultDir, relativePath);
     const now = new Date().toISOString();
 
@@ -143,14 +143,14 @@ export class VaultWriter {
     }
 
     const frontmatter: Record<string, unknown> = {
-      type: 'memory',
+      type: 'spore',
       id: input.id,
       observation_type: input.observation_type,
       created,
     };
     if (input.session) frontmatter.session = input.session;
     if (input.plan) frontmatter.plan = input.plan;
-    frontmatter.tags = buildTags('memory', input.observation_type, input.tags ?? []);
+    frontmatter.tags = buildTags('spore', input.observation_type, input.tags ?? []);
 
     this.writeMarkdown(relativePath, frontmatter, input.content);
     return relativePath;

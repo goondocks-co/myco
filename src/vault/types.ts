@@ -30,14 +30,14 @@ export const PlanFrontmatterSchema = z.object({
 
 export const OBSERVATION_TYPES = ['gotcha', 'bug_fix', 'decision', 'discovery', 'trade_off', 'cross-cutting'] as const;
 
-export const MEMORY_STATUSES = ['active', 'superseded', 'archived'] as const;
-export type MemoryStatus = (typeof MEMORY_STATUSES)[number];
+export const SPORE_STATUSES = ['active', 'superseded', 'archived'] as const;
+export type SporeStatus = (typeof SPORE_STATUSES)[number];
 
-export const MemoryFrontmatterSchema = z.object({
-  type: z.literal('memory'),
+export const SporeFrontmatterSchema = z.object({
+  type: z.literal('spore'),
   id: z.string(),
   observation_type: z.string(),
-  status: z.enum(MEMORY_STATUSES).default('active'),
+  status: z.enum(SPORE_STATUSES).default('active'),
   session: z.string().optional(),
   plan: z.string().optional(),
   superseded_by: z.string().optional(),
@@ -71,15 +71,15 @@ export const TeamMemberFrontmatterSchema = z.object({
 
 export type SessionFrontmatter = z.infer<typeof SessionFrontmatterSchema>;
 export type PlanFrontmatter = z.infer<typeof PlanFrontmatterSchema>;
-export type MemoryFrontmatter = z.infer<typeof MemoryFrontmatterSchema>;
-export type ObservationType = MemoryFrontmatter['observation_type'];
+export type SporeFrontmatter = z.infer<typeof SporeFrontmatterSchema>;
+export type ObservationType = SporeFrontmatter['observation_type'];
 export type ArtifactFrontmatter = z.infer<typeof ArtifactFrontmatterSchema>;
 export type TeamMemberFrontmatter = z.infer<typeof TeamMemberFrontmatterSchema>;
 
 export type NoteFrontmatter =
   | SessionFrontmatter
   | PlanFrontmatter
-  | MemoryFrontmatter
+  | SporeFrontmatter
   | ArtifactFrontmatter
   | TeamMemberFrontmatter;
 
@@ -92,7 +92,7 @@ export interface VaultNote<T extends NoteFrontmatter = NoteFrontmatter> {
 const schemasByType: Record<string, z.ZodSchema> = {
   session: SessionFrontmatterSchema,
   plan: PlanFrontmatterSchema,
-  memory: MemoryFrontmatterSchema,
+  spore: SporeFrontmatterSchema,
   artifact: ArtifactFrontmatterSchema,
   'team-member': TeamMemberFrontmatterSchema,
 };

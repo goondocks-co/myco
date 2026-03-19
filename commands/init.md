@@ -9,19 +9,23 @@ Guide the user through setup using the composable CLI commands. **Do NOT create 
 
 **Ask each question one at a time using AskUserQuestion with selectable options.** Wait for the user's answer before proceeding to the next question. Do NOT combine multiple questions into one message.
 
-## Step 1: Detect available providers
+The streamlined setup asks just four questions: vault location, provider, model, and embedding model. One model handles everything — hooks, extraction, summaries, and digest — sized for the most demanding task (digestion). Advanced configuration is available via CLI commands after init.
 
-Run the provider detection command to see what's available:
+## Step 1: Detect available providers and system capabilities
+
+Run the provider detection command and detect system RAM:
 
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js detect-providers
 ```
 
+Detect RAM:
+- **macOS**: `sysctl -n hw.memsize` (bytes → GB)
+- **Linux**: parse `/proc/meminfo` for `MemTotal`
+
 Parse the JSON output. This tells you which providers are running and what models are available.
 
 ## Step 2: Choose vault location
-
-Ask the user:
 
 **Question:** "Where would you like to store the Myco vault?"
 
@@ -30,69 +34,89 @@ Ask the user:
 - "Centralized (~/.myco/vaults/<project-name>/)" — vault stays outside the repo, good for public repos or personal use
 - "Custom path" — specify your own location
 
-If the user picks "Custom path", ask them to type the path.
+## Step 3: Choose provider and model
 
-## Step 3: Choose LLM provider
+**Question:** "Which LLM provider and model?"
 
-Using the detected providers from Step 1, ask the user:
+List only providers where `available` is `true`. Recommend a model sized for digest based on detected RAM:
 
-**Question:** "Which LLM provider for summarization?"
+| RAM | Recommended Model | Digest Context |
+|-----|-------------------|----------------|
+| **64GB+** | `qwen3.5:35b` (MoE, recommended) | 65536 |
+| **32–64GB** | `qwen3.5:27b` | 32768 |
+| **16–32GB** | `qwen3.5:latest` (~10B) | 16384 |
+| **8–16GB** | `qwen3.5:4b` | 8192 |
 
-**Options:** List only providers where `available` is `true`, with recommended models. Example:
-- "Ollama — gpt-oss (recommended)"
-- "LM Studio — openai/gpt-oss-20b"
-- "Anthropic"
+The same model handles hooks (at 8K context), extraction, summaries, and digest (at the larger context from the table). No separate model configuration needed.
 
-After the user picks a provider, ask them to choose a specific model from that provider's model list (from the detect-providers output).
+If the model isn't installed, offer to pull it:
+- **Ollama**: `ollama pull qwen3.5`
+- **LM Studio**: search for `qwen3.5` in the model browser
 
-## Step 4: Choose embedding provider
+## Step 4: Choose embedding model
 
-Ask the user:
+**Question:** "Which embedding model?"
 
-**Question:** "Which embedding provider?"
+**Options:** List only providers that support embeddings (Anthropic does not):
+- **Ollama** — list available embedding models. If none are available, offer to pull one (e.g., `bge-m3` or `nomic-embed-text`).
+- **LM Studio** — filter the model list for names containing `text-embedding`. If none are available, guide the user to search for and download an embedding model through LM Studio's model browser.
 
-**Options:** List only providers where `available` is `true` and that support embeddings (Anthropic does not). Example:
-- "Ollama — bge-m3 (recommended)"
-- "LM Studio — text-embedding-bge-m3"
+If no embedding models are available on the chosen provider, help the user get one before proceeding.
 
-After the user picks a provider, ask them to choose a specific embedding model.
+## Step 5: Choose digest inject tier
 
-If the recommended embedding model isn't available, offer to pull it:
-- **Ollama**: `ollama pull bge-m3`
+**Question:** "How much context should the agent receive at session start?"
 
-## Step 5: Run init with all gathered inputs
+Based on RAM, present the recommended tiers:
 
-Pass everything to the init command in a single call:
+| RAM | Options | Default |
+|-----|---------|---------|
+| **64GB+** | 1500, 3000, 5000, 10000 | 3000 |
+| **32–64GB** | 1500, 3000, 5000 | 3000 |
+| **16–32GB** | 1500, 3000 | 1500 |
+| **8–16GB** | 1500 | 1500 |
+
+**Options:**
+- "1500 — executive briefing (fastest, lightest)"
+- "3000 — team standup (recommended)"
+- "5000 — deep onboarding"
+- "10000 — institutional knowledge (richest)"
+
+This controls what gets auto-injected at the start of every session. Agents can always request a different tier on-demand via the `myco_context` tool.
+
+## Step 6: Run init and configure
+
+Create the vault and apply settings:
 
 ```bash
+# Create vault structure and base config
 node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js init \
   --vault <chosen-path> \
   --llm-provider <provider> \
   --llm-model <model> \
-  --llm-url <base-url> \
-  --embedding-provider <provider> \
-  --embedding-model <model> \
-  --embedding-url <base-url>
+  --embedding-provider <embedding-provider> \
+  --embedding-model <embedding-model>
+
+# Set digest context window and inject tier based on user choices
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js setup-digest \
+  --context-window <from-ram-table> \
+  --inject-tier <chosen-tier>
 ```
 
-The CLI creates the vault structure, writes myco.yaml, .gitignore, _dashboard.md, initializes the FTS index, and configures MYCO_VAULT_DIR if the vault is external.
-
-## Step 6: Verify connectivity
-
-Run the verify command to confirm providers are reachable:
+## Step 7: Verify connectivity
 
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js verify
 ```
 
-If verification fails, help the user troubleshoot (check if the provider is running, model is loaded, etc.).
+If verification fails, help the user troubleshoot.
 
-## Step 7: Display summary
-
-Show the user a setup summary table:
+## Step 8: Display summary
 
 | Setting | Value |
 |---------|-------|
 | Vault path | `<resolved path>` |
-| LLM provider | `<provider>` / `<model>` |
-| Embedding provider | `<provider>` / `<model>` |
+| Provider | `<provider>` / `<model>` |
+| Embedding | `<embedding-provider>` / `<embedding-model>` |
+| Digest | enabled (context: `<context-window>`) |
+| RAM detected | `<X>` GB |

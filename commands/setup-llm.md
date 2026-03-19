@@ -7,11 +7,13 @@ description: Configure or change the intelligence backend (Ollama, LM Studio, or
 
 Guide the user through configuring their intelligence backend. This command can be run at any time to change providers or models.
 
+The streamlined setup asks just three questions: provider, model, and embedding model. One model handles everything — hooks, extraction, summaries, and digest — at different context windows per request. Advanced configuration is available via the CLI for power users.
+
 ## Prerequisites
 
 Read the existing `myco.yaml` from the vault directory to show current settings before making changes.
 
-## Step 1: Detect available providers
+## Step 1: Detect available providers and system capabilities
 
 Check which providers are reachable:
 
@@ -19,65 +21,61 @@ Check which providers are reachable:
 - **LM Studio** — fetch `http://localhost:1234/v1/models`, list model names
 - **Anthropic** — check if `ANTHROPIC_API_KEY` is set in the environment
 
-Report which are available and which are not.
+Detect system RAM for recommendations:
+- **macOS**: `sysctl -n hw.memsize` (bytes → GB)
+- **Linux**: parse `/proc/meminfo` for `MemTotal`
 
-## Step 2: Choose LLM provider
+Report which providers are available and the detected RAM.
 
-Ask the user to select from available providers:
+## Step 2: Choose provider and model
 
-- **Ollama** — list available models
-- **LM Studio** — list available models
-- **Anthropic** — verify API key works, default model `claude-haiku-4-5-20251001`
+Ask the user to select from available providers. After picking a provider, recommend a model sized for digest (the most demanding task). The same model handles hooks and extraction at smaller context windows automatically.
 
-Recommended summarization models by hardware tier:
+Recommended models by hardware tier — Qwen 3.5 is preferred for its strong instruction-following and synthesis quality:
 
-| Tier | Models | RAM |
-|------|--------|-----|
-| **High** | `gpt-oss` (~20B), `gemma3:27b`, `qwen3.5:14b` | 16GB+ |
-| **Mid** | `qwen3.5:8b`, `gemma3:12b` | 8GB+ |
-| **Light** | `gemma3:4b`, `qwen3.5:4b` | 4GB+ |
+| RAM | Model | Context for Digest |
+|-----|-------|--------------------|
+| **64GB+** | `qwen3.5:35b` (MoE, recommended) | 65536 |
+| **32–64GB** | `qwen3.5:27b` | 32768 |
+| **16–32GB** | `qwen3.5:latest` (~10B) | 16384 |
+| **8–16GB** | `qwen3.5:4b` | 8192 |
 
-Any instruction-tuned model that handles JSON output works. Prefer what the user already has loaded.
-
-For local providers (Ollama, LM Studio), also configure:
-- `context_window` — ask or accept default of 8192
-- `max_tokens` — ask or accept default of 1024
+Any instruction-tuned model that handles JSON output works. Prefer what the user already has loaded, but recommend Qwen 3.5 if they're starting fresh.
 
 If the chosen model isn't installed, offer to pull it:
-- **Ollama**: `ollama pull gpt-oss` (pulls latest tag automatically)
-- **LM Studio**: `lms get openai/gpt-oss-20b` (uses `owner/model` format)
+- **Ollama**: `ollama pull qwen3.5` (pulls latest tag automatically)
+- **LM Studio**: search for `qwen3.5` in the model browser
 
-These settings do not apply to Anthropic (API-managed).
+## Step 3: Choose embedding model
 
-## Step 3: Choose embedding provider
+Ask the user to select an embedding model — **Anthropic is not an option** (it doesn't support embeddings):
 
-Ask the user to select from available providers — **Anthropic is not an option** (it doesn't support embeddings):
+- **Ollama** — list available embedding models. If none are available, offer to pull one (e.g., `bge-m3` or `nomic-embed-text`).
+- **LM Studio** — filter the model list for names containing `text-embedding`. If none are available, guide the user to search for and download an embedding model through LM Studio's model browser.
 
-- **Ollama** (recommended for embeddings) — list available models, recommend **`bge-m3`** or `nomic-embed-text`
-- **LM Studio** — possible but not recommended for embeddings; better suited for LLM work
+If no embedding models are available on the chosen provider, help the user get one before proceeding.
 
-If the embedding model isn't installed: `ollama pull bge-m3`
-
-**Important:** If the user changes the embedding model, the vector index must be rebuilt. Warn them:
+**Important:** If the user changes the embedding model, warn them:
 > "Changing the embedding model will require a full rebuild of the vector index. Run `node dist/src/cli.js rebuild` after this change."
 
-## Step 4: Update `myco.yaml`
+## Step 4: Apply settings
 
-Write both `intelligence.llm` and `intelligence.embedding` sections with all values explicit:
+Use the CLI commands to write settings deterministically. The context window for the main LLM stays at 8192 (hooks don't need more). The digest context window is set based on the RAM tier recommendation.
 
-```yaml
-intelligence:
-  llm:
-    provider: ollama
-    model: gpt-oss
-    base_url: http://localhost:11434
-    context_window: 8192
-    max_tokens: 1024
-  embedding:
-    provider: ollama
-    model: bge-m3
-    base_url: http://localhost:11434
+```bash
+# Set provider and model
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js setup-llm \
+  --llm-provider <provider> \
+  --llm-model <model> \
+  --embedding-provider <embedding-provider> \
+  --embedding-model <embedding-model>
+
+# Set digest context window based on RAM tier (model inherits from main LLM)
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js setup-digest \
+  --context-window <from-ram-table>
 ```
+
+Only pass flags the user explicitly changed — Zod defaults handle the rest.
 
 If migrating from a v1 config (has `backend: local/cloud` structure), bump `version` to `2` and rewrite the entire intelligence section. The loader auto-maps `provider: haiku` to `anthropic`.
 
@@ -87,3 +85,30 @@ If migrating from a v1 config (has `backend: local/cloud` structure), bump `vers
 2. Test the embedding provider with a test embedding
 3. Restart the daemon to pick up the new config: `node dist/src/cli.js restart`
 4. Report success or issues found
+
+## Advanced Configuration
+
+For power users who want fine-grained control, all settings are available via CLI:
+
+```bash
+# Separate digest model (e.g., larger model on LM Studio)
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js setup-digest \
+  --provider lm-studio \
+  --model "qwen/qwen3.5-35b-a3b" \
+  --context-window 65536 \
+  --gpu-kv-cache false
+
+# Custom tiers and injection
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js setup-digest \
+  --tiers 1500,3000,5000,10000 \
+  --inject-tier 3000
+
+# Capture token budgets
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js setup-digest \
+  --extraction-tokens 2048 \
+  --summary-tokens 1024
+
+# View current settings
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js setup-llm --show
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js setup-digest --show
+```

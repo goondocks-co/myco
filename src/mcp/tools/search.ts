@@ -7,7 +7,7 @@ import { CONTENT_SNIPPET_CHARS } from '../../constants.js';
 
 interface SearchInput {
   query: string;
-  type?: 'session' | 'plan' | 'memory' | 'all';
+  type?: 'session' | 'plan' | 'spore' | 'all';
   limit?: number;
 }
 

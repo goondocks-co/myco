@@ -44,22 +44,22 @@ TABLE user, started, tools_used FROM #type/session
 SORT started DESC LIMIT 10
 \`\`\`
 
-## Recent Memories
+## Recent Spores
 \`\`\`dataview
-TABLE observation_type AS "Type", created FROM #type/memory
+TABLE observation_type AS "Type", created FROM #type/spore
 SORT created DESC LIMIT 15
 \`\`\`
 
-## Memories by Type
+## Spores by Type
 \`\`\`dataview
 TABLE WITHOUT ID observation_type AS "Type", length(rows) AS "Count"
-FROM #type/memory GROUP BY observation_type
+FROM #type/spore GROUP BY observation_type
 SORT length(rows) DESC
 \`\`\`
 
 ## Gotchas
 \`\`\`dataview
-LIST FROM #memory/gotcha SORT created DESC LIMIT 10
+LIST FROM #spore/gotcha SORT created DESC LIMIT 10
 \`\`\`
 `;
 

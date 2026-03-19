@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 interface ConsolidateInput {
-  source_memory_ids: string[];
+  source_spore_ids: string[];
   consolidated_content: string;
   observation_type: string;
   tags?: string[];
@@ -27,11 +27,11 @@ export async function handleMycoConsolidate(
   const wisdomId = `${input.observation_type}-wisdom-${randomBytes(4).toString('hex')}`;
 
   // Build the wisdom note content with source links for Obsidian graph
-  const sourceLinks = input.source_memory_ids.map((id) => `- [[${id}]]`).join('\n');
+  const sourceLinks = input.source_spore_ids.map((id) => `- [[${id}]]`).join('\n');
   const fullContent = `${input.consolidated_content}\n\n## Sources\n\nConsolidated from:\n${sourceLinks}`;
 
   // Create the consolidated wisdom note
-  const wisdomPath = writer.writeMemory({
+  const wisdomPath = writer.writeSpore({
     id: wisdomId,
     observation_type: input.observation_type,
     tags: [...(input.tags ?? []), 'wisdom', 'consolidated'],
@@ -40,12 +40,12 @@ export async function handleMycoConsolidate(
 
   // Add consolidated_from to the new note's frontmatter
   writer.updateNoteFrontmatter(wisdomPath, {
-    consolidated_from: input.source_memory_ids,
+    consolidated_from: input.source_spore_ids,
   }, true);
 
-  // Mark each source memory as superseded by the wisdom note
+  // Mark each source spore as superseded by the wisdom note
   let archived = 0;
-  for (const sourceId of input.source_memory_ids) {
+  for (const sourceId of input.source_spore_ids) {
     const notes = index.queryByIds([sourceId]);
     if (notes.length > 0) {
       const notePath = notes[0].path;
