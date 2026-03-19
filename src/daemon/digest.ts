@@ -259,7 +259,7 @@ export class DigestEngine {
     // Ensure model is loaded with correct settings — one-time on first cycle
     if (!this.modelReady && this.llm.ensureLoaded) {
       const { context_window: contextWindow, gpu_kv_cache: gpuKvCache } = this.config.digest.intelligence;
-      this.log('debug', 'Ensuring model is loaded', { contextWindow, gpuKvCache });
+      this.log('info', 'Loading digest model', { contextWindow, gpuKvCache });
       await this.llm.ensureLoaded(contextWindow, gpuKvCache);
       this.modelReady = true;
     }
