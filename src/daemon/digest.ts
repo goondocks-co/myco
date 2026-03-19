@@ -54,8 +54,10 @@ export interface DigestEngineConfig {
 /** Token overhead estimate for previous extract section wrapper. */
 const PREVIOUS_EXTRACT_OVERHEAD_TOKENS = 50;
 
-/** Safety margin for context window — our chars-per-token heuristic underestimates by ~10-15%. */
-const CONTEXT_SAFETY_MARGIN = 0.85;
+/** Safety margin for context window — our CHARS_PER_TOKEN=4 heuristic significantly
+ *  underestimates real token counts (observed ~3.2 chars/token for mixed content).
+ *  0.70 provides a safe buffer: 32K * 0.70 = 22.4K usable tokens. */
+const CONTEXT_SAFETY_MARGIN = 0.70;
 
 /** Types that are digest output — excluded from substrate to avoid self-digestion. */
 const EXTRACT_TYPE = 'extract';
