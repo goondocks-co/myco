@@ -36,7 +36,7 @@ export const TOOL_DEFINITIONS = [
       type: 'object' as const,
       properties: {
         query: { type: 'string', description: 'Natural language search query — describe what you are looking for' },
-        type: { type: 'string', enum: ['session', 'plan', 'memory', 'all'], description: 'Filter by note type (default: all)' },
+        type: { type: 'string', enum: ['session', 'plan', 'spore', 'all'], description: 'Filter by note type (default: all)' },
         limit: { type: 'number', description: `Max results (default: ${MCP_SEARCH_DEFAULT_LIMIT})` },
       },
       required: ['query'],
@@ -44,7 +44,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: TOOL_RECALL,
-    description: 'Get context relevant to your current work — memories, sessions, and plans related to the branch and files you are working on. Use at the start of a task or when you need background on a component.',
+    description: 'Get context relevant to your current work — spores, sessions, and plans related to the branch and files you are working on. Use at the start of a task or when you need background on a component.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -55,7 +55,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: TOOL_REMEMBER,
-    description: 'Save a decision, gotcha, bug fix, discovery, or trade-off as a permanent memory. Use after making a key decision, fixing a tricky bug, discovering something non-obvious, or encountering a gotcha.',
+    description: 'Save a decision, gotcha, bug fix, discovery, or trade-off as a permanent spore. Use after making a key decision, fixing a tricky bug, discovering something non-obvious, or encountering a gotcha.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -81,7 +81,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: TOOL_SESSIONS,
-    description: 'Browse past coding sessions with summaries, tools used, and linked memories. Use to understand what work has been done on a feature or branch.',
+    description: 'Browse past coding sessions with summaries, tools used, and linked spores. Use to understand what work has been done on a feature or branch.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -107,7 +107,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: TOOL_GRAPH,
-    description: 'Traverse connections between vault notes via wikilinks — explore how sessions, memories, and plans relate to each other.',
+    description: 'Traverse connections between vault notes via wikilinks — explore how sessions, spores, and plans relate to each other.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -142,29 +142,29 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: TOOL_SUPERSEDE,
-    description: 'Mark a memory as outdated and replaced by a newer one. Use when a decision was reversed, a gotcha was fixed, a discovery was wrong, or the codebase changed and an observation no longer applies. The old memory is preserved but marked superseded.',
+    description: 'Mark a spore as outdated and replaced by a newer one. Use when a decision was reversed, a gotcha was fixed, a discovery was wrong, or the codebase changed and an observation no longer applies. The old spore is preserved but marked superseded.',
     inputSchema: {
       type: 'object' as const,
       properties: {
-        old_memory_id: { type: 'string', description: 'ID of the outdated memory (e.g., "decision-abc123")' },
-        new_memory_id: { type: 'string', description: 'ID of the replacement memory' },
-        reason: { type: 'string', description: 'Why the old memory is being superseded' },
+        old_spore_id: { type: 'string', description: 'ID of the outdated spore (e.g., "decision-abc123")' },
+        new_spore_id: { type: 'string', description: 'ID of the replacement spore' },
+        reason: { type: 'string', description: 'Why the old spore is being superseded' },
       },
-      required: ['old_memory_id', 'new_memory_id'],
+      required: ['old_spore_id', 'new_spore_id'],
     },
   },
   {
     name: TOOL_CONSOLIDATE,
-    description: 'Merge 3+ related memories into a single comprehensive wisdom note. Use when multiple observations describe aspects of the same insight, share a root cause, or would be more useful as one reference. Source memories are marked superseded.',
+    description: 'Merge 3+ related spores into a single comprehensive wisdom note. Use when multiple observations describe aspects of the same insight, share a root cause, or would be more useful as one reference. Source spores are marked superseded.',
     inputSchema: {
       type: 'object' as const,
       properties: {
-        source_memory_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of the memories to merge (minimum 2)' },
+        source_spore_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of the spores to merge (minimum 2)' },
         consolidated_content: { type: 'string', description: 'The merged, comprehensive content — synthesize, do not just concatenate' },
         observation_type: { type: 'string', enum: OBSERVATION_TYPES, description: `Type for the consolidated wisdom note: ${OBSERVATION_TYPES.join(', ')}` },
         tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
       },
-      required: ['source_memory_ids', 'consolidated_content', 'observation_type'],
+      required: ['source_spore_ids', 'consolidated_content', 'observation_type'],
     },
   },
 ];

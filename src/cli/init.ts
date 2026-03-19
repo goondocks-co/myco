@@ -38,7 +38,7 @@ export async function run(args: string[]): Promise<void> {
   console.log(`Initializing Myco vault at ${vaultDir}`);
 
   // Create directory structure
-  const dirs = ['sessions', 'plans', 'memories', 'artifacts', 'team', 'buffer', 'logs'];
+  const dirs = ['sessions', 'plans', 'spores', 'artifacts', 'team', 'buffer', 'logs'];
   for (const dir of dirs) {
     fs.mkdirSync(path.join(vaultDir, dir), { recursive: true });
   }
@@ -73,7 +73,7 @@ export async function run(args: string[]): Promise<void> {
     },
     context: {
       max_tokens: 1200,
-      layers: { plans: 200, sessions: 500, memories: 300, team: 200 },
+      layers: { plans: 200, sessions: 500, spores: 300, team: 200 },
     },
     team: {
       enabled: teamEnabled,

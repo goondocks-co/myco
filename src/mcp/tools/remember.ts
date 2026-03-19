@@ -29,7 +29,7 @@ export async function handleMycoRemember(
   const id = `${input.type}-${randomBytes(4).toString('hex')}`;
   const session = input.session ?? resolveSessionFromBuffer(path.join(vaultDir, 'buffer'));
 
-  const notePath = writer.writeMemory({
+  const notePath = writer.writeSpore({
     id,
     observation_type: input.type,
     session,
@@ -38,7 +38,7 @@ export async function handleMycoRemember(
     content: input.content,
   });
 
-  // Update index so the new memory is immediately searchable
+  // Update index so the new spore is immediately searchable
   indexNote(index, vaultDir, notePath);
 
   return { note_path: notePath, id, session };

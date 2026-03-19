@@ -61,11 +61,11 @@ describe('MycoIndex', () => {
 
   it('deletes a note', () => {
     index.upsertNote({
-      path: 'memories/m.md', type: 'memory', id: 'm', title: 'Memory',
+      path: 'spores/m.md', type: 'spore', id: 'm', title: 'Spore',
       content: 'test', frontmatter: {}, created: '2026-03-12T00:00:00Z',
     });
-    index.deleteNote('memories/m.md');
-    expect(index.getNoteByPath('memories/m.md')).toBeNull();
+    index.deleteNote('spores/m.md');
+    expect(index.getNoteByPath('spores/m.md')).toBeNull();
   });
 
   it('queries notes by type', () => {

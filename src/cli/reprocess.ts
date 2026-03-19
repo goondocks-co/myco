@@ -145,7 +145,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
             embedJobs.push({
               id: `${o.type}-${task.bare.slice(-6)}-${Date.now()}`,
               text: `${o.title}\n${o.content}`.slice(0, EMBEDDING_INPUT_LIMIT),
-              metadata: { type: 'memory', session_id: task.bare },
+              metadata: { type: 'spore', session_id: task.bare },
             });
           }
         }

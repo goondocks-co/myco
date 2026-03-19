@@ -23,10 +23,10 @@ describe('myco_search', () => {
       created: '2026-03-12T09:00:00Z',
     });
     index.upsertNote({
-      path: 'memories/m1.md', type: 'memory', id: 'm1',
+      path: 'spores/m1.md', type: 'spore', id: 'm1',
       title: 'CORS Proxy Gotcha',
       content: 'The CORS proxy strips auth headers silently.',
-      frontmatter: { type: 'memory', id: 'm1', observation_type: 'gotcha' },
+      frontmatter: { type: 'spore', id: 'm1', observation_type: 'gotcha' },
       created: '2026-03-12T10:00:00Z',
     });
   });
@@ -42,8 +42,8 @@ describe('myco_search', () => {
   });
 
   it('filters by type', async () => {
-    const results = await handleMycoSearch(index, { query: 'auth', type: 'memory' });
-    expect(results.every((r) => r.type === 'memory')).toBe(true);
+    const results = await handleMycoSearch(index, { query: 'auth', type: 'spore' });
+    expect(results.every((r) => r.type === 'spore')).toBe(true);
   });
 
   it('respects limit', async () => {

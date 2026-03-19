@@ -38,13 +38,13 @@ const CaptureSchema = z.object({
 const ContextLayersSchema = z.object({
   plans: z.number().int().nonnegative().default(200),
   sessions: z.number().int().nonnegative().default(500),
-  memories: z.number().int().nonnegative().default(300),
+  spores: z.number().int().nonnegative().default(300),
   team: z.number().int().nonnegative().default(200),
 });
 
 const ContextSchema = z.object({
   max_tokens: z.number().int().positive().default(1200),
-  layers: ContextLayersSchema.default({ plans: 200, sessions: 500, memories: 300, team: 200 }),
+  layers: ContextLayersSchema.default({ plans: 200, sessions: 500, spores: 300, team: 200 }),
 });
 
 const TeamSchema = z.object({
@@ -58,7 +58,7 @@ export const MycoConfigSchema = z.object({
   intelligence: IntelligenceSchema,
   daemon: DaemonSchema.default({ log_level: 'info', grace_period: 30, max_log_size: 5_242_880 }),
   capture: CaptureSchema.default({ transcript_paths: [], artifact_watch: ['.claude/plans/', '.cursor/plans/'], artifact_extensions: ['.md'], buffer_max_events: 500 }),
-  context: ContextSchema.default({ max_tokens: 1200, layers: { plans: 200, sessions: 500, memories: 300, team: 200 } }),
+  context: ContextSchema.default({ max_tokens: 1200, layers: { plans: 200, sessions: 500, spores: 300, team: 200 } }),
   team: TeamSchema.default({ enabled: false, user: '', sync: 'git' }),
 });
 

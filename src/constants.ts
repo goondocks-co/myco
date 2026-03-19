@@ -31,7 +31,7 @@ export const RECALL_SUMMARY_PREVIEW_CHARS = 200;
 // --- Context injection layer budgets (chars, not tokens — used with .slice()) ---
 export const CONTEXT_PLAN_PREVIEW_CHARS = 100;
 export const CONTEXT_SESSION_PREVIEW_CHARS = 80;
-export const CONTEXT_MEMORY_PREVIEW_CHARS = 80;
+export const CONTEXT_SPORE_PREVIEW_CHARS = 80;
 
 // --- Processor maxTokens budgets ---
 /** Response token budget for observation extraction. */
@@ -82,14 +82,14 @@ export const MIN_TRANSCRIPT_CONTENT_LENGTH = 10;
 // --- Query limits ---
 /** Max recent sessions to check for lineage heuristics. */
 export const LINEAGE_RECENT_SESSIONS_LIMIT = 5;
-/** Max related memories to query for session notes. */
-export const RELATED_MEMORIES_LIMIT = 50;
+/** Max related spores to query for session notes. */
+export const RELATED_SPORES_LIMIT = 50;
 
 // --- Context injection ---
 /** Max active plans to inject at session start. */
 export const SESSION_CONTEXT_MAX_PLANS = 3;
-/** Max memories to inject per prompt. */
-export const PROMPT_CONTEXT_MAX_MEMORIES = 3;
+/** Max spores to inject per prompt. */
+export const PROMPT_CONTEXT_MAX_SPORES = 3;
 /** Minimum similarity score for prompt context injection (0-1). */
 export const PROMPT_CONTEXT_MIN_SIMILARITY = 0.3;
 /** Max token budget for session-start context injection. */

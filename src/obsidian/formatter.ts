@@ -120,10 +120,10 @@ export function formatSessionBody(input: SessionBodyInput): string {
   if (input.branch) fields.push(inlineField('Branch', `\`${input.branch}\``));
   sections.push(fields.join('\n'));
 
-  // Related memories
+  // Related spores
   if (input.relatedMemories?.length) {
     const links = input.relatedMemories.map((m) => `- ${wikilink(m.id, m.title)}`);
-    sections.push(`## Related Memories\n${links.join('\n')}`);
+    sections.push(`## Related Spores\n${links.join('\n')}`);
   }
 
   // Conversation turns — always rebuilt from the full transcript.
@@ -163,9 +163,9 @@ export function formatSessionBody(input: SessionBodyInput): string {
   return sections.join('\n\n');
 }
 
-// --- Memory formatting ---
+// --- Spore formatting ---
 
-export interface MemoryBodyInput {
+export interface SporeBodyInput {
   title: string;
   observationType: string;
   content: string;
@@ -179,7 +179,7 @@ export interface MemoryBodyInput {
   tags?: string[];
 }
 
-export function formatMemoryBody(input: MemoryBodyInput): string {
+export function formatSporeBody(input: SporeBodyInput): string {
   const sections: string[] = [];
   const calloutType = observationCalloutType(input.observationType);
   const calloutTitle = capitalize(tagNormalize(input.observationType));
@@ -204,7 +204,7 @@ export function formatMemoryBody(input: MemoryBodyInput): string {
   if (input.sacrificed) sections.push(`## Sacrificed\n${input.sacrificed}`);
 
   // Footer tags
-  const allTags = buildTags('memory', input.observationType, input.tags ?? []);
+  const allTags = buildTags('spore', input.observationType, input.tags ?? []);
   sections.push(footerTags(allTags));
 
   return sections.join('\n\n');

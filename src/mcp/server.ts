@@ -99,7 +99,7 @@ export function createMycoServer(config: ServerConfig): MycoServer {
         return { content: [{ type: 'text', text: JSON.stringify(await handleMycoRecall(idx, input as any)) }] };
       case TOOL_REMEMBER: {
         const result = await handleMycoRemember(config.vaultDir, idx, input as any);
-        embedNote(result.id, String(input.content), { type: 'memory', observation_type: String(input.type ?? ''), importance: 'high' });
+        embedNote(result.id, String(input.content), { type: 'spore', observation_type: String(input.type ?? ''), importance: 'high' });
         logActivity(TOOL_REMEMBER, { id: result.id, observation_type: input.type, path: result.note_path });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
@@ -118,20 +118,20 @@ export function createMycoServer(config: ServerConfig): MycoServer {
       case TOOL_SUPERSEDE: {
         const result = await handleMycoSupersede(config.vaultDir, idx, input as any);
         if (result.status === 'superseded' && config.vectorIndex) {
-          config.vectorIndex.delete(result.old_memory);
+          config.vectorIndex.delete(result.old_spore);
         }
-        logActivity(TOOL_SUPERSEDE, { old: result.old_memory, new: result.new_memory, status: result.status });
+        logActivity(TOOL_SUPERSEDE, { old: result.old_spore, new: result.new_spore, status: result.status });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_CONSOLIDATE: {
         const result = await handleMycoConsolidate(config.vaultDir, idx, input as any);
-        embedNote(result.wisdom_id, String(input.consolidated_content), { type: 'memory', observation_type: String(input.observation_type ?? ''), importance: 'high' });
-        if (config.vectorIndex && Array.isArray(input.source_memory_ids)) {
-          for (const id of input.source_memory_ids as string[]) {
+        embedNote(result.wisdom_id, String(input.consolidated_content), { type: 'spore', observation_type: String(input.observation_type ?? ''), importance: 'high' });
+        if (config.vectorIndex && Array.isArray(input.source_spore_ids)) {
+          for (const id of input.source_spore_ids as string[]) {
             config.vectorIndex.delete(id);
           }
         }
-        logActivity(TOOL_CONSOLIDATE, { wisdom_id: result.wisdom_id, sources: input.source_memory_ids, archived: result.sources_archived });
+        logActivity(TOOL_CONSOLIDATE, { wisdom_id: result.wisdom_id, sources: input.source_spore_ids, archived: result.sources_archived });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       default:

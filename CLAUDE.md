@@ -75,7 +75,7 @@ This is Myco's core contract. Violations:
 - Session notes are rebuilt from the agent's authoritative transcript on each stop event. The transcript file (e.g., Claude's `.jsonl`) is the source of truth — all turns are re-parsed and the `## Conversation` section is regenerated in full. Data preservation is guaranteed by the transcript being append-only, not by the session note's write logic.
 - The degraded stop path (`src/hooks/stop.ts`) MUST NOT write a session file if one already exists. It returns early; the daemon handles it when it's back.
 - Buffer files (`buffer/<session-id>.jsonl`) MUST NOT be deleted on session unregister. Session reload (SessionEnd → SessionStart) reuses the same session ID. Buffers are cleaned up by age (>24h) on daemon startup only.
-- `observation_type` in memory frontmatter accepts any string (`z.string()`). The LLM prompt guides types; the schema MUST NOT reject unexpected values.
+- `observation_type` in spore frontmatter accepts any string (`z.string()`). The LLM prompt guides types; the schema MUST NOT reject unexpected values.
 
 ## Session ID Is the Source of Truth
 
@@ -89,7 +89,7 @@ Every write operation MUST be safe to run twice with the same input. No "first-t
 
 Concrete requirements:
 
-- `writeMemory`, `writeArtifact`, `writeSession`, `writePlan`, `writeTeamMember` MUST produce the same file content given the same input, whether or not the file already exists.
+- `writeSpore`, `writeArtifact`, `writeSession`, `writePlan`, `writeTeamMember` MUST produce the same file content given the same input, whether or not the file already exists.
 - Startup tasks (migration, buffer cleanup, index rebuild) MUST be idempotent. Running the daemon startup sequence twice in a row MUST NOT move, duplicate, or corrupt data.
 - `indexNote` and `indexAndEmbed` MUST upsert, not insert. Re-indexing an already-indexed note MUST NOT create duplicates.
 
@@ -110,7 +110,7 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
 
 ## Naming Conventions
 
-- **Memory files:** `memories/{normalized_type}/{observation_type}-{session_id_last_6}-{timestamp}.md` (e.g., `memories/gotcha/gotcha-ac5220-1773416089650.md`). The subdirectory name normalizes underscores to hyphens (`bug_fix` → `bug-fix/`).
+- **Spore files:** `spores/{normalized_type}/{observation_type}-{session_id_last_6}-{timestamp}.md` (e.g., `spores/gotcha/gotcha-ac5220-1773416089650.md`). The subdirectory name normalizes underscores to hyphens (`bug_fix` → `bug-fix/`).
 - **Session files:** `sessions/{YYYY-MM-DD}/session-{session_id}.md`
 - **Imports:** Use `@myco/*` path aliases mapping to `src/*`
 - **Tests:** `tests/<module>.test.ts` mirroring `src/<module>.ts`
@@ -125,7 +125,7 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
   vectors.db         # sqlite-vec vector embeddings
   buffer/            # Per-session JSONL event buffers (ephemeral)
   sessions/          # Session notes by date
-  memories/          # Observation notes (subdirectories by type: gotcha/, decision/, etc.)
+  spores/            # Observation notes (subdirectories by type: gotcha/, decision/, etc.)
   plans/             # Plan notes
   artifacts/         # Artifact references
   attachments/       # Images extracted from session transcripts (Obsidian embeds)
