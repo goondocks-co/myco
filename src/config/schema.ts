@@ -58,6 +58,10 @@ const DigestIntelligenceSchema = z.object({
   model: z.string().nullable().default(null),
   base_url: z.string().nullable().default(null),
   context_window: z.number().int().positive().default(32768),
+  /** Keep model loaded between digest cycles. Ollama duration string (e.g., "30m") or null for provider default. */
+  keep_alive: z.string().nullable().default('30m'),
+  /** Whether to offload KV cache to GPU. false = use system RAM (safer for large contexts). */
+  gpu_kv_cache: z.boolean().default(false),
 });
 
 const DigestMetabolismSchema = z.object({

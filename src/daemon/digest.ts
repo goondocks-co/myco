@@ -265,9 +265,9 @@ export class DigestEngine {
     // Ensure the LLM model is loaded with the configured context window.
     // For LM Studio, this calls /api/v1/models/load with context_length.
     if ('ensureLoaded' in this.llm && typeof (this.llm as { ensureLoaded: unknown }).ensureLoaded === 'function') {
-      const contextWindow = this.config.digest.intelligence.context_window;
-      this.log('debug', 'Ensuring model is loaded', { contextWindow });
-      await (this.llm as { ensureLoaded: (ctx?: number) => Promise<void> }).ensureLoaded(contextWindow);
+      const { context_window: contextWindow, gpu_kv_cache: gpuKvCache } = this.config.digest.intelligence;
+      this.log('debug', 'Ensuring model is loaded', { contextWindow, gpuKvCache });
+      await (this.llm as { ensureLoaded: (ctx?: number, gpuKv?: boolean) => Promise<void> }).ensureLoaded(contextWindow, gpuKvCache);
     }
     if (substrate.length === 0) {
       this.log('debug', 'No substrate found — skipping cycle');
@@ -344,12 +344,14 @@ export class DigestEngine {
       this.log('debug', `Tier ${tier}: sending LLM request`, { promptTokens, maxTokens: tier, substrateBudget });
 
       const tierStart = Date.now();
+      const digestConfig = this.config.digest.intelligence;
       const opts: LlmRequestOptions = {
         maxTokens: tier,
         timeoutMs: DIGEST_LLM_REQUEST_TIMEOUT_MS,
         contextLength: contextWindow,
         reasoning: 'off',
         systemPrompt,
+        keepAlive: digestConfig.keep_alive ?? undefined,
       };
       const response = await this.llm.summarize(userPrompt, opts);
       const tierDuration = Date.now() - tierStart;

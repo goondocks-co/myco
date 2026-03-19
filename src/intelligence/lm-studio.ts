@@ -113,14 +113,12 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
    * Uses LM Studio's native /api/v1/models/load endpoint.
    * If the model is already loaded, this is a no-op on LM Studio's side.
    */
-  async ensureLoaded(contextLength?: number): Promise<void> {
+  async ensureLoaded(contextLength?: number, gpuKvCache?: boolean): Promise<void> {
     const ctx = contextLength ?? this.contextWindow;
     const body: Record<string, unknown> = {
       model: this.model,
       flash_attention: true,
-      // Keep KV cache in system RAM — GPU VRAM is often too small for large contexts
-      // and LM Studio silently downsizes the effective context to fit VRAM
-      offload_kv_cache_to_gpu: false,
+      offload_kv_cache_to_gpu: gpuKvCache ?? false,
     };
     if (ctx) {
       body.context_length = ctx;
