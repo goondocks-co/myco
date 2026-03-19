@@ -56,11 +56,15 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
       body.reasoning = opts.reasoning;
     }
 
+    // keepalive: true prevents Node.js from closing the connection at its
+    // default 5-minute idle timeout. Digest requests can take 5+ minutes
+    // for large context windows on local models.
     const response = await fetch(`${this.baseUrl}/api/v1/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(opts?.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS),
+      keepalive: true,
     });
 
     if (!response.ok) {
