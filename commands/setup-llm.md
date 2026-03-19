@@ -63,21 +63,21 @@ If the embedding model isn't installed: `ollama pull bge-m3`
 
 ## Step 4: Update `myco.yaml`
 
-Write both `intelligence.llm` and `intelligence.embedding` sections with all values explicit:
+Use the CLI command to write settings deterministically:
 
-```yaml
-intelligence:
-  llm:
-    provider: ollama
-    model: qwen3.5
-    base_url: http://localhost:11434
-    context_window: 8192
-    max_tokens: 1024
-  embedding:
-    provider: ollama
-    model: bge-m3
-    base_url: http://localhost:11434
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js setup-llm \
+  --llm-provider ollama \
+  --llm-model qwen3.5 \
+  --llm-url http://localhost:11434 \
+  --llm-context-window 8192 \
+  --llm-max-tokens 1024 \
+  --embedding-provider ollama \
+  --embedding-model bge-m3 \
+  --embedding-url http://localhost:11434
 ```
+
+Only pass flags the user explicitly changed — existing values are preserved. Use `--show` to display current settings.
 
 If migrating from a v1 config (has `backend: local/cloud` structure), bump `version` to `2` and rewrite the entire intelligence section. The loader auto-maps `provider: haiku` to `anthropic`.
 
