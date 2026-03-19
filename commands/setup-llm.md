@@ -29,23 +29,23 @@ Ask the user to select from available providers:
 - **LM Studio** — list available models
 - **Anthropic** — verify API key works, default model `claude-haiku-4-5-20251001`
 
-Recommended summarization models by hardware tier:
+Recommended models by hardware tier. Qwen 3.5 is preferred for its strong instruction-following and synthesis quality — extraction data feeds into the digest, so higher quality here means better project understanding:
 
 | Tier | Models | RAM |
 |------|--------|-----|
-| **High** | `gpt-oss` (~20B), `gemma3:27b`, `qwen3.5:14b` | 16GB+ |
-| **Mid** | `qwen3.5:8b`, `gemma3:12b` | 8GB+ |
-| **Light** | `gemma3:4b`, `qwen3.5:4b` | 4GB+ |
+| **High** | `qwen3.5:35b` (MoE, recommended), `qwen3.5:27b`, `gpt-oss` (~20B) | 32GB+ |
+| **Mid** | `qwen3.5:latest` (~10B), `gemma3:12b`, `qwen3:30b` | 16GB+ |
+| **Light** | `qwen3.5:4b`, `gemma3:4b` | 8GB+ |
 
-Any instruction-tuned model that handles JSON output works. Prefer what the user already has loaded.
+Any instruction-tuned model that handles JSON output works. Prefer what the user already has loaded, but recommend Qwen 3.5 if they're starting fresh.
 
 For local providers (Ollama, LM Studio), also configure:
-- `context_window` — ask or accept default of 8192
+- `context_window` — ask or accept default of 8192 for hooks. Digest uses its own `context_window` (default 32768, configurable in Step 5)
 - `max_tokens` — ask or accept default of 1024
 
 If the chosen model isn't installed, offer to pull it:
-- **Ollama**: `ollama pull gpt-oss` (pulls latest tag automatically)
-- **LM Studio**: `lms get openai/gpt-oss-20b` (uses `owner/model` format)
+- **Ollama**: `ollama pull qwen3.5` (pulls latest tag automatically)
+- **LM Studio**: search for `qwen3.5` in the model browser
 
 These settings do not apply to Anthropic (API-managed).
 

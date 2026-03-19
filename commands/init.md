@@ -38,9 +38,9 @@ Using the detected providers from Step 1, ask the user:
 
 **Question:** "Which LLM provider for summarization?"
 
-**Options:** List only providers where `available` is `true`, with recommended models. Example:
-- "Ollama — gpt-oss (recommended)"
-- "LM Studio — openai/gpt-oss-20b"
+**Options:** List only providers where `available` is `true`, with recommended models. Prefer Qwen 3.5 for its strong instruction-following and synthesis quality. Example:
+- "Ollama — qwen3.5 (recommended)"
+- "LM Studio — qwen/qwen3.5-35b-a3b"
 - "Anthropic"
 
 After the user picks a provider, ask them to choose a specific model from that provider's model list (from the detect-providers output).

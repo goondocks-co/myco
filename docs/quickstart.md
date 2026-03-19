@@ -5,7 +5,7 @@ Myco is a collective agent intelligence plugin that captures session knowledge â
 ## Requirements
 
 - **Node.js 22+**
-- **Local LLM** (recommended): [Ollama](https://ollama.com) with `gpt-oss` and `bge-m3` models, or [LM Studio](https://lmstudio.ai)
+- **Local LLM** (recommended): [Ollama](https://ollama.com) with `qwen3.5` and `bge-m3` models, or [LM Studio](https://lmstudio.ai)
 - **Cloud LLM** (alternative): Anthropic API key for Claude Haiku
 - **Obsidian** (optional): For browsing your vault with backlinks, Dataview, and graph view
 
@@ -82,7 +82,7 @@ This guides you through:
 ### Pull Ollama Models (if using local LLM)
 
 ```bash
-ollama pull gpt-oss
+ollama pull qwen3.5
 ollama pull bge-m3
 ```
 
