@@ -305,16 +305,17 @@ export async function main(): Promise<void> {
 
     metabolism = new Metabolism(config.digest.metabolism);
 
-    // Run initial cycle
-    try {
-      const result = await digestEngine.runCycle();
-      if (result) {
-        metabolism.onSubstrateFound();
-        logger.info('digest', `Initial digest cycle: ${result.tiersGenerated.length} tiers, ${result.durationMs}ms`);
-      }
-    } catch (err) {
-      logger.warn('digest', 'Initial digest cycle failed', { error: (err as Error).message });
-    }
+    // Fire initial cycle in the background — don't block server readiness
+    digestEngine.runCycle()
+      .then((result) => {
+        if (result) {
+          metabolism!.onSubstrateFound();
+          logger.info('digest', `Initial digest cycle: ${result.tiersGenerated.length} tiers, ${result.durationMs}ms`);
+        }
+      })
+      .catch((err) => {
+        logger.warn('digest', 'Initial digest cycle failed', { error: (err as Error).message });
+      });
 
     // Start metabolism timer
     metabolism.start(async () => {
@@ -821,7 +822,7 @@ export async function main(): Promise<void> {
       if (config.digest.enabled && config.digest.inject_tier) {
         const result = handleMycoContext(vaultDir, { tier: config.digest.inject_tier });
 
-        if (!result.content.includes('not yet available')) {
+        if (result.generated !== undefined) {
           // Append session metadata that the agent needs regardless of context source
           const meta: string[] = [result.content];
           if (branch) meta.push(`\nBranch:: \`${branch}\``);

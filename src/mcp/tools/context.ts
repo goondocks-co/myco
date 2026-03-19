@@ -3,11 +3,14 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { DIGEST_TIERS } from '../../constants.js';
 
+/** Default tier when none is requested. */
+const DEFAULT_CONTEXT_TIER = 3000;
+
 interface ContextInput {
   tier?: number;
 }
 
-interface ContextResult {
+export interface ContextResult {
   content: string;
   tier: number;
   fallback: boolean;
@@ -15,10 +18,16 @@ interface ContextResult {
 }
 
 /**
- * Read a digest extract file, strip YAML frontmatter, and extract metadata.
+ * Try to read a digest extract file. Returns null if the file doesn't exist.
+ * Strips YAML frontmatter and extracts the generated timestamp.
  */
-function readExtract(filePath: string, tier: number, fallback: boolean): ContextResult {
-  const raw = fs.readFileSync(filePath, 'utf-8');
+function tryReadExtract(filePath: string, tier: number, fallback: boolean): ContextResult | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(filePath, 'utf-8');
+  } catch {
+    return null;
+  }
 
   let generated: string | undefined;
   let body = raw;
@@ -41,23 +50,20 @@ function readExtract(filePath: string, tier: number, fallback: boolean): Context
 }
 
 export function handleMycoContext(vaultDir: string, input: ContextInput): ContextResult {
-  const requestedTier = input.tier ?? 3000;
+  const requestedTier = input.tier ?? DEFAULT_CONTEXT_TIER;
   const digestDir = path.join(vaultDir, 'digest');
 
   // Try exact tier first
-  const exactPath = path.join(digestDir, `extract-${requestedTier}.md`);
-  if (fs.existsSync(exactPath)) {
-    return readExtract(exactPath, requestedTier, false);
-  }
+  const exact = tryReadExtract(path.join(digestDir, `extract-${requestedTier}.md`), requestedTier, false);
+  if (exact) return exact;
 
   // Fall back to nearest available tier
-  const available = DIGEST_TIERS
-    .filter((t) => fs.existsSync(path.join(digestDir, `extract-${t}.md`)))
+  const candidates = [...DIGEST_TIERS]
     .sort((a, b) => Math.abs(a - requestedTier) - Math.abs(b - requestedTier));
 
-  if (available.length > 0) {
-    const fallbackTier = available[0];
-    return readExtract(path.join(digestDir, `extract-${fallbackTier}.md`), fallbackTier, true);
+  for (const tier of candidates) {
+    const result = tryReadExtract(path.join(digestDir, `extract-${tier}.md`), tier, true);
+    if (result) return result;
   }
 
   return {

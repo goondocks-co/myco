@@ -107,16 +107,6 @@ export const MCP_SESSIONS_DEFAULT_LIMIT = 20;
 /** Default result limit for myco_logs. */
 export const MCP_LOGS_DEFAULT_LIMIT = 50;
 
-// --- Digest — Metabolism ---
-/** How often the digest engine runs while the session is active (ms). */
-export const DIGEST_ACTIVE_INTERVAL_MS = 300_000;
-/** Cooldown schedule — intervals grow as session goes idle (ms). */
-export const DIGEST_COOLDOWN_INTERVALS_MS = [900_000, 1_800_000, 3_600_000];
-/** Time since last activity before the engine enters dormancy (ms). */
-export const DIGEST_DORMANCY_THRESHOLD_MS = 7_200_000;
-/** Activity window used to determine whether a session is "active" (ms). */
-export const DIGEST_ACTIVE_SESSION_WINDOW_MS = 1_800_000;
-
 // --- Digest — Tiers ---
 /** Available token-budget tiers for digest synthesis. */
 export const DIGEST_TIERS = [1500, 3000, 5000, 10000] as const;
@@ -132,8 +122,6 @@ export const DIGEST_TIER_MIN_CONTEXT: Record<number, number> = {
 };
 
 // --- Digest — Substrate ---
-/** Max notes fetched from the index per digest cycle. */
-export const DIGEST_MAX_NOTES_PER_CYCLE = 50;
 /** Scoring weights by note type when selecting substrate for synthesis. */
 export const DIGEST_SUBSTRATE_TYPE_WEIGHTS: Record<string, number> = {
   session: 3,

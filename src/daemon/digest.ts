@@ -17,7 +17,6 @@ import {
   DIGEST_TIER_MIN_CONTEXT,
   DIGEST_SUBSTRATE_TYPE_WEIGHTS,
   DIGEST_SYSTEM_PROMPT_TOKENS,
-  DIGEST_MAX_NOTES_PER_CYCLE,
 } from '@myco/constants.js';
 
 // --- Interfaces ---
@@ -60,6 +59,7 @@ export class DigestEngine {
   private index: MycoIndex;
   private llm: LlmProvider;
   private config: MycoConfig;
+  private lastCycleTimestampCache: string | null | undefined = undefined;
 
   constructor(engineConfig: DigestEngineConfig) {
     this.vaultDir = engineConfig.vaultDir;
@@ -188,29 +188,38 @@ export class DigestEngine {
     fs.mkdirSync(digestDir, { recursive: true });
     const tracePath = path.join(digestDir, 'trace.jsonl');
     fs.appendFileSync(tracePath, JSON.stringify(record) + '\n', 'utf-8');
+    this.lastCycleTimestampCache = record.timestamp;
   }
 
   /**
    * Read the last cycle timestamp from trace.jsonl.
-   * Returns null if no trace file or it's empty.
+   * Cached in memory after first read — subsequent calls are O(1).
    */
   getLastCycleTimestamp(): string | null {
+    if (this.lastCycleTimestampCache !== undefined) return this.lastCycleTimestampCache;
+
     const tracePath = path.join(this.vaultDir, 'digest', 'trace.jsonl');
     let content: string;
     try {
       content = fs.readFileSync(tracePath, 'utf-8').trim();
     } catch {
+      this.lastCycleTimestampCache = null;
       return null;
     }
 
-    if (!content) return null;
+    if (!content) {
+      this.lastCycleTimestampCache = null;
+      return null;
+    }
 
     const lines = content.split('\n');
     const lastLine = lines[lines.length - 1];
     try {
       const record = JSON.parse(lastLine) as DigestCycleResult;
+      this.lastCycleTimestampCache = record.timestamp;
       return record.timestamp;
     } catch {
+      this.lastCycleTimestampCache = null;
       return null;
     }
   }
@@ -233,6 +242,13 @@ export class DigestEngine {
     let model = '';
 
     // Categorize substrate by type for the result
+    const typeToKey: Record<string, keyof DigestCycleResult['substrate']> = {
+      session: 'sessions',
+      spore: 'spores',
+      plan: 'plans',
+      artifact: 'artifacts',
+      'team-member': 'team',
+    };
     const substrateIndex: DigestCycleResult['substrate'] = {
       sessions: [],
       spores: [],
@@ -241,8 +257,8 @@ export class DigestEngine {
       team: [],
     };
     for (const note of substrate) {
-      const key = `${note.type}s` as keyof typeof substrateIndex;
-      if (key in substrateIndex) {
+      const key = typeToKey[note.type];
+      if (key) {
         substrateIndex[key].push(note.id);
       }
     }
@@ -364,10 +380,7 @@ export class Metabolism {
 
   /** Return to active from any state, resetting timers. */
   activate(): void {
-    this.state = 'active';
-    this.cooldownStep = 0;
-    this.currentIntervalMs = this.activeIntervalMs;
-    this.lastSubstrateTime = Date.now();
+    this.onSubstrateFound();
   }
 
   /** Set lastSubstrateTime explicitly (for testing). */
