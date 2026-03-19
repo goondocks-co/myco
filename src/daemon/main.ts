@@ -880,7 +880,7 @@ export async function main(): Promise<void> {
     }
   });
 
-  // Per-prompt context: semantic search for memories relevant to THIS specific prompt.
+  // Per-prompt context: semantic search for spores relevant to THIS specific prompt.
   // This is the primary intelligence delivery — targeted, high-confidence, token-efficient.
   const PromptContextBody = z.object({
     prompt: z.string(),

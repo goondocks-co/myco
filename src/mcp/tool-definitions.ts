@@ -50,7 +50,7 @@ export const TOOL_DEFINITIONS = [
       type: 'object' as const,
       properties: {
         branch: { type: 'string', description: PROP_BRANCH },
-        files: { type: 'array', items: { type: 'string' }, description: 'File paths you are working on — finds memories tagged with these files' },
+        files: { type: 'array', items: { type: 'string' }, description: 'File paths you are working on — finds spores tagged with these files' },
       },
     },
   },

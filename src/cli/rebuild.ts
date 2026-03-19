@@ -26,7 +26,7 @@ export async function run(_args: string[], vaultDir: string): Promise<void> {
     const vec = new VectorIndex(vecDb, testEmbed.dimensions);
 
     const allNotes = index.query({});
-    // Skip superseded/archived memories — they shouldn't appear in vector search
+    // Skip superseded/archived spores — they shouldn't appear in vector search
     const activeNotes = allNotes.filter((n) => {
       const status = (n.frontmatter as Record<string, unknown>)?.status as string | undefined;
       return status !== 'superseded' && status !== 'archived';

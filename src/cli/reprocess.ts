@@ -3,7 +3,7 @@
  * for existing sessions. Useful after bugs or when the LLM backend changes.
  *
  * Reads transcripts (the source of truth), re-extracts observations, regenerates
- * summaries, and re-indexes everything. Existing memory files from those sessions
+ * summaries, and re-indexes everything. Existing spore files from those sessions
  * are preserved — new observations are additive.
  */
 import fs from 'node:fs';
