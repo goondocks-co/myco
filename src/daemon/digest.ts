@@ -262,9 +262,13 @@ export class DigestEngine {
 
     this.log('debug', 'Discovering substrate', { lastTimestamp: lastTimestamp ?? 'cold start', substrateCount: substrate.length });
 
-    // Note: For LM Studio, the model should be pre-loaded with the correct context window
-    // using `lms load <model> --context-length <size> --identifier <name>`.
-    // The API's /api/v1/models/load doesn't reliably set context_length.
+    // Ensure the LLM model is loaded with the configured context window.
+    // For LM Studio, this calls /api/v1/models/load with context_length.
+    if ('ensureLoaded' in this.llm && typeof (this.llm as { ensureLoaded: unknown }).ensureLoaded === 'function') {
+      const contextWindow = this.config.digest.intelligence.context_window;
+      this.log('debug', 'Ensuring model is loaded', { contextWindow });
+      await (this.llm as { ensureLoaded: (ctx?: number) => Promise<void> }).ensureLoaded(contextWindow);
+    }
     if (substrate.length === 0) {
       this.log('debug', 'No substrate found — skipping cycle');
       return null;
