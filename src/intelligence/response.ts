@@ -17,6 +17,10 @@ const REASONING_PATTERNS = [
   /<reasoning>[\s\S]*?<\/reasoning>\s*/gi,
   // <|thinking|>...<|/thinking|>answer
   /<\|thinking\|>[\s\S]*?<\|\/thinking\|>\s*/gi,
+  // Plain-text "Thinking Process:" block followed by actual content
+  // (Qwen 3.5 via LM Studio without native thinking mode)
+  // Matches numbered thinking steps until content starts with a markdown heading
+  /^Thinking Process:[\s\S]*?(?=\n## )/i,
 ];
 
 /**
