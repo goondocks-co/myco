@@ -221,14 +221,9 @@ export async function main(): Promise<void> {
     }
   }
 
-  // If the index has stale 'memory' type entries, the vault was migrated
-  // to spores but the index wasn't rebuilt yet. Rebuild now.
-  const staleMemoryEntries = index.query({ type: 'memory' });
-  if (staleMemoryEntries.length > 0) {
-    logger.info('daemon', 'Rebuilding index after memories→spores migration', { staleEntries: staleMemoryEntries.length });
-    initFts(index);
-    rebuildIndex(index, vaultDir);
-  }
+  // Check for stale 'memory' type entries — migration happened but index wasn't rebuilt.
+  // Deferred to after server starts so it doesn't block the health check.
+  const needsMigrationReindex = index.query({ type: 'memory' }).length > 0;
 
   // Migrate flat spore files into type subdirectories
   const migrated = migrateSporeFiles(vaultDir);
@@ -948,6 +943,16 @@ export async function main(): Promise<void> {
 
   await server.start();
   logger.info('daemon', 'Daemon ready', { vault: vaultDir, port: server.port });
+
+  // Background reindex after migration — runs after server is healthy
+  if (needsMigrationReindex) {
+    setImmediate(() => {
+      logger.info('daemon', 'Rebuilding index after memories→spores migration (background)');
+      initFts(index);
+      rebuildIndex(index, vaultDir);
+      logger.info('daemon', 'Migration reindex complete');
+    });
+  }
 
   const shutdown = async (signal: string) => {
     logger.info('daemon', `${signal} received`);
