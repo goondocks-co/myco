@@ -16,6 +16,8 @@ export interface QueryOptions {
   id?: string;
   limit?: number;
   since?: string;
+  /** Filter by updated_at — returns notes with updated_at >= this ISO string. */
+  updatedSince?: string;
   /** Filter by frontmatter fields using json_extract. Applied before LIMIT. */
   frontmatter?: Record<string, string>;
 }
@@ -106,6 +108,10 @@ export class MycoIndex {
     if (options.since) {
       conditions.push('created >= ?');
       params.push(options.since);
+    }
+    if (options.updatedSince) {
+      conditions.push('updated_at >= ?');
+      params.push(options.updatedSince);
     }
     if (options.frontmatter) {
       for (const [key, value] of Object.entries(options.frontmatter)) {
