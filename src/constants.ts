@@ -134,5 +134,3 @@ export const DIGEST_SUBSTRATE_TYPE_WEIGHTS: Record<string, number> = {
 };
 
 // --- Digest — System prompt overhead estimate ---
-/** Estimated token overhead for the digest system prompt. */
-export const DIGEST_SYSTEM_PROMPT_TOKENS = 500;
