@@ -81,10 +81,19 @@ Present the recommendation and ask:
 
 **Options:**
 - "Yes — use recommended settings" (default)
-- "Customize tiers and model"
+- "Customize"
 - "Disable digest"
 
-Store the user's choice to include in the init command. Digest is enabled by default — the user must explicitly disable it.
+Digest is enabled by default — the user must explicitly disable it.
+
+If the user chooses **"Customize"**, ask these one at a time:
+
+1. **Tiers:** "Which tiers to generate?" — options: [1500], [1500, 3000], [1500, 3000, 5000], [1500, 3000, 5000, 10000]
+2. **Inject tier:** "Which tier to auto-inject at session start?" — options: 1500, 3000, 5000, 10000, or "None (MCP tool only)"
+3. **Separate model:** "Use a different model for digestion?" — if yes, show available models from detected providers. This allows a larger/better model for digest while keeping a fast model for hooks.
+4. **Context window:** "Context window for digest?" — suggest based on RAM tier from the table above
+
+Store the user's choices to write into the `digest` section of `myco.yaml`.
 
 ## Step 6: Run init with all gathered inputs
 
