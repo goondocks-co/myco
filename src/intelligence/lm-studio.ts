@@ -117,30 +117,24 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
 
   /**
    * Load the model with the correct settings for digest operations.
-   * Unloads first because LM Studio persists models across daemon restarts —
-   * without this, each daemon start would stack a new instance alongside the old one.
+   * If we previously loaded an instance, unloads it first to prevent stacking
+   * across daemon restarts. Only unloads OUR instance — leaves other instances
+   * (user-loaded or hook-loaded) untouched.
    * Captures the instance_id so subsequent chat requests target this exact instance.
    */
   async ensureLoaded(contextLength?: number, gpuKvCache?: boolean): Promise<void> {
-    // Unload all existing instances of this model to prevent stacking
-    try {
-      const listResp = await fetch(`${this.baseUrl}${ENDPOINT_MODELS_LIST}`, {
-        signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
-      });
-      if (listResp.ok) {
-        const listData = await listResp.json() as { data: Array<{ id: string }> };
-        for (const m of listData.data) {
-          if (m.id === this.model || m.id.startsWith(`${this.model}:`)) {
-            await fetch(`${this.baseUrl}${ENDPOINT_MODELS_UNLOAD}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ instance_id: m.id }),
-              signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
-            }).catch(() => {});
-          }
-        }
-      }
-    } catch { /* not loaded — fine */ }
+    // Unload only our previously loaded instance, not all instances of this model
+    if (this.loadedInstanceId) {
+      try {
+        await fetch(`${this.baseUrl}${ENDPOINT_MODELS_UNLOAD}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instance_id: this.loadedInstanceId }),
+          signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
+        });
+      } catch { /* already unloaded — fine */ }
+      this.loadedInstanceId = null;
+    }
 
     const ctx = contextLength ?? this.contextWindow;
     const body: Record<string, unknown> = {
