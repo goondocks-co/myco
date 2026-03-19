@@ -122,13 +122,24 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
    * Captures the instance_id so subsequent chat requests target this exact instance.
    */
   async ensureLoaded(contextLength?: number, gpuKvCache?: boolean): Promise<void> {
+    // Unload all existing instances of this model to prevent stacking
     try {
-      await fetch(`${this.baseUrl}${ENDPOINT_MODELS_UNLOAD}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: this.model }),
+      const listResp = await fetch(`${this.baseUrl}${ENDPOINT_MODELS_LIST}`, {
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
+      if (listResp.ok) {
+        const listData = await listResp.json() as { data: Array<{ id: string }> };
+        for (const m of listData.data) {
+          if (m.id === this.model || m.id.startsWith(`${this.model}:`)) {
+            await fetch(`${this.baseUrl}${ENDPOINT_MODELS_UNLOAD}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ instance_id: m.id }),
+              signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
+            }).catch(() => {});
+          }
+        }
+      }
     } catch { /* not loaded — fine */ }
 
     const ctx = contextLength ?? this.contextWindow;
