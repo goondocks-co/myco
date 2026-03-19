@@ -109,22 +109,11 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
   }
 
   /**
-   * Ensure the model is loaded with the correct settings.
-   * Unloads existing instances first (LM Studio auto-loads with defaults when
-   * it sees context_length in chat requests, creating duplicates).
-   * Captures the instance_id so subsequent chat requests target this exact instance.
+   * Load the model with the correct settings for digest operations.
+   * Captures the instance_id so subsequent chat requests target this exact instance
+   * without passing context_length (which would trigger LM Studio auto-loading).
    */
   async ensureLoaded(contextLength?: number, gpuKvCache?: boolean): Promise<void> {
-    // Unload any auto-loaded instances with wrong settings
-    try {
-      await fetch(`${this.baseUrl}/api/v1/models/unload`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: this.model }),
-        signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
-      });
-    } catch { /* not loaded — fine */ }
-
     const ctx = contextLength ?? this.contextWindow;
     const body: Record<string, unknown> = {
       model: this.model,
