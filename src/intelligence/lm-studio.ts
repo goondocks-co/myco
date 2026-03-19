@@ -69,10 +69,12 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
     }
 
     const data = await response.json() as {
-      message: string;
-      model: string;
+      model_instance_id: string;
+      output: Array<{ type: string; content: string }>;
     };
-    return { text: data.message, model: data.model };
+    const messageOutput = data.output.find((o) => o.type === 'message');
+    const text = messageOutput?.content ?? '';
+    return { text, model: data.model_instance_id };
   }
 
   /**
