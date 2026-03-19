@@ -29,9 +29,11 @@ export const claudeCodeAdapter: AgentAdapter = {
     const settingsDir = path.join(projectRoot, '.claude');
     if (!fs.existsSync(settingsDir)) return false;
 
-    // Write to settings.user.json (gitignored) — vault paths contain the
-    // user's home directory and should not be committed to the repository.
-    const settingsPath = path.join(settingsDir, 'settings.user.json');
+    // Write to settings.json — Claude Code only injects env vars from this
+    // file into hook processes (settings.user.json env is not propagated).
+    // The caller passes the collapsed ~/... form so the committed path
+    // doesn't leak the user's home directory.
+    const settingsPath = path.join(settingsDir, 'settings.json');
     let settings: Record<string, unknown> = {};
     if (fs.existsSync(settingsPath)) {
       try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')); } catch { /* fresh */ }
