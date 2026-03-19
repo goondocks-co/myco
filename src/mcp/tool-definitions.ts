@@ -21,6 +21,7 @@ export const TOOL_ORPHANS = 'myco_orphans';
 export const TOOL_LOGS = 'myco_logs';
 export const TOOL_SUPERSEDE = 'myco_supersede';
 export const TOOL_CONSOLIDATE = 'myco_consolidate';
+export const TOOL_CONTEXT = 'myco_context';
 
 // --- Shared property descriptions (used by multiple tools) ---
 const PROP_BRANCH = 'Git branch name to find related sessions and plans';
@@ -165,6 +166,20 @@ export const TOOL_DEFINITIONS = [
         tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
       },
       required: ['source_spore_ids', 'consolidated_content', 'observation_type'],
+    },
+  },
+  {
+    name: TOOL_CONTEXT,
+    description: "Retrieve Myco's synthesized understanding of this project. Returns a pre-computed context extract at the requested token tier. Available tiers: 1500 (executive briefing), 3000 (team standup), 5000 (deep onboarding), 10000 (institutional knowledge). This is a rich, always-current synthesis of project history, decisions, patterns, and active work — not a search result.",
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        tier: {
+          type: 'number',
+          enum: [1500, 3000, 5000, 10000],
+          description: 'Token budget tier. Larger tiers include more detail. Default: 3000.',
+        },
+      },
     },
   },
 ];

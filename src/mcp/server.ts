@@ -19,6 +19,7 @@ import { handleMycoGraph, handleMycoOrphans } from './tools/graph.js';
 import { handleMycoLogs } from './tools/logs.js';
 import { handleMycoSupersede } from './tools/supersede.js';
 import { handleMycoConsolidate } from './tools/consolidate.js';
+import { handleMycoContext } from './tools/context.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { loadConfig } from '../config/loader.js';
 import { createEmbeddingProvider } from '../intelligence/llm.js';
@@ -40,6 +41,7 @@ import {
   TOOL_DEFINITIONS,
   TOOL_SEARCH, TOOL_RECALL, TOOL_REMEMBER, TOOL_PLANS, TOOL_SESSIONS,
   TOOL_TEAM, TOOL_GRAPH, TOOL_ORPHANS, TOOL_LOGS, TOOL_SUPERSEDE, TOOL_CONSOLIDATE,
+  TOOL_CONTEXT,
 } from './tool-definitions.js';
 
 export interface MycoServer {
@@ -133,6 +135,10 @@ export function createMycoServer(config: ServerConfig): MycoServer {
         }
         logActivity(TOOL_CONSOLIDATE, { wisdom_id: result.wisdom_id, sources: input.source_spore_ids, archived: result.sources_archived });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+      case TOOL_CONTEXT: {
+        const result = handleMycoContext(config.vaultDir, args as { tier?: number });
+        return { content: [{ type: 'text', text: result.content }] };
       }
       default:
         throw new Error(`Unknown tool: ${name}`);
