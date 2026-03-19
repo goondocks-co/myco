@@ -147,7 +147,22 @@ digest:
     max_notes_per_cycle: 50
 ```
 
-Only write fields the user explicitly changed — Zod defaults handle the rest.
+Use the CLI command to write settings deterministically:
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js setup-digest \
+  --tiers 1500,3000,5000,10000 \
+  --inject-tier 3000 \
+  --provider lm-studio \
+  --model "qwen/qwen3.5-35b-a3b" \
+  --context-window 65536 \
+  --gpu-kv-cache false \
+  --keep-alive 30m \
+  --summary-tokens 1024 \
+  --extraction-tokens 2048
+```
+
+Only pass flags the user explicitly changed — Zod defaults handle the rest. Use `--show` to display current settings.
 
 ## Step 6: Verify and restart
 

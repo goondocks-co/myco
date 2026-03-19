@@ -18,6 +18,7 @@ Commands:
   vectors <query>          Raw vector search with similarity scores
   session [id|latest]      Show a session note
   logs [options]           View daemon logs
+  setup-digest [options]   Configure digest and capture settings
   restart                  Restart the daemon
   rebuild                  Reindex the entire vault
   reprocess [options]      Re-extract observations and re-index sessions
@@ -52,6 +53,7 @@ async function main(): Promise<void> {
     case 'search': return (await import('./cli/search.js')).run(args, vaultDir);
     case 'vectors': return (await import('./cli/search.js')).runVectors(args, vaultDir);
     case 'session': return (await import('./cli/session.js')).run(args, vaultDir);
+    case 'setup-digest': return (await import('./cli/setup-digest.js')).run(args, vaultDir);
     case 'restart': return (await import('./cli/restart.js')).run(args, vaultDir);
     case 'rebuild': return (await import('./cli/rebuild.js')).run(args, vaultDir);
     case 'reprocess': return (await import('./cli/reprocess.js')).run(args, vaultDir);

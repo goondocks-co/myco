@@ -93,7 +93,16 @@ If the user chooses **"Customize"**, ask these one at a time:
 3. **Separate model:** "Use a different model for digestion?" — if yes, show available models from detected providers. This allows a larger/better model for digest while keeping a fast model for hooks.
 4. **Context window:** "Context window for digest?" — suggest based on RAM tier from the table above
 
-Store the user's choices to write into the `digest` section of `myco.yaml`.
+Use the CLI command to write digest settings deterministically:
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js setup-digest \
+  --tiers 1500,3000,5000,10000 \
+  --inject-tier 3000 \
+  --context-window 32768
+```
+
+Only pass flags the user explicitly changed — Zod defaults handle the rest.
 
 ## Step 6: Run init with all gathered inputs
 
