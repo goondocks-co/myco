@@ -8,12 +8,12 @@
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
+import YAML from 'yaml';
 import type { MycoIndex, IndexedNote } from '../index/sqlite.js';
 import type { VectorIndex } from '../index/vectors.js';
 import type { LlmProvider, EmbeddingProvider } from '../intelligence/llm.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
 import { stripReasoningTokens } from '../intelligence/response.js';
-import { VaultWriter } from './writer.js';
 import { indexNote } from '../index/rebuild.js';
 import { loadPrompt } from '../prompts/index.js';
 import {
@@ -40,7 +40,8 @@ export function isActiveSpore(frontmatter: Record<string, unknown>): boolean {
 }
 
 /**
- * Mark a single spore as superseded: update frontmatter, append notice, re-index, remove vector.
+ * Mark a single spore as superseded: update frontmatter + append notice in a
+ * single read-modify-write, then re-index and remove from vector index.
  * Returns true if the write succeeded, false if the file was not found.
  */
 export function supersedeSpore(
@@ -49,23 +50,37 @@ export function supersedeSpore(
   targetPath: string,
   deps: { index: MycoIndex; vectorIndex: VectorIndex | null; vaultDir: string },
 ): boolean {
-  const writer = new VaultWriter(deps.vaultDir);
-  const updated = writer.updateNoteFrontmatter(
-    targetPath,
-    { status: 'superseded', superseded_by: newSporeId },
-    true,
-  );
-
-  if (!updated) return false;
-
-  // Append supersession notice to body (idempotent: skip if already present)
   const fullPath = path.join(deps.vaultDir, targetPath);
-  const fileContent = fs.readFileSync(fullPath, 'utf-8');
-  if (!fileContent.includes(SUPERSESSION_NOTICE_MARKER)) {
-    const notice = `\n\n> [!warning] Superseded\n> This observation has been superseded.\n\n${SUPERSESSION_NOTICE_MARKER} [[${newSporeId}]]`;
-    fs.writeFileSync(fullPath, fileContent.trimEnd() + notice + '\n', 'utf-8');
+  let fileContent: string;
+  try {
+    fileContent = fs.readFileSync(fullPath, 'utf-8');
+  } catch {
+    return false;
   }
 
+  // Parse and update frontmatter
+  const fmMatch = fileContent.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) return false;
+
+  const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
+  parsed.status = 'superseded';
+  parsed.superseded_by = newSporeId;
+
+  const fmYaml = YAML.stringify(parsed, { defaultStringType: 'QUOTE_DOUBLE', defaultKeyType: 'PLAIN' }).trim();
+  let body = fileContent.slice(fmMatch[0].length);
+
+  // Append supersession notice (idempotent: skip if already present)
+  if (!body.includes(SUPERSESSION_NOTICE_MARKER)) {
+    const notice = `\n\n> [!warning] Superseded\n> This observation has been superseded.\n\n${SUPERSESSION_NOTICE_MARKER} [[${newSporeId}]]`;
+    body = body.trimEnd() + notice + '\n';
+  }
+
+  // Atomic write (temp file + rename)
+  const tmp = `${fullPath}.tmp`;
+  fs.writeFileSync(tmp, `---\n${fmYaml}\n---${body}`, 'utf-8');
+  fs.renameSync(tmp, fullPath);
+
+  // Re-index the updated file and remove stale vector
   indexNote(deps.index, deps.vaultDir, targetPath);
   deps.vectorIndex?.delete(targetId);
 

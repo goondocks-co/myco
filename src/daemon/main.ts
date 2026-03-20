@@ -41,6 +41,7 @@ interface IndexDeps {
   vaultDir: string;
   vectorIndex: VectorIndex | null;
   embeddingProvider: EmbeddingProvider;
+  llmProvider: LlmProvider;
   logger: DaemonLogger;
 }
 
@@ -62,21 +63,31 @@ function indexAndEmbed(
 function writeObservations(
   observations: Observation[],
   sessionId: string,
-  deps: IndexDeps & { vault: VaultWriter; llmProvider: LlmProvider },
+  deps: IndexDeps & { vault: VaultWriter },
 ): void {
   const written = writeObservationNotes(observations, sessionId, deps.vault, deps.index, deps.vaultDir);
   for (const note of written) {
     indexAndEmbed(note.path, note.id, `${note.observation.title}\n${note.observation.content}`,
       { type: 'spore', importance: 'high', session_id: sessionId }, deps);
-    checkSupersession(note.id, {
+    deps.logger.info('processor', 'Observation written', { type: note.observation.type, title: note.observation.title, session_id: sessionId });
+  }
+
+  // Fire-and-forget supersession checks — sequential to avoid thundering herd on the LLM
+  if (written.length > 0) {
+    const curationDeps = {
       index: deps.index,
       vectorIndex: deps.vectorIndex,
       embeddingProvider: deps.embeddingProvider,
       llmProvider: deps.llmProvider,
       vaultDir: deps.vaultDir,
-      log: (level, msg, data) => deps.logger[level]('curation', msg, data),
-    }).catch((err) => deps.logger.debug('curation', 'Supersession check failed', { id: note.id, error: (err as Error).message }));
-    deps.logger.info('processor', 'Observation written', { type: note.observation.type, title: note.observation.title, session_id: sessionId });
+      log: ((level: string, msg: string, data?: Record<string, unknown>) => (deps.logger as any)[level]('curation', msg, data)) as Parameters<typeof checkSupersession>[1]['log'],
+    };
+    (async () => {
+      for (const note of written) {
+        try { await checkSupersession(note.id, curationDeps); }
+        catch (err) { deps.logger.debug('curation', 'Supersession check failed', { id: note.id, error: (err as Error).message }); }
+      }
+    })();
   }
 }
 
@@ -210,7 +221,7 @@ export async function main(): Promise<void> {
   });
 
   let activeStopProcessing: Promise<void> | null = null;
-  const indexDeps: IndexDeps = { index, vaultDir, vectorIndex, embeddingProvider, logger };
+  const indexDeps: IndexDeps = { index, vaultDir, vectorIndex, embeddingProvider, llmProvider, logger };
 
   const bufferDir = path.join(vaultDir, 'buffer');
   const sessionBuffers = new Map<string, EventBuffer>();
@@ -365,7 +376,7 @@ export async function main(): Promise<void> {
     const result = await processor.process(asRecords, sessionId);
 
     if (!result.degraded) {
-      writeObservations(result.observations, sessionId, { vault, llmProvider, ...indexDeps });
+      writeObservations(result.observations, sessionId, { vault, ...indexDeps });
     }
 
     logger.debug('processor', 'Batch processed', {
@@ -683,7 +694,7 @@ export async function main(): Promise<void> {
 
     // Write observations
     if (observationResult && !observationResult.degraded) {
-      writeObservations(observationResult.observations, sessionId, { vault, llmProvider, ...indexDeps });
+      writeObservations(observationResult.observations, sessionId, { vault, ...indexDeps });
     }
 
     // Compute canonical path
