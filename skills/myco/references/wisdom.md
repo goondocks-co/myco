@@ -2,9 +2,19 @@
 
 When you notice patterns in vault spores — recurring themes, conflicting advice, outdated observations — use these tools to keep the vault clean and its knowledge sharp.
 
+## Automatic Curation
+
+Myco automatically checks for supersession every time a new spore is written. After the spore is saved and embedded, a fire-and-forget pipeline searches for semantically similar active spores of the same observation type and asks the LLM whether any are now outdated. If so, they're marked superseded automatically. This means most vault hygiene happens without manual intervention.
+
+For vault-wide cleanup (e.g., after a large refactor), use the CLI:
+```sh
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js curate --dry-run  # preview
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js curate             # execute
+```
+
 ## Supersede
 
-Use `myco_supersede` when a newer spore replaces an older one.
+Use `myco_supersede` for manual supersession when you spot a stale spore that automatic curation missed.
 
 **Signals:**
 - A decision was reversed in a later session

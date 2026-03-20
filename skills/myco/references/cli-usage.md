@@ -287,6 +287,54 @@ Run this after changing the embedding model (via `setup-llm`) to regenerate all 
 
 ---
 
+### `digest` — Run a digest cycle on demand
+
+Trigger a digest cycle manually. Use `--tier` to reprocess a specific tier from scratch (all substrate, no previous extract), or `--full` for a complete rebuild of all tiers.
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--tier <number>` | number | Reprocess a specific tier (clean slate) |
+| `--full` | boolean | Reprocess all tiers from scratch |
+
+When `--tier` or `--full` is used, the cycle reads all vault notes (ignoring the last-cycle timestamp) and skips the previous extract, producing a fresh synthesis.
+
+**Examples:**
+
+```sh
+# Run an incremental cycle (same as what the metabolism timer does)
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js digest
+
+# Reprocess tier 3000 from scratch
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js digest --tier 3000
+
+# Full rebuild of all tiers
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js digest --full
+```
+
+---
+
+### `curate` — Scan vault and supersede stale spores
+
+Scans all active spores, clusters them by semantic similarity within each observation type, and asks the LLM which older spores are outdated. Superseded spores are preserved with lineage metadata — never deleted.
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--dry-run` | boolean | Run LLM evaluation but print results without writing |
+
+**Examples:**
+
+```sh
+# Scan and supersede stale spores
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js curate
+
+# Preview what would be superseded
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js curate --dry-run
+```
+
+Note: `--dry-run` still runs LLM calls (to evaluate clusters) — it just skips the writes. Use it to review before running on a vault for the first time.
+
+---
+
 ### `reprocess` — Re-extract observations from transcripts
 
 Re-reads session transcripts, re-extracts observations with the current LLM, and re-indexes. Existing spores are preserved — new extractions are additive.
