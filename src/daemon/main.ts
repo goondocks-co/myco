@@ -420,8 +420,8 @@ export async function main(): Promise<void> {
   });
 
   // Session routes
-  server.registerRoute('POST', '/sessions/register', async (body: unknown) => {
-    const { session_id, branch, started_at } = RegisterBody.parse(body);
+  server.registerRoute('POST', '/sessions/register', async (req) => {
+    const { session_id, branch, started_at } = RegisterBody.parse(req.body);
     const resolvedStartedAt = started_at ?? new Date().toISOString();
     registry.register(session_id, { started_at: resolvedStartedAt, branch });
     server.updateDaemonJsonSessions(registry.sessions);
@@ -452,11 +452,11 @@ export async function main(): Promise<void> {
     metabolism?.activate();
 
     logger.info('lifecycle', 'Session registered', { session_id, branch });
-    return { ok: true, sessions: registry.sessions };
+    return { body: { ok: true, sessions: registry.sessions } };
   });
 
-  server.registerRoute('POST', '/sessions/unregister', async (body: unknown) => {
-    const { session_id } = UnregisterBody.parse(body);
+  server.registerRoute('POST', '/sessions/unregister', async (req) => {
+    const { session_id } = UnregisterBody.parse(req.body);
     registry.unregister(session_id);
     // Note: we do NOT delete the buffer FILE for THIS session. Session reload
     // (SessionEnd → SessionStart) reuses the same session_id, and deleting
@@ -482,12 +482,12 @@ export async function main(): Promise<void> {
     capturedArtifactPaths.delete(session_id);
     server.updateDaemonJsonSessions(registry.sessions);
     logger.info('lifecycle', 'Session unregistered', { session_id });
-    return { ok: true, sessions: registry.sessions };
+    return { body: { ok: true, sessions: registry.sessions } };
   });
 
   // Event routes
-  server.registerRoute('POST', '/events', async (body: unknown) => {
-    const validated = EventBody.parse(body);
+  server.registerRoute('POST', '/events', async (req) => {
+    const validated = EventBody.parse(req.body);
     const event = { ...validated, timestamp: validated.timestamp ?? new Date().toISOString() } as BatchEvent;
     logger.debug('hooks', 'Event received', { type: event.type, session_id: event.session_id });
 
@@ -521,11 +521,11 @@ export async function main(): Promise<void> {
         }
       }
     }
-    return { ok: true };
+    return { body: { ok: true } };
   });
 
-  server.registerRoute('POST', '/events/stop', async (body: unknown) => {
-    const { session_id: sessionId, user, transcript_path: hookTranscriptPath, last_assistant_message: lastAssistantMessage } = StopBody.parse(body);
+  server.registerRoute('POST', '/events/stop', async (req) => {
+    const { session_id: sessionId, user, transcript_path: hookTranscriptPath, last_assistant_message: lastAssistantMessage } = StopBody.parse(req.body);
     // Ensure session is registered (handles daemon restarts mid-session)
     if (!registry.getSession(sessionId)) {
       registry.register(sessionId, { started_at: new Date().toISOString() });
@@ -546,7 +546,7 @@ export async function main(): Promise<void> {
     const prev = activeStopProcessing ?? Promise.resolve();
     activeStopProcessing = prev.then(run).finally(() => { activeStopProcessing = null; });
 
-    return { ok: true };
+    return { body: { ok: true } };
   });
 
   async function processStopEvent(
@@ -846,8 +846,8 @@ export async function main(): Promise<void> {
 
   // Session-start context: digest extract (if available) or structural facts.
   // Memories are injected per-prompt (more targeted, less noise).
-  server.registerRoute('POST', '/context', async (body: unknown) => {
-    const { session_id, branch } = ContextBody.parse(body);
+  server.registerRoute('POST', '/context', async (req) => {
+    const { session_id, branch } = ContextBody.parse(req.body);
     logger.debug('hooks', 'Session context query', { session_id });
     try {
       // Digest-first: serve pre-computed extract if available
@@ -861,7 +861,7 @@ export async function main(): Promise<void> {
           meta.push(`Session:: \`${session_id}\``);
 
           logger.debug('context', `Injecting digest extract (tier ${result.tier})`, { session_id, fallback: result.fallback });
-          return { text: meta.join('\n\n'), source: 'digest', tier: result.tier };
+          return { body: { text: meta.join('\n\n'), source: 'digest', tier: result.tier } };
         }
         // Fall through to layer-based injection if no extract exists yet
       }
@@ -903,12 +903,12 @@ export async function main(): Promise<void> {
       parts.push(`Session:: \`${session_id}\``);
 
       if (parts.length > 0) {
-        return { text: parts.join('\n\n') };
+        return { body: { text: parts.join('\n\n') } };
       }
-      return { text: '' };
+      return { body: { text: '' } };
     } catch (error) {
       logger.error('daemon', 'Session context failed', { error: (error as Error).message });
-      return { text: '' };
+      return { body: { text: '' } };
     }
   });
 
@@ -919,10 +919,10 @@ export async function main(): Promise<void> {
     session_id: z.string().optional(),
   });
 
-  server.registerRoute('POST', '/context/prompt', async (body: unknown) => {
-    const { prompt, session_id } = PromptContextBody.parse(body);
+  server.registerRoute('POST', '/context/prompt', async (req) => {
+    const { prompt, session_id } = PromptContextBody.parse(req.body);
     if (!prompt || prompt.length < PROMPT_CONTEXT_MIN_LENGTH || !vectorIndex) {
-      return { text: '' };
+      return { body: { text: '' } };
     }
 
     try {
@@ -933,7 +933,7 @@ export async function main(): Promise<void> {
         relativeThreshold: PROMPT_CONTEXT_MIN_SIMILARITY,
       });
 
-      if (results.length === 0) return { text: '' };
+      if (results.length === 0) return { body: { text: '' } };
 
       const noteMap = new Map(
         index.queryByIds(results.map((r) => r.id)).map((n) => [n.id, n]),
@@ -949,7 +949,7 @@ export async function main(): Promise<void> {
         lines.push(`- [${obsType}] ${note.title}: ${note.content.slice(0, CONTENT_SNIPPET_CHARS)} \`[${note.id}]\``);
       }
 
-      if (lines.length === 0) return { text: '' };
+      if (lines.length === 0) return { body: { text: '' } };
 
       const injected = `**Relevant spores for this task:**\n${lines.join('\n')}`;
       logger.debug('context', 'Prompt context injected', {
@@ -958,10 +958,10 @@ export async function main(): Promise<void> {
         prompt_preview: prompt.slice(0, 50),
       });
 
-      return { text: injected };
+      return { body: { text: injected } };
     } catch (err) {
       logger.debug('context', 'Prompt context failed', { error: (err as Error).message });
-      return { text: '' };
+      return { body: { text: '' } };
     }
   });
 
