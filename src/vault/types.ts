@@ -101,7 +101,7 @@ export function parseNoteFrontmatter(data: Record<string, unknown>): NoteFrontma
   const type = data.type as string;
   const schema = schemasByType[type];
   if (!schema) {
-    throw new Error(`Unknown note type: ${type}`);
+    throw new Error(`Unknown note type: ${type}. Known types: ${Object.keys(schemasByType).join(', ')}`);
   }
   // gray-matter and YAML.parse return Date objects for ISO date strings.
   // Coerce them to strings before Zod validation.

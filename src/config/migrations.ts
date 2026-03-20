@@ -64,11 +64,11 @@ export const MIGRATIONS: Migration[] = [
         fs.renameSync(memoriesDir, sporesDir);
       }
 
-      // Update frontmatter type: memory → type: spore
-      const walk = (dir: string): void => {
+      // Update frontmatter type: memory → type: spore in migrated files
+      const walkUpdate = (dir: string): void => {
         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
           const fullPath = path.join(dir, entry.name);
-          if (entry.isDirectory()) { walk(fullPath); continue; }
+          if (entry.isDirectory()) { walkUpdate(fullPath); continue; }
           if (!entry.name.endsWith('.md')) continue;
           const content = fs.readFileSync(fullPath, 'utf-8');
           if (content.includes('type: memory')) {
@@ -76,7 +76,22 @@ export const MIGRATIONS: Migration[] = [
           }
         }
       };
-      walk(sporesDir);
+      walkUpdate(sporesDir);
+
+      // Update wikilinks in ALL vault files: [[memories/...]] → [[spores/...]]
+      const walkLinks = (dir: string): void => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) { walkLinks(fullPath); continue; }
+          if (!entry.name.endsWith('.md')) continue;
+          const content = fs.readFileSync(fullPath, 'utf-8');
+          if (content.includes('memories/')) {
+            fs.writeFileSync(fullPath, content.replace(/memories\//g, 'spores/'));
+          }
+        }
+      };
+      // Walk the entire vault, not just spores/ — session notes reference memories/
+      walkLinks(vaultDir);
     },
   },
 ];
