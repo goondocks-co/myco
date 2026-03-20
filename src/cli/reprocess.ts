@@ -22,7 +22,7 @@ import { loadConfig } from '../config/loader.js';
 import { createLlmProvider, createEmbeddingProvider } from '../intelligence/llm.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
 import { batchExecute, LLM_BATCH_CONCURRENCY, EMBEDDING_BATCH_CONCURRENCY } from '../intelligence/batch.js';
-import { BufferProcessor } from '../daemon/processor.js';
+import { BufferProcessor, SUMMARIZATION_FAILED_MARKER } from '../daemon/processor.js';
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { VaultWriter } from '../vault/writer.js';
 import { writeObservationNotes } from '../vault/observations.js';
@@ -34,8 +34,6 @@ import { callout } from '../obsidian/formatter.js';
 import { parseStringFlag } from './shared.js';
 import matter from 'gray-matter';
 
-/** Marker text that appears in summaries when summarization fails. */
-const FAILED_SUMMARY_MARKER = 'summarization failed';
 
 interface EmbedJob {
   id: string;
@@ -157,7 +155,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   for (const { relativePath, sessionId } of sessionFiles) {
     const rawContent = fs.readFileSync(path.join(vaultDir, relativePath), 'utf-8');
     const { data: frontmatter, content: body } = matter(rawContent);
-    const hasFailed = body.includes(FAILED_SUMMARY_MARKER);
+    const hasFailed = body.includes(SUMMARIZATION_FAILED_MARKER);
 
     // Early skip: when --failed is set, don't build task for sessions that succeeded
     if (failedOnly && !hasFailed) continue;
@@ -268,7 +266,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
       const result = await processor.summarizeSession(task.conversationSection, task.bare, user);
 
       // Check if summarization actually succeeded (not a fallback error message)
-      if (result.summary.includes(FAILED_SUMMARY_MARKER)) {
+      if (result.summary.includes(SUMMARIZATION_FAILED_MARKER)) {
         process.stdout.write(` summarization failed again, skipped\n`);
         continue;
       }

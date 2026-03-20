@@ -7,6 +7,9 @@ import type { ObservationType, ArtifactType } from '../vault/types.js';
 import { buildExtractionPrompt, buildSummaryPrompt, buildTitlePrompt, buildClassificationPrompt } from '../prompts/index.js';
 import { extractJson, stripReasoningTokens } from '../intelligence/response.js';
 
+/** Marker substring in failed summary text. Used by reprocess --failed to detect failures. */
+export const SUMMARIZATION_FAILED_MARKER = 'summarization failed';
+
 export interface Observation {
   type: ObservationType;
   title: string;
@@ -112,7 +115,7 @@ export class BufferProcessor {
       const response = await this.backend.summarize(summaryPrompt, { maxTokens: this.summaryMaxTokens, reasoning: LLM_REASONING_MODE });
       summaryText = stripReasoningTokens(response.text);
     } catch (error) {
-      summaryText = `Session ${sessionId} — summarization failed: ${(error as Error).message}`;
+      summaryText = `Session ${sessionId} — ${SUMMARIZATION_FAILED_MARKER}: ${(error as Error).message}`;
     }
 
     const titlePrompt = buildTitlePrompt(summaryText, sessionId);
