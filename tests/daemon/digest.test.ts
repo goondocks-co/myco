@@ -631,6 +631,69 @@ describe('DigestEngine', () => {
       expect(fs.existsSync(path.join(vaultDir, 'digest', 'extract-3000.md'))).toBe(true);
     });
 
+    it('advances timestamp and records trace even when LLM fails', async () => {
+      const notes = [makeNote({ id: 's1', type: 'session' })];
+      const index = makeMockIndex(notes);
+      const llm = makeMockLlm();
+      (llm.summarize as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('model not found'));
+
+      const engine = new DigestEngine({
+        vaultDir,
+        index,
+        llmProvider: llm,
+        config: makeConfig({
+          tiers: [1500],
+          intelligence: { provider: null, model: null, base_url: null, context_window: 32768 },
+        }),
+      });
+
+      const result = await engine.runCycle();
+
+      // Cycle should still return a result (with no tiers generated)
+      expect(result).not.toBeNull();
+      expect(result!.tiersGenerated).toEqual([]);
+
+      // Trace should be written so the timestamp advances
+      const tracePath = path.join(vaultDir, 'digest', 'trace.jsonl');
+      expect(fs.existsSync(tracePath)).toBe(true);
+      const traceContent = fs.readFileSync(tracePath, 'utf-8').trim();
+      const traced = JSON.parse(traceContent);
+      expect(traced.cycleId).toBe(result!.cycleId);
+
+      // Subsequent getLastCycleTimestamp should return the new timestamp
+      expect(engine.getLastCycleTimestamp()).toBe(result!.timestamp);
+    });
+
+    it('completes successful tiers even when later tiers fail', async () => {
+      const notes = [makeNote({ id: 's1', type: 'session' })];
+      const index = makeMockIndex(notes);
+      const llm = makeMockLlm();
+      // First call succeeds, second fails
+      (llm.summarize as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ text: 'Good synthesis.', model: 'test-model' })
+        .mockRejectedValueOnce(new Error('context exceeded'));
+
+      const engine = new DigestEngine({
+        vaultDir,
+        index,
+        llmProvider: llm,
+        config: makeConfig({
+          tiers: [1500, 3000],
+          intelligence: { provider: null, model: null, base_url: null, context_window: 32768 },
+        }),
+      });
+
+      const result = await engine.runCycle();
+
+      expect(result).not.toBeNull();
+      expect(result!.tiersGenerated).toEqual([1500]);
+      // Tier 1500 extract should exist, tier 3000 should not
+      expect(fs.existsSync(path.join(vaultDir, 'digest', 'extract-1500.md'))).toBe(true);
+      expect(fs.existsSync(path.join(vaultDir, 'digest', 'extract-3000.md'))).toBe(false);
+      // Trace should still be written
+      expect(fs.existsSync(path.join(vaultDir, 'digest', 'trace.jsonl'))).toBe(true);
+    });
+
     it('tier gating: context_window 8192 produces only tier 1500', async () => {
       // 1500 needs 6500 (fits), 3000 needs 11500 (does not fit in 8192)
       const notes = [makeNote({ id: 's1', type: 'session', title: 'Auth work', content: 'Fixed auth.' })];

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { DAEMON_CLIENT_TIMEOUT_MS, DAEMON_HEALTH_CHECK_TIMEOUT_MS, DAEMON_HEALTH_RETRY_DELAYS } from '../constants.js';
+import { DAEMON_CLIENT_TIMEOUT_MS, DAEMON_HEALTH_CHECK_TIMEOUT_MS, DAEMON_HEALTH_RETRY_DELAYS, DAEMON_STALE_GRACE_PERIOD_MS } from '../constants.js';
 import { AgentRegistry } from '../agents/registry.js';
 import { getPluginVersion } from '../version.js';
 
@@ -83,9 +83,17 @@ export class DaemonClient {
   /**
    * Check if the daemon is running a stale version.
    * Returns true if the daemon's version doesn't match the current plugin version.
+   * Skips the check if daemon.json was written recently (grace period) to prevent
+   * rapid restart loops from concurrent hooks or session reloads.
    */
   private async isStale(): Promise<boolean> {
     try {
+      const jsonPath = path.join(this.vaultDir, 'daemon.json');
+      const stat = fs.statSync(jsonPath);
+      if (Date.now() - stat.mtimeMs < DAEMON_STALE_GRACE_PERIOD_MS) {
+        return false;
+      }
+
       const info = this.readDaemonJson();
       if (!info) return false;
 
@@ -120,12 +128,16 @@ export class DaemonClient {
   }
 
   /**
-   * Ensure the daemon is running the current version. Spawns it if unhealthy
-   * or restarts it if the version is stale. Returns true if healthy after this call.
+   * Ensure the daemon is running. Spawns it if unhealthy.
+   * When checkStale is true (default), also restarts a healthy daemon if its
+   * version doesn't match the current plugin version. Use checkStale: false
+   * for hooks that just need the daemon alive (e.g., stop) without triggering
+   * version-driven restarts.
    */
-  async ensureRunning(): Promise<boolean> {
-    // Check if daemon is running but stale (version mismatch)
-    if (await this.isStale()) {
+  async ensureRunning(opts?: { checkStale?: boolean }): Promise<boolean> {
+    const checkStale = opts?.checkStale ?? true;
+
+    if (checkStale && await this.isStale()) {
       this.killDaemon();
       // Brief pause for port release
       await new Promise((r) => setTimeout(r, 200));

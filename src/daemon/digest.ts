@@ -43,6 +43,15 @@ export interface DigestCycleResult {
 /** Simple log function signature for digest progress reporting. */
 export type DigestLogFn = (level: 'debug' | 'info' | 'warn', message: string, data?: Record<string, unknown>) => void;
 
+export interface DigestCycleOptions {
+  /** Process all substrate regardless of last cycle timestamp. */
+  fullReprocess?: boolean;
+  /** Only generate these tiers (default: all eligible). */
+  tiers?: number[];
+  /** Skip previous extract — start from clean slate. */
+  cleanSlate?: boolean;
+}
+
 export interface DigestEngineConfig {
   vaultDir: string;
   index: MycoIndex;
@@ -74,7 +83,6 @@ export class DigestEngine {
   private log: DigestLogFn;
   private lastCycleTimestampCache: string | null | undefined = undefined;
   private cycleInProgress = false;
-  private modelReady = false;
 
   constructor(engineConfig: DigestEngineConfig) {
     this.vaultDir = engineConfig.vaultDir;
@@ -241,7 +249,7 @@ export class DigestEngine {
    * Run a full digest cycle: discover substrate, generate extracts for each tier.
    * Returns the cycle result, or null if no substrate was found.
    */
-  async runCycle(): Promise<DigestCycleResult | null> {
+  async runCycle(opts?: DigestCycleOptions): Promise<DigestCycleResult | null> {
     if (this.cycleInProgress) {
       this.log('debug', 'Cycle already in progress — skipping');
       return null;
@@ -249,34 +257,41 @@ export class DigestEngine {
     this.cycleInProgress = true;
 
     try {
-      return await this.runCycleInternal();
+      return await this.runCycleInternal(opts);
     } finally {
       this.cycleInProgress = false;
     }
   }
 
-  private async runCycleInternal(): Promise<DigestCycleResult | null> {
-    // Ensure model is loaded with correct settings — one-time on first cycle
-    if (!this.modelReady && this.llm.ensureLoaded) {
+  private async runCycleInternal(opts?: DigestCycleOptions): Promise<DigestCycleResult | null> {
+    // Ensure model is loaded with correct settings every cycle.
+    // LM Studio's idle TTL can evict our instance between cycles — without
+    // re-running ensureLoaded, the auto-reloaded instance would use LM Studio's
+    // UI defaults (wrong KV cache setting). This is fast (~26ms) when the
+    // instance is still alive (just a getLoadedInstances check).
+    if (this.llm.ensureLoaded) {
       const { context_window: contextWindow, gpu_kv_cache: gpuKvCache } = this.config.digest.intelligence;
-      this.log('info', 'Loading digest model', { contextWindow, gpuKvCache });
+      this.log('debug', 'Verifying digest model', { contextWindow, gpuKvCache });
       await this.llm.ensureLoaded(contextWindow, gpuKvCache);
-      this.modelReady = true;
     }
 
     const startTime = Date.now();
-    const lastTimestamp = this.getLastCycleTimestamp();
+    const fullReprocess = opts?.fullReprocess ?? false;
+    const lastTimestamp = fullReprocess ? null : this.getLastCycleTimestamp();
     const substrate = this.discoverSubstrate(lastTimestamp);
 
-    this.log('debug', 'Discovering substrate', { lastTimestamp: lastTimestamp ?? 'cold start', substrateCount: substrate.length });
+    this.log('debug', 'Discovering substrate', { lastTimestamp: lastTimestamp ?? 'full reprocess', substrateCount: substrate.length });
     if (substrate.length === 0) {
       this.log('debug', 'No substrate found — skipping cycle');
       return null;
     }
 
-    this.log('info', `Starting digest cycle`, { substrateCount: substrate.length });
+    this.log('info', `Starting digest cycle`, { substrateCount: substrate.length, fullReprocess });
     const cycleId = crypto.randomUUID();
-    const eligibleTiers = this.getEligibleTiers();
+    const allEligible = this.getEligibleTiers();
+    const eligibleTiers = opts?.tiers
+      ? allEligible.filter((t) => opts.tiers!.includes(t))
+      : allEligible;
     this.log('debug', `Eligible tiers: [${eligibleTiers.join(', ')}]`);
     const tiersGenerated: number[] = [];
     let totalTokensUsed = 0;
@@ -304,11 +319,16 @@ export class DigestEngine {
       }
     }
 
+    // Record the cycle timestamp NOW, before tier processing. This ensures the
+    // timestamp advances even if LLM calls fail, preventing the same substrate
+    // from being rediscovered on every subsequent timer fire.
+    const cycleTimestamp = new Date().toISOString();
+
     const systemPrompt = loadPrompt('digest-system');
 
     for (const tier of eligibleTiers) {
       const tierPrompt = loadPrompt(`digest-${tier}`);
-      const previousExtract = this.readPreviousExtract(tier);
+      const previousExtract = opts?.cleanSlate ? null : this.readPreviousExtract(tier);
 
       // Calculate token budget for substrate:
       // (context_window * safety_margin) - output - system_prompt - tier_prompt - previous_extract
@@ -343,33 +363,37 @@ export class DigestEngine {
       const promptTokens = estimateTokens(systemPrompt + userPrompt);
       this.log('debug', `Tier ${tier}: sending LLM request`, { promptTokens, maxTokens: tier, substrateBudget });
 
-      const tierStart = Date.now();
-      const digestConfig = this.config.digest.intelligence;
-      const opts: LlmRequestOptions = {
-        maxTokens: tier,
-        timeoutMs: DIGEST_LLM_REQUEST_TIMEOUT_MS,
-        contextLength: contextWindow,
-        reasoning: 'off',
-        systemPrompt,
-        keepAlive: digestConfig.keep_alive ?? undefined,
-      };
-      const response = await this.llm.summarize(userPrompt, opts);
-      const tierDuration = Date.now() - tierStart;
+      try {
+        const tierStart = Date.now();
+        const digestConfig = this.config.digest.intelligence;
+        const opts: LlmRequestOptions = {
+          maxTokens: tier,
+          timeoutMs: DIGEST_LLM_REQUEST_TIMEOUT_MS,
+          contextLength: contextWindow,
+          reasoning: 'off',
+          systemPrompt,
+          keepAlive: digestConfig.keep_alive ?? undefined,
+        };
+        const response = await this.llm.summarize(userPrompt, opts);
+        const tierDuration = Date.now() - tierStart;
 
-      // Strip reasoning tokens if present (some models output chain-of-thought)
-      const extractText = stripReasoningTokens(response.text);
-      model = response.model;
-      const responseTokens = estimateTokens(extractText);
-      totalTokensUsed += promptTokens + responseTokens;
+        // Strip reasoning tokens if present (some models output chain-of-thought)
+        const extractText = stripReasoningTokens(response.text);
+        model = response.model;
+        const responseTokens = estimateTokens(extractText);
+        totalTokensUsed += promptTokens + responseTokens;
 
-      this.log('info', `Tier ${tier}: completed`, { durationMs: tierDuration, responseTokens, model: response.model });
-      this.writeExtract(tier, extractText, cycleId, response.model, substrate.length);
-      tiersGenerated.push(tier);
+        this.log('info', `Tier ${tier}: completed`, { durationMs: tierDuration, responseTokens, model: response.model });
+        this.writeExtract(tier, extractText, cycleId, response.model, substrate.length);
+        tiersGenerated.push(tier);
+      } catch (err) {
+        this.log('warn', `Tier ${tier}: failed`, { error: (err as Error).message });
+      }
     }
 
     const result: DigestCycleResult = {
       cycleId,
-      timestamp: new Date().toISOString(),
+      timestamp: cycleTimestamp,
       substrate: substrateIndex,
       tiersGenerated,
       model,
