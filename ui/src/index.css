@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Self-hosted Geist Mono — variable weight font for offline use.
+   SIL Open Font License. See public/fonts/GeistMono-LICENSE.txt */
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/ui/fonts/GeistMono-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 140 20% 6%;
+    --card: 0 0% 98%;
+    --card-foreground: 140 20% 6%;
+    --primary: 142 71% 45%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 142 20% 94%;
+    --secondary-foreground: 142 40% 15%;
+    --muted: 140 10% 96%;
+    --muted-foreground: 140 5% 40%;
+    --accent: 142 50% 90%;
+    --accent-foreground: 142 40% 15%;
+    --destructive: 0 84% 60%;
+    --border: 140 10% 90%;
+    --input: 140 10% 90%;
+    --ring: 142 71% 45%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 145 30% 4%;
+    --foreground: 215 20% 90%;
+    --card: 145 25% 7%;
+    --card-foreground: 215 20% 90%;
+    --primary: 142 71% 45%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 145 20% 12%;
+    --secondary-foreground: 142 50% 75%;
+    --muted: 145 15% 10%;
+    --muted-foreground: 215 10% 60%;
+    --accent: 145 25% 15%;
+    --accent-foreground: 142 50% 75%;
+    --destructive: 0 63% 50%;
+    --border: 145 15% 15%;
+    --input: 145 15% 15%;
+    --ring: 142 71% 45%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-ui, 'Geist Mono', 'SF Mono', 'Fira Code', monospace);
+  }
+}

@@ -3,39 +3,45 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { DaemonLogger } from './logger.js';
 import { getPluginVersion } from '../version.js';
+import { Router, type RouteHandler } from './router.js';
+import { resolveStaticFile } from './static.js';
+
+const DEFAULT_STATUS = 200;
+const UI_PATH = '/ui';
 
 export interface DaemonServerConfig {
   vaultDir: string;
   logger: DaemonLogger;
+  uiDir?: string;
 }
-
-type RouteHandler = (body: unknown) => Promise<unknown>;
 
 export class DaemonServer {
   port = 0;
   readonly version: string;
+  uiDir: string | null;
   private server: http.Server | null = null;
   private vaultDir: string;
   private logger: DaemonLogger;
-  private routes: Map<string, { method: string; handler: RouteHandler }> = new Map();
+  private router = new Router();
 
   constructor(config: DaemonServerConfig) {
     this.vaultDir = config.vaultDir;
     this.logger = config.logger;
+    this.uiDir = config.uiDir ?? null;
     this.version = getPluginVersion();
     this.registerDefaultRoutes();
   }
 
   registerRoute(method: string, routePath: string, handler: RouteHandler): void {
-    this.routes.set(`${method} ${routePath}`, { method, handler });
+    this.router.add(method, routePath, handler);
   }
 
-  async start(): Promise<void> {
+  async start(port: number = 0): Promise<void> {
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => this.handleRequest(req, res));
       this.server.on('error', reject);
 
-      this.server.listen(0, '127.0.0.1', () => {
+      this.server.listen(port, '127.0.0.1', () => {
         const addr = this.server!.address() as { port: number };
         this.port = addr.port;
         this.writeDaemonJson();
@@ -61,28 +67,74 @@ export class DaemonServer {
 
   private registerDefaultRoutes(): void {
     this.registerRoute('GET', '/health', async () => ({
-      myco: true,
-      version: this.version,
-      pid: process.pid,
-      uptime: process.uptime(),
+      body: {
+        myco: true,
+        version: this.version,
+        pid: process.pid,
+        uptime: process.uptime(),
+      },
     }));
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const key = `${req.method} ${req.url}`;
-    const route = this.routes.get(key);
+    const url = new URL(req.url!, 'http://localhost');
+    const pathname = url.pathname;
 
-    if (!route) {
+    // Static file serving for /ui* paths — handled before route matching
+    if (pathname.startsWith(UI_PATH)) {
+      if (pathname === UI_PATH) {
+        res.writeHead(301, { Location: `${UI_PATH}/` });
+        res.end();
+        return;
+      }
+
+      if (!this.uiDir) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'UI not available' }));
+        return;
+      }
+
+      const result = resolveStaticFile(this.uiDir, pathname);
+      if (!result) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not found' }));
+        return;
+      }
+
+      try {
+        const content = await fs.promises.readFile(result.filePath);
+        res.writeHead(200, {
+          'Content-Type': result.contentType,
+          'Cache-Control': result.cacheControl,
+        });
+        res.end(content);
+      } catch {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not found' }));
+      }
+      return;
+    }
+
+    const match = this.router.match(req.method!, req.url!);
+
+    if (!match) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'not found' }));
       return;
     }
 
     try {
-      const body = req.method === 'POST' ? await readBody(req) : undefined;
-      const result = await route.handler(body);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(result));
+      const body = (req.method === 'POST' || req.method === 'PUT') ? await readBody(req) : undefined;
+      const result = await match.handler({
+        body,
+        query: match.query,
+        params: match.params,
+        pathname: match.pathname,
+      });
+      const status = result.status ?? DEFAULT_STATUS;
+      const headers = { 'Content-Type': 'application/json', ...result.headers };
+      res.writeHead(status, headers);
+      res.end(JSON.stringify(result.body));
     } catch (error) {
       this.logger.error('daemon', 'Request handler error', {
         path: req.url,

@@ -20,6 +20,7 @@ const IntelligenceSchema = z.object({
 });
 
 const DaemonSchema = z.object({
+  port: z.number().int().min(1024).max(65535).nullable().default(null),
   log_level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   grace_period: z.number().int().positive().default(30),
   max_log_size: z.number().int().positive().default(5_242_880),
