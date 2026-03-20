@@ -9,7 +9,7 @@ import { MycoIndex } from '../index/sqlite.js';
 import { indexNote, rebuildIndex } from '../index/rebuild.js';
 import { initFts } from '../index/fts.js';
 import { createLlmProvider, createEmbeddingProvider } from '../intelligence/llm.js';
-import type { EmbeddingProvider } from '../intelligence/llm.js';
+import type { EmbeddingProvider, LlmProvider } from '../intelligence/llm.js';
 import { VectorIndex } from '../index/vectors.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
 import { LineageGraph, LINEAGE_SIMILARITY_THRESHOLD, LINEAGE_SIMILARITY_HIGH_CONFIDENCE, LINEAGE_SIMILARITY_CANDIDATES, LINEAGE_SIMILARITY_MAX_TOKENS, type LineageLink } from './lineage.js';
@@ -26,6 +26,7 @@ import { claudeCodeAdapter } from '../agents/claude-code.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { formatSessionBody } from '../obsidian/formatter.js';
 import { writeObservationNotes } from '../vault/observations.js';
+import { checkSupersession } from '../vault/curation.js';
 import { collectArtifactCandidates } from '../artifacts/candidates.js';
 import { slugifyPath } from '../artifacts/slugify.js';
 import { sessionNoteId, bareSessionId, sessionWikilink, sessionRelativePath } from '../vault/session-id.js';
@@ -61,12 +62,20 @@ function indexAndEmbed(
 function writeObservations(
   observations: Observation[],
   sessionId: string,
-  deps: IndexDeps & { vault: VaultWriter },
+  deps: IndexDeps & { vault: VaultWriter; llmProvider: LlmProvider },
 ): void {
   const written = writeObservationNotes(observations, sessionId, deps.vault, deps.index, deps.vaultDir);
   for (const note of written) {
     indexAndEmbed(note.path, note.id, `${note.observation.title}\n${note.observation.content}`,
       { type: 'spore', importance: 'high', session_id: sessionId }, deps);
+    checkSupersession(note.id, {
+      index: deps.index,
+      vectorIndex: deps.vectorIndex,
+      embeddingProvider: deps.embeddingProvider,
+      llmProvider: deps.llmProvider,
+      vaultDir: deps.vaultDir,
+      log: (level, msg, data) => deps.logger[level]('curation', msg, data),
+    }).catch((err) => deps.logger.debug('curation', 'Supersession check failed', { id: note.id, error: (err as Error).message }));
     deps.logger.info('processor', 'Observation written', { type: note.observation.type, title: note.observation.title, session_id: sessionId });
   }
 }
@@ -356,7 +365,7 @@ export async function main(): Promise<void> {
     const result = await processor.process(asRecords, sessionId);
 
     if (!result.degraded) {
-      writeObservations(result.observations, sessionId, { vault, ...indexDeps });
+      writeObservations(result.observations, sessionId, { vault, llmProvider, ...indexDeps });
     }
 
     logger.debug('processor', 'Batch processed', {
@@ -674,7 +683,7 @@ export async function main(): Promise<void> {
 
     // Write observations
     if (observationResult && !observationResult.degraded) {
-      writeObservations(observationResult.observations, sessionId, { vault, ...indexDeps });
+      writeObservations(observationResult.observations, sessionId, { vault, llmProvider, ...indexDeps });
     }
 
     // Compute canonical path
