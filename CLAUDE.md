@@ -31,7 +31,7 @@ Permanent installs register the plugin globally. `--plugin-dir .` is for develop
 
 ## Non-Goals
 
-- This is NOT a general-purpose knowledge base or note-taking app. Do not add user-facing UI, web dashboards, or REST APIs.
+- This is NOT a general-purpose knowledge base or note-taking app. Do not add external REST APIs or public-facing web services. The local dashboard (`/ui/`) is the configuration and operations interface — it is not a data viewer (Obsidian handles that).
 - This is NOT a framework. Do not add plugin systems, extensibility hooks, or abstraction layers for hypothetical consumers.
 - Do not add dependencies on cloud services. All intelligence runs locally (Ollama, LM Studio) or via lightweight API (Anthropic).
 
@@ -57,7 +57,25 @@ skills/          # Skill markdown files (subdirectory per skill)
 .cursor-plugin/  # Cursor plugin manifest + marketplace catalog
 .github/         # VS Code Copilot agent plugin manifest (also CI workflows)
 .mcp.json        # MCP server config for VS Code (servers format)
+ui/              # React + Tailwind dashboard (Vite build → dist/ui/)
+  src/
+    components/  # UI components (ui/, topology/, config/, operations/)
+    hooks/       # React hooks (use-daemon, use-config, use-power-query, etc.)
+    layout/      # Layout with sidebar navigation
+    lib/         # Utilities (api, cn, constants)
+    pages/       # Dashboard, Configuration, Operations, Logs
+    providers/   # Theme, Font, Power providers
 ```
+
+### Dashboard
+
+The daemon serves a React SPA at `http://localhost:<port>/ui/` for configuration management and operational triggers. Obsidian remains the data viewer for sessions, spores, and digest extracts.
+
+**Development:** `cd ui && MYCO_DAEMON_PORT=<port> npx vite dev` — Vite dev server proxies API calls to the daemon.
+
+**Build:** `make build` runs both `tsup` (backend) and `vite build` (frontend). Output: `dist/ui/`.
+
+**API routes** are thin handlers in `src/daemon/api/` that delegate to shared services in `src/services/`. The CLI and API use the same code paths — no logic duplication.
 
 ### Module Boundaries
 
@@ -198,6 +216,14 @@ make build
 1. Add `server.registerRoute()` call in `src/daemon/main.ts`
 2. Follow the pattern: validate input → process → write to vault → index → embed
 3. Embedding is fire-and-forget (`.then()/.catch()`) — never block the response on embedding
+
+### Add a new API route (dashboard)
+
+1. Create handler in `src/daemon/api/<name>.ts` — thin handler that delegates to shared services
+2. If the operation needs shared logic with the CLI, put it in `src/services/vault-ops.ts`
+3. Register route in `src/daemon/main.ts` (use `server.registerRoute()` with the new `RouteRequest`/`RouteResponse` types)
+4. Add tests in `tests/daemon/api/<name>.test.ts`
+5. Add the UI in `ui/src/pages/` or `ui/src/components/` as needed
 
 ### Test the vault and embeddings
 
