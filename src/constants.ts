@@ -142,4 +142,8 @@ export const DIGEST_SUBSTRATE_TYPE_WEIGHTS: Record<string, number> = {
   team: 1,
 };
 
+// --- LLM reasoning control ---
+/** Reasoning mode for all Myco LLM calls. Suppresses chain-of-thought tokens from reasoning models. */
+export const LLM_REASONING_MODE = 'off' as const;
+
 // --- Digest — System prompt overhead estimate ---

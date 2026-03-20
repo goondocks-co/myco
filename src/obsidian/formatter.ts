@@ -316,6 +316,24 @@ export function formatTeamBody(input: TeamBodyInput): string {
   return sections.join('\n\n');
 }
 
+// --- Section extraction ---
+
+/** Footer tag prefix used to terminate section extraction. */
+const FOOTER_TAG_PREFIX = '\n#type/';
+
+/**
+ * Extract a named section from a session/spore note body.
+ * Returns content between the section heading and the footer tags.
+ */
+export function extractSection(body: string, heading: string): string {
+  const start = body.indexOf(heading);
+  if (start === -1) return '';
+  const section = body.slice(start + heading.length);
+  const footerIdx = section.lastIndexOf(FOOTER_TAG_PREFIX);
+  if (footerIdx !== -1) return section.slice(0, footerIdx).trim();
+  return section.trim();
+}
+
 // --- Helpers ---
 
 function capitalize(s: string): string {

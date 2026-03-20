@@ -1,5 +1,5 @@
 import type { LlmProvider, EmbeddingProvider, LlmResponse, EmbeddingResponse, LlmRequestOptions } from './llm.js';
-import { estimateTokens, LLM_REQUEST_TIMEOUT_MS, EMBEDDING_REQUEST_TIMEOUT_MS, DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
+import { LLM_REQUEST_TIMEOUT_MS, EMBEDDING_REQUEST_TIMEOUT_MS, DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 
 interface OllamaConfig {
   model?: string;
@@ -21,30 +21,30 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
   readonly name = 'ollama';
   private baseUrl: string;
   private model: string;
-  private contextWindow: number;
   private defaultMaxTokens: number;
 
   constructor(config?: OllamaConfig) {
     this.baseUrl = config?.base_url ?? OllamaBackend.DEFAULT_BASE_URL;
     this.model = config?.model ?? config?.summary_model ?? 'llama3.2';
-    this.contextWindow = config?.context_window ?? 8192;
     this.defaultMaxTokens = config?.max_tokens ?? 1024;
   }
 
   async summarize(prompt: string, opts?: LlmRequestOptions): Promise<LlmResponse> {
     const maxTokens = opts?.maxTokens ?? this.defaultMaxTokens;
-    const contextLength = opts?.contextLength ?? this.contextWindow;
-    const promptTokens = estimateTokens(prompt);
-    const numCtx = Math.max(promptTokens + maxTokens, contextLength);
+
+    // Only send num_ctx when explicitly requested (e.g., digest needing 65K).
+    // Ollama reloads the model on ANY num_ctx change, so omitting it lets
+    // requests use whatever context is already loaded — no reload thrashing.
+    const options: Record<string, unknown> = { num_predict: maxTokens };
+    if (opts?.contextLength) {
+      options.num_ctx = opts.contextLength;
+    }
 
     const body: Record<string, unknown> = {
       model: this.model,
       prompt,
       stream: false,
-      options: {
-        num_ctx: numCtx,
-        num_predict: maxTokens,
-      },
+      options,
     };
 
     // System prompt — sent as a separate field instead of concatenated into prompt

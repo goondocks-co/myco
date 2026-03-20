@@ -23,7 +23,7 @@ Commands:
   digest [options]         Run a digest cycle (--tier N, --full)
   restart                  Restart the daemon
   rebuild                  Reindex the entire vault
-  reprocess [options]      Re-extract observations and re-index sessions
+  reprocess [options]      Re-extract observations, regenerate summaries, re-index
   version                  Show plugin version
 `;
 
