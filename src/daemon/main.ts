@@ -36,6 +36,9 @@ import { handleGetStats } from './api/stats.js';
 import { handleGetLogs } from './api/logs.js';
 import { handleRestart } from './api/restart.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
+import { handleRebuild, handleDigest, handleCurate } from './api/operations.js';
+import type { OperationHandlerDeps } from './api/operations.js';
+import { runCuration } from '../services/vault-ops.js';
 import { z } from 'zod';
 import YAML from 'yaml';
 import fs from 'node:fs';
@@ -990,6 +993,22 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/logs', async (req) => handleGetLogs(logger.getRingBuffer(), req.query));
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir, progressTracker }, req.body));
   server.registerRoute('GET', '/api/progress/:token', async (req) => handleGetProgress(progressTracker, req.params.token));
+
+  // --- Operations API routes ---
+  const operationDeps: OperationHandlerDeps = {
+    vaultDir,
+    config,
+    index,
+    vectorIndex,
+    llmProvider,
+    embeddingProvider,
+    progressTracker,
+    log: (level, message, data) => (logger as any)[level]('operations', message, data),
+  };
+
+  server.registerRoute('POST', '/api/rebuild', async () => handleRebuild(operationDeps));
+  server.registerRoute('POST', '/api/digest', async (req) => handleDigest(operationDeps, req.body));
+  server.registerRoute('POST', '/api/curate', async (req) => handleCurate(operationDeps, req.body, runCuration));
 
   const resolvedPort = await resolvePort(config.daemon.port, vaultDir);
   if (resolvedPort === 0) {
