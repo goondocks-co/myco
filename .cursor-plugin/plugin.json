@@ -1,6 +1,6 @@
 {
   "name": "myco",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "description": "Collective agent intelligence — captures session knowledge and serves it back to your team via MCP",
   "author": {
     "name": "goondocks-co"
