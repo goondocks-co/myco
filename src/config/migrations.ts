@@ -20,25 +20,23 @@ export interface Migration {
   migrate: (doc: Record<string, unknown>, vaultDir: string) => void;
 }
 
+/** Regex matching both quoted and unquoted YAML: type: memory, type: "memory", type: 'memory' */
+const MEMORY_TYPE_PATTERN = /type:\s*["']?memory["']?/g;
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
-    name: 'rename-memories-to-spores-config',
-    migrate: (doc) => {
-      // Rename context.layers.memories → context.layers.spores
+    name: 'rename-memories-to-spores',
+    migrate: (doc, vaultDir) => {
+      // Config: rename context.layers.memories → context.layers.spores
       const context = doc.context as Record<string, unknown> | undefined;
       const layers = context?.layers as Record<string, unknown> | undefined;
       if (layers && 'memories' in layers && !('spores' in layers)) {
         layers.spores = layers.memories;
         delete layers.memories;
       }
-    },
-  },
-  {
-    version: 2,
-    name: 'rename-memories-to-spores-vault',
-    migrate: (_, vaultDir) => {
-      // Rename memories/ directory to spores/, update frontmatter
+
+      // Vault: rename memories/ directory → spores/
       const memoriesDir = path.join(vaultDir, 'memories');
       const sporesDir = path.join(vaultDir, 'spores');
 
@@ -64,18 +62,17 @@ export const MIGRATIONS: Migration[] = [
         fs.renameSync(memoriesDir, sporesDir);
       }
 
-      // Update frontmatter type: memory → type: spore in migrated files
-      // Handles both unquoted (type: memory) and quoted (type: "memory") YAML
-      const memoryPattern = /type:\s*["']?memory["']?/g;
+      // Update frontmatter type: memory → type: spore (handles quoted and unquoted)
       const walkUpdate = (dir: string): void => {
         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
           const fullPath = path.join(dir, entry.name);
           if (entry.isDirectory()) { walkUpdate(fullPath); continue; }
           if (!entry.name.endsWith('.md')) continue;
           const content = fs.readFileSync(fullPath, 'utf-8');
-          if (memoryPattern.test(content)) {
-            memoryPattern.lastIndex = 0; // reset regex state
-            fs.writeFileSync(fullPath, content.replace(memoryPattern, 'type: spore'));
+          MEMORY_TYPE_PATTERN.lastIndex = 0;
+          if (MEMORY_TYPE_PATTERN.test(content)) {
+            MEMORY_TYPE_PATTERN.lastIndex = 0;
+            fs.writeFileSync(fullPath, content.replace(MEMORY_TYPE_PATTERN, 'type: spore'));
           }
         }
       };
@@ -93,33 +90,7 @@ export const MIGRATIONS: Migration[] = [
           }
         }
       };
-      // Walk the entire vault, not just spores/ — session notes reference memories/
       walkLinks(vaultDir);
-    },
-  },
-  {
-    version: 3,
-    name: 'fix-quoted-memory-type-in-spores',
-    migrate: (_, vaultDir) => {
-      // Migration 2 only matched unquoted type: memory but YAML files often
-      // have type: "memory" (quoted). Fix any remaining quoted references.
-      const sporesDir = path.join(vaultDir, 'spores');
-      if (!fs.existsSync(sporesDir)) return;
-
-      const memoryPattern = /type:\s*["']?memory["']?/g;
-      const walk = (dir: string): void => {
-        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-          const fullPath = path.join(dir, entry.name);
-          if (entry.isDirectory()) { walk(fullPath); continue; }
-          if (!entry.name.endsWith('.md')) continue;
-          const content = fs.readFileSync(fullPath, 'utf-8');
-          if (memoryPattern.test(content)) {
-            memoryPattern.lastIndex = 0;
-            fs.writeFileSync(fullPath, content.replace(memoryPattern, 'type: spore'));
-          }
-        }
-      };
-      walk(sporesDir);
     },
   },
 ];
