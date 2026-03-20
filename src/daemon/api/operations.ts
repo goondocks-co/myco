@@ -218,7 +218,7 @@ export async function handleCurate(
         percent: PROGRESS_COMPLETE,
         message: `Scanned: ${result.scanned}, clusters: ${result.clustersEvaluated}, superseded: ${result.superseded}`,
       });
-      deps.log('info', 'Curation completed via API', result as unknown as Record<string, unknown>);
+      deps.log('info', 'Curation completed via API', { ...result });
     })
     .catch((err) => {
       deps.progressTracker.update(token, {

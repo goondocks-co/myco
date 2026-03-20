@@ -1010,7 +1010,10 @@ export async function main(): Promise<void> {
     llmProvider,
     embeddingProvider,
     progressTracker,
-    log: (level, message, data) => (logger as any)[level]('operations', message, data),
+    log: (level, message, data) => {
+      const fn = logger[level as keyof typeof logger];
+      if (typeof fn === 'function') (fn as typeof logger.info).call(logger, 'operations', message, data);
+    },
   };
 
   server.registerRoute('POST', '/api/rebuild', async () => handleRebuild(operationDeps));
@@ -1026,9 +1029,13 @@ export async function main(): Promise<void> {
 
   // Persist the resolved port to config if it was auto-derived
   if (config.daemon.port === null && resolvedPort !== 0) {
-    config.daemon.port = resolvedPort;
-    saveConfig(vaultDir, config);
-    logger.info('daemon', 'Persisted auto-derived port to myco.yaml', { port: resolvedPort });
+    try {
+      config.daemon.port = resolvedPort;
+      saveConfig(vaultDir, config);
+      logger.info('daemon', 'Persisted auto-derived port to myco.yaml', { port: resolvedPort });
+    } catch (err) {
+      logger.warn('daemon', 'Failed to persist auto-derived port', { error: (err as Error).message });
+    }
   }
 
   // Background reindex after migration — runs after server is healthy

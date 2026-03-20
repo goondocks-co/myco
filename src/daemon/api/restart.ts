@@ -1,6 +1,11 @@
 import { spawn } from 'node:child_process';
+import { z } from 'zod';
 import type { RouteResponse } from '../router.js';
 import type { ProgressTracker } from './progress.js';
+
+const RestartBodySchema = z.object({
+  force: z.boolean().optional(),
+}).optional();
 
 /** Delay before initiating shutdown — allows the HTTP response to flush. */
 const RESTART_RESPONSE_FLUSH_MS = 500;
@@ -16,7 +21,8 @@ export async function handleRestart(
   deps: RestartHandlerDeps,
   body: unknown,
 ): Promise<RouteResponse> {
-  const { force } = (body as Record<string, unknown>) ?? {};
+  const parsed = RestartBodySchema.safeParse(body);
+  const force = parsed.success ? parsed.data?.force : false;
 
   // Check for active operations unless force is set
   if (!force && deps.progressTracker.hasActiveOperations()) {

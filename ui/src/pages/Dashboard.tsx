@@ -13,6 +13,7 @@ import {
   Timer,
 } from 'lucide-react';
 import { useDaemon, type StatsResponse } from '../hooks/use-daemon';
+import { totalSpores } from '../lib/vault';
 import { MycoTopology } from '../components/topology/MycoTopology';
 import { postJson } from '../lib/api';
 import { Button } from '../components/ui/button';
@@ -27,6 +28,7 @@ const SECONDS_PER_HOUR = 3_600;
 const SECONDS_PER_DAY = 86_400;
 const ACTION_FEEDBACK_DURATION_MS = 2_000;
 const TOP_SPORE_TYPES_LIMIT = 6;
+const DROPDOWN_CLOSE_DELAY_MS = 150;
 
 /* ---------- Helpers ---------- */
 
@@ -49,10 +51,6 @@ function formatTimeAgo(timestamp: string): string {
   if (diff < SECONDS_PER_HOUR) return `${Math.floor(diff / SECONDS_PER_MINUTE)}m ago`;
   if (diff < SECONDS_PER_DAY) return `${Math.floor(diff / SECONDS_PER_HOUR)}h ago`;
   return `${Math.floor(diff / SECONDS_PER_DAY)}d ago`;
-}
-
-function totalSpores(counts: Record<string, number>): number {
-  return Object.values(counts).reduce((sum, n) => sum + n, 0);
 }
 
 function topSporeTypes(counts: Record<string, number>): Array<[string, number]> {
@@ -137,7 +135,7 @@ function QuickActions({ stats }: { stats: StatsResponse }) {
           size="sm"
           className="gap-2"
           onClick={() => setVaultMenuOpen((prev) => !prev)}
-          onBlur={() => setTimeout(() => setVaultMenuOpen(false), 150)}
+          onBlur={() => setTimeout(() => setVaultMenuOpen(false), DROPDOWN_CLOSE_DELAY_MS)}
         >
           <FolderOpen className="h-4 w-4" />
           Open Vault

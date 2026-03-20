@@ -1,4 +1,5 @@
 import type { StatsResponse } from '../../hooks/use-daemon';
+import { totalSpores } from '../../lib/vault';
 
 /* ---------- Constants ---------- */
 
@@ -10,6 +11,7 @@ const NODE_RADIUS = 30;
 const HALO_RADIUS = 38;
 const NODE_COUNT = 5;
 const PULSE_DURATION = '3s';
+const DETAIL_MAX_CHARS = 16;
 
 /** Starting angle offset so the first node sits at top-center */
 const ANGLE_OFFSET = -Math.PI / 2;
@@ -68,10 +70,6 @@ function nodePosition(index: number): { x: number; y: number } {
 function formatModel(info: { provider: string; model: string } | null): string {
   if (!info) return 'none';
   return info.model;
-}
-
-function totalSpores(counts: Record<string, number>): number {
-  return Object.values(counts).reduce((sum, n) => sum + n, 0);
 }
 
 function metabolismToStatus(state: string | null, enabled: boolean): NodeStatus {
@@ -224,7 +222,7 @@ function TopologyNodeSvg({ node, index }: { node: TopologyNode; index: number })
         fontFamily={FONT_FAMILY}
         opacity={0.5}
       >
-        {node.detail.length > 16 ? node.detail.slice(0, 15) + '\u2026' : node.detail}
+        {node.detail.length > DETAIL_MAX_CHARS ? node.detail.slice(0, DETAIL_MAX_CHARS - 1) + '\u2026' : node.detail}
       </text>
     </g>
   );
