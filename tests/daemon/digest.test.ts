@@ -160,6 +160,45 @@ describe('DigestEngine', () => {
       expect(result.find((n) => n.type === 'extract')).toBeUndefined();
     });
 
+    it('filters out superseded spores', () => {
+      const notes = [
+        makeNote({ id: 's1', type: 'session' }),
+        makeNote({ id: 'm1', type: 'spore', frontmatter: { type: 'spore', status: 'active' } }),
+        makeNote({ id: 'm2', type: 'spore', frontmatter: { type: 'spore', status: 'superseded' } }),
+        makeNote({ id: 'm3', type: 'spore', frontmatter: { type: 'spore', status: 'archived' } }),
+      ];
+      const index = makeMockIndex(notes);
+      const engine = new DigestEngine({
+        vaultDir,
+        index,
+        llmProvider: makeMockLlm(),
+        config: makeConfig(),
+      });
+
+      const result = engine.discoverSubstrate(null);
+      expect(result).toHaveLength(2);
+      expect(result.find((n) => n.id === 's1')).toBeDefined();
+      expect(result.find((n) => n.id === 'm1')).toBeDefined();
+      expect(result.find((n) => n.id === 'm2')).toBeUndefined();
+      expect(result.find((n) => n.id === 'm3')).toBeUndefined();
+    });
+
+    it('includes spores without status field (legacy)', () => {
+      const notes = [
+        makeNote({ id: 'm1', type: 'spore', frontmatter: { type: 'spore' } }),
+      ];
+      const index = makeMockIndex(notes);
+      const engine = new DigestEngine({
+        vaultDir,
+        index,
+        llmProvider: makeMockLlm(),
+        config: makeConfig(),
+      });
+
+      const result = engine.discoverSubstrate(null);
+      expect(result).toHaveLength(1);
+    });
+
     it('respects max_notes_per_cycle limit', () => {
       const notes = Array.from({ length: 10 }, (_, i) =>
         makeNote({ id: `s${i}`, type: 'session' }),

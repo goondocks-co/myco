@@ -69,6 +69,8 @@ flowchart TD
     style Tiers fill:#e1f5fe
 ```
 
+Substrate discovery filters out superseded and archived spores — only active observations feed into the synthesis. Individual tier failures are caught and don't abort the cycle; the timestamp advances regardless so the same substrate isn't rediscovered.
+
 ### Metabolism States
 
 The digest engine adapts its processing rate based on activity:
@@ -114,6 +116,36 @@ flowchart TD
 
 Per-prompt spore injection continues unchanged alongside digest — the extract provides the big picture, spore injection provides targeted relevance for each specific prompt.
 
+## Vault Curation
+
+As projects evolve, older spores become stale. Curation automatically detects and supersedes outdated observations.
+
+```mermaid
+flowchart TD
+    Write[New Spore Written] --> Embed2[Embed Content]
+    Embed2 --> Search[Vector Search<br/>Similar active spores<br/>same observation_type]
+    Search --> Candidates{Candidates<br/>Found?}
+    Candidates -->|No| Done[Done]
+    Candidates -->|Yes| LLM[LLM Evaluation<br/>Does new spore make<br/>any candidates outdated?]
+    LLM --> Parse[Parse JSON Response<br/>Zod validation]
+    Parse --> Supersede[Mark Superseded<br/>frontmatter + notice + re-index<br/>+ delete vector]
+
+    CLI[myco curate] --> Scan[Scan All Active Spores]
+    Scan --> Group[Group by observation_type]
+    Group --> Cluster[Cluster by Similarity]
+    Cluster --> LLM
+
+    style Write fill:#e8f5e9
+    style CLI fill:#e1f5fe
+    style Supersede fill:#fff3e0
+```
+
+**Inline (automatic)** — after every spore write (daemon batch processor and MCP `myco_remember`), a fire-and-forget supersession check runs. Sequential within a batch to avoid overwhelming the LLM.
+
+**CLI (manual)** — `myco curate` scans all active spores, clusters by similarity within each observation type, and asks the LLM which are outdated. Use `--dry-run` to preview. Useful for catch-up after refactors or initial vault cleanup.
+
+Superseded spores are preserved with lineage metadata (`superseded_by` frontmatter + Obsidian wikilink) — never deleted. They are filtered from search results, recall, and digest substrate.
+
 ## Indexing & Embedding Pipeline
 
 Every vault write goes through a two-stage indexing process: FTS for keyword search, vector embeddings for semantic search.
@@ -143,18 +175,21 @@ flowchart LR
 | Wisdom notes (`myco_consolidate`) | On tool call | indexNote | embedNote | `{type}-wisdom-{hex}` |
 | Superseded spores | On supersede | updated | embedding deleted | — |
 
-### Embedding is Fire-and-Forget
+### Embedding and Curation are Fire-and-Forget
 
-Embeddings are generated asynchronously and never block the response. If the embedding provider is unavailable, the note is still written and FTS-indexed — semantic search just won't find it until the next `rebuild`.
+Embeddings and supersession checks are generated asynchronously and never block the response. If providers are unavailable, the note is still written and FTS-indexed — semantic search and curation degrade gracefully.
 
 ```mermaid
 flowchart TD
     Stop[Stop Handler] --> Write[Write Note to Vault]
     Write --> Index[FTS Index — synchronous]
     Write --> Embed[Generate Embedding — async]
+    Write --> Curate[Supersession Check — async]
     Index --> Respond[Return Response]
     Embed -.->|fire-and-forget| Vec[Upsert Vector]
     Embed -.->|on failure| Log[Log Warning]
+    Curate -.->|fire-and-forget| Supersede[Mark Stale Spores Superseded]
+    Curate -.->|on failure| Log2[Log Warning]
 
     style Embed stroke-dasharray: 5 5
     style Vec stroke-dasharray: 5 5
@@ -297,9 +332,25 @@ node dist/src/cli.js stats    # PID, port, active sessions, vault stats, digest 
 node dist/src/cli.js logs     # Tail daemon + MCP activity logs
 ```
 
+### Digest Management
+
+```bash
+node dist/src/cli.js digest              # Run an incremental digest cycle
+node dist/src/cli.js digest --tier 3000  # Reprocess a specific tier (clean slate, all substrate)
+node dist/src/cli.js digest --full       # Reprocess all tiers from scratch
+```
+
+### Vault Curation
+
+```bash
+node dist/src/cli.js curate              # Scan and supersede stale spores
+node dist/src/cli.js curate --dry-run    # Preview what would be superseded
+```
+
 Or via MCP:
 ```json
 { "tool": "myco_logs", "level": "info", "component": "digest" }
+{ "tool": "myco_logs", "level": "info", "component": "curation" }
 ```
 
 ## Files

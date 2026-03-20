@@ -106,7 +106,13 @@ export class DigestEngine {
 
     // Guard against self-digestion: extract files are not currently indexed,
     // but this filter prevents feedback loops if they ever are (e.g., via rebuild)
-    const filtered = notes.filter((n) => n.type !== EXTRACT_TYPE);
+    const filtered = notes
+      .filter((n) => n.type !== EXTRACT_TYPE)
+      .filter((n) => {
+        if (n.type !== 'spore') return true;
+        const status = n.frontmatter.status as string | undefined;
+        return !status || status === 'active';
+      });
 
     // Sort by type weight (descending) then by recency (descending)
     filtered.sort((a, b) => {

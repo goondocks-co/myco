@@ -22,17 +22,19 @@ import { handleMycoConsolidate } from './tools/consolidate.js';
 import { handleMycoContext } from './tools/context.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { loadConfig } from '../config/loader.js';
-import { createEmbeddingProvider } from '../intelligence/llm.js';
-import type { EmbeddingProvider } from '../intelligence/llm.js';
+import { createEmbeddingProvider, createLlmProvider } from '../intelligence/llm.js';
+import type { EmbeddingProvider, LlmProvider } from '../intelligence/llm.js';
 import { VectorIndex } from '../index/vectors.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
 import { EMBEDDING_INPUT_LIMIT } from '../constants.js';
+import { checkSupersession } from '../vault/curation.js';
 
 interface ServerConfig {
   vaultDir: string;
   teamUser?: string;
   embeddingProvider?: EmbeddingProvider;
   vectorIndex?: VectorIndex;
+  llmProvider?: LlmProvider;
 }
 
 // Common observation types shown as hints in the tool schema; the vault accepts any string
@@ -102,6 +104,16 @@ export function createMycoServer(config: ServerConfig): MycoServer {
       case TOOL_REMEMBER: {
         const result = await handleMycoRemember(config.vaultDir, idx, input as any);
         embedNote(result.id, String(input.content), { type: 'spore', observation_type: String(input.type ?? ''), importance: 'high' });
+        // Fire-and-forget supersession check
+        if (config.vectorIndex && config.embeddingProvider && config.llmProvider) {
+          checkSupersession(result.id, {
+            index: idx,
+            vectorIndex: config.vectorIndex,
+            embeddingProvider: config.embeddingProvider,
+            llmProvider: config.llmProvider,
+            vaultDir: config.vaultDir,
+          }).catch(() => { /* non-fatal */ });
+        }
         logActivity(TOOL_REMEMBER, { id: result.id, observation_type: input.type, path: result.note_path });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
@@ -167,6 +179,7 @@ export async function main(): Promise<void> {
   // Initialize embedding provider + vector index (same as daemon does)
   let embeddingProvider: EmbeddingProvider | undefined;
   let vectorIndex: VectorIndex | undefined;
+  let llmProvider: LlmProvider | undefined;
 
   if (config) {
     try {
@@ -176,6 +189,11 @@ export async function main(): Promise<void> {
     } catch {
       // Embedding unavailable — MCP tools fall back to FTS only
     }
+    try {
+      llmProvider = createLlmProvider(config.intelligence.llm);
+    } catch {
+      // LLM unavailable — supersession checks will be skipped
+    }
   }
 
   const server = createMycoServer({
@@ -183,6 +201,7 @@ export async function main(): Promise<void> {
     teamUser: config?.team?.user,
     embeddingProvider,
     vectorIndex,
+    llmProvider,
   });
   await server.start();
 }

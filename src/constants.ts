@@ -147,3 +147,16 @@ export const DIGEST_SUBSTRATE_TYPE_WEIGHTS: Record<string, number> = {
 export const LLM_REASONING_MODE = 'off' as const;
 
 // --- Digest — System prompt overhead estimate ---
+
+// --- Vault curation ---
+/** Max candidate spores after post-filtering for supersession check. */
+export const SUPERSESSION_CANDIDATE_LIMIT = 5;
+
+/** Over-fetch from vector index before post-filtering by status/type. */
+export const SUPERSESSION_VECTOR_FETCH_LIMIT = 20;
+
+/** Max output tokens for supersession LLM evaluation. */
+export const SUPERSESSION_MAX_TOKENS = 256;
+
+/** Similarity threshold for clustering related spores in batch curation. */
+export const CURATION_CLUSTER_SIMILARITY = 0.75;
