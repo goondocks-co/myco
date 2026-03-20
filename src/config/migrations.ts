@@ -65,14 +65,17 @@ export const MIGRATIONS: Migration[] = [
       }
 
       // Update frontmatter type: memory → type: spore in migrated files
+      // Handles both unquoted (type: memory) and quoted (type: "memory") YAML
+      const memoryPattern = /type:\s*["']?memory["']?/g;
       const walkUpdate = (dir: string): void => {
         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
           const fullPath = path.join(dir, entry.name);
           if (entry.isDirectory()) { walkUpdate(fullPath); continue; }
           if (!entry.name.endsWith('.md')) continue;
           const content = fs.readFileSync(fullPath, 'utf-8');
-          if (content.includes('type: memory')) {
-            fs.writeFileSync(fullPath, content.replace(/type: memory/g, 'type: spore'));
+          if (memoryPattern.test(content)) {
+            memoryPattern.lastIndex = 0; // reset regex state
+            fs.writeFileSync(fullPath, content.replace(memoryPattern, 'type: spore'));
           }
         }
       };
@@ -92,6 +95,31 @@ export const MIGRATIONS: Migration[] = [
       };
       // Walk the entire vault, not just spores/ — session notes reference memories/
       walkLinks(vaultDir);
+    },
+  },
+  {
+    version: 3,
+    name: 'fix-quoted-memory-type-in-spores',
+    migrate: (_, vaultDir) => {
+      // Migration 2 only matched unquoted type: memory but YAML files often
+      // have type: "memory" (quoted). Fix any remaining quoted references.
+      const sporesDir = path.join(vaultDir, 'spores');
+      if (!fs.existsSync(sporesDir)) return;
+
+      const memoryPattern = /type:\s*["']?memory["']?/g;
+      const walk = (dir: string): void => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) { walk(fullPath); continue; }
+          if (!entry.name.endsWith('.md')) continue;
+          const content = fs.readFileSync(fullPath, 'utf-8');
+          if (memoryPattern.test(content)) {
+            memoryPattern.lastIndex = 0;
+            fs.writeFileSync(fullPath, content.replace(memoryPattern, 'type: spore'));
+          }
+        }
+      };
+      walk(sporesDir);
     },
   },
 ];
