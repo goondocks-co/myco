@@ -30,7 +30,7 @@ import { createPerProjectAdapter } from '../agents/adapter.js';
 import { claudeCodeAdapter } from '../agents/claude-code.js';
 import { sessionNoteId, bareSessionId } from '../vault/session-id.js';
 import { EMBEDDING_INPUT_LIMIT } from '../constants.js';
-import { callout } from '../obsidian/formatter.js';
+import { callout, extractSection } from '../obsidian/formatter.js';
 import { parseStringFlag } from './shared.js';
 import matter from 'gray-matter';
 
@@ -56,20 +56,8 @@ interface SessionTask {
   hasFailed: boolean;
 }
 
-/**
- * Extract the ## Conversation section from a session note body.
- * Returns everything from "## Conversation" to the next `#type/` footer tag line.
- */
-function extractConversationSection(body: string): string {
-  const marker = '## Conversation';
-  const start = body.indexOf(marker);
-  if (start === -1) return '';
-  const section = body.slice(start + marker.length);
-  // Strip trailing footer tags (lines starting with #type/)
-  const footerIdx = section.lastIndexOf('\n#type/');
-  if (footerIdx !== -1) return section.slice(0, footerIdx).trim();
-  return section.trim();
-}
+/** Section heading for conversation content in session notes. */
+const CONVERSATION_HEADING = '## Conversation';
 
 /**
  * Replace the title (first `# ` line) and summary callout in a session note body.
@@ -162,7 +150,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 
     const bare = bareSessionId(sessionId);
     const turnsResult = miner.getAllTurnsWithSource(bare);
-    const conversationSection = extractConversationSection(body);
+    const conversationSection = extractSection(body, CONVERSATION_HEADING);
 
     // Preserve raw frontmatter block verbatim (matter.stringify corrupts YAML values)
     const fmEnd = rawContent.indexOf('---', 4);
@@ -250,38 +238,45 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     if (r.status === 'fulfilled') totalObservations += r.value;
   }
 
-  // Phase 2: Resummarize sessions (sequential — each needs an LLM call)
+  // Phase 2: Resummarize sessions (concurrency-limited, consistent with Phase 1)
   let summarized = 0;
   if (processor) {
-    console.log(`\nRegenerating summaries...`);
+    const summarizableTasks = tasks.filter((t) => t.conversationSection);
+    if (summarizableTasks.length > 0) {
+      console.log(`\nRegenerating summaries...`);
 
-    for (const task of tasks) {
-      if (!task.conversationSection) {
-        process.stdout.write(`  ${task.sessionId.slice(0, 12)}... no conversation section, skipped\n`);
-        continue;
+      const summaryResult = await batchExecute(
+        summarizableTasks,
+        async (task) => {
+          process.stdout.write(`  ${task.sessionId.slice(0, 12)}...`);
+          const user = typeof task.frontmatter.user === 'string' ? task.frontmatter.user : undefined;
+          const result = await processor.summarizeSession(task.conversationSection, task.bare, user);
+
+          if (result.summary.includes(SUMMARIZATION_FAILED_MARKER)) {
+            process.stdout.write(` summarization failed again, skipped\n`);
+            return false;
+          }
+
+          const updatedBody = updateTitleAndSummary(task.body, result.title, result.summary);
+          fs.writeFileSync(path.join(vaultDir, task.relativePath), task.frontmatterBlock + updatedBody);
+          indexNote(index, vaultDir, task.relativePath);
+          process.stdout.write(` → "${result.title}"\n`);
+          return true;
+        },
+        {
+          concurrency: LLM_BATCH_CONCURRENCY,
+          onProgress: (done, total) => {
+            if (done === total) console.log(`\nSummarization complete.`);
+          },
+        },
+      );
+
+      for (const r of summaryResult.results) {
+        if (r.status === 'fulfilled' && r.value) summarized++;
       }
-
-      process.stdout.write(`  ${task.sessionId.slice(0, 12)}...`);
-      const user = typeof task.frontmatter.user === 'string' ? task.frontmatter.user : undefined;
-      const result = await processor.summarizeSession(task.conversationSection, task.bare, user);
-
-      // Check if summarization actually succeeded (not a fallback error message)
-      if (result.summary.includes(SUMMARIZATION_FAILED_MARKER)) {
-        process.stdout.write(` summarization failed again, skipped\n`);
-        continue;
-      }
-
-      // Update the session note in-place using stored frontmatter block + body
-      const updatedBody = updateTitleAndSummary(task.body, result.title, result.summary);
-      fs.writeFileSync(path.join(vaultDir, task.relativePath), task.frontmatterBlock + updatedBody);
-
-      // Re-index with updated content
-      indexNote(index, vaultDir, task.relativePath);
-      summarized++;
-      process.stdout.write(` → "${result.title}"\n`);
     }
 
-    console.log(`\nSummarization complete: ${summarized}/${tasks.length} sessions updated.`);
+    console.log(`${summarized}/${tasks.length} sessions updated.`);
   }
 
   // Phase 3: Parallel embeddings
