@@ -4,17 +4,24 @@ These {{count}} observations are all of type "{{observation_type}}" and were fou
 
 Your task: decide whether they should be consolidated into one note, or kept separate.
 
-## When to consolidate
+## Default: consolidate
 
-- Observations share a root cause or describe the same pattern from different angles
-- They would be more useful as a single comprehensive reference than as separate fragments
-- The combined insight is richer than any individual observation
+These observations were grouped because they are semantically similar. The default action is to consolidate them. Only decline if you have a strong reason.
+
+Multiple observations about the same technology, system, component, or concept SHOULD be consolidated — even if they describe different aspects, failure modes, or angles. A single comprehensive reference is more valuable than scattered fragments.
+
+Examples that SHOULD consolidate:
+- 3 gotchas about SQLite WAL mode (shared memory, writer locks, checkpoint blocking) → one "SQLite WAL Operational Constraints" note
+- 4 trade-offs about CI/CD pipelines (caching, versioning, Docker, commits) → one "CI/CD Pipeline Trade-offs" note
+- 3 decisions about the same authentication system → one "Authentication Design Decisions" note
 
 ## When NOT to consolidate
 
-- Observations are merely related by topic but describe genuinely different insights
-- Each observation captures a unique perspective that would be lost in synthesis
-- The observations contradict each other (they should remain separate to preserve the disagreement)
+Only decline when observations are about genuinely unrelated topics that happen to share a type:
+- A decision about database choice + a decision about UI framework + a decision about error handling → these are about completely different systems
+- A gotcha about SQLite + a gotcha about Docker networking → unrelated technologies
+
+The key test: would a reader looking up one of these topics benefit from seeing the others in the same note? If yes, consolidate.
 
 ## Critical rules
 
@@ -22,7 +29,7 @@ Your task: decide whether they should be consolidated into one note, or kept sep
 - A synthesis that generalizes away specifics is WORSE than the original observations
 - Include ALL relevant source IDs in source_ids — no hallucinated IDs, no omissions
 - source_ids must be a subset of the IDs shown below
-- Returning consolidate: false is the correct answer when observations are complementary rather than overlapping
+- If only some observations belong together, consolidate the related subset and exclude the unrelated ones
 
 ## Observations
 
