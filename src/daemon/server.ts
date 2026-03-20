@@ -4,17 +4,22 @@ import path from 'node:path';
 import type { DaemonLogger } from './logger.js';
 import { getPluginVersion } from '../version.js';
 import { Router, type RouteHandler } from './router.js';
+import { resolveStaticFile } from './static.js';
 
 const DEFAULT_STATUS = 200;
+const UI_REDIRECT_PATH = '/ui';
+const UI_PATH_PREFIX = '/ui';
 
 export interface DaemonServerConfig {
   vaultDir: string;
   logger: DaemonLogger;
+  uiDir?: string;
 }
 
 export class DaemonServer {
   port = 0;
   readonly version: string;
+  uiDir: string | null;
   private server: http.Server | null = null;
   private vaultDir: string;
   private logger: DaemonLogger;
@@ -23,6 +28,7 @@ export class DaemonServer {
   constructor(config: DaemonServerConfig) {
     this.vaultDir = config.vaultDir;
     this.logger = config.logger;
+    this.uiDir = config.uiDir ?? null;
     this.version = getPluginVersion();
     this.registerDefaultRoutes();
   }
@@ -72,6 +78,39 @@ export class DaemonServer {
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const url = new URL(req.url!, 'http://localhost');
+    const pathname = url.pathname;
+
+    // Static file serving for /ui* paths — handled before route matching
+    if (pathname.startsWith(UI_PATH_PREFIX)) {
+      if (pathname === UI_REDIRECT_PATH) {
+        res.writeHead(301, { Location: `${UI_REDIRECT_PATH}/` });
+        res.end();
+        return;
+      }
+
+      if (!this.uiDir) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'UI not available' }));
+        return;
+      }
+
+      const result = resolveStaticFile(this.uiDir, pathname);
+      if (!result) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not found' }));
+        return;
+      }
+
+      const content = fs.readFileSync(result.filePath);
+      res.writeHead(200, {
+        'Content-Type': result.contentType,
+        'Cache-Control': result.cacheControl,
+      });
+      res.end(content);
+      return;
+    }
+
     const match = this.router.match(req.method!, req.url!);
 
     if (!match) {

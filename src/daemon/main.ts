@@ -182,7 +182,15 @@ export async function main(): Promise<void> {
     maxSize: config.daemon.max_log_size,
   });
 
-  const server = new DaemonServer({ vaultDir, logger });
+  // Resolve dist/ui/ relative to this daemon script's location
+  const scriptDir = new URL('.', import.meta.url).pathname;
+  const uiDirPath = path.resolve(scriptDir, '..', '..', 'ui');
+  const uiDir = fs.existsSync(uiDirPath) ? uiDirPath : null;
+  if (uiDir) {
+    logger.debug('daemon', 'Static UI directory found', { path: uiDir });
+  }
+
+  const server = new DaemonServer({ vaultDir, logger, uiDir: uiDir ?? undefined });
 
   const registry = new SessionRegistry({
     gracePeriod: config.daemon.grace_period,
