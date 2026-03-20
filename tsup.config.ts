@@ -43,13 +43,15 @@ export default defineConfig({
     '@modelcontextprotocol/sdk',
   ],
   onSuccess: async () => {
-    // Copy prompt .md files next to bundled output so loadPrompt() can find them
-    const promptSrc = 'src/prompts';
-    const promptDest = 'dist/src/prompts';
-    mkdirSync(promptDest, { recursive: true });
-    for (const file of readdirSync(promptSrc)) {
-      if (file.endsWith('.md')) {
-        copyFileSync(path.join(promptSrc, file), path.join(promptDest, file));
+    // Copy .md files next to bundled output so loaders can find them
+    for (const subdir of ['prompts', 'templates']) {
+      const src = `src/${subdir}`;
+      const dest = `dist/src/${subdir}`;
+      mkdirSync(dest, { recursive: true });
+      for (const file of readdirSync(src)) {
+        if (file.endsWith('.md')) {
+          copyFileSync(path.join(src, file), path.join(dest, file));
+        }
       }
     }
   },
