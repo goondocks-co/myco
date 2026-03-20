@@ -67,14 +67,13 @@ Recommended:
 
 ## Inject Tier
 
-Controls how much pre-computed context the agent receives at session start. Agents can always request a different tier on-demand via the `myco_context` MCP tool.
+Controls how much pre-computed context the agent receives at session start. All tiers are available at all RAM levels — smaller models still support large context windows, they just use more KV cache memory. The default recommendation is based on what works best out of the box.
 
-| RAM | Available Tiers | Default |
-|-----|-----------------|---------|
-| **64GB+** | 1500, 3000, 5000, 10000 | 3000 |
-| **48GB** | 1500, 3000, 5000 | 3000 |
-| **32GB** | 1500, 3000 | 1500 |
-| **16GB** | 1500 | 1500 |
+| RAM | Default Tier |
+|-----|-------------|
+| **48GB+** | 3000 |
+| **32GB** | 3000 |
+| **16GB** | 1500 |
 
 ### Tier Descriptions
 

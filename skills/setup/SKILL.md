@@ -98,7 +98,7 @@ Recommend `bge-m3` as the default. Record the chosen embedding provider and mode
 
 ### Question 5: Inject Tier
 
-Show the inject tier options appropriate for the detected RAM, with the default pre-selected:
+Show all inject tier options, with the RAM-appropriate default pre-selected:
 
 | Tier | Description |
 |------|-------------|
@@ -107,7 +107,7 @@ Show the inject tier options appropriate for the detected RAM, with the default 
 | 5000 | Deep onboarding |
 | 10000 | Institutional knowledge — richest context |
 
-Show only the tiers available for the user's RAM tier (per the table in Step 2). Pre-select the default. Tell the user: "Agents can always request a different tier on-demand via the `myco_context` MCP tool."
+All tiers work at all RAM levels — smaller models still support large context windows. Pre-select the default from the RAM table. Tell the user: "Agents can always request a different tier on-demand via the `myco_context` MCP tool."
 
 Record the chosen inject tier.
 
