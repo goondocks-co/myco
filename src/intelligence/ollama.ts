@@ -1,6 +1,11 @@
 import type { LlmProvider, EmbeddingProvider, LlmResponse, EmbeddingResponse, LlmRequestOptions } from './llm.js';
 import { estimateTokens, LLM_REQUEST_TIMEOUT_MS, EMBEDDING_REQUEST_TIMEOUT_MS, DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 
+/** Safety margin on token estimates to account for chars/4 underestimating code-heavy content. */
+const CONTEXT_MARGIN = 1.25;
+/** Minimum context tokens for any request — avoids issues with very short prompts. */
+const MIN_CONTEXT_TOKENS = 512;
+
 interface OllamaConfig {
   model?: string;
   base_url?: string;
@@ -35,7 +40,10 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
     const maxTokens = opts?.maxTokens ?? this.defaultMaxTokens;
     const contextLength = opts?.contextLength ?? this.contextWindow;
     const promptTokens = estimateTokens(prompt);
-    const numCtx = Math.max(promptTokens + maxTokens, contextLength);
+    // Add 25% margin on prompt estimate to account for tokenizer variance
+    // (chars/4 heuristic underestimates for code-heavy content)
+    const needed = Math.ceil(promptTokens * CONTEXT_MARGIN) + maxTokens;
+    const numCtx = Math.min(Math.max(needed, MIN_CONTEXT_TOKENS), contextLength);
 
     const body: Record<string, unknown> = {
       model: this.model,

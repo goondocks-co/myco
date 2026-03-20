@@ -3,8 +3,14 @@
  * for existing sessions. Useful after bugs or when the LLM backend changes.
  *
  * Reads transcripts (the source of truth), re-extracts observations, regenerates
- * summaries, and re-indexes everything. Existing spore files from those sessions
- * are preserved — new observations are additive.
+ * summaries/titles, and re-indexes everything. Existing spore files from those
+ * sessions are preserved — new observations are additive.
+ *
+ * Flags:
+ *   --session <id>   Filter to sessions matching this substring
+ *   --date <YYYY-MM-DD>  Filter to sessions from a specific date
+ *   --failed         Only reprocess sessions with failed summaries
+ *   --index-only     Skip all LLM calls (re-index only)
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -24,8 +30,12 @@ import { createPerProjectAdapter } from '../agents/adapter.js';
 import { claudeCodeAdapter } from '../agents/claude-code.js';
 import { sessionNoteId, bareSessionId } from '../vault/session-id.js';
 import { EMBEDDING_INPUT_LIMIT } from '../constants.js';
+import { callout } from '../obsidian/formatter.js';
 import { parseStringFlag } from './shared.js';
 import matter from 'gray-matter';
+
+/** Marker text that appears in summaries when summarization fails. */
+const FAILED_SUMMARY_MARKER = 'summarization failed';
 
 interface EmbedJob {
   id: string;
@@ -38,12 +48,46 @@ interface SessionTask {
   sessionId: string;
   bare: string;
   frontmatter: Record<string, unknown>;
+  rawContent: string;
+  conversationSection: string;
   batchEvents: Array<Record<string, unknown>> | null;
   turnCount: number;
+  hasFailed: boolean;
+}
+
+/**
+ * Extract the ## Conversation section from a session note body.
+ * Returns everything from "## Conversation" to the next `#type/` footer tag line.
+ */
+function extractConversationSection(body: string): string {
+  const marker = '## Conversation';
+  const start = body.indexOf(marker);
+  if (start === -1) return '';
+  const section = body.slice(start + marker.length);
+  // Strip trailing footer tags (lines starting with #type/)
+  const footerIdx = section.lastIndexOf('\n#type/');
+  if (footerIdx !== -1) return section.slice(0, footerIdx).trim();
+  return section.trim();
+}
+
+/**
+ * Replace the title (first `# ` line) and summary callout in a session note body.
+ */
+function updateTitleAndSummary(body: string, newTitle: string, newNarrative: string): string {
+  // Replace the title line (first occurrence of `# ...`)
+  let updated = body.replace(/^# .*/m, `# ${newTitle}`);
+
+  // Replace the summary callout block: from `> [!abstract]` through consecutive `> ` lines
+  const summaryCallout = callout('abstract', 'Summary', newNarrative);
+  updated = updated.replace(/> \[!abstract\] Summary\n(?:> .*\n?)*/m, summaryCallout + '\n');
+
+  return updated;
 }
 
 export async function run(args: string[], vaultDir: string): Promise<void> {
   const sessionFilter = parseStringFlag(args, '--session');
+  const dateFilter = parseStringFlag(args, '--date');
+  const failedOnly = args.includes('--failed');
   const skipLlm = args.includes('--index-only');
 
   const config = loadConfig(vaultDir);
@@ -62,7 +106,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   }
 
   const processor = llmProvider
-    ? new BufferProcessor(llmProvider, config.intelligence.llm.context_window)
+    ? new BufferProcessor(llmProvider, config.intelligence.llm.context_window, config.capture)
     : null;
   const writer = new VaultWriter(vaultDir);
   const miner = new TranscriptMiner({
@@ -82,6 +126,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 
   const sessionFiles: Array<{ relativePath: string; sessionId: string }> = [];
   for (const dateDir of fs.readdirSync(sessionsDir)) {
+    if (dateFilter && dateDir !== dateFilter) continue;
     const datePath = path.join(sessionsDir, dateDir);
     if (!fs.statSync(datePath).isDirectory()) continue;
     for (const file of fs.readdirSync(datePath)) {
@@ -96,18 +141,21 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   }
 
   if (sessionFiles.length === 0) {
-    console.log(sessionFilter ? `No sessions matching "${sessionFilter}" found.` : 'No sessions found.');
+    const filters = [sessionFilter && `session="${sessionFilter}"`, dateFilter && `date="${dateFilter}"`].filter(Boolean);
+    console.log(filters.length ? `No sessions matching ${filters.join(', ')} found.` : 'No sessions found.');
     index.close();
     vectorIndex?.close();
     return;
   }
 
-  // Prepare tasks: read transcripts, build extraction inputs
-  const tasks: SessionTask[] = sessionFiles.map(({ relativePath, sessionId }) => {
-    const raw = fs.readFileSync(path.join(vaultDir, relativePath), 'utf-8');
-    const { data: frontmatter } = matter(raw);
+  // Prepare tasks: read transcripts and session content, build extraction inputs
+  let tasks: SessionTask[] = sessionFiles.map(({ relativePath, sessionId }) => {
+    const rawContent = fs.readFileSync(path.join(vaultDir, relativePath), 'utf-8');
+    const { data: frontmatter, content: body } = matter(rawContent);
     const bare = bareSessionId(sessionId);
     const turnsResult = miner.getAllTurnsWithSource(bare);
+    const conversationSection = extractConversationSection(body);
+    const hasFailed = body.includes(FAILED_SUMMARY_MARKER);
 
     const batchEvents = turnsResult && turnsResult.turns.length > 0
       ? turnsResult.turns.map((t) => ({
@@ -119,8 +167,21 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
         }))
       : null;
 
-    return { relativePath, sessionId, bare, frontmatter, batchEvents, turnCount: turnsResult?.turns.length ?? 0 };
+    return { relativePath, sessionId, bare, frontmatter, rawContent, conversationSection, batchEvents, turnCount: turnsResult?.turns.length ?? 0, hasFailed };
   });
+
+  // Apply --failed filter after reading content
+  if (failedOnly) {
+    const before = tasks.length;
+    tasks = tasks.filter((t) => t.hasFailed);
+    if (tasks.length === 0) {
+      console.log(`No failed sessions found (checked ${before} sessions).`);
+      index.close();
+      vectorIndex?.close();
+      return;
+    }
+    console.log(`Found ${tasks.length} failed session(s) out of ${before} checked.\n`);
+  }
 
   console.log(`Reprocessing ${tasks.length} session(s)...\n`);
 
@@ -179,7 +240,45 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     if (r.status === 'fulfilled') totalObservations += r.value;
   }
 
-  // Phase 2: Parallel embeddings
+  // Phase 2: Resummarize sessions (sequential — each needs an LLM call)
+  let summarized = 0;
+  if (processor) {
+    console.log(`\nRegenerating summaries...`);
+
+    for (const task of tasks) {
+      if (!task.conversationSection) {
+        process.stdout.write(`  ${task.sessionId.slice(0, 12)}... no conversation section, skipped\n`);
+        continue;
+      }
+
+      process.stdout.write(`  ${task.sessionId.slice(0, 12)}...`);
+      const user = typeof task.frontmatter.user === 'string' ? task.frontmatter.user : undefined;
+      const result = await processor.summarizeSession(task.conversationSection, task.bare, user);
+
+      // Check if summarization actually succeeded (not a fallback error message)
+      if (result.summary.includes(FAILED_SUMMARY_MARKER)) {
+        process.stdout.write(` summarization failed again, skipped\n`);
+        continue;
+      }
+
+      // Update the session note in-place — replace body without re-serializing frontmatter
+      // (matter.stringify corrupts YAML values like ISO dates by adding extra quotes)
+      const fmEnd = task.rawContent.indexOf('---', 4);
+      const frontmatterBlock = task.rawContent.slice(0, fmEnd + 3);
+      const body = task.rawContent.slice(fmEnd + 3);
+      const updatedBody = updateTitleAndSummary(body, result.title, result.summary);
+      fs.writeFileSync(path.join(vaultDir, task.relativePath), frontmatterBlock + updatedBody);
+
+      // Re-index with updated content
+      indexNote(index, vaultDir, task.relativePath);
+      summarized++;
+      process.stdout.write(` → "${result.title}"\n`);
+    }
+
+    console.log(`\nSummarization complete: ${summarized}/${tasks.length} sessions updated.`);
+  }
+
+  // Phase 3: Parallel embeddings
   if (vectorIndex && embedJobs.length > 0) {
     console.log(`Embedding ${embedJobs.length} notes (concurrency: ${EMBEDDING_BATCH_CONCURRENCY})...`);
 
@@ -201,7 +300,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     }
   }
 
-  console.log(`\nDone: ${tasks.length} sessions reprocessed, ${totalObservations} observations extracted.`);
+  console.log(`\nDone: ${tasks.length} sessions reprocessed, ${totalObservations} observations extracted, ${summarized} summaries regenerated.`);
 
   index.close();
   vectorIndex?.close();

@@ -19,7 +19,7 @@ import { DigestEngine, Metabolism } from './digest.js';
 import { handleMycoContext } from '../mcp/tools/context.js';
 import { buildSimilarityPrompt } from '../prompts/index.js';
 import { extractNumber } from '../intelligence/response.js';
-import { EMBEDDING_INPUT_LIMIT, CONTENT_SNIPPET_CHARS, CHARS_PER_TOKEN, STALE_BUFFER_MAX_AGE_MS, LINEAGE_RECENT_SESSIONS_LIMIT, RELATED_SPORES_LIMIT, CANDIDATE_CONTENT_PREVIEW, SESSION_CONTEXT_MAX_PLANS, PROMPT_CONTEXT_MAX_SPORES, PROMPT_CONTEXT_MIN_SIMILARITY, PROMPT_CONTEXT_MIN_LENGTH, CONTEXT_SESSION_PREVIEW_CHARS } from '../constants.js';
+import { EMBEDDING_INPUT_LIMIT, CONTENT_SNIPPET_CHARS, CHARS_PER_TOKEN, STALE_BUFFER_MAX_AGE_MS, LINEAGE_RECENT_SESSIONS_LIMIT, RELATED_SPORES_LIMIT, CANDIDATE_CONTENT_PREVIEW, SESSION_CONTEXT_MAX_PLANS, PROMPT_CONTEXT_MAX_SPORES, PROMPT_CONTEXT_MIN_SIMILARITY, PROMPT_CONTEXT_MIN_LENGTH, CONTEXT_SESSION_PREVIEW_CHARS, LLM_REASONING_MODE } from '../constants.js';
 import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter, extensionForMimeType } from '../agents/adapter.js';
 import { claudeCodeAdapter } from '../agents/claude-code.js';
@@ -785,7 +785,7 @@ export async function main(): Promise<void> {
             if (!note) return { id: candidate.id, score: 0 };
             try {
               const prompt = buildSimilarityPrompt(narrative, note.content.slice(0, CANDIDATE_CONTENT_PREVIEW));
-              const response = await llmProvider.summarize(prompt, { maxTokens: LINEAGE_SIMILARITY_MAX_TOKENS });
+              const response = await llmProvider.summarize(prompt, { maxTokens: LINEAGE_SIMILARITY_MAX_TOKENS, reasoning: LLM_REASONING_MODE });
               const score = extractNumber(response.text);
               return { id: candidate.id, score: isNaN(score) ? 0 : score };
             } catch { return { id: candidate.id, score: 0 }; }
