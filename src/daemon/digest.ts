@@ -85,12 +85,28 @@ export class DigestEngine {
   private lastCycleTimestampCache: string | null | undefined = undefined;
   private cycleInProgress = false;
 
+  /** Hooks that run before each digest cycle (e.g., consolidation). */
+  private prePassHooks: Array<{ name: string; fn: () => Promise<void> }> = [];
+
+  /** Hooks that run after each successful digest cycle. */
+  private postPassHooks: Array<{ name: string; fn: (result: DigestCycleResult) => Promise<void> }> = [];
+
   constructor(engineConfig: DigestEngineConfig) {
     this.vaultDir = engineConfig.vaultDir;
     this.index = engineConfig.index;
     this.llm = engineConfig.llmProvider;
     this.config = engineConfig.config;
     this.log = engineConfig.log ?? (() => {});
+  }
+
+  /** Register a hook that runs before each digest cycle. Best-effort — errors are logged, not thrown. */
+  registerPrePass(name: string, fn: () => Promise<void>): void {
+    this.prePassHooks.push({ name, fn });
+  }
+
+  /** Register a hook that runs after each successful digest cycle. Best-effort — errors are logged, not thrown. */
+  registerPostPass(name: string, fn: (result: DigestCycleResult) => Promise<void>): void {
+    this.postPassHooks.push({ name, fn });
   }
 
   /**
@@ -264,6 +280,15 @@ export class DigestEngine {
     this.cycleInProgress = true;
 
     try {
+      // Run pre-pass hooks (e.g., consolidation) before discovering substrate
+      for (const hook of this.prePassHooks) {
+        try {
+          await hook.fn();
+        } catch (err) {
+          this.log('warn', `Pre-pass hook "${hook.name}" failed`, { error: (err as Error).message });
+        }
+      }
+
       return await this.runCycleInternal(opts);
     } finally {
       this.cycleInProgress = false;
@@ -409,6 +434,16 @@ export class DigestEngine {
     };
 
     this.appendTrace(result);
+
+    // Run post-pass hooks after successful digest
+    for (const hook of this.postPassHooks) {
+      try {
+        await hook.fn(result);
+      } catch (err) {
+        this.log('warn', `Post-pass hook "${hook.name}" failed`, { error: (err as Error).message });
+      }
+    }
+
     return result;
   }
 }
