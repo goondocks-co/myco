@@ -50,9 +50,13 @@ myco_context(tier: 3000)                → pre-computed project understanding, 
 
 A background daemon reads your agent's conversation transcript after each turn — the full dialogue including prompts, AI responses, tool calls, and screenshots. Observations called **spores** (decisions, gotchas, discoveries, trade-offs, bug fixes) are extracted automatically via a local LLM and written as linked vault notes.
 
+### Curate
+
+As a project evolves, older observations become stale. Myco automatically detects and supersedes outdated spores when new ones are created — using vector similarity to find candidates and an LLM to judge which are truly replaced vs. merely related. Superseded spores are preserved with lineage metadata (never deleted), but filtered from search results and digest synthesis. Run `myco curate` for vault-wide cleanup, or let it happen automatically on every spore write.
+
 ### Digest
 
-A **continuous reasoning engine** runs inside the daemon, periodically synthesizing all accumulated knowledge into tiered context extracts. These pre-computed summaries give agents an instant, rich understanding of the project at session start — no searching required. Four tiers serve different needs: executive briefing (1.5K tokens), team standup (3K), deep onboarding (5K), and institutional knowledge (10K).
+A **continuous reasoning engine** runs inside the daemon, periodically synthesizing all accumulated knowledge into tiered context extracts. These pre-computed summaries give agents an instant, rich understanding of the project at session start — no searching required. Four tiers serve different needs: executive briefing (1.5K tokens), team standup (3K), deep onboarding (5K), and institutional knowledge (10K). Run `myco digest --tier 3000` to reprocess a specific tier from scratch, or `myco digest --full` for a complete rebuild.
 
 ### Index
 

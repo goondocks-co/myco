@@ -9,7 +9,7 @@ import { MycoIndex } from '../index/sqlite.js';
 import { indexNote, rebuildIndex } from '../index/rebuild.js';
 import { initFts } from '../index/fts.js';
 import { createLlmProvider, createEmbeddingProvider } from '../intelligence/llm.js';
-import type { EmbeddingProvider } from '../intelligence/llm.js';
+import type { EmbeddingProvider, LlmProvider } from '../intelligence/llm.js';
 import { VectorIndex } from '../index/vectors.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
 import { LineageGraph, LINEAGE_SIMILARITY_THRESHOLD, LINEAGE_SIMILARITY_HIGH_CONFIDENCE, LINEAGE_SIMILARITY_CANDIDATES, LINEAGE_SIMILARITY_MAX_TOKENS, type LineageLink } from './lineage.js';
@@ -26,6 +26,7 @@ import { claudeCodeAdapter } from '../agents/claude-code.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { formatSessionBody } from '../obsidian/formatter.js';
 import { writeObservationNotes } from '../vault/observations.js';
+import { checkSupersession } from '../vault/curation.js';
 import { collectArtifactCandidates } from '../artifacts/candidates.js';
 import { slugifyPath } from '../artifacts/slugify.js';
 import { sessionNoteId, bareSessionId, sessionWikilink, sessionRelativePath } from '../vault/session-id.js';
@@ -40,6 +41,7 @@ interface IndexDeps {
   vaultDir: string;
   vectorIndex: VectorIndex | null;
   embeddingProvider: EmbeddingProvider;
+  llmProvider: LlmProvider;
   logger: DaemonLogger;
 }
 
@@ -68,6 +70,24 @@ function writeObservations(
     indexAndEmbed(note.path, note.id, `${note.observation.title}\n${note.observation.content}`,
       { type: 'spore', importance: 'high', session_id: sessionId }, deps);
     deps.logger.info('processor', 'Observation written', { type: note.observation.type, title: note.observation.title, session_id: sessionId });
+  }
+
+  // Fire-and-forget supersession checks — sequential to avoid thundering herd on the LLM
+  if (written.length > 0) {
+    const curationDeps = {
+      index: deps.index,
+      vectorIndex: deps.vectorIndex,
+      embeddingProvider: deps.embeddingProvider,
+      llmProvider: deps.llmProvider,
+      vaultDir: deps.vaultDir,
+      log: ((level: string, msg: string, data?: Record<string, unknown>) => (deps.logger as any)[level]('curation', msg, data)) as Parameters<typeof checkSupersession>[1]['log'],
+    };
+    (async () => {
+      for (const note of written) {
+        try { await checkSupersession(note.id, curationDeps); }
+        catch (err) { deps.logger.debug('curation', 'Supersession check failed', { id: note.id, error: (err as Error).message }); }
+      }
+    })();
   }
 }
 
@@ -201,7 +221,7 @@ export async function main(): Promise<void> {
   });
 
   let activeStopProcessing: Promise<void> | null = null;
-  const indexDeps: IndexDeps = { index, vaultDir, vectorIndex, embeddingProvider, logger };
+  const indexDeps: IndexDeps = { index, vaultDir, vectorIndex, embeddingProvider, llmProvider, logger };
 
   const bufferDir = path.join(vaultDir, 'buffer');
   const sessionBuffers = new Map<string, EventBuffer>();
