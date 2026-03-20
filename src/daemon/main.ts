@@ -609,7 +609,7 @@ export async function main(): Promise<void> {
     let existingTurnCount = 0;
     if (existingContent) {
       const startedMatch = existingContent.match(/^started:\s*"?(.+?)"?\s*$/m);
-      if (startedMatch) started = startedMatch[1];
+      if (startedMatch) started = startedMatch[1].replace(/^'+|'+$/g, '');
       const turnMatches = existingContent.match(/^### Turn \d+/gm);
       existingTurnCount = turnMatches?.length ?? 0;
     }
