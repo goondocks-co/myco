@@ -19,7 +19,7 @@ Run:
 node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js stats
 ```
 
-- If the command **succeeds** (exit code 0): tell the user "Myco is already configured" and invoke the `myco` skill to handle reconfiguration or display status. Stop here — do not continue with the setup flow.
+- If the command **succeeds** (exit code 0): the vault already exists. Tell the user "Myco is already configured at `<vault-path>`." Then invoke the `myco` skill using the Skill tool — the `myco` skill handles all reconfiguration, status checks, and ongoing management. **Stop here. Do not continue with the setup flow. Do not attempt reconfiguration yourself.**
 - If the command **fails** (exit code non-zero or vault not found): proceed to Step 2.
 
 ## Step 2: Detect System
@@ -50,11 +50,11 @@ Record: detected RAM (GB), recommended model, digest context window, and default
 
 ## Step 3: Ask Questions
 
-Ask one question at a time. Do not batch questions. Wait for each answer before asking the next.
+**Use the AskUserQuestion tool for every question.** Present choices as selectable options. Do not ask questions in plain text — always use AskUserQuestion so the user can select from options. Wait for each answer before asking the next.
 
 ### Question 1: Vault Location
 
-Ask the user where to store the vault. Present three choices:
+Use AskUserQuestion to ask the user where to store the vault. Present three choices:
 
 - **Project-local** — `.myco/` in the current directory
 - **Centralized** — `~/.myco/vaults/<project-name>/` (where `<project-name>` is the current directory's basename)

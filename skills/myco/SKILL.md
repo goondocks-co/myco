@@ -207,6 +207,10 @@ The vault should get sharper over time, not just bigger. Every session should le
 2. If you find relevant context, factor it into your recommendation
 3. After the decision is made, `myco_remember` the rationale
 
+## Reconfiguration
+
+To change LLM providers, models, or digest settings on an existing vault, see `references/reconfiguration.md`. It covers the exact CLI commands, flag names, and order of operations (setup-llm → restart → rebuild if needed → verify).
+
 ## Maintenance
 
 For the full CLI reference with all flags, see `references/cli-usage.md`.
