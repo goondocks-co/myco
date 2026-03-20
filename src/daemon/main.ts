@@ -190,10 +190,19 @@ export async function main(): Promise<void> {
     maxSize: config.daemon.max_log_size,
   });
 
-  // Resolve dist/ui/ relative to this daemon script's location
-  const scriptDir = new URL('.', import.meta.url).pathname;
-  const uiDirPath = path.resolve(scriptDir, '..', '..', 'ui');
-  const uiDir = fs.existsSync(uiDirPath) ? uiDirPath : null;
+  // Resolve dist/ui/ — walk up to find package.json (same strategy as prompts loader)
+  let uiDir: string | null = null;
+  {
+    let dir = path.dirname(new URL(import.meta.url).pathname);
+    for (let i = 0; i < 5; i++) {
+      const candidate = path.join(dir, 'dist', 'ui');
+      if (fs.existsSync(path.join(dir, 'package.json')) && fs.existsSync(candidate)) {
+        uiDir = candidate;
+        break;
+      }
+      dir = path.dirname(dir);
+    }
+  }
   if (uiDir) {
     logger.debug('daemon', 'Static UI directory found', { path: uiDir });
   }
