@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { MycoConfigSchema, type MycoConfig } from './schema.js';
+import { runMigrations, CURRENT_MIGRATION_VERSION } from './migrations.js';
 
 const CONFIG_FILENAME = 'myco.yaml';
 
@@ -29,7 +30,26 @@ export function loadConfig(vaultDir: string): MycoConfig {
     llm.provider = 'anthropic';
   }
 
-  return MycoConfigSchema.parse(parsed);
+  // Run numbered migrations
+  const migrationsRan = runMigrations(parsed, vaultDir, (msg) => {
+    // Log to stderr since this runs during config loading (before logger is available)
+    process.stderr.write(`[myco migration] ${msg}\n`);
+  });
+
+  // Parse with Zod to fill in defaults for new config sections
+  const config = MycoConfigSchema.parse(parsed);
+
+  // Write back if migrations ran or new defaults were added
+  const needsWrite = migrationsRan
+    || (parsed.config_version as number ?? 0) < CURRENT_MIGRATION_VERSION
+    || !('digest' in parsed);
+
+  if (needsWrite) {
+    const fullConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
+    fs.writeFileSync(configPath, YAML.stringify(fullConfig), 'utf-8');
+  }
+
+  return config;
 }
 
 export function saveConfig(vaultDir: string, config: MycoConfig): void {
