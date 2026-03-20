@@ -30,6 +30,7 @@ export async function run(_args: string[], vaultDir: string): Promise<void> {
     try {
       const info = JSON.parse(fs.readFileSync(daemonPath, 'utf-8'));
       console.log(`Daemon healthy on port ${info.port}`);
+      console.log(`Dashboard: http://localhost:${info.port}/ui/`);
     } catch {
       console.log('Daemon healthy');
     }

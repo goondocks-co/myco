@@ -36,6 +36,7 @@ export function run(_args: string[], vaultDir: string): void {
     console.log(`\n--- Daemon ---`);
     console.log(`PID:      ${d.pid} (${d.alive ? 'running' : 'dead'})`);
     console.log(`Port:     ${d.port}`);
+    console.log(`Dashboard: http://localhost:${d.port}/ui/`);
     console.log(`Started:  ${d.started}`);
     console.log(`Sessions: ${d.active_sessions.length}`);
   }

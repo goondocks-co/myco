@@ -71,6 +71,7 @@ vectors.db
 
 # Daemon state — per-machine, ephemeral
 daemon.json
+_portal.md
 buffer/
 logs/
 

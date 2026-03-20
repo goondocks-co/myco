@@ -45,7 +45,7 @@ export class DaemonServer {
         const addr = this.server!.address() as { port: number };
         this.port = addr.port;
         this.writeDaemonJson();
-        this.logger.info('daemon', 'Server started', { port: this.port });
+        this.logger.info('daemon', 'Server started', { port: this.port, dashboard: `http://localhost:${this.port}/ui/` });
         resolve();
       });
     });
