@@ -52,7 +52,6 @@ src/
   vault/         # Reader, writer, Zod schemas for vault notes
 tests/           # Mirrors src/ structure: tests/<module>.test.ts
 hooks/           # Hook registration shell scripts (invoke dist/src/hooks/*.js)
-commands/        # Slash command markdown files
 skills/          # Skill markdown files (subdirectory per skill)
 .claude-plugin/  # Claude Code plugin manifest + marketplace catalog
 .cursor-plugin/  # Cursor plugin manifest + marketplace catalog
