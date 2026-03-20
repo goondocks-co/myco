@@ -48,7 +48,10 @@ interface SessionTask {
   sessionId: string;
   bare: string;
   frontmatter: Record<string, unknown>;
-  rawContent: string;
+  /** Raw frontmatter block (---\n...\n---) preserved verbatim to avoid YAML re-serialization bugs. */
+  frontmatterBlock: string;
+  /** Session note body after frontmatter. */
+  body: string;
   conversationSection: string;
   batchEvents: Array<Record<string, unknown>> | null;
   turnCount: number;
@@ -148,14 +151,24 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     return;
   }
 
-  // Prepare tasks: read transcripts and session content, build extraction inputs
-  let tasks: SessionTask[] = sessionFiles.map(({ relativePath, sessionId }) => {
+  // Prepare tasks: read transcripts and session content, build extraction inputs.
+  // When --failed is set, check the marker before building expensive task fields.
+  let tasks: SessionTask[] = [];
+  for (const { relativePath, sessionId } of sessionFiles) {
     const rawContent = fs.readFileSync(path.join(vaultDir, relativePath), 'utf-8');
     const { data: frontmatter, content: body } = matter(rawContent);
+    const hasFailed = body.includes(FAILED_SUMMARY_MARKER);
+
+    // Early skip: when --failed is set, don't build task for sessions that succeeded
+    if (failedOnly && !hasFailed) continue;
+
     const bare = bareSessionId(sessionId);
     const turnsResult = miner.getAllTurnsWithSource(bare);
     const conversationSection = extractConversationSection(body);
-    const hasFailed = body.includes(FAILED_SUMMARY_MARKER);
+
+    // Preserve raw frontmatter block verbatim (matter.stringify corrupts YAML values)
+    const fmEnd = rawContent.indexOf('---', 4);
+    const frontmatterBlock = rawContent.slice(0, fmEnd + 3);
 
     const batchEvents = turnsResult && turnsResult.turns.length > 0
       ? turnsResult.turns.map((t) => ({
@@ -167,20 +180,19 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
         }))
       : null;
 
-    return { relativePath, sessionId, bare, frontmatter, rawContent, conversationSection, batchEvents, turnCount: turnsResult?.turns.length ?? 0, hasFailed };
-  });
+    tasks.push({ relativePath, sessionId, bare, frontmatter, frontmatterBlock, body, conversationSection, batchEvents, turnCount: turnsResult?.turns.length ?? 0, hasFailed });
+  }
 
-  // Apply --failed filter after reading content
   if (failedOnly) {
-    const before = tasks.length;
-    tasks = tasks.filter((t) => t.hasFailed);
-    if (tasks.length === 0) {
-      console.log(`No failed sessions found (checked ${before} sessions).`);
-      index.close();
-      vectorIndex?.close();
-      return;
-    }
-    console.log(`Found ${tasks.length} failed session(s) out of ${before} checked.\n`);
+    console.log(`Found ${tasks.length} failed session(s) out of ${sessionFiles.length} checked.\n`);
+  }
+
+  if (tasks.length === 0) {
+    const filters = [sessionFilter && `session="${sessionFilter}"`, dateFilter && `date="${dateFilter}"`, failedOnly && 'failed'].filter(Boolean);
+    console.log(filters.length ? `No sessions matching ${filters.join(', ')} found.` : 'No sessions found.');
+    index.close();
+    vectorIndex?.close();
+    return;
   }
 
   console.log(`Reprocessing ${tasks.length} session(s)...\n`);
@@ -261,13 +273,9 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
         continue;
       }
 
-      // Update the session note in-place — replace body without re-serializing frontmatter
-      // (matter.stringify corrupts YAML values like ISO dates by adding extra quotes)
-      const fmEnd = task.rawContent.indexOf('---', 4);
-      const frontmatterBlock = task.rawContent.slice(0, fmEnd + 3);
-      const body = task.rawContent.slice(fmEnd + 3);
-      const updatedBody = updateTitleAndSummary(body, result.title, result.summary);
-      fs.writeFileSync(path.join(vaultDir, task.relativePath), frontmatterBlock + updatedBody);
+      // Update the session note in-place using stored frontmatter block + body
+      const updatedBody = updateTitleAndSummary(task.body, result.title, result.summary);
+      fs.writeFileSync(path.join(vaultDir, task.relativePath), task.frontmatterBlock + updatedBody);
 
       // Re-index with updated content
       indexNote(index, vaultDir, task.relativePath);

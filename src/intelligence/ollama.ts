@@ -21,13 +21,11 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
   readonly name = 'ollama';
   private baseUrl: string;
   private model: string;
-  private contextWindow: number;
   private defaultMaxTokens: number;
 
   constructor(config?: OllamaConfig) {
     this.baseUrl = config?.base_url ?? OllamaBackend.DEFAULT_BASE_URL;
     this.model = config?.model ?? config?.summary_model ?? 'llama3.2';
-    this.contextWindow = config?.context_window ?? 8192;
     this.defaultMaxTokens = config?.max_tokens ?? 1024;
   }
 
