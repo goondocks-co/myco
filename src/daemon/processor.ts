@@ -1,11 +1,14 @@
 import { z } from 'zod';
 import type { LlmProvider } from '../intelligence/llm.js';
 import { ARTIFACT_TYPES } from '../vault/types.js';
-import { estimateTokens, CHARS_PER_TOKEN, PROMPT_PREVIEW_CHARS, AI_RESPONSE_PREVIEW_CHARS, COMMAND_PREVIEW_CHARS } from '../constants.js';
+import { estimateTokens, CHARS_PER_TOKEN, PROMPT_PREVIEW_CHARS, AI_RESPONSE_PREVIEW_CHARS, COMMAND_PREVIEW_CHARS, LLM_REASONING_MODE } from '../constants.js';
 import type { MycoConfig } from '../config/schema.js';
 import type { ObservationType, ArtifactType } from '../vault/types.js';
 import { buildExtractionPrompt, buildSummaryPrompt, buildTitlePrompt, buildClassificationPrompt } from '../prompts/index.js';
 import { extractJson, stripReasoningTokens } from '../intelligence/response.js';
+
+/** Marker substring in failed summary text. Used by reprocess --failed to detect failures. */
+export const SUMMARIZATION_FAILED_MARKER = 'summarization failed';
 
 export interface Observation {
   type: ObservationType;
@@ -71,7 +74,7 @@ export class BufferProcessor {
     const prompt = this.truncateForContext(rawPrompt, this.extractionMaxTokens);
 
     try {
-      const response = await this.backend.summarize(prompt, { maxTokens: this.extractionMaxTokens });
+      const response = await this.backend.summarize(prompt, { maxTokens: this.extractionMaxTokens, reasoning: LLM_REASONING_MODE });
       const parsed = extractJson(response.text) as {
         summary: string;
         observations: Observation[];
@@ -109,16 +112,16 @@ export class BufferProcessor {
 
     let summaryText: string;
     try {
-      const response = await this.backend.summarize(summaryPrompt, { maxTokens: this.summaryMaxTokens });
+      const response = await this.backend.summarize(summaryPrompt, { maxTokens: this.summaryMaxTokens, reasoning: LLM_REASONING_MODE });
       summaryText = stripReasoningTokens(response.text);
     } catch (error) {
-      summaryText = `Session ${sessionId} — summarization failed: ${(error as Error).message}`;
+      summaryText = `Session ${sessionId} — ${SUMMARIZATION_FAILED_MARKER}: ${(error as Error).message}`;
     }
 
     const titlePrompt = buildTitlePrompt(summaryText, sessionId);
     let title: string;
     try {
-      const response = await this.backend.summarize(titlePrompt, { maxTokens: this.titleMaxTokens });
+      const response = await this.backend.summarize(titlePrompt, { maxTokens: this.titleMaxTokens, reasoning: LLM_REASONING_MODE });
       title = stripReasoningTokens(response.text).trim();
     } catch {
       title = `Session ${sessionId}`;
@@ -134,7 +137,7 @@ export class BufferProcessor {
     if (candidates.length === 0) return [];
 
     const prompt = this.buildPromptForClassification(candidates, sessionId);
-    const response = await this.backend.summarize(prompt, { maxTokens: this.classificationMaxTokens });
+    const response = await this.backend.summarize(prompt, { maxTokens: this.classificationMaxTokens, reasoning: LLM_REASONING_MODE });
     const raw = extractJson(response.text);
     const parsed = ClassificationResponseSchema.parse(raw);
     return parsed.artifacts;

@@ -39,14 +39,14 @@ For RAM detection, run the appropriate command for the OS:
 
 Use the RAM value to determine the recommended tier from `references/model-recommendations.md`:
 
-| RAM | Recommended Intelligence Model | Digest Context Window | Default Inject Tier |
-|-----|--------------------------------|-----------------------|---------------------|
-| 64GB+ | `qwen3.5:35b` | 65536 | 3000 |
-| 32–64GB | `qwen3.5:27b` | 32768 | 3000 |
-| 16–32GB | `qwen3.5:latest` (~10B) | 16384 | 1500 |
-| 8–16GB | `qwen3.5:4b` | 8192 | 1500 |
+| RAM | Processor Model | Digest Model | Digest Context | Inject Tier |
+|-----|----------------|--------------|----------------|-------------|
+| 64GB+ | `qwen3.5:latest` | `qwen3.5:35b` | 65536 | 3000 |
+| 48GB | `qwen3.5:latest` | `qwen3.5:27b` | 32768 | 3000 |
+| 32GB | `qwen3.5:4b` | `qwen3.5:latest` | 16384 | 1500 |
+| 16GB | `qwen3.5:4b` | `qwen3.5:4b` | 8192 | 1500 |
 
-Record: detected RAM (GB), recommended model, digest context window, and default inject tier. You will use these as defaults in the questions below.
+Record: detected RAM (GB), recommended processor model, recommended digest model, digest context window, and default inject tier.
 
 ## Step 3: Ask Questions
 
@@ -62,40 +62,54 @@ Use AskUserQuestion to ask the user where to store the vault. Present three choi
 
 Record the resolved vault path.
 
-### Question 2: Provider and Model
+### Question 2: Processor Model (extraction, summaries, titles)
 
-From the `detect-providers` output, list only providers where `available` is `true`. Present them as choices. For each available provider, list its available models.
+Present the recommended processor model from the RAM table as the default. Show available models from the detected providers, grouped by provider.
 
-Pre-select the recommended model from Step 2 if it appears in the list. If the recommended model is not installed:
+Explain: "The processor model handles session extraction, summaries, and titles. Smaller, faster models work well here — speed matters more than depth."
 
-- **Ollama:** offer to run `ollama pull <recommended-model>` before continuing. Ask "Pull now or choose a different model?"
-- **LM Studio:** tell the user to open LM Studio, search for `<recommended-model>`, and download it. Offer to wait or to let the user choose a different available model.
+If the recommended model is not installed:
 
-Record the chosen provider and model.
+- **Ollama:** offer to run `ollama pull <recommended-model>` before continuing.
+- **LM Studio:** tell the user to download it from the model browser.
 
-### Question 3: Embedding Model
+Record the chosen provider and processor model.
 
-List embedding models from the chosen provider. Exclude Anthropic — it does not support embeddings.
+### Question 3: Digest Model (vault synthesis)
+
+Present the recommended digest model from the RAM table as the default. Show available models from the detected providers.
+
+Explain: "The digest model synthesizes your vault into context extracts. Larger models produce better results here — quality matters more than speed. This can be the same as the processor model on smaller machines."
+
+If the recommended model is not installed, offer to pull/download as above.
+
+Record the chosen provider and digest model.
+
+### Question 4: Embedding Model
+
+List embedding models from available providers. Exclude Anthropic — it does not support embeddings.
 
 If no embedding models are installed:
 
 - **Ollama:** offer to run `ollama pull bge-m3`. If the user accepts, run it before continuing.
-- **LM Studio:** tell the user to search for and download an embedding model (suggest `bge-m3` or any model with `text-embedding` in the name).
+- **LM Studio:** tell the user to search for and download an embedding model.
 
 Recommend `bge-m3` as the default. Record the chosen embedding provider and model.
 
-### Question 4: Inject Tier
+### Question 5: Inject Tier
 
-Show the inject tier options appropriate for the detected RAM, with the default pre-selected:
+Ask the user which coding agent they primarily use, then recommend an inject tier based on the agent's context window (see `references/model-recommendations.md`). Show all tiers:
 
 | Tier | Description |
 |------|-------------|
 | 1500 | Executive briefing — fastest, lightest |
-| 3000 | Team standup — recommended for most setups |
-| 5000 | Deep onboarding |
-| 10000 | Institutional knowledge — richest context |
+| 3000 | Team standup — balanced context |
+| 5000 | Deep onboarding — good for 200K agents |
+| 10000 | Institutional knowledge — richest, best for 1M+ agents |
 
-Show only the tiers available for the user's RAM tier (per the table in Step 2). Pre-select the default. Tell the user: "Agents can always request a different tier on-demand via the `myco_context` MCP tool."
+Explain: "The inject tier controls how much vault context is injected at session start. Larger tiers give the agent more project history but use more of its context window. All tiers work regardless of local hardware."
+
+Pre-select the default based on the agent's context window. Tell the user: "Agents can always request a different tier on-demand via the `myco_context` MCP tool."
 
 Record the chosen inject tier.
 
@@ -106,14 +120,16 @@ Run the following commands in sequence, substituting the recorded values. Show e
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js init \
   --vault <chosen-vault-path> \
-  --llm-provider <provider> \
-  --llm-model <model> \
+  --llm-provider <processor-provider> \
+  --llm-model <processor-model> \
   --embedding-provider <embedding-provider> \
   --embedding-model <embedding-model>
 ```
 
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js setup-digest \
+  --provider <digest-provider> \
+  --model <digest-model> \
   --context-window <digest-context-window-from-ram-table> \
   --inject-tier <chosen-inject-tier>
 ```
@@ -124,16 +140,28 @@ node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js verify
 
 If any command fails, report the error and stop. Do not continue to the next command on failure. Show the full error output to the user and ask how to proceed.
 
-## Step 5: Report
+## Step 5: Ollama Performance Tips
+
+If the user is using Ollama, recommend adding these to their Ollama service configuration:
+
+```
+OLLAMA_FLASH_ATTENTION=1    # Required for KV cache quantization
+OLLAMA_KV_CACHE_TYPE=q8_0   # Halves KV cache memory
+```
+
+Explain: "These settings halve the memory used for large context windows, making digest much more efficient. They're Ollama-wide settings — on macOS, add them to your Ollama launchd plist."
+
+## Step 6: Report
 
 Display a summary table:
 
 | Setting | Value |
 |---------|-------|
 | Vault path | `<resolved path>` |
-| Provider | `<provider>` / `<model>` |
+| Processor | `<provider>` / `<processor-model>` |
+| Digest | `<provider>` / `<digest-model>` (context: `<context-window>`) |
 | Embedding | `<embedding-provider>` / `<embedding-model>` |
-| Digest | enabled (context: `<context-window>`, inject: `<inject-tier>`) |
+| Inject tier | `<inject-tier>` |
 | RAM detected | `<X>` GB |
 
 Tell the user: "Myco is ready. Start a new session to begin capturing knowledge."
@@ -143,4 +171,4 @@ Tell the user: "Myco is ready. Start a new session to begin capturing knowledge.
 - All writes via CLI commands — never read or modify `myco.yaml` directly.
 - All provider detection via `detect-providers` — no raw HTTP calls to provider APIs.
 - One question at a time — do not batch questions or present them together.
-- Two model choices in guided setup: intelligence model and embedding model. For a separate dedicated digestion model, direct the user to run `setup-digest` with a `--provider` and `--model` flag after setup completes (see `references/model-recommendations.md` Advanced section).
+- Three model choices in guided setup: processor, digest, and embedding.

@@ -1,5 +1,5 @@
 You are analyzing a coding session buffer for session "{{sessionId}}".
-You have a budget of ~{{maxTokens}} tokens for your response. Use it generously — richer, more detailed observations are more valuable than brief ones.
+You have a budget of ~{{maxTokens}} tokens for your response.
 
 ## Events ({{eventCount}} total)
 {{toolSummary}}

@@ -20,6 +20,7 @@ import {
   DIGEST_TIER_MIN_CONTEXT,
   DIGEST_SUBSTRATE_TYPE_WEIGHTS,
   DIGEST_LLM_REQUEST_TIMEOUT_MS,
+  LLM_REASONING_MODE,
 } from '@myco/constants.js';
 
 // --- Interfaces ---
@@ -370,7 +371,7 @@ export class DigestEngine {
           maxTokens: tier,
           timeoutMs: DIGEST_LLM_REQUEST_TIMEOUT_MS,
           contextLength: contextWindow,
-          reasoning: 'off',
+          reasoning: LLM_REASONING_MODE,
           systemPrompt,
           keepAlive: digestConfig.keep_alive ?? undefined,
         };

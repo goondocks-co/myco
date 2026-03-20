@@ -3,8 +3,14 @@
  * for existing sessions. Useful after bugs or when the LLM backend changes.
  *
  * Reads transcripts (the source of truth), re-extracts observations, regenerates
- * summaries, and re-indexes everything. Existing spore files from those sessions
- * are preserved — new observations are additive.
+ * summaries/titles, and re-indexes everything. Existing spore files from those
+ * sessions are preserved — new observations are additive.
+ *
+ * Flags:
+ *   --session <id>   Filter to sessions matching this substring
+ *   --date <YYYY-MM-DD>  Filter to sessions from a specific date
+ *   --failed         Only reprocess sessions with failed summaries
+ *   --index-only     Skip all LLM calls (re-index only)
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,7 +22,7 @@ import { loadConfig } from '../config/loader.js';
 import { createLlmProvider, createEmbeddingProvider } from '../intelligence/llm.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
 import { batchExecute, LLM_BATCH_CONCURRENCY, EMBEDDING_BATCH_CONCURRENCY } from '../intelligence/batch.js';
-import { BufferProcessor } from '../daemon/processor.js';
+import { BufferProcessor, SUMMARIZATION_FAILED_MARKER } from '../daemon/processor.js';
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { VaultWriter } from '../vault/writer.js';
 import { writeObservationNotes } from '../vault/observations.js';
@@ -24,8 +30,10 @@ import { createPerProjectAdapter } from '../agents/adapter.js';
 import { claudeCodeAdapter } from '../agents/claude-code.js';
 import { sessionNoteId, bareSessionId } from '../vault/session-id.js';
 import { EMBEDDING_INPUT_LIMIT } from '../constants.js';
+import { callout, extractSection } from '../obsidian/formatter.js';
 import { parseStringFlag } from './shared.js';
 import matter from 'gray-matter';
+
 
 interface EmbedJob {
   id: string;
@@ -38,12 +46,37 @@ interface SessionTask {
   sessionId: string;
   bare: string;
   frontmatter: Record<string, unknown>;
+  /** Raw frontmatter block (---\n...\n---) preserved verbatim to avoid YAML re-serialization bugs. */
+  frontmatterBlock: string;
+  /** Session note body after frontmatter. */
+  body: string;
+  conversationSection: string;
   batchEvents: Array<Record<string, unknown>> | null;
   turnCount: number;
+  hasFailed: boolean;
+}
+
+/** Section heading for conversation content in session notes. */
+const CONVERSATION_HEADING = '## Conversation';
+
+/**
+ * Replace the title (first `# ` line) and summary callout in a session note body.
+ */
+function updateTitleAndSummary(body: string, newTitle: string, newNarrative: string): string {
+  // Replace the title line (first occurrence of `# ...`)
+  let updated = body.replace(/^# .*/m, `# ${newTitle}`);
+
+  // Replace the summary callout block: from `> [!abstract]` through consecutive `> ` lines
+  const summaryCallout = callout('abstract', 'Summary', newNarrative);
+  updated = updated.replace(/> \[!abstract\] Summary\n(?:> .*\n?)*/m, summaryCallout + '\n');
+
+  return updated;
 }
 
 export async function run(args: string[], vaultDir: string): Promise<void> {
   const sessionFilter = parseStringFlag(args, '--session');
+  const dateFilter = parseStringFlag(args, '--date');
+  const failedOnly = args.includes('--failed');
   const skipLlm = args.includes('--index-only');
 
   const config = loadConfig(vaultDir);
@@ -62,7 +95,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   }
 
   const processor = llmProvider
-    ? new BufferProcessor(llmProvider, config.intelligence.llm.context_window)
+    ? new BufferProcessor(llmProvider, config.intelligence.llm.context_window, config.capture)
     : null;
   const writer = new VaultWriter(vaultDir);
   const miner = new TranscriptMiner({
@@ -82,6 +115,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 
   const sessionFiles: Array<{ relativePath: string; sessionId: string }> = [];
   for (const dateDir of fs.readdirSync(sessionsDir)) {
+    if (dateFilter && dateDir !== dateFilter) continue;
     const datePath = path.join(sessionsDir, dateDir);
     if (!fs.statSync(datePath).isDirectory()) continue;
     for (const file of fs.readdirSync(datePath)) {
@@ -96,18 +130,31 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   }
 
   if (sessionFiles.length === 0) {
-    console.log(sessionFilter ? `No sessions matching "${sessionFilter}" found.` : 'No sessions found.');
+    const filters = [sessionFilter && `session="${sessionFilter}"`, dateFilter && `date="${dateFilter}"`].filter(Boolean);
+    console.log(filters.length ? `No sessions matching ${filters.join(', ')} found.` : 'No sessions found.');
     index.close();
     vectorIndex?.close();
     return;
   }
 
-  // Prepare tasks: read transcripts, build extraction inputs
-  const tasks: SessionTask[] = sessionFiles.map(({ relativePath, sessionId }) => {
-    const raw = fs.readFileSync(path.join(vaultDir, relativePath), 'utf-8');
-    const { data: frontmatter } = matter(raw);
+  // Prepare tasks: read transcripts and session content, build extraction inputs.
+  // When --failed is set, check the marker before building expensive task fields.
+  let tasks: SessionTask[] = [];
+  for (const { relativePath, sessionId } of sessionFiles) {
+    const rawContent = fs.readFileSync(path.join(vaultDir, relativePath), 'utf-8');
+    const { data: frontmatter, content: body } = matter(rawContent);
+    const hasFailed = body.includes(SUMMARIZATION_FAILED_MARKER);
+
+    // Early skip: when --failed is set, don't build task for sessions that succeeded
+    if (failedOnly && !hasFailed) continue;
+
     const bare = bareSessionId(sessionId);
     const turnsResult = miner.getAllTurnsWithSource(bare);
+    const conversationSection = extractSection(body, CONVERSATION_HEADING);
+
+    // Preserve raw frontmatter block verbatim (matter.stringify corrupts YAML values)
+    const fmEnd = rawContent.indexOf('---', 4);
+    const frontmatterBlock = rawContent.slice(0, fmEnd + 3);
 
     const batchEvents = turnsResult && turnsResult.turns.length > 0
       ? turnsResult.turns.map((t) => ({
@@ -119,8 +166,20 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
         }))
       : null;
 
-    return { relativePath, sessionId, bare, frontmatter, batchEvents, turnCount: turnsResult?.turns.length ?? 0 };
-  });
+    tasks.push({ relativePath, sessionId, bare, frontmatter, frontmatterBlock, body, conversationSection, batchEvents, turnCount: turnsResult?.turns.length ?? 0, hasFailed });
+  }
+
+  if (failedOnly) {
+    console.log(`Found ${tasks.length} failed session(s) out of ${sessionFiles.length} checked.\n`);
+  }
+
+  if (tasks.length === 0) {
+    const filters = [sessionFilter && `session="${sessionFilter}"`, dateFilter && `date="${dateFilter}"`, failedOnly && 'failed'].filter(Boolean);
+    console.log(filters.length ? `No sessions matching ${filters.join(', ')} found.` : 'No sessions found.');
+    index.close();
+    vectorIndex?.close();
+    return;
+  }
 
   console.log(`Reprocessing ${tasks.length} session(s)...\n`);
 
@@ -179,7 +238,48 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     if (r.status === 'fulfilled') totalObservations += r.value;
   }
 
-  // Phase 2: Parallel embeddings
+  // Phase 2: Resummarize sessions (concurrency-limited, consistent with Phase 1)
+  let summarized = 0;
+  if (processor) {
+    const summarizableTasks = tasks.filter((t) => t.conversationSection);
+    if (summarizableTasks.length > 0) {
+      console.log(`\nRegenerating summaries...`);
+
+      const summaryResult = await batchExecute(
+        summarizableTasks,
+        async (task) => {
+          process.stdout.write(`  ${task.sessionId.slice(0, 12)}...`);
+          const user = typeof task.frontmatter.user === 'string' ? task.frontmatter.user : undefined;
+          const result = await processor.summarizeSession(task.conversationSection, task.bare, user);
+
+          if (result.summary.includes(SUMMARIZATION_FAILED_MARKER)) {
+            process.stdout.write(` summarization failed again, skipped\n`);
+            return false;
+          }
+
+          const updatedBody = updateTitleAndSummary(task.body, result.title, result.summary);
+          fs.writeFileSync(path.join(vaultDir, task.relativePath), task.frontmatterBlock + updatedBody);
+          indexNote(index, vaultDir, task.relativePath);
+          process.stdout.write(` → "${result.title}"\n`);
+          return true;
+        },
+        {
+          concurrency: LLM_BATCH_CONCURRENCY,
+          onProgress: (done, total) => {
+            if (done === total) console.log(`\nSummarization complete.`);
+          },
+        },
+      );
+
+      for (const r of summaryResult.results) {
+        if (r.status === 'fulfilled' && r.value) summarized++;
+      }
+    }
+
+    console.log(`${summarized}/${tasks.length} sessions updated.`);
+  }
+
+  // Phase 3: Parallel embeddings
   if (vectorIndex && embedJobs.length > 0) {
     console.log(`Embedding ${embedJobs.length} notes (concurrency: ${EMBEDDING_BATCH_CONCURRENCY})...`);
 
@@ -201,7 +301,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     }
   }
 
-  console.log(`\nDone: ${tasks.length} sessions reprocessed, ${totalObservations} observations extracted.`);
+  console.log(`\nDone: ${tasks.length} sessions reprocessed, ${totalObservations} observations extracted, ${summarized} summaries regenerated.`);
 
   index.close();
   vectorIndex?.close();
