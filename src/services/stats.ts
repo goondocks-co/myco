@@ -4,6 +4,9 @@ import { isProcessAlive } from '../cli/shared.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
+/** Fallback dimension for opening VectorIndex when the actual dimension is unknown. */
+const VECTOR_FALLBACK_DIMENSION = 1024;
+
 export interface VaultStats {
   vault: {
     path: string;
@@ -43,7 +46,7 @@ export function gatherStats(vaultDir: string, index: MycoIndex, vectorIndex?: Ve
     const vecDb = path.join(vaultDir, 'vectors.db');
     if (fs.existsSync(vecDb)) {
       try {
-        const vec = new VectorIndex(vecDb, 1024);
+        const vec = new VectorIndex(vecDb, VECTOR_FALLBACK_DIMENSION);
         vector_count = vec.count();
         vec.close();
       } catch { /* ignore */ }

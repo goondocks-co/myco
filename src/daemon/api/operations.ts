@@ -49,11 +49,9 @@ const DigestBody = z.object({
 // --- Rebuild ---
 
 export async function handleRebuild(deps: OperationHandlerDeps): Promise<RouteResponse> {
-  const token = deps.progressTracker.create('rebuild');
+  const { token, isNew } = deps.progressTracker.create('rebuild');
 
-  // Check if this is a duplicate (already running)
-  const entry = deps.progressTracker.get(token);
-  if (entry && entry.status === 'running' && entry.percent !== undefined) {
+  if (!isNew) {
     return { body: { token, status: 'already_running' } };
   }
 
@@ -112,7 +110,11 @@ export async function handleDigest(
   }
 
   const options = parsed.data;
-  const token = deps.progressTracker.create('digest');
+  const { token, isNew } = deps.progressTracker.create('digest');
+
+  if (!isNew) {
+    return { body: { token, status: 'already_running' } };
+  }
 
   // Resolve digest LLM provider: use digest-specific config if set, otherwise fall back to main
   // The daemon already has the main llmProvider; digest may use a different model.
@@ -203,7 +205,11 @@ export async function handleCurate(
   }
 
   // Full run: async with progress token
-  const token = deps.progressTracker.create('curate');
+  const { token, isNew } = deps.progressTracker.create('curate');
+
+  if (!isNew) {
+    return { body: { token, status: 'already_running' } };
+  }
 
   runCuration(curationDeps, false)
     .then((result) => {

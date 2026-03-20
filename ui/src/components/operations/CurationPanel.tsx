@@ -40,7 +40,7 @@ export function CurationPanel() {
   useEffect(() => {
     if (!progress) return;
 
-    if (progress.status === 'complete') {
+    if (progress.status === 'completed') {
       setExecutePhase('complete');
       setExecuteMessage(progress.message ?? 'Curation complete');
       setExecuteToken(null);

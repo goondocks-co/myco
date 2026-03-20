@@ -1,9 +1,16 @@
 const API_BASE = '/api';
 
 export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  // Only set Content-Type for methods with a body (POST, PUT)
+  const method = init?.method?.toUpperCase();
+  const needsContentType = method === 'POST' || method === 'PUT';
+  const headers = needsContentType
+    ? { 'Content-Type': 'application/json', ...init?.headers }
+    : init?.headers;
+
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
     ...init,
+    headers,
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));

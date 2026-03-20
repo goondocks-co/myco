@@ -32,7 +32,7 @@ import { collectArtifactCandidates } from '../artifacts/candidates.js';
 import { slugifyPath } from '../artifacts/slugify.js';
 import { sessionNoteId, bareSessionId, sessionWikilink, sessionRelativePath } from '../vault/session-id.js';
 import { handleGetConfig, handlePutConfig } from './api/config.js';
-import { handleGetStats } from './api/stats.js';
+import { handleGetStats, computeConfigHash } from './api/stats.js';
 import { handleGetLogs } from './api/logs.js';
 import { handleRestart } from './api/restart.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
@@ -984,11 +984,18 @@ export async function main(): Promise<void> {
 
   // --- Dashboard API routes ---
   const progressTracker = new ProgressTracker();
+  let configHash = computeConfigHash(vaultDir);
 
   server.registerRoute('GET', '/api/config', async () => handleGetConfig(vaultDir));
-  server.registerRoute('PUT', '/api/config', async (req) => handlePutConfig(vaultDir, req.body));
+  server.registerRoute('PUT', '/api/config', async (req) => {
+    const result = await handlePutConfig(vaultDir, req.body);
+    if (!result.status || result.status < 400) {
+      configHash = computeConfigHash(vaultDir);
+    }
+    return result;
+  });
   server.registerRoute('GET', '/api/stats', async () => handleGetStats({
-    vaultDir, index, vectorIndex, version: server.version, config, metabolism,
+    vaultDir, index, vectorIndex, version: server.version, config, configHash, metabolism,
   }));
   server.registerRoute('GET', '/api/logs', async (req) => handleGetLogs(logger.getRingBuffer(), req.query));
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir, progressTracker }, req.body));

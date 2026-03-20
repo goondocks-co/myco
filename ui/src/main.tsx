@@ -6,10 +6,11 @@ import { ThemeProvider } from './providers/theme';
 import { FontProvider } from './providers/font';
 import { PowerProvider } from './providers/power';
 import App from './App';
+import { STALE_TIME } from './lib/constants';
 import './index.css';
 
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { staleTime: 10_000 } },
+  defaultOptions: { queries: { staleTime: STALE_TIME } },
 });
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

@@ -27,11 +27,20 @@ export class ProgressTracker {
    * operation of the same type is already running (duplicate prevention).
    * Throws if the maximum concurrent operations limit is reached.
    */
-  create(type: string): string {
+  /**
+   * Create a new tracked operation or return existing one.
+   * Returns `{ token, isNew }` — if `isNew` is false, the operation
+   * was already running and the caller should NOT launch it again.
+   * Throws if the maximum concurrent operations limit is reached.
+   */
+  create(type: string): { token: string; isNew: boolean } {
+    // Lazy cleanup of stale completed/failed entries before checking limits
+    this.cleanup();
+
     // Duplicate prevention: if an operation of the same type is already running, return its token
     for (const entry of this.entries.values()) {
       if (entry.type === type && entry.status === 'running') {
-        return entry.token;
+        return { token: entry.token, isNew: false };
       }
     }
 
@@ -50,7 +59,7 @@ export class ProgressTracker {
       created: now,
       updated: now,
     });
-    return token;
+    return { token, isNew: true };
   }
 
   /**

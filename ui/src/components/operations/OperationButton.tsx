@@ -39,7 +39,7 @@ export function OperationButton({
   useEffect(() => {
     if (!progress) return;
 
-    if (progress.status === 'complete') {
+    if (progress.status === 'completed') {
       setPhase('complete');
       setResultMessage(progress.message ?? 'Done');
       setToken(null);

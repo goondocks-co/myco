@@ -12,6 +12,7 @@ import { cn } from '../lib/cn';
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
 const DEFAULT_LOG_LIMIT = 200;
+const MAX_LOG_ENTRIES = 2000;
 const SCROLL_BOTTOM_THRESHOLD_PX = 40;
 
 type LogLevel = (typeof LOG_LEVELS)[number];
@@ -73,41 +74,48 @@ export default function Logs() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(autoScroll);
   autoScrollRef.current = autoScroll;
+  const cursorRef = useRef(cursor);
+  cursorRef.current = cursor;
 
-  /* Fetch new log entries since cursor */
-  const queryParams = new URLSearchParams({ limit: String(DEFAULT_LOG_LIMIT) });
-  if (cursor) queryParams.set('since', cursor);
-
-  usePowerQuery<LogsResponse>({
-    queryKey: ['logs', cursor],
-    queryFn: ({ signal }) =>
-      fetchJson<LogsResponse>(`/logs?${queryParams.toString()}`, { signal }),
+  /* Fetch new log entries — stable queryKey avoids cache bloat */
+  const { data: logsData } = usePowerQuery<LogsResponse>({
+    queryKey: ['logs'],
+    queryFn: ({ signal }) => {
+      const params = new URLSearchParams({ limit: String(DEFAULT_LOG_LIMIT) });
+      if (cursorRef.current) params.set('since', cursorRef.current);
+      return fetchJson<LogsResponse>(`/logs?${params.toString()}`, { signal });
+    },
     refetchInterval: POLL_INTERVALS.LOGS,
     pollCategory: 'standard',
-    onSuccess(data: LogsResponse) {
-      if (!data.entries.length) return;
-
-      setEntries((prev) => {
-        // On cursor_reset, the server returned entries from the beginning of
-        // the buffer. Deduplicate by timestamp+message to avoid doubling.
-        if (data.cursor_reset) {
-          const existingKeys = new Set(prev.map((e) => `${e.timestamp}|${e.message}`));
-          const fresh = data.entries.filter(
-            (e) => !existingKeys.has(`${e.timestamp}|${e.message}`),
-          );
-          return fresh.length ? [...prev, ...fresh] : prev;
-        }
-        return [...prev, ...data.entries];
-      });
-
-      setCursor(data.cursor);
-
-      // Track new entries for the "scroll to bottom" indicator
-      if (!autoScrollRef.current) {
-        setHasNewEntries(true);
-      }
-    },
   });
+
+  /* Accumulate entries when new data arrives (replaces deprecated onSuccess) */
+  useEffect(() => {
+    if (!logsData?.entries.length) return;
+
+    setEntries((prev) => {
+      let combined: LogEntry[];
+      if (logsData.cursor_reset) {
+        const existingKeys = new Set(prev.map((e) => `${e.timestamp}|${e.message}`));
+        const fresh = logsData.entries.filter(
+          (e) => !existingKeys.has(`${e.timestamp}|${e.message}`),
+        );
+        combined = fresh.length ? [...prev, ...fresh] : prev;
+      } else {
+        combined = [...prev, ...logsData.entries];
+      }
+      // Cap entries to prevent unbounded memory growth
+      return combined.length > MAX_LOG_ENTRIES
+        ? combined.slice(-MAX_LOG_ENTRIES)
+        : combined;
+    });
+
+    setCursor(logsData.cursor);
+
+    if (!autoScrollRef.current) {
+      setHasNewEntries(true);
+    }
+  }, [logsData]);
 
   /* Auto-scroll to bottom when new entries arrive */
   useEffect(() => {

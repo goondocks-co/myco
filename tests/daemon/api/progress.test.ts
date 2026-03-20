@@ -9,7 +9,8 @@ describe('ProgressTracker', () => {
   });
 
   it('creates and retrieves a progress entry', () => {
-    const token = tracker.create('rebuild');
+    const { token, isNew } = tracker.create('rebuild');
+    expect(isNew).toBe(true);
     const entry = tracker.get(token);
     expect(entry).toBeDefined();
     expect(entry!.type).toBe('rebuild');
@@ -18,7 +19,7 @@ describe('ProgressTracker', () => {
   });
 
   it('updates progress fields', () => {
-    const token = tracker.create('rebuild');
+    const { token } = tracker.create('rebuild');
     tracker.update(token, { percent: 50, message: 'Halfway done' });
     const entry = tracker.get(token);
     expect(entry!.percent).toBe(50);
@@ -26,7 +27,7 @@ describe('ProgressTracker', () => {
   });
 
   it('updates status to completed', () => {
-    const token = tracker.create('rebuild');
+    const { token } = tracker.create('rebuild');
     tracker.update(token, { status: 'completed', percent: 100 });
     const entry = tracker.get(token);
     expect(entry!.status).toBe('completed');
@@ -34,16 +35,19 @@ describe('ProgressTracker', () => {
   });
 
   it('returns existing token for duplicate operation type', () => {
-    const token1 = tracker.create('rebuild');
-    const token2 = tracker.create('rebuild');
-    expect(token1).toBe(token2);
+    const first = tracker.create('rebuild');
+    const second = tracker.create('rebuild');
+    expect(first.token).toBe(second.token);
+    expect(first.isNew).toBe(true);
+    expect(second.isNew).toBe(false);
   });
 
   it('allows new operation of same type after previous completes', () => {
-    const token1 = tracker.create('rebuild');
+    const { token: token1 } = tracker.create('rebuild');
     tracker.update(token1, { status: 'completed' });
-    const token2 = tracker.create('rebuild');
+    const { token: token2, isNew } = tracker.create('rebuild');
     expect(token2).not.toBe(token1);
+    expect(isNew).toBe(true);
   });
 
   it('throws when max concurrent operations reached', () => {
@@ -55,14 +59,14 @@ describe('ProgressTracker', () => {
 
   it('hasActiveOperations returns true when running operations exist', () => {
     expect(tracker.hasActiveOperations()).toBe(false);
-    const token = tracker.create('rebuild');
+    const { token } = tracker.create('rebuild');
     expect(tracker.hasActiveOperations()).toBe(true);
     tracker.update(token, { status: 'completed' });
     expect(tracker.hasActiveOperations()).toBe(false);
   });
 
   it('cleanup removes stale completed entries', () => {
-    const token = tracker.create('rebuild');
+    const { token } = tracker.create('rebuild');
     tracker.update(token, { status: 'completed' });
 
     // Fast-forward the updated timestamp past TTL
@@ -74,7 +78,7 @@ describe('ProgressTracker', () => {
   });
 
   it('cleanup keeps running entries', () => {
-    const token = tracker.create('rebuild');
+    const { token } = tracker.create('rebuild');
     // Even if created a long time ago, running entries should not be cleaned up
     const entry = tracker.get(token)!;
     entry.updated = Date.now() - 10 * 60 * 1000;
@@ -101,7 +105,7 @@ describe('handleGetProgress', () => {
   });
 
   it('returns progress entry for valid token', async () => {
-    const token = tracker.create('rebuild');
+    const { token } = tracker.create('rebuild');
     const result = await handleGetProgress(tracker, token);
     expect(result.status).toBeUndefined(); // 200 default
     expect((result.body as Record<string, unknown>).token).toBe(token);

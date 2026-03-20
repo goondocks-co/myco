@@ -7,8 +7,7 @@ import { Router, type RouteHandler } from './router.js';
 import { resolveStaticFile } from './static.js';
 
 const DEFAULT_STATUS = 200;
-const UI_REDIRECT_PATH = '/ui';
-const UI_PATH_PREFIX = '/ui';
+const UI_PATH = '/ui';
 
 export interface DaemonServerConfig {
   vaultDir: string;
@@ -82,9 +81,9 @@ export class DaemonServer {
     const pathname = url.pathname;
 
     // Static file serving for /ui* paths — handled before route matching
-    if (pathname.startsWith(UI_PATH_PREFIX)) {
-      if (pathname === UI_REDIRECT_PATH) {
-        res.writeHead(301, { Location: `${UI_REDIRECT_PATH}/` });
+    if (pathname.startsWith(UI_PATH)) {
+      if (pathname === UI_PATH) {
+        res.writeHead(301, { Location: `${UI_PATH}/` });
         res.end();
         return;
       }
@@ -102,12 +101,17 @@ export class DaemonServer {
         return;
       }
 
-      const content = fs.readFileSync(result.filePath);
-      res.writeHead(200, {
-        'Content-Type': result.contentType,
-        'Cache-Control': result.cacheControl,
-      });
-      res.end(content);
+      try {
+        const content = await fs.promises.readFile(result.filePath);
+        res.writeHead(200, {
+          'Content-Type': result.contentType,
+          'Cache-Control': result.cacheControl,
+        });
+        res.end(content);
+      } catch {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not found' }));
+      }
       return;
     }
 

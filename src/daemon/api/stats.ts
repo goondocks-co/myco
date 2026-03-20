@@ -7,8 +7,7 @@ import type { MycoConfig } from '../../config/schema.js';
 import { gatherStats } from '../../services/stats.js';
 import type { RouteResponse } from '../router.js';
 import type { Metabolism } from '../digest.js';
-
-const CONFIG_FILENAME = 'myco.yaml';
+import { CONFIG_FILENAME } from '../../config/loader.js';
 
 export interface StatsHandlerDeps {
   vaultDir: string;
@@ -16,46 +15,61 @@ export interface StatsHandlerDeps {
   vectorIndex: VectorIndex | null;
   version: string;
   config: MycoConfig;
+  configHash: string;
   metabolism?: Metabolism | null;
 }
 
 export async function handleGetStats(deps: StatsHandlerDeps): Promise<RouteResponse> {
   const baseStats = gatherStats(deps.vaultDir, deps.index, deps.vectorIndex ?? undefined);
 
-  // Config hash for change detection
-  let configHash = '';
-  try {
-    const configPath = path.join(deps.vaultDir, CONFIG_FILENAME);
-    const raw = fs.readFileSync(configPath, 'utf-8');
-    configHash = createHash('md5').update(raw).digest('hex');
-  } catch { /* config may be missing during tests */ }
-
-  // Digest state
-  let digest: Record<string, unknown> | undefined;
-  if (deps.metabolism) {
-    digest = {
-      metabolism_state: deps.metabolism.state,
-      interval_ms: deps.metabolism.currentIntervalMs,
-    };
-  }
+  // Digest state — match the spec's StatsResponse shape
+  const digestConfig = deps.config.digest;
+  const digest = {
+    enabled: digestConfig.enabled,
+    metabolism_state: deps.metabolism?.state ?? null,
+    last_cycle: null as { timestamp: string; tier: number; substrate_count: number } | null,
+    substrate_queue: 0,
+  };
 
   return {
     body: {
-      ...baseStats,
-      uptime_seconds: process.uptime(),
-      version: deps.version,
-      config_hash: configHash,
+      daemon: {
+        ...baseStats.daemon,
+        pid: baseStats.daemon?.pid ?? process.pid,
+        port: baseStats.daemon?.port ?? 0,
+        version: deps.version,
+        uptime_seconds: process.uptime(),
+        active_sessions: baseStats.daemon?.active_sessions ?? [],
+        config_hash: deps.configHash,
+      },
+      vault: baseStats.vault,
+      index: baseStats.index,
+      digest,
       intelligence: {
-        llm: {
+        processor: {
           provider: deps.config.intelligence.llm.provider,
           model: deps.config.intelligence.llm.model,
         },
+        digest: digestConfig.intelligence.provider ? {
+          provider: digestConfig.intelligence.provider,
+          model: digestConfig.intelligence.model ?? deps.config.intelligence.llm.model,
+        } : null,
         embedding: {
           provider: deps.config.intelligence.embedding.provider,
           model: deps.config.intelligence.embedding.model,
         },
       },
-      digest,
     },
   };
+}
+
+/** Compute config hash from the YAML file on disk. Cache this at startup and after saves. */
+export function computeConfigHash(vaultDir: string): string {
+  try {
+    const configPath = path.join(vaultDir, CONFIG_FILENAME);
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    return createHash('md5').update(raw).digest('hex');
+  } catch {
+    return '';
+  }
 }
