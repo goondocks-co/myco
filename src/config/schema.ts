@@ -89,6 +89,7 @@ const DigestSchema = z.object({
   intelligence: DigestIntelligenceSchema.default(() => DigestIntelligenceSchema.parse({})),
   metabolism: DigestMetabolismSchema.default(() => DigestMetabolismSchema.parse({})),
   substrate: DigestSubstrateSchema.default(() => DigestSubstrateSchema.parse({})),
+  consolidation: z.boolean().default(false),
 });
 
 export const MycoConfigSchema = z.object({
