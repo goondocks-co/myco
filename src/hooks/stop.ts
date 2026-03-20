@@ -17,7 +17,7 @@ async function main() {
     const config = loadConfig(VAULT_DIR);
     const client = new DaemonClient(VAULT_DIR);
 
-    await client.ensureRunning();
+    await client.ensureRunning({ checkStale: false });
 
     // Pass transcript_path and last_assistant_message from Claude Code.
     // These are provided by the hook system and eliminate the need to

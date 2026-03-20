@@ -20,6 +20,7 @@ Commands:
   logs [options]           View daemon logs
   setup-llm [options]      Configure LLM and embedding providers
   setup-digest [options]   Configure digest and capture settings
+  digest [options]         Run a digest cycle (--tier N, --full)
   restart                  Restart the daemon
   rebuild                  Reindex the entire vault
   reprocess [options]      Re-extract observations and re-index sessions
@@ -56,6 +57,7 @@ async function main(): Promise<void> {
     case 'session': return (await import('./cli/session.js')).run(args, vaultDir);
     case 'setup-llm': return (await import('./cli/setup-llm.js')).run(args, vaultDir);
     case 'setup-digest': return (await import('./cli/setup-digest.js')).run(args, vaultDir);
+    case 'digest': return (await import('./cli/digest.js')).run(args, vaultDir);
     case 'restart': return (await import('./cli/restart.js')).run(args, vaultDir);
     case 'rebuild': return (await import('./cli/rebuild.js')).run(args, vaultDir);
     case 'reprocess': return (await import('./cli/reprocess.js')).run(args, vaultDir);
