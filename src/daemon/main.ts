@@ -323,6 +323,7 @@ export async function main(): Promise<void> {
       })
       .catch((err) => {
         logger.warn('digest', 'Initial digest cycle failed', { error: (err as Error).message });
+        metabolism!.onEmptyCycle();
       });
 
     // Start metabolism timer

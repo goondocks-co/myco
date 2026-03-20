@@ -74,6 +74,10 @@ export const STALE_BUFFER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 /** Retry delays for daemon health check (ms). */
 export const DAEMON_HEALTH_RETRY_DELAYS = [100, 200, 400, 800, 1500];
 
+/** Grace period after daemon.json is written before stale checks can trigger a restart (ms).
+ *  Prevents rapid restart loops from concurrent hooks or session reloads. */
+export const DAEMON_STALE_GRACE_PERIOD_MS = 60_000;
+
 // --- Slug limits ---
 /** Max length for slugified artifact IDs. */
 export const MAX_SLUG_LENGTH = 100;
