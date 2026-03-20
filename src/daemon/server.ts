@@ -31,12 +31,12 @@ export class DaemonServer {
     this.router.add(method, routePath, handler);
   }
 
-  async start(): Promise<void> {
+  async start(port: number = 0): Promise<void> {
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => this.handleRequest(req, res));
       this.server.on('error', reject);
 
-      this.server.listen(0, '127.0.0.1', () => {
+      this.server.listen(port, '127.0.0.1', () => {
         const addr = this.server!.address() as { port: number };
         this.port = addr.port;
         this.writeDaemonJson();

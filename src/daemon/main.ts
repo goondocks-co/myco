@@ -1,7 +1,7 @@
 import { DaemonServer } from './server.js';
 import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger } from './logger.js';
-import { loadConfig } from '../config/loader.js';
+import { loadConfig, saveConfig } from '../config/loader.js';
 import { BatchManager, type BatchEvent } from './batch.js';
 import { BufferProcessor, type Observation, type ClassifiedArtifact } from './processor.js';
 import { VaultWriter } from '../vault/writer.js';
@@ -16,6 +16,7 @@ import { LineageGraph, LINEAGE_SIMILARITY_THRESHOLD, LINEAGE_SIMILARITY_HIGH_CON
 import type { RegisteredSession } from './lifecycle.js';
 import { PlanWatcher } from './watcher.js';
 import { DigestEngine, Metabolism } from './digest.js';
+import { resolvePort } from './port.js';
 import { handleMycoContext } from '../mcp/tools/context.js';
 import { buildSimilarityPrompt } from '../prompts/index.js';
 import { extractNumber } from '../intelligence/response.js';
@@ -965,8 +966,19 @@ export async function main(): Promise<void> {
     }
   });
 
-  await server.start();
+  const resolvedPort = await resolvePort(config.daemon.port, vaultDir);
+  if (resolvedPort === 0) {
+    logger.warn('daemon', 'All preferred ports occupied, using ephemeral port');
+  }
+  await server.start(resolvedPort);
   logger.info('daemon', 'Daemon ready', { vault: vaultDir, port: server.port });
+
+  // Persist the resolved port to config if it was auto-derived
+  if (config.daemon.port === null && resolvedPort !== 0) {
+    config.daemon.port = resolvedPort;
+    saveConfig(vaultDir, config);
+    logger.info('daemon', 'Persisted auto-derived port to myco.yaml', { port: resolvedPort });
+  }
 
   // Background reindex after migration — runs after server is healthy
   if (needsMigrationReindex) {
