@@ -29,39 +29,6 @@ export const PROVIDER_DEFAULTS: Record<string, { base_url: string }> = {
   'lm-studio': { base_url: LmStudioBackend.DEFAULT_BASE_URL },
 };
 
-export const DASHBOARD_CONTENT = `# Myco Vault
-
-## Active Plans
-\`\`\`dataview
-TABLE status, tags FROM #type/plan
-WHERE status = "active" OR status = "in_progress"
-SORT created DESC
-\`\`\`
-
-## Recent Sessions
-\`\`\`dataview
-TABLE user, started, tools_used FROM #type/session
-SORT started DESC LIMIT 10
-\`\`\`
-
-## Recent Spores
-\`\`\`dataview
-TABLE observation_type AS "Type", created FROM #type/spore
-SORT created DESC LIMIT 15
-\`\`\`
-
-## Spores by Type
-\`\`\`dataview
-TABLE WITHOUT ID observation_type AS "Type", length(rows) AS "Count"
-FROM #type/spore GROUP BY observation_type
-SORT length(rows) DESC
-\`\`\`
-
-## Gotchas
-\`\`\`dataview
-LIST FROM #spore/gotcha SORT created DESC LIMIT 10
-\`\`\`
-`;
 
 export const VAULT_GITIGNORE = `# Runtime — rebuilt on daemon startup
 index.db

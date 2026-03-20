@@ -33,7 +33,6 @@ describe('myco init', () => {
 
     expect(fs.existsSync(path.join(testDir, '.myco', 'myco.yaml'))).toBe(true);
     expect(fs.existsSync(path.join(testDir, '.myco', '.gitignore'))).toBe(true);
-    expect(fs.existsSync(path.join(testDir, '.myco', '_dashboard.md'))).toBe(true);
     expect(fs.existsSync(path.join(testDir, '.myco', 'index.db'))).toBe(true);
   });
 
@@ -106,17 +105,6 @@ describe('myco init', () => {
     expect(gitignore).toContain('buffer/');
     expect(gitignore).toContain('logs/');
     expect(gitignore).toContain('.obsidian/');
-  });
-
-  it('writes Obsidian dashboard with Dataview queries', () => {
-    runInit(testDir, ['--llm-provider', 'ollama', '--llm-model', 'gpt-oss', '--embedding-model', 'bge-m3']);
-
-    const dashboard = fs.readFileSync(path.join(testDir, '.myco', '_dashboard.md'), 'utf-8');
-    expect(dashboard).toContain('# Myco Vault');
-    expect(dashboard).toContain('dataview');
-    expect(dashboard).toContain('#type/plan');
-    expect(dashboard).toContain('#type/session');
-    expect(dashboard).toContain('#spore/gotcha');
   });
 
   it('is idempotent — does not overwrite existing vault', () => {
