@@ -119,7 +119,7 @@ export function OperationButton({
 
       {/* Progress bar */}
       {isRunning && progressPercent !== null && (
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+        <div className="mt-2 h-1.5 w-full rounded-full bg-muted overflow-hidden">
           <div
             className="h-full rounded-full bg-primary transition-all duration-300"
             style={{ width: `${progressPercent}%` }}

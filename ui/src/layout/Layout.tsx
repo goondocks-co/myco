@@ -10,6 +10,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { useTheme } from '../providers/theme';
+import { useDaemon } from '../hooks/use-daemon';
 import { Button } from '../components/ui/button';
 import {
   Select,
@@ -63,14 +64,23 @@ function ThemeToggle() {
 }
 
 function OpenVaultSelect() {
+  const { data: stats } = useDaemon();
+
   const handleOpenVault = (value: string) => {
-    // Placeholder: actual vault path comes from stats API in Task 10
-    // For now, log the intent
-    console.log(`Open vault in: ${value}`);
+    if (!stats) return;
+    let uri: string;
+    if (value === 'obsidian') {
+      uri = `obsidian://open?vault=${encodeURIComponent(stats.vault.name)}`;
+    } else if (value === 'vscode') {
+      uri = `vscode://file${stats.vault.path}`;
+    } else {
+      uri = `file://${stats.vault.path}`;
+    }
+    window.location.href = uri;
   };
 
   return (
-    <Select onValueChange={handleOpenVault}>
+    <Select onValueChange={handleOpenVault} disabled={!stats}>
       <SelectTrigger className="w-full border-none bg-transparent text-muted-foreground shadow-none hover:text-foreground text-sm h-8">
         <div className="flex items-center gap-2">
           <FolderOpen className="h-4 w-4" />

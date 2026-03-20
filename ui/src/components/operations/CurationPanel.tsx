@@ -9,15 +9,11 @@ import { cn } from '../../lib/cn';
 /** Duration to show the execute result before clearing */
 const EXECUTE_RESULT_DURATION_MS = 6_000;
 
-interface SporePair {
-  kept: string;
-  superseded: string;
-  reason: string;
-}
-
 interface DryRunResult {
-  pairs: SporePair[];
-  count: number;
+  dry_run: true;
+  scanned: number;
+  clustersEvaluated: number;
+  superseded: number;
 }
 
 type PreviewPhase = 'idle' | 'loading' | 'loaded' | 'error';
@@ -166,44 +162,30 @@ export function CurationPanel() {
       {/* Preview results */}
       {previewPhase === 'loaded' && previewResult && (
         <div className="space-y-3">
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">
-              {previewResult.pairs.length === 0
-                ? 'No duplicate spores found.'
-                : `Found ${previewResult.pairs.length} spore pair${previewResult.pairs.length === 1 ? '' : 's'} to consolidate:`}
-            </span>
-          </div>
-
-          {previewResult.pairs.length > 0 && (
-            <div className="space-y-2">
-              {previewResult.pairs.map((pair, idx) => (
-                <div
-                  key={idx}
-                  className="rounded-md border border-border bg-background p-3 text-sm"
-                >
-                  <div className="flex items-start gap-2">
-                    <Badge variant="secondary" className="shrink-0 text-xs">
-                      keep
-                    </Badge>
-                    <span className="font-mono text-xs break-all">{pair.kept}</span>
-                  </div>
-                  <div className="mt-1.5 flex items-start gap-2">
-                    <Badge variant="destructive" className="shrink-0 text-xs">
-                      drop
-                    </Badge>
-                    <span className="font-mono text-xs break-all text-muted-foreground">
-                      {pair.superseded}
-                    </span>
-                  </div>
-                  {pair.reason && (
-                    <p className="mt-1.5 text-xs text-muted-foreground italic">
-                      {pair.reason}
-                    </p>
-                  )}
-                </div>
-              ))}
+          <div className="rounded-md border border-border bg-background p-3 text-sm space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Spores scanned</span>
+              <Badge variant="secondary" className="font-mono text-xs">{previewResult.scanned}</Badge>
             </div>
-          )}
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Clusters evaluated</span>
+              <Badge variant="secondary" className="font-mono text-xs">{previewResult.clustersEvaluated}</Badge>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Would supersede</span>
+              <Badge
+                variant={previewResult.superseded > 0 ? 'destructive' : 'secondary'}
+                className="font-mono text-xs"
+              >
+                {previewResult.superseded}
+              </Badge>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {previewResult.superseded === 0
+              ? 'No duplicate spores found.'
+              : `${previewResult.superseded} spore${previewResult.superseded === 1 ? '' : 's'} would be superseded. Run Execute to apply.`}
+          </p>
         </div>
       )}
     </div>

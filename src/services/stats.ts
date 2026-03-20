@@ -29,15 +29,8 @@ export interface VaultStats {
 }
 
 export function gatherStats(vaultDir: string, index: MycoIndex, vectorIndex?: VectorIndex): VaultStats {
-  const sessions = index.query({ type: 'session' });
-  const spores = index.query({ type: 'spore' });
-  const plans = index.query({ type: 'plan' });
-
-  const spore_counts: Record<string, number> = {};
-  for (const m of spores) {
-    const t = (m.frontmatter as Record<string, unknown>)?.observation_type as string || 'unknown';
-    spore_counts[t] = (spore_counts[t] || 0) + 1;
-  }
+  const typeCounts = index.countByType();
+  const spore_counts = index.sporeCountsByObservationType();
 
   let vector_count = 0;
   if (vectorIndex) {
@@ -73,11 +66,11 @@ export function gatherStats(vaultDir: string, index: MycoIndex, vectorIndex?: Ve
       path: vaultDir,
       name: path.basename(vaultDir),
       spore_counts,
-      session_count: sessions.length,
-      plan_count: plans.length,
+      session_count: typeCounts['session'] ?? 0,
+      plan_count: typeCounts['plan'] ?? 0,
     },
     index: {
-      fts_entries: sessions.length + spores.length + plans.length,
+      fts_entries: Object.values(typeCounts).reduce((sum, n) => sum + n, 0),
       vector_count,
     },
     daemon,
