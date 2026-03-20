@@ -12,7 +12,7 @@ claude plugin install myco@myco-plugins
 Then in any project:
 
 ```
-/myco-init
+/myco-setup
 ```
 
 This sets up the vault, configures your LLM backend, and starts capturing session knowledge.
@@ -58,15 +58,15 @@ claude plugin install myco
 ### 3. Initialize the vault
 
 ```
-/myco-init
+/myco-setup
 ```
 
 For dogfooding, the vault lives at `~/.myco/vaults/myco/` (configured via `MYCO_VAULT_DIR` in `.claude/settings.json`).
 
 ### 4. Verify
 
-```
-/myco-status
+```bash
+node dist/src/cli.js stats
 ```
 
 ## Development Workflow
@@ -95,7 +95,6 @@ myco/
 ├── .claude-plugin/        # Claude Code + VS Code plugin manifest + marketplace
 ├── .cursor-plugin/        # Cursor plugin manifest + marketplace
 ├── hooks/                 # Hook registration shell scripts
-├── commands/              # Slash commands (/myco-init, /myco-status, /myco-setup-llm)
 ├── skills/                # Agent skills
 ├── src/
 │   ├── agents/            # Agent adapters (Claude Code, Cursor) — transcript parsing + image capture

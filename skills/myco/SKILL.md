@@ -31,7 +31,9 @@ The MCP tools below are for going deeper than the automatic context injection pr
 
 ## Setup
 
-If the vault isn't configured, run `/myco-init` to set up. To change LLM providers, run `/myco-setup-llm`. To check health, run `/myco-status`.
+If the vault isn't configured, run `/myco-setup` for guided first-time setup.
+
+For reconfiguration, status checks, and ongoing management, use the CLI commands and MCP tools documented below. For detailed vault health checks, see `references/vault-status.md`.
 
 ## MCP Tools Reference
 
@@ -206,6 +208,8 @@ The vault should get sharper over time, not just bigger. Every session should le
 3. After the decision is made, `myco_remember` the rationale
 
 ## Maintenance
+
+For the full CLI reference with all flags, see `references/cli-usage.md`.
 
 All CLI commands use `node` with the CLI script inside the plugin root. Run commands as:
 
