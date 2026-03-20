@@ -11,6 +11,7 @@ const USAGE = `Usage: myco <command> [args]
 Commands:
   init [options]           Initialize a new vault
   config <get|set> [args]  Get or set vault config values
+  curate [options]         Scan vault and supersede stale spores (--dry-run)
   detect-providers         Detect available LLM/embedding providers (JSON)
   verify                   Test LLM and embedding connectivity
   stats                    Vault health, index counts, vector count
@@ -50,6 +51,7 @@ async function main(): Promise<void> {
 
   switch (cmd) {
     case 'config': return (await import('./cli/config.js')).run(args, vaultDir);
+    case 'curate': return (await import('./cli/curate.js')).run(args, vaultDir);
     case 'verify': return (await import('./cli/verify.js')).run(args, vaultDir);
     case 'stats': return (await import('./cli/stats.js')).run(args, vaultDir);
     case 'search': return (await import('./cli/search.js')).run(args, vaultDir);
