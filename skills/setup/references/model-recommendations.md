@@ -48,11 +48,10 @@ These are system-wide Ollama settings (launchd plist on macOS, systemd on Linux)
 
 **Ollama:**
 ```bash
-ollama pull qwen3.5         # pulls latest tag (~8B)
 ollama pull qwen3.5:4b      # 4B variant
-ollama pull qwen3.5:27b     # 27B variant
+ollama pull qwen3.5:latest  # latest variant (~8B)
 ollama pull qwen3.5:35b     # 35B MoE variant
-ollama pull bge-m3           # embedding model
+ollama pull bge-m3          # embedding model
 ```
 
 **LM Studio:** Search for `qwen3.5` in the model browser. Download the variants matching the RAM tier above.
@@ -67,13 +66,14 @@ Recommended:
 
 ## Inject Tier
 
-Controls how much pre-computed context the agent receives at session start. All tiers are available at all RAM levels — smaller models still support large context windows, they just use more KV cache memory. The default recommendation is based on what works best out of the box.
+Controls how much pre-computed context the agent receives at session start. All tiers are available regardless of local hardware — the local LLM can generate any tier. The default should be based on the **coding agent's context window**, not the local model.
 
-| RAM | Default Tier |
-|-----|-------------|
-| **48GB+** | 3000 |
-| **32GB** | 3000 |
-| **16GB** | 1500 |
+| Agent Context Window | Default Tier | Rationale |
+|---------------------|-------------|-----------|
+| **1M+** (Opus 4.6) | 10000 | Rich context is cheap relative to the window |
+| **200K** (Sonnet 4.6, Gemini) | 5000 | Good depth without crowding the agent's context |
+| **128K** (GPT-4o, smaller models) | 3000 | Balanced — enough for key decisions and recent activity |
+| **32K or less** | 1500 | Executive briefing only — preserve context for the task |
 
 ### Tier Descriptions
 

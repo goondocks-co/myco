@@ -98,16 +98,18 @@ Recommend `bge-m3` as the default. Record the chosen embedding provider and mode
 
 ### Question 5: Inject Tier
 
-Show all inject tier options, with the RAM-appropriate default pre-selected:
+Ask the user which coding agent they primarily use, then recommend an inject tier based on the agent's context window (see `references/model-recommendations.md`). Show all tiers:
 
 | Tier | Description |
 |------|-------------|
 | 1500 | Executive briefing — fastest, lightest |
-| 3000 | Team standup — recommended for most setups |
-| 5000 | Deep onboarding |
-| 10000 | Institutional knowledge — richest context |
+| 3000 | Team standup — balanced context |
+| 5000 | Deep onboarding — good for 200K agents |
+| 10000 | Institutional knowledge — richest, best for 1M+ agents |
 
-All tiers work at all RAM levels — smaller models still support large context windows. Pre-select the default from the RAM table. Tell the user: "Agents can always request a different tier on-demand via the `myco_context` MCP tool."
+Explain: "The inject tier controls how much vault context is injected at session start. Larger tiers give the agent more project history but use more of its context window. All tiers work regardless of local hardware."
+
+Pre-select the default based on the agent's context window. Tell the user: "Agents can always request a different tier on-demand via the `myco_context` MCP tool."
 
 Record the chosen inject tier.
 
