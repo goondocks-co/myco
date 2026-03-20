@@ -31,6 +31,11 @@ import { checkSupersession } from '../vault/curation.js';
 import { collectArtifactCandidates } from '../artifacts/candidates.js';
 import { slugifyPath } from '../artifacts/slugify.js';
 import { sessionNoteId, bareSessionId, sessionWikilink, sessionRelativePath } from '../vault/session-id.js';
+import { handleGetConfig, handlePutConfig } from './api/config.js';
+import { handleGetStats } from './api/stats.js';
+import { handleGetLogs } from './api/logs.js';
+import { handleRestart } from './api/restart.js';
+import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { z } from 'zod';
 import YAML from 'yaml';
 import fs from 'node:fs';
@@ -973,6 +978,18 @@ export async function main(): Promise<void> {
       return { body: { text: '' } };
     }
   });
+
+  // --- Dashboard API routes ---
+  const progressTracker = new ProgressTracker();
+
+  server.registerRoute('GET', '/api/config', async () => handleGetConfig(vaultDir));
+  server.registerRoute('PUT', '/api/config', async (req) => handlePutConfig(vaultDir, req.body));
+  server.registerRoute('GET', '/api/stats', async () => handleGetStats({
+    vaultDir, index, vectorIndex, version: server.version, config, metabolism,
+  }));
+  server.registerRoute('GET', '/api/logs', async (req) => handleGetLogs(logger.getRingBuffer(), req.query));
+  server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir, progressTracker }, req.body));
+  server.registerRoute('GET', '/api/progress/:token', async (req) => handleGetProgress(progressTracker, req.params.token));
 
   const resolvedPort = await resolvePort(config.daemon.port, vaultDir);
   if (resolvedPort === 0) {
