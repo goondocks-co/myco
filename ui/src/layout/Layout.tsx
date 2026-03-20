@@ -1,3 +1,4 @@
+import { useState, useEffect, useCallback } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -8,9 +9,15 @@ import {
   Moon,
   FolderOpen,
   ExternalLink,
+  RotateCcw,
+  Type,
+  Minus,
+  Plus,
 } from 'lucide-react';
 import { useTheme } from '../providers/theme';
+import { useFont, type FontOption } from '../providers/font';
 import { useDaemon } from '../hooks/use-daemon';
+import { useRestart } from '../hooks/use-restart';
 import { Button } from '../components/ui/button';
 import {
   Select,
@@ -20,6 +27,8 @@ import {
   SelectValue,
 } from '../components/ui/select';
 import { cn } from '../lib/cn';
+
+/* ---------- Constants ---------- */
 
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -33,6 +42,67 @@ const VAULT_OPEN_OPTIONS = [
   { value: 'vscode', label: 'VS Code' },
   { value: 'finder', label: 'Finder' },
 ] as const;
+
+const FONT_OPTIONS: { value: FontOption; label: string }[] = [
+  { value: 'geist-mono', label: 'Geist Mono' },
+  { value: 'system', label: 'System' },
+  { value: 'sf-mono', label: 'SF Mono' },
+  { value: 'fira-code', label: 'Fira Code' },
+  { value: 'jetbrains-mono', label: 'JetBrains' },
+];
+
+type Density = 'compact' | 'normal' | 'comfy';
+
+const DENSITY_VALUES: Record<Density, number> = {
+  compact: 0.85,
+  normal: 1,
+  comfy: 1.15,
+};
+
+const DENSITY_LABELS: Record<Density, string> = {
+  compact: 'Compact',
+  normal: 'Normal',
+  comfy: 'Comfy',
+};
+
+const DENSITY_ORDER: Density[] = ['compact', 'normal', 'comfy'];
+
+const DENSITY_STORAGE_KEY = 'myco-ui-density';
+const DENSITY_CSS_VAR = '--density';
+const DEFAULT_DENSITY: Density = 'normal';
+
+/* ---------- Density hook ---------- */
+
+function getStoredDensity(): Density {
+  const stored = localStorage.getItem(DENSITY_STORAGE_KEY);
+  if (stored && stored in DENSITY_VALUES) {
+    return stored as Density;
+  }
+  return DEFAULT_DENSITY;
+}
+
+function applyDensity(density: Density): void {
+  const value = DENSITY_VALUES[density];
+  document.documentElement.style.setProperty(DENSITY_CSS_VAR, String(value));
+  document.documentElement.style.fontSize = `calc(14px * ${value})`;
+}
+
+function useDensity() {
+  const [density, setDensityState] = useState<Density>(getStoredDensity);
+
+  const setDensity = useCallback((next: Density) => {
+    localStorage.setItem(DENSITY_STORAGE_KEY, next);
+    setDensityState(next);
+  }, []);
+
+  useEffect(() => {
+    applyDensity(density);
+  }, [density]);
+
+  return { density, setDensity };
+}
+
+/* ---------- Sub-components ---------- */
 
 function ThemeToggle() {
   const { theme, setTheme } = useTheme();
@@ -59,6 +129,23 @@ function ThemeToggle() {
     >
       {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
       <span>{isDark ? 'Light mode' : 'Dark mode'}</span>
+    </Button>
+  );
+}
+
+function RestartButton() {
+  const { restart, isRestarting } = useRestart();
+
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={() => restart()}
+      disabled={isRestarting}
+      className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
+    >
+      <RotateCcw className={cn('h-4 w-4', isRestarting && 'animate-spin')} />
+      <span>{isRestarting ? 'Restarting...' : 'Restart Daemon'}</span>
     </Button>
   );
 }
@@ -101,6 +188,73 @@ function OpenVaultSelect() {
   );
 }
 
+function FontSelector() {
+  const { font, setFont } = useFont();
+
+  return (
+    <Select value={font} onValueChange={(v) => setFont(v as FontOption)}>
+      <SelectTrigger className="w-full border-none bg-transparent text-muted-foreground shadow-none hover:text-foreground text-sm h-8">
+        <div className="flex items-center gap-2">
+          <Type className="h-4 w-4" />
+          <SelectValue />
+        </div>
+      </SelectTrigger>
+      <SelectContent>
+        {FONT_OPTIONS.map((opt) => (
+          <SelectItem key={opt.value} value={opt.value}>
+            {opt.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function DensityControl() {
+  const { density, setDensity } = useDensity();
+  const currentIndex = DENSITY_ORDER.indexOf(density);
+
+  const decrease = () => {
+    if (currentIndex > 0) {
+      setDensity(DENSITY_ORDER[currentIndex - 1]);
+    }
+  };
+
+  const increase = () => {
+    if (currentIndex < DENSITY_ORDER.length - 1) {
+      setDensity(DENSITY_ORDER[currentIndex + 1]);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-1 px-3 py-1">
+      <button
+        onClick={decrease}
+        disabled={currentIndex === 0}
+        className="rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-30"
+        aria-label="Decrease density"
+      >
+        <Minus className="h-3 w-3" />
+      </button>
+      <div className="flex flex-1 justify-center">
+        <span className="text-xs text-muted-foreground select-none">
+          {DENSITY_LABELS[density]}
+        </span>
+      </div>
+      <button
+        onClick={increase}
+        disabled={currentIndex === DENSITY_ORDER.length - 1}
+        className="rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-30"
+        aria-label="Increase density"
+      >
+        <Plus className="h-3 w-3" />
+      </button>
+    </div>
+  );
+}
+
+/* ---------- Layout ---------- */
+
 export default function Layout() {
   return (
     <div className="flex h-screen bg-background">
@@ -141,8 +295,11 @@ export default function Layout() {
 
         {/* Footer */}
         <div className="border-t border-border px-2 py-3 space-y-1">
-          <ThemeToggle />
+          <RestartButton />
           <OpenVaultSelect />
+          <FontSelector />
+          <DensityControl />
+          <ThemeToggle />
         </div>
       </aside>
 

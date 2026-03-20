@@ -3,29 +3,46 @@ import { totalSpores } from '../../lib/vault';
 
 /* ---------- Constants ---------- */
 
-const HUB_X = 250;
-const HUB_Y = 200;
-const HUB_RADIUS = 40;
-const ORBIT_RADIUS = 140;
-const NODE_RADIUS = 30;
-const HALO_RADIUS = 38;
-const NODE_COUNT = 5;
+const SVG_WIDTH = 500;
+const SVG_HEIGHT = 400;
+const HUB_X = 240;
+const HUB_Y = 195;
+const HUB_RADIUS = 44;
+const HUB_HALO_INNER = 50;
+const HUB_HALO_OUTER = 62;
 const PULSE_DURATION = '3s';
+const SPORE_DRIFT_DURATION = '4s';
 const DETAIL_MAX_CHARS = 16;
+const SPORE_RADIUS = 1.8;
+const SPORE_COUNT_PER_ACTIVE_PATH = 2;
 
-/** Starting angle offset so the first node sits at top-center */
-const ANGLE_OFFSET = -Math.PI / 2;
+const FONT_FAMILY = 'var(--font-ui, monospace)';
 
-const COLOR_ACTIVE = 'hsl(142, 71%, 45%)';
-const COLOR_IDLE = 'hsl(142, 71%, 45%)';
+const CONNECTION_OPACITY_DEFAULT = 0.25;
+const CONNECTION_OPACITY_ACTIVE = 0.55;
+
+/* Node-specific colors (emerald/fungal palette) */
+const NODE_COLORS: Record<string, string> = {
+  daemon: 'hsl(142, 71%, 45%)',
+  processor: 'hsl(160, 60%, 40%)',
+  digest: 'hsl(142, 50%, 55%)',
+  embedding: 'hsl(175, 50%, 40%)',
+  vault: 'hsl(130, 45%, 35%)',
+  sessions: 'hsl(155, 60%, 50%)',
+};
+
 const COLOR_COOLING = 'hsl(38, 92%, 50%)';
 const COLOR_DORMANT = 'hsl(215, 10%, 40%)';
 const COLOR_OFF = 'hsl(215, 10%, 25%)';
 
-const CONNECTION_OPACITY_DEFAULT = 0.3;
-const CONNECTION_OPACITY_ACTIVE = 0.6;
-
-const FONT_FAMILY = 'var(--font-ui, monospace)';
+/* Organic node positions — asymmetric, like a mycelium mat */
+const NODE_POSITIONS: Record<string, { x: number; y: number; radius: number }> = {
+  processor: { x: 100, y: 80, radius: 32 },
+  digest: { x: 395, y: 110, radius: 28 },
+  embedding: { x: 80, y: 310, radius: 26 },
+  vault: { x: 410, y: 290, radius: 34 },
+  sessions: { x: 250, y: 355, radius: 30 },
+};
 
 /* ---------- Types ---------- */
 
@@ -40,12 +57,11 @@ interface TopologyNode {
 
 /* ---------- Helpers ---------- */
 
-function statusColor(status: NodeStatus): string {
+function statusColor(nodeId: string, status: NodeStatus): string {
   switch (status) {
     case 'active':
-      return COLOR_ACTIVE;
     case 'idle':
-      return COLOR_IDLE;
+      return NODE_COLORS[nodeId] ?? NODE_COLORS.daemon;
     case 'cooling':
       return COLOR_COOLING;
     case 'dormant':
@@ -57,14 +73,6 @@ function statusColor(status: NodeStatus): string {
 
 function isPulsing(status: NodeStatus): boolean {
   return status === 'active';
-}
-
-function nodePosition(index: number): { x: number; y: number } {
-  const angle = ANGLE_OFFSET + (2 * Math.PI * index) / NODE_COUNT;
-  return {
-    x: HUB_X + ORBIT_RADIUS * Math.cos(angle),
-    y: HUB_Y + ORBIT_RADIUS * Math.sin(angle),
-  };
 }
 
 function formatModel(info: { provider: string; model: string } | null): string {
@@ -129,40 +137,106 @@ function buildNodes(stats: StatsResponse): TopologyNode[] {
   ];
 }
 
+/** Generate a bezier curve path between hub and a node — organic hypha shape */
+function hyphaPath(nodeId: string): string {
+  const pos = NODE_POSITIONS[nodeId];
+  if (!pos) return '';
+
+  const dx = pos.x - HUB_X;
+  const dy = pos.y - HUB_Y;
+
+  // Offset control points perpendicular to the line for organic curve
+  const len = Math.sqrt(dx * dx + dy * dy);
+  const nx = -dy / len; // normal x
+  const ny = dx / len; // normal y
+
+  // Vary curvature per node for asymmetry
+  const curvatures: Record<string, number> = {
+    processor: 25,
+    digest: -30,
+    embedding: -20,
+    vault: 35,
+    sessions: 15,
+  };
+  const curve = curvatures[nodeId] ?? 20;
+
+  const cp1x = HUB_X + dx * 0.35 + nx * curve;
+  const cp1y = HUB_Y + dy * 0.35 + ny * curve;
+  const cp2x = HUB_X + dx * 0.65 + nx * curve * 0.6;
+  const cp2y = HUB_Y + dy * 0.65 + ny * curve * 0.6;
+
+  return `M ${HUB_X} ${HUB_Y} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${pos.x} ${pos.y}`;
+}
+
 /* ---------- Sub-components ---------- */
 
-function Connection({ index, status }: { index: number; status: NodeStatus }) {
-  const { x, y } = nodePosition(index);
-  const active = isPulsing(status);
-  const color = statusColor(status);
+function HyphaConnection({ node }: { node: TopologyNode }) {
+  const color = statusColor(node.id, node.status);
+  const active = isPulsing(node.status);
+  const pathId = `hypha-${node.id}`;
+  const d = hyphaPath(node.id);
 
   return (
-    <line
-      x1={HUB_X}
-      y1={HUB_Y}
-      x2={x}
-      y2={y}
-      stroke={color}
-      strokeWidth={1.5}
-      strokeDasharray={status === 'off' ? '4 4' : undefined}
-      opacity={active ? CONNECTION_OPACITY_ACTIVE : CONNECTION_OPACITY_DEFAULT}
-    >
-      {active && (
-        <animate
-          attributeName="opacity"
-          values={`${CONNECTION_OPACITY_DEFAULT};${CONNECTION_OPACITY_ACTIVE};${CONNECTION_OPACITY_DEFAULT}`}
-          dur={PULSE_DURATION}
-          repeatCount="indefinite"
-        />
-      )}
-    </line>
+    <g>
+      <path
+        id={pathId}
+        d={d}
+        fill="none"
+        stroke={color}
+        strokeWidth={active ? 2 : 1.5}
+        strokeDasharray={node.status === 'off' ? '6 4' : undefined}
+        opacity={active ? CONNECTION_OPACITY_ACTIVE : CONNECTION_OPACITY_DEFAULT}
+        strokeLinecap="round"
+      >
+        {active && (
+          <animate
+            attributeName="opacity"
+            values={`${CONNECTION_OPACITY_DEFAULT};${CONNECTION_OPACITY_ACTIVE};${CONNECTION_OPACITY_DEFAULT}`}
+            dur={PULSE_DURATION}
+            repeatCount="indefinite"
+          />
+        )}
+      </path>
+
+      {/* Spore particles drifting along active connections */}
+      {active &&
+        Array.from({ length: SPORE_COUNT_PER_ACTIVE_PATH }, (_, i) => {
+          const offset = i / SPORE_COUNT_PER_ACTIVE_PATH;
+          return (
+            <circle
+              key={i}
+              r={SPORE_RADIUS}
+              fill={color}
+              opacity={0}
+            >
+              <animateMotion
+                dur={SPORE_DRIFT_DURATION}
+                repeatCount="indefinite"
+                begin={`${offset * 4}s`}
+                path={d}
+              />
+              <animate
+                attributeName="opacity"
+                values="0;0.6;0.8;0.6;0"
+                dur={SPORE_DRIFT_DURATION}
+                repeatCount="indefinite"
+                begin={`${offset * 4}s`}
+              />
+            </circle>
+          );
+        })}
+    </g>
   );
 }
 
-function TopologyNodeSvg({ node, index }: { node: TopologyNode; index: number }) {
-  const { x, y } = nodePosition(index);
-  const color = statusColor(node.status);
+function TopologyNodeSvg({ node }: { node: TopologyNode }) {
+  const pos = NODE_POSITIONS[node.id];
+  if (!pos) return null;
+
+  const { x, y, radius } = pos;
+  const color = statusColor(node.id, node.status);
   const pulses = isPulsing(node.status);
+  const haloRadius = radius + 8;
 
   return (
     <g>
@@ -170,38 +244,38 @@ function TopologyNodeSvg({ node, index }: { node: TopologyNode; index: number })
 
       {/* Halo (pulsing glow for active nodes) */}
       {pulses && (
-        <circle cx={x} cy={y} r={HALO_RADIUS} fill={color} opacity={0}>
+        <circle cx={x} cy={y} r={haloRadius} fill={color} opacity={0}>
           <animate
             attributeName="opacity"
-            values="0;0.15;0"
+            values="0;0.12;0"
             dur={PULSE_DURATION}
             repeatCount="indefinite"
           />
           <animate
             attributeName="r"
-            values={`${HALO_RADIUS};${HALO_RADIUS + 8};${HALO_RADIUS}`}
+            values={`${haloRadius};${haloRadius + 10};${haloRadius}`}
             dur={PULSE_DURATION}
             repeatCount="indefinite"
           />
         </circle>
       )}
 
-      {/* Node circle */}
+      {/* Node circle — organic feel with slightly thicker stroke */}
       <circle
         cx={x}
         cy={y}
-        r={NODE_RADIUS}
+        r={radius}
         fill={color}
-        fillOpacity={0.12}
+        fillOpacity={0.1}
         stroke={color}
         strokeWidth={1.5}
-        strokeOpacity={node.status === 'off' ? 0.3 : 0.7}
+        strokeOpacity={node.status === 'off' ? 0.25 : 0.65}
       />
 
       {/* Label */}
       <text
         x={x}
-        y={y - 6}
+        y={y - 5}
         textAnchor="middle"
         fill="currentColor"
         fontSize={10}
@@ -215,15 +289,54 @@ function TopologyNodeSvg({ node, index }: { node: TopologyNode; index: number })
       {/* Detail */}
       <text
         x={x}
-        y={y + 8}
+        y={y + 9}
         textAnchor="middle"
         fill="currentColor"
         fontSize={8}
         fontFamily={FONT_FAMILY}
         opacity={0.5}
       >
-        {node.detail.length > DETAIL_MAX_CHARS ? node.detail.slice(0, DETAIL_MAX_CHARS - 1) + '\u2026' : node.detail}
+        {node.detail.length > DETAIL_MAX_CHARS
+          ? node.detail.slice(0, DETAIL_MAX_CHARS - 1) + '\u2026'
+          : node.detail}
       </text>
+    </g>
+  );
+}
+
+/* ---------- Ambient spores (background particles) ---------- */
+
+function AmbientSpores() {
+  // Predefined positions so we avoid random in render
+  const spores = [
+    { cx: 170, cy: 140, delay: '0s' },
+    { cx: 320, cy: 250, delay: '1.5s' },
+    { cx: 130, cy: 200, delay: '3s' },
+    { cx: 360, cy: 170, delay: '2s' },
+    { cx: 200, cy: 330, delay: '0.8s' },
+    { cx: 300, cy: 100, delay: '2.5s' },
+  ];
+
+  return (
+    <g opacity={0.3}>
+      {spores.map((s, i) => (
+        <circle key={i} cx={s.cx} cy={s.cy} r={1.2} fill="hsl(142, 50%, 50%)">
+          <animate
+            attributeName="opacity"
+            values="0;0.5;0"
+            dur="5s"
+            begin={s.delay}
+            repeatCount="indefinite"
+          />
+          <animate
+            attributeName="r"
+            values="1;2;1"
+            dur="5s"
+            begin={s.delay}
+            repeatCount="indefinite"
+          />
+        </circle>
+      ))}
     </g>
   );
 }
@@ -233,50 +346,53 @@ function TopologyNodeSvg({ node, index }: { node: TopologyNode; index: number })
 export function MycoTopology({ stats }: { stats: StatsResponse }) {
   const nodes = buildNodes(stats);
   const hubHealthy = true; // daemon is reachable if we have stats
-  const hubColor = hubHealthy ? COLOR_ACTIVE : COLOR_OFF;
+  const hubColor = hubHealthy ? NODE_COLORS.daemon : COLOR_OFF;
   const hasActiveSessions = stats.daemon.active_sessions.length > 0;
 
   return (
     <svg
-      viewBox="0 0 500 400"
+      viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}
       width="100%"
       className="max-h-[400px]"
       role="img"
       aria-label="Myco system topology"
     >
-      {/* Connections from hub to nodes */}
-      {nodes.map((node, i) => (
-        <Connection key={node.id} index={i} status={node.status} />
+      {/* Ambient spore particles */}
+      <AmbientSpores />
+
+      {/* Hyphal connections from hub to nodes */}
+      {nodes.map((node) => (
+        <HyphaConnection key={node.id} node={node} />
       ))}
 
-      {/* Hub halo */}
+      {/* Hub halo — the fruiting body glow */}
       {hasActiveSessions && (
-        <circle cx={HUB_X} cy={HUB_Y} r={HUB_RADIUS + 6} fill={hubColor} opacity={0}>
+        <circle cx={HUB_X} cy={HUB_Y} r={HUB_HALO_INNER} fill={hubColor} opacity={0}>
           <animate
             attributeName="opacity"
-            values="0;0.12;0"
+            values="0;0.1;0"
             dur={PULSE_DURATION}
             repeatCount="indefinite"
           />
           <animate
             attributeName="r"
-            values={`${HUB_RADIUS + 6};${HUB_RADIUS + 14};${HUB_RADIUS + 6}`}
+            values={`${HUB_HALO_INNER};${HUB_HALO_OUTER};${HUB_HALO_INNER}`}
             dur={PULSE_DURATION}
             repeatCount="indefinite"
           />
         </circle>
       )}
 
-      {/* Hub circle */}
+      {/* Hub circle — the fruiting body */}
       <circle
         cx={HUB_X}
         cy={HUB_Y}
         r={HUB_RADIUS}
         fill={hubColor}
-        fillOpacity={0.15}
+        fillOpacity={0.13}
         stroke={hubColor}
         strokeWidth={2}
-        strokeOpacity={0.8}
+        strokeOpacity={0.75}
       />
 
       {/* Hub label */}
@@ -306,9 +422,9 @@ export function MycoTopology({ stats }: { stats: StatsResponse }) {
 
       <title>Myco Daemon — v{stats.daemon.version}</title>
 
-      {/* Orbit nodes */}
-      {nodes.map((node, i) => (
-        <TopologyNodeSvg key={node.id} node={node} index={i} />
+      {/* Substrate nodes */}
+      {nodes.map((node) => (
+        <TopologyNodeSvg key={node.id} node={node} />
       ))}
     </svg>
   );
