@@ -27,7 +27,50 @@ import {
 type LogLevel = 'debug' | 'info' | 'warn';
 type LogFn = (level: LogLevel, message: string, data?: Record<string, unknown>) => void;
 
-const supersededIdsSchema = z.array(z.string());
+/** Zod schema for validating LLM supersession responses. */
+export const supersededIdsSchema = z.array(z.string());
+
+/** Marker string used to detect whether a supersession notice has already been appended. */
+export const SUPERSESSION_NOTICE_MARKER = 'Superseded by::';
+
+/** Returns true if a spore should be considered active (including legacy spores without status). */
+export function isActiveSpore(frontmatter: Record<string, unknown>): boolean {
+  const status = frontmatter.status as string | undefined;
+  return !status || status === 'active';
+}
+
+/**
+ * Mark a single spore as superseded: update frontmatter, append notice, re-index, remove vector.
+ * Returns true if the write succeeded, false if the file was not found.
+ */
+export function supersedeSpore(
+  targetId: string,
+  newSporeId: string,
+  targetPath: string,
+  deps: { index: MycoIndex; vectorIndex: VectorIndex | null; vaultDir: string },
+): boolean {
+  const writer = new VaultWriter(deps.vaultDir);
+  const updated = writer.updateNoteFrontmatter(
+    targetPath,
+    { status: 'superseded', superseded_by: newSporeId },
+    true,
+  );
+
+  if (!updated) return false;
+
+  // Append supersession notice to body (idempotent: skip if already present)
+  const fullPath = path.join(deps.vaultDir, targetPath);
+  const fileContent = fs.readFileSync(fullPath, 'utf-8');
+  if (!fileContent.includes(SUPERSESSION_NOTICE_MARKER)) {
+    const notice = `\n\n> [!warning] Superseded\n> This observation has been superseded.\n\n${SUPERSESSION_NOTICE_MARKER} [[${newSporeId}]]`;
+    fs.writeFileSync(fullPath, fileContent.trimEnd() + notice + '\n', 'utf-8');
+  }
+
+  indexNote(deps.index, deps.vaultDir, targetPath);
+  deps.vectorIndex?.delete(targetId);
+
+  return true;
+}
 
 /**
  * Check whether the newly written spore with `newSporeId` supersedes any
@@ -82,13 +125,13 @@ export async function checkSupersession(
 
   // Look up candidate notes and post-filter:
   // - same observation_type as the new spore
-  // - status === 'active'
+  // - active status (including legacy spores without status field)
   // - not the new spore itself
   const candidateNotes = index.queryByIds(candidateIds);
   const filtered = candidateNotes
     .filter((note) => {
       if (note.id === newSporeId) return false;
-      if (note.frontmatter['status'] !== 'active') return false;
+      if (!isActiveSpore(note.frontmatter)) return false;
       if (observationType && note.frontmatter['observation_type'] !== observationType) return false;
       return true;
     })
@@ -140,48 +183,23 @@ export async function checkSupersession(
 
   // Filter to IDs that actually exist in the candidate list and are still active
   const candidateMap = new Map<string, IndexedNote>(filtered.map((c) => [c.id, c]));
-  const validIds = parsed.data.filter((id) => {
-    const candidate = candidateMap.get(id);
-    return candidate !== undefined && candidate.frontmatter['status'] === 'active';
-  });
+  const validIds = parsed.data.filter((id) => candidateMap.has(id));
 
   if (validIds.length === 0) {
     return [];
   }
 
   // Mark each validated candidate as superseded
-  const writer = new VaultWriter(vaultDir);
   const supersededIds: string[] = [];
 
   for (const id of validIds) {
     const candidate = candidateMap.get(id)!;
+    const wrote = supersedeSpore(id, newSporeId, candidate.path, { index, vectorIndex, vaultDir });
 
-    // Update frontmatter — returns false if file doesn't exist
-    const updated = writer.updateNoteFrontmatter(
-      candidate.path,
-      { status: 'superseded', superseded_by: newSporeId },
-      true,
-    );
-
-    if (!updated) {
-      log?.('warn', 'checkSupersession: file not found for candidate, skipping write', { id, path: candidate.path });
-      // Still track as superseded — the caller identified this pair; file may
-      // be missing due to a vault inconsistency but we report what the LLM decided.
-      supersededIds.push(id);
+    if (!wrote) {
+      log?.('warn', 'checkSupersession: file not found for candidate, skipping', { id, path: candidate.path });
       continue;
     }
-
-    // Append supersession notice to body (idempotent: skip if already present)
-    const fullPath = path.join(vaultDir, candidate.path);
-    const fileContent = fs.readFileSync(fullPath, 'utf-8');
-    if (!fileContent.includes('Superseded by::')) {
-      const notice = `\n\n> [!warning] Superseded\n> This observation has been superseded.\n\nSuperseded by:: [[${newSporeId}]]`;
-      fs.writeFileSync(fullPath, fileContent.trimEnd() + notice + '\n', 'utf-8');
-    }
-
-    // Re-index and remove from vector index
-    indexNote(index, vaultDir, candidate.path);
-    vectorIndex.delete(id);
 
     supersededIds.push(id);
     log?.('info', 'checkSupersession: marked superseded', { supersededId: id, newSporeId });
