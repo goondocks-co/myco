@@ -18,9 +18,11 @@ import {
   COOLDOWN_STAGE_DESCRIPTIONS,
   ToggleSwitch,
 } from './config-helpers';
+import { ModelSelect } from './ModelSelect';
 
 interface DigestSectionProps {
   digest: MycoConfig['digest'];
+  intelligence: MycoConfig['intelligence'];
   isDirty: boolean;
   updateDigest: (key: string, value: unknown) => void;
   updateDigestIntelligence: (key: string, value: unknown) => void;
@@ -30,12 +32,15 @@ interface DigestSectionProps {
 
 export function DigestSection({
   digest,
+  intelligence,
   isDirty,
   updateDigest,
   updateDigestIntelligence,
   updateDigestMetabolism,
   updateDigestSubstrate,
 }: DigestSectionProps) {
+  const digestProvider = digest.intelligence.provider ?? intelligence.llm.provider;
+  const digestBaseUrl = digest.intelligence.base_url ?? intelligence.llm.base_url;
   return (
     <ConfigSection
       title="Digest"
@@ -72,12 +77,12 @@ export function DigestSection({
               </Select>
             </Field>
             <Field label="Model" description="Digest model — quality matters more than speed here">
-              <Input
+              <ModelSelect
+                provider={digestProvider}
+                baseUrl={digestBaseUrl}
                 value={digest.intelligence.model ?? ''}
+                onChange={(v) => updateDigestIntelligence('model', v || null)}
                 placeholder="Use main model"
-                onChange={(e) =>
-                  updateDigestIntelligence('model', e.target.value || null)
-                }
               />
             </Field>
             <Field label="Context Window" description="How much vault content the digest model can process per cycle">

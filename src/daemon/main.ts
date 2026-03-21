@@ -37,6 +37,7 @@ import { handleGetLogs } from './api/logs.js';
 import { handleRestart } from './api/restart.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleRebuild, handleDigest, handleCurate } from './api/operations.js';
+import { handleGetModels } from './api/models.js';
 import type { OperationHandlerDeps } from './api/operations.js';
 import { runCuration } from '../services/vault-ops.js';
 import { z } from 'zod';
@@ -1007,6 +1008,7 @@ export async function main(): Promise<void> {
     vaultDir, index, vectorIndex, version: server.version, config, configHash, metabolism,
   }));
   server.registerRoute('GET', '/api/logs', async (req) => handleGetLogs(logger.getRingBuffer(), req.query));
+  server.registerRoute('GET', '/api/models', async (req) => handleGetModels(req));
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir, progressTracker }, req.body));
   server.registerRoute('GET', '/api/progress/:token', async (req) => handleGetProgress(progressTracker, req.params.token));
 

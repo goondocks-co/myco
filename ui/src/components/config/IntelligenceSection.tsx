@@ -1,6 +1,5 @@
 import type { MycoConfig } from '../../hooks/use-config';
 import { ConfigSection } from './ConfigSection';
-import { Input } from '../ui/input';
 import {
   Select,
   SelectContent,
@@ -13,8 +12,8 @@ import {
   LLM_PROVIDERS,
   EMBEDDING_PROVIDERS,
   CONTEXT_WINDOW_OPTIONS,
-  strChange,
 } from './config-helpers';
+import { ModelSelect } from './ModelSelect';
 
 interface IntelligenceSectionProps {
   intelligence: MycoConfig['intelligence'];
@@ -56,9 +55,11 @@ export function IntelligenceSection({
               </Select>
             </Field>
             <Field label="Model" description="The model for extraction, summaries, and titles — speed matters more than depth">
-              <Input
+              <ModelSelect
+                provider={intelligence.llm.provider}
+                baseUrl={intelligence.llm.base_url}
                 value={intelligence.llm.model}
-                onChange={strChange(updateLlm, 'model')}
+                onChange={(v) => updateLlm('model', v)}
               />
             </Field>
             <Field label="Context Window" description="How much text the model can read per operation">
@@ -99,9 +100,11 @@ export function IntelligenceSection({
               </Select>
             </Field>
             <Field label="Model" description="The embedding model for semantic search and similarity">
-              <Input
+              <ModelSelect
+                provider={intelligence.embedding.provider}
+                baseUrl={intelligence.embedding.base_url}
                 value={intelligence.embedding.model}
-                onChange={strChange(updateEmbedding, 'model')}
+                onChange={(v) => updateEmbedding('model', v)}
               />
             </Field>
           </div>

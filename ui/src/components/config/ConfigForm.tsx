@@ -223,6 +223,7 @@ export function ConfigForm({ config, onSave, isSaving }: ConfigFormProps) {
 
       <DigestSection
         digest={form.digest}
+        intelligence={form.intelligence}
         isDirty={digestDirty}
         updateDigest={updateDigest}
         updateDigestIntelligence={updateDigestIntelligence}
