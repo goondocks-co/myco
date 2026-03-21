@@ -28,13 +28,15 @@ export function ModelSelect({
   const { data, isLoading } = useModels(provider, baseUrl, modelType);
   const models = data?.models ?? [];
 
-  // Auto-select the current configured value if it's in the list,
-  // otherwise select the first available model
+  // When models load, match the configured value to an available model.
+  // Handles tag variations: configured "bge-m3" matches returned "bge-m3:latest"
   useEffect(() => {
     if (isLoading || waitingForUrl || models.length === 0) return;
-    if (!models.includes(value)) {
-      onChange(models[0]);
-    }
+    if (models.includes(value)) return; // Exact match — keep it
+
+    // Fuzzy match: "bge-m3" matches "bge-m3:latest", or "qwen3.5:latest" matches "qwen3.5:latest"
+    const fuzzy = models.find((m) => m.startsWith(value + ':') || value.startsWith(m + ':') || m === value);
+    onChange(fuzzy ?? models[0]);
   }, [models, isLoading, waitingForUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
