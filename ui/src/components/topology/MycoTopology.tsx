@@ -279,7 +279,7 @@ function TopologyNodeSvg({ node }: { node: TopologyNode }) {
         textAnchor="middle"
         fill="currentColor"
         fontSize={10}
-        fontFamily={FONT_FAMILY}
+        style={{ fontFamily: FONT_FAMILY }}
         fontWeight={600}
         opacity={0.9}
       >
@@ -293,7 +293,7 @@ function TopologyNodeSvg({ node }: { node: TopologyNode }) {
         textAnchor="middle"
         fill="currentColor"
         fontSize={8}
-        fontFamily={FONT_FAMILY}
+        style={{ fontFamily: FONT_FAMILY }}
         opacity={0.5}
       >
         {node.detail.length > DETAIL_MAX_CHARS
@@ -402,7 +402,7 @@ export function MycoTopology({ stats }: { stats: StatsResponse }) {
         textAnchor="middle"
         fill="currentColor"
         fontSize={14}
-        fontFamily={FONT_FAMILY}
+        style={{ fontFamily: FONT_FAMILY }}
         fontWeight={700}
         opacity={0.9}
       >
@@ -414,7 +414,7 @@ export function MycoTopology({ stats }: { stats: StatsResponse }) {
         textAnchor="middle"
         fill="currentColor"
         fontSize={9}
-        fontFamily={FONT_FAMILY}
+        style={{ fontFamily: FONT_FAMILY }}
         opacity={0.45}
       >
         v{stats.daemon.version}
