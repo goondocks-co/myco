@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PipelineManager, type StageHandlers } from '@myco/daemon/pipeline';
+import type { PipelineConfig } from '@myco/config/schema';
 import { VaultWriter } from '@myco/vault/writer';
 import { MycoIndex } from '@myco/index/sqlite';
 import { initFts } from '@myco/index/fts';
@@ -16,9 +17,6 @@ import { EventBuffer } from '@myco/capture/buffer';
 import {
   ITEM_STAGE_MAP,
   EMBEDDING_INPUT_LIMIT,
-  PIPELINE_CIRCUIT_FAILURE_THRESHOLD,
-  PIPELINE_CIRCUIT_COOLDOWN_MS,
-  PIPELINE_CIRCUIT_MAX_COOLDOWN_MS,
   STAGE_PROVIDER_MAP,
 } from '@myco/constants';
 import type { EmbeddingProvider, EmbeddingResponse, LlmProvider } from '@myco/intelligence/llm';
@@ -27,6 +25,19 @@ import YAML from 'yaml';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+function makeConfig(overrides?: Partial<PipelineConfig>): PipelineConfig {
+  return {
+    retention_days: 30,
+    batch_size: 20,
+    tick_interval_seconds: 30,
+    retry: { transient_max: 3, backoff_base_seconds: 30 },
+    circuit_breaker: { failure_threshold: 3, cooldown_seconds: 300, max_cooldown_seconds: 3600 },
+    ...overrides,
+  };
+}
+
+const TEST_CONFIG = makeConfig();
 
 /**
  * Pipeline integration tests: verifies the session stop → pipeline registration
@@ -46,7 +57,7 @@ describe('Pipeline Integration: Session Stop → Pipeline Registration', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-pipeline-integ-'));
-    pipeline = new PipelineManager(tmpDir);
+    pipeline = new PipelineManager(tmpDir, TEST_CONFIG);
     vault = new VaultWriter(tmpDir);
     index = new MycoIndex(path.join(tmpDir, 'index.db'));
     initFts(index);
@@ -340,7 +351,7 @@ describe('Pipeline Integration: Extraction Stage Handler', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-extraction-integ-'));
-    pipeline = new PipelineManager(tmpDir);
+    pipeline = new PipelineManager(tmpDir, TEST_CONFIG);
     vault = new VaultWriter(tmpDir);
     index = new MycoIndex(path.join(tmpDir, 'index.db'));
     initFts(index);
@@ -755,7 +766,7 @@ describe('Pipeline Integration: Embedding Stage Handler', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-embedding-integ-'));
-    pipeline = new PipelineManager(tmpDir);
+    pipeline = new PipelineManager(tmpDir, TEST_CONFIG);
     vault = new VaultWriter(tmpDir);
     index = new MycoIndex(path.join(tmpDir, 'index.db'));
     initFts(index);
@@ -1076,7 +1087,7 @@ describe('Pipeline Integration: Consolidation Stage Handler', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-consolidation-integ-'));
-    pipeline = new PipelineManager(tmpDir);
+    pipeline = new PipelineManager(tmpDir, TEST_CONFIG);
     vault = new VaultWriter(tmpDir);
     index = new MycoIndex(path.join(tmpDir, 'index.db'));
     initFts(index);
@@ -1255,7 +1266,7 @@ describe('Pipeline Integration: Digest Stage Gating', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-digest-gate-'));
-    pipeline = new PipelineManager(tmpDir);
+    pipeline = new PipelineManager(tmpDir, TEST_CONFIG);
   });
 
   afterEach(() => {
@@ -1458,7 +1469,7 @@ describe('Pipeline Integration: CLI Operations Enqueue via Pipeline', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cli-pipeline-'));
-    pipeline = new PipelineManager(tmpDir);
+    pipeline = new PipelineManager(tmpDir, TEST_CONFIG);
     vault = new VaultWriter(tmpDir);
     index = new MycoIndex(path.join(tmpDir, 'index.db'));
     initFts(index);
@@ -1950,7 +1961,7 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-circuit-integ-'));
-    pipeline = new PipelineManager(tmpDir);
+    pipeline = new PipelineManager(tmpDir, TEST_CONFIG);
   });
 
   afterEach(() => {
@@ -1980,7 +1991,7 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
   it('config error trips circuit and blocks extraction items', async () => {
     // Register enough sessions so each config failure increments the circuit counter.
     // Each unique item contributes one trip when it fails.
-    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+    for (let i = 0; i < TEST_CONFIG.circuit_breaker.failure_threshold; i++) {
       registerSession(`circuit-trip-${i}`);
     }
 
@@ -1994,12 +2005,12 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
     pipeline.setHandlers(handlers);
 
     // First tick: all items fail, circuit opens
-    await pipeline.tick(PIPELINE_CIRCUIT_FAILURE_THRESHOLD);
+    await pipeline.tick(TEST_CONFIG.circuit_breaker.failure_threshold);
 
     // Circuit should be open for llm provider
     const circuit = pipeline.circuitState('llm');
     expect(circuit.state).toBe('open');
-    expect(circuit.failure_count).toBeGreaterThanOrEqual(PIPELINE_CIRCUIT_FAILURE_THRESHOLD);
+    expect(circuit.failure_count).toBeGreaterThanOrEqual(TEST_CONFIG.circuit_breaker.failure_threshold);
 
     // Register a NEW session after the circuit has opened
     registerSession('circuit-blocked-extra');
@@ -2014,7 +2025,7 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
 
   it('circuit reset unblocks items and processing resumes', async () => {
     // Trip the circuit
-    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+    for (let i = 0; i < TEST_CONFIG.circuit_breaker.failure_threshold; i++) {
       registerSession(`circuit-reset-${i}`);
     }
 
@@ -2033,7 +2044,7 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
     pipeline.setHandlers(handlers);
 
     // First tick: trip the circuit
-    await pipeline.tick(PIPELINE_CIRCUIT_FAILURE_THRESHOLD);
+    await pipeline.tick(TEST_CONFIG.circuit_breaker.failure_threshold);
     expect(pipeline.circuitState('llm').state).toBe('open');
 
     // Register a new session while circuit is open
@@ -2065,7 +2076,7 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
 
   it('half-open probe succeeds and closes the circuit', async () => {
     // Register items and trip the circuit
-    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+    for (let i = 0; i < TEST_CONFIG.circuit_breaker.failure_threshold; i++) {
       registerSession(`probe-success-${i}`);
     }
 
@@ -2084,7 +2095,7 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
     pipeline.setHandlers(handlers);
 
     // Trip the circuit
-    await pipeline.tick(PIPELINE_CIRCUIT_FAILURE_THRESHOLD);
+    await pipeline.tick(TEST_CONFIG.circuit_breaker.failure_threshold);
     expect(pipeline.circuitState('llm').state).toBe('open');
 
     // Simulate cooldown expiration by setting opens_at in the past
@@ -2117,7 +2128,7 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
 
   it('half-open probe fails with doubled cooldown', async () => {
     // Trip the circuit
-    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+    for (let i = 0; i < TEST_CONFIG.circuit_breaker.failure_threshold; i++) {
       registerSession(`probe-fail-${i}`);
     }
 
@@ -2131,7 +2142,7 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
     pipeline.setHandlers(handlers);
 
     // Trip the circuit
-    await pipeline.tick(PIPELINE_CIRCUIT_FAILURE_THRESHOLD);
+    await pipeline.tick(TEST_CONFIG.circuit_breaker.failure_threshold);
     expect(pipeline.circuitState('llm').state).toBe('open');
 
     // Record the opens_at from the initial trip
@@ -2141,7 +2152,7 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
     // Simulate cooldown expiration — set opens_at in the past, but keep
     // last_failure at a time that produces a known cooldown window
     const now = Date.now();
-    const lastFailure = new Date(now - PIPELINE_CIRCUIT_COOLDOWN_MS - 1000).toISOString();
+    const lastFailure = new Date(now - TEST_CONFIG.circuit_breaker.cooldown_seconds * 1000 - 1000).toISOString();
     const opensAt = new Date(now - 1000).toISOString(); // just expired
     pipeline.getDb().prepare(
       `UPDATE circuit_breakers SET opens_at = ?, last_failure = ? WHERE provider_role = 'llm'`,
@@ -2159,11 +2170,11 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
 
     // The new opens_at should be further in the future than the initial cooldown
     const newOpensAt = new Date(circuitAfter.opens_at!).getTime();
-    // The doubled cooldown should be approximately 2 * PIPELINE_CIRCUIT_COOLDOWN_MS
-    // (capped at PIPELINE_CIRCUIT_MAX_COOLDOWN_MS)
+    // The doubled cooldown should be approximately 2 * TEST_CONFIG.circuit_breaker.cooldown_seconds * 1000
+    // (capped at TEST_CONFIG.circuit_breaker.max_cooldown_seconds * 1000)
     const expectedCooldown = Math.min(
-      PIPELINE_CIRCUIT_COOLDOWN_MS * 2,
-      PIPELINE_CIRCUIT_MAX_COOLDOWN_MS,
+      TEST_CONFIG.circuit_breaker.cooldown_seconds * 1000 * 2,
+      TEST_CONFIG.circuit_breaker.max_cooldown_seconds * 1000,
     );
     // The new opens_at should be at least (now + expectedCooldown - tolerance)
     const tolerance = 5_000; // 5 seconds tolerance for test timing
@@ -2175,7 +2186,7 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
     registerSpore('isolation-spore-001');
 
     // Trip the llm circuit
-    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+    for (let i = 0; i < TEST_CONFIG.circuit_breaker.failure_threshold; i++) {
       pipeline.tripCircuit('llm', 'ECONNREFUSED');
     }
     expect(pipeline.circuitState('llm').state).toBe('open');
@@ -2205,7 +2216,7 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
 
   it('transient errors do NOT trip circuit breaker', async () => {
     // Register sessions
-    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD + 2; i++) {
+    for (let i = 0; i < TEST_CONFIG.circuit_breaker.failure_threshold + 2; i++) {
       registerSession(`transient-${i}`);
     }
 
@@ -2220,7 +2231,7 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
     pipeline.setHandlers(handlers);
 
     // Tick — all items should fail with transient classification
-    await pipeline.tick(PIPELINE_CIRCUIT_FAILURE_THRESHOLD + 2);
+    await pipeline.tick(TEST_CONFIG.circuit_breaker.failure_threshold + 2);
 
     // Circuit should still be closed — transient errors don't trip it
     const circuit = pipeline.circuitState('llm');
@@ -2228,7 +2239,7 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
     expect(circuit.failure_count).toBe(0);
 
     // Items should be in failed state (transient), not blocked
-    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD + 2; i++) {
+    for (let i = 0; i < TEST_CONFIG.circuit_breaker.failure_threshold + 2; i++) {
       const statuses = pipeline.getItemStatus(`transient-${i}`, 'session');
       const extraction = statuses.find((s) => s.stage === 'extraction');
       expect(extraction?.status).toBe('failed');
@@ -2248,14 +2259,14 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
     pipeline.setHandlers(handlers);
 
     // Register and tick one item at a time
-    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD - 1; i++) {
+    for (let i = 0; i < TEST_CONFIG.circuit_breaker.failure_threshold - 1; i++) {
       registerSession(`accumulate-${i}`);
       await pipeline.tick(1);
     }
 
     // Circuit should still be closed (one failure short of threshold)
     expect(pipeline.circuitState('llm').state).toBe('closed');
-    expect(pipeline.circuitState('llm').failure_count).toBe(PIPELINE_CIRCUIT_FAILURE_THRESHOLD - 1);
+    expect(pipeline.circuitState('llm').failure_count).toBe(TEST_CONFIG.circuit_breaker.failure_threshold - 1);
 
     // One more failure should trip it
     registerSession(`accumulate-final`);
@@ -2266,7 +2277,7 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
 
   it('embedding circuit does not block extraction (different provider roles)', async () => {
     // Trip the embedding circuit
-    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+    for (let i = 0; i < TEST_CONFIG.circuit_breaker.failure_threshold; i++) {
       pipeline.tripCircuit('embedding', 'embedding service down');
     }
     expect(pipeline.circuitState('embedding').state).toBe('open');
@@ -2296,17 +2307,17 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
     expect(embedding?.status).toBe('blocked');
   });
 
-  it('half-open probe failure caps cooldown at PIPELINE_CIRCUIT_MAX_COOLDOWN_MS', async () => {
+  it('half-open probe failure caps cooldown at max_cooldown_seconds', async () => {
     // Set up a circuit with a very large previous cooldown (close to the max)
     const now = Date.now();
-    const almostMaxCooldown = PIPELINE_CIRCUIT_MAX_COOLDOWN_MS; // already at max
+    const almostMaxCooldown = TEST_CONFIG.circuit_breaker.max_cooldown_seconds * 1000; // already at max
     const lastFailure = new Date(now - almostMaxCooldown - 1000).toISOString();
     const opensAt = new Date(now - 1000).toISOString(); // just expired
 
     pipeline.getDb().prepare(
       `INSERT INTO circuit_breakers (provider_role, state, failure_count, last_failure, last_error, opens_at, updated_at)
        VALUES ('llm', 'open', ?, ?, 'error', ?, ?)`,
-    ).run(PIPELINE_CIRCUIT_FAILURE_THRESHOLD, lastFailure, opensAt, new Date().toISOString());
+    ).run(TEST_CONFIG.circuit_breaker.failure_threshold, lastFailure, opensAt, new Date().toISOString());
 
     // Register an item for the probe
     registerSession('cap-probe-001');
@@ -2326,13 +2337,13 @@ describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
     expect(circuit.state).toBe('open');
     expect(circuit.opens_at).not.toBeNull();
 
-    // The cooldown should be capped at PIPELINE_CIRCUIT_MAX_COOLDOWN_MS
+    // The cooldown should be capped at TEST_CONFIG.circuit_breaker.max_cooldown_seconds * 1000
     const newOpensAt = new Date(circuit.opens_at!).getTime();
-    const maxExpected = now + PIPELINE_CIRCUIT_MAX_COOLDOWN_MS;
+    const maxExpected = now + TEST_CONFIG.circuit_breaker.max_cooldown_seconds * 1000;
     const tolerance = 5_000;
     // Should not exceed max cooldown
     expect(newOpensAt).toBeLessThanOrEqual(maxExpected + tolerance);
     // Should be at least close to max cooldown (not the doubled 2x value)
-    expect(newOpensAt).toBeGreaterThan(now + PIPELINE_CIRCUIT_MAX_COOLDOWN_MS - tolerance);
+    expect(newOpensAt).toBeGreaterThan(now + TEST_CONFIG.circuit_breaker.max_cooldown_seconds * 1000 - tolerance);
   });
 });

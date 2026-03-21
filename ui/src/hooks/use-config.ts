@@ -69,6 +69,20 @@ export interface MycoConfig {
       max_notes_per_cycle: number;
     };
   };
+  pipeline: {
+    retention_days: number;
+    batch_size: number;
+    tick_interval_seconds: number;
+    retry: {
+      transient_max: number;
+      backoff_base_seconds: number;
+    };
+    circuit_breaker: {
+      failure_threshold: number;
+      cooldown_seconds: number;
+      max_cooldown_seconds: number;
+    };
+  };
 }
 
 export function useConfig() {

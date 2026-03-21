@@ -174,32 +174,14 @@ export const SUPERSESSION_MAX_TOKENS = 256;
 export const CURATION_CLUSTER_SIMILARITY = 0.75;
 
 // --- Pipeline processing ---
-/** Daemon tick interval for pipeline processing (ms). */
-export const PIPELINE_TICK_INTERVAL_MS = 30_000;
-/** Default number of work items processed per stage per pipeline tick. */
-export const PIPELINE_BATCH_SIZE = 20;
-/** Max days to retain completed/failed pipeline work items before pruning. */
-export const PIPELINE_RETENTION_DAYS = 30;
 /** Default page size for pipeline items API listing. */
 export const PIPELINE_ITEMS_DEFAULT_LIMIT = 50;
 
 // --- Pipeline retry ---
-/** Max retries for transient (recoverable) pipeline failures. */
-export const PIPELINE_TRANSIENT_MAX_RETRIES = 3;
 /** Max retries for parse (structural) pipeline failures — fail fast. */
 export const PIPELINE_PARSE_MAX_RETRIES = 1;
-/** Base backoff duration between pipeline retry attempts (ms). */
-export const PIPELINE_BACKOFF_BASE_MS = 30_000;
 /** Exponential backoff multiplier for successive pipeline retries. */
 export const PIPELINE_BACKOFF_MULTIPLIER = 4;
-
-// --- Pipeline circuit breaker ---
-/** Number of consecutive failures before opening a circuit breaker. */
-export const PIPELINE_CIRCUIT_FAILURE_THRESHOLD = 3;
-/** Initial cooldown duration when a circuit breaker opens (ms). */
-export const PIPELINE_CIRCUIT_COOLDOWN_MS = 5 * 60 * 1000;
-/** Maximum cooldown duration for a circuit breaker (ms). */
-export const PIPELINE_CIRCUIT_MAX_COOLDOWN_MS = 60 * 60 * 1000;
 
 // --- Pipeline stages (ordered) ---
 export const PIPELINE_STAGES = ['capture', 'extraction', 'embedding', 'consolidation', 'digest'] as const;

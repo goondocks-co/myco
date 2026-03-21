@@ -252,7 +252,7 @@ export async function main(): Promise<void> {
   const vault = new VaultWriter(vaultDir);
   const index = new MycoIndex(path.join(vaultDir, 'index.db'));
   const lineageGraph = new LineageGraph(vaultDir);
-  const pipeline = new PipelineManager(vaultDir);
+  const pipeline = new PipelineManager(vaultDir, config.pipeline);
 
   // Recover any items stuck in 'processing' from a previous daemon crash
   const recoveredCount = pipeline.recoverStuck();

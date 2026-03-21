@@ -11,18 +11,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { walkMarkdownFiles } from '../vault/reader.js';
 import type { PipelineStage, PipelineStatus, PipelineProviderRole } from '@myco/constants';
+import type { PipelineConfig } from '@myco/config/schema';
 import {
   PIPELINE_STAGES,
   PIPELINE_TICK_STAGES,
   ITEM_STAGE_MAP,
-  PIPELINE_TRANSIENT_MAX_RETRIES,
   PIPELINE_PARSE_MAX_RETRIES,
-  PIPELINE_BACKOFF_BASE_MS,
   PIPELINE_BACKOFF_MULTIPLIER,
-  PIPELINE_CIRCUIT_FAILURE_THRESHOLD,
-  PIPELINE_CIRCUIT_COOLDOWN_MS,
-  PIPELINE_CIRCUIT_MAX_COOLDOWN_MS,
-  PIPELINE_RETENTION_DAYS,
   PIPELINE_ITEMS_DEFAULT_LIMIT,
   STAGE_PROVIDER_MAP,
   MS_PER_DAY,
@@ -249,12 +244,14 @@ const HEALTH_CIRCUITS_SQL = `
 
 export class PipelineManager {
   private db: Database.Database;
+  private config: PipelineConfig;
 
-  constructor(vaultDir: string) {
+  constructor(vaultDir: string, config: PipelineConfig) {
     const dbPath = path.join(vaultDir, PIPELINE_DB_FILENAME);
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
+    this.config = config;
     this.init();
   }
 
@@ -413,7 +410,7 @@ export class PipelineManager {
     if (status === 'failed' && error?.errorType) {
       const maxRetries =
         error.errorType === 'transient'
-          ? PIPELINE_TRANSIENT_MAX_RETRIES
+          ? this.config.retry.transient_max
           : PIPELINE_PARSE_MAX_RETRIES;
 
       // Count prior failed transitions for this item+stage
@@ -562,7 +559,7 @@ export class PipelineManager {
     if (prevStage) {
       params.push(prevStage);
     }
-    params.push(stage, PIPELINE_BACKOFF_BASE_MS, PIPELINE_BACKOFF_MULTIPLIER, stage, limit);
+    params.push(stage, this.config.retry.backoff_base_seconds * 1000, PIPELINE_BACKOFF_MULTIPLIER, stage, limit);
 
     return this.db.prepare(sql).all(...params) as BatchItem[];
   }
@@ -599,19 +596,19 @@ export class PipelineManager {
 
   /**
    * Record a failure against a circuit breaker. Increments failure_count and
-   * updates last_error / last_failure. If failure_count reaches
-   * PIPELINE_CIRCUIT_FAILURE_THRESHOLD, sets state to 'open' and calculates
-   * opens_at = now + PIPELINE_CIRCUIT_COOLDOWN_MS.
+   * updates last_error / last_failure. If failure_count reaches the configured
+   * failure_threshold, sets state to 'open' and calculates
+   * opens_at = now + configured cooldown_seconds.
    */
   tripCircuit(providerRole: string, errorMessage: string): void {
     const now = new Date().toISOString();
     const current = this.circuitState(providerRole);
     const newFailureCount = current.failure_count + 1;
 
-    const shouldOpen = newFailureCount >= PIPELINE_CIRCUIT_FAILURE_THRESHOLD;
+    const shouldOpen = newFailureCount >= this.config.circuit_breaker.failure_threshold;
     const newState = shouldOpen ? 'open' : 'closed';
     const opensAt = shouldOpen
-      ? new Date(Date.now() + PIPELINE_CIRCUIT_COOLDOWN_MS).toISOString()
+      ? new Date(Date.now() + this.config.circuit_breaker.cooldown_seconds * 1000).toISOString()
       : null;
 
     this.db
@@ -634,7 +631,7 @@ export class PipelineManager {
    * Re-open a circuit after a failed half-open probe with doubled cooldown.
    *
    * When a half-open probe fails, the circuit should re-open with a cooldown
-   * of `previousCooldown * 2`, capped at PIPELINE_CIRCUIT_MAX_COOLDOWN_MS.
+   * of `previousCooldown * 2`, capped at the configured max_cooldown_seconds.
    * This implements exponential backoff for repeated probe failures.
    */
   reopenCircuit(providerRole: string, errorMessage: string): void {
@@ -644,7 +641,7 @@ export class PipelineManager {
     // Calculate doubled cooldown from the previous opens_at window.
     // If we can determine the previous cooldown from the stored opens_at and last_failure,
     // double it. Otherwise fall back to the default cooldown.
-    let previousCooldown = PIPELINE_CIRCUIT_COOLDOWN_MS;
+    let previousCooldown = this.config.circuit_breaker.cooldown_seconds * 1000;
     if (current.last_failure && current.opens_at) {
       const lastFailureMs = new Date(current.last_failure).getTime();
       const opensAtMs = new Date(current.opens_at).getTime();
@@ -656,7 +653,7 @@ export class PipelineManager {
 
     const doubledCooldown = Math.min(
       previousCooldown * 2,
-      PIPELINE_CIRCUIT_MAX_COOLDOWN_MS,
+      this.config.circuit_breaker.max_cooldown_seconds * 1000,
     );
 
     const opensAt = new Date(Date.now() + doubledCooldown).toISOString();
@@ -829,7 +826,7 @@ export class PipelineManager {
    * Returns `{ compacted, deleted }`: compacted = number of groups written to
    * stage_history; deleted = number of transition rows removed.
    */
-  compact(retentionDays: number = PIPELINE_RETENTION_DAYS): { compacted: number; deleted: number } {
+  compact(retentionDays: number = this.config.retention_days): { compacted: number; deleted: number } {
     const cutoff = new Date(Date.now() - retentionDays * MS_PER_DAY).toISOString();
 
     // Find all old transition rows, grouped by (work_item_id, item_type, stage).

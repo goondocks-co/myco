@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { PipelineManager } from '@myco/daemon/pipeline';
+import type { PipelineConfig } from '@myco/config/schema';
 import {
   handlePipelineHealth,
   handlePipelineItems,
@@ -15,6 +16,19 @@ import os from 'node:os';
 import path from 'node:path';
 
 // --- Test helpers ---
+
+function makeConfig(overrides?: Partial<PipelineConfig>): PipelineConfig {
+  return {
+    retention_days: 30,
+    batch_size: 20,
+    tick_interval_seconds: 30,
+    retry: { transient_max: 3, backoff_base_seconds: 30 },
+    circuit_breaker: { failure_threshold: 3, cooldown_seconds: 300, max_cooldown_seconds: 3600 },
+    ...overrides,
+  };
+}
+
+const TEST_CONFIG = makeConfig();
 
 function makeReq(overrides?: Partial<RouteRequest>): RouteRequest {
   return {
@@ -32,7 +46,7 @@ describe('Pipeline API handlers', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-pipeline-api-'));
-    pipeline = new PipelineManager(tmpDir);
+    pipeline = new PipelineManager(tmpDir, TEST_CONFIG);
   });
 
   afterEach(() => {

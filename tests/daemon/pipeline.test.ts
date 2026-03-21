@@ -1,19 +1,29 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PipelineManager, type StageHandlers, type VectorHasCheck } from '@myco/daemon/pipeline';
+import type { PipelineConfig } from '@myco/config/schema';
 import {
   PIPELINE_STAGES,
   ITEM_STAGE_MAP,
-  PIPELINE_TRANSIENT_MAX_RETRIES,
   PIPELINE_PARSE_MAX_RETRIES,
-  PIPELINE_BACKOFF_BASE_MS,
   PIPELINE_BACKOFF_MULTIPLIER,
-  PIPELINE_CIRCUIT_FAILURE_THRESHOLD,
   STAGE_PROVIDER_MAP,
-  PIPELINE_RETENTION_DAYS,
 } from '@myco/constants';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+function makeConfig(overrides?: Partial<PipelineConfig>): PipelineConfig {
+  return {
+    retention_days: 30,
+    batch_size: 20,
+    tick_interval_seconds: 30,
+    retry: { transient_max: 3, backoff_base_seconds: 30 },
+    circuit_breaker: { failure_threshold: 3, cooldown_seconds: 300, max_cooldown_seconds: 3600 },
+    ...overrides,
+  };
+}
+
+const TEST_CONFIG = makeConfig();
 
 describe('PipelineManager', () => {
   let tmpDir: string;
@@ -21,7 +31,7 @@ describe('PipelineManager', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-pipeline-'));
-    manager = new PipelineManager(tmpDir);
+    manager = new PipelineManager(tmpDir, TEST_CONFIG);
   });
 
   afterEach(() => {
@@ -39,7 +49,7 @@ describe('PipelineManager', () => {
 
     it('is idempotent — opening twice does not error', () => {
       manager.close();
-      const manager2 = new PipelineManager(tmpDir);
+      const manager2 = new PipelineManager(tmpDir, TEST_CONFIG);
       const health = manager2.health();
       expect(health).toBeDefined();
       manager2.close();
@@ -273,8 +283,8 @@ describe('PipelineManager', () => {
     });
 
     it('auto-poisons after exceeding transient retry limit', () => {
-      // PIPELINE_TRANSIENT_MAX_RETRIES = 3
-      for (let i = 0; i < PIPELINE_TRANSIENT_MAX_RETRIES; i++) {
+      // TEST_CONFIG.retry.transient_max = 3
+      for (let i = 0; i < TEST_CONFIG.retry.transient_max; i++) {
         manager.advance('sess-001', 'session', 'capture', 'processing');
         manager.advance('sess-001', 'session', 'capture', 'failed', {
           errorType: 'transient',
@@ -373,7 +383,7 @@ describe('PipelineManager', () => {
       manager.advance('sess-001', 'session', 'capture', 'pending');
 
       // The backoff should exclude it since completed_at was just now and
-      // backoff = PIPELINE_BACKOFF_BASE_MS * PIPELINE_BACKOFF_MULTIPLIER^0 = 30000ms
+      // backoff = TEST_CONFIG.retry.backoff_base_seconds * 1000 * PIPELINE_BACKOFF_MULTIPLIER^0 = 30000ms
       const batch = manager.nextBatch('capture', 10);
       expect(batch).toHaveLength(0);
     });
@@ -443,27 +453,27 @@ describe('PipelineManager', () => {
     });
 
     it('does not open before threshold (2 trips → still closed)', () => {
-      for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD - 1; i++) {
+      for (let i = 0; i < TEST_CONFIG.circuit_breaker.failure_threshold - 1; i++) {
         manager.tripCircuit('llm', 'connection refused');
       }
       const state = manager.circuitState('llm');
       expect(state.state).toBe('closed');
-      expect(state.failure_count).toBe(PIPELINE_CIRCUIT_FAILURE_THRESHOLD - 1);
+      expect(state.failure_count).toBe(TEST_CONFIG.circuit_breaker.failure_threshold - 1);
     });
 
     it('opens after failure threshold consecutive failures (3 trips → open)', () => {
-      for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+      for (let i = 0; i < TEST_CONFIG.circuit_breaker.failure_threshold; i++) {
         manager.tripCircuit('llm', `error ${i + 1}`);
       }
       const state = manager.circuitState('llm');
       expect(state.state).toBe('open');
-      expect(state.failure_count).toBe(PIPELINE_CIRCUIT_FAILURE_THRESHOLD);
+      expect(state.failure_count).toBe(TEST_CONFIG.circuit_breaker.failure_threshold);
       expect(state.opens_at).not.toBeNull();
-      expect(state.last_error).toBe(`error ${PIPELINE_CIRCUIT_FAILURE_THRESHOLD}`);
+      expect(state.last_error).toBe(`error ${TEST_CONFIG.circuit_breaker.failure_threshold}`);
     });
 
     it('resets on manual reset (open → resetCircuit → closed with 0 failures)', () => {
-      for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+      for (let i = 0; i < TEST_CONFIG.circuit_breaker.failure_threshold; i++) {
         manager.tripCircuit('llm', 'error');
       }
       expect(manager.circuitState('llm').state).toBe('open');
@@ -482,7 +492,7 @@ describe('PipelineManager', () => {
     });
 
     it('probeCircuit returns false when circuit is open but cooldown not expired', () => {
-      for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+      for (let i = 0; i < TEST_CONFIG.circuit_breaker.failure_threshold; i++) {
         manager.tripCircuit('llm', 'error');
       }
       // Circuit is open, opens_at is in the future
@@ -498,7 +508,7 @@ describe('PipelineManager', () => {
       db.prepare(
         `INSERT INTO circuit_breakers (provider_role, state, failure_count, last_failure, last_error, opens_at, updated_at)
          VALUES (?, 'open', ?, ?, ?, ?, ?)`,
-      ).run('llm', PIPELINE_CIRCUIT_FAILURE_THRESHOLD, pastTime, 'expired error', pastTime, pastTime);
+      ).run('llm', TEST_CONFIG.circuit_breaker.failure_threshold, pastTime, 'expired error', pastTime, pastTime);
 
       const result = manager.probeCircuit('llm');
       expect(result).toBe(true);
@@ -575,7 +585,7 @@ describe('PipelineManager', () => {
         'INSERT INTO stage_transitions (work_item_id, item_type, stage, status, attempt, error_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       ).run('sess-compact-001', 'session', 'capture', 'succeeded', 2, null, old1);
 
-      const result = manager.compact(PIPELINE_RETENTION_DAYS);
+      const result = manager.compact(TEST_CONFIG.retention_days);
       expect(result.compacted).toBe(1); // 1 group (work_item_id, item_type, stage)
       expect(result.deleted).toBe(2);   // 2 transition rows deleted
 
@@ -613,7 +623,7 @@ describe('PipelineManager', () => {
         'INSERT INTO stage_transitions (work_item_id, item_type, stage, status, attempt, error_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       ).run('sess-compact-002', 'session', 'extraction', 'pending', 2, null, recentTs);
 
-      const result = manager.compact(PIPELINE_RETENTION_DAYS);
+      const result = manager.compact(TEST_CONFIG.retention_days);
       // Only the old transition qualifies, but it belongs to a group that also has a recent row
       // The group should NOT be compacted if any member is within the window
       // (only entirely-old groups are compacted)
@@ -646,7 +656,7 @@ describe('PipelineManager', () => {
         'INSERT INTO stage_transitions (work_item_id, item_type, stage, status, attempt, error_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       ).run('sess-compact-003', 'session', 'embedding', 'failed', 3, 'config', new Date(oldBase + 2000).toISOString());
 
-      manager.compact(PIPELINE_RETENTION_DAYS);
+      manager.compact(TEST_CONFIG.retention_days);
 
       const histRow = db
         .prepare('SELECT error_types FROM stage_history WHERE work_item_id = ? AND item_type = ? AND stage = ?')
@@ -669,7 +679,7 @@ describe('PipelineManager', () => {
         'INSERT INTO stage_transitions (work_item_id, item_type, stage, status, attempt, error_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       ).run('sess-compact-004', 'session', 'digest', 'succeeded', 1, null, oldTs);
 
-      manager.compact(PIPELINE_RETENTION_DAYS);
+      manager.compact(TEST_CONFIG.retention_days);
 
       const histRow = db
         .prepare('SELECT error_types FROM stage_history WHERE work_item_id = ? AND item_type = ? AND stage = ?')
@@ -808,7 +818,7 @@ describe('PipelineManager', () => {
       manager.advance('sess-tick-003', 'session', 'capture', 'succeeded');
 
       // Trip the llm circuit to open
-      for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+      for (let i = 0; i < TEST_CONFIG.circuit_breaker.failure_threshold; i++) {
         manager.tripCircuit('llm', 'connection refused');
       }
       expect(manager.circuitState('llm').state).toBe('open');
@@ -851,7 +861,7 @@ describe('PipelineManager', () => {
     it('trips circuit breaker on config errors', async () => {
       // Use separate items so each contributes one circuit trip without getting
       // auto-poisoned (config errors have a low retry limit).
-      for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+      for (let i = 0; i < TEST_CONFIG.circuit_breaker.failure_threshold; i++) {
         const id = `sess-tick-005-${i}`;
         manager.register(id, 'session');
         manager.advance(id, 'session', 'capture', 'succeeded');
@@ -867,11 +877,11 @@ describe('PipelineManager', () => {
       };
       manager.setHandlers(handlers);
 
-      await manager.tick(PIPELINE_CIRCUIT_FAILURE_THRESHOLD);
+      await manager.tick(TEST_CONFIG.circuit_breaker.failure_threshold);
 
       const circuit = manager.circuitState('llm');
       expect(circuit.state).toBe('open');
-      expect(circuit.failure_count).toBeGreaterThanOrEqual(PIPELINE_CIRCUIT_FAILURE_THRESHOLD);
+      expect(circuit.failure_count).toBeGreaterThanOrEqual(TEST_CONFIG.circuit_breaker.failure_threshold);
     });
 
     it('returns early when no handlers are set', async () => {
