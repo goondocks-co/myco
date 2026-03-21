@@ -86,7 +86,7 @@ describe('MycoConfigSchema v2', () => {
     it('populates default digest values when digest section is absent', () => {
       const config = MycoConfigSchema.parse(minimal);
       expect(config.digest.enabled).toBe(true);
-      expect(config.digest.tiers).toEqual([1500, 3000, 5000, 7500]);
+      expect(config.digest.tiers).toEqual([1500, 3000, 5000, 7500, 10000]);
       expect(config.digest.inject_tier).toBe(3000);
       expect(config.digest.intelligence.provider).toBeNull();
       expect(config.digest.intelligence.model).toBeNull();

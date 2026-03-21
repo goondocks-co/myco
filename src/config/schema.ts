@@ -110,7 +110,7 @@ const PipelineSchema = z.object({
 
 const DigestSchema = z.object({
   enabled: z.boolean().default(true),
-  tiers: z.array(z.number().int().positive()).default([1500, 3000, 5000, 7500]),
+  tiers: z.array(z.number().int().positive()).default([1500, 3000, 5000, 7500, 10000]),
   inject_tier: z.number().int().positive().nullable().default(3000),
   intelligence: DigestIntelligenceSchema.default(() => DigestIntelligenceSchema.parse({})),
   metabolism: DigestMetabolismSchema.default(() => DigestMetabolismSchema.parse({})),
