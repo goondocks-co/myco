@@ -407,11 +407,18 @@ export interface ReprocessResult {
 
 /**
  * Replace the title (first `# ` line) and summary callout in a session note body.
+ * Handles both cases: existing callout (replace) and no callout (insert after title).
  */
-function updateTitleAndSummary(body: string, newTitle: string, newNarrative: string): string {
+export function updateTitleAndSummary(body: string, newTitle: string, newNarrative: string): string {
   let updated = body.replace(/^# .*/m, `# ${newTitle}`);
   const summaryCallout = callout('abstract', 'Summary', newNarrative);
-  updated = updated.replace(/> \[!abstract\] Summary\n(?:> .*\n?)*/m, summaryCallout + '\n');
+  const hasExistingCallout = /> \[!abstract\] Summary/.test(updated);
+  if (hasExistingCallout) {
+    updated = updated.replace(/> \[!abstract\] Summary\n(?:> .*\n?)*/m, summaryCallout + '\n');
+  } else {
+    // Insert callout after the title line
+    updated = updated.replace(/^(# .*\n)/m, `$1\n${summaryCallout}\n`);
+  }
   return updated;
 }
 

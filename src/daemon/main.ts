@@ -3,7 +3,7 @@ import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger } from './logger.js';
 import { loadConfig, saveConfig } from '../config/loader.js';
 import { BatchManager, type BatchEvent } from './batch.js';
-import { BufferProcessor, type Observation, type ClassifiedArtifact } from './processor.js';
+import { BufferProcessor, SUMMARIZATION_FAILED_MARKER, type Observation, type ClassifiedArtifact } from './processor.js';
 import { VaultWriter } from '../vault/writer.js';
 import { MycoIndex } from '../index/sqlite.js';
 import { indexNote, rebuildIndex } from '../index/rebuild.js';
@@ -26,7 +26,7 @@ import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-m
 import { createPerProjectAdapter, extensionForMimeType } from '../agents/adapter.js';
 import { claudeCodeAdapter } from '../agents/claude-code.js';
 import { EventBuffer } from '../capture/buffer.js';
-import { formatSessionBody, CONVERSATION_HEADING } from '../obsidian/formatter.js';
+import { formatSessionBody, CONVERSATION_HEADING, extractSection } from '../obsidian/formatter.js';
 import { writeObservationNotes } from '../vault/observations.js';
 import { checkSupersession } from '../vault/curation.js';
 import { collectArtifactCandidates } from '../artifacts/candidates.js';
@@ -51,7 +51,7 @@ import {
 } from './api/pipeline.js';
 import { PipelineManager } from './pipeline.js';
 import type { OperationHandlerDeps } from './api/operations.js';
-import { runCuration } from '../services/vault-ops.js';
+import { runCuration, updateTitleAndSummary } from '../services/vault-ops.js';
 import { z } from 'zod';
 import YAML from 'yaml';
 import fs from 'node:fs';
@@ -261,10 +261,79 @@ export async function main(): Promise<void> {
     logger.info('pipeline', 'Recovered stuck pipeline items', { count: recoveredCount });
   }
 
-  // Stub handlers — replaced by real handlers in Tasks 10-12
+  // Pipeline stage handlers
   pipeline.setHandlers({
-    extraction: async (itemId, itemType) => {
-      logger.debug('pipeline', `Stub: extraction for ${itemType}/${itemId}`);
+    extraction: async (itemId, itemType, sourcePath) => {
+      if (itemType !== 'session') return; // Only sessions have extraction
+
+      logger.info('pipeline', 'Extraction started', { session_id: itemId });
+
+      // 1. Read buffer events for this session
+      const buffer = new EventBuffer(bufferDir, itemId);
+      const bufferEvents = buffer.readAll();
+
+      // 2. Read the session note to get conversation section and user
+      const fullPath = sourcePath ? path.join(vaultDir, sourcePath) : null;
+      if (!fullPath || !fs.existsSync(fullPath)) {
+        throw new Error(`Session note not found: ${sourcePath}`);
+      }
+      const fileContent = fs.readFileSync(fullPath, 'utf-8');
+      const fmMatch = fileContent.match(/^---\n([\s\S]*?)\n---/);
+      const frontmatter = fmMatch ? YAML.parse(fmMatch[1]) as Record<string, unknown> : {};
+      const body = fmMatch ? fileContent.slice(fmMatch[0].length) : fileContent;
+      const conversationMarkdown = extractSection(body, CONVERSATION_HEADING);
+      const user = typeof frontmatter.user === 'string' && frontmatter.user ? frontmatter.user : undefined;
+
+      // 3. Extract observations from buffer events (LLM call)
+      const extractionResult = await processor.process(bufferEvents, itemId);
+      if (extractionResult.degraded) {
+        throw new Error(`Observation extraction failed for session ${itemId}`);
+      }
+
+      // 4. Generate summary + title from conversation (LLM call)
+      const { summary: narrative, title } = await processor.summarizeSession(
+        conversationMarkdown,
+        itemId,
+        user,
+      );
+      if (narrative.includes(SUMMARIZATION_FAILED_MARKER)) {
+        throw new Error(`Summarization failed for session ${itemId}: ${narrative}`);
+      }
+
+      // 5. Write observation spore notes (skip supersession — that's consolidation stage)
+      const written = writeObservationNotes(
+        extractionResult.observations,
+        itemId,
+        vault,
+        index,
+        vaultDir,
+      );
+      for (const note of written) {
+        indexAndEmbed(note.path, note.id, `${note.observation.title}\n${note.observation.content}`,
+          { type: 'spore', importance: 'high', session_id: itemId }, indexDeps);
+        logger.info('pipeline', 'Spore written', { type: note.observation.type, title: note.observation.title, session_id: itemId });
+      }
+
+      // 6. Update session note with LLM-generated title + narrative
+      const fmEnd = fileContent.indexOf('---', 4);
+      const frontmatterBlock = fileContent.slice(0, fmEnd + 3);
+      const updatedBody = updateTitleAndSummary(body, title, narrative);
+      fs.writeFileSync(fullPath, frontmatterBlock + updatedBody, 'utf-8');
+
+      // 7. Re-index the session note (FTS) to pick up new title/summary
+      indexNote(index, vaultDir, sourcePath!);
+
+      // 8. Register spores in pipeline
+      for (const note of written) {
+        pipeline.register(note.id, 'spore', note.path);
+        pipeline.advance(note.id, 'spore', 'capture', 'succeeded');
+      }
+
+      logger.info('pipeline', 'Extraction completed', {
+        session_id: itemId,
+        observations: written.length,
+        title,
+      });
     },
     embedding: async (itemId, itemType) => {
       logger.debug('pipeline', `Stub: embedding for ${itemType}/${itemId}`);
