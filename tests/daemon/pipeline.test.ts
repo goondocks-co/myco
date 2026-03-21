@@ -7,6 +7,8 @@ import {
   PIPELINE_PARSE_MAX_RETRIES,
   PIPELINE_BACKOFF_BASE_MS,
   PIPELINE_BACKOFF_MULTIPLIER,
+  PIPELINE_CIRCUIT_FAILURE_THRESHOLD,
+  STAGE_PROVIDER_MAP,
 } from '@myco/constants';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -425,6 +427,131 @@ describe('PipelineManager', () => {
       const batch = manager.nextBatch('embedding', 10);
       expect(batch).toHaveLength(1);
       expect(batch[0].id).toBe('spore-001');
+    });
+  });
+
+  describe('circuit breakers', () => {
+    it('starts in closed state (circuitState returns closed with 0 failures)', () => {
+      const state = manager.circuitState('llm');
+      expect(state.provider_role).toBe('llm');
+      expect(state.state).toBe('closed');
+      expect(state.failure_count).toBe(0);
+      expect(state.last_failure).toBeNull();
+      expect(state.last_error).toBeNull();
+      expect(state.opens_at).toBeNull();
+    });
+
+    it('does not open before threshold (2 trips → still closed)', () => {
+      for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD - 1; i++) {
+        manager.tripCircuit('llm', 'connection refused');
+      }
+      const state = manager.circuitState('llm');
+      expect(state.state).toBe('closed');
+      expect(state.failure_count).toBe(PIPELINE_CIRCUIT_FAILURE_THRESHOLD - 1);
+    });
+
+    it('opens after failure threshold consecutive failures (3 trips → open)', () => {
+      for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+        manager.tripCircuit('llm', `error ${i + 1}`);
+      }
+      const state = manager.circuitState('llm');
+      expect(state.state).toBe('open');
+      expect(state.failure_count).toBe(PIPELINE_CIRCUIT_FAILURE_THRESHOLD);
+      expect(state.opens_at).not.toBeNull();
+      expect(state.last_error).toBe(`error ${PIPELINE_CIRCUIT_FAILURE_THRESHOLD}`);
+    });
+
+    it('resets on manual reset (open → resetCircuit → closed with 0 failures)', () => {
+      for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+        manager.tripCircuit('llm', 'error');
+      }
+      expect(manager.circuitState('llm').state).toBe('open');
+
+      manager.resetCircuit('llm');
+
+      const state = manager.circuitState('llm');
+      expect(state.state).toBe('closed');
+      expect(state.failure_count).toBe(0);
+      expect(state.opens_at).toBeNull();
+    });
+
+    it('probeCircuit returns false when circuit is closed', () => {
+      const result = manager.probeCircuit('llm');
+      expect(result).toBe(false);
+    });
+
+    it('probeCircuit returns false when circuit is open but cooldown not expired', () => {
+      for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+        manager.tripCircuit('llm', 'error');
+      }
+      // Circuit is open, opens_at is in the future
+      const result = manager.probeCircuit('llm');
+      expect(result).toBe(false);
+      expect(manager.circuitState('llm').state).toBe('open');
+    });
+
+    it('probeCircuit returns true when cooldown expired (sets state to half-open)', () => {
+      // Insert a circuit breaker row with opens_at in the past
+      const pastTime = new Date(Date.now() - 10_000).toISOString();
+      const db = manager.getDb();
+      db.prepare(
+        `INSERT INTO circuit_breakers (provider_role, state, failure_count, last_failure, last_error, opens_at, updated_at)
+         VALUES (?, 'open', ?, ?, ?, ?, ?)`,
+      ).run('llm', PIPELINE_CIRCUIT_FAILURE_THRESHOLD, pastTime, 'expired error', pastTime, pastTime);
+
+      const result = manager.probeCircuit('llm');
+      expect(result).toBe(true);
+      expect(manager.circuitState('llm').state).toBe('half-open');
+    });
+
+    it('blockItemsForCircuit blocks pending items at affected stages', () => {
+      // Register items and advance capture to succeeded so extraction is pending+eligible
+      manager.register('sess-001', 'session');
+      manager.advance('sess-001', 'session', 'capture', 'succeeded');
+
+      // extraction uses 'llm' provider — blocking llm should block extraction
+      const blockedCount = manager.blockItemsForCircuit('llm');
+      expect(blockedCount).toBeGreaterThan(0);
+
+      const statuses = manager.getItemStatus('sess-001', 'session');
+      const extraction = statuses.find((s) => s.stage === 'extraction');
+      expect(extraction?.status).toBe('blocked');
+    });
+
+    it('unblockItemsForCircuit moves blocked items back to pending', () => {
+      manager.register('sess-001', 'session');
+      manager.advance('sess-001', 'session', 'capture', 'succeeded');
+
+      // Block via circuit
+      manager.blockItemsForCircuit('llm');
+
+      const afterBlock = manager.getItemStatus('sess-001', 'session');
+      expect(afterBlock.find((s) => s.stage === 'extraction')?.status).toBe('blocked');
+
+      // Unblock via circuit reset
+      const unblockedCount = manager.unblockItemsForCircuit('llm');
+      expect(unblockedCount).toBeGreaterThan(0);
+
+      const afterUnblock = manager.getItemStatus('sess-001', 'session');
+      expect(afterUnblock.find((s) => s.stage === 'extraction')?.status).toBe('pending');
+    });
+
+    it('blocking only affects stages that use the tripped provider role (other stages unaffected)', () => {
+      // Register a session — capture has no provider (null), extraction uses 'llm'
+      manager.register('sess-001', 'session');
+
+      // capture is still pending — blocking 'llm' should NOT affect capture
+      const blockedCount = manager.blockItemsForCircuit('llm');
+
+      const statuses = manager.getItemStatus('sess-001', 'session');
+      const capture = statuses.find((s) => s.stage === 'capture');
+      expect(capture?.status).toBe('pending'); // capture is unaffected
+
+      const extraction = statuses.find((s) => s.stage === 'extraction');
+      expect(extraction?.status).toBe('blocked'); // extraction uses 'llm'
+
+      // blockedCount reflects only stages that map to 'llm'
+      expect(blockedCount).toBeGreaterThan(0);
     });
   });
 

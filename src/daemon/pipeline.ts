@@ -16,6 +16,9 @@ import {
   PIPELINE_PARSE_MAX_RETRIES,
   PIPELINE_BACKOFF_BASE_MS,
   PIPELINE_BACKOFF_MULTIPLIER,
+  PIPELINE_CIRCUIT_FAILURE_THRESHOLD,
+  PIPELINE_CIRCUIT_COOLDOWN_MS,
+  STAGE_PROVIDER_MAP,
 } from '@myco/constants';
 
 /** Database filename within the vault directory. */
@@ -24,6 +27,16 @@ const PIPELINE_DB_FILENAME = 'pipeline.db';
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+export interface CircuitState {
+  provider_role: string;
+  state: 'closed' | 'open' | 'half-open';
+  failure_count: number;
+  last_failure: string | null;
+  last_error: string | null;
+  opens_at: string | null;
+  updated_at: string;
+}
 
 export interface PipelineHealth {
   stages: Record<string, Record<string, number>>;
@@ -516,6 +529,224 @@ export class PipelineManager {
         stage,
         limit,
       ) as BatchItem[];
+  }
+
+  // -------------------------------------------------------------------------
+  // Circuit breakers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Get current state of a circuit breaker for the given provider role.
+   * Returns the persisted row, or a synthetic default (closed, 0 failures)
+   * if no row exists yet.
+   */
+  circuitState(providerRole: string): CircuitState {
+    const row = this.db
+      .prepare('SELECT * FROM circuit_breakers WHERE provider_role = ?')
+      .get(providerRole) as CircuitState | undefined;
+
+    if (row) {
+      return row;
+    }
+
+    // Return a synthetic default — do not persist until first trip
+    return {
+      provider_role: providerRole,
+      state: 'closed',
+      failure_count: 0,
+      last_failure: null,
+      last_error: null,
+      opens_at: null,
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Record a failure against a circuit breaker. Increments failure_count and
+   * updates last_error / last_failure. If failure_count reaches
+   * PIPELINE_CIRCUIT_FAILURE_THRESHOLD, sets state to 'open' and calculates
+   * opens_at = now + PIPELINE_CIRCUIT_COOLDOWN_MS.
+   */
+  tripCircuit(providerRole: string, errorMessage: string): void {
+    const now = new Date().toISOString();
+    const current = this.circuitState(providerRole);
+    const newFailureCount = current.failure_count + 1;
+
+    const shouldOpen = newFailureCount >= PIPELINE_CIRCUIT_FAILURE_THRESHOLD;
+    const newState = shouldOpen ? 'open' : 'closed';
+    const opensAt = shouldOpen
+      ? new Date(Date.now() + PIPELINE_CIRCUIT_COOLDOWN_MS).toISOString()
+      : null;
+
+    this.db
+      .prepare(
+        `INSERT INTO circuit_breakers
+           (provider_role, state, failure_count, last_failure, last_error, opens_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(provider_role) DO UPDATE SET
+           state        = excluded.state,
+           failure_count = excluded.failure_count,
+           last_failure  = excluded.last_failure,
+           last_error    = excluded.last_error,
+           opens_at      = excluded.opens_at,
+           updated_at    = excluded.updated_at`,
+      )
+      .run(providerRole, newState, newFailureCount, now, errorMessage, opensAt, now);
+  }
+
+  /**
+   * Manually reset a circuit breaker to closed state.
+   * Sets state='closed', failure_count=0, clears opens_at.
+   */
+  resetCircuit(providerRole: string): void {
+    const now = new Date().toISOString();
+
+    this.db
+      .prepare(
+        `INSERT INTO circuit_breakers
+           (provider_role, state, failure_count, last_failure, last_error, opens_at, updated_at)
+         VALUES (?, 'closed', 0, NULL, NULL, NULL, ?)
+         ON CONFLICT(provider_role) DO UPDATE SET
+           state         = 'closed',
+           failure_count = 0,
+           opens_at      = NULL,
+           updated_at    = excluded.updated_at`,
+      )
+      .run(providerRole, now);
+  }
+
+  /**
+   * Check if an open circuit's cooldown has expired and is ready for a
+   * half-open probe. If state is 'open' and current time >= opens_at,
+   * transitions state to 'half-open' and returns true. Otherwise returns false.
+   */
+  probeCircuit(providerRole: string): boolean {
+    const current = this.circuitState(providerRole);
+
+    if (current.state !== 'open') {
+      return false;
+    }
+
+    if (!current.opens_at) {
+      return false;
+    }
+
+    const now = Date.now();
+    const opensAt = new Date(current.opens_at).getTime();
+
+    if (now < opensAt) {
+      return false;
+    }
+
+    // Cooldown has expired — transition to half-open
+    this.db
+      .prepare(
+        `UPDATE circuit_breakers
+         SET state = 'half-open', updated_at = ?
+         WHERE provider_role = ?`,
+      )
+      .run(new Date().toISOString(), providerRole);
+
+    return true;
+  }
+
+  /**
+   * When a circuit opens, find all stages that use this provider role and
+   * insert new 'blocked' transitions for all items that currently have
+   * 'pending' status at those stages.
+   *
+   * Returns the count of blocked items.
+   */
+  blockItemsForCircuit(providerRole: string): number {
+    const affectedStages = (Object.keys(STAGE_PROVIDER_MAP) as Array<keyof typeof STAGE_PROVIDER_MAP>)
+      .filter((stage) => STAGE_PROVIDER_MAP[stage] === providerRole);
+
+    if (affectedStages.length === 0) {
+      return 0;
+    }
+
+    const now = new Date().toISOString();
+    let blockedCount = 0;
+
+    const insertBlocked = this.db.transaction(() => {
+      for (const stage of affectedStages) {
+        // Find all items currently pending at this stage
+        const pendingItems = this.db
+          .prepare(
+            `SELECT id, item_type FROM pipeline_status
+             WHERE stage = ? AND status = 'pending'`,
+          )
+          .all(stage) as Array<{ id: string; item_type: string }>;
+
+        for (const item of pendingItems) {
+          this.db
+            .prepare(
+              `INSERT INTO stage_transitions
+               (work_item_id, item_type, stage, status, attempt, error_type, error_message, started_at, completed_at, created_at)
+               VALUES (?, ?, ?, 'blocked', 1, 'config', ?, NULL, ?, ?)`,
+            )
+            .run(
+              item.id,
+              item.item_type,
+              stage,
+              `circuit open: ${providerRole}`,
+              now,
+              now,
+            );
+
+          blockedCount++;
+        }
+      }
+    });
+
+    insertBlocked();
+    return blockedCount;
+  }
+
+  /**
+   * When a circuit closes, find all stages that use this provider role and
+   * insert new 'pending' transitions for all items that currently have
+   * 'blocked' status at those stages.
+   *
+   * Returns the count of unblocked items.
+   */
+  unblockItemsForCircuit(providerRole: string): number {
+    const affectedStages = (Object.keys(STAGE_PROVIDER_MAP) as Array<keyof typeof STAGE_PROVIDER_MAP>)
+      .filter((stage) => STAGE_PROVIDER_MAP[stage] === providerRole);
+
+    if (affectedStages.length === 0) {
+      return 0;
+    }
+
+    const now = new Date().toISOString();
+    let unblockedCount = 0;
+
+    const insertPending = this.db.transaction(() => {
+      for (const stage of affectedStages) {
+        // Find all items currently blocked at this stage
+        const blockedItems = this.db
+          .prepare(
+            `SELECT id, item_type FROM pipeline_status
+             WHERE stage = ? AND status = 'blocked'`,
+          )
+          .all(stage) as Array<{ id: string; item_type: string }>;
+
+        for (const item of blockedItems) {
+          this.db
+            .prepare(
+              `INSERT INTO stage_transitions
+               (work_item_id, item_type, stage, status, attempt, error_type, error_message, started_at, completed_at, created_at)
+               VALUES (?, ?, ?, 'pending', 1, NULL, NULL, NULL, NULL, ?)`,
+            )
+            .run(item.id, item.item_type, stage, now);
+
+          unblockedCount++;
+        }
+      }
+    });
+
+    insertPending();
+    return unblockedCount;
   }
 
   /** Close the database connection. */
