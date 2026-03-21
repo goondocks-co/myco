@@ -32,15 +32,9 @@ The agent sets up your vault, configures intelligence, and starts capturing. Wor
 
 Myco captures everything your AI agents do — sessions, decisions, plans, discoveries — and connects them into a searchable intelligence graph stored as an [Obsidian](https://obsidian.md) vault. Named after [mycorrhizal networks](https://en.wikipedia.org/wiki/Mycorrhizal_network), the underground fungal systems that connect trees in a forest, Myco is the invisible network linking your agents and team members, sharing intelligence beneath the surface.
 
-**For agents** — MCP tools let any agent runtime search, recall, and build on your team's accumulated knowledge.
-```
-myco_search("how did we handle auth?")  → semantically matched sessions, decisions, and linked context
-myco_recall("migration plan")           → full decision history with session lineage
-myco_remember(observation)              → persist a discovery for the team
-myco_context(tier: 3000)                → pre-computed project understanding, instantly available
-```
+**For agents** — [12 MCP tools and 3 skills](docs/agent-tools.md) let any agent search, recall, and build on accumulated knowledge. A digest extract is injected at session start, and relevant spores are injected after each user prompt — agents get context automatically without being told to search.
 
-**For humans** — open the vault in Obsidian and browse the intelligence graph visually. Sessions link to plans, plans link to decisions, decisions link to spores. It's all Markdown with backlinks — your team's connected knowledge, navigable and searchable.
+**For humans** — open the vault in [Obsidian](https://obsidian.md) to browse the intelligence graph visually, or use the local web dashboard to manage configuration, run operations, and monitor system health. Everything is Markdown with backlinks — your team's connected knowledge, navigable and searchable.
 
 **For teams** — the vault is a Git-friendly directory of Markdown files. Share it through your existing Git workflow.
 
@@ -52,11 +46,11 @@ A background daemon reads your agent's conversation transcript after each turn �
 
 ### Curate
 
-As a project evolves, older observations become stale. Myco automatically detects and supersedes outdated spores when new ones are created — using vector similarity to find candidates and an LLM to judge which are truly replaced vs. merely related. Superseded spores are preserved with lineage metadata (never deleted), but filtered from search results and digest synthesis. Run `myco curate` for vault-wide cleanup, or let it happen automatically on every spore write.
+As a project evolves, older observations become stale. Myco automatically detects and supersedes outdated spores when new ones are created — using vector similarity to find candidates and an LLM to judge which are truly replaced vs. merely related. Related spores are automatically consolidated into comprehensive wisdom notes during each digest cycle, compressing scattered observations into denser, higher-quality knowledge. Superseded spores are preserved with lineage metadata (never deleted), but filtered from search results and digest synthesis. Run vault-wide curation from the dashboard, or let it happen automatically.
 
 ### Digest
 
-A **continuous reasoning engine** runs inside the daemon, periodically synthesizing all accumulated knowledge into tiered context extracts. These pre-computed summaries give agents an instant, rich understanding of the project at session start — no searching required. Four tiers serve different needs: executive briefing (1.5K tokens), team standup (3K), deep onboarding (5K), and institutional knowledge (10K). Run `myco digest --tier 3000` to reprocess a specific tier from scratch, or `myco digest --full` for a complete rebuild.
+A **continuous reasoning engine** runs inside the daemon, periodically synthesizing all accumulated knowledge into tiered context extracts. Before each digest cycle, an optional consolidation pre-pass compresses related spores into wisdom notes, ensuring the digest operates on clean, dense substrate. The pre-computed extracts give agents an instant, rich understanding of the project at session start — no searching required. Four tiers serve different needs: executive briefing (1.5K tokens), team standup (3K), deep onboarding (5K), and institutional knowledge (10K). Trigger digest cycles and manage tiers from the dashboard.
 
 ### Index
 
@@ -64,7 +58,12 @@ Every note is indexed for both keyword search (SQLite FTS5) and semantic search 
 
 ### Serve
 
-An MCP server exposes the vault to any agent runtime. The digest extract is injected at session start for immediate context, and relevant spores are injected per-prompt for targeted intelligence. Agents build on your team's accumulated knowledge without being told to.
+An MCP server exposes 12 tools to any agent runtime. Two automatic injection points ensure agents always have relevant context:
+
+- **Session start** — the digest extract is injected via the `SessionStart` hook, giving the agent a pre-computed understanding of the project before it asks a single question.
+- **Per-prompt** — after each user prompt, relevant spores are retrieved via vector search and injected via the `UserPromptSubmit` hook, providing targeted intelligence for the task at hand.
+
+Agents build on your team's accumulated knowledge without being told to. See the [Lifecycle docs](docs/lifecycle.md) for the full event flow.
 
 ### Connect
 
