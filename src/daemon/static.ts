@@ -1,8 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const UI_PATH_PREFIX = '/ui/';
-const HASHED_ASSET_PREFIX = '/ui/assets/';
+const HASHED_ASSET_PREFIX = '/assets/';
 const IMMUTABLE_CACHE = 'public, max-age=31536000, immutable';
 const NO_CACHE = 'no-cache';
 
@@ -25,17 +24,18 @@ export interface StaticFileResult {
   cacheControl: string;
 }
 
-/** Resolve a /ui/* request to a file in the UI directory. Returns undefined if blocked (path traversal). */
+/** Resolve a request to a file in the UI directory. Returns undefined if blocked (path traversal). */
 export function resolveStaticFile(uiDir: string, pathname: string): StaticFileResult | undefined {
-  const relative = pathname.startsWith(UI_PATH_PREFIX)
-    ? pathname.slice(UI_PATH_PREFIX.length)
-    : '';
+  // Strip leading slash to get relative path
+  const relative = pathname.startsWith('/') ? pathname.slice(1) : pathname;
 
+  // Resolve "/" to index.html
   const resolved = path.resolve(uiDir, relative || 'index.html');
   if (!resolved.startsWith(path.resolve(uiDir))) {
     return undefined;
   }
 
+  // Serve the file if it exists
   if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
     const ext = path.extname(resolved);
     const contentType = MIME_TYPES[ext] ?? 'application/octet-stream';
@@ -43,6 +43,7 @@ export function resolveStaticFile(uiDir: string, pathname: string): StaticFileRe
     return { filePath: resolved, contentType, cacheControl };
   }
 
+  // SPA fallback: serve index.html for any non-file path
   const indexPath = path.join(uiDir, 'index.html');
   if (fs.existsSync(indexPath)) {
     return { filePath: indexPath, contentType: 'text/html', cacheControl: NO_CACHE };

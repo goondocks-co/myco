@@ -19,26 +19,26 @@ describe('resolveStaticFile', () => {
   });
 
   it('resolves existing files', () => {
-    const result = resolveStaticFile(uiDir, '/ui/assets/index-abc123.js');
+    const result = resolveStaticFile(uiDir, '/assets/index-abc123.js');
     expect(result).toBeDefined();
     expect(result!.contentType).toBe('application/javascript');
     expect(result!.cacheControl).toContain('max-age=31536000');
   });
 
   it('falls back to index.html for SPA routes', () => {
-    const result = resolveStaticFile(uiDir, '/ui/configuration');
+    const result = resolveStaticFile(uiDir, '/configuration');
     expect(result).toBeDefined();
     expect(result!.contentType).toBe('text/html');
     expect(result!.cacheControl).toBe('no-cache');
   });
 
   it('blocks path traversal', () => {
-    const result = resolveStaticFile(uiDir, '/ui/../../../etc/passwd');
+    const result = resolveStaticFile(uiDir, '/../../../etc/passwd');
     expect(result).toBeUndefined();
   });
 
-  it('serves index.html for /ui/', () => {
-    const result = resolveStaticFile(uiDir, '/ui/');
+  it('serves index.html for /', () => {
+    const result = resolveStaticFile(uiDir, '/');
     expect(result).toBeDefined();
     expect(result!.contentType).toBe('text/html');
   });

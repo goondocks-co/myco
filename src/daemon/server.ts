@@ -7,7 +7,6 @@ import { Router, type RouteHandler } from './router.js';
 import { resolveStaticFile } from './static.js';
 
 const DEFAULT_STATUS = 200;
-const UI_PATH = '/ui';
 
 export interface DaemonServerConfig {
   vaultDir: string;
@@ -45,7 +44,7 @@ export class DaemonServer {
         const addr = this.server!.address() as { port: number };
         this.port = addr.port;
         this.writeDaemonJson();
-        this.logger.info('daemon', 'Server started', { port: this.port, dashboard: `http://localhost:${this.port}/ui/` });
+        this.logger.info('daemon', 'Server started', { port: this.port, dashboard: `http://localhost:${this.port}/` });
         resolve();
       });
     });
@@ -77,72 +76,55 @@ export class DaemonServer {
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const url = new URL(req.url!, 'http://localhost');
-    const pathname = url.pathname;
-
-    // Static file serving for /ui* paths — handled before route matching
-    if (pathname.startsWith(UI_PATH)) {
-      if (pathname === UI_PATH) {
-        res.writeHead(301, { Location: `${UI_PATH}/` });
-        res.end();
-        return;
-      }
-
-      if (!this.uiDir) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'UI not available' }));
-        return;
-      }
-
-      const result = resolveStaticFile(this.uiDir, pathname);
-      if (!result) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'not found' }));
-        return;
-      }
-
-      try {
-        const content = await fs.promises.readFile(result.filePath);
-        res.writeHead(200, {
-          'Content-Type': result.contentType,
-          'Cache-Control': result.cacheControl,
-        });
-        res.end(content);
-      } catch {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'not found' }));
-      }
-      return;
-    }
-
+    // API/daemon routes take priority over static files
     const match = this.router.match(req.method!, req.url!);
 
-    if (!match) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'not found' }));
+    if (match) {
+      try {
+        const body = (req.method === 'POST' || req.method === 'PUT') ? await readBody(req) : undefined;
+        const result = await match.handler({
+          body,
+          query: match.query,
+          params: match.params,
+          pathname: match.pathname,
+        });
+        const status = result.status ?? DEFAULT_STATUS;
+        const headers = { 'Content-Type': 'application/json', ...result.headers };
+        res.writeHead(status, headers);
+        res.end(JSON.stringify(result.body));
+      } catch (error) {
+        this.logger.error('daemon', 'Request handler error', {
+          path: req.url,
+          error: (error as Error).message,
+        });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: (error as Error).message }));
+      }
       return;
     }
 
-    try {
-      const body = (req.method === 'POST' || req.method === 'PUT') ? await readBody(req) : undefined;
-      const result = await match.handler({
-        body,
-        query: match.query,
-        params: match.params,
-        pathname: match.pathname,
-      });
-      const status = result.status ?? DEFAULT_STATUS;
-      const headers = { 'Content-Type': 'application/json', ...result.headers };
-      res.writeHead(status, headers);
-      res.end(JSON.stringify(result.body));
-    } catch (error) {
-      this.logger.error('daemon', 'Request handler error', {
-        path: req.url,
-        error: (error as Error).message,
-      });
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: (error as Error).message }));
+    // No API route matched — serve static files (dashboard SPA)
+    if (this.uiDir && req.method === 'GET') {
+      const pathname = new URL(req.url!, 'http://localhost').pathname;
+      const result = resolveStaticFile(this.uiDir, pathname);
+      if (result) {
+        try {
+          const content = await fs.promises.readFile(result.filePath);
+          res.writeHead(200, {
+            'Content-Type': result.contentType,
+            'Cache-Control': result.cacheControl,
+          });
+          res.end(content);
+        } catch {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'not found' }));
+        }
+        return;
+      }
     }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'not found' }));
   }
 
   updateDaemonJsonSessions(sessions: string[]): void {

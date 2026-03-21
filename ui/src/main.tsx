@@ -19,7 +19,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <FontProvider>
         <PowerProvider>
           <QueryClientProvider client={queryClient}>
-            <BrowserRouter basename="/ui">
+            <BrowserRouter>
               <App />
             </BrowserRouter>
           </QueryClientProvider>

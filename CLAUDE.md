@@ -31,7 +31,7 @@ Permanent installs register the plugin globally. `--plugin-dir .` is for develop
 
 ## Non-Goals
 
-- This is NOT a general-purpose knowledge base or note-taking app. Do not add external REST APIs or public-facing web services. The local dashboard (`/ui/`) is the configuration and operations interface — it is not a data viewer (Obsidian handles that).
+- This is NOT a general-purpose knowledge base or note-taking app. Do not add external REST APIs or public-facing web services. The local dashboard is the configuration and operations interface — it is not a data viewer (Obsidian handles that).
 - This is NOT a framework. Do not add plugin systems, extensibility hooks, or abstraction layers for hypothetical consumers.
 - Do not add dependencies on cloud services. All intelligence runs locally (Ollama, LM Studio) or via lightweight API (Anthropic).
 
@@ -69,7 +69,7 @@ ui/              # React + Tailwind dashboard (Vite build → dist/ui/)
 
 ### Dashboard
 
-The daemon serves a React SPA at `http://localhost:<port>/ui/` for configuration management and operational triggers. Obsidian remains the data viewer for sessions, spores, and digest extracts.
+The daemon serves a React SPA at `http://localhost:<port>/` for configuration management and operational triggers. Obsidian remains the data viewer for sessions, spores, and digest extracts.
 
 **Development:** `cd ui && MYCO_DAEMON_PORT=<port> npx vite dev` — Vite dev server proxies API calls to the daemon.
 
