@@ -245,6 +245,7 @@ function BacklogIndicator({ totals }: { totals: PipelineHealth['totals'] }) {
 
 export function PipelineVisualization() {
   const { data: health, isLoading, isError } = usePipeline();
+  const [, setSearchParams] = useSearchParams();
 
   if (isLoading) {
     return (
@@ -262,8 +263,6 @@ export function PipelineVisualization() {
       </div>
     );
   }
-
-  const [, setSearchParams] = useSearchParams();
 
   const handleStageClick = (stage: string) => {
     setSearchParams({ stage });
