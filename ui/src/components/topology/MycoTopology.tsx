@@ -80,11 +80,6 @@ function isPulsing(status: NodeStatus): boolean {
   return status === 'active';
 }
 
-function formatModel(info: { provider: string; model: string } | null): string {
-  if (!info) return 'none';
-  return info.model;
-}
-
 function metabolismToStatus(state: string | null, enabled: boolean): NodeStatus {
   if (!enabled) return 'off';
   if (!state) return 'dormant';
@@ -102,18 +97,18 @@ function metabolismToStatus(state: string | null, enabled: boolean): NodeStatus 
 
 function buildNodes(stats: StatsResponse): TopologyNode[] {
   const hasActiveSessions = stats.daemon.active_sessions.length > 0;
-  const processorModel = formatModel(stats.intelligence.processor);
-  const embeddingModel = formatModel(stats.intelligence.embedding);
 
   const digestEnabled = stats.digest?.enabled ?? false;
   const digestState = stats.digest?.metabolism_state ?? null;
   const consolidationEnabled = stats.digest?.consolidation_enabled ?? false;
 
+  const sporeTotal = totalSpores(stats.vault.spore_counts);
+
   const nodes: TopologyNode[] = [
     {
       id: 'processor',
-      label: 'Processor',
-      detail: processorModel,
+      label: 'Spores',
+      detail: `${sporeTotal} total`,
       status: hasActiveSessions ? 'active' : (stats.intelligence.processor ? 'idle' : 'off'),
     },
     {
@@ -124,8 +119,8 @@ function buildNodes(stats: StatsResponse): TopologyNode[] {
     },
     {
       id: 'embedding',
-      label: 'Embedding',
-      detail: `${embeddingModel} (${stats.index.vector_count})`,
+      label: 'Index',
+      detail: `${stats.index.fts_entries}f ${stats.index.vector_count}v`,
       status: stats.intelligence.embedding ? 'idle' : 'off',
     },
     {

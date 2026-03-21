@@ -98,7 +98,7 @@ export function VaultCard({ stats }: { stats: StatsResponse }) {
       <CardContent className="space-y-2 text-sm">
         <StatRow label="Sessions" value={String(stats.vault.session_count)} />
         <StatRow label="Spores" value={String(totalSpores(stats.vault.spore_counts))} />
-        <StatRow label="Plans" value={String(stats.vault.plan_count)} />
+        <StatRow label="Plans & Artifacts" value={String(stats.vault.plan_count + stats.vault.artifact_count)} />
         <StatRow label="Name" value={stats.vault.name} />
       </CardContent>
     </Card>
