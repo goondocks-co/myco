@@ -4,7 +4,6 @@ import {
   LayoutDashboard,
   Settings,
   Network,
-  Wrench,
   ScrollText,
   Sun,
   Moon,
@@ -30,7 +29,6 @@ const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/configuration', label: 'Configuration', icon: Settings },
   { to: '/mycelium', label: 'Mycelium', icon: Network },
-  { to: '/operations', label: 'Operations', icon: Wrench },
   { to: '/logs', label: 'Logs', icon: ScrollText },
 ] as const;
 

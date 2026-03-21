@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { AlertTriangle, ArrowRight, Loader2, RotateCcw, ShieldAlert } from 'lucide-react';
 import { usePipeline, type PipelineHealth } from '../../hooks/use-pipeline';
 import { postJson } from '../../lib/api';
@@ -73,10 +74,12 @@ function StageBox({
   stage,
   counts,
   circuitOpen,
+  onClick,
 }: {
   stage: string;
   counts: Record<string, number> | undefined;
   circuitOpen: boolean;
+  onClick?: (stage: string) => void;
 }) {
   const health = classifyStageHealth(counts);
   const succeeded = counts?.succeeded ?? 0;
@@ -85,8 +88,12 @@ function StageBox({
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onClick?.(stage)}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClick?.(stage); }}
       className={cn(
-        'relative flex flex-col items-center gap-1 rounded-lg border-2 px-4 py-3 transition-colors min-w-[120px]',
+        'relative flex flex-col items-center gap-1 rounded-lg border-2 px-4 py-3 transition-colors min-w-[120px] cursor-pointer hover:opacity-80',
         STAGE_BORDER_CLASSES[health],
         STAGE_BG_CLASSES[health],
       )}
@@ -256,6 +263,14 @@ export function PipelineVisualization() {
     );
   }
 
+  const [, setSearchParams] = useSearchParams();
+
+  const handleStageClick = (stage: string) => {
+    setSearchParams({ stage });
+    // Scroll to work items section
+    document.getElementById('work-items')?.scrollIntoView({ behavior: 'smooth' });
+  };
+
   return (
     <div className="space-y-4">
       {/* Circuit breaker alert banner */}
@@ -270,6 +285,7 @@ export function PipelineVisualization() {
               stage={stage}
               counts={health.stages[stage]}
               circuitOpen={isCircuitOpen(health.circuits, STAGE_PROVIDER_MAP[stage])}
+              onClick={handleStageClick}
             />
           </div>
         ))}

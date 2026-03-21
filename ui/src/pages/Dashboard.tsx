@@ -1,7 +1,8 @@
 import { useDaemon } from '../hooks/use-daemon';
-import { MycoTopology } from '../components/topology/MycoTopology';
-import { Card, CardContent } from '../components/ui/card';
+import { PipelineVisualization } from '../components/pipeline/PipelineVisualization';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { PageLoading } from '../components/ui/page-loading';
+import { Activity } from 'lucide-react';
 import {
   DaemonCard,
   VaultCard,
@@ -10,7 +11,6 @@ import {
   DigestCard,
   IntelligenceCard,
 } from '../components/dashboard/stat-cards';
-import { PipelineHealthCard } from '../components/dashboard/pipeline-health';
 
 export default function Dashboard() {
   const { data: stats, isLoading, isError, error } = useDaemon();
@@ -23,10 +23,16 @@ export default function Dashboard() {
     >
       {stats && (
         <div className="flex flex-col gap-6 p-6">
-          {/* Topology visualization */}
-          <Card className="overflow-hidden">
-            <CardContent className="p-4">
-              <MycoTopology stats={stats} />
+          {/* Pipeline health — the live processing state */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Activity className="h-4 w-4 text-primary" />
+                Pipeline Health
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <PipelineVisualization />
             </CardContent>
           </Card>
 
@@ -42,7 +48,6 @@ export default function Dashboard() {
               <IndexCard stats={stats} />
               <DigestCard stats={stats} />
               <IntelligenceCard stats={stats} />
-              <PipelineHealthCard />
             </div>
           </section>
         </div>
