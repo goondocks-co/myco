@@ -71,6 +71,7 @@ export function DigestSection({
                 value={digest.intelligence.model ?? ''}
                 onChange={(v) => updateDigestIntelligence('model', v || null)}
                 placeholder="Use main model"
+                modelType="llm"
               />
             </Field>
             <Field label="Context Window" description="How much vault content the digest model can process per cycle">

@@ -11,8 +11,32 @@ const ANTHROPIC_MODELS = [
   'claude-haiku-4-5-20251001',
 ];
 
+/** Patterns that indicate an embedding model (case-insensitive). */
+const EMBEDDING_PATTERNS = [
+  'embed', 'bge-', 'nomic-embed', 'e5-', 'gte-', 'granite-embedding',
+];
+
+/** Filter models to only include embedding models. */
+function filterEmbeddingModels(models: string[]): string[] {
+  const lower = EMBEDDING_PATTERNS;
+  return models.filter((m) => {
+    const name = m.toLowerCase();
+    return lower.some((p) => name.includes(p));
+  });
+}
+
+/** Filter models to exclude embedding models (LLM-only). */
+function filterLlmModels(models: string[]): string[] {
+  const lower = EMBEDDING_PATTERNS;
+  return models.filter((m) => {
+    const name = m.toLowerCase();
+    return !lower.some((p) => name.includes(p));
+  });
+}
+
 export async function handleGetModels(req: RouteRequest): Promise<RouteResponse> {
   const provider = req.query.provider;
+  const type = req.query.type; // 'llm' | 'embedding' | undefined (all)
 
   if (!provider) {
     return { status: 400, body: { error: 'provider query parameter required' } };
@@ -32,6 +56,13 @@ export async function handleGetModels(req: RouteRequest): Promise<RouteResponse>
     }
   } catch {
     // Provider unreachable — return empty list
+  }
+
+  // Filter by type if requested
+  if (type === 'embedding') {
+    models = filterEmbeddingModels(models);
+  } else if (type === 'llm') {
+    models = filterLlmModels(models);
   }
 
   return { body: { provider, models } };

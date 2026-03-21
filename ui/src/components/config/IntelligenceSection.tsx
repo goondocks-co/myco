@@ -61,6 +61,7 @@ export function IntelligenceSection({
                 baseUrl={intelligence.llm.base_url}
                 value={intelligence.llm.model}
                 onChange={(v) => updateLlm('model', v)}
+                modelType="llm"
               />
             </Field>
             <Field label="Context Window" description="How much text the model can read per operation">
@@ -97,6 +98,7 @@ export function IntelligenceSection({
                 baseUrl={intelligence.embedding.base_url}
                 value={intelligence.embedding.model}
                 onChange={(v) => updateEmbedding('model', v)}
+                modelType="embedding"
               />
             </Field>
           </div>

@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useModels } from '../../hooks/use-models';
+import { useModels, type ModelType } from '../../hooks/use-models';
 
 /** Providers that require a base_url before models can be listed. */
 const REQUIRES_BASE_URL = new Set(['openai-compatible']);
@@ -10,6 +10,8 @@ interface ModelSelectProps {
   value: string;
   onChange: (model: string) => void;
   placeholder?: string;
+  /** Filter to only show LLM or embedding models. */
+  modelType?: ModelType;
 }
 
 export function ModelSelect({
@@ -18,14 +20,16 @@ export function ModelSelect({
   value,
   onChange,
   placeholder,
+  modelType,
 }: ModelSelectProps) {
   const needsUrl = provider ? REQUIRES_BASE_URL.has(provider) : false;
   const waitingForUrl = needsUrl && !baseUrl;
 
-  const { data, isLoading } = useModels(provider, baseUrl);
+  const { data, isLoading } = useModels(provider, baseUrl, modelType);
   const models = data?.models ?? [];
 
-  // Auto-select first model when provider/models change and current value isn't available
+  // Auto-select the current configured value if it's in the list,
+  // otherwise select the first available model
   useEffect(() => {
     if (isLoading || waitingForUrl || models.length === 0) return;
     if (!models.includes(value)) {
