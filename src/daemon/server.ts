@@ -37,8 +37,6 @@ export class DaemonServer {
   }
 
   async start(port: number = 0): Promise<void> {
-    await this.evictExistingDaemon();
-
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => this.handleRequest(req, res));
       this.server.on('error', reject);
@@ -142,8 +140,9 @@ export class DaemonServer {
   /**
    * Kill any existing daemon for this vault before taking over.
    * Prevents orphaned daemons when spawned from worktrees or plugin upgrades.
+   * Must be called BEFORE resolvePort() so the old daemon releases the port.
    */
-  private async evictExistingDaemon(): Promise<void> {
+  async evictExistingDaemon(): Promise<void> {
     const jsonPath = path.join(this.vaultDir, 'daemon.json');
     let existingPid: number | undefined;
     try {
@@ -162,13 +161,20 @@ export class DaemonServer {
     this.logger.info('daemon', 'Evicting existing daemon', { pid: existingPid });
     try { process.kill(existingPid, 'SIGTERM'); } catch { return; }
 
-    // Poll until the process dies or timeout
+    // Give SIGTERM a grace period, then escalate to SIGKILL to guarantee port release
     const deadline = Date.now() + DAEMON_EVICT_TIMEOUT_MS;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, DAEMON_EVICT_POLL_MS));
       try { process.kill(existingPid, 0); } catch { return; /* dead */ }
     }
-    this.logger.warn('daemon', 'Evicted daemon did not exit in time, proceeding anyway', { pid: existingPid });
+
+    this.logger.warn('daemon', 'Evicted daemon did not exit in time, sending SIGKILL', { pid: existingPid });
+    try { process.kill(existingPid, 'SIGKILL'); } catch { return; }
+
+    // Verify SIGKILL took effect
+    await new Promise((r) => setTimeout(r, DAEMON_EVICT_POLL_MS));
+    try { process.kill(existingPid, 0); } catch { return; /* dead */ }
+    this.logger.warn('daemon', 'Evicted daemon still alive after SIGKILL', { pid: existingPid });
   }
 
   private writeDaemonJson(): void {
@@ -184,7 +190,13 @@ export class DaemonServer {
 
   private removeDaemonJson(): void {
     const jsonPath = path.join(this.vaultDir, 'daemon.json');
-    try { fs.unlinkSync(jsonPath); } catch { /* already gone */ }
+    try {
+      const content = fs.readFileSync(jsonPath, 'utf-8');
+      const info = JSON.parse(content);
+      // Only delete if we still own the file — a successor daemon may have taken over.
+      if (info.pid !== process.pid) return;
+      fs.unlinkSync(jsonPath);
+    } catch { /* already gone or unreadable */ }
   }
 }
 

@@ -35,6 +35,7 @@ function makeConfig() {
       intelligence: { provider: null, model: null, base_url: null, context_window: 32768, keep_alive: '30m', gpu_kv_cache: false },
       metabolism: { active_interval: 900, cooldown_intervals: [1800, 3600, 7200], dormancy_threshold: 14400 },
       substrate: { max_notes_per_cycle: 50 },
+      consolidation: { enabled: false, max_tokens: 2048 },
     },
   };
 }

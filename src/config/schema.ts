@@ -83,6 +83,12 @@ const DigestSubstrateSchema = z.object({
   max_notes_per_cycle: z.number().int().positive().default(50),
 });
 
+const ConsolidationSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Max output tokens for consolidation LLM synthesis. */
+  max_tokens: z.number().int().positive().default(2048),
+});
+
 const DigestSchema = z.object({
   enabled: z.boolean().default(true),
   tiers: z.array(z.number().int().positive()).default([1500, 3000, 5000, 7500]),
@@ -90,7 +96,7 @@ const DigestSchema = z.object({
   intelligence: DigestIntelligenceSchema.default(() => DigestIntelligenceSchema.parse({})),
   metabolism: DigestMetabolismSchema.default(() => DigestMetabolismSchema.parse({})),
   substrate: DigestSubstrateSchema.default(() => DigestSubstrateSchema.parse({})),
-  consolidation: z.boolean().default(false),
+  consolidation: ConsolidationSchema.default(() => ConsolidationSchema.parse({})),
 });
 
 export const MycoConfigSchema = z.object({

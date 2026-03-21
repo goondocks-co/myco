@@ -23,6 +23,7 @@ interface DigestSectionProps {
   updateDigestIntelligence: (key: string, value: unknown) => void;
   updateDigestMetabolism: (key: string, value: unknown) => void;
   updateDigestSubstrate: (key: string, value: number) => void;
+  updateDigestConsolidation: (key: string, value: unknown) => void;
 }
 
 export function DigestSection({
@@ -33,6 +34,7 @@ export function DigestSection({
   updateDigestIntelligence,
   updateDigestMetabolism,
   updateDigestSubstrate,
+  updateDigestConsolidation,
 }: DigestSectionProps) {
   const digestProvider = digest.intelligence.provider ?? intelligence.llm.provider;
   const digestBaseUrl = digest.intelligence.base_url ?? intelligence.llm.base_url;
@@ -50,12 +52,27 @@ export function DigestSection({
           />
         </Field>
 
-        <Field label="Consolidation" description="Automatically consolidate related spores into wisdom notes before each digest cycle">
-          <ToggleSwitch
-            checked={digest.consolidation}
-            onChange={(v) => updateDigest('consolidation', v)}
-          />
-        </Field>
+        <div>
+          <h4 className="mb-3 text-sm font-medium text-muted-foreground">Consolidation</h4>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Enabled" description="Automatically consolidate related spores into wisdom notes before each digest cycle">
+              <ToggleSwitch
+                checked={digest.consolidation.enabled}
+                onChange={(v) => updateDigestConsolidation('enabled', v)}
+              />
+            </Field>
+            <Field label="Max Tokens" description="Token budget for wisdom note generation — higher values produce more comprehensive notes">
+              <Input
+                type="number"
+                value={digest.consolidation.max_tokens}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  if (!isNaN(val)) updateDigestConsolidation('max_tokens', val);
+                }}
+              />
+            </Field>
+          </div>
+        </div>
 
         <div>
           <h4 className="mb-3 text-sm font-medium text-muted-foreground">Intelligence</h4>

@@ -62,6 +62,22 @@ describe('DaemonServer', () => {
     expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(false);
   });
 
+  it('does not delete daemon.json on stop if another daemon has taken over', async () => {
+    const server = new DaemonServer({ vaultDir, logger });
+    await server.start();
+
+    // Simulate a successor daemon overwriting daemon.json with a different PID
+    const jsonPath = path.join(vaultDir, 'daemon.json');
+    fs.writeFileSync(jsonPath, JSON.stringify({ pid: 999888, port: 55555, started: new Date().toISOString(), sessions: [] }));
+
+    await server.stop();
+
+    // daemon.json should still exist — the successor owns it
+    expect(fs.existsSync(jsonPath)).toBe(true);
+    const info = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+    expect(info.pid).toBe(999888);
+  });
+
   it('evicts an existing daemon on startup', async () => {
     // Spawn a dummy process that stays alive until killed
     const dummy = spawn('node', ['-e', 'setTimeout(() => {}, 60000)'], {
@@ -77,8 +93,9 @@ describe('DaemonServer', () => {
       JSON.stringify({ pid: dummyPid, port: 99999, started: new Date().toISOString(), sessions: [] }),
     );
 
-    // Starting a new server should evict the dummy
+    // Evicting + starting a new server should kill the dummy
     const server = new DaemonServer({ vaultDir, logger });
+    await server.evictExistingDaemon();
     await server.start();
 
     // The dummy process should be dead
