@@ -5,7 +5,7 @@ import { Badge } from '../ui/badge';
 import {
   Field,
   LLM_PROVIDERS,
-  CONTEXT_WINDOW_OPTIONS,
+  CONTEXT_WINDOW_SELECT_OPTIONS,
   DEFAULT_TIERS,
   COOLDOWN_STAGE_LABELS,
   COOLDOWN_STAGE_DESCRIPTIONS,
@@ -80,10 +80,7 @@ export function DigestSection({
                 onChange={(v) =>
                   updateDigestIntelligence('context_window', parseInt(v, 10))
                 }
-                options={CONTEXT_WINDOW_OPTIONS.map((opt) => ({
-                  value: String(opt.value),
-                  label: `${opt.label} (${opt.value.toLocaleString()})`,
-                }))}
+                options={CONTEXT_WINDOW_SELECT_OPTIONS}
               />
             </Field>
             <Field label="Keep Alive" description="How long to keep the digest model loaded between cycles (Ollama duration string)">
@@ -164,7 +161,7 @@ export function DigestSection({
             </h5>
             <div className="grid gap-4 sm:grid-cols-3">
               {COOLDOWN_STAGE_LABELS.map((stageLabel, index) => (
-                <Field key={index} label={stageLabel} description={COOLDOWN_STAGE_DESCRIPTIONS[index]}>
+                <Field key={stageLabel} label={stageLabel} description={COOLDOWN_STAGE_DESCRIPTIONS[index]}>
                   <Input
                     type="number"
                     value={digest.metabolism.cooldown_intervals[index] ?? ''}

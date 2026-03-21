@@ -6,3 +6,6 @@ export const POLL_INTERVALS = {
 } as const;
 
 export const STALE_TIME = 10_000;
+
+/** Cache TTL for available model lists (30 seconds). */
+export const MODELS_STALE_TIME = 30_000;

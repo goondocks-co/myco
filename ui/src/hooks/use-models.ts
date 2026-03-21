@@ -1,15 +1,14 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
+import { MODELS_STALE_TIME } from '../lib/constants';
 
 interface ModelsResponse {
   provider: string;
   models: string[];
 }
 
-const MODELS_STALE_TIME = 30_000; // Cache for 30 seconds
-
 /** Providers that require a base_url before we can fetch models. */
-const REQUIRES_BASE_URL = new Set(['openai-compatible']);
+export const REQUIRES_BASE_URL = new Set(['openai-compatible']);
 
 export type ModelType = 'llm' | 'embedding';
 

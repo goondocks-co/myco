@@ -24,7 +24,14 @@ export const CONTEXT_WINDOW_OPTIONS = [
   { value: 131072, label: '128K' },
 ] as const;
 
+/** Mirrors DIGEST_TIERS in src/constants.ts — keep in sync if tiers change. */
 export const DEFAULT_TIERS = [1500, 3000, 5000, 10000] as const;
+
+/** Pre-mapped select options for context window dropdowns — avoids duplicate inline mapping. */
+export const CONTEXT_WINDOW_SELECT_OPTIONS = CONTEXT_WINDOW_OPTIONS.map((opt) => ({
+  value: String(opt.value),
+  label: `${opt.label} (${opt.value.toLocaleString()})`,
+}));
 
 export const COOLDOWN_STAGE_LABELS = [
   'Stage 1 (warm)',

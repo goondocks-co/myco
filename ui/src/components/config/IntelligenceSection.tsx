@@ -6,7 +6,7 @@ import {
   NativeSelect,
   LLM_PROVIDERS,
   EMBEDDING_PROVIDERS,
-  CONTEXT_WINDOW_OPTIONS,
+  CONTEXT_WINDOW_SELECT_OPTIONS,
 } from './config-helpers';
 import { ModelSelect } from './ModelSelect';
 
@@ -16,11 +16,6 @@ interface IntelligenceSectionProps {
   updateLlm: (key: string, value: string | number) => void;
   updateEmbedding: (key: string, value: string) => void;
 }
-
-const contextWindowOptions = CONTEXT_WINDOW_OPTIONS.map((opt) => ({
-  value: String(opt.value),
-  label: `${opt.label} (${opt.value.toLocaleString()})`,
-}));
 
 export function IntelligenceSection({
   intelligence,
@@ -68,7 +63,7 @@ export function IntelligenceSection({
               <NativeSelect
                 value={String(intelligence.llm.context_window)}
                 onChange={(v) => updateLlm('context_window', parseInt(v, 10))}
-                options={contextWindowOptions}
+                options={CONTEXT_WINDOW_SELECT_OPTIONS}
               />
             </Field>
           </div>

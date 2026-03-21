@@ -1,8 +1,8 @@
-import { useEffect } from 'react';
-import { useModels, type ModelType } from '../../hooks/use-models';
+import { useEffect, useState } from 'react';
+import { useModels, REQUIRES_BASE_URL, type ModelType } from '../../hooks/use-models';
 
-/** Providers that require a base_url before models can be listed. */
-const REQUIRES_BASE_URL = new Set(['openai-compatible']);
+/** Debounce delay before a changed base URL triggers a new model fetch. */
+const BASE_URL_DEBOUNCE_MS = 500;
 
 interface ModelSelectProps {
   provider: string | null;
@@ -25,19 +25,29 @@ export function ModelSelect({
   const needsUrl = provider ? REQUIRES_BASE_URL.has(provider) : false;
   const waitingForUrl = needsUrl && !baseUrl;
 
-  const { data, isLoading } = useModels(provider, baseUrl, modelType);
+  // Debounce base URL so each keystroke doesn't trigger a new fetch.
+  const [debouncedUrl, setDebouncedUrl] = useState(baseUrl);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedUrl(baseUrl), BASE_URL_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [baseUrl]);
+
+  const { data, isLoading } = useModels(provider, debouncedUrl, modelType);
   const models = data?.models ?? [];
 
   // When models load, match the configured value to an available model.
-  // Handles tag variations: configured "bge-m3" matches returned "bge-m3:latest"
+  // Handles tag variations: configured "bge-m3" matches returned "bge-m3:latest".
+  // Only calls onChange when the resolved model actually differs from the current
+  // value — prevents spurious dirty-state on 30s cache refreshes.
   useEffect(() => {
     if (isLoading || waitingForUrl || models.length === 0) return;
     if (models.includes(value)) return; // Exact match — keep it
 
     // Fuzzy match: "bge-m3" matches "bge-m3:latest", or "qwen3.5:latest" matches "qwen3.5:latest"
     const fuzzy = models.find((m) => m.startsWith(value + ':') || value.startsWith(m + ':') || m === value);
-    onChange(fuzzy ?? models[0]);
-  }, [models, isLoading, waitingForUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+    const resolved = fuzzy ?? models[0];
+    if (resolved !== value) onChange(resolved);
+  }, [models, isLoading, waitingForUrl, value, onChange]);
 
   return (
     <select
