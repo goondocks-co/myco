@@ -18,8 +18,6 @@ const DETAIL_FONT_SIZE = 7;
 const SPORE_RADIUS = 1.8;
 const SPORE_COUNT_PER_ACTIVE_PATH = 2;
 
-const FONT_FAMILY = 'var(--font-ui, monospace)';
-
 const CONNECTION_OPACITY_DEFAULT = 0.25;
 const CONNECTION_OPACITY_ACTIVE = 0.55;
 
@@ -39,11 +37,11 @@ const COLOR_OFF = 'hsl(215, 10%, 25%)';
 
 /* Organic node positions — asymmetric, like a mycelium mat */
 const NODE_POSITIONS: Record<string, { x: number; y: number; radius: number }> = {
-  processor: { x: 100, y: 80, radius: 32 },
-  digest: { x: 395, y: 110, radius: 28 },
-  embedding: { x: 80, y: 310, radius: 26 },
-  vault: { x: 410, y: 290, radius: 34 },
-  sessions: { x: 250, y: 355, radius: 30 },
+  processor: { x: 100, y: 80, radius: 38 },
+  digest: { x: 400, y: 110, radius: 36 },
+  embedding: { x: 75, y: 310, radius: 38 },
+  vault: { x: 415, y: 290, radius: 38 },
+  sessions: { x: 250, y: 360, radius: 36 },
 };
 
 /* ---------- Types ---------- */
@@ -292,7 +290,7 @@ function TopologyNodeSvg({ node }: { node: TopologyNode }) {
         textAnchor="middle"
         fill="currentColor"
         fontSize={LABEL_FONT_SIZE}
-        style={{ fontFamily: FONT_FAMILY }}
+
         fontWeight={600}
         opacity={0.9}
       >
@@ -306,7 +304,7 @@ function TopologyNodeSvg({ node }: { node: TopologyNode }) {
         textAnchor="middle"
         fill="currentColor"
         fontSize={DETAIL_FONT_SIZE}
-        style={{ fontFamily: FONT_FAMILY }}
+
         opacity={0.5}
       >
         {node.detail.length > DETAIL_MAX_CHARS
@@ -366,7 +364,7 @@ export function MycoTopology({ stats }: { stats: StatsResponse }) {
     <svg
       viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}
       width="100%"
-      className="max-h-[400px]"
+      className="max-h-[400px] font-mono"
       role="img"
       aria-label="Myco system topology"
     >
@@ -415,7 +413,7 @@ export function MycoTopology({ stats }: { stats: StatsResponse }) {
         textAnchor="middle"
         fill="currentColor"
         fontSize={14}
-        style={{ fontFamily: FONT_FAMILY }}
+
         fontWeight={700}
         opacity={0.9}
       >
@@ -427,7 +425,7 @@ export function MycoTopology({ stats }: { stats: StatsResponse }) {
         textAnchor="middle"
         fill="currentColor"
         fontSize={9}
-        style={{ fontFamily: FONT_FAMILY }}
+
         opacity={0.45}
       >
         v{stats.daemon.version}
