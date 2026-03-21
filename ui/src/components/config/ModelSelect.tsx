@@ -56,11 +56,11 @@ export function ModelSelect({
       disabled={isLoading || !provider || waitingForUrl}
       className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
     >
-      {waitingForUrl && <option value="">Enter base URL first</option>}
+      {waitingForUrl && <option value="">{placeholder ?? 'Enter base URL first'}</option>}
       {!waitingForUrl && isLoading && <option value={value}>Loading models...</option>}
-      {!waitingForUrl && !isLoading && !provider && <option value="">Select provider first</option>}
+      {!waitingForUrl && !isLoading && !provider && <option value="">{placeholder ?? 'Select provider first'}</option>}
       {!waitingForUrl && !isLoading && provider && models.length === 0 && (
-        <option value="">No models available</option>
+        <option value="">{placeholder ?? 'No models available'}</option>
       )}
       {!waitingForUrl && !isLoading && models.map((m) => (
         <option key={m} value={m}>{m}</option>

@@ -18,19 +18,17 @@ const EMBEDDING_PATTERNS = [
 
 /** Filter models to only include embedding models. */
 function filterEmbeddingModels(models: string[]): string[] {
-  const lower = EMBEDDING_PATTERNS;
   return models.filter((m) => {
     const name = m.toLowerCase();
-    return lower.some((p) => name.includes(p));
+    return EMBEDDING_PATTERNS.some((p) => name.includes(p));
   });
 }
 
 /** Filter models to exclude embedding models (LLM-only). */
 function filterLlmModels(models: string[]): string[] {
-  const lower = EMBEDDING_PATTERNS;
   return models.filter((m) => {
     const name = m.toLowerCase();
-    return !lower.some((p) => name.includes(p));
+    return !EMBEDDING_PATTERNS.some((p) => name.includes(p));
   });
 }
 

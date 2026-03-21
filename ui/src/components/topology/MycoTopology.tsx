@@ -15,9 +15,12 @@ const SPORE_DRIFT_DURATION = '4s';
 const DETAIL_MAX_CHARS = 12;
 const LABEL_FONT_SIZE = 9;
 const DETAIL_FONT_SIZE = 7;
+const HUB_LABEL_FONT_SIZE = 14;
+const HUB_DETAIL_FONT_SIZE = 9;
 const SPORE_RADIUS = 1.8;
 const SPORE_COUNT_PER_ACTIVE_PATH = 2;
 
+const SVG_TEXT_STYLE = 'svg text { font-family: var(--font-ui, ui-monospace, monospace); }';
 const CONNECTION_OPACITY_DEFAULT = 0.25;
 const CONNECTION_OPACITY_ACTIVE = 0.55;
 
@@ -370,7 +373,7 @@ export function MycoTopology({ stats }: { stats: StatsResponse }) {
       style={{ fontSize: 'calc(1em * var(--density, 1))' }}
     >
       {/* SVG text inherits font-family from this style block, which reads the CSS variable */}
-      <style>{`svg text { font-family: var(--font-ui, ui-monospace, monospace); }`}</style>
+      <style>{SVG_TEXT_STYLE}</style>
 
       {/* Ambient spore particles */}
       <AmbientSpores />
@@ -416,7 +419,7 @@ export function MycoTopology({ stats }: { stats: StatsResponse }) {
         y={HUB_Y - 4}
         textAnchor="middle"
         fill="currentColor"
-        fontSize={14}
+        fontSize={HUB_LABEL_FONT_SIZE}
 
         fontWeight={700}
         opacity={0.9}
@@ -428,7 +431,7 @@ export function MycoTopology({ stats }: { stats: StatsResponse }) {
         y={HUB_Y + 12}
         textAnchor="middle"
         fill="currentColor"
-        fontSize={9}
+        fontSize={HUB_DETAIL_FONT_SIZE}
 
         opacity={0.45}
       >

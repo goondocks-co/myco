@@ -1,4 +1,5 @@
 import type { ChangeEvent } from 'react';
+import { cn } from '../../lib/cn';
 
 /* ---------- Constants ---------- */
 
@@ -109,7 +110,7 @@ export function NativeSelect({ value, onChange, options, disabled, className }: 
       value={value}
       onChange={(e) => onChange(e.target.value)}
       disabled={disabled}
-      className={`w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50 ${className ?? ''}`}
+      className={cn('w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50', className)}
     >
       {options.map((opt) => {
         const val = typeof opt === 'string' ? opt : opt.value;

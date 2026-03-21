@@ -6,14 +6,14 @@ export interface MycoConfig {
   config_version: number;
   intelligence: {
     llm: {
-      provider: 'ollama' | 'lm-studio' | 'anthropic';
+      provider: 'ollama' | 'lm-studio' | 'anthropic' | 'openai-compatible';
       model: string;
       base_url?: string;
       context_window: number;
       max_tokens: number;
     };
     embedding: {
-      provider: 'ollama' | 'lm-studio';
+      provider: 'ollama' | 'lm-studio' | 'openai-compatible';
       model: string;
       base_url?: string;
     };
@@ -53,7 +53,7 @@ export interface MycoConfig {
     tiers: number[];
     inject_tier: number | null;
     intelligence: {
-      provider: 'ollama' | 'lm-studio' | 'anthropic' | null;
+      provider: 'ollama' | 'lm-studio' | 'anthropic' | 'openai-compatible' | null;
       model: string | null;
       base_url: string | null;
       context_window: number;
