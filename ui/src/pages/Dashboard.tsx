@@ -2,7 +2,6 @@ import { useDaemon } from '../hooks/use-daemon';
 import { MycoTopology } from '../components/topology/MycoTopology';
 import { Card, CardContent } from '../components/ui/card';
 import { PageLoading } from '../components/ui/page-loading';
-import { QuickActions } from '../components/dashboard/quick-actions';
 import {
   DaemonCard,
   VaultCard,
@@ -29,14 +28,6 @@ export default function Dashboard() {
               <MycoTopology stats={stats} />
             </CardContent>
           </Card>
-
-          {/* Quick actions */}
-          <section>
-            <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Quick Actions
-            </h2>
-            <QuickActions stats={stats} />
-          </section>
 
           {/* Stats cards grid */}
           <section>
