@@ -14,6 +14,7 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import { loadPrompt } from '@myco/prompts/index.js';
 import { stripReasoningTokens } from '@myco/intelligence/response.js';
 import { stripFrontmatter } from '@myco/vault/frontmatter.js';
+import { readLastTimestamp, appendTraceRecord } from './trace.js';
 import {
   estimateTokens,
   CHARS_PER_TOKEN,
@@ -228,10 +229,8 @@ export class DigestEngine {
    * Append a digest cycle result as a JSON line to trace.jsonl.
    */
   appendTrace(record: DigestCycleResult): void {
-    const digestDir = path.join(this.vaultDir, 'digest');
-    fs.mkdirSync(digestDir, { recursive: true });
-    const tracePath = path.join(digestDir, 'trace.jsonl');
-    fs.appendFileSync(tracePath, JSON.stringify(record) + '\n', 'utf-8');
+    const tracePath = path.join(this.vaultDir, 'digest', 'trace.jsonl');
+    appendTraceRecord(tracePath, record as unknown as Record<string, unknown>);
     this.lastCycleTimestampCache = record.timestamp;
   }
 
@@ -243,29 +242,8 @@ export class DigestEngine {
     if (this.lastCycleTimestampCache !== undefined) return this.lastCycleTimestampCache;
 
     const tracePath = path.join(this.vaultDir, 'digest', 'trace.jsonl');
-    let content: string;
-    try {
-      content = fs.readFileSync(tracePath, 'utf-8').trim();
-    } catch {
-      this.lastCycleTimestampCache = null;
-      return null;
-    }
-
-    if (!content) {
-      this.lastCycleTimestampCache = null;
-      return null;
-    }
-
-    const lines = content.split('\n');
-    const lastLine = lines[lines.length - 1];
-    try {
-      const record = JSON.parse(lastLine) as DigestCycleResult;
-      this.lastCycleTimestampCache = record.timestamp;
-      return record.timestamp;
-    } catch {
-      this.lastCycleTimestampCache = null;
-      return null;
-    }
+    this.lastCycleTimestampCache = readLastTimestamp(tracePath);
+    return this.lastCycleTimestampCache;
   }
 
   /**

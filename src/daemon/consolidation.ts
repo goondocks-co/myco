@@ -17,7 +17,8 @@ import { generateEmbedding } from '@myco/intelligence/embeddings.js';
 import { stripReasoningTokens } from '@myco/intelligence/response.js';
 import { isActiveSpore } from '@myco/vault/curation.js';
 import { consolidateSpores } from '@myco/vault/consolidation.js';
-import { loadPrompt } from '@myco/prompts/index.js';
+import { loadPrompt, formatNotesForPrompt } from '@myco/prompts/index.js';
+import { readLastTimestamp, appendTraceRecord } from './trace.js';
 import {
   CONSOLIDATION_MIN_CLUSTER_SIZE,
   CONSOLIDATION_VECTOR_FETCH_LIMIT,
@@ -95,29 +96,8 @@ export class ConsolidationEngine {
     if (this.lastTimestampCache !== undefined) return this.lastTimestampCache;
 
     const tracePath = path.join(this.deps.vaultDir, 'digest', CONSOLIDATION_TRACE_FILENAME);
-    let content: string;
-    try {
-      content = fs.readFileSync(tracePath, 'utf-8').trim();
-    } catch {
-      this.lastTimestampCache = null;
-      return null;
-    }
-
-    if (!content) {
-      this.lastTimestampCache = null;
-      return null;
-    }
-
-    const lines = content.split('\n');
-    const lastLine = lines[lines.length - 1];
-    try {
-      const record = JSON.parse(lastLine) as ConsolidationPassResult;
-      this.lastTimestampCache = record.timestamp;
-      return record.timestamp;
-    } catch {
-      this.lastTimestampCache = null;
-      return null;
-    }
+    this.lastTimestampCache = readLastTimestamp(tracePath);
+    return this.lastTimestampCache;
   }
 
   /**
@@ -125,10 +105,8 @@ export class ConsolidationEngine {
    * Updates the in-memory timestamp cache.
    */
   appendTrace(record: ConsolidationPassResult): void {
-    const digestDir = path.join(this.deps.vaultDir, 'digest');
-    fs.mkdirSync(digestDir, { recursive: true });
-    const tracePath = path.join(digestDir, CONSOLIDATION_TRACE_FILENAME);
-    fs.appendFileSync(tracePath, JSON.stringify(record) + '\n', 'utf-8');
+    const tracePath = path.join(this.deps.vaultDir, 'digest', CONSOLIDATION_TRACE_FILENAME);
+    appendTraceRecord(tracePath, record as unknown as Record<string, unknown>);
     this.lastTimestampCache = record.timestamp;
   }
 
@@ -187,16 +165,21 @@ export class ConsolidationEngine {
 
       const observationType = triggerSpore.frontmatter['observation_type'] as string | undefined;
 
-      // Embed the trigger spore
+      // Get embedding for similarity search — reuse stored vector if available
       let embedding: number[];
-      try {
-        const embeddingText = triggerSpore.content.slice(0, EMBEDDING_INPUT_LIMIT);
-        const result = await generateEmbedding(embeddingProvider, embeddingText);
-        embedding = result.embedding;
-      } catch (err) {
-        this.log('warn', 'ConsolidationEngine: embedding failed', { id: triggerSpore.id, error: String(err) });
-        processedIds.add(triggerSpore.id);
-        continue;
+      const storedEmbedding = vectorIndex.getEmbedding(triggerSpore.id);
+      if (storedEmbedding) {
+        embedding = storedEmbedding;
+      } else {
+        try {
+          const embeddingText = triggerSpore.content.slice(0, EMBEDDING_INPUT_LIMIT);
+          const result = await generateEmbedding(embeddingProvider, embeddingText);
+          embedding = result.embedding;
+        } catch (err) {
+          this.log('warn', 'ConsolidationEngine: embedding failed', { id: triggerSpore.id, error: String(err) });
+          processedIds.add(triggerSpore.id);
+          continue;
+        }
       }
 
       // Vector search for similar spores
@@ -242,9 +225,7 @@ export class ConsolidationEngine {
       clustersFound++;
 
       // Build consolidation prompt
-      const candidatesText = cluster
-        .map((c) => `[${c.id}] ${c.title}\n${c.content}`)
-        .join('\n\n');
+      const candidatesText = formatNotesForPrompt(cluster);
 
       const prompt = template
         .replace('{{count}}', String(cluster.length))

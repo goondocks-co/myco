@@ -44,6 +44,8 @@ function makeMockVectorIndex(results: Array<{ id: string; similarity: number }> 
     ),
     upsert: vi.fn(),
     delete: vi.fn(),
+    getEmbedding: vi.fn().mockReturnValue(null),
+    has: vi.fn().mockReturnValue(false),
     close: vi.fn(),
   } as unknown as VectorIndex;
 }
