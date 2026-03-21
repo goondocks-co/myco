@@ -3,7 +3,6 @@ import { initFts } from '../index/fts.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import {
   parseStringFlag,
-  DASHBOARD_CONTENT,
   VAULT_GITIGNORE,
   configureVaultEnv,
 } from './shared.js';
@@ -53,9 +52,6 @@ export async function run(args: string[]): Promise<void> {
 
   // Write .gitignore
   fs.writeFileSync(path.join(vaultDir, '.gitignore'), VAULT_GITIGNORE, 'utf-8');
-
-  // Write Obsidian dashboard
-  fs.writeFileSync(path.join(vaultDir, '_dashboard.md'), DASHBOARD_CONTENT, 'utf-8');
 
   // Initialize FTS index
   const index = new MycoIndex(path.join(vaultDir, 'index.db'));

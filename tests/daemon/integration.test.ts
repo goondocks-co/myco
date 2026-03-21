@@ -21,19 +21,19 @@ describe('Daemon Integration', () => {
     const batchManager = new BatchManager(() => {});
     const registry = new SessionRegistry({ gracePeriod: 60, onEmpty: () => {} });
 
-    server.registerRoute('POST', '/sessions/register', async (body: any) => {
-      registry.register(body.session_id); return { ok: true };
+    server.registerRoute('POST', '/sessions/register', async (req: any) => {
+      registry.register(req.body.session_id); return { body: { ok: true } };
     });
-    server.registerRoute('POST', '/sessions/unregister', async (body: any) => {
-      registry.unregister(body.session_id); return { ok: true };
+    server.registerRoute('POST', '/sessions/unregister', async (req: any) => {
+      registry.unregister(req.body.session_id); return { body: { ok: true } };
     });
-    server.registerRoute('POST', '/events', async (body: any) => {
-      batchManager.addEvent({ ...body, timestamp: new Date().toISOString() }); return { ok: true };
+    server.registerRoute('POST', '/events', async (req: any) => {
+      batchManager.addEvent({ ...req.body, timestamp: new Date().toISOString() }); return { body: { ok: true } };
     });
-    server.registerRoute('POST', '/events/stop', async (body: any) => {
-      batchManager.finalize(body.session_id); return { ok: true };
+    server.registerRoute('POST', '/events/stop', async (req: any) => {
+      batchManager.finalize(req.body.session_id); return { body: { ok: true } };
     });
-    server.registerRoute('POST', '/context', async () => ({ text: '' }));
+    server.registerRoute('POST', '/context', async () => ({ body: { text: '' } }));
 
     await server.start();
   });

@@ -4,7 +4,7 @@ import YAML from 'yaml';
 import { MycoConfigSchema, type MycoConfig } from './schema.js';
 import { runMigrations, CURRENT_MIGRATION_VERSION } from './migrations.js';
 
-const CONFIG_FILENAME = 'myco.yaml';
+export const CONFIG_FILENAME = 'myco.yaml';
 
 export function loadConfig(vaultDir: string): MycoConfig {
   const configPath = path.join(vaultDir, CONFIG_FILENAME);

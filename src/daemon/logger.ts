@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { LogRingBuffer } from './log-buffer.js';
 
 export interface LogEntry {
   timestamp: string;
@@ -29,6 +30,7 @@ export class DaemonLogger {
   private maxSize: number;
   private maxFiles: number;
   private logDir: string;
+  private ringBuffer: LogRingBuffer;
 
   constructor(logDir: string, options: LoggerOptions = {}) {
     this.logDir = logDir;
@@ -36,6 +38,7 @@ export class DaemonLogger {
     this.level = options.level ?? 'info';
     this.maxSize = options.maxSize ?? 5_242_880;
     this.maxFiles = options.maxFiles ?? 3;
+    this.ringBuffer = new LogRingBuffer();
 
     fs.mkdirSync(logDir, { recursive: true });
     this.fd = fs.openSync(this.logPath, 'a');
@@ -69,6 +72,10 @@ export class DaemonLogger {
     }
   }
 
+  getRingBuffer(): LogRingBuffer {
+    return this.ringBuffer;
+  }
+
   private write(level: LogLevel, component: string, message: string, data?: Record<string, unknown>): void {
     if (LEVEL_ORDER[level] < LEVEL_ORDER[this.level]) return;
 
@@ -79,6 +86,8 @@ export class DaemonLogger {
       message,
       ...data,
     };
+
+    this.ringBuffer.push(entry);
 
     const line = JSON.stringify(entry) + '\n';
     const bytes = Buffer.byteLength(line);

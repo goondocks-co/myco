@@ -1,0 +1,56 @@
+import type { MycoConfig } from '../../hooks/use-config';
+import { ConfigSection } from './ConfigSection';
+import { Input } from '../ui/input';
+import { Field, LOG_LEVELS, NativeSelect, numChange } from './config-helpers';
+
+interface DaemonSectionProps {
+  daemon: MycoConfig['daemon'];
+  isDirty: boolean;
+  updateDaemon: (key: string, value: unknown) => void;
+}
+
+export function DaemonSection({ daemon, isDirty, updateDaemon }: DaemonSectionProps) {
+  return (
+    <ConfigSection
+      title="Daemon"
+      description="Daemon process settings"
+      isDirty={isDirty}
+    >
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field
+          label="Port"
+          description="Auto-derived from vault path — the daemon binds to this port on startup"
+        >
+          <Input
+            type="number"
+            value={daemon.port ?? ''}
+            placeholder="Auto"
+            disabled
+            className="disabled:cursor-default disabled:opacity-70"
+          />
+        </Field>
+        <Field label="Log Level" description="Minimum severity level for daemon log output">
+          <NativeSelect
+            value={daemon.log_level}
+            onChange={(v) => updateDaemon('log_level', v)}
+            options={LOG_LEVELS}
+          />
+        </Field>
+        <Field label="Grace Period (sec)" description="Seconds to wait before shutting down when no sessions are active">
+          <Input
+            type="number"
+            value={daemon.grace_period}
+            onChange={numChange(updateDaemon as (k: string, v: number) => void, 'grace_period')}
+          />
+        </Field>
+        <Field label="Max Log Size (bytes)" description="Maximum daemon log file size in bytes before rotation">
+          <Input
+            type="number"
+            value={daemon.max_log_size}
+            onChange={numChange(updateDaemon as (k: string, v: number) => void, 'max_log_size')}
+          />
+        </Field>
+      </div>
+    </ConfigSection>
+  );
+}

@@ -139,6 +139,24 @@ export class MycoIndex {
     return rows.map((row) => ({ ...row, frontmatter: JSON.parse(row.frontmatter) }));
   }
 
+  /** Count notes by type using SQL aggregation (much faster than materializing all rows). */
+  countByType(): Record<string, number> {
+    const rows = this.db.prepare('SELECT type, COUNT(*) as count FROM notes GROUP BY type').all() as Array<{ type: string; count: number }>;
+    const result: Record<string, number> = {};
+    for (const row of rows) result[row.type] = row.count;
+    return result;
+  }
+
+  /** Count spores grouped by observation_type. */
+  sporeCountsByObservationType(): Record<string, number> {
+    const rows = this.db.prepare(
+      "SELECT json_extract(frontmatter, '$.observation_type') as obs_type, COUNT(*) as count FROM notes WHERE type = 'spore' GROUP BY obs_type"
+    ).all() as Array<{ obs_type: string | null; count: number }>;
+    const result: Record<string, number> = {};
+    for (const row of rows) result[row.obs_type ?? 'unknown'] = row.count;
+    return result;
+  }
+
   close(): void {
     this.db.close();
   }

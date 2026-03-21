@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 const LlmProviderSchema = z.object({
-  provider: z.enum(['ollama', 'lm-studio', 'anthropic']).default('ollama'),
+  provider: z.enum(['ollama', 'lm-studio', 'anthropic', 'openai-compatible']).default('ollama'),
   model: z.string().default('qwen3.5'),
   base_url: z.string().url().optional(),
   context_window: z.number().int().positive().default(8192),
@@ -9,7 +9,7 @@ const LlmProviderSchema = z.object({
 });
 
 const EmbeddingProviderSchema = z.object({
-  provider: z.enum(['ollama', 'lm-studio']).default('ollama'),
+  provider: z.enum(['ollama', 'lm-studio', 'openai-compatible']).default('ollama'),
   model: z.string().default('bge-m3'),
   base_url: z.string().url().optional(),
 });
@@ -20,6 +20,7 @@ const IntelligenceSchema = z.object({
 });
 
 const DaemonSchema = z.object({
+  port: z.number().int().min(1024).max(65535).nullable().default(null),
   log_level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   grace_period: z.number().int().positive().default(30),
   max_log_size: z.number().int().positive().default(5_242_880),
@@ -62,7 +63,7 @@ const TeamSchema = z.object({
 });
 
 const DigestIntelligenceSchema = z.object({
-  provider: z.enum(['ollama', 'lm-studio', 'anthropic']).nullable().default(null),
+  provider: z.enum(['ollama', 'lm-studio', 'anthropic', 'openai-compatible']).nullable().default(null),
   model: z.string().nullable().default(null),
   base_url: z.string().nullable().default(null),
   context_window: z.number().int().positive().default(32768),

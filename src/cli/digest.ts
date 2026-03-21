@@ -12,8 +12,7 @@
 import { loadConfig } from '../config/loader.js';
 import { MycoIndex } from '../index/sqlite.js';
 import { createLlmProvider } from '../intelligence/llm.js';
-import { DigestEngine } from '../daemon/digest.js';
-import type { DigestCycleOptions } from '../daemon/digest.js';
+import { runDigest } from '../services/vault-ops.js';
 import { parseIntFlag } from './shared.js';
 import path from 'node:path';
 
@@ -40,33 +39,6 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 
   const index = new MycoIndex(path.join(vaultDir, 'index.db'));
 
-  const engine = new DigestEngine({
-    vaultDir,
-    index,
-    llmProvider,
-    config,
-    log: (level, message, data) => {
-      const prefix = level === 'warn' ? '⚠' : level === 'info' ? '→' : '  ';
-      const suffix = data ? ` ${JSON.stringify(data)}` : '';
-      console.log(`${prefix} ${message}${suffix}`);
-    },
-  });
-
-  const opts: DigestCycleOptions = {};
-  if (isReprocess) {
-    opts.fullReprocess = true;
-    opts.cleanSlate = true;
-  }
-  if (tierArg !== undefined) {
-    const eligible = engine.getEligibleTiers();
-    if (!eligible.includes(tierArg)) {
-      console.error(`Tier ${tierArg} is not eligible. Eligible tiers: [${eligible.join(', ')}]`);
-      index.close();
-      process.exit(1);
-    }
-    opts.tiers = [tierArg];
-  }
-
   if (isReprocess) {
     const tierLabel = tierArg ? `tier ${tierArg}` : 'all tiers';
     console.log(`Full reprocess of ${tierLabel} — clean slate, all substrate`);
@@ -75,7 +47,20 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   }
 
   try {
-    const result = await engine.runCycle(opts);
+    const result = await runDigest(
+      {
+        vaultDir,
+        config,
+        index,
+        log: (level, message, data) => {
+          const prefix = level === 'warn' ? '!' : level === 'info' ? '>' : '  ';
+          const suffix = data ? ` ${JSON.stringify(data)}` : '';
+          console.log(`${prefix} ${message}${suffix}`);
+        },
+      },
+      llmProvider,
+      { tier: tierArg, full: isFull },
+    );
 
     if (!result) {
       console.log('No substrate found — nothing to digest.');

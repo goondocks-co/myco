@@ -3,43 +3,48 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { DaemonLogger } from './logger.js';
 import { getPluginVersion } from '../version.js';
+import { Router, type RouteHandler } from './router.js';
+import { resolveStaticFile } from './static.js';
+
+const DEFAULT_STATUS = 200;
 
 export interface DaemonServerConfig {
   vaultDir: string;
   logger: DaemonLogger;
+  uiDir?: string;
 }
-
-type RouteHandler = (body: unknown) => Promise<unknown>;
 
 export class DaemonServer {
   port = 0;
   readonly version: string;
+  uiDir: string | null;
   private server: http.Server | null = null;
   private vaultDir: string;
   private logger: DaemonLogger;
-  private routes: Map<string, { method: string; handler: RouteHandler }> = new Map();
+  private router = new Router();
 
   constructor(config: DaemonServerConfig) {
     this.vaultDir = config.vaultDir;
     this.logger = config.logger;
+    this.uiDir = config.uiDir ?? null;
     this.version = getPluginVersion();
     this.registerDefaultRoutes();
   }
 
   registerRoute(method: string, routePath: string, handler: RouteHandler): void {
-    this.routes.set(`${method} ${routePath}`, { method, handler });
+    this.router.add(method, routePath, handler);
   }
 
-  async start(): Promise<void> {
+  async start(port: number = 0): Promise<void> {
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => this.handleRequest(req, res));
       this.server.on('error', reject);
 
-      this.server.listen(0, '127.0.0.1', () => {
+      this.server.listen(port, '127.0.0.1', () => {
         const addr = this.server!.address() as { port: number };
         this.port = addr.port;
         this.writeDaemonJson();
-        this.logger.info('daemon', 'Server started', { port: this.port });
+        this.logger.info('daemon', 'Server started', { port: this.port, dashboard: `http://localhost:${this.port}/` });
         resolve();
       });
     });
@@ -61,36 +66,65 @@ export class DaemonServer {
 
   private registerDefaultRoutes(): void {
     this.registerRoute('GET', '/health', async () => ({
-      myco: true,
-      version: this.version,
-      pid: process.pid,
-      uptime: process.uptime(),
+      body: {
+        myco: true,
+        version: this.version,
+        pid: process.pid,
+        uptime: process.uptime(),
+      },
     }));
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const key = `${req.method} ${req.url}`;
-    const route = this.routes.get(key);
+    // API/daemon routes take priority over static files
+    const match = this.router.match(req.method!, req.url!);
 
-    if (!route) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'not found' }));
+    if (match) {
+      try {
+        const body = (req.method === 'POST' || req.method === 'PUT') ? await readBody(req) : undefined;
+        const result = await match.handler({
+          body,
+          query: match.query,
+          params: match.params,
+          pathname: match.pathname,
+        });
+        const status = result.status ?? DEFAULT_STATUS;
+        const headers = { 'Content-Type': 'application/json', ...result.headers };
+        res.writeHead(status, headers);
+        res.end(JSON.stringify(result.body));
+      } catch (error) {
+        this.logger.error('daemon', 'Request handler error', {
+          path: req.url,
+          error: (error as Error).message,
+        });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: (error as Error).message }));
+      }
       return;
     }
 
-    try {
-      const body = req.method === 'POST' ? await readBody(req) : undefined;
-      const result = await route.handler(body);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(result));
-    } catch (error) {
-      this.logger.error('daemon', 'Request handler error', {
-        path: req.url,
-        error: (error as Error).message,
-      });
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: (error as Error).message }));
+    // No API route matched — serve static files (dashboard SPA)
+    if (this.uiDir && req.method === 'GET') {
+      const pathname = new URL(req.url!, 'http://localhost').pathname;
+      const result = resolveStaticFile(this.uiDir, pathname);
+      if (result) {
+        try {
+          const content = await fs.promises.readFile(result.filePath);
+          res.writeHead(200, {
+            'Content-Type': result.contentType,
+            'Cache-Control': result.cacheControl,
+          });
+          res.end(content);
+        } catch {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'not found' }));
+        }
+        return;
+      }
     }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'not found' }));
   }
 
   updateDaemonJsonSessions(sessions: string[]): void {
