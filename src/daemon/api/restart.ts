@@ -10,7 +10,7 @@ const RestartBodySchema = z.object({
 /** Delay before initiating shutdown — allows the HTTP response to flush. */
 const RESTART_RESPONSE_FLUSH_MS = 500;
 /** Delay before the child process starts — allows the parent to fully release the port. */
-const RESTART_CHILD_DELAY_SECONDS = 2;
+const RESTART_CHILD_DELAY_SECONDS = 3;
 
 export interface RestartHandlerDeps {
   vaultDir: string;
