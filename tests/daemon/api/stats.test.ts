@@ -30,10 +30,10 @@ function makeConfig() {
     team: { enabled: false, user: '', sync: 'git' as const },
     digest: {
       enabled: true,
-      tiers: [1500, 3000, 5000, 10000],
+      tiers: [1500, 3000, 5000, 7500, 10000],
       inject_tier: 3000,
       intelligence: { provider: null, model: null, base_url: null, context_window: 32768, keep_alive: '30m', gpu_kv_cache: false },
-      metabolism: { active_interval: 300, cooldown_intervals: [900, 1800, 3600], dormancy_threshold: 7200 },
+      metabolism: { active_interval: 900, cooldown_intervals: [1800, 3600, 7200], dormancy_threshold: 14400 },
       substrate: { max_notes_per_cycle: 50 },
     },
   };

@@ -176,7 +176,7 @@ export const TOOL_DEFINITIONS = [
       properties: {
         tier: {
           type: 'number',
-          enum: [1500, 3000, 5000, 10000],
+          enum: [1500, 3000, 5000, 7500, 10000],
           description: 'Token budget tier. Larger tiers include more detail. Default: 3000.',
         },
       },

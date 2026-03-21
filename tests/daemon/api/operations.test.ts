@@ -23,7 +23,7 @@ function makeConfig(overrides?: { digestEnabled?: boolean }): MycoConfig {
     team: { enabled: false, user: '', sync: 'git' },
     digest: {
       enabled: overrides?.digestEnabled ?? true,
-      tiers: [1500, 3000, 5000, 10000],
+      tiers: [1500, 3000, 5000, 7500, 10000],
       inject_tier: 3000,
       intelligence: {
         provider: null,
@@ -32,9 +32,9 @@ function makeConfig(overrides?: { digestEnabled?: boolean }): MycoConfig {
         context_window: 32768,
       },
       metabolism: {
-        active_interval: 300,
-        cooldown_intervals: [900, 1800, 3600],
-        dormancy_threshold: 7200,
+        active_interval: 900,
+        cooldown_intervals: [1800, 3600, 7200],
+        dormancy_threshold: 14400,
       },
       substrate: {
         max_notes_per_cycle: 50,

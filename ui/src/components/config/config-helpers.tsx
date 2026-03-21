@@ -26,7 +26,7 @@ export const CONTEXT_WINDOW_OPTIONS = [
 ] as const;
 
 /** Mirrors DIGEST_TIERS in src/constants.ts — keep in sync if tiers change. */
-export const DEFAULT_TIERS = [1500, 3000, 5000, 10000] as const;
+export const DEFAULT_TIERS = [1500, 3000, 5000, 7500, 10000] as const;
 
 /** Pre-mapped select options for context window dropdowns — avoids duplicate inline mapping. */
 export const CONTEXT_WINDOW_SELECT_OPTIONS = CONTEXT_WINDOW_OPTIONS.map((opt) => ({
@@ -45,6 +45,19 @@ export const COOLDOWN_STAGE_DESCRIPTIONS = [
   'Seconds between cycles as activity continues to drop',
   'Seconds between cycles just before dormancy',
 ] as const;
+
+/** Recommended defaults for digest settings — excludes model/provider choices. */
+export const RECOMMENDED_DIGEST = {
+  tiers: [1500, 3000, 5000, 7500],
+  inject_tier: 7500,
+  metabolism: {
+    active_interval: 900,
+    cooldown_intervals: [1800, 3600, 7200],
+    dormancy_threshold: 14400,
+  },
+  substrate: { max_notes_per_cycle: 50 },
+  intelligence: { context_window: 32768 },
+} as const;
 
 /* ---------- Field ---------- */
 

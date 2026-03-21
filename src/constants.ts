@@ -125,7 +125,7 @@ export const MCP_LOGS_DEFAULT_LIMIT = 50;
 
 // --- Digest — Tiers ---
 /** Available token-budget tiers for digest synthesis. */
-export const DIGEST_TIERS = [1500, 3000, 5000, 10000] as const;
+export const DIGEST_TIERS = [1500, 3000, 5000, 7500, 10000] as const;
 export type DigestTier = (typeof DIGEST_TIERS)[number];
 
 // --- Digest — Context window minimums per tier ---
@@ -134,6 +134,7 @@ export const DIGEST_TIER_MIN_CONTEXT: Record<number, number> = {
   1500: 6500,
   3000: 11500,
   5000: 18500,
+  7500: 24500,
   10000: 30500,
 };
 

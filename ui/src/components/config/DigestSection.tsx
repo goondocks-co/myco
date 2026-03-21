@@ -9,6 +9,7 @@ import {
   DEFAULT_TIERS,
   COOLDOWN_STAGE_LABELS,
   COOLDOWN_STAGE_DESCRIPTIONS,
+  RECOMMENDED_DIGEST,
   NativeSelect,
   ToggleSwitch,
 } from './config-helpers';
@@ -139,7 +140,21 @@ export function DigestSection({
         </div>
 
         <div>
-          <h4 className="mb-3 text-sm font-medium text-muted-foreground">Metabolism</h4>
+          <div className="mb-3 flex items-center justify-between">
+            <h4 className="text-sm font-medium text-muted-foreground">Metabolism</h4>
+            <button
+              type="button"
+              onClick={() => {
+                const r = RECOMMENDED_DIGEST.metabolism;
+                updateDigestMetabolism('active_interval', r.active_interval);
+                updateDigestMetabolism('dormancy_threshold', r.dormancy_threshold);
+                updateDigestMetabolism('cooldown_intervals', [...r.cooldown_intervals]);
+              }}
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Reset to recommended
+            </button>
+          </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Active Interval (sec)" description="Seconds between digest cycles when new content is arriving">
               <Input
