@@ -4,6 +4,10 @@ export default {
   content: ['./src/**/*.{ts,tsx}'],
   darkMode: 'class',
   theme: {
+    fontFamily: {
+      mono: 'var(--font-ui, ui-monospace, monospace)',
+      sans: 'var(--font-ui, ui-monospace, monospace)',
+    },
     extend: {
       colors: {
         background: 'hsl(var(--background))',
