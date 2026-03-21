@@ -176,6 +176,8 @@ export const PIPELINE_TICK_INTERVAL_MS = 30_000;
 export const PIPELINE_BATCH_SIZE = 5;
 /** Max days to retain completed/failed pipeline work items before pruning. */
 export const PIPELINE_RETENTION_DAYS = 30;
+/** Default page size for pipeline items API listing. */
+export const PIPELINE_ITEMS_DEFAULT_LIMIT = 50;
 
 // --- Pipeline retry ---
 /** Max retries for transient (recoverable) pipeline failures. */

@@ -19,6 +19,7 @@ import {
   PIPELINE_CIRCUIT_FAILURE_THRESHOLD,
   PIPELINE_CIRCUIT_COOLDOWN_MS,
   PIPELINE_RETENTION_DAYS,
+  PIPELINE_ITEMS_DEFAULT_LIMIT,
   STAGE_PROVIDER_MAP,
 } from '@myco/constants';
 
@@ -76,6 +77,33 @@ export interface BatchItem {
   id: string;
   item_type: string;
   source_path: string | null;
+  created_at: string;
+}
+
+export interface PipelineItem {
+  id: string;
+  item_type: string;
+  source_path: string | null;
+  stage: string;
+  status: string;
+  attempt: number;
+  error_type: string | null;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface TransitionRecord {
+  id: number;
+  work_item_id: string;
+  item_type: string;
+  stage: string;
+  status: string;
+  attempt: number;
+  error_type: string | null;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
   created_at: string;
 }
 
@@ -918,6 +946,149 @@ export class PipelineManager {
 
     doRecover();
     return stuckItems.length;
+  }
+
+  // -------------------------------------------------------------------------
+  // API query helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * List work items from the pipeline_status view with optional filters and pagination.
+   *
+   * Filters: stage, status, item_type. All optional.
+   * Returns rows ordered by work_items.created_at DESC (newest first).
+   */
+  listItems(filters: {
+    stage?: string;
+    status?: string;
+    type?: string;
+    limit?: number;
+    offset?: number;
+  }): { items: PipelineItem[]; total: number } {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    if (filters.stage) {
+      conditions.push('ps.stage = ?');
+      params.push(filters.stage);
+    }
+    if (filters.status) {
+      conditions.push('ps.status = ?');
+      params.push(filters.status);
+    }
+    if (filters.type) {
+      conditions.push('ps.item_type = ?');
+      params.push(filters.type);
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const countSql = `SELECT COUNT(*) as total FROM pipeline_status ps ${where}`;
+    const countRow = this.db.prepare(countSql).get(...params) as { total: number };
+
+    const limit = filters.limit ?? PIPELINE_ITEMS_DEFAULT_LIMIT;
+    const offset = filters.offset ?? 0;
+
+    const querySql = `
+      SELECT ps.id, ps.item_type, ps.source_path, ps.stage, ps.status,
+             ps.attempt, ps.error_type, ps.error_message, ps.started_at, ps.completed_at
+      FROM pipeline_status ps
+      JOIN work_items wi ON wi.id = ps.id AND wi.item_type = ps.item_type
+      ${where}
+      ORDER BY wi.created_at DESC
+      LIMIT ? OFFSET ?
+    `;
+
+    const items = this.db.prepare(querySql).all(...params, limit, offset) as PipelineItem[];
+
+    return { items, total: countRow.total };
+  }
+
+  /**
+   * Get the full transition history for a single work item.
+   * Returns all stage_transitions rows ordered by id ASC (oldest first).
+   */
+  getTransitionHistory(itemId: string, itemType: string): TransitionRecord[] {
+    return this.db
+      .prepare(
+        `SELECT id, work_item_id, item_type, stage, status, attempt,
+                error_type, error_message, started_at, completed_at, created_at
+         FROM stage_transitions
+         WHERE work_item_id = ? AND item_type = ?
+         ORDER BY id ASC`,
+      )
+      .all(itemId, itemType) as TransitionRecord[];
+  }
+
+  /**
+   * Retry a single poisoned work item by inserting a new 'pending' transition
+   * at the specified stage. Returns true if the item was poisoned and retried,
+   * false if the item was not found or not poisoned at that stage.
+   */
+  retryItem(itemId: string, itemType: string, stage: string): boolean {
+    // Verify the item is actually poisoned at this stage
+    const current = this.db
+      .prepare(
+        `SELECT status FROM pipeline_status
+         WHERE id = ? AND item_type = ? AND stage = ?`,
+      )
+      .get(itemId, itemType, stage) as { status: string } | undefined;
+
+    if (!current || current.status !== 'poisoned') {
+      return false;
+    }
+
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO stage_transitions
+           (work_item_id, item_type, stage, status, attempt, error_type, error_message, started_at, completed_at, created_at)
+         VALUES (?, ?, ?, 'pending', 1, NULL, NULL, NULL, NULL, ?)`,
+      )
+      .run(itemId, itemType, stage, now);
+
+    return true;
+  }
+
+  /**
+   * Retry all poisoned items by inserting new 'pending' transitions.
+   * Returns the count of items retried.
+   */
+  retryAllPoisoned(): number {
+    const poisonedItems = this.db
+      .prepare(
+        `SELECT id, item_type, stage FROM pipeline_status WHERE status = 'poisoned'`,
+      )
+      .all() as Array<{ id: string; item_type: string; stage: string }>;
+
+    if (poisonedItems.length === 0) {
+      return 0;
+    }
+
+    const now = new Date().toISOString();
+    const insertPending = this.db.prepare(
+      `INSERT INTO stage_transitions
+         (work_item_id, item_type, stage, status, attempt, error_type, error_message, started_at, completed_at, created_at)
+       VALUES (?, ?, ?, 'pending', 1, NULL, NULL, NULL, NULL, ?)`,
+    );
+
+    const doRetry = this.db.transaction(() => {
+      for (const item of poisonedItems) {
+        insertPending.run(item.id, item.item_type, item.stage, now);
+      }
+    });
+
+    doRetry();
+    return poisonedItems.length;
+  }
+
+  /**
+   * List all circuit breaker rows from the database.
+   */
+  listCircuits(): CircuitState[] {
+    return this.db
+      .prepare('SELECT * FROM circuit_breakers ORDER BY provider_role ASC')
+      .all() as CircuitState[];
   }
 
   /** Close the database connection. */

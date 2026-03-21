@@ -40,6 +40,16 @@ import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleRebuild, handleDigest, handleCurate, handleReprocess } from './api/operations.js';
 import { handleGetModels } from './api/models.js';
 import { handleGetSessions } from './api/sessions.js';
+import {
+  handlePipelineHealth,
+  handlePipelineItems,
+  handlePipelineItemDetail,
+  handlePipelineCircuits,
+  handlePipelineRetry,
+  handlePipelineRetryAll,
+  handlePipelineCircuitReset,
+} from './api/pipeline.js';
+import { PipelineManager } from './pipeline.js';
 import type { OperationHandlerDeps } from './api/operations.js';
 import { runCuration } from '../services/vault-ops.js';
 import { z } from 'zod';
@@ -243,6 +253,7 @@ export async function main(): Promise<void> {
   const vault = new VaultWriter(vaultDir);
   const index = new MycoIndex(path.join(vaultDir, 'index.db'));
   const lineageGraph = new LineageGraph(vaultDir);
+  const pipeline = new PipelineManager(vaultDir);
   const transcriptMiner = new TranscriptMiner({
     additionalAdapters: config.capture.transcript_paths.map((p) =>
       createPerProjectAdapter(p, claudeCodeAdapter.parseTurns),
@@ -1056,6 +1067,15 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/reprocess', async (req) => handleReprocess(operationDeps, req.body));
 
   server.registerRoute('GET', '/api/sessions', async () => handleGetSessions(index));
+
+  // Pipeline API
+  server.registerRoute('GET', '/api/pipeline/health', handlePipelineHealth(pipeline));
+  server.registerRoute('GET', '/api/pipeline/items', handlePipelineItems(pipeline));
+  server.registerRoute('GET', '/api/pipeline/items/:id', handlePipelineItemDetail(pipeline));
+  server.registerRoute('GET', '/api/pipeline/circuits', handlePipelineCircuits(pipeline));
+  server.registerRoute('POST', '/api/pipeline/retry/:id', handlePipelineRetry(pipeline));
+  server.registerRoute('POST', '/api/pipeline/retry-all', handlePipelineRetryAll(pipeline));
+  server.registerRoute('POST', '/api/pipeline/circuit/:provider/reset', handlePipelineCircuitReset(pipeline));
 
   await server.evictExistingDaemon();
   const resolvedPort = await resolvePort(config.daemon.port, vaultDir);
