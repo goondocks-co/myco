@@ -1,0 +1,21 @@
+{
+  "description": "3 decisions about different components — same type but unrelated topics",
+  "observation_type": "decision",
+  "candidates": [
+    {
+      "id": "decision-fixture-001",
+      "content": "Chose Ollama over LM Studio for the digest provider because Ollama manages concurrency natively via keep_alive."
+    },
+    {
+      "id": "decision-fixture-002",
+      "content": "Adopted React + Tailwind for the dashboard UI because the team has prior experience with this stack from the OAK project."
+    },
+    {
+      "id": "decision-fixture-003",
+      "content": "Switched from implicit retry to explicit fail-fast for the unknown tool because 90% of failures are permanent state errors."
+    }
+  ],
+  "expected": {
+    "consolidate": false
+  }
+}

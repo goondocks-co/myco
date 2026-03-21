@@ -1,0 +1,22 @@
+{
+  "description": "3 gotchas about SQLite WAL mode — should consolidate into one wisdom note",
+  "observation_type": "gotcha",
+  "candidates": [
+    {
+      "id": "gotcha-fixture-001",
+      "content": "SQLite WAL mode requires shared memory access — fails on network-mounted filesystems (NFS, SMB). The -shm file must be on a local disk."
+    },
+    {
+      "id": "gotcha-fixture-002",
+      "content": "SQLite in WAL mode allows only a single writer at a time. Concurrent writes queue behind a lock, leading to SQLITE_BUSY if the timeout is too short."
+    },
+    {
+      "id": "gotcha-fixture-003",
+      "content": "SQLite WAL checkpoint can block readers if the WAL file grows too large. Set PRAGMA wal_autocheckpoint to prevent unbounded growth."
+    }
+  ],
+  "expected": {
+    "consolidate": true,
+    "expected_source_ids": ["gotcha-fixture-001", "gotcha-fixture-002", "gotcha-fixture-003"]
+  }
+}

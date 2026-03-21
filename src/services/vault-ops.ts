@@ -16,7 +16,7 @@ import {
   LLM_REASONING_MODE,
 } from '../constants.js';
 import { stripReasoningTokens } from '../intelligence/response.js';
-import { loadPrompt } from '../prompts/index.js';
+import { loadPrompt, formatNoteForPrompt, formatNotesForPrompt } from '../prompts/index.js';
 import { supersedeSpore, supersededIdsSchema, isActiveSpore } from '../vault/curation.js';
 
 export interface OperationContext {
@@ -304,10 +304,8 @@ export async function runCuration(
       const candidates = sorted.slice(0, sorted.length - 1);
 
       // Build supersession prompt
-      const newSporeText = `[${newest.id}] ${newest.title}\n${newest.content}`;
-      const candidatesText = candidates
-        .map((c) => `[${c.id}] ${c.title}\n${c.content}`)
-        .join('\n\n');
+      const newSporeText = formatNoteForPrompt(newest);
+      const candidatesText = formatNotesForPrompt(candidates);
 
       const prompt = template
         .replace('{{new_spore}}', newSporeText)

@@ -138,13 +138,7 @@ export function createMycoServer(config: ServerConfig): MycoServer {
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_CONSOLIDATE: {
-        const result = await handleMycoConsolidate(config.vaultDir, idx, input as any);
-        embedNote(result.wisdom_id, String(input.consolidated_content), { type: 'spore', observation_type: String(input.observation_type ?? ''), importance: 'high' });
-        if (config.vectorIndex && Array.isArray(input.source_spore_ids)) {
-          for (const id of input.source_spore_ids as string[]) {
-            config.vectorIndex.delete(id);
-          }
-        }
+        const result = await handleMycoConsolidate(config.vaultDir, idx, input as any, config.vectorIndex ?? null, config.embeddingProvider ?? null);
         logActivity(TOOL_CONSOLIDATE, { wisdom_id: result.wisdom_id, sources: input.source_spore_ids, archived: result.sources_archived });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }

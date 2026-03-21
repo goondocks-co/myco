@@ -14,6 +14,7 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import { loadPrompt } from '@myco/prompts/index.js';
 import { stripReasoningTokens } from '@myco/intelligence/response.js';
 import { stripFrontmatter } from '@myco/vault/frontmatter.js';
+import { readLastTimestamp, appendTraceRecord } from './trace.js';
 import {
   estimateTokens,
   CHARS_PER_TOKEN,
@@ -85,12 +86,28 @@ export class DigestEngine {
   private lastCycleTimestampCache: string | null | undefined = undefined;
   private cycleInProgress = false;
 
+  /** Hooks that run before each digest cycle (e.g., consolidation). */
+  private prePassHooks: Array<{ name: string; fn: () => Promise<void> }> = [];
+
+  /** Hooks that run after each successful digest cycle. */
+  private postPassHooks: Array<{ name: string; fn: (result: DigestCycleResult) => Promise<void> }> = [];
+
   constructor(engineConfig: DigestEngineConfig) {
     this.vaultDir = engineConfig.vaultDir;
     this.index = engineConfig.index;
     this.llm = engineConfig.llmProvider;
     this.config = engineConfig.config;
     this.log = engineConfig.log ?? (() => {});
+  }
+
+  /** Register a hook that runs before each digest cycle. Best-effort — errors are logged, not thrown. */
+  registerPrePass(name: string, fn: () => Promise<void>): void {
+    this.prePassHooks.push({ name, fn });
+  }
+
+  /** Register a hook that runs after each successful digest cycle. Best-effort — errors are logged, not thrown. */
+  registerPostPass(name: string, fn: (result: DigestCycleResult) => Promise<void>): void {
+    this.postPassHooks.push({ name, fn });
   }
 
   /**
@@ -212,10 +229,8 @@ export class DigestEngine {
    * Append a digest cycle result as a JSON line to trace.jsonl.
    */
   appendTrace(record: DigestCycleResult): void {
-    const digestDir = path.join(this.vaultDir, 'digest');
-    fs.mkdirSync(digestDir, { recursive: true });
-    const tracePath = path.join(digestDir, 'trace.jsonl');
-    fs.appendFileSync(tracePath, JSON.stringify(record) + '\n', 'utf-8');
+    const tracePath = path.join(this.vaultDir, 'digest', 'trace.jsonl');
+    appendTraceRecord(tracePath, record as unknown as Record<string, unknown>);
     this.lastCycleTimestampCache = record.timestamp;
   }
 
@@ -227,29 +242,8 @@ export class DigestEngine {
     if (this.lastCycleTimestampCache !== undefined) return this.lastCycleTimestampCache;
 
     const tracePath = path.join(this.vaultDir, 'digest', 'trace.jsonl');
-    let content: string;
-    try {
-      content = fs.readFileSync(tracePath, 'utf-8').trim();
-    } catch {
-      this.lastCycleTimestampCache = null;
-      return null;
-    }
-
-    if (!content) {
-      this.lastCycleTimestampCache = null;
-      return null;
-    }
-
-    const lines = content.split('\n');
-    const lastLine = lines[lines.length - 1];
-    try {
-      const record = JSON.parse(lastLine) as DigestCycleResult;
-      this.lastCycleTimestampCache = record.timestamp;
-      return record.timestamp;
-    } catch {
-      this.lastCycleTimestampCache = null;
-      return null;
-    }
+    this.lastCycleTimestampCache = readLastTimestamp(tracePath);
+    return this.lastCycleTimestampCache;
   }
 
   /**
@@ -264,6 +258,15 @@ export class DigestEngine {
     this.cycleInProgress = true;
 
     try {
+      // Run pre-pass hooks (e.g., consolidation) before discovering substrate
+      for (const hook of this.prePassHooks) {
+        try {
+          await hook.fn();
+        } catch (err) {
+          this.log('warn', `Pre-pass hook "${hook.name}" failed`, { error: (err as Error).message });
+        }
+      }
+
       return await this.runCycleInternal(opts);
     } finally {
       this.cycleInProgress = false;
@@ -409,6 +412,16 @@ export class DigestEngine {
     };
 
     this.appendTrace(result);
+
+    // Run post-pass hooks after successful digest
+    for (const hook of this.postPassHooks) {
+      try {
+        await hook.fn(result);
+      } catch (err) {
+        this.log('warn', `Post-pass hook "${hook.name}" failed`, { error: (err as Error).message });
+      }
+    }
+
     return result;
   }
 }

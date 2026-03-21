@@ -16,6 +16,7 @@ import { LineageGraph, LINEAGE_SIMILARITY_THRESHOLD, LINEAGE_SIMILARITY_HIGH_CON
 import type { RegisteredSession } from './lifecycle.js';
 import { PlanWatcher } from './watcher.js';
 import { DigestEngine, Metabolism } from './digest.js';
+import { ConsolidationEngine } from './consolidation.js';
 import { resolvePort } from './port.js';
 import { handleMycoContext } from '../mcp/tools/context.js';
 import { buildSimilarityPrompt } from '../prompts/index.js';
@@ -356,6 +357,26 @@ export async function main(): Promise<void> {
       config,
       log: (level, message, data) => logger[level]('digest', message, data),
     });
+
+    if (config.digest.consolidation) {
+      const consolidationEngine = new ConsolidationEngine({
+        vaultDir,
+        index,
+        vectorIndex,
+        embeddingProvider,
+        llmProvider: digestLlm,
+        log: (level, message, data) => logger[level]('consolidation', message, data),
+      });
+
+      digestEngine.registerPrePass('consolidation', async () => {
+        const result = await consolidationEngine.runPass();
+        if (result && result.consolidated > 0) {
+          logger.info('consolidation', `Consolidation pass: ${result.consolidated} wisdom notes, ${result.sporesSuperseded} spores superseded`);
+        }
+      });
+
+      logger.info('consolidation', 'Auto-consolidation enabled as digest pre-pass');
+    }
 
     metabolism = new Metabolism(config.digest.metabolism);
 

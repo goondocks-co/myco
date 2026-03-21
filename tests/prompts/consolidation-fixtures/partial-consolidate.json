@@ -1,0 +1,31 @@
+{
+  "description": "5 trade-offs — 3 about CI/CD (should consolidate), 2 about unrelated topics",
+  "observation_type": "trade_off",
+  "candidates": [
+    {
+      "id": "trade_off-fixture-001",
+      "content": "Caching CI dependencies speeds builds but may serve stale packages. Mitigated by cache key including lockfile hash."
+    },
+    {
+      "id": "trade_off-fixture-002",
+      "content": "Multiple focused commits vs single large commit — granularity vs overhead. Chose focused commits for easier bisection."
+    },
+    {
+      "id": "trade_off-fixture-003",
+      "content": "Pinned CI action versions for reproducibility at the cost of maintenance overhead for updates."
+    },
+    {
+      "id": "trade_off-fixture-004",
+      "content": "Docker images increase build time but provide consistent environments across CI and local dev."
+    },
+    {
+      "id": "trade_off-fixture-005",
+      "content": "Reliability of local auth vs API key convenience — chose local auth for security despite added complexity."
+    }
+  ],
+  "expected": {
+    "consolidate": true,
+    "expected_source_ids_subset": ["trade_off-fixture-001", "trade_off-fixture-002", "trade_off-fixture-003"],
+    "expected_excluded": ["trade_off-fixture-005"]
+  }
+}
