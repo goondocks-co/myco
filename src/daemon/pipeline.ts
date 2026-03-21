@@ -20,6 +20,7 @@ import {
   PIPELINE_BACKOFF_MULTIPLIER,
   PIPELINE_CIRCUIT_FAILURE_THRESHOLD,
   PIPELINE_CIRCUIT_COOLDOWN_MS,
+  PIPELINE_CIRCUIT_MAX_COOLDOWN_MS,
   PIPELINE_RETENTION_DAYS,
   PIPELINE_ITEMS_DEFAULT_LIMIT,
   STAGE_PROVIDER_MAP,
@@ -654,6 +655,53 @@ export class PipelineManager {
   }
 
   /**
+   * Re-open a circuit after a failed half-open probe with doubled cooldown.
+   *
+   * When a half-open probe fails, the circuit should re-open with a cooldown
+   * of `previousCooldown * 2`, capped at PIPELINE_CIRCUIT_MAX_COOLDOWN_MS.
+   * This implements exponential backoff for repeated probe failures.
+   */
+  reopenCircuit(providerRole: string, errorMessage: string): void {
+    const now = new Date().toISOString();
+    const current = this.circuitState(providerRole);
+
+    // Calculate doubled cooldown from the previous opens_at window.
+    // If we can determine the previous cooldown from the stored opens_at and last_failure,
+    // double it. Otherwise fall back to the default cooldown.
+    let previousCooldown = PIPELINE_CIRCUIT_COOLDOWN_MS;
+    if (current.last_failure && current.opens_at) {
+      const lastFailureMs = new Date(current.last_failure).getTime();
+      const opensAtMs = new Date(current.opens_at).getTime();
+      const storedCooldown = opensAtMs - lastFailureMs;
+      if (storedCooldown > 0) {
+        previousCooldown = storedCooldown;
+      }
+    }
+
+    const doubledCooldown = Math.min(
+      previousCooldown * 2,
+      PIPELINE_CIRCUIT_MAX_COOLDOWN_MS,
+    );
+
+    const opensAt = new Date(Date.now() + doubledCooldown).toISOString();
+
+    this.db
+      .prepare(
+        `INSERT INTO circuit_breakers
+           (provider_role, state, failure_count, last_failure, last_error, opens_at, updated_at)
+         VALUES (?, 'open', ?, ?, ?, ?, ?)
+         ON CONFLICT(provider_role) DO UPDATE SET
+           state         = 'open',
+           failure_count = excluded.failure_count,
+           last_failure  = excluded.last_failure,
+           last_error    = excluded.last_error,
+           opens_at      = excluded.opens_at,
+           updated_at    = excluded.updated_at`,
+      )
+      .run(providerRole, current.failure_count + 1, now, errorMessage, opensAt, now);
+  }
+
+  /**
    * Manually reset a circuit breaker to closed state.
    * Sets state='closed', failure_count=0, clears opens_at.
    */
@@ -1230,11 +1278,20 @@ export class PipelineManager {
 
               // Trip circuit breaker on config errors
               if (classified.type === 'config' && providerRole) {
-                this.tripCircuit(providerRole, error.message);
-                const circuit = this.circuitState(providerRole);
-                if (circuit.state === 'open') {
+                const circuitBefore = this.circuitState(providerRole);
+
+                if (circuitBefore.state === 'half-open') {
+                  // Half-open probe failed — re-open with doubled cooldown
+                  this.reopenCircuit(providerRole, error.message);
                   const blocked = this.blockItemsForCircuit(providerRole);
-                  this.tickLogger?.('warn', 'pipeline', `Circuit opened for ${providerRole}, blocked ${blocked} items`, { stage, providerRole });
+                  this.tickLogger?.('warn', 'pipeline', `Half-open probe failed for ${providerRole}, re-opened with doubled cooldown, blocked ${blocked} items`, { stage, providerRole });
+                } else {
+                  this.tripCircuit(providerRole, error.message);
+                  const circuitAfter = this.circuitState(providerRole);
+                  if (circuitAfter.state === 'open') {
+                    const blocked = this.blockItemsForCircuit(providerRole);
+                    this.tickLogger?.('warn', 'pipeline', `Circuit opened for ${providerRole}, blocked ${blocked} items`, { stage, providerRole });
+                  }
                 }
               }
             }

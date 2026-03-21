@@ -13,7 +13,14 @@ import { MycoConfigSchema } from '@myco/config/schema';
 import { SUMMARIZATION_FAILED_MARKER } from '@myco/daemon/processor';
 import { generateEmbedding } from '@myco/intelligence/embeddings';
 import { EventBuffer } from '@myco/capture/buffer';
-import { ITEM_STAGE_MAP, EMBEDDING_INPUT_LIMIT } from '@myco/constants';
+import {
+  ITEM_STAGE_MAP,
+  EMBEDDING_INPUT_LIMIT,
+  PIPELINE_CIRCUIT_FAILURE_THRESHOLD,
+  PIPELINE_CIRCUIT_COOLDOWN_MS,
+  PIPELINE_CIRCUIT_MAX_COOLDOWN_MS,
+  STAGE_PROVIDER_MAP,
+} from '@myco/constants';
 import type { EmbeddingProvider, EmbeddingResponse, LlmProvider } from '@myco/intelligence/llm';
 import type { VectorIndex } from '@myco/index/vectors';
 import YAML from 'yaml';
@@ -1919,5 +1926,413 @@ describe('Pipeline Integration: CLI Operations Enqueue via Pipeline', () => {
     // The superseded spore should NOT be in the pipeline
     const supersededStatuses = pipeline.getItemStatus('cli-curate-superseded-spore', 'spore');
     expect(supersededStatuses).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Circuit Breaker End-to-End Tests
+// ---------------------------------------------------------------------------
+
+/**
+ * Pipeline Integration: Circuit Breaker End-to-End
+ *
+ * Verifies the full circuit breaker lifecycle within the pipeline tick:
+ * - Config errors trip the circuit and block downstream items
+ * - Circuit reset unblocks items and resumes processing
+ * - Half-open probe success closes the circuit
+ * - Half-open probe failure re-opens with doubled cooldown
+ * - Provider isolation (llm circuit does not affect embedding)
+ * - Transient errors do NOT trip the circuit
+ */
+describe('Pipeline Integration: Circuit Breaker End-to-End', () => {
+  let tmpDir: string;
+  let pipeline: PipelineManager;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-circuit-integ-'));
+    pipeline = new PipelineManager(tmpDir);
+  });
+
+  afterEach(() => {
+    pipeline.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** Register a session work item and advance capture to succeeded. */
+  function registerSession(id: string): void {
+    pipeline.register(id, 'session', `sessions/2026-03-21/session-${id}.md`);
+    pipeline.advance(id, 'session', 'capture', 'succeeded');
+  }
+
+  /** Register a spore work item and advance capture to succeeded. */
+  function registerSpore(id: string): void {
+    pipeline.register(id, 'spore', `spores/discovery/${id}.md`);
+    pipeline.advance(id, 'spore', 'capture', 'succeeded');
+  }
+
+  /** Create an ECONNREFUSED error (classified as config). */
+  function makeConnRefusedError(): Error {
+    const err = new Error('connect ECONNREFUSED 127.0.0.1:1234');
+    (err as NodeJS.ErrnoException).code = 'ECONNREFUSED';
+    return err;
+  }
+
+  it('config error trips circuit and blocks extraction items', async () => {
+    // Register enough sessions so each config failure increments the circuit counter.
+    // Each unique item contributes one trip when it fails.
+    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+      registerSession(`circuit-trip-${i}`);
+    }
+
+    const connRefusedError = makeConnRefusedError();
+
+    const handlers: StageHandlers = {
+      extraction: async () => { throw connRefusedError; },
+      embedding: async () => {},
+      consolidation: async () => {},
+    };
+    pipeline.setHandlers(handlers);
+
+    // First tick: all items fail, circuit opens
+    await pipeline.tick(PIPELINE_CIRCUIT_FAILURE_THRESHOLD);
+
+    // Circuit should be open for llm provider
+    const circuit = pipeline.circuitState('llm');
+    expect(circuit.state).toBe('open');
+    expect(circuit.failure_count).toBeGreaterThanOrEqual(PIPELINE_CIRCUIT_FAILURE_THRESHOLD);
+
+    // Register a NEW session after the circuit has opened
+    registerSession('circuit-blocked-extra');
+
+    // Second tick: circuit is open, new item should be blocked
+    await pipeline.tick(10);
+
+    const extraStatuses = pipeline.getItemStatus('circuit-blocked-extra', 'session');
+    const extractionStatus = extraStatuses.find((s) => s.stage === 'extraction');
+    expect(extractionStatus?.status).toBe('blocked');
+  });
+
+  it('circuit reset unblocks items and processing resumes', async () => {
+    // Trip the circuit
+    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+      registerSession(`circuit-reset-${i}`);
+    }
+
+    const connRefusedError = makeConnRefusedError();
+    let failExtraction = true;
+
+    const extractionCalls: string[] = [];
+    const handlers: StageHandlers = {
+      extraction: async (itemId) => {
+        if (failExtraction) throw connRefusedError;
+        extractionCalls.push(itemId);
+      },
+      embedding: async () => {},
+      consolidation: async () => {},
+    };
+    pipeline.setHandlers(handlers);
+
+    // First tick: trip the circuit
+    await pipeline.tick(PIPELINE_CIRCUIT_FAILURE_THRESHOLD);
+    expect(pipeline.circuitState('llm').state).toBe('open');
+
+    // Register a new session while circuit is open
+    registerSession('circuit-reset-new');
+
+    // Tick while circuit is open — the new item should be blocked
+    await pipeline.tick(10);
+    const beforeReset = pipeline.getItemStatus('circuit-reset-new', 'session');
+    const beforeExtraction = beforeReset.find((s) => s.stage === 'extraction');
+    expect(beforeExtraction?.status).toBe('blocked');
+
+    // Reset the circuit (simulating manual reset or provider recovery)
+    pipeline.resetCircuit('llm');
+    pipeline.unblockItemsForCircuit('llm');
+    expect(pipeline.circuitState('llm').state).toBe('closed');
+
+    // Provider is back — stop failing
+    failExtraction = false;
+
+    // Tick again — the previously blocked items should now process
+    await pipeline.tick(10);
+
+    // The new item should be unblocked and processed
+    const afterReset = pipeline.getItemStatus('circuit-reset-new', 'session');
+    const afterExtraction = afterReset.find((s) => s.stage === 'extraction');
+    expect(afterExtraction?.status).toBe('succeeded');
+    expect(extractionCalls).toContain('circuit-reset-new');
+  });
+
+  it('half-open probe succeeds and closes the circuit', async () => {
+    // Register items and trip the circuit
+    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+      registerSession(`probe-success-${i}`);
+    }
+
+    const connRefusedError = makeConnRefusedError();
+    let failExtraction = true;
+
+    const extractionCalls: string[] = [];
+    const handlers: StageHandlers = {
+      extraction: async (itemId) => {
+        if (failExtraction) throw connRefusedError;
+        extractionCalls.push(itemId);
+      },
+      embedding: async () => {},
+      consolidation: async () => {},
+    };
+    pipeline.setHandlers(handlers);
+
+    // Trip the circuit
+    await pipeline.tick(PIPELINE_CIRCUIT_FAILURE_THRESHOLD);
+    expect(pipeline.circuitState('llm').state).toBe('open');
+
+    // Simulate cooldown expiration by setting opens_at in the past
+    const pastTime = new Date(Date.now() - 10_000).toISOString();
+    pipeline.getDb().prepare(
+      `UPDATE circuit_breakers SET opens_at = ? WHERE provider_role = 'llm'`,
+    ).run(pastTime);
+
+    // Provider is back — stop failing
+    failExtraction = false;
+
+    // Register a new item to process as the probe
+    registerSession('probe-success-new');
+
+    // Tick — should detect expired cooldown, transition to half-open, process probe
+    await pipeline.tick(10);
+
+    // Circuit should now be closed (probe succeeded)
+    const circuitAfter = pipeline.circuitState('llm');
+    expect(circuitAfter.state).toBe('closed');
+    expect(circuitAfter.failure_count).toBe(0);
+
+    // The probe item should have been processed successfully
+    expect(extractionCalls).toContain('probe-success-new');
+
+    const probeStatus = pipeline.getItemStatus('probe-success-new', 'session');
+    const extractionStatus = probeStatus.find((s) => s.stage === 'extraction');
+    expect(extractionStatus?.status).toBe('succeeded');
+  });
+
+  it('half-open probe fails with doubled cooldown', async () => {
+    // Trip the circuit
+    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+      registerSession(`probe-fail-${i}`);
+    }
+
+    const connRefusedError = makeConnRefusedError();
+
+    const handlers: StageHandlers = {
+      extraction: async () => { throw connRefusedError; },
+      embedding: async () => {},
+      consolidation: async () => {},
+    };
+    pipeline.setHandlers(handlers);
+
+    // Trip the circuit
+    await pipeline.tick(PIPELINE_CIRCUIT_FAILURE_THRESHOLD);
+    expect(pipeline.circuitState('llm').state).toBe('open');
+
+    // Record the opens_at from the initial trip
+    const initialCircuit = pipeline.circuitState('llm');
+    expect(initialCircuit.opens_at).not.toBeNull();
+
+    // Simulate cooldown expiration — set opens_at in the past, but keep
+    // last_failure at a time that produces a known cooldown window
+    const now = Date.now();
+    const lastFailure = new Date(now - PIPELINE_CIRCUIT_COOLDOWN_MS - 1000).toISOString();
+    const opensAt = new Date(now - 1000).toISOString(); // just expired
+    pipeline.getDb().prepare(
+      `UPDATE circuit_breakers SET opens_at = ?, last_failure = ? WHERE provider_role = 'llm'`,
+    ).run(opensAt, lastFailure);
+
+    // Register a new item for the probe
+    registerSession('probe-fail-new');
+
+    // Tick — probe should fail (handler still throws), circuit re-opens with doubled cooldown
+    await pipeline.tick(10);
+
+    const circuitAfter = pipeline.circuitState('llm');
+    expect(circuitAfter.state).toBe('open');
+    expect(circuitAfter.opens_at).not.toBeNull();
+
+    // The new opens_at should be further in the future than the initial cooldown
+    const newOpensAt = new Date(circuitAfter.opens_at!).getTime();
+    // The doubled cooldown should be approximately 2 * PIPELINE_CIRCUIT_COOLDOWN_MS
+    // (capped at PIPELINE_CIRCUIT_MAX_COOLDOWN_MS)
+    const expectedCooldown = Math.min(
+      PIPELINE_CIRCUIT_COOLDOWN_MS * 2,
+      PIPELINE_CIRCUIT_MAX_COOLDOWN_MS,
+    );
+    // The new opens_at should be at least (now + expectedCooldown - tolerance)
+    const tolerance = 5_000; // 5 seconds tolerance for test timing
+    expect(newOpensAt).toBeGreaterThan(now + expectedCooldown - tolerance);
+  });
+
+  it('provider isolation: llm circuit does NOT affect embedding stage', async () => {
+    // Register a spore — spores skip extraction (llm), go straight to embedding
+    registerSpore('isolation-spore-001');
+
+    // Trip the llm circuit
+    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+      pipeline.tripCircuit('llm', 'ECONNREFUSED');
+    }
+    expect(pipeline.circuitState('llm').state).toBe('open');
+
+    const embeddingCalls: string[] = [];
+    const handlers: StageHandlers = {
+      extraction: async () => { throw new Error('should not be called'); },
+      embedding: async (itemId) => { embeddingCalls.push(itemId); },
+      consolidation: async () => {},
+    };
+    pipeline.setHandlers(handlers);
+
+    // Tick — embedding should proceed despite llm circuit being open
+    await pipeline.tick(10);
+
+    // Embedding handler should have been called for the spore
+    expect(embeddingCalls).toContain('isolation-spore-001');
+
+    // Embedding stage should be succeeded
+    const statuses = pipeline.getItemStatus('isolation-spore-001', 'spore');
+    const embeddingStatus = statuses.find((s) => s.stage === 'embedding');
+    expect(embeddingStatus?.status).toBe('succeeded');
+
+    // LLM circuit should still be open (unaffected by embedding success)
+    expect(pipeline.circuitState('llm').state).toBe('open');
+  });
+
+  it('transient errors do NOT trip circuit breaker', async () => {
+    // Register sessions
+    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD + 2; i++) {
+      registerSession(`transient-${i}`);
+    }
+
+    // Make handler throw transient errors (socket hang up, timeout, etc.)
+    const transientError = new Error('socket hang up');
+
+    const handlers: StageHandlers = {
+      extraction: async () => { throw transientError; },
+      embedding: async () => {},
+      consolidation: async () => {},
+    };
+    pipeline.setHandlers(handlers);
+
+    // Tick — all items should fail with transient classification
+    await pipeline.tick(PIPELINE_CIRCUIT_FAILURE_THRESHOLD + 2);
+
+    // Circuit should still be closed — transient errors don't trip it
+    const circuit = pipeline.circuitState('llm');
+    expect(circuit.state).toBe('closed');
+    expect(circuit.failure_count).toBe(0);
+
+    // Items should be in failed state (transient), not blocked
+    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD + 2; i++) {
+      const statuses = pipeline.getItemStatus(`transient-${i}`, 'session');
+      const extraction = statuses.find((s) => s.stage === 'extraction');
+      expect(extraction?.status).toBe('failed');
+      expect(extraction?.error_type).toBe('transient');
+    }
+  });
+
+  it('multiple ticks accumulate config failures to threshold', async () => {
+    // Register one session at a time and tick — each contributes one circuit trip
+    const connRefusedError = makeConnRefusedError();
+
+    const handlers: StageHandlers = {
+      extraction: async () => { throw connRefusedError; },
+      embedding: async () => {},
+      consolidation: async () => {},
+    };
+    pipeline.setHandlers(handlers);
+
+    // Register and tick one item at a time
+    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD - 1; i++) {
+      registerSession(`accumulate-${i}`);
+      await pipeline.tick(1);
+    }
+
+    // Circuit should still be closed (one failure short of threshold)
+    expect(pipeline.circuitState('llm').state).toBe('closed');
+    expect(pipeline.circuitState('llm').failure_count).toBe(PIPELINE_CIRCUIT_FAILURE_THRESHOLD - 1);
+
+    // One more failure should trip it
+    registerSession(`accumulate-final`);
+    await pipeline.tick(1);
+
+    expect(pipeline.circuitState('llm').state).toBe('open');
+  });
+
+  it('embedding circuit does not block extraction (different provider roles)', async () => {
+    // Trip the embedding circuit
+    for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+      pipeline.tripCircuit('embedding', 'embedding service down');
+    }
+    expect(pipeline.circuitState('embedding').state).toBe('open');
+
+    // Register a session — extraction uses 'llm', not 'embedding'
+    registerSession('cross-provider-001');
+
+    const extractionCalls: string[] = [];
+    const handlers: StageHandlers = {
+      extraction: async (itemId) => { extractionCalls.push(itemId); },
+      embedding: async () => {},
+      consolidation: async () => {},
+    };
+    pipeline.setHandlers(handlers);
+
+    await pipeline.tick(10);
+
+    // Extraction should have been processed (llm circuit is closed)
+    expect(extractionCalls).toContain('cross-provider-001');
+
+    const statuses = pipeline.getItemStatus('cross-provider-001', 'session');
+    const extraction = statuses.find((s) => s.stage === 'extraction');
+    expect(extraction?.status).toBe('succeeded');
+
+    // Embedding should be blocked (embedding circuit is open)
+    const embedding = statuses.find((s) => s.stage === 'embedding');
+    expect(embedding?.status).toBe('blocked');
+  });
+
+  it('half-open probe failure caps cooldown at PIPELINE_CIRCUIT_MAX_COOLDOWN_MS', async () => {
+    // Set up a circuit with a very large previous cooldown (close to the max)
+    const now = Date.now();
+    const almostMaxCooldown = PIPELINE_CIRCUIT_MAX_COOLDOWN_MS; // already at max
+    const lastFailure = new Date(now - almostMaxCooldown - 1000).toISOString();
+    const opensAt = new Date(now - 1000).toISOString(); // just expired
+
+    pipeline.getDb().prepare(
+      `INSERT INTO circuit_breakers (provider_role, state, failure_count, last_failure, last_error, opens_at, updated_at)
+       VALUES ('llm', 'open', ?, ?, 'error', ?, ?)`,
+    ).run(PIPELINE_CIRCUIT_FAILURE_THRESHOLD, lastFailure, opensAt, new Date().toISOString());
+
+    // Register an item for the probe
+    registerSession('cap-probe-001');
+
+    const connRefusedError = makeConnRefusedError();
+    const handlers: StageHandlers = {
+      extraction: async () => { throw connRefusedError; },
+      embedding: async () => {},
+      consolidation: async () => {},
+    };
+    pipeline.setHandlers(handlers);
+
+    // Tick — half-open probe should fail and reopen with capped cooldown
+    await pipeline.tick(10);
+
+    const circuit = pipeline.circuitState('llm');
+    expect(circuit.state).toBe('open');
+    expect(circuit.opens_at).not.toBeNull();
+
+    // The cooldown should be capped at PIPELINE_CIRCUIT_MAX_COOLDOWN_MS
+    const newOpensAt = new Date(circuit.opens_at!).getTime();
+    const maxExpected = now + PIPELINE_CIRCUIT_MAX_COOLDOWN_MS;
+    const tolerance = 5_000;
+    // Should not exceed max cooldown
+    expect(newOpensAt).toBeLessThanOrEqual(maxExpected + tolerance);
+    // Should be at least close to max cooldown (not the doubled 2x value)
+    expect(newOpensAt).toBeGreaterThan(now + PIPELINE_CIRCUIT_MAX_COOLDOWN_MS - tolerance);
   });
 });
