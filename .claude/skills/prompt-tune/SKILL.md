@@ -120,5 +120,5 @@ These patterns were discovered during consolidation prompt tuning and apply broa
 ## Reference Files
 
 - **`references/results-template.md`** — Template for model comparison tables
-- **`skills/myco/references/prompt-eval-methodology.md`** — Detailed methodology documentation
-- **`skills/myco/references/consolidation-tuning.md`** — Consolidation prompt tuning results (reference implementation)
+- **`references/prompt-eval-methodology.md`** — Detailed methodology documentation
+- **`references/consolidation-tuning.md`** — Consolidation prompt tuning results (reference implementation)
