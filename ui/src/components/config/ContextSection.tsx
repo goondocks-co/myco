@@ -23,7 +23,10 @@ export function ContextSection({
       isDirty={isDirty}
     >
       <div className="space-y-4">
-        <Field label="Max Tokens">
+        <Field
+          label="Max Tokens"
+          description="Total token budget for per-prompt context injection"
+        >
           <Input
             type="number"
             value={context.max_tokens}
@@ -31,7 +34,10 @@ export function ContextSection({
           />
         </Field>
         <div>
-          <h4 className="mb-3 text-sm font-medium text-muted-foreground">Layer Allocations</h4>
+          <h4 className="mb-1 text-sm font-medium text-muted-foreground">Layer Allocations</h4>
+          <p className="mb-3 text-xs text-muted-foreground">
+            How the budget is split across vault content types
+          </p>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Plans">
               <Input

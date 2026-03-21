@@ -7,6 +7,24 @@ export const EMBEDDING_PROVIDERS = ['ollama', 'lm-studio'] as const;
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
 export const SYNC_MODES = ['git', 'obsidian-sync', 'manual'] as const;
 
+export const CONTEXT_WINDOW_OPTIONS = [
+  { value: 2048, label: '2K' },
+  { value: 4096, label: '4K' },
+  { value: 8192, label: '8K' },
+  { value: 16384, label: '16K' },
+  { value: 32768, label: '32K' },
+  { value: 65536, label: '64K' },
+  { value: 131072, label: '128K' },
+] as const;
+
+export const DEFAULT_TIERS = [1500, 3000, 5000, 10000] as const;
+
+export const COOLDOWN_STAGE_LABELS = [
+  'Stage 1 (warm)',
+  'Stage 2 (cooling)',
+  'Stage 3 (cold)',
+] as const;
+
 /* ---------- Field ---------- */
 
 interface FieldProps {

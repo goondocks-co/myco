@@ -1,6 +1,7 @@
 import type { MycoConfig } from '../../hooks/use-config';
 import { ConfigSection } from './ConfigSection';
 import { Input } from '../ui/input';
+import { Badge } from '../ui/badge';
 import {
   Select,
   SelectContent,
@@ -8,7 +9,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../ui/select';
-import { Field, LLM_PROVIDERS, ToggleSwitch } from './config-helpers';
+import {
+  Field,
+  LLM_PROVIDERS,
+  CONTEXT_WINDOW_OPTIONS,
+  DEFAULT_TIERS,
+  COOLDOWN_STAGE_LABELS,
+  ToggleSwitch,
+} from './config-helpers';
 
 interface DigestSectionProps {
   digest: MycoConfig['digest'];
@@ -72,14 +80,23 @@ export function DigestSection({
               />
             </Field>
             <Field label="Context Window">
-              <Input
-                type="number"
-                value={digest.intelligence.context_window}
-                onChange={(e) => {
-                  const val = parseInt(e.target.value, 10);
-                  if (!isNaN(val)) updateDigestIntelligence('context_window', val);
-                }}
-              />
+              <Select
+                value={String(digest.intelligence.context_window)}
+                onValueChange={(v) =>
+                  updateDigestIntelligence('context_window', parseInt(v, 10))
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CONTEXT_WINDOW_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={String(opt.value)}>
+                      {opt.label} ({opt.value.toLocaleString()})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </Field>
             <Field label="Keep Alive" description="Ollama keep-alive duration (e.g. '30m')">
               <Input
@@ -101,29 +118,35 @@ export function DigestSection({
 
         <div>
           <h4 className="mb-3 text-sm font-medium text-muted-foreground">Tiers</h4>
-          <Field label="Token budgets" description="Comma-separated list of tier sizes">
-            <Input
-              value={digest.tiers.join(', ')}
-              onChange={(e) => {
-                const tiers = e.target.value
-                  .split(',')
-                  .map((s) => parseInt(s.trim(), 10))
-                  .filter((n) => !isNaN(n) && n > 0);
-                if (tiers.length > 0) updateDigest('tiers', tiers);
-              }}
-            />
+          <Field label="Token budgets">
+            <div className="flex flex-wrap gap-2">
+              {DEFAULT_TIERS.map((tier) => (
+                <Badge key={tier} variant="secondary">
+                  {tier.toLocaleString()}
+                </Badge>
+              ))}
+            </div>
           </Field>
           <div className="mt-4">
-            <Field label="Inject Tier" description="Which tier to inject into context (null = disabled)">
-              <Input
-                type="number"
-                value={digest.inject_tier ?? ''}
-                placeholder="Disabled"
-                onChange={(e) => {
-                  const val = e.target.value ? parseInt(e.target.value, 10) : null;
-                  updateDigest('inject_tier', val !== null && !isNaN(val) ? val : null);
-                }}
-              />
+            <Field label="Inject Tier" description="Which tier to inject into context">
+              <Select
+                value={digest.inject_tier !== null ? String(digest.inject_tier) : '__null__'}
+                onValueChange={(v) =>
+                  updateDigest('inject_tier', v === '__null__' ? null : parseInt(v, 10))
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__null__">None (disabled)</SelectItem>
+                  {DEFAULT_TIERS.map((tier) => (
+                    <SelectItem key={tier} value={String(tier)}>
+                      {tier.toLocaleString()} tokens
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </Field>
           </div>
         </div>
@@ -151,23 +174,29 @@ export function DigestSection({
                 }}
               />
             </Field>
-            <Field
-              label="Cooldown Intervals (sec)"
-              description="Comma-separated escalating cooldown steps"
-            >
-              <Input
-                value={digest.metabolism.cooldown_intervals.join(', ')}
-                onChange={(e) => {
-                  const intervals = e.target.value
-                    .split(',')
-                    .map((s) => parseInt(s.trim(), 10))
-                    .filter((n) => !isNaN(n) && n > 0);
-                  if (intervals.length > 0) {
-                    updateDigestMetabolism('cooldown_intervals', intervals);
-                  }
-                }}
-              />
-            </Field>
+          </div>
+          <div className="mt-4">
+            <h5 className="mb-3 text-xs font-medium text-muted-foreground">
+              Cooldown Intervals (sec)
+            </h5>
+            <div className="grid gap-4 sm:grid-cols-3">
+              {COOLDOWN_STAGE_LABELS.map((stageLabel, index) => (
+                <Field key={index} label={stageLabel}>
+                  <Input
+                    type="number"
+                    value={digest.metabolism.cooldown_intervals[index] ?? ''}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      if (!isNaN(val)) {
+                        const updated = [...digest.metabolism.cooldown_intervals];
+                        updated[index] = val;
+                        updateDigestMetabolism('cooldown_intervals', updated);
+                      }
+                    }}
+                  />
+                </Field>
+              ))}
+            </div>
           </div>
         </div>
 

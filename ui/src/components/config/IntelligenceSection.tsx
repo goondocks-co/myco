@@ -12,7 +12,7 @@ import {
   Field,
   LLM_PROVIDERS,
   EMBEDDING_PROVIDERS,
-  numChange,
+  CONTEXT_WINDOW_OPTIONS,
   strChange,
 } from './config-helpers';
 
@@ -62,18 +62,21 @@ export function IntelligenceSection({
               />
             </Field>
             <Field label="Context Window">
-              <Input
-                type="number"
-                value={intelligence.llm.context_window}
-                onChange={numChange(updateLlm, 'context_window')}
-              />
-            </Field>
-            <Field label="Max Tokens">
-              <Input
-                type="number"
-                value={intelligence.llm.max_tokens}
-                onChange={numChange(updateLlm, 'max_tokens')}
-              />
+              <Select
+                value={String(intelligence.llm.context_window)}
+                onValueChange={(v) => updateLlm('context_window', parseInt(v, 10))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CONTEXT_WINDOW_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={String(opt.value)}>
+                      {opt.label} ({opt.value.toLocaleString()})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </Field>
           </div>
         </div>

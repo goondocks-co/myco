@@ -24,15 +24,16 @@ export function DaemonSection({ daemon, isDirty, updateDaemon }: DaemonSectionPr
       isDirty={isDirty}
     >
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Port" description="Leave empty for auto-assigned port">
+        <Field
+          label="Port"
+          description="Auto-derived from vault path. Change via myco.yaml if needed."
+        >
           <Input
             type="number"
             value={daemon.port ?? ''}
             placeholder="Auto"
-            onChange={(e) => {
-              const val = e.target.value ? parseInt(e.target.value, 10) : null;
-              updateDaemon('port', val !== null && !isNaN(val) ? val : null);
-            }}
+            disabled
+            className="disabled:cursor-default disabled:opacity-70"
           />
         </Field>
         <Field label="Log Level">
