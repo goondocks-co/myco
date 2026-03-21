@@ -66,9 +66,13 @@ export const FILE_WATCH_STABILITY_MS = 1000;
 /** Provider detection timeout for detect-providers CLI command (ms). */
 export const PROVIDER_DETECT_TIMEOUT_MS = 3000;
 
+// --- Time ---
+/** Milliseconds in one day. */
+export const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
 // --- Buffer cleanup ---
 /** Max age for stale buffer files before cleanup (ms). */
-export const STALE_BUFFER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+export const STALE_BUFFER_MAX_AGE_MS = 1 * MS_PER_DAY;
 
 // --- Retry backoff ---
 /** Retry delays for daemon health check (ms). */

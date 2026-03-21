@@ -16,10 +16,9 @@ import { cn } from '../../lib/cn';
 /* ---------- Constants ---------- */
 
 const PROVIDER_LABELS: Record<string, string> = {
-  extraction: 'LLM (Extraction)',
+  llm: 'LLM (Extraction)',
   embedding: 'Embedding',
-  consolidation: 'LLM (Consolidation)',
-  digest: 'LLM (Digest)',
+  'digest-llm': 'LLM (Digest & Consolidation)',
 };
 
 const STATE_ICON: Record<string, typeof ShieldCheck> = {

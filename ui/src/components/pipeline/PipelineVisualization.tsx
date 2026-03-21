@@ -23,11 +23,12 @@ const STAGE_LABELS: Record<string, string> = {
  * Maps each pipeline stage to the provider role whose circuit breaker
  * affects that stage. Used to show circuit warnings on stage boxes.
  */
-const STAGE_PROVIDER_MAP: Record<string, string> = {
-  extraction: 'extraction',
+const STAGE_PROVIDER_MAP: Record<string, string | undefined> = {
+  capture: undefined,
+  extraction: 'llm',
   embedding: 'embedding',
-  consolidation: 'consolidation',
-  digest: 'digest',
+  consolidation: 'digest-llm',
+  digest: 'digest-llm',
 };
 
 type StageHealth = 'healthy' | 'active' | 'degraded' | 'empty';

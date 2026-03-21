@@ -24,6 +24,7 @@ import {
   PIPELINE_RETENTION_DAYS,
   PIPELINE_ITEMS_DEFAULT_LIMIT,
   STAGE_PROVIDER_MAP,
+  MS_PER_DAY,
 } from '@myco/constants';
 import { classifyError } from '@myco/daemon/pipeline-classify';
 
@@ -270,6 +271,12 @@ export class PipelineManager {
   /** Read a PRAGMA value (used in tests to verify WAL mode and foreign keys). */
   getPragma(name: string): unknown {
     return this.db.pragma(name, { simple: true });
+  }
+
+  /** Quick check whether the pipeline has any registered work items. */
+  isEmpty(): boolean {
+    const row = this.db.prepare('SELECT 1 FROM work_items LIMIT 1').get();
+    return !row;
   }
 
   /** Aggregate pipeline health: stage/status counts, circuit states, totals. */
@@ -871,7 +878,7 @@ export class PipelineManager {
    * stage_history; deleted = number of transition rows removed.
    */
   compact(retentionDays: number = PIPELINE_RETENTION_DAYS): { compacted: number; deleted: number } {
-    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+    const cutoff = new Date(Date.now() - retentionDays * MS_PER_DAY).toISOString();
 
     // Find all old transition rows, grouped by (work_item_id, item_type, stage).
     // We need the aggregate values per group as well as every individual error_type
@@ -1315,16 +1322,14 @@ export class PipelineManager {
    * stages still have work in flight.
    */
   hasUpstreamWork(): boolean {
-    for (const stage of PIPELINE_TICK_STAGES) {
-      const count = this.db
-        .prepare(
-          `SELECT COUNT(*) as cnt FROM pipeline_status
-           WHERE stage = ? AND status IN ('pending', 'processing', 'blocked')`,
-        )
-        .get(stage) as { cnt: number };
-      if (count.cnt > 0) return true;
-    }
-    return false;
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) as cnt FROM pipeline_status
+         WHERE stage IN ('extraction', 'embedding', 'consolidation')
+         AND status IN ('pending', 'processing', 'blocked')`,
+      )
+      .get() as { cnt: number };
+    return row.cnt > 0;
   }
 
   /**
@@ -1339,9 +1344,12 @@ export class PipelineManager {
       )
       .all() as Array<{ id: string; item_type: string }>;
 
-    for (const item of items) {
-      this.advance(item.id, item.item_type, 'digest', 'succeeded');
-    }
+    const advanceAll = this.db.transaction(() => {
+      for (const item of items) {
+        this.advance(item.id, item.item_type, 'digest', 'succeeded');
+      }
+    });
+    advanceAll();
     return items.length;
   }
 
@@ -1377,108 +1385,113 @@ export class PipelineManager {
       stages[key] = (stages[key] ?? 0) + 1;
     };
 
-    // --- Sessions ---
-    const sessionsDir = path.join(vaultDir, 'sessions');
-    for (const filePath of this.walkMarkdownFiles(sessionsDir)) {
-      const filename = path.basename(filePath, '.md');
-      // session-<id>.md → id = everything after "session-"
-      const itemId = filename.startsWith('session-') ? filename.slice('session-'.length) : filename;
-      const relativePath = path.relative(vaultDir, filePath);
+    // Wrap all register() + advance() calls in a single transaction
+    // to avoid thousands of individual commits during first-run migration.
+    const runRebuild = this.db.transaction(() => {
+      // --- Sessions ---
+      const sessionsDir = path.join(vaultDir, 'sessions');
+      for (const filePath of this.walkMarkdownFiles(sessionsDir)) {
+        const filename = path.basename(filePath, '.md');
+        // session-<id>.md → id = everything after "session-"
+        const itemId = filename.startsWith('session-') ? filename.slice('session-'.length) : filename;
+        const relativePath = path.relative(vaultDir, filePath);
 
-      this.register(itemId, 'session', relativePath);
-      registered++;
+        this.register(itemId, 'session', relativePath);
+        registered++;
 
-      // capture: file exists → succeeded
-      this.advance(itemId, 'session', 'capture', 'succeeded');
-      bumpStage('capture:succeeded');
+        // capture: file exists → succeeded
+        this.advance(itemId, 'session', 'capture', 'succeeded');
+        bumpStage('capture:succeeded');
 
-      // extraction: check if any spore references this session
-      if (sporeSessionIds.has(itemId) || sporeSessionIds.has(`session-${itemId}`)) {
-        this.advance(itemId, 'session', 'extraction', 'succeeded');
-        bumpStage('extraction:succeeded');
-      } else {
-        bumpStage('extraction:pending');
+        // extraction: check if any spore references this session
+        if (sporeSessionIds.has(itemId) || sporeSessionIds.has(`session-${itemId}`)) {
+          this.advance(itemId, 'session', 'extraction', 'succeeded');
+          bumpStage('extraction:succeeded');
+        } else {
+          bumpStage('extraction:pending');
+        }
+
+        // embedding: check vector index
+        if (vectorIndex?.has(itemId) || vectorIndex?.has(`session-${itemId}`)) {
+          this.advance(itemId, 'session', 'embedding', 'succeeded');
+          bumpStage('embedding:succeeded');
+        } else {
+          bumpStage('embedding:pending');
+        }
+
+        // digest: check trace
+        if (digestedIds.has(itemId) || digestedIds.has(`session-${itemId}`)) {
+          this.advance(itemId, 'session', 'digest', 'succeeded');
+          bumpStage('digest:succeeded');
+        } else {
+          bumpStage('digest:pending');
+        }
       }
 
-      // embedding: check vector index
-      if (vectorIndex?.has(itemId) || vectorIndex?.has(`session-${itemId}`)) {
-        this.advance(itemId, 'session', 'embedding', 'succeeded');
-        bumpStage('embedding:succeeded');
-      } else {
-        bumpStage('embedding:pending');
+      // --- Spores ---
+      const sporesDir = path.join(vaultDir, 'spores');
+      for (const filePath of this.walkMarkdownFiles(sporesDir)) {
+        const itemId = path.basename(filePath, '.md');
+        const relativePath = path.relative(vaultDir, filePath);
+
+        this.register(itemId, 'spore', relativePath);
+        registered++;
+
+        // capture: file exists → succeeded
+        this.advance(itemId, 'spore', 'capture', 'succeeded');
+        bumpStage('capture:succeeded');
+
+        // embedding: check vector index
+        if (vectorIndex?.has(itemId)) {
+          this.advance(itemId, 'spore', 'embedding', 'succeeded');
+          bumpStage('embedding:succeeded');
+        } else {
+          bumpStage('embedding:pending');
+        }
+
+        // consolidation: cannot reliably infer → leave as pending
+        bumpStage('consolidation:pending');
+
+        // digest: check trace
+        if (digestedIds.has(itemId)) {
+          this.advance(itemId, 'spore', 'digest', 'succeeded');
+          bumpStage('digest:succeeded');
+        } else {
+          bumpStage('digest:pending');
+        }
       }
 
-      // digest: check trace
-      if (digestedIds.has(itemId) || digestedIds.has(`session-${itemId}`)) {
-        this.advance(itemId, 'session', 'digest', 'succeeded');
-        bumpStage('digest:succeeded');
-      } else {
-        bumpStage('digest:pending');
+      // --- Artifacts ---
+      const artifactsDir = path.join(vaultDir, 'artifacts');
+      for (const filePath of this.walkMarkdownFiles(artifactsDir)) {
+        const itemId = path.basename(filePath, '.md');
+        const relativePath = path.relative(vaultDir, filePath);
+
+        this.register(itemId, 'artifact', relativePath);
+        registered++;
+
+        // capture: file exists → succeeded
+        this.advance(itemId, 'artifact', 'capture', 'succeeded');
+        bumpStage('capture:succeeded');
+
+        // embedding: check vector index
+        if (vectorIndex?.has(itemId)) {
+          this.advance(itemId, 'artifact', 'embedding', 'succeeded');
+          bumpStage('embedding:succeeded');
+        } else {
+          bumpStage('embedding:pending');
+        }
+
+        // digest: check trace
+        if (digestedIds.has(itemId)) {
+          this.advance(itemId, 'artifact', 'digest', 'succeeded');
+          bumpStage('digest:succeeded');
+        } else {
+          bumpStage('digest:pending');
+        }
       }
-    }
-
-    // --- Spores ---
-    const sporesDir = path.join(vaultDir, 'spores');
-    for (const filePath of this.walkMarkdownFiles(sporesDir)) {
-      const itemId = path.basename(filePath, '.md');
-      const relativePath = path.relative(vaultDir, filePath);
-
-      this.register(itemId, 'spore', relativePath);
-      registered++;
-
-      // capture: file exists → succeeded
-      this.advance(itemId, 'spore', 'capture', 'succeeded');
-      bumpStage('capture:succeeded');
-
-      // embedding: check vector index
-      if (vectorIndex?.has(itemId)) {
-        this.advance(itemId, 'spore', 'embedding', 'succeeded');
-        bumpStage('embedding:succeeded');
-      } else {
-        bumpStage('embedding:pending');
-      }
-
-      // consolidation: cannot reliably infer → leave as pending
-      bumpStage('consolidation:pending');
-
-      // digest: check trace
-      if (digestedIds.has(itemId)) {
-        this.advance(itemId, 'spore', 'digest', 'succeeded');
-        bumpStage('digest:succeeded');
-      } else {
-        bumpStage('digest:pending');
-      }
-    }
-
-    // --- Artifacts ---
-    const artifactsDir = path.join(vaultDir, 'artifacts');
-    for (const filePath of this.walkMarkdownFiles(artifactsDir)) {
-      const itemId = path.basename(filePath, '.md');
-      const relativePath = path.relative(vaultDir, filePath);
-
-      this.register(itemId, 'artifact', relativePath);
-      registered++;
-
-      // capture: file exists → succeeded
-      this.advance(itemId, 'artifact', 'capture', 'succeeded');
-      bumpStage('capture:succeeded');
-
-      // embedding: check vector index
-      if (vectorIndex?.has(itemId)) {
-        this.advance(itemId, 'artifact', 'embedding', 'succeeded');
-        bumpStage('embedding:succeeded');
-      } else {
-        bumpStage('embedding:pending');
-      }
-
-      // digest: check trace
-      if (digestedIds.has(itemId)) {
-        this.advance(itemId, 'artifact', 'digest', 'succeeded');
-        bumpStage('digest:succeeded');
-      } else {
-        bumpStage('digest:pending');
-      }
-    }
+    });
+    runRebuild();
 
     return { registered, stages };
   }

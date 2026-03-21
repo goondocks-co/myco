@@ -54,6 +54,7 @@ import { z } from 'zod';
 import YAML from 'yaml';
 import fs from 'node:fs';
 import path from 'node:path';
+import { stripFrontmatter } from '../vault/frontmatter.js';
 
 
 interface IndexDeps {
@@ -261,9 +262,7 @@ export async function main(): Promise<void> {
 
   // First-run migration: if pipeline.db was just created (no work items),
   // rebuild from vault to catch up with existing content
-  const health = pipeline.health();
-  const totalItems = Object.values(health.totals).reduce((a, b) => a + b, 0);
-  if (totalItems === 0) {
+  if (pipeline.isEmpty()) {
     logger.info('pipeline', 'First-run migration: rebuilding pipeline from vault');
     const result = pipeline.rebuild(vaultDir, vectorIndex, path.join(vaultDir, 'digest', 'trace.jsonl'));
     logger.info('pipeline', 'Pipeline rebuild complete', { registered: result.registered, stages: result.stages });
@@ -272,6 +271,10 @@ export async function main(): Promise<void> {
   // Consolidation engine — declared here so pipeline handler can capture it.
   // Assigned later when digest.consolidation.enabled is true.
   let consolidationEngine: ConsolidationEngine | null = null;
+
+  // Flag to ensure consolidationEngine.runPass() is called at most once per tick.
+  // runPass() processes ALL pending spores, so calling it per-item is redundant.
+  let consolidationPassRanThisTick = false;
 
   // Pipeline stage handlers
   pipeline.setHandlers({
@@ -290,9 +293,7 @@ export async function main(): Promise<void> {
         throw new Error(`Session note not found: ${sourcePath}`);
       }
       const fileContent = fs.readFileSync(fullPath, 'utf-8');
-      const fmMatch = fileContent.match(/^---\n([\s\S]*?)\n---/);
-      const frontmatter = fmMatch ? YAML.parse(fmMatch[1]) as Record<string, unknown> : {};
-      const body = fmMatch ? fileContent.slice(fmMatch[0].length) : fileContent;
+      const { body, frontmatter } = stripFrontmatter(fileContent);
       const conversationMarkdown = extractSection(body, CONVERSATION_HEADING);
       const user = typeof frontmatter.user === 'string' && frontmatter.user ? frontmatter.user : undefined;
 
@@ -363,9 +364,7 @@ export async function main(): Promise<void> {
       const fileContent = fs.readFileSync(fullPath, 'utf-8');
 
       // Parse frontmatter for metadata
-      const fmMatch = fileContent.match(/^---\n([\s\S]*?)\n---/);
-      const frontmatter = fmMatch ? YAML.parse(fmMatch[1]) as Record<string, unknown> : {};
-      const body = fmMatch ? fileContent.slice(fmMatch[0].length) : fileContent;
+      const { body, frontmatter } = stripFrontmatter(fileContent);
 
       // Extract embeddable text based on item type
       let embeddableText: string;
@@ -431,8 +430,10 @@ export async function main(): Promise<void> {
           (logger as any)[level]('curation', msg, data)) as Parameters<typeof checkSupersession>[1]['log'],
       });
 
-      // Run consolidation pass (clusters + wisdom synthesis)
-      if (consolidationEngine) {
+      // Run consolidation pass (clusters + wisdom synthesis) — once per tick,
+      // since runPass() processes ALL pending spores.
+      if (consolidationEngine && !consolidationPassRanThisTick) {
+        consolidationPassRanThisTick = true;
         await consolidationEngine.runPass();
       }
     },
@@ -446,6 +447,7 @@ export async function main(): Promise<void> {
   // Pipeline tick timer — processes extraction, embedding, consolidation
   const pipelineTickTimer = setInterval(async () => {
     try {
+      consolidationPassRanThisTick = false;
       await pipeline.tick(config.pipeline.batch_size);
     } catch (err) {
       logger.error('pipeline', 'Pipeline tick failed', { error: (err as Error).message });
