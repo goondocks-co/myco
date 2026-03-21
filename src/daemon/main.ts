@@ -466,19 +466,11 @@ export async function main(): Promise<void> {
 
     const sessionId = closedBatch[0].session_id;
 
-    // Extract observations from this batch
-    const asRecords = closedBatch as Array<Record<string, unknown>>;
-    const result = await processor.process(asRecords, sessionId);
-
-    if (!result.degraded) {
-      writeObservations(result.observations, sessionId, { vault, ...indexDeps });
-    }
-
-    logger.debug('processor', 'Batch processed', {
+    // Batch closure is now an event boundary marker — observation extraction
+    // is deferred to the pipeline extraction stage (Task 10).
+    logger.debug('processor', 'Batch closed (extraction deferred to pipeline)', {
       session_id: sessionId,
       events: closedBatch.length,
-      observations: result.observations.length,
-      degraded: result.degraded,
     });
 
     // Incremental artifact capture: process new markdown files at turn boundaries
@@ -755,42 +747,10 @@ export async function main(): Promise<void> {
       return;
     }
 
-    // --- Phase 2: LLM calls in parallel ---
-
-    // Build conversation text for summarization (pure string, no LLM)
-    const conversationText = allTurns.map((t, i) => {
-      const parts = [`### Turn ${i + 1}`];
-      if (t.prompt) parts.push(`Prompt: ${t.prompt}`);
-      if (t.toolCount > 0) parts.push(`Tools: ${t.toolCount} calls`);
-      if (t.aiResponse) parts.push(`Response: ${t.aiResponse}`);
-      return parts.join('\n');
-    }).join('\n\n');
-    const conversationSection = `${CONVERSATION_HEADING}\n\n${conversationText}`;
-
-    // Launch all LLM calls concurrently
-    const observationPromise = lastBatch.length > 0
-      ? processor.process(lastBatch as Array<Record<string, unknown>>, sessionId)
-          .catch((err) => { logger.warn('processor', 'Observation extraction failed', { session_id: sessionId, error: (err as Error).message }); return null; })
-      : Promise.resolve(null);
-
-    const artifactPromise = artifactCandidates.length > 0
-      ? processor.classifyArtifacts(artifactCandidates, sessionId)
-          .then((classified) => captureArtifacts(artifactCandidates, classified, sessionId, { vault, ...indexDeps }, lineageGraph))
-          .catch((err) => { logger.warn('processor', 'Artifact capture failed', { session_id: sessionId, error: (err as Error).message }); })
-      : Promise.resolve();
-
-    const summaryPromise = processor.summarizeSession(conversationSection, sessionId, user)
-      .catch((err) => { logger.warn('processor', 'Session summarization failed', { session_id: sessionId, error: (err as Error).message }); return null; });
-
-    // Wait for all LLM calls to complete
-    const [observationResult, , summaryResult] = await Promise.all([observationPromise, artifactPromise, summaryPromise]);
-
-    // --- Phase 3: Write results to vault ---
-
-    // Write observations
-    if (observationResult && !observationResult.degraded) {
-      writeObservations(observationResult.observations, sessionId, { vault, ...indexDeps });
-    }
+    // --- Phase 2: Capture — write session note without LLM-generated content ---
+    // LLM work (summary, title, observation extraction) is deferred to the
+    // pipeline extraction stage (Task 10). The session note gets a placeholder
+    // title and empty narrative; extraction will fill them in later.
 
     // Compute canonical path
     const date = started.slice(0, 10);
@@ -829,13 +789,10 @@ export async function main(): Promise<void> {
       turnImageNames.set(i, names);
     }
 
-    // Build and write session note
-    let title = `Session ${sessionId}`;
-    let narrative = '';
-    if (summaryResult) {
-      title = summaryResult.title;
-      narrative = summaryResult.summary;
-    }
+    // Build session note with placeholder title and empty summary (capture stage).
+    // The extraction stage will fill in LLM-generated title + narrative later.
+    const title = `Session ${sessionId}`;
+    const narrative = '';
 
     // Query related spores for this session
     const relatedMemories = index.query({ type: 'spore', limit: RELATED_SPORES_LIMIT })
@@ -845,8 +802,6 @@ export async function main(): Promise<void> {
       })
       .map((n) => ({ id: n.id, title: n.title }));
 
-    // The formatter always gets the full turn list — no more partial appending.
-    // existingConversation is no longer needed; we rebuild from the transcript each time.
     const summary = formatSessionBody({
       title,
       narrative,
@@ -878,65 +833,20 @@ export async function main(): Promise<void> {
       tools_used: allTurns.reduce((sum, t) => sum + t.toolCount, 0),
       summary,
     });
-    indexAndEmbed(relativePath, sessionNoteId(sessionId), narrative,
-      { type: 'session', session_id: sessionId }, indexDeps);
+
+    // FTS index immediately so the session is searchable right away
+    indexNote(index, vaultDir, relativePath);
 
     logger.debug('processor', 'Session turns', { source: turnSource, total: allTurns.length });
 
-    // Wait for artifact capture (started concurrently with session building)
-    await artifactPromise;
+    // --- Phase 3: Register in pipeline ---
+    // Capture is complete: transcript read, session note written, images saved.
+    // Register the session and advance capture to succeeded so the extraction
+    // stage picks it up on the next pipeline tick.
+    pipeline.register(sessionId, 'session', relativePath);
+    pipeline.advance(sessionId, 'session', 'capture', 'succeeded');
 
-    // Phase 2: LLM similarity detection (fire-and-forget, only if no heuristic parent)
-    if (!parentId && vectorIndex && narrative) {
-      generateEmbedding(embeddingProvider, narrative)
-        .then(async (emb) => {
-          const candidates = vectorIndex!.search(emb.embedding, { limit: LINEAGE_SIMILARITY_CANDIDATES })
-            .filter((r) => r.metadata.type === 'session' && r.id !== sessionNoteId(sessionId));
-          if (candidates.length === 0) return;
-
-          // Score all candidates in parallel
-          const candidateNotes = index.queryByIds(candidates.map((c) => c.id));
-          const noteMap = new Map(candidateNotes.map((n) => [n.id, n]));
-
-          const scores = await Promise.all(candidates.map(async (candidate) => {
-            const note = noteMap.get(candidate.id);
-            if (!note) return { id: candidate.id, score: 0 };
-            try {
-              const prompt = buildSimilarityPrompt(narrative, note.content.slice(0, CANDIDATE_CONTENT_PREVIEW));
-              const response = await llmProvider.summarize(prompt, { maxTokens: LINEAGE_SIMILARITY_MAX_TOKENS, reasoning: LLM_REASONING_MODE });
-              const score = extractNumber(response.text);
-              return { id: candidate.id, score: isNaN(score) ? 0 : score };
-            } catch { return { id: candidate.id, score: 0 }; }
-          }));
-
-          const best = scores.reduce((a, b) => (b.score > a.score ? b : a));
-
-          if (best.score >= LINEAGE_SIMILARITY_THRESHOLD) {
-            const bestParentId = bareSessionId(best.id);
-            const confidence: LineageLink['confidence'] = best.score >= LINEAGE_SIMILARITY_HIGH_CONFIDENCE ? 'high' : 'medium';
-            lineageGraph.addLink({
-              parent: bestParentId,
-              child: sessionId,
-              signal: 'semantic_similarity',
-              confidence: confidence as 'high' | 'medium',
-            });
-            // Retroactively update session frontmatter with parent + re-index
-            try {
-              vault.updateNoteFrontmatter(relativePath, {
-                parent: sessionWikilink(bestParentId),
-                parent_reason: 'semantic_similarity',
-              });
-              indexNote(index, vaultDir, relativePath);
-            } catch { /* frontmatter update failed — link still in lineage.json */ }
-            logger.info('lineage', 'LLM similarity parent detected', {
-              child: sessionId, parent: bestParentId, score: best.score,
-            });
-          }
-        })
-        .catch((err) => logger.debug('lineage', 'Similarity detection failed', { error: (err as Error).message }));
-    }
-
-    logger.info('processor', 'Session note written', { session_id: sessionId, path: relativePath });
+    logger.info('processor', 'Session captured and registered in pipeline', { session_id: sessionId, path: relativePath });
   }
 
   // Session-start context: digest extract (if available) or structural facts.
