@@ -19,13 +19,6 @@ import { useFont, type FontOption } from '../providers/font';
 import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
 import { Button } from '../components/ui/button';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../components/ui/select';
 import { cn } from '../lib/cn';
 
 /* ---------- Constants ---------- */
@@ -167,24 +160,20 @@ function OpenVaultSelect() {
   };
 
   return (
-    <Select onValueChange={handleOpenVault} disabled={!stats}>
-      <SelectTrigger className="w-full border-none bg-transparent text-muted-foreground shadow-none hover:text-foreground text-sm h-8">
-        <div className="flex items-center gap-2">
-          <FolderOpen className="h-4 w-4" />
-          <SelectValue placeholder="Open Vault" />
-        </div>
-      </SelectTrigger>
-      <SelectContent>
+    <label className="flex items-center gap-2 px-2 py-1 text-sm text-muted-foreground hover:text-foreground cursor-pointer">
+      <FolderOpen className="h-4 w-4 shrink-0" />
+      <select
+        value=""
+        onChange={(e) => { if (e.target.value) handleOpenVault(e.target.value); e.target.value = ''; }}
+        disabled={!stats}
+        className="w-full bg-transparent border-none outline-none cursor-pointer text-sm appearance-none disabled:opacity-50"
+      >
+        <option value="" disabled>Open Vault</option>
         {VAULT_OPEN_OPTIONS.map((opt) => (
-          <SelectItem key={opt.value} value={opt.value}>
-            <span className="flex items-center gap-2">
-              {opt.label}
-              <ExternalLink className="h-3 w-3 opacity-50" />
-            </span>
-          </SelectItem>
+          <option key={opt.value} value={opt.value}>{opt.label}</option>
         ))}
-      </SelectContent>
-    </Select>
+      </select>
+    </label>
   );
 }
 
@@ -192,21 +181,18 @@ function FontSelector() {
   const { font, setFont } = useFont();
 
   return (
-    <Select value={font} onValueChange={(v) => setFont(v as FontOption)}>
-      <SelectTrigger className="w-full border-none bg-transparent text-muted-foreground shadow-none hover:text-foreground text-sm h-8">
-        <div className="flex items-center gap-2">
-          <Type className="h-4 w-4" />
-          <SelectValue />
-        </div>
-      </SelectTrigger>
-      <SelectContent>
+    <label className="flex items-center gap-2 px-2 py-1 text-sm text-muted-foreground hover:text-foreground cursor-pointer">
+      <Type className="h-4 w-4 shrink-0" />
+      <select
+        value={font}
+        onChange={(e) => setFont(e.target.value as FontOption)}
+        className="w-full bg-transparent border-none outline-none cursor-pointer text-sm appearance-none"
+      >
         {FONT_OPTIONS.map((opt) => (
-          <SelectItem key={opt.value} value={opt.value}>
-            {opt.label}
-          </SelectItem>
+          <option key={opt.value} value={opt.value}>{opt.label}</option>
         ))}
-      </SelectContent>
-    </Select>
+      </select>
+    </label>
   );
 }
 
