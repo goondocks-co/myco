@@ -12,7 +12,9 @@ const HUB_HALO_INNER = 50;
 const HUB_HALO_OUTER = 62;
 const PULSE_DURATION = '3s';
 const SPORE_DRIFT_DURATION = '4s';
-const DETAIL_MAX_CHARS = 16;
+const DETAIL_MAX_CHARS = 12;
+const LABEL_FONT_SIZE = 9;
+const DETAIL_FONT_SIZE = 7;
 const SPORE_RADIUS = 1.8;
 const SPORE_COUNT_PER_ACTIVE_PATH = 2;
 
@@ -160,12 +162,23 @@ function hyphaPath(nodeId: string): string {
   };
   const curve = curvatures[nodeId] ?? 20;
 
-  const cp1x = HUB_X + dx * 0.35 + nx * curve;
-  const cp1y = HUB_Y + dy * 0.35 + ny * curve;
-  const cp2x = HUB_X + dx * 0.65 + nx * curve * 0.6;
-  const cp2y = HUB_Y + dy * 0.65 + ny * curve * 0.6;
+  // Offset start/end points to circle edges (not centers)
+  const ux = dx / len; // unit vector hub→node
+  const uy = dy / len;
+  const startX = HUB_X + ux * HUB_RADIUS;
+  const startY = HUB_Y + uy * HUB_RADIUS;
+  const endX = pos.x - ux * pos.radius;
+  const endY = pos.y - uy * pos.radius;
 
-  return `M ${HUB_X} ${HUB_Y} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${pos.x} ${pos.y}`;
+  // Control points along the edge-to-edge segment
+  const edgeDx = endX - startX;
+  const edgeDy = endY - startY;
+  const cp1x = startX + edgeDx * 0.35 + nx * curve;
+  const cp1y = startY + edgeDy * 0.35 + ny * curve;
+  const cp2x = startX + edgeDx * 0.65 + nx * curve * 0.6;
+  const cp2y = startY + edgeDy * 0.65 + ny * curve * 0.6;
+
+  return `M ${startX} ${startY} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${endX} ${endY}`;
 }
 
 /* ---------- Sub-components ---------- */
@@ -275,10 +288,10 @@ function TopologyNodeSvg({ node }: { node: TopologyNode }) {
       {/* Label */}
       <text
         x={x}
-        y={y - 5}
+        y={y - 4}
         textAnchor="middle"
         fill="currentColor"
-        fontSize={10}
+        fontSize={LABEL_FONT_SIZE}
         style={{ fontFamily: FONT_FAMILY }}
         fontWeight={600}
         opacity={0.9}
@@ -286,13 +299,13 @@ function TopologyNodeSvg({ node }: { node: TopologyNode }) {
         {node.label}
       </text>
 
-      {/* Detail */}
+      {/* Detail — truncate to fit inside node circle */}
       <text
         x={x}
-        y={y + 9}
+        y={y + 8}
         textAnchor="middle"
         fill="currentColor"
-        fontSize={8}
+        fontSize={DETAIL_FONT_SIZE}
         style={{ fontFamily: FONT_FAMILY }}
         opacity={0.5}
       >
