@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { DaemonServer } from '@myco/daemon/server';
 import { DaemonLogger } from '@myco/daemon/logger';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -59,6 +60,54 @@ describe('DaemonServer', () => {
     await server.stop();
 
     expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(false);
+  });
+
+  it('evicts an existing daemon on startup', async () => {
+    // Spawn a dummy process that stays alive until killed
+    const dummy = spawn('node', ['-e', 'setTimeout(() => {}, 60000)'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    const dummyPid = dummy.pid!;
+    dummy.unref();
+
+    // Write a daemon.json pointing at the dummy process
+    fs.writeFileSync(
+      path.join(vaultDir, 'daemon.json'),
+      JSON.stringify({ pid: dummyPid, port: 99999, started: new Date().toISOString(), sessions: [] }),
+    );
+
+    // Starting a new server should evict the dummy
+    const server = new DaemonServer({ vaultDir, logger });
+    await server.start();
+
+    // The dummy process should be dead
+    let alive = false;
+    try { process.kill(dummyPid, 0); alive = true; } catch { /* dead */ }
+    expect(alive).toBe(false);
+
+    // daemon.json should now point at the new server
+    const info = JSON.parse(fs.readFileSync(path.join(vaultDir, 'daemon.json'), 'utf-8'));
+    expect(info.pid).toBe(process.pid);
+
+    await server.stop();
+  });
+
+  it('handles stale daemon.json with dead PID gracefully', async () => {
+    // Write daemon.json with a PID that doesn't exist
+    fs.writeFileSync(
+      path.join(vaultDir, 'daemon.json'),
+      JSON.stringify({ pid: 999999, port: 99999, started: new Date().toISOString(), sessions: [] }),
+    );
+
+    // Should start without error
+    const server = new DaemonServer({ vaultDir, logger });
+    await server.start();
+
+    const info = JSON.parse(fs.readFileSync(path.join(vaultDir, 'daemon.json'), 'utf-8'));
+    expect(info.pid).toBe(process.pid);
+
+    await server.stop();
   });
 
   it('registers routes for /sessions/register and /sessions/unregister', async () => {

@@ -78,6 +78,11 @@ export const DAEMON_HEALTH_RETRY_DELAYS = [100, 200, 400, 800, 1500];
  *  Prevents rapid restart loops from concurrent hooks or session reloads. */
 export const DAEMON_STALE_GRACE_PERIOD_MS = 60_000;
 
+/** Max time to wait for an evicted daemon process to die (ms). */
+export const DAEMON_EVICT_TIMEOUT_MS = 2000;
+/** Poll interval when waiting for an evicted daemon to die (ms). */
+export const DAEMON_EVICT_POLL_MS = 100;
+
 // --- Slug limits ---
 /** Max length for slugified artifact IDs. */
 export const MAX_SLUG_LENGTH = 100;
