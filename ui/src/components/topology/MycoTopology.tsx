@@ -364,10 +364,14 @@ export function MycoTopology({ stats }: { stats: StatsResponse }) {
     <svg
       viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}
       width="100%"
-      className="max-h-[400px] font-mono"
+      className="max-h-[400px]"
       role="img"
       aria-label="Myco system topology"
+      style={{ fontSize: 'calc(1em * var(--density, 1))' }}
     >
+      {/* SVG text inherits font-family from this style block, which reads the CSS variable */}
+      <style>{`svg text { font-family: var(--font-ui, ui-monospace, monospace); }`}</style>
+
       {/* Ambient spore particles */}
       <AmbientSpores />
 
