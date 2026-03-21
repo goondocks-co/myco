@@ -9,6 +9,7 @@ import {
   DEFAULT_TIERS,
   COOLDOWN_STAGE_LABELS,
   COOLDOWN_STAGE_DESCRIPTIONS,
+  RECOMMENDED_DIGEST,
   NativeSelect,
   ToggleSwitch,
 } from './config-helpers';
@@ -22,6 +23,7 @@ interface DigestSectionProps {
   updateDigestIntelligence: (key: string, value: unknown) => void;
   updateDigestMetabolism: (key: string, value: unknown) => void;
   updateDigestSubstrate: (key: string, value: number) => void;
+  updateDigestConsolidation: (key: string, value: unknown) => void;
 }
 
 export function DigestSection({
@@ -32,6 +34,7 @@ export function DigestSection({
   updateDigestIntelligence,
   updateDigestMetabolism,
   updateDigestSubstrate,
+  updateDigestConsolidation,
 }: DigestSectionProps) {
   const digestProvider = digest.intelligence.provider ?? intelligence.llm.provider;
   const digestBaseUrl = digest.intelligence.base_url ?? intelligence.llm.base_url;
@@ -49,12 +52,27 @@ export function DigestSection({
           />
         </Field>
 
-        <Field label="Consolidation" description="Automatically consolidate related spores into wisdom notes before each digest cycle">
-          <ToggleSwitch
-            checked={digest.consolidation}
-            onChange={(v) => updateDigest('consolidation', v)}
-          />
-        </Field>
+        <div>
+          <h4 className="mb-3 text-sm font-medium text-muted-foreground">Consolidation</h4>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Enabled" description="Automatically consolidate related spores into wisdom notes before each digest cycle">
+              <ToggleSwitch
+                checked={digest.consolidation.enabled}
+                onChange={(v) => updateDigestConsolidation('enabled', v)}
+              />
+            </Field>
+            <Field label="Max Tokens" description="Token budget for wisdom note generation — higher values produce more comprehensive notes">
+              <Input
+                type="number"
+                value={digest.consolidation.max_tokens}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  if (!isNaN(val)) updateDigestConsolidation('max_tokens', val);
+                }}
+              />
+            </Field>
+          </div>
+        </div>
 
         <div>
           <h4 className="mb-3 text-sm font-medium text-muted-foreground">Intelligence</h4>
@@ -139,7 +157,21 @@ export function DigestSection({
         </div>
 
         <div>
-          <h4 className="mb-3 text-sm font-medium text-muted-foreground">Metabolism</h4>
+          <div className="mb-3 flex items-center justify-between">
+            <h4 className="text-sm font-medium text-muted-foreground">Metabolism</h4>
+            <button
+              type="button"
+              onClick={() => {
+                const r = RECOMMENDED_DIGEST.metabolism;
+                updateDigestMetabolism('active_interval', r.active_interval);
+                updateDigestMetabolism('dormancy_threshold', r.dormancy_threshold);
+                updateDigestMetabolism('cooldown_intervals', [...r.cooldown_intervals]);
+              }}
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Reset to recommended
+            </button>
+          </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Active Interval (sec)" description="Seconds between digest cycles when new content is arriving">
               <Input

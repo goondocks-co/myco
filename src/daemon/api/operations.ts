@@ -16,8 +16,8 @@ import type { MycoIndex } from '../../index/sqlite.js';
 import type { VectorIndex } from '../../index/vectors.js';
 import type { MycoConfig } from '../../config/schema.js';
 import type { LlmProvider, EmbeddingProvider } from '../../intelligence/llm.js';
-import { runRebuild, runDigest } from '../../services/vault-ops.js';
-import type { CurationDeps, CurationResult } from '../../services/vault-ops.js';
+import { runRebuild, runDigest, runReprocess } from '../../services/vault-ops.js';
+import type { CurationDeps, CurationResult, ReprocessOptions } from '../../services/vault-ops.js';
 
 /** Percentage representing full completion. */
 const PROGRESS_COMPLETE = 100;
@@ -44,6 +44,13 @@ const CurateBody = z.object({
 const DigestBody = z.object({
   tier: z.number().int().positive().optional(),
   full: z.boolean().optional(),
+}).optional();
+
+const ReprocessBody = z.object({
+  session: z.string().optional(),
+  date: z.string().optional(),
+  failed: z.boolean().optional(),
+  index_only: z.boolean().optional(),
 }).optional();
 
 // --- Rebuild ---
@@ -227,6 +234,69 @@ export async function handleCurate(
       });
       deps.log('warn', 'Curation failed via API', { error: (err as Error).message });
     });
+
+  return { body: { token } };
+}
+
+// --- Reprocess ---
+
+export async function handleReprocess(
+  deps: OperationHandlerDeps,
+  body: unknown,
+): Promise<RouteResponse> {
+  const parsed = ReprocessBody.safeParse(body);
+  if (!parsed.success) {
+    return { status: 400, body: { error: 'validation_failed', issues: parsed.error.issues } };
+  }
+
+  const options: ReprocessOptions = {
+    session: parsed.data?.session,
+    date: parsed.data?.date,
+    failed: parsed.data?.failed,
+    indexOnly: parsed.data?.index_only,
+  };
+
+  const { token, isNew } = deps.progressTracker.create('reprocess');
+
+  if (!isNew) {
+    return { body: { token, status: 'already_running' } };
+  }
+
+  runReprocess(
+    {
+      vaultDir: deps.vaultDir,
+      config: deps.config,
+      index: deps.index,
+      vectorIndex: deps.vectorIndex ?? undefined,
+      log: deps.log,
+    },
+    deps.llmProvider,
+    deps.embeddingProvider,
+    options,
+    (phase, done, total) => {
+      const percent = total > 0 ? Math.round((done / total) * PROGRESS_COMPLETE) : 0;
+      deps.progressTracker.update(token, {
+        percent,
+        message: `${phase}: ${done}/${total}`,
+      });
+    },
+  ).then((result) => {
+    const message = result.sessionsProcessed === 0
+      ? `No matching sessions found (${result.sessionsFound} checked)`
+      : `${result.sessionsProcessed} sessions, ${result.observationsExtracted} observations, ${result.summariesRegenerated} summaries`;
+    deps.progressTracker.update(token, {
+      status: 'completed',
+      percent: PROGRESS_COMPLETE,
+      message,
+    });
+    deps.log('info', 'Reprocess completed via API', { ...result });
+  }).catch((err) => {
+    deps.progressTracker.update(token, {
+      status: 'failed',
+      message: (err as Error).message,
+    });
+    deps.log('warn', 'Reprocess failed via API', { error: (err as Error).message });
+  });
 
   return { body: { token } };
 }

@@ -14,6 +14,7 @@ export interface VaultStats {
     spore_counts: Record<string, number>;
     session_count: number;
     plan_count: number;
+    artifact_count: number;
   };
   index: {
     fts_entries: number;
@@ -68,6 +69,7 @@ export function gatherStats(vaultDir: string, index: MycoIndex, vectorIndex?: Ve
       spore_counts,
       session_count: typeCounts['session'] ?? 0,
       plan_count: typeCounts['plan'] ?? 0,
+      artifact_count: typeCounts['artifact'] ?? 0,
     },
     index: {
       fts_entries: Object.values(typeCounts).reduce((sum, n) => sum + n, 0),

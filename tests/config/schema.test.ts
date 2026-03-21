@@ -86,15 +86,15 @@ describe('MycoConfigSchema v2', () => {
     it('populates default digest values when digest section is absent', () => {
       const config = MycoConfigSchema.parse(minimal);
       expect(config.digest.enabled).toBe(true);
-      expect(config.digest.tiers).toEqual([1500, 3000, 5000, 10000]);
+      expect(config.digest.tiers).toEqual([1500, 3000, 5000, 7500]);
       expect(config.digest.inject_tier).toBe(3000);
       expect(config.digest.intelligence.provider).toBeNull();
       expect(config.digest.intelligence.model).toBeNull();
       expect(config.digest.intelligence.base_url).toBeNull();
       expect(config.digest.intelligence.context_window).toBe(32768);
-      expect(config.digest.metabolism.active_interval).toBe(300);
-      expect(config.digest.metabolism.cooldown_intervals).toEqual([900, 1800, 3600]);
-      expect(config.digest.metabolism.dormancy_threshold).toBe(7200);
+      expect(config.digest.metabolism.active_interval).toBe(900);
+      expect(config.digest.metabolism.cooldown_intervals).toEqual([1800, 3600, 7200]);
+      expect(config.digest.metabolism.dormancy_threshold).toBe(14400);
       expect(config.digest.substrate.max_notes_per_cycle).toBe(50);
     });
 

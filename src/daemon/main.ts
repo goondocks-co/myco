@@ -26,7 +26,7 @@ import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-m
 import { createPerProjectAdapter, extensionForMimeType } from '../agents/adapter.js';
 import { claudeCodeAdapter } from '../agents/claude-code.js';
 import { EventBuffer } from '../capture/buffer.js';
-import { formatSessionBody } from '../obsidian/formatter.js';
+import { formatSessionBody, CONVERSATION_HEADING } from '../obsidian/formatter.js';
 import { writeObservationNotes } from '../vault/observations.js';
 import { checkSupersession } from '../vault/curation.js';
 import { collectArtifactCandidates } from '../artifacts/candidates.js';
@@ -37,8 +37,9 @@ import { handleGetStats, computeConfigHash } from './api/stats.js';
 import { handleGetLogs } from './api/logs.js';
 import { handleRestart } from './api/restart.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
-import { handleRebuild, handleDigest, handleCurate } from './api/operations.js';
+import { handleRebuild, handleDigest, handleCurate, handleReprocess } from './api/operations.js';
 import { handleGetModels } from './api/models.js';
+import { handleGetSessions } from './api/sessions.js';
 import type { OperationHandlerDeps } from './api/operations.js';
 import { runCuration } from '../services/vault-ops.js';
 import { z } from 'zod';
@@ -358,13 +359,14 @@ export async function main(): Promise<void> {
       log: (level, message, data) => logger[level]('digest', message, data),
     });
 
-    if (config.digest.consolidation) {
+    if (config.digest.consolidation.enabled) {
       const consolidationEngine = new ConsolidationEngine({
         vaultDir,
         index,
         vectorIndex,
         embeddingProvider,
         llmProvider: digestLlm,
+        maxTokens: config.digest.consolidation.max_tokens,
         log: (level, message, data) => logger[level]('consolidation', message, data),
       });
 
@@ -718,7 +720,7 @@ export async function main(): Promise<void> {
       if (t.aiResponse) parts.push(`Response: ${t.aiResponse}`);
       return parts.join('\n');
     }).join('\n\n');
-    const conversationSection = `## Conversation\n\n${conversationText}`;
+    const conversationSection = `${CONVERSATION_HEADING}\n\n${conversationText}`;
 
     // Launch all LLM calls concurrently
     const observationPromise = lastBatch.length > 0
@@ -1051,7 +1053,11 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/rebuild', async () => handleRebuild(operationDeps));
   server.registerRoute('POST', '/api/digest', async (req) => handleDigest(operationDeps, req.body));
   server.registerRoute('POST', '/api/curate', async (req) => handleCurate(operationDeps, req.body, runCuration));
+  server.registerRoute('POST', '/api/reprocess', async (req) => handleReprocess(operationDeps, req.body));
 
+  server.registerRoute('GET', '/api/sessions', async () => handleGetSessions(index));
+
+  await server.evictExistingDaemon();
   const resolvedPort = await resolvePort(config.daemon.port, vaultDir);
   if (resolvedPort === 0) {
     logger.warn('daemon', 'All preferred ports occupied, using ephemeral port');

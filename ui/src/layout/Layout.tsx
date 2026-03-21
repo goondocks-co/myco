@@ -13,6 +13,8 @@ import {
   Type,
   Minus,
   Plus,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { useTheme } from '../providers/theme';
 import { useFont, type FontOption } from '../providers/font';
@@ -60,6 +62,8 @@ const DENSITY_LABELS: Record<Density, string> = {
 
 const DENSITY_ORDER: Density[] = ['compact', 'normal', 'comfy'];
 
+const SIDEBAR_COLLAPSED_KEY = 'myco-ui-sidebar-collapsed';
+
 const DENSITY_STORAGE_KEY = 'myco-ui-density';
 const DENSITY_CSS_VAR = '--density';
 const DEFAULT_DENSITY: Density = 'normal';
@@ -93,6 +97,24 @@ function useDensity() {
   }, [density]);
 
   return { density, setDensity };
+}
+
+/* ---------- Sidebar collapse hook ---------- */
+
+function useSidebarCollapse() {
+  const [collapsed, setCollapsedState] = useState(() => {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true';
+  });
+
+  const toggle = useCallback(() => {
+    setCollapsedState((prev) => {
+      const next = !prev;
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
+      return next;
+    });
+  }, []);
+
+  return { collapsed, toggle };
 }
 
 /* ---------- Sub-components ---------- */
@@ -242,19 +264,41 @@ function DensityControl() {
 /* ---------- Layout ---------- */
 
 export default function Layout() {
+  const { collapsed, toggle } = useSidebarCollapse();
+  const { data: stats } = useDaemon();
+  const vaultName = stats?.vault.name;
+
   return (
     <div className="flex h-screen bg-background">
       {/* Sidebar */}
-      <aside className="flex w-56 flex-col border-r border-border bg-card">
-        {/* Logo */}
-        <div className="flex items-center gap-2 px-4 py-5">
-          <div className="relative flex items-center">
-            <span className="text-xl font-bold tracking-tight text-primary">
-              myco
-            </span>
-            {/* Health indicator — wired in Task 10 */}
-            <span className="ml-2 h-2 w-2 rounded-full bg-muted-foreground/40" />
-          </div>
+      <aside
+        className={cn(
+          'flex flex-col border-r border-border bg-card transition-[width] duration-200',
+          collapsed ? 'w-14' : 'w-56',
+        )}
+      >
+        {/* Brand + vault name */}
+        <div className={cn('px-4 py-5', collapsed && 'px-2 py-4 flex justify-center')}>
+          {collapsed ? (
+            <div className="relative flex items-center">
+              <span className="text-base font-bold tracking-tight text-primary">m</span>
+              <span className="ml-1 h-2 w-2 rounded-full bg-muted-foreground/40" />
+            </div>
+          ) : (
+            <div>
+              <div className="flex items-center">
+                <span className="text-sm font-medium tracking-tight text-muted-foreground">
+                  myco
+                </span>
+                <span className="ml-2 h-2 w-2 rounded-full bg-muted-foreground/40" />
+              </div>
+              {vaultName && (
+                <span className="text-lg font-bold tracking-tight text-primary">
+                  {vaultName}
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Navigation */}
@@ -264,28 +308,49 @@ export default function Layout() {
               key={item.to}
               to={item.to}
               end={item.to === '/'}
+              title={collapsed ? item.label : undefined}
               className={({ isActive }) =>
                 cn(
-                  'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                  'flex items-center rounded-md text-sm font-medium transition-colors',
+                  collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
                   isActive
                     ? 'bg-primary/10 text-primary'
                     : 'text-muted-foreground hover:bg-accent hover:text-foreground',
                 )
               }
             >
-              <item.icon className="h-4 w-4" />
-              {item.label}
+              <item.icon className="h-4 w-4 shrink-0" />
+              {!collapsed && item.label}
             </NavLink>
           ))}
         </nav>
 
         {/* Footer */}
-        <div className="border-t border-border px-2 py-3 space-y-1">
-          <RestartButton />
-          <OpenVaultSelect />
-          <FontSelector />
-          <DensityControl />
-          <ThemeToggle />
+        {!collapsed && (
+          <div className="border-t border-border px-2 py-3 space-y-1">
+            <RestartButton />
+            <OpenVaultSelect />
+            <FontSelector />
+            <DensityControl />
+            <ThemeToggle />
+          </div>
+        )}
+
+        {/* Collapse toggle */}
+        <div className={cn('border-t border-border px-2 py-2', collapsed && 'flex justify-center')}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={toggle}
+            className={cn(
+              'text-muted-foreground hover:text-foreground',
+              collapsed ? 'w-8 p-0 justify-center' : 'w-full justify-start gap-2',
+            )}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+            {!collapsed && <span>Collapse</span>}
+          </Button>
         </div>
       </aside>
 

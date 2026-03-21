@@ -9,6 +9,7 @@ import {
 import { useDaemon } from '../hooks/use-daemon';
 import { OperationButton } from '../components/operations/OperationButton';
 import { CurationPanel } from '../components/operations/CurationPanel';
+import { ReprocessPanel } from '../components/operations/ReprocessPanel';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import {
@@ -23,7 +24,7 @@ import { PageLoading } from '../components/ui/page-loading';
 
 /* ---------- Constants ---------- */
 
-const DIGEST_TIERS = [1500, 3000, 5000, 10000] as const;
+const DIGEST_TIERS = [1500, 3000, 5000, 7500, 10000] as const;
 const DEFAULT_DIGEST_TIER = '3000';
 
 /* ---------- Operations Page ---------- */
@@ -106,26 +107,20 @@ export default function Operations() {
               substrateQueue={stats.digest?.substrate_queue ?? 0}
             />
 
-            {/* Reprocess — Coming Soon */}
+            {/* Reprocess */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-sm">
                   <Clock className="h-4 w-4 text-primary" />
                   Reprocess
-                  <Badge variant="outline" className="ml-1 text-xs">
-                    Coming Soon
-                  </Badge>
                 </CardTitle>
                 <CardDescription>
                   Re-extract observations and regenerate summaries for past sessions.
-                  This feature is being developed.
+                  Useful after LLM configuration changes or processing failures.
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <Button variant="outline" size="sm" disabled className="gap-2 opacity-50">
-                  <Clock className="h-4 w-4" />
-                  Reprocess Sessions
-                </Button>
+                <ReprocessPanel />
               </CardContent>
             </Card>
           </div>
