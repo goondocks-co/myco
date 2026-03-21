@@ -131,7 +131,7 @@ describe('MycoConfigSchema v2', () => {
     const config = MycoConfigSchema.parse({ version: 2 });
     expect(config.pipeline).toEqual({
       retention_days: 30,
-      batch_size: 5,
+      batch_size: 20,
       tick_interval_seconds: 30,
       retry: {
         transient_max: 3,

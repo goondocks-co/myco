@@ -176,8 +176,8 @@ export const CURATION_CLUSTER_SIMILARITY = 0.75;
 // --- Pipeline processing ---
 /** Daemon tick interval for pipeline processing (ms). */
 export const PIPELINE_TICK_INTERVAL_MS = 30_000;
-/** Default number of work items processed per pipeline tick. */
-export const PIPELINE_BATCH_SIZE = 5;
+/** Default number of work items processed per stage per pipeline tick. */
+export const PIPELINE_BATCH_SIZE = 20;
 /** Max days to retain completed/failed pipeline work items before pruning. */
 export const PIPELINE_RETENTION_DAYS = 30;
 /** Default page size for pipeline items API listing. */

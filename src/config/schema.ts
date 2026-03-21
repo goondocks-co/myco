@@ -102,7 +102,7 @@ const PipelineCircuitBreakerSchema = z.object({
 
 const PipelineSchema = z.object({
   retention_days: z.number().int().positive().default(30),
-  batch_size: z.number().int().positive().default(5),
+  batch_size: z.number().int().positive().default(20),
   tick_interval_seconds: z.number().int().positive().default(30),
   retry: PipelineRetrySchema.default(() => PipelineRetrySchema.parse({})),
   circuit_breaker: PipelineCircuitBreakerSchema.default(() => PipelineCircuitBreakerSchema.parse({})),
