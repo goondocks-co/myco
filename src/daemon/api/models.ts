@@ -5,7 +5,11 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 const MODEL_LIST_TIMEOUT_MS = 5000;
 
 /** Well-known Anthropic models — no list API available locally. */
-const ANTHROPIC_MODELS = ['claude-sonnet-4-5-20250514', 'claude-haiku-4-5-20251001'];
+const ANTHROPIC_MODELS = [
+  'claude-opus-4-6',
+  'claude-sonnet-4-6',
+  'claude-haiku-4-5-20251001',
+];
 
 export async function handleGetModels(req: RouteRequest): Promise<RouteResponse> {
   const provider = req.query.provider;

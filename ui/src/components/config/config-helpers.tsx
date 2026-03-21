@@ -4,6 +4,12 @@ import type { ChangeEvent } from 'react';
 
 export const LLM_PROVIDERS = ['ollama', 'lm-studio', 'anthropic'] as const;
 export const EMBEDDING_PROVIDERS = ['ollama', 'lm-studio'] as const;
+
+/** Default base URLs per provider — used to reset base_url when provider changes. */
+export const PROVIDER_DEFAULT_URLS: Record<string, string> = {
+  ollama: 'http://localhost:11434',
+  'lm-studio': 'http://localhost:1234',
+};
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
 export const SYNC_MODES = ['git', 'obsidian-sync', 'manual'] as const;
 

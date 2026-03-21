@@ -12,7 +12,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from '../ui/dialog';
-import { isDirty } from './config-helpers';
+import { isDirty, PROVIDER_DEFAULT_URLS } from './config-helpers';
 import { IntelligenceSection } from './IntelligenceSection';
 import { DigestSection } from './DigestSection';
 import { CaptureSection } from './CaptureSection';
@@ -57,25 +57,38 @@ export function ConfigForm({ config, onSave, isSaving }: ConfigFormProps) {
 
   const updateLlm = useCallback(
     (key: string, value: string | number) =>
-      setForm((prev) => ({
-        ...prev,
-        intelligence: {
-          ...prev.intelligence,
-          llm: { ...prev.intelligence.llm, [key]: value },
-        },
-      })),
+      setForm((prev) => {
+        const updates: Record<string, unknown> = { [key]: value };
+        // When provider changes, reset base_url to the new provider's default
+        if (key === 'provider' && typeof value === 'string') {
+          updates.base_url = PROVIDER_DEFAULT_URLS[value] ?? undefined;
+        }
+        return {
+          ...prev,
+          intelligence: {
+            ...prev.intelligence,
+            llm: { ...prev.intelligence.llm, ...updates },
+          },
+        };
+      }),
     [],
   );
 
   const updateEmbedding = useCallback(
     (key: string, value: string) =>
-      setForm((prev) => ({
-        ...prev,
-        intelligence: {
-          ...prev.intelligence,
-          embedding: { ...prev.intelligence.embedding, [key]: value },
-        },
-      })),
+      setForm((prev) => {
+        const updates: Record<string, unknown> = { [key]: value };
+        if (key === 'provider') {
+          updates.base_url = PROVIDER_DEFAULT_URLS[value] ?? undefined;
+        }
+        return {
+          ...prev,
+          intelligence: {
+            ...prev.intelligence,
+            embedding: { ...prev.intelligence.embedding, ...updates },
+          },
+        };
+      }),
     [],
   );
 
