@@ -12,16 +12,14 @@ import { createLlmProvider, createEmbeddingProvider } from '../intelligence/llm.
 import type { EmbeddingProvider, LlmProvider } from '../intelligence/llm.js';
 import { VectorIndex } from '../index/vectors.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
-import { LineageGraph, LINEAGE_SIMILARITY_THRESHOLD, LINEAGE_SIMILARITY_HIGH_CONFIDENCE, LINEAGE_SIMILARITY_CANDIDATES, LINEAGE_SIMILARITY_MAX_TOKENS, type LineageLink } from './lineage.js';
+import { LineageGraph } from './lineage.js';
 import type { RegisteredSession } from './lifecycle.js';
 import { PlanWatcher } from './watcher.js';
 import { DigestEngine, Metabolism } from './digest.js';
 import { ConsolidationEngine } from './consolidation.js';
 import { resolvePort } from './port.js';
 import { handleMycoContext } from '../mcp/tools/context.js';
-import { buildSimilarityPrompt } from '../prompts/index.js';
-import { extractNumber } from '../intelligence/response.js';
-import { EMBEDDING_INPUT_LIMIT, CONTENT_SNIPPET_CHARS, CHARS_PER_TOKEN, STALE_BUFFER_MAX_AGE_MS, LINEAGE_RECENT_SESSIONS_LIMIT, RELATED_SPORES_LIMIT, CANDIDATE_CONTENT_PREVIEW, SESSION_CONTEXT_MAX_PLANS, PROMPT_CONTEXT_MAX_SPORES, PROMPT_CONTEXT_MIN_SIMILARITY, PROMPT_CONTEXT_MIN_LENGTH, CONTEXT_SESSION_PREVIEW_CHARS, LLM_REASONING_MODE } from '../constants.js';
+import { EMBEDDING_INPUT_LIMIT, CONTENT_SNIPPET_CHARS, STALE_BUFFER_MAX_AGE_MS, LINEAGE_RECENT_SESSIONS_LIMIT, RELATED_SPORES_LIMIT, SESSION_CONTEXT_MAX_PLANS, PROMPT_CONTEXT_MAX_SPORES, PROMPT_CONTEXT_MIN_SIMILARITY, PROMPT_CONTEXT_MIN_LENGTH, CONTEXT_SESSION_PREVIEW_CHARS } from '../constants.js';
 import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter, extensionForMimeType } from '../agents/adapter.js';
 import { claudeCodeAdapter } from '../agents/claude-code.js';
