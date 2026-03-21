@@ -586,53 +586,53 @@ export async function main(): Promise<void> {
 
     metabolism = new Metabolism(config.digest.metabolism);
 
-    // Fire initial cycle in the background — don't block server readiness
-    logger.debug('digest', 'Firing initial digest cycle (background)');
-    digestEngine.runCycle()
-      .then((result) => {
-        if (result) {
-          metabolism!.onSubstrateFound();
-          logger.info('digest', `Initial digest cycle: ${result.tiersGenerated.length} tiers, ${result.durationMs}ms`);
-        }
-      })
-      .catch((err) => {
-        logger.warn('digest', 'Initial digest cycle failed', { error: (err as Error).message });
-        metabolism!.onEmptyCycle();
-      });
+    // Digest is triggered by the pipeline tick, not by the metabolism timer directly.
+    // The metabolism timer only controls cadence (active → cooldown → dormant).
+    // When the metabolism says "it's time" it sets a flag; the pipeline tick checks
+    // the flag and runs digest if upstream is clear. This avoids startup races
+    // where the metabolism fires before the pipeline has processed upstream work.
+    let digestReady = false;
 
-    // Start metabolism timer
     metabolism.start(async () => {
-      try {
-        // Gate digest on upstream pipeline stages: don't run while extraction,
-        // embedding, or consolidation still have active work items.
-        if (pipeline.hasUpstreamWork()) {
-          logger.info('digest', 'Digest deferred — upstream stages pending');
-          metabolism!.onEmptyCycle();
-          return;
-        }
+      // Metabolism says it's time for a digest — set the flag for the pipeline tick
+      digestReady = true;
+    });
 
+    // Register digest as a post-stages step in the pipeline tick
+    const originalTick = pipeline.tick.bind(pipeline);
+    pipeline.tick = async (batchSize: number) => {
+      // Process upstream stages first (extraction, embedding, consolidation)
+      await originalTick(batchSize);
+
+      // Then check if digest should run
+      if (!digestReady) return;
+      if (pipeline.hasUpstreamWork()) {
+        logger.debug('digest', 'Digest deferred — upstream stages pending');
+        return;
+      }
+
+      // Reset flag before running (metabolism will set it again on next tick)
+      digestReady = false;
+
+      try {
         const cycleResult = await digestEngine.runCycle();
         if (cycleResult) {
           metabolism!.onSubstrateFound();
-
-          // Advance all digest:pending items to digest:succeeded
           const advanced = pipeline.advanceDigestItems();
           if (advanced > 0) {
             logger.debug('digest', `Advanced ${advanced} pipeline items to digest:succeeded`);
           }
-
           logger.info('digest', `Digest cycle ${cycleResult.cycleId}: ${cycleResult.tiersGenerated.length} tiers`);
         } else {
           metabolism!.onEmptyCycle();
-          logger.debug('digest', 'No substrate, backing off');
         }
       } catch (err) {
         logger.warn('digest', 'Digest cycle failed', { error: (err as Error).message });
         metabolism!.onEmptyCycle();
       }
-    });
+    };
 
-    logger.info('digest', 'Digest enabled — starting metabolism');
+    logger.info('digest', 'Digest enabled — controlled by pipeline tick');
   }
 
   const batchManager = new BatchManager(async (closedBatch: BatchEvent[]) => {
