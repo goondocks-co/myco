@@ -335,8 +335,75 @@ export async function main(): Promise<void> {
         title,
       });
     },
-    embedding: async (itemId, itemType) => {
-      logger.debug('pipeline', `Stub: embedding for ${itemType}/${itemId}`);
+    embedding: async (itemId, itemType, sourcePath) => {
+      if (!vectorIndex || !embeddingProvider) {
+        throw new Error('Embedding provider or vector index not available');
+      }
+      if (!sourcePath) {
+        throw new Error(`No source path for ${itemType}/${itemId}`);
+      }
+
+      const fullPath = path.join(vaultDir, sourcePath);
+      if (!fs.existsSync(fullPath)) {
+        throw new Error(`Vault note not found: ${sourcePath}`);
+      }
+
+      const fileContent = fs.readFileSync(fullPath, 'utf-8');
+
+      // Parse frontmatter for metadata
+      const fmMatch = fileContent.match(/^---\n([\s\S]*?)\n---/);
+      const frontmatter = fmMatch ? YAML.parse(fmMatch[1]) as Record<string, unknown> : {};
+      const body = fmMatch ? fileContent.slice(fmMatch[0].length) : fileContent;
+
+      // Extract embeddable text based on item type
+      let embeddableText: string;
+      if (itemType === 'session') {
+        // For sessions: title + summary narrative (same pattern as runReprocess)
+        const title = typeof frontmatter.title === 'string' ? frontmatter.title : '';
+        const summary = typeof frontmatter.summary === 'string' ? frontmatter.summary : '';
+        // Also try extracting narrative from the abstract callout in the body
+        const calloutMatch = body.match(/> \[!abstract\] Summary\n((?:> .*\n?)*)/);
+        const narrative = calloutMatch
+          ? calloutMatch[1].replace(/^> /gm, '').trim()
+          : '';
+        embeddableText = `${title}\n${narrative || summary}`.trim();
+      } else {
+        // For spores/artifacts: title from first heading + full body content
+        const titleMatch = body.match(/^#\s+(.+)$/m);
+        const title = titleMatch ? titleMatch[1] : '';
+        embeddableText = `${title}\n${body}`.trim();
+      }
+
+      if (!embeddableText) {
+        // Nothing to embed — empty content is not an error, just skip
+        logger.debug('pipeline', 'No embeddable content, skipping', { id: itemId, type: itemType });
+        return;
+      }
+
+      // Generate embedding
+      const result = await generateEmbedding(
+        embeddingProvider,
+        embeddableText.slice(0, EMBEDDING_INPUT_LIMIT),
+      );
+
+      // Build metadata for vector index
+      const metadata: Record<string, string> = {
+        type: itemType,
+        file_path: sourcePath,
+        session_id: typeof frontmatter.session === 'string' ? frontmatter.session
+          : typeof frontmatter.id === 'string' && itemType === 'session' ? frontmatter.id
+          : '',
+        branch: typeof frontmatter.branch === 'string' ? frontmatter.branch : '',
+      };
+
+      // Store in vectors.db
+      vectorIndex.upsert(itemId, result.embedding, metadata);
+
+      logger.info('pipeline', 'Embedding stored', {
+        id: itemId,
+        type: itemType,
+        dimensions: result.dimensions,
+      });
     },
     consolidation: async (itemId, itemType) => {
       logger.debug('pipeline', `Stub: consolidation for ${itemType}/${itemId}`);

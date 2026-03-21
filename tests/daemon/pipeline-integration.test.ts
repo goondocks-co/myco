@@ -9,8 +9,11 @@ import { sessionNoteId, sessionRelativePath } from '@myco/vault/session-id';
 import { writeObservationNotes } from '@myco/vault/observations';
 import { updateTitleAndSummary } from '@myco/services/vault-ops';
 import { SUMMARIZATION_FAILED_MARKER } from '@myco/daemon/processor';
+import { generateEmbedding } from '@myco/intelligence/embeddings';
 import { EventBuffer } from '@myco/capture/buffer';
-import { ITEM_STAGE_MAP } from '@myco/constants';
+import { ITEM_STAGE_MAP, EMBEDDING_INPUT_LIMIT } from '@myco/constants';
+import type { EmbeddingProvider, EmbeddingResponse } from '@myco/intelligence/llm';
+import type { VectorIndex } from '@myco/index/vectors';
 import YAML from 'yaml';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -677,5 +680,372 @@ describe('Pipeline Integration: Extraction Stage Handler', () => {
     expect(updated).not.toContain('# Old Title');
     expect(updated).toContain('New summary text.');
     expect(updated).not.toContain('Old summary text.');
+  });
+});
+
+/**
+ * Pipeline Integration: Embedding Stage Handler
+ *
+ * These tests exercise the embedding handler logic that runs on pipeline tick:
+ * 1. Read vault note at sourcePath
+ * 2. Parse frontmatter for metadata
+ * 3. Extract embeddable text (type-dependent)
+ * 4. Generate embedding via provider
+ * 5. Store in vectorIndex
+ */
+describe('Pipeline Integration: Embedding Stage Handler', () => {
+  let tmpDir: string;
+  let pipeline: PipelineManager;
+  let vault: VaultWriter;
+  let index: MycoIndex;
+
+  /** Mock embedding provider that returns a deterministic embedding. */
+  const MOCK_DIMENSIONS = 4;
+  function createMockEmbeddingProvider(shouldFail = false): EmbeddingProvider {
+    return {
+      name: 'mock-embedding',
+      embed: async (text: string): Promise<EmbeddingResponse> => {
+        if (shouldFail) {
+          throw new Error('Embedding provider unavailable');
+        }
+        // Deterministic embedding based on text length
+        const val = text.length / 1000;
+        return {
+          embedding: [val, val * 0.5, val * 0.25, val * 0.1],
+          model: 'mock-model',
+          dimensions: MOCK_DIMENSIONS,
+        };
+      },
+      isAvailable: async () => !shouldFail,
+    };
+  }
+
+  /** Mock vector index that records upserts for verification. */
+  interface UpsertRecord {
+    id: string;
+    embedding: number[];
+    metadata: Record<string, string>;
+  }
+
+  function createMockVectorIndex(): VectorIndex & { upserts: UpsertRecord[] } {
+    const upserts: UpsertRecord[] = [];
+    return {
+      upserts,
+      upsert(id: string, embedding: number[], metadata: Record<string, string> = {}) {
+        upserts.push({ id, embedding, metadata });
+      },
+      // Stubs for interface compliance
+      search: () => [],
+      getEmbedding: () => null,
+      has: (id: string) => upserts.some((u) => u.id === id),
+      delete: () => {},
+      count: () => upserts.length,
+      close: () => {},
+    } as unknown as VectorIndex & { upserts: UpsertRecord[] };
+  }
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-embedding-integ-'));
+    pipeline = new PipelineManager(tmpDir);
+    vault = new VaultWriter(tmpDir);
+    index = new MycoIndex(path.join(tmpDir, 'index.db'));
+    initFts(index);
+  });
+
+  afterEach(() => {
+    pipeline.close();
+    index.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** Helper: create a session note and register in pipeline as capture:succeeded. */
+  function writeAndRegisterSession(sessionId: string, opts?: { narrative?: string; user?: string; branch?: string }): string {
+    const date = '2026-03-21';
+    const relativePath = sessionRelativePath(sessionId, date);
+    const summary = formatSessionBody({
+      title: `Session ${sessionId}`,
+      narrative: opts?.narrative ?? '',
+      sessionId,
+      user: opts?.user,
+      started: '2026-03-21T10:00:00Z',
+      ended: '2026-03-21T10:30:00Z',
+      branch: opts?.branch,
+      turns: [
+        { prompt: 'Implement embedding handler', toolCount: 5, aiResponse: 'Done.' },
+      ],
+    });
+    vault.writeSession({
+      id: sessionId,
+      user: opts?.user,
+      started: '2026-03-21T10:00:00Z',
+      ended: '2026-03-21T10:30:00Z',
+      branch: opts?.branch,
+      summary,
+    });
+    indexNote(index, tmpDir, relativePath);
+    pipeline.register(sessionId, 'session', relativePath);
+    pipeline.advance(sessionId, 'session', 'capture', 'succeeded');
+    // Skip extraction for embedding tests — advance extraction to succeeded
+    pipeline.advance(sessionId, 'session', 'extraction', 'succeeded');
+    return relativePath;
+  }
+
+  /** Helper: create a spore note and register in pipeline as capture:succeeded. */
+  function writeAndRegisterSpore(sporeId: string, sessionId: string, opts?: { type?: string; content?: string }): string {
+    const obsType = opts?.type ?? 'discovery';
+    const content = opts?.content ?? 'This is a test spore observation about pipeline embedding.';
+    const relativePath = vault.writeSpore({
+      id: sporeId,
+      observation_type: obsType,
+      session: sessionId,
+      tags: ['test'],
+      content: `# Test Spore\n\n${content}`,
+    });
+    indexNote(index, tmpDir, relativePath);
+    pipeline.register(sporeId, 'spore', relativePath);
+    pipeline.advance(sporeId, 'spore', 'capture', 'succeeded');
+    // Spores skip extraction per ITEM_STAGE_MAP
+    return relativePath;
+  }
+
+  it('embedding handler stores vector in vectorIndex on success (session)', async () => {
+    const sessionId = 'test-embed-session-001';
+    const relativePath = writeAndRegisterSession(sessionId, {
+      narrative: 'Implemented the embedding stage handler for the pipeline.',
+      user: 'chris',
+      branch: 'feat/embedding',
+    });
+
+    const mockProvider = createMockEmbeddingProvider();
+    const mockVectorIndex = createMockVectorIndex();
+
+    pipeline.setHandlers({
+      extraction: async () => {},
+      embedding: async (itemId, itemType, sourcePath) => {
+        if (!sourcePath) throw new Error(`No source path for ${itemType}/${itemId}`);
+
+        const fullPath = path.join(tmpDir, sourcePath);
+        const fileContent = fs.readFileSync(fullPath, 'utf-8');
+
+        // Parse frontmatter
+        const fmMatch = fileContent.match(/^---\n([\s\S]*?)\n---/);
+        const frontmatter = fmMatch ? YAML.parse(fmMatch[1]) as Record<string, unknown> : {};
+        const body = fmMatch ? fileContent.slice(fmMatch[0].length) : fileContent;
+
+        // Extract embeddable text for session
+        let embeddableText: string;
+        if (itemType === 'session') {
+          const title = typeof frontmatter.title === 'string' ? frontmatter.title : '';
+          const summary = typeof frontmatter.summary === 'string' ? frontmatter.summary : '';
+          const calloutMatch = body.match(/> \[!abstract\] Summary\n((?:> .*\n?)*)/);
+          const narrative = calloutMatch ? calloutMatch[1].replace(/^> /gm, '').trim() : '';
+          embeddableText = `${title}\n${narrative || summary}`.trim();
+        } else {
+          const titleMatch = body.match(/^#\s+(.+)$/m);
+          const title = titleMatch ? titleMatch[1] : '';
+          embeddableText = `${title}\n${body}`.trim();
+        }
+
+        if (!embeddableText) return;
+
+        const result = await generateEmbedding(mockProvider, embeddableText.slice(0, EMBEDDING_INPUT_LIMIT));
+        mockVectorIndex.upsert(itemId, result.embedding, {
+          type: itemType,
+          file_path: sourcePath,
+          session_id: typeof frontmatter.id === 'string' && itemType === 'session' ? frontmatter.id : '',
+        });
+      },
+      consolidation: async () => {},
+    });
+
+    await pipeline.tick(10);
+
+    // Verify embedding was stored
+    expect(mockVectorIndex.upserts).toHaveLength(1);
+    expect(mockVectorIndex.upserts[0].id).toBe(sessionId);
+    expect(mockVectorIndex.upserts[0].embedding).toHaveLength(MOCK_DIMENSIONS);
+    expect(mockVectorIndex.upserts[0].metadata.type).toBe('session');
+    expect(mockVectorIndex.upserts[0].metadata.file_path).toBe(relativePath);
+
+    // Verify pipeline advanced embedding to succeeded
+    const statuses = pipeline.getItemStatus(sessionId, 'session');
+    const embeddingStatus = statuses.find((s) => s.stage === 'embedding');
+    expect(embeddingStatus).toBeDefined();
+    expect(embeddingStatus!.status).toBe('succeeded');
+  });
+
+  it('embedding handler stores vector in vectorIndex on success (spore)', async () => {
+    const sessionId = 'test-embed-spore-parent';
+    const sporeId = `discovery-${sessionId.slice(-6)}-${Date.now()}`;
+    const relativePath = writeAndRegisterSpore(sporeId, sessionId, {
+      content: 'Pipeline embedding handler reads vault notes and generates embeddings.',
+    });
+
+    const mockProvider = createMockEmbeddingProvider();
+    const mockVectorIndex = createMockVectorIndex();
+
+    pipeline.setHandlers({
+      extraction: async () => {},
+      embedding: async (itemId, itemType, sourcePath) => {
+        if (!sourcePath) throw new Error(`No source path for ${itemType}/${itemId}`);
+
+        const fullPath = path.join(tmpDir, sourcePath);
+        const fileContent = fs.readFileSync(fullPath, 'utf-8');
+
+        const fmMatch = fileContent.match(/^---\n([\s\S]*?)\n---/);
+        const frontmatter = fmMatch ? YAML.parse(fmMatch[1]) as Record<string, unknown> : {};
+        const body = fmMatch ? fileContent.slice(fmMatch[0].length) : fileContent;
+
+        const titleMatch = body.match(/^#\s+(.+)$/m);
+        const title = titleMatch ? titleMatch[1] : '';
+        const embeddableText = `${title}\n${body}`.trim();
+
+        if (!embeddableText) return;
+
+        const result = await generateEmbedding(mockProvider, embeddableText.slice(0, EMBEDDING_INPUT_LIMIT));
+        mockVectorIndex.upsert(itemId, result.embedding, {
+          type: itemType,
+          file_path: sourcePath,
+          session_id: typeof frontmatter.session === 'string' ? frontmatter.session : '',
+        });
+      },
+      consolidation: async () => {},
+    });
+
+    await pipeline.tick(10);
+
+    // Verify embedding was stored for the spore
+    expect(mockVectorIndex.upserts).toHaveLength(1);
+    expect(mockVectorIndex.upserts[0].id).toBe(sporeId);
+    expect(mockVectorIndex.upserts[0].embedding).toHaveLength(MOCK_DIMENSIONS);
+    expect(mockVectorIndex.upserts[0].metadata.type).toBe('spore');
+    expect(mockVectorIndex.upserts[0].metadata.file_path).toBe(relativePath);
+    expect(mockVectorIndex.upserts[0].metadata.session_id).toBe(sessionId);
+
+    // Verify pipeline advanced embedding to succeeded
+    const statuses = pipeline.getItemStatus(sporeId, 'spore');
+    const embeddingStatus = statuses.find((s) => s.stage === 'embedding');
+    expect(embeddingStatus).toBeDefined();
+    expect(embeddingStatus!.status).toBe('succeeded');
+  });
+
+  it('embedding handler throws on provider failure', async () => {
+    const sessionId = 'test-embed-fail-001';
+    writeAndRegisterSession(sessionId);
+
+    pipeline.setHandlers({
+      extraction: async () => {},
+      embedding: async (itemId, itemType, sourcePath) => {
+        if (!sourcePath) throw new Error(`No source path for ${itemType}/${itemId}`);
+
+        const fullPath = path.join(tmpDir, sourcePath);
+        const fileContent = fs.readFileSync(fullPath, 'utf-8');
+
+        const fmMatch = fileContent.match(/^---\n([\s\S]*?)\n---/);
+        const body = fmMatch ? fileContent.slice(fmMatch[0].length) : fileContent;
+
+        const embeddableText = body.trim();
+        if (!embeddableText) return;
+
+        // This provider will throw
+        const failingProvider = createMockEmbeddingProvider(true);
+        await generateEmbedding(failingProvider, embeddableText.slice(0, EMBEDDING_INPUT_LIMIT));
+      },
+      consolidation: async () => {},
+    });
+
+    await pipeline.tick(10);
+
+    // Verify embedding stage is failed
+    const statuses = pipeline.getItemStatus(sessionId, 'session');
+    const embeddingStatus = statuses.find((s) => s.stage === 'embedding');
+    expect(embeddingStatus).toBeDefined();
+    expect(embeddingStatus!.status).toBe('failed');
+    expect(embeddingStatus!.error_message).toContain('Embedding provider unavailable');
+  });
+
+  it('embedding handler handles missing sourcePath gracefully', async () => {
+    const sessionId = 'test-embed-no-path-001';
+    // Register with a path that doesn't exist on disk
+    const fakePath = 'sessions/2026-03-21/session-nonexistent.md';
+    pipeline.register(sessionId, 'session', fakePath);
+    pipeline.advance(sessionId, 'session', 'capture', 'succeeded');
+    pipeline.advance(sessionId, 'session', 'extraction', 'succeeded');
+
+    pipeline.setHandlers({
+      extraction: async () => {},
+      embedding: async (itemId, itemType, sourcePath) => {
+        if (!sourcePath) throw new Error(`No source path for ${itemType}/${itemId}`);
+
+        const fullPath = path.join(tmpDir, sourcePath);
+        if (!fs.existsSync(fullPath)) {
+          throw new Error(`Vault note not found: ${sourcePath}`);
+        }
+      },
+      consolidation: async () => {},
+    });
+
+    await pipeline.tick(10);
+
+    // Verify embedding stage is failed
+    const statuses = pipeline.getItemStatus(sessionId, 'session');
+    const embeddingStatus = statuses.find((s) => s.stage === 'embedding');
+    expect(embeddingStatus).toBeDefined();
+    expect(embeddingStatus!.status).toBe('failed');
+    expect(embeddingStatus!.error_message).toContain('Vault note not found');
+  });
+
+  it('embedding handler extracts narrative from session abstract callout', async () => {
+    const sessionId = 'test-embed-narrative-001';
+    // Write a session with a narrative (which creates an abstract callout)
+    writeAndRegisterSession(sessionId, {
+      narrative: 'This session implemented the embedding stage handler for the processing pipeline.',
+    });
+
+    const embeddedTexts: string[] = [];
+    const mockProvider: EmbeddingProvider = {
+      name: 'capture-mock',
+      embed: async (text: string) => {
+        embeddedTexts.push(text);
+        return { embedding: [0.1, 0.2, 0.3, 0.4], model: 'mock', dimensions: 4 };
+      },
+      isAvailable: async () => true,
+    };
+    const mockVectorIndex = createMockVectorIndex();
+
+    pipeline.setHandlers({
+      extraction: async () => {},
+      embedding: async (itemId, itemType, sourcePath) => {
+        if (!sourcePath) return;
+        const fullPath = path.join(tmpDir, sourcePath);
+        const fileContent = fs.readFileSync(fullPath, 'utf-8');
+        const fmMatch = fileContent.match(/^---\n([\s\S]*?)\n---/);
+        const frontmatter = fmMatch ? YAML.parse(fmMatch[1]) as Record<string, unknown> : {};
+        const body = fmMatch ? fileContent.slice(fmMatch[0].length) : fileContent;
+
+        let embeddableText: string;
+        if (itemType === 'session') {
+          const title = typeof frontmatter.title === 'string' ? frontmatter.title : '';
+          const calloutMatch = body.match(/> \[!abstract\] Summary\n((?:> .*\n?)*)/);
+          const narrative = calloutMatch ? calloutMatch[1].replace(/^> /gm, '').trim() : '';
+          embeddableText = `${title}\n${narrative}`.trim();
+        } else {
+          embeddableText = body.trim();
+        }
+
+        if (!embeddableText) return;
+
+        const result = await generateEmbedding(mockProvider, embeddableText.slice(0, EMBEDDING_INPUT_LIMIT));
+        mockVectorIndex.upsert(itemId, result.embedding, { type: itemType, file_path: sourcePath });
+      },
+      consolidation: async () => {},
+    });
+
+    await pipeline.tick(10);
+
+    // Verify the narrative was extracted and embedded
+    expect(embeddedTexts).toHaveLength(1);
+    expect(embeddedTexts[0]).toContain('embedding stage handler');
+    expect(mockVectorIndex.upserts).toHaveLength(1);
   });
 });
