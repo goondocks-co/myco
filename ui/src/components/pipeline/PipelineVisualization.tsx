@@ -79,7 +79,7 @@ function StageBox({
   stage: string;
   counts: Record<string, number> | undefined;
   circuitOpen: boolean;
-  onClick?: (stage: string) => void;
+  onClick?: (stage: string, status?: string) => void;
 }) {
   const health = classifyStageHealth(counts);
   const succeeded = counts?.succeeded ?? 0;
@@ -116,12 +116,18 @@ function StageBox({
           </span>
         )}
         {pending > 0 && (
-          <span className="font-mono text-amber-600 dark:text-amber-400">
+          <span
+            className="font-mono text-amber-600 dark:text-amber-400 underline decoration-dotted cursor-pointer"
+            onClick={(e) => { e.stopPropagation(); onClick?.(stage, 'pending'); }}
+          >
             {pending} pending
           </span>
         )}
         {failed > 0 && (
-          <span className="font-mono text-red-600 dark:text-red-400">
+          <span
+            className="font-mono text-red-600 dark:text-red-400 underline decoration-dotted cursor-pointer"
+            onClick={(e) => { e.stopPropagation(); onClick?.(stage, 'failed'); }}
+          >
             {failed} err
           </span>
         )}
@@ -265,14 +271,16 @@ export function PipelineVisualization() {
     );
   }
 
-  const handleStageClick = (stage: string) => {
+  const handleStageClick = (stage: string, status?: string) => {
+    const params = new URLSearchParams({ stage });
+    if (status) params.set('status', status);
+    const query = params.toString();
+
     if (location.pathname === '/mycelium') {
-      // Already on Mycelium — update URL params and scroll to work items
-      navigate(`/mycelium?stage=${stage}`, { replace: true });
+      navigate(`/mycelium?${query}`, { replace: true });
       document.getElementById('work-items')?.scrollIntoView({ behavior: 'smooth' });
     } else {
-      // From Dashboard or other page — navigate to Mycelium with stage filter
-      navigate(`/mycelium?stage=${stage}`);
+      navigate(`/mycelium?${query}`);
     }
   };
 
