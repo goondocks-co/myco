@@ -66,14 +66,14 @@ describe('DaemonServer', () => {
     const { SessionRegistry } = await import('@myco/daemon/lifecycle');
     const registry = new SessionRegistry({ gracePeriod: 30, onEmpty: () => {} });
 
-    server.registerRoute('POST', '/sessions/register', async (body: any) => {
-      registry.register(body.session_id);
-      return { ok: true, sessions: registry.sessions };
+    server.registerRoute('POST', '/sessions/register', async (req: any) => {
+      registry.register(req.body.session_id);
+      return { body: { ok: true, sessions: registry.sessions } };
     });
 
-    server.registerRoute('POST', '/sessions/unregister', async (body: any) => {
-      registry.unregister(body.session_id);
-      return { ok: true, sessions: registry.sessions };
+    server.registerRoute('POST', '/sessions/unregister', async (req: any) => {
+      registry.unregister(req.body.session_id);
+      return { body: { ok: true, sessions: registry.sessions } };
     });
 
     await server.start();

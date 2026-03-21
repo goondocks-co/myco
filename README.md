@@ -70,6 +70,10 @@ An MCP server exposes the vault to any agent runtime. The digest extract is inje
 
 Sessions link to plans. Plans link to decisions. Decisions link to spores. Obsidian backlinks and metadata create a navigable graph of your team's institutional knowledge. Open the vault in [Obsidian](https://obsidian.md) to browse it visually, or let agents traverse it via MCP tools.
 
+### Dashboard
+
+A local web dashboard at `http://localhost:<port>/` provides configuration management and operational triggers — no CLI or YAML editing needed. Manage intelligence providers, run curation and digest cycles, monitor daemon health, and view live logs. The daemon writes a `_portal.md` to your vault with the URL, so you can find it from Obsidian.
+
 ### Multi-agent
 
 Myco reads conversation transcripts from Claude Code, Cursor, and any agent that writes JSONL transcripts. Screenshots shared during sessions are extracted and embedded as Obsidian image attachments. A plugin adapter registry makes adding new agents straightforward.

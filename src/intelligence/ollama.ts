@@ -22,22 +22,26 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
   private baseUrl: string;
   private model: string;
   private defaultMaxTokens: number;
+  private contextWindow: number | undefined;
 
   constructor(config?: OllamaConfig) {
     this.baseUrl = config?.base_url ?? OllamaBackend.DEFAULT_BASE_URL;
     this.model = config?.model ?? config?.summary_model ?? 'llama3.2';
     this.defaultMaxTokens = config?.max_tokens ?? 1024;
+    this.contextWindow = config?.context_window;
   }
 
   async summarize(prompt: string, opts?: LlmRequestOptions): Promise<LlmResponse> {
     const maxTokens = opts?.maxTokens ?? this.defaultMaxTokens;
 
-    // Only send num_ctx when explicitly requested (e.g., digest needing 65K).
-    // Ollama reloads the model on ANY num_ctx change, so omitting it lets
-    // requests use whatever context is already loaded — no reload thrashing.
+    // Send num_ctx from config or per-call override. Ollama reloads the model
+    // on num_ctx changes, but consistent values (same num_ctx every call)
+    // only cause one reload on first use. Without this, Ollama falls back to
+    // its model default (often 2048), ignoring the user's configured context.
+    const contextLength = opts?.contextLength ?? this.contextWindow;
     const options: Record<string, unknown> = { num_predict: maxTokens };
-    if (opts?.contextLength) {
-      options.num_ctx = opts.contextLength;
+    if (contextLength) {
+      options.num_ctx = contextLength;
     }
 
     const body: Record<string, unknown> = {
