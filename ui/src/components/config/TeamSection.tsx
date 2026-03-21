@@ -1,14 +1,7 @@
 import type { MycoConfig } from '../../hooks/use-config';
 import { ConfigSection } from './ConfigSection';
 import { Input } from '../ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../ui/select';
-import { Field, SYNC_MODES, ToggleSwitch } from './config-helpers';
+import { Field, NativeSelect, SYNC_MODES, ToggleSwitch } from './config-helpers';
 
 interface TeamSectionProps {
   team: MycoConfig['team'];
@@ -38,19 +31,11 @@ export function TeamSection({ team, isDirty, updateTeam }: TeamSectionProps) {
             />
           </Field>
           <Field label="Sync Mode" description="How team knowledge is synchronized between machines">
-            <Select
+            <NativeSelect
               value={team.sync}
-              onValueChange={(v) => updateTeam('sync', v)}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {SYNC_MODES.map((m) => (
-                  <SelectItem key={m} value={m}>{m}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              onChange={(v) => updateTeam('sync', v)}
+              options={SYNC_MODES}
+            />
           </Field>
         </div>
       </div>

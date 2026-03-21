@@ -3,19 +3,13 @@ import { ConfigSection } from './ConfigSection';
 import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../ui/select';
-import {
   Field,
   LLM_PROVIDERS,
   CONTEXT_WINDOW_OPTIONS,
   DEFAULT_TIERS,
   COOLDOWN_STAGE_LABELS,
   COOLDOWN_STAGE_DESCRIPTIONS,
+  NativeSelect,
   ToggleSwitch,
 } from './config-helpers';
 import { ModelSelect } from './ModelSelect';
@@ -59,22 +53,16 @@ export function DigestSection({
           <h4 className="mb-3 text-sm font-medium text-muted-foreground">Intelligence</h4>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Provider" description="Override the processor model for digest — use a larger model for better synthesis">
-              <Select
+              <NativeSelect
                 value={digest.intelligence.provider ?? '__null__'}
-                onValueChange={(v) =>
+                onChange={(v) =>
                   updateDigestIntelligence('provider', v === '__null__' ? null : v)
                 }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__null__">Use main provider</SelectItem>
-                  {LLM_PROVIDERS.map((p) => (
-                    <SelectItem key={p} value={p}>{p}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                options={[
+                  { value: '__null__', label: 'Use main provider' },
+                  ...LLM_PROVIDERS.map((p) => ({ value: p, label: p })),
+                ]}
+              />
             </Field>
             <Field label="Model" description="Digest model — quality matters more than speed here">
               <ModelSelect
@@ -86,23 +74,16 @@ export function DigestSection({
               />
             </Field>
             <Field label="Context Window" description="How much vault content the digest model can process per cycle">
-              <Select
+              <NativeSelect
                 value={String(digest.intelligence.context_window)}
-                onValueChange={(v) =>
+                onChange={(v) =>
                   updateDigestIntelligence('context_window', parseInt(v, 10))
                 }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {CONTEXT_WINDOW_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={String(opt.value)}>
-                      {opt.label} ({opt.value.toLocaleString()})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                options={CONTEXT_WINDOW_OPTIONS.map((opt) => ({
+                  value: String(opt.value),
+                  label: `${opt.label} (${opt.value.toLocaleString()})`,
+                }))}
+              />
             </Field>
             <Field label="Keep Alive" description="How long to keep the digest model loaded between cycles (Ollama duration string)">
               <Input
@@ -135,24 +116,19 @@ export function DigestSection({
           </Field>
           <div className="mt-4">
             <Field label="Inject Tier" description="Which tier to inject at session start — larger tiers give agents more context">
-              <Select
+              <NativeSelect
                 value={digest.inject_tier !== null ? String(digest.inject_tier) : '__null__'}
-                onValueChange={(v) =>
+                onChange={(v) =>
                   updateDigest('inject_tier', v === '__null__' ? null : parseInt(v, 10))
                 }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__null__">None (disabled)</SelectItem>
-                  {DEFAULT_TIERS.map((tier) => (
-                    <SelectItem key={tier} value={String(tier)}>
-                      {tier.toLocaleString()} tokens
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                options={[
+                  { value: '__null__', label: 'None (disabled)' },
+                  ...DEFAULT_TIERS.map((tier) => ({
+                    value: String(tier),
+                    label: `${tier.toLocaleString()} tokens`,
+                  })),
+                ]}
+              />
             </Field>
           </div>
         </div>

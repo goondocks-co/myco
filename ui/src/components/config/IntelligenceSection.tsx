@@ -1,14 +1,8 @@
 import type { MycoConfig } from '../../hooks/use-config';
 import { ConfigSection } from './ConfigSection';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../ui/select';
-import {
   Field,
+  NativeSelect,
   LLM_PROVIDERS,
   EMBEDDING_PROVIDERS,
   CONTEXT_WINDOW_OPTIONS,
@@ -21,6 +15,11 @@ interface IntelligenceSectionProps {
   updateLlm: (key: string, value: string | number) => void;
   updateEmbedding: (key: string, value: string) => void;
 }
+
+const contextWindowOptions = CONTEXT_WINDOW_OPTIONS.map((opt) => ({
+  value: String(opt.value),
+  label: `${opt.label} (${opt.value.toLocaleString()})`,
+}));
 
 export function IntelligenceSection({
   intelligence,
@@ -40,19 +39,11 @@ export function IntelligenceSection({
           <h4 className="mb-3 text-sm font-medium text-muted-foreground">LLM</h4>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Provider" description="Which LLM service to use for processing sessions">
-              <Select
+              <NativeSelect
                 value={intelligence.llm.provider}
-                onValueChange={(v) => updateLlm('provider', v)}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {LLM_PROVIDERS.map((p) => (
-                    <SelectItem key={p} value={p}>{p}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                onChange={(v) => updateLlm('provider', v)}
+                options={[...LLM_PROVIDERS]}
+              />
             </Field>
             <Field label="Model" description="The model for extraction, summaries, and titles — speed matters more than depth">
               <ModelSelect
@@ -63,21 +54,11 @@ export function IntelligenceSection({
               />
             </Field>
             <Field label="Context Window" description="How much text the model can read per operation">
-              <Select
+              <NativeSelect
                 value={String(intelligence.llm.context_window)}
-                onValueChange={(v) => updateLlm('context_window', parseInt(v, 10))}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {CONTEXT_WINDOW_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={String(opt.value)}>
-                      {opt.label} ({opt.value.toLocaleString()})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                onChange={(v) => updateLlm('context_window', parseInt(v, 10))}
+                options={contextWindowOptions}
+              />
             </Field>
           </div>
         </div>
@@ -85,19 +66,11 @@ export function IntelligenceSection({
           <h4 className="mb-3 text-sm font-medium text-muted-foreground">Embedding</h4>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Provider" description="Which service generates vector embeddings for search">
-              <Select
+              <NativeSelect
                 value={intelligence.embedding.provider}
-                onValueChange={(v) => updateEmbedding('provider', v)}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {EMBEDDING_PROVIDERS.map((p) => (
-                    <SelectItem key={p} value={p}>{p}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                onChange={(v) => updateEmbedding('provider', v)}
+                options={[...EMBEDDING_PROVIDERS]}
+              />
             </Field>
             <Field label="Model" description="The embedding model for semantic search and similarity">
               <ModelSelect

@@ -79,6 +79,33 @@ export function ToggleSwitch({
   );
 }
 
+/* ---------- NativeSelect ---------- */
+
+interface NativeSelectProps {
+  value: string;
+  onChange: (value: string) => void;
+  options: ReadonlyArray<{ value: string; label: string }> | ReadonlyArray<string>;
+  disabled?: boolean;
+  className?: string;
+}
+
+export function NativeSelect({ value, onChange, options, disabled, className }: NativeSelectProps) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={disabled}
+      className={`w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50 ${className ?? ''}`}
+    >
+      {options.map((opt) => {
+        const val = typeof opt === 'string' ? opt : opt.value;
+        const label = typeof opt === 'string' ? opt : opt.label;
+        return <option key={val} value={val}>{label}</option>;
+      })}
+    </select>
+  );
+}
+
 /* ---------- Change helpers ---------- */
 
 export const numChange =

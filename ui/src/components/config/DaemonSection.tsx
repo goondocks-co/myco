@@ -1,14 +1,7 @@
 import type { MycoConfig } from '../../hooks/use-config';
 import { ConfigSection } from './ConfigSection';
 import { Input } from '../ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../ui/select';
-import { Field, LOG_LEVELS, numChange } from './config-helpers';
+import { Field, LOG_LEVELS, NativeSelect, numChange } from './config-helpers';
 
 interface DaemonSectionProps {
   daemon: MycoConfig['daemon'];
@@ -37,19 +30,11 @@ export function DaemonSection({ daemon, isDirty, updateDaemon }: DaemonSectionPr
           />
         </Field>
         <Field label="Log Level" description="Minimum severity level for daemon log output">
-          <Select
+          <NativeSelect
             value={daemon.log_level}
-            onValueChange={(v) => updateDaemon('log_level', v)}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {LOG_LEVELS.map((l) => (
-                <SelectItem key={l} value={l}>{l}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            onChange={(v) => updateDaemon('log_level', v)}
+            options={LOG_LEVELS}
+          />
         </Field>
         <Field label="Grace Period (sec)" description="Seconds to wait before shutting down when no sessions are active">
           <Input
