@@ -363,17 +363,15 @@ export function WorkItemList() {
     pollCategory: 'standard',
   });
 
-  // Sync URL params on initial mount (for back-navigation)
+  // Sync filter state when URL params change (e.g., stage click from PipelineVisualization)
   useEffect(() => {
     const urlStage = searchParams.get('stage');
     const urlStatus = searchParams.get('status');
     const urlType = searchParams.get('type');
-    if (urlStage && urlStage !== stage) setStage(urlStage);
-    if (urlStatus && urlStatus !== status) setStatus(urlStatus);
-    if (urlType && urlType !== type) setType(urlType);
-    // Only run on mount
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if ((urlStage ?? FILTER_ALL) !== stage) setStage(urlStage ?? FILTER_ALL);
+    if ((urlStatus ?? FILTER_ALL) !== status) setStatus(urlStatus ?? FILTER_ALL);
+    if ((urlType ?? FILTER_ALL) !== type) setType(urlType ?? FILTER_ALL);
+  }, [searchParams]); // React to URL param changes
 
   const items = data?.items ?? [];
   const total = data?.total ?? 0;

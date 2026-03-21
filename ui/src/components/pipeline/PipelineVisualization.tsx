@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { AlertTriangle, ArrowRight, Loader2, RotateCcw, ShieldAlert } from 'lucide-react';
 import { usePipeline, type PipelineHealth } from '../../hooks/use-pipeline';
 import { postJson } from '../../lib/api';
@@ -245,7 +245,8 @@ function BacklogIndicator({ totals }: { totals: PipelineHealth['totals'] }) {
 
 export function PipelineVisualization() {
   const { data: health, isLoading, isError } = usePipeline();
-  const [, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const location = useLocation();
 
   if (isLoading) {
     return (
@@ -265,9 +266,14 @@ export function PipelineVisualization() {
   }
 
   const handleStageClick = (stage: string) => {
-    setSearchParams({ stage });
-    // Scroll to work items section
-    document.getElementById('work-items')?.scrollIntoView({ behavior: 'smooth' });
+    if (location.pathname === '/mycelium') {
+      // Already on Mycelium — update URL params and scroll to work items
+      navigate(`/mycelium?stage=${stage}`, { replace: true });
+      document.getElementById('work-items')?.scrollIntoView({ behavior: 'smooth' });
+    } else {
+      // From Dashboard or other page — navigate to Mycelium with stage filter
+      navigate(`/mycelium?stage=${stage}`);
+    }
   };
 
   return (
