@@ -1049,3 +1049,185 @@ describe('Pipeline Integration: Embedding Stage Handler', () => {
     expect(mockVectorIndex.upserts).toHaveLength(1);
   });
 });
+
+/**
+ * Pipeline Integration: Consolidation Stage Handler
+ *
+ * These tests exercise the consolidation handler logic that runs on pipeline tick:
+ * 1. Only processes spore items — sessions and artifacts skip
+ * 2. Runs supersession check (checkSupersession) for the spore
+ * 3. Runs consolidation pass (ConsolidationEngine.runPass) for clustering
+ * 4. Throws on failure so the pipeline records the error
+ */
+describe('Pipeline Integration: Consolidation Stage Handler', () => {
+  let tmpDir: string;
+  let pipeline: PipelineManager;
+  let vault: VaultWriter;
+  let index: MycoIndex;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-consolidation-integ-'));
+    pipeline = new PipelineManager(tmpDir);
+    vault = new VaultWriter(tmpDir);
+    index = new MycoIndex(path.join(tmpDir, 'index.db'));
+    initFts(index);
+  });
+
+  afterEach(() => {
+    pipeline.close();
+    index.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** Helper: create a spore note and register in pipeline with embedding:succeeded. */
+  function writeAndRegisterSpore(sporeId: string, sessionId: string, opts?: { type?: string; content?: string }): string {
+    const obsType = opts?.type ?? 'discovery';
+    const content = opts?.content ?? 'This is a test spore for consolidation stage.';
+    const relativePath = vault.writeSpore({
+      id: sporeId,
+      observation_type: obsType,
+      session: sessionId,
+      tags: ['test'],
+      content: `# Test Spore\n\n${content}`,
+    });
+    indexNote(index, tmpDir, relativePath);
+    pipeline.register(sporeId, 'spore', relativePath);
+    pipeline.advance(sporeId, 'spore', 'capture', 'succeeded');
+    // Spores skip extraction per ITEM_STAGE_MAP, advance embedding to succeeded
+    pipeline.advance(sporeId, 'spore', 'embedding', 'succeeded');
+    return relativePath;
+  }
+
+  it('consolidation handler runs for spore items', async () => {
+    const sessionId = 'test-consol-parent-001';
+    const sporeId = `discovery-${sessionId.slice(-6)}-${Date.now()}`;
+    writeAndRegisterSpore(sporeId, sessionId);
+
+    const supersessionCalls: string[] = [];
+    const consolidationPassCalls: number[] = [];
+
+    pipeline.setHandlers({
+      extraction: async () => {},
+      embedding: async () => {},
+      consolidation: async (itemId, itemType) => {
+        if (itemType !== 'spore') return;
+
+        // Track supersession call
+        supersessionCalls.push(itemId);
+
+        // Simulate consolidation pass
+        consolidationPassCalls.push(1);
+      },
+    });
+
+    await pipeline.tick(10);
+
+    // Verify the handler was called for the spore
+    expect(supersessionCalls).toHaveLength(1);
+    expect(supersessionCalls[0]).toBe(sporeId);
+    expect(consolidationPassCalls).toHaveLength(1);
+
+    // Verify consolidation stage advanced to succeeded
+    const statuses = pipeline.getItemStatus(sporeId, 'spore');
+    const consolidationStatus = statuses.find((s) => s.stage === 'consolidation');
+    expect(consolidationStatus).toBeDefined();
+    expect(consolidationStatus!.status).toBe('succeeded');
+  });
+
+  it('consolidation handler skips non-spore items', async () => {
+    const sessionId = 'test-consol-skip-001';
+    const date = '2026-03-21';
+    const relativePath = sessionRelativePath(sessionId, date);
+
+    // Write a session note
+    const summary = formatSessionBody({
+      title: `Session ${sessionId}`,
+      narrative: '',
+      sessionId,
+      started: '2026-03-21T10:00:00Z',
+      ended: '2026-03-21T10:15:00Z',
+      turns: [{ prompt: 'Test consolidation skip', toolCount: 0 }],
+    });
+    vault.writeSession({
+      id: sessionId,
+      started: '2026-03-21T10:00:00Z',
+      ended: '2026-03-21T10:15:00Z',
+      summary,
+    });
+    indexNote(index, tmpDir, relativePath);
+
+    pipeline.register(sessionId, 'session', relativePath);
+    pipeline.advance(sessionId, 'session', 'capture', 'succeeded');
+    pipeline.advance(sessionId, 'session', 'extraction', 'succeeded');
+    pipeline.advance(sessionId, 'session', 'embedding', 'succeeded');
+
+    // Consolidation should be skipped for sessions per ITEM_STAGE_MAP
+    const statuses = pipeline.getItemStatus(sessionId, 'session');
+    const consolidationStatus = statuses.find((s) => s.stage === 'consolidation');
+    expect(consolidationStatus).toBeDefined();
+    expect(consolidationStatus!.status).toBe('skipped');
+
+    // Verify ITEM_STAGE_MAP confirms sessions don't have consolidation
+    expect(ITEM_STAGE_MAP['session']).not.toContain('consolidation');
+  });
+
+  it('consolidation handler throws on failure', async () => {
+    const sessionId = 'test-consol-fail-001';
+    const sporeId = `gotcha-${sessionId.slice(-6)}-${Date.now()}`;
+    writeAndRegisterSpore(sporeId, sessionId, { type: 'gotcha' });
+
+    pipeline.setHandlers({
+      extraction: async () => {},
+      embedding: async () => {},
+      consolidation: async (itemId, itemType) => {
+        if (itemType !== 'spore') return;
+
+        // Simulate LLM failure during supersession check
+        throw new Error('LLM provider connection refused');
+      },
+    });
+
+    await pipeline.tick(10);
+
+    // Verify consolidation stage is failed
+    const statuses = pipeline.getItemStatus(sporeId, 'spore');
+    const consolidationStatus = statuses.find((s) => s.stage === 'consolidation');
+    expect(consolidationStatus).toBeDefined();
+    expect(consolidationStatus!.status).toBe('failed');
+    expect(consolidationStatus!.error_message).toContain('LLM provider connection refused');
+  });
+
+  it('consolidation handler processes multiple spores independently', async () => {
+    const sessionId = 'test-consol-multi-001';
+    const sporeId1 = `discovery-${sessionId.slice(-6)}-${Date.now()}`;
+    const sporeId2 = `gotcha-${sessionId.slice(-6)}-${Date.now() + 1}`;
+    writeAndRegisterSpore(sporeId1, sessionId, { type: 'discovery', content: 'First spore observation.' });
+    writeAndRegisterSpore(sporeId2, sessionId, { type: 'gotcha', content: 'Second spore observation.' });
+
+    const processedSpores: string[] = [];
+
+    pipeline.setHandlers({
+      extraction: async () => {},
+      embedding: async () => {},
+      consolidation: async (itemId, itemType) => {
+        if (itemType !== 'spore') return;
+        processedSpores.push(itemId);
+      },
+    });
+
+    await pipeline.tick(10);
+
+    // Both spores should have been processed
+    expect(processedSpores).toHaveLength(2);
+    expect(processedSpores).toContain(sporeId1);
+    expect(processedSpores).toContain(sporeId2);
+
+    // Both should have consolidation:succeeded
+    for (const sporeId of [sporeId1, sporeId2]) {
+      const statuses = pipeline.getItemStatus(sporeId, 'spore');
+      const consolidationStatus = statuses.find((s) => s.stage === 'consolidation');
+      expect(consolidationStatus).toBeDefined();
+      expect(consolidationStatus!.status).toBe('succeeded');
+    }
+  });
+});

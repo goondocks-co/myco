@@ -261,6 +261,10 @@ export async function main(): Promise<void> {
     logger.info('pipeline', 'Recovered stuck pipeline items', { count: recoveredCount });
   }
 
+  // Consolidation engine — declared here so pipeline handler can capture it.
+  // Assigned later when digest.consolidation.enabled is true.
+  let consolidationEngine: ConsolidationEngine | null = null;
+
   // Pipeline stage handlers
   pipeline.setHandlers({
     extraction: async (itemId, itemType, sourcePath) => {
@@ -406,7 +410,23 @@ export async function main(): Promise<void> {
       });
     },
     consolidation: async (itemId, itemType) => {
-      logger.debug('pipeline', `Stub: consolidation for ${itemType}/${itemId}`);
+      if (itemType !== 'spore') return; // Sessions/artifacts skip consolidation
+
+      // Check if this spore supersedes older ones
+      await checkSupersession(itemId, {
+        index,
+        vectorIndex,
+        embeddingProvider,
+        llmProvider,
+        vaultDir,
+        log: ((level: string, msg: string, data?: Record<string, unknown>) =>
+          (logger as any)[level]('curation', msg, data)) as Parameters<typeof checkSupersession>[1]['log'],
+      });
+
+      // Run consolidation pass (clusters + wisdom synthesis)
+      if (consolidationEngine) {
+        await consolidationEngine.runPass();
+      }
     },
   });
 
@@ -541,7 +561,7 @@ export async function main(): Promise<void> {
     });
 
     if (config.digest.consolidation.enabled) {
-      const consolidationEngine = new ConsolidationEngine({
+      consolidationEngine = new ConsolidationEngine({
         vaultDir,
         index,
         vectorIndex,
@@ -551,14 +571,7 @@ export async function main(): Promise<void> {
         log: (level, message, data) => logger[level]('consolidation', message, data),
       });
 
-      digestEngine.registerPrePass('consolidation', async () => {
-        const result = await consolidationEngine.runPass();
-        if (result && result.consolidated > 0) {
-          logger.info('consolidation', `Consolidation pass: ${result.consolidated} wisdom notes, ${result.sporesSuperseded} spores superseded`);
-        }
-      });
-
-      logger.info('consolidation', 'Auto-consolidation enabled as digest pre-pass');
+      logger.info('consolidation', 'Auto-consolidation enabled as pipeline stage');
     }
 
     metabolism = new Metabolism(config.digest.metabolism);
