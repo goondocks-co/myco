@@ -1274,14 +1274,32 @@ export class PipelineManager {
    * stages still have work in flight.
    */
   hasUpstreamWork(): boolean {
-    const row = this.db
+    // Check 1: any item actively being processed at upstream stages
+    const active = this.db
       .prepare(
         `SELECT COUNT(*) as cnt FROM pipeline_status
          WHERE stage IN ('extraction', 'embedding', 'consolidation')
          AND status IN ('pending', 'processing', 'blocked')`,
       )
       .get() as { cnt: number };
-    return row.cnt > 0;
+    if (active.cnt > 0) return true;
+
+    // Check 2: any item with digest:pending where a prior stage is still
+    // non-terminal (e.g., embedding:processing → not yet at consolidation).
+    // Without this, digest runs while items are mid-pipeline.
+    const midPipeline = this.db
+      .prepare(
+        `SELECT COUNT(*) as cnt FROM pipeline_status ps1
+         WHERE ps1.stage = 'digest' AND ps1.status = 'pending'
+         AND EXISTS (
+           SELECT 1 FROM pipeline_status ps2
+           WHERE ps2.id = ps1.id AND ps2.item_type = ps1.item_type
+           AND ps2.stage != 'digest'
+           AND ps2.status NOT IN ('succeeded', 'skipped', 'failed', 'poisoned')
+         )`,
+      )
+      .get() as { cnt: number };
+    return midPipeline.cnt > 0;
   }
 
   /**
