@@ -49,6 +49,13 @@ export function DigestSection({
           />
         </Field>
 
+        <Field label="Consolidation" description="Automatically consolidate related spores into wisdom notes before each digest cycle">
+          <ToggleSwitch
+            checked={digest.consolidation}
+            onChange={(v) => updateDigest('consolidation', v)}
+          />
+        </Field>
+
         <div>
           <h4 className="mb-3 text-sm font-medium text-muted-foreground">Intelligence</h4>
           <div className="grid gap-4 sm:grid-cols-2">

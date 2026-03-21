@@ -160,3 +160,13 @@ export const SUPERSESSION_MAX_TOKENS = 256;
 
 /** Similarity threshold for clustering related spores in batch curation. */
 export const CURATION_CLUSTER_SIMILARITY = 0.75;
+
+// --- Automatic consolidation ---
+/** Minimum cluster size required before asking LLM to consolidate. */
+export const CONSOLIDATION_MIN_CLUSTER_SIZE = 3;
+
+/** Over-fetch from vector index before post-filtering by status/type. */
+export const CONSOLIDATION_VECTOR_FETCH_LIMIT = 20;
+
+/** Max output tokens for consolidation LLM synthesis. */
+export const CONSOLIDATION_MAX_TOKENS = 1024;

@@ -15,7 +15,7 @@ import type { LlmProvider, EmbeddingProvider } from '../intelligence/llm.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
 import { stripReasoningTokens } from '../intelligence/response.js';
 import { indexNote } from '../index/rebuild.js';
-import { loadPrompt } from '../prompts/index.js';
+import { loadPrompt, formatNoteForPrompt, formatNotesForPrompt } from '../prompts/index.js';
 import {
   SUPERSESSION_CANDIDATE_LIMIT,
   SUPERSESSION_VECTOR_FETCH_LIMIT,
@@ -159,10 +159,8 @@ export async function checkSupersession(
 
   // Build the supersession prompt
   const template = loadPrompt('supersession');
-  const newSporeText = `[${newSpore.id}] ${newSpore.title}\n${newSpore.content}`;
-  const candidatesText = filtered
-    .map((c) => `[${c.id}] ${c.title}\n${c.content}`)
-    .join('\n\n');
+  const newSporeText = formatNoteForPrompt(newSpore);
+  const candidatesText = formatNotesForPrompt(filtered);
 
   const prompt = template
     .replace('{{new_spore}}', newSporeText)

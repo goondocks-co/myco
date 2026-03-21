@@ -111,6 +111,19 @@ export class VectorIndex {
       .slice(0, limit);
   }
 
+  /** Retrieve the stored embedding for a given ID, or null if not found. */
+  getEmbedding(id: string): number[] | null {
+    const row = this.db.prepare('SELECT embedding FROM vec_embeddings WHERE id = ?').get(id) as { embedding: Buffer } | undefined;
+    if (!row) return null;
+    return Array.from(new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.byteLength / 4));
+  }
+
+  /** Check whether an embedding exists for the given ID. */
+  has(id: string): boolean {
+    const row = this.db.prepare('SELECT 1 FROM vec_metadata WHERE id = ?').get(id);
+    return row !== undefined;
+  }
+
   delete(id: string): void {
     this.db.prepare('DELETE FROM vec_metadata WHERE id = ?').run(id);
     this.db.prepare('DELETE FROM vec_embeddings WHERE id = ?').run(id);

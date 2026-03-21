@@ -51,6 +51,16 @@ function interpolate(template: string, vars: Record<string, string>): string {
   return result;
 }
 
+/** Format an indexed note as a prompt candidate block: `[id] title\ncontent`. */
+export function formatNoteForPrompt(note: { id: string; title: string; content: string }): string {
+  return `[${note.id}] ${note.title}\n${note.content}`;
+}
+
+/** Format multiple notes as a prompt candidates block, separated by double newlines. */
+export function formatNotesForPrompt(notes: Array<{ id: string; title: string; content: string }>): string {
+  return notes.map(formatNoteForPrompt).join('\n\n');
+}
+
 // --- Prompt builders ---
 
 export function buildExtractionPrompt(

@@ -24,6 +24,7 @@ export interface StatsResponse {
   };
   digest: {
     enabled: boolean;
+    consolidation_enabled: boolean;
     metabolism_state: string | null;
     last_cycle: {
       timestamp: string;

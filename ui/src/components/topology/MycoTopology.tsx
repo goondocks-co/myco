@@ -29,6 +29,7 @@ const NODE_COLORS: Record<string, string> = {
   daemon: 'hsl(142, 71%, 45%)',
   processor: 'hsl(160, 60%, 40%)',
   digest: 'hsl(142, 50%, 55%)',
+  consolidation: 'hsl(165, 55%, 48%)',
   embedding: 'hsl(175, 50%, 40%)',
   vault: 'hsl(130, 45%, 35%)',
   sessions: 'hsl(155, 60%, 50%)',
@@ -42,6 +43,7 @@ const COLOR_OFF = 'hsl(215, 10%, 25%)';
 const NODE_POSITIONS: Record<string, { x: number; y: number; radius: number }> = {
   processor: { x: 100, y: 80, radius: 38 },
   digest: { x: 400, y: 110, radius: 36 },
+  consolidation: { x: 480, y: 195, radius: 24 },
   embedding: { x: 75, y: 310, radius: 38 },
   vault: { x: 415, y: 290, radius: 38 },
   sessions: { x: 250, y: 360, radius: 36 },
@@ -105,8 +107,9 @@ function buildNodes(stats: StatsResponse): TopologyNode[] {
 
   const digestEnabled = stats.digest?.enabled ?? false;
   const digestState = stats.digest?.metabolism_state ?? null;
+  const consolidationEnabled = stats.digest?.consolidation_enabled ?? false;
 
-  return [
+  const nodes: TopologyNode[] = [
     {
       id: 'processor',
       label: 'Processor',
@@ -138,6 +141,19 @@ function buildNodes(stats: StatsResponse): TopologyNode[] {
       status: hasActiveSessions ? 'active' : 'idle',
     },
   ];
+
+  // Consolidation branches off digest — only shown when enabled
+  if (consolidationEnabled) {
+    const digestStatus = metabolismToStatus(digestState, digestEnabled);
+    nodes.push({
+      id: 'consolidation',
+      label: 'Consolidate',
+      detail: 'pre-pass',
+      status: digestStatus === 'active' ? 'active' : (digestEnabled ? 'idle' : 'off'),
+    });
+  }
+
+  return nodes;
 }
 
 /** Generate a bezier curve path between hub and a node — organic hypha shape */
@@ -182,13 +198,55 @@ function hyphaPath(nodeId: string): string {
   return `M ${startX} ${startY} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${endX} ${endY}`;
 }
 
+/** IDs of nodes that branch off another node instead of the hub. */
+const BRANCH_PARENTS: Record<string, string> = {
+  consolidation: 'digest',
+};
+
+/** Curvature magnitude (pixels) for branch hypha paths (node → child). */
+const BRANCH_HYPHA_CURVE = 12;
+
+/** Generate a bezier path from a parent node to a child node (branch hypha). */
+function branchHyphaPath(childId: string): string {
+  const parentId = BRANCH_PARENTS[childId];
+  if (!parentId) return '';
+  const parent = NODE_POSITIONS[parentId];
+  const child = NODE_POSITIONS[childId];
+  if (!parent || !child) return '';
+
+  const dx = child.x - parent.x;
+  const dy = child.y - parent.y;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  const ux = dx / len;
+  const uy = dy / len;
+
+  const startX = parent.x + ux * parent.radius;
+  const startY = parent.y + uy * parent.radius;
+  const endX = child.x - ux * child.radius;
+  const endY = child.y - uy * child.radius;
+
+  const edgeDx = endX - startX;
+  const edgeDy = endY - startY;
+  const edgeLen = Math.sqrt(edgeDx * edgeDx + edgeDy * edgeDy);
+  const nx = -edgeDy / edgeLen;
+  const ny = edgeDx / edgeLen;
+
+  const cp1x = startX + edgeDx * 0.4 + nx * BRANCH_HYPHA_CURVE;
+  const cp1y = startY + edgeDy * 0.4 + ny * BRANCH_HYPHA_CURVE;
+  const cp2x = startX + edgeDx * 0.7 + nx * BRANCH_HYPHA_CURVE * 0.5;
+  const cp2y = startY + edgeDy * 0.7 + ny * BRANCH_HYPHA_CURVE * 0.5;
+
+  return `M ${startX} ${startY} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${endX} ${endY}`;
+}
+
 /* ---------- Sub-components ---------- */
 
 function HyphaConnection({ node }: { node: TopologyNode }) {
   const color = statusColor(node.id, node.status);
   const active = isPulsing(node.status);
   const pathId = `hypha-${node.id}`;
-  const d = hyphaPath(node.id);
+  const isBranch = node.id in BRANCH_PARENTS;
+  const d = isBranch ? branchHyphaPath(node.id) : hyphaPath(node.id);
 
   return (
     <g>
