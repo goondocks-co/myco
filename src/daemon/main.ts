@@ -591,7 +591,9 @@ export async function main(): Promise<void> {
     // When the metabolism says "it's time" it sets a flag; the pipeline tick checks
     // the flag and runs digest if upstream is clear. This avoids startup races
     // where the metabolism fires before the pipeline has processed upstream work.
-    let digestReady = false;
+    // Start true so digest runs on the first tick after upstream clears.
+    // The hasUpstreamWork() check prevents premature execution.
+    let digestReady = true;
 
     metabolism.start(async () => {
       // Metabolism says it's time for a digest — set the flag for the pipeline tick
