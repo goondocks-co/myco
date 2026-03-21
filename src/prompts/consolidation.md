@@ -1,4 +1,5 @@
 You are consolidating related observations from a knowledge vault into a single comprehensive note.
+You have a budget of ~{{maxTokens}} tokens for your response.
 
 These {{count}} observations are all of type "{{observation_type}}" and were found to be semantically similar.
 
@@ -30,6 +31,7 @@ The key test: would a reader looking up one of these topics benefit from seeing 
 - Include ALL relevant source IDs in source_ids — no hallucinated IDs, no omissions
 - source_ids must be a subset of the IDs shown below
 - If only some observations belong together, consolidate the related subset and exclude the unrelated ones
+- Wisdom notes should be COMPREHENSIVE but not redundant — include all distinct insights, specifics, and actionable details from the sources, but don't repeat the same point in different words
 
 ## Observations
 

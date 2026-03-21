@@ -258,6 +258,16 @@ export class DigestEngine {
     this.cycleInProgress = true;
 
     try {
+      // Ensure model is loaded BEFORE pre-pass hooks (e.g., consolidation).
+      // Pre-pass hooks share the digest LLM provider — without ensureLoaded first,
+      // requests go with just the model name (no instance ID), causing LM Studio
+      // to spawn duplicate instances for each concurrent request.
+      if (this.llm.ensureLoaded) {
+        const { context_window: contextWindow, gpu_kv_cache: gpuKvCache } = this.config.digest.intelligence;
+        this.log('debug', 'Verifying digest model', { contextWindow, gpuKvCache });
+        await this.llm.ensureLoaded(contextWindow, gpuKvCache);
+      }
+
       // Run pre-pass hooks (e.g., consolidation) before discovering substrate
       for (const hook of this.prePassHooks) {
         try {
@@ -274,16 +284,6 @@ export class DigestEngine {
   }
 
   private async runCycleInternal(opts?: DigestCycleOptions): Promise<DigestCycleResult | null> {
-    // Ensure model is loaded with correct settings every cycle.
-    // LM Studio's idle TTL can evict our instance between cycles — without
-    // re-running ensureLoaded, the auto-reloaded instance would use LM Studio's
-    // UI defaults (wrong KV cache setting). This is fast (~26ms) when the
-    // instance is still alive (just a getLoadedInstances check).
-    if (this.llm.ensureLoaded) {
-      const { context_window: contextWindow, gpu_kv_cache: gpuKvCache } = this.config.digest.intelligence;
-      this.log('debug', 'Verifying digest model', { contextWindow, gpuKvCache });
-      await this.llm.ensureLoaded(contextWindow, gpuKvCache);
-    }
 
     const startTime = Date.now();
     const fullReprocess = opts?.fullReprocess ?? false;

@@ -13,6 +13,7 @@ import type { MycoIndex, IndexedNote } from '../index/sqlite.js';
 import type { VectorIndex } from '../index/vectors.js';
 import type { LlmProvider, EmbeddingProvider } from '../intelligence/llm.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
+import { extractJson } from '../intelligence/response.js';
 import { stripReasoningTokens } from '../intelligence/response.js';
 import { indexNote } from '../index/rebuild.js';
 import { loadPrompt, formatNoteForPrompt, formatNotesForPrompt } from '../prompts/index.js';
@@ -182,7 +183,7 @@ export async function checkSupersession(
   // Parse the LLM response as a JSON array of IDs
   let rawIds: unknown;
   try {
-    rawIds = JSON.parse(responseText);
+    rawIds = extractJson(responseText);
   } catch {
     log?.('warn', 'checkSupersession: failed to parse LLM response', { newSporeId, responseText });
     return [];

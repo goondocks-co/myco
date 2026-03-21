@@ -17,6 +17,7 @@ export interface StatsResponse {
     spore_counts: Record<string, number>;
     session_count: number;
     plan_count: number;
+    artifact_count: number;
   };
   index: {
     fts_entries: number;

@@ -78,6 +78,13 @@ export const DAEMON_HEALTH_RETRY_DELAYS = [100, 200, 400, 800, 1500];
  *  Prevents rapid restart loops from concurrent hooks or session reloads. */
 export const DAEMON_STALE_GRACE_PERIOD_MS = 60_000;
 
+/** Grace period for SIGTERM before escalating to SIGKILL (ms).
+ *  Gives the old daemon a chance to shut down cleanly, but force-kills
+ *  to guarantee the configured port is reclaimed. */
+export const DAEMON_EVICT_TIMEOUT_MS = 3000;
+/** Poll interval when waiting for an evicted daemon to die (ms). */
+export const DAEMON_EVICT_POLL_MS = 100;
+
 // --- Slug limits ---
 /** Max length for slugified artifact IDs. */
 export const MAX_SLUG_LENGTH = 100;
@@ -120,7 +127,7 @@ export const MCP_LOGS_DEFAULT_LIMIT = 50;
 
 // --- Digest — Tiers ---
 /** Available token-budget tiers for digest synthesis. */
-export const DIGEST_TIERS = [1500, 3000, 5000, 10000] as const;
+export const DIGEST_TIERS = [1500, 3000, 5000, 7500, 10000] as const;
 export type DigestTier = (typeof DIGEST_TIERS)[number];
 
 // --- Digest — Context window minimums per tier ---
@@ -129,6 +136,7 @@ export const DIGEST_TIER_MIN_CONTEXT: Record<number, number> = {
   1500: 6500,
   3000: 11500,
   5000: 18500,
+  7500: 24500,
   10000: 30500,
 };
 
@@ -168,5 +176,6 @@ export const CONSOLIDATION_MIN_CLUSTER_SIZE = 3;
 /** Over-fetch from vector index before post-filtering by status/type. */
 export const CONSOLIDATION_VECTOR_FETCH_LIMIT = 20;
 
-/** Max output tokens for consolidation LLM synthesis. */
-export const CONSOLIDATION_MAX_TOKENS = 1024;
+/** Max output tokens for consolidation LLM synthesis.
+ *  Must be large enough for the full JSON response including content field. */
+export const CONSOLIDATION_MAX_TOKENS = 2048;

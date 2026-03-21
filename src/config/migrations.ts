@@ -93,6 +93,19 @@ export const MIGRATIONS: Migration[] = [
       walkLinks(vaultDir);
     },
   },
+  {
+    version: 2,
+    name: 'consolidation-boolean-to-object',
+    migrate: (doc) => {
+      const digest = doc.digest as Record<string, unknown> | undefined;
+      if (!digest) return;
+
+      const consolidation = digest.consolidation;
+      if (typeof consolidation === 'boolean') {
+        digest.consolidation = { enabled: consolidation, max_tokens: 2048 };
+      }
+    },
+  },
 ];
 
 /** Current migration version — the highest version in MIGRATIONS. */
@@ -113,10 +126,15 @@ export function runMigrations(
   for (const migration of MIGRATIONS) {
     if (migration.version <= currentVersion) continue;
 
-    log?.(`Running migration ${migration.version}: ${migration.name}`);
     migration.migrate(doc, vaultDir);
     doc.config_version = migration.version;
     ran = true;
+  }
+
+  if (ran) {
+    const from = currentVersion;
+    const to = (doc.config_version as number) ?? 0;
+    log?.(`Migrated config from v${from} to v${to}`);
   }
 
   return ran;

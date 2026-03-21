@@ -1,14 +1,25 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type { MycoIndex } from '../index/sqlite.js';
 import type { VectorIndex } from '../index/vectors.js';
 import type { MycoConfig } from '../config/schema.js';
 import type { LlmProvider, EmbeddingProvider } from '../intelligence/llm.js';
 import type { DigestCycleResult, DigestLogFn } from '../daemon/digest.js';
-import { rebuildIndex } from '../index/rebuild.js';
+import { rebuildIndex, indexNote } from '../index/rebuild.js';
 import { initFts } from '../index/fts.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
-import { batchExecute, EMBEDDING_BATCH_CONCURRENCY } from '../intelligence/batch.js';
+import { batchExecute, LLM_BATCH_CONCURRENCY, EMBEDDING_BATCH_CONCURRENCY } from '../intelligence/batch.js';
 import { DigestEngine } from '../daemon/digest.js';
 import type { DigestCycleOptions } from '../daemon/digest.js';
+import { BufferProcessor, SUMMARIZATION_FAILED_MARKER } from '../daemon/processor.js';
+import { TranscriptMiner } from '../capture/transcript-miner.js';
+import { VaultWriter } from '../vault/writer.js';
+import { writeObservationNotes } from '../vault/observations.js';
+import { createPerProjectAdapter } from '../agents/adapter.js';
+import { claudeCodeAdapter } from '../agents/claude-code.js';
+import { sessionNoteId, bareSessionId } from '../vault/session-id.js';
+import { callout, extractSection, CONVERSATION_HEADING } from '../obsidian/formatter.js';
+import matter from 'gray-matter';
 import {
   EMBEDDING_INPUT_LIMIT,
   CURATION_CLUSTER_SIMILARITY,
@@ -369,5 +380,246 @@ export async function runCuration(
     scanned: activeSpores.length,
     clustersEvaluated: totalClusters,
     superseded: totalSuperseded,
+  };
+}
+
+// --- Reprocess ---
+
+export interface ReprocessOptions {
+  /** Filter to sessions matching this substring. */
+  session?: string;
+  /** Filter to sessions from a specific date (YYYY-MM-DD). */
+  date?: string;
+  /** Only reprocess sessions with failed summaries. */
+  failed?: boolean;
+  /** Skip LLM calls — re-index and re-embed only. */
+  indexOnly?: boolean;
+}
+
+export interface ReprocessResult {
+  sessionsFound: number;
+  sessionsProcessed: number;
+  observationsExtracted: number;
+  summariesRegenerated: number;
+  embeddingsQueued: number;
+}
+
+
+/**
+ * Replace the title (first `# ` line) and summary callout in a session note body.
+ */
+function updateTitleAndSummary(body: string, newTitle: string, newNarrative: string): string {
+  let updated = body.replace(/^# .*/m, `# ${newTitle}`);
+  const summaryCallout = callout('abstract', 'Summary', newNarrative);
+  updated = updated.replace(/> \[!abstract\] Summary\n(?:> .*\n?)*/m, summaryCallout + '\n');
+  return updated;
+}
+
+/**
+ * Reprocess sessions: re-extract observations, regenerate summaries, re-index.
+ * Core logic shared between CLI (`myco reprocess`) and daemon API (`POST /api/reprocess`).
+ */
+export async function runReprocess(
+  ctx: OperationContext,
+  llmProvider: LlmProvider | null,
+  embeddingProvider: EmbeddingProvider,
+  options?: ReprocessOptions,
+  onProgress?: (phase: string, done: number, total: number) => void,
+): Promise<ReprocessResult> {
+  const { vaultDir, config, index } = ctx;
+  const log = ctx.log ?? (() => {});
+
+  const sessionFilter = options?.session;
+  const dateFilter = options?.date;
+  const failedOnly = options?.failed ?? false;
+  const skipLlm = options?.indexOnly ?? false;
+
+  const effectiveLlm = skipLlm ? null : llmProvider;
+  const processor = effectiveLlm
+    ? new BufferProcessor(effectiveLlm, config.intelligence.llm.context_window, config.capture)
+    : null;
+  const writer = new VaultWriter(vaultDir);
+  const miner = new TranscriptMiner({
+    additionalAdapters: config.capture.transcript_paths.map((p: string) =>
+      createPerProjectAdapter(p, claudeCodeAdapter.parseTurns),
+    ),
+  });
+
+  // Find sessions
+  const sessionsDir = path.join(vaultDir, 'sessions');
+  if (!fs.existsSync(sessionsDir)) {
+    return { sessionsFound: 0, sessionsProcessed: 0, observationsExtracted: 0, summariesRegenerated: 0, embeddingsQueued: 0 };
+  }
+
+  const sessionFiles: Array<{ relativePath: string; sessionId: string }> = [];
+  for (const dateDir of fs.readdirSync(sessionsDir)) {
+    if (dateFilter && dateDir !== dateFilter) continue;
+    const datePath = path.join(sessionsDir, dateDir);
+    if (!fs.statSync(datePath).isDirectory()) continue;
+    for (const file of fs.readdirSync(datePath)) {
+      if (!file.startsWith('session-') || !file.endsWith('.md')) continue;
+      const sessionId = file.replace('session-', '').replace('.md', '');
+      if (sessionFilter && !sessionId.includes(sessionFilter)) continue;
+      sessionFiles.push({ relativePath: path.join('sessions', dateDir, file), sessionId });
+    }
+  }
+
+  if (sessionFiles.length === 0) {
+    return { sessionsFound: 0, sessionsProcessed: 0, observationsExtracted: 0, summariesRegenerated: 0, embeddingsQueued: 0 };
+  }
+
+  // Prepare tasks
+  interface SessionTask {
+    relativePath: string;
+    sessionId: string;
+    bare: string;
+    frontmatter: Record<string, unknown>;
+    frontmatterBlock: string;
+    body: string;
+    conversationSection: string;
+    batchEvents: Array<Record<string, unknown>> | null;
+    turnCount: number;
+    hasFailed: boolean;
+  }
+
+  const tasks: SessionTask[] = [];
+  for (const { relativePath, sessionId } of sessionFiles) {
+    const rawContent = fs.readFileSync(path.join(vaultDir, relativePath), 'utf-8');
+
+    // Quick pre-screen before expensive parsing when filtering to failed sessions only
+    const hasFailed = rawContent.includes(SUMMARIZATION_FAILED_MARKER);
+    if (failedOnly && !hasFailed) continue;
+
+    const { data: frontmatter, content: body } = matter(rawContent);
+    const bare = bareSessionId(sessionId);
+    const turnsResult = miner.getAllTurnsWithSource(bare);
+    const conversationSection = extractSection(body, CONVERSATION_HEADING);
+    const fmEnd = rawContent.indexOf('---', 4);
+    const frontmatterBlock = rawContent.slice(0, fmEnd + 3);
+
+    const batchEvents = turnsResult && turnsResult.turns.length > 0
+      ? turnsResult.turns.map((t) => ({
+          type: 'turn' as const,
+          prompt: t.prompt,
+          tool_count: t.toolCount,
+          response: t.aiResponse ?? '',
+          timestamp: t.timestamp,
+        }))
+      : null;
+
+    tasks.push({ relativePath, sessionId, bare, frontmatter, frontmatterBlock, body, conversationSection, batchEvents, turnCount: turnsResult?.turns.length ?? 0, hasFailed });
+  }
+
+  if (tasks.length === 0) {
+    return { sessionsFound: sessionFiles.length, sessionsProcessed: 0, observationsExtracted: 0, summariesRegenerated: 0, embeddingsQueued: 0 };
+  }
+
+  log('info', `Reprocessing ${tasks.length} session(s)`, { filters: { session: sessionFilter, date: dateFilter, failed: failedOnly, indexOnly: skipLlm } });
+
+  // Fire-and-forget embedding helper — pipelines embeddings as data is produced
+  // instead of accumulating all jobs in memory for a separate phase.
+  let embeddingsQueued = 0;
+  const embedPending: Promise<void>[] = [];
+  const fireEmbed = (id: string, text: string, metadata: Record<string, string>) => {
+    if (!ctx.vectorIndex) return;
+    embeddingsQueued++;
+    const vec = ctx.vectorIndex;
+    const p = generateEmbedding(embeddingProvider, text)
+      .then((emb) => { vec.upsert(id, emb.embedding, metadata); })
+      .catch((err) => { log('warn', `Embedding failed for ${id}`, { error: (err as Error).message }); });
+    embedPending.push(p);
+  };
+
+  // Phase 1: Extraction + FTS re-indexing + inline embeddings
+  let totalObservations = 0;
+
+  const extractionResult = await batchExecute(
+    tasks,
+    async (task) => {
+      let obs = 0;
+
+      if (processor && task.batchEvents) {
+        const result = await processor.process(task.batchEvents, task.bare);
+        if (result.observations.length > 0) {
+          writeObservationNotes(result.observations, task.bare, writer, index, vaultDir);
+          obs = result.observations.length;
+          for (const o of result.observations) {
+            fireEmbed(
+              `${o.type}-${task.bare.slice(-6)}-${Date.now()}`,
+              `${o.title}\n${o.content}`.slice(0, EMBEDDING_INPUT_LIMIT),
+              { type: 'spore', session_id: task.bare },
+            );
+          }
+        }
+      }
+
+      indexNote(index, vaultDir, task.relativePath);
+
+      const embText = `${task.frontmatter.title ?? ''}\n${task.frontmatter.summary ?? ''}`.slice(0, EMBEDDING_INPUT_LIMIT);
+      if (embText.trim()) {
+        fireEmbed(sessionNoteId(task.bare), embText, { type: 'session', session_id: task.bare });
+      }
+
+      return obs;
+    },
+    {
+      concurrency: LLM_BATCH_CONCURRENCY,
+      onProgress: (done, total) => onProgress?.('extraction', done, total),
+    },
+  );
+
+  for (const r of extractionResult.results) {
+    if (r.status === 'fulfilled') totalObservations += r.value;
+  }
+
+  // Phase 2: Resummarize
+  let summarized = 0;
+  if (processor) {
+    const summarizableTasks = tasks.filter((t) => t.conversationSection);
+    if (summarizableTasks.length > 0) {
+      const summaryResult = await batchExecute(
+        summarizableTasks,
+        async (task) => {
+          const user = typeof task.frontmatter.user === 'string' ? task.frontmatter.user : undefined;
+          const result = await processor.summarizeSession(task.conversationSection, task.bare, user);
+
+          if (result.summary.includes(SUMMARIZATION_FAILED_MARKER)) {
+            log('warn', `Summarization failed for ${task.sessionId.slice(0, 12)}`);
+            return false;
+          }
+
+          const updatedBody = updateTitleAndSummary(task.body, result.title, result.summary);
+          fs.writeFileSync(path.join(vaultDir, task.relativePath), task.frontmatterBlock + updatedBody);
+          indexNote(index, vaultDir, task.relativePath);
+          return true;
+        },
+        {
+          concurrency: LLM_BATCH_CONCURRENCY,
+          onProgress: (done, total) => onProgress?.('summarization', done, total),
+        },
+      );
+
+      for (const r of summaryResult.results) {
+        if (r.status === 'fulfilled' && r.value) summarized++;
+      }
+    }
+  }
+
+  // Wait for all pipelined embeddings to settle
+  await Promise.allSettled(embedPending);
+
+  log('info', 'Reprocess completed', {
+    sessions: tasks.length,
+    observations: totalObservations,
+    summaries: summarized,
+    embeddings: embeddingsQueued,
+  });
+
+  return {
+    sessionsFound: sessionFiles.length,
+    sessionsProcessed: tasks.length,
+    observationsExtracted: totalObservations,
+    summariesRegenerated: summarized,
+    embeddingsQueued,
   };
 }

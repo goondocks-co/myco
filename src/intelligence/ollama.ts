@@ -47,7 +47,7 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
     const body: Record<string, unknown> = {
       model: this.model,
       prompt,
-      stream: false,
+      stream: true,
       options,
     };
 
@@ -78,8 +78,47 @@ export class OllamaBackend implements LlmProvider, EmbeddingProvider {
       throw new Error(`Ollama summarize failed: ${response.status} ${errorBody.slice(0, 500)}`);
     }
 
-    const data = await response.json() as { response: string; model: string };
-    return { text: data.response, model: data.model };
+    return this.readStream(response);
+  }
+
+  /** Read an Ollama streaming response (newline-delimited JSON) and accumulate the result. */
+  private async readStream(response: Response): Promise<LlmResponse> {
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    let model = this.model;
+    let buffer = '';
+
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const chunk = JSON.parse(line) as { response?: string; model?: string; error?: string };
+          if (chunk.error) throw new Error(`Ollama stream error: ${chunk.error}`);
+          text += chunk.response ?? '';
+          if (chunk.model) model = chunk.model;
+        }
+      }
+
+      // Process remaining buffer
+      if (buffer.trim()) {
+        const chunk = JSON.parse(buffer) as { response?: string; model?: string; error?: string };
+        if (chunk.error) throw new Error(`Ollama stream error: ${chunk.error}`);
+        text += chunk.response ?? '';
+        if (chunk.model) model = chunk.model;
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    return { text, model };
   }
 
   async embed(text: string): Promise<EmbeddingResponse> {

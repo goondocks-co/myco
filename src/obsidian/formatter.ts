@@ -5,6 +5,9 @@
 import type { ArtifactType } from '../vault/types.js';
 import { sessionNoteId } from '../vault/session-id.js';
 
+/** Section heading for conversation content in session notes. */
+export const CONVERSATION_HEADING = '## Conversation';
+
 // Callout type mapping for observation types
 const CALLOUT_MAP: Record<string, string> = {
   gotcha: 'warning',
@@ -150,7 +153,7 @@ export function formatSessionBody(input: SessionBodyInput): string {
         turnLines.push(callout('assistant', 'Response', turn.aiResponse));
       }
     }
-    sections.push(`## Conversation\n\n${turnLines.join('\n\n')}`);
+    sections.push(`${CONVERSATION_HEADING}\n\n${turnLines.join('\n\n')}`);
   }
 
   // Footer tags

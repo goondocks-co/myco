@@ -4,6 +4,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { AgentRegistry } from './agents/registry.js';
 
 let cached: string | undefined;
@@ -16,6 +17,17 @@ export function getPluginVersion(): string {
   if (pluginRoot) {
     cached = readVersionFrom(pluginRoot);
     if (cached) return cached;
+  }
+
+  // Secondary: walk up from this file to find package.json (works for daemon)
+  let dir = path.dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 5; i++) {
+    const version = readVersionFrom(dir);
+    if (version) {
+      cached = version;
+      return cached;
+    }
+    dir = path.dirname(dir);
   }
 
   // Fallback: walk up from cwd

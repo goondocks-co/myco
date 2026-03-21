@@ -14,7 +14,7 @@ import type { MycoIndex } from '@myco/index/sqlite.js';
 import type { VectorIndex } from '@myco/index/vectors.js';
 import type { LlmProvider, EmbeddingProvider } from '@myco/intelligence/llm.js';
 import { generateEmbedding } from '@myco/intelligence/embeddings.js';
-import { stripReasoningTokens } from '@myco/intelligence/response.js';
+import { stripReasoningTokens, extractJson } from '@myco/intelligence/response.js';
 import { isActiveSpore } from '@myco/vault/curation.js';
 import { consolidateSpores } from '@myco/vault/consolidation.js';
 import { loadPrompt, formatNotesForPrompt } from '@myco/prompts/index.js';
@@ -44,6 +44,7 @@ export interface ConsolidationEngineConfig {
   vectorIndex: VectorIndex | null;
   llmProvider: LlmProvider | null;
   embeddingProvider: EmbeddingProvider | null;
+  maxTokens?: number;
   log?: (level: 'debug' | 'info' | 'warn', message: string, data?: Record<string, unknown>) => void;
 }
 
@@ -74,6 +75,7 @@ export class ConsolidationEngine {
     embeddingProvider: EmbeddingProvider | null;
   };
 
+  private readonly maxTokens: number;
   private log: NonNullable<ConsolidationEngineConfig['log']>;
   private lastTimestampCache: string | null | undefined = undefined;
 
@@ -85,6 +87,7 @@ export class ConsolidationEngine {
       llmProvider: config.llmProvider,
       embeddingProvider: config.embeddingProvider,
     };
+    this.maxTokens = config.maxTokens ?? CONSOLIDATION_MAX_TOKENS;
     this.log = config.log ?? (() => {});
   }
 
@@ -230,13 +233,14 @@ export class ConsolidationEngine {
       const prompt = template
         .replace('{{count}}', String(cluster.length))
         .replace('{{observation_type}}', observationType ?? 'unknown')
-        .replace('{{candidates}}', candidatesText);
+        .replace('{{candidates}}', candidatesText)
+        .replace('{{maxTokens}}', String(this.maxTokens));
 
       // Ask LLM whether to consolidate
       let responseText: string;
       try {
         const response = await llmProvider.summarize(prompt, {
-          maxTokens: CONSOLIDATION_MAX_TOKENS,
+          maxTokens: this.maxTokens,
           reasoning: LLM_REASONING_MODE,
         });
         responseText = stripReasoningTokens(response.text);
@@ -252,7 +256,7 @@ export class ConsolidationEngine {
       // Parse LLM response
       let parsed: z.infer<typeof consolidationResponseSchema>;
       try {
-        const raw = JSON.parse(responseText);
+        const raw = extractJson(responseText);
         const result = consolidationResponseSchema.safeParse(raw);
         if (!result.success) {
           this.log('warn', 'ConsolidationEngine: LLM response failed schema validation', {

@@ -103,13 +103,23 @@ export function ConfigForm({ config, onSave, isSaving }: ConfigFormProps) {
 
   const updateDigestIntelligence = useCallback(
     (key: string, value: unknown) =>
-      setForm((prev) => ({
-        ...prev,
-        digest: {
-          ...prev.digest,
-          intelligence: { ...prev.digest.intelligence, [key]: value },
-        },
-      })),
+      setForm((prev) => {
+        const updates: Record<string, unknown> = { [key]: value };
+        // When provider changes, reset base_url to the new provider's default.
+        // When reset to null ("Use main provider"), clear base_url so the fallback works.
+        if (key === 'provider') {
+          updates.base_url = typeof value === 'string'
+            ? (PROVIDER_DEFAULT_URLS[value] ?? undefined)
+            : null;
+        }
+        return {
+          ...prev,
+          digest: {
+            ...prev.digest,
+            intelligence: { ...prev.digest.intelligence, ...updates },
+          },
+        };
+      }),
     [],
   );
 
@@ -132,6 +142,18 @@ export function ConfigForm({ config, onSave, isSaving }: ConfigFormProps) {
         digest: {
           ...prev.digest,
           substrate: { ...prev.digest.substrate, [key]: value },
+        },
+      })),
+    [],
+  );
+
+  const updateDigestConsolidation = useCallback(
+    (key: string, value: unknown) =>
+      setForm((prev) => ({
+        ...prev,
+        digest: {
+          ...prev.digest,
+          consolidation: { ...prev.digest.consolidation, [key]: value },
         },
       })),
     [],
@@ -242,6 +264,7 @@ export function ConfigForm({ config, onSave, isSaving }: ConfigFormProps) {
         updateDigestIntelligence={updateDigestIntelligence}
         updateDigestMetabolism={updateDigestMetabolism}
         updateDigestSubstrate={updateDigestSubstrate}
+        updateDigestConsolidation={updateDigestConsolidation}
       />
 
       <CaptureSection

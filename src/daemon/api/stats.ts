@@ -26,7 +26,7 @@ export async function handleGetStats(deps: StatsHandlerDeps): Promise<RouteRespo
   const digestConfig = deps.config.digest;
   const digest = {
     enabled: digestConfig.enabled,
-    consolidation_enabled: digestConfig.consolidation,
+    consolidation_enabled: digestConfig.consolidation.enabled,
     metabolism_state: deps.metabolism?.state ?? null,
     last_cycle: null as { timestamp: string; tier: number; substrate_count: number } | null,
     substrate_queue: 0,

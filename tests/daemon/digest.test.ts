@@ -23,7 +23,7 @@ function makeConfig(overrides: Partial<MycoConfig['digest']> = {}): MycoConfig {
     team: { enabled: false, user: '', sync: 'git' },
     digest: {
       enabled: true,
-      tiers: [1500, 3000, 5000, 10000],
+      tiers: [1500, 3000, 5000, 7500, 10000],
       inject_tier: 3000,
       intelligence: {
         provider: null,
@@ -32,9 +32,9 @@ function makeConfig(overrides: Partial<MycoConfig['digest']> = {}): MycoConfig {
         context_window: 32768,
       },
       metabolism: {
-        active_interval: 300,
-        cooldown_intervals: [900, 1800, 3600],
-        dormancy_threshold: 7200,
+        active_interval: 900,
+        cooldown_intervals: [1800, 3600, 7200],
+        dormancy_threshold: 14400,
       },
       substrate: {
         max_notes_per_cycle: 50,
@@ -253,7 +253,7 @@ describe('DigestEngine', () => {
       });
 
       const tiers = engine.getEligibleTiers();
-      expect(tiers).toEqual([1500, 3000, 5000, 10000]);
+      expect(tiers).toEqual([1500, 3000, 5000, 7500, 10000]);
     });
 
     it('filters tiers by context window', () => {
@@ -744,7 +744,7 @@ describe('DigestEngine', () => {
         index,
         llmProvider: llm,
         config: makeConfig({
-          tiers: [1500, 3000, 5000, 10000],
+          tiers: [1500, 3000, 5000, 7500, 10000],
           intelligence: { provider: null, model: null, base_url: null, context_window: 8192 },
         }),
       });
