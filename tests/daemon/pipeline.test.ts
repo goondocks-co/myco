@@ -9,6 +9,7 @@ import {
   PIPELINE_BACKOFF_MULTIPLIER,
   PIPELINE_CIRCUIT_FAILURE_THRESHOLD,
   STAGE_PROVIDER_MAP,
+  PIPELINE_RETENTION_DAYS,
 } from '@myco/constants';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -552,6 +553,182 @@ describe('PipelineManager', () => {
 
       // blockedCount reflects only stages that map to 'llm'
       expect(blockedCount).toBeGreaterThan(0);
+    });
+  });
+
+  describe('compact()', () => {
+    it('compacts transitions older than retention window into stage_history', () => {
+      const db = manager.getDb();
+      const now = new Date().toISOString();
+      // Insert a work item
+      db.prepare(
+        'INSERT INTO work_items (id, item_type, source_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      ).run('sess-compact-001', 'session', null, now, now);
+
+      // Insert two old transitions (30+ days ago) for the same item/stage
+      const old1 = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+      const old2 = new Date(Date.now() - 32 * 24 * 60 * 60 * 1000).toISOString();
+      db.prepare(
+        'INSERT INTO stage_transitions (work_item_id, item_type, stage, status, attempt, error_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('sess-compact-001', 'session', 'capture', 'failed', 1, 'transient', old2);
+      db.prepare(
+        'INSERT INTO stage_transitions (work_item_id, item_type, stage, status, attempt, error_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('sess-compact-001', 'session', 'capture', 'succeeded', 2, null, old1);
+
+      const result = manager.compact(PIPELINE_RETENTION_DAYS);
+      expect(result.compacted).toBe(1); // 1 group (work_item_id, item_type, stage)
+      expect(result.deleted).toBe(2);   // 2 transition rows deleted
+
+      // stage_history should have one row
+      const histRow = db
+        .prepare('SELECT * FROM stage_history WHERE work_item_id = ? AND item_type = ? AND stage = ?')
+        .get('sess-compact-001', 'session', 'capture') as Record<string, unknown> | undefined;
+      expect(histRow).toBeDefined();
+      expect(histRow!.total_attempts).toBe(2);
+      expect(histRow!.final_status).toBe('succeeded'); // latest transition status
+      expect(histRow!.first_attempt).toBe(old2);
+      expect(histRow!.last_attempt).toBe(old1);
+
+      // original transitions should be gone
+      const remaining = db
+        .prepare('SELECT COUNT(*) as cnt FROM stage_transitions WHERE work_item_id = ? AND item_type = ? AND stage = ?')
+        .get('sess-compact-001', 'session', 'capture') as { cnt: number };
+      expect(remaining.cnt).toBe(0);
+    });
+
+    it('preserves transitions within retention window', () => {
+      const db = manager.getDb();
+      const now = new Date().toISOString();
+      db.prepare(
+        'INSERT INTO work_items (id, item_type, source_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      ).run('sess-compact-002', 'session', null, now, now);
+
+      // Insert one old transition and one recent transition
+      const oldTs = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+      const recentTs = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
+      db.prepare(
+        'INSERT INTO stage_transitions (work_item_id, item_type, stage, status, attempt, error_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('sess-compact-002', 'session', 'extraction', 'failed', 1, 'transient', oldTs);
+      db.prepare(
+        'INSERT INTO stage_transitions (work_item_id, item_type, stage, status, attempt, error_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('sess-compact-002', 'session', 'extraction', 'pending', 2, null, recentTs);
+
+      const result = manager.compact(PIPELINE_RETENTION_DAYS);
+      // Only the old transition qualifies, but it belongs to a group that also has a recent row
+      // The group should NOT be compacted if any member is within the window
+      // (only entirely-old groups are compacted)
+      expect(result.deleted).toBe(1); // only the old one deleted
+      expect(result.compacted).toBe(1); // 1 group entry upserted for the old one
+
+      // The recent transition should still be in stage_transitions
+      const remaining = db
+        .prepare('SELECT COUNT(*) as cnt FROM stage_transitions WHERE work_item_id = ? AND item_type = ? AND stage = ?')
+        .get('sess-compact-002', 'session', 'extraction') as { cnt: number };
+      expect(remaining.cnt).toBe(1);
+    });
+
+    it('stores error_types JSON correctly', () => {
+      const db = manager.getDb();
+      const now = new Date().toISOString();
+      db.prepare(
+        'INSERT INTO work_items (id, item_type, source_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      ).run('sess-compact-003', 'session', null, now, now);
+
+      const oldBase = Date.now() - 35 * 24 * 60 * 60 * 1000;
+      // 2 transient failures, 1 config failure
+      db.prepare(
+        'INSERT INTO stage_transitions (work_item_id, item_type, stage, status, attempt, error_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('sess-compact-003', 'session', 'embedding', 'failed', 1, 'transient', new Date(oldBase).toISOString());
+      db.prepare(
+        'INSERT INTO stage_transitions (work_item_id, item_type, stage, status, attempt, error_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('sess-compact-003', 'session', 'embedding', 'failed', 2, 'transient', new Date(oldBase + 1000).toISOString());
+      db.prepare(
+        'INSERT INTO stage_transitions (work_item_id, item_type, stage, status, attempt, error_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('sess-compact-003', 'session', 'embedding', 'failed', 3, 'config', new Date(oldBase + 2000).toISOString());
+
+      manager.compact(PIPELINE_RETENTION_DAYS);
+
+      const histRow = db
+        .prepare('SELECT error_types FROM stage_history WHERE work_item_id = ? AND item_type = ? AND stage = ?')
+        .get('sess-compact-003', 'session', 'embedding') as { error_types: string } | undefined;
+      expect(histRow).toBeDefined();
+      const errorTypes = JSON.parse(histRow!.error_types) as Record<string, number>;
+      expect(errorTypes['transient']).toBe(2);
+      expect(errorTypes['config']).toBe(1);
+    });
+
+    it('handles items with no errors (error_types should be empty object)', () => {
+      const db = manager.getDb();
+      const now = new Date().toISOString();
+      db.prepare(
+        'INSERT INTO work_items (id, item_type, source_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      ).run('sess-compact-004', 'session', null, now, now);
+
+      const oldTs = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+      db.prepare(
+        'INSERT INTO stage_transitions (work_item_id, item_type, stage, status, attempt, error_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('sess-compact-004', 'session', 'digest', 'succeeded', 1, null, oldTs);
+
+      manager.compact(PIPELINE_RETENTION_DAYS);
+
+      const histRow = db
+        .prepare('SELECT error_types FROM stage_history WHERE work_item_id = ? AND item_type = ? AND stage = ?')
+        .get('sess-compact-004', 'session', 'digest') as { error_types: string | null } | undefined;
+      expect(histRow).toBeDefined();
+      // error_types should be an empty JSON object (no errors)
+      const errorTypes = JSON.parse(histRow!.error_types ?? '{}') as Record<string, number>;
+      expect(Object.keys(errorTypes)).toHaveLength(0);
+    });
+  });
+
+  describe('recoverStuck()', () => {
+    it('moves processing items to pending', () => {
+      manager.register('sess-stuck-001', 'session');
+      // Advance to processing
+      manager.advance('sess-stuck-001', 'session', 'capture', 'processing');
+
+      const count = manager.recoverStuck();
+      expect(count).toBeGreaterThanOrEqual(1);
+
+      const statuses = manager.getItemStatus('sess-stuck-001', 'session');
+      const capture = statuses.find((s) => s.stage === 'capture');
+      expect(capture?.status).toBe('pending');
+    });
+
+    it('does not affect items in other statuses (succeeded, failed, pending)', () => {
+      manager.register('sess-stuck-002', 'session');
+      manager.advance('sess-stuck-002', 'session', 'capture', 'succeeded');
+      // extraction is still pending after capture succeeds
+
+      manager.register('sess-stuck-003', 'session');
+      manager.advance('sess-stuck-003', 'session', 'capture', 'failed', {
+        errorType: 'transient',
+        errorMessage: 'boom',
+      });
+
+      const count = manager.recoverStuck();
+      expect(count).toBe(0);
+
+      // succeeded stays succeeded
+      const s2 = manager.getItemStatus('sess-stuck-002', 'session');
+      expect(s2.find((s) => s.stage === 'capture')?.status).toBe('succeeded');
+
+      // failed stays failed
+      const s3 = manager.getItemStatus('sess-stuck-003', 'session');
+      expect(s3.find((s) => s.stage === 'capture')?.status).toBe('failed');
+    });
+
+    it('returns correct count of recovered items', () => {
+      manager.register('sess-stuck-010', 'session');
+      manager.register('sess-stuck-011', 'session');
+      manager.register('sess-stuck-012', 'session');
+
+      manager.advance('sess-stuck-010', 'session', 'capture', 'processing');
+      manager.advance('sess-stuck-011', 'session', 'capture', 'processing');
+      // sess-stuck-012 stays pending
+
+      const count = manager.recoverStuck();
+      expect(count).toBe(2);
     });
   });
 

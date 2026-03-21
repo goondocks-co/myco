@@ -18,6 +18,7 @@ import {
   PIPELINE_BACKOFF_MULTIPLIER,
   PIPELINE_CIRCUIT_FAILURE_THRESHOLD,
   PIPELINE_CIRCUIT_COOLDOWN_MS,
+  PIPELINE_RETENTION_DAYS,
   STAGE_PROVIDER_MAP,
 } from '@myco/constants';
 
@@ -747,6 +748,176 @@ export class PipelineManager {
 
     insertPending();
     return unblockedCount;
+  }
+
+  // -------------------------------------------------------------------------
+  // Compaction
+  // -------------------------------------------------------------------------
+
+  /**
+   * Compact stage_transitions older than retentionDays into stage_history rows.
+   *
+   * For each (work_item_id, item_type, stage) group whose transitions are older
+   * than the cutoff, inserts or replaces a stage_history row aggregating those
+   * transitions, then deletes the original rows.
+   *
+   * Returns `{ compacted, deleted }`: compacted = number of groups written to
+   * stage_history; deleted = number of transition rows removed.
+   */
+  compact(retentionDays: number = PIPELINE_RETENTION_DAYS): { compacted: number; deleted: number } {
+    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+
+    // Find all old transition rows, grouped by (work_item_id, item_type, stage).
+    // We need the aggregate values per group as well as every individual error_type
+    // so we can build the error_types JSON. Fetch the raw rows and aggregate in JS.
+    const oldRows = this.db
+      .prepare(
+        `SELECT id, work_item_id, item_type, stage, status, attempt, error_type, created_at
+         FROM stage_transitions
+         WHERE created_at < ?
+         ORDER BY id ASC`,
+      )
+      .all(cutoff) as Array<{
+        id: number;
+        work_item_id: string;
+        item_type: string;
+        stage: string;
+        status: string;
+        attempt: number;
+        error_type: string | null;
+        created_at: string;
+      }>;
+
+    if (oldRows.length === 0) {
+      return { compacted: 0, deleted: 0 };
+    }
+
+    // Group rows by (work_item_id, item_type, stage)
+    const groups = new Map<
+      string,
+      {
+        work_item_id: string;
+        item_type: string;
+        stage: string;
+        rows: typeof oldRows;
+      }
+    >();
+
+    for (const row of oldRows) {
+      const key = `${row.work_item_id}\0${row.item_type}\0${row.stage}`;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.rows.push(row);
+      } else {
+        groups.set(key, { work_item_id: row.work_item_id, item_type: row.item_type, stage: row.stage, rows: [row] });
+      }
+    }
+
+    const upsertHistory = this.db.prepare(
+      `INSERT OR REPLACE INTO stage_history
+         (work_item_id, item_type, stage, total_attempts, final_status, first_attempt, last_attempt, last_error, error_types)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    const deleteTransitions = this.db.prepare(
+      'DELETE FROM stage_transitions WHERE work_item_id = ? AND item_type = ? AND stage = ? AND created_at < ?',
+    );
+
+    let compacted = 0;
+    let deleted = 0;
+
+    const doCompact = this.db.transaction(() => {
+      for (const group of groups.values()) {
+        // Rows are ordered by id ASC; the last row is the latest
+        const latestRow = group.rows[group.rows.length - 1];
+        const earliestRow = group.rows[0];
+
+        // Count error_types
+        const errorTypeCounts: Record<string, number> = {};
+        for (const row of group.rows) {
+          if (row.error_type) {
+            errorTypeCounts[row.error_type] = (errorTypeCounts[row.error_type] ?? 0) + 1;
+          }
+        }
+
+        // Fetch last_error for the latest transition in the group
+        const lastErrorRow = this.db
+          .prepare(
+            `SELECT error_message FROM stage_transitions
+             WHERE work_item_id = ? AND item_type = ? AND stage = ?
+             ORDER BY id DESC LIMIT 1`,
+          )
+          .get(group.work_item_id, group.item_type, group.stage) as { error_message: string | null } | undefined;
+
+        upsertHistory.run(
+          group.work_item_id,
+          group.item_type,
+          group.stage,
+          group.rows.length,
+          latestRow.status,
+          earliestRow.created_at,
+          latestRow.created_at,
+          lastErrorRow?.error_message ?? null,
+          JSON.stringify(errorTypeCounts),
+        );
+
+        const deleteResult = deleteTransitions.run(
+          group.work_item_id,
+          group.item_type,
+          group.stage,
+          cutoff,
+        );
+
+        compacted++;
+        deleted += deleteResult.changes;
+      }
+    });
+
+    doCompact();
+    return { compacted, deleted };
+  }
+
+  // -------------------------------------------------------------------------
+  // Recovery
+  // -------------------------------------------------------------------------
+
+  /**
+   * Recover stuck items on daemon startup.
+   *
+   * Finds all items currently in 'processing' status (via the pipeline_status view)
+   * and inserts a new 'pending' transition for each, effectively resetting them
+   * for reprocessing.
+   *
+   * Returns the count of recovered items.
+   */
+  recoverStuck(): number {
+    const now = new Date().toISOString();
+
+    // Find all item/stage pairs currently stuck in 'processing'
+    const stuckItems = this.db
+      .prepare(
+        `SELECT id, item_type, stage FROM pipeline_status WHERE status = 'processing'`,
+      )
+      .all() as Array<{ id: string; item_type: string; stage: string }>;
+
+    if (stuckItems.length === 0) {
+      return 0;
+    }
+
+    const insertPending = this.db.prepare(
+      `INSERT INTO stage_transitions
+         (work_item_id, item_type, stage, status, attempt, error_type, error_message, started_at, completed_at, created_at)
+       VALUES (?, ?, ?, 'pending', 1, NULL, NULL, NULL, NULL, ?)`,
+    );
+
+    const doRecover = this.db.transaction(() => {
+      for (const item of stuckItems) {
+        insertPending.run(item.id, item.item_type, item.stage, now);
+      }
+    });
+
+    doRecover();
+    return stuckItems.length;
   }
 
   /** Close the database connection. */
