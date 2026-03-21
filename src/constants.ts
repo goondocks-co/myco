@@ -169,6 +169,63 @@ export const SUPERSESSION_MAX_TOKENS = 256;
 /** Similarity threshold for clustering related spores in batch curation. */
 export const CURATION_CLUSTER_SIMILARITY = 0.75;
 
+// --- Pipeline processing ---
+/** Daemon tick interval for pipeline processing (ms). */
+export const PIPELINE_TICK_INTERVAL_MS = 30_000;
+/** Default number of work items processed per pipeline tick. */
+export const PIPELINE_BATCH_SIZE = 5;
+/** Max days to retain completed/failed pipeline work items before pruning. */
+export const PIPELINE_RETENTION_DAYS = 30;
+
+// --- Pipeline retry ---
+/** Max retries for transient (recoverable) pipeline failures. */
+export const PIPELINE_TRANSIENT_MAX_RETRIES = 3;
+/** Max retries for parse (structural) pipeline failures — fail fast. */
+export const PIPELINE_PARSE_MAX_RETRIES = 1;
+/** Base backoff duration between pipeline retry attempts (ms). */
+export const PIPELINE_BACKOFF_BASE_MS = 30_000;
+/** Exponential backoff multiplier for successive pipeline retries. */
+export const PIPELINE_BACKOFF_MULTIPLIER = 4;
+
+// --- Pipeline circuit breaker ---
+/** Number of consecutive failures before opening a circuit breaker. */
+export const PIPELINE_CIRCUIT_FAILURE_THRESHOLD = 3;
+/** Initial cooldown duration when a circuit breaker opens (ms). */
+export const PIPELINE_CIRCUIT_COOLDOWN_MS = 5 * 60 * 1000;
+/** Maximum cooldown duration for a circuit breaker (ms). */
+export const PIPELINE_CIRCUIT_MAX_COOLDOWN_MS = 60 * 60 * 1000;
+
+// --- Pipeline stages (ordered) ---
+export const PIPELINE_STAGES = ['capture', 'extraction', 'embedding', 'consolidation', 'digest'] as const;
+export type PipelineStage = typeof PIPELINE_STAGES[number];
+
+// --- Pipeline statuses ---
+export const PIPELINE_STATUSES = ['pending', 'processing', 'succeeded', 'failed', 'blocked', 'skipped', 'poisoned'] as const;
+export type PipelineStatus = typeof PIPELINE_STATUSES[number];
+
+// --- Provider roles for circuit breakers ---
+export const PIPELINE_PROVIDER_ROLES = ['llm', 'embedding', 'digest-llm'] as const;
+export type PipelineProviderRole = typeof PIPELINE_PROVIDER_ROLES[number];
+
+// --- Stage to provider role mapping ---
+export const STAGE_PROVIDER_MAP: Record<PipelineStage, PipelineProviderRole | null> = {
+  capture: null,
+  extraction: 'llm',
+  embedding: 'embedding',
+  consolidation: 'digest-llm',
+  digest: 'digest-llm',
+};
+
+// --- Item type to applicable stages ---
+// Sessions skip consolidation — consolidation applies to the spores
+// extracted FROM sessions, not the session work item itself.
+// Lineage detection stays outside the pipeline (fire-and-forget, non-critical).
+export const ITEM_STAGE_MAP: Record<string, PipelineStage[]> = {
+  session: ['capture', 'extraction', 'embedding', 'digest'],
+  spore: ['capture', 'embedding', 'consolidation', 'digest'],
+  artifact: ['capture', 'embedding', 'digest'],
+};
+
 // --- Automatic consolidation ---
 /** Minimum cluster size required before asking LLM to consolidate. */
 export const CONSOLIDATION_MIN_CLUSTER_SIZE = 3;

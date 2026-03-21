@@ -126,4 +126,22 @@ describe('MycoConfigSchema v2', () => {
       expect(config.digest.tiers).toEqual([500, 1000, 2000]);
     });
   });
+
+  it('provides pipeline defaults', () => {
+    const config = MycoConfigSchema.parse({ version: 2 });
+    expect(config.pipeline).toEqual({
+      retention_days: 30,
+      batch_size: 5,
+      tick_interval_seconds: 30,
+      retry: {
+        transient_max: 3,
+        backoff_base_seconds: 30,
+      },
+      circuit_breaker: {
+        failure_threshold: 3,
+        cooldown_seconds: 300,
+        max_cooldown_seconds: 3600,
+      },
+    });
+  });
 });

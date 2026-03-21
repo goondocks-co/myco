@@ -89,6 +89,25 @@ const ConsolidationSchema = z.object({
   max_tokens: z.number().int().positive().default(2048),
 });
 
+const PipelineRetrySchema = z.object({
+  transient_max: z.number().int().positive().default(3),
+  backoff_base_seconds: z.number().int().positive().default(30),
+});
+
+const PipelineCircuitBreakerSchema = z.object({
+  failure_threshold: z.number().int().positive().default(3),
+  cooldown_seconds: z.number().int().positive().default(300),
+  max_cooldown_seconds: z.number().int().positive().default(3600),
+});
+
+const PipelineSchema = z.object({
+  retention_days: z.number().int().positive().default(30),
+  batch_size: z.number().int().positive().default(5),
+  tick_interval_seconds: z.number().int().positive().default(30),
+  retry: PipelineRetrySchema.default(() => PipelineRetrySchema.parse({})),
+  circuit_breaker: PipelineCircuitBreakerSchema.default(() => PipelineCircuitBreakerSchema.parse({})),
+});
+
 const DigestSchema = z.object({
   enabled: z.boolean().default(true),
   tiers: z.array(z.number().int().positive()).default([1500, 3000, 5000, 7500]),
@@ -109,6 +128,7 @@ export const MycoConfigSchema = z.object({
   context: ContextSchema.default(() => ContextSchema.parse({})),
   team: TeamSchema.default(() => TeamSchema.parse({})),
   digest: DigestSchema.default(() => DigestSchema.parse({})),
+  pipeline: PipelineSchema.default(() => PipelineSchema.parse({})),
 });
 
 export type MycoConfig = z.infer<typeof MycoConfigSchema>;
@@ -116,3 +136,4 @@ export type LlmProviderConfig = z.infer<typeof LlmProviderSchema>;
 export type EmbeddingProviderConfig = z.infer<typeof EmbeddingProviderSchema>;
 export type DigestConfig = z.infer<typeof DigestSchema>;
 export type DigestIntelligenceConfig = z.infer<typeof DigestIntelligenceSchema>;
+export type PipelineConfig = z.infer<typeof PipelineSchema>;
