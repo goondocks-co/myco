@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { PipelineManager } from '@myco/daemon/pipeline';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { PipelineManager, type StageHandlers } from '@myco/daemon/pipeline';
 import {
   PIPELINE_STAGES,
   ITEM_STAGE_MAP,
@@ -729,6 +729,182 @@ describe('PipelineManager', () => {
 
       const count = manager.recoverStuck();
       expect(count).toBe(2);
+    });
+  });
+
+  describe('tick()', () => {
+    function makeStubHandlers(): StageHandlers & { calls: Array<{ stage: string; itemId: string; itemType: string }> } {
+      const calls: Array<{ stage: string; itemId: string; itemType: string }> = [];
+      return {
+        calls,
+        extraction: async (itemId, itemType) => { calls.push({ stage: 'extraction', itemId, itemType }); },
+        embedding: async (itemId, itemType) => { calls.push({ stage: 'embedding', itemId, itemType }); },
+        consolidation: async (itemId, itemType) => { calls.push({ stage: 'consolidation', itemId, itemType }); },
+      };
+    }
+
+    it('processes pending extraction items through the handler', async () => {
+      // Register a session item and advance capture to succeeded
+      manager.register('sess-tick-001', 'session', '/sessions/2026-03-21/session-tick-001.md');
+      manager.advance('sess-tick-001', 'session', 'capture', 'succeeded');
+
+      const handlers = makeStubHandlers();
+      manager.setHandlers(handlers);
+
+      await manager.tick(5);
+
+      // extraction handler should have been called
+      expect(handlers.calls).toContainEqual({
+        stage: 'extraction',
+        itemId: 'sess-tick-001',
+        itemType: 'session',
+      });
+
+      // extraction should now be succeeded
+      const statuses = manager.getItemStatus('sess-tick-001', 'session');
+      const extraction = statuses.find((s) => s.stage === 'extraction');
+      expect(extraction?.status).toBe('succeeded');
+    });
+
+    it('is serialized — second tick while first is running returns immediately', async () => {
+      manager.register('sess-tick-002', 'session');
+      manager.advance('sess-tick-002', 'session', 'capture', 'succeeded');
+
+      let resolveFirst: () => void;
+      const firstBlocking = new Promise<void>((resolve) => { resolveFirst = resolve; });
+      const calls: string[] = [];
+
+      const handlers: StageHandlers = {
+        extraction: async () => {
+          calls.push('first-start');
+          await firstBlocking;
+          calls.push('first-end');
+        },
+        embedding: async () => { calls.push('embedding'); },
+        consolidation: async () => { calls.push('consolidation'); },
+      };
+      manager.setHandlers(handlers);
+
+      // Start first tick (will block in extraction handler)
+      const firstTick = manager.tick(5);
+
+      // Give the first tick a moment to start processing
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Second tick should return immediately because first is in progress
+      await manager.tick(5);
+
+      // Resolve the first tick
+      resolveFirst!();
+      await firstTick;
+
+      // Only one extraction call should have happened (from the first tick)
+      const extractionCalls = calls.filter((c) => c === 'first-start');
+      expect(extractionCalls).toHaveLength(1);
+    });
+
+    it('skips stages with open circuit breakers', async () => {
+      manager.register('sess-tick-003', 'session');
+      manager.advance('sess-tick-003', 'session', 'capture', 'succeeded');
+
+      // Trip the llm circuit to open
+      for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+        manager.tripCircuit('llm', 'connection refused');
+      }
+      expect(manager.circuitState('llm').state).toBe('open');
+
+      const handlers = makeStubHandlers();
+      manager.setHandlers(handlers);
+
+      await manager.tick(5);
+
+      // extraction uses 'llm' provider — should be skipped
+      const extractionCalls = handlers.calls.filter((c) => c.stage === 'extraction');
+      expect(extractionCalls).toHaveLength(0);
+
+      // extraction items should be blocked
+      const statuses = manager.getItemStatus('sess-tick-003', 'session');
+      const extraction = statuses.find((s) => s.stage === 'extraction');
+      expect(extraction?.status).toBe('blocked');
+    });
+
+    it('classifies handler errors and advances stage to failed', async () => {
+      manager.register('sess-tick-004', 'session');
+      manager.advance('sess-tick-004', 'session', 'capture', 'succeeded');
+
+      const handlers: StageHandlers = {
+        extraction: async () => { throw new Error('socket hang up'); },
+        embedding: async () => {},
+        consolidation: async () => {},
+      };
+      manager.setHandlers(handlers);
+
+      await manager.tick(5);
+
+      const statuses = manager.getItemStatus('sess-tick-004', 'session');
+      const extraction = statuses.find((s) => s.stage === 'extraction');
+      expect(extraction?.status).toBe('failed');
+      expect(extraction?.error_type).toBe('transient');
+      expect(extraction?.error_message).toBe('socket hang up');
+    });
+
+    it('trips circuit breaker on config errors', async () => {
+      // Use separate items so each contributes one circuit trip without getting
+      // auto-poisoned (config errors have a low retry limit).
+      for (let i = 0; i < PIPELINE_CIRCUIT_FAILURE_THRESHOLD; i++) {
+        const id = `sess-tick-005-${i}`;
+        manager.register(id, 'session');
+        manager.advance(id, 'session', 'capture', 'succeeded');
+      }
+
+      const connRefusedError = new Error('ECONNREFUSED');
+      (connRefusedError as NodeJS.ErrnoException).code = 'ECONNREFUSED';
+
+      const handlers: StageHandlers = {
+        extraction: async () => { throw connRefusedError; },
+        embedding: async () => {},
+        consolidation: async () => {},
+      };
+      manager.setHandlers(handlers);
+
+      await manager.tick(PIPELINE_CIRCUIT_FAILURE_THRESHOLD);
+
+      const circuit = manager.circuitState('llm');
+      expect(circuit.state).toBe('open');
+      expect(circuit.failure_count).toBeGreaterThanOrEqual(PIPELINE_CIRCUIT_FAILURE_THRESHOLD);
+    });
+
+    it('returns early when no handlers are set', async () => {
+      manager.register('sess-tick-006', 'session');
+      manager.advance('sess-tick-006', 'session', 'capture', 'succeeded');
+
+      // No handlers set — tick should return without error
+      await manager.tick(5);
+
+      // extraction should still be pending (no processing happened)
+      const statuses = manager.getItemStatus('sess-tick-006', 'session');
+      const extraction = statuses.find((s) => s.stage === 'extraction');
+      expect(extraction?.status).toBe('pending');
+    });
+
+    it('processes multiple stages in sequence within one tick', async () => {
+      // Register a spore: capture → embedding → consolidation (extraction skipped)
+      manager.register('spore-tick-001', 'spore');
+      manager.advance('spore-tick-001', 'spore', 'capture', 'succeeded');
+
+      const handlers = makeStubHandlers();
+      manager.setHandlers(handlers);
+
+      await manager.tick(5);
+
+      // After first tick: embedding should be succeeded (extraction is skipped for spores)
+      const afterFirst = manager.getItemStatus('spore-tick-001', 'spore');
+      const embedding = afterFirst.find((s) => s.stage === 'embedding');
+      expect(embedding?.status).toBe('succeeded');
+
+      // consolidation should also be succeeded since embedding succeeded in the same tick
+      const consolidation = afterFirst.find((s) => s.stage === 'consolidation');
+      expect(consolidation?.status).toBe('succeeded');
     });
   });
 

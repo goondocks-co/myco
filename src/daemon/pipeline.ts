@@ -11,6 +11,7 @@ import path from 'node:path';
 import type { PipelineStage, PipelineStatus, PipelineProviderRole } from '@myco/constants';
 import {
   PIPELINE_STAGES,
+  PIPELINE_TICK_STAGES,
   ITEM_STAGE_MAP,
   PIPELINE_TRANSIENT_MAX_RETRIES,
   PIPELINE_PARSE_MAX_RETRIES,
@@ -22,6 +23,7 @@ import {
   PIPELINE_ITEMS_DEFAULT_LIMIT,
   STAGE_PROVIDER_MAP,
 } from '@myco/constants';
+import { classifyError } from '@myco/daemon/pipeline-classify';
 
 /** Database filename within the vault directory. */
 const PIPELINE_DB_FILENAME = 'pipeline.db';
@@ -106,6 +108,23 @@ export interface TransitionRecord {
   completed_at: string | null;
   created_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// Stage handlers interface
+// ---------------------------------------------------------------------------
+
+/**
+ * Handlers called by tick() for each processable stage.
+ * Digest is NOT here — it's gated by the metabolism timer, not the pipeline tick.
+ */
+export interface StageHandlers {
+  extraction: (itemId: string, itemType: string, sourcePath: string | null) => Promise<void>;
+  embedding: (itemId: string, itemType: string, sourcePath: string | null) => Promise<void>;
+  consolidation: (itemId: string, itemType: string, sourcePath: string | null) => Promise<void>;
+}
+
+/** Optional logger for tick() diagnostics. */
+export type TickLogger = (level: string, domain: string, message: string, data?: Record<string, unknown>) => void;
 
 // ---------------------------------------------------------------------------
 // Schema SQL
@@ -1089,6 +1108,131 @@ export class PipelineManager {
     return this.db
       .prepare('SELECT * FROM circuit_breakers ORDER BY provider_role ASC')
       .all() as CircuitState[];
+  }
+
+  // -------------------------------------------------------------------------
+  // Tick processing
+  // -------------------------------------------------------------------------
+
+  private handlers: StageHandlers | null = null;
+  private tickInProgress = false;
+  private tickLogger: TickLogger | null = null;
+
+  /** Register stage handlers called by tick(). Must be set before tick() is useful. */
+  setHandlers(handlers: StageHandlers): void {
+    this.handlers = handlers;
+  }
+
+  /** Set a logger for tick diagnostics. */
+  setLogger(logger: TickLogger): void {
+    this.tickLogger = logger;
+  }
+
+  /**
+   * Process one tick of the pipeline: for each tick-processable stage
+   * (extraction, embedding, consolidation), fetch a batch of pending items
+   * and run the corresponding handler.
+   *
+   * Stages are processed sequentially; items within a batch run concurrently.
+   *
+   * Guarded by tickInProgress — if a tick is already running, returns immediately.
+   */
+  async tick(batchSize: number): Promise<void> {
+    if (this.tickInProgress) {
+      return;
+    }
+
+    if (!this.handlers) {
+      return;
+    }
+
+    this.tickInProgress = true;
+    try {
+      for (const stage of PIPELINE_TICK_STAGES) {
+        const providerRole = STAGE_PROVIDER_MAP[stage];
+
+        // Check circuit breaker state for this stage's provider
+        if (providerRole) {
+          const circuit = this.circuitState(providerRole);
+
+          if (circuit.state === 'open') {
+            // Check if cooldown expired — allow a half-open probe
+            const canProbe = this.probeCircuit(providerRole);
+            if (!canProbe) {
+              // Circuit still open, ensure items are blocked
+              const blocked = this.blockItemsForCircuit(providerRole);
+              if (blocked > 0) {
+                this.tickLogger?.('debug', 'pipeline', `Circuit open for ${providerRole}, blocked ${blocked} items`, { stage, providerRole });
+              }
+              continue;
+            }
+            // Half-open: fall through to process one item as probe
+            this.tickLogger?.('debug', 'pipeline', `Circuit half-open probe for ${providerRole}`, { stage, providerRole });
+          }
+        }
+
+        const batch = this.nextBatch(stage, batchSize);
+        if (batch.length === 0) {
+          continue;
+        }
+
+        const handler = this.handlers[stage as keyof StageHandlers];
+        if (!handler) {
+          continue;
+        }
+
+        // Process batch items concurrently
+        await Promise.all(
+          batch.map(async (item) => {
+            // Advance to processing
+            this.advance(item.id, item.item_type, stage, 'processing');
+
+            try {
+              await handler(item.id, item.item_type, item.source_path);
+              // Handler succeeded
+              this.advance(item.id, item.item_type, stage, 'succeeded');
+
+              // If circuit was half-open and probe succeeded, reset it
+              if (providerRole) {
+                const circuitAfter = this.circuitState(providerRole);
+                if (circuitAfter.state === 'half-open') {
+                  this.resetCircuit(providerRole);
+                  const unblocked = this.unblockItemsForCircuit(providerRole);
+                  this.tickLogger?.('info', 'pipeline', `Circuit closed after successful probe, unblocked ${unblocked} items`, { stage, providerRole });
+                }
+              }
+            } catch (err) {
+              const error = err instanceof Error ? err : new Error(String(err));
+              const classified = classifyError(error);
+
+              this.advance(item.id, item.item_type, stage, 'failed', {
+                errorType: classified.type,
+                errorMessage: error.message,
+              });
+
+              this.tickLogger?.('warn', 'pipeline', `Stage handler failed: ${stage}`, {
+                itemId: item.id,
+                itemType: item.item_type,
+                errorType: classified.type,
+                error: error.message,
+              });
+
+              // Trip circuit breaker on config errors
+              if (classified.type === 'config' && providerRole) {
+                this.tripCircuit(providerRole, error.message);
+                const circuit = this.circuitState(providerRole);
+                if (circuit.state === 'open') {
+                  const blocked = this.blockItemsForCircuit(providerRole);
+                  this.tickLogger?.('warn', 'pipeline', `Circuit opened for ${providerRole}, blocked ${blocked} items`, { stage, providerRole });
+                }
+              }
+            }
+          }),
+        );
+      }
+    } finally {
+      this.tickInProgress = false;
+    }
   }
 
   /** Close the database connection. */

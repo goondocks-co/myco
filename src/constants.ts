@@ -218,6 +218,12 @@ export const STAGE_PROVIDER_MAP: Record<PipelineStage, PipelineProviderRole | nu
   digest: 'digest-llm',
 };
 
+/**
+ * Stages processed by the pipeline tick timer.
+ * Capture is handled at registration time, digest is gated by the metabolism timer.
+ */
+export const PIPELINE_TICK_STAGES: PipelineStage[] = ['extraction', 'embedding', 'consolidation'];
+
 // --- Item type to applicable stages ---
 // Sessions skip consolidation — consolidation applies to the spores
 // extracted FROM sessions, not the session work item itself.

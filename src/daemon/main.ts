@@ -254,6 +254,40 @@ export async function main(): Promise<void> {
   const index = new MycoIndex(path.join(vaultDir, 'index.db'));
   const lineageGraph = new LineageGraph(vaultDir);
   const pipeline = new PipelineManager(vaultDir);
+
+  // Recover any items stuck in 'processing' from a previous daemon crash
+  const recoveredCount = pipeline.recoverStuck();
+  if (recoveredCount > 0) {
+    logger.info('pipeline', 'Recovered stuck pipeline items', { count: recoveredCount });
+  }
+
+  // Stub handlers — replaced by real handlers in Tasks 10-12
+  pipeline.setHandlers({
+    extraction: async (itemId, itemType) => {
+      logger.debug('pipeline', `Stub: extraction for ${itemType}/${itemId}`);
+    },
+    embedding: async (itemId, itemType) => {
+      logger.debug('pipeline', `Stub: embedding for ${itemType}/${itemId}`);
+    },
+    consolidation: async (itemId, itemType) => {
+      logger.debug('pipeline', `Stub: consolidation for ${itemType}/${itemId}`);
+    },
+  });
+
+  pipeline.setLogger((level, domain, message, data) => {
+    const fn = logger[level as keyof typeof logger];
+    if (typeof fn === 'function') (fn as typeof logger.info).call(logger, domain, message, data);
+  });
+
+  // Pipeline tick timer — processes extraction, embedding, consolidation
+  const pipelineTickTimer = setInterval(async () => {
+    try {
+      await pipeline.tick(config.pipeline.batch_size);
+    } catch (err) {
+      logger.error('pipeline', 'Pipeline tick failed', { error: (err as Error).message });
+    }
+  }, config.pipeline.tick_interval_seconds * 1000);
+
   const transcriptMiner = new TranscriptMiner({
     additionalAdapters: config.capture.transcript_paths.map((p) =>
       createPerProjectAdapter(p, claudeCodeAdapter.parseTurns),
@@ -1121,6 +1155,8 @@ export async function main(): Promise<void> {
       await activeStopProcessing;
     }
     metabolism?.stop();
+    clearInterval(pipelineTickTimer);
+    pipeline.close();
     planWatcher.stopFileWatcher();
     registry.destroy();
     await server.stop();
