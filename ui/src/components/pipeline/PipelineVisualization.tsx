@@ -113,7 +113,7 @@ function StageBox({
       <div className="flex items-center gap-2 text-xs">
         {succeeded > 0 && (
           <span className="font-mono text-emerald-600 dark:text-emerald-400">
-            {succeeded} done
+            {succeeded} {stage === 'digest' ? 'digested' : 'done'}
           </span>
         )}
         {pending > 0 && (
@@ -121,7 +121,7 @@ function StageBox({
             className="font-mono text-amber-600 dark:text-amber-400 underline decoration-dotted cursor-pointer"
             onClick={(e) => { e.stopPropagation(); onClick?.(stage, 'pending'); }}
           >
-            {pending} pending
+            {pending} {stage === 'digest' ? 'new substrate' : 'pending'}
           </span>
         )}
         {failed > 0 && (
