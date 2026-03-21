@@ -7,6 +7,7 @@
  */
 
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
 import path from 'node:path';
 import type { PipelineStage, PipelineStatus, PipelineProviderRole } from '@myco/constants';
 import {
@@ -107,6 +108,16 @@ export interface TransitionRecord {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+}
+
+export interface RebuildResult {
+  registered: number;
+  stages: Record<string, number>;
+}
+
+/** Minimal interface for vector index lookups during rebuild. */
+export interface VectorHasCheck {
+  has(id: string): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -1275,6 +1286,244 @@ export class PipelineManager {
       this.advance(item.id, item.item_type, 'digest', 'succeeded');
     }
     return items.length;
+  }
+
+  // -------------------------------------------------------------------------
+  // Rebuild from vault
+  // -------------------------------------------------------------------------
+
+  /**
+   * Walk the vault and infer pipeline stage completion from existing data.
+   *
+   * Used for first-run migration: when pipeline.db is empty but the vault
+   * already has session, spore, and artifact files from prior processing.
+   *
+   * Algorithm:
+   * 1. Walk sessions/, spores/, artifacts/ directories for .md files
+   * 2. Register each as a work item with inferred stage statuses
+   * 3. Check vector index for embedding status
+   * 4. Check digest trace for digest status
+   * 5. Infer extraction status for sessions (check if spores reference them)
+   * 6. Mark spore consolidation as pending (cannot reliably infer)
+   */
+  rebuild(
+    vaultDir: string,
+    vectorIndex: VectorHasCheck | null,
+    digestTracePath?: string,
+  ): RebuildResult {
+    const digestedIds = this.loadDigestedIds(digestTracePath);
+    const sporeSessionIds = this.collectSporeSessionIds(vaultDir);
+    const stages: Record<string, number> = {};
+    let registered = 0;
+
+    const bumpStage = (key: string): void => {
+      stages[key] = (stages[key] ?? 0) + 1;
+    };
+
+    // --- Sessions ---
+    const sessionsDir = path.join(vaultDir, 'sessions');
+    for (const filePath of this.walkMarkdownFiles(sessionsDir)) {
+      const filename = path.basename(filePath, '.md');
+      // session-<id>.md → id = everything after "session-"
+      const itemId = filename.startsWith('session-') ? filename.slice('session-'.length) : filename;
+      const relativePath = path.relative(vaultDir, filePath);
+
+      this.register(itemId, 'session', relativePath);
+      registered++;
+
+      // capture: file exists → succeeded
+      this.advance(itemId, 'session', 'capture', 'succeeded');
+      bumpStage('capture:succeeded');
+
+      // extraction: check if any spore references this session
+      if (sporeSessionIds.has(itemId) || sporeSessionIds.has(`session-${itemId}`)) {
+        this.advance(itemId, 'session', 'extraction', 'succeeded');
+        bumpStage('extraction:succeeded');
+      } else {
+        bumpStage('extraction:pending');
+      }
+
+      // embedding: check vector index
+      if (vectorIndex?.has(itemId) || vectorIndex?.has(`session-${itemId}`)) {
+        this.advance(itemId, 'session', 'embedding', 'succeeded');
+        bumpStage('embedding:succeeded');
+      } else {
+        bumpStage('embedding:pending');
+      }
+
+      // digest: check trace
+      if (digestedIds.has(itemId) || digestedIds.has(`session-${itemId}`)) {
+        this.advance(itemId, 'session', 'digest', 'succeeded');
+        bumpStage('digest:succeeded');
+      } else {
+        bumpStage('digest:pending');
+      }
+    }
+
+    // --- Spores ---
+    const sporesDir = path.join(vaultDir, 'spores');
+    for (const filePath of this.walkMarkdownFiles(sporesDir)) {
+      const itemId = path.basename(filePath, '.md');
+      const relativePath = path.relative(vaultDir, filePath);
+
+      this.register(itemId, 'spore', relativePath);
+      registered++;
+
+      // capture: file exists → succeeded
+      this.advance(itemId, 'spore', 'capture', 'succeeded');
+      bumpStage('capture:succeeded');
+
+      // embedding: check vector index
+      if (vectorIndex?.has(itemId)) {
+        this.advance(itemId, 'spore', 'embedding', 'succeeded');
+        bumpStage('embedding:succeeded');
+      } else {
+        bumpStage('embedding:pending');
+      }
+
+      // consolidation: cannot reliably infer → leave as pending
+      bumpStage('consolidation:pending');
+
+      // digest: check trace
+      if (digestedIds.has(itemId)) {
+        this.advance(itemId, 'spore', 'digest', 'succeeded');
+        bumpStage('digest:succeeded');
+      } else {
+        bumpStage('digest:pending');
+      }
+    }
+
+    // --- Artifacts ---
+    const artifactsDir = path.join(vaultDir, 'artifacts');
+    for (const filePath of this.walkMarkdownFiles(artifactsDir)) {
+      const itemId = path.basename(filePath, '.md');
+      const relativePath = path.relative(vaultDir, filePath);
+
+      this.register(itemId, 'artifact', relativePath);
+      registered++;
+
+      // capture: file exists → succeeded
+      this.advance(itemId, 'artifact', 'capture', 'succeeded');
+      bumpStage('capture:succeeded');
+
+      // embedding: check vector index
+      if (vectorIndex?.has(itemId)) {
+        this.advance(itemId, 'artifact', 'embedding', 'succeeded');
+        bumpStage('embedding:succeeded');
+      } else {
+        bumpStage('embedding:pending');
+      }
+
+      // digest: check trace
+      if (digestedIds.has(itemId)) {
+        this.advance(itemId, 'artifact', 'digest', 'succeeded');
+        bumpStage('digest:succeeded');
+      } else {
+        bumpStage('digest:pending');
+      }
+    }
+
+    return { registered, stages };
+  }
+
+  /**
+   * Read digest trace JSONL and collect all note IDs that appear in any
+   * substrate array. Returns an empty Set if the trace file doesn't exist.
+   */
+  private loadDigestedIds(tracePath?: string): Set<string> {
+    const ids = new Set<string>();
+    if (!tracePath) return ids;
+
+    let content: string;
+    try {
+      content = fs.readFileSync(tracePath, 'utf-8').trim();
+    } catch {
+      return ids;
+    }
+
+    if (!content) return ids;
+
+    for (const line of content.split('\n')) {
+      try {
+        const record = JSON.parse(line) as {
+          substrate?: {
+            sessions?: string[];
+            spores?: string[];
+            plans?: string[];
+            artifacts?: string[];
+            team?: string[];
+          };
+        };
+        if (record.substrate) {
+          for (const arr of Object.values(record.substrate)) {
+            if (Array.isArray(arr)) {
+              for (const id of arr) {
+                ids.add(id);
+              }
+            }
+          }
+        }
+      } catch {
+        // Skip malformed lines
+      }
+    }
+
+    return ids;
+  }
+
+  /**
+   * Walk spore files and collect session IDs they reference.
+   * Used to infer whether extraction has been completed for a session.
+   */
+  private collectSporeSessionIds(vaultDir: string): Set<string> {
+    const sessionIds = new Set<string>();
+    const sporesDir = path.join(vaultDir, 'spores');
+
+    for (const filePath of this.walkMarkdownFiles(sporesDir)) {
+      try {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+        if (!fmMatch) continue;
+
+        // Look for session field in frontmatter
+        // Format: session: "[[session-<id>]]" or session: "session-<id>" or session: "<id>"
+        const sessionMatch = fmMatch[1].match(/^session:\s*(?:"\[\[)?([^"\]]+)/m);
+        if (sessionMatch) {
+          const rawSession = sessionMatch[1].trim();
+          sessionIds.add(rawSession);
+          // Also add bare ID if it has session- prefix
+          if (rawSession.startsWith('session-')) {
+            sessionIds.add(rawSession.slice('session-'.length));
+          }
+        }
+      } catch {
+        // Skip unreadable files
+      }
+    }
+
+    return sessionIds;
+  }
+
+  /**
+   * Recursively walk a directory and collect all .md file paths.
+   * Returns empty array if the directory doesn't exist.
+   */
+  private walkMarkdownFiles(dir: string): string[] {
+    if (!fs.existsSync(dir)) return [];
+
+    const results: string[] = [];
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        results.push(...this.walkMarkdownFiles(fullPath));
+      } else if (entry.isFile() && entry.name.endsWith('.md')) {
+        results.push(fullPath);
+      }
+    }
+
+    return results;
   }
 
   /** Close the database connection. */

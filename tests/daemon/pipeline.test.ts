@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { PipelineManager, type StageHandlers } from '@myco/daemon/pipeline';
+import { PipelineManager, type StageHandlers, type VectorHasCheck } from '@myco/daemon/pipeline';
 import {
   PIPELINE_STAGES,
   ITEM_STAGE_MAP,
@@ -905,6 +905,261 @@ describe('PipelineManager', () => {
       // consolidation should also be succeeded since embedding succeeded in the same tick
       const consolidation = afterFirst.find((s) => s.stage === 'consolidation');
       expect(consolidation?.status).toBe('succeeded');
+    });
+  });
+
+  describe('rebuild()', () => {
+    let vaultDir: string;
+
+    /** Helper to create a vault file at the given relative path with optional content. */
+    function createVaultFile(relativePath: string, content?: string): void {
+      const fullPath = path.join(vaultDir, relativePath);
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+      fs.writeFileSync(fullPath, content ?? `---\ntype: note\n---\n\n# Test\n`, 'utf-8');
+    }
+
+    /** Helper to create a minimal spore file with session reference in frontmatter. */
+    function createSporeFile(sporeId: string, obsType: string, sessionId?: string): void {
+      const normalizedType = obsType.replace(/_/g, '-');
+      const sessionLine = sessionId ? `session: "[[session-${sessionId}]]"` : '';
+      const content = `---\ntype: spore\nid: ${sporeId}\nobservation_type: ${obsType}\n${sessionLine}\n---\n\n# ${sporeId}\n`;
+      createVaultFile(`spores/${normalizedType}/${sporeId}.md`, content);
+    }
+
+    /** Create a mock VectorHasCheck that returns true for the given IDs. */
+    function mockVectorIndex(existingIds: string[]): VectorHasCheck {
+      const idSet = new Set(existingIds);
+      return { has: (id: string) => idSet.has(id) };
+    }
+
+    /** Create a digest trace file with the given substrate IDs. */
+    function createDigestTrace(ids: { sessions?: string[]; spores?: string[]; artifacts?: string[] }): string {
+      const tracePath = path.join(vaultDir, 'digest', 'trace.jsonl');
+      fs.mkdirSync(path.dirname(tracePath), { recursive: true });
+      const record = {
+        cycleId: 'test-cycle',
+        timestamp: new Date().toISOString(),
+        substrate: {
+          sessions: ids.sessions ?? [],
+          spores: ids.spores ?? [],
+          plans: [],
+          artifacts: ids.artifacts ?? [],
+          team: [],
+        },
+        tiersGenerated: [1500],
+        model: 'test',
+        durationMs: 100,
+        tokensUsed: 500,
+      };
+      fs.writeFileSync(tracePath, JSON.stringify(record) + '\n', 'utf-8');
+      return tracePath;
+    }
+
+    beforeEach(() => {
+      vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-rebuild-'));
+    });
+
+    afterEach(() => {
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    });
+
+    it('registers session files from vault', () => {
+      createVaultFile('sessions/2026-03-21/session-abc123.md');
+      createVaultFile('sessions/2026-03-20/session-def456.md');
+
+      const result = manager.rebuild(vaultDir, null);
+
+      expect(result.registered).toBe(2);
+      expect(result.stages['capture:succeeded']).toBe(2);
+
+      // Both sessions should be registered in the pipeline
+      const s1 = manager.getItemStatus('abc123', 'session');
+      expect(s1.length).toBeGreaterThan(0);
+      const capture1 = s1.find((s) => s.stage === 'capture');
+      expect(capture1?.status).toBe('succeeded');
+
+      const s2 = manager.getItemStatus('def456', 'session');
+      expect(s2.length).toBeGreaterThan(0);
+    });
+
+    it('registers spore files from vault', () => {
+      createSporeFile('gotcha-abc123-1234567890', 'gotcha');
+      createSporeFile('decision-def456-9876543210', 'decision');
+
+      const result = manager.rebuild(vaultDir, null);
+
+      expect(result.registered).toBe(2);
+
+      const s1 = manager.getItemStatus('gotcha-abc123-1234567890', 'spore');
+      expect(s1.length).toBeGreaterThan(0);
+      const capture1 = s1.find((s) => s.stage === 'capture');
+      expect(capture1?.status).toBe('succeeded');
+
+      const s2 = manager.getItemStatus('decision-def456-9876543210', 'spore');
+      expect(s2.length).toBeGreaterThan(0);
+    });
+
+    it('registers artifact files from vault', () => {
+      createVaultFile('artifacts/src-utils-helpers.md');
+
+      const result = manager.rebuild(vaultDir, null);
+
+      expect(result.registered).toBe(1);
+
+      const s = manager.getItemStatus('src-utils-helpers', 'artifact');
+      expect(s.length).toBeGreaterThan(0);
+      const capture = s.find((st) => st.stage === 'capture');
+      expect(capture?.status).toBe('succeeded');
+    });
+
+    it('infers embedding:succeeded when vector exists', () => {
+      createVaultFile('sessions/2026-03-21/session-abc123.md');
+      createSporeFile('gotcha-abc123-1234567890', 'gotcha');
+      createVaultFile('artifacts/my-artifact.md');
+
+      const vectors = mockVectorIndex([
+        'session-abc123',
+        'gotcha-abc123-1234567890',
+        'my-artifact',
+      ]);
+
+      const result = manager.rebuild(vaultDir, vectors);
+
+      expect(result.registered).toBe(3);
+      expect(result.stages['embedding:succeeded']).toBe(3);
+
+      // Session embedding inferred
+      const sessionStatuses = manager.getItemStatus('abc123', 'session');
+      const sessionEmbed = sessionStatuses.find((s) => s.stage === 'embedding');
+      expect(sessionEmbed?.status).toBe('succeeded');
+
+      // Spore embedding inferred
+      const sporeStatuses = manager.getItemStatus('gotcha-abc123-1234567890', 'spore');
+      const sporeEmbed = sporeStatuses.find((s) => s.stage === 'embedding');
+      expect(sporeEmbed?.status).toBe('succeeded');
+
+      // Artifact embedding inferred
+      const artStatuses = manager.getItemStatus('my-artifact', 'artifact');
+      const artEmbed = artStatuses.find((s) => s.stage === 'embedding');
+      expect(artEmbed?.status).toBe('succeeded');
+    });
+
+    it('infers extraction:succeeded for sessions with spores', () => {
+      createVaultFile('sessions/2026-03-21/session-abc123.md');
+      createSporeFile('gotcha-abc123-1234567890', 'gotcha', 'abc123');
+
+      const result = manager.rebuild(vaultDir, null);
+
+      const sessionStatuses = manager.getItemStatus('abc123', 'session');
+      const extraction = sessionStatuses.find((s) => s.stage === 'extraction');
+      expect(extraction?.status).toBe('succeeded');
+      expect(result.stages['extraction:succeeded']).toBe(1);
+    });
+
+    it('leaves extraction:pending for sessions without spores', () => {
+      createVaultFile('sessions/2026-03-21/session-abc123.md');
+
+      const result = manager.rebuild(vaultDir, null);
+
+      const sessionStatuses = manager.getItemStatus('abc123', 'session');
+      const extraction = sessionStatuses.find((s) => s.stage === 'extraction');
+      expect(extraction?.status).toBe('pending');
+      expect(result.stages['extraction:pending']).toBe(1);
+    });
+
+    it('marks consolidation:pending for spores (cannot infer)', () => {
+      createSporeFile('gotcha-abc123-1234567890', 'gotcha');
+
+      const result = manager.rebuild(vaultDir, null);
+
+      expect(result.stages['consolidation:pending']).toBe(1);
+
+      const sporeStatuses = manager.getItemStatus('gotcha-abc123-1234567890', 'spore');
+      const consolidation = sporeStatuses.find((s) => s.stage === 'consolidation');
+      expect(consolidation?.status).toBe('pending');
+    });
+
+    it('infers digest:succeeded when item appears in trace', () => {
+      createVaultFile('sessions/2026-03-21/session-abc123.md');
+      createSporeFile('gotcha-abc123-1234567890', 'gotcha');
+
+      const tracePath = createDigestTrace({
+        sessions: ['session-abc123'],
+        spores: ['gotcha-abc123-1234567890'],
+      });
+
+      const result = manager.rebuild(vaultDir, null, tracePath);
+
+      expect(result.stages['digest:succeeded']).toBe(2);
+
+      const sessionStatuses = manager.getItemStatus('abc123', 'session');
+      const sessionDigest = sessionStatuses.find((s) => s.stage === 'digest');
+      expect(sessionDigest?.status).toBe('succeeded');
+
+      const sporeStatuses = manager.getItemStatus('gotcha-abc123-1234567890', 'spore');
+      const sporeDigest = sporeStatuses.find((s) => s.stage === 'digest');
+      expect(sporeDigest?.status).toBe('succeeded');
+    });
+
+    it('handles empty vault gracefully', () => {
+      const result = manager.rebuild(vaultDir, null);
+
+      expect(result.registered).toBe(0);
+      expect(result.stages).toEqual({});
+    });
+
+    it('is idempotent (re-running does not duplicate)', () => {
+      createVaultFile('sessions/2026-03-21/session-abc123.md');
+      createSporeFile('gotcha-abc123-1234567890', 'gotcha');
+
+      const result1 = manager.rebuild(vaultDir, null);
+      const result2 = manager.rebuild(vaultDir, null);
+
+      // Same counts — register() is idempotent
+      expect(result1.registered).toBe(result2.registered);
+
+      // No duplicate work items
+      const db = manager.getDb();
+      const count = db
+        .prepare('SELECT COUNT(*) as cnt FROM work_items')
+        .get() as { cnt: number };
+      expect(count.cnt).toBe(2); // 1 session + 1 spore
+    });
+
+    it('handles missing digest trace file gracefully', () => {
+      createVaultFile('sessions/2026-03-21/session-abc123.md');
+
+      const result = manager.rebuild(
+        vaultDir,
+        null,
+        path.join(vaultDir, 'digest', 'trace.jsonl'),
+      );
+
+      expect(result.registered).toBe(1);
+      expect(result.stages['digest:pending']).toBe(1);
+    });
+
+    it('handles mixed vault with all item types', () => {
+      createVaultFile('sessions/2026-03-21/session-abc123.md');
+      createSporeFile('gotcha-abc123-1234567890', 'gotcha', 'abc123');
+      createVaultFile('artifacts/my-config.md');
+
+      const vectors = mockVectorIndex(['session-abc123', 'my-config']);
+      const tracePath = createDigestTrace({
+        sessions: ['session-abc123'],
+        artifacts: ['my-config'],
+      });
+
+      const result = manager.rebuild(vaultDir, vectors, tracePath);
+
+      expect(result.registered).toBe(3);
+      expect(result.stages['capture:succeeded']).toBe(3);
+      expect(result.stages['extraction:succeeded']).toBe(1);
+      expect(result.stages['embedding:succeeded']).toBe(2);
+      expect(result.stages['embedding:pending']).toBe(1); // spore not in vectors
+      expect(result.stages['digest:succeeded']).toBe(2); // session + artifact
+      expect(result.stages['digest:pending']).toBe(1); // spore not in trace
+      expect(result.stages['consolidation:pending']).toBe(1); // spore always pending
     });
   });
 

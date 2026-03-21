@@ -261,6 +261,16 @@ export async function main(): Promise<void> {
     logger.info('pipeline', 'Recovered stuck pipeline items', { count: recoveredCount });
   }
 
+  // First-run migration: if pipeline.db was just created (no work items),
+  // rebuild from vault to catch up with existing content
+  const health = pipeline.health();
+  const totalItems = Object.values(health.totals).reduce((a, b) => a + b, 0);
+  if (totalItems === 0) {
+    logger.info('pipeline', 'First-run migration: rebuilding pipeline from vault');
+    const result = pipeline.rebuild(vaultDir, vectorIndex, path.join(vaultDir, 'digest', 'trace.jsonl'));
+    logger.info('pipeline', 'Pipeline rebuild complete', { registered: result.registered, stages: result.stages });
+  }
+
   // Consolidation engine — declared here so pipeline handler can capture it.
   // Assigned later when digest.consolidation.enabled is true.
   let consolidationEngine: ConsolidationEngine | null = null;
