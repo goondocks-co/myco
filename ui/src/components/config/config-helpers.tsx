@@ -25,6 +25,12 @@ export const COOLDOWN_STAGE_LABELS = [
   'Stage 3 (cold)',
 ] as const;
 
+export const COOLDOWN_STAGE_DESCRIPTIONS = [
+  'Seconds between cycles after initial activity subsides',
+  'Seconds between cycles as activity continues to drop',
+  'Seconds between cycles just before dormancy',
+] as const;
+
 /* ---------- Field ---------- */
 
 interface FieldProps {

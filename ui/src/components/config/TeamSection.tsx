@@ -24,20 +24,20 @@ export function TeamSection({ team, isDirty, updateTeam }: TeamSectionProps) {
       isDirty={isDirty}
     >
       <div className="space-y-4">
-        <Field label="Enabled">
+        <Field label="Enabled" description="Enable team knowledge sharing across vault users">
           <ToggleSwitch
             checked={team.enabled}
             onChange={(v) => updateTeam('enabled', v)}
           />
         </Field>
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="User Name">
+          <Field label="User Name" description="Your display name for team attribution">
             <Input
               value={team.user}
               onChange={(e) => updateTeam('user', e.target.value)}
             />
           </Field>
-          <Field label="Sync Mode">
+          <Field label="Sync Mode" description="How team knowledge is synchronized between machines">
             <Select
               value={team.sync}
               onValueChange={(v) => updateTeam('sync', v)}

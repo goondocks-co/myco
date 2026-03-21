@@ -26,7 +26,7 @@ export function DaemonSection({ daemon, isDirty, updateDaemon }: DaemonSectionPr
       <div className="grid gap-4 sm:grid-cols-2">
         <Field
           label="Port"
-          description="Auto-derived from vault path. Change via myco.yaml if needed."
+          description="Auto-derived from vault path — the daemon binds to this port on startup"
         >
           <Input
             type="number"
@@ -36,7 +36,7 @@ export function DaemonSection({ daemon, isDirty, updateDaemon }: DaemonSectionPr
             className="disabled:cursor-default disabled:opacity-70"
           />
         </Field>
-        <Field label="Log Level">
+        <Field label="Log Level" description="Minimum severity level for daemon log output">
           <Select
             value={daemon.log_level}
             onValueChange={(v) => updateDaemon('log_level', v)}
@@ -51,14 +51,14 @@ export function DaemonSection({ daemon, isDirty, updateDaemon }: DaemonSectionPr
             </SelectContent>
           </Select>
         </Field>
-        <Field label="Grace Period (sec)" description="Seconds to wait before shutting down idle daemon">
+        <Field label="Grace Period (sec)" description="Seconds to wait before shutting down when no sessions are active">
           <Input
             type="number"
             value={daemon.grace_period}
             onChange={numChange(updateDaemon as (k: string, v: number) => void, 'grace_period')}
           />
         </Field>
-        <Field label="Max Log Size (bytes)">
+        <Field label="Max Log Size (bytes)" description="Maximum daemon log file size in bytes before rotation">
           <Input
             type="number"
             value={daemon.max_log_size}

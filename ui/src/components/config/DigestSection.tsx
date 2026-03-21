@@ -15,6 +15,7 @@ import {
   CONTEXT_WINDOW_OPTIONS,
   DEFAULT_TIERS,
   COOLDOWN_STAGE_LABELS,
+  COOLDOWN_STAGE_DESCRIPTIONS,
   ToggleSwitch,
 } from './config-helpers';
 
@@ -42,7 +43,7 @@ export function DigestSection({
       isDirty={isDirty}
     >
       <div className="space-y-6">
-        <Field label="Enabled">
+        <Field label="Enabled" description="Run continuous vault synthesis in the background">
           <ToggleSwitch
             checked={digest.enabled}
             onChange={(v) => updateDigest('enabled', v)}
@@ -52,7 +53,7 @@ export function DigestSection({
         <div>
           <h4 className="mb-3 text-sm font-medium text-muted-foreground">Intelligence</h4>
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Provider" description="Override main LLM provider for digest (null = use main)">
+            <Field label="Provider" description="Override the processor model for digest — use a larger model for better synthesis">
               <Select
                 value={digest.intelligence.provider ?? '__null__'}
                 onValueChange={(v) =>
@@ -70,7 +71,7 @@ export function DigestSection({
                 </SelectContent>
               </Select>
             </Field>
-            <Field label="Model" description="Override model (null = use main)">
+            <Field label="Model" description="Digest model — quality matters more than speed here">
               <Input
                 value={digest.intelligence.model ?? ''}
                 placeholder="Use main model"
@@ -79,7 +80,7 @@ export function DigestSection({
                 }
               />
             </Field>
-            <Field label="Context Window">
+            <Field label="Context Window" description="How much vault content the digest model can process per cycle">
               <Select
                 value={String(digest.intelligence.context_window)}
                 onValueChange={(v) =>
@@ -98,7 +99,7 @@ export function DigestSection({
                 </SelectContent>
               </Select>
             </Field>
-            <Field label="Keep Alive" description="Ollama keep-alive duration (e.g. '30m')">
+            <Field label="Keep Alive" description="How long to keep the digest model loaded between cycles (Ollama duration string)">
               <Input
                 value={digest.intelligence.keep_alive ?? ''}
                 placeholder="Provider default"
@@ -107,7 +108,7 @@ export function DigestSection({
                 }
               />
             </Field>
-            <Field label="GPU KV Cache" description="Offload KV cache to GPU">
+            <Field label="GPU KV Cache" description="Offload key-value cache to GPU — faster but uses more VRAM">
               <ToggleSwitch
                 checked={digest.intelligence.gpu_kv_cache}
                 onChange={(v) => updateDigestIntelligence('gpu_kv_cache', v)}
@@ -118,7 +119,7 @@ export function DigestSection({
 
         <div>
           <h4 className="mb-3 text-sm font-medium text-muted-foreground">Tiers</h4>
-          <Field label="Token budgets">
+          <Field label="Token budgets" description="Pre-computed context sizes available for session injection">
             <div className="flex flex-wrap gap-2">
               {DEFAULT_TIERS.map((tier) => (
                 <Badge key={tier} variant="secondary">
@@ -128,7 +129,7 @@ export function DigestSection({
             </div>
           </Field>
           <div className="mt-4">
-            <Field label="Inject Tier" description="Which tier to inject into context">
+            <Field label="Inject Tier" description="Which tier to inject at session start — larger tiers give agents more context">
               <Select
                 value={digest.inject_tier !== null ? String(digest.inject_tier) : '__null__'}
                 onValueChange={(v) =>
@@ -154,7 +155,7 @@ export function DigestSection({
         <div>
           <h4 className="mb-3 text-sm font-medium text-muted-foreground">Metabolism</h4>
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Active Interval (sec)">
+            <Field label="Active Interval (sec)" description="Seconds between digest cycles when new content is arriving">
               <Input
                 type="number"
                 value={digest.metabolism.active_interval}
@@ -164,7 +165,7 @@ export function DigestSection({
                 }}
               />
             </Field>
-            <Field label="Dormancy Threshold (sec)">
+            <Field label="Dormancy Threshold (sec)" description="Seconds of inactivity before the digest engine goes dormant">
               <Input
                 type="number"
                 value={digest.metabolism.dormancy_threshold}
@@ -181,7 +182,7 @@ export function DigestSection({
             </h5>
             <div className="grid gap-4 sm:grid-cols-3">
               {COOLDOWN_STAGE_LABELS.map((stageLabel, index) => (
-                <Field key={index} label={stageLabel}>
+                <Field key={index} label={stageLabel} description={COOLDOWN_STAGE_DESCRIPTIONS[index]}>
                   <Input
                     type="number"
                     value={digest.metabolism.cooldown_intervals[index] ?? ''}
@@ -202,7 +203,7 @@ export function DigestSection({
 
         <div>
           <h4 className="mb-3 text-sm font-medium text-muted-foreground">Substrate</h4>
-          <Field label="Max Notes Per Cycle">
+          <Field label="Max Notes Per Cycle" description="Maximum vault notes to process in a single digest cycle">
             <Input
               type="number"
               value={digest.substrate.max_notes_per_cycle}

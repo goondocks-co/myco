@@ -39,28 +39,28 @@ export function ContextSection({
             How the budget is split across vault content types
           </p>
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Plans">
+            <Field label="Plans" description="Tokens allocated to active plan context">
               <Input
                 type="number"
                 value={context.layers.plans}
                 onChange={numChange(updateContextLayer, 'plans')}
               />
             </Field>
-            <Field label="Sessions">
+            <Field label="Sessions" description="Tokens allocated to recent session context">
               <Input
                 type="number"
                 value={context.layers.sessions}
                 onChange={numChange(updateContextLayer, 'sessions')}
               />
             </Field>
-            <Field label="Spores">
+            <Field label="Spores" description="Tokens allocated to relevant spore context">
               <Input
                 type="number"
                 value={context.layers.spores}
                 onChange={numChange(updateContextLayer, 'spores')}
               />
             </Field>
-            <Field label="Team">
+            <Field label="Team" description="Tokens allocated to team member context">
               <Input
                 type="number"
                 value={context.layers.team}
