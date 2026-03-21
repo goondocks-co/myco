@@ -1163,6 +1163,7 @@ export async function main(): Promise<void> {
     llmProvider,
     embeddingProvider,
     progressTracker,
+    pipeline,
     log: (level, message, data) => {
       const fn = logger[level as keyof typeof logger];
       if (typeof fn === 'function') (fn as typeof logger.info).call(logger, 'operations', message, data);

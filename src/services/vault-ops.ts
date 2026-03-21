@@ -29,12 +29,14 @@ import {
 import { stripReasoningTokens } from '../intelligence/response.js';
 import { loadPrompt, formatNoteForPrompt, formatNotesForPrompt } from '../prompts/index.js';
 import { supersedeSpore, supersededIdsSchema, isActiveSpore } from '../vault/curation.js';
+import type { PipelineManager } from '../daemon/pipeline.js';
 
 export interface OperationContext {
   vaultDir: string;
   config: MycoConfig;
   index: MycoIndex;
   vectorIndex?: VectorIndex;
+  pipeline?: PipelineManager;
   log?: (level: string, message: string, data?: Record<string, unknown>) => void;
 }
 
@@ -110,6 +112,10 @@ export interface DigestOptions {
 /**
  * Run a single digest cycle.
  * Core logic shared between CLI (`myco digest`) and daemon API (`POST /api/digest`).
+ *
+ * When a PipelineManager is available in ctx.pipeline and `--full` is set,
+ * all pipeline items are reset to digest:pending so the metabolism timer
+ * picks them up. Regular (non-full) digest runs the engine directly.
  */
 export async function runDigest(
   ctx: OperationContext,
@@ -117,10 +123,24 @@ export async function runDigest(
   options?: DigestOptions,
 ): Promise<DigestCycleResult | null> {
   const { config, vaultDir, index } = ctx;
-
   const log: DigestLogFn = ctx.log
     ? (level, message, data) => ctx.log!(level, message, data)
     : () => {};
+
+  // Pipeline mode for --full: reset digest stages to pending and let
+  // the metabolism timer handle the actual digest cycle.
+  if (ctx.pipeline && options?.full) {
+    const items = ctx.pipeline.listItems({ stage: 'digest', status: 'succeeded' });
+    let reset = 0;
+    for (const item of items.items) {
+      ctx.pipeline.advance(item.id, item.item_type, 'digest', 'pending');
+      reset++;
+    }
+    log('info', `Reset ${reset} item(s) to digest:pending for full reprocessing`);
+    // Return null to indicate no immediate cycle was run; the metabolism
+    // timer will pick up the pending items on its next tick.
+    return null;
+  }
 
   const engine = new DigestEngine({
     vaultDir,
@@ -158,12 +178,7 @@ export interface CurationDeps {
   llmProvider: LlmProvider;
   embeddingProvider: EmbeddingProvider;
   log?: (level: string, message: string, data?: Record<string, unknown>) => void;
-}
-
-export interface CurationResult {
-  scanned: number;
-  clustersEvaluated: number;
-  superseded: number;
+  pipeline?: PipelineManager;
 }
 
 // --- Curation internals ---
@@ -233,9 +248,21 @@ function clusterSpores(spores: SporeWithEmbedding[]): Cluster[] {
   return clusters;
 }
 
+export interface CurationResult {
+  scanned: number;
+  clustersEvaluated: number;
+  superseded: number;
+  /** True when spores were enqueued via pipeline instead of curated inline. */
+  enqueued?: boolean;
+}
+
 /**
  * Run vault curation: embed spores, cluster, ask LLM which are outdated, supersede.
  * Core logic shared between CLI (`myco curate`) and daemon API (`POST /api/curate`).
+ *
+ * When a PipelineManager is available in deps.pipeline, active spores are
+ * registered at consolidation:pending for the pipeline tick to handle.
+ * When no pipeline is available, falls back to inline curation.
  */
 export async function runCuration(
   deps: CurationDeps,
@@ -247,6 +274,19 @@ export async function runCuration(
   // 1. Query all spores and filter for active ones
   const allSpores = index.query({ type: 'spore' });
   const activeSpores = allSpores.filter((n) => isActiveSpore(n.frontmatter));
+
+  // --- Pipeline mode: enqueue spores for consolidation via pipeline tick ---
+  if (deps.pipeline && !dryRun) {
+    let enqueued = 0;
+    for (const spore of activeSpores) {
+      deps.pipeline.register(spore.id, 'spore', spore.path);
+      deps.pipeline.advance(spore.id, 'spore', 'capture', 'succeeded');
+      deps.pipeline.advance(spore.id, 'spore', 'consolidation', 'pending');
+      enqueued++;
+    }
+    log('info', `Enqueued ${enqueued} spore(s) for pipeline consolidation`);
+    return { scanned: activeSpores.length, clustersEvaluated: 0, superseded: 0, enqueued: true };
+  }
 
   if (activeSpores.length === 0) {
     return { scanned: 0, clustersEvaluated: 0, superseded: 0 };
@@ -402,6 +442,8 @@ export interface ReprocessResult {
   observationsExtracted: number;
   summariesRegenerated: number;
   embeddingsQueued: number;
+  /** True when sessions were enqueued via pipeline instead of processed inline. */
+  enqueued?: boolean;
 }
 
 
@@ -425,6 +467,10 @@ export function updateTitleAndSummary(body: string, newTitle: string, newNarrati
 /**
  * Reprocess sessions: re-extract observations, regenerate summaries, re-index.
  * Core logic shared between CLI (`myco reprocess`) and daemon API (`POST /api/reprocess`).
+ *
+ * When a PipelineManager is available in ctx.pipeline, sessions are registered
+ * at extraction:pending for the pipeline tick to handle. When no pipeline is
+ * available (standalone CLI), falls back to inline processing.
  */
 export async function runReprocess(
   ctx: OperationContext,
@@ -441,6 +487,65 @@ export async function runReprocess(
   const failedOnly = options?.failed ?? false;
   const skipLlm = options?.indexOnly ?? false;
 
+  // Find sessions (shared between pipeline and legacy modes)
+  const sessionsDir = path.join(vaultDir, 'sessions');
+  if (!fs.existsSync(sessionsDir)) {
+    return { sessionsFound: 0, sessionsProcessed: 0, observationsExtracted: 0, summariesRegenerated: 0, embeddingsQueued: 0 };
+  }
+
+  const sessionFiles: Array<{ relativePath: string; sessionId: string; dateDir: string }> = [];
+  for (const dateDir of fs.readdirSync(sessionsDir)) {
+    if (dateFilter && dateDir !== dateFilter) continue;
+    const datePath = path.join(sessionsDir, dateDir);
+    if (!fs.statSync(datePath).isDirectory()) continue;
+    for (const file of fs.readdirSync(datePath)) {
+      if (!file.startsWith('session-') || !file.endsWith('.md')) continue;
+      const sessionId = file.replace('session-', '').replace('.md', '');
+      if (sessionFilter && !sessionId.includes(sessionFilter)) continue;
+      sessionFiles.push({ relativePath: path.join('sessions', dateDir, file), sessionId, dateDir });
+    }
+  }
+
+  if (sessionFiles.length === 0) {
+    return { sessionsFound: 0, sessionsProcessed: 0, observationsExtracted: 0, summariesRegenerated: 0, embeddingsQueued: 0 };
+  }
+
+  // --- Pipeline mode: enqueue sessions for extraction via pipeline tick ---
+  if (ctx.pipeline && !skipLlm) {
+    let enqueued = 0;
+
+    // Pre-filter for failed-only if requested
+    let eligibleFiles = sessionFiles;
+    if (failedOnly) {
+      eligibleFiles = sessionFiles.filter(({ relativePath }) => {
+        const rawContent = fs.readFileSync(path.join(vaultDir, relativePath), 'utf-8');
+        return rawContent.includes(SUMMARIZATION_FAILED_MARKER);
+      });
+    }
+
+    for (const { relativePath, sessionId } of eligibleFiles) {
+      // Register (idempotent) and reset extraction to pending
+      ctx.pipeline.register(sessionId, 'session', relativePath);
+      ctx.pipeline.advance(sessionId, 'session', 'capture', 'succeeded');
+      ctx.pipeline.advance(sessionId, 'session', 'extraction', 'pending');
+      enqueued++;
+    }
+
+    log('info', `Enqueued ${enqueued} session(s) for pipeline reprocessing`, {
+      filters: { session: sessionFilter, date: dateFilter, failed: failedOnly },
+    });
+
+    return {
+      sessionsFound: sessionFiles.length,
+      sessionsProcessed: enqueued,
+      observationsExtracted: 0,
+      summariesRegenerated: 0,
+      embeddingsQueued: 0,
+      enqueued: true,
+    };
+  }
+
+  // --- Legacy inline mode (no pipeline) ---
   const effectiveLlm = skipLlm ? null : llmProvider;
   const processor = effectiveLlm
     ? new BufferProcessor(effectiveLlm, config.intelligence.llm.context_window, config.capture)
@@ -451,29 +556,6 @@ export async function runReprocess(
       createPerProjectAdapter(p, claudeCodeAdapter.parseTurns),
     ),
   });
-
-  // Find sessions
-  const sessionsDir = path.join(vaultDir, 'sessions');
-  if (!fs.existsSync(sessionsDir)) {
-    return { sessionsFound: 0, sessionsProcessed: 0, observationsExtracted: 0, summariesRegenerated: 0, embeddingsQueued: 0 };
-  }
-
-  const sessionFiles: Array<{ relativePath: string; sessionId: string }> = [];
-  for (const dateDir of fs.readdirSync(sessionsDir)) {
-    if (dateFilter && dateDir !== dateFilter) continue;
-    const datePath = path.join(sessionsDir, dateDir);
-    if (!fs.statSync(datePath).isDirectory()) continue;
-    for (const file of fs.readdirSync(datePath)) {
-      if (!file.startsWith('session-') || !file.endsWith('.md')) continue;
-      const sessionId = file.replace('session-', '').replace('.md', '');
-      if (sessionFilter && !sessionId.includes(sessionFilter)) continue;
-      sessionFiles.push({ relativePath: path.join('sessions', dateDir, file), sessionId });
-    }
-  }
-
-  if (sessionFiles.length === 0) {
-    return { sessionsFound: 0, sessionsProcessed: 0, observationsExtracted: 0, summariesRegenerated: 0, embeddingsQueued: 0 };
-  }
 
   // Prepare tasks
   interface SessionTask {

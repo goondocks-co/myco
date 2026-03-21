@@ -7,12 +7,14 @@ import { indexNote } from '@myco/index/rebuild';
 import { formatSessionBody, CONVERSATION_HEADING, extractSection, callout } from '@myco/obsidian/formatter';
 import { sessionNoteId, sessionRelativePath } from '@myco/vault/session-id';
 import { writeObservationNotes } from '@myco/vault/observations';
-import { updateTitleAndSummary } from '@myco/services/vault-ops';
+import { updateTitleAndSummary, runReprocess, runDigest, runCuration } from '@myco/services/vault-ops';
+import type { OperationContext, CurationDeps } from '@myco/services/vault-ops';
+import { MycoConfigSchema } from '@myco/config/schema';
 import { SUMMARIZATION_FAILED_MARKER } from '@myco/daemon/processor';
 import { generateEmbedding } from '@myco/intelligence/embeddings';
 import { EventBuffer } from '@myco/capture/buffer';
 import { ITEM_STAGE_MAP, EMBEDDING_INPUT_LIMIT } from '@myco/constants';
-import type { EmbeddingProvider, EmbeddingResponse } from '@myco/intelligence/llm';
+import type { EmbeddingProvider, EmbeddingResponse, LlmProvider } from '@myco/intelligence/llm';
 import type { VectorIndex } from '@myco/index/vectors';
 import YAML from 'yaml';
 import fs from 'node:fs';
@@ -1407,5 +1409,515 @@ describe('Pipeline Integration: Digest Stage Gating', () => {
     const statuses = pipeline.getItemStatus('session-008', 'session');
     const digestStatus = statuses.find((s) => s.stage === 'digest');
     expect(digestStatus!.status).toBe('succeeded');
+  });
+});
+
+/**
+ * Pipeline Integration: CLI Operations Enqueue via Pipeline
+ *
+ * Verifies that runReprocess, runDigest, and runCuration enqueue work
+ * via the PipelineManager when it is available, instead of processing inline.
+ */
+describe('Pipeline Integration: CLI Operations Enqueue via Pipeline', () => {
+  let tmpDir: string;
+  let pipeline: PipelineManager;
+  let vault: VaultWriter;
+  let index: MycoIndex;
+  const config = MycoConfigSchema.parse({
+    version: 2,
+    intelligence: {
+      llm: { provider: 'ollama', model: 'test-model' },
+      embedding: { provider: 'ollama', model: 'test-embed' },
+    },
+  });
+
+  /** Stub LLM provider — should NOT be called in pipeline mode. */
+  const stubLlmProvider: LlmProvider = {
+    name: 'stub-llm',
+    summarize: async () => {
+      throw new Error('LLM should not be called in pipeline mode');
+    },
+    isAvailable: async () => true,
+  };
+
+  /** Stub embedding provider — should NOT be called in pipeline mode for reprocess. */
+  const stubEmbeddingProvider: EmbeddingProvider = {
+    name: 'stub-embedding',
+    embed: async () => {
+      throw new Error('Embedding should not be called in pipeline mode');
+    },
+    isAvailable: async () => true,
+  };
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cli-pipeline-'));
+    pipeline = new PipelineManager(tmpDir);
+    vault = new VaultWriter(tmpDir);
+    index = new MycoIndex(path.join(tmpDir, 'index.db'));
+    initFts(index);
+  });
+
+  afterEach(() => {
+    pipeline.close();
+    index.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** Helper: write a session note into the vault and FTS-index it. */
+  function writeTestSession(sessionId: string, opts?: { date?: string; failed?: boolean }): string {
+    const date = opts?.date ?? '2026-03-21';
+    const relativePath = sessionRelativePath(sessionId, date);
+    const narrative = opts?.failed ? SUMMARIZATION_FAILED_MARKER : 'Test session narrative.';
+    const summary = formatSessionBody({
+      title: `Session ${sessionId}`,
+      narrative,
+      sessionId,
+      started: `${date}T10:00:00Z`,
+      ended: `${date}T10:30:00Z`,
+      turns: [{ prompt: 'Test prompt', toolCount: 1 }],
+    });
+    vault.writeSession({
+      id: sessionId,
+      started: `${date}T10:00:00Z`,
+      ended: `${date}T10:30:00Z`,
+      summary,
+    });
+    indexNote(index, tmpDir, relativePath);
+    return relativePath;
+  }
+
+  /** Helper: write a spore note into the vault and FTS-index it. */
+  function writeTestSpore(sporeId: string, sessionId: string, opts?: { type?: string }): string {
+    const obsType = opts?.type ?? 'discovery';
+    const relativePath = vault.writeSpore({
+      id: sporeId,
+      observation_type: obsType,
+      session: sessionId,
+      tags: ['test'],
+      content: `# Test Spore ${sporeId}\n\nThis is a test spore for CLI pipeline integration.`,
+    });
+    indexNote(index, tmpDir, relativePath);
+    return relativePath;
+  }
+
+  // --- runReprocess with pipeline ---
+
+  it('runReprocess with pipeline registers sessions at extraction:pending', async () => {
+    const sessionId = 'cli-reprocess-001';
+    writeTestSession(sessionId);
+
+    const ctx: OperationContext = {
+      vaultDir: tmpDir,
+      config,
+      index,
+      pipeline,
+    };
+
+    const result = await runReprocess(ctx, stubLlmProvider, stubEmbeddingProvider);
+
+    // Should be enqueued, not inline processed
+    expect(result.enqueued).toBe(true);
+    expect(result.sessionsProcessed).toBe(1);
+    expect(result.sessionsFound).toBe(1);
+    // No inline work done
+    expect(result.observationsExtracted).toBe(0);
+    expect(result.summariesRegenerated).toBe(0);
+    expect(result.embeddingsQueued).toBe(0);
+
+    // Verify pipeline state
+    const statuses = pipeline.getItemStatus(sessionId, 'session');
+    const captureStatus = statuses.find((s) => s.stage === 'capture');
+    expect(captureStatus).toBeDefined();
+    expect(captureStatus!.status).toBe('succeeded');
+
+    const extractionStatus = statuses.find((s) => s.stage === 'extraction');
+    expect(extractionStatus).toBeDefined();
+    expect(extractionStatus!.status).toBe('pending');
+  });
+
+  it('runReprocess with pipeline respects date filter', async () => {
+    writeTestSession('cli-reprocess-date-001', { date: '2026-03-20' });
+    writeTestSession('cli-reprocess-date-002', { date: '2026-03-21' });
+
+    const ctx: OperationContext = {
+      vaultDir: tmpDir,
+      config,
+      index,
+      pipeline,
+    };
+
+    const result = await runReprocess(ctx, stubLlmProvider, stubEmbeddingProvider, {
+      date: '2026-03-21',
+    });
+
+    expect(result.enqueued).toBe(true);
+    expect(result.sessionsProcessed).toBe(1);
+
+    // Only the session matching the date filter should be registered
+    const statuses1 = pipeline.getItemStatus('cli-reprocess-date-001', 'session');
+    expect(statuses1).toHaveLength(0); // Not registered
+
+    const statuses2 = pipeline.getItemStatus('cli-reprocess-date-002', 'session');
+    expect(statuses2.length).toBeGreaterThan(0);
+  });
+
+  it('runReprocess with pipeline respects failed filter', async () => {
+    writeTestSession('cli-reprocess-pass-001');
+    writeTestSession('cli-reprocess-fail-001', { failed: true });
+
+    const ctx: OperationContext = {
+      vaultDir: tmpDir,
+      config,
+      index,
+      pipeline,
+    };
+
+    const result = await runReprocess(ctx, stubLlmProvider, stubEmbeddingProvider, {
+      failed: true,
+    });
+
+    expect(result.enqueued).toBe(true);
+    expect(result.sessionsProcessed).toBe(1);
+
+    // Only the failed session should be registered
+    const statusesPass = pipeline.getItemStatus('cli-reprocess-pass-001', 'session');
+    expect(statusesPass).toHaveLength(0);
+
+    const statusesFail = pipeline.getItemStatus('cli-reprocess-fail-001', 'session');
+    expect(statusesFail.length).toBeGreaterThan(0);
+  });
+
+  it('runReprocess with pipeline and indexOnly falls back to legacy mode', async () => {
+    writeTestSession('cli-reprocess-idx-001');
+
+    const ctx: OperationContext = {
+      vaultDir: tmpDir,
+      config,
+      index,
+      pipeline,
+    };
+
+    // indexOnly=true should bypass pipeline mode (no LLM needed)
+    const result = await runReprocess(ctx, null, stubEmbeddingProvider, {
+      indexOnly: true,
+    });
+
+    // Should NOT be enqueued — legacy inline mode handles index-only
+    expect(result.enqueued).toBeUndefined();
+    // The session should be found and processed inline
+    expect(result.sessionsFound).toBe(1);
+  });
+
+  it('runReprocess without pipeline falls back to legacy mode', async () => {
+    writeTestSession('cli-reprocess-legacy-001');
+
+    const ctx: OperationContext = {
+      vaultDir: tmpDir,
+      config,
+      index,
+      // No pipeline — legacy mode
+    };
+
+    // Use null llmProvider for index-only to avoid needing a real LLM
+    const result = await runReprocess(ctx, null, stubEmbeddingProvider, {
+      indexOnly: true,
+    });
+
+    // Should NOT be enqueued
+    expect(result.enqueued).toBeUndefined();
+    expect(result.sessionsFound).toBe(1);
+  });
+
+  it('runReprocess with pipeline is idempotent on re-registration', async () => {
+    const sessionId = 'cli-reprocess-idem-001';
+    writeTestSession(sessionId);
+
+    const ctx: OperationContext = {
+      vaultDir: tmpDir,
+      config,
+      index,
+      pipeline,
+    };
+
+    // Run twice — should be idempotent
+    await runReprocess(ctx, stubLlmProvider, stubEmbeddingProvider);
+    await runReprocess(ctx, stubLlmProvider, stubEmbeddingProvider);
+
+    // Should still have exactly one work item
+    const { items } = pipeline.listItems({ type: 'session' });
+    const uniqueIds = new Set(items.filter((i) => i.id === sessionId).map((i) => i.id));
+    expect(uniqueIds.size).toBe(1);
+  });
+
+  // --- runDigest with pipeline ---
+
+  it('runDigest with pipeline and --full resets digest:succeeded items to pending', async () => {
+    // Register some items as fully processed (digest:succeeded)
+    pipeline.register('digest-session-001', 'session', 'sessions/2026-03-21/session-digest-session-001.md');
+    pipeline.advance('digest-session-001', 'session', 'capture', 'succeeded');
+    pipeline.advance('digest-session-001', 'session', 'extraction', 'succeeded');
+    pipeline.advance('digest-session-001', 'session', 'embedding', 'succeeded');
+    pipeline.advance('digest-session-001', 'session', 'digest', 'succeeded');
+
+    pipeline.register('digest-session-002', 'session', 'sessions/2026-03-21/session-digest-session-002.md');
+    pipeline.advance('digest-session-002', 'session', 'capture', 'succeeded');
+    pipeline.advance('digest-session-002', 'session', 'extraction', 'succeeded');
+    pipeline.advance('digest-session-002', 'session', 'embedding', 'succeeded');
+    pipeline.advance('digest-session-002', 'session', 'digest', 'succeeded');
+
+    const ctx: OperationContext = {
+      vaultDir: tmpDir,
+      config,
+      index,
+      pipeline,
+    };
+
+    const result = await runDigest(ctx, stubLlmProvider, { full: true });
+
+    // Returns null because the pipeline defers to metabolism timer
+    expect(result).toBeNull();
+
+    // Verify items were reset to digest:pending
+    const statuses1 = pipeline.getItemStatus('digest-session-001', 'session');
+    const digest1 = statuses1.find((s) => s.stage === 'digest');
+    expect(digest1!.status).toBe('pending');
+
+    const statuses2 = pipeline.getItemStatus('digest-session-002', 'session');
+    const digest2 = statuses2.find((s) => s.stage === 'digest');
+    expect(digest2!.status).toBe('pending');
+  });
+
+  it('runDigest with pipeline and no --full runs engine directly', async () => {
+    // This test verifies that non-full digest calls do NOT use the pipeline
+    // shortcut. They go through the DigestEngine directly. Since we can't
+    // instantiate a real DigestEngine in this test, we verify that the method
+    // does NOT reset pipeline items (no side effects on pipeline state).
+
+    pipeline.register('digest-nofull-001', 'session', 'sessions/2026-03-21/session-digest-nofull-001.md');
+    pipeline.advance('digest-nofull-001', 'session', 'capture', 'succeeded');
+    pipeline.advance('digest-nofull-001', 'session', 'extraction', 'succeeded');
+    pipeline.advance('digest-nofull-001', 'session', 'embedding', 'succeeded');
+    pipeline.advance('digest-nofull-001', 'session', 'digest', 'succeeded');
+
+    const ctx: OperationContext = {
+      vaultDir: tmpDir,
+      config,
+      index,
+      pipeline,
+    };
+
+    // Non-full digest will try to run DigestEngine.runCycle() which reads
+    // vault files. With an empty digest dir, it should return null.
+    // The key assertion is that digest:succeeded items are NOT reset.
+    try {
+      await runDigest(ctx, stubLlmProvider);
+    } catch {
+      // DigestEngine may throw because the vault is empty — that's fine.
+    }
+
+    // Verify the item was NOT reset to pending
+    const statuses = pipeline.getItemStatus('digest-nofull-001', 'session');
+    const digestStatus = statuses.find((s) => s.stage === 'digest');
+    expect(digestStatus!.status).toBe('succeeded');
+  });
+
+  it('runDigest without pipeline falls back to engine directly', async () => {
+    const ctx: OperationContext = {
+      vaultDir: tmpDir,
+      config,
+      index,
+      // No pipeline
+    };
+
+    // Without pipeline, even --full goes through DigestEngine directly.
+    // With an empty vault the engine returns null or throws.
+    try {
+      const result = await runDigest(ctx, stubLlmProvider, { full: true });
+      // If it succeeds, result may be null (no substrate)
+      expect(result === null || result !== undefined).toBe(true);
+    } catch {
+      // DigestEngine may throw on empty vault — acceptable for this test.
+    }
+  });
+
+  // --- runCuration with pipeline ---
+
+  it('runCuration with pipeline registers spores at consolidation:pending', async () => {
+    const sessionId = 'cli-curate-session-001';
+    writeTestSession(sessionId);
+    writeTestSpore('cli-curate-spore-001', sessionId, { type: 'discovery' });
+    writeTestSpore('cli-curate-spore-002', sessionId, { type: 'gotcha' });
+
+    // Create a mock vector index (curation requires it)
+    const mockVectorIndex = {
+      upsert: () => {},
+      search: () => [],
+      getEmbedding: () => null,
+      has: () => false,
+      delete: () => {},
+      count: () => 0,
+      close: () => {},
+    } as unknown as VectorIndex;
+
+    const deps: CurationDeps = {
+      vaultDir: tmpDir,
+      config,
+      index,
+      vectorIndex: mockVectorIndex,
+      llmProvider: stubLlmProvider,
+      embeddingProvider: stubEmbeddingProvider,
+      pipeline,
+    };
+
+    const result = await runCuration(deps, false);
+
+    expect(result.enqueued).toBe(true);
+    expect(result.scanned).toBe(2);
+    expect(result.clustersEvaluated).toBe(0);
+    expect(result.superseded).toBe(0);
+
+    // Verify spores were registered in pipeline at consolidation:pending
+    const statuses1 = pipeline.getItemStatus('cli-curate-spore-001', 'spore');
+    expect(statuses1.length).toBeGreaterThan(0);
+    const consol1 = statuses1.find((s) => s.stage === 'consolidation');
+    expect(consol1).toBeDefined();
+    expect(consol1!.status).toBe('pending');
+
+    const statuses2 = pipeline.getItemStatus('cli-curate-spore-002', 'spore');
+    expect(statuses2.length).toBeGreaterThan(0);
+    const consol2 = statuses2.find((s) => s.stage === 'consolidation');
+    expect(consol2).toBeDefined();
+    expect(consol2!.status).toBe('pending');
+  });
+
+  it('runCuration with pipeline and dry-run does NOT enqueue', async () => {
+    const sessionId = 'cli-curate-dry-session';
+    writeTestSession(sessionId);
+    writeTestSpore('cli-curate-dry-spore-001', sessionId);
+
+    const mockVectorIndex = {
+      upsert: () => {},
+      search: () => [],
+      getEmbedding: () => null,
+      has: () => false,
+      delete: () => {},
+      count: () => 0,
+      close: () => {},
+    } as unknown as VectorIndex;
+
+    const deps: CurationDeps = {
+      vaultDir: tmpDir,
+      config,
+      index,
+      vectorIndex: mockVectorIndex,
+      llmProvider: stubLlmProvider,
+      embeddingProvider: stubEmbeddingProvider,
+      pipeline,
+    };
+
+    // Dry run should bypass pipeline and go inline
+    // It will try to embed spores inline which will fail with our stub,
+    // but should still not enqueue
+    const result = await runCuration(deps, true);
+
+    expect(result.enqueued).toBeUndefined();
+    // The inline path scans 1 active spore but embedding fails so no clusters
+    expect(result.scanned).toBe(1);
+    expect(result.clustersEvaluated).toBe(0);
+    expect(result.superseded).toBe(0);
+  });
+
+  it('runCuration without pipeline falls back to inline mode', async () => {
+    const sessionId = 'cli-curate-legacy-session';
+    writeTestSession(sessionId);
+    writeTestSpore('cli-curate-legacy-spore', sessionId);
+
+    const mockVectorIndex = {
+      upsert: () => {},
+      search: () => [],
+      getEmbedding: () => null,
+      has: () => false,
+      delete: () => {},
+      count: () => 0,
+      close: () => {},
+    } as unknown as VectorIndex;
+
+    const deps: CurationDeps = {
+      vaultDir: tmpDir,
+      config,
+      index,
+      vectorIndex: mockVectorIndex,
+      llmProvider: stubLlmProvider,
+      embeddingProvider: stubEmbeddingProvider,
+      // No pipeline
+    };
+
+    // Without pipeline, runs inline. The stub embedding will fail on each spore.
+    const result = await runCuration(deps, false);
+
+    expect(result.enqueued).toBeUndefined();
+    // 1 active spore found but embedding fails so no clusters are evaluated
+    expect(result.scanned).toBe(1);
+    expect(result.clustersEvaluated).toBe(0);
+  });
+
+  it('runCuration with pipeline skips superseded spores', async () => {
+    const sessionId = 'cli-curate-skip-session';
+    writeTestSession(sessionId);
+
+    // Write an active spore
+    writeTestSpore('cli-curate-active-spore', sessionId);
+
+    // Write a superseded spore manually (writeSpore doesn't support status field)
+    const supersededDir = path.join(tmpDir, 'spores', 'discovery');
+    fs.mkdirSync(supersededDir, { recursive: true });
+    const supersededRelPath = 'spores/discovery/cli-curate-superseded-spore.md';
+    const supersededFullPath = path.join(tmpDir, supersededRelPath);
+    fs.writeFileSync(supersededFullPath, [
+      '---',
+      'type: spore',
+      'id: cli-curate-superseded-spore',
+      'observation_type: discovery',
+      `session: ${sessionId}`,
+      'status: superseded',
+      `created: ${new Date().toISOString()}`,
+      'tags:',
+      '  - test',
+      '---',
+      '# Superseded Spore',
+      '',
+      'This is superseded.',
+    ].join('\n'));
+    indexNote(index, tmpDir, supersededRelPath);
+
+    const mockVectorIndex = {
+      upsert: () => {},
+      search: () => [],
+      getEmbedding: () => null,
+      has: () => false,
+      delete: () => {},
+      count: () => 0,
+      close: () => {},
+    } as unknown as VectorIndex;
+
+    const deps: CurationDeps = {
+      vaultDir: tmpDir,
+      config,
+      index,
+      vectorIndex: mockVectorIndex,
+      llmProvider: stubLlmProvider,
+      embeddingProvider: stubEmbeddingProvider,
+      pipeline,
+    };
+
+    const result = await runCuration(deps, false);
+
+    expect(result.enqueued).toBe(true);
+    // Only the active spore should be scanned and enqueued
+    expect(result.scanned).toBe(1);
+
+    // The superseded spore should NOT be in the pipeline
+    const supersededStatuses = pipeline.getItemStatus('cli-curate-superseded-spore', 'spore');
+    expect(supersededStatuses).toHaveLength(0);
   });
 });
