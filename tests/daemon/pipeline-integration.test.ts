@@ -1231,3 +1231,181 @@ describe('Pipeline Integration: Consolidation Stage Handler', () => {
     }
   });
 });
+
+/**
+ * Pipeline Integration: Digest Stage Gating
+ *
+ * These tests verify that:
+ * 1. hasUpstreamWork() detects pending/processing/blocked items at upstream stages
+ * 2. hasUpstreamWork() ignores failed/poisoned items and digest-only items
+ * 3. advanceDigestItems() marks all digest:pending items as digest:succeeded
+ */
+describe('Pipeline Integration: Digest Stage Gating', () => {
+  let tmpDir: string;
+  let pipeline: PipelineManager;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-digest-gate-'));
+    pipeline = new PipelineManager(tmpDir);
+  });
+
+  afterEach(() => {
+    pipeline.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('hasUpstreamWork returns true when extraction has pending items', () => {
+    pipeline.register('session-001', 'session', 'sessions/2026-03-21/session-session-001.md');
+    pipeline.advance('session-001', 'session', 'capture', 'succeeded');
+    // extraction is now pending (default from register)
+
+    expect(pipeline.hasUpstreamWork()).toBe(true);
+  });
+
+  it('hasUpstreamWork returns true when embedding has processing items', () => {
+    pipeline.register('session-002', 'session', 'sessions/2026-03-21/session-session-002.md');
+    pipeline.advance('session-002', 'session', 'capture', 'succeeded');
+    pipeline.advance('session-002', 'session', 'extraction', 'succeeded');
+    pipeline.advance('session-002', 'session', 'embedding', 'processing');
+
+    expect(pipeline.hasUpstreamWork()).toBe(true);
+  });
+
+  it('hasUpstreamWork returns true when consolidation has blocked items', () => {
+    pipeline.register('spore-001', 'spore', 'spores/discovery/discovery-001.md');
+    pipeline.advance('spore-001', 'spore', 'capture', 'succeeded');
+    pipeline.advance('spore-001', 'spore', 'embedding', 'succeeded');
+    pipeline.advance('spore-001', 'spore', 'consolidation', 'blocked', {
+      errorType: 'config',
+      errorMessage: 'circuit open',
+    });
+
+    expect(pipeline.hasUpstreamWork()).toBe(true);
+  });
+
+  it('hasUpstreamWork returns false when only digest:pending items remain', () => {
+    pipeline.register('session-003', 'session', 'sessions/2026-03-21/session-session-003.md');
+    pipeline.advance('session-003', 'session', 'capture', 'succeeded');
+    pipeline.advance('session-003', 'session', 'extraction', 'succeeded');
+    pipeline.advance('session-003', 'session', 'embedding', 'succeeded');
+    // consolidation is skipped for sessions (per ITEM_STAGE_MAP)
+    // digest is pending — but that's not an upstream stage
+
+    expect(pipeline.hasUpstreamWork()).toBe(false);
+  });
+
+  it('hasUpstreamWork returns false when upstream has only failed/poisoned items', () => {
+    pipeline.register('session-004', 'session', 'sessions/2026-03-21/session-session-004.md');
+    pipeline.advance('session-004', 'session', 'capture', 'succeeded');
+    pipeline.advance('session-004', 'session', 'extraction', 'failed', {
+      errorType: 'transient',
+      errorMessage: 'LLM timeout',
+    });
+
+    // Failed items should not block digest (they'll be retried or poisoned)
+    // However, failed items are retried by the pipeline — a failed item will
+    // revert to pending on next tick. So "failed" alone doesn't block, but
+    // check the actual query: we only block on pending/processing/blocked.
+    // After a failure, the item status is 'failed' which is NOT in the blocking set.
+
+    // But we need to also check that embedding is pending (since extraction failed,
+    // embedding can't proceed — it requires extraction:succeeded as prerequisite).
+    // Since extraction failed, embedding stays pending which IS a blocking status.
+    // Let's test with a scenario where extraction is poisoned (terminal) and
+    // embedding is blocked.
+    pipeline.advance('session-004', 'session', 'extraction', 'poisoned');
+
+    // At this point extraction is poisoned. Embedding is still pending (it requires
+    // extraction:succeeded to be picked up by nextBatch, but its pipeline_status
+    // row still shows 'pending'). So hasUpstreamWork will see embedding:pending.
+    // To truly test "only failed/poisoned", we need to also advance downstream.
+    pipeline.advance('session-004', 'session', 'embedding', 'poisoned');
+
+    // Now extraction:poisoned, embedding:poisoned — neither is pending/processing/blocked
+    // Consolidation is skipped for sessions
+    expect(pipeline.hasUpstreamWork()).toBe(false);
+  });
+
+  it('hasUpstreamWork returns false when all upstream stages are succeeded/skipped', () => {
+    // Register a session and a spore, advance all upstream stages
+    pipeline.register('session-005', 'session', 'sessions/2026-03-21/session-session-005.md');
+    pipeline.advance('session-005', 'session', 'capture', 'succeeded');
+    pipeline.advance('session-005', 'session', 'extraction', 'succeeded');
+    pipeline.advance('session-005', 'session', 'embedding', 'succeeded');
+    // consolidation: skipped for sessions
+
+    pipeline.register('spore-002', 'spore', 'spores/discovery/discovery-002.md');
+    pipeline.advance('spore-002', 'spore', 'capture', 'succeeded');
+    // extraction: skipped for spores
+    pipeline.advance('spore-002', 'spore', 'embedding', 'succeeded');
+    pipeline.advance('spore-002', 'spore', 'consolidation', 'succeeded');
+
+    expect(pipeline.hasUpstreamWork()).toBe(false);
+  });
+
+  it('advanceDigestItems marks all digest:pending items as digest:succeeded', () => {
+    // Register two items and advance them through all upstream stages
+    pipeline.register('session-006', 'session', 'sessions/2026-03-21/session-session-006.md');
+    pipeline.advance('session-006', 'session', 'capture', 'succeeded');
+    pipeline.advance('session-006', 'session', 'extraction', 'succeeded');
+    pipeline.advance('session-006', 'session', 'embedding', 'succeeded');
+
+    pipeline.register('spore-003', 'spore', 'spores/gotcha/gotcha-003.md');
+    pipeline.advance('spore-003', 'spore', 'capture', 'succeeded');
+    pipeline.advance('spore-003', 'spore', 'embedding', 'succeeded');
+    pipeline.advance('spore-003', 'spore', 'consolidation', 'succeeded');
+
+    // Both should have digest:pending at this point
+    const sessionStatuses = pipeline.getItemStatus('session-006', 'session');
+    const sessionDigest = sessionStatuses.find((s) => s.stage === 'digest');
+    expect(sessionDigest).toBeDefined();
+    expect(sessionDigest!.status).toBe('pending');
+
+    const sporeStatuses = pipeline.getItemStatus('spore-003', 'spore');
+    const sporeDigest = sporeStatuses.find((s) => s.stage === 'digest');
+    expect(sporeDigest).toBeDefined();
+    expect(sporeDigest!.status).toBe('pending');
+
+    // Advance all digest items
+    const advanced = pipeline.advanceDigestItems();
+    expect(advanced).toBe(2);
+
+    // Verify both are now digest:succeeded
+    const sessionAfter = pipeline.getItemStatus('session-006', 'session');
+    const sessionDigestAfter = sessionAfter.find((s) => s.stage === 'digest');
+    expect(sessionDigestAfter!.status).toBe('succeeded');
+
+    const sporeAfter = pipeline.getItemStatus('spore-003', 'spore');
+    const sporeDigestAfter = sporeAfter.find((s) => s.stage === 'digest');
+    expect(sporeDigestAfter!.status).toBe('succeeded');
+  });
+
+  it('advanceDigestItems returns 0 when no digest:pending items exist', () => {
+    // No items registered at all
+    expect(pipeline.advanceDigestItems()).toBe(0);
+  });
+
+  it('advanceDigestItems does not affect non-pending digest items', () => {
+    // Register an item and advance digest to succeeded manually
+    pipeline.register('session-007', 'session', 'sessions/2026-03-21/session-session-007.md');
+    pipeline.advance('session-007', 'session', 'capture', 'succeeded');
+    pipeline.advance('session-007', 'session', 'extraction', 'succeeded');
+    pipeline.advance('session-007', 'session', 'embedding', 'succeeded');
+    pipeline.advance('session-007', 'session', 'digest', 'succeeded');
+
+    // Register another item still at digest:pending
+    pipeline.register('session-008', 'session', 'sessions/2026-03-21/session-session-008.md');
+    pipeline.advance('session-008', 'session', 'capture', 'succeeded');
+    pipeline.advance('session-008', 'session', 'extraction', 'succeeded');
+    pipeline.advance('session-008', 'session', 'embedding', 'succeeded');
+
+    // Only session-008 should be advanced (session-007 is already succeeded)
+    const advanced = pipeline.advanceDigestItems();
+    expect(advanced).toBe(1);
+
+    // Verify session-008 is now succeeded
+    const statuses = pipeline.getItemStatus('session-008', 'session');
+    const digestStatus = statuses.find((s) => s.stage === 'digest');
+    expect(digestStatus!.status).toBe('succeeded');
+  });
+});

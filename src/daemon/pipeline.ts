@@ -1235,6 +1235,48 @@ export class PipelineManager {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Digest gating helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Check if any upstream stages (extraction, embedding, consolidation) have
+   * active work items (pending, processing, or blocked — but not failed/poisoned).
+   *
+   * Used to gate the digest engine: digest should not run while upstream
+   * stages still have work in flight.
+   */
+  hasUpstreamWork(): boolean {
+    for (const stage of PIPELINE_TICK_STAGES) {
+      const count = this.db
+        .prepare(
+          `SELECT COUNT(*) as cnt FROM pipeline_status
+           WHERE stage = ? AND status IN ('pending', 'processing', 'blocked')`,
+        )
+        .get(stage) as { cnt: number };
+      if (count.cnt > 0) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Mark all digest:pending items as digest:succeeded after a successful cycle.
+   * Returns the number of items advanced.
+   */
+  advanceDigestItems(): number {
+    const items = this.db
+      .prepare(
+        `SELECT id, item_type FROM pipeline_status
+         WHERE stage = 'digest' AND status = 'pending'`,
+      )
+      .all() as Array<{ id: string; item_type: string }>;
+
+    for (const item of items) {
+      this.advance(item.id, item.item_type, 'digest', 'succeeded');
+    }
+    return items.length;
+  }
+
   /** Close the database connection. */
   close(): void {
     this.db.close();

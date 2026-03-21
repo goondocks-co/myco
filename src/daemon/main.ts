@@ -593,9 +593,24 @@ export async function main(): Promise<void> {
     // Start metabolism timer
     metabolism.start(async () => {
       try {
+        // Gate digest on upstream pipeline stages: don't run while extraction,
+        // embedding, or consolidation still have active work items.
+        if (pipeline.hasUpstreamWork()) {
+          logger.info('digest', 'Digest deferred — upstream stages pending');
+          metabolism!.onEmptyCycle();
+          return;
+        }
+
         const cycleResult = await digestEngine.runCycle();
         if (cycleResult) {
           metabolism!.onSubstrateFound();
+
+          // Advance all digest:pending items to digest:succeeded
+          const advanced = pipeline.advanceDigestItems();
+          if (advanced > 0) {
+            logger.debug('digest', `Advanced ${advanced} pipeline items to digest:succeeded`);
+          }
+
           logger.info('digest', `Digest cycle ${cycleResult.cycleId}: ${cycleResult.tiersGenerated.length} tiers`);
         } else {
           metabolism!.onEmptyCycle();
