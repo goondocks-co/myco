@@ -5,9 +5,13 @@ import {
   Sparkles,
   Brain,
   Clock,
+  ShieldAlert,
+  ListTodo,
 } from 'lucide-react';
 import { useDaemon } from '../hooks/use-daemon';
 import { PipelineVisualization } from '../components/pipeline/PipelineVisualization';
+import { WorkItemList } from '../components/pipeline/WorkItemList';
+import { CircuitBreakerPanel } from '../components/pipeline/CircuitBreakerPanel';
 import { OperationButton } from '../components/operations/OperationButton';
 import { CurationPanel } from '../components/operations/CurationPanel';
 import { ReprocessPanel } from '../components/operations/ReprocessPanel';
@@ -65,34 +69,37 @@ export default function Mycelium() {
             </CardContent>
           </Card>
 
-          {/* Placeholder sections for Task 19 */}
-          <div className="grid gap-6 lg:grid-cols-2">
-            {/* Work items list — placeholder */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">Work Items</CardTitle>
-                <CardDescription>
-                  Pending and failed pipeline items. Built in a follow-up task.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">Coming soon</p>
-              </CardContent>
-            </Card>
+          {/* Circuit breakers */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <ShieldAlert className="h-4 w-4 text-primary" />
+                Circuit Breakers
+              </CardTitle>
+              <CardDescription>
+                Per-provider circuit breaker state and controls. Reset open circuits to resume processing.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <CircuitBreakerPanel />
+            </CardContent>
+          </Card>
 
-            {/* Circuit breaker panel — placeholder */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">Circuit Breakers</CardTitle>
-                <CardDescription>
-                  Detailed circuit breaker state and controls. Built in a follow-up task.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">Coming soon</p>
-              </CardContent>
-            </Card>
-          </div>
+          {/* Work items */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <ListTodo className="h-4 w-4 text-primary" />
+                Work Items
+              </CardTitle>
+              <CardDescription>
+                Filter and inspect individual pipeline items. Click a row to see full stage history.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <WorkItemList />
+            </CardContent>
+          </Card>
 
           {/* Operations utility section (preserved from Operations page) */}
           <section>
