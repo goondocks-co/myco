@@ -43,7 +43,7 @@ const COLOR_OFF = 'hsl(215, 10%, 25%)';
 const NODE_POSITIONS: Record<string, { x: number; y: number; radius: number }> = {
   processor: { x: 100, y: 80, radius: 38 },
   digest: { x: 400, y: 110, radius: 36 },
-  consolidation: { x: 470, y: 22, radius: 24 },
+  consolidation: { x: 480, y: 195, radius: 24 },
   embedding: { x: 75, y: 310, radius: 38 },
   vault: { x: 415, y: 290, radius: 38 },
   sessions: { x: 250, y: 360, radius: 36 },
@@ -173,7 +173,6 @@ function hyphaPath(nodeId: string): string {
   const curvatures: Record<string, number> = {
     processor: 25,
     digest: -30,
-    consolidation: 0,
     embedding: -20,
     vault: 35,
     sessions: 15,
@@ -204,6 +203,9 @@ const BRANCH_PARENTS: Record<string, string> = {
   consolidation: 'digest',
 };
 
+/** Curvature magnitude (pixels) for branch hypha paths (node → child). */
+const BRANCH_HYPHA_CURVE = 12;
+
 /** Generate a bezier path from a parent node to a child node (branch hypha). */
 function branchHyphaPath(childId: string): string {
   const parentId = BRANCH_PARENTS[childId];
@@ -225,14 +227,14 @@ function branchHyphaPath(childId: string): string {
 
   const edgeDx = endX - startX;
   const edgeDy = endY - startY;
-  const nx = -edgeDy / len;
-  const ny = edgeDx / len;
-  const curve = 12;
+  const edgeLen = Math.sqrt(edgeDx * edgeDx + edgeDy * edgeDy);
+  const nx = -edgeDy / edgeLen;
+  const ny = edgeDx / edgeLen;
 
-  const cp1x = startX + edgeDx * 0.4 + nx * curve;
-  const cp1y = startY + edgeDy * 0.4 + ny * curve;
-  const cp2x = startX + edgeDx * 0.7 + nx * curve * 0.5;
-  const cp2y = startY + edgeDy * 0.7 + ny * curve * 0.5;
+  const cp1x = startX + edgeDx * 0.4 + nx * BRANCH_HYPHA_CURVE;
+  const cp1y = startY + edgeDy * 0.4 + ny * BRANCH_HYPHA_CURVE;
+  const cp2x = startX + edgeDx * 0.7 + nx * BRANCH_HYPHA_CURVE * 0.5;
+  const cp2y = startY + edgeDy * 0.7 + ny * BRANCH_HYPHA_CURVE * 0.5;
 
   return `M ${startX} ${startY} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${endX} ${endY}`;
 }

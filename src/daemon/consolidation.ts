@@ -65,8 +65,7 @@ const CONSOLIDATION_TRACE_FILENAME = 'consolidation-trace.jsonl';
 // --- ConsolidationEngine ---
 
 export class ConsolidationEngine {
-  /** Public readonly so tests can inspect dependencies. */
-  readonly deps: {
+  private readonly deps: {
     vaultDir: string;
     index: MycoIndex;
     vectorIndex: VectorIndex | null;
@@ -156,8 +155,8 @@ export class ConsolidationEngine {
   async runPass(): Promise<ConsolidationPassResult | null> {
     const { vaultDir, index, vectorIndex, llmProvider, embeddingProvider } = this.deps;
 
-    if (!vectorIndex || !llmProvider) {
-      this.log('debug', 'ConsolidationEngine: skipped — vectorIndex or llmProvider unavailable');
+    if (!vectorIndex || !llmProvider || !embeddingProvider) {
+      this.log('debug', 'ConsolidationEngine: skipped — vectorIndex, llmProvider, or embeddingProvider unavailable');
       return null;
     }
 
@@ -192,13 +191,7 @@ export class ConsolidationEngine {
       let embedding: number[];
       try {
         const embeddingText = triggerSpore.content.slice(0, EMBEDDING_INPUT_LIMIT);
-        const embeddingProvider_ = embeddingProvider;
-        if (!embeddingProvider_) {
-          this.log('debug', 'ConsolidationEngine: no embeddingProvider — skipping spore', { id: triggerSpore.id });
-          processedIds.add(triggerSpore.id);
-          continue;
-        }
-        const result = await generateEmbedding(embeddingProvider_, embeddingText);
+        const result = await generateEmbedding(embeddingProvider, embeddingText);
         embedding = result.embedding;
       } catch (err) {
         this.log('warn', 'ConsolidationEngine: embedding failed', { id: triggerSpore.id, error: String(err) });
@@ -368,7 +361,13 @@ export class ConsolidationEngine {
       durationMs,
     };
 
-    this.appendTrace(passResult);
+    if (consolidated > 0) {
+      // Only write trace records for passes that actually consolidated something
+      this.appendTrace(passResult);
+    } else {
+      // Still advance the timestamp cache so we don't re-examine the same spores
+      this.lastTimestampCache = passTimestamp;
+    }
 
     this.log('info', 'ConsolidationEngine: pass complete', {
       sporesChecked: newSpores.length,

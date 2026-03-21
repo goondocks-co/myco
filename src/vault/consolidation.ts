@@ -80,13 +80,14 @@ export async function consolidateSpores(
   }, true);
 
   // Supersede each source spore (atomic frontmatter update + notice + re-index + vector delete)
+  const sourceNotes = index.queryByIds(input.sourceSporeIds);
+  const sourceNoteMap = new Map(sourceNotes.map((n) => [n.id, n]));
   let sourcesArchived = 0;
   for (const sourceId of input.sourceSporeIds) {
-    const notes = index.queryByIds([sourceId]);
-    if (notes.length === 0) continue;
+    const note = sourceNoteMap.get(sourceId);
+    if (!note) continue;
 
-    const notePath = notes[0].path;
-    const superseded = supersedeSpore(sourceId, wisdomId, notePath, {
+    const superseded = supersedeSpore(sourceId, wisdomId, note.path, {
       index,
       vectorIndex,
       vaultDir,

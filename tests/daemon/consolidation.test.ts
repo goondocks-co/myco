@@ -352,16 +352,17 @@ describe('ConsolidationEngine', () => {
     expect(result).toBeNull();
   });
 
-  it('appends trace record after a pass and caches the timestamp', async () => {
+  it('caches timestamp after a no-op pass without writing trace file', async () => {
     const spore1 = makeNote({ id: 'gotcha-e1', created: '2026-03-15T10:00:00Z' });
     const { engine } = makeEngine(vaultDir, [spore1], []);
 
     await engine.runPass();
 
+    // No consolidation occurred — trace file should NOT be written
     const tracePath = path.join(vaultDir, 'digest', 'consolidation-trace.jsonl');
-    expect(fs.existsSync(tracePath)).toBe(true);
+    expect(fs.existsSync(tracePath)).toBe(false);
 
-    // Timestamp should be cached
+    // But timestamp should still be cached so we don't re-examine the same spores
     const ts = engine.getLastTimestamp();
     expect(ts).not.toBeNull();
     expect(ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
