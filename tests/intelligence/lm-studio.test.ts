@@ -143,7 +143,7 @@ describe('LmStudioBackend', () => {
   });
 
   describe('ensureLoaded', () => {
-    it('reuses compatible instance without loading', async () => {
+    it('reuses any loaded instance without loading', async () => {
       const { calls } = mockFetch({
         '/api/v1/models': () => ({
           models: [{
@@ -163,6 +163,49 @@ describe('LmStudioBackend', () => {
       expect(loadCalls).toHaveLength(0);
     });
 
+    it('reuses instance even with different config (no config matching)', async () => {
+      const { calls } = mockFetch({
+        '/api/v1/models': () => ({
+          models: [{
+            key: 'test-model',
+            loaded_instances: [{
+              id: 'test-model:1',
+              config: { context_length: 4096, offload_kv_cache_to_gpu: true },
+            }],
+          }],
+        }),
+      });
+
+      const backend = makeBackend();
+      // Request different context and kv_cache — should still reuse
+      await backend.ensureLoaded(65536, false);
+
+      const loadCalls = calls.filter((c) => c.url.includes('/models/load'));
+      expect(loadCalls).toHaveLength(0);
+    });
+
+    it('reuses instance when config fields are missing (non-llama.cpp models)', async () => {
+      const { calls } = mockFetch({
+        '/api/v1/models': () => ({
+          models: [{
+            key: 'test-model',
+            loaded_instances: [{
+              id: 'test-model:1',
+              // Models like glm-4.7-flash don't report kv_cache or flash_attention
+              config: { context_length: 32768 },
+            }],
+          }],
+        }),
+      });
+
+      const backend = makeBackend();
+      await backend.ensureLoaded(65536, false);
+
+      // Must NOT load a new instance — this was the root cause of resource exhaustion
+      const loadCalls = calls.filter((c) => c.url.includes('/models/load'));
+      expect(loadCalls).toHaveLength(0);
+    });
+
     it('loads new instance when none exist', async () => {
       const { calls } = mockFetch({
         '/api/v1/models/load': () => ({ instance_id: 'test-model:1', status: 'loaded' }),
@@ -178,34 +221,23 @@ describe('LmStudioBackend', () => {
       expect(loadCall).toBeDefined();
       expect(loadCall!.body.model).toBe('test-model');
       expect(loadCall!.body.context_length).toBe(65536);
-      expect(loadCall!.body.offload_kv_cache_to_gpu).toBe(false);
+      // gpu_kv_cache=false should NOT be sent (it's the default, and not all models support it)
+      expect(loadCall!.body.offload_kv_cache_to_gpu).toBeUndefined();
     });
 
-    it('loads own instance without unloading incompatible ones', async () => {
+    it('sends offload_kv_cache_to_gpu only when explicitly true', async () => {
       const { calls } = mockFetch({
-        '/api/v1/models/load': () => ({ instance_id: 'test-model:3', status: 'loaded' }),
+        '/api/v1/models/load': () => ({ instance_id: 'test-model:1', status: 'loaded' }),
         '/api/v1/models': () => ({
-          models: [{
-            key: 'test-model',
-            loaded_instances: [{
-              id: 'test-model:1',
-              config: { context_length: 32768, offload_kv_cache_to_gpu: true },
-            }],
-          }],
+          models: [{ key: 'test-model', loaded_instances: [] }],
         }),
       });
 
       const backend = makeBackend();
-      await backend.ensureLoaded(65536, false);
+      await backend.ensureLoaded(65536, true);
 
-      // Should NOT unload the other instance
-      const unloadCalls = calls.filter((c) => c.url.includes('/models/unload'));
-      expect(unloadCalls).toHaveLength(0);
-
-      // Should load our own
       const loadCall = calls.find((c) => c.url.includes('/models/load'));
-      expect(loadCall).toBeDefined();
-      expect(loadCall!.body.offload_kv_cache_to_gpu).toBe(false);
+      expect(loadCall!.body.offload_kv_cache_to_gpu).toBe(true);
     });
 
     it('captures instance ID from load response', async () => {
@@ -228,7 +260,7 @@ describe('LmStudioBackend', () => {
       expect(chatCall!.body.model).toBe('test-model:5');
     });
 
-    it('reuses compatible instance from another daemon', async () => {
+    it('reuses first instance when multiple exist (no config matching)', async () => {
       const { calls } = mockFetch({
         '/api/v1/models': () => ({
           models: [{
@@ -250,11 +282,9 @@ describe('LmStudioBackend', () => {
       const backend = makeBackend();
       await backend.ensureLoaded(65536, false);
 
-      // Should reuse :2 without loading or unloading
+      // Should reuse first available without loading or unloading
       const loadCalls = calls.filter((c) => c.url.includes('/models/load'));
       expect(loadCalls).toHaveLength(0);
-      const unloadCalls = calls.filter((c) => c.url.includes('/models/unload'));
-      expect(unloadCalls).toHaveLength(0);
     });
   });
 });

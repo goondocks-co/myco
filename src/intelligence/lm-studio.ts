@@ -18,13 +18,15 @@ const ENDPOINT_MODELS_LIST = '/v1/models';
 const ENDPOINT_MODELS_NATIVE = '/api/v1/models';
 const ENDPOINT_EMBEDDINGS = '/v1/embeddings';
 
-/** Shape of a loaded instance from the LM Studio native models API. */
+/** Shape of a loaded instance from the LM Studio native models API.
+ *  Config fields vary by engine — llama.cpp models include flash_attention
+ *  and offload_kv_cache_to_gpu, but other engines (MLX, etc.) may omit them. */
 interface NativeLoadedInstance {
   id: string;
   config: {
     context_length: number;
-    flash_attention: boolean;
-    offload_kv_cache_to_gpu: boolean;
+    flash_attention?: boolean;
+    offload_kv_cache_to_gpu?: boolean;
   };
 }
 
@@ -140,40 +142,44 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
   }
 
   /**
-   * Ensure a model instance is loaded with the desired settings.
-   * Called every digest cycle (not cached) so it recovers from idle TTL eviction.
+   * Ensure a model instance is loaded and capture its ID for routing.
+   * Called every digest cycle so it recovers from idle TTL eviction.
    *
-   * The load API is necessary to control offload_kv_cache_to_gpu — a load-time
-   * setting that cannot be set per-request via the chat API.
+   * Strategy: reuse ANY loaded instance of this model. Only load a new one
+   * when zero instances exist. This avoids the previous bug where strict
+   * config matching (context_length, offload_kv_cache_to_gpu) caused new
+   * instances to spawn every cycle — exhausting system resources.
    *
-   * Multi-daemon safe: finds or loads our own compatible instance without
-   * touching instances from other daemons/projects. Routes by instance ID.
+   * context_length is set per-request on /api/v1/chat, so we don't need
+   * to match it at load time. Load-time-only params like
+   * offload_kv_cache_to_gpu are llama.cpp-specific and may not apply to
+   * all models (e.g., glm-4.7-flash has no KV cache setting).
    */
   async ensureLoaded(contextLength?: number, gpuKvCache?: boolean): Promise<void> {
-    const ctx = contextLength ?? this.contextWindow;
-    const kvCache = gpuKvCache ?? false;
-
     // Query native API for existing loaded instances of this model
     const instances = await this.getLoadedInstances();
 
-    // Look for a compatible instance we can reuse (ours or anyone's)
-    for (const instance of instances) {
-      const matchesContext = !ctx || instance.config.context_length === ctx;
-      const matchesKvCache = instance.config.offload_kv_cache_to_gpu === kvCache;
-      if (matchesContext && matchesKvCache) {
-        this.instanceId = instance.id;
-        return;
-      }
+    if (instances.length > 0) {
+      // Reuse the first available instance — don't reject over config differences.
+      // context_length is set per-request; load-time params like kv_cache are
+      // model-dependent and may not even appear in the instance config.
+      this.instanceId = instances[0].id;
+      return;
     }
 
-    // No compatible instance — load our own (don't touch others)
+    // No instances loaded — load one with our preferred settings.
+    // These are hints; LM Studio silently ignores params that don't apply to the model's engine.
+    const ctx = contextLength ?? this.contextWindow;
     const body: Record<string, unknown> = {
       model: this.model,
+      // llama.cpp-specific — ignored by other engines (MLX, etc.)
       flash_attention: true,
-      offload_kv_cache_to_gpu: kvCache,
     };
     if (ctx) {
       body.context_length = ctx;
+    }
+    if (gpuKvCache) {
+      body.offload_kv_cache_to_gpu = true;
     }
 
     const response = await fetch(`${this.baseUrl}${ENDPOINT_MODELS_LOAD}`, {
