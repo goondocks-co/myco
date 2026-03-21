@@ -18,8 +18,8 @@
   ],
   "scripts": {
     "prepare": "npm run build",
-    "postinstall": "cd ui && npm install",
-    "build": "tsup && cd ui && npx vite build",
+    "postinstall": "test -d ui && cd ui && npm install || true",
+    "build": "tsup && (test -d ui && cd ui && npx vite build || true)",
     "build:watch": "tsc --watch",
     "build:types": "tsc",
     "test": "vitest run",
