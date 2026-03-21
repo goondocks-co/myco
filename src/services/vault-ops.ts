@@ -94,6 +94,15 @@ export async function runRebuild(
     },
   );
 
+  // Register embedding results in the pipeline when available
+  if (ctx.pipeline) {
+    for (const note of activeNotes) {
+      ctx.pipeline.register(note.id, note.type, note.path);
+      ctx.pipeline.advance(note.id, note.type, 'capture', 'succeeded');
+      ctx.pipeline.advance(note.id, note.type, 'embedding', 'succeeded');
+    }
+  }
+
   return {
     ftsCount,
     embeddedCount: result.succeeded,

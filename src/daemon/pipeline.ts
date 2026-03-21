@@ -9,6 +9,7 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
+import { walkMarkdownFiles } from '../vault/reader.js';
 import type { PipelineStage, PipelineStatus, PipelineProviderRole } from '@myco/constants';
 import {
   PIPELINE_STAGES,
@@ -525,77 +526,45 @@ export class PipelineManager {
    */
   nextBatch(stage: string, limit: number): BatchItem[] {
     const stageIdx = PIPELINE_STAGES.indexOf(stage as PipelineStage);
+    const prevStage = stageIdx > 0 ? PIPELINE_STAGES[stageIdx - 1] : null;
 
-    // For the first stage (capture), there is no upstream requirement
-    if (stageIdx === 0) {
-      return this.db
-        .prepare(
-          `SELECT ps.id, ps.item_type, ps.source_path, wi.created_at
-           FROM pipeline_status ps
-           JOIN work_items wi ON wi.id = ps.id AND wi.item_type = ps.item_type
-           WHERE ps.stage = ? AND ps.status = 'pending'
-           AND NOT EXISTS (
-             SELECT 1 FROM stage_transitions st2
-             WHERE st2.work_item_id = ps.id AND st2.item_type = ps.item_type
-             AND st2.stage = ? AND st2.status = 'failed'
-             AND st2.completed_at IS NOT NULL
-             AND (julianday('now') - julianday(st2.completed_at)) * 86400000 <
-               ? * POWER(?, (
-                 SELECT COUNT(*) FROM stage_transitions st3
-                 WHERE st3.work_item_id = ps.id AND st3.item_type = ps.item_type
-                 AND st3.stage = ? AND st3.status = 'failed'
-               ) - 1)
-           )
-           ORDER BY wi.created_at ASC
-           LIMIT ?`,
-        )
-        .all(
-          stage,
-          stage,
-          PIPELINE_BACKOFF_BASE_MS,
-          PIPELINE_BACKOFF_MULTIPLIER,
-          stage,
-          limit,
-        ) as BatchItem[];
-    }
-
-    const prevStage = PIPELINE_STAGES[stageIdx - 1];
-
-    return this.db
-      .prepare(
-        `SELECT ps.id, ps.item_type, ps.source_path, wi.created_at
-         FROM pipeline_status ps
-         JOIN work_items wi ON wi.id = ps.id AND wi.item_type = ps.item_type
-         WHERE ps.stage = ? AND ps.status = 'pending'
-         AND EXISTS (
+    // Upstream check is conditional: first stage has no upstream requirement
+    const upstreamCheck = prevStage
+      ? `AND EXISTS (
            SELECT 1 FROM pipeline_status ps2
            WHERE ps2.id = ps.id AND ps2.item_type = ps.item_type
            AND ps2.stage = ? AND ps2.status IN ('succeeded', 'skipped')
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM stage_transitions st2
-           WHERE st2.work_item_id = ps.id AND st2.item_type = ps.item_type
-           AND st2.stage = ? AND st2.status = 'failed'
-           AND st2.completed_at IS NOT NULL
-           AND (julianday('now') - julianday(st2.completed_at)) * 86400000 <
-             ? * POWER(?, (
-               SELECT COUNT(*) FROM stage_transitions st3
-               WHERE st3.work_item_id = ps.id AND st3.item_type = ps.item_type
-               AND st3.stage = ? AND st3.status = 'failed'
-             ) - 1)
-         )
-         ORDER BY wi.created_at ASC
-         LIMIT ?`,
+         )`
+      : '';
+
+    const sql = `
+      SELECT ps.id, ps.item_type, ps.source_path, wi.created_at
+      FROM pipeline_status ps
+      JOIN work_items wi ON wi.id = ps.id AND wi.item_type = ps.item_type
+      WHERE ps.stage = ? AND ps.status = 'pending'
+      ${upstreamCheck}
+      AND NOT EXISTS (
+        SELECT 1 FROM stage_transitions st2
+        WHERE st2.work_item_id = ps.id AND st2.item_type = ps.item_type
+        AND st2.stage = ? AND st2.status = 'failed'
+        AND st2.completed_at IS NOT NULL
+        AND (julianday('now') - julianday(st2.completed_at)) * 86400000 <
+          ? * POWER(?, (
+            SELECT COUNT(*) FROM stage_transitions st3
+            WHERE st3.work_item_id = ps.id AND st3.item_type = ps.item_type
+            AND st3.stage = ? AND st3.status = 'failed'
+          ) - 1)
       )
-      .all(
-        stage,
-        prevStage,
-        stage,
-        PIPELINE_BACKOFF_BASE_MS,
-        PIPELINE_BACKOFF_MULTIPLIER,
-        stage,
-        limit,
-      ) as BatchItem[];
+      ORDER BY wi.created_at ASC
+      LIMIT ?`;
+
+    const params: unknown[] = [stage];
+    if (prevStage) {
+      params.push(prevStage);
+    }
+    params.push(stage, PIPELINE_BACKOFF_BASE_MS, PIPELINE_BACKOFF_MULTIPLIER, stage, limit);
+
+    return this.db.prepare(sql).all(...params) as BatchItem[];
   }
 
   // -------------------------------------------------------------------------
@@ -772,49 +741,7 @@ export class PipelineManager {
    * Returns the count of blocked items.
    */
   blockItemsForCircuit(providerRole: string): number {
-    const affectedStages = (Object.keys(STAGE_PROVIDER_MAP) as Array<keyof typeof STAGE_PROVIDER_MAP>)
-      .filter((stage) => STAGE_PROVIDER_MAP[stage] === providerRole);
-
-    if (affectedStages.length === 0) {
-      return 0;
-    }
-
-    const now = new Date().toISOString();
-    let blockedCount = 0;
-
-    const insertBlocked = this.db.transaction(() => {
-      for (const stage of affectedStages) {
-        // Find all items currently pending at this stage
-        const pendingItems = this.db
-          .prepare(
-            `SELECT id, item_type FROM pipeline_status
-             WHERE stage = ? AND status = 'pending'`,
-          )
-          .all(stage) as Array<{ id: string; item_type: string }>;
-
-        for (const item of pendingItems) {
-          this.db
-            .prepare(
-              `INSERT INTO stage_transitions
-               (work_item_id, item_type, stage, status, attempt, error_type, error_message, started_at, completed_at, created_at)
-               VALUES (?, ?, ?, 'blocked', 1, 'config', ?, NULL, ?, ?)`,
-            )
-            .run(
-              item.id,
-              item.item_type,
-              stage,
-              `circuit open: ${providerRole}`,
-              now,
-              now,
-            );
-
-          blockedCount++;
-        }
-      }
-    });
-
-    insertBlocked();
-    return blockedCount;
+    return this._transitionItemsForCircuit(providerRole, 'pending', 'blocked');
   }
 
   /**
@@ -825,6 +752,19 @@ export class PipelineManager {
    * Returns the count of unblocked items.
    */
   unblockItemsForCircuit(providerRole: string): number {
+    return this._transitionItemsForCircuit(providerRole, 'blocked', 'pending');
+  }
+
+  /**
+   * Shared implementation for blockItemsForCircuit / unblockItemsForCircuit.
+   * Finds all stages mapped to providerRole, selects items at fromStatus,
+   * and inserts a new transition at toStatus.
+   */
+  private _transitionItemsForCircuit(
+    providerRole: string,
+    fromStatus: string,
+    toStatus: string,
+  ): number {
     const affectedStages = (Object.keys(STAGE_PROVIDER_MAP) as Array<keyof typeof STAGE_PROVIDER_MAP>)
       .filter((stage) => STAGE_PROVIDER_MAP[stage] === providerRole);
 
@@ -833,34 +773,46 @@ export class PipelineManager {
     }
 
     const now = new Date().toISOString();
-    let unblockedCount = 0;
+    let transitionedCount = 0;
 
-    const insertPending = this.db.transaction(() => {
+    // Blocking transitions include error context; unblocking transitions are clean
+    const isBlocking = toStatus === 'blocked';
+
+    const doTransition = this.db.transaction(() => {
       for (const stage of affectedStages) {
-        // Find all items currently blocked at this stage
-        const blockedItems = this.db
+        const items = this.db
           .prepare(
             `SELECT id, item_type FROM pipeline_status
-             WHERE stage = ? AND status = 'blocked'`,
+             WHERE stage = ? AND status = ?`,
           )
-          .all(stage) as Array<{ id: string; item_type: string }>;
+          .all(stage, fromStatus) as Array<{ id: string; item_type: string }>;
 
-        for (const item of blockedItems) {
-          this.db
-            .prepare(
-              `INSERT INTO stage_transitions
-               (work_item_id, item_type, stage, status, attempt, error_type, error_message, started_at, completed_at, created_at)
-               VALUES (?, ?, ?, 'pending', 1, NULL, NULL, NULL, NULL, ?)`,
-            )
-            .run(item.id, item.item_type, stage, now);
+        for (const item of items) {
+          if (isBlocking) {
+            this.db
+              .prepare(
+                `INSERT INTO stage_transitions
+                 (work_item_id, item_type, stage, status, attempt, error_type, error_message, started_at, completed_at, created_at)
+                 VALUES (?, ?, ?, 'blocked', 1, 'config', ?, NULL, ?, ?)`,
+              )
+              .run(item.id, item.item_type, stage, `circuit open: ${providerRole}`, now, now);
+          } else {
+            this.db
+              .prepare(
+                `INSERT INTO stage_transitions
+                 (work_item_id, item_type, stage, status, attempt, error_type, error_message, started_at, completed_at, created_at)
+                 VALUES (?, ?, ?, 'pending', 1, NULL, NULL, NULL, NULL, ?)`,
+              )
+              .run(item.id, item.item_type, stage, now);
+          }
 
-          unblockedCount++;
+          transitionedCount++;
         }
       }
     });
 
-    insertPending();
-    return unblockedCount;
+    doTransition();
+    return transitionedCount;
   }
 
   // -------------------------------------------------------------------------
@@ -1390,7 +1342,7 @@ export class PipelineManager {
     const runRebuild = this.db.transaction(() => {
       // --- Sessions ---
       const sessionsDir = path.join(vaultDir, 'sessions');
-      for (const filePath of this.walkMarkdownFiles(sessionsDir)) {
+      for (const filePath of walkMarkdownFiles(sessionsDir)) {
         const filename = path.basename(filePath, '.md');
         // session-<id>.md → id = everything after "session-"
         const itemId = filename.startsWith('session-') ? filename.slice('session-'.length) : filename;
@@ -1430,7 +1382,7 @@ export class PipelineManager {
 
       // --- Spores ---
       const sporesDir = path.join(vaultDir, 'spores');
-      for (const filePath of this.walkMarkdownFiles(sporesDir)) {
+      for (const filePath of walkMarkdownFiles(sporesDir)) {
         const itemId = path.basename(filePath, '.md');
         const relativePath = path.relative(vaultDir, filePath);
 
@@ -1463,7 +1415,7 @@ export class PipelineManager {
 
       // --- Artifacts ---
       const artifactsDir = path.join(vaultDir, 'artifacts');
-      for (const filePath of this.walkMarkdownFiles(artifactsDir)) {
+      for (const filePath of walkMarkdownFiles(artifactsDir)) {
         const itemId = path.basename(filePath, '.md');
         const relativePath = path.relative(vaultDir, filePath);
 
@@ -1549,7 +1501,7 @@ export class PipelineManager {
     const sessionIds = new Set<string>();
     const sporesDir = path.join(vaultDir, 'spores');
 
-    for (const filePath of this.walkMarkdownFiles(sporesDir)) {
+    for (const filePath of walkMarkdownFiles(sporesDir)) {
       try {
         const content = fs.readFileSync(filePath, 'utf-8');
         const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
@@ -1574,27 +1526,6 @@ export class PipelineManager {
     return sessionIds;
   }
 
-  /**
-   * Recursively walk a directory and collect all .md file paths.
-   * Returns empty array if the directory doesn't exist.
-   */
-  private walkMarkdownFiles(dir: string): string[] {
-    if (!fs.existsSync(dir)) return [];
-
-    const results: string[] = [];
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        results.push(...this.walkMarkdownFiles(fullPath));
-      } else if (entry.isFile() && entry.name.endsWith('.md')) {
-        results.push(fullPath);
-      }
-    }
-
-    return results;
-  }
 
   /** Close the database connection. */
   close(): void {

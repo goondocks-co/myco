@@ -5,6 +5,28 @@ import { parseNoteFrontmatter, type VaultNote } from './types.js';
 
 const VAULT_SUBDIRS = ['sessions', 'plans', 'spores', 'artifacts', 'team'];
 
+/**
+ * Recursively walk a directory and collect all .md file paths.
+ * Returns an empty array if the directory doesn't exist.
+ */
+export function walkMarkdownFiles(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+
+  const results: string[] = [];
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...walkMarkdownFiles(fullPath));
+    } else if (entry.isFile() && entry.name.endsWith('.md')) {
+      results.push(fullPath);
+    }
+  }
+
+  return results;
+}
+
 export class VaultReader {
   constructor(private vaultDir: string) {}
 
@@ -20,7 +42,7 @@ export class VaultReader {
     const dirPath = path.join(this.vaultDir, subdir);
     if (!fs.existsSync(dirPath)) return [];
 
-    const files = this.walkMarkdownFiles(dirPath);
+    const files = walkMarkdownFiles(dirPath);
     return files.map((filePath) => {
       const relativePath = path.relative(this.vaultDir, filePath);
       return this.readNote(relativePath);
@@ -29,23 +51,5 @@ export class VaultReader {
 
   readAllNotes(): VaultNote[] {
     return VAULT_SUBDIRS.flatMap((subdir) => this.listNotes(subdir));
-  }
-
-  walkMarkdownFiles(dir: string): string[] {
-    if (!fs.existsSync(dir)) return [];
-
-    const results: string[] = [];
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        results.push(...this.walkMarkdownFiles(fullPath));
-      } else if (entry.isFile() && entry.name.endsWith('.md')) {
-        results.push(fullPath);
-      }
-    }
-
-    return results;
   }
 }

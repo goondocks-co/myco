@@ -35,9 +35,6 @@ export interface ClassifyContext {
 /** Well-known API hostnames whose ENOTFOUND errors indicate a transient DNS issue, not misconfiguration. */
 const WELL_KNOWN_API_HOSTS = ['api.anthropic.com', 'api.openai.com'];
 
-/** HTTP status substrings that indicate the connection was refused or auth failed (config). */
-const CONFIG_STATUS_PATTERNS = [' 401 ', ' 403 '];
-
 /** HTTP status substrings that indicate a transient server-side issue. */
 const TRANSIENT_STATUS_PATTERNS = [' 429 ', ' 500 ', ' 503 '];
 
@@ -144,6 +141,14 @@ export function classifyError(error: Error, context?: ClassifyContext): Classify
   const msgLower = error.message.toLowerCase();
   if (msgLower.includes('empty content') || msgLower.includes('schema validation')) {
     return { type: 'parse', suggestedAction: 'LLM returned an empty or schema-invalid response. Check model health and prompt.' };
+  }
+  // Reasoning-only response: after stripping <think> tags the response is empty
+  if (msgLower.includes('only reasoning') || msgLower.includes('empty after strip') || msgLower.includes('observation extraction failed')) {
+    return { type: 'parse', suggestedAction: 'LLM returned only reasoning tokens with no usable content. Check model reasoning settings.' };
+  }
+  // Missing expected fields in LLM/embedding response
+  if (msgLower.includes('missing output') || msgLower.includes('no content in response') || msgLower.includes('summarization failed')) {
+    return { type: 'parse', suggestedAction: 'LLM response is missing expected fields. Check provider health and model compatibility.' };
   }
 
   // 2. Config errors — connection refused

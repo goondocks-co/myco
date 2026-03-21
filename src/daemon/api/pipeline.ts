@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { PipelineManager } from '../pipeline.js';
+import { PIPELINE_PROVIDER_ROLES } from '../../constants.js';
 
 // --- Request body schemas ---
 
@@ -120,6 +121,16 @@ export function handlePipelineRetryAll(pipeline: PipelineManager): (req: RouteRe
 export function handlePipelineCircuitReset(pipeline: PipelineManager): (req: RouteRequest) => Promise<RouteResponse> {
   return async (req) => {
     const { provider } = req.params;
+
+    if (!(PIPELINE_PROVIDER_ROLES as readonly string[]).includes(provider)) {
+      return {
+        status: 400,
+        body: {
+          error: 'unknown_provider',
+          message: `Unknown provider role '${provider}'. Valid roles: ${PIPELINE_PROVIDER_ROLES.join(', ')}`,
+        },
+      };
+    }
 
     pipeline.resetCircuit(provider);
     const unblocked = pipeline.unblockItemsForCircuit(provider);

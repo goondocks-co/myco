@@ -82,6 +82,38 @@ describe('classifyError', () => {
       err.name = 'ParseError';
       expect(classifyError(err).type).toBe('parse');
     });
+
+    it('classifies reasoning-only response as parse', () => {
+      const err = new Error('LLM returned only reasoning tokens, no usable output');
+      expect(classifyError(err).type).toBe('parse');
+      expect(classifyError(err).suggestedAction).toContain('reasoning');
+    });
+
+    it('classifies empty-after-strip response as parse', () => {
+      const err = new Error('Response empty after stripping think tags');
+      expect(classifyError(err).type).toBe('parse');
+    });
+
+    it('classifies observation extraction failed as parse', () => {
+      const err = new Error('Observation extraction failed for session abc123');
+      expect(classifyError(err).type).toBe('parse');
+    });
+
+    it('classifies missing output field as parse', () => {
+      const err = new Error('LM Studio: missing output in response body');
+      expect(classifyError(err).type).toBe('parse');
+      expect(classifyError(err).suggestedAction).toContain('missing expected fields');
+    });
+
+    it('classifies no content in response as parse', () => {
+      const err = new Error('Ollama: no content in response');
+      expect(classifyError(err).type).toBe('parse');
+    });
+
+    it('classifies summarization failed as parse', () => {
+      const err = new Error('Summarization failed for session abc123: timeout');
+      expect(classifyError(err).type).toBe('parse');
+    });
   });
 
   describe('defaults', () => {
