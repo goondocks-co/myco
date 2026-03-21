@@ -1,11 +1,5 @@
+import { useEffect } from 'react';
 import { useModels } from '../../hooks/use-models';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../ui/select';
 
 interface ModelSelectProps {
   provider: string | null;
@@ -25,39 +19,29 @@ export function ModelSelect({
   const { data, isLoading } = useModels(provider, baseUrl);
   const models = data?.models ?? [];
 
-  // Ensure current value is always an option so it doesn't disappear
-  const hasValue = value && models.includes(value);
-  const showNotFound = value && !isLoading && models.length > 0 && !hasValue;
+  // Auto-select first model when provider changes and current value isn't available
+  useEffect(() => {
+    if (isLoading || models.length === 0) return;
+    if (!models.includes(value)) {
+      onChange(models[0]);
+    }
+  }, [models, isLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <Select value={value || '__empty__'} onValueChange={(v) => onChange(v === '__empty__' ? '' : v)}>
-      <SelectTrigger>
-        <SelectValue placeholder={placeholder ?? 'Select model'}>
-          {isLoading
-            ? 'Loading models...'
-            : showNotFound
-              ? `${value} (not found)`
-              : value || placeholder || 'Select model'}
-        </SelectValue>
-      </SelectTrigger>
-      <SelectContent>
-        {!value && (
-          <SelectItem value="__empty__">{placeholder ?? 'Select model'}</SelectItem>
-        )}
-        {value && !hasValue && !isLoading && (
-          <SelectItem value={value}>
-            {value}{models.length > 0 ? ' (not found)' : ''}
-          </SelectItem>
-        )}
-        {models.map((m) => (
-          <SelectItem key={m} value={m}>{m}</SelectItem>
-        ))}
-        {isLoading && (
-          <SelectItem value={value || '__empty__'} disabled>
-            Loading models...
-          </SelectItem>
-        )}
-      </SelectContent>
-    </Select>
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={isLoading || !provider}
+      className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+    >
+      {isLoading && <option value={value}>Loading models...</option>}
+      {!isLoading && !provider && <option value="">Select provider first</option>}
+      {!isLoading && provider && models.length === 0 && (
+        <option value="">No models available</option>
+      )}
+      {!isLoading && models.map((m) => (
+        <option key={m} value={m}>{m}</option>
+      ))}
+    </select>
   );
 }
