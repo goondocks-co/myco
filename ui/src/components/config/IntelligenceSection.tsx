@@ -1,5 +1,6 @@
 import type { MycoConfig } from '../../hooks/use-config';
 import { ConfigSection } from './ConfigSection';
+import { Input } from '../ui/input';
 import {
   Field,
   NativeSelect,
@@ -45,6 +46,15 @@ export function IntelligenceSection({
                 options={[...LLM_PROVIDERS]}
               />
             </Field>
+            {intelligence.llm.provider === 'openai-compatible' && (
+              <Field label="Base URL" description="OpenAI-compatible API endpoint (e.g., http://localhost:8080/v1)">
+                <Input
+                  value={intelligence.llm.base_url ?? ''}
+                  onChange={(e) => updateLlm('base_url', e.target.value)}
+                  placeholder="http://localhost:8080/v1"
+                />
+              </Field>
+            )}
             <Field label="Model" description="The model for extraction, summaries, and titles — speed matters more than depth">
               <ModelSelect
                 provider={intelligence.llm.provider}
@@ -72,6 +82,15 @@ export function IntelligenceSection({
                 options={[...EMBEDDING_PROVIDERS]}
               />
             </Field>
+            {intelligence.embedding.provider === 'openai-compatible' && (
+              <Field label="Base URL" description="OpenAI-compatible embedding API endpoint">
+                <Input
+                  value={intelligence.embedding.base_url ?? ''}
+                  onChange={(e) => updateEmbedding('base_url', e.target.value)}
+                  placeholder="http://localhost:8080/v1"
+                />
+              </Field>
+            )}
             <Field label="Model" description="The embedding model for semantic search and similarity">
               <ModelSelect
                 provider={intelligence.embedding.provider}

@@ -24,7 +24,7 @@ export async function handleGetModels(req: RouteRequest): Promise<RouteResponse>
     if (provider === 'ollama') {
       const backend = new OllamaBackend({ base_url: req.query.base_url });
       models = await backend.listModels(MODEL_LIST_TIMEOUT_MS);
-    } else if (provider === 'lm-studio') {
+    } else if (provider === 'lm-studio' || provider === 'openai-compatible') {
       const backend = new LmStudioBackend({ base_url: req.query.base_url });
       models = await backend.listModels(MODEL_LIST_TIMEOUT_MS);
     } else if (provider === 'anthropic') {
