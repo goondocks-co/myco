@@ -1,7 +1,7 @@
 import { DaemonServer } from './server.js';
 import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger } from './logger.js';
-import { loadConfig } from '../config/loader.js';
+import { loadConfig, saveConfig } from '../config/loader.js';
 import { BatchManager, type BatchEvent } from './batch.js';
 import { BufferProcessor, type Observation, type ClassifiedArtifact } from './processor.js';
 import { VaultWriter } from '../vault/writer.js';
@@ -17,6 +17,7 @@ import type { RegisteredSession } from './lifecycle.js';
 import { PlanWatcher } from './watcher.js';
 import { DigestEngine, Metabolism } from './digest.js';
 import { ConsolidationEngine } from './consolidation.js';
+import { resolvePort } from './port.js';
 import { handleMycoContext } from '../mcp/tools/context.js';
 import { buildSimilarityPrompt } from '../prompts/index.js';
 import { extractNumber } from '../intelligence/response.js';
@@ -31,6 +32,15 @@ import { checkSupersession } from '../vault/curation.js';
 import { collectArtifactCandidates } from '../artifacts/candidates.js';
 import { slugifyPath } from '../artifacts/slugify.js';
 import { sessionNoteId, bareSessionId, sessionWikilink, sessionRelativePath } from '../vault/session-id.js';
+import { handleGetConfig, handlePutConfig } from './api/config.js';
+import { handleGetStats, computeConfigHash } from './api/stats.js';
+import { handleGetLogs } from './api/logs.js';
+import { handleRestart } from './api/restart.js';
+import { ProgressTracker, handleGetProgress } from './api/progress.js';
+import { handleRebuild, handleDigest, handleCurate } from './api/operations.js';
+import { handleGetModels } from './api/models.js';
+import type { OperationHandlerDeps } from './api/operations.js';
+import { runCuration } from '../services/vault-ops.js';
 import { z } from 'zod';
 import YAML from 'yaml';
 import fs from 'node:fs';
@@ -182,7 +192,24 @@ export async function main(): Promise<void> {
     maxSize: config.daemon.max_log_size,
   });
 
-  const server = new DaemonServer({ vaultDir, logger });
+  // Resolve dist/ui/ — walk up to find package.json (same strategy as prompts loader)
+  let uiDir: string | null = null;
+  {
+    let dir = path.dirname(new URL(import.meta.url).pathname);
+    for (let i = 0; i < 5; i++) {
+      const candidate = path.join(dir, 'dist', 'ui');
+      if (fs.existsSync(path.join(dir, 'package.json')) && fs.existsSync(candidate)) {
+        uiDir = candidate;
+        break;
+      }
+      dir = path.dirname(dir);
+    }
+  }
+  if (uiDir) {
+    logger.debug('daemon', 'Static UI directory found', { path: uiDir });
+  }
+
+  const server = new DaemonServer({ vaultDir, logger, uiDir: uiDir ?? undefined });
 
   const registry = new SessionRegistry({
     gracePeriod: config.daemon.grace_period,
@@ -441,8 +468,8 @@ export async function main(): Promise<void> {
   });
 
   // Session routes
-  server.registerRoute('POST', '/sessions/register', async (body: unknown) => {
-    const { session_id, branch, started_at } = RegisterBody.parse(body);
+  server.registerRoute('POST', '/sessions/register', async (req) => {
+    const { session_id, branch, started_at } = RegisterBody.parse(req.body);
     const resolvedStartedAt = started_at ?? new Date().toISOString();
     registry.register(session_id, { started_at: resolvedStartedAt, branch });
     server.updateDaemonJsonSessions(registry.sessions);
@@ -473,11 +500,11 @@ export async function main(): Promise<void> {
     metabolism?.activate();
 
     logger.info('lifecycle', 'Session registered', { session_id, branch });
-    return { ok: true, sessions: registry.sessions };
+    return { body: { ok: true, sessions: registry.sessions } };
   });
 
-  server.registerRoute('POST', '/sessions/unregister', async (body: unknown) => {
-    const { session_id } = UnregisterBody.parse(body);
+  server.registerRoute('POST', '/sessions/unregister', async (req) => {
+    const { session_id } = UnregisterBody.parse(req.body);
     registry.unregister(session_id);
     // Note: we do NOT delete the buffer FILE for THIS session. Session reload
     // (SessionEnd → SessionStart) reuses the same session_id, and deleting
@@ -503,12 +530,12 @@ export async function main(): Promise<void> {
     capturedArtifactPaths.delete(session_id);
     server.updateDaemonJsonSessions(registry.sessions);
     logger.info('lifecycle', 'Session unregistered', { session_id });
-    return { ok: true, sessions: registry.sessions };
+    return { body: { ok: true, sessions: registry.sessions } };
   });
 
   // Event routes
-  server.registerRoute('POST', '/events', async (body: unknown) => {
-    const validated = EventBody.parse(body);
+  server.registerRoute('POST', '/events', async (req) => {
+    const validated = EventBody.parse(req.body);
     const event = { ...validated, timestamp: validated.timestamp ?? new Date().toISOString() } as BatchEvent;
     logger.debug('hooks', 'Event received', { type: event.type, session_id: event.session_id });
 
@@ -542,11 +569,11 @@ export async function main(): Promise<void> {
         }
       }
     }
-    return { ok: true };
+    return { body: { ok: true } };
   });
 
-  server.registerRoute('POST', '/events/stop', async (body: unknown) => {
-    const { session_id: sessionId, user, transcript_path: hookTranscriptPath, last_assistant_message: lastAssistantMessage } = StopBody.parse(body);
+  server.registerRoute('POST', '/events/stop', async (req) => {
+    const { session_id: sessionId, user, transcript_path: hookTranscriptPath, last_assistant_message: lastAssistantMessage } = StopBody.parse(req.body);
     // Ensure session is registered (handles daemon restarts mid-session)
     if (!registry.getSession(sessionId)) {
       registry.register(sessionId, { started_at: new Date().toISOString() });
@@ -567,7 +594,7 @@ export async function main(): Promise<void> {
     const prev = activeStopProcessing ?? Promise.resolve();
     activeStopProcessing = prev.then(run).finally(() => { activeStopProcessing = null; });
 
-    return { ok: true };
+    return { body: { ok: true } };
   });
 
   async function processStopEvent(
@@ -867,8 +894,8 @@ export async function main(): Promise<void> {
 
   // Session-start context: digest extract (if available) or structural facts.
   // Memories are injected per-prompt (more targeted, less noise).
-  server.registerRoute('POST', '/context', async (body: unknown) => {
-    const { session_id, branch } = ContextBody.parse(body);
+  server.registerRoute('POST', '/context', async (req) => {
+    const { session_id, branch } = ContextBody.parse(req.body);
     logger.debug('hooks', 'Session context query', { session_id });
     try {
       // Digest-first: serve pre-computed extract if available
@@ -882,7 +909,7 @@ export async function main(): Promise<void> {
           meta.push(`Session:: \`${session_id}\``);
 
           logger.debug('context', `Injecting digest extract (tier ${result.tier})`, { session_id, fallback: result.fallback });
-          return { text: meta.join('\n\n'), source: 'digest', tier: result.tier };
+          return { body: { text: meta.join('\n\n'), source: 'digest', tier: result.tier } };
         }
         // Fall through to layer-based injection if no extract exists yet
       }
@@ -924,12 +951,12 @@ export async function main(): Promise<void> {
       parts.push(`Session:: \`${session_id}\``);
 
       if (parts.length > 0) {
-        return { text: parts.join('\n\n') };
+        return { body: { text: parts.join('\n\n') } };
       }
-      return { text: '' };
+      return { body: { text: '' } };
     } catch (error) {
       logger.error('daemon', 'Session context failed', { error: (error as Error).message });
-      return { text: '' };
+      return { body: { text: '' } };
     }
   });
 
@@ -940,10 +967,10 @@ export async function main(): Promise<void> {
     session_id: z.string().optional(),
   });
 
-  server.registerRoute('POST', '/context/prompt', async (body: unknown) => {
-    const { prompt, session_id } = PromptContextBody.parse(body);
+  server.registerRoute('POST', '/context/prompt', async (req) => {
+    const { prompt, session_id } = PromptContextBody.parse(req.body);
     if (!prompt || prompt.length < PROMPT_CONTEXT_MIN_LENGTH || !vectorIndex) {
-      return { text: '' };
+      return { body: { text: '' } };
     }
 
     try {
@@ -954,7 +981,7 @@ export async function main(): Promise<void> {
         relativeThreshold: PROMPT_CONTEXT_MIN_SIMILARITY,
       });
 
-      if (results.length === 0) return { text: '' };
+      if (results.length === 0) return { body: { text: '' } };
 
       const noteMap = new Map(
         index.queryByIds(results.map((r) => r.id)).map((n) => [n.id, n]),
@@ -970,7 +997,7 @@ export async function main(): Promise<void> {
         lines.push(`- [${obsType}] ${note.title}: ${note.content.slice(0, CONTENT_SNIPPET_CHARS)} \`[${note.id}]\``);
       }
 
-      if (lines.length === 0) return { text: '' };
+      if (lines.length === 0) return { body: { text: '' } };
 
       const injected = `**Relevant spores for this task:**\n${lines.join('\n')}`;
       logger.debug('context', 'Prompt context injected', {
@@ -979,15 +1006,76 @@ export async function main(): Promise<void> {
         prompt_preview: prompt.slice(0, 50),
       });
 
-      return { text: injected };
+      return { body: { text: injected } };
     } catch (err) {
       logger.debug('context', 'Prompt context failed', { error: (err as Error).message });
-      return { text: '' };
+      return { body: { text: '' } };
     }
   });
 
-  await server.start();
+  // --- Dashboard API routes ---
+  const progressTracker = new ProgressTracker();
+  let configHash = computeConfigHash(vaultDir);
+
+  server.registerRoute('GET', '/api/config', async () => handleGetConfig(vaultDir));
+  server.registerRoute('PUT', '/api/config', async (req) => {
+    const result = await handlePutConfig(vaultDir, req.body);
+    if (!result.status || result.status < 400) {
+      configHash = computeConfigHash(vaultDir);
+    }
+    return result;
+  });
+  server.registerRoute('GET', '/api/stats', async () => handleGetStats({
+    vaultDir, index, vectorIndex, version: server.version, config, configHash, metabolism,
+  }));
+  server.registerRoute('GET', '/api/logs', async (req) => handleGetLogs(logger.getRingBuffer(), req.query));
+  server.registerRoute('GET', '/api/models', async (req) => handleGetModels(req));
+  server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir, progressTracker }, req.body));
+  server.registerRoute('GET', '/api/progress/:token', async (req) => handleGetProgress(progressTracker, req.params.token));
+
+  // --- Operations API routes ---
+  const operationDeps: OperationHandlerDeps = {
+    vaultDir,
+    config,
+    index,
+    vectorIndex,
+    llmProvider,
+    embeddingProvider,
+    progressTracker,
+    log: (level, message, data) => {
+      const fn = logger[level as keyof typeof logger];
+      if (typeof fn === 'function') (fn as typeof logger.info).call(logger, 'operations', message, data);
+    },
+  };
+
+  server.registerRoute('POST', '/api/rebuild', async () => handleRebuild(operationDeps));
+  server.registerRoute('POST', '/api/digest', async (req) => handleDigest(operationDeps, req.body));
+  server.registerRoute('POST', '/api/curate', async (req) => handleCurate(operationDeps, req.body, runCuration));
+
+  const resolvedPort = await resolvePort(config.daemon.port, vaultDir);
+  if (resolvedPort === 0) {
+    logger.warn('daemon', 'All preferred ports occupied, using ephemeral port');
+  }
+  await server.start(resolvedPort);
   logger.info('daemon', 'Daemon ready', { vault: vaultDir, port: server.port });
+
+  // Persist the resolved port to config if it was auto-derived
+  if (config.daemon.port === null && resolvedPort !== 0) {
+    try {
+      config.daemon.port = resolvedPort;
+      saveConfig(vaultDir, config);
+      logger.info('daemon', 'Persisted auto-derived port to myco.yaml', { port: resolvedPort });
+    } catch (err) {
+      logger.warn('daemon', 'Failed to persist auto-derived port', { error: (err as Error).message });
+    }
+  }
+
+  // Write portal file so users can find the dashboard URL in Obsidian
+  try {
+    const { loadTemplate } = await import('../templates/index.js');
+    const portalContent = loadTemplate('portal', { port: String(server.port) });
+    fs.writeFileSync(path.join(vaultDir, '_portal.md'), portalContent, 'utf-8');
+  } catch { /* non-critical — template may be missing or vault read-only */ }
 
   // Background reindex after migration — runs after server is healthy
   if (needsMigrationReindex) {

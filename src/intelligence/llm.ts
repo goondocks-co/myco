@@ -53,6 +53,7 @@ export function createLlmProvider(config: ProviderConfig): LlmProvider {
     case 'ollama':
       return new OllamaBackend(config);
     case 'lm-studio':
+    case 'openai-compatible':
       return new LmStudioBackend(config);
     case 'anthropic':
       return new AnthropicBackend(config);
@@ -66,6 +67,7 @@ export function createEmbeddingProvider(config: ProviderConfig): EmbeddingProvid
     case 'ollama':
       return new OllamaBackend(config);
     case 'lm-studio':
+    case 'openai-compatible':
       return new LmStudioBackend(config);
     default:
       throw new Error(`Provider "${config.provider}" does not support embeddings. Use ollama or lm-studio.`);
