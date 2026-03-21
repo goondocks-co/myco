@@ -10,6 +10,7 @@ import {
   DigestCard,
   IntelligenceCard,
 } from '../components/dashboard/stat-cards';
+import { PipelineHealthCard } from '../components/dashboard/pipeline-health';
 
 export default function Dashboard() {
   const { data: stats, isLoading, isError, error } = useDaemon();
@@ -41,6 +42,7 @@ export default function Dashboard() {
               <IndexCard stats={stats} />
               <DigestCard stats={stats} />
               <IntelligenceCard stats={stats} />
+              <PipelineHealthCard />
             </div>
           </section>
         </div>
