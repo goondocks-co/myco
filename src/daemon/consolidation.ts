@@ -226,6 +226,10 @@ export class ConsolidationEngine {
       }
 
       clustersFound++;
+      this.log('debug', 'Consolidation groups formed', {
+        group_count: clustersFound,
+        total_notes: cluster.length,
+      });
 
       // Build consolidation prompt
       const candidatesText = formatNotesForPrompt(cluster);
@@ -319,10 +323,11 @@ export class ConsolidationEngine {
         consolidated++;
         sporesSuperseded += consolidateResult.sources_archived;
 
-        this.log('info', 'ConsolidationEngine: consolidated cluster', {
+        this.log('info', 'Notes consolidated', {
           wisdomId: consolidateResult.wisdom_id,
           sourcesArchived: consolidateResult.sources_archived,
           clusterSize: cluster.length,
+          similarity: vectorResults[0]?.similarity ?? 0,
         });
       } catch (err) {
         this.log('warn', 'ConsolidationEngine: consolidateSpores failed', {
@@ -332,6 +337,10 @@ export class ConsolidationEngine {
       }
 
       cluster.forEach((n) => processedIds.add(n.id));
+    }
+
+    if (clustersFound === 0) {
+      this.log('debug', 'Consolidation: no groups above threshold');
     }
 
     const passTimestamp = new Date().toISOString();

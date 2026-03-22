@@ -19,7 +19,7 @@ import { DigestEngine, Metabolism } from './digest.js';
 import { ConsolidationEngine } from './consolidation.js';
 import { resolvePort } from './port.js';
 import { handleMycoContext } from '../mcp/tools/context.js';
-import { EMBEDDING_INPUT_LIMIT, CONTENT_SNIPPET_CHARS, STALE_BUFFER_MAX_AGE_MS, LINEAGE_RECENT_SESSIONS_LIMIT, RELATED_SPORES_LIMIT, SESSION_CONTEXT_MAX_PLANS, PROMPT_CONTEXT_MAX_SPORES, PROMPT_CONTEXT_MIN_SIMILARITY, PROMPT_CONTEXT_MIN_LENGTH, CONTEXT_SESSION_PREVIEW_CHARS, estimateTokens } from '../constants.js';
+import { EMBEDDING_INPUT_LIMIT, CONTENT_SNIPPET_CHARS, STALE_BUFFER_MAX_AGE_MS, LINEAGE_RECENT_SESSIONS_LIMIT, RELATED_SPORES_LIMIT, SESSION_CONTEXT_MAX_PLANS, PROMPT_CONTEXT_MAX_SPORES, PROMPT_CONTEXT_MIN_SIMILARITY, PROMPT_CONTEXT_MIN_LENGTH, CONTEXT_SESSION_PREVIEW_CHARS, LOG_PROMPT_PREVIEW_CHARS, LOG_MESSAGE_PREVIEW_CHARS, estimateTokens } from '../constants.js';
 import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter, extensionForMimeType, type TranscriptTurn } from '../agents/adapter.js';
 import { claudeCodeAdapter } from '../agents/claude-code.js';
@@ -204,6 +204,13 @@ export async function main(): Promise<void> {
     maxSize: config.daemon.max_log_size,
   });
 
+  logger.info('daemon', 'Config loaded', {
+    vault: vaultDir,
+    digest_enabled: config.digest.enabled,
+    intelligence_provider: config.intelligence.llm.provider,
+    embedding_provider: config.intelligence.embedding.provider,
+  });
+
   // Resolve dist/ui/ — walk up to find package.json (same strategy as prompts loader)
   let uiDir: string | null = null;
   {
@@ -346,6 +353,10 @@ export async function main(): Promise<void> {
         observations: written.length,
         title,
       });
+      logger.debug('pipeline', 'Extraction detail', {
+        session_id: itemId,
+        types: written.map((n) => n.observation.type),
+      });
 
       return {
         observations: written.length,
@@ -399,6 +410,7 @@ export async function main(): Promise<void> {
       }
 
       // Generate embedding
+      const embeddingStart = Date.now();
       const result = await generateEmbedding(
         embeddingProvider,
         embeddableText.slice(0, EMBEDDING_INPUT_LIMIT),
@@ -428,6 +440,7 @@ export async function main(): Promise<void> {
         id: itemId,
         type: itemType,
         dimensions: result.dimensions,
+        duration_ms: Date.now() - embeddingStart,
       });
 
       return {
@@ -494,6 +507,7 @@ export async function main(): Promise<void> {
   const capturedArtifactPaths = new Map<string, Set<string>>();
 
   // Clean up stale buffer files (>24h) on startup
+  let startupCleanedCount = 0;
   if (fs.existsSync(bufferDir)) {
     const cutoff = Date.now() - STALE_BUFFER_MAX_AGE_MS;
     for (const file of fs.readdirSync(bufferDir)) {
@@ -501,9 +515,15 @@ export async function main(): Promise<void> {
       const stat = fs.statSync(filePath);
       if (stat.mtimeMs < cutoff) {
         fs.unlinkSync(filePath);
+        startupCleanedCount++;
         logger.debug('daemon', 'Cleaned stale buffer', { file });
       }
     }
+  }
+  if (startupCleanedCount > 0) {
+    logger.info('daemon', 'Buffer cleanup complete', {
+      stale_removed: startupCleanedCount,
+    });
   }
 
   // Check for stale 'memory' type entries — migration happened but index wasn't rebuilt.
@@ -584,6 +604,7 @@ export async function main(): Promise<void> {
 
   // Digest engine: synthesizes vault knowledge into tiered context extracts
   let metabolism: Metabolism | null = null;
+  let triggerForceDigest: (() => void) | undefined;
 
   if (config.digest.enabled) {
     logger.debug('digest', 'Digest LLM config', digestLlmConfig);
@@ -622,6 +643,7 @@ export async function main(): Promise<void> {
     // The hasUpstreamWork() check prevents premature execution.
     let digestReady = true;
     let forceDigest = false;
+    triggerForceDigest = () => { forceDigest = true; };
 
     metabolism.start(async () => {
       // Metabolism says it's time for a digest — set the flag for the pipeline tick
@@ -772,7 +794,7 @@ export async function main(): Promise<void> {
     // Wake digest metabolism when a new session starts
     metabolism?.activate();
 
-    logger.info('lifecycle', 'Session registered', { session_id, branch });
+    logger.info('lifecycle', 'Session registered', { session_id, branch, started_at: started_at ?? null });
     return { body: { ok: true, sessions: registry.sessions } };
   });
 
@@ -812,6 +834,16 @@ export async function main(): Promise<void> {
     const event = { ...validated, timestamp: validated.timestamp ?? new Date().toISOString() } as BatchEvent;
     logger.debug('hooks', 'Event received', { type: event.type, session_id: event.session_id });
 
+    if (validated.type === 'user_prompt') {
+      const v = validated as Record<string, unknown>;
+      const promptText = String(v.prompt ?? '');
+      logger.info('hooks', 'User prompt received', {
+        session_id: validated.session_id,
+        prompt_preview: promptText.slice(0, LOG_PROMPT_PREVIEW_CHARS),
+        prompt_length: promptText.length,
+      });
+    }
+
     // Ensure session is registered (idempotent — handles daemon restarts mid-session)
     if (!registry.getSession(event.session_id)) {
       registry.register(event.session_id, { started_at: event.timestamp });
@@ -827,6 +859,10 @@ export async function main(): Promise<void> {
     batchManager.addEvent(event);
     if (validated.type === 'tool_use') {
       const v = validated as Record<string, unknown>;
+      logger.debug('hooks', 'Tool use event', {
+        session_id: validated.session_id,
+        tool_name: String(v.tool_name ?? ''),
+      });
       planWatcher.checkToolEvent({ tool_name: String(v.tool_name ?? ''), tool_input: v.tool_input, session_id: validated.session_id });
       const toolName = String(v.tool_name ?? '');
       if (toolName === 'Write' || toolName === 'Edit') {
@@ -853,7 +889,16 @@ export async function main(): Promise<void> {
       logger.debug('lifecycle', 'Auto-registered session from stop event', { session_id: sessionId });
     }
     const sessionMeta = registry.getSession(sessionId);
-    logger.info('hooks', 'Stop received', { session_id: sessionId, has_transcript_path: !!hookTranscriptPath, has_response: !!lastAssistantMessage });
+    logger.info('hooks', 'Stop received', {
+      session_id: sessionId,
+      has_transcript_path: !!hookTranscriptPath,
+      has_response: !!lastAssistantMessage,
+    });
+    logger.debug('hooks', 'Stop event detail', {
+      session_id: sessionId,
+      transcript_path: hookTranscriptPath ?? null,
+      last_message_preview: lastAssistantMessage?.slice(0, LOG_MESSAGE_PREVIEW_CHARS) ?? null,
+    });
 
     // Respond immediately — the hook should not block on LLM processing.
     // Serialize stop processing: if a previous stop is still running, chain
@@ -960,6 +1005,13 @@ export async function main(): Promise<void> {
     }
 
     enrichTurnsWithToolMetadata(allTurns, bufferEvents);
+
+    const imageCount = allTurns.reduce((sum, t) => sum + (t.images?.length ?? 0), 0);
+    logger.debug('processor', 'Transcript parsed', {
+      session_id: sessionId,
+      turn_count: allTurns.length,
+      image_count: imageCount,
+    });
 
     const ended = new Date().toISOString();
     let started = (allTurns.length > 0 && allTurns[0].timestamp) ? allTurns[0].timestamp : ended;
@@ -1112,7 +1164,7 @@ export async function main(): Promise<void> {
     const parentId = lineageGraph.getParent(sessionId);
     const parentLink = parentId ? lineageGraph.getLinks().find((l) => l.child === sessionId) : undefined;
 
-    vault.writeSession({
+    const notePath = vault.writeSession({
       id: sessionId,
       user,
       started,
@@ -1124,6 +1176,12 @@ export async function main(): Promise<void> {
       transcript_source: turnSource,
       transcript_path: hookTranscriptPath,
       summary,
+    });
+
+    logger.debug('processor', 'Session note written', {
+      session_id: sessionId,
+      path: notePath,
+      content_length: summary.length,
     });
 
     // Restore extraction-enriched frontmatter fields lost during rebuild
@@ -1162,13 +1220,19 @@ export async function main(): Promise<void> {
           if (branch) meta.push(`\nBranch:: \`${branch}\``);
           meta.push(`Session:: \`${session_id}\``);
 
-          logger.debug('context', `Injecting digest extract (tier ${result.tier})`, { session_id, fallback: result.fallback });
+          logger.info('context', 'Session context injected', {
+            session_id,
+            source: 'digest',
+            tier: result.tier,
+            fallback: result.fallback,
+          });
           return { body: { text: meta.join('\n\n'), source: 'digest', tier: result.tier } };
         }
         // Fall through to layer-based injection if no extract exists yet
       }
 
       const parts: string[] = [];
+      const layerCounts = { plans: 0, parent_session: false, branch: !!branch };
 
       // Active plans — the agent needs to know what's in flight
       const plans = index.query({ type: 'plan' });
@@ -1176,6 +1240,7 @@ export async function main(): Promise<void> {
         const status = (p.frontmatter as Record<string, unknown>).status as string;
         return status === 'active' || status === 'in_progress';
       });
+      layerCounts.plans = activePlans.length;
       if (activePlans.length > 0) {
         const planLines = activePlans.slice(0, SESSION_CONTEXT_MAX_PLANS).map((p) => {
           const status = (p.frontmatter as Record<string, unknown>).status as string;
@@ -1185,11 +1250,13 @@ export async function main(): Promise<void> {
       }
 
       // Parent session summary — lineage continuity
+      let parentId: string | undefined;
       if (session_id) {
-        const parentId = lineageGraph.getParent(session_id);
+        parentId = lineageGraph.getParent(session_id);
         if (parentId) {
           const parentNotes = index.queryByIds([sessionNoteId(parentId)]);
           if (parentNotes.length > 0) {
+            layerCounts.parent_session = true;
             const parent = parentNotes[0];
             parts.push(`### Previous Session\n- **${parent.title}**: ${parent.content.slice(0, CONTEXT_SESSION_PREVIEW_CHARS)} \`[${parent.id}]\``);
           }
@@ -1205,6 +1272,17 @@ export async function main(): Promise<void> {
       parts.push(`Session:: \`${session_id}\``);
 
       if (parts.length > 0) {
+        logger.info('context', 'Session context injected', {
+          session_id,
+          source: 'layers',
+          ...layerCounts,
+          parts: parts.length,
+        });
+        logger.debug('context', 'Session context layer detail', {
+          session_id,
+          plan_titles: activePlans.slice(0, 5).map((p) => p.title),
+          parent_id: parentId ?? null,
+        });
         return { body: { text: parts.join('\n\n') } };
       }
       return { body: { text: '' } };
@@ -1226,6 +1304,7 @@ export async function main(): Promise<void> {
     if (!prompt || prompt.length < PROMPT_CONTEXT_MIN_LENGTH || !vectorIndex) {
       return { body: { text: '' } };
     }
+    const searchStart = Date.now();
 
     try {
       const emb = await generateEmbedding(embeddingProvider, prompt.slice(0, EMBEDDING_INPUT_LIMIT));
@@ -1235,7 +1314,14 @@ export async function main(): Promise<void> {
         relativeThreshold: PROMPT_CONTEXT_MIN_SIMILARITY,
       });
 
-      if (results.length === 0) return { body: { text: '' } };
+      if (results.length === 0) {
+        logger.debug('context', 'No matching spores for prompt', {
+          session_id,
+          prompt_preview: prompt.slice(0, LOG_PROMPT_PREVIEW_CHARS),
+          search_duration_ms: Date.now() - searchStart,
+        });
+        return { body: { text: '' } };
+      }
 
       const noteMap = new Map(
         index.queryByIds(results.map((r) => r.id)).map((n) => [n.id, n]),
@@ -1254,10 +1340,18 @@ export async function main(): Promise<void> {
       if (lines.length === 0) return { body: { text: '' } };
 
       const injected = `**Relevant spores for this task:**\n${lines.join('\n')}`;
-      logger.debug('context', 'Prompt context injected', {
+      logger.info('context', 'Prompt context injected', {
         session_id,
         spores: lines.length,
-        prompt_preview: prompt.slice(0, 50),
+        prompt_preview: prompt.slice(0, LOG_PROMPT_PREVIEW_CHARS),
+      });
+      logger.debug('context', 'Prompt context spore details', {
+        session_id,
+        spore_ids: results.map((r) => r.id),
+        similarities: results.map((r) => r.similarity.toFixed(3)),
+        prompt_length: prompt.length,
+        context_chars: injected.length,
+        search_duration_ms: Date.now() - searchStart,
       });
 
       return { body: { text: injected } };
@@ -1283,6 +1377,21 @@ export async function main(): Promise<void> {
     vaultDir, index, vectorIndex, version: server.version, config, configHash, metabolism,
   }));
   server.registerRoute('GET', '/api/logs', async (req) => handleGetLogs(logger.getRingBuffer(), req.query));
+
+  // External log ingestion: allows MCP server (separate process) to write through the daemon logger
+  const ExternalLogBody = z.object({
+    level: z.enum(['debug', 'info', 'warn', 'error']),
+    component: z.string(),
+    message: z.string(),
+    data: z.record(z.string(), z.unknown()).optional(),
+  });
+
+  server.registerRoute('POST', '/api/log', async (req) => {
+    const { level, component, message, data } = ExternalLogBody.parse(req.body);
+    logger.log(level, component, message, data);
+    return { body: { ok: true } };
+  });
+
   server.registerRoute('GET', '/api/models', async (req) => handleGetModels(req));
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir, progressTracker }, req.body));
   server.registerRoute('GET', '/api/progress/:token', async (req) => handleGetProgress(progressTracker, req.params.token));
@@ -1298,9 +1407,9 @@ export async function main(): Promise<void> {
     embeddingProvider,
     progressTracker,
     pipeline,
+    onForceDigest: triggerForceDigest,
     log: (level, message, data) => {
-      const fn = logger[level as keyof typeof logger];
-      if (typeof fn === 'function') (fn as typeof logger.info).call(logger, 'operations', message, data);
+      logger.log(level, 'operations', message, data);
     },
   };
 

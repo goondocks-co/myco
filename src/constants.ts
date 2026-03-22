@@ -33,6 +33,12 @@ export const SESSION_SUMMARY_PREVIEW_CHARS = 300;
 /** Max chars for a recall summary preview. */
 export const RECALL_SUMMARY_PREVIEW_CHARS = 200;
 
+// --- Log preview limits (short previews for structured log fields) ---
+/** Max chars for a user prompt preview in log entries. */
+export const LOG_PROMPT_PREVIEW_CHARS = 50;
+/** Max chars for an assistant message preview in log entries. */
+export const LOG_MESSAGE_PREVIEW_CHARS = 80;
+
 // --- Context injection layer budgets (chars, not tokens — used with .slice()) ---
 export const CONTEXT_PLAN_PREVIEW_CHARS = 100;
 export const CONTEXT_SESSION_PREVIEW_CHARS = 80;

@@ -1,7 +1,7 @@
 import type { LogEntry, LogLevel } from './logger.js';
 import { LEVEL_ORDER } from './logger.js';
 
-const LOG_RING_BUFFER_CAPACITY = 1000;
+const LOG_RING_BUFFER_CAPACITY = 5000;
 const LOG_QUERY_DEFAULT_LIMIT = 100;
 
 interface LogQueryResult {
@@ -12,6 +12,7 @@ interface LogQueryResult {
 
 interface LogQueryOptions {
   level?: LogLevel;
+  component?: string;
   limit?: number;
 }
 
@@ -64,6 +65,7 @@ export class LogRingBuffer {
       const bufIdx = (this.head - this.count + i + this.capacity) % this.capacity;
       const entry = this.buffer[bufIdx];
       if (entry && LEVEL_ORDER[entry.level as LogLevel] >= minLevel) {
+        if (options?.component && entry.component !== options.component) continue;
         entries.push(entry);
       }
     }

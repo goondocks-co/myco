@@ -65,6 +65,13 @@ export class DaemonLogger {
     this.write('error', component, message, data);
   }
 
+  /** Dispatch a log entry by dynamic level string. */
+  log(level: string, component: string, message: string, data?: Record<string, unknown>): void {
+    if (level in LEVEL_ORDER) {
+      this.write(level as LogLevel, component, message, data);
+    }
+  }
+
   close(): void {
     if (this.fd !== null) {
       fs.closeSync(this.fd);

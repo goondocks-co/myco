@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { ScrollText, Pause, Play, Trash2, ArrowDown } from 'lucide-react';
 import { usePowerQuery } from '../hooks/use-power-query';
 import { fetchJson } from '../lib/api';
-import { POLL_INTERVALS } from '../lib/constants';
+import { POLL_INTERVALS, LOG_LEVELS, LEVEL_ORDER, type LogLevel } from '../lib/constants';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
@@ -10,19 +10,10 @@ import { cn } from '../lib/cn';
 
 /* ---------- Constants ---------- */
 
-const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
 const DEFAULT_LOG_LIMIT = 200;
-const MAX_LOG_ENTRIES = 2000;
+/** Matches LOG_RING_BUFFER_CAPACITY in src/daemon/log-buffer.ts */
+const MAX_LOG_ENTRIES = 5000;
 const SCROLL_BOTTOM_THRESHOLD_PX = 40;
-
-type LogLevel = (typeof LOG_LEVELS)[number];
-
-const LEVEL_ORDER: Record<LogLevel, number> = {
-  debug: 0,
-  info: 1,
-  warn: 2,
-  error: 3,
-};
 
 const LEVEL_BADGE_CLASS: Record<LogLevel, string> = {
   debug: 'border-transparent bg-muted text-muted-foreground',
@@ -68,6 +59,8 @@ export default function Logs() {
   const [cursor, setCursor] = useState<string | undefined>(undefined);
   const [activeLevel, setActiveLevel] = useState<LogLevel>('debug');
   const [searchText, setSearchText] = useState('');
+  const [activeCategories, setActiveCategories] = useState<Set<string>>(new Set());
+  const [knownCategories, setKnownCategories] = useState<string[]>([]);
   const [autoScroll, setAutoScroll] = useState(true);
   const [hasNewEntries, setHasNewEntries] = useState(false);
 
@@ -112,6 +105,19 @@ export default function Logs() {
 
     setCursor(logsData.cursor);
 
+    // Incrementally discover new categories from incoming entries
+    setKnownCategories((prev) => {
+      const known = new Set(prev);
+      let changed = false;
+      for (const e of logsData.entries) {
+        if (!known.has(e.category)) {
+          known.add(e.category);
+          changed = true;
+        }
+      }
+      return changed ? Array.from(known).sort() : prev;
+    });
+
     if (!autoScrollRef.current) {
       setHasNewEntries(true);
     }
@@ -147,6 +153,7 @@ export default function Logs() {
   /* Clear accumulated entries */
   const clearEntries = useCallback(() => {
     setEntries([]);
+    setKnownCategories([]);
     setHasNewEntries(false);
   }, []);
 
@@ -156,10 +163,11 @@ export default function Logs() {
     const search = searchText.trim().toLowerCase();
     return entries.filter((e) => {
       if (LEVEL_ORDER[e.level] < levelFloor) return false;
+      if (activeCategories.size > 0 && !activeCategories.has(e.category)) return false;
       if (search && !e.message.toLowerCase().includes(search)) return false;
       return true;
     });
-  }, [entries, activeLevel, searchText]);
+  }, [entries, activeLevel, activeCategories, searchText]);
 
   return (
     <div className="flex h-full flex-col">
@@ -185,6 +193,44 @@ export default function Logs() {
             </Button>
           ))}
         </div>
+
+        {/* Category filter chips */}
+        {knownCategories.length > 0 && (
+          <div className="flex items-center gap-1 flex-wrap">
+            <span className="text-[10px] text-muted-foreground mr-0.5">cat:</span>
+            {knownCategories.map((cat) => (
+              <Button
+                key={cat}
+                size="sm"
+                variant={activeCategories.has(cat) ? 'default' : 'ghost'}
+                className="h-5 px-1.5 text-[10px]"
+                onClick={() => {
+                  setActiveCategories((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(cat)) {
+                      next.delete(cat);
+                    } else {
+                      next.add(cat);
+                    }
+                    return next;
+                  });
+                }}
+              >
+                {cat}
+              </Button>
+            ))}
+            {activeCategories.size > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-5 px-1.5 text-[10px] text-muted-foreground"
+                onClick={() => setActiveCategories(new Set())}
+              >
+                clear
+              </Button>
+            )}
+          </div>
+        )}
 
         {/* Search */}
         <Input
