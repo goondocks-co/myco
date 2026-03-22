@@ -3,7 +3,7 @@ import { NavLink, Outlet } from 'react-router-dom';
 import {
   LayoutDashboard,
   Settings,
-  Wrench,
+  Network,
   ScrollText,
   Sun,
   Moon,
@@ -28,7 +28,7 @@ import { cn } from '../lib/cn';
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/configuration', label: 'Configuration', icon: Settings },
-  { to: '/operations', label: 'Operations', icon: Wrench },
+  { to: '/mycelium', label: 'Mycelium', icon: Network },
   { to: '/logs', label: 'Logs', icon: ScrollText },
 ] as const;
 

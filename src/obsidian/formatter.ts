@@ -4,9 +4,13 @@
  */
 import type { ArtifactType } from '../vault/types.js';
 import { sessionNoteId } from '../vault/session-id.js';
+import { TURN_MAX_FILES_DISPLAYED } from '../constants.js';
 
 /** Section heading for conversation content in session notes. */
 export const CONVERSATION_HEADING = '## Conversation';
+
+/** Prefix for turn headings in session notes. Used for boundary detection during truncation. */
+export const TURN_HEADING_PREFIX = '\n### Turn ';
 
 // Callout type mapping for observation types
 const CALLOUT_MAP: Record<string, string> = {
@@ -96,11 +100,34 @@ export interface SessionBodyInput {
   turns: Array<{
     prompt: string;
     toolCount: number;
+    toolBreakdown?: Record<string, number>;
+    files?: string[];
     aiResponse?: string;
     /** Filenames of images in the vault attachments folder */
     images?: string[];
   }>;
   tags?: string[];
+}
+
+function formatToolAndFiles(turn: { toolCount: number; toolBreakdown?: Record<string, number>; files?: string[] }): string[] {
+  const parts: string[] = [];
+  if (turn.toolCount > 0) {
+    if (turn.toolBreakdown && Object.keys(turn.toolBreakdown).length > 0) {
+      const sorted = Object.entries(turn.toolBreakdown).sort((a, b) => b[1] - a[1]);
+      const breakdown = sorted.map(([name, count]) => `${name} (${count})`).join(', ');
+      parts.push(`*${turn.toolCount} tool calls: ${breakdown}*`);
+    } else {
+      parts.push(`*${turn.toolCount} tool calls*`);
+    }
+  }
+  if (turn.files && turn.files.length > 0) {
+    const displayed = turn.files.slice(0, TURN_MAX_FILES_DISPLAYED);
+    const suffix = turn.files.length > TURN_MAX_FILES_DISPLAYED
+      ? ` +${turn.files.length - TURN_MAX_FILES_DISPLAYED} more`
+      : '';
+    parts.push(`*Files: ${displayed.join(', ')}${suffix}*`);
+  }
+  return parts;
 }
 
 export function formatSessionBody(input: SessionBodyInput): string {
@@ -137,17 +164,16 @@ export function formatSessionBody(input: SessionBodyInput): string {
       const turn = input.turns[i];
       const turnNum = i + 1;
       turnLines.push(`### Turn ${turnNum}`);
-      if (turn.prompt || turn.images?.length) {
-        // Build prompt content: text + images + tool count
+      {
         const parts: string[] = [];
         if (turn.prompt) parts.push(turn.prompt);
         if (turn.images?.length) {
           parts.push(turn.images.map((f) => `![[${f}]]`).join('\n'));
         }
-        if (turn.toolCount > 0) parts.push(`*${turn.toolCount} tool calls*`);
-        turnLines.push(callout('user', 'Prompt', parts.join('\n\n')));
-      } else if (turn.toolCount > 0) {
-        turnLines.push(callout('user', 'Prompt', `*${turn.toolCount} tool calls*`));
+        parts.push(...formatToolAndFiles(turn));
+        if (parts.length > 0) {
+          turnLines.push(callout('user', 'Prompt', parts.join('\n\n')));
+        }
       }
       if (turn.aiResponse) {
         turnLines.push(callout('assistant', 'Response', turn.aiResponse));

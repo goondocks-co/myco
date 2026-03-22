@@ -18,6 +18,7 @@ import { DigestSection } from './DigestSection';
 import { CaptureSection } from './CaptureSection';
 import { ContextSection } from './ContextSection';
 import { DaemonSection } from './DaemonSection';
+import { PipelineSection } from './PipelineSection';
 import { TeamSection } from './TeamSection';
 
 interface ConfigFormProps {
@@ -51,6 +52,7 @@ export function ConfigForm({ config, onSave, isSaving }: ConfigFormProps) {
   const captureDirty = isDirty(form.capture, config.capture);
   const contextDirty = isDirty(form.context, config.context);
   const daemonDirty = isDirty(form.daemon, config.daemon);
+  const pipelineDirty = isDirty(form.pipeline, config.pipeline);
   const teamDirty = isDirty(form.team, config.team);
 
   /* ---------- Updaters ---------- */
@@ -198,6 +200,39 @@ export function ConfigForm({ config, onSave, isSaving }: ConfigFormProps) {
     [],
   );
 
+  const updatePipeline = useCallback(
+    (key: string, value: number) =>
+      setForm((prev) => ({
+        ...prev,
+        pipeline: { ...prev.pipeline, [key]: value },
+      })),
+    [],
+  );
+
+  const updatePipelineRetry = useCallback(
+    (key: string, value: number) =>
+      setForm((prev) => ({
+        ...prev,
+        pipeline: {
+          ...prev.pipeline,
+          retry: { ...prev.pipeline.retry, [key]: value },
+        },
+      })),
+    [],
+  );
+
+  const updatePipelineCircuitBreaker = useCallback(
+    (key: string, value: number) =>
+      setForm((prev) => ({
+        ...prev,
+        pipeline: {
+          ...prev.pipeline,
+          circuit_breaker: { ...prev.pipeline.circuit_breaker, [key]: value },
+        },
+      })),
+    [],
+  );
+
   const updateTeam = useCallback(
     (key: string, value: unknown) =>
       setForm((prev) => ({
@@ -265,6 +300,14 @@ export function ConfigForm({ config, onSave, isSaving }: ConfigFormProps) {
         updateDigestMetabolism={updateDigestMetabolism}
         updateDigestSubstrate={updateDigestSubstrate}
         updateDigestConsolidation={updateDigestConsolidation}
+      />
+
+      <PipelineSection
+        pipeline={form.pipeline}
+        isDirty={pipelineDirty}
+        updatePipeline={updatePipeline}
+        updatePipelineRetry={updatePipelineRetry}
+        updatePipelineCircuitBreaker={updatePipelineCircuitBreaker}
       />
 
       <CaptureSection

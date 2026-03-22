@@ -1,11 +1,11 @@
-You are analyzing a coding session buffer for session "{{sessionId}}".
+You are analyzing a coding session conversation for session "{{sessionId}}".
 You have a budget of ~{{maxTokens}} tokens for your response.
 
-## Events ({{eventCount}} total)
-{{toolSummary}}
+## Session Conversation
+{{conversation}}
 
 ## Task
-Analyze these events and produce a JSON response with exactly this structure:
+Analyze this session conversation and produce a JSON response with exactly this structure:
 {
   "summary": "A concise narrative of what happened in this session (2-4 sentences).",
   "observations": [

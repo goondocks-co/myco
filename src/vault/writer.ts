@@ -18,6 +18,8 @@ interface WriteSessionInput {
   tags?: string[];
   tools_used?: number;
   files_changed?: number;
+  transcript_source?: string;
+  transcript_path?: string;
   summary: string;
 }
 
@@ -78,6 +80,8 @@ export class VaultWriter {
     ]);
     if (input.tools_used != null) frontmatter.tools_used = input.tools_used;
     if (input.files_changed != null) frontmatter.files_changed = input.files_changed;
+    if (input.transcript_source) frontmatter.transcript_source = input.transcript_source;
+    if (input.transcript_path) frontmatter.transcript_path = input.transcript_path;
 
     this.writeMarkdown(relativePath, frontmatter, input.summary);
     return relativePath;

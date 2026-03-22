@@ -86,7 +86,7 @@ describe('MycoConfigSchema v2', () => {
     it('populates default digest values when digest section is absent', () => {
       const config = MycoConfigSchema.parse(minimal);
       expect(config.digest.enabled).toBe(true);
-      expect(config.digest.tiers).toEqual([1500, 3000, 5000, 7500]);
+      expect(config.digest.tiers).toEqual([1500, 3000, 5000, 7500, 10000]);
       expect(config.digest.inject_tier).toBe(3000);
       expect(config.digest.intelligence.provider).toBeNull();
       expect(config.digest.intelligence.model).toBeNull();
@@ -124,6 +124,24 @@ describe('MycoConfigSchema v2', () => {
         },
       });
       expect(config.digest.tiers).toEqual([500, 1000, 2000]);
+    });
+  });
+
+  it('provides pipeline defaults', () => {
+    const config = MycoConfigSchema.parse({ version: 2 });
+    expect(config.pipeline).toEqual({
+      retention_days: 30,
+      batch_size: 20,
+      tick_interval_seconds: 30,
+      retry: {
+        transient_max: 3,
+        backoff_base_seconds: 30,
+      },
+      circuit_breaker: {
+        failure_threshold: 3,
+        cooldown_seconds: 300,
+        max_cooldown_seconds: 3600,
+      },
     });
   });
 });

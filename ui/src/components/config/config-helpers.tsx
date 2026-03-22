@@ -55,7 +55,7 @@ export const RECOMMENDED_DIGEST = {
     cooldown_intervals: [1800, 3600, 7200],
     dormancy_threshold: 14400,
   },
-  substrate: { max_notes_per_cycle: 50 },
+  substrate: { max_notes_per_cycle: 50, min_notes_for_cycle: 10 },
   intelligence: { context_window: 32768 },
 } as const;
 

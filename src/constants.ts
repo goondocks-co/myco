@@ -66,9 +66,13 @@ export const FILE_WATCH_STABILITY_MS = 1000;
 /** Provider detection timeout for detect-providers CLI command (ms). */
 export const PROVIDER_DETECT_TIMEOUT_MS = 3000;
 
+// --- Time ---
+/** Milliseconds in one day. */
+export const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
 // --- Buffer cleanup ---
 /** Max age for stale buffer files before cleanup (ms). */
-export const STALE_BUFFER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+export const STALE_BUFFER_MAX_AGE_MS = 1 * MS_PER_DAY;
 
 // --- Retry backoff ---
 /** Retry delays for daemon health check (ms). */
@@ -92,6 +96,10 @@ export const MAX_SLUG_LENGTH = 100;
 // --- Content preview for classification prompt ---
 /** Max chars of file content per candidate in classification prompt. */
 export const CANDIDATE_CONTENT_PREVIEW = 2000;
+
+// --- Turn rendering ---
+/** Max file paths displayed per turn in session notes. */
+export const TURN_MAX_FILES_DISPLAYED = 10;
 
 // --- Transcript mining ---
 /** Minimum content length to consider a transcript entry meaningful. */
@@ -141,6 +149,9 @@ export const DIGEST_TIER_MIN_CONTEXT: Record<number, number> = {
 };
 
 // --- Digest — Substrate ---
+/** Default minimum substrate notes required before a digest cycle runs. */
+export const DIGEST_MIN_NOTES_FOR_CYCLE = 10;
+
 /** Scoring weights by note type when selecting substrate for synthesis. */
 export const DIGEST_SUBSTRATE_TYPE_WEIGHTS: Record<string, number> = {
   session: 3,
@@ -168,6 +179,53 @@ export const SUPERSESSION_MAX_TOKENS = 256;
 
 /** Similarity threshold for clustering related spores in batch curation. */
 export const CURATION_CLUSTER_SIMILARITY = 0.75;
+
+// --- Pipeline processing ---
+/** Default page size for pipeline items API listing. */
+export const PIPELINE_ITEMS_DEFAULT_LIMIT = 50;
+
+// --- Pipeline retry ---
+/** Max retries for parse (structural) pipeline failures — fail fast. */
+export const PIPELINE_PARSE_MAX_RETRIES = 1;
+/** Exponential backoff multiplier for successive pipeline retries. */
+export const PIPELINE_BACKOFF_MULTIPLIER = 4;
+
+// --- Pipeline stages (ordered) ---
+export const PIPELINE_STAGES = ['capture', 'extraction', 'embedding', 'consolidation', 'digest'] as const;
+export type PipelineStage = typeof PIPELINE_STAGES[number];
+
+// --- Pipeline statuses ---
+export const PIPELINE_STATUSES = ['pending', 'processing', 'succeeded', 'failed', 'blocked', 'skipped', 'poisoned'] as const;
+export type PipelineStatus = typeof PIPELINE_STATUSES[number];
+
+// --- Provider roles for circuit breakers ---
+export const PIPELINE_PROVIDER_ROLES = ['llm', 'embedding', 'digest-llm'] as const;
+export type PipelineProviderRole = typeof PIPELINE_PROVIDER_ROLES[number];
+
+// --- Stage to provider role mapping ---
+export const STAGE_PROVIDER_MAP: Record<PipelineStage, PipelineProviderRole | null> = {
+  capture: null,
+  extraction: 'llm',
+  embedding: 'embedding',
+  consolidation: 'digest-llm',
+  digest: 'digest-llm',
+};
+
+/**
+ * Stages processed by the pipeline tick timer.
+ * Capture is handled at registration time, digest is gated by the metabolism timer.
+ */
+export const PIPELINE_TICK_STAGES: PipelineStage[] = ['extraction', 'embedding', 'consolidation'];
+
+// --- Item type to applicable stages ---
+// Sessions skip consolidation — consolidation applies to the spores
+// extracted FROM sessions, not the session work item itself.
+// Lineage detection stays outside the pipeline (fire-and-forget, non-critical).
+export const ITEM_STAGE_MAP: Record<string, PipelineStage[]> = {
+  session: ['capture', 'extraction', 'embedding', 'digest'],
+  spore: ['capture', 'embedding', 'consolidation', 'digest'],
+  artifact: ['capture', 'embedding', 'digest'],
+};
 
 // --- Automatic consolidation ---
 /** Minimum cluster size required before asking LLM to consolidate. */
