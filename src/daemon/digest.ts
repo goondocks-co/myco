@@ -18,6 +18,7 @@ import { readLastTimestamp, appendTraceRecord } from './trace.js';
 import {
   estimateTokens,
   CHARS_PER_TOKEN,
+  DIGEST_TIERS,
   DIGEST_TIER_MIN_CONTEXT,
   DIGEST_SUBSTRATE_TYPE_WEIGHTS,
   DIGEST_LLM_REQUEST_TIMEOUT_MS,
@@ -149,7 +150,7 @@ export class DigestEngine {
    */
   getEligibleTiers(): number[] {
     const contextWindow = this.config.digest.intelligence.context_window;
-    return this.config.digest.tiers.filter((tier) => {
+    return DIGEST_TIERS.filter((tier) => {
       const minContext = DIGEST_TIER_MIN_CONTEXT[tier];
       return minContext !== undefined && minContext <= contextWindow;
     });

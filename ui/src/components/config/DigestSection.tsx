@@ -14,6 +14,18 @@ import {
 } from './config-helpers';
 import { ModelSelect } from './ModelSelect';
 
+// Built-in digest tiers and their minimum context requirements.
+// These are constants, not user-configurable — eligibility is
+// determined by the digest model's context window.
+const BUILT_IN_TIERS = [1500, 3000, 5000, 7500, 10000] as const;
+const TIER_MIN_CONTEXT: Record<number, number> = {
+  1500: 6500,
+  3000: 11500,
+  5000: 18500,
+  7500: 24500,
+  10000: 30500,
+};
+
 interface DigestSectionProps {
   digest: MycoConfig['digest'];
   intelligence: MycoConfig['intelligence'];
@@ -127,13 +139,25 @@ export function DigestSection({
 
         <div>
           <h4 className="mb-3 text-sm font-medium text-muted-foreground">Tiers</h4>
-          <Field label="Token budgets" description="Pre-computed context sizes available for session injection">
+          <Field label="Token budgets" description="Built-in tiers — eligible tiers are determined by your digest model's context window">
             <div className="flex flex-wrap gap-2">
-              {digest.tiers.map((tier) => (
-                <Badge key={tier} variant="secondary">
-                  {tier.toLocaleString()}
-                </Badge>
-              ))}
+              {BUILT_IN_TIERS.map((tier) => {
+                const minCtx = TIER_MIN_CONTEXT[tier] ?? Infinity;
+                const eligible = minCtx <= (digest.intelligence.context_window ?? 0);
+                return (
+                  <Badge
+                    key={tier}
+                    variant={eligible ? 'secondary' : 'outline'}
+                    className={eligible ? '' : 'opacity-40'}
+                    title={eligible
+                      ? `Eligible — requires ${minCtx.toLocaleString()} context`
+                      : `Requires ${minCtx.toLocaleString()} context (current: ${(digest.intelligence.context_window ?? 0).toLocaleString()})`
+                    }
+                  >
+                    {tier.toLocaleString()}
+                  </Badge>
+                );
+              })}
             </div>
           </Field>
           <div className="mt-4">
@@ -145,7 +169,7 @@ export function DigestSection({
                 }
                 options={[
                   { value: '__null__', label: 'None (disabled)' },
-                  ...digest.tiers.map((tier) => ({
+                  ...BUILT_IN_TIERS.map((tier) => ({
                     value: String(tier),
                     label: `${tier.toLocaleString()} tokens`,
                   })),
