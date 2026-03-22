@@ -25,13 +25,34 @@ import { handleRestart } from './api/restart.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
 import { computeConfigHash } from './api/stats.js';
+import {
+  handleGetSession,
+  handleGetSessionBatches,
+  handleGetBatchActivities,
+  handleGetSessionAttachments,
+} from './api/sessions.js';
+import {
+  handleListSpores,
+  handleGetSpore,
+  handleListEntities,
+  handleGetGraph,
+  handleGetDigest,
+} from './api/mycelium.js';
+import { handleSearch } from './api/search.js';
+import { handleGetFeed } from './api/feed.js';
+import { handleGetEmbeddingStatus } from './api/embedding.js';
+import { listTurnsByRun } from '../db/queries/turns.js';
+import { listTasksByCurator } from '../db/queries/tasks.js';
+import { gatherStats } from '../services/stats.js';
 import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
 import { upsertSession, closeSession, updateSession, listSessions } from '../db/queries/sessions.js';
 import { insertBatch, closeBatch, incrementActivityCount } from '../db/queries/batches.js';
 import { insertActivity } from '../db/queries/activities.js';
+import { insertAttachment } from '../db/queries/attachments.js';
 import { listRuns, getRun } from '../db/queries/runs.js';
 import { listReports } from '../db/queries/reports.js';
 import {
+  DEFAULT_CURATOR_ID,
   STALE_BUFFER_MAX_AGE_MS,
   LOG_PROMPT_PREVIEW_CHARS,
   LOG_MESSAGE_PREVIEW_CHARS,
@@ -188,13 +209,11 @@ export async function main(): Promise<void> {
 
   const logger = new DaemonLogger(path.join(vaultDir, 'logs'), {
     level: config.daemon.log_level,
-    maxSize: config.daemon.max_log_size,
   });
 
   logger.info('daemon', 'Config loaded', {
     vault: vaultDir,
-    intelligence_provider: config.intelligence.llm.provider,
-    embedding_provider: config.intelligence.embedding.provider,
+    embedding_provider: config.embedding.provider,
   });
 
   // --- PGlite initialization ---
@@ -582,6 +601,13 @@ export async function main(): Promise<void> {
         if (!fs.existsSync(filePath)) {
           fs.writeFileSync(filePath, Buffer.from(img.data, 'base64'));
           logger.debug('processor', 'Image saved', { filename, turn: i + 1 });
+          insertAttachment({
+            id: `${sessionShort}-t${i + 1}-${j + 1}`,
+            session_id: sessionId,
+            file_path: filename,
+            media_type: img.mediaType,
+            created_at: epochSeconds(),
+          }).catch(err => logger.warn('processor', 'Failed to record attachment', { error: String(err) }));
         }
       }
     }
@@ -649,31 +675,15 @@ export async function main(): Promise<void> {
     return result;
   });
 
-  // Simplified stats — no index/vector deps
+  // V2 stats — vault counts, embedding coverage, curator status, digest freshness
   server.registerRoute('GET', '/api/stats', async () => {
-    return {
-      body: {
-        daemon: {
-          pid: process.pid,
-          port: server.port,
-          version: server.version,
-          uptime_seconds: process.uptime(),
-          active_sessions: registry.sessions,
-          config_hash: configHash,
-        },
-        vault: { path: vaultDir },
-        intelligence: {
-          processor: {
-            provider: config.intelligence.llm.provider,
-            model: config.intelligence.llm.model,
-          },
-          embedding: {
-            provider: config.intelligence.embedding.provider,
-            model: config.intelligence.embedding.model,
-          },
-        },
-      },
-    };
+    const stats = await gatherStats(vaultDir, { active_sessions: registry.sessions });
+    // Overlay live daemon fields from the running process (more accurate than daemon.json)
+    stats.daemon.pid = process.pid;
+    stats.daemon.port = server.port;
+    stats.daemon.version = server.version;
+    stats.daemon.uptime_seconds = Math.floor(process.uptime());
+    return { body: { ...stats, config_hash: configHash } };
   });
 
   server.registerRoute('GET', '/api/logs', async (req) => handleGetLogs(logger.getRingBuffer(), req.query));
@@ -709,6 +719,41 @@ export async function main(): Promise<void> {
         })),
       },
     };
+  });
+
+  server.registerRoute('GET', '/api/sessions/:id', handleGetSession);
+  server.registerRoute('GET', '/api/sessions/:id/batches', handleGetSessionBatches);
+  server.registerRoute('GET', '/api/batches/:id/activities', handleGetBatchActivities);
+  server.registerRoute('GET', '/api/sessions/:id/attachments', handleGetSessionAttachments);
+
+  // --- Mycelium API routes ---
+  server.registerRoute('GET', '/api/spores', handleListSpores);
+  server.registerRoute('GET', '/api/spores/:id', handleGetSpore);
+  server.registerRoute('GET', '/api/entities', handleListEntities);
+  server.registerRoute('GET', '/api/graph/:id', handleGetGraph);
+  server.registerRoute('GET', '/api/digest', handleGetDigest);
+
+  /** Media type lookup for attachment file serving. */
+  const ATTACHMENT_MEDIA_TYPES: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+  };
+
+  server.registerRoute('GET', '/api/attachments/:filename', async (req) => {
+    const filename = req.params.filename;
+    // Prevent path traversal
+    if (filename.includes('..') || filename.includes('/')) {
+      return { status: 400, body: { error: 'invalid_filename' } };
+    }
+    const filePath = path.join(vaultDir, 'attachments', filename);
+    if (!fs.existsSync(filePath)) return { status: 404, body: { error: 'not_found' } };
+    const data = fs.readFileSync(filePath);
+    const ext = path.extname(filename).slice(1).toLowerCase();
+    const contentType = ATTACHMENT_MEDIA_TYPES[ext] ?? 'application/octet-stream';
+    return { status: 200, headers: { 'Content-Type': contentType }, body: data };
   });
 
   // --- Agent API routes ---
@@ -759,6 +804,23 @@ export async function main(): Promise<void> {
     const reports = await listReports(req.params.id);
     return { body: { reports } };
   });
+
+  server.registerRoute('GET', '/api/agent/runs/:id/turns', async (req) => {
+    const turns = await listTurnsByRun(req.params.id);
+    return { body: turns };
+  });
+
+  server.registerRoute('GET', '/api/agent/tasks', async (req) => {
+    const curatorId = req.query.curator_id ?? DEFAULT_CURATOR_ID;
+    const tasks = await listTasksByCurator(curatorId);
+    return { body: tasks };
+  });
+
+  // --- Search, activity feed, and embedding status ---
+
+  server.registerRoute('GET', '/api/search', handleSearch);
+  server.registerRoute('GET', '/api/activity', handleGetFeed);
+  server.registerRoute('GET', '/api/embedding/status', async () => handleGetEmbeddingStatus(vaultDir));
 
   // --- Start server ---
 

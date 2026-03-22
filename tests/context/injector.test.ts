@@ -15,11 +15,7 @@ import { MycoConfigSchema } from '@myco/config/schema';
 
 describe('buildInjectedContext', () => {
   const config = MycoConfigSchema.parse({
-    version: 2,
-    intelligence: {
-      llm: { provider: 'ollama', model: 'gpt-oss' },
-      embedding: { provider: 'ollama', model: 'bge-m3' },
-    },
+    version: 3,
   });
 
   beforeEach(async () => {
@@ -125,18 +121,14 @@ describe('buildInjectedContext', () => {
     }
 
     const result = await buildInjectedContext(config, {});
-    // Token estimate should be within budget (with some tolerance for formatting)
-    expect(result.tokenEstimate).toBeLessThanOrEqual(config.context.max_tokens + 50);
+    // Token estimate should be reasonable (within default budget + tolerance)
+    expect(result.tokenEstimate).toBeLessThanOrEqual(1250);
   });
 });
 
 describe('buildPromptContext', () => {
   const config = MycoConfigSchema.parse({
-    version: 2,
-    intelligence: {
-      llm: { provider: 'ollama', model: 'gpt-oss' },
-      embedding: { provider: 'ollama', model: 'bge-m3' },
-    },
+    version: 3,
   });
 
   beforeEach(async () => {

@@ -26,7 +26,11 @@ export default defineConfig({
   banner: {
     js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);",
   },
-  external: [],
+  external: [
+    '@electric-sql/pglite',
+    '@electric-sql/pglite/vector',
+    '@anthropic-ai/claude-agent-sdk',
+  ],
   // Do not generate .d.ts — this is a plugin, not a library
   dts: false,
   // Bundle all other dependencies (yaml, zod, gray-matter, etc.)
@@ -37,7 +41,7 @@ export default defineConfig({
     'chokidar',
     '@anthropic-ai/sdk',
     '@modelcontextprotocol/sdk',
-    '@electric-sql/pglite',
+    // PGlite and Agent SDK are external — WASM/subprocess can't be bundled
   ],
   onSuccess: async () => {
     // Copy .md files next to bundled output so loaders can find them

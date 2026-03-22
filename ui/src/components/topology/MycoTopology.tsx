@@ -1,5 +1,4 @@
 import type { StatsResponse } from '../../hooks/use-daemon';
-import { totalSpores } from '../../lib/vault';
 
 /* ---------- Constants ---------- */
 
@@ -66,7 +65,7 @@ function statusColor(nodeId: string, status: NodeStatus): string {
   switch (status) {
     case 'active':
     case 'idle':
-      return NODE_COLORS[nodeId] ?? NODE_COLORS.daemon;
+      return NODE_COLORS[nodeId] ?? NODE_COLORS.daemon ?? COLOR_DORMANT;
     case 'cooling':
       return COLOR_COOLING;
     case 'dormant':
@@ -98,18 +97,16 @@ function metabolismToStatus(state: string | null, enabled: boolean): NodeStatus 
 function buildNodes(stats: StatsResponse): TopologyNode[] {
   const hasActiveSessions = stats.daemon.active_sessions.length > 0;
 
-  const digestEnabled = stats.digest?.enabled ?? false;
-  const digestState = stats.digest?.metabolism_state ?? null;
-  const consolidationEnabled = stats.digest?.consolidation_enabled ?? false;
-
-  const sporeTotal = totalSpores(stats.vault.spore_counts);
+  const digestEnabled = stats.digest.tiers_available.length > 0;
+  // v2 digest has no metabolism_state; derive from tiers_available
+  const digestState: string | null = digestEnabled ? 'idle' : null;
 
   const nodes: TopologyNode[] = [
     {
       id: 'processor',
       label: 'Spores',
-      detail: `${sporeTotal} total`,
-      status: hasActiveSessions ? 'active' : (stats.intelligence.processor ? 'idle' : 'off'),
+      detail: `${stats.vault.spore_count} total`,
+      status: hasActiveSessions ? 'active' : 'idle',
     },
     {
       id: 'digest',
@@ -120,13 +117,13 @@ function buildNodes(stats: StatsResponse): TopologyNode[] {
     {
       id: 'embedding',
       label: 'Index',
-      detail: `${stats.index.fts_entries}f ${stats.index.vector_count}v`,
-      status: stats.intelligence.embedding ? 'idle' : 'off',
+      detail: `${stats.embedding.embedded_count}/${stats.embedding.total_embeddable}`,
+      status: stats.embedding.queue_depth > 0 ? 'active' : 'idle',
     },
     {
       id: 'vault',
       label: 'Vault',
-      detail: `${totalSpores(stats.vault.spore_counts)}s ${stats.vault.session_count}n`,
+      detail: `${stats.vault.spore_count}s ${stats.vault.session_count}n`,
       status: 'active',
     },
     {
@@ -136,17 +133,6 @@ function buildNodes(stats: StatsResponse): TopologyNode[] {
       status: hasActiveSessions ? 'active' : 'idle',
     },
   ];
-
-  // Consolidation branches off digest — only shown when enabled
-  if (consolidationEnabled) {
-    const digestStatus = metabolismToStatus(digestState, digestEnabled);
-    nodes.push({
-      id: 'consolidation',
-      label: 'Consolidate',
-      detail: 'pre-pass',
-      status: digestStatus === 'active' ? 'active' : (digestEnabled ? 'idle' : 'off'),
-    });
-  }
 
   return nodes;
 }

@@ -44,7 +44,7 @@ describe('myco init', () => {
 
   it('creates vault with config and gitignore', async () => {
     const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--llm-provider', 'ollama', '--llm-model', 'gpt-oss', '--embedding-model', 'bge-m3']);
+    await run(['--vault', vault, '--embedding-model', 'bge-m3']);
 
     expect(fs.existsSync(path.join(vault, 'myco.yaml'))).toBe(true);
     expect(fs.existsSync(path.join(vault, '.gitignore'))).toBe(true);
@@ -52,7 +52,7 @@ describe('myco init', () => {
 
   it('initializes PGlite database in pgdata/', async () => {
     const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--llm-provider', 'ollama', '--llm-model', 'gpt-oss', '--embedding-model', 'bge-m3']);
+    await run(['--vault', vault, '--embedding-model', 'bge-m3']);
 
     expect(initDatabaseForVault).toHaveBeenCalledWith(vault);
     expect(closeDatabase).toHaveBeenCalled();
@@ -60,7 +60,7 @@ describe('myco init', () => {
 
   it('creates all required subdirectories', async () => {
     const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--llm-provider', 'ollama', '--llm-model', 'gpt-oss', '--embedding-model', 'bge-m3']);
+    await run(['--vault', vault, '--embedding-model', 'bge-m3']);
 
     const dirs = ['sessions', 'plans', 'spores', 'artifacts', 'team', 'buffer', 'logs'];
     for (const dir of dirs) {
@@ -68,55 +68,35 @@ describe('myco init', () => {
     }
   });
 
-  it('writes valid v2 config with explicit values', async () => {
+  it('writes valid v3 config with explicit values', async () => {
     const vault = path.join(testDir, 'vault');
     await run([
       '--vault', vault,
-      '--llm-provider', 'ollama',
-      '--llm-model', 'gpt-oss',
       '--embedding-provider', 'ollama',
       '--embedding-model', 'bge-m3',
-      '--user', 'chris',
     ]);
 
     const yaml = fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8');
     const config = YAML.parse(yaml);
 
-    expect(config.version).toBe(2);
-    expect(config.intelligence.llm.provider).toBe('ollama');
-    expect(config.intelligence.llm.model).toBe('gpt-oss');
-    expect(config.intelligence.llm.context_window).toBe(8192);
-    expect(config.intelligence.llm.max_tokens).toBe(1024);
-    expect(config.intelligence.embedding.provider).toBe('ollama');
-    expect(config.intelligence.embedding.model).toBe('bge-m3');
+    expect(config.version).toBe(3);
+    expect(config.embedding.provider).toBe('ollama');
+    expect(config.embedding.model).toBe('bge-m3');
     expect(config.daemon.log_level).toBe('info');
-    expect(config.daemon.grace_period).toBe(30);
     expect(config.capture.artifact_extensions).toEqual(['.md']);
-    expect(config.team.user).toBe('chris');
-    expect(config.team.enabled).toBe(false);
-  });
-
-  it('sets team mode when --team flag is passed', async () => {
-    const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--llm-provider', 'ollama', '--llm-model', 'gpt-oss', '--embedding-model', 'bge-m3', '--team', '--user', 'chris']);
-
-    const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
-    expect(config.team.enabled).toBe(true);
-    expect(config.team.user).toBe('chris');
   });
 
   it('uses correct base_url when explicitly passed', async () => {
     const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--llm-provider', 'lm-studio', '--llm-model', 'test', '--llm-url', 'http://localhost:1234', '--embedding-model', 'bge-m3', '--embedding-url', 'http://localhost:11434']);
+    await run(['--vault', vault, '--embedding-model', 'bge-m3', '--embedding-url', 'http://localhost:11434']);
 
     const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
-    expect(config.intelligence.llm.base_url).toBe('http://localhost:1234');
-    expect(config.intelligence.embedding.base_url).toBe('http://localhost:11434');
+    expect(config.embedding.base_url).toBe('http://localhost:11434');
   });
 
   it('accepts custom --vault path', async () => {
     const customVault = path.join(testDir, 'custom-vault');
-    await run(['--vault', customVault, '--llm-provider', 'ollama', '--llm-model', 'gpt-oss', '--embedding-model', 'bge-m3']);
+    await run(['--vault', customVault, '--embedding-model', 'bge-m3']);
 
     expect(fs.existsSync(path.join(customVault, 'myco.yaml'))).toBe(true);
     expect(fs.existsSync(path.join(customVault, 'sessions'))).toBe(true);
@@ -124,7 +104,7 @@ describe('myco init', () => {
 
   it('writes .gitignore excluding runtime artifacts', async () => {
     const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--llm-provider', 'ollama', '--llm-model', 'gpt-oss', '--embedding-model', 'bge-m3']);
+    await run(['--vault', vault, '--embedding-model', 'bge-m3']);
 
     const gitignore = fs.readFileSync(path.join(vault, '.gitignore'), 'utf-8');
     expect(gitignore).toContain('pgdata/');
@@ -136,7 +116,7 @@ describe('myco init', () => {
 
   it('is idempotent — does not overwrite existing vault', async () => {
     const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--llm-provider', 'ollama', '--llm-model', 'gpt-oss', '--embedding-model', 'bge-m3', '--user', 'alice']);
+    await run(['--vault', vault, '--embedding-model', 'bge-m3']);
 
     // Capture the original config to prove it is not overwritten
     const configPath = path.join(vault, 'myco.yaml');
@@ -144,7 +124,7 @@ describe('myco init', () => {
 
     // Second init should detect existing vault and return early
     const consoleSpy = vi.spyOn(console, 'log');
-    await run(['--vault', vault, '--llm-provider', 'lm-studio', '--llm-model', 'other', '--embedding-model', 'other', '--user', 'bob']);
+    await run(['--vault', vault, '--embedding-model', 'other']);
 
     const loggedMessages = consoleSpy.mock.calls.map(c => c[0]);
     expect(loggedMessages.some((m: string) => m.includes('already initialized'))).toBe(true);
@@ -154,18 +134,10 @@ describe('myco init', () => {
 
   it('includes artifact_watch for both Claude and Cursor plan dirs', async () => {
     const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--llm-provider', 'ollama', '--llm-model', 'gpt-oss', '--embedding-model', 'bge-m3']);
+    await run(['--vault', vault, '--embedding-model', 'bge-m3']);
 
     const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
     expect(config.capture.artifact_watch).toContain('.claude/plans/');
     expect(config.capture.artifact_watch).toContain('.cursor/plans/');
-  });
-
-  it('accepts custom --llm-url override', async () => {
-    const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--llm-provider', 'ollama', '--llm-model', 'gpt-oss', '--llm-url', 'http://gpu-box:11434', '--embedding-model', 'bge-m3']);
-
-    const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
-    expect(config.intelligence.llm.base_url).toBe('http://gpu-box:11434');
   });
 });

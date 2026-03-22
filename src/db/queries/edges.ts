@@ -62,7 +62,7 @@ export interface ListEdgesOptions {
 // Column list
 // ---------------------------------------------------------------------------
 
-const EDGE_COLUMNS = [
+export const EDGE_COLUMNS = [
   'id',
   'curator_id',
   'source_id',
@@ -76,14 +76,14 @@ const EDGE_COLUMNS = [
   'created_at',
 ] as const;
 
-const SELECT_COLUMNS = EDGE_COLUMNS.join(', ');
+export const SELECT_EDGE_COLUMNS = EDGE_COLUMNS.join(', ');
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /** Normalize a PGlite result row into a typed EdgeRow. */
-function toEdgeRow(row: Record<string, unknown>): EdgeRow {
+export function toEdgeRow(row: Record<string, unknown>): EdgeRow {
   return {
     id: row.id as number,
     curator_id: row.curator_id as string,
@@ -114,7 +114,7 @@ export async function insertEdge(data: EdgeInsert): Promise<EdgeRow> {
        curator_id, source_id, target_id, type,
        session_id, confidence, valid_from, properties, created_at
      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-     RETURNING ${SELECT_COLUMNS}`,
+     RETURNING ${SELECT_EDGE_COLUMNS}`,
     [
       data.curator_id,
       data.source_id,
@@ -169,7 +169,7 @@ export async function listEdges(
   params.push(limit);
 
   const result = await db.query(
-    `SELECT ${SELECT_COLUMNS}
+    `SELECT ${SELECT_EDGE_COLUMNS}
      FROM edges
      ${where}
      ORDER BY created_at DESC

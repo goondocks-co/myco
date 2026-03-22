@@ -13,10 +13,10 @@ import type { PGlite } from '@electric-sql/pglite';
 import { epochSeconds } from '@myco/constants.js';
 
 /** Current schema version — increment on breaking changes. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /** Previous schema version (for migration guard). */
-export const PREVIOUS_SCHEMA_VERSION = 1;
+export const PREVIOUS_SCHEMA_VERSION = 2;
 
 /** Embedding vector dimensions (bge-m3 default). */
 export const EMBEDDING_DIMENSIONS = 1024;
@@ -71,7 +71,8 @@ const PROMPT_BATCHES_TABLE = `
     processed         INTEGER DEFAULT 0,
     content_hash      TEXT UNIQUE,
     created_at        INTEGER NOT NULL,
-    embedding         vector(${EMBEDDING_DIMENSIONS})
+    embedding         vector(${EMBEDDING_DIMENSIONS}),
+    search_vector     tsvector
   )`;
 
 const ACTIVITIES_TABLE = `
@@ -90,7 +91,8 @@ const ACTIVITIES_TABLE = `
     timestamp            INTEGER NOT NULL,
     processed            INTEGER DEFAULT 0,
     content_hash         TEXT UNIQUE,
-    created_at           INTEGER NOT NULL
+    created_at           INTEGER NOT NULL,
+    search_vector        tsvector
   )`;
 
 const PLANS_TABLE = `
@@ -104,7 +106,8 @@ const PLANS_TABLE = `
     tags        TEXT,
     processed   INTEGER DEFAULT 0,
     created_at  INTEGER NOT NULL,
-    updated_at  INTEGER
+    updated_at  INTEGER,
+    embedding   vector(${EMBEDDING_DIMENSIONS})
   )`;
 
 const ARTIFACTS_TABLE = `
@@ -117,7 +120,8 @@ const ARTIFACTS_TABLE = `
     last_captured_by TEXT,
     tags             TEXT,
     created_at       INTEGER NOT NULL,
-    updated_at       INTEGER
+    updated_at       INTEGER,
+    embedding        vector(${EMBEDDING_DIMENSIONS})
   )`;
 
 const TEAM_MEMBERS_TABLE = `
@@ -316,6 +320,7 @@ const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_session_id ON prompt_batches (session_id)',
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_processed ON prompt_batches (processed)',
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_status ON prompt_batches (status)',
+  'CREATE INDEX IF NOT EXISTS idx_prompt_batches_search ON prompt_batches USING GIN (search_vector)',
 
   // Activities
   'CREATE INDEX IF NOT EXISTS idx_activities_session_id ON activities (session_id)',
@@ -323,6 +328,7 @@ const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_activities_tool_name ON activities (tool_name)',
   'CREATE INDEX IF NOT EXISTS idx_activities_timestamp ON activities (timestamp)',
   'CREATE INDEX IF NOT EXISTS idx_activities_processed ON activities (processed)',
+  'CREATE INDEX IF NOT EXISTS idx_activities_search ON activities USING GIN (search_vector)',
 
   // Spores
   'CREATE INDEX IF NOT EXISTS idx_spores_curator_id ON spores (curator_id)',
@@ -371,6 +377,8 @@ const HNSW_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_sessions_embedding ON sessions USING hnsw (embedding vector_cosine_ops)`,
   `CREATE INDEX IF NOT EXISTS idx_prompt_batches_embedding ON prompt_batches USING hnsw (embedding vector_cosine_ops)`,
   `CREATE INDEX IF NOT EXISTS idx_spores_embedding ON spores USING hnsw (embedding vector_cosine_ops)`,
+  `CREATE INDEX IF NOT EXISTS idx_plans_embedding ON plans USING hnsw (embedding vector_cosine_ops)`,
+  `CREATE INDEX IF NOT EXISTS idx_artifacts_embedding ON artifacts USING hnsw (embedding vector_cosine_ops)`,
 ];
 
 // -- Ordered table creation -------------------------------------------------
@@ -464,6 +472,41 @@ async function migrateV1ToV2(db: PGlite): Promise<void> {
   }
 }
 
+/**
+ * Migrate from v2 → v3:
+ * - Add search_vector tsvector column to prompt_batches and activities
+ * - Add embedding vector column to plans and artifacts
+ * - Add GIN indexes for FTS on new tsvector columns
+ * - Add HNSW indexes for new embedding columns
+ *
+ * Idempotent: uses IF NOT EXISTS for indexes and column existence checks for ALTER TABLE.
+ */
+async function migrateV2ToV3(db: PGlite): Promise<void> {
+  if (!(await columnExists(db, 'prompt_batches', 'search_vector'))) {
+    await db.query('ALTER TABLE prompt_batches ADD COLUMN search_vector tsvector');
+  }
+  if (!(await columnExists(db, 'activities', 'search_vector'))) {
+    await db.query('ALTER TABLE activities ADD COLUMN search_vector tsvector');
+  }
+  if (!(await columnExists(db, 'plans', 'embedding'))) {
+    await db.query(`ALTER TABLE plans ADD COLUMN embedding vector(${EMBEDDING_DIMENSIONS})`);
+  }
+  if (!(await columnExists(db, 'artifacts', 'embedding'))) {
+    await db.query(`ALTER TABLE artifacts ADD COLUMN embedding vector(${EMBEDDING_DIMENSIONS})`);
+  }
+
+  // GIN indexes for FTS
+  await db.query('CREATE INDEX IF NOT EXISTS idx_prompt_batches_search ON prompt_batches USING GIN (search_vector)');
+  await db.query('CREATE INDEX IF NOT EXISTS idx_activities_search ON activities USING GIN (search_vector)');
+
+  // HNSW indexes for new embedding columns
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_plans_embedding ON plans USING hnsw (embedding vector_cosine_ops)`);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_artifacts_embedding ON artifacts USING hnsw (embedding vector_cosine_ops)`);
+
+  // Advance the version row if schema_version table already exists with version 2
+  await db.query(`UPDATE schema_version SET version = ${SCHEMA_VERSION} WHERE version = ${PREVIOUS_SCHEMA_VERSION}`);
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -480,7 +523,7 @@ export async function createSchema(db: PGlite): Promise<void> {
   // Fast-path: skip all DDL if schema is already at the current version
   try {
     const versionResult = await db.query<{ version: number }>(
-      'SELECT version FROM schema_version LIMIT 1',
+      'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1',
     );
     if (versionResult.rows.length > 0 && versionResult.rows[0].version === SCHEMA_VERSION) {
       return;
@@ -496,6 +539,7 @@ export async function createSchema(db: PGlite): Promise<void> {
 
   // Run migrations for databases at prior versions
   await migrateV1ToV2(db);
+  await migrateV2ToV3(db);
 
   // Secondary B-tree indexes
   for (const idx of SECONDARY_INDEXES) {

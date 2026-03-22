@@ -44,6 +44,21 @@ const CONTEXT_SPORE_DISPLAY_LIMIT = 5;
 /** Active plan status values. */
 const ACTIVE_PLAN_STATUSES = new Set(['active', 'in_progress']);
 
+/** Default token budget for plans layer. */
+const DEFAULT_PLANS_BUDGET = 200;
+
+/** Default token budget for sessions layer. */
+const DEFAULT_SESSIONS_BUDGET = 500;
+
+/** Default token budget for spores layer. */
+const DEFAULT_SPORES_BUDGET = 300;
+
+/** Default token budget for team layer. */
+const DEFAULT_TEAM_BUDGET = 200;
+
+/** Default total context max tokens. */
+const DEFAULT_CONTEXT_MAX_TOKENS = 1200;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -73,11 +88,9 @@ interface InjectedContext {
  * Returns empty context gracefully when no data exists (zero-config behavior).
  */
 export async function buildInjectedContext(
-  config: MycoConfig,
+  _config: MycoConfig,
   context: InjectionContext,
 ): Promise<InjectedContext> {
-  const budgets = config.context.layers;
-
   // Verify database is available — return empty if not
   try {
     getDatabase();
@@ -101,7 +114,7 @@ export async function buildInjectedContext(
     activePlans.slice(0, SESSION_CONTEXT_MAX_PLANS).map((p) =>
       `- **${p.title ?? p.id}** (${p.status}): ${(p.content ?? '').slice(0, CONTEXT_PLAN_PREVIEW_CHARS)}`,
     ),
-    budgets.plans,
+    DEFAULT_PLANS_BUDGET,
   );
 
   // Layer 2: Recent sessions
@@ -113,7 +126,7 @@ export async function buildInjectedContext(
       const branchLabel = s.branch === context.branch ? ' (same branch)' : '';
       return `- **${title}**: ${summary}${branchLabel}`;
     }),
-    budgets.sessions,
+    DEFAULT_SESSIONS_BUDGET,
   );
 
   // Layer 3: Relevant spores (exclude superseded/archived)
@@ -125,11 +138,11 @@ export async function buildInjectedContext(
     filteredSpores.slice(0, CONTEXT_SPORE_DISPLAY_LIMIT).map((s) =>
       `- **${s.id}** (${s.observation_type}): ${s.content.slice(0, CONTEXT_SPORE_PREVIEW_CHARS)}`,
     ),
-    budgets.spores,
+    DEFAULT_SPORES_BUDGET,
   );
 
   // Layer 4: Team activity (placeholder — populated in Phase 2)
-  const teamText = formatLayer('Team Activity', [], budgets.team);
+  const teamText = formatLayer('Team Activity', [], DEFAULT_TEAM_BUDGET);
 
   // Enforce total max_tokens budget
   const allLayers = [plansText, sessionsText, sporesText, teamText].filter(Boolean);
@@ -138,7 +151,7 @@ export async function buildInjectedContext(
 
   for (const layer of allLayers) {
     const layerTokens = estimateTokens(layer);
-    if (totalTokens + layerTokens > config.context.max_tokens) break;
+    if (totalTokens + layerTokens > DEFAULT_CONTEXT_MAX_TOKENS) break;
     parts.push(layer);
     totalTokens += layerTokens;
   }
@@ -166,7 +179,7 @@ export async function buildInjectedContext(
  */
 export async function buildPromptContext(
   prompt: string,
-  config: MycoConfig,
+  _config: MycoConfig,
 ): Promise<InjectedContext> {
   if (prompt.length < PROMPT_CONTEXT_MIN_LENGTH) {
     return emptyContext();
@@ -202,7 +215,7 @@ export async function buildPromptContext(
       const type = r.observation_type as string;
       return `- **${type}** (${r.similarity.toFixed(2)}): ${content}`;
     }),
-    config.context.layers.spores,
+    DEFAULT_SPORES_BUDGET,
   );
 
   const totalTokens = estimateTokens(sporesText);

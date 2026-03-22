@@ -1,0 +1,161 @@
+import { useState } from 'react';
+import { Play, Loader2 } from 'lucide-react';
+import { Button } from '../ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '../ui/dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../ui/select';
+import { useAgentTasks, useTriggerRun, type TaskRow } from '../../hooks/use-agent';
+
+/* ---------- Constants ---------- */
+
+/** Placeholder value for "no task selected" in the Select component. */
+const NO_TASK_VALUE = '__default__';
+
+/* ---------- Helpers ---------- */
+
+function taskLabel(task: TaskRow): string {
+  return task.display_name ?? task.id;
+}
+
+/* ---------- Component ---------- */
+
+export interface TriggerRunProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onTriggered?: () => void;
+}
+
+export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps) {
+  const [selectedTask, setSelectedTask] = useState<string>(NO_TASK_VALUE);
+  const [instruction, setInstruction] = useState('');
+
+  const { data: tasks, isLoading: tasksLoading } = useAgentTasks();
+  const { mutate: triggerRun, isPending, error } = useTriggerRun();
+
+  function handleRun() {
+    const payload = {
+      task: selectedTask === NO_TASK_VALUE ? undefined : selectedTask,
+      instruction: instruction.trim() || undefined,
+    };
+
+    triggerRun(payload, {
+      onSuccess: () => {
+        onOpenChange(false);
+        setSelectedTask(NO_TASK_VALUE);
+        setInstruction('');
+        onTriggered?.();
+      },
+    });
+  }
+
+  const availableTasks = tasks ?? [];
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Trigger Curation Run</DialogTitle>
+          <DialogDescription>
+            Run the curator agent now. It will process unprocessed sessions and update the vault.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 py-2">
+          {/* Task picker */}
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-foreground">Task</label>
+            {tasksLoading ? (
+              <div className="flex h-9 items-center gap-2 text-muted-foreground text-sm">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading tasks...
+              </div>
+            ) : (
+              <Select value={selectedTask} onValueChange={setSelectedTask}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Default task" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_TASK_VALUE}>
+                    Default task
+                  </SelectItem>
+                  {availableTasks.map((task) => (
+                    <SelectItem key={task.id} value={task.id}>
+                      {taskLabel(task)}
+                      {task.is_default === 1 && (
+                        <span className="ml-1 text-xs text-muted-foreground">(default)</span>
+                      )}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+
+          {/* Instruction field */}
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-foreground">
+              Instruction
+              <span className="ml-1 text-xs text-muted-foreground font-normal">(optional)</span>
+            </label>
+            <textarea
+              className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 resize-none"
+              rows={3}
+              placeholder="E.g. Focus on gotchas from yesterday's sessions…"
+              value={instruction}
+              onChange={(e) => setInstruction(e.target.value)}
+              disabled={isPending}
+            />
+          </div>
+
+          {/* Error */}
+          {error && (
+            <p className="text-xs text-destructive">
+              {error instanceof Error ? error.message : 'Failed to trigger run'}
+            </p>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onOpenChange(false)}
+            disabled={isPending}
+          >
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            className="gap-2"
+            onClick={handleRun}
+            disabled={isPending}
+          >
+            {isPending ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Starting...
+              </>
+            ) : (
+              <>
+                <Play className="h-3.5 w-3.5" />
+                Run Now
+              </>
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

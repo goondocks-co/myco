@@ -24,7 +24,7 @@ describe('myco setup-llm', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-setup-llm-test-'));
-    const config = MycoConfigSchema.parse({ version: 2, intelligence: { llm: { provider: 'ollama', model: 'qwen3.5' }, embedding: { provider: 'ollama', model: 'bge-m3' } } });
+    const config = MycoConfigSchema.parse({ version: 3 });
     writeConfig(tmpDir, config as unknown as Record<string, unknown>);
 
     logged = [];
@@ -50,57 +50,41 @@ describe('myco setup-llm', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('--show outputs current intelligence config as JSON', async () => {
+  it('--show outputs current embedding config as JSON', async () => {
     await run(['--show'], tmpDir);
     const output = logged.join('\n');
     const parsed = JSON.parse(output);
-    expect(parsed).toHaveProperty('llm');
-    expect(parsed).toHaveProperty('embedding');
-  });
-
-  it('--llm-model updates the llm model', async () => {
-    await run(['--llm-model', 'qwen3.5:35b'], tmpDir);
-    const config = readConfig(tmpDir);
-    const intelligence = config.intelligence as Record<string, Record<string, unknown>>;
-    expect(intelligence.llm.model).toBe('qwen3.5:35b');
-  });
-
-  it('--llm-provider and --llm-url updates provider and base_url', async () => {
-    await run(['--llm-provider', 'lm-studio', '--llm-url', 'http://localhost:1234'], tmpDir);
-    const config = readConfig(tmpDir);
-    const intelligence = config.intelligence as Record<string, Record<string, unknown>>;
-    expect(intelligence.llm.provider).toBe('lm-studio');
-    expect(intelligence.llm.base_url).toBe('http://localhost:1234');
+    expect(parsed).toHaveProperty('provider');
+    expect(parsed).toHaveProperty('model');
   });
 
   it('--embedding-model updates the embedding model', async () => {
     await run(['--embedding-model', 'nomic-embed-text'], tmpDir);
     const config = readConfig(tmpDir);
-    const intelligence = config.intelligence as Record<string, Record<string, unknown>>;
-    expect(intelligence.embedding.model).toBe('nomic-embed-text');
+    const embedding = config.embedding as Record<string, unknown>;
+    expect(embedding.model).toBe('nomic-embed-text');
   });
 
-  it('--llm-context-window updates context_window', async () => {
-    await run(['--llm-context-window', '32768'], tmpDir);
+  it('--embedding-provider updates the embedding provider', async () => {
+    await run(['--embedding-provider', 'openai-compatible', '--embedding-url', 'http://localhost:1234'], tmpDir);
     const config = readConfig(tmpDir);
-    const intelligence = config.intelligence as Record<string, Record<string, unknown>>;
-    expect(intelligence.llm.context_window).toBe(32768);
+    const embedding = config.embedding as Record<string, unknown>;
+    expect(embedding.provider).toBe('openai-compatible');
+    expect(embedding.base_url).toBe('http://localhost:1234');
   });
 
   it('partial update preserves other fields unchanged', async () => {
-    // Change only the model; provider should remain 'ollama'
-    await run(['--llm-model', 'llama3'], tmpDir);
+    await run(['--embedding-model', 'nomic-embed-text'], tmpDir);
     const config = readConfig(tmpDir);
-    const intelligence = config.intelligence as Record<string, Record<string, unknown>>;
-    expect(intelligence.llm.model).toBe('llama3');
-    expect(intelligence.llm.provider).toBe('ollama');
+    const embedding = config.embedding as Record<string, unknown>;
+    expect(embedding.model).toBe('nomic-embed-text');
+    expect(embedding.provider).toBe('ollama');
   });
 
-  it('prints updated intelligence config after a change', async () => {
-    await run(['--llm-model', 'deepseek-r1'], tmpDir);
+  it('prints updated embedding config after a change', async () => {
+    await run(['--embedding-model', 'nomic-embed-text'], tmpDir);
     const allOutput = logged.join('\n');
-    // The updated config JSON should appear in output
-    expect(allOutput).toContain('deepseek-r1');
+    expect(allOutput).toContain('nomic-embed-text');
   });
 
   it('warns about vector rebuild when embedding model changes', async () => {
@@ -110,12 +94,17 @@ describe('myco setup-llm', () => {
 
   it('shows daemon restart notice when daemon.json exists', async () => {
     fs.writeFileSync(path.join(tmpDir, 'daemon.json'), '{}', 'utf-8');
-    await run(['--llm-model', 'llama3'], tmpDir);
+    await run(['--embedding-model', 'nomic-embed-text'], tmpDir);
     expect(logged.some((l) => l.includes('restart'))).toBe(true);
   });
 
   it('does not show daemon restart notice when daemon.json is absent', async () => {
-    await run(['--llm-model', 'llama3'], tmpDir);
+    await run(['--embedding-model', 'nomic-embed-text'], tmpDir);
     expect(logged.every((l) => !l.includes('restart'))).toBe(true);
+  });
+
+  it('prints note about LLM flags being ignored', async () => {
+    await run(['--llm-provider', 'ollama', '--llm-model', 'qwen3.5'], tmpDir);
+    expect(logged.some((l) => l.includes('LLM') && l.includes('ignored'))).toBe(true);
   });
 });

@@ -66,6 +66,7 @@ export interface ListSporesOptions {
   observation_type?: string;
   status?: string;
   limit?: number;
+  offset?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,15 +208,18 @@ export async function listSpores(
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const limit = options.limit ?? DEFAULT_LIST_LIMIT;
+  const offset = options.offset ?? 0;
 
   params.push(limit);
+  params.push(offset);
 
   const result = await db.query(
     `SELECT ${SELECT_COLUMNS}
      FROM spores
      ${where}
      ORDER BY created_at DESC
-     LIMIT $${paramIndex}`,
+     LIMIT $${paramIndex}
+     OFFSET $${paramIndex + 1}`,
     params,
   );
 

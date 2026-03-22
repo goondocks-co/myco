@@ -6,20 +6,16 @@ import YAML from 'yaml';
 import { run } from '@myco/cli/config';
 
 const VALID_CONFIG = {
-  version: 2,
-  intelligence: {
-    llm: { provider: 'ollama', model: 'gpt-oss', context_window: 8192, max_tokens: 1024 },
-    embedding: { provider: 'ollama', model: 'bge-m3' },
-  },
-  daemon: { log_level: 'info', grace_period: 30, max_log_size: 5242880 },
+  version: 3,
+  config_version: 0,
+  embedding: { provider: 'ollama', model: 'bge-m3' },
+  daemon: { port: null, log_level: 'info' },
   capture: {
     transcript_paths: [],
     artifact_watch: ['.claude/plans/', '.cursor/plans/'],
     artifact_extensions: ['.md'],
     buffer_max_events: 500,
   },
-  context: { max_tokens: 1200, layers: { plans: 200, sessions: 500, spores: 300, team: 200 } },
-  team: { enabled: false, user: '', sync: 'git' },
 };
 
 function writeConfig(dir: string, config: Record<string, unknown> = VALID_CONFIG): void {
@@ -67,22 +63,22 @@ describe('myco config', () => {
   describe('config get', () => {
     it('gets a nested value via dot-path', async () => {
       writeConfig(tmpDir);
-      await run(['get', 'intelligence.llm.model'], tmpDir);
-      expect(logged).toContain('gpt-oss');
+      await run(['get', 'embedding.model'], tmpDir);
+      expect(logged).toContain('bge-m3');
     });
 
     it('gets a top-level value', async () => {
       writeConfig(tmpDir);
       await run(['get', 'version'], tmpDir);
-      expect(logged).toContain('2');
+      expect(logged).toContain('3');
     });
 
     it('prints object values as JSON', async () => {
       writeConfig(tmpDir);
-      await run(['get', 'intelligence.llm'], tmpDir);
+      await run(['get', 'embedding'], tmpDir);
       const parsed = JSON.parse(logged[0]);
       expect(parsed.provider).toBe('ollama');
-      expect(parsed.model).toBe('gpt-oss');
+      expect(parsed.model).toBe('bge-m3');
     });
 
     it('exits 1 for non-existent key', async () => {
@@ -102,39 +98,30 @@ describe('myco config', () => {
   describe('config set', () => {
     it('sets a nested value and persists to file', async () => {
       writeConfig(tmpDir);
-      await run(['set', 'intelligence.llm.model', 'llama3'], tmpDir);
+      await run(['set', 'embedding.model', 'nomic-embed-text'], tmpDir);
       const config = readConfig(tmpDir);
-      expect((config.intelligence as Record<string, unknown> & { llm: { model: string } }).llm.model).toBe('llama3');
-      expect(logged.some((l) => l.includes('Set intelligence.llm.model'))).toBe(true);
+      expect((config.embedding as Record<string, unknown>).model).toBe('nomic-embed-text');
+      expect(logged.some((l) => l.includes('Set embedding.model'))).toBe(true);
     });
 
     it('coerces number values via JSON parse', async () => {
       writeConfig(tmpDir);
-      await run(['set', 'daemon.grace_period', '60'], tmpDir);
+      await run(['set', 'capture.buffer_max_events', '1000'], tmpDir);
       const config = readConfig(tmpDir);
-      expect((config.daemon as Record<string, unknown>).grace_period).toBe(60);
-    });
-
-    it('coerces boolean values via JSON parse', async () => {
-      writeConfig(tmpDir);
-      await run(['set', 'team.enabled', 'true'], tmpDir);
-      const config = readConfig(tmpDir);
-      expect((config.team as Record<string, unknown>).enabled).toBe(true);
+      expect((config.capture as Record<string, unknown>).buffer_max_events).toBe(1000);
     });
 
     it('creates intermediate objects along dot-path', async () => {
-      // Start with a config that has a flat structure, set deep path
       writeConfig(tmpDir);
-      // Setting a value in an existing object should work
-      await run(['set', 'intelligence.llm.model', 'deepseek'], tmpDir);
+      await run(['set', 'embedding.model', 'nomic-embed-text'], tmpDir);
       const config = readConfig(tmpDir);
-      const intel = config.intelligence as Record<string, Record<string, unknown>>;
-      expect(intel.llm.model).toBe('deepseek');
+      const embedding = config.embedding as Record<string, unknown>;
+      expect(embedding.model).toBe('nomic-embed-text');
     });
 
     it('exits 1 on Zod validation failure', async () => {
       writeConfig(tmpDir);
-      // version must be literal 2, setting to 99 should fail
+      // version must be literal 3, setting to 99 should fail
       await expect(run(['set', 'version', '99'], tmpDir)).rejects.toThrow('process.exit(1)');
       expect(exitCode).toBe(1);
       expect(errors.some((e) => e.includes('Validation error'))).toBe(true);
@@ -142,20 +129,20 @@ describe('myco config', () => {
 
     it('exits 1 when no value provided', async () => {
       writeConfig(tmpDir);
-      await expect(run(['set', 'intelligence.llm.model'], tmpDir)).rejects.toThrow('process.exit(1)');
+      await expect(run(['set', 'embedding.model'], tmpDir)).rejects.toThrow('process.exit(1)');
       expect(exitCode).toBe(1);
     });
 
     it('prints daemon restart notice when daemon.json exists', async () => {
       writeConfig(tmpDir);
       fs.writeFileSync(path.join(tmpDir, 'daemon.json'), '{}', 'utf-8');
-      await run(['set', 'intelligence.llm.model', 'llama3'], tmpDir);
+      await run(['set', 'embedding.model', 'nomic-embed-text'], tmpDir);
       expect(logged.some((l) => l.includes('restart the daemon'))).toBe(true);
     });
 
     it('does not print daemon restart notice when daemon.json is absent', async () => {
       writeConfig(tmpDir);
-      await run(['set', 'intelligence.llm.model', 'llama3'], tmpDir);
+      await run(['set', 'embedding.model', 'nomic-embed-text'], tmpDir);
       expect(logged.every((l) => !l.includes('restart the daemon'))).toBe(true);
     });
   });

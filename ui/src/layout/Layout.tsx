@@ -8,27 +8,32 @@ import {
   Sun,
   Moon,
   FolderOpen,
-  ExternalLink,
   RotateCcw,
   Type,
   Minus,
   Plus,
   ChevronLeft,
   ChevronRight,
+  MessageSquare,
+  Bot,
+  Search,
 } from 'lucide-react';
 import { useTheme } from '../providers/theme';
 import { useFont, type FontOption } from '../providers/font';
 import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
 import { Button } from '../components/ui/button';
+import { GlobalSearch } from '../components/search/GlobalSearch';
 import { cn } from '../lib/cn';
 
 /* ---------- Constants ---------- */
 
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/configuration', label: 'Configuration', icon: Settings },
+  { to: '/sessions', label: 'Sessions', icon: MessageSquare },
   { to: '/mycelium', label: 'Mycelium', icon: Network },
+  { to: '/agent', label: 'Agent', icon: Bot },
+  { to: '/settings', label: 'Settings', icon: Settings },
   { to: '/logs', label: 'Logs', icon: ScrollText },
 ] as const;
 
@@ -223,14 +228,16 @@ function DensityControl() {
   const currentIndex = DENSITY_ORDER.indexOf(density);
 
   const decrease = () => {
-    if (currentIndex > 0) {
-      setDensity(DENSITY_ORDER[currentIndex - 1]);
+    const prev = DENSITY_ORDER[currentIndex - 1];
+    if (currentIndex > 0 && prev !== undefined) {
+      setDensity(prev);
     }
   };
 
   const increase = () => {
-    if (currentIndex < DENSITY_ORDER.length - 1) {
-      setDensity(DENSITY_ORDER[currentIndex + 1]);
+    const next = DENSITY_ORDER[currentIndex + 1];
+    if (currentIndex < DENSITY_ORDER.length - 1 && next !== undefined) {
+      setDensity(next);
     }
   };
 
@@ -267,9 +274,23 @@ export default function Layout() {
   const { collapsed, toggle } = useSidebarCollapse();
   const { data: stats } = useDaemon();
   const vaultName = stats?.vault.name;
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  // Register Cmd+K / Ctrl+K global shortcut
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setSearchOpen((prev) => !prev);
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
 
   return (
     <div className="flex h-screen bg-background">
+      <GlobalSearch open={searchOpen} onOpenChange={setSearchOpen} />
       {/* Sidebar */}
       <aside
         className={cn(
@@ -299,6 +320,27 @@ export default function Layout() {
               )}
             </div>
           )}
+        </div>
+
+        {/* Search trigger */}
+        <div className="px-2 pt-2 pb-1">
+          <button
+            type="button"
+            onClick={() => setSearchOpen(true)}
+            title={collapsed ? 'Search (⌘K)' : undefined}
+            className={cn(
+              'flex w-full items-center rounded-md text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
+              collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
+            )}
+          >
+            <Search className="h-4 w-4 shrink-0" />
+            {!collapsed && (
+              <span className="flex-1 text-left">Search</span>
+            )}
+            {!collapsed && (
+              <kbd className="text-xs text-muted-foreground/60 font-mono">⌘K</kbd>
+            )}
+          </button>
         </div>
 
         {/* Navigation */}

@@ -107,3 +107,22 @@ export async function getDigestExtract(
   if (result.rows.length === 0) return null;
   return toDigestExtractRow(result.rows[0] as Record<string, unknown>);
 }
+
+/**
+ * List all digest extracts for a curator, ordered by tier ASC.
+ */
+export async function listDigestExtracts(
+  curatorId: string,
+): Promise<DigestExtractRow[]> {
+  const db = getDatabase();
+
+  const result = await db.query(
+    `SELECT ${SELECT_COLUMNS}
+     FROM digest_extracts
+     WHERE curator_id = $1
+     ORDER BY tier ASC`,
+    [curatorId],
+  );
+
+  return (result.rows as Record<string, unknown>[]).map(toDigestExtractRow);
+}
