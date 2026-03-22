@@ -9,8 +9,9 @@ export async function handleGetLogs(
   const since = query.since || null;
   const level = query.level as LogLevel | undefined;
   const limit = query.limit ? parseInt(query.limit, 10) : undefined;
+  const component = query.category || undefined;
 
-  const result = ringBuffer.since(since, { level, limit: isNaN(limit as number) ? undefined : limit });
+  const result = ringBuffer.since(since, { level, component, limit: isNaN(limit as number) ? undefined : limit });
 
   // Map `component` to `category` in the response entries —
   // the logger uses `component` internally; the API spec uses `category`

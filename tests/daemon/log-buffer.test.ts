@@ -51,3 +51,25 @@ describe('LogRingBuffer', () => {
     expect(result.cursor_reset).toBe(true);
   });
 });
+
+describe('component filtering', () => {
+  it('should filter entries by component', () => {
+    const buf = new LogRingBuffer(10);
+    buf.push({ timestamp: '2026-01-01T00:00:00Z', level: 'info', component: 'hooks', message: 'hook event' });
+    buf.push({ timestamp: '2026-01-01T00:00:01Z', level: 'info', component: 'context', message: 'context injected' });
+    buf.push({ timestamp: '2026-01-01T00:00:02Z', level: 'info', component: 'mcp', message: 'tool call' });
+
+    const result = buf.since(null, { component: 'hooks' });
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0].message).toBe('hook event');
+  });
+
+  it('should return all entries when no component filter', () => {
+    const buf = new LogRingBuffer(10);
+    buf.push({ timestamp: '2026-01-01T00:00:00Z', level: 'info', component: 'hooks', message: 'a' });
+    buf.push({ timestamp: '2026-01-01T00:00:01Z', level: 'info', component: 'mcp', message: 'b' });
+
+    const result = buf.since(null);
+    expect(result.entries).toHaveLength(2);
+  });
+});

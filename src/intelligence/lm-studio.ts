@@ -45,6 +45,8 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
   private instanceId: string | null = null;
   private contextWindow: number | undefined;
   private defaultMaxTokens: number;
+  /** Set after a model rejects the `reasoning` param — skip it on future calls. */
+  private reasoningUnsupported = false;
 
   constructor(config?: LmStudioConfig) {
     this.baseUrl = config?.base_url ?? LmStudioBackend.DEFAULT_BASE_URL;
@@ -83,12 +85,14 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
       body.system_prompt = opts.systemPrompt;
     }
 
-    // Reasoning control — 'off' suppresses chain-of-thought for reasoning models
-    if (opts?.reasoning) {
-      body.reasoning = opts.reasoning;
+    // Reasoning control — 'off' suppresses chain-of-thought for reasoning models.
+    // Non-reasoning models reject this param, so we retry without it on failure.
+    const sendReasoning = opts?.reasoning && !this.reasoningUnsupported;
+    if (sendReasoning) {
+      body.reasoning = opts!.reasoning;
     }
 
-    const response = await fetch(`${this.baseUrl}${ENDPOINT_CHAT}`, {
+    let response = await fetch(`${this.baseUrl}${ENDPOINT_CHAT}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -97,12 +101,30 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
 
     if (!response.ok) {
       const errorBody = await response.text().catch(() => '');
-      // If our instance was evicted, clear the ID so ensureLoaded
-      // reloads on the next cycle instead of hitting a stale ID repeatedly
-      if (response.status === 404 && this.instanceId) {
-        this.instanceId = null;
+
+      // Model doesn't support reasoning — retry without it and remember
+      // so subsequent calls skip the param entirely.
+      if (sendReasoning && /does not support reasoning|"param"\s*:\s*"reasoning"/.test(errorBody)) {
+        this.reasoningUnsupported = true;
+        delete body.reasoning;
+        response = await fetch(`${this.baseUrl}${ENDPOINT_CHAT}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(opts?.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS),
+        });
+        if (!response.ok) {
+          const retryError = await response.text().catch(() => '');
+          throw new Error(`LM Studio summarize failed: ${response.status} ${retryError.slice(0, 500)}`);
+        }
+      } else {
+        // If our instance was evicted, clear the ID so ensureLoaded
+        // reloads on the next cycle instead of hitting a stale ID repeatedly
+        if (response.status === 404 && this.instanceId) {
+          this.instanceId = null;
+        }
+        throw new Error(`LM Studio summarize failed: ${response.status} ${errorBody.slice(0, 500)}`);
       }
-      throw new Error(`LM Studio summarize failed: ${response.status} ${errorBody.slice(0, 500)}`);
     }
 
     const data = await response.json() as {

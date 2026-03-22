@@ -36,6 +36,8 @@ export interface OperationHandlerDeps {
   embeddingProvider: EmbeddingProvider;
   progressTracker: ProgressTracker;
   pipeline?: PipelineManager;
+  /** Signal the metabolism timer to bypass the substrate threshold on next tick. */
+  onForceDigest?: () => void;
   log: (level: string, message: string, data?: Record<string, unknown>) => void;
 }
 
@@ -155,6 +157,15 @@ export async function handleDigest(
       deps.log('info', 'Digest completed via API', {
         tiers: result.tiersGenerated,
         duration: result.durationMs,
+      });
+    } else if (options?.full && deps.onForceDigest) {
+      // Full cycle deferred to metabolism timer — signal it to bypass
+      // the substrate threshold so the reset items actually get processed.
+      deps.onForceDigest();
+      deps.progressTracker.update(token, {
+        status: 'completed',
+        percent: PROGRESS_COMPLETE,
+        message: 'Full cycle queued — items reset to pending',
       });
     } else {
       deps.progressTracker.update(token, {

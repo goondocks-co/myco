@@ -339,6 +339,14 @@ export class DigestEngine {
       }
     }
 
+    this.log('debug', 'Substrate breakdown', {
+      sessions: substrateIndex.sessions.length,
+      spores: substrateIndex.spores.length,
+      plans: substrateIndex.plans.length,
+      artifacts: substrateIndex.artifacts.length,
+      team: substrateIndex.team.length,
+    });
+
     // Record the cycle timestamp NOW, before tier processing. This ensures the
     // timestamp advances even if LLM calls fail, preventing the same substrate
     // from being rediscovered on every subsequent timer fire.
