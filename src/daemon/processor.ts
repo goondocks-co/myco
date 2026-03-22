@@ -1,11 +1,15 @@
 import { z } from 'zod';
 import type { LlmProvider } from '../intelligence/llm.js';
 import { ARTIFACT_TYPES } from '../vault/types.js';
-import { estimateTokens, CHARS_PER_TOKEN, PROMPT_PREVIEW_CHARS, AI_RESPONSE_PREVIEW_CHARS, COMMAND_PREVIEW_CHARS, LLM_REASONING_MODE } from '../constants.js';
+import { estimateTokens, CHARS_PER_TOKEN, LLM_REASONING_MODE } from '../constants.js';
 import type { MycoConfig } from '../config/schema.js';
 import type { ObservationType, ArtifactType } from '../vault/types.js';
 import { buildExtractionPrompt, buildSummaryPrompt, buildTitlePrompt, buildClassificationPrompt } from '../prompts/index.js';
 import { extractJson, stripReasoningTokens } from '../intelligence/response.js';
+import { TURN_HEADING_PREFIX } from '../obsidian/formatter.js';
+
+/** Estimated token overhead for the extraction prompt template (excluding conversation content). */
+const EXTRACTION_PROMPT_OVERHEAD_TOKENS = 500;
 
 /** Marker substring in failed summary text. Used by reprocess --failed to detect failures. */
 export const SUMMARIZATION_FAILED_MARKER = 'summarization failed';
@@ -66,20 +70,35 @@ export class BufferProcessor {
     return data.slice(0, charBudget);
   }
 
-  async process(
-    events: Array<Record<string, unknown>>,
-    sessionId: string,
-  ): Promise<ProcessorResult> {
-    const rawPrompt = this.buildPromptForExtraction(events, sessionId);
-    const prompt = this.truncateForContext(rawPrompt, this.extractionMaxTokens);
+  async process(conversationMarkdown: string, sessionId: string): Promise<ProcessorResult> {
+    if (!conversationMarkdown.trim()) {
+      return { summary: '', observations: [], degraded: false };
+    }
+
+    // Truncate from the beginning (keep recent turns) if conversation exceeds budget
+    const availableTokens = this.contextWindow - EXTRACTION_PROMPT_OVERHEAD_TOKENS - this.extractionMaxTokens;
+    const availableChars = availableTokens * CHARS_PER_TOKEN;
+    let truncated = conversationMarkdown;
+    if (conversationMarkdown.length > availableChars) {
+      truncated = conversationMarkdown.slice(-availableChars);
+      // Find first turn boundary to avoid cutting mid-turn
+      const turnBoundary = truncated.indexOf(TURN_HEADING_PREFIX);
+      if (turnBoundary > 0) {
+        truncated = truncated.slice(turnBoundary);
+      }
+    }
+
+    const prompt = buildExtractionPrompt(sessionId, truncated, this.extractionMaxTokens);
 
     try {
-      const response = await this.backend.summarize(prompt, { maxTokens: this.extractionMaxTokens, reasoning: LLM_REASONING_MODE });
+      const response = await this.backend.summarize(prompt, {
+        maxTokens: this.extractionMaxTokens,
+        reasoning: LLM_REASONING_MODE,
+      });
       const parsed = extractJson(response.text) as {
         summary: string;
         observations: Observation[];
       };
-
       return {
         summary: parsed.summary,
         observations: parsed.observations ?? [],
@@ -87,19 +106,11 @@ export class BufferProcessor {
       };
     } catch (error) {
       return {
-        summary: `LLM processing failed for session ${sessionId}. ${events.length} events captured. Error: ${(error as Error).message}`,
+        summary: `LLM processing failed for session ${sessionId}. Error: ${(error as Error).message}`,
         observations: [],
         degraded: true,
       };
     }
-  }
-
-  private buildPromptForExtraction(
-    events: Array<Record<string, unknown>>,
-    sessionId: string,
-  ): string {
-    const toolSummary = this.summarizeEvents(events);
-    return buildExtractionPrompt(sessionId, events.length, toolSummary, this.extractionMaxTokens);
   }
 
   async summarizeSession(
@@ -150,63 +161,4 @@ export class BufferProcessor {
     return buildClassificationPrompt(sessionId, candidates, this.classificationMaxTokens);
   }
 
-  private summarizeEvents(events: Array<Record<string, unknown>>): string {
-    const toolCounts = new Map<string, number>();
-    const filesAccessed = new Set<string>();
-    const prompts: string[] = [];
-    const aiResponses: string[] = [];
-
-    for (const event of events) {
-      if (event.type === 'user_prompt') {
-        const prompt = String(event.prompt ?? '');
-        if (prompt) prompts.push(prompt.slice(0, PROMPT_PREVIEW_CHARS));
-        continue;
-      }
-
-      if (event.type === 'ai_response') {
-        const content = String(event.content ?? '');
-        if (content) aiResponses.push(content.slice(0, AI_RESPONSE_PREVIEW_CHARS));
-        continue;
-      }
-
-      // Hooks send tool_name/tool_input; also support legacy tool/input
-      const tool = String(event.tool_name ?? event.tool ?? 'unknown');
-      toolCounts.set(tool, (toolCounts.get(tool) ?? 0) + 1);
-
-      const input = (event.tool_input ?? event.input) as Record<string, unknown> | undefined;
-      if (input?.path) filesAccessed.add(String(input.path));
-      if (input?.file_path) filesAccessed.add(String(input.file_path));
-      if (input?.command) filesAccessed.add(`[cmd] ${String(input.command).slice(0, COMMAND_PREVIEW_CHARS)}`);
-    }
-
-    const lines: string[] = [];
-
-    if (prompts.length > 0) {
-      lines.push('### User Prompts');
-      for (const p of prompts) {
-        lines.push(`- "${p}"`);
-      }
-    }
-
-    lines.push('\n### Tool Usage');
-    for (const [tool, count] of toolCounts) {
-      lines.push(`- ${tool}: ${count} calls`);
-    }
-
-    if (filesAccessed.size > 0) {
-      lines.push('\n### Files Accessed');
-      for (const file of filesAccessed) {
-        lines.push(`- ${file}`);
-      }
-    }
-
-    if (aiResponses.length > 0) {
-      lines.push('\n### AI Responses');
-      for (const r of aiResponses) {
-        lines.push(`- "${r}"`);
-      }
-    }
-
-    return lines.join('\n');
-  }
 }

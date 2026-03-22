@@ -367,3 +367,65 @@ describe('formatArtifactBody', () => {
     expect(body).not.toContain('#auth');
   });
 });
+
+describe('turn tool breakdown rendering', () => {
+  it('renders tool breakdown when toolBreakdown is provided', () => {
+    const result = formatSessionBody({
+      title: 'Test',
+      narrative: '',
+      sessionId: 'test-1',
+      turns: [{
+        prompt: 'Fix the bug',
+        toolCount: 8,
+        toolBreakdown: { Read: 3, Edit: 2, Bash: 2, Grep: 1 },
+      }],
+    });
+    expect(result).toContain('*8 tool calls: Read (3), Edit (2), Bash (2), Grep (1)*');
+  });
+
+  it('falls back to plain tool count when toolBreakdown is undefined', () => {
+    const result = formatSessionBody({
+      title: 'Test',
+      narrative: '',
+      sessionId: 'test-1',
+      turns: [{ prompt: 'Fix it', toolCount: 5 }],
+    });
+    expect(result).toContain('*5 tool calls*');
+    expect(result).not.toContain('(');
+  });
+
+  it('renders files list when files are provided', () => {
+    const result = formatSessionBody({
+      title: 'Test',
+      narrative: '',
+      sessionId: 'test-1',
+      turns: [{
+        prompt: 'Fix it',
+        toolCount: 3,
+        files: ['src/auth/login.ts', 'src/auth/session.ts'],
+      }],
+    });
+    expect(result).toContain('*Files: src/auth/login.ts, src/auth/session.ts*');
+  });
+
+  it('truncates files list with +N more suffix', () => {
+    const files = Array.from({ length: 15 }, (_, i) => `src/file-${i}.ts`);
+    const result = formatSessionBody({
+      title: 'Test',
+      narrative: '',
+      sessionId: 'test-1',
+      turns: [{ prompt: 'Fix it', toolCount: 1, files }],
+    });
+    expect(result).toContain('+5 more');
+  });
+
+  it('omits files line when files array is empty', () => {
+    const result = formatSessionBody({
+      title: 'Test',
+      narrative: '',
+      sessionId: 'test-1',
+      turns: [{ prompt: 'Fix it', toolCount: 1, files: [] }],
+    });
+    expect(result).not.toContain('*Files:');
+  });
+});

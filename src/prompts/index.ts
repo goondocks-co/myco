@@ -65,14 +65,12 @@ export function formatNotesForPrompt(notes: Array<{ id: string; title: string; c
 
 export function buildExtractionPrompt(
   sessionId: string,
-  eventCount: number,
-  toolSummary: string,
+  conversation: string,
   maxTokens?: number,
 ): string {
   return interpolate(loadPrompt('extraction'), {
     sessionId,
-    eventCount: String(eventCount),
-    toolSummary,
+    conversation,
     maxTokens: String(maxTokens ?? 2048),
   });
 }

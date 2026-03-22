@@ -1,3 +1,6 @@
+/** Pipeline stages in processing order. Single source of truth for the UI. */
+export const PIPELINE_STAGES = ['capture', 'extraction', 'embedding', 'consolidation', 'digest'] as const;
+
 export const POLL_INTERVALS = {
   HEALTH: 5_000,
   STATS: 10_000,

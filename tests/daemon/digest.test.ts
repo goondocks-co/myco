@@ -573,10 +573,9 @@ describe('DigestEngine', () => {
       const index = makeMockIndex(notes);
       const llm = makeMockLlm();
 
-      // Use only 1500 tier for speed
+      // Use context window that only fits tier 1500 (needs 6500, next tier 3000 needs 11500)
       const config = makeConfig({
-        tiers: [1500],
-        intelligence: { provider: null, model: null, base_url: null, context_window: 32768 },
+        intelligence: { provider: null, model: null, base_url: null, context_window: 7000 },
       });
 
       const engine = new DigestEngine({
@@ -650,13 +649,15 @@ describe('DigestEngine', () => {
       const index = makeMockIndex(notes);
       const llm = makeMockLlm();
 
+      // Context window of 12000 makes only 2 tiers eligible:
+      // 1500 needs 6500, 3000 needs 11500 — both fit
+      // 5000 needs 18500 — too large
       const engine = new DigestEngine({
         vaultDir,
         index,
         llmProvider: llm,
         config: makeConfig({
-          tiers: [1500, 3000],
-          intelligence: { provider: null, model: null, base_url: null, context_window: 32768 },
+          intelligence: { provider: null, model: null, base_url: null, context_window: 12000 },
         }),
       });
 
@@ -712,13 +713,13 @@ describe('DigestEngine', () => {
         .mockResolvedValueOnce({ text: 'Good synthesis.', model: 'test-model' })
         .mockRejectedValueOnce(new Error('context exceeded'));
 
+      // Context window of 12000 makes only 2 tiers eligible (1500, 3000)
       const engine = new DigestEngine({
         vaultDir,
         index,
         llmProvider: llm,
         config: makeConfig({
-          tiers: [1500, 3000],
-          intelligence: { provider: null, model: null, base_url: null, context_window: 32768 },
+          intelligence: { provider: null, model: null, base_url: null, context_window: 12000 },
         }),
       });
 

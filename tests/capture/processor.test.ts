@@ -37,7 +37,7 @@ describe('BufferProcessor', () => {
   it('passes maxTokens to summarize for process()', async () => {
     const spy = vi.spyOn(mockBackend, 'summarize');
     const processor = new BufferProcessor(mockBackend, 8192);
-    await processor.process([{ type: 'tool_use', tool: 'Read' }], 's1');
+    await processor.process('### Turn 1\n**User:** hello\n**Assistant:** hi', 's1');
 
     expect(spy).toHaveBeenCalled();
     const opts = spy.mock.calls[0][1];
@@ -57,15 +57,32 @@ describe('BufferProcessor', () => {
     spy.mockRestore();
   });
 
-  it('processes buffer events into summary + observations', async () => {
-    const events = [
-      { type: 'tool_use', tool: 'Read', input: { path: 'src/auth.ts' } },
-      { type: 'tool_use', tool: 'Edit', input: { path: 'src/auth.ts' } },
-    ];
+  it('processes conversation markdown into summary + observations', async () => {
+    const conversation = [
+      '### Turn 1',
+      '**User:** Refactor the auth middleware',
+      '**Assistant:** I\'ll update src/auth.ts to use JWT rotation with RS256.',
+    ].join('\n');
     const processor = new BufferProcessor(mockBackend);
-    const result = await processor.process(events, 'session-abc');
+    const result = await processor.process(conversation, 'session-abc');
     expect(result.summary).toContain('auth');
     expect(result.observations).toHaveLength(1);
+  });
+
+  it('returns empty result for empty conversation', async () => {
+    const processor = new BufferProcessor(mockBackend);
+    const result = await processor.process('', 'session-abc');
+    expect(result.summary).toBe('');
+    expect(result.observations).toHaveLength(0);
+    expect(result.degraded).toBe(false);
+  });
+
+  it('returns empty result for whitespace-only conversation', async () => {
+    const processor = new BufferProcessor(mockBackend);
+    const result = await processor.process('   \n  \n  ', 'session-abc');
+    expect(result.summary).toBe('');
+    expect(result.observations).toHaveLength(0);
+    expect(result.degraded).toBe(false);
   });
 
   it('handles LLM failure gracefully', async () => {
@@ -74,7 +91,30 @@ describe('BufferProcessor', () => {
       async summarize() { throw new Error('LLM unavailable'); },
     };
     const processor = new BufferProcessor(failBackend);
-    const result = await processor.process([{ type: 'tool_use', tool: 'Read' }], 's1');
+    const result = await processor.process('### Turn 1\n**User:** hello', 's1');
     expect(result.degraded).toBe(true);
+  });
+
+  it('truncates long conversation from the beginning, keeping recent turns', async () => {
+    const spy = vi.spyOn(mockBackend, 'summarize');
+    // Use a small context window so truncation kicks in
+    const processor = new BufferProcessor(mockBackend, 1024);
+
+    // Build a conversation larger than the available budget
+    // contextWindow=1024, overhead=500, maxTokens=2048 => availableTokens is negative,
+    // so use a realistic window instead
+    const largProcessor = new BufferProcessor(mockBackend, 4096);
+    const turns: string[] = [];
+    for (let i = 1; i <= 100; i++) {
+      turns.push(`### Turn ${i}\n**User:** Question ${i}\n**Assistant:** ${'A'.repeat(200)}`);
+    }
+    const longConversation = turns.join('\n\n');
+    await largProcessor.process(longConversation, 'session-trunc');
+
+    expect(spy).toHaveBeenCalled();
+    // The prompt should contain later turns, not the first ones
+    const promptSent = spy.mock.calls[0][0];
+    expect(promptSent).toContain('Turn 100');
+    spy.mockRestore();
   });
 });

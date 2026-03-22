@@ -16,6 +16,7 @@ import type { MycoIndex } from '../../index/sqlite.js';
 import type { VectorIndex } from '../../index/vectors.js';
 import type { MycoConfig } from '../../config/schema.js';
 import type { LlmProvider, EmbeddingProvider } from '../../intelligence/llm.js';
+import type { PipelineManager } from '../pipeline.js';
 import { runRebuild, runDigest, runReprocess } from '../../services/vault-ops.js';
 import type { CurationDeps, CurationResult, ReprocessOptions } from '../../services/vault-ops.js';
 
@@ -30,8 +31,11 @@ export interface OperationHandlerDeps {
   index: MycoIndex;
   vectorIndex: VectorIndex | null;
   llmProvider: LlmProvider;
+  /** Digest-specific LLM provider (may differ from main llmProvider). */
+  digestLlmProvider: LlmProvider;
   embeddingProvider: EmbeddingProvider;
   progressTracker: ProgressTracker;
+  pipeline?: PipelineManager;
   log: (level: string, message: string, data?: Record<string, unknown>) => void;
 }
 
@@ -69,6 +73,7 @@ export async function handleRebuild(deps: OperationHandlerDeps): Promise<RouteRe
       config: deps.config,
       index: deps.index,
       vectorIndex: deps.vectorIndex ?? undefined,
+      pipeline: deps.pipeline,
       log: deps.log,
     },
     deps.embeddingProvider,
@@ -135,9 +140,10 @@ export async function handleDigest(
       config: deps.config,
       index: deps.index,
       vectorIndex: deps.vectorIndex ?? undefined,
+      pipeline: deps.pipeline,
       log: deps.log,
     },
-    deps.llmProvider,
+    deps.digestLlmProvider,
     options ?? undefined,
   ).then((result) => {
     if (result) {
@@ -198,6 +204,7 @@ export async function handleCurate(
     vectorIndex: deps.vectorIndex,
     llmProvider: deps.llmProvider,
     embeddingProvider: deps.embeddingProvider,
+    pipeline: deps.pipeline,
     log: deps.log,
   };
 
@@ -268,6 +275,7 @@ export async function handleReprocess(
       config: deps.config,
       index: deps.index,
       vectorIndex: deps.vectorIndex ?? undefined,
+      pipeline: deps.pipeline,
       log: deps.log,
     },
     deps.llmProvider,

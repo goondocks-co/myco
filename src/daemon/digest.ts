@@ -18,6 +18,7 @@ import { readLastTimestamp, appendTraceRecord } from './trace.js';
 import {
   estimateTokens,
   CHARS_PER_TOKEN,
+  DIGEST_TIERS,
   DIGEST_TIER_MIN_CONTEXT,
   DIGEST_SUBSTRATE_TYPE_WEIGHTS,
   DIGEST_LLM_REQUEST_TIMEOUT_MS,
@@ -86,6 +87,11 @@ export class DigestEngine {
   private lastCycleTimestampCache: string | null | undefined = undefined;
   private cycleInProgress = false;
 
+  /** Whether a digest cycle is currently running. */
+  get isCycleInProgress(): boolean {
+    return this.cycleInProgress;
+  }
+
   /** Hooks that run before each digest cycle (e.g., consolidation). */
   private prePassHooks: Array<{ name: string; fn: () => Promise<void> }> = [];
 
@@ -149,7 +155,7 @@ export class DigestEngine {
    */
   getEligibleTiers(): number[] {
     const contextWindow = this.config.digest.intelligence.context_window;
-    return this.config.digest.tiers.filter((tier) => {
+    return DIGEST_TIERS.filter((tier) => {
       const minContext = DIGEST_TIER_MIN_CONTEXT[tier];
       return minContext !== undefined && minContext <= contextWindow;
     });
@@ -200,6 +206,8 @@ export class DigestEngine {
     cycleId: string,
     model: string,
     substrateCount: number,
+    substrateNotes?: string[],
+    tokensUsed?: number,
   ): void {
     const digestDir = path.join(this.vaultDir, 'digest');
     fs.mkdirSync(digestDir, { recursive: true });
@@ -212,6 +220,8 @@ export class DigestEngine {
       substrate_count: substrateCount,
       model,
     };
+    if (substrateNotes && substrateNotes.length > 0) frontmatter.substrate_notes = substrateNotes;
+    if (tokensUsed !== undefined) frontmatter.tokens_used = tokensUsed;
 
     const fmYaml = YAML.stringify(frontmatter, {
       defaultStringType: 'QUOTE_DOUBLE',
@@ -335,6 +345,7 @@ export class DigestEngine {
     const cycleTimestamp = new Date().toISOString();
 
     const systemPrompt = loadPrompt('digest-system');
+    const allSubstrateIds = substrate.map((note) => note.id);
 
     for (const tier of eligibleTiers) {
       const tierPrompt = loadPrompt(`digest-${tier}`);
@@ -394,10 +405,33 @@ export class DigestEngine {
         totalTokensUsed += promptTokens + responseTokens;
 
         this.log('info', `Tier ${tier}: completed`, { durationMs: tierDuration, responseTokens, model: response.model });
-        this.writeExtract(tier, extractText, cycleId, response.model, substrate.length);
+        this.writeExtract(tier, extractText, cycleId, response.model, substrate.length, allSubstrateIds, promptTokens + responseTokens);
         tiersGenerated.push(tier);
       } catch (err) {
         this.log('warn', `Tier ${tier}: failed`, { error: (err as Error).message });
+      }
+    }
+
+    // Patch tiers_generated into each extract's frontmatter (not known until all tiers complete)
+    if (tiersGenerated.length > 0) {
+      const digestDir = path.join(this.vaultDir, 'digest');
+      for (const tier of tiersGenerated) {
+        const extractPath = path.join(digestDir, `extract-${tier}.md`);
+        try {
+          const content = fs.readFileSync(extractPath, 'utf-8');
+          const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+          if (fmMatch) {
+            const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
+            parsed.tiers_generated = tiersGenerated;
+            const fmYaml = YAML.stringify(parsed, { defaultStringType: 'QUOTE_DOUBLE', defaultKeyType: 'PLAIN' }).trim();
+            const extractBody = content.slice(fmMatch[0].length);
+            const tmpPath = `${extractPath}.tmp`;
+            fs.writeFileSync(tmpPath, `---\n${fmYaml}\n---${extractBody}`, 'utf-8');
+            fs.renameSync(tmpPath, extractPath);
+          }
+        } catch {
+          // Extract file may not exist if that tier failed
+        }
       }
     }
 

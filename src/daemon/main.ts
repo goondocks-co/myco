@@ -3,7 +3,7 @@ import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger } from './logger.js';
 import { loadConfig, saveConfig } from '../config/loader.js';
 import { BatchManager, type BatchEvent } from './batch.js';
-import { BufferProcessor, type Observation, type ClassifiedArtifact } from './processor.js';
+import { BufferProcessor, SUMMARIZATION_FAILED_MARKER, type Observation, type ClassifiedArtifact } from './processor.js';
 import { VaultWriter } from '../vault/writer.js';
 import { MycoIndex } from '../index/sqlite.js';
 import { indexNote, rebuildIndex } from '../index/rebuild.js';
@@ -12,21 +12,19 @@ import { createLlmProvider, createEmbeddingProvider } from '../intelligence/llm.
 import type { EmbeddingProvider, LlmProvider } from '../intelligence/llm.js';
 import { VectorIndex } from '../index/vectors.js';
 import { generateEmbedding } from '../intelligence/embeddings.js';
-import { LineageGraph, LINEAGE_SIMILARITY_THRESHOLD, LINEAGE_SIMILARITY_HIGH_CONFIDENCE, LINEAGE_SIMILARITY_CANDIDATES, LINEAGE_SIMILARITY_MAX_TOKENS, type LineageLink } from './lineage.js';
+import { LineageGraph } from './lineage.js';
 import type { RegisteredSession } from './lifecycle.js';
 import { PlanWatcher } from './watcher.js';
 import { DigestEngine, Metabolism } from './digest.js';
 import { ConsolidationEngine } from './consolidation.js';
 import { resolvePort } from './port.js';
 import { handleMycoContext } from '../mcp/tools/context.js';
-import { buildSimilarityPrompt } from '../prompts/index.js';
-import { extractNumber } from '../intelligence/response.js';
-import { EMBEDDING_INPUT_LIMIT, CONTENT_SNIPPET_CHARS, CHARS_PER_TOKEN, STALE_BUFFER_MAX_AGE_MS, LINEAGE_RECENT_SESSIONS_LIMIT, RELATED_SPORES_LIMIT, CANDIDATE_CONTENT_PREVIEW, SESSION_CONTEXT_MAX_PLANS, PROMPT_CONTEXT_MAX_SPORES, PROMPT_CONTEXT_MIN_SIMILARITY, PROMPT_CONTEXT_MIN_LENGTH, CONTEXT_SESSION_PREVIEW_CHARS, LLM_REASONING_MODE } from '../constants.js';
+import { EMBEDDING_INPUT_LIMIT, CONTENT_SNIPPET_CHARS, STALE_BUFFER_MAX_AGE_MS, LINEAGE_RECENT_SESSIONS_LIMIT, RELATED_SPORES_LIMIT, SESSION_CONTEXT_MAX_PLANS, PROMPT_CONTEXT_MAX_SPORES, PROMPT_CONTEXT_MIN_SIMILARITY, PROMPT_CONTEXT_MIN_LENGTH, CONTEXT_SESSION_PREVIEW_CHARS, estimateTokens } from '../constants.js';
 import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-miner.js';
-import { createPerProjectAdapter, extensionForMimeType } from '../agents/adapter.js';
+import { createPerProjectAdapter, extensionForMimeType, type TranscriptTurn } from '../agents/adapter.js';
 import { claudeCodeAdapter } from '../agents/claude-code.js';
 import { EventBuffer } from '../capture/buffer.js';
-import { formatSessionBody, CONVERSATION_HEADING } from '../obsidian/formatter.js';
+import { formatSessionBody, CONVERSATION_HEADING, extractSection } from '../obsidian/formatter.js';
 import { writeObservationNotes } from '../vault/observations.js';
 import { checkSupersession } from '../vault/curation.js';
 import { collectArtifactCandidates } from '../artifacts/candidates.js';
@@ -40,12 +38,25 @@ import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleRebuild, handleDigest, handleCurate, handleReprocess } from './api/operations.js';
 import { handleGetModels } from './api/models.js';
 import { handleGetSessions } from './api/sessions.js';
+import {
+  handlePipelineHealth,
+  handlePipelineItems,
+  handlePipelineItemDetail,
+  handlePipelineCircuits,
+  handlePipelineRetry,
+  handlePipelineSkip,
+  handlePipelineRetryAll,
+  handlePipelineCircuitReset,
+} from './api/pipeline.js';
+import { handleForceDigest, handleDigestHealth } from './api/digest.js';
+import { PipelineManager } from './pipeline.js';
 import type { OperationHandlerDeps } from './api/operations.js';
-import { runCuration } from '../services/vault-ops.js';
+import { runCuration, updateTitleAndSummary } from '../services/vault-ops.js';
 import { z } from 'zod';
 import YAML from 'yaml';
 import fs from 'node:fs';
 import path from 'node:path';
+import { stripFrontmatter } from '../vault/frontmatter.js';
 
 
 interface IndexDeps {
@@ -212,18 +223,11 @@ export async function main(): Promise<void> {
 
   const server = new DaemonServer({ vaultDir, logger, uiDir: uiDir ?? undefined });
 
+  // The daemon serves the dashboard UI and must stay running regardless of
+  // active sessions. No auto-shutdown — runs until explicitly killed.
   const registry = new SessionRegistry({
-    gracePeriod: config.daemon.grace_period,
-    onEmpty: async () => {
-      logger.info('daemon', 'Grace period expired, shutting down');
-      metabolism?.stop();
-      planWatcher.stopFileWatcher();
-      await server.stop();
-      vectorIndex?.close();
-      index.close();
-      logger.close();
-      process.exit(0);
-    },
+    gracePeriod: 0,
+    onEmpty: () => {},
   });
 
   // Batch processing setup
@@ -243,6 +247,238 @@ export async function main(): Promise<void> {
   const vault = new VaultWriter(vaultDir);
   const index = new MycoIndex(path.join(vaultDir, 'index.db'));
   const lineageGraph = new LineageGraph(vaultDir);
+  const pipeline = new PipelineManager(vaultDir, config.pipeline);
+
+  // Recover any items stuck in 'processing' from a previous daemon crash
+  const recoveredCount = pipeline.recoverStuck();
+  if (recoveredCount > 0) {
+    logger.info('pipeline', 'Recovered stuck pipeline items', { count: recoveredCount });
+  }
+
+  // First-run migration: if pipeline.db was just created (no work items),
+  // rebuild from vault to catch up with existing content
+  if (pipeline.isEmpty()) {
+    logger.info('pipeline', 'First-run migration: rebuilding pipeline from vault');
+    const result = pipeline.rebuild(vaultDir, vectorIndex, path.join(vaultDir, 'digest', 'trace.jsonl'));
+    logger.info('pipeline', 'Pipeline rebuild complete', { registered: result.registered, stages: result.stages });
+  }
+
+  // Consolidation engine — declared here so pipeline handler can capture it.
+  // Assigned later when digest.consolidation.enabled is true.
+  let consolidationEngine: ConsolidationEngine | null = null;
+
+  // Flag to ensure consolidationEngine.runPass() is called at most once per tick.
+  // runPass() processes ALL pending spores, so calling it per-item is redundant.
+  let consolidationPassRanThisTick = false;
+
+  // Pipeline stage handlers
+  pipeline.setHandlers({
+    extraction: async (itemId, itemType, sourcePath) => {
+      if (itemType !== 'session') return; // Only sessions have extraction
+
+      logger.info('pipeline', 'Extraction started', { session_id: itemId });
+
+      // 1. Read the session note to get conversation section and user
+      const fullPath = sourcePath ? path.join(vaultDir, sourcePath) : null;
+      if (!fullPath || !fs.existsSync(fullPath)) {
+        throw new Error(`Session note not found: ${sourcePath}`);
+      }
+      const fileContent = fs.readFileSync(fullPath, 'utf-8');
+      const { body, frontmatter } = stripFrontmatter(fileContent);
+      const conversationMarkdown = extractSection(body, CONVERSATION_HEADING);
+      const user = typeof frontmatter.user === 'string' && frontmatter.user ? frontmatter.user : undefined;
+
+      if (!conversationMarkdown.trim()) {
+        throw new Error(`No conversation content in session note: ${sourcePath}`);
+      }
+
+      // 2. Extract observations from conversation markdown (LLM call)
+      const extractionResult = await processor.process(conversationMarkdown, itemId);
+      if (extractionResult.degraded) {
+        throw new Error(`Observation extraction failed for session ${itemId}`);
+      }
+
+      // 3. Generate summary + title from conversation (LLM call)
+      const { summary: narrative, title } = await processor.summarizeSession(
+        conversationMarkdown,
+        itemId,
+        user,
+      );
+      if (narrative.includes(SUMMARIZATION_FAILED_MARKER)) {
+        throw new Error(`Summarization failed for session ${itemId}: ${narrative}`);
+      }
+
+      // 4. Write observation spore notes (skip supersession — that's consolidation stage)
+      const written = writeObservationNotes(
+        extractionResult.observations,
+        itemId,
+        vault,
+        index,
+        vaultDir,
+      );
+      for (const note of written) {
+        indexAndEmbed(note.path, note.id, `${note.observation.title}\n${note.observation.content}`,
+          { type: 'spore', importance: 'high', session_id: itemId }, indexDeps);
+        logger.info('pipeline', 'Spore written', { type: note.observation.type, title: note.observation.title, session_id: itemId });
+      }
+
+      // 5. Update session note with LLM-generated title + narrative + extraction metadata
+      const fmEnd = fileContent.indexOf('---', 4);
+      const parsedFm = YAML.parse(fileContent.slice(4, fmEnd)) as Record<string, unknown>;
+      parsedFm.observations_count = written.length;
+      parsedFm.summary_tokens = estimateTokens(narrative);
+      parsedFm.extraction_model = config.intelligence.llm.model;
+      const fmYaml = YAML.stringify(parsedFm, { defaultStringType: 'QUOTE_DOUBLE', defaultKeyType: 'PLAIN' }).trim();
+      const updatedBody = updateTitleAndSummary(body, title, narrative);
+      fs.writeFileSync(fullPath, `---\n${fmYaml}\n---\n\n${updatedBody}`, 'utf-8');
+
+      // 6. Re-index the session note (FTS) to pick up new title/summary
+      indexNote(index, vaultDir, sourcePath!);
+
+      // 7. Register spores in pipeline
+      for (const note of written) {
+        pipeline.register(note.id, 'spore', note.path);
+        pipeline.advance(note.id, 'spore', 'capture', 'succeeded');
+      }
+
+      logger.info('pipeline', 'Extraction completed', {
+        session_id: itemId,
+        observations: written.length,
+        title,
+      });
+
+      return {
+        observations: written.length,
+        observation_ids: written.map((n) => n.id),
+        summary_tokens: estimateTokens(narrative),
+        title,
+        model: config.intelligence.llm.model,
+      };
+    },
+    embedding: async (itemId, itemType, sourcePath) => {
+      if (!vectorIndex || !embeddingProvider) {
+        throw new Error('Embedding provider or vector index not available');
+      }
+      if (!sourcePath) {
+        throw new Error(`No source path for ${itemType}/${itemId}`);
+      }
+
+      const fullPath = path.join(vaultDir, sourcePath);
+      if (!fs.existsSync(fullPath)) {
+        throw new Error(`Vault note not found: ${sourcePath}`);
+      }
+
+      const fileContent = fs.readFileSync(fullPath, 'utf-8');
+
+      // Parse frontmatter for metadata
+      const { body, frontmatter } = stripFrontmatter(fileContent);
+
+      // Extract embeddable text based on item type
+      let embeddableText: string;
+      if (itemType === 'session') {
+        // For sessions: title + summary narrative (same pattern as runReprocess)
+        const title = typeof frontmatter.title === 'string' ? frontmatter.title : '';
+        const summary = typeof frontmatter.summary === 'string' ? frontmatter.summary : '';
+        // Also try extracting narrative from the abstract callout in the body
+        const calloutMatch = body.match(/> \[!abstract\] Summary\n((?:> .*\n?)*)/);
+        const narrative = calloutMatch
+          ? calloutMatch[1].replace(/^> /gm, '').trim()
+          : '';
+        embeddableText = `${title}\n${narrative || summary}`.trim();
+      } else {
+        // For spores/artifacts: title from first heading + full body content
+        const titleMatch = body.match(/^#\s+(.+)$/m);
+        const title = titleMatch ? titleMatch[1] : '';
+        embeddableText = `${title}\n${body}`.trim();
+      }
+
+      if (!embeddableText) {
+        // Nothing to embed — empty content is not an error, just skip
+        logger.debug('pipeline', 'No embeddable content, skipping', { id: itemId, type: itemType });
+        return;
+      }
+
+      // Generate embedding
+      const result = await generateEmbedding(
+        embeddingProvider,
+        embeddableText.slice(0, EMBEDDING_INPUT_LIMIT),
+      );
+
+      // Build metadata for vector index
+      const metadata: Record<string, string> = {
+        type: itemType,
+        file_path: sourcePath,
+        session_id: typeof frontmatter.session === 'string' ? frontmatter.session
+          : typeof frontmatter.id === 'string' && itemType === 'session' ? frontmatter.id
+          : '',
+        branch: typeof frontmatter.branch === 'string' ? frontmatter.branch : '',
+      };
+
+      // Store in vectors.db
+      vectorIndex.upsert(itemId, result.embedding, metadata);
+
+      // Enrich session note frontmatter with embedding model
+      if (itemType === 'session' && sourcePath) {
+        vault.updateNoteFrontmatter(sourcePath, {
+          embedding_model: config.intelligence.embedding.model,
+        }, true);
+      }
+
+      logger.info('pipeline', 'Embedding stored', {
+        id: itemId,
+        type: itemType,
+        dimensions: result.dimensions,
+      });
+
+      return {
+        model: result.model,
+        dimensions: result.dimensions,
+      };
+    },
+    consolidation: async (itemId, itemType) => {
+      if (itemType !== 'spore') return; // Sessions/artifacts skip consolidation
+
+      // Check if this spore supersedes older ones
+      const supersededIds = await checkSupersession(itemId, {
+        index,
+        vectorIndex,
+        embeddingProvider,
+        llmProvider,
+        vaultDir,
+        log: ((level: string, msg: string, data?: Record<string, unknown>) =>
+          (logger as any)[level]('curation', msg, data)) as Parameters<typeof checkSupersession>[1]['log'],
+      });
+
+      // Run consolidation pass (clusters + wisdom synthesis) — once per tick,
+      // since runPass() processes ALL pending spores.
+      if (consolidationEngine && !consolidationPassRanThisTick) {
+        consolidationPassRanThisTick = true;
+        await consolidationEngine.runPass();
+      }
+
+      return {
+        superseded: supersededIds ?? [],
+        wisdom_created: null,
+        candidates_evaluated: 0,
+      };
+    },
+  });
+
+  pipeline.setLogger((level, domain, message, data) => {
+    const fn = logger[level as keyof typeof logger];
+    if (typeof fn === 'function') (fn as typeof logger.info).call(logger, domain, message, data);
+  });
+
+  // Pipeline tick timer — processes extraction, embedding, consolidation
+  const pipelineTickTimer = setInterval(async () => {
+    try {
+      consolidationPassRanThisTick = false;
+      await pipeline.tick(config.pipeline.batch_size);
+    } catch (err) {
+      logger.error('pipeline', 'Pipeline tick failed', { error: (err as Error).message });
+    }
+  }, config.pipeline.tick_interval_seconds * 1000);
+
   const transcriptMiner = new TranscriptMiner({
     additionalAdapters: config.capture.transcript_paths.map((p) =>
       createPerProjectAdapter(p, claudeCodeAdapter.parseTurns),
@@ -335,20 +571,22 @@ export async function main(): Promise<void> {
   });
   planWatcher.startFileWatcher();
 
+  // Digest LLM provider: resolved once, used by both pipeline tick and operations API
+  const digestLlmConfig = {
+    provider: config.digest.intelligence.provider ?? config.intelligence.llm.provider,
+    model: config.digest.intelligence.model ?? config.intelligence.llm.model,
+    base_url: config.digest.intelligence.base_url ?? config.intelligence.llm.base_url,
+    context_window: config.digest.intelligence.context_window,
+  };
+  const digestLlm = (config.digest.intelligence.model || config.digest.intelligence.provider)
+    ? createLlmProvider(digestLlmConfig)
+    : llmProvider;
+
   // Digest engine: synthesizes vault knowledge into tiered context extracts
   let metabolism: Metabolism | null = null;
 
   if (config.digest.enabled) {
-    const digestLlmConfig = {
-      provider: config.digest.intelligence.provider ?? config.intelligence.llm.provider,
-      model: config.digest.intelligence.model ?? config.intelligence.llm.model,
-      base_url: config.digest.intelligence.base_url ?? config.intelligence.llm.base_url,
-      context_window: config.digest.intelligence.context_window,
-    };
     logger.debug('digest', 'Digest LLM config', digestLlmConfig);
-    const digestLlm = (config.digest.intelligence.model || config.digest.intelligence.provider)
-      ? createLlmProvider(digestLlmConfig)
-      : llmProvider;
     logger.debug('digest', `Using ${digestLlm.name} provider for digest`);
 
     const digestEngine = new DigestEngine({
@@ -360,7 +598,7 @@ export async function main(): Promise<void> {
     });
 
     if (config.digest.consolidation.enabled) {
-      const consolidationEngine = new ConsolidationEngine({
+      consolidationEngine = new ConsolidationEngine({
         vaultDir,
         index,
         vectorIndex,
@@ -370,50 +608,91 @@ export async function main(): Promise<void> {
         log: (level, message, data) => logger[level]('consolidation', message, data),
       });
 
-      digestEngine.registerPrePass('consolidation', async () => {
-        const result = await consolidationEngine.runPass();
-        if (result && result.consolidated > 0) {
-          logger.info('consolidation', `Consolidation pass: ${result.consolidated} wisdom notes, ${result.sporesSuperseded} spores superseded`);
-        }
-      });
-
-      logger.info('consolidation', 'Auto-consolidation enabled as digest pre-pass');
+      logger.info('consolidation', 'Auto-consolidation enabled as pipeline stage');
     }
 
     metabolism = new Metabolism(config.digest.metabolism);
 
-    // Fire initial cycle in the background — don't block server readiness
-    logger.debug('digest', 'Firing initial digest cycle (background)');
-    digestEngine.runCycle()
-      .then((result) => {
-        if (result) {
-          metabolism!.onSubstrateFound();
-          logger.info('digest', `Initial digest cycle: ${result.tiersGenerated.length} tiers, ${result.durationMs}ms`);
-        }
-      })
-      .catch((err) => {
-        logger.warn('digest', 'Initial digest cycle failed', { error: (err as Error).message });
-        metabolism!.onEmptyCycle();
-      });
+    // Digest is triggered by the pipeline tick, not by the metabolism timer directly.
+    // The metabolism timer only controls cadence (active → cooldown → dormant).
+    // When the metabolism says "it's time" it sets a flag; the pipeline tick checks
+    // the flag and runs digest if upstream is clear. This avoids startup races
+    // where the metabolism fires before the pipeline has processed upstream work.
+    // Start true so digest runs on the first tick after upstream clears.
+    // The hasUpstreamWork() check prevents premature execution.
+    let digestReady = true;
+    let forceDigest = false;
 
-    // Start metabolism timer
     metabolism.start(async () => {
+      // Metabolism says it's time for a digest — set the flag for the pipeline tick
+      digestReady = true;
+    });
+
+    // Register digest as a post-stages step in the pipeline tick
+    const originalTick = pipeline.tick.bind(pipeline);
+    pipeline.tick = async (batchSize: number) => {
+      // Process upstream stages first (extraction, embedding, consolidation)
+      await originalTick(batchSize);
+
+      // Then check if digest should run
+      if (!digestReady) return;
+      if (pipeline.hasUpstreamWork()) {
+        logger.debug('digest', 'Digest deferred — upstream stages pending');
+        return;
+      }
+
+      // Substrate threshold gate: skip if not enough new knowledge (unless forced)
+      if (!forceDigest) {
+        const ready = pipeline.newSubstrateSinceLastDigest();
+        if (ready < config.digest.substrate.min_notes_for_cycle) {
+          logger.debug('digest', 'Digest deferred — insufficient substrate', {
+            ready,
+            threshold: config.digest.substrate.min_notes_for_cycle,
+          });
+          return;
+        }
+      }
+
+      // Reset flags before running
+      digestReady = false;
+      forceDigest = false;
+
       try {
         const cycleResult = await digestEngine.runCycle();
         if (cycleResult) {
           metabolism!.onSubstrateFound();
+          const digestOutput = {
+            included_in_cycle: cycleResult.cycleId,
+            tiers_generated: cycleResult.tiersGenerated,
+          };
+          const advanced = pipeline.advanceDigestItems(digestOutput);
+          if (advanced > 0) {
+            logger.debug('digest', `Advanced ${advanced} pipeline items to digest:succeeded`);
+          }
           logger.info('digest', `Digest cycle ${cycleResult.cycleId}: ${cycleResult.tiersGenerated.length} tiers`);
         } else {
           metabolism!.onEmptyCycle();
-          logger.debug('digest', 'No substrate, backing off');
         }
       } catch (err) {
         logger.warn('digest', 'Digest cycle failed', { error: (err as Error).message });
         metabolism!.onEmptyCycle();
       }
-    });
+    };
 
-    logger.info('digest', 'Digest enabled — starting metabolism');
+    // Digest API routes
+    server.registerRoute('POST', '/api/pipeline/digest/force', handleForceDigest(() => {
+      forceDigest = true;
+    }));
+    server.registerRoute('GET', '/api/pipeline/digest-health', handleDigestHealth({
+      vaultDir,
+      pipeline,
+      minNotesForCycle: config.digest.substrate.min_notes_for_cycle,
+      metabolismState: () => metabolism?.state ?? 'disabled',
+      digestReady: () => digestReady,
+      cycleInProgress: () => digestEngine.isCycleInProgress,
+    }));
+
+    logger.info('digest', 'Digest enabled — controlled by pipeline tick');
   }
 
   const batchManager = new BatchManager(async (closedBatch: BatchEvent[]) => {
@@ -421,19 +700,11 @@ export async function main(): Promise<void> {
 
     const sessionId = closedBatch[0].session_id;
 
-    // Extract observations from this batch
-    const asRecords = closedBatch as Array<Record<string, unknown>>;
-    const result = await processor.process(asRecords, sessionId);
-
-    if (!result.degraded) {
-      writeObservations(result.observations, sessionId, { vault, ...indexDeps });
-    }
-
-    logger.debug('processor', 'Batch processed', {
+    // Batch closure is now an event boundary marker — observation extraction
+    // is deferred to the pipeline extraction stage (Task 10).
+    logger.debug('processor', 'Batch closed (extraction deferred to pipeline)', {
       session_id: sessionId,
       events: closedBatch.length,
-      observations: result.observations.length,
-      degraded: result.degraded,
     });
 
     // Incremental artifact capture: process new markdown files at turn boundaries
@@ -599,6 +870,39 @@ export async function main(): Promise<void> {
     return { body: { ok: true } };
   });
 
+  /** Correlate buffer tool_use events with transcript turns by timestamp to populate toolBreakdown and files. */
+  function enrichTurnsWithToolMetadata(turns: TranscriptTurn[], events: Array<Record<string, unknown>>): void {
+    if (events.length === 0 || turns.length === 0) return;
+
+    const toolEvents = events.filter((e) => e.type === 'tool_use');
+    if (toolEvents.length === 0) return;
+
+    // Linear merge: advance a cursor through sorted tool events as we iterate turns
+    let cursor = 0;
+    for (let i = 0; i < turns.length; i++) {
+      const turnEnd = i + 1 < turns.length ? turns[i + 1].timestamp : null;
+      const breakdown: Record<string, number> = {};
+      const files = new Set<string>();
+
+      while (cursor < toolEvents.length) {
+        const ts = String(toolEvents[cursor].timestamp ?? '');
+        if (turnEnd !== null && ts >= turnEnd) break;
+        const evt = toolEvents[cursor];
+        const toolName = String(evt.tool_name ?? evt.tool ?? 'unknown');
+        breakdown[toolName] = (breakdown[toolName] ?? 0) + 1;
+        const input = evt.tool_input as Record<string, unknown> | undefined;
+        const filePath = input?.file_path ?? input?.path;
+        if (typeof filePath === 'string') files.add(filePath);
+        cursor++;
+      }
+
+      if (Object.keys(breakdown).length > 0) {
+        turns[i].toolBreakdown = breakdown;
+        if (files.size > 0) turns[i].files = [...files];
+      }
+    }
+  }
+
   async function processStopEvent(
     sessionId: string,
     user: string | undefined,
@@ -655,6 +959,8 @@ export async function main(): Promise<void> {
       }
     }
 
+    enrichTurnsWithToolMetadata(allTurns, bufferEvents);
+
     const ended = new Date().toISOString();
     let started = (allTurns.length > 0 && allTurns[0].timestamp) ? allTurns[0].timestamp : ended;
 
@@ -677,11 +983,19 @@ export async function main(): Promise<void> {
     } catch { /* sessions dir may not exist yet */ }
 
     let existingTurnCount = 0;
+    let existingExtractionFields: Record<string, unknown> | null = null;
     if (existingContent) {
       const fmMatch = existingContent.match(/^---\n([\s\S]*?)\n---/);
       if (fmMatch) {
         const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
         if (typeof parsed.started === 'string') started = parsed.started;
+        // Preserve extraction-enriched frontmatter fields across stop-event rebuilds
+        const extractionKeys = ['observations_count', 'summary_tokens', 'extraction_model', 'embedding_model'];
+        const preserved: Record<string, unknown> = {};
+        for (const key of extractionKeys) {
+          if (parsed[key] !== undefined) preserved[key] = parsed[key];
+        }
+        if (Object.keys(preserved).length > 0) existingExtractionFields = preserved;
       }
       const turnMatches = existingContent.match(/^### Turn \d+/gm);
       existingTurnCount = turnMatches?.length ?? 0;
@@ -710,42 +1024,10 @@ export async function main(): Promise<void> {
       return;
     }
 
-    // --- Phase 2: LLM calls in parallel ---
-
-    // Build conversation text for summarization (pure string, no LLM)
-    const conversationText = allTurns.map((t, i) => {
-      const parts = [`### Turn ${i + 1}`];
-      if (t.prompt) parts.push(`Prompt: ${t.prompt}`);
-      if (t.toolCount > 0) parts.push(`Tools: ${t.toolCount} calls`);
-      if (t.aiResponse) parts.push(`Response: ${t.aiResponse}`);
-      return parts.join('\n');
-    }).join('\n\n');
-    const conversationSection = `${CONVERSATION_HEADING}\n\n${conversationText}`;
-
-    // Launch all LLM calls concurrently
-    const observationPromise = lastBatch.length > 0
-      ? processor.process(lastBatch as Array<Record<string, unknown>>, sessionId)
-          .catch((err) => { logger.warn('processor', 'Observation extraction failed', { session_id: sessionId, error: (err as Error).message }); return null; })
-      : Promise.resolve(null);
-
-    const artifactPromise = artifactCandidates.length > 0
-      ? processor.classifyArtifacts(artifactCandidates, sessionId)
-          .then((classified) => captureArtifacts(artifactCandidates, classified, sessionId, { vault, ...indexDeps }, lineageGraph))
-          .catch((err) => { logger.warn('processor', 'Artifact capture failed', { session_id: sessionId, error: (err as Error).message }); })
-      : Promise.resolve();
-
-    const summaryPromise = processor.summarizeSession(conversationSection, sessionId, user)
-      .catch((err) => { logger.warn('processor', 'Session summarization failed', { session_id: sessionId, error: (err as Error).message }); return null; });
-
-    // Wait for all LLM calls to complete
-    const [observationResult, , summaryResult] = await Promise.all([observationPromise, artifactPromise, summaryPromise]);
-
-    // --- Phase 3: Write results to vault ---
-
-    // Write observations
-    if (observationResult && !observationResult.degraded) {
-      writeObservations(observationResult.observations, sessionId, { vault, ...indexDeps });
-    }
+    // --- Phase 2: Capture — write session note without LLM-generated content ---
+    // LLM work (summary, title, observation extraction) is deferred to the
+    // pipeline extraction stage (Task 10). The session note gets a placeholder
+    // title and empty narrative; extraction will fill them in later.
 
     // Compute canonical path
     const date = started.slice(0, 10);
@@ -784,12 +1066,20 @@ export async function main(): Promise<void> {
       turnImageNames.set(i, names);
     }
 
-    // Build and write session note
+    // Build session note. Preserve LLM-generated title + narrative if extraction
+    // has already run (stop events fire repeatedly during a session, and each one
+    // rebuilds the note from the transcript — without this, extraction results are lost).
     let title = `Session ${sessionId}`;
     let narrative = '';
-    if (summaryResult) {
-      title = summaryResult.title;
-      narrative = summaryResult.summary;
+    if (existingContent) {
+      const existingTitle = existingContent.match(/^# (.+)$/m)?.[1];
+      if (existingTitle && existingTitle !== `Session ${sessionId}`) {
+        title = existingTitle;
+      }
+      const calloutMatch = existingContent.match(/> \[!abstract\] Summary\n((?:> .*\n?)*)/);
+      if (calloutMatch) {
+        narrative = calloutMatch[1].replace(/^> /gm, '').trim();
+      }
     }
 
     // Query related spores for this session
@@ -800,8 +1090,6 @@ export async function main(): Promise<void> {
       })
       .map((n) => ({ id: n.id, title: n.title }));
 
-    // The formatter always gets the full turn list — no more partial appending.
-    // existingConversation is no longer needed; we rebuild from the transcript each time.
     const summary = formatSessionBody({
       title,
       narrative,
@@ -814,6 +1102,8 @@ export async function main(): Promise<void> {
       turns: allTurns.map((t, i) => ({
         prompt: t.prompt,
         toolCount: t.toolCount,
+        toolBreakdown: t.toolBreakdown,
+        files: t.files,
         aiResponse: t.aiResponse,
         images: turnImageNames.get(i),
       })),
@@ -831,67 +1121,29 @@ export async function main(): Promise<void> {
       parent: parentId ? sessionWikilink(parentId) : undefined,
       parent_reason: parentLink?.signal,
       tools_used: allTurns.reduce((sum, t) => sum + t.toolCount, 0),
+      transcript_source: turnSource,
+      transcript_path: hookTranscriptPath,
       summary,
     });
-    indexAndEmbed(relativePath, sessionNoteId(sessionId), narrative,
-      { type: 'session', session_id: sessionId }, indexDeps);
+
+    // Restore extraction-enriched frontmatter fields lost during rebuild
+    if (existingExtractionFields) {
+      vault.updateNoteFrontmatter(relativePath, existingExtractionFields);
+    }
+
+    // FTS index immediately so the session is searchable right away
+    indexNote(index, vaultDir, relativePath);
 
     logger.debug('processor', 'Session turns', { source: turnSource, total: allTurns.length });
 
-    // Wait for artifact capture (started concurrently with session building)
-    await artifactPromise;
+    // --- Phase 3: Register in pipeline ---
+    // Capture is complete: transcript read, session note written, images saved.
+    // Register the session and advance capture to succeeded so the extraction
+    // stage picks it up on the next pipeline tick.
+    pipeline.register(sessionId, 'session', relativePath);
+    pipeline.advance(sessionId, 'session', 'capture', 'succeeded');
 
-    // Phase 2: LLM similarity detection (fire-and-forget, only if no heuristic parent)
-    if (!parentId && vectorIndex && narrative) {
-      generateEmbedding(embeddingProvider, narrative)
-        .then(async (emb) => {
-          const candidates = vectorIndex!.search(emb.embedding, { limit: LINEAGE_SIMILARITY_CANDIDATES })
-            .filter((r) => r.metadata.type === 'session' && r.id !== sessionNoteId(sessionId));
-          if (candidates.length === 0) return;
-
-          // Score all candidates in parallel
-          const candidateNotes = index.queryByIds(candidates.map((c) => c.id));
-          const noteMap = new Map(candidateNotes.map((n) => [n.id, n]));
-
-          const scores = await Promise.all(candidates.map(async (candidate) => {
-            const note = noteMap.get(candidate.id);
-            if (!note) return { id: candidate.id, score: 0 };
-            try {
-              const prompt = buildSimilarityPrompt(narrative, note.content.slice(0, CANDIDATE_CONTENT_PREVIEW));
-              const response = await llmProvider.summarize(prompt, { maxTokens: LINEAGE_SIMILARITY_MAX_TOKENS, reasoning: LLM_REASONING_MODE });
-              const score = extractNumber(response.text);
-              return { id: candidate.id, score: isNaN(score) ? 0 : score };
-            } catch { return { id: candidate.id, score: 0 }; }
-          }));
-
-          const best = scores.reduce((a, b) => (b.score > a.score ? b : a));
-
-          if (best.score >= LINEAGE_SIMILARITY_THRESHOLD) {
-            const bestParentId = bareSessionId(best.id);
-            const confidence: LineageLink['confidence'] = best.score >= LINEAGE_SIMILARITY_HIGH_CONFIDENCE ? 'high' : 'medium';
-            lineageGraph.addLink({
-              parent: bestParentId,
-              child: sessionId,
-              signal: 'semantic_similarity',
-              confidence: confidence as 'high' | 'medium',
-            });
-            // Retroactively update session frontmatter with parent + re-index
-            try {
-              vault.updateNoteFrontmatter(relativePath, {
-                parent: sessionWikilink(bestParentId),
-                parent_reason: 'semantic_similarity',
-              });
-              indexNote(index, vaultDir, relativePath);
-            } catch { /* frontmatter update failed — link still in lineage.json */ }
-            logger.info('lineage', 'LLM similarity parent detected', {
-              child: sessionId, parent: bestParentId, score: best.score,
-            });
-          }
-        })
-        .catch((err) => logger.debug('lineage', 'Similarity detection failed', { error: (err as Error).message }));
-    }
-
-    logger.info('processor', 'Session note written', { session_id: sessionId, path: relativePath });
+    logger.info('processor', 'Session captured and registered in pipeline', { session_id: sessionId, path: relativePath });
   }
 
   // Session-start context: digest extract (if available) or structural facts.
@@ -1042,8 +1294,10 @@ export async function main(): Promise<void> {
     index,
     vectorIndex,
     llmProvider,
+    digestLlmProvider: digestLlm,
     embeddingProvider,
     progressTracker,
+    pipeline,
     log: (level, message, data) => {
       const fn = logger[level as keyof typeof logger];
       if (typeof fn === 'function') (fn as typeof logger.info).call(logger, 'operations', message, data);
@@ -1056,6 +1310,16 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/reprocess', async (req) => handleReprocess(operationDeps, req.body));
 
   server.registerRoute('GET', '/api/sessions', async () => handleGetSessions(index));
+
+  // Pipeline API
+  server.registerRoute('GET', '/api/pipeline/health', handlePipelineHealth(pipeline));
+  server.registerRoute('GET', '/api/pipeline/items', handlePipelineItems(pipeline));
+  server.registerRoute('GET', '/api/pipeline/items/:id', handlePipelineItemDetail(pipeline));
+  server.registerRoute('GET', '/api/pipeline/circuits', handlePipelineCircuits(pipeline));
+  server.registerRoute('POST', '/api/pipeline/retry/:id', handlePipelineRetry(pipeline));
+  server.registerRoute('POST', '/api/pipeline/skip/:id', handlePipelineSkip(pipeline));
+  server.registerRoute('POST', '/api/pipeline/retry-all', handlePipelineRetryAll(pipeline));
+  server.registerRoute('POST', '/api/pipeline/circuit/:provider/reset', handlePipelineCircuitReset(pipeline));
 
   await server.evictExistingDaemon();
   const resolvedPort = await resolvePort(config.daemon.port, vaultDir);
@@ -1101,6 +1365,8 @@ export async function main(): Promise<void> {
       await activeStopProcessing;
     }
     metabolism?.stop();
+    clearInterval(pipelineTickTimer);
+    pipeline.close();
     planWatcher.stopFileWatcher();
     registry.destroy();
     await server.stop();

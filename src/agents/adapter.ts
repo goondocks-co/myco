@@ -21,6 +21,10 @@ export interface TranscriptImage {
 export interface TranscriptTurn {
   prompt: string;
   toolCount: number;
+  /** Per-tool call counts (e.g., { Read: 5, Edit: 3 }). Populated from buffer events. */
+  toolBreakdown?: Record<string, number>;
+  /** Deduplicated file paths touched in this turn. Populated from buffer events. */
+  files?: string[];
   aiResponse?: string;
   timestamp: string;
   /** Images attached to this turn's user prompt */
