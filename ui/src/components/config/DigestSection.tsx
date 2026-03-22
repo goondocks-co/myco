@@ -6,7 +6,6 @@ import {
   Field,
   LLM_PROVIDERS,
   CONTEXT_WINDOW_SELECT_OPTIONS,
-  DEFAULT_TIERS,
   COOLDOWN_STAGE_LABELS,
   COOLDOWN_STAGE_DESCRIPTIONS,
   RECOMMENDED_DIGEST,
@@ -130,7 +129,7 @@ export function DigestSection({
           <h4 className="mb-3 text-sm font-medium text-muted-foreground">Tiers</h4>
           <Field label="Token budgets" description="Pre-computed context sizes available for session injection">
             <div className="flex flex-wrap gap-2">
-              {DEFAULT_TIERS.map((tier) => (
+              {digest.tiers.map((tier) => (
                 <Badge key={tier} variant="secondary">
                   {tier.toLocaleString()}
                 </Badge>
@@ -146,7 +145,7 @@ export function DigestSection({
                 }
                 options={[
                   { value: '__null__', label: 'None (disabled)' },
-                  ...DEFAULT_TIERS.map((tier) => ({
+                  ...digest.tiers.map((tier) => ({
                     value: String(tier),
                     label: `${tier.toLocaleString()} tokens`,
                   })),
