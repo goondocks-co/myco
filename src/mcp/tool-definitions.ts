@@ -4,7 +4,7 @@
  * and available to tests, logging, and documentation generators.
  */
 import { OBSERVATION_TYPES, PLAN_STATUSES } from '../vault/types.js';
-import { MCP_SEARCH_DEFAULT_LIMIT, MCP_SESSIONS_DEFAULT_LIMIT, MCP_LOGS_DEFAULT_LIMIT } from '../constants.js';
+import { MCP_SEARCH_DEFAULT_LIMIT, MCP_SESSIONS_DEFAULT_LIMIT } from '../constants.js';
 
 /** Plan statuses plus 'all' for filtering. */
 const PLAN_STATUS_FILTER = [...PLAN_STATUSES, 'all'] as const;
@@ -17,8 +17,6 @@ export const TOOL_PLANS = 'myco_plans';
 export const TOOL_SESSIONS = 'myco_sessions';
 export const TOOL_TEAM = 'myco_team';
 export const TOOL_GRAPH = 'myco_graph';
-export const TOOL_ORPHANS = 'myco_orphans';
-export const TOOL_LOGS = 'myco_logs';
 export const TOOL_SUPERSEDE = 'myco_supersede';
 export const TOOL_CONSOLIDATE = 'myco_consolidate';
 export const TOOL_CONTEXT = 'myco_context';
@@ -45,13 +43,13 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: TOOL_RECALL,
-    description: 'Get context relevant to your current work — spores, sessions, and plans related to the branch and files you are working on. Use at the start of a task or when you need background on a component.',
+    description: 'Look up a specific vault note by ID — returns the full content of a session, spore, or plan. Use when you have a note ID from search results or graph traversal and need the complete details.',
     inputSchema: {
       type: 'object' as const,
       properties: {
-        branch: { type: 'string', description: PROP_BRANCH },
-        files: { type: 'array', items: { type: 'string' }, description: 'File paths you are working on — finds spores tagged with these files' },
+        note_id: { type: 'string', description: 'Note ID to look up (e.g., "session-abc123", "decision-xyz789", "plan-feature-x")' },
       },
+      required: ['note_id'],
     },
   },
   {
@@ -117,28 +115,6 @@ export const TOOL_DEFINITIONS = [
         depth: { type: 'number', description: 'How many hops to traverse, 1-3 (default: 1)' },
       },
       required: ['note_id'],
-    },
-  },
-  {
-    name: TOOL_ORPHANS,
-    description: 'Find vault notes with no connections — potentially stale or unlinked knowledge that may need review or cleanup.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {},
-    },
-  },
-  {
-    name: TOOL_LOGS,
-    description: 'View daemon logs for debugging when sessions are not being captured, observations are missing, or embeddings fail. Filter by level, component, or time range.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        limit: { type: 'number', description: `Max entries to return (default: ${MCP_LOGS_DEFAULT_LIMIT})` },
-        level: { type: 'string', enum: ['debug', 'info', 'warn', 'error'], description: 'Minimum log level filter' },
-        component: { type: 'string', description: 'Component filter: daemon, processor, hooks, lifecycle, embeddings, mcp, lineage, watcher' },
-        since: { type: 'string', description: PROP_SINCE },
-        until: { type: 'string', description: 'ISO timestamp — entries before this time' },
-      },
     },
   },
   {

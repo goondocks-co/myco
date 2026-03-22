@@ -1,6 +1,26 @@
-import type { MycoIndex, IndexedNote } from '../../index/sqlite.js';
+/**
+ * myco_graph — traverse connections between vault notes via entities and edges.
+ *
+ * Phase 1: the entities/edges tables are empty (populated by future
+ * intelligence agents). Returns empty results gracefully. The handler
+ * structure is in place for Phase 3 knowledge graph features.
+ */
 
-const WIKILINK_RE = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
+import { getDatabase } from '@myco/db/client.js';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Maximum traversal depth to prevent runaway queries. */
+const MAX_DEPTH = 3;
+
+/** Default traversal depth. */
+const DEFAULT_DEPTH = 1;
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface GraphInput {
   note_id: string;
@@ -8,139 +28,84 @@ interface GraphInput {
   depth?: number;
 }
 
-interface GraphLink {
-  source: string;
-  target: string;
-  source_type: string;
-  target_type: string;
-  source_title: string;
-  target_title: string;
+interface GraphEdge {
+  source_id: string;
+  target_id: string;
+  type: string;
+  confidence: number;
 }
 
 interface GraphResult {
   note_id: string;
-  links: GraphLink[];
+  edges: GraphEdge[];
+  entities: Array<{ id: string; type: string; name: string }>;
 }
 
-function extractWikilinks(content: string): string[] {
-  const links: string[] = [];
-  let match;
-  while ((match = WIKILINK_RE.exec(content)) !== null) {
-    links.push(match[1]);
-  }
-  return links;
-}
-
-function findNoteById(index: MycoIndex, noteId: string): IndexedNote | null {
-  const results = index.query({ id: noteId, limit: 1 });
-  return results[0] ?? null;
-}
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
 
 export async function handleMycoGraph(
-  index: MycoIndex,
   input: GraphInput,
 ): Promise<GraphResult> {
+  const db = getDatabase();
   const direction = input.direction ?? 'both';
-  const depth = Math.min(input.depth ?? 1, 3);
+  const depth = Math.min(input.depth ?? DEFAULT_DEPTH, MAX_DEPTH);
 
-  const visited = new Set<string>();
-  const allLinks: GraphLink[] = [];
+  // Query entity_mentions for this note to find related entities
+  const mentions = await db.query(
+    `SELECT DISTINCT entity_id
+     FROM entity_mentions
+     WHERE note_id = $1`,
+    [input.note_id],
+  );
 
-  function traverse(noteId: string, currentDepth: number): void {
-    if (currentDepth > depth || visited.has(noteId)) return;
-    visited.add(noteId);
+  const entityIds = (mentions.rows as Record<string, unknown>[]).map(
+    (r) => r.entity_id as string,
+  );
 
-    const note = findNoteById(index, noteId);
-
-    // Outgoing: wikilinks in this note's content
-    if (direction === 'outgoing' || direction === 'both') {
-      if (note) {
-        const targets = extractWikilinks(note.content);
-        for (const target of targets) {
-          const targetNote = findNoteById(index, target);
-          allLinks.push({
-            source: noteId,
-            target,
-            source_type: note.type,
-            target_type: targetNote?.type ?? 'unknown',
-            source_title: note.title,
-            target_title: targetNote?.title ?? target,
-          });
-          if (currentDepth < depth) traverse(target, currentDepth + 1);
-        }
-      }
-    }
-
-    // Incoming: other notes whose content links to this note
-    if (direction === 'incoming' || direction === 'both') {
-      const allNotes = index.query({ limit: 500 });
-      for (const n of allNotes) {
-        if (n.id === noteId) continue;
-        const links = extractWikilinks(n.content);
-        if (links.includes(noteId)) {
-          allLinks.push({
-            source: n.id,
-            target: noteId,
-            source_type: n.type,
-            target_type: note?.type ?? 'unknown',
-            source_title: n.title,
-            target_title: note?.title ?? noteId,
-          });
-          if (currentDepth < depth) traverse(n.id, currentDepth + 1);
-        }
-      }
-    }
+  if (entityIds.length === 0) {
+    return { note_id: input.note_id, edges: [], entities: [] };
   }
 
-  traverse(input.note_id, 1);
+  // Fetch the entities
+  const placeholders = entityIds.map((_, i) => `$${i + 1}`).join(', ');
+  const entities = await db.query(
+    `SELECT id, type, name
+     FROM entities
+     WHERE id IN (${placeholders})`,
+    entityIds,
+  );
 
-  // Deduplicate links
-  const seen = new Set<string>();
-  const unique = allLinks.filter((link) => {
-    const key = `${link.source}->${link.target}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-
-  return { note_id: input.note_id, links: unique };
-}
-
-interface OrphansResult {
-  orphans: Array<{ id: string; type: string; title: string; path: string }>;
-}
-
-export async function handleMycoOrphans(index: MycoIndex): Promise<OrphansResult> {
-  const allNotes = index.query({ limit: 1000 });
-
-  // Build maps of all links
-  const hasOutgoing = new Set<string>();
-  const isLinkedTo = new Set<string>();
-
-  for (const note of allNotes) {
-    const links = extractWikilinks(note.content);
-    if (links.length > 0) hasOutgoing.add(note.id);
-    for (const target of links) {
-      isLinkedTo.add(target);
-    }
-    // Also check frontmatter session/plan refs
-    const fm = note.frontmatter as Record<string, unknown>;
-    if (fm.session && typeof fm.session === 'string') {
-      isLinkedTo.add(fm.session);
-    }
-    if (fm.plan && typeof fm.plan === 'string') {
-      isLinkedTo.add(fm.plan);
-    }
+  // Fetch edges connected to these entities
+  const edgeConditions: string[] = [];
+  if (direction === 'outgoing' || direction === 'both') {
+    edgeConditions.push(`source_id IN (${placeholders})`);
+  }
+  if (direction === 'incoming' || direction === 'both') {
+    edgeConditions.push(`target_id IN (${placeholders})`);
   }
 
-  const orphans = allNotes.filter((note) =>
-    !hasOutgoing.has(note.id) && !isLinkedTo.has(note.id),
-  ).map((note) => ({
-    id: note.id,
-    type: note.type,
-    title: note.title,
-    path: note.path,
-  }));
+  const edgeWhere = edgeConditions.join(' OR ');
+  const edges = await db.query(
+    `SELECT source_id, target_id, type, confidence
+     FROM edges
+     WHERE ${edgeWhere}`,
+    entityIds,
+  );
 
-  return { orphans };
+  return {
+    note_id: input.note_id,
+    edges: (edges.rows as Record<string, unknown>[]).map((r) => ({
+      source_id: r.source_id as string,
+      target_id: r.target_id as string,
+      type: r.type as string,
+      confidence: (r.confidence as number) ?? 1.0,
+    })),
+    entities: (entities.rows as Record<string, unknown>[]).map((r) => ({
+      id: r.id as string,
+      type: r.type as string,
+      name: r.name as string,
+    })),
+  };
 }

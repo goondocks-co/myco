@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { DaemonServer } from '@myco/daemon/server';
 import { SessionRegistry } from '@myco/daemon/lifecycle';
-import { BatchManager } from '@myco/daemon/batch';
 import { DaemonLogger } from '@myco/daemon/logger';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -18,7 +17,6 @@ describe('Daemon Integration', () => {
     logger = new DaemonLogger(path.join(vaultDir, 'logs'));
     server = new DaemonServer({ vaultDir, logger });
 
-    const batchManager = new BatchManager(() => {});
     const registry = new SessionRegistry({ gracePeriod: 60, onEmpty: () => {} });
 
     server.registerRoute('POST', '/sessions/register', async (req: any) => {
@@ -27,11 +25,11 @@ describe('Daemon Integration', () => {
     server.registerRoute('POST', '/sessions/unregister', async (req: any) => {
       registry.unregister(req.body.session_id); return { body: { ok: true } };
     });
-    server.registerRoute('POST', '/events', async (req: any) => {
-      batchManager.addEvent({ ...req.body, timestamp: new Date().toISOString() }); return { body: { ok: true } };
+    server.registerRoute('POST', '/events', async () => {
+      return { body: { ok: true } };
     });
-    server.registerRoute('POST', '/events/stop', async (req: any) => {
-      batchManager.finalize(req.body.session_id); return { body: { ok: true } };
+    server.registerRoute('POST', '/events/stop', async () => {
+      return { body: { ok: true } };
     });
     server.registerRoute('POST', '/context', async () => ({ body: { text: '' } }));
 

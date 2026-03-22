@@ -11,20 +11,17 @@ const USAGE = `Usage: myco <command> [args]
 Commands:
   init [options]           Initialize a new vault
   config <get|set> [args]  Get or set vault config values
-  curate [options]         Scan vault and supersede stale spores (--dry-run)
   detect-providers         Detect available LLM/embedding providers (JSON)
   verify                   Test LLM and embedding connectivity
   stats                    Vault health, index counts, vector count
   search <query>           Combined FTS + vector search with scores
   vectors <query>          Raw vector search with similarity scores
-  session [id|latest]      Show a session note
+  session [id|latest]      Show a session
   logs [options]           View daemon logs
   setup-llm [options]      Configure LLM and embedding providers
   setup-digest [options]   Configure digest and capture settings
-  digest [options]         Run a digest cycle (--tier N, --full)
+  curate [options]         Run the curation agent
   restart                  Restart the daemon
-  rebuild                  Reindex the entire vault
-  reprocess [options]      Re-extract observations, regenerate summaries, re-index
   version                  Show plugin version
 `;
 
@@ -51,7 +48,6 @@ async function main(): Promise<void> {
 
   switch (cmd) {
     case 'config': return (await import('./cli/config.js')).run(args, vaultDir);
-    case 'curate': return (await import('./cli/curate.js')).run(args, vaultDir);
     case 'verify': return (await import('./cli/verify.js')).run(args, vaultDir);
     case 'stats': return (await import('./cli/stats.js')).run(args, vaultDir);
     case 'search': return (await import('./cli/search.js')).run(args, vaultDir);
@@ -59,10 +55,8 @@ async function main(): Promise<void> {
     case 'session': return (await import('./cli/session.js')).run(args, vaultDir);
     case 'setup-llm': return (await import('./cli/setup-llm.js')).run(args, vaultDir);
     case 'setup-digest': return (await import('./cli/setup-digest.js')).run(args, vaultDir);
-    case 'digest': return (await import('./cli/digest.js')).run(args, vaultDir);
+    case 'curate': return (await import('./cli/curate.js')).run(args, vaultDir);
     case 'restart': return (await import('./cli/restart.js')).run(args, vaultDir);
-    case 'rebuild': return (await import('./cli/rebuild.js')).run(args, vaultDir);
-    case 'reprocess': return (await import('./cli/reprocess.js')).run(args, vaultDir);
     case 'logs': return (await import('./cli/logs.js')).run(args, vaultDir);
     default:
       console.error(`Unknown command: ${cmd}`);

@@ -1,11 +1,15 @@
-import { MycoIndex } from '../index/sqlite.js';
-import { VectorIndex } from '../index/vectors.js';
-import { isProcessAlive } from '../cli/shared.js';
+/**
+ * Vault statistics — gathered from PGlite.
+ */
+
+import { getDatabase } from '@myco/db/client.js';
+import { isProcessAlive } from '@myco/cli/shared.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
-/** Fallback dimension for opening VectorIndex when the actual dimension is unknown. */
-const VECTOR_FALLBACK_DIMENSION = 1024;
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 export interface VaultStats {
   vault: {
@@ -17,8 +21,8 @@ export interface VaultStats {
     artifact_count: number;
   };
   index: {
-    fts_entries: number;
-    vector_count: number;
+    embedded_sessions: number;
+    embedded_spores: number;
   };
   daemon: {
     pid: number;
@@ -29,24 +33,36 @@ export interface VaultStats {
   } | null;
 }
 
-export function gatherStats(vaultDir: string, index: MycoIndex, vectorIndex?: VectorIndex): VaultStats {
-  const typeCounts = index.countByType();
-  const spore_counts = index.sporeCountsByObservationType();
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
-  let vector_count = 0;
-  if (vectorIndex) {
-    vector_count = vectorIndex.count();
-  } else {
-    const vecDb = path.join(vaultDir, 'vectors.db');
-    if (fs.existsSync(vecDb)) {
-      try {
-        const vec = new VectorIndex(vecDb, VECTOR_FALLBACK_DIMENSION);
-        vector_count = vec.count();
-        vec.close();
-      } catch { /* ignore */ }
-    }
+export async function gatherStats(vaultDir: string): Promise<VaultStats> {
+  const db = getDatabase();
+
+  // Run all independent COUNT queries in parallel
+  const [sessionResult, planResult, artifactResult, sporeResult, embSessionResult, embSporeResult] = await Promise.all([
+    db.query('SELECT COUNT(*) AS cnt FROM sessions'),
+    db.query('SELECT COUNT(*) AS cnt FROM plans'),
+    db.query('SELECT COUNT(*) AS cnt FROM artifacts'),
+    db.query('SELECT observation_type, COUNT(*) AS cnt FROM spores GROUP BY observation_type'),
+    db.query('SELECT COUNT(*) AS cnt FROM sessions WHERE embedding IS NOT NULL'),
+    db.query('SELECT COUNT(*) AS cnt FROM spores WHERE embedding IS NOT NULL'),
+  ]);
+
+  const session_count = (sessionResult.rows[0] as Record<string, unknown>).cnt as number;
+  const plan_count = (planResult.rows[0] as Record<string, unknown>).cnt as number;
+  const artifact_count = (artifactResult.rows[0] as Record<string, unknown>).cnt as number;
+
+  const spore_counts: Record<string, number> = {};
+  for (const row of sporeResult.rows as Record<string, unknown>[]) {
+    spore_counts[row.observation_type as string] = row.cnt as number;
   }
 
+  const embedded_sessions = (embSessionResult.rows[0] as Record<string, unknown>).cnt as number;
+  const embedded_spores = (embSporeResult.rows[0] as Record<string, unknown>).cnt as number;
+
+  // Daemon info
   let daemon: VaultStats['daemon'] = null;
   const daemonPath = path.join(vaultDir, 'daemon.json');
   if (fs.existsSync(daemonPath)) {
@@ -67,13 +83,13 @@ export function gatherStats(vaultDir: string, index: MycoIndex, vectorIndex?: Ve
       path: vaultDir,
       name: path.basename(vaultDir),
       spore_counts,
-      session_count: typeCounts['session'] ?? 0,
-      plan_count: typeCounts['plan'] ?? 0,
-      artifact_count: typeCounts['artifact'] ?? 0,
+      session_count,
+      plan_count,
+      artifact_count,
     },
     index: {
-      fts_entries: Object.values(typeCounts).reduce((sum, n) => sum + n, 0),
-      vector_count,
+      embedded_sessions,
+      embedded_spores,
     },
     daemon,
   };

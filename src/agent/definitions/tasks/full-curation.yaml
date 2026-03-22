@@ -1,0 +1,17 @@
+# Full curation pass — the default task.
+# Processes all unprocessed data: extraction, graph building, curation, digest.
+
+name: full-curation
+displayName: Full Curation
+description: >
+  Complete curation pass over all unprocessed session data. Extracts
+  observations, builds knowledge graph entities and edges, runs supersession
+  checks, updates session summaries, and regenerates digest extracts.
+agent: myco-curator
+prompt: >
+  Process all unprocessed prompt batches and sessions. For each batch:
+  extract observations as spores, identify entities and relationships for the
+  knowledge graph, check for supersession against existing spores, and update
+  the session summary. After processing all new data, regenerate digest
+  extracts if the substrate has changed.
+isDefault: true

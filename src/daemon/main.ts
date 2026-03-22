@@ -1,193 +1,180 @@
+/**
+ * Myco daemon — PGlite capture engine.
+ *
+ * This is the v2 rewrite: all data goes to PGlite instead of markdown vault +
+ * SQLite. The intelligence pipeline (extraction, embedding, consolidation,
+ * digest) is removed — it moves to Phase 2 Agent SDK. What remains is the
+ * capture layer: session lifecycle, prompt batch tracking, activity recording,
+ * and transcript mining.
+ */
+
 import { DaemonServer } from './server.js';
 import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger } from './logger.js';
 import { loadConfig, saveConfig } from '../config/loader.js';
-import { BatchManager, type BatchEvent } from './batch.js';
-import { BufferProcessor, SUMMARIZATION_FAILED_MARKER, type Observation, type ClassifiedArtifact } from './processor.js';
-import { VaultWriter } from '../vault/writer.js';
-import { MycoIndex } from '../index/sqlite.js';
-import { indexNote, rebuildIndex } from '../index/rebuild.js';
-import { initFts } from '../index/fts.js';
-import { createLlmProvider, createEmbeddingProvider } from '../intelligence/llm.js';
-import type { EmbeddingProvider, LlmProvider } from '../intelligence/llm.js';
-import { VectorIndex } from '../index/vectors.js';
-import { generateEmbedding } from '../intelligence/embeddings.js';
-import { LineageGraph } from './lineage.js';
-import type { RegisteredSession } from './lifecycle.js';
-import { PlanWatcher } from './watcher.js';
-import { DigestEngine, Metabolism } from './digest.js';
-import { ConsolidationEngine } from './consolidation.js';
 import { resolvePort } from './port.js';
-import { handleMycoContext } from '../mcp/tools/context.js';
-import { EMBEDDING_INPUT_LIMIT, CONTENT_SNIPPET_CHARS, STALE_BUFFER_MAX_AGE_MS, LINEAGE_RECENT_SESSIONS_LIMIT, RELATED_SPORES_LIMIT, SESSION_CONTEXT_MAX_PLANS, PROMPT_CONTEXT_MAX_SPORES, PROMPT_CONTEXT_MIN_SIMILARITY, PROMPT_CONTEXT_MIN_LENGTH, CONTEXT_SESSION_PREVIEW_CHARS, LOG_PROMPT_PREVIEW_CHARS, LOG_MESSAGE_PREVIEW_CHARS, estimateTokens } from '../constants.js';
 import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter, extensionForMimeType, type TranscriptTurn } from '../agents/adapter.js';
 import { claudeCodeAdapter } from '../agents/claude-code.js';
 import { EventBuffer } from '../capture/buffer.js';
-import { formatSessionBody, CONVERSATION_HEADING, extractSection } from '../obsidian/formatter.js';
-import { writeObservationNotes } from '../vault/observations.js';
-import { checkSupersession } from '../vault/curation.js';
-import { collectArtifactCandidates } from '../artifacts/candidates.js';
-import { slugifyPath } from '../artifacts/slugify.js';
-import { sessionNoteId, bareSessionId, sessionWikilink, sessionRelativePath } from '../vault/session-id.js';
+import { PlanWatcher } from './watcher.js';
+import type { RegisteredSession } from './lifecycle.js';
 import { handleGetConfig, handlePutConfig } from './api/config.js';
-import { handleGetStats, computeConfigHash } from './api/stats.js';
 import { handleGetLogs } from './api/logs.js';
 import { handleRestart } from './api/restart.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
-import { handleRebuild, handleDigest, handleCurate, handleReprocess } from './api/operations.js';
 import { handleGetModels } from './api/models.js';
-import { handleGetSessions } from './api/sessions.js';
+import { computeConfigHash } from './api/stats.js';
+import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
+import { upsertSession, closeSession, updateSession, listSessions } from '../db/queries/sessions.js';
+import { insertBatch, closeBatch, incrementActivityCount } from '../db/queries/batches.js';
+import { insertActivity } from '../db/queries/activities.js';
+import { listRuns, getRun } from '../db/queries/runs.js';
+import { listReports } from '../db/queries/reports.js';
 import {
-  handlePipelineHealth,
-  handlePipelineItems,
-  handlePipelineItemDetail,
-  handlePipelineCircuits,
-  handlePipelineRetry,
-  handlePipelineSkip,
-  handlePipelineRetryAll,
-  handlePipelineCircuitReset,
-} from './api/pipeline.js';
-import { handleForceDigest, handleDigestHealth } from './api/digest.js';
-import { PipelineManager } from './pipeline.js';
-import type { OperationHandlerDeps } from './api/operations.js';
-import { runCuration, updateTitleAndSummary } from '../services/vault-ops.js';
+  STALE_BUFFER_MAX_AGE_MS,
+  LOG_PROMPT_PREVIEW_CHARS,
+  LOG_MESSAGE_PREVIEW_CHARS,
+  epochSeconds,
+} from '../constants.js';
 import { z } from 'zod';
-import YAML from 'yaml';
 import fs from 'node:fs';
 import path from 'node:path';
-import { stripFrontmatter } from '../vault/frontmatter.js';
 
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
-interface IndexDeps {
-  index: MycoIndex;
-  vaultDir: string;
-  vectorIndex: VectorIndex | null;
-  embeddingProvider: EmbeddingProvider;
-  llmProvider: LlmProvider;
-  logger: DaemonLogger;
+/** Interval between curation timer checks (ms). */
+const CURATION_CHECK_INTERVAL_MS = 300_000; // 5 minutes
+
+/** Default limit for listing agent runs in the API. */
+const AGENT_RUNS_DEFAULT_LIMIT = 50;
+
+/** Prompt count tracking key prefix for in-memory session state. */
+const INITIAL_PROMPT_NUMBER = 1;
+
+/** Max chars of tool input stored in the activity row. */
+const TOOL_INPUT_STORE_LIMIT = 4000;
+
+/** Max chars of tool output summary stored in the activity row. */
+const TOOL_OUTPUT_STORE_LIMIT = 2000;
+
+/** Max chars for deriving a title from the first user prompt. */
+const TITLE_PREVIEW_CHARS = 80;
+
+// ---------------------------------------------------------------------------
+// Event handling helpers (exported for testing)
+// ---------------------------------------------------------------------------
+
+/** Per-session state for prompt batch tracking. */
+export interface SessionBatchState {
+  currentBatchId: number | null;
+  promptNumber: number;
 }
 
-function indexAndEmbed(
-  relativePath: string,
-  noteId: string,
-  embeddingText: string,
-  metadata: Record<string, string>,
-  deps: IndexDeps,
-): void {
-  indexNote(deps.index, deps.vaultDir, relativePath);
-  if (deps.vectorIndex && embeddingText) {
-    generateEmbedding(deps.embeddingProvider, embeddingText.slice(0, EMBEDDING_INPUT_LIMIT))
-      .then((emb) => deps.vectorIndex!.upsert(noteId, emb.embedding, metadata))
-      .catch((err) => deps.logger.debug('embeddings', 'Embedding failed', { id: noteId, error: (err as Error).message }));
-  }
-}
+/** In-memory map of session_id → current batch state. */
+export type BatchStateMap = Map<string, SessionBatchState>;
 
-function writeObservations(
-  observations: Observation[],
+/**
+ * Handle a UserPromptSubmit event: close previous batch, open new one.
+ *
+ * @returns the new batch ID
+ */
+export async function handleUserPrompt(
   sessionId: string,
-  deps: IndexDeps & { vault: VaultWriter },
-): void {
-  const written = writeObservationNotes(observations, sessionId, deps.vault, deps.index, deps.vaultDir);
-  for (const note of written) {
-    indexAndEmbed(note.path, note.id, `${note.observation.title}\n${note.observation.content}`,
-      { type: 'spore', importance: 'high', session_id: sessionId }, deps);
-    deps.logger.info('processor', 'Observation written', { type: note.observation.type, title: note.observation.title, session_id: sessionId });
+  prompt: string | undefined,
+  batchState: BatchStateMap,
+): Promise<number> {
+  const now = epochSeconds();
+  const state = batchState.get(sessionId) ?? { currentBatchId: null, promptNumber: INITIAL_PROMPT_NUMBER };
+
+  // Close previous batch if open
+  if (state.currentBatchId !== null) {
+    await closeBatch(state.currentBatchId, now);
   }
 
-  // Fire-and-forget supersession checks — sequential to avoid thundering herd on the LLM
-  if (written.length > 0) {
-    const curationDeps = {
-      index: deps.index,
-      vectorIndex: deps.vectorIndex,
-      embeddingProvider: deps.embeddingProvider,
-      llmProvider: deps.llmProvider,
-      vaultDir: deps.vaultDir,
-      log: ((level: string, msg: string, data?: Record<string, unknown>) => (deps.logger as any)[level]('curation', msg, data)) as Parameters<typeof checkSupersession>[1]['log'],
-    };
-    (async () => {
-      for (const note of written) {
-        try { await checkSupersession(note.id, curationDeps); }
-        catch (err) { deps.logger.debug('curation', 'Supersession check failed', { id: note.id, error: (err as Error).message }); }
-      }
-    })();
-  }
+  // Insert new batch
+  const batch = await insertBatch({
+    session_id: sessionId,
+    prompt_number: state.promptNumber,
+    user_prompt: prompt ?? null,
+    started_at: now,
+    created_at: now,
+  });
+
+  // Update state
+  state.currentBatchId = batch.id;
+  state.promptNumber++;
+  batchState.set(sessionId, state);
+
+  // Increment session prompt count
+  await updateSession(sessionId, { prompt_count: state.promptNumber - 1 });
+
+  return batch.id;
 }
 
-async function captureArtifacts(
-  candidates: Array<{ path: string; content: string }>,
-  classified: ClassifiedArtifact[],
+/**
+ * Handle a PostToolUse event: insert activity, increment batch count.
+ */
+export async function handleToolUse(
   sessionId: string,
-  deps: IndexDeps & { vault: VaultWriter },
-  lineage?: LineageGraph,
+  toolName: string,
+  toolInput: unknown,
+  toolOutput: string | undefined,
+  batchState: BatchStateMap,
 ): Promise<void> {
-  const candidateMap = new Map(candidates.map((c) => [c.path, c]));
+  const now = epochSeconds();
+  const state = batchState.get(sessionId);
+  const batchId = state?.currentBatchId ?? null;
 
-  for (const artifact of classified) {
-    const candidate = candidateMap.get(artifact.source_path);
-    if (!candidate) continue;
+  // Extract file_path from tool input if present
+  const inputObj = toolInput as Record<string, unknown> | undefined;
+  const filePath = typeof inputObj?.file_path === 'string' ? inputObj.file_path : null;
 
-    const artifactId = slugifyPath(artifact.source_path);
-    const artifactPath = deps.vault.writeArtifact({
-      id: artifactId,
-      artifact_type: artifact.artifact_type,
-      source_path: artifact.source_path,
-      title: artifact.title,
-      session: sessionId,
-      tags: artifact.tags,
-      content: candidate.content,
-    });
-    indexAndEmbed(artifactPath, artifactId, `${artifact.title}\n${candidate.content}`,
-      { type: 'artifact', artifact_type: artifact.artifact_type, session_id: sessionId }, deps);
-    deps.logger.info('processor', 'Artifact captured', {
-      id: artifactId,
-      type: artifact.artifact_type,
-      source: artifact.source_path,
-    });
+  const activityPromise = insertActivity({
+    session_id: sessionId,
+    prompt_batch_id: batchId,
+    tool_name: toolName,
+    tool_input: toolInput ? JSON.stringify(toolInput).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
+    tool_output_summary: toolOutput?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
+    file_path: filePath,
+    timestamp: now,
+    created_at: now,
+  });
 
-    // Register artifact-session association for lineage detection.
-    // Future sessions referencing this artifact ID link as children.
-    lineage?.registerArtifactForSession(sessionId, artifactId);
+  if (batchId !== null) {
+    await Promise.all([activityPromise, incrementActivityCount(batchId)]);
+  } else {
+    await activityPromise;
   }
+  // Session-level tool_count is updated at stop time from transcript data.
 }
 
-export function migrateSporeFiles(vaultDir: string): number {
-  const sporesDir = path.join(vaultDir, 'spores');
-  if (!fs.existsSync(sporesDir)) return 0;
+/**
+ * Handle session stop: close batch, close session, mine transcript for title.
+ */
+export async function handleSessionStop(
+  sessionId: string,
+  batchState: BatchStateMap,
+): Promise<void> {
+  const now = epochSeconds();
+  const state = batchState.get(sessionId);
 
-  let moved = 0;
-  const entries = fs.readdirSync(sporesDir);
-
-  for (const entry of entries) {
-    const fullPath = path.join(sporesDir, entry);
-    if (!entry.endsWith('.md')) continue;
-    if (fs.statSync(fullPath).isDirectory()) continue;
-
-    try {
-      const content = fs.readFileSync(fullPath, 'utf-8');
-      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      if (!fmMatch) continue;
-
-      const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
-      const obsType = parsed.observation_type as string | undefined;
-      if (!obsType) continue;
-
-      const normalizedType = obsType.replace(/_/g, '-');
-      const targetDir = path.join(sporesDir, normalizedType);
-      fs.mkdirSync(targetDir, { recursive: true });
-      const targetPath = path.join(targetDir, entry);
-      fs.renameSync(fullPath, targetPath);
-      // Touch the file so Obsidian detects the move and re-indexes backlinks
-      const now = new Date();
-      fs.utimesSync(targetPath, now, now);
-      moved++;
-    } catch {
-      // Skip files that can't be read or parsed
-    }
+  // Close current batch if open
+  if (state?.currentBatchId !== null && state?.currentBatchId !== undefined) {
+    await closeBatch(state.currentBatchId, now);
+    state.currentBatchId = null;
+    batchState.set(sessionId, state);
   }
 
-  return moved;
+  // Close session
+  await closeSession(sessionId, now);
 }
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
 export async function main(): Promise<void> {
   const vaultArg = process.argv.find((_, i) => process.argv[i - 1] === '--vault');
@@ -206,10 +193,23 @@ export async function main(): Promise<void> {
 
   logger.info('daemon', 'Config loaded', {
     vault: vaultDir,
-    digest_enabled: config.digest.enabled,
     intelligence_provider: config.intelligence.llm.provider,
     embedding_provider: config.intelligence.embedding.provider,
   });
+
+  // --- PGlite initialization ---
+  await initDatabaseForVault(vaultDir);
+  logger.info('daemon', 'PGlite initialized', { vault: vaultDir });
+
+  // --- Register built-in curators and tasks ---
+  try {
+    const { registerBuiltInCuratorsAndTasks, resolveDefinitionsDir } = await import('../agent/loader.js');
+    const definitionsDir = resolveDefinitionsDir();
+    await registerBuiltInCuratorsAndTasks(definitionsDir);
+    logger.info('agent', 'Built-in curators and tasks registered');
+  } catch (err) {
+    logger.warn('agent', 'Failed to register built-in curators/tasks', { error: (err as Error).message });
+  }
 
   // Resolve dist/ui/ — walk up to find package.json (same strategy as prompts loader)
   let uiDir: string | null = null;
@@ -237,261 +237,6 @@ export async function main(): Promise<void> {
     onEmpty: () => {},
   });
 
-  // Batch processing setup
-  const llmProvider = createLlmProvider(config.intelligence.llm);
-  const embeddingProvider = createEmbeddingProvider(config.intelligence.embedding);
-
-  let vectorIndex: VectorIndex | null = null;
-  try {
-    const testEmbed = await embeddingProvider.embed('test');
-    vectorIndex = new VectorIndex(path.join(vaultDir, 'vectors.db'), testEmbed.dimensions);
-    logger.info('embeddings', 'Vector index initialized', { dimensions: testEmbed.dimensions });
-  } catch (error) {
-    logger.warn('embeddings', 'Vector index unavailable', { error: (error as Error).message });
-  }
-
-  const processor = new BufferProcessor(llmProvider, config.intelligence.llm.context_window, config.capture);
-  const vault = new VaultWriter(vaultDir);
-  const index = new MycoIndex(path.join(vaultDir, 'index.db'));
-  const lineageGraph = new LineageGraph(vaultDir);
-  const pipeline = new PipelineManager(vaultDir, config.pipeline);
-
-  // Recover any items stuck in 'processing' from a previous daemon crash
-  const recoveredCount = pipeline.recoverStuck();
-  if (recoveredCount > 0) {
-    logger.info('pipeline', 'Recovered stuck pipeline items', { count: recoveredCount });
-  }
-
-  // First-run migration: if pipeline.db was just created (no work items),
-  // rebuild from vault to catch up with existing content
-  if (pipeline.isEmpty()) {
-    logger.info('pipeline', 'First-run migration: rebuilding pipeline from vault');
-    const result = pipeline.rebuild(vaultDir, vectorIndex, path.join(vaultDir, 'digest', 'trace.jsonl'));
-    logger.info('pipeline', 'Pipeline rebuild complete', { registered: result.registered, stages: result.stages });
-  }
-
-  // Consolidation engine — declared here so pipeline handler can capture it.
-  // Assigned later when digest.consolidation.enabled is true.
-  let consolidationEngine: ConsolidationEngine | null = null;
-
-  // Flag to ensure consolidationEngine.runPass() is called at most once per tick.
-  // runPass() processes ALL pending spores, so calling it per-item is redundant.
-  let consolidationPassRanThisTick = false;
-
-  // Pipeline stage handlers
-  pipeline.setHandlers({
-    extraction: async (itemId, itemType, sourcePath) => {
-      if (itemType !== 'session') return; // Only sessions have extraction
-
-      logger.info('pipeline', 'Extraction started', { session_id: itemId });
-
-      // 1. Read the session note to get conversation section and user
-      const fullPath = sourcePath ? path.join(vaultDir, sourcePath) : null;
-      if (!fullPath || !fs.existsSync(fullPath)) {
-        throw new Error(`Session note not found: ${sourcePath}`);
-      }
-      const fileContent = fs.readFileSync(fullPath, 'utf-8');
-      const { body, frontmatter } = stripFrontmatter(fileContent);
-      const conversationMarkdown = extractSection(body, CONVERSATION_HEADING);
-      const user = typeof frontmatter.user === 'string' && frontmatter.user ? frontmatter.user : undefined;
-
-      if (!conversationMarkdown.trim()) {
-        throw new Error(`No conversation content in session note: ${sourcePath}`);
-      }
-
-      // 2. Extract observations from conversation markdown (LLM call)
-      const extractionResult = await processor.process(conversationMarkdown, itemId);
-      if (extractionResult.degraded) {
-        throw new Error(`Observation extraction failed for session ${itemId}`);
-      }
-
-      // 3. Generate summary + title from conversation (LLM call)
-      const { summary: narrative, title } = await processor.summarizeSession(
-        conversationMarkdown,
-        itemId,
-        user,
-      );
-      if (narrative.includes(SUMMARIZATION_FAILED_MARKER)) {
-        throw new Error(`Summarization failed for session ${itemId}: ${narrative}`);
-      }
-
-      // 4. Write observation spore notes (skip supersession — that's consolidation stage)
-      const written = writeObservationNotes(
-        extractionResult.observations,
-        itemId,
-        vault,
-        index,
-        vaultDir,
-      );
-      for (const note of written) {
-        indexAndEmbed(note.path, note.id, `${note.observation.title}\n${note.observation.content}`,
-          { type: 'spore', importance: 'high', session_id: itemId }, indexDeps);
-        logger.info('pipeline', 'Spore written', { type: note.observation.type, title: note.observation.title, session_id: itemId });
-      }
-
-      // 5. Update session note with LLM-generated title + narrative + extraction metadata
-      const fmEnd = fileContent.indexOf('---', 4);
-      const parsedFm = YAML.parse(fileContent.slice(4, fmEnd)) as Record<string, unknown>;
-      parsedFm.observations_count = written.length;
-      parsedFm.summary_tokens = estimateTokens(narrative);
-      parsedFm.extraction_model = config.intelligence.llm.model;
-      const fmYaml = YAML.stringify(parsedFm, { defaultStringType: 'QUOTE_DOUBLE', defaultKeyType: 'PLAIN' }).trim();
-      const updatedBody = updateTitleAndSummary(body, title, narrative);
-      fs.writeFileSync(fullPath, `---\n${fmYaml}\n---\n\n${updatedBody}`, 'utf-8');
-
-      // 6. Re-index the session note (FTS) to pick up new title/summary
-      indexNote(index, vaultDir, sourcePath!);
-
-      // 7. Register spores in pipeline
-      for (const note of written) {
-        pipeline.register(note.id, 'spore', note.path);
-        pipeline.advance(note.id, 'spore', 'capture', 'succeeded');
-      }
-
-      logger.info('pipeline', 'Extraction completed', {
-        session_id: itemId,
-        observations: written.length,
-        title,
-      });
-      logger.debug('pipeline', 'Extraction detail', {
-        session_id: itemId,
-        types: written.map((n) => n.observation.type),
-      });
-
-      return {
-        observations: written.length,
-        observation_ids: written.map((n) => n.id),
-        summary_tokens: estimateTokens(narrative),
-        title,
-        model: config.intelligence.llm.model,
-      };
-    },
-    embedding: async (itemId, itemType, sourcePath) => {
-      if (!vectorIndex || !embeddingProvider) {
-        throw new Error('Embedding provider or vector index not available');
-      }
-      if (!sourcePath) {
-        throw new Error(`No source path for ${itemType}/${itemId}`);
-      }
-
-      const fullPath = path.join(vaultDir, sourcePath);
-      if (!fs.existsSync(fullPath)) {
-        throw new Error(`Vault note not found: ${sourcePath}`);
-      }
-
-      const fileContent = fs.readFileSync(fullPath, 'utf-8');
-
-      // Parse frontmatter for metadata
-      const { body, frontmatter } = stripFrontmatter(fileContent);
-
-      // Extract embeddable text based on item type
-      let embeddableText: string;
-      if (itemType === 'session') {
-        // For sessions: title + summary narrative (same pattern as runReprocess)
-        const title = typeof frontmatter.title === 'string' ? frontmatter.title : '';
-        const summary = typeof frontmatter.summary === 'string' ? frontmatter.summary : '';
-        // Also try extracting narrative from the abstract callout in the body
-        const calloutMatch = body.match(/> \[!abstract\] Summary\n((?:> .*\n?)*)/);
-        const narrative = calloutMatch
-          ? calloutMatch[1].replace(/^> /gm, '').trim()
-          : '';
-        embeddableText = `${title}\n${narrative || summary}`.trim();
-      } else {
-        // For spores/artifacts: title from first heading + full body content
-        const titleMatch = body.match(/^#\s+(.+)$/m);
-        const title = titleMatch ? titleMatch[1] : '';
-        embeddableText = `${title}\n${body}`.trim();
-      }
-
-      if (!embeddableText) {
-        // Nothing to embed — empty content is not an error, just skip
-        logger.debug('pipeline', 'No embeddable content, skipping', { id: itemId, type: itemType });
-        return;
-      }
-
-      // Generate embedding
-      const embeddingStart = Date.now();
-      const result = await generateEmbedding(
-        embeddingProvider,
-        embeddableText.slice(0, EMBEDDING_INPUT_LIMIT),
-      );
-
-      // Build metadata for vector index
-      const metadata: Record<string, string> = {
-        type: itemType,
-        file_path: sourcePath,
-        session_id: typeof frontmatter.session === 'string' ? frontmatter.session
-          : typeof frontmatter.id === 'string' && itemType === 'session' ? frontmatter.id
-          : '',
-        branch: typeof frontmatter.branch === 'string' ? frontmatter.branch : '',
-      };
-
-      // Store in vectors.db
-      vectorIndex.upsert(itemId, result.embedding, metadata);
-
-      // Enrich session note frontmatter with embedding model
-      if (itemType === 'session' && sourcePath) {
-        vault.updateNoteFrontmatter(sourcePath, {
-          embedding_model: config.intelligence.embedding.model,
-        }, true);
-      }
-
-      logger.info('pipeline', 'Embedding stored', {
-        id: itemId,
-        type: itemType,
-        dimensions: result.dimensions,
-        duration_ms: Date.now() - embeddingStart,
-      });
-
-      return {
-        model: result.model,
-        dimensions: result.dimensions,
-      };
-    },
-    consolidation: async (itemId, itemType) => {
-      if (itemType !== 'spore') return; // Sessions/artifacts skip consolidation
-
-      // Check if this spore supersedes older ones
-      const supersededIds = await checkSupersession(itemId, {
-        index,
-        vectorIndex,
-        embeddingProvider,
-        llmProvider,
-        vaultDir,
-        log: ((level: string, msg: string, data?: Record<string, unknown>) =>
-          (logger as any)[level]('curation', msg, data)) as Parameters<typeof checkSupersession>[1]['log'],
-      });
-
-      // Run consolidation pass (clusters + wisdom synthesis) — once per tick,
-      // since runPass() processes ALL pending spores.
-      if (consolidationEngine && !consolidationPassRanThisTick) {
-        consolidationPassRanThisTick = true;
-        await consolidationEngine.runPass();
-      }
-
-      return {
-        superseded: supersededIds ?? [],
-        wisdom_created: null,
-        candidates_evaluated: 0,
-      };
-    },
-  });
-
-  pipeline.setLogger((level, domain, message, data) => {
-    const fn = logger[level as keyof typeof logger];
-    if (typeof fn === 'function') (fn as typeof logger.info).call(logger, domain, message, data);
-  });
-
-  // Pipeline tick timer — processes extraction, embedding, consolidation
-  const pipelineTickTimer = setInterval(async () => {
-    try {
-      consolidationPassRanThisTick = false;
-      await pipeline.tick(config.pipeline.batch_size);
-    } catch (err) {
-      logger.error('pipeline', 'Pipeline tick failed', { error: (err as Error).message });
-    }
-  }, config.pipeline.tick_interval_seconds * 1000);
-
   const transcriptMiner = new TranscriptMiner({
     additionalAdapters: config.capture.transcript_paths.map((p) =>
       createPerProjectAdapter(p, claudeCodeAdapter.parseTurns),
@@ -499,12 +244,12 @@ export async function main(): Promise<void> {
   });
 
   let activeStopProcessing: Promise<void> | null = null;
-  const indexDeps: IndexDeps = { index, vaultDir, vectorIndex, embeddingProvider, llmProvider, logger };
 
   const bufferDir = path.join(vaultDir, 'buffer');
   const sessionBuffers = new Map<string, EventBuffer>();
-  const sessionFilePaths = new Map<string, Set<string>>();
-  const capturedArtifactPaths = new Map<string, Set<string>>();
+
+  // Prompt batch state tracking: session_id → current batch state
+  const batchState: BatchStateMap = new Map();
 
   // Clean up stale buffer files (>24h) on startup
   let startupCleanedCount = 0;
@@ -524,19 +269,6 @@ export async function main(): Promise<void> {
     logger.info('daemon', 'Buffer cleanup complete', {
       stale_removed: startupCleanedCount,
     });
-  }
-
-  // Check for stale 'memory' type entries — migration happened but index wasn't rebuilt.
-  // Deferred to after server starts so it doesn't block the health check.
-  const needsMigrationReindex = index.query({ type: 'memory' }).length > 0;
-
-  // Migrate flat spore files into type subdirectories
-  const migrated = migrateSporeFiles(vaultDir);
-  if (migrated > 0) {
-    logger.info('daemon', 'Migrated spore files to type subdirectories', { count: migrated });
-    // Rebuild FTS index to update stored paths (vectors are keyed by ID, unaffected)
-    initFts(index);
-    rebuildIndex(index, vaultDir);
   }
 
   // Route body schemas
@@ -564,235 +296,31 @@ export async function main(): Promise<void> {
     watchPaths: config.capture.artifact_watch,
     onPlan: (event) => {
       logger.info('watcher', 'Plan detected', { source: event.source, file: event.filePath });
-
-      if (event.filePath) {
-        try {
-          const content = fs.readFileSync(event.filePath, 'utf-8');
-          const relativePath = path.relative(vaultDir, event.filePath);
-          const title = content.match(/^#\s+(.+)$/m)?.[1] ?? path.basename(event.filePath);
-          const planId = `plan-${path.basename(event.filePath, '.md')}`;
-          indexAndEmbed(relativePath, planId, `${title}\n${content}`, { type: 'plan' },
-            indexDeps);
-
-          // Register plan-session association for lineage detection.
-          // When a future session's first prompt mentions this plan ID,
-          // detectHeuristicParent links it as a child of this session.
-          if (event.sessionId) {
-            lineageGraph.registerArtifactForSession(event.sessionId, planId);
-            logger.debug('lineage', 'Plan registered for session', { planId, session: event.sessionId });
-          }
-
-          logger.info('watcher', 'Plan indexed', { path: relativePath });
-        } catch (err) {
-          logger.debug('watcher', 'Plan index failed', { error: (err as Error).message });
-        }
-      }
+      // Plan indexing deferred to Phase 2 (PGlite plans table + Agent SDK)
     },
   });
   planWatcher.startFileWatcher();
 
-  // Digest LLM provider: resolved once, used by both pipeline tick and operations API
-  const digestLlmConfig = {
-    provider: config.digest.intelligence.provider ?? config.intelligence.llm.provider,
-    model: config.digest.intelligence.model ?? config.intelligence.llm.model,
-    base_url: config.digest.intelligence.base_url ?? config.intelligence.llm.base_url,
-    context_window: config.digest.intelligence.context_window,
-  };
-  const digestLlm = (config.digest.intelligence.model || config.digest.intelligence.provider)
-    ? createLlmProvider(digestLlmConfig)
-    : llmProvider;
+  // --- Session routes ---
 
-  // Digest engine: synthesizes vault knowledge into tiered context extracts
-  let metabolism: Metabolism | null = null;
-  let triggerForceDigest: (() => void) | undefined;
-
-  if (config.digest.enabled) {
-    logger.debug('digest', 'Digest LLM config', digestLlmConfig);
-    logger.debug('digest', `Using ${digestLlm.name} provider for digest`);
-
-    const digestEngine = new DigestEngine({
-      vaultDir,
-      index,
-      llmProvider: digestLlm,
-      config,
-      log: (level, message, data) => logger[level]('digest', message, data),
-    });
-
-    if (config.digest.consolidation.enabled) {
-      consolidationEngine = new ConsolidationEngine({
-        vaultDir,
-        index,
-        vectorIndex,
-        embeddingProvider,
-        llmProvider: digestLlm,
-        maxTokens: config.digest.consolidation.max_tokens,
-        log: (level, message, data) => logger[level]('consolidation', message, data),
-      });
-
-      logger.info('consolidation', 'Auto-consolidation enabled as pipeline stage');
-    }
-
-    metabolism = new Metabolism(config.digest.metabolism);
-
-    // Digest is triggered by the pipeline tick, not by the metabolism timer directly.
-    // The metabolism timer only controls cadence (active → cooldown → dormant).
-    // When the metabolism says "it's time" it sets a flag; the pipeline tick checks
-    // the flag and runs digest if upstream is clear. This avoids startup races
-    // where the metabolism fires before the pipeline has processed upstream work.
-    // Start true so digest runs on the first tick after upstream clears.
-    // The hasUpstreamWork() check prevents premature execution.
-    let digestReady = true;
-    let forceDigest = false;
-    triggerForceDigest = () => { forceDigest = true; };
-
-    metabolism.start(async () => {
-      // Metabolism says it's time for a digest — set the flag for the pipeline tick
-      digestReady = true;
-    });
-
-    // Register digest as a post-stages step in the pipeline tick
-    const originalTick = pipeline.tick.bind(pipeline);
-    pipeline.tick = async (batchSize: number) => {
-      // Process upstream stages first (extraction, embedding, consolidation)
-      await originalTick(batchSize);
-
-      // Then check if digest should run
-      if (!digestReady) return;
-      if (pipeline.hasUpstreamWork()) {
-        logger.debug('digest', 'Digest deferred — upstream stages pending');
-        return;
-      }
-
-      // Substrate threshold gate: skip if not enough new knowledge (unless forced)
-      if (!forceDigest) {
-        const ready = pipeline.newSubstrateSinceLastDigest();
-        if (ready < config.digest.substrate.min_notes_for_cycle) {
-          logger.debug('digest', 'Digest deferred — insufficient substrate', {
-            ready,
-            threshold: config.digest.substrate.min_notes_for_cycle,
-          });
-          return;
-        }
-      }
-
-      // Reset flags before running
-      digestReady = false;
-      forceDigest = false;
-
-      try {
-        const cycleResult = await digestEngine.runCycle();
-        if (cycleResult) {
-          metabolism!.onSubstrateFound();
-          const digestOutput = {
-            included_in_cycle: cycleResult.cycleId,
-            tiers_generated: cycleResult.tiersGenerated,
-          };
-          const advanced = pipeline.advanceDigestItems(digestOutput);
-          if (advanced > 0) {
-            logger.debug('digest', `Advanced ${advanced} pipeline items to digest:succeeded`);
-          }
-          logger.info('digest', `Digest cycle ${cycleResult.cycleId}: ${cycleResult.tiersGenerated.length} tiers`);
-        } else {
-          metabolism!.onEmptyCycle();
-        }
-      } catch (err) {
-        logger.warn('digest', 'Digest cycle failed', { error: (err as Error).message });
-        metabolism!.onEmptyCycle();
-      }
-    };
-
-    // Digest API routes
-    server.registerRoute('POST', '/api/pipeline/digest/force', handleForceDigest(() => {
-      forceDigest = true;
-    }));
-    server.registerRoute('GET', '/api/pipeline/digest-health', handleDigestHealth({
-      vaultDir,
-      pipeline,
-      minNotesForCycle: config.digest.substrate.min_notes_for_cycle,
-      metabolismState: () => metabolism?.state ?? 'disabled',
-      digestReady: () => digestReady,
-      cycleInProgress: () => digestEngine.isCycleInProgress,
-    }));
-
-    logger.info('digest', 'Digest enabled — controlled by pipeline tick');
-  }
-
-  const batchManager = new BatchManager(async (closedBatch: BatchEvent[]) => {
-    if (closedBatch.length === 0) return;
-
-    const sessionId = closedBatch[0].session_id;
-
-    // Batch closure is now an event boundary marker — observation extraction
-    // is deferred to the pipeline extraction stage (Task 10).
-    logger.debug('processor', 'Batch closed (extraction deferred to pipeline)', {
-      session_id: sessionId,
-      events: closedBatch.length,
-    });
-
-    // Incremental artifact capture: process new markdown files at turn boundaries
-    // instead of waiting for session end. Only classify files not yet captured.
-    const allPaths = sessionFilePaths.get(sessionId);
-    const alreadyCaptured = capturedArtifactPaths.get(sessionId) ?? new Set<string>();
-    if (allPaths && allPaths.size > alreadyCaptured.size) {
-      const newPaths = new Set([...allPaths].filter((p) => !alreadyCaptured.has(p)));
-      const candidates = collectArtifactCandidates(
-        newPaths,
-        { artifact_extensions: config.capture.artifact_extensions },
-        process.cwd(),
-      );
-      if (candidates.length > 0) {
-        processor.classifyArtifacts(candidates, sessionId)
-          .then((classified) => captureArtifacts(candidates, classified, sessionId, { vault, ...indexDeps }, lineageGraph))
-          .then(() => {
-            // Mark these paths as captured so we don't re-classify them
-            if (!capturedArtifactPaths.has(sessionId)) {
-              capturedArtifactPaths.set(sessionId, new Set());
-            }
-            const captured = capturedArtifactPaths.get(sessionId)!;
-            for (const c of candidates) {
-              // candidates have relative paths; sessionFilePaths has absolute paths
-              const absPath = path.resolve(process.cwd(), c.path);
-              captured.add(absPath);
-            }
-          })
-          .catch((err) => logger.warn('processor', 'Incremental artifact capture failed', {
-            session_id: sessionId, error: (err as Error).message,
-          }));
-      }
-    }
-  });
-
-  // Session routes
   server.registerRoute('POST', '/sessions/register', async (req) => {
     const { session_id, branch, started_at } = RegisterBody.parse(req.body);
     const resolvedStartedAt = started_at ?? new Date().toISOString();
     registry.register(session_id, { started_at: resolvedStartedAt, branch });
     server.updateDaemonJsonSessions(registry.sessions);
 
-    // Heuristic lineage detection
-    try {
-      const recentSessions = index.query({ type: 'session', limit: LINEAGE_RECENT_SESSIONS_LIMIT })
-        .map((n) => {
-          const fm = n.frontmatter as Record<string, unknown>;
-          return { id: bareSessionId(n.id), ended: fm.ended as string | undefined, branch: fm.branch as string | undefined };
-        });
-      const activeSessions = registry.sessions
-        .filter((s) => s !== session_id)
-        .map((s) => registry.getSession(s))
-        .filter((s): s is RegisteredSession => s !== undefined);
-      const link = lineageGraph.detectHeuristicParent(session_id, {
-        started_at: resolvedStartedAt,
-        branch,
-      }, recentSessions, activeSessions);
-      if (link) {
-        logger.info('lineage', 'Heuristic parent detected', { child: session_id, parent: link.parent, signal: link.signal });
-      }
-    } catch (err) {
-      logger.debug('lineage', 'Heuristic detection failed', { error: (err as Error).message });
-    }
-
-    // Wake digest metabolism when a new session starts
-    metabolism?.activate();
+    // Upsert session in PGlite
+    const now = epochSeconds();
+    const startedEpoch = Math.floor(new Date(resolvedStartedAt).getTime() / 1000);
+    await upsertSession({
+      id: session_id,
+      agent: 'claude-code',
+      user: null,
+      project_root: process.cwd(),
+      branch: branch ?? null,
+      started_at: startedEpoch,
+      created_at: now,
+    });
 
     logger.info('lifecycle', 'Session registered', { session_id, branch, started_at: started_at ?? null });
     return { body: { ok: true, sessions: registry.sessions } };
@@ -819,67 +347,83 @@ export async function main(): Promise<void> {
         }
       }
     } catch { /* buffer dir may not exist */ }
-    // We DO prune the in-memory Map entries to avoid unbounded growth.
+    // Prune in-memory state
     sessionBuffers.delete(session_id);
-    sessionFilePaths.delete(session_id);
-    capturedArtifactPaths.delete(session_id);
+    batchState.delete(session_id);
     server.updateDaemonJsonSessions(registry.sessions);
     logger.info('lifecycle', 'Session unregistered', { session_id });
     return { body: { ok: true, sessions: registry.sessions } };
   });
 
-  // Event routes
+  // --- Event routes ---
+
   server.registerRoute('POST', '/events', async (req) => {
     const validated = EventBody.parse(req.body);
-    const event = { ...validated, timestamp: validated.timestamp ?? new Date().toISOString() } as BatchEvent;
+    const event = { ...validated, timestamp: validated.timestamp ?? new Date().toISOString() } as Record<string, unknown> & { type: string; session_id: string; timestamp: string };
     logger.debug('hooks', 'Event received', { type: event.type, session_id: event.session_id });
-
-    if (validated.type === 'user_prompt') {
-      const v = validated as Record<string, unknown>;
-      const promptText = String(v.prompt ?? '');
-      logger.info('hooks', 'User prompt received', {
-        session_id: validated.session_id,
-        prompt_preview: promptText.slice(0, LOG_PROMPT_PREVIEW_CHARS),
-        prompt_length: promptText.length,
-      });
-    }
 
     // Ensure session is registered (idempotent — handles daemon restarts mid-session)
     if (!registry.getSession(event.session_id)) {
       registry.register(event.session_id, { started_at: event.timestamp });
       logger.debug('lifecycle', 'Auto-registered session from event', { session_id: event.session_id });
+
+      // Ensure PGlite session exists
+      const now = epochSeconds();
+      const startedEpoch = Math.floor(new Date(event.timestamp).getTime() / 1000);
+      await upsertSession({
+        id: event.session_id,
+        agent: 'claude-code',
+        started_at: startedEpoch,
+        created_at: now,
+      });
     }
 
     // Persist to disk so events survive daemon restarts
     if (!sessionBuffers.has(event.session_id)) {
       sessionBuffers.set(event.session_id, new EventBuffer(bufferDir, event.session_id));
     }
-    sessionBuffers.get(event.session_id)!.append(event as Record<string, unknown>);
+    sessionBuffers.get(event.session_id)!.append(event);
 
-    batchManager.addEvent(event);
-    if (validated.type === 'tool_use') {
-      const v = validated as Record<string, unknown>;
-      logger.debug('hooks', 'Tool use event', {
-        session_id: validated.session_id,
-        tool_name: String(v.tool_name ?? ''),
+    // --- Prompt batch tracking ---
+    if (event.type === 'user_prompt') {
+      const promptText = String(event.prompt ?? '');
+      logger.info('hooks', 'User prompt received', {
+        session_id: event.session_id,
+        prompt_preview: promptText.slice(0, LOG_PROMPT_PREVIEW_CHARS),
+        prompt_length: promptText.length,
       });
-      planWatcher.checkToolEvent({ tool_name: String(v.tool_name ?? ''), tool_input: v.tool_input, session_id: validated.session_id });
-      const toolName = String(v.tool_name ?? '');
-      if (toolName === 'Write' || toolName === 'Edit') {
-        const filePath = (v.tool_input as Record<string, unknown> | undefined)?.file_path as string | undefined;
-        if (filePath) {
-          if (!sessionFilePaths.has(event.session_id)) {
-            sessionFilePaths.set(event.session_id, new Set());
-          }
-          sessionFilePaths.get(event.session_id)!.add(filePath);
-          // Invalidate captured status so edits to already-captured files
-          // trigger re-classification on the next turn boundary
-          capturedArtifactPaths.get(event.session_id)?.delete(filePath);
-        }
+      try {
+        const batchId = await handleUserPrompt(event.session_id, promptText || undefined, batchState);
+        logger.debug('capture', 'Batch opened', { session_id: event.session_id, batch_id: batchId });
+      } catch (err) {
+        logger.warn('capture', 'Failed to open batch', { session_id: event.session_id, error: (err as Error).message });
       }
     }
+
+    if (event.type === 'tool_use') {
+      const toolName = String(event.tool_name ?? '');
+      logger.debug('hooks', 'Tool use event', {
+        session_id: event.session_id,
+        tool_name: toolName,
+      });
+      planWatcher.checkToolEvent({ tool_name: toolName, tool_input: event.tool_input, session_id: event.session_id });
+      try {
+        await handleToolUse(
+          event.session_id,
+          toolName,
+          event.tool_input,
+          typeof event.output_preview === 'string' ? event.output_preview : undefined,
+          batchState,
+        );
+      } catch (err) {
+        logger.warn('capture', 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });
+      }
+    }
+
     return { body: { ok: true } };
   });
+
+  // --- Stop route ---
 
   server.registerRoute('POST', '/events/stop', async (req) => {
     const { session_id: sessionId, user, transcript_path: hookTranscriptPath, last_assistant_message: lastAssistantMessage } = StopBody.parse(req.body);
@@ -900,15 +444,11 @@ export async function main(): Promise<void> {
       last_message_preview: lastAssistantMessage?.slice(0, LOG_MESSAGE_PREVIEW_CHARS) ?? null,
     });
 
-    // Respond immediately — the hook should not block on LLM processing.
-    // Serialize stop processing: if a previous stop is still running, chain
-    // the new one to run after it completes. This prevents concurrent
-    // processStopEvent calls from racing on the same session file.
+    // Respond immediately — the hook should not block on processing.
     const run = () => processStopEvent(sessionId, user, sessionMeta, hookTranscriptPath, lastAssistantMessage).catch((err) => {
       logger.error('processor', 'Stop processing failed', { session_id: sessionId, error: (err as Error).message });
     });
 
-    // Chain onto any in-flight processing. Only the tail of the chain clears the variable.
     const prev = activeStopProcessing ?? Promise.resolve();
     activeStopProcessing = prev.then(run).finally(() => { activeStopProcessing = null; });
 
@@ -922,7 +462,6 @@ export async function main(): Promise<void> {
     const toolEvents = events.filter((e) => e.type === 'tool_use');
     if (toolEvents.length === 0) return;
 
-    // Linear merge: advance a cursor through sorted tool events as we iterate turns
     let cursor = 0;
     for (let i = 0; i < turns.length; i++) {
       const turnEnd = i + 1 < turns.length ? turns[i + 1].timestamp : null;
@@ -956,15 +495,8 @@ export async function main(): Promise<void> {
     lastAssistantMessage?: string,
   ): Promise<void> {
 
-    // --- Phase 1: Gather data (I/O only, no LLM) ---
+    // --- Phase 1: Gather transcript data ---
 
-    const lastBatch = batchManager.finalize(sessionId);
-
-    // Tiered turn extraction:
-    // 1. Read transcript for complete turns (with AI responses)
-    // 2. Check buffer for prompts newer than the transcript's last turn
-    //    (captures turns the transcript missed, e.g., after context compaction)
-    // 3. Fall back to buffer entirely if no transcript found
     const transcriptResult = transcriptMiner.getAllTurnsWithSource(sessionId, hookTranscriptPath);
     let allTurns = transcriptResult.turns;
     let turnSource = transcriptResult.source;
@@ -972,12 +504,9 @@ export async function main(): Promise<void> {
     const bufferEvents = sessionBuffers.get(sessionId)?.readAll() ?? [];
 
     if (allTurns.length === 0) {
-      // No transcript — use buffer as primary source
       allTurns = extractTurnsFromBuffer(bufferEvents);
       turnSource = 'buffer';
     } else if (bufferEvents.length > 0) {
-      // Transcript exists — check for buffer events newer than the last transcript turn.
-      // These are prompts the transcript missed (e.g., after context compaction).
       const lastTranscriptTs = allTurns[allTurns.length - 1].timestamp;
       if (lastTranscriptTs) {
         const newerEvents = bufferEvents.filter((e) =>
@@ -995,8 +524,6 @@ export async function main(): Promise<void> {
     }
 
     // Attach the last assistant message from the hook to the most recent turn
-    // that doesn't already have an AI response. This captures the response
-    // for turns the transcript missed (post-compaction) or buffer-sourced turns.
     if (lastAssistantMessage && allTurns.length > 0) {
       const lastTurn = allTurns[allTurns.length - 1];
       if (!lastTurn.aiResponse) {
@@ -1013,275 +540,80 @@ export async function main(): Promise<void> {
       image_count: imageCount,
     });
 
-    const ended = new Date().toISOString();
-    let started = (allTurns.length > 0 && allTurns[0].timestamp) ? allTurns[0].timestamp : ended;
+    // --- Phase 2: Close session in PGlite ---
 
-    // Find existing session file and clean up cross-date duplicates in one pass.
-    const sessionsDir = path.join(vaultDir, 'sessions');
-    const sessionFileName = `${sessionNoteId(sessionId)}.md`;
-    let existingContent: string | undefined;
-    const duplicatePaths: string[] = [];
-    try {
-      for (const dateDir of fs.readdirSync(sessionsDir)) {
-        const candidate = path.join(sessionsDir, dateDir, sessionFileName);
-        try {
-          const content = fs.readFileSync(candidate, 'utf-8');
-          if (!existingContent || content.length > existingContent.length) {
-            existingContent = content;
-          }
-          duplicatePaths.push(candidate);
-        } catch { /* file doesn't exist in this date dir */ }
-      }
-    } catch { /* sessions dir may not exist yet */ }
+    await handleSessionStop(sessionId, batchState);
 
-    let existingTurnCount = 0;
-    let existingExtractionFields: Record<string, unknown> | null = null;
-    if (existingContent) {
-      const fmMatch = existingContent.match(/^---\n([\s\S]*?)\n---/);
-      if (fmMatch) {
-        const parsed = YAML.parse(fmMatch[1]) as Record<string, unknown>;
-        if (typeof parsed.started === 'string') started = parsed.started;
-        // Preserve extraction-enriched frontmatter fields across stop-event rebuilds
-        const extractionKeys = ['observations_count', 'summary_tokens', 'extraction_model', 'embedding_model'];
-        const preserved: Record<string, unknown> = {};
-        for (const key of extractionKeys) {
-          if (parsed[key] !== undefined) preserved[key] = parsed[key];
-        }
-        if (Object.keys(preserved).length > 0) existingExtractionFields = preserved;
-      }
-      const turnMatches = existingContent.match(/^### Turn \d+/gm);
-      existingTurnCount = turnMatches?.length ?? 0;
-    }
-
-    // Collect artifact candidates (no LLM yet) — only files not already captured incrementally
-    const writtenFiles = sessionFilePaths.get(sessionId) ?? new Set<string>();
-    const alreadyCaptured = capturedArtifactPaths.get(sessionId) ?? new Set<string>();
-    const uncapturedFiles = new Set([...writtenFiles].filter((p) => !alreadyCaptured.has(p)));
-    const artifactCandidates = collectArtifactCandidates(
-      uncapturedFiles,
-      { artifact_extensions: config.capture.artifact_extensions },
-      process.cwd(),
-    );
-
-    // Guard: never overwrite an existing session with zero turns — the transcript
-    // is temporarily unreadable (daemon restart, file locked, etc.)
-    if (allTurns.length === 0 && existingTurnCount > 0) {
-      logger.warn('processor', 'Transcript unreadable, skipping rewrite to preserve existing data', { session_id: sessionId, existingTurns: existingTurnCount });
-      return;
-    }
-
-    // Skip if no new turns AND no batch to process AND no artifacts to classify
-    if (allTurns.length > 0 && allTurns.length === existingTurnCount && lastBatch.length === 0 && artifactCandidates.length === 0) {
-      logger.debug('processor', 'No new turns, skipping session rewrite', { session_id: sessionId, turns: allTurns.length });
-      return;
-    }
-
-    // --- Phase 2: Capture — write session note without LLM-generated content ---
-    // LLM work (summary, title, observation extraction) is deferred to the
-    // pipeline extraction stage (Task 10). The session note gets a placeholder
-    // title and empty narrative; extraction will fill them in later.
-
-    // Compute canonical path
-    const date = started.slice(0, 10);
-    const relativePath = sessionRelativePath(sessionId, date);
-    const targetFullPath = path.join(vaultDir, relativePath);
-
-    // Remove cross-date duplicates
-    for (const dup of duplicatePaths) {
-      if (dup !== targetFullPath) {
-        try { fs.unlinkSync(dup); logger.debug('lifecycle', 'Removed duplicate session file', { path: dup }); } catch { /* already gone */ }
+    // Derive a simple title from the first prompt (no LLM — that's Phase 2)
+    let title: string | null = null;
+    if (allTurns.length > 0 && allTurns[0].prompt) {
+      title = allTurns[0].prompt.slice(0, TITLE_PREVIEW_CHARS);
+      if (allTurns[0].prompt.length > TITLE_PREVIEW_CHARS) {
+        title += '...';
       }
     }
 
-    // Write images to attachments
+    // Update session with transcript metadata (no LLM calls)
+    const updateFields: Record<string, unknown> = {
+      transcript_path: hookTranscriptPath ?? null,
+      prompt_count: allTurns.length,
+      tool_count: allTurns.reduce((sum, t) => sum + t.toolCount, 0),
+    };
+    if (user) updateFields.user = user;
+    if (title) updateFields.title = title;
+
+    await updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
+
+    // Write images to attachments (keep this — images are binary, not in PGlite)
     const attachmentsDir = path.join(vaultDir, 'attachments');
     const hasImages = allTurns.some((t) => t.images?.length);
     if (hasImages) {
       fs.mkdirSync(attachmentsDir, { recursive: true });
     }
-    const turnImageNames: Map<number, string[]> = new Map();
     for (let i = 0; i < allTurns.length; i++) {
       const turn = allTurns[i];
       if (!turn.images?.length) continue;
-      const names: string[] = [];
       for (let j = 0; j < turn.images.length; j++) {
         const img = turn.images[j];
         const ext = extensionForMimeType(img.mediaType);
-        const filename = `${bareSessionId(sessionId)}-t${i + 1}-${j + 1}.${ext}`;
+        const sessionShort = sessionId.slice(-6);
+        const filename = `${sessionShort}-t${i + 1}-${j + 1}.${ext}`;
         const filePath = path.join(attachmentsDir, filename);
         if (!fs.existsSync(filePath)) {
           fs.writeFileSync(filePath, Buffer.from(img.data, 'base64'));
           logger.debug('processor', 'Image saved', { filename, turn: i + 1 });
         }
-        names.push(filename);
-      }
-      turnImageNames.set(i, names);
-    }
-
-    // Build session note. Preserve LLM-generated title + narrative if extraction
-    // has already run (stop events fire repeatedly during a session, and each one
-    // rebuilds the note from the transcript — without this, extraction results are lost).
-    let title = `Session ${sessionId}`;
-    let narrative = '';
-    if (existingContent) {
-      const existingTitle = existingContent.match(/^# (.+)$/m)?.[1];
-      if (existingTitle && existingTitle !== `Session ${sessionId}`) {
-        title = existingTitle;
-      }
-      const calloutMatch = existingContent.match(/> \[!abstract\] Summary\n((?:> .*\n?)*)/);
-      if (calloutMatch) {
-        narrative = calloutMatch[1].replace(/^> /gm, '').trim();
       }
     }
 
-    // Query related spores for this session
-    const relatedMemories = index.query({ type: 'spore', limit: RELATED_SPORES_LIMIT })
-      .filter((n) => {
-        const fm = n.frontmatter as Record<string, unknown>;
-        return fm.session === sessionNoteId(sessionId) || fm.session === sessionId;
-      })
-      .map((n) => ({ id: n.id, title: n.title }));
-
-    const summary = formatSessionBody({
-      title,
-      narrative,
-      sessionId,
-      user,
-      started,
-      ended,
-      branch: sessionMeta?.branch,
-      relatedMemories,
-      turns: allTurns.map((t, i) => ({
-        prompt: t.prompt,
-        toolCount: t.toolCount,
-        toolBreakdown: t.toolBreakdown,
-        files: t.files,
-        aiResponse: t.aiResponse,
-        images: turnImageNames.get(i),
-      })),
-    });
-
-    const parentId = lineageGraph.getParent(sessionId);
-    const parentLink = parentId ? lineageGraph.getLinks().find((l) => l.child === sessionId) : undefined;
-
-    const notePath = vault.writeSession({
-      id: sessionId,
-      user,
-      started,
-      ended,
-      branch: sessionMeta?.branch,
-      parent: parentId ? sessionWikilink(parentId) : undefined,
-      parent_reason: parentLink?.signal,
-      tools_used: allTurns.reduce((sum, t) => sum + t.toolCount, 0),
-      transcript_source: turnSource,
-      transcript_path: hookTranscriptPath,
-      summary,
-    });
-
-    logger.debug('processor', 'Session note written', {
+    logger.info('processor', 'Session captured', {
       session_id: sessionId,
-      path: notePath,
-      content_length: summary.length,
+      turns: allTurns.length,
+      source: turnSource,
+      title: title ?? '(untitled)',
     });
-
-    // Restore extraction-enriched frontmatter fields lost during rebuild
-    if (existingExtractionFields) {
-      vault.updateNoteFrontmatter(relativePath, existingExtractionFields);
-    }
-
-    // FTS index immediately so the session is searchable right away
-    indexNote(index, vaultDir, relativePath);
-
-    logger.debug('processor', 'Session turns', { source: turnSource, total: allTurns.length });
-
-    // --- Phase 3: Register in pipeline ---
-    // Capture is complete: transcript read, session note written, images saved.
-    // Register the session and advance capture to succeeded so the extraction
-    // stage picks it up on the next pipeline tick.
-    pipeline.register(sessionId, 'session', relativePath);
-    pipeline.advance(sessionId, 'session', 'capture', 'succeeded');
-
-    logger.info('processor', 'Session captured and registered in pipeline', { session_id: sessionId, path: relativePath });
   }
 
-  // Session-start context: digest extract (if available) or structural facts.
-  // Memories are injected per-prompt (more targeted, less noise).
+  // --- Session-start context (simplified — no digest, no vault search) ---
   server.registerRoute('POST', '/context', async (req) => {
     const { session_id, branch } = ContextBody.parse(req.body);
     logger.debug('hooks', 'Session context query', { session_id });
     try {
-      // Digest-first: serve pre-computed extract if available
-      if (config.digest.enabled && config.digest.inject_tier) {
-        const result = handleMycoContext(vaultDir, { tier: config.digest.inject_tier });
-
-        if (result.generated !== undefined) {
-          // Append session metadata that the agent needs regardless of context source
-          const meta: string[] = [result.content];
-          if (branch) meta.push(`\nBranch:: \`${branch}\``);
-          meta.push(`Session:: \`${session_id}\``);
-
-          logger.info('context', 'Session context injected', {
-            session_id,
-            source: 'digest',
-            tier: result.tier,
-            fallback: result.fallback,
-          });
-          return { body: { text: meta.join('\n\n'), source: 'digest', tier: result.tier } };
-        }
-        // Fall through to layer-based injection if no extract exists yet
-      }
-
       const parts: string[] = [];
-      const layerCounts = { plans: 0, parent_session: false, branch: !!branch };
-
-      // Active plans — the agent needs to know what's in flight
-      const plans = index.query({ type: 'plan' });
-      const activePlans = plans.filter((p) => {
-        const status = (p.frontmatter as Record<string, unknown>).status as string;
-        return status === 'active' || status === 'in_progress';
-      });
-      layerCounts.plans = activePlans.length;
-      if (activePlans.length > 0) {
-        const planLines = activePlans.slice(0, SESSION_CONTEXT_MAX_PLANS).map((p) => {
-          const status = (p.frontmatter as Record<string, unknown>).status as string;
-          return `- **${p.title}** (${status}) \`[${p.id}]\``;
-        });
-        parts.push(`### Active Plans\n${planLines.join('\n')}`);
-      }
-
-      // Parent session summary — lineage continuity
-      let parentId: string | undefined;
-      if (session_id) {
-        parentId = lineageGraph.getParent(session_id);
-        if (parentId) {
-          const parentNotes = index.queryByIds([sessionNoteId(parentId)]);
-          if (parentNotes.length > 0) {
-            layerCounts.parent_session = true;
-            const parent = parentNotes[0];
-            parts.push(`### Previous Session\n- **${parent.title}**: ${parent.content.slice(0, CONTEXT_SESSION_PREVIEW_CHARS)} \`[${parent.id}]\``);
-          }
-        }
-      }
 
       // Branch info for awareness
       if (branch) {
         parts.push(`Branch:: \`${branch}\``);
       }
 
-      // Always include the session ID so the agent can pass it to myco_remember
+      // Always include the session ID
       parts.push(`Session:: \`${session_id}\``);
 
       if (parts.length > 0) {
         logger.info('context', 'Session context injected', {
           session_id,
-          source: 'layers',
-          ...layerCounts,
+          source: 'basic',
           parts: parts.length,
-        });
-        logger.debug('context', 'Session context layer detail', {
-          session_id,
-          plan_titles: activePlans.slice(0, 5).map((p) => p.title),
-          parent_id: parentId ?? null,
         });
         return { body: { text: parts.join('\n\n') } };
       }
@@ -1292,73 +624,16 @@ export async function main(): Promise<void> {
     }
   });
 
-  // Per-prompt context: semantic search for spores relevant to THIS specific prompt.
-  // This is the primary intelligence delivery — targeted, high-confidence, token-efficient.
+  // Per-prompt context: deferred to Phase 2 (Agent SDK)
   const PromptContextBody = z.object({
     prompt: z.string(),
     session_id: z.string().optional(),
   });
 
   server.registerRoute('POST', '/context/prompt', async (req) => {
-    const { prompt, session_id } = PromptContextBody.parse(req.body);
-    if (!prompt || prompt.length < PROMPT_CONTEXT_MIN_LENGTH || !vectorIndex) {
-      return { body: { text: '' } };
-    }
-    const searchStart = Date.now();
-
-    try {
-      const emb = await generateEmbedding(embeddingProvider, prompt.slice(0, EMBEDDING_INPUT_LIMIT));
-      const results = vectorIndex.search(emb.embedding, {
-        limit: PROMPT_CONTEXT_MAX_SPORES,
-        type: 'spore',
-        relativeThreshold: PROMPT_CONTEXT_MIN_SIMILARITY,
-      });
-
-      if (results.length === 0) {
-        logger.debug('context', 'No matching spores for prompt', {
-          session_id,
-          prompt_preview: prompt.slice(0, LOG_PROMPT_PREVIEW_CHARS),
-          search_duration_ms: Date.now() - searchStart,
-        });
-        return { body: { text: '' } };
-      }
-
-      const noteMap = new Map(
-        index.queryByIds(results.map((r) => r.id)).map((n) => [n.id, n]),
-      );
-
-      const lines: string[] = [];
-      for (const r of results) {
-        const note = noteMap.get(r.id);
-        if (!note) continue;
-        const fm = note.frontmatter as Record<string, unknown>;
-        if (fm.status === 'superseded' || fm.status === 'archived') continue;
-        const obsType = fm.observation_type as string ?? 'note';
-        lines.push(`- [${obsType}] ${note.title}: ${note.content.slice(0, CONTENT_SNIPPET_CHARS)} \`[${note.id}]\``);
-      }
-
-      if (lines.length === 0) return { body: { text: '' } };
-
-      const injected = `**Relevant spores for this task:**\n${lines.join('\n')}`;
-      logger.info('context', 'Prompt context injected', {
-        session_id,
-        spores: lines.length,
-        prompt_preview: prompt.slice(0, LOG_PROMPT_PREVIEW_CHARS),
-      });
-      logger.debug('context', 'Prompt context spore details', {
-        session_id,
-        spore_ids: results.map((r) => r.id),
-        similarities: results.map((r) => r.similarity.toFixed(3)),
-        prompt_length: prompt.length,
-        context_chars: injected.length,
-        search_duration_ms: Date.now() - searchStart,
-      });
-
-      return { body: { text: injected } };
-    } catch (err) {
-      logger.debug('context', 'Prompt context failed', { error: (err as Error).message });
-      return { body: { text: '' } };
-    }
+    PromptContextBody.parse(req.body);
+    // Per-prompt semantic search deferred to Phase 2
+    return { body: { text: '' } };
   });
 
   // --- Dashboard API routes ---
@@ -1373,9 +648,34 @@ export async function main(): Promise<void> {
     }
     return result;
   });
-  server.registerRoute('GET', '/api/stats', async () => handleGetStats({
-    vaultDir, index, vectorIndex, version: server.version, config, configHash, metabolism,
-  }));
+
+  // Simplified stats — no index/vector deps
+  server.registerRoute('GET', '/api/stats', async () => {
+    return {
+      body: {
+        daemon: {
+          pid: process.pid,
+          port: server.port,
+          version: server.version,
+          uptime_seconds: process.uptime(),
+          active_sessions: registry.sessions,
+          config_hash: configHash,
+        },
+        vault: { path: vaultDir },
+        intelligence: {
+          processor: {
+            provider: config.intelligence.llm.provider,
+            model: config.intelligence.llm.model,
+          },
+          embedding: {
+            provider: config.intelligence.embedding.provider,
+            model: config.intelligence.embedding.model,
+          },
+        },
+      },
+    };
+  });
+
   server.registerRoute('GET', '/api/logs', async (req) => handleGetLogs(logger.getRingBuffer(), req.query));
 
   // External log ingestion: allows MCP server (separate process) to write through the daemon logger
@@ -1396,39 +696,71 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir, progressTracker }, req.body));
   server.registerRoute('GET', '/api/progress/:token', async (req) => handleGetProgress(progressTracker, req.params.token));
 
-  // --- Operations API routes ---
-  const operationDeps: OperationHandlerDeps = {
-    vaultDir,
-    config,
-    index,
-    vectorIndex,
-    llmProvider,
-    digestLlmProvider: digestLlm,
-    embeddingProvider,
-    progressTracker,
-    pipeline,
-    onForceDigest: triggerForceDigest,
-    log: (level, message, data) => {
-      logger.log(level, 'operations', message, data);
-    },
-  };
+  // Simplified sessions endpoint — PGlite based
+  server.registerRoute('GET', '/api/sessions', async () => {
+    const sessions = await listSessions({ limit: 100 });
+    return {
+      body: {
+        sessions: sessions.map((s) => ({
+          id: s.id,
+          date: new Date(s.started_at * 1000).toISOString().slice(0, 10),
+          title: s.title || s.id.slice(0, 8),
+          status: s.status,
+        })),
+      },
+    };
+  });
 
-  server.registerRoute('POST', '/api/rebuild', async () => handleRebuild(operationDeps));
-  server.registerRoute('POST', '/api/digest', async (req) => handleDigest(operationDeps, req.body));
-  server.registerRoute('POST', '/api/curate', async (req) => handleCurate(operationDeps, req.body, runCuration));
-  server.registerRoute('POST', '/api/reprocess', async (req) => handleReprocess(operationDeps, req.body));
+  // --- Agent API routes ---
 
-  server.registerRoute('GET', '/api/sessions', async () => handleGetSessions(index));
+  const AgentRunBody = z.object({
+    task: z.string().optional(),
+    instruction: z.string().optional(),
+    curatorId: z.string().optional(),
+  });
 
-  // Pipeline API
-  server.registerRoute('GET', '/api/pipeline/health', handlePipelineHealth(pipeline));
-  server.registerRoute('GET', '/api/pipeline/items', handlePipelineItems(pipeline));
-  server.registerRoute('GET', '/api/pipeline/items/:id', handlePipelineItemDetail(pipeline));
-  server.registerRoute('GET', '/api/pipeline/circuits', handlePipelineCircuits(pipeline));
-  server.registerRoute('POST', '/api/pipeline/retry/:id', handlePipelineRetry(pipeline));
-  server.registerRoute('POST', '/api/pipeline/skip/:id', handlePipelineSkip(pipeline));
-  server.registerRoute('POST', '/api/pipeline/retry-all', handlePipelineRetryAll(pipeline));
-  server.registerRoute('POST', '/api/pipeline/circuit/:provider/reset', handlePipelineCircuitReset(pipeline));
+  server.registerRoute('POST', '/api/agent/run', async (req) => {
+    const { task, instruction, curatorId } = AgentRunBody.parse(req.body);
+
+    // Fire-and-forget: respond immediately with a runId placeholder, agent runs in background
+    const { runCurationAgent } = await import('../agent/executor.js');
+    const resultPromise = runCurationAgent(vaultDir, { task, instruction, curatorId });
+
+    // We need the runId from the executor, but the executor creates it synchronously
+    // before the async SDK call. Wait for the result since it's fast to start.
+    resultPromise
+      .then((result) => {
+        logger.info('curation', 'Agent run completed', { runId: result.runId, status: result.status });
+      })
+      .catch((err) => {
+        logger.error('curation', 'Agent run failed', { error: (err as Error).message });
+      });
+
+    // Return immediately — the caller can poll /api/agent/runs for status
+    return { body: { ok: true, message: 'Curation agent started' } };
+  });
+
+  server.registerRoute('GET', '/api/agent/runs', async (req) => {
+    const limit = req.query.limit ? Number(req.query.limit) : AGENT_RUNS_DEFAULT_LIMIT;
+    const curatorId = req.query.curatorId || undefined;
+    const runs = await listRuns({ limit, curator_id: curatorId });
+    return { body: { runs } };
+  });
+
+  server.registerRoute('GET', '/api/agent/runs/:id', async (req) => {
+    const run = await getRun(req.params.id);
+    if (!run) {
+      return { status: 404, body: { error: 'Run not found' } };
+    }
+    return { body: { run } };
+  });
+
+  server.registerRoute('GET', '/api/agent/runs/:id/reports', async (req) => {
+    const reports = await listReports(req.params.id);
+    return { body: { reports } };
+  });
+
+  // --- Start server ---
 
   await server.evictExistingDaemon();
   const resolvedPort = await resolvePort(config.daemon.port, vaultDir);
@@ -1456,31 +788,39 @@ export async function main(): Promise<void> {
     fs.writeFileSync(path.join(vaultDir, '_portal.md'), portalContent, 'utf-8');
   } catch { /* non-critical — template may be missing or vault read-only */ }
 
-  // Background reindex after migration — runs after server is healthy
-  if (needsMigrationReindex) {
-    setImmediate(() => {
-      logger.info('daemon', 'Rebuilding index after memories→spores migration (background)');
-      initFts(index);
-      rebuildIndex(index, vaultDir);
-      logger.info('daemon', 'Migration reindex complete');
-    });
-  }
+  // --- Curation timer ---
+
+  const curationTimer = setInterval(async () => {
+    try {
+      // Pre-check: only spawn agent if there's unprocessed work
+      const db = getDatabase();
+      const checkResult = await db.query('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0');
+      const count = Number((checkResult.rows[0] as Record<string, unknown>).count);
+      if (count === 0) return;
+
+      logger.info('curation', 'Unprocessed batches found, starting curation', { count });
+      const { runCurationAgent } = await import('../agent/executor.js');
+      const runResult = await runCurationAgent(vaultDir);
+      logger.info('curation', 'Curation run completed', { status: runResult.status, runId: runResult.runId });
+    } catch (err) {
+      logger.error('curation', 'Curation timer failed', { error: (err as Error).message });
+    }
+  }, CURATION_CHECK_INTERVAL_MS);
+
+  // --- Shutdown ---
 
   const shutdown = async (signal: string) => {
     logger.info('daemon', `${signal} received`);
+    clearInterval(curationTimer);
     // Wait for any active stop processing to finish before shutting down
     if (activeStopProcessing) {
       logger.info('daemon', 'Waiting for active stop processing to complete...');
       await activeStopProcessing;
     }
-    metabolism?.stop();
-    clearInterval(pipelineTickTimer);
-    pipeline.close();
     planWatcher.stopFileWatcher();
     registry.destroy();
     await server.stop();
-    vectorIndex?.close();
-    index.close();
+    await closeDatabase();
     logger.close();
     process.exit(0);
   };
@@ -1488,4 +828,3 @@ export async function main(): Promise<void> {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
-

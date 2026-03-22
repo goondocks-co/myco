@@ -1,14 +1,19 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { buildInjectedContext } from '@myco/context/injector';
-import { MycoIndex } from '@myco/index/sqlite';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { buildInjectedContext, buildPromptContext } from '@myco/context/injector';
+import { initDatabase, closeDatabase } from '@myco/db/client';
+
+// Mock tryEmbed to return null immediately — no real embedding provider in tests
+vi.mock('@myco/intelligence/embed-query.js', () => ({
+  tryEmbed: async () => null,
+}));
+import { createSchema } from '@myco/db/schema';
+import { upsertSession } from '@myco/db/queries/sessions';
+import { upsertPlan } from '@myco/db/queries/plans';
+import { insertSpore } from '@myco/db/queries/spores';
+import { registerCurator } from '@myco/db/queries/curators';
 import { MycoConfigSchema } from '@myco/config/schema';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 
 describe('buildInjectedContext', () => {
-  let tmpDir: string;
-  let index: MycoIndex;
   const config = MycoConfigSchema.parse({
     version: 2,
     intelligence: {
@@ -17,47 +22,142 @@ describe('buildInjectedContext', () => {
     },
   });
 
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-ctx-'));
-    index = new MycoIndex(path.join(tmpDir, 'index.db'));
+  beforeEach(async () => {
+    const db = await initDatabase(); // in-memory
+    await createSchema(db);
   });
 
-  afterEach(() => {
-    index.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  afterEach(async () => {
+    await closeDatabase();
   });
 
-  it('returns empty text for empty vault', () => {
-    const result = buildInjectedContext(index, config, {});
+  it('returns empty text when DB has no data', async () => {
+    const result = await buildInjectedContext(config, {});
     expect(result.text).toBe('');
     expect(result.tokenEstimate).toBe(0);
   });
 
-  it('includes active plans in layer 1', () => {
-    index.upsertNote({
-      path: 'plans/auth.md', type: 'plan', id: 'auth',
-      title: 'Auth Redesign', content: 'Replace JWT.',
-      frontmatter: { type: 'plan', status: 'active' },
-      created: '2026-03-10T00:00:00Z',
+  it('returns session-based context when sessions exist', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await upsertSession({
+      id: 'sess-001',
+      agent: 'claude-code',
+      started_at: now,
+      created_at: now,
+      title: 'Auth Middleware Refactor',
+      summary: 'Refactored the auth middleware to use JWT tokens',
+      status: 'completed',
     });
 
-    const result = buildInjectedContext(index, config, {});
+    const result = await buildInjectedContext(config, {});
+    expect(result.layers.sessions).toContain('Auth Middleware Refactor');
+    expect(result.tokenEstimate).toBeGreaterThan(0);
+  });
+
+  it('includes active plans in context', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await upsertPlan({
+      id: 'plan-auth',
+      created_at: now,
+      status: 'active',
+      title: 'Auth Redesign',
+      content: 'Replace JWT with session tokens for better security.',
+    });
+
+    const result = await buildInjectedContext(config, {});
     expect(result.layers.plans).toContain('Auth Redesign');
     expect(result.tokenEstimate).toBeGreaterThan(0);
   });
 
-  it('respects total max_tokens budget', () => {
-    // Add many notes to potentially exceed budget
+  it('includes active spores in context', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await registerCurator({
+      id: 'curator-1',
+      name: 'test-curator',
+      created_at: now,
+    });
+    await insertSpore({
+      id: 'spore-001',
+      curator_id: 'curator-1',
+      observation_type: 'gotcha',
+      content: 'Always validate JWT expiry before refreshing tokens',
+      created_at: now,
+      status: 'active',
+    });
+
+    const result = await buildInjectedContext(config, {});
+    expect(result.layers.spores).toContain('gotcha');
+    expect(result.layers.spores).toContain('Always validate JWT');
+  });
+
+  it('excludes superseded spores', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await registerCurator({
+      id: 'curator-1',
+      name: 'test-curator',
+      created_at: now,
+    });
+    await insertSpore({
+      id: 'spore-old',
+      curator_id: 'curator-1',
+      observation_type: 'gotcha',
+      content: 'Old stale observation',
+      created_at: now,
+      status: 'superseded',
+    });
+
+    const result = await buildInjectedContext(config, {});
+    expect(result.layers.spores).toBe('');
+  });
+
+  it('respects total max_tokens budget', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    // Add many sessions to potentially exceed budget
     for (let i = 0; i < 20; i++) {
-      index.upsertNote({
-        path: `sessions/s${i}.md`, type: 'session', id: `s${i}`,
-        title: `Session ${i}`, content: 'A'.repeat(500),
-        frontmatter: { type: 'session', started: new Date().toISOString() },
-        created: new Date().toISOString(),
+      await upsertSession({
+        id: `sess-${i.toString().padStart(3, '0')}`,
+        agent: 'claude-code',
+        started_at: now - i,
+        created_at: now - i,
+        title: `Session ${i}`,
+        summary: 'A'.repeat(500),
       });
     }
 
-    const result = buildInjectedContext(index, config, {});
+    const result = await buildInjectedContext(config, {});
+    // Token estimate should be within budget (with some tolerance for formatting)
     expect(result.tokenEstimate).toBeLessThanOrEqual(config.context.max_tokens + 50);
+  });
+});
+
+describe('buildPromptContext', () => {
+  const config = MycoConfigSchema.parse({
+    version: 2,
+    intelligence: {
+      llm: { provider: 'ollama', model: 'gpt-oss' },
+      embedding: { provider: 'ollama', model: 'bge-m3' },
+    },
+  });
+
+  beforeEach(async () => {
+    const db = await initDatabase(); // in-memory
+    await createSchema(db);
+  });
+
+  afterEach(async () => {
+    await closeDatabase();
+  });
+
+  it('returns empty context for short prompts', async () => {
+    const result = await buildPromptContext('hi', config);
+    expect(result.text).toBe('');
+    expect(result.tokenEstimate).toBe(0);
+  });
+
+  it('returns empty context when no embedding provider available', async () => {
+    // No provider configured in test env — tryEmbed returns null
+    const result = await buildPromptContext('How should I handle authentication middleware?', config);
+    expect(result.text).toBe('');
+    expect(result.tokenEstimate).toBe(0);
   });
 });

@@ -1,0 +1,22 @@
+# Digest-only task — regenerate context extracts without processing new data.
+
+name: digest-only
+displayName: Digest Only
+description: >
+  Regenerate digest extracts at all token tiers using current vault knowledge.
+  Does not process new data or extract spores. Useful after manual edits
+  to spores or graph data.
+agent: myco-curator
+prompt: >
+  Regenerate digest extracts at all configured token tiers. Read the current
+  vault state (spores, entities, edges, sessions) and synthesize updated
+  context extracts. Do not process new batches or extract new spores.
+isDefault: false
+toolOverrides:
+  - query_spores
+  - query_graph
+  - query_sessions
+  - semantic_search
+  - get_agent_state
+  - write_digest_extract
+  - set_agent_state

@@ -1,45 +1,72 @@
-import { VaultWriter } from '../../vault/writer.js';
-import { indexNote } from '../../index/rebuild.js';
-import type { MycoIndex } from '../../index/sqlite.js';
-import type { ObservationType } from '../../vault/types.js';
-import { resolveSessionFromBuffer } from '../../capture/buffer.js';
+/**
+ * myco_remember — save a decision, gotcha, bug fix, discovery, or trade-off as a spore.
+ *
+ * Inserts a spore into PGlite via the `insertSpore()` query helper.
+ * Embedding is fire-and-forget to avoid blocking the response.
+ */
+
 import { randomBytes } from 'node:crypto';
-import path from 'node:path';
+import { insertSpore, type SporeRow } from '@myco/db/queries/spores.js';
+import { registerCurator } from '@myco/db/queries/curators.js';
+import { epochSeconds, USER_CURATOR_ID, USER_CURATOR_NAME } from '@myco/constants.js';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Byte length for random spore ID suffix. */
+const SPORE_ID_RANDOM_BYTES = 4;
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface RememberInput {
   content: string;
-  type: ObservationType;
+  type?: string;
   tags?: string[];
-  session?: string;
-  related_plan?: string;
 }
 
 interface RememberResult {
-  note_path: string;
   id: string;
-  session?: string;
+  observation_type: string;
+  status: string;
+  created_at: number;
 }
 
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
 export async function handleMycoRemember(
-  vaultDir: string,
-  index: MycoIndex,
   input: RememberInput,
 ): Promise<RememberResult> {
-  const writer = new VaultWriter(vaultDir);
-  const id = `${input.type}-${randomBytes(4).toString('hex')}`;
-  const session = input.session ?? resolveSessionFromBuffer(path.join(vaultDir, 'buffer'));
+  const observationType = input.type ?? 'discovery';
+  const id = `${observationType}-${randomBytes(SPORE_ID_RANDOM_BYTES).toString('hex')}`;
+  const now = epochSeconds();
 
-  const notePath = writer.writeSpore({
-    id,
-    observation_type: input.type,
-    session,
-    plan: input.related_plan ?? undefined,
-    tags: input.tags,
-    content: input.content,
+  // Ensure the user curator exists (idempotent upsert)
+  await registerCurator({
+    id: USER_CURATOR_ID,
+    name: USER_CURATOR_NAME,
+    created_at: now,
   });
 
-  // Update index so the new spore is immediately searchable
-  indexNote(index, vaultDir, notePath);
+  const spore = await insertSpore({
+    id,
+    curator_id: USER_CURATOR_ID,
+    observation_type: observationType,
+    content: input.content,
+    tags: input.tags ? input.tags.join(', ') : null,
+    created_at: now,
+  });
 
-  return { note_path: notePath, id, session };
+  // TODO: Phase 2 — fire-and-forget embedding of the new spore
+
+  return {
+    id: spore.id,
+    observation_type: spore.observation_type,
+    status: spore.status,
+    created_at: spore.created_at,
+  };
 }

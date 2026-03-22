@@ -35,6 +35,7 @@ index.db
 index.db-wal
 index.db-shm
 vectors.db
+pgdata/
 
 # Daemon state — per-machine, ephemeral
 daemon.json

@@ -1,17 +1,19 @@
-import { MycoIndex } from '../index/sqlite.js';
-import { gatherStats } from '../services/stats.js';
-import fs from 'node:fs';
-import path from 'node:path';
+/**
+ * CLI: myco stats — display vault statistics from PGlite.
+ */
 
-export function run(_args: string[], vaultDir: string): void {
-  const index = new MycoIndex(path.join(vaultDir, 'index.db'));
+import { initDatabaseForVault } from '@myco/db/client.js';
+import { gatherStats } from '@myco/services/stats.js';
 
-  const stats = gatherStats(vaultDir, index);
+export async function run(_args: string[], vaultDir: string): Promise<void> {
+  await initDatabaseForVault(vaultDir);
+
+  const stats = await gatherStats(vaultDir);
 
   console.log('=== Myco Vault ===');
   console.log(`Path: ${stats.vault.path}`);
   console.log();
-  console.log('--- Index ---');
+  console.log('--- Data ---');
   console.log(`Sessions:  ${stats.vault.session_count}`);
   console.log(`Spores:    ${Object.values(stats.vault.spore_counts).reduce((a, b) => a + b, 0)}`);
   console.log(`Plans:     ${stats.vault.plan_count}`);
@@ -23,13 +25,9 @@ export function run(_args: string[], vaultDir: string): void {
     }
   }
 
-  const vecDb = path.join(vaultDir, 'vectors.db');
-  if (fs.existsSync(vecDb)) {
-    console.log(`\n--- Vectors ---`);
-    console.log(`Embeddings: ${stats.index.vector_count}`);
-  } else {
-    console.log('\nVectors: not initialized');
-  }
+  console.log(`\n--- Embeddings ---`);
+  console.log(`Sessions:  ${stats.index.embedded_sessions}`);
+  console.log(`Spores:    ${stats.index.embedded_spores}`);
 
   if (stats.daemon) {
     const d = stats.daemon;
@@ -40,6 +38,4 @@ export function run(_args: string[], vaultDir: string): void {
     console.log(`Started:  ${d.started}`);
     console.log(`Sessions: ${d.active_sessions.length}`);
   }
-
-  index.close();
 }

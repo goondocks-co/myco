@@ -1,4 +1,3 @@
-import { ensureNativeDeps } from '../native-deps.js';
-ensureNativeDeps();
+export {};
 const { main } = await import('../daemon/main.js');
 await main();

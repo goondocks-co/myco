@@ -1,51 +1,47 @@
-import type { MycoIndex } from '../../index/sqlite.js';
-import { sessionFm } from '../../vault/frontmatter.js';
-import { RECALL_SUMMARY_PREVIEW_CHARS } from '../../constants.js';
+/**
+ * myco_team — list team members registered in the vault.
+ *
+ * Queries the `team_members` table directly via PGlite.
+ */
+
+import { getDatabase } from '@myco/db/client.js';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface TeamInput {
-  files?: string[];
-  plan?: string;
-  since?: string;
+  // No filters in Phase 1 — returns all team members.
 }
 
-interface TeamActivity {
+interface TeamMember {
+  id: string;
   user: string;
-  session_id: string;
-  summary: string;
-  files_changed: string[];
-  decisions: string[];
+  role: string | null;
+  joined: string | null;
+  tags: string[];
 }
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
 
 export async function handleMycoTeam(
-  index: MycoIndex,
-  input: TeamInput,
-  currentUser?: string,
-): Promise<TeamActivity[]> {
-  const sessions = index.query({
-    type: 'session',
-    since: input.since,
-    limit: 50,
-  });
+  _input: TeamInput,
+): Promise<TeamMember[]> {
+  const db = getDatabase();
 
-  // Filter out current user and optionally by plan
-  const filtered = sessions.filter((s) => {
-    const f = sessionFm(s);
-    if (!f.user || f.user === currentUser) return false;
-    if (input.plan) {
-      const planRef = f.plan;
-      if (planRef !== `[[${input.plan}]]` && planRef !== input.plan) return false;
-    }
-    return true;
-  });
+  const result = await db.query(
+    `SELECT id, "user", role, joined, tags
+     FROM team_members
+     ORDER BY id ASC`,
+  );
 
-  return filtered.map((s) => {
-    const f = sessionFm(s);
-    return {
-      user: f.user ?? '',
-      session_id: s.id,
-      summary: s.content.slice(0, RECALL_SUMMARY_PREVIEW_CHARS),
-      files_changed: [],
-      decisions: [],
-    };
-  });
+  return (result.rows as Record<string, unknown>[]).map((row) => ({
+    id: row.id as string,
+    user: row.user as string,
+    role: (row.role as string) ?? null,
+    joined: (row.joined as string) ?? null,
+    tags: row.tags ? (row.tags as string).split(',').map((t) => t.trim()) : [],
+  }));
 }

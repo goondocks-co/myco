@@ -1,3 +1,2 @@
-import { ensureNativeDeps } from '../native-deps.js';
-ensureNativeDeps();
+export {};
 await import('../hooks/session-start.js');
