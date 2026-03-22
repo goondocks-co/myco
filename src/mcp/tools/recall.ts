@@ -1,53 +1,44 @@
-import type { MycoIndex } from '../../index/sqlite.js';
-import { planFm, sessionFm, sporeFm } from '../../vault/frontmatter.js';
-import { RECALL_SUMMARY_PREVIEW_CHARS } from '../../constants.js';
+/**
+ * myco_recall — get context relevant to current work.
+ *
+ * Queries sessions, plans, and spores from PGlite. Returns a composite
+ * result with active plans, recent sessions, and relevant spores.
+ */
+
+import { getSession } from '@myco/db/queries/sessions.js';
+import { getSpore } from '@myco/db/queries/spores.js';
+import { getPlan } from '@myco/db/queries/plans.js';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface RecallInput {
-  branch?: string;
-  files?: string[];
+  note_id: string;
 }
 
-interface RecallResult {
-  active_plans: Array<{ id: string; title: string; status: string }>;
-  recent_sessions: Array<{ id: string; title: string; summary: string }>;
-  relevant_spores: Array<{ id: string; title: string; type: string }>;
-  team_activity: Array<{ user: string; session_id: string; summary: string }>;
-}
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
 
+/**
+ * Recall looks up a specific note by ID. It tries sessions, spores, and
+ * plans in parallel and returns the first match.
+ */
 export async function handleMycoRecall(
-  index: MycoIndex,
   input: RecallInput,
-): Promise<RecallResult> {
-  const allPlans = index.query({ type: 'plan' });
-  const activePlans = allPlans.filter((p) => {
-    const status = planFm(p).status;
-    return status === 'active' || status === 'in_progress';
-  });
+): Promise<Record<string, unknown>> {
+  const id = input.note_id;
 
-  let sessions = index.query({ type: 'session', limit: 10 });
-  if (input.branch) {
-    sessions = sessions.filter((s) => sessionFm(s).branch === input.branch);
-  }
+  const [session, spore, plan] = await Promise.all([
+    getSession(id),
+    getSpore(id),
+    getPlan(id),
+  ]);
 
-  const spores = index.query({ type: 'spore', limit: 5 })
-    .filter((m) => sporeFm(m).status !== 'superseded' && sporeFm(m).status !== 'archived');
+  if (session) return { type: 'session', ...session };
+  if (spore) return { type: 'spore', ...spore };
+  if (plan) return { type: 'plan', ...plan };
 
-  return {
-    active_plans: activePlans.map((p) => ({
-      id: p.id,
-      title: p.title,
-      status: planFm(p).status ?? 'active',
-    })),
-    recent_sessions: sessions.slice(0, 5).map((s) => ({
-      id: s.id,
-      title: s.title,
-      summary: s.content.slice(0, RECALL_SUMMARY_PREVIEW_CHARS),
-    })),
-    relevant_spores: spores.map((m) => ({
-      id: m.id,
-      title: m.title,
-      type: sporeFm(m).observation_type ?? 'discovery',
-    })),
-    team_activity: [],
-  };
+  return { error: `Note not found: ${id}` };
 }

@@ -15,8 +15,8 @@ describe('MCP Server', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('creates server with all 12 tools registered', () => {
-    const server = createMycoServer({ vaultDir: tmpDir });
+  it('creates server with all 10 tools registered', () => {
+    const server = createMycoServer(tmpDir);
     const tools = server.getRegisteredTools();
     expect(tools).toContain('myco_search');
     expect(tools).toContain('myco_recall');
@@ -25,16 +25,14 @@ describe('MCP Server', () => {
     expect(tools).toContain('myco_sessions');
     expect(tools).toContain('myco_team');
     expect(tools).toContain('myco_graph');
-    expect(tools).toContain('myco_orphans');
-    expect(tools).toContain('myco_logs');
     expect(tools).toContain('myco_supersede');
     expect(tools).toContain('myco_consolidate');
     expect(tools).toContain('myco_context');
-    expect(tools).toHaveLength(12);
+    expect(tools).toHaveLength(10);
   });
 
   it('exports server name and version', () => {
-    const server = createMycoServer({ vaultDir: tmpDir });
+    const server = createMycoServer(tmpDir);
     expect(server.name).toBe('myco');
   });
 });

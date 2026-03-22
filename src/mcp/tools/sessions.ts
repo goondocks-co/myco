@@ -1,60 +1,68 @@
-import type { MycoIndex } from '../../index/sqlite.js';
-import { sessionFm } from '../../vault/frontmatter.js';
-import { SESSION_SUMMARY_PREVIEW_CHARS } from '../../constants.js';
+/**
+ * myco_sessions — list past coding sessions with summaries.
+ *
+ * Delegates to PGlite `listSessions()` query helper.
+ */
+
+import { listSessions, type SessionRow } from '@myco/db/queries/sessions.js';
+import { MCP_SESSIONS_DEFAULT_LIMIT, SESSION_SUMMARY_PREVIEW_CHARS } from '@myco/constants.js';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface SessionsInput {
-  plan?: string;
-  branch?: string;
-  user?: string;
-  since?: string;
   limit?: number;
+  status?: string;
 }
 
 interface SessionSummary {
   id: string;
-  summary: string;
-  user: string;
   agent: string;
-  started: string;
-  parent: string | null;
-  plan: string | null;
-  tags: string[];
+  user: string | null;
+  branch: string | null;
+  started_at: number;
+  ended_at: number | null;
+  status: string;
+  title: string | null;
+  summary: string;
+  prompt_count: number;
+  tool_count: number;
+  parent_session_id: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function toSummary(row: SessionRow): SessionSummary {
+  return {
+    id: row.id,
+    agent: row.agent,
+    user: row.user,
+    branch: row.branch,
+    started_at: row.started_at,
+    ended_at: row.ended_at,
+    status: row.status,
+    title: row.title,
+    summary: (row.summary ?? '').slice(0, SESSION_SUMMARY_PREVIEW_CHARS),
+    prompt_count: row.prompt_count,
+    tool_count: row.tool_count,
+    parent_session_id: row.parent_session_id,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
 export async function handleMycoSessions(
-  index: MycoIndex,
   input: SessionsInput,
 ): Promise<SessionSummary[]> {
-  const frontmatter: Record<string, string> = {};
-  if (input.branch) frontmatter.branch = input.branch;
-  if (input.user) frontmatter.user = input.user;
-
-  let sessions = index.query({
-    type: 'session',
-    since: input.since,
-    limit: input.limit ?? 20,
-    frontmatter,
+  const rows = await listSessions({
+    limit: input.limit ?? MCP_SESSIONS_DEFAULT_LIMIT,
+    status: input.status,
   });
 
-  // Plan filtering needs special handling for [[wikilink]] format
-  if (input.plan) {
-    sessions = sessions.filter((s) => {
-      const planRef = sessionFm(s).plan;
-      return planRef === `[[${input.plan}]]` || planRef === input.plan;
-    });
-  }
-
-  return sessions.map((s) => {
-    const f = sessionFm(s);
-    return {
-      id: s.id,
-      summary: s.content.slice(0, SESSION_SUMMARY_PREVIEW_CHARS),
-      user: f.user ?? '',
-      agent: f.agent ?? '',
-      started: f.started ?? s.created,
-      parent: f.parent ?? null,
-      plan: f.plan ?? null,
-      tags: f.tags ?? [],
-    };
-  });
+  return rows.map(toSummary);
 }

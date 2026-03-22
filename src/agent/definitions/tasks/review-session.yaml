@@ -1,0 +1,15 @@
+# Review a specific session — targeted extraction and summarization.
+
+name: review-session
+displayName: Review Session
+description: >
+  Process a single session end-to-end. Extracts spores from all prompt
+  batches in the session, builds graph entities and edges, runs supersession
+  checks, and generates the session title and summary.
+agent: myco-curator
+prompt: >
+  Review the specified session. Process all prompt batches within it:
+  extract observations as spores, identify entities and relationships,
+  check for supersession, and generate a title and summary for the session.
+  Mark all batches and the session as processed when complete.
+isDefault: false

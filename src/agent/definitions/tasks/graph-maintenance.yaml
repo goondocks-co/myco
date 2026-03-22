@@ -1,0 +1,25 @@
+# Graph maintenance task — update entities and edges from existing spores.
+
+name: graph-maintenance
+displayName: Graph Maintenance
+description: >
+  Scan existing spores and sessions to update the knowledge graph. Adds
+  missing entities and edges, merges duplicates, and updates temporal
+  validity. Does not extract new spores or regenerate digest.
+agent: myco-curator
+prompt: >
+  Review existing spores and sessions to maintain the knowledge graph.
+  For each active spore, ensure referenced entities exist and relationships
+  are represented as edges. Merge duplicate entities. Update temporal
+  validity (valid_from/valid_until) on edges where evidence exists.
+  Do not extract new spores or regenerate digest extracts.
+isDefault: false
+toolOverrides:
+  - query_spores
+  - query_graph
+  - query_sessions
+  - semantic_search
+  - get_agent_state
+  - create_entity
+  - create_edge
+  - set_agent_state

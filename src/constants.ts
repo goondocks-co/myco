@@ -76,6 +76,14 @@ export const PROVIDER_DETECT_TIMEOUT_MS = 3000;
 /** Milliseconds in one day. */
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+/** Milliseconds-to-seconds divisor for Unix epoch conversion. */
+const MS_PER_SECOND = 1000;
+
+/** Current Unix epoch in seconds. */
+export function epochSeconds(): number {
+  return Math.floor(Date.now() / MS_PER_SECOND);
+}
+
 // --- Buffer cleanup ---
 /** Max age for stale buffer files before cleanup (ms). */
 export const STALE_BUFFER_MAX_AGE_MS = 1 * MS_PER_DAY;
@@ -130,6 +138,18 @@ export const SESSION_CONTEXT_MAX_TOKENS = 500;
 export const PROMPT_CONTEXT_MAX_TOKENS = 300;
 /** Minimum prompt length to trigger context search. */
 export const PROMPT_CONTEXT_MIN_LENGTH = 10;
+
+// --- Spore status filtering ---
+/** Spore statuses excluded from search results and context injection. */
+export const EXCLUDED_SPORE_STATUSES = new Set(['superseded', 'archived']);
+
+// --- Curator identity ---
+/** Default curator ID for the built-in curation agent. */
+export const DEFAULT_CURATOR_ID = 'myco-curator';
+/** Curator ID for user-initiated MCP operations. */
+export const USER_CURATOR_ID = 'user';
+/** Curator name for user-initiated MCP operations. */
+export const USER_CURATOR_NAME = 'User (MCP)';
 
 // --- MCP tool defaults ---
 /** Default result limit for myco_search. */

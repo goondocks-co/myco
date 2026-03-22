@@ -1,92 +1,67 @@
-import type { MycoIndex } from '../../index/sqlite.js';
-import { planFm, sessionFm } from '../../vault/frontmatter.js';
+/**
+ * myco_plans — list active implementation plans and their status.
+ *
+ * Delegates to PGlite `listPlans()` and `getPlan()` query helpers.
+ */
+
+import { listPlans, getPlan, type PlanRow } from '@myco/db/queries/plans.js';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface PlansInput {
-  status?: 'active' | 'in_progress' | 'completed' | 'abandoned' | 'all';
-  id?: string;
+  status?: string;
+  limit?: number;
 }
 
 interface PlanSummary {
   id: string;
-  title: string;
+  title: string | null;
   status: string;
   progress: string;
   tags: string[];
+  created_at: number;
 }
 
-interface PlanDetail extends PlanSummary {
-  content: string;
-  sessions: Array<{ id: string; title: string; started: string }>;
-}
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-export async function handleMycoPlans(
-  index: MycoIndex,
-  input: PlansInput,
-): Promise<PlanSummary[] | PlanDetail> {
-  if (input.id) {
-    return getPlanDetail(index, input.id);
-  }
-
-  const allPlans = index.query({ type: 'plan' });
-  let plans = allPlans;
-
-  if (input.status && input.status !== 'all') {
-    plans = allPlans.filter((p) => planFm(p).status === input.status);
-  }
-
-  return plans.map((p) => {
-    const f = planFm(p);
-    return {
-      id: p.id,
-      title: p.title,
-      status: f.status ?? 'active',
-      progress: extractProgress(p.content),
-      tags: f.tags ?? [],
-    };
-  });
-}
-
-function getPlanDetail(index: MycoIndex, planId: string): PlanDetail {
-  const plans = index.query({ type: 'plan', id: planId });
-  if (plans.length === 0) {
-    throw new Error(`Plan not found: ${planId}`);
-  }
-
-  const plan = plans[0];
-  const f = planFm(plan);
-
-  // Query sessions that reference this plan — use SQL to avoid loading all sessions
-  const allSessions = index.query({ type: 'session', limit: 100 });
-  const linkedSessions = allSessions.filter((s) => {
-    const sf = sessionFm(s);
-    const planRef = sf.plan;
-    const plansArr = sf.plans;
-    return planRef === `[[${planId}]]` || planRef === planId
-      || plansArr?.includes(planId) || plansArr?.includes(`[[${planId}]]`);
-  });
-
-  return {
-    id: plan.id,
-    title: plan.title,
-    status: f.status ?? 'active',
-    progress: extractProgress(plan.content),
-    tags: f.tags ?? [],
-    content: plan.content,
-    sessions: linkedSessions.map((s) => {
-      const sf = sessionFm(s);
-      return {
-        id: s.id,
-        title: s.title,
-        started: sf.started ?? s.created,
-      };
-    }),
-  };
-}
-
-function extractProgress(content: string): string {
+/** Extract checklist progress from plan content. */
+function extractProgress(content: string | null): string {
+  if (!content) return 'N/A';
   const checked = (content.match(/- \[x\]/gi) ?? []).length;
   const unchecked = (content.match(/- \[ \]/g) ?? []).length;
   const total = checked + unchecked;
   if (total === 0) return 'N/A';
   return `${checked}/${total}`;
+}
+
+function toSummary(row: PlanRow): PlanSummary {
+  return {
+    id: row.id,
+    title: row.title,
+    status: row.status,
+    progress: extractProgress(row.content),
+    tags: row.tags ? row.tags.split(',').map((t) => t.trim()) : [],
+    created_at: row.created_at,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
+export async function handleMycoPlans(
+  input: PlansInput,
+): Promise<PlanSummary[]> {
+  const statusFilter = input.status === 'all' ? undefined : input.status;
+
+  const rows = await listPlans({
+    status: statusFilter,
+    limit: input.limit,
+  });
+
+  return rows.map(toSummary);
 }

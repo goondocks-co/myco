@@ -1,8 +1,8 @@
 import { DaemonClient } from './client.js';
 import { readStdin } from './read-stdin.js';
 import { loadConfig } from '../config/loader.js';
-import { MycoIndex } from '../index/sqlite.js';
 import { buildInjectedContext } from '../context/injector.js';
+import { initDatabaseForVault } from '../db/client.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -43,11 +43,10 @@ async function main() {
       }
     }
 
-    // Degraded: local FTS context only
-    const index = new MycoIndex(path.join(VAULT_DIR, 'index.db'));
-    const injected = buildInjectedContext(index, config, { branch });
+    // Degraded: local PGlite context only
+    await initDatabaseForVault(VAULT_DIR);
+    const injected = await buildInjectedContext(config, { branch });
     if (injected.text) process.stdout.write(injected.text);
-    index.close();
   } catch (error) {
     process.stderr.write(`[myco] session-start error: ${(error as Error).message}\n`);
   }

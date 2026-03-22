@@ -1,60 +1,70 @@
+/**
+ * Tests for myco_recall tool handler.
+ */
+
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { handleMycoRecall } from '@myco/mcp/tools/recall';
-import { MycoIndex } from '@myco/index/sqlite';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
+import { initDatabase, closeDatabase } from '@myco/db/client.js';
+import { createSchema } from '@myco/db/schema.js';
+import { upsertSession } from '@myco/db/queries/sessions.js';
+import { upsertPlan } from '@myco/db/queries/plans.js';
+import { insertSpore } from '@myco/db/queries/spores.js';
+import { registerCurator } from '@myco/db/queries/curators.js';
+import { handleMycoRecall } from '@myco/mcp/tools/recall.js';
+
+const epochNow = () => Math.floor(Date.now() / 1000);
 
 describe('myco_recall', () => {
-  let tmpDir: string;
-  let index: MycoIndex;
+  beforeEach(async () => {
+    const db = await initDatabase();
+    await createSchema(db);
 
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-recall-'));
-    index = new MycoIndex(path.join(tmpDir, 'index.db'));
+    const now = epochNow();
 
-    index.upsertNote({
-      path: 'plans/auth.md', type: 'plan', id: 'auth',
-      title: 'Auth Redesign', content: 'Replace JWT secret.',
-      frontmatter: { type: 'plan', id: 'auth', status: 'active' },
-      created: '2026-03-10T00:00:00Z',
+    await registerCurator({
+      id: 'test-curator', name: 'Test Curator', created_at: now,
     });
-    index.upsertNote({
-      path: 'sessions/s1.md', type: 'session', id: 's1',
-      title: 'Auth Session 1', content: 'Started refactoring.',
-      frontmatter: {
-        type: 'session', id: 's1', user: 'chris',
-        branch: 'feature/auth', plan: '[[auth]]',
-      },
-      created: '2026-03-12T09:00:00Z',
+
+    await upsertSession({
+      id: 'sess-1', agent: 'claude-code', started_at: now,
+      created_at: now, title: 'Auth Session',
+    });
+
+    await upsertPlan({
+      id: 'plan-auth', title: 'Auth Redesign', status: 'active',
+      created_at: now,
+    });
+
+    await insertSpore({
+      id: 'gotcha-abc', curator_id: 'test-curator',
+      observation_type: 'gotcha', content: 'CORS strips headers',
+      created_at: now,
     });
   });
 
-  afterEach(() => {
-    index.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  afterEach(async () => {
+    await closeDatabase();
   });
 
-  it('recalls active plans', async () => {
-    const result = await handleMycoRecall(index, {});
-    expect(result.active_plans).toHaveLength(1);
-    expect(result.active_plans[0].id).toBe('auth');
+  it('recalls a session by ID', async () => {
+    const result = await handleMycoRecall({ note_id: 'sess-1' });
+    expect(result.type).toBe('session');
+    expect(result.id).toBe('sess-1');
   });
 
-  it('recalls recent sessions for a branch', async () => {
-    const result = await handleMycoRecall(index, { branch: 'feature/auth' });
-    expect(result.recent_sessions).toHaveLength(1);
+  it('recalls a plan by ID', async () => {
+    const result = await handleMycoRecall({ note_id: 'plan-auth' });
+    expect(result.type).toBe('plan');
+    expect(result.id).toBe('plan-auth');
   });
 
-  it('returns empty context for fresh vault', async () => {
-    const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-empty-'));
-    const emptyIndex = new MycoIndex(path.join(emptyDir, 'index.db'));
+  it('recalls a spore by ID', async () => {
+    const result = await handleMycoRecall({ note_id: 'gotcha-abc' });
+    expect(result.type).toBe('spore');
+    expect(result.id).toBe('gotcha-abc');
+  });
 
-    const result = await handleMycoRecall(emptyIndex, {});
-    expect(result.active_plans).toEqual([]);
-    expect(result.recent_sessions).toEqual([]);
-
-    emptyIndex.close();
-    fs.rmSync(emptyDir, { recursive: true, force: true });
+  it('returns error for unknown ID', async () => {
+    const result = await handleMycoRecall({ note_id: 'nonexistent' });
+    expect(result.error).toBeDefined();
   });
 });

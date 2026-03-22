@@ -1,86 +1,106 @@
-import type { MycoIndex } from '../../index/sqlite.js';
-import { searchFts } from '../../index/fts.js';
-import type { VectorIndex } from '../../index/vectors.js';
-import { generateEmbedding } from '../../intelligence/embeddings.js';
-import type { EmbeddingProvider } from '../../intelligence/llm.js';
-import { CONTENT_SNIPPET_CHARS } from '../../constants.js';
+/**
+ * myco_search — semantic search across the vault.
+ *
+ * Uses pgvector similarity search via `searchSimilar()`. The query text is
+ * embedded using the configured embedding provider. If no embedding provider
+ * is available (Phase 1 without local models), returns empty results gracefully.
+ */
+
+import { searchSimilar, type SimilarityResult } from '@myco/db/queries/embeddings.js';
+import { tryEmbed } from '@myco/intelligence/embed-query.js';
+import { MCP_SEARCH_DEFAULT_LIMIT, CONTENT_SNIPPET_CHARS } from '@myco/constants.js';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface SearchInput {
   query: string;
-  type?: 'session' | 'plan' | 'spore' | 'all';
+  type?: string;
   limit?: number;
 }
 
 interface SearchResult {
-  note_path: string;
+  id: string;
   type: string;
-  title: string;
-  snippet: string;
+  content: string;
   score: number;
-  frontmatter: Record<string, unknown>;
+  observation_type?: string;
+  status?: string;
+  tags?: string;
 }
 
-export async function handleMycoSearch(
-  index: MycoIndex,
-  input: SearchInput,
-  vectorIndex?: VectorIndex,
-  backend?: EmbeddingProvider,
-): Promise<SearchResult[]> {
-  const type = input.type === 'all' ? undefined : input.type;
-  const limit = input.limit ?? 10;
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-  // Try vector search first if available
-  if (vectorIndex && backend) {
-    try {
-      const emb = await generateEmbedding(backend, input.query);
-      const results = vectorIndex.search(emb.embedding, {
-        limit,
-        type,
-      });
-      if (results.length > 0) {
-        // Batch-fetch all notes in one query
-        const noteMap = new Map(
-          index.queryByIds(results.map((r) => r.id)).map((n) => [n.id, n]),
-        );
-        return results
-          .map((r) => {
-            const note = noteMap.get(r.id);
-            return {
-              note_path: note?.path ?? r.id,
-              type: r.metadata.type || note?.type || 'unknown',
-              title: note?.title ?? r.id,
-              snippet: note?.content?.slice(0, CONTENT_SNIPPET_CHARS) ?? '',
-              score: r.similarity,
-              frontmatter: note?.frontmatter ?? {},
-            };
-          })
-          .filter((r) => r.snippet)
-          .filter((r) => {
-            const status = (r.frontmatter as Record<string, unknown>).status as string | undefined;
-            return status !== 'superseded' && status !== 'archived';
-          });
-      }
-    } catch {
-      // Fall through to FTS
-    }
+function toSearchResult(row: SimilarityResult, table: string): SearchResult {
+  const base: SearchResult = {
+    id: row.id,
+    type: table,
+    content: ((row.content as string) ?? (row.summary as string) ?? '').slice(0, CONTENT_SNIPPET_CHARS),
+    score: row.similarity,
+  };
+
+  if (table === 'spores') {
+    base.observation_type = row.observation_type as string;
+    base.status = row.status as string;
+    base.tags = row.tags as string;
   }
 
-  const ftsResults = searchFts(index, input.query, { type, limit });
+  return base;
+}
 
-  return ftsResults
-    .map((r) => {
-      const note = index.getNoteByPath(r.path);
-      return {
-        note_path: r.path,
-        type: r.type,
-        title: r.title,
-        snippet: r.snippet,
-        score: Math.abs(r.rank),
-        frontmatter: note?.frontmatter ?? {},
-      };
-    })
-    .filter((r) => {
-      const status = (r.frontmatter as Record<string, unknown>).status as string | undefined;
-      return status !== 'superseded' && status !== 'archived';
-    });
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
+export async function handleMycoSearch(
+  input: SearchInput,
+): Promise<SearchResult[]> {
+  const limit = input.limit ?? MCP_SEARCH_DEFAULT_LIMIT;
+
+  const queryVector = await tryEmbed(input.query);
+  if (!queryVector) {
+    // No embedding provider available — return empty results gracefully
+    return [];
+  }
+
+  // Determine which tables to search based on type filter
+  const tablesToSearch = resolveSearchTables(input.type);
+
+  // Search all tables in parallel
+  const searchPromises = tablesToSearch.map((table) => {
+    const filters: Record<string, unknown> = {};
+    if (table === 'spores') {
+      filters.status = 'active';
+    }
+
+    return searchSimilar(table, queryVector, {
+      limit,
+      filters: Object.keys(filters).length > 0 ? filters : undefined,
+    }).then((results) =>
+      results.map((row) => toSearchResult(row, table)),
+    );
+  });
+
+  const resultSets = await Promise.all(searchPromises);
+  const allResults: SearchResult[] = resultSets.flat();
+
+  // Sort by score descending, limit to requested count
+  allResults.sort((a, b) => b.score - a.score);
+  return allResults.slice(0, limit);
+}
+
+/** Map the user-facing type filter to embeddable table names. */
+function resolveSearchTables(type?: string): string[] {
+  switch (type) {
+    case 'session':
+      return ['sessions'];
+    case 'spore':
+      return ['spores'];
+    default:
+      // 'all' or undefined — search all embeddable tables
+      return ['spores', 'sessions'];
+  }
 }

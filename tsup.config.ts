@@ -1,18 +1,16 @@
 import { defineConfig } from 'tsup';
-import { copyFileSync, mkdirSync, readdirSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
 export default defineConfig({
   entry: {
-    // Thin hooks — no native deps, no entry wrapper needed
+    // Thin hooks — delegate to daemon
     'src/hooks/session-end': 'src/hooks/session-end.ts',
     'src/hooks/stop': 'src/hooks/stop.ts',
     'src/hooks/user-prompt-submit': 'src/hooks/user-prompt-submit.ts',
     'src/hooks/post-tool-use': 'src/hooks/post-tool-use.ts',
-    // Entry wrappers — ensureNativeDeps() before dynamic import, then
-    // call main() explicitly (tsup code-splitting moves the module into
-    // a chunk whose filename differs from process.argv[1], so inline
-    // entry-point guards break)
+    // Entry wrappers — dynamic import so tsup code-splitting works
+    // (chunk filenames differ from process.argv[1])
     'src/hooks/session-start': 'src/entries/session-start.ts',
     'src/mcp/server': 'src/entries/mcp-server.ts',
     'src/cli': 'src/entries/cli.ts',
@@ -28,9 +26,7 @@ export default defineConfig({
   banner: {
     js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);",
   },
-  // Native modules cannot be bundled — they need platform-specific binaries.
-  // These are installed at runtime via ensureNativeDeps() on first use.
-  external: ['better-sqlite3', 'sqlite-vec'],
+  external: [],
   // Do not generate .d.ts — this is a plugin, not a library
   dts: false,
   // Bundle all other dependencies (yaml, zod, gray-matter, etc.)
@@ -41,6 +37,7 @@ export default defineConfig({
     'chokidar',
     '@anthropic-ai/sdk',
     '@modelcontextprotocol/sdk',
+    '@electric-sql/pglite',
   ],
   onSuccess: async () => {
     // Copy .md files next to bundled output so loaders can find them
@@ -51,6 +48,38 @@ export default defineConfig({
       for (const file of readdirSync(src)) {
         if (file.endsWith('.md')) {
           copyFileSync(path.join(src, file), path.join(dest, file));
+        }
+      }
+    }
+
+    // Copy agent definition YAML files and prompt .md files
+    const agentDefs = 'src/agent/definitions';
+    const agentDefsDest = `dist/src/agent/definitions`;
+    mkdirSync(agentDefsDest, { recursive: true });
+    for (const file of readdirSync(agentDefs)) {
+      if (file.endsWith('.yaml')) {
+        copyFileSync(path.join(agentDefs, file), path.join(agentDefsDest, file));
+      }
+    }
+    const agentTasksSrc = path.join(agentDefs, 'tasks');
+    if (existsSync(agentTasksSrc)) {
+      const agentTasksDest = path.join(agentDefsDest, 'tasks');
+      mkdirSync(agentTasksDest, { recursive: true });
+      for (const file of readdirSync(agentTasksSrc)) {
+        if (file.endsWith('.yaml')) {
+          copyFileSync(path.join(agentTasksSrc, file), path.join(agentTasksDest, file));
+        }
+      }
+    }
+
+    // Copy agent prompt .md files
+    const agentPrompts = 'src/agent/prompts';
+    if (existsSync(agentPrompts)) {
+      const agentPromptsDest = `dist/src/agent/prompts`;
+      mkdirSync(agentPromptsDest, { recursive: true });
+      for (const file of readdirSync(agentPrompts)) {
+        if (file.endsWith('.md')) {
+          copyFileSync(path.join(agentPrompts, file), path.join(agentPromptsDest, file));
         }
       }
     }

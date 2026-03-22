@@ -1,0 +1,478 @@
+/**
+ * Vault MCP tool server for the curation agent.
+ *
+ * Creates 14 tools that expose PGlite query helpers to the curation agent
+ * via the Claude Agent SDK. Tools are grouped into:
+ * - Read tools: vault_unprocessed, vault_spores, vault_sessions, vault_search, vault_state
+ * - Write tools: vault_create_spore, vault_create_entity, vault_create_edge,
+ *                vault_resolve_spore, vault_update_session, vault_set_state,
+ *                vault_write_digest, vault_mark_processed
+ * - Observability: vault_report
+ *
+ * `curatorId` and `runId` are captured in closures — tools inject them
+ * automatically so the agent cannot impersonate another curator.
+ */
+
+import crypto from 'node:crypto';
+import { z } from 'zod/v4';
+import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { epochSeconds } from '@myco/constants.js';
+import { getPluginVersion } from '@myco/version.js';
+import { getUnprocessedBatches, markBatchProcessed } from '@myco/db/queries/batches.js';
+import { listSpores, insertSpore, updateSporeStatus, DEFAULT_IMPORTANCE } from '@myco/db/queries/spores.js';
+import { listSessions, updateSession } from '@myco/db/queries/sessions.js';
+import { getStatesForCurator, setState } from '@myco/db/queries/agent-state.js';
+import { insertReport } from '@myco/db/queries/reports.js';
+import { insertTurn } from '@myco/db/queries/turns.js';
+import { searchSimilar, EMBEDDABLE_TABLES, type EmbeddableTable } from '@myco/db/queries/embeddings.js';
+import { insertEntity } from '@myco/db/queries/entities.js';
+import { insertEdge } from '@myco/db/queries/edges.js';
+import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
+import { upsertDigestExtract } from '@myco/db/queries/digest-extracts.js';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Default limit for unprocessed batches query. */
+const DEFAULT_UNPROCESSED_LIMIT = 50;
+
+/** Default limit for spore listing. */
+const DEFAULT_SPORES_LIMIT = 50;
+
+/** Default limit for session listing. */
+const DEFAULT_SESSIONS_LIMIT = 20;
+
+/** Default limit for similarity search results. */
+const DEFAULT_SEARCH_LIMIT = 10;
+
+/** Default embeddable table for search. */
+const DEFAULT_SEARCH_TABLE: EmbeddableTable = 'spores';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Format a value as a JSON text content block for tool output. */
+function textResult(data: unknown): { content: Array<{ type: 'text'; text: string }> } {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(data) }] };
+}
+
+// ---------------------------------------------------------------------------
+// Tool definitions factory
+// ---------------------------------------------------------------------------
+
+/** Total number of vault tools defined. */
+export const VAULT_TOOL_COUNT = 14;
+
+/**
+ * Create the 14 vault tool definitions for the curation agent.
+ *
+ * Exposed for testing (call handler directly) and for the MCP server factory.
+ *
+ * @param curatorId — the curator identity, injected into all write operations.
+ * @param runId — the current agent run ID, injected into reports and turns.
+ * @returns array of SdkMcpToolDefinition objects.
+ */
+export function createVaultTools(curatorId: string, runId: string) {
+  /** Turn number counter — incremented per write tool call within a run. */
+  let turnCounter = 0;
+
+  /**
+   * Record a turn in the audit trail for write operations.
+   * Fire-and-forget — does not block the tool response.
+   */
+  function recordTurn(toolName: string, toolInput: unknown): void {
+    turnCounter++;
+    insertTurn({
+      run_id: runId,
+      curator_id: curatorId,
+      turn_number: turnCounter,
+      tool_name: toolName,
+      tool_input: JSON.stringify(toolInput),
+      started_at: epochSeconds(),
+    }).catch(() => {
+      /* audit trail is best-effort */
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Read tools
+  // -------------------------------------------------------------------------
+
+  const vaultUnprocessed = tool(
+    'vault_unprocessed',
+    'Get unprocessed prompt batches, ordered by id ASC. Supports cursor-based pagination.',
+    {
+      after_id: z.number().optional().describe('Return batches with id greater than this'),
+      limit: z.number().optional().describe('Maximum number of batches to return'),
+    },
+    async (args) => {
+      const batches = await getUnprocessedBatches({
+        after_id: args.after_id,
+        limit: args.limit ?? DEFAULT_UNPROCESSED_LIMIT,
+      });
+      return textResult(batches);
+    },
+  );
+
+  const vaultSpores = tool(
+    'vault_spores',
+    'List spores with optional filters (curator, observation type, status).',
+    {
+      curator_id: z.string().optional().describe('Filter by curator ID'),
+      observation_type: z.string().optional().describe('Filter by observation type (e.g., gotcha, decision)'),
+      status: z.enum(['active', 'superseded', 'archived']).optional().describe('Filter by status'),
+      limit: z.number().optional().describe('Maximum number of spores to return'),
+    },
+    async (args) => {
+      const spores = await listSpores({
+        curator_id: args.curator_id,
+        observation_type: args.observation_type,
+        status: args.status,
+        limit: args.limit ?? DEFAULT_SPORES_LIMIT,
+      });
+      return textResult(spores);
+    },
+  );
+
+  const vaultSessions = tool(
+    'vault_sessions',
+    'List sessions with optional status filter, ordered by created_at DESC.',
+    {
+      limit: z.number().optional().describe('Maximum number of sessions to return'),
+      status: z.string().optional().describe('Filter by status (active, completed)'),
+    },
+    async (args) => {
+      const sessions = await listSessions({
+        limit: args.limit ?? DEFAULT_SESSIONS_LIMIT,
+        status: args.status,
+      });
+      return textResult(sessions);
+    },
+  );
+
+  const vaultSearch = tool(
+    'vault_search',
+    'Semantic similarity search across vault content. Requires embedding provider to be configured. Returns empty results gracefully if embeddings are unavailable.',
+    {
+      query: z.string().describe('Search query text to embed and compare'),
+      table: z.enum(EMBEDDABLE_TABLES).optional().describe('Table to search'),
+      limit: z.number().optional().describe('Maximum number of results to return'),
+    },
+    async (args) => {
+      try {
+        const { tryEmbed } = await import('@myco/intelligence/embed-query.js');
+        const embedding = await tryEmbed(args.query);
+        if (!embedding) {
+          return textResult({ results: [], message: 'Embedding provider unavailable' });
+        }
+
+        const table = args.table ?? DEFAULT_SEARCH_TABLE;
+        const results = await searchSimilar(table, embedding, {
+          limit: args.limit ?? DEFAULT_SEARCH_LIMIT,
+        });
+        return textResult({ results });
+      } catch {
+        return textResult({ results: [], message: 'Search unavailable' });
+      }
+    },
+  );
+
+  const vaultState = tool(
+    'vault_state',
+    'Get all state key-value pairs for the current curator.',
+    {},
+    async () => {
+      const states = await getStatesForCurator(curatorId);
+      return textResult(states);
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // Write tools
+  // -------------------------------------------------------------------------
+
+  const vaultCreateSpore = tool(
+    'vault_create_spore',
+    'Create a new spore (observation) in the vault. The curator_id is set automatically.',
+    {
+      observation_type: z.string().describe('Type of observation (gotcha, decision, discovery, trade-off, bug_fix, etc.)'),
+      content: z.string().describe('The observation content in markdown'),
+      session_id: z.string().optional().describe('Associated session ID'),
+      prompt_batch_id: z.number().optional().describe('Associated prompt batch ID'),
+      importance: z.number().optional().describe('Importance score 1-10 (default 5)'),
+      tags: z.array(z.string()).optional().describe('Tags for categorization'),
+      context: z.string().optional().describe('Additional context about the observation'),
+      file_path: z.string().optional().describe('Related file path'),
+    },
+    async (args) => {
+      const id = crypto.randomUUID();
+      const now = epochSeconds();
+
+      const spore = await insertSpore({
+        id,
+        curator_id: curatorId,
+        observation_type: args.observation_type,
+        content: args.content,
+        session_id: args.session_id ?? null,
+        prompt_batch_id: args.prompt_batch_id ?? null,
+        importance: args.importance ?? DEFAULT_IMPORTANCE,
+        tags: args.tags ? JSON.stringify(args.tags) : null,
+        context: args.context ?? null,
+        file_path: args.file_path ?? null,
+        created_at: now,
+      });
+
+      recordTurn('vault_create_spore', args);
+      return textResult(spore);
+    },
+  );
+
+  const vaultCreateEntity = tool(
+    'vault_create_entity',
+    'Create or update an entity in the knowledge graph. Uses UPSERT on (curator_id, type, name).',
+    {
+      type: z.enum(['component', 'concept', 'file', 'bug', 'decision', 'tool', 'person']).describe('Entity type'),
+      name: z.string().describe('Entity name (unique within curator + type)'),
+      properties: z.record(z.string(), z.unknown()).optional().describe('Additional properties as key-value pairs'),
+    },
+    async (args) => {
+      const id = crypto.randomUUID();
+      const now = epochSeconds();
+      const props = args.properties ? JSON.stringify(args.properties) : null;
+
+      const entity = await insertEntity({
+        id,
+        curator_id: curatorId,
+        type: args.type,
+        name: args.name,
+        properties: props,
+        first_seen: now,
+        last_seen: now,
+      });
+
+      recordTurn('vault_create_entity', args);
+      return textResult(entity);
+    },
+  );
+
+  const vaultCreateEdge = tool(
+    'vault_create_edge',
+    'Create a directed edge between two entities in the knowledge graph.',
+    {
+      source_id: z.string().describe('Source entity ID'),
+      target_id: z.string().describe('Target entity ID'),
+      type: z.enum(['DISCOVERED_IN', 'AFFECTS', 'RESOLVED_BY', 'SUPERSEDES', 'RELATES_TO', 'CONTRADICTS', 'CAUSED_BY', 'DEPENDS_ON']).describe('Edge relationship type'),
+      session_id: z.string().optional().describe('Session where this relationship was observed'),
+      confidence: z.number().optional().describe('Confidence score 0-1 (default 1.0)'),
+      valid_from: z.number().optional().describe('Epoch seconds when the relationship started'),
+      properties: z.record(z.string(), z.unknown()).optional().describe('Additional properties as key-value pairs'),
+    },
+    async (args) => {
+      const now = epochSeconds();
+      const props = args.properties ? JSON.stringify(args.properties) : null;
+
+      const edge = await insertEdge({
+        curator_id: curatorId,
+        source_id: args.source_id,
+        target_id: args.target_id,
+        type: args.type,
+        session_id: args.session_id ?? null,
+        confidence: args.confidence,
+        valid_from: args.valid_from ?? null,
+        properties: props,
+        created_at: now,
+      });
+
+      recordTurn('vault_create_edge', args);
+      return textResult(edge);
+    },
+  );
+
+  const vaultResolveSpore = tool(
+    'vault_resolve_spore',
+    'Resolve a spore by updating its status and recording a resolution event.',
+    {
+      spore_id: z.string().describe('ID of the spore to resolve'),
+      action: z.enum(['supersede', 'archive', 'merge', 'split']).describe('Resolution action'),
+      new_spore_id: z.string().optional().describe('ID of the replacement spore (for supersede/merge)'),
+      reason: z.string().optional().describe('Explanation for the resolution'),
+      session_id: z.string().optional().describe('Session where this resolution occurred'),
+    },
+    async (args) => {
+      const now = epochSeconds();
+
+      // Update spore status
+      const statusMap: Record<string, string> = {
+        supersede: 'superseded',
+        archive: 'archived',
+        merge: 'merged',
+        split: 'split',
+      };
+      const newStatus = statusMap[args.action] ?? args.action;
+      const updatedSpore = await updateSporeStatus(args.spore_id, newStatus, now);
+
+      // Record resolution event
+      const eventId = crypto.randomUUID();
+      await insertResolutionEvent({
+        id: eventId,
+        curator_id: curatorId,
+        spore_id: args.spore_id,
+        action: args.action,
+        new_spore_id: args.new_spore_id ?? null,
+        reason: args.reason ?? null,
+        session_id: args.session_id ?? null,
+        created_at: now,
+      });
+
+      recordTurn('vault_resolve_spore', args);
+      return textResult({ spore: updatedSpore, resolution_event_id: eventId });
+    },
+  );
+
+  const vaultUpdateSession = tool(
+    'vault_update_session',
+    'Update a session title and/or summary.',
+    {
+      session_id: z.string().describe('Session ID to update'),
+      title: z.string().optional().describe('New session title'),
+      summary: z.string().optional().describe('New session summary'),
+    },
+    async (args) => {
+      const updates: Record<string, unknown> = {};
+      if (args.title !== undefined) updates.title = args.title;
+      if (args.summary !== undefined) updates.summary = args.summary;
+
+      const session = await updateSession(args.session_id, updates);
+
+      recordTurn('vault_update_session', args);
+      return textResult(session);
+    },
+  );
+
+  const vaultSetState = tool(
+    'vault_set_state',
+    'Set a key-value state pair for the current curator. Used for bookmarks, cursors, and preferences.',
+    {
+      key: z.string().describe('State key (e.g., last_processed_batch_id, cursor)'),
+      value: z.string().describe('State value (stored as text)'),
+    },
+    async (args) => {
+      const now = epochSeconds();
+      const state = await setState(curatorId, args.key, args.value, now);
+
+      recordTurn('vault_set_state', args);
+      return textResult(state);
+    },
+  );
+
+  const vaultWriteDigest = tool(
+    'vault_write_digest',
+    'Write or update a digest extract at a specific token tier. Uses UPSERT on (curator_id, tier).',
+    {
+      tier: z.number().describe('Token budget tier (e.g., 1500, 3000, 5000, 7500, 10000)'),
+      content: z.string().describe('The digest extract content in markdown'),
+    },
+    async (args) => {
+      const now = epochSeconds();
+
+      const extract = await upsertDigestExtract({
+        curator_id: curatorId,
+        tier: args.tier,
+        content: args.content,
+        generated_at: now,
+      });
+
+      recordTurn('vault_write_digest', args);
+      return textResult(extract);
+    },
+  );
+
+  const vaultMarkProcessed = tool(
+    'vault_mark_processed',
+    'Mark a prompt batch as processed so it is not returned by vault_unprocessed.',
+    {
+      batch_id: z.number().describe('ID of the prompt batch to mark as processed'),
+    },
+    async (args) => {
+      const batch = await markBatchProcessed(args.batch_id);
+
+      recordTurn('vault_mark_processed', args);
+      return textResult(batch);
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // Observability tool
+  // -------------------------------------------------------------------------
+
+  const vaultReport = tool(
+    'vault_report',
+    'Record an observability report for the current run. Used to log actions, decisions, and summaries.',
+    {
+      action: z.string().describe('Action name (e.g., extract, consolidate, digest, skip)'),
+      summary: z.string().describe('Human-readable summary of what was done'),
+      details: z.record(z.string(), z.unknown()).optional().describe('Structured details as key-value pairs'),
+    },
+    async (args) => {
+      const now = epochSeconds();
+
+      const report = await insertReport({
+        run_id: runId,
+        curator_id: curatorId,
+        action: args.action,
+        summary: args.summary,
+        details: args.details ? JSON.stringify(args.details) : null,
+        created_at: now,
+      });
+
+      return textResult(report);
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // Assemble and return
+  // -------------------------------------------------------------------------
+
+  return [
+    vaultUnprocessed,
+    vaultSpores,
+    vaultSessions,
+    vaultSearch,
+    vaultState,
+    vaultCreateSpore,
+    vaultCreateEntity,
+    vaultCreateEdge,
+    vaultResolveSpore,
+    vaultUpdateSession,
+    vaultSetState,
+    vaultWriteDigest,
+    vaultMarkProcessed,
+    vaultReport,
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// MCP server factory
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a vault MCP tool server with 14 tools for the curation agent.
+ *
+ * Wraps `createVaultTools()` with `createSdkMcpServer()` from the
+ * Claude Agent SDK.
+ *
+ * @param curatorId — the curator identity, injected into all write operations.
+ * @param runId — the current agent run ID, injected into reports and turns.
+ * @returns an MCP server config with instance, suitable for the SDK.
+ */
+export function createVaultToolServer(curatorId: string, runId: string) {
+  const tools = createVaultTools(curatorId, runId);
+
+  return createSdkMcpServer({
+    name: 'myco-vault',
+    version: getPluginVersion(),
+    tools,
+  });
+}

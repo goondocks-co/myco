@@ -1,8 +1,32 @@
-import { VaultWriter } from '../../vault/writer.js';
-import { indexNote } from '../../index/rebuild.js';
-import type { MycoIndex } from '../../index/sqlite.js';
-import fs from 'node:fs';
-import path from 'node:path';
+/**
+ * myco_supersede — mark a spore as outdated and replaced by a newer one.
+ *
+ * Updates the old spore's status to 'superseded' via PGlite and records
+ * a resolution event for audit.
+ */
+
+import { randomBytes } from 'node:crypto';
+import { updateSporeStatus } from '@myco/db/queries/spores.js';
+import { registerCurator } from '@myco/db/queries/curators.js';
+import { getDatabase } from '@myco/db/client.js';
+import { epochSeconds, USER_CURATOR_ID, USER_CURATOR_NAME } from '@myco/constants.js';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Status value for superseded spores. */
+const STATUS_SUPERSEDED = 'superseded';
+
+/** Resolution action type for supersession. */
+const ACTION_SUPERSEDE = 'supersede';
+
+/** Byte length for random resolution event ID. */
+const RESOLUTION_ID_RANDOM_BYTES = 8;
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface SupersedeInput {
   old_spore_id: string;
@@ -13,41 +37,49 @@ interface SupersedeInput {
 interface SupersedeResult {
   old_spore: string;
   new_spore: string;
-  status: 'superseded' | 'not_found';
+  status: 'superseded';
 }
 
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
 export async function handleMycoSupersede(
-  vaultDir: string,
-  index: MycoIndex,
   input: SupersedeInput,
 ): Promise<SupersedeResult> {
-  const writer = new VaultWriter(vaultDir);
+  const now = epochSeconds();
 
-  // Find the old spore note in the index
-  const oldNotes = index.queryByIds([input.old_spore_id]);
-  if (oldNotes.length === 0) {
-    return { old_spore: input.old_spore_id, new_spore: input.new_spore_id, status: 'not_found' };
-  }
+  // Update status to superseded
+  await updateSporeStatus(input.old_spore_id, STATUS_SUPERSEDED, now);
 
-  const oldNote = oldNotes[0];
+  // Ensure user curator exists (idempotent)
+  await registerCurator({
+    id: USER_CURATOR_ID,
+    name: USER_CURATOR_NAME,
+    created_at: now,
+  });
 
-  // Mark the old spore as superseded in frontmatter
-  writer.updateNoteFrontmatter(oldNote.path, {
-    status: 'superseded',
-    superseded_by: input.new_spore_id,
-  }, true);
+  // Record resolution event for audit trail
+  const db = getDatabase();
+  const resolutionId = `res-${randomBytes(RESOLUTION_ID_RANDOM_BYTES).toString('hex')}`;
 
-  // Append a supersession notice to the body with wikilink for Obsidian graph
-  const fullPath = path.join(vaultDir, oldNote.path);
-  const content = fs.readFileSync(fullPath, 'utf-8');
-  if (!content.includes('Superseded by::')) {
-    const notice = `\n\n> [!warning] Superseded\n> This observation has been superseded.\n\nSuperseded by:: [[${input.new_spore_id}]]`;
-    const reasonLine = input.reason ? `\nReason:: ${input.reason}` : '';
-    fs.writeFileSync(fullPath, content.trimEnd() + notice + reasonLine + '\n', 'utf-8');
-  }
+  await db.query(
+    `INSERT INTO resolution_events (id, curator_id, spore_id, action, new_spore_id, reason, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [
+      resolutionId,
+      USER_CURATOR_ID,
+      input.old_spore_id,
+      ACTION_SUPERSEDE,
+      input.new_spore_id,
+      input.reason ?? null,
+      now,
+    ],
+  );
 
-  // Re-index the updated note
-  indexNote(index, vaultDir, oldNote.path);
-
-  return { old_spore: input.old_spore_id, new_spore: input.new_spore_id, status: 'superseded' };
+  return {
+    old_spore: input.old_spore_id,
+    new_spore: input.new_spore_id,
+    status: STATUS_SUPERSEDED,
+  };
 }

@@ -1,53 +1,47 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { handleMycoSearch } from '@myco/mcp/tools/search';
-import { MycoIndex } from '@myco/index/sqlite';
-import { initFts } from '@myco/index/fts';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
+/**
+ * Tests for myco_search tool handler.
+ *
+ * Search requires an embedding provider. Without one configured,
+ * the handler returns empty results gracefully. These tests verify
+ * the graceful degradation path.
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { initDatabase, closeDatabase } from '@myco/db/client.js';
+import { createSchema } from '@myco/db/schema.js';
+import { handleMycoSearch } from '@myco/mcp/tools/search.js';
 
 describe('myco_search', () => {
-  let tmpDir: string;
-  let index: MycoIndex;
+  const originalVaultDir = process.env.MYCO_VAULT_DIR;
 
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-search-'));
-    index = new MycoIndex(path.join(tmpDir, 'index.db'));
-    initFts(index);
-
-    index.upsertNote({
-      path: 'sessions/s1.md', type: 'session', id: 's1',
-      title: 'Auth Middleware Refactor',
-      content: 'Refactored JWT middleware to use RS256 rotating keys.',
-      frontmatter: { type: 'session', id: 's1', user: 'chris' },
-      created: '2026-03-12T09:00:00Z',
-    });
-    index.upsertNote({
-      path: 'spores/m1.md', type: 'spore', id: 'm1',
-      title: 'CORS Proxy Gotcha',
-      content: 'The CORS proxy strips auth headers silently.',
-      frontmatter: { type: 'spore', id: 'm1', observation_type: 'gotcha' },
-      created: '2026-03-12T10:00:00Z',
-    });
+  beforeEach(async () => {
+    // Point to a nonexistent vault so loadConfig fails fast (no network calls)
+    process.env.MYCO_VAULT_DIR = '/tmp/myco-search-test-nonexistent';
+    const db = await initDatabase();
+    await createSchema(db);
   });
 
-  afterEach(() => {
-    index.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  afterEach(async () => {
+    if (originalVaultDir !== undefined) {
+      process.env.MYCO_VAULT_DIR = originalVaultDir;
+    } else {
+      delete process.env.MYCO_VAULT_DIR;
+    }
+    await closeDatabase();
   });
 
-  it('searches across all types', async () => {
-    const results = await handleMycoSearch(index, { query: 'auth' });
-    expect(results.length).toBeGreaterThanOrEqual(1);
+  it('returns empty results when no embedding provider available', async () => {
+    const results = await handleMycoSearch({ query: 'auth middleware' });
+    expect(results).toEqual([]);
   });
 
-  it('filters by type', async () => {
-    const results = await handleMycoSearch(index, { query: 'auth', type: 'spore' });
-    expect(results.every((r) => r.type === 'spore')).toBe(true);
+  it('returns empty results with type filter', async () => {
+    const results = await handleMycoSearch({ query: 'auth', type: 'spore' });
+    expect(results).toEqual([]);
   });
 
-  it('respects limit', async () => {
-    const results = await handleMycoSearch(index, { query: 'auth OR CORS', limit: 1 });
-    expect(results).toHaveLength(1);
+  it('accepts limit parameter gracefully', async () => {
+    const results = await handleMycoSearch({ query: 'test', limit: 5 });
+    expect(results).toEqual([]);
   });
 });

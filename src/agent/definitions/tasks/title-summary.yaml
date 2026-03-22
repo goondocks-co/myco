@@ -1,0 +1,21 @@
+# Title and summary generation for sessions missing them.
+
+name: title-summary
+displayName: Title & Summary
+description: >
+  Generate titles and summaries for sessions that lack them. Reviews
+  prompt batches and activities within each session to produce a concise
+  title and informative summary.
+agent: myco-curator
+prompt: >
+  Find sessions that are missing a title or summary. For each such session,
+  review its prompt batches and activities to understand what happened.
+  Generate a concise title (under 80 characters) and an informative summary
+  (2-4 sentences) that captures the key work done and outcomes. Update each
+  session with the generated title and summary.
+isDefault: false
+toolOverrides:
+  - query_sessions
+  - get_agent_state
+  - update_session_summary
+  - set_agent_state

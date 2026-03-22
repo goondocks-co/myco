@@ -1,5 +1,4 @@
-import { MycoIndex } from '../index/sqlite.js';
-import { initFts } from '../index/fts.js';
+import { initDatabaseForVault, closeDatabase } from '../db/client.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import {
   parseStringFlag,
@@ -53,10 +52,9 @@ export async function run(args: string[]): Promise<void> {
   // Write .gitignore
   fs.writeFileSync(path.join(vaultDir, '.gitignore'), VAULT_GITIGNORE, 'utf-8');
 
-  // Initialize FTS index
-  const index = new MycoIndex(path.join(vaultDir, 'index.db'));
-  initFts(index);
-  index.close();
+  // Initialize PGlite database
+  await initDatabaseForVault(vaultDir);
+  await closeDatabase();
 
   // Apply LLM provider settings from flags (if any were passed)
   const llmFlags: string[] = [];
