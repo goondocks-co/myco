@@ -357,8 +357,8 @@ describe('embedding query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('EMBEDDABLE_TABLES', () => {
-    it('contains exactly the three tables with embedding columns', () => {
-      expect(EMBEDDABLE_TABLES).toEqual(['sessions', 'prompt_batches', 'spores']);
+    it('contains exactly the four tables with embedding columns', () => {
+      expect(EMBEDDABLE_TABLES).toEqual(['sessions', 'spores', 'plans', 'artifacts']);
     });
   });
 });

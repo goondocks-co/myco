@@ -59,7 +59,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(2);
+      expect(SCHEMA_VERSION).toBe(3);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -155,6 +155,7 @@ describe('Database schema', () => {
         expect(colNames).toContain('content_hash');
         expect(colNames).toContain('created_at');
         expect(colNames).toContain('embedding');
+        expect(colNames).toContain('search_vector');
       });
 
       it('activities table has correct columns', async () => {
@@ -176,6 +177,7 @@ describe('Database schema', () => {
         expect(colNames).toContain('processed');
         expect(colNames).toContain('content_hash');
         expect(colNames).toContain('created_at');
+        expect(colNames).toContain('search_vector');
       });
 
       it('plans table has correct columns', async () => {
@@ -192,6 +194,7 @@ describe('Database schema', () => {
         expect(colNames).toContain('processed');
         expect(colNames).toContain('created_at');
         expect(colNames).toContain('updated_at');
+        expect(colNames).toContain('embedding');
       });
 
       it('artifacts table has correct columns', async () => {
@@ -207,6 +210,7 @@ describe('Database schema', () => {
         expect(colNames).toContain('tags');
         expect(colNames).toContain('created_at');
         expect(colNames).toContain('updated_at');
+        expect(colNames).toContain('embedding');
       });
 
       it('team_members table has correct columns', async () => {
@@ -438,12 +442,72 @@ describe('Database schema', () => {
         expect(colNames).toContain('updated_at');
       });
 
-      it('records schema version 2', async () => {
+      it('records schema version 3', async () => {
         await createSchema(db);
         const result = await db.query<{ version: number }>(
           'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1',
         );
-        expect(result.rows[0].version).toBe(2);
+        expect(result.rows[0].version).toBe(3);
+      });
+    });
+
+    describe('v2 to v3 migration', () => {
+      it('adds search_vector column to prompt_batches', async () => {
+        await createSchema(db);
+        const cols = await getColumns(db, 'prompt_batches');
+        const colNames = cols.map((c) => c.column_name);
+        expect(colNames).toContain('search_vector');
+      });
+
+      it('adds search_vector column to activities', async () => {
+        await createSchema(db);
+        const cols = await getColumns(db, 'activities');
+        const colNames = cols.map((c) => c.column_name);
+        expect(colNames).toContain('search_vector');
+      });
+
+      it('adds embedding column to plans', async () => {
+        await createSchema(db);
+        const cols = await getColumns(db, 'plans');
+        const colNames = cols.map((c) => c.column_name);
+        expect(colNames).toContain('embedding');
+      });
+
+      it('adds embedding column to artifacts', async () => {
+        await createSchema(db);
+        const cols = await getColumns(db, 'artifacts');
+        const colNames = cols.map((c) => c.column_name);
+        expect(colNames).toContain('embedding');
+      });
+
+      it('creates GIN index on prompt_batches.search_vector', async () => {
+        await createSchema(db);
+        expect(await indexExists(db, 'idx_prompt_batches_search')).toBe(true);
+      });
+
+      it('creates GIN index on activities.search_vector', async () => {
+        await createSchema(db);
+        expect(await indexExists(db, 'idx_activities_search')).toBe(true);
+      });
+
+      it('creates HNSW index on plans.embedding', async () => {
+        await createSchema(db);
+        expect(await indexExists(db, 'idx_plans_embedding')).toBe(true);
+      });
+
+      it('creates HNSW index on artifacts.embedding', async () => {
+        await createSchema(db);
+        expect(await indexExists(db, 'idx_artifacts_embedding')).toBe(true);
+      });
+
+      it('is idempotent — running createSchema twice produces same result', async () => {
+        await createSchema(db);
+        await expect(createSchema(db)).resolves.not.toThrow();
+
+        const cols = await getColumns(db, 'prompt_batches');
+        const colNames = cols.map((c) => c.column_name);
+        expect(colNames).toContain('search_vector');
+        expect(colNames).toContain('embedding');
       });
     });
 

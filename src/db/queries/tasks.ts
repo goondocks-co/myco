@@ -235,3 +235,24 @@ export async function getDefaultTask(
   if (result.rows.length === 0) return null;
   return toTaskRow(result.rows[0] as Record<string, unknown>);
 }
+
+/**
+ * List all tasks for a curator, ordered by display_name ASC.
+ *
+ * Rows with a null display_name sort before named tasks.
+ */
+export async function listTasksByCurator(
+  curatorId: string,
+): Promise<TaskRow[]> {
+  const db = getDatabase();
+
+  const result = await db.query(
+    `SELECT ${SELECT_COLUMNS}
+     FROM agent_tasks
+     WHERE curator_id = $1
+     ORDER BY display_name ASC`,
+    [curatorId],
+  );
+
+  return (result.rows as Record<string, unknown>[]).map(toTaskRow);
+}

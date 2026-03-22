@@ -1,8 +1,10 @@
 import { Routes, Route } from 'react-router-dom';
 import Layout from './layout/Layout';
 import Dashboard from './pages/Dashboard';
-import Configuration from './pages/Configuration';
+import Sessions from './pages/Sessions';
 import Mycelium from './pages/Mycelium';
+import Agent from './pages/Agent';
+import Settings from './pages/Settings';
 import Logs from './pages/Logs';
 
 export default function App() {
@@ -10,8 +12,11 @@ export default function App() {
     <Routes>
       <Route element={<Layout />}>
         <Route path="/" element={<Dashboard />} />
-        <Route path="/configuration" element={<Configuration />} />
+        <Route path="/sessions" element={<Sessions />} />
+        <Route path="/sessions/:id" element={<Sessions />} />
         <Route path="/mycelium" element={<Mycelium />} />
+        <Route path="/agent" element={<Agent />} />
+        <Route path="/settings" element={<Settings />} />
         <Route path="/logs" element={<Logs />} />
       </Route>
     </Routes>

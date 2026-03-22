@@ -31,9 +31,9 @@ export async function tryEmbed(text: string): Promise<number[] | null> {
 
       const vaultDir = resolveVaultDir();
       const config = loadConfig(vaultDir);
-      if (!config.intelligence?.embedding) return null;
+      if (!config.embedding) return null;
 
-      cachedProvider = createEmbeddingProvider(config.intelligence.embedding);
+      cachedProvider = createEmbeddingProvider(config.embedding);
     }
 
     const isUp = await cachedProvider.isAvailable();

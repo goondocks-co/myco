@@ -1,28 +1,14 @@
 import { loadConfig } from '../config/loader.js';
-import { createLlmProvider, createEmbeddingProvider } from '../intelligence/llm.js';
+import { createEmbeddingProvider } from '../intelligence/llm.js';
 
-const VERIFY_LLM_PROMPT = 'Respond with OK';
 const VERIFY_EMBEDDING_INPUT = 'test';
 
 export async function run(_args: string[], vaultDir: string): Promise<void> {
   const config = loadConfig(vaultDir);
-  const { llm: llmConfig, embedding: embeddingConfig } = config.intelligence;
+  const embeddingConfig = config.embedding;
 
-  let llmOk = false;
   let embeddingOk = false;
   let embeddingDimensions = 0;
-
-  // Test LLM
-  try {
-    const llm = createLlmProvider(llmConfig);
-    const response = await llm.summarize(VERIFY_LLM_PROMPT);
-    llmOk = response.text.length > 0;
-  } catch (err) {
-    llmOk = false;
-  }
-
-  const llmLabel = `LLM (${llmConfig.provider} / ${llmConfig.model}):`;
-  console.log(`${llmLabel.padEnd(40)} ${llmOk ? 'OK' : 'FAIL'}`);
 
   // Test embedding
   try {
@@ -30,7 +16,7 @@ export async function run(_args: string[], vaultDir: string): Promise<void> {
     const response = await emb.embed(VERIFY_EMBEDDING_INPUT);
     embeddingDimensions = response.dimensions;
     embeddingOk = embeddingDimensions > 0;
-  } catch (err) {
+  } catch {
     embeddingOk = false;
   }
 
@@ -38,7 +24,9 @@ export async function run(_args: string[], vaultDir: string): Promise<void> {
   const embStatus = embeddingOk ? `OK (${embeddingDimensions} dimensions)` : 'FAIL';
   console.log(`${embLabel.padEnd(40)} ${embStatus}`);
 
-  if (!llmOk || !embeddingOk) {
+  console.log('\nNote: LLM configuration is managed by the Myco agent (Claude Agent SDK).');
+
+  if (!embeddingOk) {
     process.exit(1);
   }
 }

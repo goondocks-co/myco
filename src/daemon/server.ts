@@ -90,6 +90,11 @@ export class DaemonServer {
           pathname: match.pathname,
         });
         const status = result.status ?? DEFAULT_STATUS;
+        if (Buffer.isBuffer(result.body)) {
+          res.writeHead(status, result.headers ?? {});
+          res.end(result.body);
+          return;
+        }
         const headers = { 'Content-Type': 'application/json', ...result.headers };
         res.writeHead(status, headers);
         res.end(JSON.stringify(result.body));

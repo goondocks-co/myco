@@ -23,26 +23,57 @@ export function loadConfig(vaultDir: string): MycoConfig {
     );
   }
 
-  // Auto-map legacy 'haiku' provider name to 'anthropic'
-  const intel = parsed.intelligence as Record<string, unknown> | undefined;
-  const llm = intel?.llm as Record<string, unknown> | undefined;
-  if (llm?.provider === 'haiku') {
-    llm.provider = 'anthropic';
+  // --- v2 → v3 migration ---
+  if (parsed.version === 2) {
+    // Extract intelligence.embedding to top-level embedding
+    const intel = parsed.intelligence as Record<string, unknown> | undefined;
+    const embeddingConfig = intel?.embedding as Record<string, unknown> | undefined;
+    if (embeddingConfig && !parsed.embedding) {
+      // Map v2 'lm-studio' to v3 'openai-compatible' for embedding provider
+      if (embeddingConfig.provider === 'lm-studio') {
+        embeddingConfig.provider = 'openai-compatible';
+      }
+      parsed.embedding = embeddingConfig;
+    }
+
+    // Keep daemon.port and daemon.log_level, drop grace_period and max_log_size
+    const daemon = parsed.daemon as Record<string, unknown> | undefined;
+    if (daemon) {
+      const { port, log_level } = daemon;
+      parsed.daemon = { port: port ?? null, log_level: log_level ?? 'info' };
+    }
+
+    // Keep capture basics, drop token-related fields
+    const capture = parsed.capture as Record<string, unknown> | undefined;
+    if (capture) {
+      const { transcript_paths, artifact_watch, artifact_extensions, buffer_max_events } = capture;
+      parsed.capture = { transcript_paths, artifact_watch, artifact_extensions, buffer_max_events };
+    }
+
+    // Drop removed top-level sections
+    delete parsed.intelligence;
+    delete parsed.context;
+    delete parsed.team;
+    delete parsed.digest;
+
+    // Set version to 3
+    parsed.version = 3;
+
+    process.stderr.write('[myco migration] Migrated config from v2 to v3\n');
   }
 
-  // Run numbered migrations
+  // Run numbered migrations (for v3+ forward migrations)
   const migrationsRan = runMigrations(parsed, vaultDir, (msg) => {
-    // Log to stderr since this runs during config loading (before logger is available)
     process.stderr.write(`[myco migration] ${msg}\n`);
   });
 
   // Parse with Zod to fill in defaults for new config sections
   const config = MycoConfigSchema.parse(parsed);
 
-  // Write back if migrations ran or new defaults were added
+  // Write back if v2→v3 migration ran, numbered migrations ran, or new defaults were added
   const needsWrite = migrationsRan
     || (parsed.config_version as number ?? 0) < CURRENT_MIGRATION_VERSION
-    || !('digest' in parsed);
+    || parsed.version !== config.version;
 
   if (needsWrite) {
     const fullConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;

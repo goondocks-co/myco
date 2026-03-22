@@ -6,6 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { type EdgeRow, SELECT_EDGE_COLUMNS, toEdgeRow } from '@myco/db/queries/edges.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -44,8 +45,23 @@ export interface EntityRow {
 export interface ListEntitiesOptions {
   curator_id?: string;
   type?: string;
+  /** Filter by entity_mentions subquery — must be paired with note_type. */
+  mentioned_in?: string;
+  /** Required when mentioned_in is provided. */
+  note_type?: string;
   limit?: number;
+  offset?: number;
 }
+
+/** Return type for `getEntityWithEdges`. */
+export interface EntityGraph {
+  center: EntityRow;
+  nodes: EntityRow[];
+  edges: EdgeRow[];
+}
+
+// Re-export EdgeRow for consumers that import it from this module.
+export type { EdgeRow };
 
 // ---------------------------------------------------------------------------
 // Column list
@@ -132,6 +148,9 @@ export async function getEntity(id: string): Promise<EntityRow | null> {
 
 /**
  * List entities with optional filters, ordered by last_seen DESC.
+ *
+ * When both `mentioned_in` and `note_type` are provided, filters to entities
+ * referenced in a specific note via the entity_mentions subquery.
  */
 export async function listEntities(
   options: ListEntitiesOptions = {},
@@ -152,19 +171,110 @@ export async function listEntities(
     params.push(options.type);
   }
 
+  if (options.mentioned_in !== undefined && options.note_type !== undefined) {
+    conditions.push(
+      `id IN (SELECT entity_id FROM entity_mentions WHERE note_id = $${paramIndex++} AND note_type = $${paramIndex++})`,
+    );
+    params.push(options.mentioned_in);
+    params.push(options.note_type);
+  }
+
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const limit = options.limit ?? DEFAULT_LIST_LIMIT;
+  const offset = options.offset ?? 0;
 
   params.push(limit);
+  params.push(offset);
 
   const result = await db.query(
     `SELECT ${SELECT_COLUMNS}
      FROM entities
      ${where}
      ORDER BY last_seen DESC
-     LIMIT $${paramIndex}`,
+     LIMIT $${paramIndex}
+     OFFSET $${paramIndex + 1}`,
     params,
   );
 
   return (result.rows as Record<string, unknown>[]).map(toEntityRow);
+}
+
+/**
+ * Fetch an entity and its surrounding graph via BFS traversal.
+ *
+ * @param entityId - The center entity to expand from.
+ * @param depth    - Number of hops to traverse (1–3, default 1).
+ * @returns `{ center, nodes, edges }` where nodes are all connected entities
+ *          (excluding center) and edges are deduplicated across BFS iterations.
+ */
+export async function getEntityWithEdges(
+  entityId: string,
+  depth = 1,
+): Promise<EntityGraph | null> {
+  const db = getDatabase();
+
+  const center = await getEntity(entityId);
+  if (center === null) return null;
+
+  const clampedDepth = Math.min(Math.max(depth, 1), 3);
+
+  const seenEdgeIds = new Set<number>();
+  const collectedEdges: EdgeRow[] = [];
+  const visited = new Set<string>([entityId]);
+  let frontier = new Set<string>([entityId]);
+
+  for (let hop = 0; hop < clampedDepth; hop++) {
+    if (frontier.size === 0) break;
+
+    const frontierArray = Array.from(frontier);
+    // Build parameterized IN clause
+    const placeholders = frontierArray
+      .map((_, i) => `$${i + 1}`)
+      .join(', ');
+
+    const result = await db.query(
+      `SELECT ${SELECT_EDGE_COLUMNS}
+       FROM edges
+       WHERE source_id IN (${placeholders}) OR target_id IN (${placeholders})`,
+      frontierArray,
+    );
+
+    const nextFrontier = new Set<string>();
+
+    for (const row of result.rows as Record<string, unknown>[]) {
+      const edge = toEdgeRow(row);
+      if (!seenEdgeIds.has(edge.id)) {
+        seenEdgeIds.add(edge.id);
+        collectedEdges.push(edge);
+      }
+      // Add unvisited endpoints to the next frontier
+      if (!visited.has(edge.source_id)) nextFrontier.add(edge.source_id);
+      if (!visited.has(edge.target_id)) nextFrontier.add(edge.target_id);
+    }
+
+    // Mark all next-frontier nodes as visited before the next hop
+    for (const id of nextFrontier) visited.add(id);
+    frontier = nextFrontier;
+  }
+
+  // Collect all node IDs (excluding center)
+  const nodeIdSet = new Set<string>();
+  for (const edge of collectedEdges) {
+    if (edge.source_id !== entityId) nodeIdSet.add(edge.source_id);
+    if (edge.target_id !== entityId) nodeIdSet.add(edge.target_id);
+  }
+
+  // Fetch all connected nodes
+  const nodeIds = Array.from(nodeIdSet);
+  let nodes: EntityRow[] = [];
+  if (nodeIds.length > 0) {
+    const placeholders = nodeIds.map((_, i) => `$${i + 1}`).join(', ');
+    const nodeResult = await db.query(
+      `SELECT ${SELECT_COLUMNS} FROM entities WHERE id IN (${placeholders})`,
+      nodeIds,
+    );
+    nodes = (nodeResult.rows as Record<string, unknown>[]).map(toEntityRow);
+  }
+
+  return { center, nodes, edges: collectedEdges };
 }

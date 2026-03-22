@@ -9,15 +9,13 @@ const DAEMON_STATE_FILENAME = 'daemon.json';
 
 const USAGE = `Usage: myco setup-llm [options]
 
-Configure LLM and embedding provider settings.
+Configure embedding provider settings.
+
+In v3, LLM configuration is managed by the Myco agent (Claude Agent SDK).
+Only embedding settings are user-configurable.
 
 Options:
-  --llm-provider <name>         LLM provider (ollama, lm-studio, anthropic)
-  --llm-model <name>            LLM model name
-  --llm-url <url>               LLM provider base URL
-  --llm-context-window <number> LLM context window (tokens)
-  --llm-max-tokens <number>     LLM max output tokens
-  --embedding-provider <name>   Embedding provider (ollama, lm-studio)
+  --embedding-provider <name>   Embedding provider (ollama, openai-compatible)
   --embedding-model <name>      Embedding model name
   --embedding-url <url>         Embedding provider base URL
   --show                        Show current settings and exit
@@ -31,7 +29,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   // Show current settings
   if (args.includes('--show')) {
     const config = MycoConfigSchema.parse(doc);
-    console.log(JSON.stringify(config.intelligence, null, 2));
+    console.log(JSON.stringify(config.embedding, null, 2));
     return;
   }
 
@@ -41,38 +39,23 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     return;
   }
 
-  // Ensure intelligence section exists
-  if (!doc.intelligence || typeof doc.intelligence !== 'object') {
-    doc.intelligence = {};
-  }
-  const intelligence = doc.intelligence as Record<string, unknown>;
-
-  if (!intelligence.llm || typeof intelligence.llm !== 'object') {
-    intelligence.llm = {};
-  }
-  if (!intelligence.embedding || typeof intelligence.embedding !== 'object') {
-    intelligence.embedding = {};
-  }
-
-  const llm = intelligence.llm as Record<string, unknown>;
-  const embedding = intelligence.embedding as Record<string, unknown>;
-
-  // Parse and apply flags
+  // Warn about removed LLM flags
   const llmProvider = parseStringFlag(args, '--llm-provider');
-  if (llmProvider !== undefined) llm.provider = llmProvider;
-
   const llmModel = parseStringFlag(args, '--llm-model');
-  if (llmModel !== undefined) llm.model = llmModel;
-
   const llmUrl = parseStringFlag(args, '--llm-url');
-  if (llmUrl !== undefined) llm.base_url = llmUrl;
-
   const llmContextWindow = parseStringFlag(args, '--llm-context-window');
-  if (llmContextWindow !== undefined) llm.context_window = parseInt(llmContextWindow, 10);
-
   const llmMaxTokens = parseStringFlag(args, '--llm-max-tokens');
-  if (llmMaxTokens !== undefined) llm.max_tokens = parseInt(llmMaxTokens, 10);
+  if (llmProvider || llmModel || llmUrl || llmContextWindow || llmMaxTokens) {
+    console.log('Note: LLM configuration is managed by the Myco agent. LLM flags are ignored.');
+  }
 
+  // Ensure embedding section exists
+  if (!doc.embedding || typeof doc.embedding !== 'object') {
+    doc.embedding = {};
+  }
+  const embedding = doc.embedding as Record<string, unknown>;
+
+  // Parse and apply embedding flags
   const embeddingProvider = parseStringFlag(args, '--embedding-provider');
   if (embeddingProvider !== undefined) embedding.provider = embeddingProvider;
 
@@ -94,11 +77,11 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 
   // Write back
   fs.writeFileSync(configPath, YAML.stringify(doc), 'utf-8');
-  console.log('Intelligence configuration updated.');
+  console.log('Embedding configuration updated.');
 
   // Show what was set
   const updated = MycoConfigSchema.parse(doc);
-  console.log(JSON.stringify(updated.intelligence, null, 2));
+  console.log(JSON.stringify(updated.embedding, null, 2));
 
   // Warn about embedding model changes
   if (embeddingModel !== undefined) {

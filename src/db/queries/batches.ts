@@ -14,6 +14,9 @@ import { getDatabase } from '@myco/db/client.js';
 /** Default number of unprocessed batches returned when no limit given. */
 const DEFAULT_UNPROCESSED_LIMIT = 100;
 
+/** Default number of batches returned by listBatchesBySession when no limit given. */
+export const BATCHES_DEFAULT_LIMIT = 200;
+
 /** Batch status value when a batch is closed normally. */
 const STATUS_COMPLETED = 'completed';
 
@@ -32,6 +35,12 @@ const PROCESSED_FLAG = 1;
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/** Filter options for `listBatchesBySession`. */
+export interface ListBatchesBySessionOptions {
+  limit?: number;
+  offset?: number;
+}
 
 /** Fields required (or optional) when inserting a prompt batch. */
 export interface BatchInsert {
@@ -127,11 +136,13 @@ export async function insertBatch(data: BatchInsert): Promise<BatchRow> {
     `INSERT INTO prompt_batches (
        session_id, prompt_number, user_prompt, response_summary,
        classification, started_at, ended_at, status,
-       activity_count, processed, content_hash, created_at
+       activity_count, processed, content_hash, created_at,
+       search_vector
      ) VALUES (
        $1, $2, $3, $4,
        $5, $6, $7, $8,
-       $9, $10, $11, $12
+       $9, $10, $11, $12,
+       to_tsvector('english', COALESCE($3, ''))
      )
      RETURNING ${SELECT_COLUMNS}`,
     [
@@ -254,4 +265,31 @@ export async function markBatchProcessed(
 
   if (result.rows.length === 0) return null;
   return toBatchRow(result.rows[0] as Record<string, unknown>);
+}
+
+/**
+ * List all prompt batches for a session, ordered by prompt_number ASC.
+ *
+ * Supports optional limit and offset for pagination.
+ */
+export async function listBatchesBySession(
+  sessionId: string,
+  options: ListBatchesBySessionOptions = {},
+): Promise<BatchRow[]> {
+  const db = getDatabase();
+
+  const limit = options.limit ?? BATCHES_DEFAULT_LIMIT;
+  const offset = options.offset ?? 0;
+
+  const result = await db.query(
+    `SELECT ${SELECT_COLUMNS}
+     FROM prompt_batches
+     WHERE session_id = $1
+     ORDER BY prompt_number ASC
+     LIMIT $2
+     OFFSET $3`,
+    [sessionId, limit, offset],
+  );
+
+  return (result.rows as Record<string, unknown>[]).map(toBatchRow);
 }

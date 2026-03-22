@@ -10,7 +10,7 @@ describe('config API', () => {
 
   beforeEach(() => {
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-api-'));
-    const config = { version: 2, intelligence: { llm: { provider: 'ollama', model: 'test' } } };
+    const config = { version: 3, embedding: { provider: 'ollama', model: 'bge-m3' } };
     fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), YAML.stringify(config));
   });
 
@@ -20,17 +20,17 @@ describe('config API', () => {
 
   it('GET returns parsed config', async () => {
     const result = await handleGetConfig(vaultDir);
-    expect(result.body).toHaveProperty('version', 2);
+    expect(result.body).toHaveProperty('version', 3);
   });
 
   it('PUT validates and saves config', async () => {
-    const newConfig = { version: 2, intelligence: { llm: { provider: 'ollama', model: 'new-model' } } };
+    const newConfig = { version: 3, embedding: { provider: 'ollama', model: 'nomic-embed-text' } };
     const result = await handlePutConfig(vaultDir, newConfig);
     expect(result.status).toBeUndefined(); // 200 default
   });
 
   it('PUT returns 400 for invalid config', async () => {
-    const invalid = { version: 2, intelligence: { llm: { provider: 'invalid-provider' } } };
+    const invalid = { version: 3, embedding: { provider: 'invalid-provider' } };
     const result = await handlePutConfig(vaultDir, invalid);
     expect(result.status).toBe(400);
   });

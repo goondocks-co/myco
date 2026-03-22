@@ -14,7 +14,7 @@ import { EMBEDDING_DIMENSIONS } from '@myco/db/schema.js';
 // ---------------------------------------------------------------------------
 
 /** Tables that have an `embedding vector(N)` column. */
-export const EMBEDDABLE_TABLES = ['sessions', 'prompt_batches', 'spores'] as const;
+export const EMBEDDABLE_TABLES = ['sessions', 'spores', 'plans', 'artifacts'] as const;
 
 /** TypeScript type for valid embeddable table names. */
 export type EmbeddableTable = (typeof EMBEDDABLE_TABLES)[number];
@@ -26,7 +26,7 @@ const DEFAULT_SEARCH_LIMIT = 20;
 const DEFAULT_UNEMBEDDED_LIMIT = 100;
 
 /** Error message for invalid table names. */
-const INVALID_TABLE_MSG = 'Invalid table name — must be one of: sessions, prompt_batches, spores';
+const INVALID_TABLE_MSG = 'Invalid table name — must be one of: sessions, spores, plans, artifacts';
 
 /** Error message when setEmbedding finds no matching row. */
 const NO_ROW_MSG = 'No row found with the given id';
@@ -41,15 +41,18 @@ const TABLE_SELECT_COLUMNS: Record<EmbeddableTable, string> = {
     'status', 'prompt_count', 'tool_count', 'title', 'summary', 'transcript_path',
     'parent_session_id', 'parent_session_reason', 'processed', 'content_hash', 'created_at',
   ].join(', '),
-  prompt_batches: [
-    'id', 'session_id', 'prompt_number', 'user_prompt', 'response_summary',
-    'classification', 'started_at', 'ended_at', 'status', 'activity_count',
-    'processed', 'content_hash', 'created_at',
-  ].join(', '),
   spores: [
     'id', 'curator_id', 'session_id', 'prompt_batch_id', 'observation_type',
     'status', 'content', 'context', 'importance', 'file_path', 'tags',
     'content_hash', 'created_at', 'updated_at',
+  ].join(', '),
+  plans: [
+    'id', 'status', 'author', 'title', 'content', 'source_path',
+    'tags', 'processed', 'created_at', 'updated_at',
+  ].join(', '),
+  artifacts: [
+    'id', 'artifact_type', 'source_path', 'title', 'content',
+    'last_captured_by', 'tags', 'created_at', 'updated_at',
   ].join(', '),
 };
 
@@ -101,7 +104,7 @@ function assertValidTable(table: string): asserts table is EmbeddableTable {
  *
  * pgvector expects vector values as string literals in this format.
  */
-function toVectorLiteral(embedding: number[]): string {
+export function toVectorLiteral(embedding: number[]): string {
   return `[${embedding.join(',')}]`;
 }
 
@@ -114,7 +117,7 @@ function toVectorLiteral(embedding: number[]): string {
  *
  * UPDATE <table> SET embedding = $vec WHERE id = $id.
  *
- * @param table — one of 'sessions', 'prompt_batches', 'spores'
+ * @param table — one of 'sessions', 'spores', 'plans', 'artifacts'
  * @param id — the primary key of the row to update
  * @param embedding — a number[] of length EMBEDDING_DIMENSIONS
  * @throws if the table name is invalid or no row matches the id
@@ -151,7 +154,7 @@ export async function setEmbedding(
  * by similarity (1 - distance), most similar first. Only rows with
  * a non-NULL embedding are considered.
  *
- * @param table — one of 'sessions', 'prompt_batches', 'spores'
+ * @param table — one of 'sessions', 'spores', 'plans', 'artifacts'
  * @param queryVector — the query embedding as number[]
  * @param options — optional limit and equality filters
  * @returns array of { id, similarity, ...row } ordered by similarity DESC
@@ -203,11 +206,52 @@ export async function searchSimilar(
 }
 
 /**
+ * Get aggregated embedding queue depth, embedded count, and total across all
+ * embeddable tables.
+ *
+ * For sessions: only counts those with a summary (not bare sessions).
+ * For plans/artifacts: only counts those with content (non-NULL).
+ *
+ * This is the single source of truth for embedding stats — called from both
+ * the stats service and the embedding status API handler.
+ */
+export async function getEmbeddingQueueDepth(): Promise<{
+  queue_depth: number;
+  embedded_count: number;
+  total: number;
+}> {
+  const db = getDatabase();
+
+  const [queueResult, embeddedResult] = await Promise.all([
+    db.query(`
+      SELECT
+        (SELECT COUNT(*) FROM sessions  WHERE embedding IS NULL AND summary IS NOT NULL) +
+        (SELECT COUNT(*) FROM spores    WHERE embedding IS NULL) +
+        (SELECT COUNT(*) FROM plans     WHERE embedding IS NULL AND content IS NOT NULL) +
+        (SELECT COUNT(*) FROM artifacts WHERE embedding IS NULL AND content IS NOT NULL)
+      AS cnt
+    `),
+    db.query(`
+      SELECT
+        (SELECT COUNT(*) FROM sessions  WHERE embedding IS NOT NULL) +
+        (SELECT COUNT(*) FROM spores    WHERE embedding IS NOT NULL) +
+        (SELECT COUNT(*) FROM plans     WHERE embedding IS NOT NULL) +
+        (SELECT COUNT(*) FROM artifacts WHERE embedding IS NOT NULL)
+      AS cnt
+    `),
+  ]);
+
+  const queue_depth = Number((queueResult.rows[0] as Record<string, unknown>).cnt ?? 0);
+  const embedded_count = Number((embeddedResult.rows[0] as Record<string, unknown>).cnt ?? 0);
+  return { queue_depth, embedded_count, total: queue_depth + embedded_count };
+}
+
+/**
  * Find rows that do not yet have an embedding, for the embedding worker.
  *
  * Returns rows ordered by created_at ASC so oldest items are processed first.
  *
- * @param table — one of 'sessions', 'prompt_batches', 'spores'
+ * @param table — one of 'sessions', 'spores', 'plans', 'artifacts'
  * @param options — optional limit (default 100)
  * @returns array of { id, created_at }
  */

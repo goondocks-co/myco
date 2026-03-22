@@ -9,36 +9,36 @@ export interface StatsResponse {
     version: string;
     uptime_seconds: number;
     active_sessions: string[];
-    config_hash: string;
   };
   vault: {
     path: string;
     name: string;
-    spore_counts: Record<string, number>;
     session_count: number;
+    batch_count: number;
+    spore_count: number;
     plan_count: number;
     artifact_count: number;
+    entity_count: number;
+    edge_count: number;
   };
-  index: {
-    fts_entries: number;
-    vector_count: number;
+  embedding: {
+    provider: string;
+    model: string;
+    queue_depth: number;
+    embedded_count: number;
+    total_embeddable: number;
+  };
+  curator: {
+    last_run_at: number | null;
+    last_run_status: string | null;
+    total_runs: number;
   };
   digest: {
-    enabled: boolean;
-    consolidation_enabled: boolean;
-    metabolism_state: string | null;
-    last_cycle: {
-      timestamp: string;
-      tier: number;
-      substrate_count: number;
-    } | null;
-    substrate_queue: number;
-  } | null;
-  intelligence: {
-    processor: { provider: string; model: string } | null;
-    digest: { provider: string; model: string } | null;
-    embedding: { provider: string; model: string } | null;
+    freshest_tier: number | null;
+    generated_at: number | null;
+    tiers_available: number[];
   };
+  unprocessed_batches: number;
 }
 
 export function useDaemon() {

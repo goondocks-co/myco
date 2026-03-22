@@ -134,12 +134,14 @@ export async function insertActivity(data: ActivityInsert): Promise<ActivityRow>
        session_id, prompt_batch_id, tool_name, tool_input,
        tool_output_summary, file_path, files_affected, duration_ms,
        success, error_message, timestamp, processed,
-       content_hash, created_at
+       content_hash, created_at,
+       search_vector
      ) VALUES (
        $1, $2, $3, $4,
        $5, $6, $7, $8,
        $9, $10, $11, $12,
-       $13, $14
+       $13, $14,
+       to_tsvector('english', COALESCE($3, '') || ' ' || COALESCE($4, '') || ' ' || COALESCE($6, ''))
      )
      RETURNING ${SELECT_COLUMNS}`,
     [
@@ -200,6 +202,25 @@ export async function listActivities(
      ORDER BY timestamp ASC
      LIMIT $${paramIndex}`,
     params,
+  );
+
+  return (result.rows as Record<string, unknown>[]).map(toActivityRow);
+}
+
+/**
+ * List all activities for a specific batch, ordered by timestamp ASC.
+ */
+export async function listActivitiesByBatch(
+  batchId: number,
+): Promise<ActivityRow[]> {
+  const db = getDatabase();
+
+  const result = await db.query(
+    `SELECT ${SELECT_COLUMNS}
+     FROM activities
+     WHERE prompt_batch_id = $1
+     ORDER BY timestamp ASC`,
+    [batchId],
   );
 
   return (result.rows as Record<string, unknown>[]).map(toActivityRow);

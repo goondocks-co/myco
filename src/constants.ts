@@ -159,6 +159,10 @@ export const MCP_SESSIONS_DEFAULT_LIMIT = 20;
 /** Default result limit for myco_logs. */
 export const MCP_LOGS_DEFAULT_LIMIT = 50;
 
+// --- Feed ---
+/** Default number of entries returned by the activity feed. */
+export const FEED_DEFAULT_LIMIT = 50;
+
 // --- Digest — Tiers ---
 /** Available token-budget tiers for digest synthesis. */
 export const DIGEST_TIERS = [1500, 3000, 5000, 7500, 10000] as const;
@@ -205,6 +209,12 @@ export const SUPERSESSION_MAX_TOKENS = 256;
 
 /** Similarity threshold for clustering related spores in batch curation. */
 export const CURATION_CLUSTER_SIMILARITY = 0.75;
+
+// --- Search ---
+/** Default number of results returned by semanticSearch and fullTextSearch. */
+export const SEARCH_RESULTS_DEFAULT_LIMIT = 20;
+/** Minimum cosine similarity score for semantic search results (0-1). */
+export const SEARCH_SIMILARITY_THRESHOLD = 0.3;
 
 // --- Pipeline processing ---
 /** Default page size for pipeline items API listing. */

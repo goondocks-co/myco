@@ -42,7 +42,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 
   // Semantic search is primary
   try {
-    const embeddingProvider = createEmbeddingProvider(config.intelligence.embedding);
+    const embeddingProvider = createEmbeddingProvider(config.embedding);
     const emb = await generateEmbedding(embeddingProvider, query);
 
     console.log(`=== Semantic Search: "${query}" ===`);
@@ -104,7 +104,7 @@ export async function runVectors(args: string[], vaultDir: string): Promise<void
   await initDatabaseForVault(vaultDir);
 
   const config = loadConfig(vaultDir);
-  const embeddingProvider = createEmbeddingProvider(config.intelligence.embedding);
+  const embeddingProvider = createEmbeddingProvider(config.embedding);
   const emb = await generateEmbedding(embeddingProvider, query);
 
   // Count total embeddings

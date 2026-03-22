@@ -123,3 +123,13 @@ export async function listTurns(runId: string): Promise<TurnRow[]> {
 
   return (result.rows as Record<string, unknown>[]).map(toTurnRow);
 }
+
+/**
+ * List all agent turns for a run, ordered by turn_number ASC.
+ *
+ * Alias for `listTurns` with an explicit "by run" naming convention used
+ * by the dashboard API layer.
+ */
+export async function listTurnsByRun(runId: string): Promise<TurnRow[]> {
+  return listTurns(runId);
+}
