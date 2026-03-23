@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { CheckCircle, XCircle, Loader2 } from 'lucide-react';
 import { useConfig, type MycoConfig } from '../hooks/use-config';
 import { useDaemon } from '../hooks/use-daemon';
+import { useRestart } from '../hooks/use-restart';
 import { fetchJson } from '../lib/api';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/card';
 import { Input } from '../components/ui/input';
@@ -31,6 +32,8 @@ interface FormState {
   embeddingProvider: Provider;
   embeddingModel: string;
   embeddingBaseUrl: string;
+  curationAutoRun: boolean;
+  curationIntervalSeconds: string;
 }
 
 function toFormState(config: MycoConfig): FormState {
@@ -40,6 +43,8 @@ function toFormState(config: MycoConfig): FormState {
     embeddingProvider: config.embedding.provider,
     embeddingModel: config.embedding.model,
     embeddingBaseUrl: config.embedding.base_url ?? '',
+    curationAutoRun: config.curation?.auto_run ?? true,
+    curationIntervalSeconds: String(config.curation?.interval_seconds ?? 300),
   };
 }
 
@@ -56,6 +61,10 @@ function formToConfig(form: FormState, original: MycoConfig): MycoConfig {
       model: form.embeddingModel,
       base_url: form.embeddingBaseUrl !== '' ? form.embeddingBaseUrl : undefined,
     },
+    curation: {
+      auto_run: form.curationAutoRun,
+      interval_seconds: Number(form.curationIntervalSeconds) || 300,
+    },
   };
 }
 
@@ -66,13 +75,16 @@ function isDirty(form: FormState, original: MycoConfig): boolean {
     form.logLevel !== orig.logLevel ||
     form.embeddingProvider !== orig.embeddingProvider ||
     form.embeddingModel !== orig.embeddingModel ||
-    form.embeddingBaseUrl !== orig.embeddingBaseUrl
+    form.embeddingBaseUrl !== orig.embeddingBaseUrl ||
+    form.curationAutoRun !== orig.curationAutoRun ||
+    form.curationIntervalSeconds !== orig.curationIntervalSeconds
   );
 }
 
 export default function Settings() {
   const { config, isLoading, saveConfig, isSaving } = useConfig();
   const { data: stats } = useDaemon();
+  const { restart } = useRestart();
 
   const [form, setForm] = useState<FormState | null>(null);
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -98,7 +110,14 @@ export default function Settings() {
     setSaveMessage(null);
     try {
       await saveConfig(formToConfig(form, config));
-      setSaveMessage({ type: 'success', text: 'Settings saved.' });
+      setSaveMessage({ type: 'success', text: 'Settings saved. Restarting daemon...' });
+      // Trigger daemon restart so new settings take effect
+      try {
+        await restart();
+      } catch {
+        // Restart may fail if daemon is already restarting; the save still succeeded
+        setSaveMessage({ type: 'success', text: 'Settings saved. Daemon restart may require manual action.' });
+      }
     } catch {
       setSaveMessage({ type: 'error', text: 'Failed to save settings.' });
     }
@@ -127,7 +146,7 @@ export default function Settings() {
     return (
       <div className="p-6">
         <h1 className="text-2xl font-bold">Settings</h1>
-        <p className="text-muted-foreground mt-2">Loading…</p>
+        <p className="text-muted-foreground mt-2">Loading...</p>
       </div>
     );
   }
@@ -135,7 +154,7 @@ export default function Settings() {
   const vaultName = stats?.vault.name ?? config.embedding.provider;
 
   return (
-    <div className="space-y-6 p-6 max-w-2xl">
+    <div className="space-y-6 p-6">
       <h1 className="text-2xl font-bold">Settings</h1>
 
       {/* Project section */}
@@ -268,6 +287,54 @@ export default function Settings() {
                 {testMessage}
               </span>
             )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Agent section */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Agent</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Auto-run toggle */}
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <label className="text-sm font-medium">Auto Run</label>
+              <p className="text-xs text-muted-foreground">
+                Automatically run the agent on unprocessed batches.
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={form.curationAutoRun}
+              onClick={() => setField('curationAutoRun', !form.curationAutoRun)}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+                form.curationAutoRun ? 'bg-primary' : 'bg-muted'
+              }`}
+            >
+              <span
+                className={`pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${
+                  form.curationAutoRun ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* Interval */}
+          <div className="space-y-1">
+            <label className="text-sm font-medium">Run Interval (seconds)</label>
+            <Input
+              type="number"
+              min="30"
+              placeholder="300"
+              value={form.curationIntervalSeconds}
+              onChange={e => setField('curationIntervalSeconds', e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Seconds between agent timer checks. Minimum 30.
+            </p>
           </div>
         </CardContent>
       </Card>

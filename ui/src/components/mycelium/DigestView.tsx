@@ -127,7 +127,7 @@ export function DigestView({ curatorId }: DigestViewProps) {
         <FlaskConical className="h-8 w-8 opacity-30" />
         <span className="text-sm">No digest generated yet</span>
         <span className="text-xs text-center max-w-xs">
-          Run the curator with the digest-only task to synthesize your vault knowledge into context extracts.
+          Run the agent with the digest-only task to synthesize your vault knowledge into context extracts.
         </span>
       </div>
     );

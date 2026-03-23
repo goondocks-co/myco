@@ -144,7 +144,7 @@ export function RunList({ onSelectRun, onTriggerRun }: RunListProps) {
         <div className="flex h-48 flex-col items-center justify-center gap-3 rounded-lg border border-border text-muted-foreground">
           <Bot className="h-10 w-10 opacity-30" />
           <div className="text-center">
-            <p className="text-sm">No curation runs yet</p>
+            <p className="text-sm">No agent runs yet</p>
             <p className="text-xs mt-1">Trigger the first run to see the agent at work</p>
           </div>
           <Button variant="outline" size="sm" className="gap-2 mt-2" onClick={onTriggerRun}>

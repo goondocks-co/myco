@@ -39,7 +39,7 @@ function TabButton({
 /* ---------- Component ---------- */
 
 export default function Mycelium() {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('spores');
+  const [activeTab, setActiveTab] = useState<ActiveTab>('graph');
   const [selectedSpore, setSelectedSpore] = useState<SporeSummary | null>(null);
 
   function handleSelectSpore(spore: SporeSummary) {
@@ -64,11 +64,11 @@ export default function Mycelium() {
 
       {/* Tab bar */}
       <div className="flex gap-0 border-b border-border">
-        <TabButton active={activeTab === 'spores'} onClick={() => { setActiveTab('spores'); setSelectedSpore(null); }}>
-          Spores
-        </TabButton>
         <TabButton active={activeTab === 'graph'} onClick={() => setActiveTab('graph')}>
           Graph
+        </TabButton>
+        <TabButton active={activeTab === 'spores'} onClick={() => { setActiveTab('spores'); setSelectedSpore(null); }}>
+          Spores
         </TabButton>
         <TabButton active={activeTab === 'digest'} onClick={() => setActiveTab('digest')}>
           Digest

@@ -1,3 +1,4 @@
+import { useNavigate } from 'react-router-dom';
 import { MessageSquare, Bot, Sprout, Activity } from 'lucide-react';
 import { type LucideIcon } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
@@ -22,13 +23,26 @@ function labelForType(eventType: string): string {
   return eventType.replace(/_/g, ' ');
 }
 
+/** Return the route path for a given activity event, or null if not navigable. */
+function routeForEvent(event: ActivityEvent): string | null {
+  if (event.type === 'session') return `/sessions/${event.id}`;
+  if (event.type === 'agent_run') return '/agent';
+  if (event.type === 'spore') return '/mycelium';
+  return null;
+}
+
 /* ---------- Sub-components ---------- */
 
-function EventRow({ event }: { event: ActivityEvent }) {
+function EventRow({ event, onClick }: { event: ActivityEvent; onClick?: () => void }) {
   const Icon = iconForType(event.type);
+  const isClickable = onClick !== undefined;
 
   return (
-    <div className="flex items-start gap-3 py-2.5 border-b border-border last:border-0">
+    <div
+      className={`flex items-start gap-3 py-2.5 border-b border-border last:border-0 ${isClickable ? 'cursor-pointer hover:bg-accent/50 transition-colors rounded-md px-1 -mx-1' : ''}`}
+      onClick={onClick}
+      role={isClickable ? 'link' : undefined}
+    >
       <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted">
         <Icon className="h-3.5 w-3.5 text-muted-foreground" />
       </div>
@@ -49,6 +63,7 @@ function EventRow({ event }: { event: ActivityEvent }) {
 
 export function ActivityFeed() {
   const { data, isLoading } = useActivity(ACTIVITY_FEED_LIMIT);
+  const navigate = useNavigate();
 
   return (
     <Card>
@@ -65,9 +80,16 @@ export function ActivityFeed() {
           <div className="px-6 py-4 text-sm text-muted-foreground">No recent activity</div>
         ) : (
           <div className={`${FEED_MAX_HEIGHT} overflow-y-auto px-6`}>
-            {data.map((event) => (
-              <EventRow key={event.id} event={event} />
-            ))}
+            {data.map((event) => {
+              const route = routeForEvent(event);
+              return (
+                <EventRow
+                  key={event.id}
+                  event={event}
+                  onClick={route ? () => navigate(route) : undefined}
+                />
+              );
+            })}
           </div>
         )}
       </CardContent>

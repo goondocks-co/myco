@@ -1,4 +1,4 @@
-/** Shared helpers for agent (curation run) components. */
+/** Shared helpers for agent run components. */
 
 /** Tailwind class string for run status badges. */
 export function runStatusClass(status: string): string {
