@@ -1097,11 +1097,84 @@ export async function main(): Promise<void> {
     logger.info('curation', 'Auto-curation disabled (curation.auto_run = false)');
   }
 
+  // --- Embedding worker ---
+  // Drains the unembedded queue on a timer, embedding content that the agent
+  // or capture pipeline has written but not yet vectorized.
+
+  const EMBEDDING_INTERVAL_MS = 30 * SECONDS_TO_MS;
+  const EMBEDDING_BATCH_SIZE = 10;
+  let embeddingRunning = false;
+
+  const embeddingTimer = setInterval(async () => {
+    if (embeddingRunning) return;
+    embeddingRunning = true;
+    try {
+      const { getUnembedded, setEmbedding, EMBEDDABLE_TABLES } = await import('../db/queries/embeddings.js');
+      const { tryEmbed } = await import('../intelligence/embed-query.js');
+
+      let totalEmbedded = 0;
+      for (const table of EMBEDDABLE_TABLES) {
+        const rows = await getUnembedded(table, { limit: EMBEDDING_BATCH_SIZE });
+        if (rows.length === 0) continue;
+
+        // For each row, get its text content and embed it
+        const db = getDatabase();
+        // Each table stores embeddable text in different columns
+        const textColumn: Record<string, string> = {
+          sessions: 'summary',
+          spores: 'content',
+          plans: 'content',
+          artifacts: 'content',
+        };
+        const col = textColumn[table] ?? 'content';
+        for (const row of rows) {
+          try {
+            const contentResult = await db.query(
+              `SELECT ${col} as text FROM ${table} WHERE id = $1`,
+              [row.id],
+            );
+            const text = String((contentResult.rows[0] as Record<string, unknown>)?.text ?? '');
+            if (!text) continue;
+
+            const embedding = await tryEmbed(text);
+            if (!embedding) {
+              // Provider unavailable — stop trying this cycle
+              if (totalEmbedded === 0) {
+                logger.debug('embedding', 'Provider unavailable, skipping cycle');
+              }
+              embeddingRunning = false;
+              return;
+            }
+
+            await setEmbedding(table, row.id, embedding);
+            totalEmbedded++;
+          } catch (err) {
+            logger.warn('embedding', 'Failed to embed row', { table, id: row.id, error: (err as Error).message });
+          }
+        }
+      }
+
+      if (totalEmbedded > 0) {
+        logger.info('embedding', 'Embedding batch completed', { embedded: totalEmbedded });
+      }
+    } catch (err) {
+      logger.error('embedding', 'Embedding worker failed', { error: (err as Error).message });
+    } finally {
+      embeddingRunning = false;
+    }
+  }, EMBEDDING_INTERVAL_MS);
+
+  logger.info('embedding', 'Embedding worker started', {
+    interval_ms: EMBEDDING_INTERVAL_MS,
+    batch_size: EMBEDDING_BATCH_SIZE,
+  });
+
   // --- Shutdown ---
 
   const shutdown = async (signal: string) => {
     logger.info('daemon', `${signal} received`);
     if (curationTimer) clearInterval(curationTimer);
+    clearInterval(embeddingTimer);
     // Wait for any active stop processing to finish before shutting down
     if (activeStopProcessing) {
       logger.info('daemon', 'Waiting for active stop processing to complete...');
