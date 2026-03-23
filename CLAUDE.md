@@ -21,13 +21,20 @@ This sets `${CLAUDE_PLUGIN_ROOT}` to the repo root. The vault lives at `~/.myco/
 **How end users install Myco (not how we run it):**
 
 ```sh
-claude plugin marketplace add goondocks-co/myco
-claude plugin install myco@myco-plugins
-# or
-claude plugin add /path/to/myco          # local permanent install
+npm install -g @goondocks/myco    # Install the package globally
+myco init                          # Detects symbionts (Claude Code, Cursor), registers plugin
 ```
 
-Permanent installs register the plugin globally. `--plugin-dir .` is for development only. Do not confuse these modes in documentation or code paths — `${CLAUDE_PLUGIN_ROOT}` resolves differently in each case.
+`myco init` detects which coding agents (symbionts) are available and runs the appropriate plugin registration command. The plugin provides hooks, skills, commands, and MCP server registration — all runtime invocations route through the `bin/myco-run` wrapper which resolves the `myco` CLI on PATH.
+
+**Dev binary setup:**
+
+```sh
+make dev-link    # Creates myco-dev symlink, sets MYCO_CMD=myco-dev in settings.json
+make dev-unlink  # Removes myco-dev, clears MYCO_CMD
+```
+
+After changing hook or daemon code, run `make build` — the wrapper script picks up the new build automatically.
 
 ## Non-Goals
 
@@ -39,7 +46,7 @@ Permanent installs register the plugin globally. `--plugin-dir .` is for develop
 
 ```
 src/
-  agents/        # Agent adapters (Claude Code, Cursor) for transcript discovery, parsing, and image capture
+  symbionts/     # Symbiont adapters (Claude Code, Cursor) for transcript discovery, parsing, and plugin registration
   capture/       # Event buffering (EventBuffer) and buffer-based turn fallback
   config/        # Vault config loading and Zod schema
   context/       # Context injection for UserPromptSubmit hook
@@ -145,6 +152,7 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
 | **Dormancy** | Digest timer suspended when no new substrate arrives for an extended period. |
 | **Activation** | Return from dormancy to active metabolism, triggered by new session events. |
 | **Spore** | Discrete observation extracted from session activity (gotcha, decision, discovery, trade-off, bug fix). Stored in `vault/spores/`. |
+| **Symbiont** | External coding agent that Myco integrates with (Claude Code, Cursor). Named for the mycorrhizal symbiotic relationship. Declared via YAML manifests in `src/symbionts/manifests/`. |
 
 ## Vault Structure
 
@@ -207,9 +215,11 @@ make build
 
 ### Add a new hook
 
-1. Create entry point in `src/hooks/<hook-name>.ts` — keep it thin
-2. Create shell wrapper in `hooks/<hook-name>` that invokes `node dist/src/hooks/<hook-name>.js`
-3. The hook SHOULD send events to the daemon via `DaemonClient`; only fall back to local processing if the daemon is unreachable
+1. Create entry point in `src/hooks/<hook-name>.ts` — keep it thin, export `main()`
+2. Create entry wrapper in `src/entries/<hook-name>.ts` that imports and calls `main()`
+3. Add hook name to the `HOOK_DISPATCH` map in `src/cli.ts`
+4. Add hook entry to `hooks/hooks.json` using `${CLAUDE_PLUGIN_ROOT}/bin/myco-run hook <hook-name>` command
+5. The hook SHOULD send events to the daemon via `DaemonClient`; only fall back to local processing if the daemon is unreachable
 
 ### Add a new daemon route
 
@@ -247,7 +257,7 @@ Use the CLI: `node dist/src/cli.js <command>`
 The daemon persists across sessions. After modifying daemon code, you MUST restart it:
 
 ```sh
-node dist/src/cli.js restart
+myco restart     # or myco-dev restart in dogfooding mode
 ```
 
 Or manually: kill the PID in `~/.myco/vaults/myco/daemon.json`, then let the next session-start hook spawn a fresh one.
