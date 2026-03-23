@@ -87,5 +87,17 @@ export default defineConfig({
         }
       }
     }
+
+    // Copy symbiont manifest YAML files
+    const symbiontManifests = 'src/symbionts/manifests';
+    if (existsSync(symbiontManifests)) {
+      const symbiontManifestsDest = 'dist/src/symbionts/manifests';
+      mkdirSync(symbiontManifestsDest, { recursive: true });
+      for (const file of readdirSync(symbiontManifests)) {
+        if (file.endsWith('.yaml')) {
+          copyFileSync(path.join(symbiontManifests, file), path.join(symbiontManifestsDest, file));
+        }
+      }
+    }
   },
 });
