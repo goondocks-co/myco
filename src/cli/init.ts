@@ -27,7 +27,7 @@ export async function run(args: string[]): Promise<void> {
   console.log(`Initializing Myco vault at ${vaultDir}`);
 
   // Create directory structure
-  const dirs = ['sessions', 'plans', 'spores', 'artifacts', 'team', 'buffer', 'logs'];
+  const dirs = ['pgdata', 'buffer', 'attachments', 'logs'];
   for (const dir of dirs) {
     fs.mkdirSync(path.join(vaultDir, dir), { recursive: true });
   }

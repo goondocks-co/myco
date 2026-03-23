@@ -30,21 +30,16 @@ export const PROVIDER_DEFAULTS: Record<string, { base_url: string }> = {
 };
 
 
-export const VAULT_GITIGNORE = `# Runtime — rebuilt on daemon startup
-index.db
-index.db-wal
-index.db-shm
-vectors.db
+export const VAULT_GITIGNORE = `# PGlite database — rebuilt from capture data
 pgdata/
 
 # Daemon state — per-machine, ephemeral
 daemon.json
-_portal.md
 buffer/
 logs/
 
-# Obsidian — per-user workspace config
-.obsidian/
+# Binary attachments — screenshots captured from transcripts
+attachments/
 `;
 
 /** Collapse an absolute home-dir path to its `~/` form for portable config storage. */

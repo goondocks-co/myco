@@ -843,13 +843,6 @@ export async function main(): Promise<void> {
     }
   }
 
-  // Write portal file so users can find the dashboard URL in Obsidian
-  try {
-    const { loadTemplate } = await import('../templates/index.js');
-    const portalContent = loadTemplate('portal', { port: String(server.port) });
-    fs.writeFileSync(path.join(vaultDir, '_portal.md'), portalContent, 'utf-8');
-  } catch { /* non-critical — template may be missing or vault read-only */ }
-
   // --- Curation timer ---
 
   const curationTimer = config.curation.auto_run
