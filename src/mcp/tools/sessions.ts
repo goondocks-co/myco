@@ -1,11 +1,10 @@
 /**
  * myco_sessions — list past coding sessions with summaries.
  *
- * Delegates to PGlite `listSessions()` query helper.
+ * Proxies through the daemon HTTP API via DaemonClient.
  */
 
-import { listSessions, type SessionRow } from '@myco/db/queries/sessions.js';
-import { MCP_SESSIONS_DEFAULT_LIMIT, SESSION_SUMMARY_PREVIEW_CHARS } from '@myco/constants.js';
+import type { DaemonClient } from '@myco/hooks/client.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -32,37 +31,22 @@ interface SessionSummary {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function toSummary(row: SessionRow): SessionSummary {
-  return {
-    id: row.id,
-    agent: row.agent,
-    user: row.user,
-    branch: row.branch,
-    started_at: row.started_at,
-    ended_at: row.ended_at,
-    status: row.status,
-    title: row.title,
-    summary: (row.summary ?? '').slice(0, SESSION_SUMMARY_PREVIEW_CHARS),
-    prompt_count: row.prompt_count,
-    tool_count: row.tool_count,
-    parent_session_id: row.parent_session_id,
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
 export async function handleMycoSessions(
   input: SessionsInput,
+  client: DaemonClient,
 ): Promise<SessionSummary[]> {
-  const rows = await listSessions({
-    limit: input.limit ?? MCP_SESSIONS_DEFAULT_LIMIT,
-    status: input.status,
-  });
+  const params = new URLSearchParams();
+  if (input.limit) params.set('limit', String(input.limit));
+  if (input.status) params.set('status', input.status);
 
-  return rows.map(toSummary);
+  const qs = params.toString();
+  const endpoint = qs ? `/api/mcp/sessions?${qs}` : '/api/mcp/sessions';
+  const result = await client.get(endpoint);
+
+  if (!result.ok || !result.data?.sessions) return [];
+
+  return result.data.sessions as SessionSummary[];
 }

@@ -1,21 +1,11 @@
 /**
  * myco_remember — save a decision, gotcha, bug fix, discovery, or trade-off as a spore.
  *
- * Inserts a spore into PGlite via the `insertSpore()` query helper.
- * Embedding is fire-and-forget to avoid blocking the response.
+ * Proxies through the daemon HTTP API via DaemonClient.
+ * The daemon handles curator registration, spore insertion, and embedding.
  */
 
-import { randomBytes } from 'node:crypto';
-import { insertSpore, type SporeRow } from '@myco/db/queries/spores.js';
-import { registerCurator } from '@myco/db/queries/curators.js';
-import { epochSeconds, USER_CURATOR_ID, USER_CURATOR_NAME } from '@myco/constants.js';
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Byte length for random spore ID suffix. */
-const SPORE_ID_RANDOM_BYTES = 4;
+import type { DaemonClient } from '@myco/hooks/client.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,33 +30,23 @@ interface RememberResult {
 
 export async function handleMycoRemember(
   input: RememberInput,
+  client: DaemonClient,
 ): Promise<RememberResult> {
-  const observationType = input.type ?? 'discovery';
-  const id = `${observationType}-${randomBytes(SPORE_ID_RANDOM_BYTES).toString('hex')}`;
-  const now = epochSeconds();
-
-  // Ensure the user curator exists (idempotent upsert)
-  await registerCurator({
-    id: USER_CURATOR_ID,
-    name: USER_CURATOR_NAME,
-    created_at: now,
-  });
-
-  const spore = await insertSpore({
-    id,
-    curator_id: USER_CURATOR_ID,
-    observation_type: observationType,
+  const result = await client.post('/api/mcp/remember', {
     content: input.content,
-    tags: input.tags ? input.tags.join(', ') : null,
-    created_at: now,
+    type: input.type,
+    tags: input.tags,
   });
 
-  // TODO: Phase 2 — fire-and-forget embedding of the new spore
+  if (!result.ok || !result.data) {
+    // Return a graceful error shape that matches RememberResult enough to not crash
+    return {
+      id: '',
+      observation_type: input.type ?? 'discovery',
+      status: 'error',
+      created_at: 0,
+    };
+  }
 
-  return {
-    id: spore.id,
-    observation_type: spore.observation_type,
-    status: spore.status,
-    created_at: spore.created_at,
-  };
+  return result.data as RememberResult;
 }

@@ -1,53 +1,51 @@
 /**
  * Tests for myco_plans tool handler.
+ *
+ * The handler now proxies through DaemonClient. Tests mock the client
+ * to verify correct endpoint usage and response mapping.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
-import { upsertPlan } from '@myco/db/queries/plans.js';
+import { describe, it, expect, vi } from 'vitest';
 import { handleMycoPlans } from '@myco/mcp/tools/plans.js';
+import { DaemonClient } from '@myco/hooks/client.js';
 
-const epochNow = () => Math.floor(Date.now() / 1000);
+function mockClient(getData: unknown = null, ok = true): DaemonClient {
+  const client = {
+    get: vi.fn().mockResolvedValue({ ok, data: getData }),
+    post: vi.fn().mockResolvedValue({ ok, data: getData }),
+  } as unknown as DaemonClient;
+  return client;
+}
 
 describe('myco_plans', () => {
-  beforeEach(async () => {
-    const db = await initDatabase();
-    await createSchema(db);
+  it('lists plans from daemon response', async () => {
+    const plans = [
+      { id: 'auth', title: 'Auth Redesign', status: 'active', progress: '1/2', tags: [], created_at: 1700000000 },
+      { id: 'done', title: 'Completed Plan', status: 'completed', progress: '1/1', tags: [], created_at: 1699999900 },
+    ];
+    const client = mockClient({ plans });
 
-    const now = epochNow();
-    await upsertPlan({
-      id: 'auth', title: 'Auth Redesign', status: 'active',
-      content: '- [x] Step 1\n- [ ] Step 2', created_at: now - 100,
-    });
-    await upsertPlan({
-      id: 'done', title: 'Completed Plan', status: 'completed',
-      content: '- [x] All done', created_at: now - 200,
-    });
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
-  });
-
-  it('lists all plans', async () => {
-    const results = await handleMycoPlans({});
+    const results = await handleMycoPlans({}, client);
     expect(results).toHaveLength(2);
   });
 
-  it('filters by status', async () => {
-    const results = await handleMycoPlans({ status: 'active' });
+  it('passes status filter to daemon', async () => {
+    const client = mockClient({ plans: [{ id: 'auth', title: 'Auth', status: 'active', progress: '1/2', tags: [], created_at: 1700000000 }] });
+
+    const results = await handleMycoPlans({ status: 'active' }, client);
     expect(results).toHaveLength(1);
-    expect(results[0].id).toBe('auth');
+    expect(client.get).toHaveBeenCalledWith(expect.stringContaining('status=active'));
   });
 
-  it('extracts progress from checklist content', async () => {
-    const results = await handleMycoPlans({ status: 'active' });
-    expect(results[0].progress).toBe('1/2');
+  it('returns empty on daemon failure', async () => {
+    const client = mockClient(null, false);
+    const results = await handleMycoPlans({}, client);
+    expect(results).toEqual([]);
   });
 
-  it('lists all when status is "all"', async () => {
-    const results = await handleMycoPlans({ status: 'all' });
-    expect(results).toHaveLength(2);
+  it('passes limit to daemon', async () => {
+    const client = mockClient({ plans: [] });
+    await handleMycoPlans({ limit: 5 }, client);
+    expect(client.get).toHaveBeenCalledWith(expect.stringContaining('limit=5'));
   });
 });

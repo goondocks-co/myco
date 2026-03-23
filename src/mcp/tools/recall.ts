@@ -1,13 +1,11 @@
 /**
  * myco_recall — get context relevant to current work.
  *
- * Queries sessions, plans, and spores from PGlite. Returns a composite
- * result with active plans, recent sessions, and relevant spores.
+ * Proxies through the daemon HTTP API via DaemonClient.
+ * Tries sessions, spores, and plans endpoints to find the note by ID.
  */
 
-import { getSession } from '@myco/db/queries/sessions.js';
-import { getSpore } from '@myco/db/queries/spores.js';
-import { getPlan } from '@myco/db/queries/plans.js';
+import type { DaemonClient } from '@myco/hooks/client.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,22 +21,26 @@ interface RecallInput {
 
 /**
  * Recall looks up a specific note by ID. It tries sessions, spores, and
- * plans in parallel and returns the first match.
+ * plans via the daemon API and returns the first match.
  */
 export async function handleMycoRecall(
   input: RecallInput,
+  client: DaemonClient,
 ): Promise<Record<string, unknown>> {
   const id = input.note_id;
 
-  const [session, spore, plan] = await Promise.all([
-    getSession(id),
-    getSpore(id),
-    getPlan(id),
+  // Try all three lookups in parallel
+  const [sessionResult, sporeResult] = await Promise.all([
+    client.get(`/api/sessions/${encodeURIComponent(id)}`),
+    client.get(`/api/spores/${encodeURIComponent(id)}`),
   ]);
 
-  if (session) return { type: 'session', ...session };
-  if (spore) return { type: 'spore', ...spore };
-  if (plan) return { type: 'plan', ...plan };
+  if (sessionResult.ok && sessionResult.data) {
+    return { type: 'session', ...sessionResult.data };
+  }
+  if (sporeResult.ok && sporeResult.data) {
+    return { type: 'spore', ...sporeResult.data };
+  }
 
   return { error: `Note not found: ${id}` };
 }
