@@ -4,14 +4,12 @@ import path from 'node:path';
 
 export default defineConfig({
   entry: {
-    // Thin hooks — delegate to daemon
-    'src/hooks/session-end': 'src/hooks/session-end.ts',
-    'src/hooks/stop': 'src/hooks/stop.ts',
-    'src/hooks/user-prompt-submit': 'src/hooks/user-prompt-submit.ts',
-    'src/hooks/post-tool-use': 'src/hooks/post-tool-use.ts',
-    // Entry wrappers — dynamic import so tsup code-splitting works
-    // (chunk filenames differ from process.argv[1])
+    // Entry wrappers — all hooks now use explicit main() calls
     'src/hooks/session-start': 'src/entries/session-start.ts',
+    'src/hooks/session-end': 'src/entries/session-end.ts',
+    'src/hooks/stop': 'src/entries/stop.ts',
+    'src/hooks/user-prompt-submit': 'src/entries/user-prompt-submit.ts',
+    'src/hooks/post-tool-use': 'src/entries/post-tool-use.ts',
     'src/mcp/server': 'src/entries/mcp-server.ts',
     'src/cli': 'src/entries/cli.ts',
     'src/daemon/main': 'src/entries/daemon.ts',

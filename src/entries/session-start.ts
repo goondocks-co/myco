@@ -1,2 +1,3 @@
 export {};
-await import('../hooks/session-start.js');
+const { main } = await import('../hooks/session-start.js');
+await main();
