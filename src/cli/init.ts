@@ -3,7 +3,6 @@ import { resolveVaultDir } from '../vault/resolve.js';
 import {
   parseStringFlag,
   VAULT_GITIGNORE,
-  configureVaultEnv,
 } from './shared.js';
 import { MycoConfigSchema } from '../config/schema.js';
 import fs from 'node:fs';
@@ -67,13 +66,6 @@ export async function run(args: string[]): Promise<void> {
   console.log('=== Myco Vault Initialized ===');
   console.log(`Path:               ${vaultDir}`);
   console.log('');
-
-  // If vault is outside the project, configure MYCO_VAULT_DIR for the current agent
-  const projectRoot = path.resolve('.');
-  const isProjectLocal = vaultDir.startsWith(projectRoot);
-  if (!isProjectLocal) {
-    configureVaultEnv(projectRoot, vaultDir);
-  }
 
   console.log('Next: start a coding session — Myco will begin capturing automatically.');
 }

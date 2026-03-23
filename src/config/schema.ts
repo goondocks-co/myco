@@ -18,12 +18,20 @@ const CaptureSchema = z.object({
   buffer_max_events: z.number().int().positive().default(500),
 });
 
+const CurationSchema = z.object({
+  /** Whether the daemon automatically runs the curator on unprocessed batches. */
+  auto_run: z.boolean().default(true),
+  /** Seconds between curation timer checks. */
+  interval_seconds: z.number().int().positive().default(300),
+});
+
 export const MycoConfigSchema = z.object({
   version: z.literal(3),
   config_version: z.number().int().nonnegative().default(0),
   embedding: EmbeddingProviderSchema.default(() => EmbeddingProviderSchema.parse({})),
   daemon: DaemonSchema.default(() => DaemonSchema.parse({})),
   capture: CaptureSchema.default(() => CaptureSchema.parse({})),
+  curation: CurationSchema.default(() => CurationSchema.parse({})),
 });
 
 export type MycoConfig = z.infer<typeof MycoConfigSchema>;

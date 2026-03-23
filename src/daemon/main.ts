@@ -66,8 +66,8 @@ import path from 'node:path';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Interval between curation timer checks (ms). */
-const CURATION_CHECK_INTERVAL_MS = 300_000; // 5 minutes
+/** Seconds-to-milliseconds multiplier for config intervals. */
+const SECONDS_TO_MS = 1000;
 
 /** Default limit for listing agent runs in the API. */
 const AGENT_RUNS_DEFAULT_LIMIT = 50;
@@ -852,28 +852,34 @@ export async function main(): Promise<void> {
 
   // --- Curation timer ---
 
-  const curationTimer = setInterval(async () => {
-    try {
-      // Pre-check: only spawn agent if there's unprocessed work
-      const db = getDatabase();
-      const checkResult = await db.query('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0');
-      const count = Number((checkResult.rows[0] as Record<string, unknown>).count);
-      if (count === 0) return;
+  const curationTimer = config.curation.auto_run
+    ? setInterval(async () => {
+        try {
+          // Pre-check: only spawn agent if there's unprocessed work
+          const db = getDatabase();
+          const checkResult = await db.query('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0');
+          const count = Number((checkResult.rows[0] as Record<string, unknown>).count);
+          if (count === 0) return;
 
-      logger.info('curation', 'Unprocessed batches found, starting curation', { count });
-      const { runCurationAgent } = await import('../agent/executor.js');
-      const runResult = await runCurationAgent(vaultDir);
-      logger.info('curation', 'Curation run completed', { status: runResult.status, runId: runResult.runId });
-    } catch (err) {
-      logger.error('curation', 'Curation timer failed', { error: (err as Error).message });
-    }
-  }, CURATION_CHECK_INTERVAL_MS);
+          logger.info('curation', 'Unprocessed batches found, starting curation', { count });
+          const { runCurationAgent } = await import('../agent/executor.js');
+          const runResult = await runCurationAgent(vaultDir);
+          logger.info('curation', 'Curation run completed', { status: runResult.status, runId: runResult.runId });
+        } catch (err) {
+          logger.error('curation', 'Curation timer failed', { error: (err as Error).message });
+        }
+      }, config.curation.interval_seconds * SECONDS_TO_MS)
+    : null;
+
+  if (!config.curation.auto_run) {
+    logger.info('curation', 'Auto-curation disabled (curation.auto_run = false)');
+  }
 
   // --- Shutdown ---
 
   const shutdown = async (signal: string) => {
     logger.info('daemon', `${signal} received`);
-    clearInterval(curationTimer);
+    if (curationTimer) clearInterval(curationTimer);
     // Wait for any active stop processing to finish before shutting down
     if (activeStopProcessing) {
       logger.info('daemon', 'Waiting for active stop processing to complete...');

@@ -24,6 +24,7 @@ export function loadConfig(vaultDir: string): MycoConfig {
   }
 
   // --- v2 → v3 migration ---
+  let v2Migrated = false;
   if (parsed.version === 2) {
     // Extract intelligence.embedding to top-level embedding
     const intel = parsed.intelligence as Record<string, unknown> | undefined;
@@ -55,9 +56,11 @@ export function loadConfig(vaultDir: string): MycoConfig {
     delete parsed.context;
     delete parsed.team;
     delete parsed.digest;
+    delete parsed.pipeline;
 
     // Set version to 3
     parsed.version = 3;
+    v2Migrated = true;
 
     process.stderr.write('[myco migration] Migrated config from v2 to v3\n');
   }
@@ -71,7 +74,8 @@ export function loadConfig(vaultDir: string): MycoConfig {
   const config = MycoConfigSchema.parse(parsed);
 
   // Write back if v2→v3 migration ran, numbered migrations ran, or new defaults were added
-  const needsWrite = migrationsRan
+  const needsWrite = v2Migrated
+    || migrationsRan
     || (parsed.config_version as number ?? 0) < CURRENT_MIGRATION_VERSION
     || parsed.version !== config.version;
 
