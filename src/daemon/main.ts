@@ -678,12 +678,17 @@ export async function main(): Promise<void> {
       parts.push(`Session:: \`${session_id}\``);
 
       if (parts.length > 0) {
+        const contextText = parts.join('\n\n');
         logger.info('context', 'Session context injected', {
           session_id,
           source: 'basic',
           parts: parts.length,
         });
-        return { body: { text: parts.join('\n\n') } };
+        logger.debug('context', 'Injected context content', {
+          session_id,
+          text: contextText,
+        });
+        return { body: { text: contextText } };
       }
       return { body: { text: '' } };
     } catch (error) {
