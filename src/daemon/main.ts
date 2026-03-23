@@ -200,6 +200,35 @@ export async function handleSessionStop(
 }
 
 // ---------------------------------------------------------------------------
+// Stale daemon cleanup
+// ---------------------------------------------------------------------------
+
+/**
+ * Kill any stale daemon process for this vault before starting a new one.
+ * Reads daemon.json — if a live process exists with that PID, kill it.
+ * This prevents orphaned daemons from accumulating across restarts.
+ */
+function killStaleDaemon(vaultDir: string, logger: DaemonLogger): void {
+  const daemonJsonPath = path.join(vaultDir, 'daemon.json');
+  try {
+    if (!fs.existsSync(daemonJsonPath)) return;
+    const info = JSON.parse(fs.readFileSync(daemonJsonPath, 'utf-8')) as { pid?: number };
+    if (!info.pid) return;
+
+    // Don't kill ourselves
+    if (info.pid === process.pid) return;
+
+    try {
+      process.kill(info.pid, 0); // Check if alive
+      process.kill(info.pid, 'SIGTERM');
+      logger.info('daemon', 'Killed stale daemon', { pid: info.pid });
+    } catch { /* already dead */ }
+
+    fs.unlinkSync(daemonJsonPath);
+  } catch { /* daemon.json unreadable — ignore */ }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -216,6 +245,9 @@ export async function main(): Promise<void> {
   const logger = new DaemonLogger(path.join(vaultDir, 'logs'), {
     level: config.daemon.log_level,
   });
+
+  // Kill any stale daemon for this vault before starting
+  killStaleDaemon(vaultDir, logger);
 
   logger.info('daemon', 'Config loaded', {
     vault: vaultDir,
