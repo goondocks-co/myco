@@ -38,29 +38,32 @@ export interface TriggerRunProps {
 }
 
 export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps) {
-  const [selectedTask, setSelectedTask] = useState<string>(NO_TASK_VALUE);
+  const [selectedTask, setSelectedTask] = useState<string | undefined>(undefined);
   const [instruction, setInstruction] = useState('');
 
   const { data: tasks, isLoading: tasksLoading } = useAgentTasks();
   const { mutate: triggerRun, isPending, error } = useTriggerRun();
 
+  // Pre-select the default task once tasks load
+  const availableTasks = tasks ?? [];
+  const defaultTask = availableTasks.find(t => t.is_default === 1);
+  const effectiveSelection = selectedTask ?? defaultTask?.id ?? availableTasks[0]?.id ?? '';
+
   function handleRun() {
     const payload = {
-      task: selectedTask === NO_TASK_VALUE ? undefined : selectedTask,
+      task: effectiveSelection || undefined,
       instruction: instruction.trim() || undefined,
     };
 
     triggerRun(payload, {
       onSuccess: () => {
         onOpenChange(false);
-        setSelectedTask(NO_TASK_VALUE);
+        setSelectedTask(undefined);
         setInstruction('');
         onTriggered?.();
       },
     });
   }
-
-  const availableTasks = tasks ?? [];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -82,14 +85,11 @@ export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps)
                 Loading tasks...
               </div>
             ) : (
-              <Select value={selectedTask} onValueChange={setSelectedTask}>
+              <Select value={effectiveSelection} onValueChange={setSelectedTask}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Default task" />
+                  <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={NO_TASK_VALUE}>
-                    Default task
-                  </SelectItem>
                   {availableTasks.map((task) => (
                     <SelectItem key={task.id} value={task.id}>
                       {taskLabel(task)}

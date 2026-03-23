@@ -288,7 +288,7 @@ export async function main(): Promise<void> {
     if (staleRuns.rows.length > 0) {
       logger.info('agent', 'Cleaned stale running agent runs', {
         count: staleRuns.rows.length,
-        ids: staleRuns.rows.map((r: Record<string, unknown>) => r.id),
+        ids: staleRuns.rows.map((r: unknown) => (r as Record<string, unknown>).id),
       });
     }
   } catch (err) {

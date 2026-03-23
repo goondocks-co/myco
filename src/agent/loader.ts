@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod/v4';
 import { parse as parseYaml } from 'yaml';
 import { epochSeconds, DEFAULT_CURATOR_ID } from '@myco/constants.js';
+import { getDatabase } from '@myco/db/client.js';
 import { registerCurator } from '@myco/db/queries/curators.js';
 import { upsertTask } from '@myco/db/queries/tasks.js';
 import type { CuratorRow } from '@myco/db/queries/curators.js';
@@ -283,4 +284,13 @@ export async function registerBuiltInCuratorsAndTasks(definitionsDir: string): P
       updated_at: now,
     });
   }
+
+  // Remove built-in tasks that no longer have YAML definitions
+  const validTaskIds = tasks.map(t => t.name);
+  const db = getDatabase();
+  await db.query(
+    `DELETE FROM agent_tasks
+     WHERE source = $1 AND curator_id = $2 AND id != ALL($3)`,
+    [BUILT_IN_SOURCE, definition.name, validTaskIds],
+  );
 }
