@@ -1,6 +1,8 @@
 import { defineConfig } from 'tsup';
-import { copyFileSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+
+const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'));
 
 export default defineConfig({
   entry: {
@@ -20,6 +22,9 @@ export default defineConfig({
   splitting: true,
   sourcemap: true,
   clean: true,
+  define: {
+    '__MYCO_VERSION__': JSON.stringify(pkg.version),
+  },
   // Inject createRequire shim so CJS deps (yaml) can require Node builtins
   banner: {
     js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);",

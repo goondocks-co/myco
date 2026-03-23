@@ -1,46 +1,35 @@
 /**
- * Resolve the plugin's package version from package.json.
- * Uses the agent registry to find the plugin root, then reads package.json.
+ * Plugin version — injected at build time by tsup define.
+ * Falls back to reading package.json for unbundled execution (tests, tsx).
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SymbiontRegistry } from './symbionts/registry.js';
 
+declare const __MYCO_VERSION__: string;
+
+const VERSION_WALK_LIMIT = 5;
 let cached: string | undefined;
 
 export function getPluginVersion(): string {
   if (cached) return cached;
 
-  // Primary: resolve via agent env var (CLAUDE_PLUGIN_ROOT, etc.)
-  const pluginRoot = new SymbiontRegistry().resolvePluginRoot();
-  if (pluginRoot) {
-    cached = readVersionFrom(pluginRoot);
-    if (cached) return cached;
+  // Primary: build-time injected constant
+  if (typeof __MYCO_VERSION__ !== 'undefined') {
+    cached = __MYCO_VERSION__;
+    return cached;
   }
 
-  // Secondary: walk up from this file to find package.json (works for daemon)
+  // Fallback: walk up from this file (unbundled/test execution)
   let dir = path.dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 5; i++) {
-    const version = readVersionFrom(dir);
-    if (version) {
-      cached = version;
-      return cached;
-    }
+  for (let i = 0; i < VERSION_WALK_LIMIT; i++) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8')) as { version?: string };
+      if (pkg.version) { cached = pkg.version; return cached; }
+    } catch { /* continue */ }
     dir = path.dirname(dir);
   }
 
-  // Fallback: walk up from cwd
-  cached = readVersionFrom(process.cwd()) ?? '0.0.0';
+  cached = '0.0.0';
   return cached;
-}
-
-function readVersionFrom(dir: string): string | undefined {
-  const pkgPath = path.join(dir, 'package.json');
-  try {
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-    return pkg.version;
-  } catch {
-    return undefined;
-  }
 }
