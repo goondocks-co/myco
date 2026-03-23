@@ -22,7 +22,7 @@ export interface AgentDefinition {
   tools: string[];
 }
 
-/** Shape of each task YAML file (e.g., `tasks/full-curation.yaml`). */
+/** Shape of each task YAML file (e.g., `tasks/full-intelligence.yaml`). */
 export interface AgentTask {
   name: string;
   displayName: string;

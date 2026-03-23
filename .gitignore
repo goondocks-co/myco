@@ -3,21 +3,12 @@ dist/
 *.tsbuildinfo
 .env
 
-# Vault runtime artifacts (also in .myco/.gitignore for user projects)
-.myco/index.db
-.myco/index.db-wal
-.myco/index.db-shm
-.myco/vectors.db
-.myco/buffer/
-.myco/daemon.json
-.myco/logs/
-.myco/.obsidian/
-
 # User-local settings (vault paths contain home directory)
 .claude/settings.user.json
 
 # Dev tooling
 .worktrees/
+.playwright-mcp/
 
 # Specs and plans — captured in Myco vault, not the repo
 docs/superpowers/

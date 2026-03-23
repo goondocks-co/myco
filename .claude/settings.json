@@ -1,5 +1,5 @@
 {
   "env": {
-    "MYCO_VAULT_DIR": "~/.myco/vaults/myco"
+    "MYCO_CMD": "myco-dev"
   }
 }

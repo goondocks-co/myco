@@ -66,9 +66,9 @@ export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps)
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Trigger Curation Run</DialogTitle>
+          <DialogTitle>Trigger Agent Run</DialogTitle>
           <DialogDescription>
-            Run the curator agent now. It will process unprocessed sessions and update the vault.
+            Run the Myco agent now. It will process unprocessed sessions and update the vault.
           </DialogDescription>
         </DialogHeader>
 

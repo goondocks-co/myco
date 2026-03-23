@@ -1,10 +1,10 @@
-# Built-in curator agent definition.
+# Built-in Myco agent definition.
 # Loaded at startup and registered in the curators table as source: 'built-in'.
 
 name: myco-curator
-displayName: Myco Curator
+displayName: Myco Agent
 description: >
-  Default curation agent that processes captured session data, extracts
+  Default intelligence agent that processes captured session data, extracts
   observations (spores), builds the knowledge graph, manages spore lifecycle,
   and synthesizes digest extracts.
 model: claude-sonnet-4-20250514

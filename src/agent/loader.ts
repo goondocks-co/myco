@@ -221,8 +221,8 @@ export function resolveEffectiveConfig(
   }
 
   // Task prompt and display info (fall back to a generic prompt)
-  const taskName = taskOverrides?.name ?? 'full-curation';
-  const taskDisplayName = taskOverrides?.displayName ?? 'Full Curation';
+  const taskName = taskOverrides?.name ?? 'full-intelligence';
+  const taskDisplayName = taskOverrides?.displayName ?? 'Full Intelligence';
   const taskPrompt = taskOverrides?.prompt ?? '';
 
   return {
