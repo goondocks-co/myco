@@ -14,7 +14,7 @@ This sets `${CLAUDE_PLUGIN_ROOT}` to the repo root. The vault lives at `~/.myco/
 
 **Implications for development:**
 
-- After changing hook or daemon code, you MUST run `make build` and then `node dist/src/cli.js restart` for the daemon. Hooks pick up new code on next invocation; the daemon does not.
+- After changing hook or daemon code, you MUST run `make build` and then `myco-dev restart` for the daemon. Hooks pick up new code on next invocation; the daemon does not.
 - The MCP server reloads on `/reload-plugins`, but a full session restart may be needed for connection changes.
 - Session data from your development sessions is real vault data. Be careful with destructive vault operations — you'll lose your own session history.
 
@@ -237,7 +237,7 @@ make build
 
 ### Test the vault and embeddings
 
-Use the CLI: `node dist/src/cli.js <command>`
+Use the CLI: `myco <command>` (or `myco-dev` in dogfooding mode)
 
 - `stats` — vault health, index counts, daemon status
 - `search <query>` — semantic search (primary) + FTS (fallback)
