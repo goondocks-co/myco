@@ -46,7 +46,7 @@ import { listTurnsByRun } from '../db/queries/turns.js';
 import { listTasksByCurator } from '../db/queries/tasks.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
-import { upsertSession, closeSession, updateSession, listSessions } from '../db/queries/sessions.js';
+import { upsertSession, closeSession, updateSession, listSessions, getSession } from '../db/queries/sessions.js';
 import { insertBatch, closeBatch, incrementActivityCount } from '../db/queries/batches.js';
 import { insertActivity } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
@@ -114,7 +114,15 @@ export async function handleUserPrompt(
   batchState: BatchStateMap,
 ): Promise<number> {
   const now = epochSeconds();
-  const state = batchState.get(sessionId) ?? { currentBatchId: null, promptNumber: INITIAL_PROMPT_NUMBER };
+  let state = batchState.get(sessionId);
+  if (!state) {
+    // Recover prompt number from DB to survive daemon restarts
+    const session = await getSession(sessionId);
+    const resumeNumber = session?.prompt_count
+      ? session.prompt_count + INITIAL_PROMPT_NUMBER
+      : INITIAL_PROMPT_NUMBER;
+    state = { currentBatchId: null, promptNumber: resumeNumber };
+  }
 
   // Close previous batch if open
   if (state.currentBatchId !== null) {
