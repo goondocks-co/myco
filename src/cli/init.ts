@@ -21,55 +21,55 @@ export async function run(args: string[]): Promise<void> {
     ? (vaultPath.startsWith('~/') ? path.join(os.homedir(), vaultPath.slice(2)) : path.resolve(vaultPath))
     : path.join(resolveVaultDir());
 
-  // Check if already initialized
-  if (fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {
-    console.log(`Vault already initialized at ${vaultDir}`);
-    return;
+  const alreadyInitialized = fs.existsSync(path.join(vaultDir, 'myco.yaml'));
+
+  if (!alreadyInitialized) {
+    console.log(`Initializing Myco vault at ${vaultDir}`);
+
+    // Create directory structure
+    const dirs = ['pgdata', 'buffer', 'attachments', 'logs'];
+    for (const dir of dirs) {
+      fs.mkdirSync(path.join(vaultDir, dir), { recursive: true });
+    }
+
+    // Build embedding config from flags
+    const embeddingProvider = parseStringFlag(args, '--embedding-provider');
+    const embeddingModel = parseStringFlag(args, '--embedding-model');
+    const embeddingUrl = parseStringFlag(args, '--embedding-url');
+
+    const embeddingOverrides: Record<string, unknown> = {};
+    if (embeddingProvider) embeddingOverrides.provider = embeddingProvider;
+    if (embeddingModel) embeddingOverrides.model = embeddingModel;
+    if (embeddingUrl) embeddingOverrides.base_url = embeddingUrl;
+
+    // Write myco.yaml — only version is truly required, everything else has Zod defaults
+    const config = MycoConfigSchema.parse({
+      version: 3,
+      ...(Object.keys(embeddingOverrides).length > 0 ? { embedding: embeddingOverrides } : {}),
+    });
+
+    fs.writeFileSync(
+      path.join(vaultDir, 'myco.yaml'),
+      YAML.stringify(config),
+      'utf-8',
+    );
+
+    // Write .gitignore
+    fs.writeFileSync(path.join(vaultDir, '.gitignore'), VAULT_GITIGNORE, 'utf-8');
+
+    // Initialize PGlite database
+    await initDatabaseForVault(vaultDir);
+    await closeDatabase();
   }
 
-  console.log(`Initializing Myco vault at ${vaultDir}`);
-
-  // Create directory structure
-  const dirs = ['pgdata', 'buffer', 'attachments', 'logs'];
-  for (const dir of dirs) {
-    fs.mkdirSync(path.join(vaultDir, dir), { recursive: true });
-  }
-
-  // Build embedding config from flags
-  const embeddingProvider = parseStringFlag(args, '--embedding-provider');
-  const embeddingModel = parseStringFlag(args, '--embedding-model');
-  const embeddingUrl = parseStringFlag(args, '--embedding-url');
-
-  const embeddingOverrides: Record<string, unknown> = {};
-  if (embeddingProvider) embeddingOverrides.provider = embeddingProvider;
-  if (embeddingModel) embeddingOverrides.model = embeddingModel;
-  if (embeddingUrl) embeddingOverrides.base_url = embeddingUrl;
-
-  // Write myco.yaml — only version is truly required, everything else has Zod defaults
-  const config = MycoConfigSchema.parse({
-    version: 3,
-    ...(Object.keys(embeddingOverrides).length > 0 ? { embedding: embeddingOverrides } : {}),
-  });
-
-  fs.writeFileSync(
-    path.join(vaultDir, 'myco.yaml'),
-    YAML.stringify(config),
-    'utf-8',
-  );
-
-  // Write .gitignore
-  fs.writeFileSync(path.join(vaultDir, '.gitignore'), VAULT_GITIGNORE, 'utf-8');
-
-  // Initialize PGlite database
-  await initDatabaseForVault(vaultDir);
-  await closeDatabase();
-
-  // Detect and register symbionts
+  // Detect and register symbionts — runs even on re-init so newly
+  // installed symbionts get registered without recreating the vault
   const projectRoot = path.dirname(resolveVaultDir());
   const detected = detectSymbionts(projectRoot);
 
   if (detected.length > 0) {
-    console.log('\nDetected symbionts:');
+    console.log(alreadyInitialized ? `Vault at ${vaultDir}` : '');
+    console.log('Detected symbionts:');
     for (const d of detected) {
       const signals = [
         d.binaryFound ? 'binary found' : null,
@@ -90,7 +90,6 @@ export async function run(args: string[]): Promise<void> {
           console.log(`  Registered plugin with ${d.manifest.displayName}`);
         }
 
-        // Configure MYCO_VAULT_DIR in the symbiont's settings
         const configured = configureSymbiontVaultEnv(d, projectRoot, portableVaultDir);
         if (configured) {
           console.log(`  Set MYCO_VAULT_DIR for ${d.manifest.displayName}`);
@@ -99,15 +98,17 @@ export async function run(args: string[]): Promise<void> {
         console.error(`  Failed to register with ${d.manifest.displayName}: ${(err as Error).message}`);
       }
     }
+  } else if (alreadyInitialized) {
+    console.log(`Vault already initialized at ${vaultDir}`);
   }
 
-  // Summary
-  console.log('');
-  console.log('=== Myco Vault Initialized ===');
-  console.log(`Path:               ${vaultDir}`);
-  console.log('');
-
-  console.log('Next: start a coding session — Myco will begin capturing automatically.');
+  if (!alreadyInitialized) {
+    console.log('');
+    console.log('=== Myco Vault Initialized ===');
+    console.log(`Path:               ${vaultDir}`);
+    console.log('');
+    console.log('Next: start a coding session — Myco will begin capturing automatically.');
+  }
 }
 
 import type { DetectedSymbiont } from '../symbionts/detect.js';

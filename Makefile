@@ -20,7 +20,8 @@ clean:
 install:
 	npm install
 
-dev-link: build
+dev-link:
+	npm run build
 	@mkdir -p $(HOME)/.local/bin
 	@ln -sf $(PWD)/dist/src/cli.js $(HOME)/.local/bin/myco-dev
 	@chmod +x $(HOME)/.local/bin/myco-dev
