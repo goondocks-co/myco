@@ -91,32 +91,9 @@ export async function run(args: string[]): Promise<void> {
         }
 
         // Configure MYCO_VAULT_DIR in the symbiont's settings
-        if (d.manifest.settingsPath) {
-          const settingsFile = path.join(projectRoot, d.manifest.settingsPath);
-          const settingsDir = path.dirname(settingsFile);
-          if (fs.existsSync(settingsDir)) {
-            let settings: Record<string, unknown> = {};
-            try { settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8')); } catch { /* fresh */ }
-            const env = (settings.env ?? {}) as Record<string, string>;
-            env.MYCO_VAULT_DIR = portableVaultDir;
-            settings.env = env;
-            fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
-            console.log(`  Set MYCO_VAULT_DIR for ${d.manifest.displayName}`);
-          }
-        }
-
-        if (d.manifest.mcpConfigPath) {
-          const mcpFile = path.join(projectRoot, d.manifest.mcpConfigPath);
-          if (fs.existsSync(mcpFile)) {
-            try {
-              const config = JSON.parse(fs.readFileSync(mcpFile, 'utf-8'));
-              if (config.mcpServers?.myco) {
-                config.mcpServers.myco.env = { ...config.mcpServers.myco.env, MYCO_VAULT_DIR: portableVaultDir };
-                fs.writeFileSync(mcpFile, JSON.stringify(config, null, 2) + '\n', 'utf-8');
-                console.log(`  Set MYCO_VAULT_DIR for ${d.manifest.displayName}`);
-              }
-            } catch { /* malformed config */ }
-          }
+        const configured = configureSymbiontVaultEnv(d, projectRoot, portableVaultDir);
+        if (configured) {
+          console.log(`  Set MYCO_VAULT_DIR for ${d.manifest.displayName}`);
         }
       } catch (err) {
         console.error(`  Failed to register with ${d.manifest.displayName}: ${(err as Error).message}`);
@@ -131,4 +108,38 @@ export async function run(args: string[]): Promise<void> {
   console.log('');
 
   console.log('Next: start a coding session — Myco will begin capturing automatically.');
+}
+
+import type { DetectedSymbiont } from '../symbionts/detect.js';
+
+/** Write MYCO_VAULT_DIR into a symbiont's settings or MCP config file. */
+function configureSymbiontVaultEnv(
+  d: DetectedSymbiont,
+  projectRoot: string,
+  portableVaultDir: string,
+): boolean {
+  try {
+    if (d.manifest.settingsPath) {
+      const settingsFile = path.join(projectRoot, d.manifest.settingsPath);
+      let settings: Record<string, unknown> = {};
+      try { settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8')) as Record<string, unknown>; } catch { /* fresh */ }
+      const env = (settings.env ?? {}) as Record<string, string>;
+      env.MYCO_VAULT_DIR = portableVaultDir;
+      settings.env = env;
+      fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
+      return true;
+    }
+
+    if (d.manifest.mcpConfigPath) {
+      const mcpFile = path.join(projectRoot, d.manifest.mcpConfigPath);
+      const config = JSON.parse(fs.readFileSync(mcpFile, 'utf-8')) as Record<string, unknown>;
+      const servers = config.mcpServers as Record<string, { env?: Record<string, string> }> | undefined;
+      if (servers?.myco) {
+        servers.myco.env = { ...servers.myco.env, MYCO_VAULT_DIR: portableVaultDir };
+        fs.writeFileSync(mcpFile, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+        return true;
+      }
+    }
+  } catch { /* settings dir doesn't exist or config malformed */ }
+  return false;
 }
