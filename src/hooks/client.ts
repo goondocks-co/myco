@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { DAEMON_CLIENT_TIMEOUT_MS, DAEMON_HEALTH_CHECK_TIMEOUT_MS, DAEMON_HEALTH_RETRY_DELAYS, DAEMON_STALE_GRACE_PERIOD_MS } from '../constants.js';
-import { AgentRegistry } from '../agents/registry.js';
+import { SymbiontRegistry } from '../symbionts/registry.js';
 import { getPluginVersion } from '../version.js';
 
 interface DaemonInfo {
@@ -174,7 +174,7 @@ export class DaemonClient {
    *    thin entry points (dist/src/hooks/*.js) after bundling.
    */
   private resolveDaemonScript(): string | undefined {
-    const pluginRoot = new AgentRegistry().resolvePluginRoot();
+    const pluginRoot = new SymbiontRegistry().resolvePluginRoot();
     if (pluginRoot) {
       return path.join(pluginRoot, 'dist', 'src', 'daemon', 'main.js');
     }

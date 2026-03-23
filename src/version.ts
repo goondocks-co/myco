@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AgentRegistry } from './agents/registry.js';
+import { SymbiontRegistry } from './symbionts/registry.js';
 
 let cached: string | undefined;
 
@@ -13,7 +13,7 @@ export function getPluginVersion(): string {
   if (cached) return cached;
 
   // Primary: resolve via agent env var (CLAUDE_PLUGIN_ROOT, etc.)
-  const pluginRoot = new AgentRegistry().resolvePluginRoot();
+  const pluginRoot = new SymbiontRegistry().resolvePluginRoot();
   if (pluginRoot) {
     cached = readVersionFrom(pluginRoot);
     if (cached) return cached;
