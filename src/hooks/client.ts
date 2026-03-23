@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { DAEMON_CLIENT_TIMEOUT_MS, DAEMON_HEALTH_CHECK_TIMEOUT_MS, DAEMON_HEALTH_RETRY_DELAYS, DAEMON_STALE_GRACE_PERIOD_MS } from '../constants.js';
-import { SymbiontRegistry } from '../symbionts/registry.js';
 import { getPluginVersion } from '../version.js';
 
 interface DaemonInfo {
@@ -155,41 +154,12 @@ export class DaemonClient {
   }
 
   spawnDaemon(): void {
-    const daemonScript = this.resolveDaemonScript();
-    if (!daemonScript || !fs.existsSync(daemonScript)) return;
-
-    const child = spawn('node', [daemonScript, '--vault', this.vaultDir], {
+    const mycoCmd = process.env.MYCO_CMD || 'myco';
+    const child = spawn(mycoCmd, ['daemon', '--vault', this.vaultDir], {
       detached: true,
       stdio: 'ignore',
     });
     child.unref();
-  }
-
-  /**
-   * Resolve the daemon entry script path.
-   * Priority:
-   * 1. Plugin root env var (set by the agent host) → dist/src/daemon/main.js
-   * 2. Walk up from the current file to find the dist/ directory containing
-   *    the daemon entry. This handles both chunk files (dist/chunk-*.js) and
-   *    thin entry points (dist/src/hooks/*.js) after bundling.
-   */
-  private resolveDaemonScript(): string | undefined {
-    const pluginRoot = new SymbiontRegistry().resolvePluginRoot();
-    if (pluginRoot) {
-      return path.join(pluginRoot, 'dist', 'src', 'daemon', 'main.js');
-    }
-
-    // Walk up from import.meta.dirname looking for the daemon entry
-    let dir = import.meta.dirname;
-    for (let i = 0; i < 5; i++) {
-      const candidate = path.join(dir, 'dist', 'src', 'daemon', 'main.js');
-      if (fs.existsSync(candidate)) return candidate;
-      // Also check if we're already inside dist/
-      const inDist = path.join(dir, 'src', 'daemon', 'main.js');
-      if (fs.existsSync(inDist)) return inDist;
-      dir = path.dirname(dir);
-    }
-    return undefined;
   }
 
   private readDaemonJson(): DaemonInfo | null {
