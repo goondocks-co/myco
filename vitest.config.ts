@@ -9,6 +9,9 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     exclude: ['**/node_modules/**', '**/dist/**', '**/.worktrees/**'],
+    testTimeout: 15000,
+    pool: 'threads',
+    maxThreads: 4,
   },
   resolve: {
     alias: {
