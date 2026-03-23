@@ -5,10 +5,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findPackageRoot } from './utils/find-package-root.js';
 
 declare const __MYCO_VERSION__: string;
 
-const VERSION_WALK_LIMIT = 5;
 let cached: string | undefined;
 
 export function getPluginVersion(): string {
@@ -20,14 +20,13 @@ export function getPluginVersion(): string {
     return cached;
   }
 
-  // Fallback: walk up from this file (unbundled/test execution)
-  let dir = path.dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < VERSION_WALK_LIMIT; i++) {
+  // Fallback: read package.json from package root (unbundled/test execution)
+  const root = findPackageRoot(path.dirname(fileURLToPath(import.meta.url)));
+  if (root) {
     try {
-      const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8')) as { version?: string };
+      const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf-8')) as { version?: string };
       if (pkg.version) { cached = pkg.version; return cached; }
     } catch { /* continue */ }
-    dir = path.dirname(dir);
   }
 
   cached = '0.0.0';

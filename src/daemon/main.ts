@@ -16,6 +16,7 @@ import { resolvePort } from './port.js';
 import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter, extensionForMimeType, type TranscriptTurn } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
+import { findPackageRoot } from '../utils/find-package-root.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { PlanWatcher } from './watcher.js';
 import type { RegisteredSession } from './lifecycle.js';
@@ -230,17 +231,13 @@ export async function main(): Promise<void> {
     logger.warn('agent', 'Failed to register built-in curators/tasks', { error: (err as Error).message });
   }
 
-  // Resolve dist/ui/ — walk up to find package.json (same strategy as prompts loader)
+  // Resolve dist/ui/ from the package root
   let uiDir: string | null = null;
   {
-    let dir = path.dirname(new URL(import.meta.url).pathname);
-    for (let i = 0; i < 5; i++) {
-      const candidate = path.join(dir, 'dist', 'ui');
-      if (fs.existsSync(path.join(dir, 'package.json')) && fs.existsSync(candidate)) {
-        uiDir = candidate;
-        break;
-      }
-      dir = path.dirname(dir);
+    const root = findPackageRoot(path.dirname(new URL(import.meta.url).pathname));
+    if (root) {
+      const candidate = path.join(root, 'dist', 'ui');
+      if (fs.existsSync(candidate)) uiDir = candidate;
     }
   }
   if (uiDir) {

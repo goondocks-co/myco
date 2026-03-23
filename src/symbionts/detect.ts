@@ -1,4 +1,5 @@
 import { SymbiontManifestSchema, type SymbiontManifest } from './manifest-schema.js';
+import { findPackageRoot } from '../utils/find-package-root.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,7 +12,6 @@ export interface DetectedSymbiont {
 }
 
 const MANIFESTS_SUBDIR = 'symbionts/manifests';
-const PACKAGE_ROOT_WALK_LIMIT = 5;
 
 /** Load all symbiont manifests from the package's dist directory. */
 export function loadManifests(): SymbiontManifest[] {
@@ -55,10 +55,5 @@ export function detectSymbionts(projectRoot: string): DetectedSymbiont[] {
 
 /** Find the Myco package root (where package.json lives). */
 export function resolvePackageRoot(): string {
-  let dir = import.meta.dirname;
-  for (let i = 0; i < PACKAGE_ROOT_WALK_LIMIT; i++) {
-    if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
-    dir = path.dirname(dir);
-  }
-  return process.cwd();
+  return findPackageRoot(import.meta.dirname) ?? process.cwd();
 }
