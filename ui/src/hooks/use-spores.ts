@@ -49,11 +49,10 @@ export interface SporesResponse {
 export interface EntitySummary {
   id: string;
   name: string;
-  entity_type: string;
-  note_type: string | null;
-  note_id: string | null;
+  type: string;
   mentions: number;
-  created_at: number;
+  first_seen: number;
+  last_seen: number;
 }
 
 export interface EntitiesResponse {
@@ -70,7 +69,7 @@ export interface GraphEdge {
 export interface GraphNode {
   id: string;
   name: string;
-  entity_type: string;
+  type: string;
   depth: number;
 }
 
