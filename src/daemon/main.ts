@@ -276,6 +276,25 @@ export async function main(): Promise<void> {
     logger.warn('agent', 'Failed to register built-in curators/tasks', { error: (err as Error).message });
   }
 
+  // Clean up stale "running" agent runs from previous daemon — they'll never complete
+  try {
+    const db = getDatabase();
+    const staleRuns = await db.query(
+      `UPDATE agent_runs SET status = 'failed', completed_at = $1
+       WHERE status = 'running'
+       RETURNING id`,
+      [epochSeconds()],
+    );
+    if (staleRuns.rows.length > 0) {
+      logger.info('agent', 'Cleaned stale running agent runs', {
+        count: staleRuns.rows.length,
+        ids: staleRuns.rows.map((r: Record<string, unknown>) => r.id),
+      });
+    }
+  } catch (err) {
+    logger.warn('agent', 'Failed to clean stale runs', { error: (err as Error).message });
+  }
+
   // Resolve dist/ui/ from the package root
   let uiDir: string | null = null;
   {
