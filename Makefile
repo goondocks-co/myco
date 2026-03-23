@@ -1,6 +1,9 @@
-.PHONY: build check test lint clean watch install dev-link dev-unlink
+.PHONY: build build-only check test lint clean watch install dev-link dev-unlink
 
 build: check
+	npm run build
+
+build-only:
 	npm run build
 
 check: lint test
