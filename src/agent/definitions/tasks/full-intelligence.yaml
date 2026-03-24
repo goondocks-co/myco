@@ -12,7 +12,8 @@ agent: myco-agent
 prompt: >
   Process all unprocessed prompt batches and sessions. For each batch:
   extract observations as spores, identify entities and relationships for the
-  knowledge graph, check for supersession against existing spores, and update
-  the session summary. After processing all new data, regenerate digest
-  extracts if the substrate has changed.
+  knowledge graph, and check for supersession against existing spores.
+  For each session touched, evaluate and update the session title and summary
+  per the summary update criteria in your instructions. After processing all
+  new data, regenerate digest extracts if the substrate has changed.
 isDefault: true

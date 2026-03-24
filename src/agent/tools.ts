@@ -154,7 +154,7 @@ export function createVaultTools(agentId: string, runId: string) {
 
   const vaultSearch = tool(
     'vault_search',
-    'Semantic similarity search across vault content. Requires embedding provider to be configured. Returns empty results gracefully if embeddings are unavailable.',
+    'Semantic similarity search across vault content. Returns ranked results by cosine similarity. If no embeddings are available, returns an empty result set — use vault_spores or vault_sessions as a fallback.',
     {
       query: z.string().describe('Search query text to embed and compare'),
       table: z.enum(EMBEDDABLE_TABLES).optional().describe('Table to search'),
@@ -333,7 +333,7 @@ export function createVaultTools(agentId: string, runId: string) {
 
   const vaultUpdateSession = tool(
     'vault_update_session',
-    'Update a session title and/or summary.',
+    'Update a session title and/or summary. When generating for the first time, provide BOTH title and summary. Title should be under 80 characters and reflect the full session scope.',
     {
       session_id: z.string().describe('Session ID to update'),
       title: z.string().optional().describe('New session title'),
@@ -409,7 +409,7 @@ export function createVaultTools(agentId: string, runId: string) {
 
   const vaultReport = tool(
     'vault_report',
-    'Record an observability report for the current run. Used to log actions, decisions, and summaries.',
+    'Record an observability report for the current run. Use action "skip" when skipping expected operations (e.g., not updating a session summary) with reasoning in the summary field.',
     {
       action: z.string().describe('Action name (e.g., extract, consolidate, digest, skip)'),
       summary: z.string().describe('Human-readable summary of what was done'),
