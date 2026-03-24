@@ -32,3 +32,23 @@ export function formatDuration(startEpoch: number | null, endEpoch: number | nul
   const seconds = Math.floor((ms % 60_000) / 1_000);
   return `${minutes}m ${seconds}s`;
 }
+
+/** Badge classes for task source (built-in vs user). */
+export function taskSourceClass(source: string): string {
+  return source === 'user'
+    ? 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200'
+    : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200';
+}
+
+/** Format phase count for display. */
+export function formatPhaseCount(config: string | null | undefined): string {
+  if (!config) return 'Single query';
+  try {
+    const parsed = JSON.parse(config);
+    const phases = parsed?.phases;
+    if (!Array.isArray(phases) || phases.length === 0) return 'Single query';
+    return `${phases.length} phases`;
+  } catch {
+    return 'Single query';
+  }
+}
