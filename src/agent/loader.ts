@@ -9,7 +9,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { z } from 'zod/v4';
 import { parse as parseYaml } from 'yaml';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -17,6 +16,7 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertTask } from '@myco/db/queries/tasks.js';
 import type { AgentRow } from '@myco/db/queries/agents.js';
 import type { AgentDefinition, AgentTask, EffectiveConfig } from './types.js';
+import { AgentDefinitionSchema, AgentTaskSchema } from './schemas.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -33,47 +33,6 @@ const MAX_PARENT_WALK_DEPTH = 10;
 
 /** Source label for built-in agents and tasks in the database. */
 const BUILT_IN_SOURCE = 'built-in';
-
-// ---------------------------------------------------------------------------
-// Zod schemas for YAML validation
-// ---------------------------------------------------------------------------
-
-/** Schema for agent.yaml agent definition files. */
-const AgentDefinitionSchema = z.object({
-  name: z.string(),
-  displayName: z.string(),
-  description: z.string(),
-  model: z.string(),
-  maxTurns: z.number(),
-  timeoutSeconds: z.number(),
-  systemPromptPath: z.string(),
-  tools: z.array(z.string()),
-});
-
-/** Schema for a single phase within a phased task pipeline. */
-const PhaseDefinitionSchema = z.object({
-  name: z.string(),
-  prompt: z.string(),
-  tools: z.array(z.string()),
-  maxTurns: z.number(),
-  model: z.string().optional(),
-  required: z.boolean(),
-});
-
-/** Schema for task YAML files in tasks/. */
-const AgentTaskSchema = z.object({
-  name: z.string(),
-  displayName: z.string(),
-  description: z.string(),
-  agent: z.string(),
-  prompt: z.string(),
-  isDefault: z.boolean(),
-  toolOverrides: z.array(z.string()).optional(),
-  model: z.string().optional(),
-  maxTurns: z.number().optional(),
-  timeoutSeconds: z.number().optional(),
-  phases: z.array(PhaseDefinitionSchema).optional(),
-});
 
 // ---------------------------------------------------------------------------
 // Definitions directory resolution

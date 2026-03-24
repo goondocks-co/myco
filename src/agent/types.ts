@@ -47,6 +47,42 @@ export interface PhaseResult {
   summary: string; // last assistant message or error
 }
 
+/** Context query that runs before task execution to gather vault state. */
+export interface ContextQuery {
+  tool: string;
+  queryTemplate: string;
+  limit: number;
+  purpose: string;
+  required: boolean;
+}
+
+/** API provider configuration for task execution. */
+export interface ProviderConfig {
+  type: 'cloud' | 'ollama' | 'lmstudio';
+  baseUrl?: string;
+  apiKey?: string;
+  model?: string;
+}
+
+/** Execution configuration overrides for a task. */
+export interface ExecutionConfig {
+  model?: string;
+  maxTurns?: number;
+  timeoutSeconds?: number;
+  provider?: ProviderConfig;
+}
+
+/**
+ * Extended config stored as JSON in the agent_tasks.config column.
+ * Structural data that doesn't fit in flat columns.
+ */
+export interface TaskConfig {
+  phases?: PhaseDefinition[];
+  execution?: ExecutionConfig;
+  contextQueries?: Record<string, ContextQuery[]>;
+  schemaVersion?: number;
+}
+
 /** Shape of each task YAML file (e.g., `tasks/full-intelligence.yaml`). */
 export interface AgentTask {
   name: string;
@@ -60,6 +96,11 @@ export interface AgentTask {
   maxTurns?: number; // override max turns for this task
   timeoutSeconds?: number; // override timeout for this task
   phases?: PhaseDefinition[]; // phased execution pipeline (opt-in)
+  execution?: ExecutionConfig; // extended execution config
+  contextQueries?: Record<string, ContextQuery[]>; // pre-execution vault queries
+  isBuiltin?: boolean; // true for tasks loaded from built-in YAML definitions
+  source?: string; // origin of the task (e.g., 'built-in', 'user')
+  schemaVersion?: number; // schema version for the task config
 }
 
 // ---------------------------------------------------------------------------
