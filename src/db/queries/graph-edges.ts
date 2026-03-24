@@ -9,16 +9,11 @@
 
 import crypto from 'node:crypto';
 import { getDatabase } from '@myco/db/client.js';
+import { QUERY_DEFAULT_LIST_LIMIT, GRAPH_EDGE_DEFAULT_CONFIDENCE } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/** Default number of edges returned by listGraphEdges when no limit given. */
-const DEFAULT_LIST_LIMIT = 100;
-
-/** Default confidence score for new graph edges. */
-const DEFAULT_CONFIDENCE = 1.0;
 
 /** Default BFS traversal depth. */
 const DEFAULT_BFS_DEPTH = 2;
@@ -149,7 +144,7 @@ export async function insertGraphEdge(data: GraphEdgeInsert): Promise<GraphEdgeR
       data.target_type,
       data.type,
       data.session_id ?? null,
-      data.confidence ?? DEFAULT_CONFIDENCE,
+      data.confidence ?? GRAPH_EDGE_DEFAULT_CONFIDENCE,
       data.properties ?? null,
       data.created_at,
     ],
@@ -191,7 +186,7 @@ export async function listGraphEdges(
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const limit = options.limit ?? DEFAULT_LIST_LIMIT;
+  const limit = options.limit ?? QUERY_DEFAULT_LIST_LIMIT;
 
   params.push(limit);
 

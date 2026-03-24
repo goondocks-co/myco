@@ -6,7 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { type EdgeRow, SELECT_EDGE_COLUMNS, toEdgeRow } from '@myco/db/queries/edges.js';
+import { getGraphForNode, type GraphEdgeRow } from '@myco/db/queries/graph-edges.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -60,11 +60,8 @@ export interface ListEntitiesOptions {
 export interface EntityGraph {
   center: EntityRow;
   nodes: EntityRow[];
-  edges: EdgeRow[];
+  edges: GraphEdgeRow[];
 }
-
-// Re-export EdgeRow for consumers that import it from this module.
-export type { EdgeRow };
 
 // ---------------------------------------------------------------------------
 // Column list
@@ -220,6 +217,9 @@ export async function listEntities(
 /**
  * Fetch an entity and its surrounding graph via BFS traversal.
  *
+ * Delegates to `getGraphForNode` (graph_edges table) for the BFS,
+ * then fetches entity rows for all connected entity nodes.
+ *
  * @param entityId - The center entity to expand from.
  * @param depth    - Number of hops to traverse (1–3, default 1).
  * @returns `{ center, nodes, edges }` where nodes are all connected entities
@@ -235,54 +235,16 @@ export async function getEntityWithEdges(
   if (center === null) return null;
 
   const clampedDepth = Math.min(Math.max(depth, 1), 3);
+  const graph = await getGraphForNode(entityId, 'entity', { depth: clampedDepth });
 
-  const seenEdgeIds = new Set<number>();
-  const collectedEdges: EdgeRow[] = [];
-  const visited = new Set<string>([entityId]);
-  let frontier = new Set<string>([entityId]);
-
-  for (let hop = 0; hop < clampedDepth; hop++) {
-    if (frontier.size === 0) break;
-
-    const frontierArray = Array.from(frontier);
-    // Build parameterized IN clause
-    const placeholders = frontierArray
-      .map((_, i) => `$${i + 1}`)
-      .join(', ');
-
-    const result = await db.query(
-      `SELECT ${SELECT_EDGE_COLUMNS}
-       FROM edges
-       WHERE source_id IN (${placeholders}) OR target_id IN (${placeholders})`,
-      frontierArray,
-    );
-
-    const nextFrontier = new Set<string>();
-
-    for (const row of result.rows as Record<string, unknown>[]) {
-      const edge = toEdgeRow(row);
-      if (!seenEdgeIds.has(edge.id)) {
-        seenEdgeIds.add(edge.id);
-        collectedEdges.push(edge);
-      }
-      // Add unvisited endpoints to the next frontier
-      if (!visited.has(edge.source_id)) nextFrontier.add(edge.source_id);
-      if (!visited.has(edge.target_id)) nextFrontier.add(edge.target_id);
-    }
-
-    // Mark all next-frontier nodes as visited before the next hop
-    for (const id of nextFrontier) visited.add(id);
-    frontier = nextFrontier;
-  }
-
-  // Collect all node IDs (excluding center)
+  // Collect all entity node IDs from edges (excluding center)
   const nodeIdSet = new Set<string>();
-  for (const edge of collectedEdges) {
-    if (edge.source_id !== entityId) nodeIdSet.add(edge.source_id);
-    if (edge.target_id !== entityId) nodeIdSet.add(edge.target_id);
+  for (const edge of graph.edges) {
+    if (edge.source_type === 'entity' && edge.source_id !== entityId) nodeIdSet.add(edge.source_id);
+    if (edge.target_type === 'entity' && edge.target_id !== entityId) nodeIdSet.add(edge.target_id);
   }
 
-  // Fetch all connected nodes
+  // Fetch all connected entity nodes
   const nodeIds = Array.from(nodeIdSet);
   let nodes: EntityRow[] = [];
   if (nodeIds.length > 0) {
@@ -294,5 +256,5 @@ export async function getEntityWithEdges(
     nodes = (nodeResult.rows as Record<string, unknown>[]).map(toEntityRow);
   }
 
-  return { center, nodes, edges: collectedEdges };
+  return { center, nodes, edges: graph.edges };
 }

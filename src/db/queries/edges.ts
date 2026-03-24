@@ -6,16 +6,11 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { QUERY_DEFAULT_LIST_LIMIT, GRAPH_EDGE_DEFAULT_CONFIDENCE } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/** Default number of edges returned by listEdges when no limit given. */
-const DEFAULT_LIST_LIMIT = 100;
-
-/** Default confidence score for new edges. */
-const DEFAULT_CONFIDENCE = 1.0;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -121,7 +116,7 @@ export async function insertEdge(data: EdgeInsert): Promise<EdgeRow> {
       data.target_id,
       data.type,
       data.session_id ?? null,
-      data.confidence ?? DEFAULT_CONFIDENCE,
+      data.confidence ?? GRAPH_EDGE_DEFAULT_CONFIDENCE,
       data.valid_from ?? null,
       data.properties ?? null,
       data.created_at,
@@ -164,7 +159,7 @@ export async function listEdges(
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const limit = options.limit ?? DEFAULT_LIST_LIMIT;
+  const limit = options.limit ?? QUERY_DEFAULT_LIST_LIMIT;
 
   params.push(limit);
 

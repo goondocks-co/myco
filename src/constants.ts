@@ -119,6 +119,12 @@ export const TURN_MAX_FILES_DISPLAYED = 10;
 /** Minimum content length to consider a transcript entry meaningful. */
 export const MIN_TRANSCRIPT_CONTENT_LENGTH = 10;
 
+// --- Query defaults ---
+/** Default row limit for query module list operations. */
+export const QUERY_DEFAULT_LIST_LIMIT = 100;
+/** Default confidence score for graph edges. */
+export const GRAPH_EDGE_DEFAULT_CONFIDENCE = 1.0;
+
 // --- Query limits ---
 /** Max recent sessions to check for lineage heuristics. */
 export const LINEAGE_RECENT_SESSIONS_LIMIT = 5;
