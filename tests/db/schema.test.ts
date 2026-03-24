@@ -59,7 +59,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(3);
+      expect(SCHEMA_VERSION).toBe(4);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -240,7 +240,7 @@ describe('Database schema', () => {
 
     describe('intelligence layer tables', () => {
       const intelligenceTables = [
-        'curators',
+        'agents',
         'spores',
         'entities',
         'edges',
@@ -266,7 +266,7 @@ describe('Database schema', () => {
         const cols = await getColumns(db, 'entities');
         const colNames = cols.map((c) => c.column_name);
         expect(colNames).toContain('id');
-        expect(colNames).toContain('curator_id');
+        expect(colNames).toContain('agent_id');
         expect(colNames).toContain('type');
         expect(colNames).toContain('name');
         expect(colNames).toContain('properties');
@@ -279,7 +279,7 @@ describe('Database schema', () => {
         const cols = await getColumns(db, 'edges');
         const colNames = cols.map((c) => c.column_name);
         expect(colNames).toContain('id');
-        expect(colNames).toContain('curator_id');
+        expect(colNames).toContain('agent_id');
         expect(colNames).toContain('source_id');
         expect(colNames).toContain('target_id');
         expect(colNames).toContain('type');
@@ -298,7 +298,7 @@ describe('Database schema', () => {
         expect(colNames).toContain('entity_id');
         expect(colNames).toContain('note_id');
         expect(colNames).toContain('note_type');
-        expect(colNames).toContain('curator_id');
+        expect(colNames).toContain('agent_id');
       });
 
       it('resolution_events table has correct columns', async () => {
@@ -306,7 +306,7 @@ describe('Database schema', () => {
         const cols = await getColumns(db, 'resolution_events');
         const colNames = cols.map((c) => c.column_name);
         expect(colNames).toContain('id');
-        expect(colNames).toContain('curator_id');
+        expect(colNames).toContain('agent_id');
         expect(colNames).toContain('spore_id');
         expect(colNames).toContain('action');
         expect(colNames).toContain('new_spore_id');
@@ -320,7 +320,7 @@ describe('Database schema', () => {
         const cols = await getColumns(db, 'digest_extracts');
         const colNames = cols.map((c) => c.column_name);
         expect(colNames).toContain('id');
-        expect(colNames).toContain('curator_id');
+        expect(colNames).toContain('agent_id');
         expect(colNames).toContain('tier');
         expect(colNames).toContain('content');
         expect(colNames).toContain('substrate_hash');
@@ -335,7 +335,7 @@ describe('Database schema', () => {
         const cols = await getColumns(db, 'agent_runs');
         const colNames = cols.map((c) => c.column_name);
         expect(colNames).toContain('id');
-        expect(colNames).toContain('curator_id');
+        expect(colNames).toContain('agent_id');
         expect(colNames).toContain('task');
         expect(colNames).toContain('instruction');
         expect(colNames).toContain('status');
@@ -352,7 +352,7 @@ describe('Database schema', () => {
         expect(await tableExists(db, 'agent_state')).toBe(true);
         const cols = await getColumns(db, 'agent_state');
         const colNames = cols.map((c) => c.column_name);
-        expect(colNames).toContain('curator_id');
+        expect(colNames).toContain('agent_id');
         expect(colNames).toContain('key');
         expect(colNames).toContain('value');
         expect(colNames).toContain('updated_at');
@@ -367,7 +367,7 @@ describe('Database schema', () => {
         const colNames = cols.map((c) => c.column_name);
         expect(colNames).toContain('id');
         expect(colNames).toContain('run_id');
-        expect(colNames).toContain('curator_id');
+        expect(colNames).toContain('agent_id');
         expect(colNames).toContain('action');
         expect(colNames).toContain('summary');
         expect(colNames).toContain('details');
@@ -381,7 +381,7 @@ describe('Database schema', () => {
         const colNames = cols.map((c) => c.column_name);
         expect(colNames).toContain('id');
         expect(colNames).toContain('run_id');
-        expect(colNames).toContain('curator_id');
+        expect(colNames).toContain('agent_id');
         expect(colNames).toContain('turn_number');
         expect(colNames).toContain('tool_name');
         expect(colNames).toContain('tool_input');
@@ -396,7 +396,7 @@ describe('Database schema', () => {
         const cols = await getColumns(db, 'agent_tasks');
         const colNames = cols.map((c) => c.column_name);
         expect(colNames).toContain('id');
-        expect(colNames).toContain('curator_id');
+        expect(colNames).toContain('agent_id');
         expect(colNames).toContain('source');
         expect(colNames).toContain('display_name');
         expect(colNames).toContain('description');
@@ -408,9 +408,9 @@ describe('Database schema', () => {
         expect(colNames).toContain('updated_at');
       });
 
-      it('curators table has expanded Phase 2 columns', async () => {
+      it('agents table has expanded Phase 2 columns', async () => {
         await createSchema(db);
-        const cols = await getColumns(db, 'curators');
+        const cols = await getColumns(db, 'agents');
         const colNames = cols.map((c) => c.column_name);
         expect(colNames).toContain('source');
         expect(colNames).toContain('system_prompt');
@@ -425,29 +425,62 @@ describe('Database schema', () => {
         await createSchema(db);
         expect(await indexExists(db, 'idx_agent_reports_run_id')).toBe(true);
         expect(await indexExists(db, 'idx_agent_turns_run_id')).toBe(true);
-        expect(await indexExists(db, 'idx_agent_tasks_curator_id')).toBe(true);
+        expect(await indexExists(db, 'idx_agent_tasks_agent_id')).toBe(true);
       });
     });
 
-    describe('v1 to v2 migration', () => {
+    describe('v3 to v4 migration', () => {
       it('is idempotent — running createSchema twice produces same result', async () => {
         await createSchema(db);
         await expect(createSchema(db)).resolves.not.toThrow();
 
-        // Verify curators still has the new columns after double-run
-        const cols = await getColumns(db, 'curators');
+        // Verify agents still has the new columns after double-run
+        const cols = await getColumns(db, 'agents');
         const colNames = cols.map((c) => c.column_name);
         expect(colNames).toContain('source');
         expect(colNames).toContain('enabled');
         expect(colNames).toContain('updated_at');
       });
 
-      it('records schema version 3', async () => {
+      it('records schema version 4', async () => {
         await createSchema(db);
         const result = await db.query<{ version: number }>(
           'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1',
         );
-        expect(result.rows[0].version).toBe(3);
+        expect(result.rows[0].version).toBe(4);
+      });
+
+      it('migrates a v3 database: renames curators→agents and curator_id→agent_id', async () => {
+        // Build a v3-state database by running a full schema at v4 and then
+        // simulating the pre-migration state: rename agents→curators and
+        // agent_id→curator_id in spores, and downgrade schema_version to 3.
+        // This lets createSchema see a real v3 state and verify the migration
+        // path without fighting the DDL index loop with under-specified tables.
+        await createSchema(db);
+
+        // Downgrade to v3 state: undo the curator→agent rename on key tables
+        await db.query('ALTER TABLE agents RENAME TO curators');
+        await db.query('ALTER TABLE spores RENAME COLUMN agent_id TO curator_id');
+        await db.query(`UPDATE schema_version SET version = 3 WHERE version = 4`);
+
+        // Re-run createSchema — must detect v3 and apply v3→v4 migration
+        await createSchema(db);
+
+        // agents table must exist; curators must not
+        expect(await tableExists(db, 'agents')).toBe(true);
+        expect(await tableExists(db, 'curators')).toBe(false);
+
+        // agent_id column must exist in spores; curator_id must not
+        const sporesCols = await getColumns(db, 'spores');
+        const sporesColNames = sporesCols.map((c) => c.column_name);
+        expect(sporesColNames).toContain('agent_id');
+        expect(sporesColNames).not.toContain('curator_id');
+
+        // Schema version must be 4
+        const result = await db.query<{ version: number }>(
+          'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1',
+        );
+        expect(result.rows[0].version).toBe(4);
       });
     });
 
@@ -553,11 +586,11 @@ describe('Database schema', () => {
       it('spores table has a vector embedding column', async () => {
         await createSchema(db);
         await db.query(
-          `INSERT INTO curators (id, name, created_at) VALUES ('test-curator', 'Test', 1000)`,
+          `INSERT INTO agents (id, name, created_at) VALUES ('test-agent', 'Test', 1000)`,
         );
         await db.query(
-          `INSERT INTO spores (id, curator_id, observation_type, content, created_at)
-           VALUES ('test-spore', 'test-curator', 'gotcha', 'Test observation', 1000)`,
+          `INSERT INTO spores (id, agent_id, observation_type, content, created_at)
+           VALUES ('test-spore', 'test-agent', 'gotcha', 'Test observation', 1000)`,
         );
         const zeros = new Array(EMBEDDING_DIMENSIONS).fill(0).join(',');
         await db.query(
@@ -595,10 +628,10 @@ describe('Database schema', () => {
         expect(await indexExists(db, 'idx_sessions_processed')).toBe(true);
         expect(await indexExists(db, 'idx_prompt_batches_session_id')).toBe(true);
         expect(await indexExists(db, 'idx_activities_session_id')).toBe(true);
-        expect(await indexExists(db, 'idx_spores_curator_id')).toBe(true);
+        expect(await indexExists(db, 'idx_spores_agent_id')).toBe(true);
         expect(await indexExists(db, 'idx_spores_status')).toBe(true);
-        expect(await indexExists(db, 'idx_entities_curator_id')).toBe(true);
-        expect(await indexExists(db, 'idx_edges_curator_id')).toBe(true);
+        expect(await indexExists(db, 'idx_entities_agent_id')).toBe(true);
+        expect(await indexExists(db, 'idx_edges_agent_id')).toBe(true);
         expect(await indexExists(db, 'idx_edges_source_id')).toBe(true);
         expect(await indexExists(db, 'idx_edges_target_id')).toBe(true);
       });
@@ -619,18 +652,18 @@ describe('Database schema', () => {
         ).rejects.toThrow();
       });
 
-      it('enforces compound unique on entities (curator_id, type, name)', async () => {
+      it('enforces compound unique on entities (agent_id, type, name)', async () => {
         await createSchema(db);
         await db.query(
-          `INSERT INTO curators (id, name, created_at) VALUES ('c1', 'Test', 1000)`,
+          `INSERT INTO agents (id, name, created_at) VALUES ('c1', 'Test', 1000)`,
         );
         await db.query(
-          `INSERT INTO entities (id, curator_id, type, name, first_seen, last_seen)
+          `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
            VALUES ('e1', 'c1', 'component', 'AuthModule', 1000, 1000)`,
         );
         await expect(
           db.query(
-            `INSERT INTO entities (id, curator_id, type, name, first_seen, last_seen)
+            `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
              VALUES ('e2', 'c1', 'component', 'AuthModule', 1001, 1001)`,
           ),
         ).rejects.toThrow();
@@ -639,36 +672,36 @@ describe('Database schema', () => {
       it('enforces compound unique on entity_mentions', async () => {
         await createSchema(db);
         await db.query(
-          `INSERT INTO curators (id, name, created_at) VALUES ('c1', 'Test', 1000)`,
+          `INSERT INTO agents (id, name, created_at) VALUES ('c1', 'Test', 1000)`,
         );
         await db.query(
-          `INSERT INTO entities (id, curator_id, type, name, first_seen, last_seen)
+          `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
            VALUES ('e1', 'c1', 'component', 'X', 1000, 1000)`,
         );
         await db.query(
-          `INSERT INTO entity_mentions (entity_id, note_id, note_type, curator_id)
+          `INSERT INTO entity_mentions (entity_id, note_id, note_type, agent_id)
            VALUES ('e1', 'spore-1', 'spore', 'c1')`,
         );
         await expect(
           db.query(
-            `INSERT INTO entity_mentions (entity_id, note_id, note_type, curator_id)
+            `INSERT INTO entity_mentions (entity_id, note_id, note_type, agent_id)
              VALUES ('e1', 'spore-1', 'spore', 'c1')`,
           ),
         ).rejects.toThrow();
       });
 
-      it('enforces compound unique on digest_extracts (curator_id, tier)', async () => {
+      it('enforces compound unique on digest_extracts (agent_id, tier)', async () => {
         await createSchema(db);
         await db.query(
-          `INSERT INTO curators (id, name, created_at) VALUES ('c1', 'Test', 1000)`,
+          `INSERT INTO agents (id, name, created_at) VALUES ('c1', 'Test', 1000)`,
         );
         await db.query(
-          `INSERT INTO digest_extracts (curator_id, tier, content, generated_at)
+          `INSERT INTO digest_extracts (agent_id, tier, content, generated_at)
            VALUES ('c1', 1500, 'context', 1000)`,
         );
         await expect(
           db.query(
-            `INSERT INTO digest_extracts (curator_id, tier, content, generated_at)
+            `INSERT INTO digest_extracts (agent_id, tier, content, generated_at)
              VALUES ('c1', 1500, 'updated context', 1001)`,
           ),
         ).rejects.toThrow();
@@ -677,15 +710,15 @@ describe('Database schema', () => {
       it('enforces compound primary key on agent_state', async () => {
         await createSchema(db);
         await db.query(
-          `INSERT INTO curators (id, name, created_at) VALUES ('c1', 'Test', 1000)`,
+          `INSERT INTO agents (id, name, created_at) VALUES ('c1', 'Test', 1000)`,
         );
         await db.query(
-          `INSERT INTO agent_state (curator_id, key, value, updated_at)
+          `INSERT INTO agent_state (agent_id, key, value, updated_at)
            VALUES ('c1', 'cursor', '42', 1000)`,
         );
         await expect(
           db.query(
-            `INSERT INTO agent_state (curator_id, key, value, updated_at)
+            `INSERT INTO agent_state (agent_id, key, value, updated_at)
              VALUES ('c1', 'cursor', '43', 1001)`,
           ),
         ).rejects.toThrow();
