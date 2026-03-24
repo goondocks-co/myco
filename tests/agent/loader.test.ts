@@ -50,10 +50,10 @@ function makeDefinition(overrides: Partial<AgentDefinition> = {}): AgentDefiniti
     displayName: 'Myco Agent',
     description: 'Test agent',
     model: 'claude-sonnet-4-20250514',
-    maxTurns: 25,
-    timeoutSeconds: 300,
+    maxTurns: 50,
+    timeoutSeconds: 600,
     systemPromptPath: '../prompts/agent.md',
-    tools: ['query_unprocessed', 'create_spore', 'set_agent_state'],
+    tools: ['vault_unprocessed', 'vault_create_spore', 'vault_set_state'],
     ...overrides,
   };
 }
@@ -110,8 +110,8 @@ describe('agent loader', () => {
       expect(typeof def.description).toBe('string');
       expect(def.description.length).toBeGreaterThan(0);
       expect(def.model).toBe('claude-sonnet-4-20250514');
-      expect(def.maxTurns).toBe(25);
-      expect(def.timeoutSeconds).toBe(300);
+      expect(def.maxTurns).toBe(50);
+      expect(def.timeoutSeconds).toBe(600);
       expect(def.systemPromptPath).toBe('../prompts/agent.md');
     });
 
@@ -119,22 +119,22 @@ describe('agent loader', () => {
       const def = loadAgentDefinition(DEFINITIONS_DIR);
 
       // Read tools
-      expect(def.tools).toContain('query_unprocessed');
-      expect(def.tools).toContain('query_spores');
-      expect(def.tools).toContain('query_graph');
-      expect(def.tools).toContain('query_sessions');
-      expect(def.tools).toContain('semantic_search');
-      expect(def.tools).toContain('get_agent_state');
+      expect(def.tools).toContain('vault_unprocessed');
+      expect(def.tools).toContain('vault_spores');
+      expect(def.tools).toContain('vault_sessions');
+      expect(def.tools).toContain('vault_search');
+      expect(def.tools).toContain('vault_state');
 
       // Write tools
-      expect(def.tools).toContain('create_spore');
-      expect(def.tools).toContain('create_entity');
-      expect(def.tools).toContain('create_edge');
-      expect(def.tools).toContain('resolve_spore');
-      expect(def.tools).toContain('update_session_summary');
-      expect(def.tools).toContain('mark_processed');
-      expect(def.tools).toContain('write_digest_extract');
-      expect(def.tools).toContain('set_agent_state');
+      expect(def.tools).toContain('vault_create_spore');
+      expect(def.tools).toContain('vault_create_entity');
+      expect(def.tools).toContain('vault_create_edge');
+      expect(def.tools).toContain('vault_resolve_spore');
+      expect(def.tools).toContain('vault_update_session');
+      expect(def.tools).toContain('vault_mark_processed');
+      expect(def.tools).toContain('vault_write_digest');
+      expect(def.tools).toContain('vault_set_state');
+      expect(def.tools).toContain('vault_report');
     });
 
     it('tools is an array of strings', () => {
@@ -242,8 +242,8 @@ describe('agent loader', () => {
 
       expect(config.agentId).toBe('myco-agent');
       expect(config.model).toBe('claude-sonnet-4-20250514');
-      expect(config.maxTurns).toBe(25);
-      expect(config.timeoutSeconds).toBe(300);
+      expect(config.maxTurns).toBe(50);
+      expect(config.timeoutSeconds).toBe(600);
       expect(config.tools).toEqual(def.tools);
       expect(config.systemPromptPath).toBe('../prompts/agent.md');
       expect(config.taskName).toBe('full-intelligence');
@@ -273,11 +273,11 @@ describe('agent loader', () => {
     it('applies agent DB tool_access override', () => {
       const def = makeDefinition();
       const agent = makeAgentRow({
-        tool_access: JSON.stringify(['query_spores', 'create_spore']),
+        tool_access: JSON.stringify(['vault_spores', 'vault_create_spore']),
       });
       const config = resolveEffectiveConfig(def, agent);
 
-      expect(config.tools).toEqual(['query_spores', 'create_spore']);
+      expect(config.tools).toEqual(['vault_spores', 'vault_create_spore']);
     });
 
     it('ignores invalid JSON in tool_access', () => {
@@ -292,15 +292,15 @@ describe('agent loader', () => {
     it('task toolOverrides take precedence over agent tool_access', () => {
       const def = makeDefinition();
       const agent = makeAgentRow({
-        tool_access: JSON.stringify(['query_spores', 'create_spore']),
+        tool_access: JSON.stringify(['vault_spores', 'vault_create_spore']),
       });
       const task = makeTask({
-        toolOverrides: ['resolve_spore', 'set_agent_state'],
+        toolOverrides: ['vault_resolve_spore', 'vault_set_state'],
       });
       const config = resolveEffectiveConfig(def, agent, task);
 
       // Task overrides win
-      expect(config.tools).toEqual(['resolve_spore', 'set_agent_state']);
+      expect(config.tools).toEqual(['vault_resolve_spore', 'vault_set_state']);
     });
 
     it('uses task prompt and display info when task provided', () => {
@@ -337,7 +337,7 @@ describe('agent loader', () => {
 
       expect(config.model).toBe('claude-sonnet-4-20250514');
       expect(config.maxTurns).toBe(50);
-      expect(config.timeoutSeconds).toBe(300);
+      expect(config.timeoutSeconds).toBe(600);
       expect(config.tools).toEqual(def.tools);
     });
   });
@@ -365,8 +365,8 @@ describe('agent loader', () => {
       expect(agent!.name).toBe('Myco Agent');
       expect(agent!.source).toBe('built-in');
       expect(agent!.model).toBe('claude-sonnet-4-20250514');
-      expect(agent!.max_turns).toBe(25);
-      expect(agent!.timeout_seconds).toBe(300);
+      expect(agent!.max_turns).toBe(50);
+      expect(agent!.timeout_seconds).toBe(600);
     });
 
     it('registers all built-in tasks in the database', async () => {
@@ -414,8 +414,8 @@ describe('agent loader', () => {
 
       const tools = JSON.parse(agent!.tool_access!) as string[];
       expect(Array.isArray(tools)).toBe(true);
-      expect(tools).toContain('query_unprocessed');
-      expect(tools).toContain('create_spore');
+      expect(tools).toContain('vault_unprocessed');
+      expect(tools).toContain('vault_create_spore');
     });
 
     it('stores toolOverrides as JSON on tasks that have them', async () => {

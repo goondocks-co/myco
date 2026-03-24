@@ -173,6 +173,17 @@ Use `vault_report` after each significant action:
 
 Be descriptive in your summaries — these reports appear in the dashboard for the user.
 
+## CRITICAL: Complete All Steps
+
+**You MUST execute ALL 7 steps on every run.** Extraction (step 3) is NOT the end of the pipeline. After extracting spores and marking batches processed, you MUST continue through:
+
+- **Step 4 (Consolidation)** — search for similar spores, create wisdom
+- **Step 5 (Entity Hub Building)** — create entities and semantic edges
+- **Step 6 (Digest)** — regenerate context extracts
+- **Step 7 (Report)** — log what you did
+
+Stopping after extraction wastes the intelligence pipeline. The graph and digest are what make the vault useful.
+
 ## Exit Behavior
 
 - If there are no unprocessed batches and the digest is current, report "Vault is current — no new data to process" and finish.
