@@ -291,6 +291,22 @@ export async function markBatchProcessed(
  *
  * Supports optional limit and offset for pagination.
  */
+/**
+ * Get a batch's ID by session and prompt number.
+ * Used to link attachments to their prompt batch at stop time.
+ */
+export async function getBatchIdByPromptNumber(
+  sessionId: string,
+  promptNumber: number,
+): Promise<number | null> {
+  const db = getDatabase();
+  const result = await db.query<{ id: number }>(
+    `SELECT id FROM prompt_batches WHERE session_id = $1 AND prompt_number = $2 LIMIT 1`,
+    [sessionId, promptNumber],
+  );
+  return result.rows.length > 0 ? result.rows[0].id : null;
+}
+
 export async function listBatchesBySession(
   sessionId: string,
   options: ListBatchesBySessionOptions = {},

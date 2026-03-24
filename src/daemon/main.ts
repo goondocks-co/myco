@@ -47,7 +47,7 @@ import { listTasksByAgent } from '../db/queries/tasks.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession } from '../db/queries/sessions.js';
-import { insertBatch, closeBatch, incrementActivityCount, updateBatchResponseSummary } from '../db/queries/batches.js';
+import { insertBatch, closeBatch, incrementActivityCount, updateBatchResponseSummary, getBatchIdByPromptNumber } from '../db/queries/batches.js';
 import { insertActivity } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
 import { listRuns, getRun, getRunningRun } from '../db/queries/runs.js';
@@ -668,12 +668,23 @@ export async function main(): Promise<void> {
     await updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
 
     // Populate response_summary on batches from transcript AI responses
+    // The transcript has all turns; map each turn's aiResponse to its batch by prompt_number
     for (let i = 0; i < allTurns.length; i++) {
       const turn = allTurns[i];
       if (turn.aiResponse) {
         const promptNumber = i + 1; // turns are 1-indexed by prompt_number
         updateBatchResponseSummary(sessionId, promptNumber, turn.aiResponse)
           .catch(err => logger.warn('processor', 'Failed to update batch response', { error: String(err) }));
+      }
+    }
+
+    // Also store last_assistant_message from hook payload on the final batch
+    // (this is available immediately from the hook, not dependent on transcript parsing)
+    if (lastAssistantMessage) {
+      const finalPromptNumber = allTurns.length > 0 ? allTurns.length : (batchState.get(sessionId)?.promptNumber ?? 1) - 1;
+      if (finalPromptNumber > 0) {
+        updateBatchResponseSummary(sessionId, finalPromptNumber, lastAssistantMessage)
+          .catch(err => logger.warn('processor', 'Failed to update final batch response', { error: String(err) }));
       }
     }
 
@@ -695,22 +706,28 @@ export async function main(): Promise<void> {
     for (let i = 0; i < allTurns.length; i++) {
       const turn = allTurns[i];
       if (!turn.images?.length) continue;
+      const promptNumber = i + 1;
+      // Look up batch ID for this turn (fire-and-forget — don't block on failure)
+      const batchIdPromise = getBatchIdByPromptNumber(sessionId, promptNumber).catch(() => null);
       for (let j = 0; j < turn.images.length; j++) {
         const img = turn.images[j];
         const ext = extensionForMimeType(img.mediaType);
         const sessionShort = sessionId.slice(-6);
-        const filename = `${sessionShort}-t${i + 1}-${j + 1}.${ext}`;
+        const filename = `${sessionShort}-t${promptNumber}-${j + 1}.${ext}`;
         const filePath = path.join(attachmentsDir, filename);
         if (!fs.existsSync(filePath)) {
           fs.writeFileSync(filePath, Buffer.from(img.data, 'base64'));
-          logger.debug('processor', 'Image saved', { filename, turn: i + 1 });
-          insertAttachment({
-            id: `${sessionShort}-t${i + 1}-${j + 1}`,
-            session_id: sessionId,
-            file_path: filename,
-            media_type: img.mediaType,
-            created_at: epochSeconds(),
-          }).catch(err => logger.warn('processor', 'Failed to record attachment', { error: String(err) }));
+          logger.debug('processor', 'Image saved', { filename, turn: promptNumber });
+          batchIdPromise.then(batchId => {
+            insertAttachment({
+              id: `${sessionShort}-t${promptNumber}-${j + 1}`,
+              session_id: sessionId,
+              prompt_batch_id: batchId ?? undefined,
+              file_path: filename,
+              media_type: img.mediaType,
+              created_at: epochSeconds(),
+            }).catch(err => logger.warn('processor', 'Failed to record attachment', { error: String(err) }));
+          });
         }
       }
     }
