@@ -39,12 +39,15 @@ export interface EntityRow {
   properties: string | null;
   first_seen: number;
   last_seen: number;
+  status: string;
 }
 
 /** Filter options for `listEntities`. */
 export interface ListEntitiesOptions {
   agent_id?: string;
   type?: string;
+  /** Filter by status (default 'active'). */
+  status?: string;
   /** Filter by entity_mentions subquery — must be paired with note_type. */
   mentioned_in?: string;
   /** Required when mentioned_in is provided. */
@@ -75,6 +78,7 @@ const ENTITY_COLUMNS = [
   'properties',
   'first_seen',
   'last_seen',
+  'status',
 ] as const;
 
 const SELECT_COLUMNS = ENTITY_COLUMNS.join(', ');
@@ -93,6 +97,7 @@ function toEntityRow(row: Record<string, unknown>): EntityRow {
     properties: (row.properties as string) ?? null,
     first_seen: row.first_seen as number,
     last_seen: row.last_seen as number,
+    status: (row.status as string) ?? 'active',
   };
 }
 
@@ -169,6 +174,15 @@ export async function listEntities(
   if (options.type !== undefined) {
     conditions.push(`type = $${paramIndex++}`);
     params.push(options.type);
+  }
+
+  // Default: only show active entities (status column added in v5)
+  if (options.status !== undefined) {
+    conditions.push(`status = $${paramIndex++}`);
+    params.push(options.status);
+  } else {
+    conditions.push(`status = $${paramIndex++}`);
+    params.push('active');
   }
 
   if (options.mentioned_in !== undefined && options.note_type !== undefined) {

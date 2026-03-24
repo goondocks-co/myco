@@ -479,6 +479,23 @@ export async function main(): Promise<void> {
       try {
         const batchId = await handleUserPrompt(event.session_id, promptText || undefined, batchState);
         logger.debug('capture', 'Batch opened', { session_id: event.session_id, batch_id: batchId });
+
+        // Batch-threshold summary trigger
+        const batchCount = batchState.get(event.session_id)?.promptNumber ?? 0;
+        const summaryInterval = config.agent.summary_batch_interval;
+        if (summaryInterval > 0 && batchCount > 0 && batchCount % summaryInterval === 0) {
+          try {
+            const { getRunningRun } = await import('../db/queries/runs.js');
+            const running = await getRunningRun(DEFAULT_AGENT_ID);
+            if (!running) {
+              const { runAgent } = await import('../agent/executor.js');
+              runAgent(vaultDir, {
+                task: 'title-summary',
+                instruction: `Process session ${event.session_id} only`,
+              }).catch(err => logger.warn('agent', 'Batch-threshold summary failed', { error: String(err) }));
+            }
+          } catch { /* agent unavailable */ }
+        }
       } catch (err) {
         logger.warn('capture', 'Failed to open batch', { session_id: event.session_id, error: (err as Error).message });
       }
@@ -647,6 +664,15 @@ export async function main(): Promise<void> {
     if (title) updateFields.title = title;
 
     await updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
+
+    // Fire-and-forget: trigger title/summary generation via agent task
+    try {
+      const { runAgent } = await import('../agent/executor.js');
+      runAgent(vaultDir, {
+        task: 'title-summary',
+        instruction: `Process session ${sessionId} only`,
+      }).catch(err => logger.warn('agent', 'Title-summary task failed', { error: String(err) }));
+    } catch { /* agent unavailable */ }
 
     // Write images to attachments (keep this — images are binary, not in PGlite)
     const attachmentsDir = path.join(vaultDir, 'attachments');

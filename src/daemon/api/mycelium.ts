@@ -1,6 +1,7 @@
 import { listSpores, getSpore } from '@myco/db/queries/spores.js';
-import { listEntities, getEntityWithEdges } from '@myco/db/queries/entities.js';
+import { listEntities, getEntity } from '@myco/db/queries/entities.js';
 import { listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
+import { getGraphForNode } from '@myco/db/queries/graph-edges.js';
 import { getDatabase } from '@myco/db/client.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -79,38 +80,47 @@ export async function handleListEntities(req: RouteRequest): Promise<RouteRespon
 
 export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> {
   const depth = Math.min(Number(req.query.depth) || DEFAULT_GRAPH_DEPTH, MAX_GRAPH_DEPTH);
+  const nodeType = (req.query.node_type as 'session' | 'batch' | 'spore' | 'entity') ?? 'entity';
 
-  const graph = await getEntityWithEdges(req.params.id, depth);
-  if (!graph) return { status: 404, body: { error: 'not_found' } };
+  // Verify center node exists (for entity type, check entities table)
+  if (nodeType === 'entity') {
+    const center = await getEntity(req.params.id);
+    if (!center) return { status: 404, body: { error: 'not_found' } };
+  }
+
+  // Use graph_edges for BFS traversal
+  const graph = await getGraphForNode(req.params.id, nodeType, { depth });
 
   const db = getDatabase();
 
-  // Batch-fetch mention counts for all nodes (including center) in a single query
-  const allNodeIds = [graph.center.id, ...graph.nodes.map((n) => n.id)];
-  const mentionCounts = new Map<string, number>();
+  // Collect all unique entity IDs from edges for mention counts
+  const entityIds = new Set<string>();
+  entityIds.add(req.params.id);
+  for (const edge of graph.edges) {
+    if (edge.source_type === 'entity') entityIds.add(edge.source_id);
+    if (edge.target_type === 'entity') entityIds.add(edge.target_id);
+  }
 
-  if (allNodeIds.length > 0) {
-    const placeholders = allNodeIds.map((_, i) => `$${i + 1}`).join(', ');
+  const mentionCounts = new Map<string, number>();
+  const entityIdArray = Array.from(entityIds);
+  if (entityIdArray.length > 0) {
+    const placeholders = entityIdArray.map((_, i) => `$${i + 1}`).join(', ');
     const result = await db.query(
       `SELECT entity_id, COUNT(*) as count FROM entity_mentions
        WHERE entity_id IN (${placeholders}) GROUP BY entity_id`,
-      allNodeIds,
+      entityIdArray,
     );
     for (const row of result.rows as Array<Record<string, unknown>>) {
       mentionCounts.set(row.entity_id as string, Number(row.count));
     }
   }
 
-  const nodesWithMentions = graph.nodes.map((node) => ({
-    ...node,
-    mention_count: mentionCounts.get(node.id) ?? 0,
-  }));
-
   return {
     body: {
-      center: { ...graph.center, mention_count: mentionCounts.get(graph.center.id) ?? 0 },
-      nodes: nodesWithMentions,
+      center_id: req.params.id,
+      center_type: nodeType,
       edges: graph.edges,
+      mention_counts: Object.fromEntries(mentionCounts),
       depth,
     },
   };
