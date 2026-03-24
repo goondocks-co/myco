@@ -47,7 +47,7 @@ import { listTasksByAgent } from '../db/queries/tasks.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession } from '../db/queries/sessions.js';
-import { insertBatch, closeBatch, incrementActivityCount, updateBatchResponseSummary, getBatchIdByPromptNumber } from '../db/queries/batches.js';
+import { insertBatch, closeBatch, incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber } from '../db/queries/batches.js';
 import { insertActivity } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
 import { listRuns, getRun, getRunningRun } from '../db/queries/runs.js';
@@ -667,25 +667,23 @@ export async function main(): Promise<void> {
 
     await updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
 
-    // Populate response_summary on batches from transcript AI responses
-    // The transcript has all turns; map each turn's aiResponse to its batch by prompt_number
+    // Populate response_summary on batches from transcript AI responses.
+    // Maps by batch insertion order (id ASC) rather than prompt_number,
+    // which is resilient to daemon restarts that reset the prompt counter.
+    const responses: Array<{ turnIndex: number; response: string }> = [];
     for (let i = 0; i < allTurns.length; i++) {
-      const turn = allTurns[i];
-      if (turn.aiResponse) {
-        const promptNumber = i + 1; // turns are 1-indexed by prompt_number
-        updateBatchResponseSummary(sessionId, promptNumber, turn.aiResponse)
-          .catch(err => logger.warn('processor', 'Failed to update batch response', { error: String(err) }));
+      if (allTurns[i].aiResponse) {
+        responses.push({ turnIndex: i + 1, response: allTurns[i].aiResponse! });
       }
     }
-
-    // Also store last_assistant_message from hook payload on the final batch
-    // (this is available immediately from the hook, not dependent on transcript parsing)
-    if (lastAssistantMessage) {
-      const finalPromptNumber = allTurns.length > 0 ? allTurns.length : (batchState.get(sessionId)?.promptNumber ?? 1) - 1;
-      if (finalPromptNumber > 0) {
-        updateBatchResponseSummary(sessionId, finalPromptNumber, lastAssistantMessage)
-          .catch(err => logger.warn('processor', 'Failed to update final batch response', { error: String(err) }));
-      }
+    // Also include last_assistant_message from the hook payload for the final turn
+    // (may duplicate the transcript's last response — populateBatchResponses is idempotent)
+    if (lastAssistantMessage && allTurns.length > 0) {
+      responses.push({ turnIndex: allTurns.length, response: lastAssistantMessage });
+    }
+    if (responses.length > 0) {
+      populateBatchResponses(sessionId, responses)
+        .catch(err => logger.warn('processor', 'Failed to populate batch responses', { error: String(err) }));
     }
 
     // Fire-and-forget: trigger title/summary generation via agent task

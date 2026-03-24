@@ -188,22 +188,38 @@ export async function closeBatch(
 }
 
 /**
- * Update the response_summary for a batch by prompt_number within a session.
+ * Populate response_summary on batches from transcript turns.
  *
- * Used at stop time to populate AI responses from the transcript.
+ * Matches transcript turns (ordered by position) to batches (ordered by id ASC).
+ * This is resilient to prompt_number duplicates caused by daemon restarts.
+ * Only updates batches that don't already have a response_summary.
+ *
+ * @param sessionId — the session to update
+ * @param responses — array of { response } ordered by turn position (1-indexed)
  */
-export async function updateBatchResponseSummary(
+export async function populateBatchResponses(
   sessionId: string,
-  promptNumber: number,
-  responseSummary: string,
+  responses: Array<{ turnIndex: number; response: string }>,
 ): Promise<void> {
   const db = getDatabase();
-  await db.query(
-    `UPDATE prompt_batches
-     SET response_summary = $1
-     WHERE session_id = $2 AND prompt_number = $3 AND response_summary IS NULL`,
-    [responseSummary, sessionId, promptNumber],
+
+  // Get all batches for this session ordered by id (insertion order = true order)
+  const batches = await db.query<{ id: number }>(
+    `SELECT id FROM prompt_batches WHERE session_id = $1 ORDER BY id ASC`,
+    [sessionId],
   );
+
+  // Map each response to the batch at the same position
+  for (const { turnIndex, response } of responses) {
+    const batchIndex = turnIndex - 1; // turns are 1-indexed
+    if (batchIndex >= 0 && batchIndex < batches.rows.length) {
+      const batchId = batches.rows[batchIndex].id;
+      await db.query(
+        `UPDATE prompt_batches SET response_summary = $1 WHERE id = $2 AND response_summary IS NULL`,
+        [response, batchId],
+      );
+    }
+  }
 }
 
 /**
