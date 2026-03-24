@@ -42,8 +42,14 @@ import {
 import { handleSearch } from './api/search.js';
 import { handleGetFeed } from './api/feed.js';
 import { handleGetEmbeddingStatus } from './api/embedding.js';
+import {
+  handleListTasks,
+  handleGetTask,
+  handleCreateTask,
+  handleCopyTask,
+  handleDeleteTask,
+} from './api/agent-tasks.js';
 import { listTurnsByRun } from '../db/queries/turns.js';
-import { listTasksByAgent } from '../db/queries/tasks.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession } from '../db/queries/sessions.js';
@@ -930,11 +936,11 @@ export async function main(): Promise<void> {
     return { body: turns };
   });
 
-  server.registerRoute('GET', '/api/agent/tasks', async (req) => {
-    const agentId = req.query.agent_id ?? DEFAULT_AGENT_ID;
-    const tasks = await listTasksByAgent(agentId);
-    return { body: tasks };
-  });
+  server.registerRoute('GET', '/api/agent/tasks', async (req) => handleListTasks(req, vaultDir));
+  server.registerRoute('GET', '/api/agent/tasks/:id', async (req) => handleGetTask(req, vaultDir));
+  server.registerRoute('POST', '/api/agent/tasks', async (req) => handleCreateTask(req, vaultDir));
+  server.registerRoute('POST', '/api/agent/tasks/:id/copy', async (req) => handleCopyTask(req, vaultDir));
+  server.registerRoute('DELETE', '/api/agent/tasks/:id', async (req) => handleDeleteTask(req, vaultDir));
 
   // --- MCP proxy routes ---
   // These routes exist so the MCP server can proxy tool calls through the
