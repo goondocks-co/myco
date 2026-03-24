@@ -167,6 +167,51 @@ The orchestrator pattern naturally optimizes cost:
 7. **Orchestrator intelligence** — smart model makes strategic decisions, cheap models execute
 8. **Cost efficiency** — high-volume work runs on cheapest viable model
 
+## Open Research: Local Model Compatibility
+
+The orchestrator pattern assumes model-switching between phases. This works with Anthropic API but needs validation for local models (Ollama, LM Studio):
+
+- **Can Ollama handle the subagent tool-use protocol?** The Agent SDK's `query()` uses tool_use content blocks. Local models via Ollama may not support structured tool calling reliably. Need to test with llama3.2, qwen2.5, mistral.
+- **Is the orchestrator viable on local models?** The orchestrator needs strong instruction following to plan phases and route context. If local models can't reliably orchestrate, the fallback is code-only orchestration (no orchestrator LLM call — just run all phases sequentially).
+- **Model availability detection**: The executor should check which models are available (via Ollama API `/api/tags` or provider config) and fall back gracefully. If only one model is available, all phases use it.
+- **Embedding model vs. LLM model**: These are separate. Embedding (bge-m3) runs locally regardless. The LLM for agent tasks may be local or API.
+
+### Fallback strategy
+
+```
+If Anthropic API available:
+  → Full orchestrator pattern (Opus orchestrates, Haiku/Sonnet execute)
+If only local models:
+  → Code-only orchestration (sequential phases, same model for all)
+  → Skip orchestrator planning call (waste of local model tokens)
+  → Simpler phase prompts (local models need more explicit instructions)
+```
+
+## Dashboard: Task Configuration UI
+
+Tasks need a management interface on the dashboard, similar to the Settings page:
+
+### Task List View (`/tasks` or within Agent page)
+- Show all registered tasks with: name, model, maxTurns, timeoutSeconds
+- Indicate which is the default task
+- Show last run status/time for each task
+
+### Task Detail / Edit View
+- Edit execution config: model, maxTurns, timeoutSeconds
+- Edit tool overrides (checklist of available vault tools)
+- Edit prompt (markdown editor)
+- "Run Now" button scoped to this task
+- Reset to built-in defaults
+
+### API Routes Needed
+- `GET /api/agent/tasks` — list all tasks (already exists via `listTasksByAgent`)
+- `GET /api/agent/tasks/:id` — get task detail
+- `PUT /api/agent/tasks/:id` — update task config (writes to DB, overrides YAML)
+- `POST /api/agent/tasks/:id/run` — trigger a run of this specific task
+
+### Design Principle
+YAML files define built-in defaults. The database stores user overrides. The UI edits database overrides, not YAML files. `registerBuiltInAgentsAndTasks` syncs YAML → DB on startup, preserving user overrides.
+
 ## Non-goals
 
 - Don't change the task YAML for non-phased tasks (backward compat)
