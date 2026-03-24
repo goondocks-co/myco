@@ -507,6 +507,7 @@ export async function runAgent(
       completed_at: completedAt,
       tokens_used: tokensUsed,
       cost_usd: costUsd,
+      actions_taken: phaseResults ? JSON.stringify({ phases: phaseResults }) : undefined,
     });
 
     return {

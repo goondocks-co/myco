@@ -6,6 +6,7 @@ import { useAgentRun, useAgentReports, useAgentTurns, type ReportRow, type TurnR
 import { cn } from '../../lib/cn';
 import { formatEpochAgo, truncate, capitalize } from '../../lib/format';
 import { runStatusClass, formatCost, formatTokens, formatDuration } from './helpers';
+import { PhaseTimeline, type PhaseResult } from './PhaseTimeline';
 
 /* ---------- Constants ---------- */
 
@@ -186,6 +187,24 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   const reports = reportsData?.reports ?? [];
   const turns = turnsData ?? [];
 
+  // Parse phase results from actions_taken if present
+  let phaseResults: PhaseResult[] | null = null;
+  if (run.actions_taken) {
+    try {
+      const parsed = JSON.parse(run.actions_taken) as unknown;
+      if (
+        parsed !== null &&
+        typeof parsed === 'object' &&
+        'phases' in parsed &&
+        Array.isArray((parsed as { phases: unknown }).phases)
+      ) {
+        phaseResults = (parsed as { phases: PhaseResult[] }).phases;
+      }
+    } catch {
+      // Malformed JSON — silently ignore, don't render timeline
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Back nav */}
@@ -226,6 +245,13 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
           </div>
         )}
       </div>
+
+      {/* Phase Timeline (only shown for phased runs) */}
+      {phaseResults && phaseResults.length > 0 && (
+        <div className="rounded-lg border border-border bg-card p-4">
+          <PhaseTimeline phases={phaseResults} />
+        </div>
+      )}
 
       {/* Decisions / Reports */}
       <div className="space-y-3">
