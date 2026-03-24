@@ -83,6 +83,28 @@ export interface TaskConfig {
   schemaVersion?: number;
 }
 
+/** Directive for a single phase from the orchestrator's plan. */
+export interface OrchestratorPhaseDirective {
+  name: string;
+  skip: boolean;
+  skipReason?: string;
+  maxTurns?: number;
+  contextNotes?: string;
+}
+
+/** The orchestrator's output — a plan for phase execution. */
+export interface OrchestratorPlan {
+  phases: OrchestratorPhaseDirective[];
+  reasoning: string;
+}
+
+/** Orchestrator configuration on a task definition. */
+export interface OrchestratorConfig {
+  enabled: boolean;
+  model?: string;
+  maxTurns?: number;
+}
+
 /** Shape of each task YAML file (e.g., `tasks/full-intelligence.yaml`). */
 export interface AgentTask {
   name: string;
@@ -101,6 +123,7 @@ export interface AgentTask {
   isBuiltin?: boolean; // true for tasks loaded from built-in YAML definitions
   source?: string; // origin of the task (e.g., 'built-in', 'user')
   schemaVersion?: number; // schema version for the task config
+  orchestrator?: OrchestratorConfig; // orchestrator configuration for phased tasks
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +147,7 @@ export interface EffectiveConfig {
   taskDisplayName: string;
   taskPrompt: string;
   phases?: PhaseDefinition[];
+  orchestrator?: OrchestratorConfig;
 }
 
 /** Options passed to an agent run. */

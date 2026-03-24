@@ -63,6 +63,13 @@ export const AgentDefinitionSchema = z.object({
 // Task schemas
 // ---------------------------------------------------------------------------
 
+/** Schema for orchestrator configuration on a task definition. */
+export const OrchestratorConfigSchema = z.object({
+  enabled: z.boolean(),
+  model: z.string().optional(),
+  maxTurns: z.number().optional(),
+});
+
 /** Schema for a single phase within a phased task pipeline. */
 export const PhaseDefinitionSchema = z.object({
   name: z.string(),
@@ -89,4 +96,5 @@ export const AgentTaskSchema = z.object({
   execution: ExecutionConfigSchema.optional(),
   contextQueries: z.record(z.string(), z.array(ContextQuerySchema)).optional(),
   schemaVersion: z.number().optional(),
+  orchestrator: OrchestratorConfigSchema.optional(),
 });
