@@ -13,7 +13,8 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertTask } from '@myco/db/queries/tasks.js';
 import { insertRun, getRun } from '@myco/db/queries/runs.js';
 import { epochSeconds } from '@myco/constants.js';
-import { composeTaskPrompt } from '@myco/agent/executor.js';
+import { composeTaskPrompt, composePhasePrompt } from '@myco/agent/executor.js';
+import type { PhaseDefinition } from '@myco/agent/types.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -32,29 +33,51 @@ const epochNow = () => Math.floor(Date.now() / 1000);
 // Mock: Agent SDK query
 // ---------------------------------------------------------------------------
 
-/** Captured arguments from the last query() call. */
+/** Captured arguments from ALL query() calls (supports phased execution). */
+let allQueryCalls: Array<{ prompt: string; options?: Record<string, unknown> }> = [];
+
+/** Captured arguments from the last query() call (backward compat). */
 let capturedQueryArgs: { prompt: string; options?: Record<string, unknown> } | null = null;
 
-/** Controls what the mock query() yields. Set per-test. */
+/**
+ * Per-call behaviors. Each query() call shifts the next behavior.
+ * Falls back to mockQueryBehavior when exhausted.
+ */
+let mockQueryBehaviors: Array<'success' | 'error' | 'empty'> = [];
+
+/** Default behavior when mockQueryBehaviors is empty. */
 let mockQueryBehavior: 'success' | 'error' | 'empty' = 'success';
 
 /** Custom error message for the 'error' behavior. */
 let mockErrorMessage = 'SDK exploded';
 
+/** Per-call result text. Shifts the next value per query() call. */
+let mockResultTexts: string[] = [];
+
+/** Default result text for successful queries. */
+const DEFAULT_RESULT_TEXT = 'Agent run complete.';
+
 vi.mock('@anthropic-ai/claude-agent-sdk', () => {
   return {
     query: (args: { prompt: string; options?: Record<string, unknown> }) => {
       capturedQueryArgs = args;
+      allQueryCalls.push(args);
 
-      // Return an async generator
+      const behavior = mockQueryBehaviors.length > 0
+        ? mockQueryBehaviors.shift()!
+        : mockQueryBehavior;
+
+      const resultText = mockResultTexts.length > 0
+        ? mockResultTexts.shift()!
+        : DEFAULT_RESULT_TEXT;
+
       return {
         [Symbol.asyncIterator]: async function* () {
-          if (mockQueryBehavior === 'error') {
+          if (behavior === 'error') {
             throw new Error(mockErrorMessage);
           }
 
-          if (mockQueryBehavior === 'success') {
-            // Yield a result message matching SDKResultMessage shape
+          if (behavior === 'success') {
             yield {
               type: 'result' as const,
               subtype: 'success' as const,
@@ -69,7 +92,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
               duration_ms: 5000,
               duration_api_ms: 4500,
               is_error: false,
-              result: 'Agent run complete.',
+              result: resultText,
               stop_reason: 'end_turn',
               modelUsage: {},
               permission_denials: [],
@@ -77,9 +100,8 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
               session_id: 'test-session',
             };
           }
-          // 'empty': yields nothing — for await loop ends without a result
+          // 'empty': yields nothing
         },
-        // Methods on the Query object that we don't use but exist on the type
         interrupt: async () => {},
         setPermissionMode: async () => {},
         setModel: async () => {},
@@ -103,7 +125,6 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         throw: async () => ({ done: true, value: undefined }),
       };
     },
-    // Also mock createSdkMcpServer and tool since tools.ts imports them
     createSdkMcpServer: (opts: Record<string, unknown>) => ({
       type: 'sdk' as const,
       instance: {},
@@ -120,6 +141,9 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
 // Mock: loader (avoid filesystem reads for definitions)
 // ---------------------------------------------------------------------------
 
+/** YAML phases to return from the loader mock. Set per-test. */
+let mockYamlPhases: PhaseDefinition[] | undefined;
+
 vi.mock('@myco/agent/loader.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('@myco/agent/loader.js')>();
   return {
@@ -135,13 +159,35 @@ vi.mock('@myco/agent/loader.js', async (importOriginal) => {
       systemPromptPath: 'prompts/system.md',
       tools: ['vault_unprocessed', 'vault_create_spore'],
     }),
+    loadAgentTasks: () => {
+      // Return a task with phases if mockYamlPhases is set
+      if (mockYamlPhases) {
+        return [{
+          name: TEST_TASK_NAME,
+          displayName: 'Full Intelligence',
+          description: 'Run full intelligence pipeline',
+          agent: 'myco-agent',
+          prompt: 'Phased pipeline overview.',
+          isDefault: true,
+          phases: mockYamlPhases,
+        }];
+      }
+      return [{
+        name: TEST_TASK_NAME,
+        displayName: 'Full Intelligence',
+        description: 'Run full intelligence pipeline',
+        agent: 'myco-agent',
+        prompt: TEST_TASK_PROMPT,
+        isDefault: true,
+      }];
+    },
     loadSystemPrompt: () => TEST_SYSTEM_PROMPT,
     // Keep resolveEffectiveConfig from the original module
   };
 });
 
 // ---------------------------------------------------------------------------
-// Mock: context (avoid DB queries in buildVaultContext since we test it separately)
+// Mock: context
 // ---------------------------------------------------------------------------
 
 vi.mock('@myco/agent/context.js', () => ({
@@ -149,8 +195,11 @@ vi.mock('@myco/agent/context.js', () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Mock: tools (avoid importing real Agent SDK tool/createSdkMcpServer at module level)
+// Mock: tools (track scoped tool server calls)
 // ---------------------------------------------------------------------------
+
+/** Captured calls to createScopedVaultToolServer. */
+let scopedToolCalls: Array<{ agentId: string; runId: string; toolNames: string[] }> = [];
 
 vi.mock('@myco/agent/tools.js', () => ({
   createVaultToolServer: (_agentId: string, _runId: string) => ({
@@ -158,6 +207,14 @@ vi.mock('@myco/agent/tools.js', () => ({
     name: 'myco-vault',
     instance: {},
   }),
+  createScopedVaultToolServer: (agentId: string, runId: string, toolNames: string[]) => {
+    scopedToolCalls.push({ agentId, runId, toolNames });
+    return {
+      type: 'sdk' as const,
+      name: 'myco-vault',
+      instance: {},
+    };
+  },
 }));
 
 // ---------------------------------------------------------------------------
@@ -168,7 +225,6 @@ vi.mock('@myco/db/client.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('@myco/db/client.js')>();
   return {
     ...original,
-    // Override initDatabaseForVault to be a no-op (DB is already initialized in beforeEach)
     initDatabaseForVault: async () => original.getDatabase(),
   };
 });
@@ -177,7 +233,6 @@ vi.mock('@myco/db/client.js', async (importOriginal) => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Insert an agent directly for test setup. */
 async function createTestAgent(id: string): Promise<void> {
   const now = epochNow();
   await registerAgent({
@@ -188,7 +243,6 @@ async function createTestAgent(id: string): Promise<void> {
   });
 }
 
-/** Insert a default task for the test agent. */
 async function createTestTask(): Promise<void> {
   const now = epochNow();
   await upsertTask({
@@ -203,8 +257,20 @@ async function createTestTask(): Promise<void> {
   });
 }
 
+/** Resets all mock state between tests. */
+function resetMockState(): void {
+  capturedQueryArgs = null;
+  allQueryCalls = [];
+  scopedToolCalls = [];
+  mockQueryBehavior = 'success';
+  mockQueryBehaviors = [];
+  mockResultTexts = [];
+  mockErrorMessage = 'SDK exploded';
+  mockYamlPhases = undefined;
+}
+
 // ---------------------------------------------------------------------------
-// Tests
+// Tests: composeTaskPrompt
 // ---------------------------------------------------------------------------
 
 describe('composeTaskPrompt', () => {
@@ -235,13 +301,88 @@ describe('composeTaskPrompt', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Tests: composePhasePrompt
+// ---------------------------------------------------------------------------
+
+describe('composePhasePrompt', () => {
+  const vaultContext = '## Vault State\nspores: 10';
+  const taskName = 'Full Intelligence';
+  const taskOverview = 'Complete intelligence pipeline.';
+
+  it('composes vault context + task overview + phase prompt', () => {
+    const result = composePhasePrompt(
+      vaultContext,
+      taskName,
+      taskOverview,
+      { name: 'extract', prompt: 'Extract spores from batches.', tools: [], maxTurns: 5, required: true },
+      [],
+    );
+
+    expect(result).toContain('## Vault State');
+    expect(result).toContain('## Task: Full Intelligence');
+    expect(result).toContain('Complete intelligence pipeline.');
+    expect(result).toContain('## Current Phase: extract');
+    expect(result).toContain('Extract spores from batches.');
+    expect(result).not.toContain('## Prior Phase Results');
+  });
+
+  it('includes prior phase results when available', () => {
+    const result = composePhasePrompt(
+      vaultContext,
+      taskName,
+      taskOverview,
+      { name: 'consolidate', prompt: 'Consolidate spores.', tools: [], maxTurns: 5, required: true },
+      [
+        { name: 'extract', status: 'completed', turnsUsed: 3, tokensUsed: 500, costUsd: 0.001, summary: 'Created 5 spores.' },
+        { name: 'summarize', status: 'completed', turnsUsed: 2, tokensUsed: 300, costUsd: 0.0005, summary: 'Updated 2 sessions.' },
+      ],
+    );
+
+    expect(result).toContain('## Prior Phase Results');
+    expect(result).toContain('### extract (completed)');
+    expect(result).toContain('Created 5 spores.');
+    expect(result).toContain('### summarize (completed)');
+    expect(result).toContain('Updated 2 sessions.');
+  });
+
+  it('truncates long phase summaries', () => {
+    const longSummary = 'A'.repeat(3000);
+    const result = composePhasePrompt(
+      vaultContext,
+      taskName,
+      taskOverview,
+      { name: 'graph', prompt: 'Build graph.', tools: [], maxTurns: 5, required: true },
+      [{ name: 'extract', status: 'completed', turnsUsed: 3, tokensUsed: 500, costUsd: 0.001, summary: longSummary }],
+    );
+
+    expect(result).toContain('...');
+    expect(result.indexOf(longSummary)).toBe(-1);
+  });
+
+  it('includes user instruction when provided', () => {
+    const result = composePhasePrompt(
+      vaultContext,
+      taskName,
+      taskOverview,
+      { name: 'extract', prompt: 'Extract spores.', tools: [], maxTurns: 5, required: true },
+      [],
+      'Focus on security issues.',
+    );
+
+    expect(result).toContain('## User Instruction');
+    expect(result).toContain('Focus on security issues.');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: runAgent (non-phased, backward compatibility)
+// ---------------------------------------------------------------------------
+
 describe('runAgent', () => {
   beforeEach(async () => {
-    capturedQueryArgs = null;
-    mockQueryBehavior = 'success';
-    mockErrorMessage = 'SDK exploded';
-
-    const db = await initDatabase(); // in-memory
+    resetMockState();
+    const db = await initDatabase();
     await createSchema(db);
     await createTestAgent(TEST_AGENT_ID);
     await createTestTask();
@@ -252,17 +393,15 @@ describe('runAgent', () => {
   });
 
   it('completes a successful run with cost and token tracking', async () => {
-    // Dynamic import to get the version with mocks applied
     const { runAgent } = await import('@myco/agent/executor.js');
 
     const result = await runAgent(TEST_VAULT_DIR);
 
     expect(result.status).toBe('completed');
     expect(result.runId).toBeDefined();
-    expect(result.tokensUsed).toBe(1850); // 1500 + 350
+    expect(result.tokensUsed).toBe(1850);
     expect(result.costUsd).toBe(0.0042);
 
-    // Verify run record in DB
     const run = await getRun(result.runId);
     expect(run).not.toBeNull();
     expect(run!.status).toBe('completed');
@@ -289,7 +428,6 @@ describe('runAgent', () => {
   it('returns skipped when a run is already active for the agent', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    // Insert a running run for the same agent
     const existingRunId = crypto.randomUUID();
     await insertRun({
       id: existingRunId,
@@ -303,7 +441,6 @@ describe('runAgent', () => {
     expect(result.status).toBe('skipped');
     expect(result.reason).toBe('already_running');
     expect(result.runId).toBe(existingRunId);
-    // query() should NOT have been called
     expect(capturedQueryArgs).toBeNull();
   });
 
@@ -319,7 +456,6 @@ describe('runAgent', () => {
     expect(result.error).toBe('API rate limit exceeded');
     expect(result.runId).toBeDefined();
 
-    // Verify run record in DB
     const run = await getRun(result.runId);
     expect(run).not.toBeNull();
     expect(run!.status).toBe('failed');
@@ -336,11 +472,9 @@ describe('runAgent', () => {
 
     expect(result.status).toBe('completed');
 
-    // Verify instruction in run record
     const run = await getRun(result.runId);
     expect(run!.instruction).toBe('Focus on security observations only.');
 
-    // Verify instruction appears in the composed prompt
     expect(capturedQueryArgs!.prompt).toContain('## User Instruction');
     expect(capturedQueryArgs!.prompt).toContain('Focus on security observations only.');
   });
@@ -358,14 +492,12 @@ describe('runAgent', () => {
     expect(opts.allowDangerouslySkipPermissions).toBe(true);
     expect(opts.persistSession).toBe(false);
     expect(opts.mcpServers).toBeDefined();
-    // Tools should be empty array (all tools come from MCP server)
     expect(opts.tools).toEqual([]);
   });
 
   it('resolves config with agent DB overrides', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    // Update the agent with a different model
     const db = getDatabase();
     await db.query(
       `UPDATE agents SET model = $1, max_turns = $2 WHERE id = $3`,
@@ -377,5 +509,223 @@ describe('runAgent', () => {
     const opts = capturedQueryArgs!.options as Record<string, unknown>;
     expect(opts.model).toBe('claude-opus-4-20250514');
     expect(opts.maxTurns).toBe(20);
+  });
+
+  it('does not return phases for non-phased tasks', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const result = await runAgent(TEST_VAULT_DIR);
+
+    expect(result.status).toBe('completed');
+    expect(result.phases).toBeUndefined();
+    expect(allQueryCalls.length).toBe(1);
+    expect(scopedToolCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: runAgent — phased execution
+// ---------------------------------------------------------------------------
+
+describe('runAgent — phased execution', () => {
+  const TEST_PHASES: PhaseDefinition[] = [
+    {
+      name: 'read-state',
+      prompt: 'Read vault state.',
+      tools: ['vault_state', 'vault_unprocessed'],
+      maxTurns: 3,
+      required: true,
+    },
+    {
+      name: 'extract',
+      prompt: 'Extract spores from batches.',
+      tools: ['vault_unprocessed', 'vault_create_spore', 'vault_mark_processed'],
+      maxTurns: 15,
+      required: true,
+    },
+    {
+      name: 'report',
+      prompt: 'Write final report.',
+      tools: ['vault_report'],
+      maxTurns: 2,
+      required: true,
+    },
+  ];
+
+  beforeEach(async () => {
+    resetMockState();
+    mockYamlPhases = TEST_PHASES;
+
+    const db = await initDatabase();
+    await createSchema(db);
+    await createTestAgent(TEST_AGENT_ID);
+    await createTestTask();
+  });
+
+  afterEach(async () => {
+    await closeDatabase();
+  });
+
+  it('executes all phases sequentially', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    mockResultTexts = [
+      'Found 5 unprocessed batches.',
+      'Created 3 spores.',
+      'Run complete.',
+    ];
+
+    const result = await runAgent(TEST_VAULT_DIR);
+
+    expect(result.status).toBe('completed');
+    // 3 phases = 3 query() calls
+    expect(allQueryCalls.length).toBe(3);
+    // All phases should use scoped tools
+    expect(scopedToolCalls.length).toBe(3);
+  });
+
+  it('returns per-phase results with token tracking', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const result = await runAgent(TEST_VAULT_DIR);
+
+    expect(result.phases).toBeDefined();
+    expect(result.phases!.length).toBe(3);
+
+    expect(result.phases![0].name).toBe('read-state');
+    expect(result.phases![0].status).toBe('completed');
+    expect(result.phases![0].tokensUsed).toBe(1850);
+    expect(result.phases![0].costUsd).toBe(0.0042);
+    expect(result.phases![0].turnsUsed).toBe(3);
+
+    expect(result.phases![1].name).toBe('extract');
+    expect(result.phases![2].name).toBe('report');
+
+    // Total should be sum of all phases
+    expect(result.tokensUsed).toBe(1850 * 3);
+    expect(result.costUsd).toBeCloseTo(0.0042 * 3);
+  });
+
+  it('scopes tools per phase', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    await runAgent(TEST_VAULT_DIR);
+
+    expect(scopedToolCalls.length).toBe(3);
+    expect(scopedToolCalls[0].toolNames).toEqual(['vault_state', 'vault_unprocessed']);
+    expect(scopedToolCalls[1].toolNames).toEqual(['vault_unprocessed', 'vault_create_spore', 'vault_mark_processed']);
+    expect(scopedToolCalls[2].toolNames).toEqual(['vault_report']);
+  });
+
+  it('passes phase-specific maxTurns to SDK', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    await runAgent(TEST_VAULT_DIR);
+
+    expect(allQueryCalls.length).toBe(3);
+    expect((allQueryCalls[0].options as Record<string, unknown>).maxTurns).toBe(3);
+    expect((allQueryCalls[1].options as Record<string, unknown>).maxTurns).toBe(15);
+    expect((allQueryCalls[2].options as Record<string, unknown>).maxTurns).toBe(2);
+  });
+
+  it('includes prior phase summaries in later phase prompts', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    mockResultTexts = [
+      'Found 5 batches to process.',
+      'Extracted 3 spores from 5 batches.',
+      'Done.',
+    ];
+
+    await runAgent(TEST_VAULT_DIR);
+
+    // Phase 1 prompt should NOT have prior results
+    expect(allQueryCalls[0].prompt).not.toContain('## Prior Phase Results');
+    expect(allQueryCalls[0].prompt).toContain('## Current Phase: read-state');
+
+    // Phase 2 prompt should have phase 1 results
+    expect(allQueryCalls[1].prompt).toContain('## Prior Phase Results');
+    expect(allQueryCalls[1].prompt).toContain('### read-state (completed)');
+    expect(allQueryCalls[1].prompt).toContain('Found 5 batches to process.');
+    expect(allQueryCalls[1].prompt).toContain('## Current Phase: extract');
+
+    // Phase 3 prompt should have phases 1 and 2
+    expect(allQueryCalls[2].prompt).toContain('### read-state (completed)');
+    expect(allQueryCalls[2].prompt).toContain('### extract (completed)');
+    expect(allQueryCalls[2].prompt).toContain('Extracted 3 spores from 5 batches.');
+  });
+
+  it('stops pipeline when a required phase fails', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    // Phase 1 succeeds, phase 2 (extract, required) fails
+    mockQueryBehaviors = ['success', 'error', 'success'];
+    mockErrorMessage = 'Model unavailable';
+
+    const result = await runAgent(TEST_VAULT_DIR);
+
+    expect(result.status).toBe('completed'); // run-level status still completed
+    expect(result.phases!.length).toBe(2); // stopped after phase 2 failed
+    expect(result.phases![0].status).toBe('completed');
+    expect(result.phases![1].status).toBe('failed');
+    expect(result.phases![1].summary).toContain('Model unavailable');
+    // Phase 3 (report) should NOT have run
+    expect(allQueryCalls.length).toBe(2);
+  });
+
+  it('continues pipeline when an optional phase fails', async () => {
+    // Override phases to make the middle one optional
+    mockYamlPhases = [
+      { name: 'read-state', prompt: 'Read state.', tools: ['vault_state'], maxTurns: 3, required: true },
+      { name: 'summarize', prompt: 'Update summaries.', tools: ['vault_sessions'], maxTurns: 5, required: false },
+      { name: 'report', prompt: 'Write report.', tools: ['vault_report'], maxTurns: 2, required: true },
+    ];
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    // Phase 1 succeeds, phase 2 (optional) fails, phase 3 succeeds
+    mockQueryBehaviors = ['success', 'error', 'success'];
+    mockErrorMessage = 'Timeout';
+
+    const result = await runAgent(TEST_VAULT_DIR);
+
+    expect(result.phases!.length).toBe(3);
+    expect(result.phases![0].status).toBe('completed');
+    expect(result.phases![1].status).toBe('failed');
+    expect(result.phases![2].status).toBe('completed');
+    // All 3 query() calls should have been made
+    expect(allQueryCalls.length).toBe(3);
+  });
+
+  it('uses phase-specific model when provided', async () => {
+    mockYamlPhases = [
+      { name: 'extract', prompt: 'Extract.', tools: ['vault_unprocessed'], maxTurns: 20, model: 'claude-haiku-4-5', required: true },
+      { name: 'graph', prompt: 'Build graph.', tools: ['vault_create_entity'], maxTurns: 10, required: true },
+    ];
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    await runAgent(TEST_VAULT_DIR);
+
+    expect(allQueryCalls.length).toBe(2);
+    // Phase 1 should use the phase-specific model
+    expect((allQueryCalls[0].options as Record<string, unknown>).model).toBe('claude-haiku-4-5');
+    // Phase 2 should fall back to the task/agent model
+    expect((allQueryCalls[1].options as Record<string, unknown>).model).toBe('claude-sonnet-4-20250514');
+  });
+
+  it('records correct aggregate tokens and cost', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const result = await runAgent(TEST_VAULT_DIR);
+
+    // Each phase: 1850 tokens, $0.0042 — 3 phases total
+    expect(result.tokensUsed).toBe(5550);
+    expect(result.costUsd).toBeCloseTo(0.0126);
+
+    // Verify DB record
+    const run = await getRun(result.runId);
+    expect(run!.tokens_used).toBe(5550);
+    expect(run!.cost_usd).toBeCloseTo(0.0126);
   });
 });

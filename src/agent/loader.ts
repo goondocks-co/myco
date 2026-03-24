@@ -50,6 +50,16 @@ const AgentDefinitionSchema = z.object({
   tools: z.array(z.string()),
 });
 
+/** Schema for a single phase within a phased task pipeline. */
+const PhaseDefinitionSchema = z.object({
+  name: z.string(),
+  prompt: z.string(),
+  tools: z.array(z.string()),
+  maxTurns: z.number(),
+  model: z.string().optional(),
+  required: z.boolean(),
+});
+
 /** Schema for task YAML files in tasks/. */
 const AgentTaskSchema = z.object({
   name: z.string(),
@@ -62,6 +72,7 @@ const AgentTaskSchema = z.object({
   model: z.string().optional(),
   maxTurns: z.number().optional(),
   timeoutSeconds: z.number().optional(),
+  phases: z.array(PhaseDefinitionSchema).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -161,6 +172,7 @@ export function loadAgentTasks(definitionsDir: string): AgentTask[] {
       ...(parsed.model ? { model: parsed.model } : {}),
       ...(parsed.maxTurns ? { maxTurns: parsed.maxTurns } : {}),
       ...(parsed.timeoutSeconds ? { timeoutSeconds: parsed.timeoutSeconds } : {}),
+      ...(parsed.phases ? { phases: parsed.phases } : {}),
     };
   });
 }
@@ -245,6 +257,7 @@ export function resolveEffectiveConfig(
     taskName,
     taskDisplayName,
     taskPrompt,
+    ...(taskOverrides?.phases ? { phases: taskOverrides.phases } : {}),
   };
 }
 

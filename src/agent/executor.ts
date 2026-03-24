@@ -7,7 +7,8 @@
  *   3. Guards against concurrent runs for the same agent.
  *   4. Creates a run record in the database.
  *   5. Builds the task prompt (vault context + task + optional instruction).
- *   6. Executes the Claude Agent SDK query with an in-process MCP tool server.
+ *   6. Executes the Claude Agent SDK query — single call for flat tasks,
+ *      sequential phase loop for phased tasks.
  *   7. Records cost/token data and marks the run completed or failed.
  */
 
@@ -27,12 +28,19 @@ import {
 import {
   resolveDefinitionsDir,
   loadAgentDefinition,
+  loadAgentTasks,
   loadSystemPrompt,
   resolveEffectiveConfig,
 } from './loader.js';
-import { createVaultToolServer } from './tools.js';
+import { createVaultToolServer, createScopedVaultToolServer } from './tools.js';
 import { buildVaultContext } from './context.js';
-import type { RunOptions, AgentRunResult } from './types.js';
+import type {
+  RunOptions,
+  AgentRunResult,
+  EffectiveConfig,
+  PhaseDefinition,
+  PhaseResult,
+} from './types.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -58,6 +66,15 @@ const MCP_SERVER_NAME = 'myco-vault';
 
 /** Whether to persist the agent session to disk. */
 const PERSIST_SESSION = false;
+
+/** Header for prior phase context in phased prompts. */
+const PROMPT_SECTION_PRIOR_PHASES = '## Prior Phase Results';
+
+/** Header for the current phase in phased prompts. */
+const PROMPT_SECTION_CURRENT_PHASE = '## Current Phase: ';
+
+/** Truncation limit for phase summary text passed to subsequent phases. */
+const PHASE_SUMMARY_MAX_CHARS = 2000;
 
 // ---------------------------------------------------------------------------
 // Prompt composition
@@ -98,12 +115,211 @@ export function composeTaskPrompt(
   return parts.join(PROMPT_SECTION_SEPARATOR);
 }
 
+/**
+ * Build the prompt for a single phase in a phased execution.
+ *
+ * Includes vault context, the task overview, prior phase summaries,
+ * and the current phase instructions.
+ */
+export function composePhasePrompt(
+  vaultContext: string,
+  taskDisplayName: string,
+  taskOverview: string,
+  phase: PhaseDefinition,
+  priorPhaseResults: PhaseResult[],
+  instruction?: string,
+): string {
+  const parts = [
+    vaultContext,
+    `${PROMPT_SECTION_TASK}${taskDisplayName}\n${taskOverview}`,
+  ];
+
+  if (instruction) {
+    parts.push(`${PROMPT_SECTION_INSTRUCTION}\n${instruction}`);
+  }
+
+  // Include prior phase results as context
+  if (priorPhaseResults.length > 0) {
+    const summaries = priorPhaseResults.map((pr) => {
+      const truncated = pr.summary.length > PHASE_SUMMARY_MAX_CHARS
+        ? pr.summary.slice(0, PHASE_SUMMARY_MAX_CHARS) + '...'
+        : pr.summary;
+      return `### ${pr.name} (${pr.status})\n${truncated}`;
+    });
+    parts.push(`${PROMPT_SECTION_PRIOR_PHASES}\n${summaries.join('\n\n')}`);
+  }
+
+  // Current phase instructions
+  parts.push(`${PROMPT_SECTION_CURRENT_PHASE}${phase.name}\n${phase.prompt}`);
+
+  return parts.join(PROMPT_SECTION_SEPARATOR);
+}
+
+// ---------------------------------------------------------------------------
+// Single-query execution (non-phased tasks)
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute a single query() call for non-phased tasks.
+ *
+ * @returns tokens used, cost, and status.
+ */
+async function executeSingleQuery(
+  config: EffectiveConfig,
+  systemPrompt: string,
+  taskPrompt: string,
+  agentId: string,
+  runId: string,
+): Promise<{ tokensUsed: number; costUsd: number }> {
+  const { query } = await import('@anthropic-ai/claude-agent-sdk');
+  const toolServer = createVaultToolServer(agentId, runId);
+
+  let resultCostUsd = 0;
+  let resultTokens = 0;
+
+  for await (const message of query({
+    prompt: taskPrompt,
+    options: {
+      model: config.model,
+      systemPrompt,
+      mcpServers: { [MCP_SERVER_NAME]: toolServer },
+      maxTurns: config.maxTurns,
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      persistSession: PERSIST_SESSION,
+      tools: [],
+    },
+  })) {
+    if (message.type === 'result') {
+      resultCostUsd = message.total_cost_usd ?? 0;
+      resultTokens =
+        (message.usage.input_tokens ?? 0) + (message.usage.output_tokens ?? 0);
+    }
+  }
+
+  return { tokensUsed: resultTokens, costUsd: resultCostUsd };
+}
+
+// ---------------------------------------------------------------------------
+// Phased execution
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute a phased task — sequential query() calls, one per phase.
+ *
+ * Each phase gets:
+ * - Scoped tools (only the tools listed in the phase definition)
+ * - Its own turn budget (maxTurns)
+ * - Optional model override (falls back to task/agent model)
+ * - Context from prior phase results
+ *
+ * The executor controls the loop — the LLM cannot skip phases.
+ */
+async function executePhasedQuery(
+  config: EffectiveConfig,
+  systemPrompt: string,
+  vaultContext: string,
+  agentId: string,
+  runId: string,
+  instruction?: string,
+): Promise<{ tokensUsed: number; costUsd: number; phases: PhaseResult[] }> {
+  const { query } = await import('@anthropic-ai/claude-agent-sdk');
+
+  const phases = config.phases!;
+  const phaseResults: PhaseResult[] = [];
+  let totalTokens = 0;
+  let totalCost = 0;
+
+  for (const phase of phases) {
+    const phasePrompt = composePhasePrompt(
+      vaultContext,
+      config.taskDisplayName,
+      config.taskPrompt,
+      phase,
+      phaseResults,
+      instruction,
+    );
+
+    const phaseModel = phase.model ?? config.model;
+    const toolServer = createScopedVaultToolServer(agentId, runId, phase.tools);
+
+    let phaseCost = 0;
+    let phaseTokens = 0;
+    let phaseTurns = 0;
+    let phaseSummary = '';
+
+    try {
+      for await (const message of query({
+        prompt: phasePrompt,
+        options: {
+          model: phaseModel,
+          systemPrompt,
+          mcpServers: { [MCP_SERVER_NAME]: toolServer },
+          maxTurns: phase.maxTurns,
+          permissionMode: 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
+          persistSession: PERSIST_SESSION,
+          tools: [],
+        },
+      })) {
+        if (message.type === 'result') {
+          phaseCost = message.total_cost_usd ?? 0;
+          phaseTokens =
+            (message.usage.input_tokens ?? 0) + (message.usage.output_tokens ?? 0);
+          phaseTurns = message.num_turns ?? 0;
+          if ('result' in message && typeof message.result === 'string') {
+            phaseSummary = message.result;
+          }
+        }
+      }
+
+      if (phase.required && phaseTurns === 0) {
+        console.warn(`[agent] Required phase "${phase.name}" produced 0 turns`);
+      }
+
+      phaseResults.push({
+        name: phase.name,
+        status: 'completed',
+        turnsUsed: phaseTurns,
+        tokensUsed: phaseTokens,
+        costUsd: phaseCost,
+        summary: phaseSummary,
+      });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+
+      phaseResults.push({
+        name: phase.name,
+        status: 'failed',
+        turnsUsed: phaseTurns,
+        tokensUsed: phaseTokens,
+        costUsd: phaseCost,
+        summary: `Error: ${errorMessage}`,
+      });
+
+      // If a required phase fails, stop the pipeline
+      if (phase.required) {
+        break;
+      }
+    }
+
+    totalTokens += phaseTokens;
+    totalCost += phaseCost;
+  }
+
+  return { tokensUsed: totalTokens, costUsd: totalCost, phases: phaseResults };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
  * Run an agent against a vault.
+ *
+ * For tasks with a `phases` array, uses phased execution (sequential query()
+ * calls per phase with scoped tools). For tasks without phases, uses a single
+ * query() call as before.
  *
  * @param vaultDir — absolute path to the vault directory.
  * @param options — optional overrides for agent, task, and instruction.
@@ -132,7 +348,15 @@ export async function runAgent(
     taskPromise,
   ]);
 
-  // Convert TaskRow to AgentTask shape for resolveEffectiveConfig
+  // Convert TaskRow to AgentTask shape for resolveEffectiveConfig.
+  // Phases are structural (define how the executor runs) and come from YAML,
+  // not from DB. Load YAML tasks to get phase definitions.
+  const yamlTasks = loadAgentTasks(definitionsDir);
+  const taskName = taskRow?.id ?? options?.task;
+  const yamlTask = taskName
+    ? yamlTasks.find((t) => t.name === taskName)
+    : undefined;
+
   const taskOverrides = taskRow
     ? {
         name: taskRow.id,
@@ -144,6 +368,8 @@ export async function runAgent(
         ...(taskRow.tool_overrides
           ? { toolOverrides: JSON.parse(taskRow.tool_overrides) as string[] }
           : {}),
+        // Phases come from YAML — DB doesn't store them
+        ...(yamlTask?.phases ? { phases: yamlTask.phases } : {}),
       }
     : undefined;
 
@@ -172,61 +398,64 @@ export async function runAgent(
     started_at: now,
   });
 
-  // 5. Build prompt
+  // 5. Build prompt components
   const systemPrompt = loadSystemPrompt(definitionsDir, config.systemPromptPath);
   const vaultContext = await buildVaultContext(agentId);
-  const taskPrompt = composeTaskPrompt(
-    vaultContext,
-    config.taskDisplayName,
-    config.taskPrompt,
-    options?.instruction,
-  );
 
-  // 6. Create tool server
-  const toolServer = createVaultToolServer(agentId, runId);
-
-  // 7. Execute Agent SDK
+  // 6. Execute — phased or single query
   try {
-    const { query } = await import('@anthropic-ai/claude-agent-sdk');
+    let tokensUsed: number;
+    let costUsd: number;
+    let phaseResults: PhaseResult[] | undefined;
 
-    let resultCostUsd = 0;
-    let resultTokens = 0;
-
-    for await (const message of query({
-      prompt: taskPrompt,
-      options: {
-        model: config.model,
+    if (config.phases && config.phases.length > 0) {
+      // Phased execution: sequential query() per phase with scoped tools
+      const result = await executePhasedQuery(
+        config,
         systemPrompt,
-        mcpServers: { [MCP_SERVER_NAME]: toolServer },
-        maxTurns: config.maxTurns,
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-        persistSession: PERSIST_SESSION,
-        tools: [],
-      },
-    })) {
-      if (message.type === 'result') {
-        resultCostUsd = message.total_cost_usd ?? 0;
-        resultTokens =
-          (message.usage.input_tokens ?? 0) + (message.usage.output_tokens ?? 0);
-      }
+        vaultContext,
+        agentId,
+        runId,
+        options?.instruction,
+      );
+      tokensUsed = result.tokensUsed;
+      costUsd = result.costUsd;
+      phaseResults = result.phases;
+    } else {
+      // Single-query execution (backward compatible)
+      const taskPrompt = composeTaskPrompt(
+        vaultContext,
+        config.taskDisplayName,
+        config.taskPrompt,
+        options?.instruction,
+      );
+      const result = await executeSingleQuery(
+        config,
+        systemPrompt,
+        taskPrompt,
+        agentId,
+        runId,
+      );
+      tokensUsed = result.tokensUsed;
+      costUsd = result.costUsd;
     }
 
     const completedAt = epochSeconds();
     await updateRunStatus(runId, STATUS_COMPLETED, {
       completed_at: completedAt,
-      tokens_used: resultTokens,
-      cost_usd: resultCostUsd,
+      tokens_used: tokensUsed,
+      cost_usd: costUsd,
     });
 
     return {
       runId,
       status: STATUS_COMPLETED,
-      tokensUsed: resultTokens,
-      costUsd: resultCostUsd,
+      tokensUsed,
+      costUsd,
+      ...(phaseResults ? { phases: phaseResults } : {}),
     };
   } catch (err) {
-    // 8. Error handling — mark run as failed
+    // 7. Error handling — mark run as failed
     const errorMessage = err instanceof Error ? err.message : String(err);
     const failedAt = epochSeconds();
 

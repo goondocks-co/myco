@@ -485,3 +485,30 @@ export function createVaultToolServer(agentId: string, runId: string) {
     tools,
   });
 }
+
+/**
+ * Create a vault MCP tool server scoped to a subset of tools.
+ *
+ * Used by the phased executor to restrict each phase to only the tools
+ * it needs. Tools not in `toolNames` are excluded from the server.
+ *
+ * @param agentId — the agent identity, injected into all write operations.
+ * @param runId — the current agent run ID, injected into reports and turns.
+ * @param toolNames — tool names to include (e.g., ['vault_unprocessed', 'vault_create_spore']).
+ * @returns an MCP server config with only the specified tools.
+ */
+export function createScopedVaultToolServer(
+  agentId: string,
+  runId: string,
+  toolNames: string[],
+) {
+  const allTools = createVaultTools(agentId, runId);
+  const nameSet = new Set(toolNames);
+  const scopedTools = allTools.filter((t) => nameSet.has(t.name));
+
+  return createSdkMcpServer({
+    name: 'myco-vault',
+    version: getPluginVersion(),
+    tools: scopedTools,
+  });
+}

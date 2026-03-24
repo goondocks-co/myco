@@ -22,6 +22,31 @@ export interface AgentDefinition {
   tools: string[];
 }
 
+/**
+ * A single phase in a phased task pipeline.
+ *
+ * Phases run sequentially — the executor controls the loop, not the LLM.
+ * Each phase gets its own `query()` call with scoped tools and turn limit.
+ */
+export interface PhaseDefinition {
+  name: string;
+  prompt: string;
+  tools: string[];
+  maxTurns: number;
+  model?: string; // override model for this phase (falls back to task/agent model)
+  required: boolean;
+}
+
+/** Result of a single phase execution within a phased run. */
+export interface PhaseResult {
+  name: string;
+  status: 'completed' | 'failed' | 'skipped';
+  turnsUsed: number;
+  tokensUsed: number;
+  costUsd: number;
+  summary: string; // last assistant message or error
+}
+
 /** Shape of each task YAML file (e.g., `tasks/full-intelligence.yaml`). */
 export interface AgentTask {
   name: string;
@@ -34,6 +59,7 @@ export interface AgentTask {
   model?: string; // override model for this task
   maxTurns?: number; // override max turns for this task
   timeoutSeconds?: number; // override timeout for this task
+  phases?: PhaseDefinition[]; // phased execution pipeline (opt-in)
 }
 
 // ---------------------------------------------------------------------------
@@ -56,6 +82,7 @@ export interface EffectiveConfig {
   taskName: string;
   taskDisplayName: string;
   taskPrompt: string;
+  phases?: PhaseDefinition[];
 }
 
 /** Options passed to an agent run. */
@@ -73,4 +100,5 @@ export interface AgentRunResult {
   tokensUsed?: number;
   costUsd?: number;
   error?: string;
+  phases?: PhaseResult[];
 }
