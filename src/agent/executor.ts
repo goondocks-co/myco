@@ -66,6 +66,10 @@ const PERSIST_SESSION = false;
 /**
  * Build the full task prompt from vault context, task definition, and
  * optional user instruction.
+ *
+ * Task prompts support template variables:
+ * - `{{session_id}}` — replaced with the session ID from instruction (if present)
+ * - `{{instruction}}` — the raw user instruction text
  */
 export function composeTaskPrompt(
   vaultContext: string,
@@ -73,9 +77,18 @@ export function composeTaskPrompt(
   taskPrompt: string,
   instruction?: string,
 ): string {
+  // Extract session_id from instruction if it contains one (UUID pattern)
+  const sessionIdMatch = instruction?.match(/\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i);
+  const sessionId = sessionIdMatch?.[1] ?? '';
+
+  // Template variable substitution in task prompt
+  let resolvedPrompt = taskPrompt;
+  resolvedPrompt = resolvedPrompt.replace(/\{\{session_id\}\}/g, sessionId);
+  resolvedPrompt = resolvedPrompt.replace(/\{\{instruction\}\}/g, instruction ?? '');
+
   const parts = [
     vaultContext,
-    `${PROMPT_SECTION_TASK}${taskDisplayName}\n${taskPrompt}`,
+    `${PROMPT_SECTION_TASK}${taskDisplayName}\n${resolvedPrompt}`,
   ];
 
   if (instruction) {

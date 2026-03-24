@@ -19,14 +19,14 @@ timeoutSeconds: 120
 prompt: |
   Generate or update session titles and summaries. Budget: ~12 turns.
 
-  IMPORTANT: If the User Instruction specifies a session ID, process
-  ONLY that session. Do not scan or update other sessions.
+  Target session: {{session_id}}
 
   ## Phase 1 — Find Sessions Needing Updates (budget: 3 turns)
 
-  1. If a specific session was requested in the instruction, use only that one.
-     Otherwise, call `vault_sessions` with limit 10 to find candidates.
-  2. Identify sessions where title is null, summary is null, or the
+  1. If a target session ID is specified above, process ONLY that session.
+     Call `vault_sessions` to find it by ID.
+  2. If no target session specified, call `vault_sessions` with limit 10
+     and identify sessions where title is null, summary is null, or the
      title looks like a truncated first prompt (ends with "...")
 
   ## Phase 2 — Generate Titles and Summaries (budget: 8 turns)
