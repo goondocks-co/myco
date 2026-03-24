@@ -615,8 +615,43 @@ async function migrateV3ToV4(db: PGlite): Promise<void> {
     }
   }
 
+  // -- Step 4: Update agent_id values from old default to new default --
+  // The column rename (step 2) preserved values, but the DEFAULT_AGENT_ID
+  // constant changed from 'myco-curator' to 'myco-agent'. Update all rows.
+  const OLD_AGENT_ID = 'myco-curator';
+  const NEW_AGENT_ID = 'myco-agent';
+  for (const table of CURATOR_ID_TABLES) {
+    if (await columnExists(db, table, 'agent_id')) {
+      await db.query(`UPDATE ${table} SET agent_id = '${NEW_AGENT_ID}' WHERE agent_id = '${OLD_AGENT_ID}'`);
+    }
+  }
+
   // Advance the version row from v3 → v4
   await db.query(`UPDATE schema_version SET version = ${SCHEMA_VERSION} WHERE version = ${PREVIOUS_SCHEMA_VERSION}`);
+}
+
+/**
+ * One-time data fixup: update agent_id values from 'myco-curator' to 'myco-agent'.
+ * The v3→v4 migration renamed columns but not values. This runs on every startup
+ * and is idempotent — rows already set to 'myco-agent' are unaffected.
+ */
+async function fixupAgentIdValues(db: PGlite): Promise<void> {
+  const OLD_AGENT_ID = 'myco-curator';
+  const NEW_AGENT_ID = 'myco-agent';
+  const TABLES_WITH_AGENT_ID = [
+    'agents', 'spores', 'entities', 'entity_mentions', 'edges',
+    'resolution_events', 'digest_extracts', 'agent_runs', 'agent_reports',
+    'agent_turns', 'agent_tasks', 'agent_state',
+  ] as const;
+
+  for (const table of TABLES_WITH_AGENT_ID) {
+    if (await tableExists(db, table) && await columnExists(db, table, 'agent_id')) {
+      await db.query(
+        `UPDATE ${table} SET agent_id = $1 WHERE agent_id = $2`,
+        [NEW_AGENT_ID, OLD_AGENT_ID],
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -638,6 +673,8 @@ export async function createSchema(db: PGlite): Promise<void> {
       'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1',
     );
     if (versionResult.rows.length > 0 && versionResult.rows[0].version === SCHEMA_VERSION) {
+      // Always run data fixups even on the fast-path (idempotent)
+      await fixupAgentIdValues(db);
       return;
     }
   } catch {
