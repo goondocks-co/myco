@@ -31,15 +31,15 @@ export async function run(_args: string[], vaultDir: string): Promise<void> {
     console.log(`Queue:      ${stats.embedding.queue_depth} pending`);
   }
 
-  console.log('\n--- Curator ---');
-  if (stats.curator.total_runs === 0) {
+  console.log('\n--- Agent ---');
+  if (stats.agent.total_runs === 0) {
     console.log('No runs yet');
   } else {
-    const lastAt = stats.curator.last_run_at
-      ? new Date(stats.curator.last_run_at * 1000).toISOString()
+    const lastAt = stats.agent.last_run_at
+      ? new Date(stats.agent.last_run_at * 1000).toISOString()
       : 'never';
-    console.log(`Last run:   ${lastAt} (${stats.curator.last_run_status ?? 'unknown'})`);
-    console.log(`Total runs: ${stats.curator.total_runs}`);
+    console.log(`Last run:   ${lastAt} (${stats.agent.last_run_status ?? 'unknown'})`);
+    console.log(`Total runs: ${stats.agent.total_runs}`);
   }
   if (stats.unprocessed_batches > 0) {
     console.log(`Pending:    ${stats.unprocessed_batches} unprocessed batch(es)`);
