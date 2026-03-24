@@ -775,50 +775,10 @@ async function backfillSporeLineage(db: PGlite): Promise<void> {
   );
 }
 
-/**
- * One-time entity reset for the graph redesign.
- * Deletes all pre-redesign entities and their mentions — the agent will
- * recreate proper entities under the tightened criteria (3+ spores, 2+ sessions).
- * Idempotent: no-ops once entity_mentions and entities are empty.
- */
-async function resetPreRedesignEntities(db: PGlite): Promise<void> {
-  if (!(await tableExists(db, 'entities'))) return;
-
-  // Skip if no entities with missing status (pre-v5 entities had no status column,
-  // but the migration added DEFAULT 'active' — so check for entities that lack
-  // graph_edges references as a signal they're pre-redesign)
-  if (!(await tableExists(db, 'graph_edges'))) return;
-
-  // Check if any entities exist that have NO graph_edges pointing to them
-  const probe = await db.query(`
-    SELECT e.id FROM entities e
-    LEFT JOIN graph_edges ge ON (ge.source_id = e.id AND ge.source_type = 'entity')
-                             OR (ge.target_id = e.id AND ge.target_type = 'entity')
-    WHERE ge.id IS NULL
-    LIMIT 1
-  `);
-  if (probe.rows.length === 0) return; // All entities have graph edges — skip
-
-  // Delete mentions first (FK constraint)
-  if (await tableExists(db, 'entity_mentions')) {
-    await db.query('DELETE FROM entity_mentions');
-  }
-
-  // Delete old edges (FK constraint on entities)
-  if (await tableExists(db, 'edges')) {
-    await db.query('DELETE FROM edges');
-  }
-
-  // Delete entities that have no graph_edges
-  await db.query(`
-    DELETE FROM entities e
-    WHERE NOT EXISTS (
-      SELECT 1 FROM graph_edges ge
-      WHERE (ge.source_id = e.id AND ge.source_type = 'entity')
-         OR (ge.target_id = e.id AND ge.target_type = 'entity')
-    )
-  `);
-}
+// Note: resetPreRedesignEntities was removed — it ran on every startup and
+// deleted entities that lacked graph_edges, including freshly created ones.
+// The one-time cleanup of pre-redesign entities (45 entities with old types)
+// was completed on 2026-03-24. No recurring fixup needed.
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -842,7 +802,7 @@ export async function createSchema(db: PGlite): Promise<void> {
       // Always run data fixups even on the fast-path (idempotent)
       await fixupAgentIdValues(db);
       await backfillSporeLineage(db);
-      await resetPreRedesignEntities(db);
+      // resetPreRedesignEntities removed — one-time cleanup already completed
       return;
     }
   } catch {
