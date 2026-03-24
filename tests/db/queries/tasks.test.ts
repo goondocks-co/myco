@@ -14,8 +14,12 @@ import {
   getTask,
   listTasks,
   getDefaultTask,
+  deleteTask,
+  serializeConfig,
+  deserializeConfig,
 } from '@myco/db/queries/tasks.js';
 import type { TaskInsert } from '@myco/db/queries/tasks.js';
+import type { TaskConfig } from '@myco/agent/types.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -216,6 +220,147 @@ describe('task query helpers', () => {
     it('returns null for agent with no tasks', async () => {
       const defaultTask = await getDefaultTask('no-such-agent');
       expect(defaultTask).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // config column — serialization helpers and round-trip
+  // ---------------------------------------------------------------------------
+
+  describe('config column', () => {
+    it('upsert with phases config round-trips correctly', async () => {
+      const phases = [
+        {
+          name: 'gather',
+          prompt: 'Gather data.',
+          tools: ['vault_unprocessed'],
+          maxTurns: 5,
+          required: true,
+        },
+        {
+          name: 'extract',
+          prompt: 'Extract spores.',
+          tools: ['vault_create_spore'],
+          maxTurns: 10,
+          required: false,
+        },
+      ];
+      const config: TaskConfig = { phases, schemaVersion: 1 };
+
+      const data = makeTask({ config: serializeConfig(config) });
+      await upsertTask(data);
+
+      const row = await getTask(data.id);
+      expect(row).not.toBeNull();
+      expect(row!.config).not.toBeNull();
+
+      const parsed = deserializeConfig(row!.config);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.phases).toHaveLength(2);
+      expect(parsed!.phases![0].name).toBe('gather');
+      expect(parsed!.phases![1].name).toBe('extract');
+      expect(parsed!.schemaVersion).toBe(1);
+    });
+
+    it('upsert with execution overrides config round-trips correctly', async () => {
+      const config: TaskConfig = {
+        execution: {
+          model: 'claude-3-haiku',
+          maxTurns: 20,
+          timeoutSeconds: 180,
+        },
+        schemaVersion: 1,
+      };
+
+      const data = makeTask({ config: serializeConfig(config) });
+      await upsertTask(data);
+
+      const row = await getTask(data.id);
+      expect(row).not.toBeNull();
+
+      const parsed = deserializeConfig(row!.config);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.execution).toBeDefined();
+      expect(parsed!.execution!.model).toBe('claude-3-haiku');
+      expect(parsed!.execution!.maxTurns).toBe(20);
+      expect(parsed!.execution!.timeoutSeconds).toBe(180);
+    });
+
+    it('config column is null when no extended config provided', async () => {
+      const data = makeTask(); // no config field
+      const row = await upsertTask(data);
+
+      expect(row.config).toBeNull();
+
+      const fetched = await getTask(data.id);
+      expect(fetched!.config).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // serializeConfig / deserializeConfig helpers
+  // ---------------------------------------------------------------------------
+
+  describe('serializeConfig', () => {
+    it('serializes a config to JSON string', () => {
+      const config: TaskConfig = { schemaVersion: 1, phases: [] };
+      const result = serializeConfig(config);
+      expect(typeof result).toBe('string');
+      expect(JSON.parse(result!)).toEqual(config);
+    });
+
+    it('returns null for null input', () => {
+      expect(serializeConfig(null)).toBeNull();
+    });
+  });
+
+  describe('deserializeConfig', () => {
+    it('deserializes a valid JSON string to TaskConfig', () => {
+      const config: TaskConfig = { schemaVersion: 2 };
+      const raw = JSON.stringify(config);
+      const result = deserializeConfig(raw);
+      expect(result).toEqual(config);
+    });
+
+    it('returns null for null input', () => {
+      expect(deserializeConfig(null)).toBeNull();
+    });
+
+    it('returns null for malformed JSON', () => {
+      expect(deserializeConfig('not-json')).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // deleteTask
+  // ---------------------------------------------------------------------------
+
+  describe('deleteTask', () => {
+    it('deletes a user task (source=user) and returns true', async () => {
+      const data = makeTask({ id: 'task-to-delete', source: 'user' });
+      await upsertTask(data);
+
+      const deleted = await deleteTask(data.id);
+      expect(deleted).toBe(true);
+
+      const fetched = await getTask(data.id);
+      expect(fetched).toBeNull();
+    });
+
+    it('returns false for a non-existent task', async () => {
+      const deleted = await deleteTask('does-not-exist');
+      expect(deleted).toBe(false);
+    });
+
+    it('returns false for a built-in task and does not delete it', async () => {
+      const data = makeTask({ id: 'task-builtin', source: 'built-in' });
+      await upsertTask(data);
+
+      const deleted = await deleteTask(data.id);
+      expect(deleted).toBe(false);
+
+      const fetched = await getTask(data.id);
+      expect(fetched).not.toBeNull();
     });
   });
 });

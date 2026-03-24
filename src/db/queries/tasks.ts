@@ -6,6 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import type { TaskConfig } from '@myco/agent/types.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -16,6 +17,9 @@ const DEFAULT_LIST_LIMIT = 100;
 
 /** Default task source for new tasks. */
 const DEFAULT_SOURCE = 'built-in';
+
+/** Source label for built-in tasks — protected from deletion. */
+const BUILT_IN_SOURCE = 'built-in';
 
 /** Default is_default flag for new tasks. */
 const DEFAULT_IS_DEFAULT = 0;
@@ -107,6 +111,22 @@ function toTaskRow(row: Record<string, unknown>): TaskRow {
     created_at: row.created_at as number,
     updated_at: (row.updated_at as number) ?? null,
   };
+}
+
+/** Serialize a TaskConfig to a JSON string for storage. */
+export function serializeConfig(config: TaskConfig | null): string | null {
+  if (!config) return null;
+  return JSON.stringify(config);
+}
+
+/** Deserialize a TaskConfig from a stored JSON string. Returns null on failure. */
+export function deserializeConfig(raw: string | null): TaskConfig | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as TaskConfig;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -261,4 +281,20 @@ export async function listTasksByAgent(
   );
 
   return (result.rows as Record<string, unknown>[]).map(toTaskRow);
+}
+
+/**
+ * Delete a task by id.
+ *
+ * Built-in tasks (source = 'built-in') are protected and cannot be deleted.
+ *
+ * @returns true if the task was deleted, false if not found or protected.
+ */
+export async function deleteTask(id: string): Promise<boolean> {
+  const db = getDatabase();
+  const result = await db.query(
+    `DELETE FROM agent_tasks WHERE id = $1 AND source != $2 RETURNING id`,
+    [id, BUILT_IN_SOURCE],
+  );
+  return result.rows.length > 0;
 }

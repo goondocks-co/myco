@@ -261,6 +261,12 @@ export async function registerBuiltInAgentsAndTasks(definitionsDir: string): Pro
       prompt: task.prompt,
       is_default: task.isDefault ? 1 : 0,
       tool_overrides: task.toolOverrides ? JSON.stringify(task.toolOverrides) : null,
+      config: JSON.stringify({
+        phases: task.phases ?? null,
+        execution: task.execution ?? null,
+        contextQueries: task.contextQueries ?? null,
+        schemaVersion: task.schemaVersion ?? 1,
+      }),
       created_at: now,
       updated_at: now,
     });
