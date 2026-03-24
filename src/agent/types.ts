@@ -148,6 +148,8 @@ export interface EffectiveConfig {
   taskPrompt: string;
   phases?: PhaseDefinition[];
   orchestrator?: OrchestratorConfig;
+  contextQueries?: Record<string, ContextQuery[]>;
+  execution?: ExecutionConfig;
 }
 
 /** Options passed to an agent run. */

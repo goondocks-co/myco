@@ -14,7 +14,7 @@ import { upsertTask } from '@myco/db/queries/tasks.js';
 import { insertRun, getRun } from '@myco/db/queries/runs.js';
 import { epochSeconds } from '@myco/constants.js';
 import { composeTaskPrompt, composePhasePrompt } from '@myco/agent/executor.js';
-import type { PhaseDefinition, ExecutionConfig } from '@myco/agent/types.js';
+import type { PhaseDefinition, ExecutionConfig, OrchestratorConfig } from '@myco/agent/types.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -147,6 +147,9 @@ let mockYamlPhases: PhaseDefinition[] | undefined;
 /** Execution config to return from the registry mock. Set per-test. */
 let mockExecution: ExecutionConfig | undefined;
 
+/** Orchestrator config to return from the registry mock. Set per-test. */
+let mockOrchestratorConfig: OrchestratorConfig | undefined;
+
 vi.mock('@myco/agent/loader.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('@myco/agent/loader.js')>();
   return {
@@ -205,6 +208,7 @@ vi.mock('@myco/agent/registry.js', () => ({
       isDefault: true,
       ...(mockYamlPhases ? { phases: mockYamlPhases } : {}),
       ...(mockExecution ? { execution: mockExecution } : {}),
+      ...(mockOrchestratorConfig ? { orchestrator: mockOrchestratorConfig } : {}),
     };
     tasks.set(TEST_TASK_NAME, task);
     return tasks;
@@ -293,6 +297,7 @@ function resetMockState(): void {
   mockErrorMessage = 'SDK exploded';
   mockYamlPhases = undefined;
   mockExecution = undefined;
+  mockOrchestratorConfig = undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -777,5 +782,142 @@ describe('runAgent — phased execution', () => {
     const run = await getRun(result.runId);
     expect(run!.tokens_used).toBe(5550);
     expect(run!.cost_usd).toBeCloseTo(0.0126);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Orchestrator tests
+  // ---------------------------------------------------------------------------
+
+  it('orchestrator disabled (default): runs all phases statically', async () => {
+    // No mockOrchestratorConfig set — orchestrator is disabled by default
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    await runAgent(TEST_VAULT_DIR);
+
+    // Exactly 3 query() calls — one per phase, no orchestrator call
+    expect(allQueryCalls.length).toBe(3);
+  });
+
+  it('orchestrator enabled: runs planning call before phases', async () => {
+    mockOrchestratorConfig = { enabled: true };
+
+    // mockResultTexts[0] = orchestrator JSON plan, then one per phase
+    mockResultTexts = [
+      JSON.stringify({
+        phases: [
+          { name: 'read-state', skip: false },
+          { name: 'extract', skip: false },
+          { name: 'report', skip: false },
+        ],
+        reasoning: 'Running all phases.',
+      }),
+      'Found 5 batches.',
+      'Created 3 spores.',
+      'Run complete.',
+    ];
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const result = await runAgent(TEST_VAULT_DIR);
+
+    expect(result.status).toBe('completed');
+    // 1 orchestrator planning call + 3 phase calls = 4 total
+    expect(allQueryCalls.length).toBe(4);
+    // Orchestrator call uses no mcpServers (planning only)
+    const orchestratorCall = allQueryCalls[0];
+    expect((orchestratorCall.options as Record<string, unknown>).mcpServers).toBeUndefined();
+    expect((orchestratorCall.options as Record<string, unknown>).tools).toEqual([]);
+    // All 3 phases should have run
+    expect(result.phases!.length).toBe(3);
+  });
+
+  it('orchestrator skips non-required phase when directed', async () => {
+    // Make middle phase optional so orchestrator can skip it
+    mockYamlPhases = [
+      { name: 'read-state', prompt: 'Read state.', tools: ['vault_state'], maxTurns: 3, required: true },
+      { name: 'summarize', prompt: 'Update summaries.', tools: ['vault_sessions'], maxTurns: 5, required: false },
+      { name: 'report', prompt: 'Write report.', tools: ['vault_report'], maxTurns: 2, required: true },
+    ];
+    mockOrchestratorConfig = { enabled: true };
+
+    // Orchestrator plan skips the optional 'summarize' phase
+    mockResultTexts = [
+      JSON.stringify({
+        phases: [
+          { name: 'read-state', skip: false },
+          { name: 'summarize', skip: true, skipReason: 'No new sessions to summarize' },
+          { name: 'report', skip: false },
+        ],
+        reasoning: 'Skipping summarize — no new sessions.',
+      }),
+      'Vault state read.',
+      'Report written.',
+    ];
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const result = await runAgent(TEST_VAULT_DIR);
+
+    expect(result.status).toBe('completed');
+    // 1 orchestrator + 2 phase calls (summarize was skipped)
+    expect(allQueryCalls.length).toBe(3);
+    // Only 2 phase results (read-state + report)
+    expect(result.phases!.length).toBe(2);
+    expect(result.phases!.map((p) => p.name)).toEqual(['read-state', 'report']);
+  });
+
+  it('orchestrator cannot skip required phase', async () => {
+    mockOrchestratorConfig = { enabled: true };
+
+    // Orchestrator attempts to skip the required 'extract' phase
+    mockResultTexts = [
+      JSON.stringify({
+        phases: [
+          { name: 'read-state', skip: false },
+          { name: 'extract', skip: true, skipReason: 'Looks clean' },
+          { name: 'report', skip: false },
+        ],
+        reasoning: 'Tried to skip required phase.',
+      }),
+      'State read.',
+      'Extracted anyway.',
+      'Report done.',
+    ];
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const result = await runAgent(TEST_VAULT_DIR);
+
+    expect(result.status).toBe('completed');
+    // 1 orchestrator + 3 phase calls — required phase cannot be skipped
+    expect(allQueryCalls.length).toBe(4);
+    expect(result.phases!.length).toBe(3);
+    expect(result.phases!.map((p) => p.name)).toEqual(['read-state', 'extract', 'report']);
+  });
+
+  it('orchestrator adjusts turn budget per directive', async () => {
+    mockOrchestratorConfig = { enabled: true };
+
+    // Plan overrides maxTurns for the extract phase
+    mockResultTexts = [
+      JSON.stringify({
+        phases: [
+          { name: 'read-state', skip: false },
+          { name: 'extract', skip: false, maxTurns: 7 },
+          { name: 'report', skip: false },
+        ],
+        reasoning: 'Extract needs more turns than usual.',
+      }),
+      'State read.',
+      'Extracted spores.',
+      'Report done.',
+    ];
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    await runAgent(TEST_VAULT_DIR);
+
+    // Phase calls start at index 1 (index 0 is orchestrator)
+    expect((allQueryCalls[2].options as Record<string, unknown>).maxTurns).toBe(7);
   });
 });

@@ -34,6 +34,10 @@ import {
 import { loadAllTasks } from './registry.js';
 import { createVaultToolServer, createScopedVaultToolServer } from './tools.js';
 import { buildVaultContext } from './context.js';
+import { composeOrchestratorPrompt, parseOrchestratorPlan, applyDirectives, DEFAULT_ORCHESTRATOR_MAX_TURNS } from './orchestrator.js';
+import { executeContextQueries } from './context-queries.js';
+import { applyProviderEnv, restoreProviderEnv } from './provider.js';
+import type { ContextQueryResult } from './context-queries.js';
 import type {
   RunOptions,
   AgentRunResult,
@@ -230,7 +234,54 @@ async function executePhasedQuery(
   let totalTokens = 0;
   let totalCost = 0;
 
-  for (const phase of phases) {
+  // ---------------------------------------------------------------------------
+  // Orchestrator planning (opt-in via config.orchestrator.enabled)
+  // ---------------------------------------------------------------------------
+
+  let effectivePhases = [...phases];
+
+  if (config.orchestrator?.enabled) {
+    // 1. Run context queries (if any)
+    const contextQueries = config.contextQueries
+      ? Object.values(config.contextQueries).flat()
+      : [];
+    const contextResults: ContextQueryResult[] = contextQueries.length > 0
+      ? await executeContextQueries(agentId, contextQueries)
+      : [];
+
+    // 2. Compose orchestrator prompt
+    const orchestratorPrompt = composeOrchestratorPrompt(vaultContext, phases, contextResults);
+    const orchestratorModel = config.orchestrator.model ?? config.model;
+    const orchestratorMaxTurns = config.orchestrator.maxTurns ?? DEFAULT_ORCHESTRATOR_MAX_TURNS;
+
+    // 3. Call orchestrator (no tools — planning only)
+    let planResponse = '';
+    for await (const message of query({
+      prompt: orchestratorPrompt,
+      options: {
+        model: orchestratorModel,
+        maxTurns: orchestratorMaxTurns,
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+        persistSession: PERSIST_SESSION,
+        tools: [],
+      },
+    })) {
+      if (message.type === 'result' && 'result' in message && typeof message.result === 'string') {
+        planResponse = message.result;
+      }
+    }
+
+    // 4. Parse plan and apply directives
+    const plan = parseOrchestratorPlan(planResponse, phases);
+    effectivePhases = applyDirectives(phases, plan.phases);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase loop
+  // ---------------------------------------------------------------------------
+
+  for (const phase of effectivePhases) {
     const phasePrompt = composePhasePrompt(
       vaultContext,
       config.taskDisplayName,
@@ -247,6 +298,10 @@ async function executePhasedQuery(
     let phaseTokens = 0;
     let phaseTurns = 0;
     let phaseSummary = '';
+
+    // Apply provider env for this phase (if execution.provider is configured)
+    const phaseProvider = config.execution?.provider;
+    const savedEnv = phaseProvider ? applyProviderEnv(phaseProvider) : null;
 
     try {
       for await (const message of query({
@@ -297,10 +352,16 @@ async function executePhasedQuery(
         summary: `Error: ${errorMessage}`,
       });
 
-      // If a required phase fails, stop the pipeline
+      // If a required phase fails, stop the pipeline.
+      // finally runs before break, so provider env is always restored.
       if (phase.required) {
+        totalTokens += phaseTokens;
+        totalCost += phaseCost;
         break;
       }
+    } finally {
+      // Always restore provider env after each phase query (including on break).
+      if (savedEnv) restoreProviderEnv(savedEnv);
     }
 
     totalTokens += phaseTokens;
@@ -370,6 +431,7 @@ export async function runAgent(
         ...(yamlTask?.phases ? { phases: yamlTask.phases } : {}),
         ...(yamlTask?.execution ? { execution: yamlTask.execution } : {}),
         ...(yamlTask?.contextQueries ? { contextQueries: yamlTask.contextQueries } : {}),
+        ...(yamlTask?.orchestrator ? { orchestrator: yamlTask.orchestrator } : {}),
       }
     : undefined;
 

@@ -225,6 +225,9 @@ export function resolveEffectiveConfig(
     taskDisplayName,
     taskPrompt,
     ...(taskOverrides?.phases ? { phases: taskOverrides.phases } : {}),
+    ...(taskOverrides?.orchestrator ? { orchestrator: taskOverrides.orchestrator } : {}),
+    ...(taskOverrides?.contextQueries ? { contextQueries: taskOverrides.contextQueries } : {}),
+    ...(taskOverrides?.execution ? { execution: taskOverrides.execution } : {}),
   };
 }
 
