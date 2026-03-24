@@ -6,7 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { type EdgeRow, SELECT_EDGE_COLUMNS, toEdgeRow } from '@myco/db/queries/edges.js';
+import { getGraphForNode, type GraphEdgeRow } from '@myco/db/queries/graph-edges.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -39,12 +39,15 @@ export interface EntityRow {
   properties: string | null;
   first_seen: number;
   last_seen: number;
+  status: string;
 }
 
 /** Filter options for `listEntities`. */
 export interface ListEntitiesOptions {
   agent_id?: string;
   type?: string;
+  /** Filter by status (default 'active'). */
+  status?: string;
   /** Filter by entity_mentions subquery — must be paired with note_type. */
   mentioned_in?: string;
   /** Required when mentioned_in is provided. */
@@ -57,11 +60,8 @@ export interface ListEntitiesOptions {
 export interface EntityGraph {
   center: EntityRow;
   nodes: EntityRow[];
-  edges: EdgeRow[];
+  edges: GraphEdgeRow[];
 }
-
-// Re-export EdgeRow for consumers that import it from this module.
-export type { EdgeRow };
 
 // ---------------------------------------------------------------------------
 // Column list
@@ -75,6 +75,7 @@ const ENTITY_COLUMNS = [
   'properties',
   'first_seen',
   'last_seen',
+  'status',
 ] as const;
 
 const SELECT_COLUMNS = ENTITY_COLUMNS.join(', ');
@@ -93,6 +94,7 @@ function toEntityRow(row: Record<string, unknown>): EntityRow {
     properties: (row.properties as string) ?? null,
     first_seen: row.first_seen as number,
     last_seen: row.last_seen as number,
+    status: (row.status as string) ?? 'active',
   };
 }
 
@@ -149,6 +151,10 @@ export async function getEntity(id: string): Promise<EntityRow | null> {
 /**
  * List entities with optional filters, ordered by last_seen DESC.
  *
+ * Defaults to `status = 'active'` — archived entities are excluded unless
+ * `status` is explicitly provided. Pass `status: undefined` in options to
+ * get only active entities (the default), or set a specific status string.
+ *
  * When both `mentioned_in` and `note_type` are provided, filters to entities
  * referenced in a specific note via the entity_mentions subquery.
  */
@@ -169,6 +175,15 @@ export async function listEntities(
   if (options.type !== undefined) {
     conditions.push(`type = $${paramIndex++}`);
     params.push(options.type);
+  }
+
+  // Default: only show active entities (status column added in v5)
+  if (options.status !== undefined) {
+    conditions.push(`status = $${paramIndex++}`);
+    params.push(options.status);
+  } else {
+    conditions.push(`status = $${paramIndex++}`);
+    params.push('active');
   }
 
   if (options.mentioned_in !== undefined && options.note_type !== undefined) {
@@ -202,6 +217,9 @@ export async function listEntities(
 /**
  * Fetch an entity and its surrounding graph via BFS traversal.
  *
+ * Delegates to `getGraphForNode` (graph_edges table) for the BFS,
+ * then fetches entity rows for all connected entity nodes.
+ *
  * @param entityId - The center entity to expand from.
  * @param depth    - Number of hops to traverse (1–3, default 1).
  * @returns `{ center, nodes, edges }` where nodes are all connected entities
@@ -217,54 +235,16 @@ export async function getEntityWithEdges(
   if (center === null) return null;
 
   const clampedDepth = Math.min(Math.max(depth, 1), 3);
+  const graph = await getGraphForNode(entityId, 'entity', { depth: clampedDepth });
 
-  const seenEdgeIds = new Set<number>();
-  const collectedEdges: EdgeRow[] = [];
-  const visited = new Set<string>([entityId]);
-  let frontier = new Set<string>([entityId]);
-
-  for (let hop = 0; hop < clampedDepth; hop++) {
-    if (frontier.size === 0) break;
-
-    const frontierArray = Array.from(frontier);
-    // Build parameterized IN clause
-    const placeholders = frontierArray
-      .map((_, i) => `$${i + 1}`)
-      .join(', ');
-
-    const result = await db.query(
-      `SELECT ${SELECT_EDGE_COLUMNS}
-       FROM edges
-       WHERE source_id IN (${placeholders}) OR target_id IN (${placeholders})`,
-      frontierArray,
-    );
-
-    const nextFrontier = new Set<string>();
-
-    for (const row of result.rows as Record<string, unknown>[]) {
-      const edge = toEdgeRow(row);
-      if (!seenEdgeIds.has(edge.id)) {
-        seenEdgeIds.add(edge.id);
-        collectedEdges.push(edge);
-      }
-      // Add unvisited endpoints to the next frontier
-      if (!visited.has(edge.source_id)) nextFrontier.add(edge.source_id);
-      if (!visited.has(edge.target_id)) nextFrontier.add(edge.target_id);
-    }
-
-    // Mark all next-frontier nodes as visited before the next hop
-    for (const id of nextFrontier) visited.add(id);
-    frontier = nextFrontier;
-  }
-
-  // Collect all node IDs (excluding center)
+  // Collect all entity node IDs from edges (excluding center)
   const nodeIdSet = new Set<string>();
-  for (const edge of collectedEdges) {
-    if (edge.source_id !== entityId) nodeIdSet.add(edge.source_id);
-    if (edge.target_id !== entityId) nodeIdSet.add(edge.target_id);
+  for (const edge of graph.edges) {
+    if (edge.source_type === 'entity' && edge.source_id !== entityId) nodeIdSet.add(edge.source_id);
+    if (edge.target_type === 'entity' && edge.target_id !== entityId) nodeIdSet.add(edge.target_id);
   }
 
-  // Fetch all connected nodes
+  // Fetch all connected entity nodes
   const nodeIds = Array.from(nodeIdSet);
   let nodes: EntityRow[] = [];
   if (nodeIds.length > 0) {
@@ -276,5 +256,5 @@ export async function getEntityWithEdges(
     nodes = (nodeResult.rows as Record<string, unknown>[]).map(toEntityRow);
   }
 
-  return { center, nodes, edges: collectedEdges };
+  return { center, nodes, edges: graph.edges };
 }

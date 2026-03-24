@@ -1,4 +1,9 @@
-# Supersession sweep — find and resolve duplicate or outdated spores.
+# =============================================================================
+# Built-in Task: Supersession Sweep
+# =============================================================================
+# Scan active spores for duplicates, contradictions, and outdated
+# observations. Resolve or archive as appropriate.
+# =============================================================================
 
 name: supersession-sweep
 displayName: Supersession Sweep
@@ -7,16 +12,54 @@ description: >
   observations. Supersede, resolve, or archive spores as appropriate.
   Records resolution events for audit trail.
 agent: myco-agent
-prompt: >
-  Review all active spores. For each spore, search for semantically similar
-  active spores. When duplicates or contradictions are found, resolve them
-  by superseding the older or less accurate spore. When an observation is
-  clearly outdated, archive it. Record resolution events with clear reasons
-  for each action taken.
 isDefault: false
+maxTurns: 30
+timeoutSeconds: 300
+
+prompt: |
+  Review active spores for supersession opportunities. Budget: ~25 turns.
+
+  ## Phase 1 — Inventory (budget: 2 turns)
+
+  1. Call `vault_spores` with status "active" to see current observations
+  2. Group mentally by observation_type for systematic review
+
+  ## Phase 2 — Semantic Duplicate Detection (budget: 10 turns)
+
+  For each observation type (gotcha, decision, discovery, trade_off, bug_fix):
+  1. Pick 2-3 representative spores of that type
+  2. Call `vault_search` with their content to find similar active spores
+  3. When you find duplicates or near-duplicates, note the cluster
+
+  If `vault_search` is unavailable (no embeddings), use `vault_spores`
+  filtered by observation_type and compare manually. Report the limitation.
+
+  ## Phase 3 — Resolution (budget: 10 turns)
+
+  For each cluster of duplicates:
+  1. Determine which spore has the best content (most complete, most accurate)
+  2. Call `vault_resolve_spore` with action "supersede" on the inferior spores:
+     - new_spore_id: the kept spore's ID
+     - reason: specific explanation (not just "duplicate")
+  3. For truly outdated spores (no longer accurate):
+     - Call `vault_resolve_spore` with action "archive"
+     - reason: explain what changed
+
+  Only supersede when the new information genuinely replaces the old.
+  When in doubt, keep both.
+
+  ## Phase 4 — Report (budget: 2 turns)
+
+  Call `vault_report` with action "supersession":
+  - Spores reviewed: N
+  - Superseded: N (with reasons summary)
+  - Archived: N (with reasons summary)
+  - Kept (no action): N
+
 toolOverrides:
-  - query_spores
-  - semantic_search
-  - get_agent_state
-  - resolve_spore
-  - set_agent_state
+  - vault_spores
+  - vault_search
+  - vault_state
+  - vault_resolve_spore
+  - vault_set_state
+  - vault_report

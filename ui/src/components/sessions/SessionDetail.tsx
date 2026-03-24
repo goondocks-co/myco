@@ -1,9 +1,11 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlertCircle, Loader2 } from 'lucide-react';
+import { ArrowLeft, AlertCircle, Loader2, Sparkles } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { useSession } from '../../hooks/use-sessions';
+import { useTriggerRun } from '../../hooks/use-agent';
 import { BatchTimeline } from './BatchTimeline';
 import { formatTimeAgo } from '../../lib/format';
 
@@ -54,6 +56,8 @@ export interface SessionDetailProps {
 export function SessionDetail({ id }: SessionDetailProps) {
   const navigate = useNavigate();
   const { data: session, isLoading, isError, error } = useSession(id);
+  const triggerRun = useTriggerRun();
+  const [summaryStatus, setSummaryStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
 
   if (isLoading) {
     return (
@@ -108,6 +112,31 @@ export function SessionDetail({ id }: SessionDetailProps) {
           <Badge variant={statusVariant(session.status)}>
             {session.status.charAt(0).toUpperCase() + session.status.slice(1)}
           </Badge>
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto gap-2"
+            disabled={summaryStatus === 'running'}
+            onClick={async () => {
+              setSummaryStatus('running');
+              try {
+                await triggerRun.mutateAsync({
+                  task: 'title-summary',
+                  instruction: `Process session ${id} only`,
+                });
+                setSummaryStatus('done');
+              } catch {
+                setSummaryStatus('error');
+              }
+            }}
+          >
+            {summaryStatus === 'running' ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Sparkles className="h-4 w-4" />
+            )}
+            {summaryStatus === 'done' ? 'Summary Requested' : 'Generate Summary'}
+          </Button>
         </div>
         <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
           {session.agent && <span>Agent: <span className="text-foreground">{session.agent}</span></span>}

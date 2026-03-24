@@ -90,7 +90,7 @@ export async function gatherStats(vaultDir: string, options?: { active_sessions?
     db.query('SELECT COUNT(*) AS cnt FROM plans'),
     db.query('SELECT COUNT(*) AS cnt FROM artifacts'),
     db.query('SELECT COUNT(*) AS cnt FROM entities'),
-    db.query('SELECT COUNT(*) AS cnt FROM edges'),
+    db.query('SELECT COUNT(*) AS cnt FROM graph_edges'),
     // Shared embedding queue depth helper (consistent filter logic)
     getEmbeddingQueueDepth(),
     // Unprocessed batches

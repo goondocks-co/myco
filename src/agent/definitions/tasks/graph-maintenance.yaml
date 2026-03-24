@@ -1,25 +1,73 @@
-# Graph maintenance task — update entities and edges from existing spores.
+# =============================================================================
+# Built-in Task: Graph Maintenance
+# =============================================================================
+# Scan existing spores to build/update entities and semantic edges.
+# Does not extract new spores or regenerate digest.
+# =============================================================================
 
 name: graph-maintenance
 displayName: Graph Maintenance
 description: >
   Scan existing spores and sessions to update the knowledge graph. Adds
-  missing entities and edges, merges duplicates, and updates temporal
-  validity. Does not extract new spores or regenerate digest.
+  missing entities and semantic edges, merges duplicates. Does not extract
+  new spores or regenerate digest.
 agent: myco-agent
-prompt: >
-  Review existing spores and sessions to maintain the knowledge graph.
-  For each active spore, ensure referenced entities exist and relationships
-  are represented as edges. Merge duplicate entities. Update temporal
-  validity (valid_from/valid_until) on edges where evidence exists.
-  Do not extract new spores or regenerate digest extracts.
 isDefault: false
+maxTurns: 40
+timeoutSeconds: 480
+
+prompt: |
+  Maintain the knowledge graph from existing spores. Budget: ~35 turns.
+
+  ## Phase 1 — Inventory (budget: 3 turns)
+
+  1. Call `vault_state` for context
+  2. Call `vault_spores` with status "active" to see current observations
+  3. Call `vault_search` to check embedding availability
+
+  ## Phase 2 — Entity Discovery (budget: 15 turns)
+
+  Scan active spores for entity candidates:
+  1. Look for components, concepts, or people mentioned in 3+ spores
+     from 2+ different sessions
+  2. Call `vault_create_entity` for each valid candidate:
+     - type: component | concept | person
+     - name: specific, named thing (not abstract categories)
+  3. Good: "DaemonClient", "cursor-based pagination", "Chris"
+  4. Bad: "testing phase", "technical debt", "code quality"
+
+  ## Phase 3 — Semantic Edges (budget: 10 turns)
+
+  Create edges between related nodes:
+  1. REFERENCES (spore→entity): when a spore discusses a specific entity
+  2. DEPENDS_ON (entity→entity): architectural dependencies
+  3. AFFECTS (spore→entity): when an observation impacts a component
+  4. RELATES_TO: general semantic connections
+  5. SUPERSEDED_BY: when a newer observation replaces an older one
+
+  Always include source_type and target_type on every edge.
+  Do NOT create lineage edges (FROM_SESSION, EXTRACTED_FROM, etc.).
+
+  ## Phase 4 — Deduplication (budget: 5 turns)
+
+  Check for duplicate entities (same concept, different names):
+  1. Use `vault_search` to find semantically similar entities
+  2. If duplicates found, keep the better-named one and note the issue
+     via `vault_report`
+
+  ## Phase 5 — Report (budget: 2 turns)
+
+  Call `vault_report` with action "graph":
+  - Entities created: N (by type)
+  - Edges created: N (by type)
+  - Duplicates found: N
+
 toolOverrides:
-  - query_spores
-  - query_graph
-  - query_sessions
-  - semantic_search
-  - get_agent_state
-  - create_entity
-  - create_edge
-  - set_agent_state
+  - vault_spores
+  - vault_sessions
+  - vault_search
+  - vault_state
+  - vault_create_entity
+  - vault_create_edge
+  - vault_set_state
+  - vault_report

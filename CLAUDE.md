@@ -152,6 +152,10 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
 | **Dormancy** | Digest timer suspended when no new substrate arrives for an extended period. |
 | **Activation** | Return from dormancy to active metabolism, triggered by new session events. |
 | **Spore** | Discrete observation extracted from session activity (gotcha, decision, discovery, trade-off, bug fix). Stored in `vault/spores/`. |
+| **Wisdom** | Higher-order observation synthesized from 3+ related spores. Stored as spore with `observation_type: 'wisdom'` and `properties.consolidated_from`. |
+| **Lineage edge** | Automatic graph connection created by daemon on insert: FROM_SESSION, EXTRACTED_FROM, HAS_BATCH, DERIVED_FROM. No LLM needed. |
+| **Semantic edge** | Intelligence graph connection created by agent: RELATES_TO, SUPERSEDED_BY, REFERENCES, DEPENDS_ON, AFFECTS. LLM-driven. |
+| **Graph edge** | Stored in `graph_edges` table. Supports cross-type references between session, batch, spore, and entity nodes. |
 | **Symbiont** | External coding agent that Myco integrates with (Claude Code, Cursor). Named for the mycorrhizal symbiotic relationship. Declared via YAML manifests in `src/symbionts/manifests/`. |
 
 ## Vault Structure

@@ -146,6 +146,49 @@ flowchart TD
 
 Superseded spores are preserved with lineage metadata (`superseded_by` frontmatter + Obsidian wikilink) — never deleted. They are filtered from search results, recall, and digest substrate.
 
+## Graph Architecture
+
+The knowledge graph uses a two-layer model stored in the `graph_edges` table:
+
+**Lineage layer** (automatic, no LLM):
+- `FROM_SESSION` — spore → session (created on spore insert)
+- `EXTRACTED_FROM` — spore → batch (created on spore insert)
+- `HAS_BATCH` — session → batch (created on batch insert)
+- `DERIVED_FROM` — wisdom spore → source spore (created on consolidation)
+
+**Intelligence layer** (agent-created, LLM-driven):
+- `RELATES_TO` — semantic relationship between spores or entities
+- `SUPERSEDED_BY` — newer observation replaces older one
+- `REFERENCES` — spore references an entity
+- `DEPENDS_ON` — architectural dependency between entities
+- `AFFECTS` — observation impacts a component
+
+Node types: `session`, `batch`, `spore`, `entity`. Unlike the old `edges` table, `graph_edges` has no FK constraints on source/target — any node can connect to any other.
+
+### Consolidation
+
+When the intelligence agent finds 3+ semantically similar spores, it synthesizes them into a **wisdom** spore:
+
+1. Wisdom spore created with `observation_type: 'wisdom'` and `properties.consolidated_from` listing source IDs
+2. `DERIVED_FROM` lineage edges auto-created from wisdom to each source
+3. Source spores resolved with action `consolidate` (status → 'consolidated')
+4. Consolidated spores excluded from future consolidation to prevent wisdom-of-wisdom
+
+### Entity Types
+
+Three types only (tightened from the original seven):
+- **component** — module, class, service, or significant function
+- **concept** — architectural pattern or domain concept spanning 2+ sessions
+- **person** — contributor or team member
+
+Entities are created only when referenced by 3+ spores from 2+ sessions. Old types (file, bug, decision, tool) are archived on startup.
+
+### Session Summary Triggers
+
+Summaries are event-driven, not dependent on full agent runs:
+- **On session stop**: fire-and-forget title-summary agent task
+- **On batch threshold**: triggered every N batches (configurable via `agent.summary_batch_interval`)
+
 ## Indexing & Embedding Pipeline
 
 Every vault write goes through a two-stage indexing process: FTS for keyword search, vector embeddings for semantic search.

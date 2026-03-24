@@ -352,7 +352,7 @@ describe('vault tools', () => {
   });
 
   describe('vault_create_edge', () => {
-    it('creates an edge between two entities', async () => {
+    it('creates a semantic edge in graph_edges', async () => {
       // Create two entities first
       const db = getDatabase();
       const now = epochNow();
@@ -371,16 +371,29 @@ describe('vault tools', () => {
       const result = await t.handler(
         {
           source_id: 'entity-a',
+          source_type: 'entity',
           target_id: 'entity-b',
+          target_type: 'entity',
           type: 'DEPENDS_ON',
           confidence: 0.9,
         },
         undefined,
       );
-      const edge = parseResult(result) as { agent_id: string; type: string; confidence: number };
+      const edge = parseResult(result) as {
+        agent_id: string; type: string; confidence: number;
+        source_type: string; target_type: string;
+      };
       expect(edge.agent_id).toBe(TEST_AGENT_ID);
       expect(edge.type).toBe('DEPENDS_ON');
       expect(edge.confidence).toBe(0.9);
+      expect(edge.source_type).toBe('entity');
+      expect(edge.target_type).toBe('entity');
+
+      // Verify it's stored in graph_edges, not edges
+      const graphEdges = await db.query(
+        `SELECT * FROM graph_edges WHERE type = 'DEPENDS_ON'`,
+      );
+      expect(graphEdges.rows).toHaveLength(1);
     });
   });
 

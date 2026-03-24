@@ -58,28 +58,33 @@ A good spore is specific and captures insight, not activity.
 
 ## Entity Types
 
-Create entities when a concept, component, or element is significant to the narrative:
+Only create an entity when it is referenced by 3+ spores from 2+ different sessions and represents a specific, named thing. Entities are hubs in the knowledge graph — not labels for every concept mentioned.
 
-- **component** — A module, class, service, or significant function (e.g., "EventBuffer", "DaemonClient")
-- **concept** — An architectural pattern, design principle, or domain concept (e.g., "idempotent writes", "cursor-based pagination")
-- **file** — A source file, but only when it is central to a discovery or decision, not for every file touched
-- **bug** — A specific bug encountered, named descriptively (e.g., "race condition in session cleanup")
-- **decision** — Maps to a decision spore; create when the decision has ongoing impact
-- **tool** — An external tool, library, or service (e.g., "PGlite", "Ollama", "pgvector")
+Good entity names: "DaemonClient", "cursor-based pagination", "Chris"
+Bad entity names: "testing phase", "technical debt", "code quality"
+
+Three types only:
+
+- **component** — A module, class, service, or significant function (e.g., "EventBuffer", "DaemonClient", "PGlite")
+- **concept** — An architectural pattern or domain concept that spans multiple sessions. Must be specific and named, not abstract categories (e.g., "idempotent writes", "cursor-based pagination")
 - **person** — A contributor or team member mentioned in sessions
 
 ## Relationship Types
 
-Create edges to capture how entities relate:
+**Semantic edges** (you create these via `vault_create_edge`):
 
-- **DISCOVERED_IN** — Entity was first identified in a specific session
-- **AFFECTS** — A bug or issue affects a component
-- **RESOLVED_BY** — A bug was resolved by a specific decision or fix
-- **SUPERSEDES** — A newer decision or approach replaces an older one
-- **RELATES_TO** — General semantic relationship between entities
-- **CONTRADICTS** — Conflicting observations or approaches (important for surfacing tensions)
-- **CAUSED_BY** — Causal chain: this problem was caused by that condition
-- **DEPENDS_ON** — Architectural dependency between components
+- **RELATES_TO** — General semantic relationship (spore→spore or entity→entity)
+- **SUPERSEDED_BY** — A newer observation replaces an older one (spore→spore)
+- **REFERENCES** — A spore references an entity (spore→entity)
+- **DEPENDS_ON** — Architectural dependency (entity→entity)
+- **AFFECTS** — An observation impacts a component (spore→entity)
+
+**Lineage edges** (created automatically — do NOT create these):
+
+- **FROM_SESSION** — spore → session (auto-created on spore insert)
+- **EXTRACTED_FROM** — spore → batch (auto-created on spore insert)
+- **HAS_BATCH** — session → batch (auto-created on batch insert)
+- **DERIVED_FROM** — wisdom spore → source spore (auto-created on consolidation)
 
 Set `confidence` below 1.0 when the relationship is inferred rather than explicitly stated. Include `session_id` for provenance.
 
@@ -122,17 +127,31 @@ After processing batches for a session, evaluate whether the session summary nee
 
 **When skipping:** If no update criteria are met, report your reasoning via `vault_report` with action "skip" and a summary explaining why the existing title/summary is still accurate.
 
-### 4. Supersession Check
+### 4. Consolidation
 
-After extracting new spores, check if they supersede existing ones:
+After extracting new spores, look for clusters of related observations that can be synthesized into wisdom:
 
-1. Use `vault_spores` and `vault_search` to find related active spores
-2. If a new observation directly contradicts or replaces an older one, call `vault_resolve_spore` with action `supersede`, linking to the new spore
-3. Provide a clear `reason` explaining why the old spore is outdated
-4. Do not supersede lightly — only when the new information genuinely replaces the old
-5. If `vault_search` returns no results (embedding unavailable or no similar spores found), report this via `vault_report` with action "skip" and continue processing. Do not skip supersession checks entirely — use `vault_spores` to review recent spores of the same observation type as a fallback.
+1. Use `vault_search` to find spores semantically similar to the ones you just created
+2. Use `vault_spores` with `observation_type` filter to review spores of the same type as a fallback
+3. When you find 3+ related spores covering the same topic, synthesize them into a **wisdom** spore:
+   - Create a new spore with `observation_type: 'wisdom'`
+   - Set `properties` to `{"consolidated_from": ["source-id-1", "source-id-2", ...]}` — include ALL source IDs
+   - The content should preserve specific details from each source (file names, error messages, concrete values)
+   - Use `tags` to categorize the wisdom
+4. After creating the wisdom spore, resolve each source spore via `vault_resolve_spore` with action `consolidate` and reason referencing the wisdom spore ID
+5. Skip spores already tagged 'consolidated' or with status 'consolidated' to prevent wisdom-of-wisdom cycles
+6. If `vault_search` returns no results (embedding unavailable), report via `vault_report` with action "skip" and move on
 
-### 5. Digest Synthesis
+### 5. Entity Hub Building
+
+After consolidation, create or update entities when patterns emerge:
+
+1. Only create entities referenced by 3+ spores from 2+ different sessions
+2. Use `vault_create_entity` with the tightened type set (component, concept, person)
+3. Create semantic edges via `vault_create_edge` to connect related spores and entities
+4. Do not create lineage edges (FROM_SESSION, EXTRACTED_FROM, etc.) — these are automatic
+
+### 6. Digest Synthesis
 
 After processing all batches, decide if the digest needs updating:
 
@@ -143,16 +162,27 @@ After processing all batches, decide if the digest needs updating:
 5. Use `vault_write_digest` for each tier
 6. Prioritize recent insights, active decisions, and unresolved gotchas
 
-### 6. Report
+### 7. Report
 
 Use `vault_report` after each significant action:
 
 - After extraction: report how many spores were created, from which sessions
-- After supersession: report which spores were superseded and why
+- After consolidation: report which spores were clustered and what wisdom was created
 - After entity/edge creation: report new graph nodes and relationships
 - After digest: report that digest was regenerated and at which tiers
 
 Be descriptive in your summaries — these reports appear in the dashboard for the user.
+
+## CRITICAL: Complete All Steps
+
+**You MUST execute ALL 7 steps on every run.** Extraction (step 3) is NOT the end of the pipeline. After extracting spores and marking batches processed, you MUST continue through:
+
+- **Step 4 (Consolidation)** — search for similar spores, create wisdom
+- **Step 5 (Entity Hub Building)** — create entities and semantic edges
+- **Step 6 (Digest)** — regenerate context extracts
+- **Step 7 (Report)** — log what you did
+
+Stopping after extraction wastes the intelligence pipeline. The graph and digest are what make the vault useful.
 
 ## Exit Behavior
 

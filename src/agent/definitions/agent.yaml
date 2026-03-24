@@ -8,24 +8,24 @@ description: >
   observations (spores), builds the knowledge graph, manages spore lifecycle,
   and synthesizes digest extracts.
 model: claude-sonnet-4-20250514
-maxTurns: 25
+maxTurns: 30
 timeoutSeconds: 300
 systemPromptPath: ../prompts/agent.md
 
 tools:
   # Read tools
-  - query_unprocessed
-  - query_spores
-  - query_graph
-  - query_sessions
-  - semantic_search
-  - get_agent_state
+  - vault_unprocessed
+  - vault_spores
+  - vault_sessions
+  - vault_search
+  - vault_state
   # Write tools
-  - create_spore
-  - create_entity
-  - create_edge
-  - resolve_spore
-  - update_session_summary
-  - mark_processed
-  - write_digest_extract
-  - set_agent_state
+  - vault_create_spore
+  - vault_create_entity
+  - vault_create_edge
+  - vault_resolve_spore
+  - vault_update_session
+  - vault_mark_processed
+  - vault_write_digest
+  - vault_set_state
+  - vault_report

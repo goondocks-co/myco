@@ -23,6 +23,8 @@ const AgentSchema = z.object({
   auto_run: z.boolean().default(true),
   /** Seconds between agent timer checks. */
   interval_seconds: z.number().int().positive().default(300),
+  /** Number of batches between event-driven summary triggers (0 to disable). */
+  summary_batch_interval: z.number().int().min(0).default(5),
 });
 
 export const MycoConfigSchema = z.preprocess(
