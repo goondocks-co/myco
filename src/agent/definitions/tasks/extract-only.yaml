@@ -15,11 +15,12 @@ prompt: >
   digest extracts. Mark batches as processed when complete.
 isDefault: false
 toolOverrides:
-  - query_unprocessed
-  - query_spores
-  - semantic_search
-  - get_agent_state
-  - create_spore
-  - update_session_summary
-  - mark_processed
-  - set_agent_state
+  - vault_unprocessed
+  - vault_spores
+  - vault_search
+  - vault_state
+  - vault_create_spore
+  - vault_update_session
+  - vault_mark_processed
+  - vault_set_state
+  - vault_report

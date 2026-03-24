@@ -15,8 +15,9 @@ prompt: >
   session with the generated title and summary.
 isDefault: false
 toolOverrides:
-  - query_unprocessed
-  - query_sessions
-  - get_agent_state
-  - update_session_summary
-  - set_agent_state
+  - vault_unprocessed
+  - vault_sessions
+  - vault_state
+  - vault_update_session
+  - vault_set_state
+  - vault_report

@@ -428,7 +428,7 @@ describe('agent loader', () => {
 
       const overrides = JSON.parse(digestOnly!.tool_overrides!) as string[];
       expect(Array.isArray(overrides)).toBe(true);
-      expect(overrides).toContain('write_digest_extract');
+      expect(overrides).toContain('vault_write_digest');
     });
   });
 });

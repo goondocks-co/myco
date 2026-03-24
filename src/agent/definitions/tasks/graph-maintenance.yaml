@@ -16,11 +16,11 @@ prompt: >
   Do not extract new spores or regenerate digest extracts.
 isDefault: false
 toolOverrides:
-  - query_spores
-  - query_graph
-  - query_sessions
-  - semantic_search
-  - get_agent_state
-  - create_entity
-  - create_edge
-  - set_agent_state
+  - vault_spores
+  - vault_sessions
+  - vault_search
+  - vault_state
+  - vault_create_entity
+  - vault_create_edge
+  - vault_set_state
+  - vault_report

@@ -13,10 +13,10 @@ prompt: >
   context extracts. Do not process new batches or extract new spores.
 isDefault: false
 toolOverrides:
-  - query_spores
-  - query_graph
-  - query_sessions
-  - semantic_search
-  - get_agent_state
-  - write_digest_extract
-  - set_agent_state
+  - vault_spores
+  - vault_sessions
+  - vault_search
+  - vault_state
+  - vault_write_digest
+  - vault_set_state
+  - vault_report
