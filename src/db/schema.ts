@@ -13,10 +13,10 @@ import type { PGlite } from '@electric-sql/pglite';
 import { epochSeconds } from '@myco/constants.js';
 
 /** Current schema version — increment on breaking changes. */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /** Previous schema version (for migration guard). */
-export const PREVIOUS_SCHEMA_VERSION = 3;
+export const PREVIOUS_SCHEMA_VERSION = 4;
 
 /** Embedding vector dimensions (bge-m3 default). */
 export const EMBEDDING_DIMENSIONS = 1024;
@@ -184,6 +184,7 @@ const SPORES_TABLE = `
     file_path         TEXT,
     tags              TEXT,
     content_hash      TEXT UNIQUE,
+    properties        TEXT,
     created_at        INTEGER NOT NULL,
     updated_at        INTEGER,
     embedding         vector(${EMBEDDING_DIMENSIONS})
@@ -198,6 +199,7 @@ const ENTITIES_TABLE = `
     properties  TEXT,
     first_seen  INTEGER NOT NULL,
     last_seen   INTEGER NOT NULL,
+    status      TEXT DEFAULT 'active',
     UNIQUE (agent_id, type, name)
   )`;
 
@@ -214,6 +216,21 @@ const EDGES_TABLE = `
     confidence  REAL DEFAULT 1.0,
     properties  TEXT,
     created_at  INTEGER NOT NULL
+  )`;
+
+const GRAPH_EDGES_TABLE = `
+  CREATE TABLE IF NOT EXISTS graph_edges (
+    id              TEXT PRIMARY KEY,
+    agent_id        TEXT NOT NULL REFERENCES agents(id),
+    source_id       TEXT NOT NULL,
+    source_type     TEXT NOT NULL,
+    target_id       TEXT NOT NULL,
+    target_type     TEXT NOT NULL,
+    type            TEXT NOT NULL,
+    session_id      TEXT,
+    confidence      REAL DEFAULT 1.0,
+    properties      TEXT,
+    created_at      INTEGER NOT NULL
   )`;
 
 const ENTITY_MENTIONS_TABLE = `
@@ -299,6 +316,7 @@ const AGENT_TASKS_TABLE = `
     prompt          TEXT NOT NULL,
     is_default      INTEGER DEFAULT 0,
     tool_overrides  TEXT,
+    model           TEXT,
     config          TEXT,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER
@@ -353,6 +371,12 @@ const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_edges_target_id ON edges (target_id)',
   'CREATE INDEX IF NOT EXISTS idx_edges_type ON edges (type)',
 
+  // Graph edges
+  'CREATE INDEX IF NOT EXISTS idx_graph_edges_source ON graph_edges (source_id, source_type)',
+  'CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON graph_edges (target_id, target_type)',
+  'CREATE INDEX IF NOT EXISTS idx_graph_edges_type ON graph_edges (type)',
+  'CREATE INDEX IF NOT EXISTS idx_graph_edges_agent ON graph_edges (agent_id)',
+
   // Entity mentions
   'CREATE INDEX IF NOT EXISTS idx_entity_mentions_entity_id ON entity_mentions (entity_id)',
   'CREATE INDEX IF NOT EXISTS idx_entity_mentions_agent_id ON entity_mentions (agent_id)',
@@ -404,6 +428,7 @@ const TABLE_DDLS = [
   SPORES_TABLE,
   ENTITIES_TABLE,
   EDGES_TABLE,
+  GRAPH_EDGES_TABLE,
   ENTITY_MENTIONS_TABLE,
   RESOLUTION_EVENTS_TABLE,
   DIGEST_EXTRACTS_TABLE,
@@ -635,6 +660,32 @@ async function migrateV3ToV4(db: PGlite): Promise<void> {
 }
 
 /**
+ * Migrate from v4 → v5:
+ * - Add `properties` column to spores
+ * - Add `model` column to agent_tasks
+ * - Add `status` column to entities
+ *
+ * The `graph_edges` table is created by the DDL loop (IF NOT EXISTS).
+ * Idempotent: each ALTER is guarded by column existence checks.
+ */
+async function migrateV4ToV5(db: PGlite): Promise<void> {
+  // Add properties column to spores
+  if (await tableExists(db, 'spores') && !(await columnExists(db, 'spores', 'properties'))) {
+    await db.query('ALTER TABLE spores ADD COLUMN properties TEXT');
+  }
+  // Add model column to agent_tasks
+  if (await tableExists(db, 'agent_tasks') && !(await columnExists(db, 'agent_tasks', 'model'))) {
+    await db.query('ALTER TABLE agent_tasks ADD COLUMN model TEXT');
+  }
+  // Add status column to entities
+  if (await tableExists(db, 'entities') && !(await columnExists(db, 'entities', 'status'))) {
+    await db.query("ALTER TABLE entities ADD COLUMN status TEXT DEFAULT 'active'");
+  }
+  // Advance the version row from v4 → v5
+  await db.query(`UPDATE schema_version SET version = ${SCHEMA_VERSION} WHERE version = ${PREVIOUS_SCHEMA_VERSION}`);
+}
+
+/**
  * One-time data fixup: update agent_id values from 'myco-curator' to 'myco-agent'.
  * The v3→v4 migration renamed columns but not values. This runs on every startup
  * and is idempotent — rows already set to 'myco-agent' are unaffected.
@@ -718,6 +769,7 @@ export async function createSchema(db: PGlite): Promise<void> {
   await migrateV1ToV2(db);
   await migrateV2ToV3(db);
   await migrateV3ToV4(db);
+  await migrateV4ToV5(db);
 
   // Create tables in dependency order (IF NOT EXISTS — idempotent)
   for (const ddl of TABLE_DDLS) {

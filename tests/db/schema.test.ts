@@ -59,7 +59,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(4);
+      expect(SCHEMA_VERSION).toBe(5);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -244,6 +244,7 @@ describe('Database schema', () => {
         'spores',
         'entities',
         'edges',
+        'graph_edges',
         'entity_mentions',
         'resolution_events',
         'digest_extracts',
@@ -325,6 +326,44 @@ describe('Database schema', () => {
         expect(colNames).toContain('content');
         expect(colNames).toContain('substrate_hash');
         expect(colNames).toContain('generated_at');
+      });
+
+      it('graph_edges table has correct columns', async () => {
+        await createSchema(db);
+        const cols = await getColumns(db, 'graph_edges');
+        const colNames = cols.map((c) => c.column_name);
+        expect(colNames).toContain('id');
+        expect(colNames).toContain('agent_id');
+        expect(colNames).toContain('source_id');
+        expect(colNames).toContain('source_type');
+        expect(colNames).toContain('target_id');
+        expect(colNames).toContain('target_type');
+        expect(colNames).toContain('type');
+        expect(colNames).toContain('session_id');
+        expect(colNames).toContain('confidence');
+        expect(colNames).toContain('properties');
+        expect(colNames).toContain('created_at');
+      });
+
+      it('spores table has properties column', async () => {
+        await createSchema(db);
+        const cols = await getColumns(db, 'spores');
+        const colNames = cols.map((c) => c.column_name);
+        expect(colNames).toContain('properties');
+      });
+
+      it('entities table has status column', async () => {
+        await createSchema(db);
+        const cols = await getColumns(db, 'entities');
+        const colNames = cols.map((c) => c.column_name);
+        expect(colNames).toContain('status');
+      });
+
+      it('agent_tasks table has model column', async () => {
+        await createSchema(db);
+        const cols = await getColumns(db, 'agent_tasks');
+        const colNames = cols.map((c) => c.column_name);
+        expect(colNames).toContain('model');
       });
     });
 
@@ -442,12 +481,12 @@ describe('Database schema', () => {
         expect(colNames).toContain('updated_at');
       });
 
-      it('records schema version 4', async () => {
+      it('records schema version 5', async () => {
         await createSchema(db);
         const result = await db.query<{ version: number }>(
           'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1',
         );
-        expect(result.rows[0].version).toBe(4);
+        expect(result.rows[0].version).toBe(5);
       });
 
       it('migrates a v3 database: renames curators→agents and curator_id→agent_id', async () => {
@@ -461,7 +500,7 @@ describe('Database schema', () => {
         // Downgrade to v3 state: undo the curator→agent rename on key tables
         await db.query('ALTER TABLE agents RENAME TO curators');
         await db.query('ALTER TABLE spores RENAME COLUMN agent_id TO curator_id');
-        await db.query(`UPDATE schema_version SET version = 3 WHERE version = 4`);
+        await db.query(`UPDATE schema_version SET version = 3 WHERE version = ${SCHEMA_VERSION}`);
 
         // Re-run createSchema — must detect v3 and apply v3→v4 migration
         await createSchema(db);
@@ -476,11 +515,11 @@ describe('Database schema', () => {
         expect(sporesColNames).toContain('agent_id');
         expect(sporesColNames).not.toContain('curator_id');
 
-        // Schema version must be 4
+        // Schema version must be 5
         const result = await db.query<{ version: number }>(
           'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1',
         );
-        expect(result.rows[0].version).toBe(4);
+        expect(result.rows[0].version).toBe(5);
       });
     });
 
@@ -634,6 +673,10 @@ describe('Database schema', () => {
         expect(await indexExists(db, 'idx_edges_agent_id')).toBe(true);
         expect(await indexExists(db, 'idx_edges_source_id')).toBe(true);
         expect(await indexExists(db, 'idx_edges_target_id')).toBe(true);
+        expect(await indexExists(db, 'idx_graph_edges_source')).toBe(true);
+        expect(await indexExists(db, 'idx_graph_edges_target')).toBe(true);
+        expect(await indexExists(db, 'idx_graph_edges_type')).toBe(true);
+        expect(await indexExists(db, 'idx_graph_edges_agent')).toBe(true);
       });
     });
 
