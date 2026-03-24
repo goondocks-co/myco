@@ -27,6 +27,10 @@ export async function putJson<T>(path: string, body: unknown): Promise<T> {
   return fetchJson(path, { method: 'PUT', body: JSON.stringify(body) });
 }
 
+export async function deleteJson<T>(path: string): Promise<T> {
+  return fetchJson(path, { method: 'DELETE' });
+}
+
 export class ApiError extends Error {
   constructor(public status: number, public body: unknown) {
     super(`API error ${status}`);

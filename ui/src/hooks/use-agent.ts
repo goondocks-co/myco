@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchJson, postJson } from '../lib/api';
+import { fetchJson, postJson, deleteJson } from '../lib/api';
 
 /* ---------- Constants ---------- */
 
@@ -95,6 +95,41 @@ export interface TriggerRunResponse {
   message: string;
 }
 
+export interface TasksResponse {
+  tasks: TaskRow[];
+}
+
+export interface TaskDetailResponse {
+  task: TaskRow;
+}
+
+export interface PhaseDefinition {
+  name: string;
+  prompt: string;
+  tools: string[];
+  maxTurns: number;
+  model?: string;
+  required: boolean;
+}
+
+export interface CreateTaskPayload {
+  name: string;
+  displayName: string;
+  description: string;
+  agent: string;
+  prompt: string;
+  isDefault: boolean;
+  phases?: PhaseDefinition[];
+  model?: string;
+  maxTurns?: number;
+  timeoutSeconds?: number;
+}
+
+export interface CopyTaskPayload {
+  taskId: string;
+  name?: string;
+}
+
 /* ---------- Hooks ---------- */
 
 export function useAgentRuns(options?: { limit?: number }) {
@@ -139,10 +174,51 @@ export function useAgentTurns(runId: string | undefined) {
 }
 
 export function useAgentTasks() {
-  return useQuery<TaskRow[]>({
+  return useQuery<TasksResponse>({
     queryKey: ['agent-tasks'],
-    queryFn: ({ signal }) => fetchJson<TaskRow[]>('/agent/tasks', { signal }),
+    queryFn: ({ signal }) => fetchJson<TasksResponse>('/agent/tasks', { signal }),
     staleTime: TASKS_STALE_TIME,
+  });
+}
+
+export function useTask(taskId: string | undefined) {
+  return useQuery<TaskDetailResponse>({
+    queryKey: ['agent-task', taskId],
+    queryFn: ({ signal }) =>
+      fetchJson<TaskDetailResponse>(`/agent/tasks/${taskId}`, { signal }),
+    enabled: taskId !== undefined,
+    staleTime: TASKS_STALE_TIME,
+  });
+}
+
+export function useCreateTask() {
+  const queryClient = useQueryClient();
+  return useMutation<TaskDetailResponse, Error, CreateTaskPayload>({
+    mutationFn: (payload) => postJson<TaskDetailResponse>('/agent/tasks', payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['agent-tasks'] });
+    },
+  });
+}
+
+export function useCopyTask() {
+  const queryClient = useQueryClient();
+  return useMutation<TaskDetailResponse, Error, CopyTaskPayload>({
+    mutationFn: ({ taskId, name }) =>
+      postJson<TaskDetailResponse>(`/agent/tasks/${taskId}/copy`, name ? { name } : {}),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['agent-tasks'] });
+    },
+  });
+}
+
+export function useDeleteTask() {
+  const queryClient = useQueryClient();
+  return useMutation<{ ok: boolean }, Error, string>({
+    mutationFn: (taskId) => deleteJson<{ ok: boolean }>(`/agent/tasks/${taskId}`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['agent-tasks'] });
+    },
   });
 }
 

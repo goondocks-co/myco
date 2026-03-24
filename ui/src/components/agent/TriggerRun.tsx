@@ -18,11 +18,6 @@ import {
 } from '../ui/select';
 import { useAgentTasks, useTriggerRun, type TaskRow } from '../../hooks/use-agent';
 
-/* ---------- Constants ---------- */
-
-/** Placeholder value for "no task selected" in the Select component. */
-const NO_TASK_VALUE = '__default__';
-
 /* ---------- Helpers ---------- */
 
 function taskLabel(task: TaskRow): string {
@@ -41,11 +36,11 @@ export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps)
   const [selectedTask, setSelectedTask] = useState<string | undefined>(undefined);
   const [instruction, setInstruction] = useState('');
 
-  const { data: tasks, isLoading: tasksLoading } = useAgentTasks();
+  const { data: tasksData, isLoading: tasksLoading } = useAgentTasks();
   const { mutate: triggerRun, isPending, error } = useTriggerRun();
 
   // Pre-select the default task once tasks load
-  const availableTasks = tasks ?? [];
+  const availableTasks = tasksData?.tasks ?? [];
   const defaultTask = availableTasks.find(t => t.is_default === 1);
   const effectiveSelection = selectedTask ?? defaultTask?.id ?? availableTasks[0]?.id ?? '';
 
