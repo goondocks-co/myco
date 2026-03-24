@@ -197,7 +197,7 @@ export const LLM_REASONING_MODE = 'off' as const;
 
 // --- Digest — System prompt overhead estimate ---
 
-// --- Vault curation ---
+// --- Vault intelligence ---
 /** Max candidate spores after post-filtering for supersession check. */
 export const SUPERSESSION_CANDIDATE_LIMIT = 5;
 

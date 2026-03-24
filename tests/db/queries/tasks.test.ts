@@ -81,7 +81,7 @@ describe('task query helpers', () => {
       const data = makeTask({
         source: 'user',
         display_name: 'Custom Task',
-        description: 'A custom curation task',
+        description: 'A custom intelligence task',
         is_default: 1,
         tool_overrides: '["vault_search"]',
         config: '{"max_spores": 10}',
@@ -91,7 +91,7 @@ describe('task query helpers', () => {
 
       expect(row.source).toBe('user');
       expect(row.display_name).toBe('Custom Task');
-      expect(row.description).toBe('A custom curation task');
+      expect(row.description).toBe('A custom intelligence task');
       expect(row.is_default).toBe(1);
       expect(row.tool_overrides).toBe('["vault_search"]');
       expect(row.config).toBe('{"max_spores": 10}');

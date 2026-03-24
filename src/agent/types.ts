@@ -1,5 +1,5 @@
 /**
- * Agent definition and task types for the curation agent system.
+ * Agent definition and task types for the intelligence agent system.
  *
  * These types describe the shape of YAML definition files (on disk)
  * and the runtime configuration produced by merging definitions with
@@ -10,7 +10,7 @@
 // YAML-sourced definitions (read from src/agent/definitions/)
 // ---------------------------------------------------------------------------
 
-/** Shape of `curator.yaml` — the built-in agent definition. */
+/** Shape of `agent.yaml` — the built-in agent definition. */
 export interface AgentDefinition {
   name: string;
   displayName: string;

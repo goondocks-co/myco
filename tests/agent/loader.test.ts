@@ -2,7 +2,7 @@
  * Tests for agent definition and task YAML loader.
  *
  * Tests cover:
- * - Loading the built-in agent definition from curator.yaml
+ * - Loading the built-in agent definition from agent.yaml
  * - Loading all task YAML files from tasks/
  * - Merging definitions with DB overrides via resolveEffectiveConfig
  * - Registering built-in agents and tasks into PGlite
@@ -32,8 +32,8 @@ import type { AgentDefinition, AgentTask } from '@myco/agent/types.js';
 /** Number of built-in task YAML files. */
 const EXPECTED_TASK_COUNT = 7;
 
-/** Built-in agent name from curator.yaml. */
-const BUILT_IN_AGENT_NAME = 'myco-curator';
+/** Built-in agent name from agent.yaml. */
+const BUILT_IN_AGENT_NAME = 'myco-agent';
 
 /** Resolve the test definitions directory (src/agent/definitions/). */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -46,13 +46,13 @@ const DEFINITIONS_DIR = path.resolve(__dirname, '..', '..', 'src', 'agent', 'def
 /** Create a minimal AgentDefinition for testing. */
 function makeDefinition(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
   return {
-    name: 'myco-curator',
-    displayName: 'Myco Curator',
+    name: 'myco-agent',
+    displayName: 'Myco Agent',
     description: 'Test agent',
     model: 'claude-sonnet-4-20250514',
     maxTurns: 25,
     timeoutSeconds: 300,
-    systemPromptPath: '../prompts/curator.md',
+    systemPromptPath: '../prompts/agent.md',
     tools: ['query_unprocessed', 'create_spore', 'set_agent_state'],
     ...overrides,
   };
@@ -61,8 +61,8 @@ function makeDefinition(overrides: Partial<AgentDefinition> = {}): AgentDefiniti
 /** Create a minimal AgentRow for testing DB overrides. */
 function makeAgentRow(overrides: Partial<AgentRow> = {}): AgentRow {
   return {
-    id: 'myco-curator',
-    name: 'Myco Curator',
+    id: 'myco-agent',
+    name: 'Myco Agent',
     provider: null,
     model: null,
     system_prompt_hash: null,
@@ -85,7 +85,7 @@ function makeTask(overrides: Partial<AgentTask> = {}): AgentTask {
     name: 'test-task',
     displayName: 'Test Task',
     description: 'A test task',
-    agent: 'myco-curator',
+    agent: 'myco-agent',
     prompt: 'Do the thing.',
     isDefault: false,
     ...overrides,
@@ -102,17 +102,17 @@ describe('agent loader', () => {
   // -------------------------------------------------------------------------
 
   describe('loadAgentDefinition', () => {
-    it('loads curator.yaml with correct fields', () => {
+    it('loads agent.yaml with correct fields', () => {
       const def = loadAgentDefinition(DEFINITIONS_DIR);
 
-      expect(def.name).toBe('myco-curator');
-      expect(def.displayName).toBe('Myco Curator');
+      expect(def.name).toBe('myco-agent');
+      expect(def.displayName).toBe('Myco Agent');
       expect(typeof def.description).toBe('string');
       expect(def.description.length).toBeGreaterThan(0);
       expect(def.model).toBe('claude-sonnet-4-20250514');
       expect(def.maxTurns).toBe(25);
       expect(def.timeoutSeconds).toBe(300);
-      expect(def.systemPromptPath).toBe('../prompts/curator.md');
+      expect(def.systemPromptPath).toBe('../prompts/agent.md');
     });
 
     it('includes all expected tools', () => {
@@ -169,7 +169,7 @@ describe('agent loader', () => {
         expect(task.name.length).toBeGreaterThan(0);
         expect(typeof task.displayName).toBe('string');
         expect(typeof task.description).toBe('string');
-        expect(task.agent).toBe('myco-curator');
+        expect(task.agent).toBe('myco-agent');
         expect(typeof task.prompt).toBe('string');
         expect(task.prompt.length).toBeGreaterThan(0);
         expect(typeof task.isDefault).toBe('boolean');
@@ -180,14 +180,14 @@ describe('agent loader', () => {
       const tasks = loadAgentTasks(DEFINITIONS_DIR);
       const defaults = tasks.filter((t) => t.isDefault);
       expect(defaults).toHaveLength(1);
-      expect(defaults[0].name).toBe('full-curation');
+      expect(defaults[0].name).toBe('full-intelligence');
     });
 
     it('loads expected task names', () => {
       const tasks = loadAgentTasks(DEFINITIONS_DIR);
       const names = tasks.map((t) => t.name).sort();
 
-      expect(names).toContain('full-curation');
+      expect(names).toContain('full-intelligence');
       expect(names).toContain('digest-only');
       expect(names).toContain('review-session');
       expect(names).toContain('extract-only');
@@ -220,8 +220,8 @@ describe('agent loader', () => {
   // -------------------------------------------------------------------------
 
   describe('loadSystemPrompt', () => {
-    it('loads the curator.md prompt file', () => {
-      const content = loadSystemPrompt(DEFINITIONS_DIR, '../prompts/curator.md');
+    it('loads the agent.md prompt file', () => {
+      const content = loadSystemPrompt(DEFINITIONS_DIR, '../prompts/agent.md');
       expect(typeof content).toBe('string');
       expect(content.length).toBeGreaterThan(0);
     });
@@ -245,7 +245,7 @@ describe('agent loader', () => {
       expect(config.maxTurns).toBe(25);
       expect(config.timeoutSeconds).toBe(300);
       expect(config.tools).toEqual(def.tools);
-      expect(config.systemPromptPath).toBe('../prompts/curator.md');
+      expect(config.systemPromptPath).toBe('../prompts/agent.md');
       expect(config.taskName).toBe('full-intelligence');
       expect(config.taskDisplayName).toBe('Full Intelligence');
     });
@@ -362,7 +362,7 @@ describe('agent loader', () => {
       const agent = await getAgent(BUILT_IN_AGENT_NAME);
       expect(agent).not.toBeNull();
       expect(agent!.id).toBe(BUILT_IN_AGENT_NAME);
-      expect(agent!.name).toBe('Myco Curator');
+      expect(agent!.name).toBe('Myco Agent');
       expect(agent!.source).toBe('built-in');
       expect(agent!.model).toBe('claude-sonnet-4-20250514');
       expect(agent!.max_turns).toBe(25);
@@ -376,7 +376,7 @@ describe('agent loader', () => {
       expect(tasks).toHaveLength(EXPECTED_TASK_COUNT);
 
       const names = tasks.map((t) => t.id).sort();
-      expect(names).toContain('full-curation');
+      expect(names).toContain('full-intelligence');
       expect(names).toContain('digest-only');
       expect(names).toContain('review-session');
       expect(names).toContain('extract-only');
@@ -385,12 +385,12 @@ describe('agent loader', () => {
       expect(names).toContain('title-summary');
     });
 
-    it('marks full-curation as the default task', async () => {
+    it('marks full-intelligence as the default task', async () => {
       await registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
 
       const defaultTask = await getDefaultTask(BUILT_IN_AGENT_NAME);
       expect(defaultTask).not.toBeNull();
-      expect(defaultTask!.id).toBe('full-curation');
+      expect(defaultTask!.id).toBe('full-intelligence');
       expect(defaultTask!.is_default).toBe(1);
     });
 

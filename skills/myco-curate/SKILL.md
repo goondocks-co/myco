@@ -1,20 +1,20 @@
 ---
 name: myco-curate
 description: >-
-  Trigger the Myco curation agent to process unprocessed session data,
+  Trigger the Myco intelligence agent to process unprocessed session data,
   extract observations, and maintain the vault knowledge graph
 user-invocable: true
 allowed-tools: Bash
 ---
 
-# Myco Curate — Run the Curation Agent
+# Myco Curate — Run the Intelligence Agent
 
-This skill triggers a curation agent run via the daemon API. The curation agent processes unprocessed prompt batches, extracts observations (spores), and maintains the vault's knowledge graph.
+This skill triggers an intelligence agent run via the daemon API. The intelligence agent processes unprocessed prompt batches, extracts observations (spores), and maintains the vault's knowledge graph.
 
 ## Arguments
 
 The user may provide:
-- **task name** — which curation task to run (e.g., "full-curation", "extraction-only")
+- **task name** — which intelligence task to run (e.g., "full-intelligence", "extraction-only")
 - **instruction** — free-text instruction to guide the agent's focus
 
 Parse the user's message for these. Both are optional.
@@ -33,7 +33,7 @@ If the daemon is not running, tell the user:
 
 > "The Myco daemon is not running. Start a new session or run `node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js restart` to start it."
 
-## Step 2: Trigger Curation Run
+## Step 2: Trigger Agent Run
 
 Send a POST request to the daemon API:
 
@@ -45,11 +45,11 @@ curl -s -X POST http://localhost:<port>/api/agent/run \
 
 Omit `task` and `instruction` fields from the JSON body if they were not provided by the user.
 
-Report the response to the user. The response will be `{ "ok": true, "message": "Curation agent started" }`.
+Report the response to the user. The response will be `{ "ok": true, "message": "Intelligence agent started" }`.
 
 ## Step 3: Check Run Status
 
-The curation agent runs in the background. To check its progress, poll the runs endpoint:
+The intelligence agent runs in the background. To check its progress, poll the runs endpoint:
 
 ```bash
 curl -s http://localhost:<port>/api/agent/runs?limit=1
@@ -81,6 +81,6 @@ Summarize the reports for the user:
 ## Constraints
 
 - Always use the daemon API, never call the executor directly from the skill.
-- The curation agent runs asynchronously — the POST returns immediately.
+- The intelligence agent runs asynchronously — the POST returns immediately.
 - If the user asks for a specific task, pass it in the `task` field.
 - If the user provides natural language guidance, pass it in the `instruction` field.

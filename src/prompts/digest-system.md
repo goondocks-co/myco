@@ -24,7 +24,7 @@ KNOWLEDGE LIFECYCLE:
 - Foundational knowledge (project identity, architecture decisions, team conventions) persists across cycles even when old
 - Completed work transitions from "active focus" to "historical context" — compress it, don't drop it
 - Contradictions between old and new substrate should be resolved in favor of the new — note what changed
-- As the vault grows, your role shifts from "capture everything" to "curate what matters most right now"
+- As the vault grows, your role shifts from "capture everything" to "surface what matters most right now"
 
 FORMATTING:
 - Use markdown with clear section headings

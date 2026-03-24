@@ -2,7 +2,7 @@
  * myco_remember — save a decision, gotcha, bug fix, discovery, or trade-off as a spore.
  *
  * Proxies through the daemon HTTP API via DaemonClient.
- * The daemon handles curator registration, spore insertion, and embedding.
+ * The daemon handles agent registration, spore insertion, and embedding.
  */
 
 import type { DaemonClient } from '@myco/hooks/client.js';
