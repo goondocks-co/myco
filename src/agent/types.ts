@@ -38,13 +38,13 @@ export interface AgentTask {
 // ---------------------------------------------------------------------------
 
 /**
- * The effective configuration for a curation run, produced by merging:
+ * The effective configuration for an agent run, produced by merging:
  * 1. Built-in AgentDefinition defaults
- * 2. CuratorRow overrides from the database
+ * 2. AgentRow overrides from the database
  * 3. AgentTask overrides (tool list, prompt)
  */
 export interface EffectiveConfig {
-  curatorId: string;
+  agentId: string;
   model: string;
   maxTurns: number;
   timeoutSeconds: number;
@@ -55,9 +55,9 @@ export interface EffectiveConfig {
   taskPrompt: string;
 }
 
-/** Options passed to a curation agent run. */
+/** Options passed to an agent run. */
 export interface RunOptions {
-  curatorId?: string;
+  agentId?: string;
   task?: string;
   instruction?: string;
 }
