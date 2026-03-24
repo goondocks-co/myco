@@ -21,6 +21,29 @@ maxTurns: 50
 timeoutSeconds: 600
 model: claude-sonnet-4-6
 
+orchestrator:
+  enabled: true
+  model: claude-sonnet-4-6
+  maxTurns: 3
+
+contextQueries:
+  pre-planning:
+    - tool: vault_unprocessed
+      queryTemplate: ""
+      limit: 5
+      purpose: "Check if there are unprocessed batches"
+      required: false
+    - tool: vault_state
+      queryTemplate: ""
+      limit: 10
+      purpose: "Get agent cursor state"
+      required: false
+    - tool: vault_spores
+      queryTemplate: ""
+      limit: 20
+      purpose: "Review recent spores for consolidation candidates"
+      required: false
+
 prompt: >
   Complete intelligence pipeline. Each phase runs as a separate pass with
   scoped tools. Focus on quality over quantity — one precise observation
