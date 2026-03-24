@@ -243,7 +243,6 @@ describe('Database schema', () => {
         'agents',
         'spores',
         'entities',
-        'edges',
         'graph_edges',
         'entity_mentions',
         'resolution_events',
@@ -273,23 +272,6 @@ describe('Database schema', () => {
         expect(colNames).toContain('properties');
         expect(colNames).toContain('first_seen');
         expect(colNames).toContain('last_seen');
-      });
-
-      it('edges table has correct columns', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'edges');
-        const colNames = cols.map((c) => c.column_name);
-        expect(colNames).toContain('id');
-        expect(colNames).toContain('agent_id');
-        expect(colNames).toContain('source_id');
-        expect(colNames).toContain('target_id');
-        expect(colNames).toContain('type');
-        expect(colNames).toContain('valid_from');
-        expect(colNames).toContain('valid_until');
-        expect(colNames).toContain('session_id');
-        expect(colNames).toContain('confidence');
-        expect(colNames).toContain('properties');
-        expect(colNames).toContain('created_at');
       });
 
       it('entity_mentions table has correct columns', async () => {
@@ -670,9 +652,6 @@ describe('Database schema', () => {
         expect(await indexExists(db, 'idx_spores_agent_id')).toBe(true);
         expect(await indexExists(db, 'idx_spores_status')).toBe(true);
         expect(await indexExists(db, 'idx_entities_agent_id')).toBe(true);
-        expect(await indexExists(db, 'idx_edges_agent_id')).toBe(true);
-        expect(await indexExists(db, 'idx_edges_source_id')).toBe(true);
-        expect(await indexExists(db, 'idx_edges_target_id')).toBe(true);
         expect(await indexExists(db, 'idx_graph_edges_source')).toBe(true);
         expect(await indexExists(db, 'idx_graph_edges_target')).toBe(true);
         expect(await indexExists(db, 'idx_graph_edges_type')).toBe(true);

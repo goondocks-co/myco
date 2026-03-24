@@ -12,22 +12,12 @@
  */
 
 import { insertGraphEdge } from './graph-edges.js';
-
-// ---------------------------------------------------------------------------
-// Lineage edge type constants
-// ---------------------------------------------------------------------------
-
-/** Spore was extracted during this session. */
-export const EDGE_TYPE_FROM_SESSION = 'FROM_SESSION';
-
-/** Spore was extracted from this prompt batch. */
-export const EDGE_TYPE_EXTRACTED_FROM = 'EXTRACTED_FROM';
-
-/** Wisdom spore was derived from (consolidated) this source spore. */
-export const EDGE_TYPE_DERIVED_FROM = 'DERIVED_FROM';
-
-/** Session contains this prompt batch. */
-export const EDGE_TYPE_HAS_BATCH = 'HAS_BATCH';
+import {
+  EDGE_TYPE_FROM_SESSION,
+  EDGE_TYPE_EXTRACTED_FROM,
+  EDGE_TYPE_DERIVED_FROM,
+  EDGE_TYPE_HAS_BATCH,
+} from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
 // Spore lineage

@@ -10,8 +10,9 @@ agent: myco-agent
 prompt: >
   Review existing spores and sessions to maintain the knowledge graph.
   For each active spore, ensure referenced entities exist and relationships
-  are represented as edges. Merge duplicate entities. Update temporal
-  validity (valid_from/valid_until) on edges where evidence exists.
+  are represented as edges in graph_edges. Merge duplicate entities.
+  Only create semantic edges (RELATES_TO, SUPERSEDED_BY, REFERENCES,
+  DEPENDS_ON, AFFECTS) — lineage edges are created automatically.
   Do not extract new spores or regenerate digest extracts.
 isDefault: false
 toolOverrides:

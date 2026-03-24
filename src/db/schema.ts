@@ -10,11 +10,11 @@
  */
 
 import type { PGlite } from '@electric-sql/pglite';
-import { epochSeconds } from '@myco/constants.js';
 import {
+  epochSeconds,
   EDGE_TYPE_FROM_SESSION,
   EDGE_TYPE_EXTRACTED_FROM,
-} from '@myco/db/queries/lineage.js';
+} from '@myco/constants.js';
 
 /** Current schema version — increment on breaking changes. */
 export const SCHEMA_VERSION = 5;
@@ -207,6 +207,8 @@ const ENTITIES_TABLE = `
     UNIQUE (agent_id, type, name)
   )`;
 
+// Legacy table — no longer written to (graph_edges replaces it).
+// DDL kept so existing databases with edges data don't break on migration.
 const EDGES_TABLE = `
   CREATE TABLE IF NOT EXISTS edges (
     id          SERIAL PRIMARY KEY,
@@ -368,12 +370,6 @@ const SECONDARY_INDEXES = [
   // Entities
   'CREATE INDEX IF NOT EXISTS idx_entities_agent_id ON entities (agent_id)',
   'CREATE INDEX IF NOT EXISTS idx_entities_type ON entities (type)',
-
-  // Edges
-  'CREATE INDEX IF NOT EXISTS idx_edges_agent_id ON edges (agent_id)',
-  'CREATE INDEX IF NOT EXISTS idx_edges_source_id ON edges (source_id)',
-  'CREATE INDEX IF NOT EXISTS idx_edges_target_id ON edges (target_id)',
-  'CREATE INDEX IF NOT EXISTS idx_edges_type ON edges (type)',
 
   // Graph edges
   'CREATE INDEX IF NOT EXISTS idx_graph_edges_source ON graph_edges (source_id, source_type)',
