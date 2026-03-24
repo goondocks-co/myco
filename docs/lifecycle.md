@@ -116,9 +116,9 @@ flowchart TD
 
 Per-prompt spore injection continues unchanged alongside digest — the extract provides the big picture, spore injection provides targeted relevance for each specific prompt.
 
-## Vault Curation
+## Vault Intelligence
 
-As projects evolve, older spores become stale. Curation automatically detects and supersedes outdated observations.
+As projects evolve, older spores become stale. The intelligence pipeline automatically detects and supersedes outdated observations.
 
 ```mermaid
 flowchart TD
@@ -130,7 +130,7 @@ flowchart TD
     LLM --> Parse[Parse JSON Response<br/>Zod validation]
     Parse --> Supersede[Mark Superseded<br/>frontmatter + notice + re-index<br/>+ delete vector]
 
-    CLI[myco curate] --> Scan[Scan All Active Spores]
+    CLI[myco agent] --> Scan[Scan All Active Spores]
     Scan --> Group[Group by observation_type]
     Group --> Cluster[Cluster by Similarity]
     Cluster --> LLM
@@ -142,7 +142,7 @@ flowchart TD
 
 **Inline (automatic)** — after every spore write (daemon batch processor and MCP `myco_remember`), a fire-and-forget supersession check runs. Sequential within a batch to avoid overwhelming the LLM.
 
-**CLI (manual)** — `myco curate` scans all active spores, clusters by similarity within each observation type, and asks the LLM which are outdated. Use `--dry-run` to preview. Useful for catch-up after refactors or initial vault cleanup.
+**CLI (manual)** — `myco agent` runs the intelligence agent to scan active spores, cluster by similarity within each observation type, and determine which are outdated. Use `--dry-run` to preview. Useful for catch-up after refactors or initial vault cleanup.
 
 Superseded spores are preserved with lineage metadata (`superseded_by` frontmatter + Obsidian wikilink) — never deleted. They are filtered from search results, recall, and digest substrate.
 
@@ -175,21 +175,21 @@ flowchart LR
 | Wisdom notes (`myco_consolidate`) | On tool call | indexNote | embedNote | `{type}-wisdom-{hex}` |
 | Superseded spores | On supersede | updated | embedding deleted | — |
 
-### Embedding and Curation are Fire-and-Forget
+### Embedding and Intelligence are Fire-and-Forget
 
-Embeddings and supersession checks are generated asynchronously and never block the response. If providers are unavailable, the note is still written and FTS-indexed — semantic search and curation degrade gracefully.
+Embeddings and supersession checks are generated asynchronously and never block the response. If providers are unavailable, the note is still written and FTS-indexed — semantic search and intelligence degrade gracefully.
 
 ```mermaid
 flowchart TD
     Stop[Stop Handler] --> Write[Write Note to Vault]
     Write --> Index[FTS Index — synchronous]
     Write --> Embed[Generate Embedding — async]
-    Write --> Curate[Supersession Check — async]
+    Write --> Intelligence[Supersession Check — async]
     Index --> Respond[Return Response]
     Embed -.->|fire-and-forget| Vec[Upsert Vector]
     Embed -.->|on failure| Log[Log Warning]
-    Curate -.->|fire-and-forget| Supersede[Mark Stale Spores Superseded]
-    Curate -.->|on failure| Log2[Log Warning]
+    Intelligence -.->|fire-and-forget| Supersede[Mark Stale Spores Superseded]
+    Intelligence -.->|on failure| Log2[Log Warning]
 
     style Embed stroke-dasharray: 5 5
     style Vec stroke-dasharray: 5 5
@@ -340,17 +340,17 @@ node dist/src/cli.js digest --tier 3000  # Reprocess a specific tier (clean slat
 node dist/src/cli.js digest --full       # Reprocess all tiers from scratch
 ```
 
-### Vault Curation
+### Vault Intelligence
 
 ```bash
-node dist/src/cli.js curate              # Scan and supersede stale spores
-node dist/src/cli.js curate --dry-run    # Preview what would be superseded
+node dist/src/cli.js agent              # Run the intelligence agent
+node dist/src/cli.js agent --dry-run    # Preview what would be changed
 ```
 
 Or via MCP:
 ```json
 { "tool": "myco_logs", "level": "info", "component": "digest" }
-{ "tool": "myco_logs", "level": "info", "component": "curation" }
+{ "tool": "myco_logs", "level": "info", "component": "intelligence" }
 ```
 
 ## Files

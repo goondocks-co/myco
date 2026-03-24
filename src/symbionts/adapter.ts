@@ -1,7 +1,7 @@
 /**
- * Agent adapter interface — declares what each coding agent provides to Myco.
+ * Symbiont adapter interface — declares what each coding agent provides to Myco.
  *
- * Each supported agent (Claude Code, Cursor, Cline, etc.) has an adapter that
+ * Each supported symbiont (Claude Code, Cursor, Cline, etc.) has an adapter that
  * tells Myco where to find transcripts, how to parse them, and what capabilities
  * the agent supports. The daemon uses these adapters at runtime to read the
  * authoritative conversation record.
@@ -44,7 +44,7 @@ export interface HookFieldNames {
   sessionId: string;
 }
 
-export interface AgentAdapter {
+export interface SymbiontAdapter {
   /** Agent identifier (matches plugin directory names) */
   readonly name: string;
   /** Human-readable display name */
@@ -98,9 +98,9 @@ export function findJsonlInSubdirs(baseDir: string, sessionId: string): string |
  */
 export function createPerProjectAdapter(
   baseDir: string,
-  parseTurns: AgentAdapter['parseTurns'],
+  parseTurns: SymbiontAdapter['parseTurns'],
   name?: string,
-): AgentAdapter {
+): SymbiontAdapter {
   return {
     name: name ?? `custom:${path.basename(baseDir)}`,
     displayName: `Custom (${baseDir})`,

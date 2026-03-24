@@ -6,10 +6,11 @@ description: >
   Process a single session end-to-end. Extracts spores from all prompt
   batches in the session, builds graph entities and edges, runs supersession
   checks, and generates the session title and summary.
-agent: myco-curator
+agent: myco-agent
 prompt: >
   Review the specified session. Process all prompt batches within it:
   extract observations as spores, identify entities and relationships,
-  check for supersession, and generate a title and summary for the session.
-  Mark all batches and the session as processed when complete.
+  and check for supersession. Evaluate and update the session title and
+  summary per the summary update criteria in your instructions. Mark all
+  batches and the session as processed when complete.
 isDefault: false

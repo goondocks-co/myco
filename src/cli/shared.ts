@@ -1,11 +1,24 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { AgentRegistry } from '../agents/registry.js';
+import { SymbiontRegistry } from '../symbionts/registry.js';
 import { OllamaBackend } from '../intelligence/ollama.js';
 import { LmStudioBackend } from '../intelligence/lm-studio.js';
 
+import { DaemonClient } from '../hooks/client.js';
+
 export { parseStringFlag, parseIntFlag } from '../logs/format.js';
+
+/** Connect to the daemon, ensuring it's running. Exits on failure. */
+export async function connectToDaemon(vaultDir: string): Promise<DaemonClient> {
+  const client = new DaemonClient(vaultDir);
+  const healthy = await client.ensureRunning();
+  if (!healthy) {
+    console.error('Failed to connect to daemon');
+    process.exit(1);
+  }
+  return client;
+}
 
 /** Load .env from cwd (not script location — that's the plugin install dir). */
 export function loadEnv(): void {
@@ -30,21 +43,16 @@ export const PROVIDER_DEFAULTS: Record<string, { base_url: string }> = {
 };
 
 
-export const VAULT_GITIGNORE = `# Runtime — rebuilt on daemon startup
-index.db
-index.db-wal
-index.db-shm
-vectors.db
+export const VAULT_GITIGNORE = `# PGlite database — rebuilt from capture data
 pgdata/
 
 # Daemon state — per-machine, ephemeral
 daemon.json
-_portal.md
 buffer/
 logs/
 
-# Obsidian — per-user workspace config
-.obsidian/
+# Binary attachments — screenshots captured from transcripts
+attachments/
 `;
 
 /** Collapse an absolute home-dir path to its `~/` form for portable config storage. */
@@ -58,7 +66,7 @@ export function collapseHomePath(absPath: string): string {
 
 /** Set MYCO_VAULT_DIR in the active agent's config, falling back to all known agents. */
 export function configureVaultEnv(projectRoot: string, vaultDir: string): void {
-  const registry = new AgentRegistry();
+  const registry = new SymbiontRegistry();
   const active = registry.detectActiveAgent();
   // Store the portable ~/... form so config files don't leak the username
   const portableDir = collapseHomePath(vaultDir);

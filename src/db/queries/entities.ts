@@ -22,7 +22,7 @@ const DEFAULT_LIST_LIMIT = 100;
 /** Fields required (or optional) when inserting an entity. */
 export interface EntityInsert {
   id: string;
-  curator_id: string;
+  agent_id: string;
   type: string;
   name: string;
   first_seen: number;
@@ -33,7 +33,7 @@ export interface EntityInsert {
 /** Row shape returned from entity queries (all columns). */
 export interface EntityRow {
   id: string;
-  curator_id: string;
+  agent_id: string;
   type: string;
   name: string;
   properties: string | null;
@@ -43,7 +43,7 @@ export interface EntityRow {
 
 /** Filter options for `listEntities`. */
 export interface ListEntitiesOptions {
-  curator_id?: string;
+  agent_id?: string;
   type?: string;
   /** Filter by entity_mentions subquery — must be paired with note_type. */
   mentioned_in?: string;
@@ -69,7 +69,7 @@ export type { EdgeRow };
 
 const ENTITY_COLUMNS = [
   'id',
-  'curator_id',
+  'agent_id',
   'type',
   'name',
   'properties',
@@ -87,7 +87,7 @@ const SELECT_COLUMNS = ENTITY_COLUMNS.join(', ');
 function toEntityRow(row: Record<string, unknown>): EntityRow {
   return {
     id: row.id as string,
-    curator_id: row.curator_id as string,
+    agent_id: row.agent_id as string,
     type: row.type as string,
     name: row.name as string,
     properties: (row.properties as string) ?? null,
@@ -101,7 +101,7 @@ function toEntityRow(row: Record<string, unknown>): EntityRow {
 // ---------------------------------------------------------------------------
 
 /**
- * Insert or update an entity. Uses UPSERT on (curator_id, type, name).
+ * Insert or update an entity. Uses UPSERT on (agent_id, type, name).
  *
  * On conflict, updates properties (if provided) and last_seen.
  */
@@ -109,15 +109,15 @@ export async function insertEntity(data: EntityInsert): Promise<EntityRow> {
   const db = getDatabase();
 
   const result = await db.query(
-    `INSERT INTO entities (id, curator_id, type, name, properties, first_seen, last_seen)
+    `INSERT INTO entities (id, agent_id, type, name, properties, first_seen, last_seen)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (curator_id, type, name) DO UPDATE SET
+     ON CONFLICT (agent_id, type, name) DO UPDATE SET
        properties = COALESCE(EXCLUDED.properties, entities.properties),
        last_seen = EXCLUDED.last_seen
      RETURNING ${SELECT_COLUMNS}`,
     [
       data.id,
-      data.curator_id,
+      data.agent_id,
       data.type,
       data.name,
       data.properties ?? null,
@@ -161,9 +161,9 @@ export async function listEntities(
   const params: unknown[] = [];
   let paramIndex = 1;
 
-  if (options.curator_id !== undefined) {
-    conditions.push(`curator_id = $${paramIndex++}`);
-    params.push(options.curator_id);
+  if (options.agent_id !== undefined) {
+    conditions.push(`agent_id = $${paramIndex++}`);
+    params.push(options.agent_id);
   }
 
   if (options.type !== undefined) {

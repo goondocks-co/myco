@@ -8,26 +8,23 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ARTIFACT_TYPES } from '../vault/types.js';
 import { CANDIDATE_CONTENT_PREVIEW } from '../constants.js';
+import { findPackageRoot } from '../utils/find-package-root.js';
 
 /**
  * Resolve the prompts directory. With tsup code-splitting, import.meta.url
  * points to a chunk file (dist/chunk-XXXX.js), not dist/src/prompts/.
- * Walk up from the current file to find package.json, then use dist/src/prompts/.
  */
 function resolvePromptsDir(): string {
-  let dir = path.dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 5; i++) {
-    if (fs.existsSync(path.join(dir, 'package.json'))) {
-      return path.join(dir, 'dist', 'src', 'prompts');
-    }
-    // Also check if we're already in the right place (tsc output or dev mode)
-    if (fs.existsSync(path.join(dir, 'extraction.md'))) {
-      return dir;
-    }
-    dir = path.dirname(dir);
-  }
-  // Final fallback: adjacent to current file (works with tsc)
-  return path.dirname(fileURLToPath(import.meta.url));
+  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+
+  // Check if we're already in the prompts directory (tsc output or dev mode)
+  if (fs.existsSync(path.join(scriptDir, 'extraction.md'))) return scriptDir;
+
+  // Walk up to package root, then use dist/src/prompts/
+  const root = findPackageRoot(scriptDir);
+  if (root) return path.join(root, 'dist', 'src', 'prompts');
+
+  return scriptDir;
 }
 
 const PROMPTS_DIR = resolvePromptsDir();

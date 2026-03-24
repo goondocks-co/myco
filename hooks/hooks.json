@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/src/hooks/session-start.js",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/myco-run hook session-start",
             "timeout": 10
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/src/hooks/user-prompt-submit.js",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/myco-run hook user-prompt-submit",
             "timeout": 5
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/src/hooks/post-tool-use.js",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/myco-run hook post-tool-use",
             "timeout": 5
           }
         ]
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/src/hooks/stop.js",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/myco-run hook stop",
             "timeout": 30
           }
         ]
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/src/hooks/session-end.js",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/myco-run hook session-end",
             "timeout": 10
           }
         ]

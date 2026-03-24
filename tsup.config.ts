@@ -1,17 +1,17 @@
 import { defineConfig } from 'tsup';
-import { copyFileSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+
+const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'));
 
 export default defineConfig({
   entry: {
-    // Thin hooks — delegate to daemon
-    'src/hooks/session-end': 'src/hooks/session-end.ts',
-    'src/hooks/stop': 'src/hooks/stop.ts',
-    'src/hooks/user-prompt-submit': 'src/hooks/user-prompt-submit.ts',
-    'src/hooks/post-tool-use': 'src/hooks/post-tool-use.ts',
-    // Entry wrappers — dynamic import so tsup code-splitting works
-    // (chunk filenames differ from process.argv[1])
+    // Entry wrappers — all hooks now use explicit main() calls
     'src/hooks/session-start': 'src/entries/session-start.ts',
+    'src/hooks/session-end': 'src/entries/session-end.ts',
+    'src/hooks/stop': 'src/entries/stop.ts',
+    'src/hooks/user-prompt-submit': 'src/entries/user-prompt-submit.ts',
+    'src/hooks/post-tool-use': 'src/entries/post-tool-use.ts',
     'src/mcp/server': 'src/entries/mcp-server.ts',
     'src/cli': 'src/entries/cli.ts',
     'src/daemon/main': 'src/entries/daemon.ts',
@@ -22,6 +22,9 @@ export default defineConfig({
   splitting: true,
   sourcemap: true,
   clean: true,
+  define: {
+    '__MYCO_VERSION__': JSON.stringify(pkg.version),
+  },
   // Inject createRequire shim so CJS deps (yaml) can require Node builtins
   banner: {
     js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);",
@@ -84,6 +87,18 @@ export default defineConfig({
       for (const file of readdirSync(agentPrompts)) {
         if (file.endsWith('.md')) {
           copyFileSync(path.join(agentPrompts, file), path.join(agentPromptsDest, file));
+        }
+      }
+    }
+
+    // Copy symbiont manifest YAML files
+    const symbiontManifests = 'src/symbionts/manifests';
+    if (existsSync(symbiontManifests)) {
+      const symbiontManifestsDest = 'dist/src/symbionts/manifests';
+      mkdirSync(symbiontManifestsDest, { recursive: true });
+      for (const file of readdirSync(symbiontManifests)) {
+        if (file.endsWith('.yaml')) {
+          copyFileSync(path.join(symbiontManifests, file), path.join(symbiontManifestsDest, file));
         }
       }
     }

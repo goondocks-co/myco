@@ -44,9 +44,9 @@ Myco captures everything your AI agents do — sessions, decisions, plans, disco
 
 A background daemon reads your agent's conversation transcript after each turn — the full dialogue including prompts, AI responses, tool calls, and screenshots. Observations called **spores** (decisions, gotchas, discoveries, trade-offs, bug fixes) are extracted automatically via a local LLM and written as linked vault notes.
 
-### Curate
+### Intelligence
 
-As a project evolves, older observations become stale. Myco automatically detects and supersedes outdated spores when new ones are created — using vector similarity to find candidates and an LLM to judge which are truly replaced vs. merely related. Related spores are automatically consolidated into comprehensive wisdom notes during each digest cycle, compressing scattered observations into denser, higher-quality knowledge. Superseded spores are preserved with lineage metadata (never deleted), but filtered from search results and digest synthesis. Run vault-wide curation from the dashboard, or let it happen automatically.
+As a project evolves, older observations become stale. Myco automatically detects and supersedes outdated spores when new ones are created — using vector similarity to find candidates and an LLM to judge which are truly replaced vs. merely related. Related spores are automatically consolidated into comprehensive wisdom notes during each digest cycle, compressing scattered observations into denser, higher-quality knowledge. Superseded spores are preserved with lineage metadata (never deleted), but filtered from search results and digest synthesis. Run the intelligence agent from the dashboard, or let it happen automatically.
 
 ### Digest
 
@@ -71,7 +71,7 @@ Sessions link to plans. Plans link to decisions. Decisions link to spores. Obsid
 
 ### Dashboard
 
-A local web dashboard at `http://localhost:<port>/` provides configuration management and operational triggers — no CLI or YAML editing needed. Manage intelligence providers, run curation and digest cycles, monitor daemon health, and view live logs. The daemon writes a `_portal.md` to your vault with the URL, so you can find it from Obsidian.
+A local web dashboard at `http://localhost:<port>/` provides configuration management and operational triggers — no CLI or YAML editing needed. Manage intelligence providers, run agent and digest cycles, monitor daemon health, and view live logs. The daemon writes a `_portal.md` to your vault with the URL, so you can find it from Obsidian.
 
 ### Multi-agent
 

@@ -1,4 +1,4 @@
-import type { AgentAdapter } from './adapter.js';
+import type { SymbiontAdapter } from './adapter.js';
 import { findJsonlInSubdirs, parseJsonlTurns } from './adapter.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -6,7 +6,7 @@ import os from 'node:os';
 
 const TRANSCRIPT_BASE = path.join(os.homedir(), '.claude', 'projects');
 
-export const claudeCodeAdapter: AgentAdapter = {
+export const claudeCodeAdapter: SymbiontAdapter = {
   name: 'claude-code',
   displayName: 'Claude Code',
   pluginRootEnvVar: 'CLAUDE_PLUGIN_ROOT',

@@ -45,7 +45,7 @@ See the [Lifecycle docs](lifecycle.md) for the full event flow.
 
 | Tool | Purpose |
 |------|---------|
-| `myco_logs` | View daemon logs filtered by level and component (`daemon`, `processor`, `digest`, `curation`, `consolidation`, etc.). |
+| `myco_logs` | View daemon logs filtered by level and component (`daemon`, `processor`, `digest`, `intelligence`, `consolidation`, etc.). |
 
 ## Skills
 

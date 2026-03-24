@@ -1,0 +1,11 @@
+name: claude-code
+displayName: Claude Code
+binary: claude
+configDir: .claude
+pluginRootEnvVar: CLAUDE_PLUGIN_ROOT
+pluginInstallCommand: "claude plugin add {packageRoot}"
+settingsPath: .claude/settings.json
+hookFields:
+  transcriptPath: transcript_path
+  lastResponse: last_assistant_message
+  sessionId: session_id

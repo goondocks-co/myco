@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { DAEMON_CLIENT_TIMEOUT_MS, DAEMON_HEALTH_CHECK_TIMEOUT_MS, DAEMON_HEALTH_RETRY_DELAYS, DAEMON_STALE_GRACE_PERIOD_MS } from '../constants.js';
-import { AgentRegistry } from '../agents/registry.js';
 import { getPluginVersion } from '../version.js';
 
 interface DaemonInfo {
@@ -64,9 +63,9 @@ export class DaemonClient {
     }
   }
 
-  async isHealthy(): Promise<boolean> {
+  async isHealthy(cachedInfo?: DaemonInfo | null): Promise<boolean> {
     try {
-      const info = this.readDaemonJson();
+      const info = cachedInfo ?? this.readDaemonJson();
       if (!info) return false;
 
       const res = await fetch(`http://127.0.0.1:${info.port}/health`, {
@@ -86,16 +85,13 @@ export class DaemonClient {
    * Skips the check if daemon.json was written recently (grace period) to prevent
    * rapid restart loops from concurrent hooks or session reloads.
    */
-  private async isStale(): Promise<boolean> {
+  private async isStale(info: DaemonInfo): Promise<boolean> {
     try {
       const jsonPath = path.join(this.vaultDir, 'daemon.json');
       const stat = fs.statSync(jsonPath);
       if (Date.now() - stat.mtimeMs < DAEMON_STALE_GRACE_PERIOD_MS) {
         return false;
       }
-
-      const info = this.readDaemonJson();
-      if (!info) return false;
 
       const res = await fetch(`http://127.0.0.1:${info.port}/health`, {
         signal: AbortSignal.timeout(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
@@ -116,9 +112,8 @@ export class DaemonClient {
   /**
    * Kill the running daemon process.
    */
-  private killDaemon(): void {
+  private killDaemon(info: DaemonInfo | null): void {
     try {
-      const info = this.readDaemonJson();
       if (!info) return;
       process.kill(info.pid, 'SIGTERM');
     } catch { /* already dead */ }
@@ -136,12 +131,13 @@ export class DaemonClient {
    */
   async ensureRunning(opts?: { checkStale?: boolean }): Promise<boolean> {
     const checkStale = opts?.checkStale ?? true;
+    const info = this.readDaemonJson();
 
-    if (checkStale && await this.isStale()) {
-      this.killDaemon();
+    if (checkStale && info && await this.isStale(info)) {
+      this.killDaemon(info);
       // Brief pause for port release
       await new Promise((r) => setTimeout(r, 200));
-    } else if (await this.isHealthy()) {
+    } else if (await this.isHealthy(info)) {
       return true;
     }
 
@@ -155,41 +151,12 @@ export class DaemonClient {
   }
 
   spawnDaemon(): void {
-    const daemonScript = this.resolveDaemonScript();
-    if (!daemonScript || !fs.existsSync(daemonScript)) return;
-
-    const child = spawn('node', [daemonScript, '--vault', this.vaultDir], {
+    const mycoCmd = process.env.MYCO_CMD || 'myco';
+    const child = spawn(mycoCmd, ['daemon', '--vault', this.vaultDir], {
       detached: true,
       stdio: 'ignore',
     });
     child.unref();
-  }
-
-  /**
-   * Resolve the daemon entry script path.
-   * Priority:
-   * 1. Plugin root env var (set by the agent host) → dist/src/daemon/main.js
-   * 2. Walk up from the current file to find the dist/ directory containing
-   *    the daemon entry. This handles both chunk files (dist/chunk-*.js) and
-   *    thin entry points (dist/src/hooks/*.js) after bundling.
-   */
-  private resolveDaemonScript(): string | undefined {
-    const pluginRoot = new AgentRegistry().resolvePluginRoot();
-    if (pluginRoot) {
-      return path.join(pluginRoot, 'dist', 'src', 'daemon', 'main.js');
-    }
-
-    // Walk up from import.meta.dirname looking for the daemon entry
-    let dir = import.meta.dirname;
-    for (let i = 0; i < 5; i++) {
-      const candidate = path.join(dir, 'dist', 'src', 'daemon', 'main.js');
-      if (fs.existsSync(candidate)) return candidate;
-      // Also check if we're already inside dist/
-      const inDist = path.join(dir, 'src', 'daemon', 'main.js');
-      if (fs.existsSync(inDist)) return inDist;
-      dir = path.dirname(dir);
-    }
-    return undefined;
   }
 
   private readDaemonJson(): DaemonInfo | null {

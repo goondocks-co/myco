@@ -7,23 +7,22 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findPackageRoot } from '../utils/find-package-root.js';
 
 /**
- * Resolve the templates directory. Same strategy as prompts loader:
- * walk up from the current file to find package.json, then use dist/src/templates/.
+ * Resolve the templates directory. Same strategy as prompts loader.
  */
 function resolveTemplatesDir(): string {
-  let dir = path.dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 5; i++) {
-    if (fs.existsSync(path.join(dir, 'package.json'))) {
-      return path.join(dir, 'dist', 'src', 'templates');
-    }
-    if (fs.existsSync(path.join(dir, 'portal.md'))) {
-      return dir;
-    }
-    dir = path.dirname(dir);
-  }
-  return path.dirname(fileURLToPath(import.meta.url));
+  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+
+  // Check if we're already in the templates directory (tsc output or dev mode)
+  if (fs.existsSync(path.join(scriptDir, 'portal.md'))) return scriptDir;
+
+  // Walk up to package root, then use dist/src/templates/
+  const root = findPackageRoot(scriptDir);
+  if (root) return path.join(root, 'dist', 'src', 'templates');
+
+  return scriptDir;
 }
 
 const TEMPLATES_DIR = resolveTemplatesDir();

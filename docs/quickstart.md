@@ -107,7 +107,7 @@ node dist/src/cli.js stats
 The dashboard lets you:
 
 - **Configure** intelligence providers, models, context windows, and digest settings
-- **Run operations** like curation, index rebuilds, and manual digest cycles
+- **Run operations** like intelligence agent runs, index rebuilds, and manual digest cycles
 - **Monitor** daemon health, metabolism state, and system stats
 - **View logs** in real-time with level filtering
 

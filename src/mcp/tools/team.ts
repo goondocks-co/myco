@@ -1,10 +1,10 @@
 /**
  * myco_team — list team members registered in the vault.
  *
- * Queries the `team_members` table directly via PGlite.
+ * Proxies through the daemon HTTP API via DaemonClient.
  */
 
-import { getDatabase } from '@myco/db/client.js';
+import type { DaemonClient } from '@myco/hooks/client.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,20 +28,11 @@ interface TeamMember {
 
 export async function handleMycoTeam(
   _input: TeamInput,
+  client: DaemonClient,
 ): Promise<TeamMember[]> {
-  const db = getDatabase();
+  const result = await client.get('/api/mcp/team');
 
-  const result = await db.query(
-    `SELECT id, "user", role, joined, tags
-     FROM team_members
-     ORDER BY id ASC`,
-  );
+  if (!result.ok || !result.data?.members) return [];
 
-  return (result.rows as Record<string, unknown>[]).map((row) => ({
-    id: row.id as string,
-    user: row.user as string,
-    role: (row.role as string) ?? null,
-    joined: (row.joined as string) ?? null,
-    tags: row.tags ? (row.tags as string).split(',').map((t) => t.trim()) : [],
-  }));
+  return result.data.members as TeamMember[];
 }

@@ -1,0 +1,10 @@
+# PGlite database — rebuilt from capture data
+pgdata/
+
+# Daemon state — per-machine, ephemeral
+daemon.json
+buffer/
+logs/
+
+# Binary attachments — screenshots captured from transcripts
+attachments/

@@ -25,7 +25,7 @@ const DEFAULT_RUNS_LIMIT = 50;
 
 export interface RunRow {
   id: string;
-  curator_id: string;
+  agent_id: string;
   task: string | null;
   instruction: string | null;
   status: string;
@@ -48,7 +48,7 @@ export interface RunDetailResponse {
 export interface ReportRow {
   id: number;
   run_id: string;
-  curator_id: string;
+  agent_id: string;
   action: string;
   summary: string;
   details: string | null;
@@ -62,7 +62,7 @@ export interface ReportsResponse {
 export interface TurnRow {
   id: number;
   run_id: string;
-  curator_id: string;
+  agent_id: string;
   turn_number: number;
   tool_name: string;
   tool_input: string | null;
@@ -73,7 +73,7 @@ export interface TurnRow {
 
 export interface TaskRow {
   id: string;
-  curator_id: string;
+  agent_id: string;
   source: string;
   display_name: string | null;
   description: string | null;

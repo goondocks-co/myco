@@ -6,7 +6,7 @@ description: >
   Scan existing spores and sessions to update the knowledge graph. Adds
   missing entities and edges, merges duplicates, and updates temporal
   validity. Does not extract new spores or regenerate digest.
-agent: myco-curator
+agent: myco-agent
 prompt: >
   Review existing spores and sessions to maintain the knowledge graph.
   For each active spore, ensure referenced entities exist and relationships

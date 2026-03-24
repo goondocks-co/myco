@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
-import { registerCurator } from '@myco/db/queries/curators.js';
+import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { insertTurn, listTurns } from '@myco/db/queries/turns.js';
 import type { TurnInsert } from '@myco/db/queries/turns.js';
@@ -16,15 +16,15 @@ import type { TurnInsert } from '@myco/db/queries/turns.js';
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
 
-/** Shared curator and run IDs used across tests. */
-const TEST_CURATOR_ID = 'curator-turns-test';
+/** Shared agent and run IDs used across tests. */
+const TEST_AGENT_ID = 'agent-turns-test';
 const TEST_RUN_ID = 'run-turns-test';
 
 /** Factory for minimal valid turn data. */
 function makeTurn(overrides: Partial<TurnInsert> = {}): TurnInsert {
   return {
     run_id: TEST_RUN_ID,
-    curator_id: TEST_CURATOR_ID,
+    agent_id: TEST_AGENT_ID,
     turn_number: 1,
     tool_name: 'vault_search',
     ...overrides,
@@ -36,14 +36,14 @@ describe('turn query helpers', () => {
     const db = await initDatabase();
     await createSchema(db);
     // Insert FK targets
-    await registerCurator({
-      id: TEST_CURATOR_ID,
-      name: 'Test Curator',
+    await registerAgent({
+      id: TEST_AGENT_ID,
+      name: 'Test Agent',
       created_at: epochNow(),
     });
     await insertRun({
       id: TEST_RUN_ID,
-      curator_id: TEST_CURATOR_ID,
+      agent_id: TEST_AGENT_ID,
       started_at: epochNow(),
     });
   });
@@ -69,7 +69,7 @@ describe('turn query helpers', () => {
 
       expect(typeof row.id).toBe('number');
       expect(row.run_id).toBe(TEST_RUN_ID);
-      expect(row.curator_id).toBe(TEST_CURATOR_ID);
+      expect(row.agent_id).toBe(TEST_AGENT_ID);
       expect(row.turn_number).toBe(1);
       expect(row.tool_name).toBe('vault_search');
       expect(row.tool_input).toBe('{"query":"recent sessions"}');

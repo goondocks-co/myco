@@ -25,7 +25,7 @@ import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 // Constants
 // ---------------------------------------------------------------------------
 
-const TEST_CURATOR_ID = 'test-curator';
+const TEST_AGENT_ID = 'test-agent';
 const TEST_RUN_ID = 'run-test-001';
 
 /** Epoch seconds helper. */
@@ -35,21 +35,21 @@ const epochNow = () => Math.floor(Date.now() / 1000);
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Insert a curator directly into the curators table. */
-async function createCurator(id: string): Promise<void> {
+/** Insert an agent directly into the agents table. */
+async function createAgent(id: string): Promise<void> {
   const db = getDatabase();
   const now = epochNow();
   await db.query(
-    `INSERT INTO curators (id, name, created_at) VALUES ($1, $2, $3)`,
-    [id, `curator-${id}`, now],
+    `INSERT INTO agents (id, name, created_at) VALUES ($1, $2, $3)`,
+    [id, `agent-${id}`, now],
   );
 }
 
 /** Insert an agent run directly (required FK for reports and turns). */
-async function createRun(id: string, curatorId: string): Promise<void> {
+async function createRun(id: string, agentId: string): Promise<void> {
   await insertRun({
     id,
-    curator_id: curatorId,
+    agent_id: agentId,
     status: 'running',
     started_at: epochNow(),
   });
@@ -103,15 +103,15 @@ describe('vault tools', () => {
     await createSchema(db);
 
     // Seed required parent rows
-    await createCurator(TEST_CURATOR_ID);
-    await createRun(TEST_RUN_ID, TEST_CURATOR_ID);
+    await createAgent(TEST_AGENT_ID);
+    await createRun(TEST_RUN_ID, TEST_AGENT_ID);
 
     const session = makeSession();
     await upsertSession(session);
     sessionId = session.id;
 
     // Create tools for this test
-    tools = createVaultTools(TEST_CURATOR_ID, TEST_RUN_ID);
+    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID);
   });
 
   afterEach(async () => {
@@ -186,14 +186,14 @@ describe('vault tools', () => {
     it('returns spores filtered by observation_type', async () => {
       await insertSpore({
         id: 'spore-1',
-        curator_id: TEST_CURATOR_ID,
+        agent_id: TEST_AGENT_ID,
         observation_type: 'gotcha',
         content: 'A gotcha',
         created_at: epochNow(),
       });
       await insertSpore({
         id: 'spore-2',
-        curator_id: TEST_CURATOR_ID,
+        agent_id: TEST_AGENT_ID,
         observation_type: 'decision',
         content: 'A decision',
         created_at: epochNow(),
@@ -242,8 +242,8 @@ describe('vault tools', () => {
     });
 
     it('returns state entries after setting them', async () => {
-      await setState(TEST_CURATOR_ID, 'cursor', '42', epochNow());
-      await setState(TEST_CURATOR_ID, 'mode', 'full', epochNow());
+      await setState(TEST_AGENT_ID, 'cursor', '42', epochNow());
+      await setState(TEST_AGENT_ID, 'mode', 'full', epochNow());
 
       const t = findTool(tools, 'vault_state');
       const result = await t.handler({}, undefined);
@@ -259,7 +259,7 @@ describe('vault tools', () => {
   // -------------------------------------------------------------------------
 
   describe('vault_create_spore', () => {
-    it('creates a spore with curator_id injected', async () => {
+    it('creates a spore with agent_id injected', async () => {
       const t = findTool(tools, 'vault_create_spore');
       const result = await t.handler(
         {
@@ -271,9 +271,9 @@ describe('vault tools', () => {
         },
         undefined,
       );
-      const spore = parseResult(result) as { id: string; curator_id: string; importance: number; tags: string };
+      const spore = parseResult(result) as { id: string; agent_id: string; importance: number; tags: string };
       expect(spore.id).toBeDefined();
-      expect(spore.curator_id).toBe(TEST_CURATOR_ID);
+      expect(spore.agent_id).toBe(TEST_AGENT_ID);
       expect(spore.importance).toBe(8);
       expect(JSON.parse(spore.tags)).toEqual(['testing', 'example']);
     });
@@ -312,7 +312,7 @@ describe('vault tools', () => {
   });
 
   describe('vault_create_entity', () => {
-    it('creates an entity with curator_id injected', async () => {
+    it('creates an entity with agent_id injected', async () => {
       const t = findTool(tools, 'vault_create_entity');
       const result = await t.handler(
         {
@@ -322,14 +322,14 @@ describe('vault tools', () => {
         },
         undefined,
       );
-      const entity = parseResult(result) as { curator_id: string; type: string; name: string; properties: string };
-      expect(entity.curator_id).toBe(TEST_CURATOR_ID);
+      const entity = parseResult(result) as { agent_id: string; type: string; name: string; properties: string };
+      expect(entity.agent_id).toBe(TEST_AGENT_ID);
       expect(entity.type).toBe('component');
       expect(entity.name).toBe('AuthModule');
       expect(JSON.parse(entity.properties)).toEqual({ language: 'TypeScript' });
     });
 
-    it('upserts on conflict (same curator, type, name)', async () => {
+    it('upserts on conflict (same agent, type, name)', async () => {
       const t = findTool(tools, 'vault_create_entity');
       await t.handler(
         { type: 'component', name: 'AuthModule' },
@@ -357,14 +357,14 @@ describe('vault tools', () => {
       const db = getDatabase();
       const now = epochNow();
       await db.query(
-        `INSERT INTO entities (id, curator_id, type, name, first_seen, last_seen)
+        `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
          VALUES ($1, $2, $3, $4, $5, $6)`,
-        ['entity-a', TEST_CURATOR_ID, 'component', 'CompA', now, now],
+        ['entity-a', TEST_AGENT_ID, 'component', 'CompA', now, now],
       );
       await db.query(
-        `INSERT INTO entities (id, curator_id, type, name, first_seen, last_seen)
+        `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
          VALUES ($1, $2, $3, $4, $5, $6)`,
-        ['entity-b', TEST_CURATOR_ID, 'component', 'CompB', now, now],
+        ['entity-b', TEST_AGENT_ID, 'component', 'CompB', now, now],
       );
 
       const t = findTool(tools, 'vault_create_edge');
@@ -377,8 +377,8 @@ describe('vault tools', () => {
         },
         undefined,
       );
-      const edge = parseResult(result) as { curator_id: string; type: string; confidence: number };
-      expect(edge.curator_id).toBe(TEST_CURATOR_ID);
+      const edge = parseResult(result) as { agent_id: string; type: string; confidence: number };
+      expect(edge.agent_id).toBe(TEST_AGENT_ID);
       expect(edge.type).toBe('DEPENDS_ON');
       expect(edge.confidence).toBe(0.9);
     });
@@ -389,7 +389,7 @@ describe('vault tools', () => {
       // Create a spore to resolve
       await insertSpore({
         id: 'spore-resolve-test',
-        curator_id: TEST_CURATOR_ID,
+        agent_id: TEST_AGENT_ID,
         observation_type: 'gotcha',
         content: 'Old observation',
         created_at: epochNow(),
@@ -440,14 +440,14 @@ describe('vault tools', () => {
   });
 
   describe('vault_set_state', () => {
-    it('sets a state value for the current curator', async () => {
+    it('sets a state value for the current agent', async () => {
       const t = findTool(tools, 'vault_set_state');
       const result = await t.handler(
         { key: 'last_processed_batch_id', value: '42' },
         undefined,
       );
-      const state = parseResult(result) as { curator_id: string; key: string; value: string };
-      expect(state.curator_id).toBe(TEST_CURATOR_ID);
+      const state = parseResult(result) as { agent_id: string; key: string; value: string };
+      expect(state.agent_id).toBe(TEST_AGENT_ID);
       expect(state.key).toBe('last_processed_batch_id');
       expect(state.value).toBe('42');
     });
@@ -468,13 +468,13 @@ describe('vault tools', () => {
         { tier: 1500, content: '# Digest\nCompact context.' },
         undefined,
       );
-      const extract = parseResult(result) as { curator_id: string; tier: number; content: string };
-      expect(extract.curator_id).toBe(TEST_CURATOR_ID);
+      const extract = parseResult(result) as { agent_id: string; tier: number; content: string };
+      expect(extract.agent_id).toBe(TEST_AGENT_ID);
       expect(extract.tier).toBe(1500);
       expect(extract.content).toBe('# Digest\nCompact context.');
     });
 
-    it('upserts on (curator_id, tier) conflict', async () => {
+    it('upserts on (agent_id, tier) conflict', async () => {
       const t = findTool(tools, 'vault_write_digest');
       await t.handler({ tier: 3000, content: 'v1' }, undefined);
       const result = await t.handler({ tier: 3000, content: 'v2' }, undefined);
@@ -484,8 +484,8 @@ describe('vault tools', () => {
       // Verify only one row
       const db = getDatabase();
       const count = await db.query(
-        `SELECT count(*) AS count FROM digest_extracts WHERE curator_id = $1 AND tier = $2`,
-        [TEST_CURATOR_ID, 3000],
+        `SELECT count(*) AS count FROM digest_extracts WHERE agent_id = $1 AND tier = $2`,
+        [TEST_AGENT_ID, 3000],
       );
       expect(Number((count.rows[0] as { count: string }).count)).toBe(1);
     });
@@ -519,7 +519,7 @@ describe('vault tools', () => {
   // -------------------------------------------------------------------------
 
   describe('vault_report', () => {
-    it('writes a report with run_id and curator_id injected', async () => {
+    it('writes a report with run_id and agent_id injected', async () => {
       const t = findTool(tools, 'vault_report');
       const result = await t.handler(
         {
@@ -531,13 +531,13 @@ describe('vault tools', () => {
       );
       const report = parseResult(result) as {
         run_id: string;
-        curator_id: string;
+        agent_id: string;
         action: string;
         summary: string;
         details: string;
       };
       expect(report.run_id).toBe(TEST_RUN_ID);
-      expect(report.curator_id).toBe(TEST_CURATOR_ID);
+      expect(report.agent_id).toBe(TEST_AGENT_ID);
       expect(report.action).toBe('extract');
       expect(report.summary).toBe('Extracted 3 spores from batch 42');
       expect(JSON.parse(report.details)).toEqual({ batch_id: 42, spore_count: 3 });

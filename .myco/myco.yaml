@@ -1,0 +1,19 @@
+version: 3
+config_version: 2
+embedding:
+  provider: ollama
+  model: bge-m3
+daemon:
+  port: 21039
+  log_level: debug
+capture:
+  transcript_paths: []
+  artifact_watch:
+    - .claude/plans/
+    - .cursor/plans/
+  artifact_extensions:
+    - .md
+  buffer_max_events: 500
+curation:
+  auto_run: false
+  interval_seconds: 1800

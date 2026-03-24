@@ -18,13 +18,30 @@ const CaptureSchema = z.object({
   buffer_max_events: z.number().int().positive().default(500),
 });
 
-export const MycoConfigSchema = z.object({
-  version: z.literal(3),
-  config_version: z.number().int().nonnegative().default(0),
-  embedding: EmbeddingProviderSchema.default(() => EmbeddingProviderSchema.parse({})),
-  daemon: DaemonSchema.default(() => DaemonSchema.parse({})),
-  capture: CaptureSchema.default(() => CaptureSchema.parse({})),
+const AgentSchema = z.object({
+  /** Whether the daemon automatically runs the agent on unprocessed batches. */
+  auto_run: z.boolean().default(true),
+  /** Seconds between agent timer checks. */
+  interval_seconds: z.number().int().positive().default(300),
 });
 
-export type MycoConfig = z.infer<typeof MycoConfigSchema>;
+export const MycoConfigSchema = z.preprocess(
+  (raw: unknown) => {
+    if (raw && typeof raw === 'object' && 'curation' in raw && !('agent' in raw)) {
+      const { curation, ...rest } = raw as Record<string, unknown>;
+      return { ...rest, agent: curation };
+    }
+    return raw;
+  },
+  z.object({
+    version: z.literal(3),
+    config_version: z.number().int().nonnegative().default(0),
+    embedding: EmbeddingProviderSchema.default(() => EmbeddingProviderSchema.parse({})),
+    daemon: DaemonSchema.default(() => DaemonSchema.parse({})),
+    capture: CaptureSchema.default(() => CaptureSchema.parse({})),
+    agent: AgentSchema.default(() => AgentSchema.parse({})),
+  }),
+);
+
+export type MycoConfig = z.output<typeof MycoConfigSchema>;
 export type EmbeddingProviderConfig = z.infer<typeof EmbeddingProviderSchema>;

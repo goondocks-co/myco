@@ -4,7 +4,7 @@ import { resolveVaultDir } from '../vault/resolve.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
-async function main() {
+export async function main() {
   const VAULT_DIR = resolveVaultDir();
   if (!fs.existsSync(path.join(VAULT_DIR, 'myco.yaml'))) return;
 
@@ -20,5 +20,3 @@ async function main() {
     process.stderr.write(`[myco] session-end error: ${(error as Error).message}\n`);
   }
 }
-
-main();

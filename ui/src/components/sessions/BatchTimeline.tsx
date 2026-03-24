@@ -12,8 +12,8 @@ const PROMPT_PREVIEW_CHARS = 120;
 
 /* ---------- Helpers ---------- */
 
-function formatTimestamp(epochMs: number): string {
-  return new Date(epochMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+function formatTimestamp(epochSeconds: number): string {
+  return new Date(epochSeconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 function promptPreview(text: string | null): string {
@@ -144,7 +144,8 @@ export function BatchTimeline({ sessionId }: BatchTimelineProps) {
     );
   }
 
-  const batchList = batches ?? [];
+  // Sort by started_at ascending (chronological) — prompt_number can reset across daemon restarts
+  const batchList = [...(batches ?? [])].sort((a, b) => (a.started_at ?? 0) - (b.started_at ?? 0));
 
   if (batchList.length === 0) {
     return (

@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
-import { registerCurator } from '@myco/db/queries/curators.js';
+import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { insertSpore } from '@myco/db/queries/spores.js';
 import { getActivityFeed } from '@myco/db/queries/feed.js';
@@ -17,17 +17,17 @@ import { getActivityFeed } from '@myco/db/queries/feed.js';
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
 
-/** Shared curator ID used across tests. */
-const TEST_CURATOR_ID = 'curator-feed-test';
+/** Shared agent ID used across tests. */
+const TEST_AGENT_ID = 'agent-feed-test';
 
 describe('getActivityFeed', () => {
   beforeEach(async () => {
     const db = await initDatabase(); // in-memory
     await createSchema(db);
-    // Insert curator required as FK for agent_runs and spores
-    await registerCurator({
-      id: TEST_CURATOR_ID,
-      name: 'Feed Test Curator',
+    // Insert agent required as FK for agent_runs and spores
+    await registerAgent({
+      id: TEST_AGENT_ID,
+      name: 'Feed Test Agent',
       created_at: epochNow(),
     });
   });
@@ -64,7 +64,7 @@ describe('getActivityFeed', () => {
     // Agent run at base+20
     await insertRun({
       id: 'run-feed-1',
-      curator_id: TEST_CURATOR_ID,
+      agent_id: TEST_AGENT_ID,
       task: 'curate spores',
       status: 'completed',
       started_at: base + 20,
@@ -74,7 +74,7 @@ describe('getActivityFeed', () => {
     // Spore at base+10 (oldest)
     await insertSpore({
       id: 'spore-feed-1',
-      curator_id: TEST_CURATOR_ID,
+      agent_id: TEST_AGENT_ID,
       observation_type: 'gotcha',
       content: 'Watch out for PGlite file locks',
       created_at: base + 10,
@@ -135,7 +135,7 @@ describe('getActivityFeed', () => {
 
     await insertSpore({
       id: 'spore-long',
-      curator_id: TEST_CURATOR_ID,
+      agent_id: TEST_AGENT_ID,
       observation_type: 'decision',
       content: longContent,
       created_at: now,
@@ -156,7 +156,7 @@ describe('getActivityFeed', () => {
 
     await insertSpore({
       id: 'spore-active',
-      curator_id: TEST_CURATOR_ID,
+      agent_id: TEST_AGENT_ID,
       observation_type: 'gotcha',
       content: 'Active spore',
       created_at: now,
@@ -165,7 +165,7 @@ describe('getActivityFeed', () => {
 
     await insertSpore({
       id: 'spore-superseded',
-      curator_id: TEST_CURATOR_ID,
+      agent_id: TEST_AGENT_ID,
       observation_type: 'gotcha',
       content: 'Superseded spore',
       created_at: now + 1,
@@ -224,7 +224,7 @@ describe('getActivityFeed', () => {
 
     await insertRun({
       id: 'run-done',
-      curator_id: TEST_CURATOR_ID,
+      agent_id: TEST_AGENT_ID,
       task: 'prune',
       status: 'completed',
       started_at: now,
@@ -246,7 +246,7 @@ describe('getActivityFeed', () => {
     // Only a spore — no sessions or runs
     await insertSpore({
       id: 'spore-only',
-      curator_id: TEST_CURATOR_ID,
+      agent_id: TEST_AGENT_ID,
       observation_type: 'discovery',
       content: 'Interesting finding',
       created_at: now,

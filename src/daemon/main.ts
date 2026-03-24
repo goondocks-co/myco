@@ -14,8 +14,9 @@ import { DaemonLogger } from './logger.js';
 import { loadConfig, saveConfig } from '../config/loader.js';
 import { resolvePort } from './port.js';
 import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-miner.js';
-import { createPerProjectAdapter, extensionForMimeType, type TranscriptTurn } from '../agents/adapter.js';
-import { claudeCodeAdapter } from '../agents/claude-code.js';
+import { createPerProjectAdapter, extensionForMimeType, type TranscriptTurn } from '../symbionts/adapter.js';
+import { claudeCodeAdapter } from '../symbionts/claude-code.js';
+import { findPackageRoot } from '../utils/find-package-root.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { PlanWatcher } from './watcher.js';
 import type { RegisteredSession } from './lifecycle.js';
@@ -42,20 +43,25 @@ import { handleSearch } from './api/search.js';
 import { handleGetFeed } from './api/feed.js';
 import { handleGetEmbeddingStatus } from './api/embedding.js';
 import { listTurnsByRun } from '../db/queries/turns.js';
-import { listTasksByCurator } from '../db/queries/tasks.js';
+import { listTasksByAgent } from '../db/queries/tasks.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
-import { upsertSession, closeSession, updateSession, listSessions } from '../db/queries/sessions.js';
+import { upsertSession, closeSession, updateSession, listSessions, getSession } from '../db/queries/sessions.js';
 import { insertBatch, closeBatch, incrementActivityCount } from '../db/queries/batches.js';
 import { insertActivity } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
 import { listRuns, getRun } from '../db/queries/runs.js';
 import { listReports } from '../db/queries/reports.js';
+import { insertSpore, updateSporeStatus } from '../db/queries/spores.js';
+import { listPlans } from '../db/queries/plans.js';
+import { registerAgent } from '../db/queries/agents.js';
 import {
-  DEFAULT_CURATOR_ID,
+  DEFAULT_AGENT_ID,
   STALE_BUFFER_MAX_AGE_MS,
   LOG_PROMPT_PREVIEW_CHARS,
   LOG_MESSAGE_PREVIEW_CHARS,
+  USER_AGENT_ID,
+  USER_AGENT_NAME,
   epochSeconds,
 } from '../constants.js';
 import { z } from 'zod';
@@ -66,8 +72,8 @@ import path from 'node:path';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Interval between curation timer checks (ms). */
-const CURATION_CHECK_INTERVAL_MS = 300_000; // 5 minutes
+/** Seconds-to-milliseconds multiplier for config intervals. */
+const SECONDS_TO_MS = 1000;
 
 /** Default limit for listing agent runs in the API. */
 const AGENT_RUNS_DEFAULT_LIMIT = 50;
@@ -108,7 +114,15 @@ export async function handleUserPrompt(
   batchState: BatchStateMap,
 ): Promise<number> {
   const now = epochSeconds();
-  const state = batchState.get(sessionId) ?? { currentBatchId: null, promptNumber: INITIAL_PROMPT_NUMBER };
+  let state = batchState.get(sessionId);
+  if (!state) {
+    // Recover prompt number from DB to survive daemon restarts
+    const session = await getSession(sessionId);
+    const resumeNumber = session?.prompt_count
+      ? session.prompt_count + INITIAL_PROMPT_NUMBER
+      : INITIAL_PROMPT_NUMBER;
+    state = { currentBatchId: null, promptNumber: resumeNumber };
+  }
 
   // Close previous batch if open
   if (state.currentBatchId !== null) {
@@ -194,6 +208,35 @@ export async function handleSessionStop(
 }
 
 // ---------------------------------------------------------------------------
+// Stale daemon cleanup
+// ---------------------------------------------------------------------------
+
+/**
+ * Kill any stale daemon process for this vault before starting a new one.
+ * Reads daemon.json — if a live process exists with that PID, kill it.
+ * This prevents orphaned daemons from accumulating across restarts.
+ */
+function killStaleDaemon(vaultDir: string, logger: DaemonLogger): void {
+  const daemonJsonPath = path.join(vaultDir, 'daemon.json');
+  try {
+    if (!fs.existsSync(daemonJsonPath)) return;
+    const info = JSON.parse(fs.readFileSync(daemonJsonPath, 'utf-8')) as { pid?: number };
+    if (!info.pid) return;
+
+    // Don't kill ourselves
+    if (info.pid === process.pid) return;
+
+    try {
+      process.kill(info.pid, 0);
+      process.kill(info.pid, 'SIGTERM');
+      logger.info('daemon', 'Killed stale daemon', { pid: info.pid });
+    } catch { /* already dead */ }
+
+    fs.unlinkSync(daemonJsonPath);
+  } catch { /* daemon.json unreadable — ignore */ }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -211,6 +254,9 @@ export async function main(): Promise<void> {
     level: config.daemon.log_level,
   });
 
+  // Kill any stale daemon for this vault before starting
+  killStaleDaemon(vaultDir, logger);
+
   logger.info('daemon', 'Config loaded', {
     vault: vaultDir,
     embedding_provider: config.embedding.provider,
@@ -220,27 +266,42 @@ export async function main(): Promise<void> {
   await initDatabaseForVault(vaultDir);
   logger.info('daemon', 'PGlite initialized', { vault: vaultDir });
 
-  // --- Register built-in curators and tasks ---
+  // --- Register built-in agents and tasks ---
   try {
-    const { registerBuiltInCuratorsAndTasks, resolveDefinitionsDir } = await import('../agent/loader.js');
+    const { registerBuiltInAgentsAndTasks, resolveDefinitionsDir } = await import('../agent/loader.js');
     const definitionsDir = resolveDefinitionsDir();
-    await registerBuiltInCuratorsAndTasks(definitionsDir);
-    logger.info('agent', 'Built-in curators and tasks registered');
+    await registerBuiltInAgentsAndTasks(definitionsDir);
+    logger.info('agent', 'Built-in agents and tasks registered');
   } catch (err) {
-    logger.warn('agent', 'Failed to register built-in curators/tasks', { error: (err as Error).message });
+    logger.warn('agent', 'Failed to register built-in agents/tasks', { error: (err as Error).message });
   }
 
-  // Resolve dist/ui/ — walk up to find package.json (same strategy as prompts loader)
+  // Clean up stale "running" agent runs from previous daemon — they'll never complete
+  try {
+    const db = getDatabase();
+    const staleRuns = await db.query(
+      `UPDATE agent_runs SET status = 'failed', completed_at = $1
+       WHERE status = 'running'
+       RETURNING id`,
+      [epochSeconds()],
+    );
+    if (staleRuns.rows.length > 0) {
+      logger.info('agent', 'Cleaned stale running agent runs', {
+        count: staleRuns.rows.length,
+        ids: staleRuns.rows.map((r: unknown) => (r as Record<string, unknown>).id),
+      });
+    }
+  } catch (err) {
+    logger.warn('agent', 'Failed to clean stale runs', { error: (err as Error).message });
+  }
+
+  // Resolve dist/ui/ from the package root
   let uiDir: string | null = null;
   {
-    let dir = path.dirname(new URL(import.meta.url).pathname);
-    for (let i = 0; i < 5; i++) {
-      const candidate = path.join(dir, 'dist', 'ui');
-      if (fs.existsSync(path.join(dir, 'package.json')) && fs.existsSync(candidate)) {
-        uiDir = candidate;
-        break;
-      }
-      dir = path.dirname(dir);
+    const root = findPackageRoot(path.dirname(new URL(import.meta.url).pathname));
+    if (root) {
+      const candidate = path.join(root, 'dist', 'ui');
+      if (fs.existsSync(candidate)) uiDir = candidate;
     }
   }
   if (uiDir) {
@@ -636,12 +697,17 @@ export async function main(): Promise<void> {
       parts.push(`Session:: \`${session_id}\``);
 
       if (parts.length > 0) {
+        const contextText = parts.join('\n\n');
         logger.info('context', 'Session context injected', {
           session_id,
           source: 'basic',
           parts: parts.length,
         });
-        return { body: { text: parts.join('\n\n') } };
+        logger.debug('context', 'Injected context content', {
+          session_id,
+          text: contextText,
+        });
+        return { body: { text: contextText } };
       }
       return { body: { text: '' } };
     } catch (error) {
@@ -675,7 +741,7 @@ export async function main(): Promise<void> {
     return result;
   });
 
-  // V2 stats — vault counts, embedding coverage, curator status, digest freshness
+  // V2 stats — vault counts, embedding coverage, agent status, digest freshness
   server.registerRoute('GET', '/api/stats', async () => {
     const stats = await gatherStats(vaultDir, { active_sessions: registry.sessions });
     // Overlay live daemon fields from the running process (more accurate than daemon.json)
@@ -761,34 +827,34 @@ export async function main(): Promise<void> {
   const AgentRunBody = z.object({
     task: z.string().optional(),
     instruction: z.string().optional(),
-    curatorId: z.string().optional(),
+    agentId: z.string().optional(),
   });
 
   server.registerRoute('POST', '/api/agent/run', async (req) => {
-    const { task, instruction, curatorId } = AgentRunBody.parse(req.body);
+    const { task, instruction, agentId } = AgentRunBody.parse(req.body);
 
     // Fire-and-forget: respond immediately with a runId placeholder, agent runs in background
-    const { runCurationAgent } = await import('../agent/executor.js');
-    const resultPromise = runCurationAgent(vaultDir, { task, instruction, curatorId });
+    const { runAgent } = await import('../agent/executor.js');
+    const resultPromise = runAgent(vaultDir, { task, instruction, agentId });
 
     // We need the runId from the executor, but the executor creates it synchronously
     // before the async SDK call. Wait for the result since it's fast to start.
     resultPromise
       .then((result) => {
-        logger.info('curation', 'Agent run completed', { runId: result.runId, status: result.status });
+        logger.info('agent', 'Agent run completed', { runId: result.runId, status: result.status });
       })
       .catch((err) => {
-        logger.error('curation', 'Agent run failed', { error: (err as Error).message });
+        logger.error('agent', 'Agent run failed', { error: (err as Error).message });
       });
 
     // Return immediately — the caller can poll /api/agent/runs for status
-    return { body: { ok: true, message: 'Curation agent started' } };
+    return { body: { ok: true, message: 'Agent started' } };
   });
 
   server.registerRoute('GET', '/api/agent/runs', async (req) => {
     const limit = req.query.limit ? Number(req.query.limit) : AGENT_RUNS_DEFAULT_LIMIT;
-    const curatorId = req.query.curatorId || undefined;
-    const runs = await listRuns({ limit, curator_id: curatorId });
+    const agentId = req.query.agentId || undefined;
+    const runs = await listRuns({ limit, agent_id: agentId });
     return { body: { runs } };
   });
 
@@ -811,9 +877,172 @@ export async function main(): Promise<void> {
   });
 
   server.registerRoute('GET', '/api/agent/tasks', async (req) => {
-    const curatorId = req.query.curator_id ?? DEFAULT_CURATOR_ID;
-    const tasks = await listTasksByCurator(curatorId);
+    const agentId = req.query.agent_id ?? DEFAULT_AGENT_ID;
+    const tasks = await listTasksByAgent(agentId);
     return { body: tasks };
+  });
+
+  // --- MCP proxy routes ---
+  // These routes exist so the MCP server can proxy tool calls through the
+  // daemon instead of opening its own PGlite connection.
+
+  const SPORE_ID_RANDOM_BYTES = 4;
+  const RESOLUTION_ID_RANDOM_BYTES = 8;
+
+  const RememberBody = z.object({
+    content: z.string(),
+    type: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+  });
+
+  server.registerRoute('POST', '/api/mcp/remember', async (req) => {
+    const { content, type, tags } = RememberBody.parse(req.body);
+    const { randomBytes } = await import('node:crypto');
+
+    const observationType = type ?? 'discovery';
+    const id = `${observationType}-${randomBytes(SPORE_ID_RANDOM_BYTES).toString('hex')}`;
+    const now = epochSeconds();
+
+    // Ensure the user agent exists (idempotent upsert)
+    await registerAgent({
+      id: USER_AGENT_ID,
+      name: USER_AGENT_NAME,
+      created_at: now,
+    });
+
+    const spore = await insertSpore({
+      id,
+      agent_id: USER_AGENT_ID,
+      observation_type: observationType,
+      content,
+      tags: tags ? tags.join(', ') : null,
+      created_at: now,
+    });
+
+    return {
+      body: {
+        id: spore.id,
+        observation_type: spore.observation_type,
+        status: spore.status,
+        created_at: spore.created_at,
+      },
+    };
+  });
+
+  server.registerRoute('GET', '/api/mcp/plans', async (req) => {
+    const statusFilter = req.query.status === 'all' ? undefined : req.query.status;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+
+    const rows = await listPlans({ status: statusFilter, limit });
+
+    const plans = rows.map((row) => {
+      const content = row.content ?? '';
+      const checked = (content.match(/- \[x\]/gi) ?? []).length;
+      const unchecked = (content.match(/- \[ \]/g) ?? []).length;
+      const total = checked + unchecked;
+      const progress = total === 0 ? 'N/A' : `${checked}/${total}`;
+
+      return {
+        id: row.id,
+        title: row.title,
+        status: row.status,
+        progress,
+        tags: row.tags ? row.tags.split(',').map((t) => t.trim()) : [],
+        created_at: row.created_at,
+      };
+    });
+
+    return { body: { plans } };
+  });
+
+  server.registerRoute('GET', '/api/mcp/sessions', async (req) => {
+    const limit = req.query.limit ? Number(req.query.limit) : 20;
+    const status = req.query.status;
+
+    const rows = await listSessions({ limit, status });
+    const sessions = rows.map((row) => ({
+      id: row.id,
+      agent: row.agent,
+      user: row.user,
+      branch: row.branch,
+      started_at: row.started_at,
+      ended_at: row.ended_at,
+      status: row.status,
+      title: row.title,
+      summary: (row.summary ?? '').slice(0, 300),
+      prompt_count: row.prompt_count,
+      tool_count: row.tool_count,
+      parent_session_id: row.parent_session_id,
+    }));
+
+    return { body: { sessions } };
+  });
+
+  server.registerRoute('GET', '/api/mcp/team', async () => {
+    const db = getDatabase();
+    const result = await db.query(
+      `SELECT id, "user", role, joined, tags
+       FROM team_members
+       ORDER BY id ASC`,
+    );
+
+    const members = (result.rows as Record<string, unknown>[]).map((row) => ({
+      id: row.id as string,
+      user: row.user as string,
+      role: (row.role as string) ?? null,
+      joined: (row.joined as string) ?? null,
+      tags: row.tags ? (row.tags as string).split(',').map((t) => t.trim()) : [],
+    }));
+
+    return { body: { members } };
+  });
+
+  const SupersedeBody = z.object({
+    old_spore_id: z.string(),
+    new_spore_id: z.string(),
+    reason: z.string().optional(),
+  });
+
+  server.registerRoute('POST', '/api/mcp/supersede', async (req) => {
+    const { old_spore_id, new_spore_id, reason } = SupersedeBody.parse(req.body);
+    const { randomBytes } = await import('node:crypto');
+    const now = epochSeconds();
+
+    // Update status to superseded
+    await updateSporeStatus(old_spore_id, 'superseded', now);
+
+    // Ensure user agent exists (idempotent)
+    await registerAgent({
+      id: USER_AGENT_ID,
+      name: USER_AGENT_NAME,
+      created_at: now,
+    });
+
+    // Record resolution event for audit trail
+    const db = getDatabase();
+    const resolutionId = `res-${randomBytes(RESOLUTION_ID_RANDOM_BYTES).toString('hex')}`;
+
+    await db.query(
+      `INSERT INTO resolution_events (id, agent_id, spore_id, action, new_spore_id, reason, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        resolutionId,
+        USER_AGENT_ID,
+        old_spore_id,
+        'supersede',
+        new_spore_id,
+        reason ?? null,
+        now,
+      ],
+    );
+
+    return {
+      body: {
+        old_spore: old_spore_id,
+        new_spore: new_spore_id,
+        status: 'superseded' as const,
+      },
+    };
   });
 
   // --- Search, activity feed, and embedding status ---
@@ -843,37 +1072,96 @@ export async function main(): Promise<void> {
     }
   }
 
-  // Write portal file so users can find the dashboard URL in Obsidian
-  try {
-    const { loadTemplate } = await import('../templates/index.js');
-    const portalContent = loadTemplate('portal', { port: String(server.port) });
-    fs.writeFileSync(path.join(vaultDir, '_portal.md'), portalContent, 'utf-8');
-  } catch { /* non-critical — template may be missing or vault read-only */ }
+  // --- Agent timer ---
 
-  // --- Curation timer ---
+  const agentTimer = config.agent.auto_run
+    ? setInterval(async () => {
+        try {
+          // Pre-check: only spawn agent if there's unprocessed work
+          const db = getDatabase();
+          const checkResult = await db.query('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0');
+          const count = Number((checkResult.rows[0] as Record<string, unknown>).count);
+          if (count === 0) {
+            logger.debug('agent', 'No unprocessed batches, skipping cycle');
+            return;
+          }
 
-  const curationTimer = setInterval(async () => {
+          logger.info('agent', 'Unprocessed batches found, starting agent', { count });
+          const { runAgent } = await import('../agent/executor.js');
+          const runResult = await runAgent(vaultDir);
+          logger.info('agent', 'Agent run completed', { status: runResult.status, runId: runResult.runId });
+        } catch (err) {
+          logger.error('agent', 'Agent timer failed', { error: (err as Error).message });
+        }
+      }, config.agent.interval_seconds * SECONDS_TO_MS)
+    : null;
+
+  if (!config.agent.auto_run) {
+    logger.info('agent', 'Auto-agent disabled (agent.auto_run = false)');
+  }
+
+  // --- Embedding worker ---
+  // Drains the unembedded queue on a timer, embedding content that the agent
+  // or capture pipeline has written but not yet vectorized.
+
+  const EMBEDDING_INTERVAL_MS = 30 * SECONDS_TO_MS;
+  const EMBEDDING_BATCH_SIZE = 10;
+  let embeddingRunning = false;
+
+  const embeddingTimer = setInterval(async () => {
+    if (embeddingRunning) return;
+    embeddingRunning = true;
     try {
-      // Pre-check: only spawn agent if there's unprocessed work
-      const db = getDatabase();
-      const checkResult = await db.query('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0');
-      const count = Number((checkResult.rows[0] as Record<string, unknown>).count);
-      if (count === 0) return;
+      const { getUnembedded, setEmbedding, EMBEDDABLE_TABLES } = await import('../db/queries/embeddings.js');
+      const { tryEmbed } = await import('../intelligence/embed-query.js');
 
-      logger.info('curation', 'Unprocessed batches found, starting curation', { count });
-      const { runCurationAgent } = await import('../agent/executor.js');
-      const runResult = await runCurationAgent(vaultDir);
-      logger.info('curation', 'Curation run completed', { status: runResult.status, runId: runResult.runId });
+      let totalEmbedded = 0;
+      for (const table of EMBEDDABLE_TABLES) {
+        const rows = await getUnembedded(table, { limit: EMBEDDING_BATCH_SIZE });
+        if (rows.length === 0) continue;
+
+        for (const row of rows) {
+          try {
+            if (!row.text) continue;
+
+            const embedding = await tryEmbed(row.text);
+            if (!embedding) {
+              if (totalEmbedded === 0) {
+                logger.debug('embedding', 'Provider unavailable, skipping cycle');
+              }
+              embeddingRunning = false;
+              return;
+            }
+
+            await setEmbedding(table, row.id, embedding);
+            totalEmbedded++;
+          } catch (err) {
+            logger.warn('embedding', 'Failed to embed row', { table, id: row.id, error: (err as Error).message });
+          }
+        }
+      }
+
+      if (totalEmbedded > 0) {
+        logger.info('embedding', 'Embedding batch completed', { embedded: totalEmbedded });
+      }
     } catch (err) {
-      logger.error('curation', 'Curation timer failed', { error: (err as Error).message });
+      logger.error('embedding', 'Embedding worker failed', { error: (err as Error).message });
+    } finally {
+      embeddingRunning = false;
     }
-  }, CURATION_CHECK_INTERVAL_MS);
+  }, EMBEDDING_INTERVAL_MS);
+
+  logger.info('embedding', 'Embedding worker started', {
+    interval_ms: EMBEDDING_INTERVAL_MS,
+    batch_size: EMBEDDING_BATCH_SIZE,
+  });
 
   // --- Shutdown ---
 
   const shutdown = async (signal: string) => {
     logger.info('daemon', `${signal} received`);
-    clearInterval(curationTimer);
+    if (agentTimer) clearInterval(agentTimer);
+    clearInterval(embeddingTimer);
     // Wait for any active stop processing to finish before shutting down
     if (activeStopProcessing) {
       logger.info('daemon', 'Waiting for active stop processing to complete...');

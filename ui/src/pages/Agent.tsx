@@ -15,7 +15,7 @@ export default function Agent() {
         <div>
           <h1 className="text-2xl font-bold">Agent</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Curation history — what Myco observed, decided, and wrote
+            Agent runs — what Myco observed, decided, and wrote
           </p>
         </div>
         <Button

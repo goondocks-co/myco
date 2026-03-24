@@ -86,7 +86,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   // Warn about embedding model changes
   if (embeddingModel !== undefined) {
     console.log('\nWarning: changing the embedding model requires a full vector index rebuild.');
-    console.log('Run: node dist/src/cli.js rebuild');
+    console.log('Run: myco rebuild');
   }
 
   if (fs.existsSync(path.join(vaultDir, DAEMON_STATE_FILENAME))) {

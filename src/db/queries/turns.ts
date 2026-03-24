@@ -14,7 +14,7 @@ import { getDatabase } from '@myco/db/client.js';
 /** Fields required (or optional) when inserting a turn. */
 export interface TurnInsert {
   run_id: string;
-  curator_id: string;
+  agent_id: string;
   turn_number: number;
   tool_name: string;
   tool_input?: string | null;
@@ -27,7 +27,7 @@ export interface TurnInsert {
 export interface TurnRow {
   id: number;
   run_id: string;
-  curator_id: string;
+  agent_id: string;
   turn_number: number;
   tool_name: string;
   tool_input: string | null;
@@ -43,7 +43,7 @@ export interface TurnRow {
 const TURN_COLUMNS = [
   'id',
   'run_id',
-  'curator_id',
+  'agent_id',
   'turn_number',
   'tool_name',
   'tool_input',
@@ -63,7 +63,7 @@ function toTurnRow(row: Record<string, unknown>): TurnRow {
   return {
     id: row.id as number,
     run_id: row.run_id as string,
-    curator_id: row.curator_id as string,
+    agent_id: row.agent_id as string,
     turn_number: row.turn_number as number,
     tool_name: row.tool_name as string,
     tool_input: (row.tool_input as string) ?? null,
@@ -85,7 +85,7 @@ export async function insertTurn(data: TurnInsert): Promise<TurnRow> {
 
   const result = await db.query(
     `INSERT INTO agent_turns (
-       run_id, curator_id, turn_number, tool_name,
+       run_id, agent_id, turn_number, tool_name,
        tool_input, tool_output_summary, started_at, completed_at
      ) VALUES (
        $1, $2, $3, $4,
@@ -94,7 +94,7 @@ export async function insertTurn(data: TurnInsert): Promise<TurnRow> {
      RETURNING ${SELECT_COLUMNS}`,
     [
       data.run_id,
-      data.curator_id,
+      data.agent_id,
       data.turn_number,
       data.tool_name,
       data.tool_input ?? null,

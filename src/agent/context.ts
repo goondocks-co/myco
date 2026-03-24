@@ -1,13 +1,13 @@
 /**
- * Vault context builder for curation agent task prompt injection.
+ * Vault context builder for agent task prompt injection.
  *
- * Queries PGlite for aggregate vault metrics and curator state,
+ * Queries PGlite for aggregate vault metrics and agent state,
  * then formats them as a markdown block suitable for inclusion
- * in the curation agent's task prompt.
+ * in the agent's task prompt.
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { getStatesForCurator } from '@myco/db/queries/agent-state.js';
+import { getStatesForAgent } from '@myco/db/queries/agent-state.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -16,7 +16,7 @@ import { getStatesForCurator } from '@myco/db/queries/agent-state.js';
 /** Default value for unset state entries. */
 const STATE_UNSET = '(unset)';
 
-/** Key used by the curator to store its last processed batch ID. */
+/** Key used by the agent to store its last processed batch ID. */
 const STATE_KEY_LAST_PROCESSED_BATCH = 'last_processed_batch_id';
 
 /** Status value for active spores. */
@@ -63,17 +63,17 @@ async function countRows(
 
 /**
  * Build a markdown context block describing the current vault state
- * for a specific curator.
+ * for a specific agent.
  *
  * Includes:
- * - Curator state key-value pairs (cursor position, preferences)
+ * - Agent state key-value pairs (cursor position, preferences)
  * - Aggregate counts (sessions, spores, entities, edges, unprocessed batches)
  * - Last digest timestamp (if any)
  *
- * @param curatorId — the curator to build context for.
+ * @param agentId — the agent to build context for.
  * @returns a markdown-formatted string.
  */
-export async function buildVaultContext(curatorId: string): Promise<string> {
+export async function buildVaultContext(agentId: string): Promise<string> {
   // Fetch all state entries and aggregate counts in parallel
   const [
     states,
@@ -84,13 +84,13 @@ export async function buildVaultContext(curatorId: string): Promise<string> {
     unprocessedBatches,
     lastDigestAt,
   ] = await Promise.all([
-    getStatesForCurator(curatorId),
+    getStatesForAgent(agentId),
     countRows('sessions'),
     countRows('spores', [{ clause: 'status = ?', value: SPORE_STATUS_ACTIVE }]),
     countRows('entities'),
     countRows('edges'),
     countRows('prompt_batches', [{ clause: 'processed = ?', value: 0 }]),
-    getLastDigestTimestamp(curatorId),
+    getLastDigestTimestamp(agentId),
   ]);
   const stateMap = new Map(states.map((s) => [s.key, s.value]));
 
@@ -98,7 +98,7 @@ export async function buildVaultContext(curatorId: string): Promise<string> {
 
   const lines = [
     '## Current Vault State',
-    `curator_id: ${curatorId}`,
+    `agent_id: ${agentId}`,
     `last_processed_batch_id: ${lastProcessedBatchId}`,
     `unprocessed_batches: ${unprocessedBatches}`,
     `total_sessions: ${totalSessions}`,
@@ -112,18 +112,18 @@ export async function buildVaultContext(curatorId: string): Promise<string> {
 }
 
 /**
- * Get the most recent digest generation timestamp for a curator.
+ * Get the most recent digest generation timestamp for an agent.
  *
  * @returns epoch seconds of the last digest, or 0 if no digests exist.
  */
-async function getLastDigestTimestamp(curatorId: string): Promise<number> {
+async function getLastDigestTimestamp(agentId: string): Promise<number> {
   const db = getDatabase();
 
   const result = await db.query<{ max_at: number | null }>(
     `SELECT MAX(generated_at) AS max_at
      FROM digest_extracts
-     WHERE curator_id = $1`,
-    [curatorId],
+     WHERE agent_id = $1`,
+    [agentId],
   );
 
   return result.rows[0]?.max_at ?? 0;

@@ -27,6 +27,12 @@ vi.mock('@myco/cli/shared.js', async (importOriginal) => {
   return { ...actual, configureVaultEnv: vi.fn() };
 });
 
+// Prevent init from detecting real symbionts and running plugin install in tests
+vi.mock('@myco/symbionts/detect.js', () => ({
+  detectSymbionts: vi.fn().mockReturnValue([]),
+  resolvePackageRoot: vi.fn().mockReturnValue('/tmp'),
+}));
+
 import { run } from '@myco/cli/init.js';
 import { initDatabaseForVault, closeDatabase } from '@myco/db/client.js';
 
@@ -62,7 +68,7 @@ describe('myco init', () => {
     const vault = path.join(testDir, 'vault');
     await run(['--vault', vault, '--embedding-model', 'bge-m3']);
 
-    const dirs = ['sessions', 'plans', 'spores', 'artifacts', 'team', 'buffer', 'logs'];
+    const dirs = ['pgdata', 'buffer', 'attachments', 'logs'];
     for (const dir of dirs) {
       expect(fs.existsSync(path.join(vault, dir))).toBe(true);
     }
@@ -99,7 +105,7 @@ describe('myco init', () => {
     await run(['--vault', customVault, '--embedding-model', 'bge-m3']);
 
     expect(fs.existsSync(path.join(customVault, 'myco.yaml'))).toBe(true);
-    expect(fs.existsSync(path.join(customVault, 'sessions'))).toBe(true);
+    expect(fs.existsSync(path.join(customVault, 'pgdata'))).toBe(true);
   });
 
   it('writes .gitignore excluding runtime artifacts', async () => {
@@ -111,7 +117,7 @@ describe('myco init', () => {
     expect(gitignore).toContain('daemon.json');
     expect(gitignore).toContain('buffer/');
     expect(gitignore).toContain('logs/');
-    expect(gitignore).toContain('.obsidian/');
+    expect(gitignore).toContain('attachments/');
   });
 
   it('is idempotent — does not overwrite existing vault', async () => {

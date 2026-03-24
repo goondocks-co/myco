@@ -6,7 +6,7 @@ description: >
   Regenerate digest extracts at all token tiers using current vault knowledge.
   Does not process new data or extract spores. Useful after manual edits
   to spores or graph data.
-agent: myco-curator
+agent: myco-agent
 prompt: >
   Regenerate digest extracts at all configured token tiers. Read the current
   vault state (spores, entities, edges, sessions) and synthesize updated

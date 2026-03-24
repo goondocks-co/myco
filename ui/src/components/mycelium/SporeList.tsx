@@ -196,7 +196,7 @@ export function SporeList({ onSelectSpore, selectedSporeId }: SporeListProps) {
                       <div className="flex h-40 flex-col items-center justify-center gap-2 text-muted-foreground">
                         <Sprout className="h-8 w-8 opacity-30" />
                         <span className="text-sm">No spores yet</span>
-                        <span className="text-xs">Spores are extracted from session activity by curators</span>
+                        <span className="text-xs">Spores are extracted from session activity by the agent</span>
                       </div>
                     </td>
                   </tr>

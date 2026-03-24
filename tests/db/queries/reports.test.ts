@@ -8,27 +8,27 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
-import { registerCurator } from '@myco/db/queries/curators.js';
+import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import {
   insertReport,
   listReports,
-  listReportsByCurator,
+  listReportsByAgent,
 } from '@myco/db/queries/reports.js';
 import type { ReportInsert } from '@myco/db/queries/reports.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
 
-/** Shared curator and run IDs used across tests. */
-const TEST_CURATOR_ID = 'curator-reports-test';
+/** Shared agent and run IDs used across tests. */
+const TEST_AGENT_ID = 'agent-reports-test';
 const TEST_RUN_ID = 'run-reports-test';
 
 /** Factory for minimal valid report data. */
 function makeReport(overrides: Partial<ReportInsert> = {}): ReportInsert {
   return {
     run_id: TEST_RUN_ID,
-    curator_id: TEST_CURATOR_ID,
+    agent_id: TEST_AGENT_ID,
     action: 'write_spore',
     summary: 'Created a new spore',
     created_at: epochNow(),
@@ -41,14 +41,14 @@ describe('report query helpers', () => {
     const db = await initDatabase();
     await createSchema(db);
     // Insert FK targets
-    await registerCurator({
-      id: TEST_CURATOR_ID,
-      name: 'Test Curator',
+    await registerAgent({
+      id: TEST_AGENT_ID,
+      name: 'Test Agent',
       created_at: epochNow(),
     });
     await insertRun({
       id: TEST_RUN_ID,
-      curator_id: TEST_CURATOR_ID,
+      agent_id: TEST_AGENT_ID,
       started_at: epochNow(),
     });
   });
@@ -68,7 +68,7 @@ describe('report query helpers', () => {
 
       expect(typeof row.id).toBe('number');
       expect(row.run_id).toBe(TEST_RUN_ID);
-      expect(row.curator_id).toBe(TEST_CURATOR_ID);
+      expect(row.agent_id).toBe(TEST_AGENT_ID);
       expect(row.action).toBe('write_spore');
       expect(row.summary).toBe('Created a new spore');
       expect(row.details).toBeNull();
@@ -109,16 +109,16 @@ describe('report query helpers', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // listReportsByCurator
+  // listReportsByAgent
   // ---------------------------------------------------------------------------
 
-  describe('listReportsByCurator', () => {
-    it('returns reports by curator ordered by created_at DESC', async () => {
+  describe('listReportsByAgent', () => {
+    it('returns reports by agent ordered by created_at DESC', async () => {
       const now = epochNow();
       await insertReport(makeReport({ summary: 'Old', created_at: now - 100 }));
       await insertReport(makeReport({ summary: 'New', created_at: now }));
 
-      const rows = await listReportsByCurator(TEST_CURATOR_ID);
+      const rows = await listReportsByAgent(TEST_AGENT_ID);
       expect(rows).toHaveLength(2);
       expect(rows[0].summary).toBe('New');
       expect(rows[1].summary).toBe('Old');
@@ -130,12 +130,12 @@ describe('report query helpers', () => {
       await insertReport(makeReport({ created_at: now - 1 }));
       await insertReport(makeReport({ created_at: now }));
 
-      const rows = await listReportsByCurator(TEST_CURATOR_ID, { limit: 2 });
+      const rows = await listReportsByAgent(TEST_AGENT_ID, { limit: 2 });
       expect(rows).toHaveLength(2);
     });
 
-    it('returns empty array for curator with no reports', async () => {
-      const rows = await listReportsByCurator('no-such-curator');
+    it('returns empty array for agent with no reports', async () => {
+      const rows = await listReportsByAgent('no-such-agent');
       expect(rows).toEqual([]);
     });
   });

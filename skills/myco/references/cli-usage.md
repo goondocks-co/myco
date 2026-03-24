@@ -313,25 +313,27 @@ node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js digest --full
 
 ---
 
-### `curate` — Scan vault and supersede stale spores
+### `agent` — Run the intelligence agent
 
-Scans all active spores, clusters them by semantic similarity within each observation type, and asks the LLM which older spores are outdated. Superseded spores are preserved with lineage metadata — never deleted.
+Runs the intelligence agent to process unprocessed session data, extract observations, build the knowledge graph, and supersede stale spores.
 
 | Flag | Type | Description |
 |------|------|-------------|
+| `--task <name>` | string | Which task to run (e.g., `full-intelligence`, `extract-only`) |
+| `--instruction <text>` | string | Free-text instruction to guide the agent's focus |
 | `--dry-run` | boolean | Run LLM evaluation but print results without writing |
 
 **Examples:**
 
 ```sh
-# Scan and supersede stale spores
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js curate
+# Run the default intelligence task
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js agent
 
-# Preview what would be superseded
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js curate --dry-run
+# Preview what would be changed
+node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js agent --dry-run
 ```
 
-Note: `--dry-run` still runs LLM calls (to evaluate clusters) — it just skips the writes. Use it to review before running on a vault for the first time.
+Note: `--dry-run` still runs LLM calls (to evaluate) — it just skips the writes. Use it to review before running on a vault for the first time.
 
 ---
 

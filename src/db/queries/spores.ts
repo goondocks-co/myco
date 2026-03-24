@@ -27,7 +27,7 @@ export const DEFAULT_IMPORTANCE = 5;
 /** Fields required (or optional) when inserting a spore. */
 export interface SporeInsert {
   id: string;
-  curator_id: string;
+  agent_id: string;
   observation_type: string;
   content: string;
   created_at: number;
@@ -45,7 +45,7 @@ export interface SporeInsert {
 /** Row shape returned from spore queries (all columns, no embedding). */
 export interface SporeRow {
   id: string;
-  curator_id: string;
+  agent_id: string;
   session_id: string | null;
   prompt_batch_id: number | null;
   observation_type: string;
@@ -62,7 +62,7 @@ export interface SporeRow {
 
 /** Filter options for `listSpores`. */
 export interface ListSporesOptions {
-  curator_id?: string;
+  agent_id?: string;
   observation_type?: string;
   status?: string;
   limit?: number;
@@ -75,7 +75,7 @@ export interface ListSporesOptions {
 
 const SPORE_COLUMNS = [
   'id',
-  'curator_id',
+  'agent_id',
   'session_id',
   'prompt_batch_id',
   'observation_type',
@@ -100,7 +100,7 @@ const SELECT_COLUMNS = SPORE_COLUMNS.join(', ');
 function toSporeRow(row: Record<string, unknown>): SporeRow {
   return {
     id: row.id as string,
-    curator_id: row.curator_id as string,
+    agent_id: row.agent_id as string,
     session_id: (row.session_id as string) ?? null,
     prompt_batch_id: (row.prompt_batch_id as number) ?? null,
     observation_type: row.observation_type as string,
@@ -123,14 +123,14 @@ function toSporeRow(row: Record<string, unknown>): SporeRow {
 /**
  * Insert a new spore.
  *
- * Requires a valid `curator_id` (foreign key to curators table).
+ * Requires a valid `agent_id` (foreign key to agents table).
  */
 export async function insertSpore(data: SporeInsert): Promise<SporeRow> {
   const db = getDatabase();
 
   const result = await db.query(
     `INSERT INTO spores (
-       id, curator_id, session_id, prompt_batch_id,
+       id, agent_id, session_id, prompt_batch_id,
        observation_type, status, content, context,
        importance, file_path, tags, content_hash,
        created_at, updated_at
@@ -143,7 +143,7 @@ export async function insertSpore(data: SporeInsert): Promise<SporeRow> {
      RETURNING ${SELECT_COLUMNS}`,
     [
       data.id,
-      data.curator_id,
+      data.agent_id,
       data.session_id ?? null,
       data.prompt_batch_id ?? null,
       data.observation_type,
@@ -191,9 +191,9 @@ export async function listSpores(
   const params: unknown[] = [];
   let paramIndex = 1;
 
-  if (options.curator_id !== undefined) {
-    conditions.push(`curator_id = $${paramIndex++}`);
-    params.push(options.curator_id);
+  if (options.agent_id !== undefined) {
+    conditions.push(`agent_id = $${paramIndex++}`);
+    params.push(options.agent_id);
   }
 
   if (options.observation_type !== undefined) {

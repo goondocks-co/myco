@@ -28,7 +28,7 @@ export interface StatsResponse {
     embedded_count: number;
     total_embeddable: number;
   };
-  curator: {
+  agent: {
     last_run_at: number | null;
     last_run_status: string | null;
     total_runs: number;

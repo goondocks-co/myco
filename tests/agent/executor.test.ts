@@ -1,5 +1,5 @@
 /**
- * Tests for the curation agent executor.
+ * Tests for the agent executor.
  *
  * The Agent SDK's `query()` function is mocked via vi.mock() so tests
  * never call the Anthropic API. Each test uses an in-memory PGlite
@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
-import { registerCurator } from '@myco/db/queries/curators.js';
+import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertTask } from '@myco/db/queries/tasks.js';
 import { insertRun, getRun } from '@myco/db/queries/runs.js';
 import { epochSeconds } from '@myco/constants.js';
@@ -19,11 +19,11 @@ import { composeTaskPrompt } from '@myco/agent/executor.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-const TEST_CURATOR_ID = 'myco-curator';
+const TEST_AGENT_ID = 'myco-agent';
 const TEST_VAULT_DIR = '/tmp/test-vault';
-const TEST_TASK_NAME = 'full-curation';
-const TEST_TASK_PROMPT = 'Curate the vault.';
-const TEST_SYSTEM_PROMPT = 'You are a vault curator.';
+const TEST_TASK_NAME = 'full-intelligence';
+const TEST_TASK_PROMPT = 'Run full intelligence pipeline.';
+const TEST_SYSTEM_PROMPT = 'You are a vault agent.';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -69,7 +69,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
               duration_ms: 5000,
               duration_api_ms: 4500,
               is_error: false,
-              result: 'Curation complete.',
+              result: 'Agent run complete.',
               stop_reason: 'end_turn',
               modelUsage: {},
               permission_denials: [],
@@ -126,9 +126,9 @@ vi.mock('@myco/agent/loader.js', async (importOriginal) => {
     ...original,
     resolveDefinitionsDir: () => '/mock/definitions',
     loadAgentDefinition: () => ({
-      name: 'myco-curator',
-      displayName: 'Myco Curator',
-      description: 'Built-in curator',
+      name: 'myco-agent',
+      displayName: 'Myco Agent',
+      description: 'Built-in agent',
       model: 'claude-sonnet-4-20250514',
       maxTurns: 10,
       timeoutSeconds: 300,
@@ -145,7 +145,7 @@ vi.mock('@myco/agent/loader.js', async (importOriginal) => {
 // ---------------------------------------------------------------------------
 
 vi.mock('@myco/agent/context.js', () => ({
-  buildVaultContext: async () => '## Current Vault State\ncurator_id: myco-curator\nunprocessed_batches: 5',
+  buildVaultContext: async () => '## Current Vault State\nagent_id: myco-agent\nunprocessed_batches: 5',
 }));
 
 // ---------------------------------------------------------------------------
@@ -153,7 +153,7 @@ vi.mock('@myco/agent/context.js', () => ({
 // ---------------------------------------------------------------------------
 
 vi.mock('@myco/agent/tools.js', () => ({
-  createVaultToolServer: (_curatorId: string, _runId: string) => ({
+  createVaultToolServer: (_agentId: string, _runId: string) => ({
     type: 'sdk' as const,
     name: 'myco-vault',
     instance: {},
@@ -177,26 +177,26 @@ vi.mock('@myco/db/client.js', async (importOriginal) => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Insert a curator directly for test setup. */
-async function createTestCurator(id: string): Promise<void> {
+/** Insert an agent directly for test setup. */
+async function createTestAgent(id: string): Promise<void> {
   const now = epochNow();
-  await registerCurator({
+  await registerAgent({
     id,
-    name: `curator-${id}`,
+    name: `agent-${id}`,
     created_at: now,
     updated_at: now,
   });
 }
 
-/** Insert a default task for the test curator. */
+/** Insert a default task for the test agent. */
 async function createTestTask(): Promise<void> {
   const now = epochNow();
   await upsertTask({
     id: TEST_TASK_NAME,
-    curator_id: TEST_CURATOR_ID,
+    agent_id: TEST_AGENT_ID,
     prompt: TEST_TASK_PROMPT,
-    display_name: 'Full Curation',
-    description: 'Run full curation pipeline',
+    display_name: 'Full Intelligence',
+    description: 'Run full intelligence pipeline',
     is_default: 1,
     created_at: now,
     updated_at: now,
@@ -211,22 +211,22 @@ describe('composeTaskPrompt', () => {
   it('composes vault context + task without instruction', () => {
     const result = composeTaskPrompt(
       '## Vault State\nspores: 10',
-      'Full Curation',
-      'Curate everything.',
+      'Full Intelligence',
+      'Run full intelligence.',
     );
 
     expect(result).toContain('## Vault State');
     expect(result).toContain('spores: 10');
-    expect(result).toContain('## Task: Full Curation');
-    expect(result).toContain('Curate everything.');
+    expect(result).toContain('## Task: Full Intelligence');
+    expect(result).toContain('Run full intelligence.');
     expect(result).not.toContain('## User Instruction');
   });
 
   it('appends user instruction when provided', () => {
     const result = composeTaskPrompt(
       '## Vault State',
-      'Full Curation',
-      'Curate everything.',
+      'Full Intelligence',
+      'Run full intelligence.',
       'Focus on gotchas only.',
     );
 
@@ -235,7 +235,7 @@ describe('composeTaskPrompt', () => {
   });
 });
 
-describe('runCurationAgent', () => {
+describe('runAgent', () => {
   beforeEach(async () => {
     capturedQueryArgs = null;
     mockQueryBehavior = 'success';
@@ -243,7 +243,7 @@ describe('runCurationAgent', () => {
 
     const db = await initDatabase(); // in-memory
     await createSchema(db);
-    await createTestCurator(TEST_CURATOR_ID);
+    await createTestAgent(TEST_AGENT_ID);
     await createTestTask();
   });
 
@@ -253,9 +253,9 @@ describe('runCurationAgent', () => {
 
   it('completes a successful run with cost and token tracking', async () => {
     // Dynamic import to get the version with mocks applied
-    const { runCurationAgent } = await import('@myco/agent/executor.js');
+    const { runAgent } = await import('@myco/agent/executor.js');
 
-    const result = await runCurationAgent(TEST_VAULT_DIR);
+    const result = await runAgent(TEST_VAULT_DIR);
 
     expect(result.status).toBe('completed');
     expect(result.runId).toBeDefined();
@@ -269,36 +269,36 @@ describe('runCurationAgent', () => {
     expect(run!.tokens_used).toBe(1850);
     expect(run!.cost_usd).toBe(0.0042);
     expect(run!.task).toBe(TEST_TASK_NAME);
-    expect(run!.curator_id).toBe(TEST_CURATOR_ID);
+    expect(run!.agent_id).toBe(TEST_AGENT_ID);
     expect(run!.started_at).toBeGreaterThan(0);
     expect(run!.completed_at).toBeGreaterThan(0);
   });
 
   it('passes system prompt and composed task prompt to the SDK', async () => {
-    const { runCurationAgent } = await import('@myco/agent/executor.js');
+    const { runAgent } = await import('@myco/agent/executor.js');
 
-    await runCurationAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR);
 
     expect(capturedQueryArgs).not.toBeNull();
     expect(capturedQueryArgs!.prompt).toContain('## Current Vault State');
-    expect(capturedQueryArgs!.prompt).toContain('## Task: Full Curation');
+    expect(capturedQueryArgs!.prompt).toContain('## Task: Full Intelligence');
     expect(capturedQueryArgs!.prompt).toContain(TEST_TASK_PROMPT);
     expect(capturedQueryArgs!.options?.systemPrompt).toBe(TEST_SYSTEM_PROMPT);
   });
 
-  it('returns skipped when a run is already active for the curator', async () => {
-    const { runCurationAgent } = await import('@myco/agent/executor.js');
+  it('returns skipped when a run is already active for the agent', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
 
-    // Insert a running run for the same curator
+    // Insert a running run for the same agent
     const existingRunId = crypto.randomUUID();
     await insertRun({
       id: existingRunId,
-      curator_id: TEST_CURATOR_ID,
+      agent_id: TEST_AGENT_ID,
       status: 'running',
       started_at: epochSeconds(),
     });
 
-    const result = await runCurationAgent(TEST_VAULT_DIR);
+    const result = await runAgent(TEST_VAULT_DIR);
 
     expect(result.status).toBe('skipped');
     expect(result.reason).toBe('already_running');
@@ -308,12 +308,12 @@ describe('runCurationAgent', () => {
   });
 
   it('marks run as failed on SDK error', async () => {
-    const { runCurationAgent } = await import('@myco/agent/executor.js');
+    const { runAgent } = await import('@myco/agent/executor.js');
 
     mockQueryBehavior = 'error';
     mockErrorMessage = 'API rate limit exceeded';
 
-    const result = await runCurationAgent(TEST_VAULT_DIR);
+    const result = await runAgent(TEST_VAULT_DIR);
 
     expect(result.status).toBe('failed');
     expect(result.error).toBe('API rate limit exceeded');
@@ -328,9 +328,9 @@ describe('runCurationAgent', () => {
   });
 
   it('stores user instruction in run record and prompt', async () => {
-    const { runCurationAgent } = await import('@myco/agent/executor.js');
+    const { runAgent } = await import('@myco/agent/executor.js');
 
-    const result = await runCurationAgent(TEST_VAULT_DIR, {
+    const result = await runAgent(TEST_VAULT_DIR, {
       instruction: 'Focus on security observations only.',
     });
 
@@ -346,9 +346,9 @@ describe('runCurationAgent', () => {
   });
 
   it('uses correct SDK options (model, maxTurns, tools, permissions)', async () => {
-    const { runCurationAgent } = await import('@myco/agent/executor.js');
+    const { runAgent } = await import('@myco/agent/executor.js');
 
-    await runCurationAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR);
 
     expect(capturedQueryArgs).not.toBeNull();
     const opts = capturedQueryArgs!.options as Record<string, unknown>;
@@ -362,17 +362,17 @@ describe('runCurationAgent', () => {
     expect(opts.tools).toEqual([]);
   });
 
-  it('resolves config with curator DB overrides', async () => {
-    const { runCurationAgent } = await import('@myco/agent/executor.js');
+  it('resolves config with agent DB overrides', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
 
-    // Update the curator with a different model
+    // Update the agent with a different model
     const db = getDatabase();
     await db.query(
-      `UPDATE curators SET model = $1, max_turns = $2 WHERE id = $3`,
-      ['claude-opus-4-20250514', 20, TEST_CURATOR_ID],
+      `UPDATE agents SET model = $1, max_turns = $2 WHERE id = $3`,
+      ['claude-opus-4-20250514', 20, TEST_AGENT_ID],
     );
 
-    await runCurationAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR);
 
     const opts = capturedQueryArgs!.options as Record<string, unknown>;
     expect(opts.model).toBe('claude-opus-4-20250514');

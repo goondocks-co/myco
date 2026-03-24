@@ -140,7 +140,7 @@ View daemon logs for debugging when sessions aren't being captured, observations
 { "level": "warn", "component": "processor", "limit": 20 }
 ```
 
-Components: `daemon`, `processor`, `hooks`, `lifecycle`, `embeddings`, `lineage`, `watcher`, `digest`, `curation`.
+Components: `daemon`, `processor`, `hooks`, `lifecycle`, `embeddings`, `lineage`, `watcher`, `digest`, `intelligence`.
 
 ### myco_supersede — Mark a spore as replaced
 
@@ -245,13 +245,13 @@ node <plugin-root>/dist/src/cli.js digest --tier 3000  # Reprocess a specific ti
 node <plugin-root>/dist/src/cli.js digest --full       # Reprocess all tiers from scratch
 ```
 
-### Vault curation
+### Vault intelligence
 
 Supersession happens automatically on every spore write. For vault-wide cleanup, see `references/cli-usage.md` for full flags:
 
 ```
-node <plugin-root>/dist/src/cli.js curate              # Scan and supersede stale spores
-node <plugin-root>/dist/src/cli.js curate --dry-run    # Preview without writing
+node <plugin-root>/dist/src/cli.js agent              # Run the intelligence agent
+node <plugin-root>/dist/src/cli.js agent --dry-run    # Preview without writing
 ```
 
 For patterns on when to manually supersede or consolidate, see `references/wisdom.md`.

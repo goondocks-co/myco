@@ -20,9 +20,12 @@ Commands:
   logs [options]           View daemon logs
   setup-llm [options]      Configure LLM and embedding providers
   setup-digest [options]   Configure digest and capture settings
-  curate [options]         Run the curation agent
+  agent [options]          Run the intelligence agent
   restart                  Restart the daemon
   version                  Show plugin version
+  mcp                     Start the MCP stdio server
+  hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, post-tool-use)
+  daemon --vault <dir>    Start the daemon process
 `;
 
 async function main(): Promise<void> {
@@ -39,6 +42,24 @@ async function main(): Promise<void> {
     console.log(getPluginVersion());
     return;
   }
+  if (cmd === 'mcp') return (await import('./mcp/server.js')).main();
+  if (cmd === 'hook') {
+    const hookName = args[0];
+    const HOOK_DISPATCH: Record<string, () => Promise<{ main: () => Promise<void> }>> = {
+      'session-start': () => import('./hooks/session-start.js'),
+      'session-end': () => import('./hooks/session-end.js'),
+      'stop': () => import('./hooks/stop.js'),
+      'user-prompt-submit': () => import('./hooks/user-prompt-submit.js'),
+      'post-tool-use': () => import('./hooks/post-tool-use.js'),
+    };
+    const loader = HOOK_DISPATCH[hookName];
+    if (!loader) {
+      console.error(`Unknown hook: ${hookName}. Available: ${Object.keys(HOOK_DISPATCH).join(', ')}`);
+      process.exit(1);
+    }
+    return (await loader()).main();
+  }
+  if (cmd === 'daemon') return (await import('./daemon/main.js')).main();
 
   const vaultDir = resolveVaultDir();
   if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {
@@ -55,7 +76,7 @@ async function main(): Promise<void> {
     case 'session': return (await import('./cli/session.js')).run(args, vaultDir);
     case 'setup-llm': return (await import('./cli/setup-llm.js')).run(args, vaultDir);
     case 'setup-digest': return (await import('./cli/setup-digest.js')).run(args, vaultDir);
-    case 'curate': return (await import('./cli/curate.js')).run(args, vaultDir);
+    case 'agent': return (await import('./cli/agent-run.js')).run(args, vaultDir);
     case 'restart': return (await import('./cli/restart.js')).run(args, vaultDir);
     case 'logs': return (await import('./cli/logs.js')).run(args, vaultDir);
     default:

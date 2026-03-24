@@ -35,8 +35,9 @@ export async function handleRestart(
   // Schedule: respond → wait for flush → SIGTERM self → child starts after parent exits.
   // The child waits RESTART_CHILD_DELAY_SECONDS before starting to ensure the parent
   // has fully released the port and cleaned up daemon.json.
-  const daemonScript = process.argv[1];
-  const shellCmd = `sleep ${RESTART_CHILD_DELAY_SECONDS} && ${process.execPath} ${daemonScript} --vault ${deps.vaultDir}`;
+  // Use MYCO_CMD to respawn through the same CLI path (myco or myco-dev).
+  const mycoCmd = process.env.MYCO_CMD || 'myco';
+  const shellCmd = `sleep ${RESTART_CHILD_DELAY_SECONDS} && ${mycoCmd} daemon --vault ${deps.vaultDir}`;
 
   const child = spawn('/bin/sh', ['-c', shellCmd], {
     detached: true,

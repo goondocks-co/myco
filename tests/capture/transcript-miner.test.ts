@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { TranscriptMiner, extractTurnsFromBuffer } from '../../src/capture/transcript-miner.js';
-import { claudeCodeAdapter } from '../../src/agents/claude-code.js';
-import { createPerProjectAdapter } from '../../src/agents/adapter.js';
-import { AgentRegistry } from '../../src/agents/registry.js';
+import { claudeCodeAdapter } from '../../src/symbionts/claude-code.js';
+import { createPerProjectAdapter } from '../../src/symbionts/adapter.js';
+import { SymbiontRegistry } from '../../src/symbionts/registry.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-describe('TranscriptMiner with AgentRegistry', () => {
+describe('TranscriptMiner with SymbiontRegistry', () => {
   let tmpDir: string;
   let projectDir: string;
   const sessionId = 'test-session-abc123';
@@ -244,12 +244,12 @@ describe('TranscriptMiner with AgentRegistry', () => {
   });
 });
 
-describe('AgentRegistry', () => {
+describe('SymbiontRegistry', () => {
   it('detects active agent from environment', () => {
     const originalEnv = process.env.CLAUDE_PLUGIN_ROOT;
     process.env.CLAUDE_PLUGIN_ROOT = '/some/path';
     try {
-      const registry = new AgentRegistry();
+      const registry = new SymbiontRegistry();
       const active = registry.detectActiveAgent();
       expect(active?.name).toBe('claude-code');
     } finally {
@@ -262,7 +262,7 @@ describe('AgentRegistry', () => {
   });
 
   it('lists all registered adapters', () => {
-    const registry = new AgentRegistry();
+    const registry = new SymbiontRegistry();
     expect(registry.adapterNames).toContain('claude-code');
     expect(registry.adapterNames).toContain('cursor');
   });

@@ -8,7 +8,7 @@
  *   - getEntityWithEdges     (entities.ts — BFS graph traversal)
  *   - listDigestExtracts     (digest-extracts.ts)
  *   - listTurnsByRun         (turns.ts)
- *   - listTasksByCurator     (tasks.ts)
+ *   - listTasksByAgent     (tasks.ts)
  *   - listSpores with offset  (spores.ts)
  *
  * Each test uses an in-memory PGlite instance that is created fresh in
@@ -18,7 +18,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
-import { registerCurator } from '@myco/db/queries/curators.js';
+import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertBatch, listBatchesBySession } from '@myco/db/queries/batches.js';
 import { insertActivity, listActivitiesByBatch } from '@myco/db/queries/activities.js';
@@ -31,7 +31,7 @@ import { insertEdge } from '@myco/db/queries/edges.js';
 import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { insertTurn, listTurnsByRun } from '@myco/db/queries/turns.js';
-import { upsertTask, listTasksByCurator } from '@myco/db/queries/tasks.js';
+import { upsertTask, listTasksByAgent } from '@myco/db/queries/tasks.js';
 import { insertSpore, listSpores } from '@myco/db/queries/spores.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';
 import type { BatchInsert } from '@myco/db/queries/batches.js';
@@ -50,7 +50,7 @@ import type { SporeInsert } from '@myco/db/queries/spores.js';
 const epochNow = () => Math.floor(Date.now() / 1000);
 
 /** Shared test IDs — kept consistent to simplify FK wiring. */
-const TEST_CURATOR_ID = 'curator-ext-test';
+const TEST_AGENT_ID = 'agent-ext-test';
 const TEST_RUN_ID = 'run-ext-test';
 
 function makeSession(overrides: Partial<SessionInsert> = {}): SessionInsert {
@@ -92,7 +92,7 @@ function makeEntity(overrides: Partial<EntityInsert> = {}): EntityInsert {
   const now = epochNow();
   return {
     id: `entity-${Math.random().toString(36).slice(2, 10)}`,
-    curator_id: TEST_CURATOR_ID,
+    agent_id: TEST_AGENT_ID,
     type: 'file',
     name: `file-${Math.random().toString(36).slice(2, 8)}`,
     first_seen: now,
@@ -107,7 +107,7 @@ function makeEdge(
   overrides: Partial<EdgeInsert> = {},
 ): EdgeInsert {
   return {
-    curator_id: TEST_CURATOR_ID,
+    agent_id: TEST_AGENT_ID,
     source_id: sourceId,
     target_id: targetId,
     type: 'references',
@@ -119,7 +119,7 @@ function makeEdge(
 function makeTurn(overrides: Partial<TurnInsert> = {}): TurnInsert {
   return {
     run_id: TEST_RUN_ID,
-    curator_id: TEST_CURATOR_ID,
+    agent_id: TEST_AGENT_ID,
     turn_number: 1,
     tool_name: 'vault_search',
     ...overrides,
@@ -129,7 +129,7 @@ function makeTurn(overrides: Partial<TurnInsert> = {}): TurnInsert {
 function makeTask(overrides: Partial<TaskInsert> = {}): TaskInsert {
   return {
     id: `task-${Math.random().toString(36).slice(2, 8)}`,
-    curator_id: TEST_CURATOR_ID,
+    agent_id: TEST_AGENT_ID,
     prompt: 'Analyze the vault and produce observations.',
     created_at: epochNow(),
     ...overrides,
@@ -140,7 +140,7 @@ function makeSpore(overrides: Partial<SporeInsert> = {}): SporeInsert {
   const now = epochNow();
   return {
     id: `spore-${Math.random().toString(36).slice(2, 8)}`,
-    curator_id: TEST_CURATOR_ID,
+    agent_id: TEST_AGENT_ID,
     observation_type: 'gotcha',
     content: 'Test observation',
     created_at: now,
@@ -159,10 +159,10 @@ describe('extended list-by-parent query helpers', () => {
     const db = await initDatabase();
     await createSchema(db);
 
-    // Curator FK required by several tables
-    await registerCurator({
-      id: TEST_CURATOR_ID,
-      name: 'Ext Test Curator',
+    // Agent FK required by several tables
+    await registerAgent({
+      id: TEST_AGENT_ID,
+      name: 'Ext Test Agent',
       created_at: epochNow(),
     });
 
@@ -174,7 +174,7 @@ describe('extended list-by-parent query helpers', () => {
     // Run FK required by turns
     await insertRun({
       id: TEST_RUN_ID,
-      curator_id: TEST_CURATOR_ID,
+      agent_id: TEST_AGENT_ID,
       started_at: epochNow(),
     });
   });
@@ -318,16 +318,16 @@ describe('extended list-by-parent query helpers', () => {
 
       // Mention e1 and e2 in note-abc/session
       await db.query(
-        `INSERT INTO entity_mentions (entity_id, note_id, note_type, curator_id)
+        `INSERT INTO entity_mentions (entity_id, note_id, note_type, agent_id)
          VALUES ($1, 'note-abc', 'session', $2),
                 ($3, 'note-abc', 'session', $4)`,
-        [e1.id, TEST_CURATOR_ID, e2.id, TEST_CURATOR_ID],
+        [e1.id, TEST_AGENT_ID, e2.id, TEST_AGENT_ID],
       );
       // Mention e3 in a different note
       await db.query(
-        `INSERT INTO entity_mentions (entity_id, note_id, note_type, curator_id)
+        `INSERT INTO entity_mentions (entity_id, note_id, note_type, agent_id)
          VALUES ($1, 'note-xyz', 'session', $2)`,
-        [e3.id, TEST_CURATOR_ID],
+        [e3.id, TEST_AGENT_ID],
       );
 
       const rows = await listEntities({
@@ -449,31 +449,31 @@ describe('extended list-by-parent query helpers', () => {
   // =========================================================================
 
   describe('listDigestExtracts', () => {
-    it('returns all extracts for a curator ordered by tier ASC', async () => {
+    it('returns all extracts for an agent ordered by tier ASC', async () => {
       const now = epochNow();
-      await upsertDigestExtract({ curator_id: TEST_CURATOR_ID, tier: 3, content: 'tier 3', generated_at: now });
-      await upsertDigestExtract({ curator_id: TEST_CURATOR_ID, tier: 1, content: 'tier 1', generated_at: now });
-      await upsertDigestExtract({ curator_id: TEST_CURATOR_ID, tier: 2, content: 'tier 2', generated_at: now });
+      await upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 3, content: 'tier 3', generated_at: now });
+      await upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 1, content: 'tier 1', generated_at: now });
+      await upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 2, content: 'tier 2', generated_at: now });
 
-      const rows = await listDigestExtracts(TEST_CURATOR_ID);
+      const rows = await listDigestExtracts(TEST_AGENT_ID);
       expect(rows).toHaveLength(3);
       expect(rows[0].tier).toBe(1);
       expect(rows[1].tier).toBe(2);
       expect(rows[2].tier).toBe(3);
     });
 
-    it('returns empty array when curator has no extracts', async () => {
-      const rows = await listDigestExtracts('no-such-curator');
+    it('returns empty array when agent has no extracts', async () => {
+      const rows = await listDigestExtracts('no-such-agent');
       expect(rows).toEqual([]);
     });
 
-    it('does not return extracts from other curators', async () => {
-      await registerCurator({ id: 'curator-other', name: 'Other', created_at: epochNow() });
+    it('does not return extracts from other agents', async () => {
+      await registerAgent({ id: 'agent-other', name: 'Other', created_at: epochNow() });
       const now = epochNow();
-      await upsertDigestExtract({ curator_id: TEST_CURATOR_ID, tier: 1, content: 'mine', generated_at: now });
-      await upsertDigestExtract({ curator_id: 'curator-other', tier: 1, content: 'theirs', generated_at: now });
+      await upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 1, content: 'mine', generated_at: now });
+      await upsertDigestExtract({ agent_id: 'agent-other', tier: 1, content: 'theirs', generated_at: now });
 
-      const rows = await listDigestExtracts(TEST_CURATOR_ID);
+      const rows = await listDigestExtracts(TEST_AGENT_ID);
       expect(rows).toHaveLength(1);
       expect(rows[0].content).toBe('mine');
     });
@@ -504,33 +504,33 @@ describe('extended list-by-parent query helpers', () => {
   });
 
   // =========================================================================
-  // listTasksByCurator
+  // listTasksByAgent
   // =========================================================================
 
-  describe('listTasksByCurator', () => {
-    it('returns all tasks for a curator ordered by display_name ASC', async () => {
+  describe('listTasksByAgent', () => {
+    it('returns all tasks for an agent ordered by display_name ASC', async () => {
       await upsertTask(makeTask({ display_name: 'Zebra Task' }));
       await upsertTask(makeTask({ display_name: 'Alpha Task' }));
       await upsertTask(makeTask({ display_name: 'Mango Task' }));
 
-      const rows = await listTasksByCurator(TEST_CURATOR_ID);
+      const rows = await listTasksByAgent(TEST_AGENT_ID);
       expect(rows).toHaveLength(3);
       expect(rows[0].display_name).toBe('Alpha Task');
       expect(rows[1].display_name).toBe('Mango Task');
       expect(rows[2].display_name).toBe('Zebra Task');
     });
 
-    it('returns empty array when curator has no tasks', async () => {
-      const rows = await listTasksByCurator('no-such-curator');
+    it('returns empty array when agent has no tasks', async () => {
+      const rows = await listTasksByAgent('no-such-agent');
       expect(rows).toEqual([]);
     });
 
-    it('does not return tasks from other curators', async () => {
-      await registerCurator({ id: 'curator-other2', name: 'Other2', created_at: epochNow() });
+    it('does not return tasks from other agents', async () => {
+      await registerAgent({ id: 'agent-other2', name: 'Other2', created_at: epochNow() });
       await upsertTask(makeTask({ id: 'task-mine', display_name: 'My Task' }));
-      await upsertTask(makeTask({ id: 'task-theirs', curator_id: 'curator-other2', display_name: 'Their Task' }));
+      await upsertTask(makeTask({ id: 'task-theirs', agent_id: 'agent-other2', display_name: 'Their Task' }));
 
-      const rows = await listTasksByCurator(TEST_CURATOR_ID);
+      const rows = await listTasksByAgent(TEST_AGENT_ID);
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('task-mine');
     });

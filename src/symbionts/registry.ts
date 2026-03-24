@@ -1,22 +1,22 @@
-import type { AgentAdapter, TranscriptTurn } from './adapter.js';
+import type { SymbiontAdapter, TranscriptTurn } from './adapter.js';
 import { claudeCodeAdapter } from './claude-code.js';
 import { cursorAdapter } from './cursor.js';
 import fs from 'node:fs';
 
 /**
- * All known agent adapters, ordered by priority.
+ * All known symbiont adapters, ordered by priority.
  * When searching for a transcript, adapters are tried in order.
- * Add new adapters here as agent support grows.
+ * Add new adapters here as symbiont support grows.
  */
-const ALL_ADAPTERS: AgentAdapter[] = [
+const ALL_ADAPTERS: SymbiontAdapter[] = [
   claudeCodeAdapter,
   cursorAdapter,
 ];
 
-export class AgentRegistry {
-  private adapters: AgentAdapter[];
+export class SymbiontRegistry {
+  private adapters: SymbiontAdapter[];
 
-  constructor(additionalAdapters: AgentAdapter[] = []) {
+  constructor(additionalAdapters: SymbiontAdapter[] = []) {
     this.adapters = [...ALL_ADAPTERS, ...additionalAdapters];
   }
 
@@ -48,12 +48,12 @@ export class AgentRegistry {
   }
 
   /** Get a specific adapter by name */
-  getAdapter(name: string): AgentAdapter | undefined {
+  getAdapter(name: string): SymbiontAdapter | undefined {
     return this.adapters.find((a) => a.name === name);
   }
 
-  /** Detect which agent is currently active based on environment variables */
-  detectActiveAgent(): AgentAdapter | undefined {
+  /** Detect which symbiont is currently active based on environment variables */
+  detectActiveAgent(): SymbiontAdapter | undefined {
     for (const adapter of this.adapters) {
       if (process.env[adapter.pluginRootEnvVar]) {
         return adapter;

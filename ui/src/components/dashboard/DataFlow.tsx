@@ -38,10 +38,10 @@ function statusDot(status: NodeStatus): string {
 }
 
 function buildNodes(stats: StatsResponse): FlowNode[] {
-  const curatorStatus: NodeStatus =
-    stats.curator.last_run_status === 'success'
+  const agentStatus: NodeStatus =
+    stats.agent.last_run_status === 'success'
       ? 'green'
-      : stats.curator.last_run_status === 'error'
+      : stats.agent.last_run_status === 'error'
         ? 'amber'
         : 'gray';
 
@@ -65,9 +65,9 @@ function buildNodes(stats: StatsResponse): FlowNode[] {
       route: '/settings',
     },
     {
-      label: 'Curation',
-      count: `${stats.curator.total_runs} runs`,
-      status: curatorStatus,
+      label: 'Agent',
+      count: `${stats.agent.total_runs} runs`,
+      status: agentStatus,
       route: '/agent',
     },
     {

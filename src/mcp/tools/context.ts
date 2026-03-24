@@ -1,12 +1,10 @@
 /**
  * myco_context — retrieve synthesized project context from digest extracts.
  *
- * Queries the `digest_extracts` table in PGlite. In Phase 1 this table
- * is typically empty, so the handler returns a graceful fallback message.
+ * Proxies through the daemon HTTP API via DaemonClient.
  */
 
-import { getDatabase } from '@myco/db/client.js';
-import { DIGEST_TIERS } from '@myco/constants.js';
+import type { DaemonClient } from '@myco/hooks/client.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -39,54 +37,44 @@ export interface ContextResult {
 
 export async function handleMycoContext(
   input: ContextInput,
+  client: DaemonClient,
 ): Promise<ContextResult> {
   const requestedTier = input.tier ?? DEFAULT_CONTEXT_TIER;
-  const db = getDatabase();
+
+  const result = await client.get('/api/digest');
+  if (!result.ok || !result.data?.tiers) {
+    return {
+      content: NO_DIGEST_MESSAGE,
+      tier: requestedTier,
+      fallback: false,
+    };
+  }
+
+  const tiers = result.data.tiers as Array<{ tier: number; content: string; generated_at: number }>;
 
   // Try exact tier first
-  const exact = await db.query(
-    `SELECT content, tier, generated_at
-     FROM digest_extracts
-     WHERE tier = $1
-     ORDER BY generated_at DESC
-     LIMIT 1`,
-    [requestedTier],
-  );
-
-  if (exact.rows.length > 0) {
-    const row = exact.rows[0] as Record<string, unknown>;
+  const exact = tiers.find((t) => t.tier === requestedTier);
+  if (exact) {
     return {
-      content: row.content as string,
-      tier: row.tier as number,
+      content: exact.content,
+      tier: exact.tier,
       fallback: false,
-      generated_at: row.generated_at as number,
+      generated_at: exact.generated_at,
     };
   }
 
   // Fall back to nearest available tier
-  const candidates = [...DIGEST_TIERS]
-    .sort((a, b) => Math.abs(a - requestedTier) - Math.abs(b - requestedTier));
-
-  for (const tier of candidates) {
-    if (tier === requestedTier) continue; // Already tried
-    const result = await db.query(
-      `SELECT content, tier, generated_at
-       FROM digest_extracts
-       WHERE tier = $1
-       ORDER BY generated_at DESC
-       LIMIT 1`,
-      [tier],
+  if (tiers.length > 0) {
+    const sorted = [...tiers].sort(
+      (a, b) => Math.abs(a.tier - requestedTier) - Math.abs(b.tier - requestedTier),
     );
-
-    if (result.rows.length > 0) {
-      const row = result.rows[0] as Record<string, unknown>;
-      return {
-        content: row.content as string,
-        tier: row.tier as number,
-        fallback: true,
-        generated_at: row.generated_at as number,
-      };
-    }
+    const nearest = sorted[0];
+    return {
+      content: nearest.content,
+      tier: nearest.tier,
+      fallback: true,
+      generated_at: nearest.generated_at,
+    };
   }
 
   return {

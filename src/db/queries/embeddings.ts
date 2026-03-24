@@ -16,6 +16,14 @@ import { EMBEDDING_DIMENSIONS } from '@myco/db/schema.js';
 /** Tables that have an `embedding vector(N)` column. */
 export const EMBEDDABLE_TABLES = ['sessions', 'spores', 'plans', 'artifacts'] as const;
 
+/** Per-table column that holds the text content used for embedding. */
+export const EMBEDDABLE_TEXT_COLUMNS: Record<(typeof EMBEDDABLE_TABLES)[number], string> = {
+  sessions: 'summary',
+  spores: 'content',
+  plans: 'content',
+  artifacts: 'content',
+};
+
 /** TypeScript type for valid embeddable table names. */
 export type EmbeddableTable = (typeof EMBEDDABLE_TABLES)[number];
 
@@ -42,7 +50,7 @@ const TABLE_SELECT_COLUMNS: Record<EmbeddableTable, string> = {
     'parent_session_id', 'parent_session_reason', 'processed', 'content_hash', 'created_at',
   ].join(', '),
   spores: [
-    'id', 'curator_id', 'session_id', 'prompt_batch_id', 'observation_type',
+    'id', 'agent_id', 'session_id', 'prompt_batch_id', 'observation_type',
     'status', 'content', 'context', 'importance', 'file_path', 'tags',
     'content_hash', 'created_at', 'updated_at',
   ].join(', '),
@@ -78,10 +86,11 @@ export interface GetUnembeddedOptions {
   limit?: number;
 }
 
-/** A row returned from getUnembedded — just id and created_at for the embedding worker. */
+/** A row returned from getUnembedded — id, created_at, and text content for the embedding worker. */
 export interface UnembeddedRow {
   id: string | number;
   created_at: number;
+  text: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -250,10 +259,11 @@ export async function getEmbeddingQueueDepth(): Promise<{
  * Find rows that do not yet have an embedding, for the embedding worker.
  *
  * Returns rows ordered by created_at ASC so oldest items are processed first.
+ * Includes the text content column so callers don't need a second query per row.
  *
  * @param table — one of 'sessions', 'spores', 'plans', 'artifacts'
  * @param options — optional limit (default 100)
- * @returns array of { id, created_at }
+ * @returns array of { id, created_at, text }
  */
 export async function getUnembedded(
   table: string,
@@ -263,11 +273,16 @@ export async function getUnembedded(
 
   const db = getDatabase();
   const limit = options.limit ?? DEFAULT_UNEMBEDDED_LIMIT;
+  const textCol = EMBEDDABLE_TEXT_COLUMNS[table as EmbeddableTable];
+
+  // Sessions are embedded via their summary field — skip rows with no summary
+  // to avoid clogging the queue with items that will always be skipped.
+  const contentFilter = table === 'sessions' ? ' AND summary IS NOT NULL' : '';
 
   const result = await db.query(
-    `SELECT id, created_at
+    `SELECT id, created_at, ${textCol} AS text
      FROM ${table}
-     WHERE embedding IS NULL
+     WHERE embedding IS NULL${contentFilter}
      ORDER BY created_at ASC
      LIMIT $1`,
     [limit],
@@ -276,5 +291,6 @@ export async function getUnembedded(
   return (result.rows as Record<string, unknown>[]).map((row) => ({
     id: row.id as string | number,
     created_at: row.created_at as number,
+    text: String(row.text ?? ''),
   }));
 }

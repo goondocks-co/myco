@@ -1,4 +1,4 @@
-import type { AgentAdapter } from './adapter.js';
+import type { SymbiontAdapter } from './adapter.js';
 import type { TranscriptTurn, TranscriptImage } from './adapter.js';
 import { mimeTypeForExtension, parseJsonlTurns } from './adapter.js';
 import { PROMPT_PREVIEW_CHARS } from '../constants.js';
@@ -30,7 +30,7 @@ function getCursorProjectsBase(): string {
 
 const CURSOR_PROJECTS = getCursorProjectsBase();
 
-export const cursorAdapter: AgentAdapter = {
+export const cursorAdapter: SymbiontAdapter = {
   name: 'cursor',
   displayName: 'Cursor',
   pluginRootEnvVar: 'CURSOR_PLUGIN_ROOT',

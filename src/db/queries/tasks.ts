@@ -20,7 +20,7 @@ const DEFAULT_SOURCE = 'built-in';
 /** Default is_default flag for new tasks. */
 const DEFAULT_IS_DEFAULT = 0;
 
-/** Value indicating a task is the default for its curator. */
+/** Value indicating a task is the default for its agent. */
 const IS_DEFAULT_TRUE = 1;
 
 // ---------------------------------------------------------------------------
@@ -30,7 +30,7 @@ const IS_DEFAULT_TRUE = 1;
 /** Fields required (or optional) when upserting a task. */
 export interface TaskInsert {
   id: string;
-  curator_id: string;
+  agent_id: string;
   prompt: string;
   created_at: number;
   source?: string;
@@ -45,7 +45,7 @@ export interface TaskInsert {
 /** Row shape returned from agent_tasks queries (all columns). */
 export interface TaskRow {
   id: string;
-  curator_id: string;
+  agent_id: string;
   source: string;
   display_name: string | null;
   description: string | null;
@@ -60,7 +60,7 @@ export interface TaskRow {
 /** Filter options for `listTasks`. */
 export interface ListTasksOptions {
   limit?: number;
-  curator_id?: string;
+  agent_id?: string;
   source?: string;
 }
 
@@ -70,7 +70,7 @@ export interface ListTasksOptions {
 
 const TASK_COLUMNS = [
   'id',
-  'curator_id',
+  'agent_id',
   'source',
   'display_name',
   'description',
@@ -92,7 +92,7 @@ const SELECT_COLUMNS = TASK_COLUMNS.join(', ');
 function toTaskRow(row: Record<string, unknown>): TaskRow {
   return {
     id: row.id as string,
-    curator_id: row.curator_id as string,
+    agent_id: row.agent_id as string,
     source: (row.source as string) ?? DEFAULT_SOURCE,
     display_name: (row.display_name as string) ?? null,
     description: (row.description as string) ?? null,
@@ -121,7 +121,7 @@ export async function upsertTask(data: TaskInsert): Promise<TaskRow> {
 
   const result = await db.query(
     `INSERT INTO agent_tasks (
-       id, curator_id, source, display_name, description,
+       id, agent_id, source, display_name, description,
        prompt, is_default, tool_overrides, config,
        created_at, updated_at
      ) VALUES (
@@ -130,7 +130,7 @@ export async function upsertTask(data: TaskInsert): Promise<TaskRow> {
        $10, $11
      )
      ON CONFLICT (id) DO UPDATE SET
-       curator_id     = EXCLUDED.curator_id,
+       agent_id       = EXCLUDED.agent_id,
        source         = EXCLUDED.source,
        display_name   = EXCLUDED.display_name,
        description    = EXCLUDED.description,
@@ -142,7 +142,7 @@ export async function upsertTask(data: TaskInsert): Promise<TaskRow> {
      RETURNING ${SELECT_COLUMNS}`,
     [
       data.id,
-      data.curator_id,
+      data.agent_id,
       data.source ?? DEFAULT_SOURCE,
       data.display_name ?? null,
       data.description ?? null,
@@ -187,9 +187,9 @@ export async function listTasks(
   const params: unknown[] = [];
   let paramIndex = 1;
 
-  if (options.curator_id !== undefined) {
-    conditions.push(`curator_id = $${paramIndex++}`);
-    params.push(options.curator_id);
+  if (options.agent_id !== undefined) {
+    conditions.push(`agent_id = $${paramIndex++}`);
+    params.push(options.agent_id);
   }
 
   if (options.source !== undefined) {
@@ -215,21 +215,21 @@ export async function listTasks(
 }
 
 /**
- * Get the default task for a curator.
+ * Get the default task for an agent.
  *
  * @returns the default task row, or null if no default exists.
  */
 export async function getDefaultTask(
-  curatorId: string,
+  agentId: string,
 ): Promise<TaskRow | null> {
   const db = getDatabase();
 
   const result = await db.query(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_tasks
-     WHERE curator_id = $1 AND is_default = $2
+     WHERE agent_id = $1 AND is_default = $2
      LIMIT 1`,
-    [curatorId, IS_DEFAULT_TRUE],
+    [agentId, IS_DEFAULT_TRUE],
   );
 
   if (result.rows.length === 0) return null;
@@ -237,21 +237,21 @@ export async function getDefaultTask(
 }
 
 /**
- * List all tasks for a curator, ordered by display_name ASC.
+ * List all tasks for an agent, ordered by display_name ASC.
  *
  * Rows with a null display_name sort before named tasks.
  */
-export async function listTasksByCurator(
-  curatorId: string,
+export async function listTasksByAgent(
+  agentId: string,
 ): Promise<TaskRow[]> {
   const db = getDatabase();
 
   const result = await db.query(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_tasks
-     WHERE curator_id = $1
+     WHERE agent_id = $1
      ORDER BY display_name ASC`,
-    [curatorId],
+    [agentId],
   );
 
   return (result.rows as Record<string, unknown>[]).map(toTaskRow);

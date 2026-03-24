@@ -1,0 +1,11 @@
+name: cursor
+displayName: Cursor
+binary: cursor
+configDir: .cursor
+pluginRootEnvVar: CURSOR_PLUGIN_ROOT
+pluginInstallCommand: null
+mcpConfigPath: .cursor/mcp.json
+hookFields:
+  transcriptPath: transcript_path
+  lastResponse: last_assistant_message
+  sessionId: conversation_id

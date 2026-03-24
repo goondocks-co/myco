@@ -1,45 +1,31 @@
 /**
  * Tests for myco_context tool handler.
+ *
+ * The handler now proxies through DaemonClient. Tests mock the client
+ * to verify correct endpoint usage and response mapping.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
-import { registerCurator } from '@myco/db/queries/curators.js';
+import { describe, it, expect, vi } from 'vitest';
 import { handleMycoContext } from '@myco/mcp/tools/context.js';
+import { DaemonClient } from '@myco/hooks/client.js';
 
-const epochNow = () => Math.floor(Date.now() / 1000);
-
-async function insertExtract(curatorId: string, tier: number, content: string): Promise<void> {
-  const db = getDatabase();
-  const now = epochNow();
-  await db.query(
-    `INSERT INTO digest_extracts (curator_id, tier, content, generated_at)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (curator_id, tier) DO UPDATE SET content = EXCLUDED.content, generated_at = EXCLUDED.generated_at`,
-    [curatorId, tier, content, now],
-  );
+function mockClient(getData: unknown = null, ok = true): DaemonClient {
+  const client = {
+    get: vi.fn().mockResolvedValue({ ok, data: getData }),
+    post: vi.fn().mockResolvedValue({ ok, data: getData }),
+  } as unknown as DaemonClient;
+  return client;
 }
 
 describe('myco_context', () => {
-  beforeEach(async () => {
-    const db = await initDatabase();
-    await createSchema(db);
-
-    const now = epochNow();
-    await registerCurator({
-      id: 'digest-curator', name: 'Digest', created_at: now,
-    });
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
-  });
-
   it('returns extract for requested tier', async () => {
-    await insertExtract('digest-curator', 3000, 'Project synthesis at 3000 tokens.');
+    const client = mockClient({
+      tiers: [
+        { tier: 3000, content: 'Project synthesis at 3000 tokens.', generated_at: 1700000000 },
+      ],
+    });
 
-    const result = await handleMycoContext({ tier: 3000 });
+    const result = await handleMycoContext({ tier: 3000 }, client);
 
     expect(result.tier).toBe(3000);
     expect(result.fallback).toBe(false);
@@ -47,10 +33,14 @@ describe('myco_context', () => {
   });
 
   it('falls back to nearest tier when requested unavailable', async () => {
-    await insertExtract('digest-curator', 1500, 'Executive briefing.');
-    await insertExtract('digest-curator', 5000, 'Deep onboarding.');
+    const client = mockClient({
+      tiers: [
+        { tier: 1500, content: 'Executive briefing.', generated_at: 1700000000 },
+        { tier: 5000, content: 'Deep onboarding.', generated_at: 1700000000 },
+      ],
+    });
 
-    const result = await handleMycoContext({ tier: 3000 });
+    const result = await handleMycoContext({ tier: 3000 }, client);
 
     // 1500 is distance 1500, 5000 is distance 2000 — should pick 1500
     expect(result.tier).toBe(1500);
@@ -59,7 +49,9 @@ describe('myco_context', () => {
   });
 
   it('returns not-ready message when no extracts exist', async () => {
-    const result = await handleMycoContext({ tier: 3000 });
+    const client = mockClient({ tiers: [] });
+
+    const result = await handleMycoContext({ tier: 3000 }, client);
 
     expect(result.tier).toBe(3000);
     expect(result.fallback).toBe(false);
@@ -67,11 +59,23 @@ describe('myco_context', () => {
   });
 
   it('defaults to tier 3000 when no tier specified', async () => {
-    await insertExtract('digest-curator', 3000, 'Default tier content.');
+    const client = mockClient({
+      tiers: [
+        { tier: 3000, content: 'Default tier content.', generated_at: 1700000000 },
+      ],
+    });
 
-    const result = await handleMycoContext({});
+    const result = await handleMycoContext({}, client);
 
     expect(result.tier).toBe(3000);
     expect(result.content).toBe('Default tier content.');
+  });
+
+  it('returns not-ready on daemon failure', async () => {
+    const client = mockClient(null, false);
+
+    const result = await handleMycoContext({ tier: 3000 }, client);
+
+    expect(result.content).toContain('not yet available');
   });
 });

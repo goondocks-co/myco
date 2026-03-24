@@ -13,13 +13,19 @@ import type { PGlite } from '@electric-sql/pglite';
 import { epochSeconds } from '@myco/constants.js';
 
 /** Current schema version — increment on breaking changes. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /** Previous schema version (for migration guard). */
-export const PREVIOUS_SCHEMA_VERSION = 2;
+export const PREVIOUS_SCHEMA_VERSION = 3;
 
 /** Embedding vector dimensions (bge-m3 default). */
 export const EMBEDDING_DIMENSIONS = 1024;
+
+/** Legacy agent ID from the "curator" era — used in data migrations. */
+const LEGACY_AGENT_ID = 'myco-curator';
+
+/** Current agent ID — the rename target for legacy rows. */
+const CURRENT_AGENT_ID = 'myco-agent';
 
 // ---------------------------------------------------------------------------
 // DDL statements
@@ -146,8 +152,8 @@ const ATTACHMENTS_TABLE = `
 
 // -- Intelligence Layer -----------------------------------------------------
 
-const CURATORS_TABLE = `
-  CREATE TABLE IF NOT EXISTS curators (
+const AGENTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS agents (
     id                  TEXT PRIMARY KEY,
     name                TEXT NOT NULL,
     provider            TEXT,
@@ -167,7 +173,7 @@ const CURATORS_TABLE = `
 const SPORES_TABLE = `
   CREATE TABLE IF NOT EXISTS spores (
     id                TEXT PRIMARY KEY,
-    curator_id        TEXT NOT NULL REFERENCES curators(id),
+    agent_id          TEXT NOT NULL REFERENCES agents(id),
     session_id        TEXT REFERENCES sessions(id),
     prompt_batch_id   INTEGER REFERENCES prompt_batches(id),
     observation_type  TEXT NOT NULL,
@@ -186,19 +192,19 @@ const SPORES_TABLE = `
 const ENTITIES_TABLE = `
   CREATE TABLE IF NOT EXISTS entities (
     id          TEXT PRIMARY KEY,
-    curator_id  TEXT NOT NULL REFERENCES curators(id),
+    agent_id    TEXT NOT NULL REFERENCES agents(id),
     type        TEXT NOT NULL,
     name        TEXT NOT NULL,
     properties  TEXT,
     first_seen  INTEGER NOT NULL,
     last_seen   INTEGER NOT NULL,
-    UNIQUE (curator_id, type, name)
+    UNIQUE (agent_id, type, name)
   )`;
 
 const EDGES_TABLE = `
   CREATE TABLE IF NOT EXISTS edges (
     id          SERIAL PRIMARY KEY,
-    curator_id  TEXT NOT NULL REFERENCES curators(id),
+    agent_id    TEXT NOT NULL REFERENCES agents(id),
     source_id   TEXT NOT NULL REFERENCES entities(id),
     target_id   TEXT NOT NULL REFERENCES entities(id),
     type        TEXT NOT NULL,
@@ -215,14 +221,14 @@ const ENTITY_MENTIONS_TABLE = `
     entity_id   TEXT NOT NULL REFERENCES entities(id),
     note_id     TEXT NOT NULL,
     note_type   TEXT NOT NULL,
-    curator_id  TEXT NOT NULL REFERENCES curators(id),
-    UNIQUE (entity_id, note_id, note_type, curator_id)
+    agent_id    TEXT NOT NULL REFERENCES agents(id),
+    UNIQUE (entity_id, note_id, note_type, agent_id)
   )`;
 
 const RESOLUTION_EVENTS_TABLE = `
   CREATE TABLE IF NOT EXISTS resolution_events (
     id            TEXT PRIMARY KEY,
-    curator_id    TEXT NOT NULL REFERENCES curators(id),
+    agent_id      TEXT NOT NULL REFERENCES agents(id),
     spore_id      TEXT NOT NULL REFERENCES spores(id),
     action        TEXT NOT NULL,
     new_spore_id  TEXT,
@@ -234,12 +240,12 @@ const RESOLUTION_EVENTS_TABLE = `
 const DIGEST_EXTRACTS_TABLE = `
   CREATE TABLE IF NOT EXISTS digest_extracts (
     id              SERIAL PRIMARY KEY,
-    curator_id      TEXT NOT NULL REFERENCES curators(id),
+    agent_id        TEXT NOT NULL REFERENCES agents(id),
     tier            INTEGER NOT NULL,
     content         TEXT NOT NULL,
     substrate_hash  TEXT,
     generated_at    INTEGER NOT NULL,
-    UNIQUE (curator_id, tier)
+    UNIQUE (agent_id, tier)
   )`;
 
 // -- Agent State Layer ------------------------------------------------------
@@ -247,7 +253,7 @@ const DIGEST_EXTRACTS_TABLE = `
 const AGENT_RUNS_TABLE = `
   CREATE TABLE IF NOT EXISTS agent_runs (
     id            TEXT PRIMARY KEY,
-    curator_id    TEXT NOT NULL REFERENCES curators(id),
+    agent_id      TEXT NOT NULL REFERENCES agents(id),
     task          TEXT,
     instruction   TEXT,
     status        TEXT DEFAULT 'pending',
@@ -263,7 +269,7 @@ const AGENT_REPORTS_TABLE = `
   CREATE TABLE IF NOT EXISTS agent_reports (
     id          SERIAL PRIMARY KEY,
     run_id      TEXT NOT NULL REFERENCES agent_runs(id),
-    curator_id  TEXT NOT NULL REFERENCES curators(id),
+    agent_id    TEXT NOT NULL REFERENCES agents(id),
     action      TEXT NOT NULL,
     summary     TEXT NOT NULL,
     details     TEXT,
@@ -274,7 +280,7 @@ const AGENT_TURNS_TABLE = `
   CREATE TABLE IF NOT EXISTS agent_turns (
     id                   SERIAL PRIMARY KEY,
     run_id               TEXT NOT NULL REFERENCES agent_runs(id),
-    curator_id           TEXT NOT NULL REFERENCES curators(id),
+    agent_id             TEXT NOT NULL REFERENCES agents(id),
     turn_number          INTEGER NOT NULL,
     tool_name            TEXT NOT NULL,
     tool_input           TEXT,
@@ -286,7 +292,7 @@ const AGENT_TURNS_TABLE = `
 const AGENT_TASKS_TABLE = `
   CREATE TABLE IF NOT EXISTS agent_tasks (
     id              TEXT PRIMARY KEY,
-    curator_id      TEXT NOT NULL REFERENCES curators(id),
+    agent_id        TEXT NOT NULL REFERENCES agents(id),
     source          TEXT NOT NULL DEFAULT 'built-in',
     display_name    TEXT,
     description     TEXT,
@@ -300,11 +306,11 @@ const AGENT_TASKS_TABLE = `
 
 const AGENT_STATE_TABLE = `
   CREATE TABLE IF NOT EXISTS agent_state (
-    curator_id  TEXT NOT NULL REFERENCES curators(id),
+    agent_id    TEXT NOT NULL REFERENCES agents(id),
     key         TEXT NOT NULL,
     value       TEXT NOT NULL,
     updated_at  INTEGER NOT NULL,
-    PRIMARY KEY (curator_id, key)
+    PRIMARY KEY (agent_id, key)
   )`;
 
 // -- Indexes ----------------------------------------------------------------
@@ -331,37 +337,37 @@ const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_activities_search ON activities USING GIN (search_vector)',
 
   // Spores
-  'CREATE INDEX IF NOT EXISTS idx_spores_curator_id ON spores (curator_id)',
+  'CREATE INDEX IF NOT EXISTS idx_spores_agent_id ON spores (agent_id)',
   'CREATE INDEX IF NOT EXISTS idx_spores_session_id ON spores (session_id)',
   'CREATE INDEX IF NOT EXISTS idx_spores_status ON spores (status)',
   'CREATE INDEX IF NOT EXISTS idx_spores_observation_type ON spores (observation_type)',
   'CREATE INDEX IF NOT EXISTS idx_spores_created_at ON spores (created_at)',
 
   // Entities
-  'CREATE INDEX IF NOT EXISTS idx_entities_curator_id ON entities (curator_id)',
+  'CREATE INDEX IF NOT EXISTS idx_entities_agent_id ON entities (agent_id)',
   'CREATE INDEX IF NOT EXISTS idx_entities_type ON entities (type)',
 
   // Edges
-  'CREATE INDEX IF NOT EXISTS idx_edges_curator_id ON edges (curator_id)',
+  'CREATE INDEX IF NOT EXISTS idx_edges_agent_id ON edges (agent_id)',
   'CREATE INDEX IF NOT EXISTS idx_edges_source_id ON edges (source_id)',
   'CREATE INDEX IF NOT EXISTS idx_edges_target_id ON edges (target_id)',
   'CREATE INDEX IF NOT EXISTS idx_edges_type ON edges (type)',
 
   // Entity mentions
   'CREATE INDEX IF NOT EXISTS idx_entity_mentions_entity_id ON entity_mentions (entity_id)',
-  'CREATE INDEX IF NOT EXISTS idx_entity_mentions_curator_id ON entity_mentions (curator_id)',
+  'CREATE INDEX IF NOT EXISTS idx_entity_mentions_agent_id ON entity_mentions (agent_id)',
 
   // Resolution events
   'CREATE INDEX IF NOT EXISTS idx_resolution_events_spore_id ON resolution_events (spore_id)',
-  'CREATE INDEX IF NOT EXISTS idx_resolution_events_curator_id ON resolution_events (curator_id)',
+  'CREATE INDEX IF NOT EXISTS idx_resolution_events_agent_id ON resolution_events (agent_id)',
 
   // Digest extracts
-  'CREATE INDEX IF NOT EXISTS idx_digest_extracts_curator_id ON digest_extracts (curator_id)',
+  'CREATE INDEX IF NOT EXISTS idx_digest_extracts_agent_id ON digest_extracts (agent_id)',
 
   // Agent runs
-  'CREATE INDEX IF NOT EXISTS idx_agent_runs_curator_id ON agent_runs (curator_id)',
+  'CREATE INDEX IF NOT EXISTS idx_agent_runs_agent_id ON agent_runs (agent_id)',
   'CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs (status)',
-  'CREATE INDEX IF NOT EXISTS idx_agent_runs_curator_status ON agent_runs (curator_id, status)',
+  'CREATE INDEX IF NOT EXISTS idx_agent_runs_agent_status ON agent_runs (agent_id, status)',
 
   // Agent reports
   'CREATE INDEX IF NOT EXISTS idx_agent_reports_run_id ON agent_reports (run_id)',
@@ -370,7 +376,7 @@ const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_agent_turns_run_id ON agent_turns (run_id)',
 
   // Agent tasks
-  'CREATE INDEX IF NOT EXISTS idx_agent_tasks_curator_id ON agent_tasks (curator_id)',
+  'CREATE INDEX IF NOT EXISTS idx_agent_tasks_agent_id ON agent_tasks (agent_id)',
 ];
 
 const HNSW_INDEXES = [
@@ -394,7 +400,7 @@ const TABLE_DDLS = [
   TEAM_MEMBERS_TABLE,
   ATTACHMENTS_TABLE,
   // Intelligence layer
-  CURATORS_TABLE,
+  AGENTS_TABLE,
   SPORES_TABLE,
   ENTITIES_TABLE,
   EDGES_TABLE,
@@ -449,25 +455,27 @@ async function columnExists(
  * Idempotent: each ALTER is guarded by a column existence check.
  */
 async function migrateV1ToV2(db: PGlite): Promise<void> {
-  // -- curators: new columns --
-  const curatorAlters: Array<{ column: string; ddl: string }> = [
-    { column: 'source', ddl: `ALTER TABLE curators ADD COLUMN source TEXT NOT NULL DEFAULT 'built-in'` },
-    { column: 'system_prompt', ddl: `ALTER TABLE curators ADD COLUMN system_prompt TEXT` },
-    { column: 'max_turns', ddl: `ALTER TABLE curators ADD COLUMN max_turns INTEGER` },
-    { column: 'timeout_seconds', ddl: `ALTER TABLE curators ADD COLUMN timeout_seconds INTEGER` },
-    { column: 'tool_access', ddl: `ALTER TABLE curators ADD COLUMN tool_access TEXT` },
-    { column: 'enabled', ddl: `ALTER TABLE curators ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1` },
-    { column: 'updated_at', ddl: `ALTER TABLE curators ADD COLUMN updated_at INTEGER` },
-  ];
+  // -- curators: new columns (only if the table exists — skipped on fresh installs) --
+  if (await tableExists(db, 'curators')) {
+    const curatorAlters: Array<{ column: string; ddl: string }> = [
+      { column: 'source', ddl: `ALTER TABLE curators ADD COLUMN source TEXT NOT NULL DEFAULT 'built-in'` },
+      { column: 'system_prompt', ddl: `ALTER TABLE curators ADD COLUMN system_prompt TEXT` },
+      { column: 'max_turns', ddl: `ALTER TABLE curators ADD COLUMN max_turns INTEGER` },
+      { column: 'timeout_seconds', ddl: `ALTER TABLE curators ADD COLUMN timeout_seconds INTEGER` },
+      { column: 'tool_access', ddl: `ALTER TABLE curators ADD COLUMN tool_access TEXT` },
+      { column: 'enabled', ddl: `ALTER TABLE curators ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1` },
+      { column: 'updated_at', ddl: `ALTER TABLE curators ADD COLUMN updated_at INTEGER` },
+    ];
 
-  for (const { column, ddl } of curatorAlters) {
-    if (!(await columnExists(db, 'curators', column))) {
-      await db.query(ddl);
+    for (const { column, ddl } of curatorAlters) {
+      if (!(await columnExists(db, 'curators', column))) {
+        await db.query(ddl);
+      }
     }
   }
 
-  // -- agent_runs: instruction column --
-  if (!(await columnExists(db, 'agent_runs', 'instruction'))) {
+  // -- agent_runs: instruction column (only if the table exists — skipped on fresh installs) --
+  if (await tableExists(db, 'agent_runs') && !(await columnExists(db, 'agent_runs', 'instruction'))) {
     await db.query(`ALTER TABLE agent_runs ADD COLUMN instruction TEXT`);
   }
 }
@@ -482,29 +490,195 @@ async function migrateV1ToV2(db: PGlite): Promise<void> {
  * Idempotent: uses IF NOT EXISTS for indexes and column existence checks for ALTER TABLE.
  */
 async function migrateV2ToV3(db: PGlite): Promise<void> {
-  if (!(await columnExists(db, 'prompt_batches', 'search_vector'))) {
+  // Guard each ALTER with table existence — skipped on fresh installs where
+  // these tables don't exist yet (the DDL loop will create them with all columns).
+  if (await tableExists(db, 'prompt_batches') && !(await columnExists(db, 'prompt_batches', 'search_vector'))) {
     await db.query('ALTER TABLE prompt_batches ADD COLUMN search_vector tsvector');
   }
-  if (!(await columnExists(db, 'activities', 'search_vector'))) {
+  if (await tableExists(db, 'activities') && !(await columnExists(db, 'activities', 'search_vector'))) {
     await db.query('ALTER TABLE activities ADD COLUMN search_vector tsvector');
   }
-  if (!(await columnExists(db, 'plans', 'embedding'))) {
+  if (await tableExists(db, 'plans') && !(await columnExists(db, 'plans', 'embedding'))) {
     await db.query(`ALTER TABLE plans ADD COLUMN embedding vector(${EMBEDDING_DIMENSIONS})`);
   }
-  if (!(await columnExists(db, 'artifacts', 'embedding'))) {
+  if (await tableExists(db, 'artifacts') && !(await columnExists(db, 'artifacts', 'embedding'))) {
     await db.query(`ALTER TABLE artifacts ADD COLUMN embedding vector(${EMBEDDING_DIMENSIONS})`);
   }
 
-  // GIN indexes for FTS
-  await db.query('CREATE INDEX IF NOT EXISTS idx_prompt_batches_search ON prompt_batches USING GIN (search_vector)');
-  await db.query('CREATE INDEX IF NOT EXISTS idx_activities_search ON activities USING GIN (search_vector)');
+  // GIN indexes for FTS (only if tables exist)
+  if (await tableExists(db, 'prompt_batches')) {
+    await db.query('CREATE INDEX IF NOT EXISTS idx_prompt_batches_search ON prompt_batches USING GIN (search_vector)');
+  }
+  if (await tableExists(db, 'activities')) {
+    await db.query('CREATE INDEX IF NOT EXISTS idx_activities_search ON activities USING GIN (search_vector)');
+  }
 
-  // HNSW indexes for new embedding columns
-  await db.query(`CREATE INDEX IF NOT EXISTS idx_plans_embedding ON plans USING hnsw (embedding vector_cosine_ops)`);
-  await db.query(`CREATE INDEX IF NOT EXISTS idx_artifacts_embedding ON artifacts USING hnsw (embedding vector_cosine_ops)`);
+  // HNSW indexes for new embedding columns (only if tables exist)
+  if (await tableExists(db, 'plans')) {
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_plans_embedding ON plans USING hnsw (embedding vector_cosine_ops)`);
+  }
+  if (await tableExists(db, 'artifacts')) {
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_artifacts_embedding ON artifacts USING hnsw (embedding vector_cosine_ops)`);
+  }
 
   // Advance the version row if schema_version table already exists with version 2
+  await db.query(`UPDATE schema_version SET version = 3 WHERE version = 2`);
+}
+
+/**
+ * Check if a table exists in the public schema.
+ * Used by migration guards for idempotent ALTER TABLE / RENAME.
+ */
+async function tableExists(
+  db: PGlite,
+  tableName: string,
+): Promise<boolean> {
+  const result = await db.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM information_schema.tables
+       WHERE table_schema = 'public'
+         AND table_name = $1
+     ) AS exists`,
+    [tableName],
+  );
+  return result.rows[0].exists;
+}
+
+/**
+ * Check if an index exists in the public schema.
+ * Used by migration guards for idempotent index renames.
+ */
+async function indexExistsInSchema(
+  db: PGlite,
+  indexName: string,
+): Promise<boolean> {
+  const result = await db.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM pg_indexes
+       WHERE schemaname = 'public'
+         AND indexname = $1
+     ) AS exists`,
+    [indexName],
+  );
+  return result.rows[0].exists;
+}
+
+/**
+ * Migrate from v3 → v4:
+ * - Rename `curators` table → `agents`
+ * - Rename `curator_id` → `agent_id` in 12 tables
+ * - Rename all curator-named indexes → agent-named equivalents
+ *
+ * Idempotent: each operation is guarded by existence checks.
+ * Must run BEFORE DDL loop so existing databases get tables renamed
+ * before `CREATE TABLE IF NOT EXISTS` with new names runs.
+ */
+async function migrateV3ToV4(db: PGlite): Promise<void> {
+  // -- Step 1: Rename curators table → agents --
+  if (await tableExists(db, 'curators')) {
+    await db.query('ALTER TABLE curators RENAME TO agents');
+  }
+
+  // -- Step 2: Rename curator_id → agent_id in all 12 tables --
+  // Tables that have a curator_id column to rename:
+  const AGENT_ID_TABLES = [
+    'agents',
+    'spores',
+    'entities',
+    'entity_mentions',
+    'edges',
+    'resolution_events',
+    'digest_extracts',
+    'agent_runs',
+    'agent_reports',
+    'agent_turns',
+    'agent_tasks',
+    'agent_state',
+  ] as const;
+
+  for (const table of AGENT_ID_TABLES) {
+    if (await columnExists(db, table, 'curator_id')) {
+      await db.query(`ALTER TABLE ${table} RENAME COLUMN curator_id TO agent_id`);
+    }
+  }
+
+  // -- Step 3: Rename curator-named indexes → agent-named equivalents --
+  const INDEX_RENAMES: Array<[oldName: string, newName: string]> = [
+    ['idx_spores_curator_id', 'idx_spores_agent_id'],
+    ['idx_entities_curator_id', 'idx_entities_agent_id'],
+    ['idx_edges_curator_id', 'idx_edges_agent_id'],
+    ['idx_entity_mentions_curator_id', 'idx_entity_mentions_agent_id'],
+    ['idx_resolution_events_curator_id', 'idx_resolution_events_agent_id'],
+    ['idx_digest_extracts_curator_id', 'idx_digest_extracts_agent_id'],
+    ['idx_agent_runs_curator_id', 'idx_agent_runs_agent_id'],
+    ['idx_agent_runs_curator_status', 'idx_agent_runs_agent_status'],
+    ['idx_agent_tasks_curator_id', 'idx_agent_tasks_agent_id'],
+  ];
+
+  for (const [oldName, newName] of INDEX_RENAMES) {
+    if (await indexExistsInSchema(db, oldName)) {
+      await db.query(`ALTER INDEX ${oldName} RENAME TO ${newName}`);
+    }
+  }
+
+  // -- Step 4: Update agent_id values from old default to new default --
+  // The column rename (step 2) preserved values, but the DEFAULT_AGENT_ID
+  // constant changed from 'myco-curator' to 'myco-agent'. Update all rows.
+  for (const table of AGENT_ID_TABLES) {
+    if (await columnExists(db, table, 'agent_id')) {
+      await db.query(`UPDATE ${table} SET agent_id = '${CURRENT_AGENT_ID}' WHERE agent_id = '${LEGACY_AGENT_ID}'`);
+    }
+  }
+
+  // Advance the version row from v3 → v4
   await db.query(`UPDATE schema_version SET version = ${SCHEMA_VERSION} WHERE version = ${PREVIOUS_SCHEMA_VERSION}`);
+}
+
+/**
+ * One-time data fixup: update agent_id values from 'myco-curator' to 'myco-agent'.
+ * The v3→v4 migration renamed columns but not values. This runs on every startup
+ * and is idempotent — rows already set to 'myco-agent' are unaffected.
+ */
+async function fixupAgentIdValues(db: PGlite): Promise<void> {
+  // Early-exit: if no rows in agents have the legacy ID, nothing to fix
+  if (await tableExists(db, 'agents')) {
+    const probe = await db.query(
+      `SELECT 1 FROM agents WHERE id = $1 LIMIT 1`,
+      [LEGACY_AGENT_ID],
+    );
+    if (probe.rows.length === 0) return;
+  }
+
+  const TABLES_WITH_AGENT_ID = [
+    'agents', 'spores', 'entities', 'entity_mentions', 'edges',
+    'resolution_events', 'digest_extracts', 'agent_runs', 'agent_reports',
+    'agent_turns', 'agent_tasks', 'agent_state',
+  ] as const;
+
+  for (const table of TABLES_WITH_AGENT_ID) {
+    if (await tableExists(db, table) && await columnExists(db, table, 'agent_id')) {
+      await db.query(
+        `UPDATE ${table} SET agent_id = $1 WHERE agent_id = $2`,
+        [CURRENT_AGENT_ID, LEGACY_AGENT_ID],
+      );
+    }
+  }
+
+  // Also fix old task names in agent_runs and agent_tasks
+  const OLD_TASK_NAME = 'full-curation';
+  const NEW_TASK_NAME = 'full-intelligence';
+  if (await tableExists(db, 'agent_runs')) {
+    await db.query(
+      `UPDATE agent_runs SET task = $1 WHERE task = $2`,
+      [NEW_TASK_NAME, OLD_TASK_NAME],
+    );
+  }
+  if (await tableExists(db, 'agent_tasks')) {
+    await db.query(
+      `UPDATE agent_tasks SET id = $1 WHERE id = $2`,
+      [NEW_TASK_NAME, OLD_TASK_NAME],
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -526,20 +700,29 @@ export async function createSchema(db: PGlite): Promise<void> {
       'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1',
     );
     if (versionResult.rows.length > 0 && versionResult.rows[0].version === SCHEMA_VERSION) {
+      // Always run data fixups even on the fast-path (idempotent)
+      await fixupAgentIdValues(db);
       return;
     }
   } catch {
     // Table doesn't exist yet — first run, continue with full DDL
   }
 
-  // Create tables in dependency order
+  // Ensure schema_version table exists before running migrations
+  // (migrations may UPDATE this table; DDL loop also creates it via IF NOT EXISTS)
+  await db.query(SCHEMA_VERSION_TABLE);
+
+  // Run migrations BEFORE DDL loop so existing databases get tables/columns
+  // renamed before `CREATE TABLE IF NOT EXISTS` with new names runs.
+  // On fresh installs, old tables don't exist so migrations are harmless no-ops.
+  await migrateV1ToV2(db);
+  await migrateV2ToV3(db);
+  await migrateV3ToV4(db);
+
+  // Create tables in dependency order (IF NOT EXISTS — idempotent)
   for (const ddl of TABLE_DDLS) {
     await db.query(ddl);
   }
-
-  // Run migrations for databases at prior versions
-  await migrateV1ToV2(db);
-  await migrateV2ToV3(db);
 
   // Secondary B-tree indexes
   for (const idx of SECONDARY_INDEXES) {
