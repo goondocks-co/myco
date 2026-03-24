@@ -287,8 +287,9 @@ describe('embedding query helpers', () => {
   describe('getUnembedded', () => {
     it('returns rows without embeddings', async () => {
       const now = epochNow();
-      const s1 = makeSession({ id: 'sess-no-emb', created_at: now, started_at: now });
-      const s2 = makeSession({ id: 'sess-has-emb', created_at: now + 1, started_at: now + 1 });
+      const summary = 'A non-empty session summary';
+      const s1 = makeSession({ id: 'sess-no-emb', created_at: now, started_at: now, summary });
+      const s2 = makeSession({ id: 'sess-has-emb', created_at: now + 1, started_at: now + 1, summary });
       await upsertSession(s1);
       await upsertSession(s2);
       await setEmbedding('sessions', 'sess-has-emb', makeUnitVector(0));
@@ -301,8 +302,9 @@ describe('embedding query helpers', () => {
 
     it('respects the limit option', async () => {
       const now = epochNow();
+      const summary = 'A non-empty session summary';
       for (let i = 0; i < 5; i++) {
-        await upsertSession(makeSession({ id: `sess-unemb-${i}`, created_at: now + i, started_at: now + i }));
+        await upsertSession(makeSession({ id: `sess-unemb-${i}`, created_at: now + i, started_at: now + i, summary }));
       }
 
       const rows = await getUnembedded('sessions', { limit: 2 });
@@ -310,7 +312,7 @@ describe('embedding query helpers', () => {
     });
 
     it('returns empty array when all rows have embeddings', async () => {
-      const session = makeSession();
+      const session = makeSession({ summary: 'A non-empty session summary' });
       await upsertSession(session);
       await setEmbedding('sessions', session.id, makeUnitVector(0));
 
@@ -339,9 +341,10 @@ describe('embedding query helpers', () => {
 
     it('orders results by created_at ASC (oldest first for processing queue)', async () => {
       const now = epochNow();
-      await upsertSession(makeSession({ id: 'sess-old', created_at: now - 100, started_at: now - 100 }));
-      await upsertSession(makeSession({ id: 'sess-new', created_at: now, started_at: now }));
-      await upsertSession(makeSession({ id: 'sess-mid', created_at: now - 50, started_at: now - 50 }));
+      const summary = 'A session summary for ordering test';
+      await upsertSession(makeSession({ id: 'sess-old', created_at: now - 100, started_at: now - 100, summary }));
+      await upsertSession(makeSession({ id: 'sess-new', created_at: now, started_at: now, summary }));
+      await upsertSession(makeSession({ id: 'sess-mid', created_at: now - 50, started_at: now - 50, summary }));
 
       const rows = await getUnembedded('sessions');
 
@@ -349,6 +352,25 @@ describe('embedding query helpers', () => {
       expect(rows[0].id).toBe('sess-old');
       expect(rows[1].id).toBe('sess-mid');
       expect(rows[2].id).toBe('sess-new');
+    });
+
+    it('should not return sessions without summaries for embedding', async () => {
+      const now = epochNow();
+      // Session with no summary — should be excluded from the queue
+      await upsertSession(makeSession({ id: 'sess-no-summary', created_at: now, started_at: now }));
+      // Session with a summary but no embedding — should appear in the queue
+      await upsertSession(makeSession({
+        id: 'sess-has-summary',
+        created_at: now + 1,
+        started_at: now + 1,
+        summary: 'This session did something useful',
+      }));
+
+      const rows = await getUnembedded('sessions');
+
+      const ids = rows.map((r) => r.id);
+      expect(ids).not.toContain('sess-no-summary');
+      expect(ids).toContain('sess-has-summary');
     });
   });
 

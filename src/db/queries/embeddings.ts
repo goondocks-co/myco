@@ -264,10 +264,14 @@ export async function getUnembedded(
   const db = getDatabase();
   const limit = options.limit ?? DEFAULT_UNEMBEDDED_LIMIT;
 
+  // Sessions are embedded via their summary field — skip rows with no summary
+  // to avoid clogging the queue with items that will always be skipped.
+  const summaryFilter = table === 'sessions' ? ' AND summary IS NOT NULL' : '';
+
   const result = await db.query(
     `SELECT id, created_at
      FROM ${table}
-     WHERE embedding IS NULL
+     WHERE embedding IS NULL${summaryFilter}
      ORDER BY created_at ASC
      LIMIT $1`,
     [limit],
