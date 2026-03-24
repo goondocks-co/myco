@@ -733,6 +733,62 @@ async function fixupAgentIdValues(db: PGlite): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Startup fixups (idempotent, run on every startup)
+// ---------------------------------------------------------------------------
+
+/** Valid entity types after the graph redesign. */
+const VALID_ENTITY_TYPES = ['component', 'concept', 'person'];
+
+/**
+ * Backfill lineage edges for existing spores that predate the graph_edges table.
+ * Idempotent: uses LEFT JOIN to skip spores that already have edges.
+ */
+async function backfillSporeLineage(db: PGlite): Promise<void> {
+  if (!(await tableExists(db, 'graph_edges')) || !(await tableExists(db, 'spores'))) return;
+
+  // Check if any spores lack FROM_SESSION edges
+  const probe = await db.query(`
+    SELECT s.id FROM spores s
+    LEFT JOIN graph_edges ge ON ge.source_id = s.id AND ge.type = 'FROM_SESSION'
+    WHERE s.session_id IS NOT NULL AND ge.id IS NULL
+    LIMIT 1
+  `);
+  if (probe.rows.length === 0) return; // All spores already have lineage
+
+  // Backfill FROM_SESSION
+  await db.query(`
+    INSERT INTO graph_edges (id, agent_id, source_id, source_type, target_id, target_type, type, created_at)
+    SELECT gen_random_uuid(), s.agent_id, s.id, 'spore', s.session_id, 'session', 'FROM_SESSION', s.created_at
+    FROM spores s
+    LEFT JOIN graph_edges ge ON ge.source_id = s.id AND ge.type = 'FROM_SESSION'
+    WHERE s.session_id IS NOT NULL AND ge.id IS NULL
+  `);
+
+  // Backfill EXTRACTED_FROM
+  await db.query(`
+    INSERT INTO graph_edges (id, agent_id, source_id, source_type, target_id, target_type, type, created_at)
+    SELECT gen_random_uuid(), s.agent_id, s.id, 'spore', CAST(s.prompt_batch_id AS TEXT), 'batch', 'EXTRACTED_FROM', s.created_at
+    FROM spores s
+    LEFT JOIN graph_edges ge ON ge.source_id = s.id AND ge.type = 'EXTRACTED_FROM'
+    WHERE s.prompt_batch_id IS NOT NULL AND ge.id IS NULL
+  `);
+}
+
+/**
+ * Archive entities whose type is not in the valid set (component, concept, person).
+ * Idempotent: only updates rows that are still 'active' with invalid types.
+ */
+async function archiveInvalidEntityTypes(db: PGlite): Promise<void> {
+  if (!(await tableExists(db, 'entities')) || !(await columnExists(db, 'entities', 'status'))) return;
+
+  const placeholders = VALID_ENTITY_TYPES.map((_, i) => `$${i + 1}`).join(', ');
+  await db.query(
+    `UPDATE entities SET status = 'archived' WHERE status = 'active' AND type NOT IN (${placeholders})`,
+    VALID_ENTITY_TYPES,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -753,6 +809,8 @@ export async function createSchema(db: PGlite): Promise<void> {
     if (versionResult.rows.length > 0 && versionResult.rows[0].version === SCHEMA_VERSION) {
       // Always run data fixups even on the fast-path (idempotent)
       await fixupAgentIdValues(db);
+      await backfillSporeLineage(db);
+      await archiveInvalidEntityTypes(db);
       return;
     }
   } catch {
