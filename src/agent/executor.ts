@@ -28,10 +28,10 @@ import {
 import {
   resolveDefinitionsDir,
   loadAgentDefinition,
-  loadAgentTasks,
   loadSystemPrompt,
   resolveEffectiveConfig,
 } from './loader.js';
+import { loadAllTasks } from './registry.js';
 import { createVaultToolServer, createScopedVaultToolServer } from './tools.js';
 import { buildVaultContext } from './context.js';
 import type {
@@ -349,13 +349,11 @@ export async function runAgent(
   ]);
 
   // Convert TaskRow to AgentTask shape for resolveEffectiveConfig.
-  // Phases are structural (define how the executor runs) and come from YAML,
-  // not from DB. Load YAML tasks to get phase definitions.
-  const yamlTasks = loadAgentTasks(definitionsDir);
+  // Structural fields (phases, execution, contextQueries) come from the registry
+  // (built-in YAML merged with user vault tasks) rather than the DB flat columns.
+  const allTasks = loadAllTasks(definitionsDir, vaultDir);
   const taskName = taskRow?.id ?? options?.task;
-  const yamlTask = taskName
-    ? yamlTasks.find((t) => t.name === taskName)
-    : undefined;
+  const yamlTask = taskName ? allTasks.get(taskName) : undefined;
 
   const taskOverrides = taskRow
     ? {
@@ -368,8 +366,10 @@ export async function runAgent(
         ...(taskRow.tool_overrides
           ? { toolOverrides: JSON.parse(taskRow.tool_overrides) as string[] }
           : {}),
-        // Phases come from YAML — DB doesn't store them
+        // Structural fields come from the registry (not DB flat columns)
         ...(yamlTask?.phases ? { phases: yamlTask.phases } : {}),
+        ...(yamlTask?.execution ? { execution: yamlTask.execution } : {}),
+        ...(yamlTask?.contextQueries ? { contextQueries: yamlTask.contextQueries } : {}),
       }
     : undefined;
 

@@ -14,7 +14,7 @@ import { upsertTask } from '@myco/db/queries/tasks.js';
 import { insertRun, getRun } from '@myco/db/queries/runs.js';
 import { epochSeconds } from '@myco/constants.js';
 import { composeTaskPrompt, composePhasePrompt } from '@myco/agent/executor.js';
-import type { PhaseDefinition } from '@myco/agent/types.js';
+import type { PhaseDefinition, ExecutionConfig } from '@myco/agent/types.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -144,6 +144,9 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
 /** YAML phases to return from the loader mock. Set per-test. */
 let mockYamlPhases: PhaseDefinition[] | undefined;
 
+/** Execution config to return from the registry mock. Set per-test. */
+let mockExecution: ExecutionConfig | undefined;
+
 vi.mock('@myco/agent/loader.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('@myco/agent/loader.js')>();
   return {
@@ -185,6 +188,28 @@ vi.mock('@myco/agent/loader.js', async (importOriginal) => {
     // Keep resolveEffectiveConfig from the original module
   };
 });
+
+// ---------------------------------------------------------------------------
+// Mock: registry (wraps loadAgentTasks — avoids filesystem reads)
+// ---------------------------------------------------------------------------
+
+vi.mock('@myco/agent/registry.js', () => ({
+  loadAllTasks: (_definitionsDir: string, _vaultDir?: string) => {
+    const tasks = new Map();
+    const task = {
+      name: TEST_TASK_NAME,
+      displayName: 'Full Intelligence',
+      description: 'Run full intelligence pipeline',
+      agent: 'myco-agent',
+      prompt: mockYamlPhases ? 'Phased pipeline overview.' : TEST_TASK_PROMPT,
+      isDefault: true,
+      ...(mockYamlPhases ? { phases: mockYamlPhases } : {}),
+      ...(mockExecution ? { execution: mockExecution } : {}),
+    };
+    tasks.set(TEST_TASK_NAME, task);
+    return tasks;
+  },
+}));
 
 // ---------------------------------------------------------------------------
 // Mock: context
@@ -267,6 +292,7 @@ function resetMockState(): void {
   mockResultTexts = [];
   mockErrorMessage = 'SDK exploded';
   mockYamlPhases = undefined;
+  mockExecution = undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -520,6 +546,30 @@ describe('runAgent', () => {
     expect(result.phases).toBeUndefined();
     expect(allQueryCalls.length).toBe(1);
     expect(scopedToolCalls.length).toBe(0);
+  });
+
+  it('execution.model overrides task.model', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    // Set execution config with a different model — no phases
+    mockExecution = { model: 'claude-haiku-4-5' };
+
+    await runAgent(TEST_VAULT_DIR);
+
+    const opts = capturedQueryArgs!.options as Record<string, unknown>;
+    expect(opts.model).toBe('claude-haiku-4-5');
+  });
+
+  it('execution.maxTurns overrides task.maxTurns', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    // Set execution config with a custom maxTurns
+    mockExecution = { maxTurns: 42 };
+
+    await runAgent(TEST_VAULT_DIR);
+
+    const opts = capturedQueryArgs!.options as Record<string, unknown>;
+    expect(opts.maxTurns).toBe(42);
   });
 });
 

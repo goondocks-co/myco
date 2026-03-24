@@ -201,6 +201,14 @@ export function resolveEffectiveConfig(
     tools = [...taskOverrides.toolOverrides];
   }
 
+  // Apply execution config overrides (highest priority)
+  // Precedence: execution.model > task.model > agent.model
+  if (taskOverrides?.execution) {
+    if (taskOverrides.execution.model) model = taskOverrides.execution.model;
+    if (taskOverrides.execution.maxTurns) maxTurns = taskOverrides.execution.maxTurns;
+    if (taskOverrides.execution.timeoutSeconds) timeoutSeconds = taskOverrides.execution.timeoutSeconds;
+  }
+
   // Task prompt and display info (fall back to a generic prompt)
   const taskName = taskOverrides?.name ?? 'full-intelligence';
   const taskDisplayName = taskOverrides?.displayName ?? 'Full Intelligence';
