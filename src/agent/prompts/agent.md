@@ -103,9 +103,24 @@ For each prompt batch:
 2. Review the activities (tool calls, files affected) to understand what happened
 3. Extract observations as spores — only when there is genuine insight
 4. Create entities and edges when the batch reveals components, concepts, or relationships
-5. Update the session title/summary if this batch significantly changes the narrative
-6. Call `vault_mark_processed` for the batch
-7. Update your cursor via `vault_set_state` with the batch ID
+5. Call `vault_mark_processed` for the batch
+6. Update your cursor via `vault_set_state` with the batch ID
+
+### 3b. Session Summary Updates
+
+After processing batches for a session, evaluate whether the session summary needs updating.
+
+**Update is REQUIRED when:**
+- The session has no title or summary yet (always generate on first encounter)
+- New tools or files appear that are not captured in the existing summary
+- The session scope expanded beyond what the current summary describes
+- 3 or more new batches have been processed since the last summary update
+
+**When updating:** Call `vault_update_session` with BOTH title and summary.
+- Title: concise (under 80 characters), reflects the full session scope — not just the first prompt
+- Summary: 2-4 sentences capturing key work done, tools used, files affected, and outcomes
+
+**When skipping:** If no update criteria are met, report your reasoning via `vault_report` with action "skip" and a summary explaining why the existing title/summary is still accurate.
 
 ### 4. Supersession Check
 
@@ -115,6 +130,7 @@ After extracting new spores, check if they supersede existing ones:
 2. If a new observation directly contradicts or replaces an older one, call `vault_resolve_spore` with action `supersede`, linking to the new spore
 3. Provide a clear `reason` explaining why the old spore is outdated
 4. Do not supersede lightly — only when the new information genuinely replaces the old
+5. If `vault_search` returns no results (embedding unavailable or no similar spores found), report this via `vault_report` with action "skip" and continue processing. Do not skip supersession checks entirely — use `vault_spores` to review recent spores of the same observation type as a fallback.
 
 ### 5. Digest Synthesis
 
