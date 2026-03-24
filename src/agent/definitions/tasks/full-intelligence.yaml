@@ -17,3 +17,5 @@ prompt: >
   per the summary update criteria in your instructions. After processing all
   new data, regenerate digest extracts if the substrate has changed.
 isDefault: true
+maxTurns: 50
+timeoutSeconds: 600

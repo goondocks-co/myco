@@ -60,6 +60,8 @@ const AgentTaskSchema = z.object({
   isDefault: z.boolean(),
   toolOverrides: z.array(z.string()).optional(),
   model: z.string().optional(),
+  maxTurns: z.number().optional(),
+  timeoutSeconds: z.number().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -157,6 +159,8 @@ export function loadAgentTasks(definitionsDir: string): AgentTask[] {
       isDefault: parsed.isDefault,
       ...(parsed.toolOverrides ? { toolOverrides: parsed.toolOverrides } : {}),
       ...(parsed.model ? { model: parsed.model } : {}),
+      ...(parsed.maxTurns ? { maxTurns: parsed.maxTurns } : {}),
+      ...(parsed.timeoutSeconds ? { timeoutSeconds: parsed.timeoutSeconds } : {}),
     };
   });
 }
@@ -218,8 +222,10 @@ export function resolveEffectiveConfig(
     }
   }
 
-  // Apply task overrides (model + tool list replacement)
+  // Apply task overrides (model, turns, timeout, tool list)
   if (taskOverrides?.model) model = taskOverrides.model;
+  if (taskOverrides?.maxTurns) maxTurns = taskOverrides.maxTurns;
+  if (taskOverrides?.timeoutSeconds) timeoutSeconds = taskOverrides.timeoutSeconds;
   if (taskOverrides?.toolOverrides) {
     tools = [...taskOverrides.toolOverrides];
   }

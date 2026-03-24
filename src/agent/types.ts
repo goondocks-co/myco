@@ -32,6 +32,8 @@ export interface AgentTask {
   isDefault: boolean;
   toolOverrides?: string[]; // add/remove tools
   model?: string; // override model for this task
+  maxTurns?: number; // override max turns for this task
+  timeoutSeconds?: number; // override timeout for this task
 }
 
 // ---------------------------------------------------------------------------

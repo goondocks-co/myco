@@ -50,8 +50,8 @@ function makeDefinition(overrides: Partial<AgentDefinition> = {}): AgentDefiniti
     displayName: 'Myco Agent',
     description: 'Test agent',
     model: 'claude-sonnet-4-20250514',
-    maxTurns: 50,
-    timeoutSeconds: 600,
+    maxTurns: 30,
+    timeoutSeconds: 300,
     systemPromptPath: '../prompts/agent.md',
     tools: ['vault_unprocessed', 'vault_create_spore', 'vault_set_state'],
     ...overrides,
@@ -110,8 +110,8 @@ describe('agent loader', () => {
       expect(typeof def.description).toBe('string');
       expect(def.description.length).toBeGreaterThan(0);
       expect(def.model).toBe('claude-sonnet-4-20250514');
-      expect(def.maxTurns).toBe(50);
-      expect(def.timeoutSeconds).toBe(600);
+      expect(def.maxTurns).toBe(30);
+      expect(def.timeoutSeconds).toBe(300);
       expect(def.systemPromptPath).toBe('../prompts/agent.md');
     });
 
@@ -242,8 +242,8 @@ describe('agent loader', () => {
 
       expect(config.agentId).toBe('myco-agent');
       expect(config.model).toBe('claude-sonnet-4-20250514');
-      expect(config.maxTurns).toBe(50);
-      expect(config.timeoutSeconds).toBe(600);
+      expect(config.maxTurns).toBe(30);
+      expect(config.timeoutSeconds).toBe(300);
       expect(config.tools).toEqual(def.tools);
       expect(config.systemPromptPath).toBe('../prompts/agent.md');
       expect(config.taskName).toBe('full-intelligence');
@@ -337,7 +337,7 @@ describe('agent loader', () => {
 
       expect(config.model).toBe('claude-sonnet-4-20250514');
       expect(config.maxTurns).toBe(50);
-      expect(config.timeoutSeconds).toBe(600);
+      expect(config.timeoutSeconds).toBe(300);
       expect(config.tools).toEqual(def.tools);
     });
   });
@@ -365,8 +365,8 @@ describe('agent loader', () => {
       expect(agent!.name).toBe('Myco Agent');
       expect(agent!.source).toBe('built-in');
       expect(agent!.model).toBe('claude-sonnet-4-20250514');
-      expect(agent!.max_turns).toBe(50);
-      expect(agent!.timeout_seconds).toBe(600);
+      expect(agent!.max_turns).toBe(30);
+      expect(agent!.timeout_seconds).toBe(300);
     });
 
     it('registers all built-in tasks in the database', async () => {

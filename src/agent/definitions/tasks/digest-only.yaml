@@ -12,6 +12,8 @@ prompt: >
   vault state (spores, entities, edges, sessions) and synthesize updated
   context extracts. Do not process new batches or extract new spores.
 isDefault: false
+maxTurns: 20
+timeoutSeconds: 300
 toolOverrides:
   - vault_spores
   - vault_sessions

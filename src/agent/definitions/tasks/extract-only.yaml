@@ -14,6 +14,8 @@ prompt: >
   instructions. Do not build graph entities or edges. Do not regenerate
   digest extracts. Mark batches as processed when complete.
 isDefault: false
+maxTurns: 30
+timeoutSeconds: 300
 toolOverrides:
   - vault_unprocessed
   - vault_spores
