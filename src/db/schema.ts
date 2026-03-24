@@ -652,6 +652,22 @@ async function fixupAgentIdValues(db: PGlite): Promise<void> {
       );
     }
   }
+
+  // Also fix old task names in agent_runs and agent_tasks
+  const OLD_TASK_NAME = 'full-curation';
+  const NEW_TASK_NAME = 'full-intelligence';
+  if (await tableExists(db, 'agent_runs')) {
+    await db.query(
+      `UPDATE agent_runs SET task = $1 WHERE task = $2`,
+      [NEW_TASK_NAME, OLD_TASK_NAME],
+    );
+  }
+  if (await tableExists(db, 'agent_tasks')) {
+    await db.query(
+      `UPDATE agent_tasks SET id = $1 WHERE id = $2`,
+      [NEW_TASK_NAME, OLD_TASK_NAME],
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
