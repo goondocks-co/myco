@@ -27,6 +27,7 @@ import { insertTurn } from '@myco/db/queries/turns.js';
 import { searchSimilar, EMBEDDABLE_TABLES, type EmbeddableTable } from '@myco/db/queries/embeddings.js';
 import { insertEntity } from '@myco/db/queries/entities.js';
 import { insertEdge } from '@myco/db/queries/edges.js';
+import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { upsertDigestExtract } from '@myco/db/queries/digest-extracts.js';
 
@@ -223,6 +224,9 @@ export function createVaultTools(agentId: string, runId: string) {
         file_path: args.file_path ?? null,
         created_at: now,
       });
+
+      // Fire-and-forget lineage edges — failure should not break spore creation
+      try { await createSporeLineage(spore); } catch { /* lineage best-effort */ }
 
       recordTurn('vault_create_spore', args);
       return textResult(spore);

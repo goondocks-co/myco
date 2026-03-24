@@ -64,6 +64,7 @@ import {
   USER_AGENT_NAME,
   epochSeconds,
 } from '../constants.js';
+import { createBatchLineage } from '../db/queries/lineage.js';
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -137,6 +138,9 @@ export async function handleUserPrompt(
     started_at: now,
     created_at: now,
   });
+
+  // Create HAS_BATCH lineage edge (fire-and-forget)
+  createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now).catch(() => { /* lineage best-effort */ });
 
   // Update state
   state.currentBatchId = batch.id;
