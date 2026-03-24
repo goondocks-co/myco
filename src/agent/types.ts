@@ -31,6 +31,7 @@ export interface AgentTask {
   prompt: string;
   isDefault: boolean;
   toolOverrides?: string[]; // add/remove tools
+  model?: string; // override model for this task
 }
 
 // ---------------------------------------------------------------------------
