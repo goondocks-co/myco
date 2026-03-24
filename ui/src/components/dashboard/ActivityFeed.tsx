@@ -14,7 +14,7 @@ const FEED_MAX_HEIGHT = 'max-h-96';
 
 function iconForType(eventType: string): LucideIcon {
   if (eventType.startsWith('session')) return MessageSquare;
-  if (eventType.startsWith('agent') || eventType.startsWith('curator')) return Bot;
+  if (eventType.startsWith('agent')) return Bot;
   if (eventType.startsWith('spore')) return Sprout;
   return Activity;
 }

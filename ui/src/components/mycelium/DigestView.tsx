@@ -94,11 +94,11 @@ function SkeletonCard() {
 /* ---------- Component ---------- */
 
 export interface DigestViewProps {
-  curatorId?: string;
+  agentId?: string;
 }
 
-export function DigestView({ curatorId }: DigestViewProps) {
-  const { data, isLoading, isError, error } = useDigest(curatorId);
+export function DigestView({ agentId }: DigestViewProps) {
+  const { data, isLoading, isError, error } = useDigest(agentId);
   const tiers = data?.tiers ?? [];
 
   if (isLoading) {

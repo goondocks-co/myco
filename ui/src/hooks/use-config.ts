@@ -19,7 +19,7 @@ export interface MycoConfig {
     artifact_extensions: string[];
     buffer_max_events: number;
   };
-  curation: {
+  agent: {
     auto_run: boolean;
     interval_seconds: number;
   };

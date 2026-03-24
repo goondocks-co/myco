@@ -199,7 +199,7 @@ export function GraphExplorer({ initialEntityId }: GraphExplorerProps) {
               <Network className="h-8 w-8 opacity-30" />
               <span className="text-sm">No graph data yet</span>
               <span className="text-xs text-center max-w-xs">
-                Run the curator to build the mycelium — entities and their connections will appear here.
+                Run the agent to build the mycelium — entities and their connections will appear here.
               </span>
             </div>
           )}

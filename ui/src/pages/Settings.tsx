@@ -32,8 +32,8 @@ interface FormState {
   embeddingProvider: Provider;
   embeddingModel: string;
   embeddingBaseUrl: string;
-  curationAutoRun: boolean;
-  curationIntervalSeconds: string;
+  agentAutoRun: boolean;
+  agentIntervalSeconds: string;
 }
 
 function toFormState(config: MycoConfig): FormState {
@@ -43,8 +43,8 @@ function toFormState(config: MycoConfig): FormState {
     embeddingProvider: config.embedding.provider,
     embeddingModel: config.embedding.model,
     embeddingBaseUrl: config.embedding.base_url ?? '',
-    curationAutoRun: config.curation?.auto_run ?? true,
-    curationIntervalSeconds: String(config.curation?.interval_seconds ?? 300),
+    agentAutoRun: config.agent?.auto_run ?? true,
+    agentIntervalSeconds: String(config.agent?.interval_seconds ?? 300),
   };
 }
 
@@ -61,9 +61,9 @@ function formToConfig(form: FormState, original: MycoConfig): MycoConfig {
       model: form.embeddingModel,
       base_url: form.embeddingBaseUrl !== '' ? form.embeddingBaseUrl : undefined,
     },
-    curation: {
-      auto_run: form.curationAutoRun,
-      interval_seconds: Number(form.curationIntervalSeconds) || 300,
+    agent: {
+      auto_run: form.agentAutoRun,
+      interval_seconds: Number(form.agentIntervalSeconds) || 300,
     },
   };
 }
@@ -76,8 +76,8 @@ function isDirty(form: FormState, original: MycoConfig): boolean {
     form.embeddingProvider !== orig.embeddingProvider ||
     form.embeddingModel !== orig.embeddingModel ||
     form.embeddingBaseUrl !== orig.embeddingBaseUrl ||
-    form.curationAutoRun !== orig.curationAutoRun ||
-    form.curationIntervalSeconds !== orig.curationIntervalSeconds
+    form.agentAutoRun !== orig.agentAutoRun ||
+    form.agentIntervalSeconds !== orig.agentIntervalSeconds
   );
 }
 
@@ -308,15 +308,15 @@ export default function Settings() {
             <button
               type="button"
               role="switch"
-              aria-checked={form.curationAutoRun}
-              onClick={() => setField('curationAutoRun', !form.curationAutoRun)}
+              aria-checked={form.agentAutoRun}
+              onClick={() => setField('agentAutoRun', !form.agentAutoRun)}
               className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
-                form.curationAutoRun ? 'bg-primary' : 'bg-muted'
+                form.agentAutoRun ? 'bg-primary' : 'bg-muted'
               }`}
             >
               <span
                 className={`pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${
-                  form.curationAutoRun ? 'translate-x-5' : 'translate-x-0'
+                  form.agentAutoRun ? 'translate-x-5' : 'translate-x-0'
                 }`}
               />
             </button>
@@ -329,8 +329,8 @@ export default function Settings() {
               type="number"
               min="30"
               placeholder="300"
-              value={form.curationIntervalSeconds}
-              onChange={e => setField('curationIntervalSeconds', e.target.value)}
+              value={form.agentIntervalSeconds}
+              onChange={e => setField('agentIntervalSeconds', e.target.value)}
             />
             <p className="text-xs text-muted-foreground">
               Seconds between agent timer checks. Minimum 30.
