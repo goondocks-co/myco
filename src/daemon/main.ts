@@ -43,7 +43,7 @@ import { handleSearch } from './api/search.js';
 import { handleGetFeed } from './api/feed.js';
 import { handleGetEmbeddingStatus } from './api/embedding.js';
 import { listTurnsByRun } from '../db/queries/turns.js';
-import { listTasksByCurator } from '../db/queries/tasks.js';
+import { listTasksByAgent } from '../db/queries/tasks.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession } from '../db/queries/sessions.js';
@@ -54,14 +54,14 @@ import { listRuns, getRun } from '../db/queries/runs.js';
 import { listReports } from '../db/queries/reports.js';
 import { insertSpore, updateSporeStatus } from '../db/queries/spores.js';
 import { listPlans } from '../db/queries/plans.js';
-import { registerCurator } from '../db/queries/curators.js';
+import { registerAgent } from '../db/queries/agents.js';
 import {
-  DEFAULT_CURATOR_ID,
+  DEFAULT_AGENT_ID,
   STALE_BUFFER_MAX_AGE_MS,
   LOG_PROMPT_PREVIEW_CHARS,
   LOG_MESSAGE_PREVIEW_CHARS,
-  USER_CURATOR_ID,
-  USER_CURATOR_NAME,
+  USER_AGENT_ID,
+  USER_AGENT_NAME,
   epochSeconds,
 } from '../constants.js';
 import { z } from 'zod';
@@ -266,14 +266,14 @@ export async function main(): Promise<void> {
   await initDatabaseForVault(vaultDir);
   logger.info('daemon', 'PGlite initialized', { vault: vaultDir });
 
-  // --- Register built-in curators and tasks ---
+  // --- Register built-in agents and tasks ---
   try {
-    const { registerBuiltInCuratorsAndTasks, resolveDefinitionsDir } = await import('../agent/loader.js');
+    const { registerBuiltInAgentsAndTasks, resolveDefinitionsDir } = await import('../agent/loader.js');
     const definitionsDir = resolveDefinitionsDir();
-    await registerBuiltInCuratorsAndTasks(definitionsDir);
-    logger.info('agent', 'Built-in curators and tasks registered');
+    await registerBuiltInAgentsAndTasks(definitionsDir);
+    logger.info('agent', 'Built-in agents and tasks registered');
   } catch (err) {
-    logger.warn('agent', 'Failed to register built-in curators/tasks', { error: (err as Error).message });
+    logger.warn('agent', 'Failed to register built-in agents/tasks', { error: (err as Error).message });
   }
 
   // Clean up stale "running" agent runs from previous daemon — they'll never complete
@@ -741,7 +741,7 @@ export async function main(): Promise<void> {
     return result;
   });
 
-  // V2 stats — vault counts, embedding coverage, curator status, digest freshness
+  // V2 stats — vault counts, embedding coverage, agent status, digest freshness
   server.registerRoute('GET', '/api/stats', async () => {
     const stats = await gatherStats(vaultDir, { active_sessions: registry.sessions });
     // Overlay live daemon fields from the running process (more accurate than daemon.json)
@@ -827,34 +827,34 @@ export async function main(): Promise<void> {
   const AgentRunBody = z.object({
     task: z.string().optional(),
     instruction: z.string().optional(),
-    curatorId: z.string().optional(),
+    agentId: z.string().optional(),
   });
 
   server.registerRoute('POST', '/api/agent/run', async (req) => {
-    const { task, instruction, curatorId } = AgentRunBody.parse(req.body);
+    const { task, instruction, agentId } = AgentRunBody.parse(req.body);
 
     // Fire-and-forget: respond immediately with a runId placeholder, agent runs in background
-    const { runCurationAgent } = await import('../agent/executor.js');
-    const resultPromise = runCurationAgent(vaultDir, { task, instruction, curatorId });
+    const { runAgent } = await import('../agent/executor.js');
+    const resultPromise = runAgent(vaultDir, { task, instruction, agentId });
 
     // We need the runId from the executor, but the executor creates it synchronously
     // before the async SDK call. Wait for the result since it's fast to start.
     resultPromise
       .then((result) => {
-        logger.info('curation', 'Agent run completed', { runId: result.runId, status: result.status });
+        logger.info('agent', 'Agent run completed', { runId: result.runId, status: result.status });
       })
       .catch((err) => {
-        logger.error('curation', 'Agent run failed', { error: (err as Error).message });
+        logger.error('agent', 'Agent run failed', { error: (err as Error).message });
       });
 
     // Return immediately — the caller can poll /api/agent/runs for status
-    return { body: { ok: true, message: 'Curation agent started' } };
+    return { body: { ok: true, message: 'Agent started' } };
   });
 
   server.registerRoute('GET', '/api/agent/runs', async (req) => {
     const limit = req.query.limit ? Number(req.query.limit) : AGENT_RUNS_DEFAULT_LIMIT;
-    const curatorId = req.query.curatorId || undefined;
-    const runs = await listRuns({ limit, curator_id: curatorId });
+    const agentId = req.query.agentId || undefined;
+    const runs = await listRuns({ limit, agent_id: agentId });
     return { body: { runs } };
   });
 
@@ -877,8 +877,8 @@ export async function main(): Promise<void> {
   });
 
   server.registerRoute('GET', '/api/agent/tasks', async (req) => {
-    const curatorId = req.query.curator_id ?? DEFAULT_CURATOR_ID;
-    const tasks = await listTasksByCurator(curatorId);
+    const agentId = req.query.agent_id ?? DEFAULT_AGENT_ID;
+    const tasks = await listTasksByAgent(agentId);
     return { body: tasks };
   });
 
@@ -903,16 +903,16 @@ export async function main(): Promise<void> {
     const id = `${observationType}-${randomBytes(SPORE_ID_RANDOM_BYTES).toString('hex')}`;
     const now = epochSeconds();
 
-    // Ensure the user curator exists (idempotent upsert)
-    await registerCurator({
-      id: USER_CURATOR_ID,
-      name: USER_CURATOR_NAME,
+    // Ensure the user agent exists (idempotent upsert)
+    await registerAgent({
+      id: USER_AGENT_ID,
+      name: USER_AGENT_NAME,
       created_at: now,
     });
 
     const spore = await insertSpore({
       id,
-      curator_id: USER_CURATOR_ID,
+      agent_id: USER_AGENT_ID,
       observation_type: observationType,
       content,
       tags: tags ? tags.join(', ') : null,
@@ -1011,10 +1011,10 @@ export async function main(): Promise<void> {
     // Update status to superseded
     await updateSporeStatus(old_spore_id, 'superseded', now);
 
-    // Ensure user curator exists (idempotent)
-    await registerCurator({
-      id: USER_CURATOR_ID,
-      name: USER_CURATOR_NAME,
+    // Ensure user agent exists (idempotent)
+    await registerAgent({
+      id: USER_AGENT_ID,
+      name: USER_AGENT_NAME,
       created_at: now,
     });
 
@@ -1023,11 +1023,11 @@ export async function main(): Promise<void> {
     const resolutionId = `res-${randomBytes(RESOLUTION_ID_RANDOM_BYTES).toString('hex')}`;
 
     await db.query(
-      `INSERT INTO resolution_events (id, curator_id, spore_id, action, new_spore_id, reason, created_at)
+      `INSERT INTO resolution_events (id, agent_id, spore_id, action, new_spore_id, reason, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [
         resolutionId,
-        USER_CURATOR_ID,
+        USER_AGENT_ID,
         old_spore_id,
         'supersede',
         new_spore_id,
@@ -1072,9 +1072,9 @@ export async function main(): Promise<void> {
     }
   }
 
-  // --- Curation timer ---
+  // --- Agent timer ---
 
-  const curationTimer = config.curation.auto_run
+  const agentTimer = config.agent.auto_run
     ? setInterval(async () => {
         try {
           // Pre-check: only spawn agent if there's unprocessed work
@@ -1083,18 +1083,18 @@ export async function main(): Promise<void> {
           const count = Number((checkResult.rows[0] as Record<string, unknown>).count);
           if (count === 0) return;
 
-          logger.info('curation', 'Unprocessed batches found, starting curation', { count });
-          const { runCurationAgent } = await import('../agent/executor.js');
-          const runResult = await runCurationAgent(vaultDir);
-          logger.info('curation', 'Curation run completed', { status: runResult.status, runId: runResult.runId });
+          logger.info('agent', 'Unprocessed batches found, starting agent', { count });
+          const { runAgent } = await import('../agent/executor.js');
+          const runResult = await runAgent(vaultDir);
+          logger.info('agent', 'Agent run completed', { status: runResult.status, runId: runResult.runId });
         } catch (err) {
-          logger.error('curation', 'Curation timer failed', { error: (err as Error).message });
+          logger.error('agent', 'Agent timer failed', { error: (err as Error).message });
         }
-      }, config.curation.interval_seconds * SECONDS_TO_MS)
+      }, config.agent.interval_seconds * SECONDS_TO_MS)
     : null;
 
-  if (!config.curation.auto_run) {
-    logger.info('curation', 'Auto-curation disabled (curation.auto_run = false)');
+  if (!config.agent.auto_run) {
+    logger.info('agent', 'Auto-agent disabled (agent.auto_run = false)');
   }
 
   // --- Embedding worker ---
@@ -1173,7 +1173,7 @@ export async function main(): Promise<void> {
 
   const shutdown = async (signal: string) => {
     logger.info('daemon', `${signal} received`);
-    if (curationTimer) clearInterval(curationTimer);
+    if (agentTimer) clearInterval(agentTimer);
     clearInterval(embeddingTimer);
     // Wait for any active stop processing to finish before shutting down
     if (activeStopProcessing) {

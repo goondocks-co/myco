@@ -2,7 +2,7 @@ import { listSpores, getSpore } from '@myco/db/queries/spores.js';
 import { listEntities, getEntityWithEdges } from '@myco/db/queries/entities.js';
 import { listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import { getDatabase } from '@myco/db/client.js';
-import { DEFAULT_CURATOR_ID } from '@myco/constants.js';
+import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 
 // ---------------------------------------------------------------------------
@@ -26,14 +26,14 @@ const MAX_GRAPH_DEPTH = 3;
 // ---------------------------------------------------------------------------
 
 export async function handleListSpores(req: RouteRequest): Promise<RouteResponse> {
-  const curatorId = req.query.curator_id ?? DEFAULT_CURATOR_ID;
+  const agentId = req.query.agent_id ?? DEFAULT_AGENT_ID;
   const type = req.query.type;
   const status = req.query.status;
   const limit = req.query.limit ? Number(req.query.limit) : DEFAULT_LIST_LIMIT;
   const offset = req.query.offset ? Number(req.query.offset) : DEFAULT_LIST_OFFSET;
 
   const spores = await listSpores({
-    curator_id: curatorId,
+    agent_id: agentId,
     observation_type: type,
     status,
     limit,
@@ -54,7 +54,7 @@ export async function handleGetSpore(req: RouteRequest): Promise<RouteResponse> 
 // ---------------------------------------------------------------------------
 
 export async function handleListEntities(req: RouteRequest): Promise<RouteResponse> {
-  const curatorId = req.query.curator_id ?? DEFAULT_CURATOR_ID;
+  const agentId = req.query.agent_id ?? DEFAULT_AGENT_ID;
   const type = req.query.type;
   const mentioned_in = req.query.mentioned_in;
   const note_type = req.query.note_type;
@@ -62,7 +62,7 @@ export async function handleListEntities(req: RouteRequest): Promise<RouteRespon
   const offset = req.query.offset ? Number(req.query.offset) : DEFAULT_LIST_OFFSET;
 
   const entities = await listEntities({
-    curator_id: curatorId,
+    agent_id: agentId,
     type,
     mentioned_in,
     note_type,
@@ -121,7 +121,7 @@ export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> 
 // ---------------------------------------------------------------------------
 
 export async function handleGetDigest(req: RouteRequest): Promise<RouteResponse> {
-  const curatorId = req.query.curator_id ?? DEFAULT_CURATOR_ID;
-  const extracts = await listDigestExtracts(curatorId);
+  const agentId = req.query.agent_id ?? DEFAULT_AGENT_ID;
+  const extracts = await listDigestExtracts(agentId);
   return { body: { tiers: extracts } };
 }
