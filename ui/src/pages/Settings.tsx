@@ -34,6 +34,7 @@ interface FormState {
   embeddingBaseUrl: string;
   agentAutoRun: boolean;
   agentIntervalSeconds: string;
+  agentSummaryBatchInterval: string;
 }
 
 function toFormState(config: MycoConfig): FormState {
@@ -45,6 +46,7 @@ function toFormState(config: MycoConfig): FormState {
     embeddingBaseUrl: config.embedding.base_url ?? '',
     agentAutoRun: config.agent?.auto_run ?? true,
     agentIntervalSeconds: String(config.agent?.interval_seconds ?? 300),
+    agentSummaryBatchInterval: String(config.agent?.summary_batch_interval ?? 5),
   };
 }
 
@@ -64,6 +66,7 @@ function formToConfig(form: FormState, original: MycoConfig): MycoConfig {
     agent: {
       auto_run: form.agentAutoRun,
       interval_seconds: Number(form.agentIntervalSeconds) || 300,
+      summary_batch_interval: Number(form.agentSummaryBatchInterval) ?? 5,
     },
   };
 }
@@ -77,7 +80,8 @@ function isDirty(form: FormState, original: MycoConfig): boolean {
     form.embeddingModel !== orig.embeddingModel ||
     form.embeddingBaseUrl !== orig.embeddingBaseUrl ||
     form.agentAutoRun !== orig.agentAutoRun ||
-    form.agentIntervalSeconds !== orig.agentIntervalSeconds
+    form.agentIntervalSeconds !== orig.agentIntervalSeconds ||
+    form.agentSummaryBatchInterval !== orig.agentSummaryBatchInterval
   );
 }
 
@@ -334,6 +338,21 @@ export default function Settings() {
             />
             <p className="text-xs text-muted-foreground">
               Seconds between agent timer checks. Minimum 30.
+            </p>
+          </div>
+
+          {/* Summary batch interval */}
+          <div className="space-y-1">
+            <label className="text-sm font-medium">Summary Batch Interval</label>
+            <Input
+              type="number"
+              min="0"
+              placeholder="5"
+              value={form.agentSummaryBatchInterval}
+              onChange={e => setField('agentSummaryBatchInterval', e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Trigger a session summary every N batches. Set to 0 to disable.
             </p>
           </div>
         </CardContent>
