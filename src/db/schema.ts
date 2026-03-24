@@ -11,6 +11,10 @@
 
 import type { PGlite } from '@electric-sql/pglite';
 import { epochSeconds } from '@myco/constants.js';
+import {
+  EDGE_TYPE_FROM_SESSION,
+  EDGE_TYPE_EXTRACTED_FROM,
+} from '@myco/db/queries/lineage.js';
 
 /** Current schema version — increment on breaking changes. */
 export const SCHEMA_VERSION = 5;
@@ -376,6 +380,7 @@ const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON graph_edges (target_id, target_type)',
   'CREATE INDEX IF NOT EXISTS idx_graph_edges_type ON graph_edges (type)',
   'CREATE INDEX IF NOT EXISTS idx_graph_edges_agent ON graph_edges (agent_id)',
+  'CREATE INDEX IF NOT EXISTS idx_graph_edges_source_type ON graph_edges (source_id, type)',
 
   // Entity mentions
   'CREATE INDEX IF NOT EXISTS idx_entity_mentions_entity_id ON entity_mentions (entity_id)',
@@ -655,8 +660,8 @@ async function migrateV3ToV4(db: PGlite): Promise<void> {
     }
   }
 
-  // Advance the version row from v3 → v4
-  await db.query(`UPDATE schema_version SET version = ${SCHEMA_VERSION} WHERE version = ${PREVIOUS_SCHEMA_VERSION}`);
+  // Advance the version row from v3 → v4 (hardcoded — must not use module-level constants)
+  await db.query(`UPDATE schema_version SET version = 4 WHERE version = 3`);
 }
 
 /**
@@ -747,31 +752,34 @@ async function backfillSporeLineage(db: PGlite): Promise<void> {
   if (!(await tableExists(db, 'graph_edges')) || !(await tableExists(db, 'spores'))) return;
 
   // Check if any spores lack FROM_SESSION edges
-  const probe = await db.query(`
-    SELECT s.id FROM spores s
-    LEFT JOIN graph_edges ge ON ge.source_id = s.id AND ge.type = 'FROM_SESSION'
-    WHERE s.session_id IS NOT NULL AND ge.id IS NULL
-    LIMIT 1
-  `);
+  const probe = await db.query(
+    `SELECT s.id FROM spores s
+     LEFT JOIN graph_edges ge ON ge.source_id = s.id AND ge.type = $1
+     WHERE s.session_id IS NOT NULL AND ge.id IS NULL
+     LIMIT 1`,
+    [EDGE_TYPE_FROM_SESSION],
+  );
   if (probe.rows.length === 0) return; // All spores already have lineage
 
   // Backfill FROM_SESSION
-  await db.query(`
-    INSERT INTO graph_edges (id, agent_id, source_id, source_type, target_id, target_type, type, created_at)
-    SELECT gen_random_uuid(), s.agent_id, s.id, 'spore', s.session_id, 'session', 'FROM_SESSION', s.created_at
-    FROM spores s
-    LEFT JOIN graph_edges ge ON ge.source_id = s.id AND ge.type = 'FROM_SESSION'
-    WHERE s.session_id IS NOT NULL AND ge.id IS NULL
-  `);
+  await db.query(
+    `INSERT INTO graph_edges (id, agent_id, source_id, source_type, target_id, target_type, type, created_at)
+     SELECT gen_random_uuid(), s.agent_id, s.id, 'spore', s.session_id, 'session', $1, s.created_at
+     FROM spores s
+     LEFT JOIN graph_edges ge ON ge.source_id = s.id AND ge.type = $1
+     WHERE s.session_id IS NOT NULL AND ge.id IS NULL`,
+    [EDGE_TYPE_FROM_SESSION],
+  );
 
   // Backfill EXTRACTED_FROM
-  await db.query(`
-    INSERT INTO graph_edges (id, agent_id, source_id, source_type, target_id, target_type, type, created_at)
-    SELECT gen_random_uuid(), s.agent_id, s.id, 'spore', CAST(s.prompt_batch_id AS TEXT), 'batch', 'EXTRACTED_FROM', s.created_at
-    FROM spores s
-    LEFT JOIN graph_edges ge ON ge.source_id = s.id AND ge.type = 'EXTRACTED_FROM'
-    WHERE s.prompt_batch_id IS NOT NULL AND ge.id IS NULL
-  `);
+  await db.query(
+    `INSERT INTO graph_edges (id, agent_id, source_id, source_type, target_id, target_type, type, created_at)
+     SELECT gen_random_uuid(), s.agent_id, s.id, 'spore', CAST(s.prompt_batch_id AS TEXT), 'batch', $1, s.created_at
+     FROM spores s
+     LEFT JOIN graph_edges ge ON ge.source_id = s.id AND ge.type = $1
+     WHERE s.prompt_batch_id IS NOT NULL AND ge.id IS NULL`,
+    [EDGE_TYPE_EXTRACTED_FROM],
+  );
 }
 
 /**

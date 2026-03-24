@@ -50,7 +50,7 @@ import { upsertSession, closeSession, updateSession, listSessions, getSession } 
 import { insertBatch, closeBatch, incrementActivityCount } from '../db/queries/batches.js';
 import { insertActivity } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
-import { listRuns, getRun } from '../db/queries/runs.js';
+import { listRuns, getRun, getRunningRun } from '../db/queries/runs.js';
 import { listReports } from '../db/queries/reports.js';
 import { insertSpore, updateSporeStatus } from '../db/queries/spores.js';
 import { listPlans } from '../db/queries/plans.js';
@@ -485,7 +485,6 @@ export async function main(): Promise<void> {
         const summaryInterval = config.agent.summary_batch_interval;
         if (summaryInterval > 0 && batchCount > 0 && batchCount % summaryInterval === 0) {
           try {
-            const { getRunningRun } = await import('../db/queries/runs.js');
             const running = await getRunningRun(DEFAULT_AGENT_ID);
             if (!running) {
               const { runAgent } = await import('../agent/executor.js');

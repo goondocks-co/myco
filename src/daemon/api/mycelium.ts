@@ -80,47 +80,62 @@ export async function handleListEntities(req: RouteRequest): Promise<RouteRespon
 
 export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> {
   const depth = Math.min(Number(req.query.depth) || DEFAULT_GRAPH_DEPTH, MAX_GRAPH_DEPTH);
-  const nodeType = (req.query.node_type as 'session' | 'batch' | 'spore' | 'entity') ?? 'entity';
 
-  // Verify center node exists (for entity type, check entities table)
-  if (nodeType === 'entity') {
-    const center = await getEntity(req.params.id);
-    if (!center) return { status: 404, body: { error: 'not_found' } };
-  }
+  // Verify center entity exists
+  const center = await getEntity(req.params.id);
+  if (!center) return { status: 404, body: { error: 'not_found' } };
 
   // Use graph_edges for BFS traversal
-  const graph = await getGraphForNode(req.params.id, nodeType, { depth });
+  const graph = await getGraphForNode(req.params.id, 'entity', { depth });
 
   const db = getDatabase();
 
-  // Collect all unique entity IDs from edges for mention counts
+  // Collect all unique entity IDs from edges for node fetching + mention counts
   const entityIds = new Set<string>();
-  entityIds.add(req.params.id);
   for (const edge of graph.edges) {
     if (edge.source_type === 'entity') entityIds.add(edge.source_id);
     if (edge.target_type === 'entity') entityIds.add(edge.target_id);
   }
+  entityIds.delete(center.id); // exclude center from "nodes" list
 
+  // Batch-fetch connected entity nodes
+  const nodeIdArray = Array.from(entityIds);
+  let nodes: Array<Record<string, unknown>> = [];
+  if (nodeIdArray.length > 0) {
+    const placeholders = nodeIdArray.map((_, i) => `$${i + 1}`).join(', ');
+    const nodeResult = await db.query(
+      `SELECT id, agent_id, type, name, properties, first_seen, last_seen, status
+       FROM entities WHERE id IN (${placeholders})`,
+      nodeIdArray,
+    );
+    nodes = nodeResult.rows as Array<Record<string, unknown>>;
+  }
+
+  // Batch-fetch mention counts for all entity nodes (including center)
+  const allEntityIds = [center.id, ...nodeIdArray];
   const mentionCounts = new Map<string, number>();
-  const entityIdArray = Array.from(entityIds);
-  if (entityIdArray.length > 0) {
-    const placeholders = entityIdArray.map((_, i) => `$${i + 1}`).join(', ');
+  if (allEntityIds.length > 0) {
+    const placeholders = allEntityIds.map((_, i) => `$${i + 1}`).join(', ');
     const result = await db.query(
       `SELECT entity_id, COUNT(*) as count FROM entity_mentions
        WHERE entity_id IN (${placeholders}) GROUP BY entity_id`,
-      entityIdArray,
+      allEntityIds,
     );
     for (const row of result.rows as Array<Record<string, unknown>>) {
       mentionCounts.set(row.entity_id as string, Number(row.count));
     }
   }
 
+  const nodesWithMentions = nodes.map((node) => ({
+    ...node,
+    mention_count: mentionCounts.get(node.id as string) ?? 0,
+  }));
+
   return {
     body: {
-      center_id: req.params.id,
-      center_type: nodeType,
+      center: { ...center, mention_count: mentionCounts.get(center.id) ?? 0 },
+      nodes: nodesWithMentions,
       edges: graph.edges,
-      mention_counts: Object.fromEntries(mentionCounts),
       depth,
     },
   };

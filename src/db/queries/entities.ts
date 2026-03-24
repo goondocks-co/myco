@@ -154,6 +154,10 @@ export async function getEntity(id: string): Promise<EntityRow | null> {
 /**
  * List entities with optional filters, ordered by last_seen DESC.
  *
+ * Defaults to `status = 'active'` — archived entities are excluded unless
+ * `status` is explicitly provided. Pass `status: undefined` in options to
+ * get only active entities (the default), or set a specific status string.
+ *
  * When both `mentioned_in` and `note_type` are provided, filters to entities
  * referenced in a specific note via the entity_mentions subquery.
  */

@@ -33,6 +33,15 @@ const MAX_BFS_DEPTH = 5;
 /** Valid node types in the graph. */
 export type GraphNodeType = 'session' | 'batch' | 'spore' | 'entity';
 
+/** Lineage edge types (auto-created by daemon, no LLM). */
+export type LineageEdgeType = 'FROM_SESSION' | 'EXTRACTED_FROM' | 'DERIVED_FROM' | 'HAS_BATCH';
+
+/** Semantic edge types (created by intelligence agent, LLM-driven). */
+export type SemanticEdgeType = 'RELATES_TO' | 'SUPERSEDED_BY' | 'REFERENCES' | 'DEPENDS_ON' | 'AFFECTS';
+
+/** All valid graph edge types. */
+export type GraphEdgeType = LineageEdgeType | SemanticEdgeType;
+
 /** Fields required (or optional) when inserting a graph edge. */
 export interface GraphEdgeInsert {
   agent_id: string;
@@ -40,7 +49,7 @@ export interface GraphEdgeInsert {
   source_type: GraphNodeType;
   target_id: string;
   target_type: GraphNodeType;
-  type: string;
+  type: GraphEdgeType;
   created_at: number;
   session_id?: string;
   confidence?: number;
