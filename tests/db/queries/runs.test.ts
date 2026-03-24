@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
-import { registerCurator } from '@myco/db/queries/curators.js';
+import { registerAgent } from '@myco/db/queries/agents.js';
 import {
   insertRun,
   getRun,
@@ -21,14 +21,14 @@ import type { RunInsert } from '@myco/db/queries/runs.js';
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
 
-/** Shared curator ID used across tests. */
-const TEST_CURATOR_ID = 'curator-runs-test';
+/** Shared agent ID used across tests. */
+const TEST_AGENT_ID = 'agent-runs-test';
 
 /** Factory for minimal valid run data. */
 function makeRun(overrides: Partial<RunInsert> = {}): RunInsert {
   return {
     id: `run-${Math.random().toString(36).slice(2, 8)}`,
-    curator_id: TEST_CURATOR_ID,
+    agent_id: TEST_AGENT_ID,
     ...overrides,
   };
 }
@@ -37,10 +37,10 @@ describe('run query helpers', () => {
   beforeEach(async () => {
     const db = await initDatabase();
     await createSchema(db);
-    // Insert the curator FK target
-    await registerCurator({
-      id: TEST_CURATOR_ID,
-      name: 'Test Curator',
+    // Insert the agent FK target
+    await registerAgent({
+      id: TEST_AGENT_ID,
+      name: 'Test Agent',
       created_at: epochNow(),
     });
   });
@@ -60,7 +60,7 @@ describe('run query helpers', () => {
       const row = await insertRun(data);
 
       expect(row.id).toBe(data.id);
-      expect(row.curator_id).toBe(TEST_CURATOR_ID);
+      expect(row.agent_id).toBe(TEST_AGENT_ID);
       expect(row.task).toBe('digest');
       expect(row.instruction).toBe('analyze recent sessions');
       expect(row.status).toBe('pending');
@@ -129,18 +129,18 @@ describe('run query helpers', () => {
       expect(rows[2].id).toBe('run-old');
     });
 
-    it('filters by curator_id', async () => {
-      // Create a second curator
-      await registerCurator({
-        id: 'curator-other',
-        name: 'Other Curator',
+    it('filters by agent_id', async () => {
+      // Create a second agent
+      await registerAgent({
+        id: 'agent-other',
+        name: 'Other Agent',
         created_at: epochNow(),
       });
 
       await insertRun(makeRun({ id: 'run-a', started_at: epochNow() }));
-      await insertRun(makeRun({ id: 'run-b', curator_id: 'curator-other', started_at: epochNow() }));
+      await insertRun(makeRun({ id: 'run-b', agent_id: 'agent-other', started_at: epochNow() }));
 
-      const rows = await listRuns({ curator_id: TEST_CURATOR_ID });
+      const rows = await listRuns({ agent_id: TEST_AGENT_ID });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('run-a');
     });
@@ -227,11 +227,11 @@ describe('run query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('getRunningRun', () => {
-    it('returns the running run for a curator', async () => {
+    it('returns the running run for an agent', async () => {
       const data = makeRun({ status: 'running', started_at: epochNow() });
       await insertRun(data);
 
-      const running = await getRunningRun(TEST_CURATOR_ID);
+      const running = await getRunningRun(TEST_AGENT_ID);
       expect(running).not.toBeNull();
       expect(running!.id).toBe(data.id);
       expect(running!.status).toBe('running');
@@ -240,7 +240,7 @@ describe('run query helpers', () => {
     it('returns null when no run is running', async () => {
       await insertRun(makeRun({ status: 'completed', started_at: epochNow() }));
 
-      const running = await getRunningRun(TEST_CURATOR_ID);
+      const running = await getRunningRun(TEST_AGENT_ID);
       expect(running).toBeNull();
     });
 
@@ -249,7 +249,7 @@ describe('run query helpers', () => {
       await insertRun(makeRun({ id: 'run-old', status: 'running', started_at: now - 100 }));
       await insertRun(makeRun({ id: 'run-new', status: 'running', started_at: now }));
 
-      const running = await getRunningRun(TEST_CURATOR_ID);
+      const running = await getRunningRun(TEST_AGENT_ID);
       expect(running).not.toBeNull();
       expect(running!.id).toBe('run-new');
     });

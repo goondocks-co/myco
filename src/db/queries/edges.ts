@@ -23,7 +23,7 @@ const DEFAULT_CONFIDENCE = 1.0;
 
 /** Fields required (or optional) when inserting an edge. */
 export interface EdgeInsert {
-  curator_id: string;
+  agent_id: string;
   source_id: string;
   target_id: string;
   type: string;
@@ -37,7 +37,7 @@ export interface EdgeInsert {
 /** Row shape returned from edge queries (all columns). */
 export interface EdgeRow {
   id: number;
-  curator_id: string;
+  agent_id: string;
   source_id: string;
   target_id: string;
   type: string;
@@ -51,7 +51,7 @@ export interface EdgeRow {
 
 /** Filter options for `listEdges`. */
 export interface ListEdgesOptions {
-  curator_id?: string;
+  agent_id?: string;
   source_id?: string;
   target_id?: string;
   type?: string;
@@ -64,7 +64,7 @@ export interface ListEdgesOptions {
 
 export const EDGE_COLUMNS = [
   'id',
-  'curator_id',
+  'agent_id',
   'source_id',
   'target_id',
   'type',
@@ -86,7 +86,7 @@ export const SELECT_EDGE_COLUMNS = EDGE_COLUMNS.join(', ');
 export function toEdgeRow(row: Record<string, unknown>): EdgeRow {
   return {
     id: row.id as number,
-    curator_id: row.curator_id as string,
+    agent_id: row.agent_id as string,
     source_id: row.source_id as string,
     target_id: row.target_id as string,
     type: row.type as string,
@@ -111,12 +111,12 @@ export async function insertEdge(data: EdgeInsert): Promise<EdgeRow> {
 
   const result = await db.query(
     `INSERT INTO edges (
-       curator_id, source_id, target_id, type,
+       agent_id, source_id, target_id, type,
        session_id, confidence, valid_from, properties, created_at
      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING ${SELECT_EDGE_COLUMNS}`,
     [
-      data.curator_id,
+      data.agent_id,
       data.source_id,
       data.target_id,
       data.type,
@@ -143,9 +143,9 @@ export async function listEdges(
   const params: unknown[] = [];
   let paramIndex = 1;
 
-  if (options.curator_id !== undefined) {
-    conditions.push(`curator_id = $${paramIndex++}`);
-    params.push(options.curator_id);
+  if (options.agent_id !== undefined) {
+    conditions.push(`agent_id = $${paramIndex++}`);
+    params.push(options.agent_id);
   }
 
   if (options.source_id !== undefined) {

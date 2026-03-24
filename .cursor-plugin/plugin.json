@@ -16,9 +16,9 @@
   ],
   "mcpServers": {
     "myco": {
-      "command": "node",
+      "command": "${CURSOR_PLUGIN_ROOT}/bin/myco-run",
       "args": [
-        "${CURSOR_PLUGIN_ROOT}/dist/src/mcp/server.js"
+        "mcp"
       ],
       "env": {}
     }

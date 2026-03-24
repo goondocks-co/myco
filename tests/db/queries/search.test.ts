@@ -76,20 +76,20 @@ function makeUnitVector(hotIndex: number): number[] {
   return vec;
 }
 
-/** Insert a curator directly and return its id. */
-async function createCurator(id: string): Promise<string> {
+/** Insert an agent directly and return its id. */
+async function createAgent(id: string): Promise<string> {
   const db = getDatabase();
   const now = epochNow();
   await db.query(
-    `INSERT INTO curators (id, name, created_at) VALUES ($1, $2, $3)`,
-    [id, `curator-${id}`, now],
+    `INSERT INTO agents (id, name, created_at) VALUES ($1, $2, $3)`,
+    [id, `agent-${id}`, now],
   );
   return id;
 }
 
 /** Insert a spore with an embedding vector. */
 async function insertSporeWithEmbedding(
-  curatorId: string,
+  agentId: string,
   id: string,
   content: string,
   hotIndex: number,
@@ -97,9 +97,9 @@ async function insertSporeWithEmbedding(
   const db = getDatabase();
   const now = epochNow();
   await db.query(
-    `INSERT INTO spores (id, curator_id, observation_type, content, created_at)
+    `INSERT INTO spores (id, agent_id, observation_type, content, created_at)
      VALUES ($1, $2, $3, $4, $5)`,
-    [id, curatorId, 'gotcha', content, now],
+    [id, agentId, 'gotcha', content, now],
   );
   await setEmbedding('spores', id, makeUnitVector(hotIndex));
 }
@@ -220,7 +220,7 @@ describe('fullTextSearch', () => {
 
 describe('semanticSearch', () => {
   let sessionId: string;
-  let curatorId: string;
+  let agentId: string;
 
   beforeEach(async () => {
     const db = await initDatabase();
@@ -230,7 +230,7 @@ describe('semanticSearch', () => {
     await upsertSession(session);
     sessionId = session.id;
 
-    curatorId = await createCurator('curator-search-test');
+    agentId = await createAgent('agent-search-test');
   });
 
   afterEach(async () => {
@@ -290,7 +290,7 @@ describe('semanticSearch', () => {
 
     // Both use hotIndex 0 — both should match a query with hotIndex 0
     await setEmbedding('sessions', 'sess-multi', makeUnitVector(0));
-    await insertSporeWithEmbedding(curatorId, 'spore-multi', 'A relevant gotcha', 0);
+    await insertSporeWithEmbedding(agentId, 'spore-multi', 'A relevant gotcha', 0);
 
     const results = await semanticSearch(makeUnitVector(0));
 
@@ -346,9 +346,9 @@ describe('semanticSearch', () => {
 
     const db = getDatabase();
     await db.query(
-      `INSERT INTO spores (id, curator_id, session_id, observation_type, content, created_at)
+      `INSERT INTO spores (id, agent_id, session_id, observation_type, content, created_at)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      ['spore-with-sid', curatorId, 'sess-spore-sid', 'decision', 'Use PGlite for embedded Postgres', now],
+      ['spore-with-sid', agentId, 'sess-spore-sid', 'decision', 'Use PGlite for embedded Postgres', now],
     );
     await setEmbedding('spores', 'spore-with-sid', makeUnitVector(0));
 

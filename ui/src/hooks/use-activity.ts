@@ -3,22 +3,17 @@ import { fetchJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
 
 export interface ActivityEvent {
+  type: string;
   id: string;
-  event_type: string;
-  session_id: string | null;
   summary: string;
-  created_at: string;
-}
-
-export interface ActivityResponse {
-  events: ActivityEvent[];
+  timestamp: number;
 }
 
 export function useActivity(limit = 20) {
-  return usePowerQuery<ActivityResponse>({
+  return usePowerQuery<ActivityEvent[]>({
     queryKey: ['activity', limit],
     queryFn: ({ signal }) =>
-      fetchJson<ActivityResponse>(`/activity?limit=${limit}`, { signal }),
+      fetchJson<ActivityEvent[]>(`/activity?limit=${limit}`, { signal }),
     refetchInterval: POLL_INTERVALS.STATS,
     pollCategory: 'standard',
   });

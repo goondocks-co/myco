@@ -22,7 +22,7 @@ function statusLabel(status: string | null): string {
 
 /* ---------- Component ---------- */
 
-export function CuratorStatus() {
+export function AgentStatus() {
   const { data: stats } = useDaemon();
   const queryClient = useQueryClient();
 
@@ -33,18 +33,18 @@ export function CuratorStatus() {
     },
   });
 
-  const curator = stats?.curator;
+  const agent = stats?.agent;
 
   return (
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-sm">
           <Bot className="h-4 w-4 text-primary" />
-          Curator
+          Agent
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
-        {!curator ? (
+        {!agent ? (
           <p className="text-muted-foreground">Loading...</p>
         ) : (
           <>
@@ -56,21 +56,21 @@ export function CuratorStatus() {
             </div>
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">Last run</span>
-              <Badge variant={statusVariant(curator.last_run_status)} className="text-xs">
-                {statusLabel(curator.last_run_status)}
+              <Badge variant={statusVariant(agent.last_run_status)} className="text-xs">
+                {statusLabel(agent.last_run_status)}
               </Badge>
             </div>
-            {curator.last_run_at && (
+            {agent.last_run_at && (
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">When</span>
                 <span className="font-mono text-foreground">
-                  {formatEpochAgo(curator.last_run_at)}
+                  {formatEpochAgo(agent.last_run_at)}
                 </span>
               </div>
             )}
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">Total runs</span>
-              <span className="font-mono text-foreground">{curator.total_runs}</span>
+              <span className="font-mono text-foreground">{agent.total_runs}</span>
             </div>
             <Button
               variant="outline"

@@ -1,14 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createMycoServer } from '@myco/mcp/server';
+import { DaemonClient } from '@myco/hooks/client';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
 describe('MCP Server', () => {
   let tmpDir: string;
+  let client: DaemonClient;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-mcp-'));
+    client = new DaemonClient(tmpDir);
   });
 
   afterEach(() => {
@@ -16,7 +19,7 @@ describe('MCP Server', () => {
   });
 
   it('creates server with all 10 tools registered', () => {
-    const server = createMycoServer(tmpDir);
+    const server = createMycoServer(tmpDir, client);
     const tools = server.getRegisteredTools();
     expect(tools).toContain('myco_search');
     expect(tools).toContain('myco_recall');
@@ -32,7 +35,7 @@ describe('MCP Server', () => {
   });
 
   it('exports server name and version', () => {
-    const server = createMycoServer(tmpDir);
+    const server = createMycoServer(tmpDir, client);
     expect(server.name).toBe('myco');
   });
 });

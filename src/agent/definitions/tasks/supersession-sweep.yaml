@@ -6,7 +6,7 @@ description: >
   Scan active spores for duplicates, contradictions, and outdated
   observations. Supersede, resolve, or archive spores as appropriate.
   Records resolution events for audit trail.
-agent: myco-curator
+agent: myco-agent
 prompt: >
   Review all active spores. For each spore, search for semantically similar
   active spores. When duplicates or contradictions are found, resolve them

@@ -46,7 +46,7 @@ export interface V2Stats {
     embedded_count: number;
     total_embeddable: number;
   };
-  curator: {
+  agent: {
     last_run_at: number | null;
     last_run_status: string | null;
     total_runs: number;
@@ -80,8 +80,8 @@ export async function gatherStats(vaultDir: string, options?: { active_sessions?
     edgeResult,
     embeddingStats,
     unprocessedBatchResult,
-    curatorRunResult,
-    curatorTotalResult,
+    agentRunResult,
+    agentTotalResult,
     digestResult,
   ] = await Promise.all([
     db.query('SELECT COUNT(*) AS cnt FROM sessions'),
@@ -115,11 +115,11 @@ export async function gatherStats(vaultDir: string, options?: { active_sessions?
 
   const unprocessed_batches = Number((unprocessedBatchResult.rows[0] as Record<string, unknown>).cnt ?? 0);
 
-  // Curator: last run
-  const lastRun = curatorRunResult.rows[0] as Record<string, unknown> | undefined;
+  // Agent: last run
+  const lastRun = agentRunResult.rows[0] as Record<string, unknown> | undefined;
   const last_run_at = lastRun ? (lastRun.started_at as number | null) : null;
   const last_run_status = lastRun ? (lastRun.status as string | null) : null;
-  const total_runs = Number((curatorTotalResult.rows[0] as Record<string, unknown>).cnt ?? 0);
+  const total_runs = Number((agentTotalResult.rows[0] as Record<string, unknown>).cnt ?? 0);
 
   // Digest: available tiers and freshest
   const digestRows = digestResult.rows as Array<Record<string, unknown>>;
@@ -174,7 +174,7 @@ export async function gatherStats(vaultDir: string, options?: { active_sessions?
       embedded_count,
       total_embeddable,
     },
-    curator: {
+    agent: {
       last_run_at,
       last_run_status,
       total_runs,

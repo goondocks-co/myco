@@ -193,8 +193,8 @@ export function SporeDetail({ id, onBack, onNavigateToSpore, onNavigateToGraph: 
               </button>
             </div>
           )}
-          {spore.curator_id && (
-            <MetaRow label="Curator" value={spore.curator_id} />
+          {spore.agent_id && (
+            <MetaRow label="Agent" value={spore.agent_id} />
           )}
         </CardContent>
       </Card>

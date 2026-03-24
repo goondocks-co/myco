@@ -34,26 +34,26 @@ function makeSession(overrides: Partial<SessionInsert> = {}): SessionInsert {
   };
 }
 
-/** Insert a curator directly into the curators table and return its id. */
-async function createCurator(id: string): Promise<string> {
+/** Insert an agent directly into the agents table and return its id. */
+async function createAgent(id: string): Promise<string> {
   const db = getDatabase();
   const now = epochNow();
   await db.query(
-    `INSERT INTO curators (id, name, created_at) VALUES ($1, $2, $3)`,
-    [id, `curator-${id}`, now],
+    `INSERT INTO agents (id, name, created_at) VALUES ($1, $2, $3)`,
+    [id, `agent-${id}`, now],
   );
   return id;
 }
 
 /** Factory for minimal valid spore data. */
 function makeSpore(
-  curatorId: string,
+  agentId: string,
   overrides: Partial<SporeInsert> = {},
 ): SporeInsert {
   const now = epochNow();
   return {
     id: `spore-${Math.random().toString(36).slice(2, 8)}`,
-    curator_id: curatorId,
+    agent_id: agentId,
     observation_type: 'gotcha',
     content: 'Some observation content',
     created_at: now,
@@ -106,8 +106,8 @@ describe('embedding query helpers', () => {
     });
 
     it('stores an embedding on a spore row', async () => {
-      const curatorId = await createCurator('curator-emb');
-      const spore = makeSpore(curatorId);
+      const agentId = await createAgent('agent-emb');
+      const spore = makeSpore(agentId);
       await insertSpore(spore);
 
       const vec = makeUnitVector(1);
@@ -244,8 +244,8 @@ describe('embedding query helpers', () => {
     });
 
     it('works with spores table', async () => {
-      const curatorId = await createCurator('curator-search');
-      const spore = makeSpore(curatorId, { id: 'spore-search' });
+      const agentId = await createAgent('agent-search');
+      const spore = makeSpore(agentId, { id: 'spore-search' });
       await insertSpore(spore);
       await setEmbedding('spores', 'spore-search', makeUnitVector(2));
 
@@ -287,8 +287,9 @@ describe('embedding query helpers', () => {
   describe('getUnembedded', () => {
     it('returns rows without embeddings', async () => {
       const now = epochNow();
-      const s1 = makeSession({ id: 'sess-no-emb', created_at: now, started_at: now });
-      const s2 = makeSession({ id: 'sess-has-emb', created_at: now + 1, started_at: now + 1 });
+      const summary = 'A non-empty session summary';
+      const s1 = makeSession({ id: 'sess-no-emb', created_at: now, started_at: now, summary });
+      const s2 = makeSession({ id: 'sess-has-emb', created_at: now + 1, started_at: now + 1, summary });
       await upsertSession(s1);
       await upsertSession(s2);
       await setEmbedding('sessions', 'sess-has-emb', makeUnitVector(0));
@@ -301,8 +302,9 @@ describe('embedding query helpers', () => {
 
     it('respects the limit option', async () => {
       const now = epochNow();
+      const summary = 'A non-empty session summary';
       for (let i = 0; i < 5; i++) {
-        await upsertSession(makeSession({ id: `sess-unemb-${i}`, created_at: now + i, started_at: now + i }));
+        await upsertSession(makeSession({ id: `sess-unemb-${i}`, created_at: now + i, started_at: now + i, summary }));
       }
 
       const rows = await getUnembedded('sessions', { limit: 2 });
@@ -310,7 +312,7 @@ describe('embedding query helpers', () => {
     });
 
     it('returns empty array when all rows have embeddings', async () => {
-      const session = makeSession();
+      const session = makeSession({ summary: 'A non-empty session summary' });
       await upsertSession(session);
       await setEmbedding('sessions', session.id, makeUnitVector(0));
 
@@ -324,8 +326,8 @@ describe('embedding query helpers', () => {
     });
 
     it('works with spores table', async () => {
-      const curatorId = await createCurator('curator-unemb');
-      const spore = makeSpore(curatorId, { id: 'spore-unemb' });
+      const agentId = await createAgent('agent-unemb');
+      const spore = makeSpore(agentId, { id: 'spore-unemb' });
       await insertSpore(spore);
 
       const rows = await getUnembedded('spores');
@@ -339,9 +341,10 @@ describe('embedding query helpers', () => {
 
     it('orders results by created_at ASC (oldest first for processing queue)', async () => {
       const now = epochNow();
-      await upsertSession(makeSession({ id: 'sess-old', created_at: now - 100, started_at: now - 100 }));
-      await upsertSession(makeSession({ id: 'sess-new', created_at: now, started_at: now }));
-      await upsertSession(makeSession({ id: 'sess-mid', created_at: now - 50, started_at: now - 50 }));
+      const summary = 'A session summary for ordering test';
+      await upsertSession(makeSession({ id: 'sess-old', created_at: now - 100, started_at: now - 100, summary }));
+      await upsertSession(makeSession({ id: 'sess-new', created_at: now, started_at: now, summary }));
+      await upsertSession(makeSession({ id: 'sess-mid', created_at: now - 50, started_at: now - 50, summary }));
 
       const rows = await getUnembedded('sessions');
 
@@ -349,6 +352,25 @@ describe('embedding query helpers', () => {
       expect(rows[0].id).toBe('sess-old');
       expect(rows[1].id).toBe('sess-mid');
       expect(rows[2].id).toBe('sess-new');
+    });
+
+    it('should not return sessions without summaries for embedding', async () => {
+      const now = epochNow();
+      // Session with no summary — should be excluded from the queue
+      await upsertSession(makeSession({ id: 'sess-no-summary', created_at: now, started_at: now }));
+      // Session with a summary but no embedding — should appear in the queue
+      await upsertSession(makeSession({
+        id: 'sess-has-summary',
+        created_at: now + 1,
+        started_at: now + 1,
+        summary: 'This session did something useful',
+      }));
+
+      const rows = await getUnembedded('sessions');
+
+      const ids = rows.map((r) => r.id);
+      expect(ids).not.toContain('sess-no-summary');
+      expect(ids).toContain('sess-has-summary');
     });
   });
 

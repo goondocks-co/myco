@@ -27,7 +27,7 @@ export interface SporeSummary {
   importance: number | null;
   content: string;
   session_id: string | null;
-  curator_id: string | null;
+  agent_id: string | null;
   tags: string | null;
   created_at: number;
   updated_at: number;
@@ -49,11 +49,10 @@ export interface SporesResponse {
 export interface EntitySummary {
   id: string;
   name: string;
-  entity_type: string;
-  note_type: string | null;
-  note_id: string | null;
+  type: string;
   mentions: number;
-  created_at: number;
+  first_seen: number;
+  last_seen: number;
 }
 
 export interface EntitiesResponse {
@@ -70,7 +69,7 @@ export interface GraphEdge {
 export interface GraphNode {
   id: string;
   name: string;
-  entity_type: string;
+  type: string;
   depth: number;
 }
 
@@ -84,7 +83,7 @@ export interface DigestTier {
   tier: number;
   content: string;
   generated_at: number;
-  curator_id: string | null;
+  agent_id: string | null;
 }
 
 export interface DigestResponse {
@@ -147,13 +146,13 @@ export function useGraph(entityId: string | undefined, depth: number = 1) {
   });
 }
 
-export function useDigest(curatorId?: string) {
-  const path = curatorId
-    ? `/digest?curator_id=${encodeURIComponent(curatorId)}`
+export function useDigest(agentId?: string) {
+  const path = agentId
+    ? `/digest?agent_id=${encodeURIComponent(agentId)}`
     : '/digest';
 
   return useQuery<DigestResponse>({
-    queryKey: ['digest', curatorId],
+    queryKey: ['digest', agentId],
     queryFn: ({ signal }) => fetchJson<DigestResponse>(path, { signal }),
     staleTime: DIGEST_STALE_TIME,
   });

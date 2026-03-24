@@ -1,22 +1,22 @@
-import { AgentRegistry } from '../agents/registry.js';
-import type { AgentAdapter } from '../agents/adapter.js';
+import { SymbiontRegistry } from '../symbionts/registry.js';
+import type { SymbiontAdapter } from '../symbionts/adapter.js';
 import { PROMPT_PREVIEW_CHARS } from '../constants.js';
 import fs from 'node:fs';
 
-// Re-export TranscriptTurn from its canonical home in agents/adapter.ts
-export type { TranscriptTurn } from '../agents/adapter.js';
-import type { TranscriptTurn } from '../agents/adapter.js';
+// Re-export TranscriptTurn from its canonical home in symbionts/adapter.ts
+export type { TranscriptTurn } from '../symbionts/adapter.js';
+import type { TranscriptTurn } from '../symbionts/adapter.js';
 
 interface TranscriptConfig {
-  /** Additional agent adapters to register (useful for testing or custom agents) */
-  additionalAdapters?: AgentAdapter[];
+  /** Additional symbiont adapters to register (useful for testing or custom symbionts) */
+  additionalAdapters?: SymbiontAdapter[];
 }
 
 export class TranscriptMiner {
-  private registry: AgentRegistry;
+  private registry: SymbiontRegistry;
 
   constructor(config?: TranscriptConfig) {
-    this.registry = new AgentRegistry(config?.additionalAdapters);
+    this.registry = new SymbiontRegistry(config?.additionalAdapters);
   }
 
   /**

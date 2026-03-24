@@ -1,88 +1,67 @@
 /**
  * Tests for myco_supersede tool handler.
+ *
+ * The handler now proxies through DaemonClient. Tests mock the client
+ * to verify correct endpoint usage and response mapping.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
-import { insertSpore, getSpore } from '@myco/db/queries/spores.js';
-import { registerCurator } from '@myco/db/queries/curators.js';
+import { describe, it, expect, vi } from 'vitest';
 import { handleMycoSupersede } from '@myco/mcp/tools/supersede.js';
+import { DaemonClient } from '@myco/hooks/client.js';
 
-const epochNow = () => Math.floor(Date.now() / 1000);
+function mockClient(getData: unknown = null, ok = true): DaemonClient {
+  const client = {
+    get: vi.fn().mockResolvedValue({ ok, data: getData }),
+    post: vi.fn().mockResolvedValue({ ok, data: getData }),
+  } as unknown as DaemonClient;
+  return client;
+}
 
 describe('myco_supersede', () => {
-  beforeEach(async () => {
-    const db = await initDatabase();
-    await createSchema(db);
-
-    const now = epochNow();
-    await registerCurator({
-      id: 'test-curator', name: 'Test', created_at: now,
-    });
-
-    await insertSpore({
-      id: 'old-spore', curator_id: 'test-curator',
-      observation_type: 'gotcha', content: 'Old gotcha',
-      created_at: now,
-    });
-
-    await insertSpore({
-      id: 'new-spore', curator_id: 'test-curator',
-      observation_type: 'gotcha', content: 'Updated gotcha',
-      created_at: now + 1,
-    });
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
-  });
-
   it('supersedes a spore and returns success', async () => {
+    const client = mockClient({
+      old_spore: 'old-spore',
+      new_spore: 'new-spore',
+      status: 'superseded',
+    });
+
     const result = await handleMycoSupersede({
       old_spore_id: 'old-spore',
       new_spore_id: 'new-spore',
       reason: 'Bug was fixed',
-    });
+    }, client);
 
     expect(result.status).toBe('superseded');
     expect(result.old_spore).toBe('old-spore');
     expect(result.new_spore).toBe('new-spore');
   });
 
-  it('marks old spore as superseded in database', async () => {
-    await handleMycoSupersede({
-      old_spore_id: 'old-spore',
-      new_spore_id: 'new-spore',
+  it('posts to daemon with correct body', async () => {
+    const client = mockClient({
+      old_spore: 'old-spore',
+      new_spore: 'new-spore',
+      status: 'superseded',
     });
 
-    const spore = await getSpore('old-spore');
-    expect(spore!.status).toBe('superseded');
-  });
-
-  it('creates a resolution event', async () => {
     await handleMycoSupersede({
       old_spore_id: 'old-spore',
       new_spore_id: 'new-spore',
       reason: 'Test reason',
-    });
+    }, client);
 
-    const db = getDatabase();
-    const events = await db.query(
-      'SELECT * FROM resolution_events WHERE spore_id = $1',
-      ['old-spore'],
-    );
-    expect(events.rows).toHaveLength(1);
-    const event = events.rows[0] as Record<string, unknown>;
-    expect(event.action).toBe('supersede');
-    expect(event.new_spore_id).toBe('new-spore');
-    expect(event.reason).toBe('Test reason');
+    expect(client.post).toHaveBeenCalledWith('/api/mcp/supersede', {
+      old_spore_id: 'old-spore',
+      new_spore_id: 'new-spore',
+      reason: 'Test reason',
+    });
   });
 
-  it('throws on nonexistent spore (FK constraint)', async () => {
+  it('throws on daemon failure', async () => {
+    const client = mockClient(null, false);
+
     await expect(handleMycoSupersede({
       old_spore_id: 'nonexistent',
       new_spore_id: 'new-spore',
-    })).rejects.toThrow();
+    }, client)).rejects.toThrow('Failed to supersede spore');
   });
 });

@@ -9,6 +9,7 @@
     "myco": "dist/src/cli.js"
   },
   "files": [
+    "bin/",
     "dist/",
     "commands/",
     "skills/",

@@ -1,28 +1,11 @@
 /**
  * myco_supersede — mark a spore as outdated and replaced by a newer one.
  *
- * Updates the old spore's status to 'superseded' via PGlite and records
- * a resolution event for audit.
+ * Proxies through the daemon HTTP API via DaemonClient.
+ * The daemon handles status update and resolution event recording.
  */
 
-import { randomBytes } from 'node:crypto';
-import { updateSporeStatus } from '@myco/db/queries/spores.js';
-import { registerCurator } from '@myco/db/queries/curators.js';
-import { getDatabase } from '@myco/db/client.js';
-import { epochSeconds, USER_CURATOR_ID, USER_CURATOR_NAME } from '@myco/constants.js';
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Status value for superseded spores. */
-const STATUS_SUPERSEDED = 'superseded';
-
-/** Resolution action type for supersession. */
-const ACTION_SUPERSEDE = 'supersede';
-
-/** Byte length for random resolution event ID. */
-const RESOLUTION_ID_RANDOM_BYTES = 8;
+import type { DaemonClient } from '@myco/hooks/client.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,40 +29,17 @@ interface SupersedeResult {
 
 export async function handleMycoSupersede(
   input: SupersedeInput,
+  client: DaemonClient,
 ): Promise<SupersedeResult> {
-  const now = epochSeconds();
-
-  // Update status to superseded
-  await updateSporeStatus(input.old_spore_id, STATUS_SUPERSEDED, now);
-
-  // Ensure user curator exists (idempotent)
-  await registerCurator({
-    id: USER_CURATOR_ID,
-    name: USER_CURATOR_NAME,
-    created_at: now,
+  const result = await client.post('/api/mcp/supersede', {
+    old_spore_id: input.old_spore_id,
+    new_spore_id: input.new_spore_id,
+    reason: input.reason,
   });
 
-  // Record resolution event for audit trail
-  const db = getDatabase();
-  const resolutionId = `res-${randomBytes(RESOLUTION_ID_RANDOM_BYTES).toString('hex')}`;
+  if (!result.ok || !result.data) {
+    throw new Error(`Failed to supersede spore: daemon request failed`);
+  }
 
-  await db.query(
-    `INSERT INTO resolution_events (id, curator_id, spore_id, action, new_spore_id, reason, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [
-      resolutionId,
-      USER_CURATOR_ID,
-      input.old_spore_id,
-      ACTION_SUPERSEDE,
-      input.new_spore_id,
-      input.reason ?? null,
-      now,
-    ],
-  );
-
-  return {
-    old_spore: input.old_spore_id,
-    new_spore: input.new_spore_id,
-    status: STATUS_SUPERSEDED,
-  };
+  return result.data as SupersedeResult;
 }

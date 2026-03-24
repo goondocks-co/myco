@@ -143,13 +143,13 @@ export const PROMPT_CONTEXT_MIN_LENGTH = 10;
 /** Spore statuses excluded from search results and context injection. */
 export const EXCLUDED_SPORE_STATUSES = new Set(['superseded', 'archived']);
 
-// --- Curator identity ---
-/** Default curator ID for the built-in curation agent. */
-export const DEFAULT_CURATOR_ID = 'myco-curator';
-/** Curator ID for user-initiated MCP operations. */
-export const USER_CURATOR_ID = 'user';
-/** Curator name for user-initiated MCP operations. */
-export const USER_CURATOR_NAME = 'User (MCP)';
+// --- Agent identity ---
+/** Default agent ID for the built-in intelligence agent. */
+export const DEFAULT_AGENT_ID = 'myco-agent';
+/** Agent ID for user-initiated MCP operations. */
+export const USER_AGENT_ID = 'user';
+/** Agent name for user-initiated MCP operations. */
+export const USER_AGENT_NAME = 'User (MCP)';
 
 // --- MCP tool defaults ---
 /** Default result limit for myco_search. */
@@ -197,7 +197,7 @@ export const LLM_REASONING_MODE = 'off' as const;
 
 // --- Digest — System prompt overhead estimate ---
 
-// --- Vault curation ---
+// --- Vault intelligence ---
 /** Max candidate spores after post-filtering for supersession check. */
 export const SUPERSESSION_CANDIDATE_LIMIT = 5;
 
@@ -207,8 +207,8 @@ export const SUPERSESSION_VECTOR_FETCH_LIMIT = 20;
 /** Max output tokens for supersession LLM evaluation. */
 export const SUPERSESSION_MAX_TOKENS = 256;
 
-/** Similarity threshold for clustering related spores in batch curation. */
-export const CURATION_CLUSTER_SIMILARITY = 0.75;
+/** Similarity threshold for clustering related spores in batch agent processing. */
+export const AGENT_CLUSTER_SIMILARITY = 0.75;
 
 // --- Search ---
 /** Default number of results returned by semanticSearch and fullTextSearch. */

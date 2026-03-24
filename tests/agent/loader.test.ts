@@ -2,10 +2,10 @@
  * Tests for agent definition and task YAML loader.
  *
  * Tests cover:
- * - Loading the built-in curator definition from curator.yaml
+ * - Loading the built-in agent definition from agent.yaml
  * - Loading all task YAML files from tasks/
  * - Merging definitions with DB overrides via resolveEffectiveConfig
- * - Registering built-in curators and tasks into PGlite
+ * - Registering built-in agents and tasks into PGlite
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -13,16 +13,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
-import { getCurator } from '@myco/db/queries/curators.js';
+import { getAgent } from '@myco/db/queries/agents.js';
 import { listTasks, getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
   loadAgentDefinition,
   loadAgentTasks,
   loadSystemPrompt,
   resolveEffectiveConfig,
-  registerBuiltInCuratorsAndTasks,
+  registerBuiltInAgentsAndTasks,
 } from '@myco/agent/loader.js';
-import type { CuratorRow } from '@myco/db/queries/curators.js';
+import type { AgentRow } from '@myco/db/queries/agents.js';
 import type { AgentDefinition, AgentTask } from '@myco/agent/types.js';
 
 // ---------------------------------------------------------------------------
@@ -32,8 +32,8 @@ import type { AgentDefinition, AgentTask } from '@myco/agent/types.js';
 /** Number of built-in task YAML files. */
 const EXPECTED_TASK_COUNT = 7;
 
-/** Built-in curator name from curator.yaml. */
-const BUILT_IN_CURATOR_NAME = 'myco-curator';
+/** Built-in agent name from agent.yaml. */
+const BUILT_IN_AGENT_NAME = 'myco-agent';
 
 /** Resolve the test definitions directory (src/agent/definitions/). */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -46,23 +46,23 @@ const DEFINITIONS_DIR = path.resolve(__dirname, '..', '..', 'src', 'agent', 'def
 /** Create a minimal AgentDefinition for testing. */
 function makeDefinition(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
   return {
-    name: 'myco-curator',
-    displayName: 'Myco Curator',
-    description: 'Test curator',
+    name: 'myco-agent',
+    displayName: 'Myco Agent',
+    description: 'Test agent',
     model: 'claude-sonnet-4-20250514',
     maxTurns: 25,
     timeoutSeconds: 300,
-    systemPromptPath: '../prompts/curator.md',
+    systemPromptPath: '../prompts/agent.md',
     tools: ['query_unprocessed', 'create_spore', 'set_agent_state'],
     ...overrides,
   };
 }
 
-/** Create a minimal CuratorRow for testing DB overrides. */
-function makeCuratorRow(overrides: Partial<CuratorRow> = {}): CuratorRow {
+/** Create a minimal AgentRow for testing DB overrides. */
+function makeAgentRow(overrides: Partial<AgentRow> = {}): AgentRow {
   return {
-    id: 'myco-curator',
-    name: 'Myco Curator',
+    id: 'myco-agent',
+    name: 'Myco Agent',
     provider: null,
     model: null,
     system_prompt_hash: null,
@@ -85,7 +85,7 @@ function makeTask(overrides: Partial<AgentTask> = {}): AgentTask {
     name: 'test-task',
     displayName: 'Test Task',
     description: 'A test task',
-    agent: 'myco-curator',
+    agent: 'myco-agent',
     prompt: 'Do the thing.',
     isDefault: false,
     ...overrides,
@@ -102,17 +102,17 @@ describe('agent loader', () => {
   // -------------------------------------------------------------------------
 
   describe('loadAgentDefinition', () => {
-    it('loads curator.yaml with correct fields', () => {
+    it('loads agent.yaml with correct fields', () => {
       const def = loadAgentDefinition(DEFINITIONS_DIR);
 
-      expect(def.name).toBe('myco-curator');
-      expect(def.displayName).toBe('Myco Curator');
+      expect(def.name).toBe('myco-agent');
+      expect(def.displayName).toBe('Myco Agent');
       expect(typeof def.description).toBe('string');
       expect(def.description.length).toBeGreaterThan(0);
       expect(def.model).toBe('claude-sonnet-4-20250514');
       expect(def.maxTurns).toBe(25);
       expect(def.timeoutSeconds).toBe(300);
-      expect(def.systemPromptPath).toBe('../prompts/curator.md');
+      expect(def.systemPromptPath).toBe('../prompts/agent.md');
     });
 
     it('includes all expected tools', () => {
@@ -169,7 +169,7 @@ describe('agent loader', () => {
         expect(task.name.length).toBeGreaterThan(0);
         expect(typeof task.displayName).toBe('string');
         expect(typeof task.description).toBe('string');
-        expect(task.agent).toBe('myco-curator');
+        expect(task.agent).toBe('myco-agent');
         expect(typeof task.prompt).toBe('string');
         expect(task.prompt.length).toBeGreaterThan(0);
         expect(typeof task.isDefault).toBe('boolean');
@@ -180,14 +180,14 @@ describe('agent loader', () => {
       const tasks = loadAgentTasks(DEFINITIONS_DIR);
       const defaults = tasks.filter((t) => t.isDefault);
       expect(defaults).toHaveLength(1);
-      expect(defaults[0].name).toBe('full-curation');
+      expect(defaults[0].name).toBe('full-intelligence');
     });
 
     it('loads expected task names', () => {
       const tasks = loadAgentTasks(DEFINITIONS_DIR);
       const names = tasks.map((t) => t.name).sort();
 
-      expect(names).toContain('full-curation');
+      expect(names).toContain('full-intelligence');
       expect(names).toContain('digest-only');
       expect(names).toContain('review-session');
       expect(names).toContain('extract-only');
@@ -220,8 +220,8 @@ describe('agent loader', () => {
   // -------------------------------------------------------------------------
 
   describe('loadSystemPrompt', () => {
-    it('loads the curator.md prompt file', () => {
-      const content = loadSystemPrompt(DEFINITIONS_DIR, '../prompts/curator.md');
+    it('loads the agent.md prompt file', () => {
+      const content = loadSystemPrompt(DEFINITIONS_DIR, '../prompts/agent.md');
       expect(typeof content).toBe('string');
       expect(content.length).toBeGreaterThan(0);
     });
@@ -240,64 +240,64 @@ describe('agent loader', () => {
       const def = makeDefinition();
       const config = resolveEffectiveConfig(def);
 
-      expect(config.curatorId).toBe('myco-curator');
+      expect(config.agentId).toBe('myco-agent');
       expect(config.model).toBe('claude-sonnet-4-20250514');
       expect(config.maxTurns).toBe(25);
       expect(config.timeoutSeconds).toBe(300);
       expect(config.tools).toEqual(def.tools);
-      expect(config.systemPromptPath).toBe('../prompts/curator.md');
-      expect(config.taskName).toBe('full-curation');
-      expect(config.taskDisplayName).toBe('Full Curation');
+      expect(config.systemPromptPath).toBe('../prompts/agent.md');
+      expect(config.taskName).toBe('full-intelligence');
+      expect(config.taskDisplayName).toBe('Full Intelligence');
     });
 
-    it('applies curator DB overrides for model', () => {
+    it('applies agent DB overrides for model', () => {
       const def = makeDefinition();
-      const curator = makeCuratorRow({ model: 'claude-3-haiku' });
-      const config = resolveEffectiveConfig(def, curator);
+      const agent = makeAgentRow({ model: 'claude-3-haiku' });
+      const config = resolveEffectiveConfig(def, agent);
 
       expect(config.model).toBe('claude-3-haiku');
     });
 
-    it('applies curator DB overrides for maxTurns and timeoutSeconds', () => {
+    it('applies agent DB overrides for maxTurns and timeoutSeconds', () => {
       const def = makeDefinition();
-      const curator = makeCuratorRow({
+      const agent = makeAgentRow({
         max_turns: 10,
         timeout_seconds: 120,
       });
-      const config = resolveEffectiveConfig(def, curator);
+      const config = resolveEffectiveConfig(def, agent);
 
       expect(config.maxTurns).toBe(10);
       expect(config.timeoutSeconds).toBe(120);
     });
 
-    it('applies curator DB tool_access override', () => {
+    it('applies agent DB tool_access override', () => {
       const def = makeDefinition();
-      const curator = makeCuratorRow({
+      const agent = makeAgentRow({
         tool_access: JSON.stringify(['query_spores', 'create_spore']),
       });
-      const config = resolveEffectiveConfig(def, curator);
+      const config = resolveEffectiveConfig(def, agent);
 
       expect(config.tools).toEqual(['query_spores', 'create_spore']);
     });
 
     it('ignores invalid JSON in tool_access', () => {
       const def = makeDefinition();
-      const curator = makeCuratorRow({ tool_access: 'not-json' });
-      const config = resolveEffectiveConfig(def, curator);
+      const agent = makeAgentRow({ tool_access: 'not-json' });
+      const config = resolveEffectiveConfig(def, agent);
 
       // Falls back to definition tools
       expect(config.tools).toEqual(def.tools);
     });
 
-    it('task toolOverrides take precedence over curator tool_access', () => {
+    it('task toolOverrides take precedence over agent tool_access', () => {
       const def = makeDefinition();
-      const curator = makeCuratorRow({
+      const agent = makeAgentRow({
         tool_access: JSON.stringify(['query_spores', 'create_spore']),
       });
       const task = makeTask({
         toolOverrides: ['resolve_spore', 'set_agent_state'],
       });
-      const config = resolveEffectiveConfig(def, curator, task);
+      const config = resolveEffectiveConfig(def, agent, task);
 
       // Task overrides win
       expect(config.tools).toEqual(['resolve_spore', 'set_agent_state']);
@@ -317,23 +317,23 @@ describe('agent loader', () => {
       expect(config.taskPrompt).toBe('Regenerate digests.');
     });
 
-    it('uses curator id from DB row when provided', () => {
+    it('uses agent id from DB row when provided', () => {
       const def = makeDefinition();
-      const curator = makeCuratorRow({ id: 'custom-curator' });
-      const config = resolveEffectiveConfig(def, curator);
+      const agent = makeAgentRow({ id: 'custom-agent' });
+      const config = resolveEffectiveConfig(def, agent);
 
-      expect(config.curatorId).toBe('custom-curator');
+      expect(config.agentId).toBe('custom-agent');
     });
 
-    it('null curator overrides fall through to definition defaults', () => {
+    it('null agent overrides fall through to definition defaults', () => {
       const def = makeDefinition({ maxTurns: 50 });
-      const curator = makeCuratorRow({
+      const agent = makeAgentRow({
         model: null,
         max_turns: null,
         timeout_seconds: null,
         tool_access: null,
       });
-      const config = resolveEffectiveConfig(def, curator);
+      const config = resolveEffectiveConfig(def, agent);
 
       expect(config.model).toBe('claude-sonnet-4-20250514');
       expect(config.maxTurns).toBe(50);
@@ -343,10 +343,10 @@ describe('agent loader', () => {
   });
 
   // -------------------------------------------------------------------------
-  // registerBuiltInCuratorsAndTasks (requires PGlite)
+  // registerBuiltInAgentsAndTasks (requires PGlite)
   // -------------------------------------------------------------------------
 
-  describe('registerBuiltInCuratorsAndTasks', () => {
+  describe('registerBuiltInAgentsAndTasks', () => {
     beforeEach(async () => {
       const db = await initDatabase(); // in-memory
       await createSchema(db);
@@ -356,27 +356,27 @@ describe('agent loader', () => {
       await closeDatabase();
     });
 
-    it('registers the built-in curator in the database', async () => {
-      await registerBuiltInCuratorsAndTasks(DEFINITIONS_DIR);
+    it('registers the built-in agent in the database', async () => {
+      await registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
 
-      const curator = await getCurator(BUILT_IN_CURATOR_NAME);
-      expect(curator).not.toBeNull();
-      expect(curator!.id).toBe(BUILT_IN_CURATOR_NAME);
-      expect(curator!.name).toBe('Myco Curator');
-      expect(curator!.source).toBe('built-in');
-      expect(curator!.model).toBe('claude-sonnet-4-20250514');
-      expect(curator!.max_turns).toBe(25);
-      expect(curator!.timeout_seconds).toBe(300);
+      const agent = await getAgent(BUILT_IN_AGENT_NAME);
+      expect(agent).not.toBeNull();
+      expect(agent!.id).toBe(BUILT_IN_AGENT_NAME);
+      expect(agent!.name).toBe('Myco Agent');
+      expect(agent!.source).toBe('built-in');
+      expect(agent!.model).toBe('claude-sonnet-4-20250514');
+      expect(agent!.max_turns).toBe(25);
+      expect(agent!.timeout_seconds).toBe(300);
     });
 
     it('registers all built-in tasks in the database', async () => {
-      await registerBuiltInCuratorsAndTasks(DEFINITIONS_DIR);
+      await registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
 
-      const tasks = await listTasks({ curator_id: BUILT_IN_CURATOR_NAME });
+      const tasks = await listTasks({ agent_id: BUILT_IN_AGENT_NAME });
       expect(tasks).toHaveLength(EXPECTED_TASK_COUNT);
 
       const names = tasks.map((t) => t.id).sort();
-      expect(names).toContain('full-curation');
+      expect(names).toContain('full-intelligence');
       expect(names).toContain('digest-only');
       expect(names).toContain('review-session');
       expect(names).toContain('extract-only');
@@ -385,43 +385,43 @@ describe('agent loader', () => {
       expect(names).toContain('title-summary');
     });
 
-    it('marks full-curation as the default task', async () => {
-      await registerBuiltInCuratorsAndTasks(DEFINITIONS_DIR);
+    it('marks full-intelligence as the default task', async () => {
+      await registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
 
-      const defaultTask = await getDefaultTask(BUILT_IN_CURATOR_NAME);
+      const defaultTask = await getDefaultTask(BUILT_IN_AGENT_NAME);
       expect(defaultTask).not.toBeNull();
-      expect(defaultTask!.id).toBe('full-curation');
+      expect(defaultTask!.id).toBe('full-intelligence');
       expect(defaultTask!.is_default).toBe(1);
     });
 
     it('is idempotent — running twice produces the same result', async () => {
-      await registerBuiltInCuratorsAndTasks(DEFINITIONS_DIR);
-      await registerBuiltInCuratorsAndTasks(DEFINITIONS_DIR);
+      await registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
+      await registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
 
-      const curator = await getCurator(BUILT_IN_CURATOR_NAME);
-      expect(curator).not.toBeNull();
+      const agent = await getAgent(BUILT_IN_AGENT_NAME);
+      expect(agent).not.toBeNull();
 
-      const tasks = await listTasks({ curator_id: BUILT_IN_CURATOR_NAME });
+      const tasks = await listTasks({ agent_id: BUILT_IN_AGENT_NAME });
       expect(tasks).toHaveLength(EXPECTED_TASK_COUNT);
     });
 
-    it('stores tool_access as JSON string on curator', async () => {
-      await registerBuiltInCuratorsAndTasks(DEFINITIONS_DIR);
+    it('stores tool_access as JSON string on agent', async () => {
+      await registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
 
-      const curator = await getCurator(BUILT_IN_CURATOR_NAME);
-      expect(curator).not.toBeNull();
-      expect(curator!.tool_access).not.toBeNull();
+      const agent = await getAgent(BUILT_IN_AGENT_NAME);
+      expect(agent).not.toBeNull();
+      expect(agent!.tool_access).not.toBeNull();
 
-      const tools = JSON.parse(curator!.tool_access!) as string[];
+      const tools = JSON.parse(agent!.tool_access!) as string[];
       expect(Array.isArray(tools)).toBe(true);
       expect(tools).toContain('query_unprocessed');
       expect(tools).toContain('create_spore');
     });
 
     it('stores toolOverrides as JSON on tasks that have them', async () => {
-      await registerBuiltInCuratorsAndTasks(DEFINITIONS_DIR);
+      await registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
 
-      const tasks = await listTasks({ curator_id: BUILT_IN_CURATOR_NAME });
+      const tasks = await listTasks({ agent_id: BUILT_IN_AGENT_NAME });
       const digestOnly = tasks.find((t) => t.id === 'digest-only');
       expect(digestOnly).not.toBeUndefined();
       expect(digestOnly!.tool_overrides).not.toBeNull();

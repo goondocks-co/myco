@@ -18,7 +18,7 @@ import { handleMycoSupersede } from './tools/supersede.js';
 import { handleMycoConsolidate } from './tools/consolidate.js';
 import { handleMycoContext } from './tools/context.js';
 import { resolveVaultDir } from '../vault/resolve.js';
-import { initDatabaseForVault } from '../db/client.js';
+import { DaemonClient } from '../hooks/client.js';
 import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 
 import {
@@ -34,7 +34,7 @@ export interface MycoServer {
   start(): Promise<void>;
 }
 
-export function createMycoServer(vaultDir: string): MycoServer {
+export function createMycoServer(vaultDir: string, client: DaemonClient): MycoServer {
   const server = new Server(
     { name: 'myco', version: getPluginVersion() },
     { capabilities: { tools: {} } },
@@ -84,49 +84,49 @@ export function createMycoServer(vaultDir: string): MycoServer {
     switch (name) {
       case TOOL_SEARCH: {
         const searchInput = input as { query: string; type?: string; limit?: number };
-        const result = await handleMycoSearch(searchInput);
+        const result = await handleMycoSearch(searchInput, client);
         logActivity(TOOL_SEARCH, { query: searchInput.query, matches: result.length, duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_RECALL: {
         const recallInput = input as { note_id: string };
-        const result = await handleMycoRecall(recallInput);
+        const result = await handleMycoRecall(recallInput, client);
         logActivity(TOOL_RECALL, { note_id: recallInput.note_id, duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_REMEMBER: {
         const rememberInput = input as { content: string; type?: string; tags?: string[] };
-        const result = await handleMycoRemember(rememberInput);
+        const result = await handleMycoRemember(rememberInput, client);
         logActivity(TOOL_REMEMBER, { id: result.id, observation_type: result.observation_type, duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_PLANS: {
         const plansInput = input as { status?: string; limit?: number };
-        const result = await handleMycoPlans(plansInput);
+        const result = await handleMycoPlans(plansInput, client);
         logActivity(TOOL_PLANS, { count: result.length, duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_SESSIONS: {
         const sessionsInput = input as { limit?: number; status?: string };
-        const result = await handleMycoSessions(sessionsInput);
+        const result = await handleMycoSessions(sessionsInput, client);
         logActivity(TOOL_SESSIONS, { count: result.length, duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_TEAM: {
         const teamInput = input as Record<string, unknown>;
-        const result = await handleMycoTeam(teamInput);
+        const result = await handleMycoTeam(teamInput, client);
         logActivity(TOOL_TEAM, { count: result.length, duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_GRAPH: {
         const graphInput = input as { note_id: string; direction?: 'incoming' | 'outgoing' | 'both'; depth?: number };
-        const result = await handleMycoGraph(graphInput);
+        const result = await handleMycoGraph(graphInput, client);
         logActivity(TOOL_GRAPH, { note_id: graphInput.note_id, duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_SUPERSEDE: {
         const supersedeInput = input as { old_spore_id: string; new_spore_id: string; reason?: string };
-        const result = await handleMycoSupersede(supersedeInput);
+        const result = await handleMycoSupersede(supersedeInput, client);
         logActivity(TOOL_SUPERSEDE, { old: result.old_spore, new: result.new_spore, status: result.status, duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
@@ -138,7 +138,7 @@ export function createMycoServer(vaultDir: string): MycoServer {
       }
       case TOOL_CONTEXT: {
         const contextInput = input as { tier?: number };
-        const result = await handleMycoContext(contextInput);
+        const result = await handleMycoContext(contextInput, client);
         logActivity(TOOL_CONTEXT, { tier: contextInput.tier, duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: result.content }] };
       }
@@ -161,11 +161,7 @@ export function createMycoServer(vaultDir: string): MycoServer {
 
 export async function main(): Promise<void> {
   const vaultDir = resolveVaultDir();
-
-  // Initialize PGlite — the MCP server runs as a separate process from the daemon
-  // and needs its own database connection.
-  await initDatabaseForVault(vaultDir);
-
-  const server = createMycoServer(vaultDir);
+  const client = new DaemonClient(vaultDir);
+  const server = createMycoServer(vaultDir, client);
   await server.start();
 }

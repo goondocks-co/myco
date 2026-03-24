@@ -21,7 +21,7 @@ const DEFAULT_LIST_LIMIT = 100;
 /** Fields required (or optional) when inserting a resolution event. */
 export interface ResolutionEventInsert {
   id: string;
-  curator_id: string;
+  agent_id: string;
   spore_id: string;
   action: string;
   created_at: number;
@@ -33,7 +33,7 @@ export interface ResolutionEventInsert {
 /** Row shape returned from resolution_events queries (all columns). */
 export interface ResolutionEventRow {
   id: string;
-  curator_id: string;
+  agent_id: string;
   spore_id: string;
   action: string;
   new_spore_id: string | null;
@@ -44,7 +44,7 @@ export interface ResolutionEventRow {
 
 /** Filter options for `listResolutionEvents`. */
 export interface ListResolutionEventsOptions {
-  curator_id?: string;
+  agent_id?: string;
   spore_id?: string;
   limit?: number;
 }
@@ -55,7 +55,7 @@ export interface ListResolutionEventsOptions {
 
 const EVENT_COLUMNS = [
   'id',
-  'curator_id',
+  'agent_id',
   'spore_id',
   'action',
   'new_spore_id',
@@ -74,7 +74,7 @@ const SELECT_COLUMNS = EVENT_COLUMNS.join(', ');
 function toResolutionEventRow(row: Record<string, unknown>): ResolutionEventRow {
   return {
     id: row.id as string,
-    curator_id: row.curator_id as string,
+    agent_id: row.agent_id as string,
     spore_id: row.spore_id as string,
     action: row.action as string,
     new_spore_id: (row.new_spore_id as string) ?? null,
@@ -98,12 +98,12 @@ export async function insertResolutionEvent(
 
   const result = await db.query(
     `INSERT INTO resolution_events (
-       id, curator_id, spore_id, action, new_spore_id, reason, session_id, created_at
+       id, agent_id, spore_id, action, new_spore_id, reason, session_id, created_at
      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING ${SELECT_COLUMNS}`,
     [
       data.id,
-      data.curator_id,
+      data.agent_id,
       data.spore_id,
       data.action,
       data.new_spore_id ?? null,
@@ -128,9 +128,9 @@ export async function listResolutionEvents(
   const params: unknown[] = [];
   let paramIndex = 1;
 
-  if (options.curator_id !== undefined) {
-    conditions.push(`curator_id = $${paramIndex++}`);
-    params.push(options.curator_id);
+  if (options.agent_id !== undefined) {
+    conditions.push(`agent_id = $${paramIndex++}`);
+    params.push(options.agent_id);
   }
 
   if (options.spore_id !== undefined) {

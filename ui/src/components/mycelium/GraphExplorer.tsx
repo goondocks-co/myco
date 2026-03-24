@@ -27,7 +27,8 @@ function entityTypeClass(type: string): string {
   }
 }
 
-function formatLabel(value: string): string {
+function formatLabel(value: string | undefined): string {
+  if (!value) return 'Unknown';
   return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -67,7 +68,7 @@ function EntitySelector({
           >
             <span className="truncate font-medium">{entity.name}</span>
             <div className="flex items-center gap-1.5 shrink-0">
-              <EntityTypeBadge type={entity.entity_type} />
+              <EntityTypeBadge type={entity.type} />
               <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
             </div>
           </button>
@@ -99,7 +100,7 @@ function ConnectedNode({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm font-medium truncate">{node.name}</span>
-          <EntityTypeBadge type={node.entity_type} />
+          <EntityTypeBadge type={node.type} />
           {node.depth > 1 && (
             <span className="text-xs text-muted-foreground">depth {node.depth}</span>
           )}
@@ -198,7 +199,7 @@ export function GraphExplorer({ initialEntityId }: GraphExplorerProps) {
               <Network className="h-8 w-8 opacity-30" />
               <span className="text-sm">No graph data yet</span>
               <span className="text-xs text-center max-w-xs">
-                Run the curator to build the mycelium — entities and their connections will appear here.
+                Run the agent to build the mycelium — entities and their connections will appear here.
               </span>
             </div>
           )}
@@ -232,7 +233,7 @@ export function GraphExplorer({ initialEntityId }: GraphExplorerProps) {
                 <CardHeader className="pb-2">
                   <div className="flex items-center gap-2 flex-wrap">
                     <CardTitle className="text-base">{graphData.center.name}</CardTitle>
-                    <EntityTypeBadge type={graphData.center.entity_type} />
+                    <EntityTypeBadge type={graphData.center.type} />
                   </div>
                 </CardHeader>
                 {connectedNodes.length === 0 && (

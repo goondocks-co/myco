@@ -1,10 +1,11 @@
 /**
  * myco_plans — list active implementation plans and their status.
  *
- * Delegates to PGlite `listPlans()` and `getPlan()` query helpers.
+ * Proxies through the daemon HTTP API via DaemonClient.
  */
 
-import { listPlans, getPlan, type PlanRow } from '@myco/db/queries/plans.js';
+import type { DaemonClient } from '@myco/hooks/client.js';
+import { buildEndpoint } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,43 +26,20 @@ interface PlanSummary {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Extract checklist progress from plan content. */
-function extractProgress(content: string | null): string {
-  if (!content) return 'N/A';
-  const checked = (content.match(/- \[x\]/gi) ?? []).length;
-  const unchecked = (content.match(/- \[ \]/g) ?? []).length;
-  const total = checked + unchecked;
-  if (total === 0) return 'N/A';
-  return `${checked}/${total}`;
-}
-
-function toSummary(row: PlanRow): PlanSummary {
-  return {
-    id: row.id,
-    title: row.title,
-    status: row.status,
-    progress: extractProgress(row.content),
-    tags: row.tags ? row.tags.split(',').map((t) => t.trim()) : [],
-    created_at: row.created_at,
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
 export async function handleMycoPlans(
   input: PlansInput,
+  client: DaemonClient,
 ): Promise<PlanSummary[]> {
-  const statusFilter = input.status === 'all' ? undefined : input.status;
-
-  const rows = await listPlans({
-    status: statusFilter,
+  const endpoint = buildEndpoint('/api/mcp/plans', {
+    status: input.status,
     limit: input.limit,
   });
+  const result = await client.get(endpoint);
 
-  return rows.map(toSummary);
+  if (!result.ok || !result.data?.plans) return [];
+
+  return result.data.plans as PlanSummary[];
 }

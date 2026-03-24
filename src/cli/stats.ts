@@ -1,15 +1,22 @@
 /**
- * CLI: myco stats — display vault statistics from PGlite (v2).
+ * CLI: myco stats — display vault statistics via daemon API.
+ *
+ * Routes through the daemon HTTP API to avoid PGlite file lock conflicts.
  */
 
-import { initDatabaseForVault } from '@myco/db/client.js';
-import { gatherStats } from '@myco/services/stats.js';
-import { isProcessAlive } from '@myco/cli/shared.js';
+import type { V2Stats } from '../services/stats.js';
+import { connectToDaemon } from './shared.js';
 
 export async function run(_args: string[], vaultDir: string): Promise<void> {
-  await initDatabaseForVault(vaultDir);
+  const client = await connectToDaemon(vaultDir);
 
-  const stats = await gatherStats(vaultDir);
+  const result = await client.get('/api/stats');
+  if (!result.ok || !result.data) {
+    console.error('Failed to fetch stats from daemon');
+    process.exit(1);
+  }
+
+  const stats = result.data as V2Stats;
 
   console.log('=== Myco Vault ===');
   console.log(`Path:  ${stats.vault.path}`);
@@ -31,15 +38,15 @@ export async function run(_args: string[], vaultDir: string): Promise<void> {
     console.log(`Queue:      ${stats.embedding.queue_depth} pending`);
   }
 
-  console.log('\n--- Curator ---');
-  if (stats.curator.total_runs === 0) {
+  console.log('\n--- Agent ---');
+  if (stats.agent.total_runs === 0) {
     console.log('No runs yet');
   } else {
-    const lastAt = stats.curator.last_run_at
-      ? new Date(stats.curator.last_run_at * 1000).toISOString()
+    const lastAt = stats.agent.last_run_at
+      ? new Date(stats.agent.last_run_at * 1000).toISOString()
       : 'never';
-    console.log(`Last run:   ${lastAt} (${stats.curator.last_run_status ?? 'unknown'})`);
-    console.log(`Total runs: ${stats.curator.total_runs}`);
+    console.log(`Last run:   ${lastAt} (${stats.agent.last_run_status ?? 'unknown'})`);
+    console.log(`Total runs: ${stats.agent.total_runs}`);
   }
   if (stats.unprocessed_batches > 0) {
     console.log(`Pending:    ${stats.unprocessed_batches} unprocessed batch(es)`);
@@ -56,15 +63,14 @@ export async function run(_args: string[], vaultDir: string): Promise<void> {
     console.log(`Freshest:   tier ${stats.digest.freshest_tier} (generated ${generatedAt})`);
   }
 
-  // Daemon section — read from daemon.json to show alive state
+  // Daemon section — from the live daemon stats
   const { pid, port, version, uptime_seconds, active_sessions } = stats.daemon;
   if (pid > 0) {
-    const alive = isProcessAlive(pid);
     console.log('\n--- Daemon ---');
-    console.log(`PID:       ${pid} (${alive ? 'running' : 'dead'})`);
+    console.log(`PID:       ${pid} (running)`);
     console.log(`Port:      ${port}`);
     if (version) console.log(`Version:   ${version}`);
-    if (alive && uptime_seconds > 0) {
+    if (uptime_seconds > 0) {
       console.log(`Uptime:    ${formatUptime(uptime_seconds)}`);
     }
     console.log(`Dashboard: http://localhost:${port}/`);

@@ -10,7 +10,7 @@ import { createSchema } from '@myco/db/schema';
 import { upsertSession } from '@myco/db/queries/sessions';
 import { upsertPlan } from '@myco/db/queries/plans';
 import { insertSpore } from '@myco/db/queries/spores';
-import { registerCurator } from '@myco/db/queries/curators';
+import { registerAgent } from '@myco/db/queries/agents';
 import { MycoConfigSchema } from '@myco/config/schema';
 
 describe('buildInjectedContext', () => {
@@ -67,14 +67,14 @@ describe('buildInjectedContext', () => {
 
   it('includes active spores in context', async () => {
     const now = Math.floor(Date.now() / 1000);
-    await registerCurator({
-      id: 'curator-1',
-      name: 'test-curator',
+    await registerAgent({
+      id: 'agent-1',
+      name: 'test-agent',
       created_at: now,
     });
     await insertSpore({
       id: 'spore-001',
-      curator_id: 'curator-1',
+      agent_id: 'agent-1',
       observation_type: 'gotcha',
       content: 'Always validate JWT expiry before refreshing tokens',
       created_at: now,
@@ -88,14 +88,14 @@ describe('buildInjectedContext', () => {
 
   it('excludes superseded spores', async () => {
     const now = Math.floor(Date.now() / 1000);
-    await registerCurator({
-      id: 'curator-1',
-      name: 'test-curator',
+    await registerAgent({
+      id: 'agent-1',
+      name: 'test-agent',
       created_at: now,
     });
     await insertSpore({
       id: 'spore-old',
-      curator_id: 'curator-1',
+      agent_id: 'agent-1',
       observation_type: 'gotcha',
       content: 'Old stale observation',
       created_at: now,

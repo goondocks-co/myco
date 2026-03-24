@@ -19,6 +19,10 @@ export interface MycoConfig {
     artifact_extensions: string[];
     buffer_max_events: number;
   };
+  agent: {
+    auto_run: boolean;
+    interval_seconds: number;
+  };
 }
 
 export function useConfig() {
