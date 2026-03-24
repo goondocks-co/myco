@@ -33,7 +33,7 @@ export const STATUS_FAILED = 'failed';
 /** Fields required (or optional) when inserting a run. */
 export interface RunInsert {
   id: string;
-  curator_id: string;
+  agent_id: string;
   task?: string | null;
   instruction?: string | null;
   status?: string;
@@ -48,7 +48,7 @@ export interface RunInsert {
 /** Row shape returned from agent_runs queries (all columns). */
 export interface RunRow {
   id: string;
-  curator_id: string;
+  agent_id: string;
   task: string | null;
   instruction: string | null;
   status: string;
@@ -72,7 +72,7 @@ export interface RunCompletion {
 /** Filter options for `listRuns`. */
 export interface ListRunsOptions {
   limit?: number;
-  curator_id?: string;
+  agent_id?: string;
   status?: string;
 }
 
@@ -82,7 +82,7 @@ export interface ListRunsOptions {
 
 const RUN_COLUMNS = [
   'id',
-  'curator_id',
+  'agent_id',
   'task',
   'instruction',
   'status',
@@ -104,7 +104,7 @@ const SELECT_COLUMNS = RUN_COLUMNS.join(', ');
 function toRunRow(row: Record<string, unknown>): RunRow {
   return {
     id: row.id as string,
-    curator_id: row.curator_id as string,
+    agent_id: row.agent_id as string,
     task: (row.task as string) ?? null,
     instruction: (row.instruction as string) ?? null,
     status: row.status as string,
@@ -129,7 +129,7 @@ export async function insertRun(data: RunInsert): Promise<RunRow> {
 
   const result = await db.query(
     `INSERT INTO agent_runs (
-       id, curator_id, task, instruction, status,
+       id, agent_id, task, instruction, status,
        started_at, completed_at, tokens_used, cost_usd,
        actions_taken, error
      ) VALUES (
@@ -140,7 +140,7 @@ export async function insertRun(data: RunInsert): Promise<RunRow> {
      RETURNING ${SELECT_COLUMNS}`,
     [
       data.id,
-      data.curator_id,
+      data.agent_id,
       data.task ?? null,
       data.instruction ?? null,
       data.status ?? DEFAULT_STATUS,
@@ -185,9 +185,9 @@ export async function listRuns(
   const params: unknown[] = [];
   let paramIndex = 1;
 
-  if (options.curator_id !== undefined) {
-    conditions.push(`curator_id = $${paramIndex++}`);
-    params.push(options.curator_id);
+  if (options.agent_id !== undefined) {
+    conditions.push(`agent_id = $${paramIndex++}`);
+    params.push(options.agent_id);
   }
 
   if (options.status !== undefined) {
@@ -268,22 +268,22 @@ export async function updateRunStatus(
 }
 
 /**
- * Get the currently running run for a curator, if any.
+ * Get the currently running run for an agent, if any.
  *
  * @returns the running run row, or null if no run is active.
  */
 export async function getRunningRun(
-  curatorId: string,
+  agentId: string,
 ): Promise<RunRow | null> {
   const db = getDatabase();
 
   const result = await db.query(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_runs
-     WHERE curator_id = $1 AND status = $2
+     WHERE agent_id = $1 AND status = $2
      ORDER BY started_at DESC NULLS LAST
      LIMIT 1`,
-    [curatorId, STATUS_RUNNING],
+    [agentId, STATUS_RUNNING],
   );
 
   if (result.rows.length === 0) return null;

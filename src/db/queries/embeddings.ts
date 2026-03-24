@@ -42,7 +42,7 @@ const TABLE_SELECT_COLUMNS: Record<EmbeddableTable, string> = {
     'parent_session_id', 'parent_session_reason', 'processed', 'content_hash', 'created_at',
   ].join(', '),
   spores: [
-    'id', 'curator_id', 'session_id', 'prompt_batch_id', 'observation_type',
+    'id', 'agent_id', 'session_id', 'prompt_batch_id', 'observation_type',
     'status', 'content', 'context', 'importance', 'file_path', 'tags',
     'content_hash', 'created_at', 'updated_at',
   ].join(', '),

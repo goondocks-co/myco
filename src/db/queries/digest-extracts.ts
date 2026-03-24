@@ -13,7 +13,7 @@ import { getDatabase } from '@myco/db/client.js';
 
 /** Fields required when upserting a digest extract. */
 export interface DigestExtractUpsert {
-  curator_id: string;
+  agent_id: string;
   tier: number;
   content: string;
   generated_at: number;
@@ -22,7 +22,7 @@ export interface DigestExtractUpsert {
 /** Row shape returned from digest_extracts queries (all columns). */
 export interface DigestExtractRow {
   id: number;
-  curator_id: string;
+  agent_id: string;
   tier: number;
   content: string;
   substrate_hash: string | null;
@@ -35,7 +35,7 @@ export interface DigestExtractRow {
 
 const EXTRACT_COLUMNS = [
   'id',
-  'curator_id',
+  'agent_id',
   'tier',
   'content',
   'substrate_hash',
@@ -52,7 +52,7 @@ const SELECT_COLUMNS = EXTRACT_COLUMNS.join(', ');
 function toDigestExtractRow(row: Record<string, unknown>): DigestExtractRow {
   return {
     id: row.id as number,
-    curator_id: row.curator_id as string,
+    agent_id: row.agent_id as string,
     tier: row.tier as number,
     content: row.content as string,
     substrate_hash: (row.substrate_hash as string) ?? null,
@@ -65,9 +65,9 @@ function toDigestExtractRow(row: Record<string, unknown>): DigestExtractRow {
 // ---------------------------------------------------------------------------
 
 /**
- * Upsert a digest extract. Uses ON CONFLICT on (curator_id, tier).
+ * Upsert a digest extract. Uses ON CONFLICT on (agent_id, tier).
  *
- * Creates or updates the extract for the given curator and token tier.
+ * Creates or updates the extract for the given agent and token tier.
  */
 export async function upsertDigestExtract(
   data: DigestExtractUpsert,
@@ -75,33 +75,33 @@ export async function upsertDigestExtract(
   const db = getDatabase();
 
   const result = await db.query(
-    `INSERT INTO digest_extracts (curator_id, tier, content, generated_at)
+    `INSERT INTO digest_extracts (agent_id, tier, content, generated_at)
      VALUES ($1, $2, $3, $4)
-     ON CONFLICT (curator_id, tier) DO UPDATE SET
+     ON CONFLICT (agent_id, tier) DO UPDATE SET
        content = EXCLUDED.content,
        generated_at = EXCLUDED.generated_at
      RETURNING ${SELECT_COLUMNS}`,
-    [data.curator_id, data.tier, data.content, data.generated_at],
+    [data.agent_id, data.tier, data.content, data.generated_at],
   );
 
   return toDigestExtractRow(result.rows[0] as Record<string, unknown>);
 }
 
 /**
- * Get a digest extract for a specific curator and tier.
+ * Get a digest extract for a specific agent and tier.
  *
  * @returns the extract row, or null if not found.
  */
 export async function getDigestExtract(
-  curatorId: string,
+  agentId: string,
   tier: number,
 ): Promise<DigestExtractRow | null> {
   const db = getDatabase();
 
   const result = await db.query(
     `SELECT ${SELECT_COLUMNS} FROM digest_extracts
-     WHERE curator_id = $1 AND tier = $2`,
-    [curatorId, tier],
+     WHERE agent_id = $1 AND tier = $2`,
+    [agentId, tier],
   );
 
   if (result.rows.length === 0) return null;
@@ -109,19 +109,19 @@ export async function getDigestExtract(
 }
 
 /**
- * List all digest extracts for a curator, ordered by tier ASC.
+ * List all digest extracts for an agent, ordered by tier ASC.
  */
 export async function listDigestExtracts(
-  curatorId: string,
+  agentId: string,
 ): Promise<DigestExtractRow[]> {
   const db = getDatabase();
 
   const result = await db.query(
     `SELECT ${SELECT_COLUMNS}
      FROM digest_extracts
-     WHERE curator_id = $1
+     WHERE agent_id = $1
      ORDER BY tier ASC`,
-    [curatorId],
+    [agentId],
   );
 
   return (result.rows as Record<string, unknown>[]).map(toDigestExtractRow);

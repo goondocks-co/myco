@@ -21,7 +21,7 @@ const DEFAULT_LIST_LIMIT = 100;
 /** Fields required (or optional) when inserting a report. */
 export interface ReportInsert {
   run_id: string;
-  curator_id: string;
+  agent_id: string;
   action: string;
   summary: string;
   details?: string | null;
@@ -32,15 +32,15 @@ export interface ReportInsert {
 export interface ReportRow {
   id: number;
   run_id: string;
-  curator_id: string;
+  agent_id: string;
   action: string;
   summary: string;
   details: string | null;
   created_at: number;
 }
 
-/** Filter options for `listReportsByCurator`. */
-export interface ListReportsByCuratorOptions {
+/** Filter options for `listReportsByAgent`. */
+export interface ListReportsByAgentOptions {
   limit?: number;
 }
 
@@ -51,7 +51,7 @@ export interface ListReportsByCuratorOptions {
 const REPORT_COLUMNS = [
   'id',
   'run_id',
-  'curator_id',
+  'agent_id',
   'action',
   'summary',
   'details',
@@ -69,7 +69,7 @@ function toReportRow(row: Record<string, unknown>): ReportRow {
   return {
     id: row.id as number,
     run_id: row.run_id as string,
-    curator_id: row.curator_id as string,
+    agent_id: row.agent_id as string,
     action: row.action as string,
     summary: row.summary as string,
     details: (row.details as string) ?? null,
@@ -89,14 +89,14 @@ export async function insertReport(data: ReportInsert): Promise<ReportRow> {
 
   const result = await db.query(
     `INSERT INTO agent_reports (
-       run_id, curator_id, action, summary, details, created_at
+       run_id, agent_id, action, summary, details, created_at
      ) VALUES (
        $1, $2, $3, $4, $5, $6
      )
      RETURNING ${SELECT_COLUMNS}`,
     [
       data.run_id,
-      data.curator_id,
+      data.agent_id,
       data.action,
       data.summary,
       data.details ?? null,
@@ -125,11 +125,11 @@ export async function listReports(runId: string): Promise<ReportRow[]> {
 }
 
 /**
- * List reports by curator, ordered by created_at DESC.
+ * List reports by agent, ordered by created_at DESC.
  */
-export async function listReportsByCurator(
-  curatorId: string,
-  options: ListReportsByCuratorOptions = {},
+export async function listReportsByAgent(
+  agentId: string,
+  options: ListReportsByAgentOptions = {},
 ): Promise<ReportRow[]> {
   const db = getDatabase();
 
@@ -138,10 +138,10 @@ export async function listReportsByCurator(
   const result = await db.query(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_reports
-     WHERE curator_id = $1
+     WHERE agent_id = $1
      ORDER BY created_at DESC
      LIMIT $2`,
-    [curatorId, limit],
+    [agentId, limit],
   );
 
   return (result.rows as Record<string, unknown>[]).map(toReportRow);

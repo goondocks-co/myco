@@ -34,26 +34,26 @@ function makeSession(overrides: Partial<SessionInsert> = {}): SessionInsert {
   };
 }
 
-/** Insert a curator directly into the curators table and return its id. */
-async function createCurator(id: string): Promise<string> {
+/** Insert an agent directly into the agents table and return its id. */
+async function createAgent(id: string): Promise<string> {
   const db = getDatabase();
   const now = epochNow();
   await db.query(
-    `INSERT INTO curators (id, name, created_at) VALUES ($1, $2, $3)`,
-    [id, `curator-${id}`, now],
+    `INSERT INTO agents (id, name, created_at) VALUES ($1, $2, $3)`,
+    [id, `agent-${id}`, now],
   );
   return id;
 }
 
 /** Factory for minimal valid spore data. */
 function makeSpore(
-  curatorId: string,
+  agentId: string,
   overrides: Partial<SporeInsert> = {},
 ): SporeInsert {
   const now = epochNow();
   return {
     id: `spore-${Math.random().toString(36).slice(2, 8)}`,
-    curator_id: curatorId,
+    agent_id: agentId,
     observation_type: 'gotcha',
     content: 'Some observation content',
     created_at: now,
@@ -106,8 +106,8 @@ describe('embedding query helpers', () => {
     });
 
     it('stores an embedding on a spore row', async () => {
-      const curatorId = await createCurator('curator-emb');
-      const spore = makeSpore(curatorId);
+      const agentId = await createAgent('agent-emb');
+      const spore = makeSpore(agentId);
       await insertSpore(spore);
 
       const vec = makeUnitVector(1);
@@ -244,8 +244,8 @@ describe('embedding query helpers', () => {
     });
 
     it('works with spores table', async () => {
-      const curatorId = await createCurator('curator-search');
-      const spore = makeSpore(curatorId, { id: 'spore-search' });
+      const agentId = await createAgent('agent-search');
+      const spore = makeSpore(agentId, { id: 'spore-search' });
       await insertSpore(spore);
       await setEmbedding('spores', 'spore-search', makeUnitVector(2));
 
@@ -324,8 +324,8 @@ describe('embedding query helpers', () => {
     });
 
     it('works with spores table', async () => {
-      const curatorId = await createCurator('curator-unemb');
-      const spore = makeSpore(curatorId, { id: 'spore-unemb' });
+      const agentId = await createAgent('agent-unemb');
+      const spore = makeSpore(agentId, { id: 'spore-unemb' });
       await insertSpore(spore);
 
       const rows = await getUnembedded('spores');
