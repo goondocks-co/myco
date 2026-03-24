@@ -1,22 +1,33 @@
 /**
- * CLI `agent` command — trigger an intelligence agent run.
+ * CLI `agent` command — trigger an intelligence agent run via daemon API.
  *
- * Accepts optional --task and --instruction flags to customize the run.
- * Delegates entirely to the agent executor.
+ * Routes through the daemon HTTP API to avoid PGlite file lock conflicts.
+ * The daemon's /api/agent/run endpoint fires-and-forgets the run.
  */
+
+import { DaemonClient } from '../hooks/client.js';
 
 export async function run(args: string[], vaultDir: string): Promise<void> {
   const task = args.find((_, i) => args[i - 1] === '--task');
   const instruction = args.find((_, i) => args[i - 1] === '--instruction');
 
-  console.log('Starting agent...');
-  const { runAgent } = await import('../agent/executor.js');
-  const result = await runAgent(vaultDir, { task, instruction });
+  const client = new DaemonClient(vaultDir);
+  const healthy = await client.ensureRunning();
+  if (!healthy) {
+    console.error('Failed to connect to daemon');
+    process.exit(1);
+  }
 
-  console.log(`\nAgent ${result.status}:`);
-  console.log(`  Run ID: ${result.runId}`);
-  if (result.tokensUsed) console.log(`  Tokens: ${result.tokensUsed}`);
-  if (result.costUsd) console.log(`  Cost: $${result.costUsd.toFixed(4)}`);
-  if (result.error) console.log(`  Error: ${result.error}`);
-  if (result.reason) console.log(`  Reason: ${result.reason}`);
+  console.log('Starting agent...');
+  const result = await client.post('/api/agent/run', { task, instruction });
+
+  if (!result.ok) {
+    console.error('Failed to start agent run');
+    process.exit(1);
+  }
+
+  console.log('Agent run dispatched to daemon');
+  if (result.data?.message) {
+    console.log(`  ${result.data.message}`);
+  }
 }
