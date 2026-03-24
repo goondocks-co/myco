@@ -4,7 +4,7 @@
  * Routes through the daemon HTTP API to avoid PGlite file lock conflicts.
  */
 
-import { DaemonClient } from '../hooks/client.js';
+import { connectToDaemon } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,12 +37,7 @@ interface SessionDetail {
 export async function run(args: string[], vaultDir: string): Promise<void> {
   const idOrLatest = args[0];
 
-  const client = new DaemonClient(vaultDir);
-  const healthy = await client.ensureRunning();
-  if (!healthy) {
-    console.error('Failed to connect to daemon');
-    process.exit(1);
-  }
+  const client = await connectToDaemon(vaultDir);
 
   // List sessions
   const listResult = await client.get('/api/sessions');

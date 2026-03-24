@@ -5,7 +5,20 @@ import { SymbiontRegistry } from '../symbionts/registry.js';
 import { OllamaBackend } from '../intelligence/ollama.js';
 import { LmStudioBackend } from '../intelligence/lm-studio.js';
 
+import { DaemonClient } from '../hooks/client.js';
+
 export { parseStringFlag, parseIntFlag } from '../logs/format.js';
+
+/** Connect to the daemon, ensuring it's running. Exits on failure. */
+export async function connectToDaemon(vaultDir: string): Promise<DaemonClient> {
+  const client = new DaemonClient(vaultDir);
+  const healthy = await client.ensureRunning();
+  if (!healthy) {
+    console.error('Failed to connect to daemon');
+    process.exit(1);
+  }
+  return client;
+}
 
 /** Load .env from cwd (not script location — that's the plugin install dir). */
 export function loadEnv(): void {

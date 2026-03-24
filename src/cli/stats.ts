@@ -4,16 +4,11 @@
  * Routes through the daemon HTTP API to avoid PGlite file lock conflicts.
  */
 
-import { DaemonClient } from '../hooks/client.js';
 import type { V2Stats } from '../services/stats.js';
+import { connectToDaemon } from './shared.js';
 
 export async function run(_args: string[], vaultDir: string): Promise<void> {
-  const client = new DaemonClient(vaultDir);
-  const healthy = await client.ensureRunning();
-  if (!healthy) {
-    console.error('Failed to connect to daemon');
-    process.exit(1);
-  }
+  const client = await connectToDaemon(vaultDir);
 
   const result = await client.get('/api/stats');
   if (!result.ok || !result.data) {

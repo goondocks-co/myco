@@ -5,8 +5,8 @@
  * The daemon handles embedding, semantic search, and FTS internally.
  */
 
-import { DaemonClient } from '../hooks/client.js';
 import { CONTENT_SNIPPET_CHARS } from '@myco/constants.js';
+import { connectToDaemon } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -39,12 +39,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   const query = args.join(' ');
   if (!query) { console.error('Usage: myco search <query>'); process.exit(1); }
 
-  const client = new DaemonClient(vaultDir);
-  const healthy = await client.ensureRunning();
-  if (!healthy) {
-    console.error('Failed to connect to daemon');
-    process.exit(1);
-  }
+  const client = await connectToDaemon(vaultDir);
 
   // Semantic search
   const semanticParams = new URLSearchParams({
@@ -103,12 +98,7 @@ export async function runVectors(args: string[], vaultDir: string): Promise<void
   const query = args.join(' ');
   if (!query) { console.error('Usage: myco vectors <query>'); process.exit(1); }
 
-  const client = new DaemonClient(vaultDir);
-  const healthy = await client.ensureRunning();
-  if (!healthy) {
-    console.error('Failed to connect to daemon');
-    process.exit(1);
-  }
+  const client = await connectToDaemon(vaultDir);
 
   const params = new URLSearchParams({
     q: query,

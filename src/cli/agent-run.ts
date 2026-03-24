@@ -5,18 +5,13 @@
  * The daemon's /api/agent/run endpoint fires-and-forgets the run.
  */
 
-import { DaemonClient } from '../hooks/client.js';
+import { connectToDaemon } from './shared.js';
 
 export async function run(args: string[], vaultDir: string): Promise<void> {
   const task = args.find((_, i) => args[i - 1] === '--task');
   const instruction = args.find((_, i) => args[i - 1] === '--instruction');
 
-  const client = new DaemonClient(vaultDir);
-  const healthy = await client.ensureRunning();
-  if (!healthy) {
-    console.error('Failed to connect to daemon');
-    process.exit(1);
-  }
+  const client = await connectToDaemon(vaultDir);
 
   console.log('Starting agent...');
   const result = await client.post('/api/agent/run', { task, instruction });
