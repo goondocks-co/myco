@@ -1,4 +1,9 @@
-# Title and summary generation for sessions missing them.
+# =============================================================================
+# Built-in Task: Title & Summary
+# =============================================================================
+# Lightweight task triggered by batch threshold or session stop.
+# Only generates titles and summaries — no extraction or graph work.
+# =============================================================================
 
 name: title-summary
 displayName: Title & Summary
@@ -7,15 +12,34 @@ description: >
   prompt batches and activities within each session to produce a concise
   title and informative summary.
 agent: myco-agent
-prompt: >
-  Find sessions that are missing a title or summary. For each such session,
-  review its prompt batches and activities to understand what happened.
-  Generate a concise title (under 80 characters) and an informative summary
-  (2-4 sentences) that captures the key work done and outcomes. Update each
-  session with the generated title and summary.
 isDefault: false
 maxTurns: 15
 timeoutSeconds: 120
+
+prompt: |
+  Generate or update session titles and summaries. Budget: ~12 turns.
+
+  ## Phase 1 — Find Sessions Needing Updates (budget: 3 turns)
+
+  1. Call `vault_sessions` with limit 10
+  2. Identify sessions where title is null, summary is null, or the
+     title looks like a truncated first prompt (ends with "...")
+
+  ## Phase 2 — Generate Titles and Summaries (budget: 8 turns)
+
+  For each session needing updates:
+  1. Call `vault_unprocessed` or review existing batches to understand
+     what happened in the session
+  2. Call `vault_update_session` with BOTH title and summary:
+     - Title: under 80 characters, reflects the full session scope
+     - Summary: 2-4 sentences capturing key work, tools used, outcomes
+
+  ## Phase 3 — Report (budget: 1 turn)
+
+  Call `vault_report` with action "summary":
+  - Sessions updated: N
+  - Sessions skipped (already current): N
+
 toolOverrides:
   - vault_unprocessed
   - vault_sessions

@@ -1,21 +1,108 @@
-# Full intelligence pass — the default task.
-# Processes all unprocessed data: extraction, graph building, supersession, digest.
+# =============================================================================
+# Built-in Task: Full Intelligence
+# =============================================================================
+# Default task for: myco-agent
+#
+# Complete intelligence pipeline: extraction → summaries → consolidation →
+# entity building → digest. Each phase has a turn budget. Total: ~45 turns.
+# =============================================================================
 
 name: full-intelligence
 displayName: Full Intelligence
 description: >
   Complete intelligence pass over all unprocessed session data. Extracts
-  observations as spores, builds knowledge graph entities and edges, runs
-  supersession checks, updates session summaries, and regenerates digest
-  extracts.
+  observations as spores, updates session summaries, consolidates related
+  spores into wisdom, builds knowledge graph entities and edges, and
+  regenerates digest extracts.
 agent: myco-agent
-prompt: >
-  Process all unprocessed prompt batches and sessions. For each batch:
-  extract observations as spores, identify entities and relationships for the
-  knowledge graph, and check for supersession against existing spores.
-  For each session touched, evaluate and update the session title and summary
-  per the summary update criteria in your instructions. After processing all
-  new data, regenerate digest extracts if the substrate has changed.
 isDefault: true
 maxTurns: 50
 timeoutSeconds: 600
+
+prompt: |
+  Run a complete intelligence pass. This task has 7 phases — you MUST
+  complete all of them. Each phase has a turn budget (1 turn = 1 tool call).
+
+  ## Phase 1 — Read State (budget: 2 turns)
+
+  1. Call `vault_state` to get your cursor (`last_processed_batch_id`)
+  2. Call `vault_unprocessed` with `after_id` set to your cursor
+
+  If no unprocessed batches exist, skip to Phase 4 (consolidation may
+  still be needed on existing spores). Report via `vault_report` with
+  action "skip" and reason "no unprocessed batches".
+
+  ## Phase 2 — Extract Spores (budget: 15 turns)
+
+  For each unprocessed batch:
+  1. Read `user_prompt` to understand what the developer asked
+  2. Extract observations as spores — only genuine insights, not activity
+  3. Call `vault_create_spore` for each observation (include session_id,
+     prompt_batch_id, importance 1-10, tags)
+  4. Call `vault_mark_processed` for the batch
+  5. Update cursor via `vault_set_state`
+
+  Batch multiple mark_processed calls. One observation per spore.
+  If approaching the turn budget, stop extraction and continue to Phase 3.
+
+  ## Phase 3 — Session Summaries (budget: 5 turns)
+
+  For each session touched during extraction:
+  1. Call `vault_sessions` to check current title/summary
+  2. If missing or outdated, call `vault_update_session` with BOTH title
+     and summary
+  3. Title: under 80 chars, reflects full session scope
+  4. Summary: 2-4 sentences, key work done + outcomes
+
+  Report via `vault_report` with action "summary" for each update.
+  If no updates needed, report action "skip" with reason.
+
+  ## Phase 4 — Consolidation (budget: 10 turns)
+
+  Search for clusters of related spores that can become wisdom:
+  1. Call `vault_search` with content from your newly created spores
+  2. Also call `vault_spores` filtered by observation_type as fallback
+  3. When you find 3+ related active spores on the same topic:
+     a. Create a wisdom spore via `vault_create_spore` with:
+        - observation_type: "wisdom"
+        - properties: '{"consolidated_from": ["id-1", "id-2", "id-3"]}'
+        - Content preserving ALL specific details from sources
+     b. Resolve each source via `vault_resolve_spore` action "consolidate"
+  4. Skip spores with status "consolidated" to prevent cycles
+
+  If `vault_search` returns no results (embedding unavailable), report
+  action "skip" and move on. Do NOT skip this phase entirely.
+
+  ## Phase 5 — Entity Hub Building (budget: 5 turns)
+
+  Create entities only when referenced by 3+ spores from 2+ sessions:
+  1. Review spores created in this run + recent active spores
+  2. Identify components, concepts, or people mentioned repeatedly
+  3. Call `vault_create_entity` with type: component | concept | person
+  4. Create semantic edges via `vault_create_edge`:
+     - REFERENCES (spore→entity), DEPENDS_ON (entity→entity),
+       AFFECTS (spore→entity), RELATES_TO, SUPERSEDED_BY
+     - Include source_type/target_type on every edge
+  5. Do NOT create lineage edges (FROM_SESSION, EXTRACTED_FROM, etc.)
+
+  Report via `vault_report` with action "graph" listing entities/edges created.
+
+  ## Phase 6 — Digest (budget: 5 turns)
+
+  Regenerate context extracts if you extracted new knowledge:
+  1. Write at all five tiers: 1500, 3000, 5000, 7500, 10000
+  2. Each tier is self-contained at that token budget
+  3. Call `vault_write_digest` for each tier
+  4. Prioritize recent insights, active decisions, unresolved gotchas
+
+  If no new knowledge was extracted, report action "skip" with reason.
+
+  ## Phase 7 — Report (budget: 2 turns)
+
+  Final summary via `vault_report` with action "complete":
+  - Batches processed: N
+  - Spores created: N (by type)
+  - Sessions updated: N
+  - Wisdom created: N
+  - Entities created: N, edges created: N
+  - Digest regenerated: yes/no
