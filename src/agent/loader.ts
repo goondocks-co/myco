@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findPackageRoot } from '@myco/utils/find-package-root.js';
 import { parse as parseYaml } from 'yaml';
 import { epochSeconds, DEFAULT_AGENT_ID, BUILT_IN_SOURCE } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -28,8 +29,7 @@ const AGENT_DEFINITION_FILE = 'agent.yaml';
 /** Subdirectory containing task YAML files. */
 const TASKS_SUBDIRECTORY = 'tasks';
 
-/** Max parent directories to walk when resolving the package root. */
-const MAX_PARENT_WALK_DEPTH = 10;
+// Package root resolution uses shared findPackageRoot from @myco/utils
 
 // BUILT_IN_SOURCE imported from @myco/constants.js
 
@@ -47,33 +47,31 @@ const MAX_PARENT_WALK_DEPTH = 10;
  * 4. Also check if the current file's directory already contains agent.yaml.
  */
 export function resolveDefinitionsDir(): string {
-  let dir = path.dirname(fileURLToPath(import.meta.url));
+  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
-  // Check if we're already adjacent to the definitions
-  const adjacentDefs = path.join(dir, 'definitions');
+  // Check if we're already adjacent to the definitions (tsc output or dev mode)
+  const adjacentDefs = path.join(scriptDir, 'definitions');
   if (fs.existsSync(path.join(adjacentDefs, AGENT_DEFINITION_FILE))) {
     return adjacentDefs;
   }
 
-  // Walk up to find package.json
-  for (let i = 0; i < MAX_PARENT_WALK_DEPTH; i++) {
-    if (fs.existsSync(path.join(dir, 'package.json'))) {
-      // Try dist path first (tsup bundled output)
-      const distPath = path.join(dir, 'dist', 'src', 'agent', 'definitions');
-      if (fs.existsSync(path.join(distPath, AGENT_DEFINITION_FILE))) {
-        return distPath;
-      }
-      // Fall back to src path (dev mode)
-      const srcPath = path.join(dir, 'src', 'agent', 'definitions');
-      if (fs.existsSync(path.join(srcPath, AGENT_DEFINITION_FILE))) {
-        return srcPath;
-      }
+  // Walk up to package root using shared utility
+  const root = findPackageRoot(scriptDir);
+  if (root) {
+    // Try dist path first (tsup bundled output)
+    const distPath = path.join(root, 'dist', 'src', 'agent', 'definitions');
+    if (fs.existsSync(path.join(distPath, AGENT_DEFINITION_FILE))) {
+      return distPath;
     }
-    dir = path.dirname(dir);
+    // Fall back to src path (dev mode)
+    const srcPath = path.join(root, 'src', 'agent', 'definitions');
+    if (fs.existsSync(path.join(srcPath, AGENT_DEFINITION_FILE))) {
+      return srcPath;
+    }
   }
 
   // Final fallback: adjacent to current file
-  return path.join(path.dirname(fileURLToPath(import.meta.url)), 'definitions');
+  return adjacentDefs;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 import { useTriggerRun, useCopyTask, useDeleteTask, type TaskRow } from '../../hooks/use-agent';
+import { TASK_SOURCE_BUILTIN, TASK_SOURCE_USER } from '../../lib/constants';
 
 /* ---------- Types ---------- */
 
@@ -27,7 +28,7 @@ export function TaskActions({ task, onRunTriggered, onDeleted }: TaskActionsProp
         Run Now
       </button>
 
-      {task.source === 'built-in' && (
+      {task.source === TASK_SOURCE_BUILTIN && (
         <button
           onClick={() => copyTask.mutate({ taskId: task.id })}
           className="px-3 py-1.5 text-sm font-medium rounded-md border hover:bg-accent"
@@ -36,7 +37,7 @@ export function TaskActions({ task, onRunTriggered, onDeleted }: TaskActionsProp
         </button>
       )}
 
-      {task.source === 'user' && (
+      {task.source === TASK_SOURCE_USER && (
         <button
           onClick={() => {
             deleteTask.mutate(task.id, { onSuccess: () => onDeleted?.() });

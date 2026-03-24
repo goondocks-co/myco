@@ -24,9 +24,6 @@ const PHASE_STATUS_CLASSES: Record<string, string> = {
   skipped: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
 };
 
-/** Tailwind class for clamping phase summary to 2 lines. */
-const SUMMARY_LINE_CLAMP = 'line-clamp-2';
-
 /* ---------- Component ---------- */
 
 export function PhaseTimeline({ phases }: PhaseTimelineProps) {
@@ -50,7 +47,7 @@ export function PhaseTimeline({ phases }: PhaseTimelineProps) {
               </div>
             </div>
             {phase.summary && (
-              <p className={`text-muted-foreground mt-1 ${SUMMARY_LINE_CLAMP}`}>{phase.summary}</p>
+              <p className="text-muted-foreground mt-1 line-clamp-2">{phase.summary}</p>
             )}
           </div>
         </div>

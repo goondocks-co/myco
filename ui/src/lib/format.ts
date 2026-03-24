@@ -49,3 +49,27 @@ export function truncate(text: string | null, max: number): string {
 export function capitalize(str: string): string {
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
+
+/**
+ * Format the duration between two epoch-second timestamps as a human-readable string.
+ * Returns an em dash if either timestamp is null.
+ */
+export function formatDuration(startEpoch: number | null, endEpoch: number | null): string {
+  if (startEpoch === null || endEpoch === null) return '\u2014';
+  const ms = (endEpoch - startEpoch) * MS_PER_SECOND;
+  if (ms < MS_PER_SECOND) return `${ms}ms`;
+  if (ms < SECONDS_PER_MINUTE * MS_PER_SECOND) return `${(ms / MS_PER_SECOND).toFixed(1)}s`;
+  const minutes = Math.floor(ms / (SECONDS_PER_MINUTE * MS_PER_SECOND));
+  const seconds = Math.floor((ms % (SECONDS_PER_MINUTE * MS_PER_SECOND)) / MS_PER_SECOND);
+  return `${minutes}m ${seconds}s`;
+}
+
+/**
+ * Format a millisecond duration as a human-readable string.
+ * Returns an em dash if null.
+ */
+export function formatDurationMs(ms: number | null): string {
+  if (ms === null) return '\u2014';
+  if (ms < MS_PER_SECOND) return `${ms}ms`;
+  return `${(ms / MS_PER_SECOND).toFixed(1)}s`;
+}
