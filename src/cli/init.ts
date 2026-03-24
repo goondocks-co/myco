@@ -13,6 +13,9 @@ import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
 
+/** Directories that must exist inside a vault for correct operation. */
+const VAULT_REQUIRED_DIRS = ['pgdata', 'buffer', 'attachments', 'logs'] as const;
+
 export async function run(args: string[]): Promise<void> {
   const vaultPath = parseStringFlag(args, '--vault');
 
@@ -27,8 +30,7 @@ export async function run(args: string[]): Promise<void> {
     console.log(`Initializing Myco vault at ${vaultDir}`);
 
     // Create directory structure
-    const dirs = ['pgdata', 'buffer', 'attachments', 'logs'];
-    for (const dir of dirs) {
+    for (const dir of VAULT_REQUIRED_DIRS) {
       fs.mkdirSync(path.join(vaultDir, dir), { recursive: true });
     }
 

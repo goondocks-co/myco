@@ -5,6 +5,7 @@
  */
 
 import type { DaemonClient } from '@myco/hooks/client.js';
+import { buildEndpoint } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -32,12 +33,10 @@ export async function handleMycoPlans(
   input: PlansInput,
   client: DaemonClient,
 ): Promise<PlanSummary[]> {
-  const params = new URLSearchParams();
-  if (input.status) params.set('status', input.status);
-  if (input.limit) params.set('limit', String(input.limit));
-
-  const qs = params.toString();
-  const endpoint = qs ? `/api/mcp/plans?${qs}` : '/api/mcp/plans';
+  const endpoint = buildEndpoint('/api/mcp/plans', {
+    status: input.status,
+    limit: input.limit,
+  });
   const result = await client.get(endpoint);
 
   if (!result.ok || !result.data?.plans) return [];

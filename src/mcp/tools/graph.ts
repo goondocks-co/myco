@@ -5,6 +5,7 @@
  */
 
 import type { DaemonClient } from '@myco/hooks/client.js';
+import { buildEndpoint } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,13 +38,10 @@ export async function handleMycoGraph(
   input: GraphInput,
   client: DaemonClient,
 ): Promise<GraphResult> {
-  const params = new URLSearchParams();
-  if (input.direction) params.set('direction', input.direction);
-  if (input.depth !== undefined) params.set('depth', String(input.depth));
-
-  const qs = params.toString();
-  const base = `/api/graph/${encodeURIComponent(input.note_id)}`;
-  const endpoint = qs ? `${base}?${qs}` : base;
+  const endpoint = buildEndpoint(`/api/graph/${encodeURIComponent(input.note_id)}`, {
+    direction: input.direction,
+    depth: input.depth,
+  });
   const result = await client.get(endpoint);
 
   if (!result.ok || !result.data) {

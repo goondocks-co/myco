@@ -227,7 +227,7 @@ function killStaleDaemon(vaultDir: string, logger: DaemonLogger): void {
     if (info.pid === process.pid) return;
 
     try {
-      process.kill(info.pid, 0); // Check if alive
+      process.kill(info.pid, 0);
       process.kill(info.pid, 'SIGTERM');
       logger.info('daemon', 'Killed stale daemon', { pid: info.pid });
     } catch { /* already dead */ }
@@ -1081,7 +1081,10 @@ export async function main(): Promise<void> {
           const db = getDatabase();
           const checkResult = await db.query('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0');
           const count = Number((checkResult.rows[0] as Record<string, unknown>).count);
-          if (count === 0) return;
+          if (count === 0) {
+            logger.debug('agent', 'No unprocessed batches, skipping cycle');
+            return;
+          }
 
           logger.info('agent', 'Unprocessed batches found, starting agent', { count });
           const { runAgent } = await import('../agent/executor.js');
@@ -1117,28 +1120,12 @@ export async function main(): Promise<void> {
         const rows = await getUnembedded(table, { limit: EMBEDDING_BATCH_SIZE });
         if (rows.length === 0) continue;
 
-        // For each row, get its text content and embed it
-        const db = getDatabase();
-        // Each table stores embeddable text in different columns
-        const textColumn: Record<string, string> = {
-          sessions: 'summary',
-          spores: 'content',
-          plans: 'content',
-          artifacts: 'content',
-        };
-        const col = textColumn[table] ?? 'content';
         for (const row of rows) {
           try {
-            const contentResult = await db.query(
-              `SELECT ${col} as text FROM ${table} WHERE id = $1`,
-              [row.id],
-            );
-            const text = String((contentResult.rows[0] as Record<string, unknown>)?.text ?? '');
-            if (!text) continue;
+            if (!row.text) continue;
 
-            const embedding = await tryEmbed(text);
+            const embedding = await tryEmbed(row.text);
             if (!embedding) {
-              // Provider unavailable — stop trying this cycle
               if (totalEmbedded === 0) {
                 logger.debug('embedding', 'Provider unavailable, skipping cycle');
               }

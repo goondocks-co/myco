@@ -21,6 +21,12 @@ export const PREVIOUS_SCHEMA_VERSION = 3;
 /** Embedding vector dimensions (bge-m3 default). */
 export const EMBEDDING_DIMENSIONS = 1024;
 
+/** Legacy agent ID from the "curator" era — used in data migrations. */
+const LEGACY_AGENT_ID = 'myco-curator';
+
+/** Current agent ID — the rename target for legacy rows. */
+const CURRENT_AGENT_ID = 'myco-agent';
+
 // ---------------------------------------------------------------------------
 // DDL statements
 // ---------------------------------------------------------------------------
@@ -575,7 +581,7 @@ async function migrateV3ToV4(db: PGlite): Promise<void> {
 
   // -- Step 2: Rename curator_id → agent_id in all 12 tables --
   // Tables that have a curator_id column to rename:
-  const CURATOR_ID_TABLES = [
+  const AGENT_ID_TABLES = [
     'agents',
     'spores',
     'entities',
@@ -590,7 +596,7 @@ async function migrateV3ToV4(db: PGlite): Promise<void> {
     'agent_state',
   ] as const;
 
-  for (const table of CURATOR_ID_TABLES) {
+  for (const table of AGENT_ID_TABLES) {
     if (await columnExists(db, table, 'curator_id')) {
       await db.query(`ALTER TABLE ${table} RENAME COLUMN curator_id TO agent_id`);
     }
@@ -618,11 +624,9 @@ async function migrateV3ToV4(db: PGlite): Promise<void> {
   // -- Step 4: Update agent_id values from old default to new default --
   // The column rename (step 2) preserved values, but the DEFAULT_AGENT_ID
   // constant changed from 'myco-curator' to 'myco-agent'. Update all rows.
-  const OLD_AGENT_ID = 'myco-curator';
-  const NEW_AGENT_ID = 'myco-agent';
-  for (const table of CURATOR_ID_TABLES) {
+  for (const table of AGENT_ID_TABLES) {
     if (await columnExists(db, table, 'agent_id')) {
-      await db.query(`UPDATE ${table} SET agent_id = '${NEW_AGENT_ID}' WHERE agent_id = '${OLD_AGENT_ID}'`);
+      await db.query(`UPDATE ${table} SET agent_id = '${CURRENT_AGENT_ID}' WHERE agent_id = '${LEGACY_AGENT_ID}'`);
     }
   }
 
@@ -636,8 +640,15 @@ async function migrateV3ToV4(db: PGlite): Promise<void> {
  * and is idempotent — rows already set to 'myco-agent' are unaffected.
  */
 async function fixupAgentIdValues(db: PGlite): Promise<void> {
-  const OLD_AGENT_ID = 'myco-curator';
-  const NEW_AGENT_ID = 'myco-agent';
+  // Early-exit: if no rows in agents have the legacy ID, nothing to fix
+  if (await tableExists(db, 'agents')) {
+    const probe = await db.query(
+      `SELECT 1 FROM agents WHERE id = $1 LIMIT 1`,
+      [LEGACY_AGENT_ID],
+    );
+    if (probe.rows.length === 0) return;
+  }
+
   const TABLES_WITH_AGENT_ID = [
     'agents', 'spores', 'entities', 'entity_mentions', 'edges',
     'resolution_events', 'digest_extracts', 'agent_runs', 'agent_reports',
@@ -648,7 +659,7 @@ async function fixupAgentIdValues(db: PGlite): Promise<void> {
     if (await tableExists(db, table) && await columnExists(db, table, 'agent_id')) {
       await db.query(
         `UPDATE ${table} SET agent_id = $1 WHERE agent_id = $2`,
-        [NEW_AGENT_ID, OLD_AGENT_ID],
+        [CURRENT_AGENT_ID, LEGACY_AGENT_ID],
       );
     }
   }

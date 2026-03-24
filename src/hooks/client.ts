@@ -63,9 +63,9 @@ export class DaemonClient {
     }
   }
 
-  async isHealthy(): Promise<boolean> {
+  async isHealthy(cachedInfo?: DaemonInfo | null): Promise<boolean> {
     try {
-      const info = this.readDaemonJson();
+      const info = cachedInfo ?? this.readDaemonJson();
       if (!info) return false;
 
       const res = await fetch(`http://127.0.0.1:${info.port}/health`, {
@@ -85,16 +85,13 @@ export class DaemonClient {
    * Skips the check if daemon.json was written recently (grace period) to prevent
    * rapid restart loops from concurrent hooks or session reloads.
    */
-  private async isStale(): Promise<boolean> {
+  private async isStale(info: DaemonInfo): Promise<boolean> {
     try {
       const jsonPath = path.join(this.vaultDir, 'daemon.json');
       const stat = fs.statSync(jsonPath);
       if (Date.now() - stat.mtimeMs < DAEMON_STALE_GRACE_PERIOD_MS) {
         return false;
       }
-
-      const info = this.readDaemonJson();
-      if (!info) return false;
 
       const res = await fetch(`http://127.0.0.1:${info.port}/health`, {
         signal: AbortSignal.timeout(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
@@ -115,9 +112,8 @@ export class DaemonClient {
   /**
    * Kill the running daemon process.
    */
-  private killDaemon(): void {
+  private killDaemon(info: DaemonInfo | null): void {
     try {
-      const info = this.readDaemonJson();
       if (!info) return;
       process.kill(info.pid, 'SIGTERM');
     } catch { /* already dead */ }
@@ -135,12 +131,13 @@ export class DaemonClient {
    */
   async ensureRunning(opts?: { checkStale?: boolean }): Promise<boolean> {
     const checkStale = opts?.checkStale ?? true;
+    const info = this.readDaemonJson();
 
-    if (checkStale && await this.isStale()) {
-      this.killDaemon();
+    if (checkStale && info && await this.isStale(info)) {
+      this.killDaemon(info);
       // Brief pause for port release
       await new Promise((r) => setTimeout(r, 200));
-    } else if (await this.isHealthy()) {
+    } else if (await this.isHealthy(info)) {
       return true;
     }
 

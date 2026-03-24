@@ -7,6 +7,7 @@
 
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { MCP_SEARCH_DEFAULT_LIMIT } from '@myco/constants.js';
+import { buildEndpoint } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -38,10 +39,12 @@ export async function handleMycoSearch(
 ): Promise<SearchResult[]> {
   const limit = input.limit ?? MCP_SEARCH_DEFAULT_LIMIT;
 
-  const params = new URLSearchParams({ q: input.query, limit: String(limit) });
-  if (input.type) params.set('type', input.type);
-
-  const result = await client.get(`/api/search?${params.toString()}`);
+  const endpoint = buildEndpoint('/api/search', {
+    q: input.query,
+    limit,
+    type: input.type,
+  });
+  const result = await client.get(endpoint);
   if (!result.ok || !result.data?.results) return [];
 
   return result.data.results as SearchResult[];
