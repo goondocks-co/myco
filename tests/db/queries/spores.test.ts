@@ -125,6 +125,18 @@ describe('spore query helpers', () => {
       expect(row.content_hash).toBe('hash-abc');
     });
 
+    it('stores and retrieves properties as JSON string', async () => {
+      const props = JSON.stringify({ consolidated_from: ['spore-a', 'spore-b'] });
+      const data = makeSpore(agentId, { properties: props });
+      const row = await insertSpore(data);
+
+      expect(row.properties).toBe(props);
+
+      const fetched = await getSpore(data.id);
+      expect(fetched!.properties).toBe(props);
+      expect(JSON.parse(fetched!.properties!)).toEqual({ consolidated_from: ['spore-a', 'spore-b'] });
+    });
+
     it('accepts any observation_type string', async () => {
       const data = makeSpore(agentId, { observation_type: 'custom_weird_type' });
       const row = await insertSpore(data);
