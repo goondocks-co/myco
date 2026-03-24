@@ -47,7 +47,7 @@ import { listTasksByAgent } from '../db/queries/tasks.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession } from '../db/queries/sessions.js';
-import { insertBatch, closeBatch, incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber } from '../db/queries/batches.js';
+import { insertBatch, closeBatch, incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, recoverBatchState } from '../db/queries/batches.js';
 import { insertActivity } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
 import { listRuns, getRun, getRunningRun } from '../db/queries/runs.js';
@@ -117,12 +117,9 @@ export async function handleUserPrompt(
   const now = epochSeconds();
   let state = batchState.get(sessionId);
   if (!state) {
-    // Recover prompt number from DB to survive daemon restarts
-    const session = await getSession(sessionId);
-    const resumeNumber = session?.prompt_count
-      ? session.prompt_count + INITIAL_PROMPT_NUMBER
-      : INITIAL_PROMPT_NUMBER;
-    state = { currentBatchId: null, promptNumber: resumeNumber };
+    // Recover from database — the DB is the source of truth, not in-memory state.
+    const recovered = await recoverBatchState(sessionId);
+    state = { currentBatchId: recovered.openBatchId, promptNumber: recovered.nextPromptNumber };
   }
 
   // Close previous batch if open
