@@ -47,7 +47,7 @@ import { listTasksByAgent } from '../db/queries/tasks.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession } from '../db/queries/sessions.js';
-import { insertBatch, closeBatch, incrementActivityCount } from '../db/queries/batches.js';
+import { insertBatch, closeBatch, incrementActivityCount, updateBatchResponseSummary } from '../db/queries/batches.js';
 import { insertActivity } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
 import { listRuns, getRun, getRunningRun } from '../db/queries/runs.js';
@@ -393,7 +393,7 @@ export async function main(): Promise<void> {
     registry.register(session_id, { started_at: resolvedStartedAt, branch });
     server.updateDaemonJsonSessions(registry.sessions);
 
-    // Upsert session in PGlite
+    // Upsert session in PGlite — always reset to active on register
     const now = epochSeconds();
     const startedEpoch = Math.floor(new Date(resolvedStartedAt).getTime() / 1000);
     await upsertSession({
@@ -404,7 +404,10 @@ export async function main(): Promise<void> {
       branch: branch ?? null,
       started_at: startedEpoch,
       created_at: now,
+      status: 'active',
     });
+    // Clear ended_at if session was previously completed (reload scenario)
+    await updateSession(session_id, { ended_at: null, status: 'active' });
 
     logger.info('lifecycle', 'Session registered', { session_id, branch, started_at: started_at ?? null });
     return { body: { ok: true, sessions: registry.sessions } };
@@ -663,6 +666,16 @@ export async function main(): Promise<void> {
     if (title) updateFields.title = title;
 
     await updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
+
+    // Populate response_summary on batches from transcript AI responses
+    for (let i = 0; i < allTurns.length; i++) {
+      const turn = allTurns[i];
+      if (turn.aiResponse) {
+        const promptNumber = i + 1; // turns are 1-indexed by prompt_number
+        updateBatchResponseSummary(sessionId, promptNumber, turn.aiResponse)
+          .catch(err => logger.warn('processor', 'Failed to update batch response', { error: String(err) }));
+      }
+    }
 
     // Fire-and-forget: trigger title/summary generation via agent task
     try {

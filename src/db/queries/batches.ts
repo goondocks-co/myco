@@ -188,6 +188,25 @@ export async function closeBatch(
 }
 
 /**
+ * Update the response_summary for a batch by prompt_number within a session.
+ *
+ * Used at stop time to populate AI responses from the transcript.
+ */
+export async function updateBatchResponseSummary(
+  sessionId: string,
+  promptNumber: number,
+  responseSummary: string,
+): Promise<void> {
+  const db = getDatabase();
+  await db.query(
+    `UPDATE prompt_batches
+     SET response_summary = $1
+     WHERE session_id = $2 AND prompt_number = $3 AND response_summary IS NULL`,
+    [responseSummary, sessionId, promptNumber],
+  );
+}
+
+/**
  * Get unprocessed batches, ordered by id ASC (insertion order).
  *
  * Supports cursor-based pagination via `after_id` and a `limit` cap.
