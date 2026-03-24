@@ -18,6 +18,7 @@ agent: myco-agent
 isDefault: true
 maxTurns: 50
 timeoutSeconds: 600
+model: claude-sonnet-4-6
 
 prompt: |
   Run a complete intelligence pass. This task has 7 phases — you MUST
