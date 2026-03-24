@@ -279,6 +279,19 @@ export const ITEM_STAGE_MAP: Record<string, PipelineStage[]> = {
   artifact: ['capture', 'embedding', 'digest'],
 };
 
+// --- User task registry ---
+/** Subdirectory within the vault for user-created task YAML files. */
+export const USER_TASKS_DIR = 'tasks';
+
+/** Source label for user-created tasks. */
+export const USER_TASK_SOURCE = 'user';
+
+/** Task name validation pattern (lowercase, hyphens, digits). */
+export const TASK_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/;
+
+/** Maximum length for task names. */
+export const MAX_TASK_NAME_LENGTH = 50;
+
 // --- Automatic consolidation ---
 /** Minimum cluster size required before asking LLM to consolidate. */
 export const CONSOLIDATION_MIN_CLUSTER_SIZE = 3;
