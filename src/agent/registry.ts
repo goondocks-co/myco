@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
-import { USER_TASKS_DIR, USER_TASK_SOURCE, TASK_NAME_PATTERN, MAX_TASK_NAME_LENGTH } from '@myco/constants.js';
+import { USER_TASKS_DIR, USER_TASK_SOURCE, BUILT_IN_SOURCE, TASK_NAME_PATTERN, MAX_TASK_NAME_LENGTH } from '@myco/constants.js';
 import { loadAgentTasks } from './loader.js';
 import { AgentTaskSchema } from './schemas.js';
 import type { AgentTask } from './types.js';
@@ -20,8 +20,7 @@ import type { AgentTask } from './types.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Source label applied to tasks loaded from the definitions directory. */
-const BUILT_IN_SOURCE = 'built-in';
+// BUILT_IN_SOURCE imported from @myco/constants.js
 
 /** Suffix appended to the task name when copying a built-in task for the user. */
 const COPY_SUFFIX = '-custom';

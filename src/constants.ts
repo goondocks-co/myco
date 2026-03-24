@@ -286,6 +286,9 @@ export const USER_TASKS_DIR = 'tasks';
 /** Source label for user-created tasks. */
 export const USER_TASK_SOURCE = 'user';
 
+/** Source label for built-in tasks shipped with the package. */
+export const BUILT_IN_SOURCE = 'built-in';
+
 /** Task name validation pattern (lowercase, hyphens, digits). */
 export const TASK_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/;
 

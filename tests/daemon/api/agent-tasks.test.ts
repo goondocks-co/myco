@@ -101,7 +101,7 @@ describe('handleListTasks', () => {
       const result = await handleListTasks(makeReq(), vaultDir);
 
       expect(result.status).toBe(200);
-      const tasks = result.body as AgentTask[];
+      const tasks = (result.body as { tasks: AgentTask[] }).tasks;
       expect(tasks.length).toBe(2);
       const names = tasks.map((t) => t.name);
       expect(names).toContain('full-intelligence');
@@ -122,7 +122,7 @@ describe('handleListTasks', () => {
       const result = await handleListTasks(makeReq({ query: { source: 'user' } }), vaultDir);
 
       expect(result.status).toBe(200);
-      const tasks = result.body as AgentTask[];
+      const tasks = (result.body as { tasks: AgentTask[] }).tasks;
       expect(tasks.length).toBe(1);
       expect(tasks[0].name).toBe('user-task');
       expect(tasks[0].source).toBe('user');
@@ -145,7 +145,7 @@ describe('handleListTasks', () => {
       );
 
       expect(result.status).toBe(200);
-      const tasks = result.body as AgentTask[];
+      const tasks = (result.body as { tasks: AgentTask[] }).tasks;
       expect(tasks.length).toBe(1);
       expect(tasks[0].name).toBe('built-in-task');
     } finally {
@@ -177,7 +177,7 @@ describe('handleGetTask', () => {
       const result = await handleGetTask(makeReq({ params: { id: 'phased-task' } }), vaultDir);
 
       expect(result.status).toBe(200);
-      const body = result.body as AgentTask;
+      const body = (result.body as { task: AgentTask }).task;
       expect(body.name).toBe('phased-task');
       expect(body.phases).toHaveLength(1);
       expect(body.phases![0].name).toBe('plan');

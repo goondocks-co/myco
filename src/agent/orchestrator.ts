@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { extractJson } from '@myco/intelligence/response.js';
 import type { PhaseDefinition, OrchestratorPlan, OrchestratorPhaseDirective } from './types.js';
 import type { ContextQueryResult } from './context-queries.js';
 
@@ -57,10 +58,16 @@ const PLACEHOLDER_CONTEXT_RESULTS = '{{context_results}}';
  * Resolves the path relative to this file so it works in both dev and built
  * (tsup) environments. The `prompts/` directory is a sibling of this file.
  */
+/** Cached prompt template — loaded once, reused across calls. */
+let cachedPromptTemplate: string | undefined;
+
 function loadPromptTemplate(): string {
-  const dir = path.dirname(fileURLToPath(import.meta.url));
-  const filePath = path.join(dir, 'prompts', ORCHESTRATOR_PROMPT_FILE);
-  return fs.readFileSync(filePath, 'utf-8');
+  if (!cachedPromptTemplate) {
+    const dir = path.dirname(fileURLToPath(import.meta.url));
+    const filePath = path.join(dir, 'prompts', ORCHESTRATOR_PROMPT_FILE);
+    cachedPromptTemplate = fs.readFileSync(filePath, 'utf-8');
+  }
+  return cachedPromptTemplate;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,8 +125,7 @@ export function parseOrchestratorPlan(
   }
 
   try {
-    const json = extractJson(trimmed);
-    const parsed = JSON.parse(json) as unknown;
+    const parsed = extractJson(trimmed);
 
     if (!isOrchestratorPlanShape(parsed)) {
       return buildRunAllPlan(phases, FALLBACK_REASONING_MISSING_PHASES);
@@ -245,17 +251,6 @@ function formatContextResults(results: ContextQueryResult[]): string {
       return `### ${r.tool}\nPurpose: ${r.purpose}\n\n${dataSection}`;
     })
     .join('\n\n');
-}
-
-/**
- * Extract JSON from a string that may be wrapped in a ```json code block.
- */
-function extractJson(text: string): string {
-  const codeBlockMatch = text.match(/```json\s*([\s\S]*?)```/);
-  if (codeBlockMatch) {
-    return codeBlockMatch[1].trim();
-  }
-  return text;
 }
 
 /**

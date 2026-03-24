@@ -68,7 +68,7 @@ export async function handleListTasks(
     tasks = tasks.filter((t) => t.source === sourceFilter);
   }
 
-  return { status: HTTP_OK, body: tasks };
+  return { status: HTTP_OK, body: { tasks } };
 }
 
 /**
@@ -88,7 +88,7 @@ export async function handleGetTask(
     return { status: HTTP_NOT_FOUND, body: { error: 'task_not_found' } };
   }
 
-  return { status: HTTP_OK, body: task };
+  return { status: HTTP_OK, body: { task } };
 }
 
 /**

@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
-import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
+import { epochSeconds, DEFAULT_AGENT_ID, BUILT_IN_SOURCE } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertTask } from '@myco/db/queries/tasks.js';
@@ -31,8 +31,7 @@ const TASKS_SUBDIRECTORY = 'tasks';
 /** Max parent directories to walk when resolving the package root. */
 const MAX_PARENT_WALK_DEPTH = 10;
 
-/** Source label for built-in agents and tasks in the database. */
-const BUILT_IN_SOURCE = 'built-in';
+// BUILT_IN_SOURCE imported from @myco/constants.js
 
 // ---------------------------------------------------------------------------
 // Definitions directory resolution
@@ -132,6 +131,9 @@ export function loadAgentTasks(definitionsDir: string): AgentTask[] {
       ...(parsed.maxTurns ? { maxTurns: parsed.maxTurns } : {}),
       ...(parsed.timeoutSeconds ? { timeoutSeconds: parsed.timeoutSeconds } : {}),
       ...(parsed.phases ? { phases: parsed.phases } : {}),
+      ...(parsed.orchestrator ? { orchestrator: parsed.orchestrator } : {}),
+      ...(parsed.contextQueries ? { contextQueries: parsed.contextQueries } : {}),
+      ...(parsed.execution ? { execution: parsed.execution } : {}),
     };
   });
 }

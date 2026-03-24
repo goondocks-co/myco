@@ -53,19 +53,32 @@ export async function executeContextQueries(
   agentId: string,
   queries: ContextQuery[],
 ): Promise<ContextQueryResult[]> {
-  const results: ContextQueryResult[] = [];
-
+  // Validate all tool names upfront — unknown tools are a programming error.
   for (const query of queries) {
-    const limit = query.limit ?? DEFAULT_CONTEXT_QUERY_LIMIT;
-
-    // Unknown tools are a programming error — always throw regardless of required flag.
     validateTool(query.tool);
+  }
 
-    try {
+  // Execute all queries in parallel — they hit independent DB tables.
+  const settled = await Promise.allSettled(
+    queries.map(async (query) => {
+      const limit = query.limit ?? DEFAULT_CONTEXT_QUERY_LIMIT;
       const data = await executeQuery(agentId, query.tool, limit);
-      results.push({ tool: query.tool, purpose: query.purpose, data });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      return { tool: query.tool, purpose: query.purpose, data } satisfies ContextQueryResult;
+    }),
+  );
+
+  // Map settled results, throwing for required failures.
+  const results: ContextQueryResult[] = [];
+  for (let i = 0; i < settled.length; i++) {
+    const outcome = settled[i];
+    const query = queries[i];
+
+    if (outcome.status === 'fulfilled') {
+      results.push(outcome.value);
+    } else {
+      const message = outcome.reason instanceof Error
+        ? outcome.reason.message
+        : String(outcome.reason);
 
       if (query.required) {
         throw new Error(

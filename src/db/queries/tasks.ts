@@ -6,6 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { BUILT_IN_SOURCE } from '@myco/constants.js';
 import type { TaskConfig } from '@myco/agent/types.js';
 
 // ---------------------------------------------------------------------------
@@ -16,10 +17,7 @@ import type { TaskConfig } from '@myco/agent/types.js';
 const DEFAULT_LIST_LIMIT = 100;
 
 /** Default task source for new tasks. */
-const DEFAULT_SOURCE = 'built-in';
-
-/** Source label for built-in tasks — protected from deletion. */
-const BUILT_IN_SOURCE = 'built-in';
+const DEFAULT_SOURCE = BUILT_IN_SOURCE;
 
 /** Default is_default flag for new tasks. */
 const DEFAULT_IS_DEFAULT = 0;
