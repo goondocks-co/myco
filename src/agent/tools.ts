@@ -1,7 +1,7 @@
 /**
- * Vault MCP tool server for the curation agent.
+ * Vault MCP tool server for the agent.
  *
- * Creates 14 tools that expose PGlite query helpers to the curation agent
+ * Creates 14 tools that expose PGlite query helpers to the agent
  * via the Claude Agent SDK. Tools are grouped into:
  * - Read tools: vault_unprocessed, vault_spores, vault_sessions, vault_search, vault_state
  * - Write tools: vault_create_spore, vault_create_entity, vault_create_edge,
@@ -9,8 +9,8 @@
  *                vault_write_digest, vault_mark_processed
  * - Observability: vault_report
  *
- * `curatorId` and `runId` are captured in closures — tools inject them
- * automatically so the agent cannot impersonate another curator.
+ * `agentId` and `runId` are captured in closures — tools inject them
+ * automatically so the agent cannot impersonate another agent.
  */
 
 import crypto from 'node:crypto';
@@ -21,7 +21,7 @@ import { getPluginVersion } from '@myco/version.js';
 import { getUnprocessedBatches, markBatchProcessed } from '@myco/db/queries/batches.js';
 import { listSpores, insertSpore, updateSporeStatus, DEFAULT_IMPORTANCE } from '@myco/db/queries/spores.js';
 import { listSessions, updateSession } from '@myco/db/queries/sessions.js';
-import { getStatesForCurator, setState } from '@myco/db/queries/agent-state.js';
+import { getStatesForAgent, setState } from '@myco/db/queries/agent-state.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { insertTurn } from '@myco/db/queries/turns.js';
 import { searchSimilar, EMBEDDABLE_TABLES, type EmbeddableTable } from '@myco/db/queries/embeddings.js';
@@ -66,15 +66,15 @@ function textResult(data: unknown): { content: Array<{ type: 'text'; text: strin
 export const VAULT_TOOL_COUNT = 14;
 
 /**
- * Create the 14 vault tool definitions for the curation agent.
+ * Create the 14 vault tool definitions for the agent.
  *
  * Exposed for testing (call handler directly) and for the MCP server factory.
  *
- * @param curatorId — the curator identity, injected into all write operations.
+ * @param agentId — the agent identity, injected into all write operations.
  * @param runId — the current agent run ID, injected into reports and turns.
  * @returns array of SdkMcpToolDefinition objects.
  */
-export function createVaultTools(curatorId: string, runId: string) {
+export function createVaultTools(agentId: string, runId: string) {
   /** Turn number counter — incremented per write tool call within a run. */
   let turnCounter = 0;
 
@@ -86,7 +86,7 @@ export function createVaultTools(curatorId: string, runId: string) {
     turnCounter++;
     insertTurn({
       run_id: runId,
-      curator_id: curatorId,
+      agent_id: agentId,
       turn_number: turnCounter,
       tool_name: toolName,
       tool_input: JSON.stringify(toolInput),
@@ -118,16 +118,16 @@ export function createVaultTools(curatorId: string, runId: string) {
 
   const vaultSpores = tool(
     'vault_spores',
-    'List spores with optional filters (curator, observation type, status).',
+    'List spores with optional filters (agent, observation type, status).',
     {
-      curator_id: z.string().optional().describe('Filter by curator ID'),
+      agent_id: z.string().optional().describe('Filter by agent ID'),
       observation_type: z.string().optional().describe('Filter by observation type (e.g., gotcha, decision)'),
       status: z.enum(['active', 'superseded', 'archived']).optional().describe('Filter by status'),
       limit: z.number().optional().describe('Maximum number of spores to return'),
     },
     async (args) => {
       const spores = await listSpores({
-        curator_id: args.curator_id,
+        agent_id: args.agent_id,
         observation_type: args.observation_type,
         status: args.status,
         limit: args.limit ?? DEFAULT_SPORES_LIMIT,
@@ -181,10 +181,10 @@ export function createVaultTools(curatorId: string, runId: string) {
 
   const vaultState = tool(
     'vault_state',
-    'Get all state key-value pairs for the current curator.',
+    'Get all state key-value pairs for the current agent.',
     {},
     async () => {
-      const states = await getStatesForCurator(curatorId);
+      const states = await getStatesForAgent(agentId);
       return textResult(states);
     },
   );
@@ -195,7 +195,7 @@ export function createVaultTools(curatorId: string, runId: string) {
 
   const vaultCreateSpore = tool(
     'vault_create_spore',
-    'Create a new spore (observation) in the vault. The curator_id is set automatically.',
+    'Create a new spore (observation) in the vault. The agent_id is set automatically.',
     {
       observation_type: z.string().describe('Type of observation (gotcha, decision, discovery, trade-off, bug_fix, etc.)'),
       content: z.string().describe('The observation content in markdown'),
@@ -212,7 +212,7 @@ export function createVaultTools(curatorId: string, runId: string) {
 
       const spore = await insertSpore({
         id,
-        curator_id: curatorId,
+        agent_id: agentId,
         observation_type: args.observation_type,
         content: args.content,
         session_id: args.session_id ?? null,
@@ -231,10 +231,10 @@ export function createVaultTools(curatorId: string, runId: string) {
 
   const vaultCreateEntity = tool(
     'vault_create_entity',
-    'Create or update an entity in the knowledge graph. Uses UPSERT on (curator_id, type, name).',
+    'Create or update an entity in the knowledge graph. Uses UPSERT on (agent_id, type, name).',
     {
       type: z.enum(['component', 'concept', 'file', 'bug', 'decision', 'tool', 'person']).describe('Entity type'),
-      name: z.string().describe('Entity name (unique within curator + type)'),
+      name: z.string().describe('Entity name (unique within agent + type)'),
       properties: z.record(z.string(), z.unknown()).optional().describe('Additional properties as key-value pairs'),
     },
     async (args) => {
@@ -244,7 +244,7 @@ export function createVaultTools(curatorId: string, runId: string) {
 
       const entity = await insertEntity({
         id,
-        curator_id: curatorId,
+        agent_id: agentId,
         type: args.type,
         name: args.name,
         properties: props,
@@ -274,7 +274,7 @@ export function createVaultTools(curatorId: string, runId: string) {
       const props = args.properties ? JSON.stringify(args.properties) : null;
 
       const edge = await insertEdge({
-        curator_id: curatorId,
+        agent_id: agentId,
         source_id: args.source_id,
         target_id: args.target_id,
         type: args.type,
@@ -317,7 +317,7 @@ export function createVaultTools(curatorId: string, runId: string) {
       const eventId = crypto.randomUUID();
       await insertResolutionEvent({
         id: eventId,
-        curator_id: curatorId,
+        agent_id: agentId,
         spore_id: args.spore_id,
         action: args.action,
         new_spore_id: args.new_spore_id ?? null,
@@ -353,14 +353,14 @@ export function createVaultTools(curatorId: string, runId: string) {
 
   const vaultSetState = tool(
     'vault_set_state',
-    'Set a key-value state pair for the current curator. Used for bookmarks, cursors, and preferences.',
+    'Set a key-value state pair for the current agent. Used for bookmarks, cursors, and preferences.',
     {
       key: z.string().describe('State key (e.g., last_processed_batch_id, cursor)'),
       value: z.string().describe('State value (stored as text)'),
     },
     async (args) => {
       const now = epochSeconds();
-      const state = await setState(curatorId, args.key, args.value, now);
+      const state = await setState(agentId, args.key, args.value, now);
 
       recordTurn('vault_set_state', args);
       return textResult(state);
@@ -369,7 +369,7 @@ export function createVaultTools(curatorId: string, runId: string) {
 
   const vaultWriteDigest = tool(
     'vault_write_digest',
-    'Write or update a digest extract at a specific token tier. Uses UPSERT on (curator_id, tier).',
+    'Write or update a digest extract at a specific token tier. Uses UPSERT on (agent_id, tier).',
     {
       tier: z.number().describe('Token budget tier (e.g., 1500, 3000, 5000, 7500, 10000)'),
       content: z.string().describe('The digest extract content in markdown'),
@@ -378,7 +378,7 @@ export function createVaultTools(curatorId: string, runId: string) {
       const now = epochSeconds();
 
       const extract = await upsertDigestExtract({
-        curator_id: curatorId,
+        agent_id: agentId,
         tier: args.tier,
         content: args.content,
         generated_at: now,
@@ -420,7 +420,7 @@ export function createVaultTools(curatorId: string, runId: string) {
 
       const report = await insertReport({
         run_id: runId,
-        curator_id: curatorId,
+        agent_id: agentId,
         action: args.action,
         summary: args.summary,
         details: args.details ? JSON.stringify(args.details) : null,
@@ -458,17 +458,17 @@ export function createVaultTools(curatorId: string, runId: string) {
 // ---------------------------------------------------------------------------
 
 /**
- * Create a vault MCP tool server with 14 tools for the curation agent.
+ * Create a vault MCP tool server with 14 tools for the agent.
  *
  * Wraps `createVaultTools()` with `createSdkMcpServer()` from the
  * Claude Agent SDK.
  *
- * @param curatorId — the curator identity, injected into all write operations.
+ * @param agentId — the agent identity, injected into all write operations.
  * @param runId — the current agent run ID, injected into reports and turns.
  * @returns an MCP server config with instance, suitable for the SDK.
  */
-export function createVaultToolServer(curatorId: string, runId: string) {
-  const tools = createVaultTools(curatorId, runId);
+export function createVaultToolServer(agentId: string, runId: string) {
+  const tools = createVaultTools(agentId, runId);
 
   return createSdkMcpServer({
     name: 'myco-vault',

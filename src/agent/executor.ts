@@ -1,10 +1,10 @@
 /**
- * Curation agent executor.
+ * Agent executor.
  *
  * Orchestrates a single agent run:
  *   1. Initializes the database for the vault.
- *   2. Resolves effective config (definition + curator DB overrides + task).
- *   3. Guards against concurrent runs for the same curator.
+ *   2. Resolves effective config (definition + agent DB overrides + task).
+ *   3. Guards against concurrent runs for the same agent.
  *   4. Creates a run record in the database.
  *   5. Builds the task prompt (vault context + task + optional instruction).
  *   6. Executes the Claude Agent SDK query with an in-process MCP tool server.
@@ -12,9 +12,9 @@
  */
 
 import crypto from 'node:crypto';
-import { epochSeconds, DEFAULT_CURATOR_ID } from '@myco/constants.js';
+import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { initDatabaseForVault } from '@myco/db/client.js';
-import { getCurator } from '@myco/db/queries/curators.js';
+import { getAgent } from '@myco/db/queries/agents.js';
 import { getTask, getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
   insertRun,
@@ -90,13 +90,13 @@ export function composeTaskPrompt(
 // ---------------------------------------------------------------------------
 
 /**
- * Run a curation agent against a vault.
+ * Run an agent against a vault.
  *
  * @param vaultDir — absolute path to the vault directory.
- * @param options — optional overrides for curator, task, and instruction.
+ * @param options — optional overrides for agent, task, and instruction.
  * @returns the run result with status, token usage, and cost.
  */
-export async function runCurationAgent(
+export async function runAgent(
   vaultDir: string,
   options?: RunOptions,
 ): Promise<AgentRunResult> {
@@ -107,15 +107,15 @@ export async function runCurationAgent(
   const definitionsDir = resolveDefinitionsDir();
   const definition = loadAgentDefinition(definitionsDir);
 
-  const curatorId = options?.curatorId ?? DEFAULT_CURATOR_ID;
+  const agentId = options?.agentId ?? DEFAULT_AGENT_ID;
 
-  // Load curator and task in parallel — both are independent DB lookups
+  // Load agent and task in parallel — both are independent DB lookups
   const taskPromise = options?.task
     ? getTask(options.task)
-    : getDefaultTask(curatorId);
+    : getDefaultTask(agentId);
 
-  const [curatorRow, taskRow] = await Promise.all([
-    getCurator(curatorId),
+  const [agentRow, taskRow] = await Promise.all([
+    getAgent(agentId),
     taskPromise,
   ]);
 
@@ -125,7 +125,7 @@ export async function runCurationAgent(
         name: taskRow.id,
         displayName: taskRow.display_name ?? taskRow.id,
         description: taskRow.description ?? '',
-        agent: taskRow.curator_id,
+        agent: taskRow.agent_id,
         prompt: taskRow.prompt,
         isDefault: taskRow.is_default === 1,
         ...(taskRow.tool_overrides
@@ -134,10 +134,10 @@ export async function runCurationAgent(
       }
     : undefined;
 
-  const config = resolveEffectiveConfig(definition, curatorRow, taskOverrides);
+  const config = resolveEffectiveConfig(definition, agentRow, taskOverrides);
 
   // 3. Concurrency guard
-  const running = await getRunningRun(curatorId);
+  const running = await getRunningRun(agentId);
   if (running) {
     return {
       runId: running.id,
@@ -152,7 +152,7 @@ export async function runCurationAgent(
 
   await insertRun({
     id: runId,
-    curator_id: curatorId,
+    agent_id: agentId,
     task: config.taskName,
     instruction: options?.instruction ?? null,
     status: STATUS_RUNNING,
@@ -161,7 +161,7 @@ export async function runCurationAgent(
 
   // 5. Build prompt
   const systemPrompt = loadSystemPrompt(definitionsDir, config.systemPromptPath);
-  const vaultContext = await buildVaultContext(curatorId);
+  const vaultContext = await buildVaultContext(agentId);
   const taskPrompt = composeTaskPrompt(
     vaultContext,
     config.taskDisplayName,
@@ -170,7 +170,7 @@ export async function runCurationAgent(
   );
 
   // 6. Create tool server
-  const toolServer = createVaultToolServer(curatorId, runId);
+  const toolServer = createVaultToolServer(agentId, runId);
 
   // 7. Execute Agent SDK
   try {
