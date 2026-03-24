@@ -1,4 +1,9 @@
-# Digest-only task — regenerate context extracts without processing new data.
+# =============================================================================
+# Built-in Task: Digest Only
+# =============================================================================
+# Regenerate digest extracts without processing new data.
+# Useful after manual edits to spores or after a consolidation run.
+# =============================================================================
 
 name: digest-only
 displayName: Digest Only
@@ -7,16 +12,52 @@ description: >
   Does not process new data or extract spores. Useful after manual edits
   to spores or graph data.
 agent: myco-agent
-prompt: >
-  Regenerate digest extracts at all configured token tiers. Read the current
-  vault state (spores, entities, edges, sessions) and synthesize updated
-  context extracts. Do not process new batches or extract new spores.
 isDefault: false
+maxTurns: 20
+timeoutSeconds: 300
+
+prompt: |
+  Regenerate digest extracts from current vault state. Budget: ~15 turns.
+
+  ## Phase 1 — Survey Current Knowledge (budget: 5 turns)
+
+  1. Call `vault_state` for context
+  2. Call `vault_spores` with status "active" to see current observations
+  3. Call `vault_sessions` to understand recent activity
+  4. Call `vault_search` with broad queries to sample vault breadth:
+     - "architecture decisions"
+     - "bugs and gotchas"
+     - "key components"
+
+  ## Phase 2 — Generate Extracts (budget: 8 turns)
+
+  Write digest extracts at all five tiers. Each tier is a self-contained
+  summary at that token budget — NOT an incremental expansion.
+
+  For each tier, call `vault_write_digest`:
+  1. Tier 1500 — Executive briefing: what is this project, what's active,
+     what to avoid. Most critical knowledge only.
+  2. Tier 3000 — Team standup: decisions, plans, conventions. Enough to
+     start contributing.
+  3. Tier 5000 — Deep onboarding: trade-offs, patterns, team dynamics.
+  4. Tier 7500 — Comprehensive: thread history, design tensions.
+  5. Tier 10000 — Full institutional knowledge: everything worth knowing.
+
+  Prioritize: recent insights > active decisions > unresolved gotchas >
+  architectural patterns > historical context.
+
+  ## Phase 3 — Report (budget: 1 turn)
+
+  Call `vault_report` with action "digest":
+  - Tiers regenerated: [1500, 3000, 5000, 7500, 10000]
+  - Active spores used as substrate: N
+  - Key themes captured
+
 toolOverrides:
-  - query_spores
-  - query_graph
-  - query_sessions
-  - semantic_search
-  - get_agent_state
-  - write_digest_extract
-  - set_agent_state
+  - vault_spores
+  - vault_sessions
+  - vault_search
+  - vault_state
+  - vault_write_digest
+  - vault_set_state
+  - vault_report

@@ -38,6 +38,7 @@ export interface TaskInsert {
   description?: string | null;
   is_default?: number;
   tool_overrides?: string | null;
+  model?: string | null;
   config?: string | null;
   updated_at?: number | null;
 }
@@ -52,6 +53,7 @@ export interface TaskRow {
   prompt: string;
   is_default: number;
   tool_overrides: string | null;
+  model: string | null;
   config: string | null;
   created_at: number;
   updated_at: number | null;
@@ -77,6 +79,7 @@ const TASK_COLUMNS = [
   'prompt',
   'is_default',
   'tool_overrides',
+  'model',
   'config',
   'created_at',
   'updated_at',
@@ -99,6 +102,7 @@ function toTaskRow(row: Record<string, unknown>): TaskRow {
     prompt: row.prompt as string,
     is_default: (row.is_default as number) ?? DEFAULT_IS_DEFAULT,
     tool_overrides: (row.tool_overrides as string) ?? null,
+    model: (row.model as string) ?? null,
     config: (row.config as string) ?? null,
     created_at: row.created_at as number,
     updated_at: (row.updated_at as number) ?? null,
@@ -122,12 +126,12 @@ export async function upsertTask(data: TaskInsert): Promise<TaskRow> {
   const result = await db.query(
     `INSERT INTO agent_tasks (
        id, agent_id, source, display_name, description,
-       prompt, is_default, tool_overrides, config,
+       prompt, is_default, tool_overrides, model, config,
        created_at, updated_at
      ) VALUES (
        $1, $2, $3, $4, $5,
-       $6, $7, $8, $9,
-       $10, $11
+       $6, $7, $8, $9, $10,
+       $11, $12
      )
      ON CONFLICT (id) DO UPDATE SET
        agent_id       = EXCLUDED.agent_id,
@@ -137,6 +141,7 @@ export async function upsertTask(data: TaskInsert): Promise<TaskRow> {
        prompt         = EXCLUDED.prompt,
        is_default     = EXCLUDED.is_default,
        tool_overrides = EXCLUDED.tool_overrides,
+       model          = EXCLUDED.model,
        config         = EXCLUDED.config,
        updated_at     = EXCLUDED.updated_at
      RETURNING ${SELECT_COLUMNS}`,
@@ -149,6 +154,7 @@ export async function upsertTask(data: TaskInsert): Promise<TaskRow> {
       data.prompt,
       data.is_default ?? DEFAULT_IS_DEFAULT,
       data.tool_overrides ?? null,
+      data.model ?? null,
       data.config ?? null,
       data.created_at,
       data.updated_at ?? null,

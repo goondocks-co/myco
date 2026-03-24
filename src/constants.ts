@@ -119,6 +119,22 @@ export const TURN_MAX_FILES_DISPLAYED = 10;
 /** Minimum content length to consider a transcript entry meaningful. */
 export const MIN_TRANSCRIPT_CONTENT_LENGTH = 10;
 
+// --- Graph edge types (lineage — auto-created by daemon) ---
+/** Spore was extracted during this session. */
+export const EDGE_TYPE_FROM_SESSION = 'FROM_SESSION';
+/** Spore was extracted from this prompt batch. */
+export const EDGE_TYPE_EXTRACTED_FROM = 'EXTRACTED_FROM';
+/** Wisdom spore was derived from (consolidated) this source spore. */
+export const EDGE_TYPE_DERIVED_FROM = 'DERIVED_FROM';
+/** Session contains this prompt batch. */
+export const EDGE_TYPE_HAS_BATCH = 'HAS_BATCH';
+
+// --- Query defaults ---
+/** Default row limit for query module list operations. */
+export const QUERY_DEFAULT_LIST_LIMIT = 100;
+/** Default confidence score for graph edges. */
+export const GRAPH_EDGE_DEFAULT_CONFIDENCE = 1.0;
+
 // --- Query limits ---
 /** Max recent sessions to check for lineage heuristics. */
 export const LINEAGE_RECENT_SESSIONS_LIMIT = 5;

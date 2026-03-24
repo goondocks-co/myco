@@ -22,6 +22,7 @@ export interface MycoConfig {
   agent: {
     auto_run: boolean;
     interval_seconds: number;
+    summary_batch_interval: number;
   };
 }
 

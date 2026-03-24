@@ -188,6 +188,41 @@ export async function closeBatch(
 }
 
 /**
+ * Populate response_summary on batches from transcript turns.
+ *
+ * Matches transcript turns (ordered by position) to batches (ordered by id ASC).
+ * This is resilient to prompt_number duplicates caused by daemon restarts.
+ * Only updates batches that don't already have a response_summary.
+ *
+ * @param sessionId — the session to update
+ * @param responses — array of { response } ordered by turn position (1-indexed)
+ */
+export async function populateBatchResponses(
+  sessionId: string,
+  responses: Array<{ turnIndex: number; response: string }>,
+): Promise<void> {
+  const db = getDatabase();
+
+  // Get all batches for this session ordered by id (insertion order = true order)
+  const batches = await db.query<{ id: number }>(
+    `SELECT id FROM prompt_batches WHERE session_id = $1 ORDER BY id ASC`,
+    [sessionId],
+  );
+
+  // Map each response to the batch at the same position
+  for (const { turnIndex, response } of responses) {
+    const batchIndex = turnIndex - 1; // turns are 1-indexed
+    if (batchIndex >= 0 && batchIndex < batches.rows.length) {
+      const batchId = batches.rows[batchIndex].id;
+      await db.query(
+        `UPDATE prompt_batches SET response_summary = $1 WHERE id = $2 AND response_summary IS NULL`,
+        [response, batchId],
+      );
+    }
+  }
+}
+
+/**
  * Get unprocessed batches, ordered by id ASC (insertion order).
  *
  * Supports cursor-based pagination via `after_id` and a `limit` cap.
@@ -272,6 +307,43 @@ export async function markBatchProcessed(
  *
  * Supports optional limit and offset for pagination.
  */
+/**
+ * Get a batch's ID by session and prompt number.
+ * Used to link attachments to their prompt batch at stop time.
+ */
+export async function getBatchIdByPromptNumber(
+  sessionId: string,
+  promptNumber: number,
+): Promise<number | null> {
+  const db = getDatabase();
+  const result = await db.query<{ id: number }>(
+    `SELECT id FROM prompt_batches WHERE session_id = $1 AND prompt_number = $2 LIMIT 1`,
+    [sessionId, promptNumber],
+  );
+  return result.rows.length > 0 ? result.rows[0].id : null;
+}
+
+/**
+ * Recover batch state for a session from the database.
+ *
+ * Returns the next prompt number and the ID of any currently open batch.
+ * Used by the daemon to resume batch tracking after a restart.
+ */
+export async function recoverBatchState(
+  sessionId: string,
+): Promise<{ nextPromptNumber: number; openBatchId: number | null }> {
+  const db = getDatabase();
+  const result = await db.query<{ max_pn: number | null; last_batch_id: number | null }>(
+    `SELECT MAX(prompt_number) as max_pn,
+            (SELECT id FROM prompt_batches WHERE session_id = $1 AND ended_at IS NULL ORDER BY id DESC LIMIT 1) as last_batch_id
+     FROM prompt_batches WHERE session_id = $1`,
+    [sessionId],
+  );
+  const maxPn = result.rows[0]?.max_pn ?? 0;
+  const openBatchId = result.rows[0]?.last_batch_id ?? null;
+  return { nextPromptNumber: maxPn + 1, openBatchId };
+}
+
 export async function listBatchesBySession(
   sessionId: string,
   options: ListBatchesBySessionOptions = {},

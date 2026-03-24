@@ -27,7 +27,8 @@ import {
   listEntities,
   getEntityWithEdges,
 } from '@myco/db/queries/entities.js';
-import { insertEdge } from '@myco/db/queries/edges.js';
+import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
+import type { GraphEdgeInsert } from '@myco/db/queries/graph-edges.js';
 import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { insertTurn, listTurnsByRun } from '@myco/db/queries/turns.js';
@@ -37,7 +38,6 @@ import type { SessionInsert } from '@myco/db/queries/sessions.js';
 import type { BatchInsert } from '@myco/db/queries/batches.js';
 import type { ActivityInsert } from '@myco/db/queries/activities.js';
 import type { EntityInsert } from '@myco/db/queries/entities.js';
-import type { EdgeInsert } from '@myco/db/queries/edges.js';
 import type { TurnInsert } from '@myco/db/queries/turns.js';
 import type { TaskInsert } from '@myco/db/queries/tasks.js';
 import type { SporeInsert } from '@myco/db/queries/spores.js';
@@ -93,7 +93,7 @@ function makeEntity(overrides: Partial<EntityInsert> = {}): EntityInsert {
   return {
     id: `entity-${Math.random().toString(36).slice(2, 10)}`,
     agent_id: TEST_AGENT_ID,
-    type: 'file',
+    type: 'component',
     name: `file-${Math.random().toString(36).slice(2, 8)}`,
     first_seen: now,
     last_seen: now,
@@ -101,16 +101,18 @@ function makeEntity(overrides: Partial<EntityInsert> = {}): EntityInsert {
   };
 }
 
-function makeEdge(
+function makeGraphEdge(
   sourceId: string,
   targetId: string,
-  overrides: Partial<EdgeInsert> = {},
-): EdgeInsert {
+  overrides: Partial<GraphEdgeInsert> = {},
+): GraphEdgeInsert {
   return {
     agent_id: TEST_AGENT_ID,
     source_id: sourceId,
+    source_type: 'entity',
     target_id: targetId,
-    type: 'references',
+    target_type: 'entity',
+    type: 'REFERENCES',
     created_at: epochNow(),
     ...overrides,
   };
@@ -398,8 +400,8 @@ describe('extended list-by-parent query helpers', () => {
       const neighbour1 = await insertEntity(makeEntity({ name: 'n1' }));
       const neighbour2 = await insertEntity(makeEntity({ name: 'n2' }));
 
-      await insertEdge(makeEdge(center.id, neighbour1.id));
-      await insertEdge(makeEdge(center.id, neighbour2.id));
+      await insertGraphEdge(makeGraphEdge(center.id, neighbour1.id));
+      await insertGraphEdge(makeGraphEdge(center.id, neighbour2.id));
 
       const result = await getEntityWithEdges(center.id, 1);
 
@@ -416,7 +418,7 @@ describe('extended list-by-parent query helpers', () => {
       const center = await insertEntity(makeEntity({ name: 'center' }));
       const source = await insertEntity(makeEntity({ name: 'src' }));
 
-      await insertEdge(makeEdge(source.id, center.id));
+      await insertGraphEdge(makeGraphEdge(source.id, center.id));
 
       const result = await getEntityWithEdges(center.id, 1);
 
@@ -431,8 +433,8 @@ describe('extended list-by-parent query helpers', () => {
       const b = await insertEntity(makeEntity({ name: 'b' }));
       const c = await insertEntity(makeEntity({ name: 'c' }));
 
-      const edgeAB = await insertEdge(makeEdge(a.id, b.id));
-      await insertEdge(makeEdge(b.id, c.id));
+      const edgeAB = await insertGraphEdge(makeGraphEdge(a.id, b.id));
+      await insertGraphEdge(makeGraphEdge(b.id, c.id));
 
       const result = await getEntityWithEdges(a.id, 2);
 

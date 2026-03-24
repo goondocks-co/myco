@@ -47,10 +47,10 @@ import { listTasksByAgent } from '../db/queries/tasks.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession } from '../db/queries/sessions.js';
-import { insertBatch, closeBatch, incrementActivityCount } from '../db/queries/batches.js';
+import { insertBatch, closeBatch, incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, recoverBatchState } from '../db/queries/batches.js';
 import { insertActivity } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
-import { listRuns, getRun } from '../db/queries/runs.js';
+import { listRuns, getRun, getRunningRun } from '../db/queries/runs.js';
 import { listReports } from '../db/queries/reports.js';
 import { insertSpore, updateSporeStatus } from '../db/queries/spores.js';
 import { listPlans } from '../db/queries/plans.js';
@@ -64,6 +64,7 @@ import {
   USER_AGENT_NAME,
   epochSeconds,
 } from '../constants.js';
+import { createBatchLineage } from '../db/queries/lineage.js';
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -116,12 +117,9 @@ export async function handleUserPrompt(
   const now = epochSeconds();
   let state = batchState.get(sessionId);
   if (!state) {
-    // Recover prompt number from DB to survive daemon restarts
-    const session = await getSession(sessionId);
-    const resumeNumber = session?.prompt_count
-      ? session.prompt_count + INITIAL_PROMPT_NUMBER
-      : INITIAL_PROMPT_NUMBER;
-    state = { currentBatchId: null, promptNumber: resumeNumber };
+    // Recover from database — the DB is the source of truth, not in-memory state.
+    const recovered = await recoverBatchState(sessionId);
+    state = { currentBatchId: recovered.openBatchId, promptNumber: recovered.nextPromptNumber };
   }
 
   // Close previous batch if open
@@ -137,6 +135,9 @@ export async function handleUserPrompt(
     started_at: now,
     created_at: now,
   });
+
+  // Create HAS_BATCH lineage edge (fire-and-forget)
+  createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now).catch(() => { /* lineage best-effort */ });
 
   // Update state
   state.currentBatchId = batch.id;
@@ -389,7 +390,7 @@ export async function main(): Promise<void> {
     registry.register(session_id, { started_at: resolvedStartedAt, branch });
     server.updateDaemonJsonSessions(registry.sessions);
 
-    // Upsert session in PGlite
+    // Upsert session in PGlite — always reset to active on register
     const now = epochSeconds();
     const startedEpoch = Math.floor(new Date(resolvedStartedAt).getTime() / 1000);
     await upsertSession({
@@ -400,7 +401,10 @@ export async function main(): Promise<void> {
       branch: branch ?? null,
       started_at: startedEpoch,
       created_at: now,
+      status: 'active',
     });
+    // Clear ended_at if session was previously completed (reload scenario)
+    await updateSession(session_id, { ended_at: null, status: 'active' });
 
     logger.info('lifecycle', 'Session registered', { session_id, branch, started_at: started_at ?? null });
     return { body: { ok: true, sessions: registry.sessions } };
@@ -475,6 +479,22 @@ export async function main(): Promise<void> {
       try {
         const batchId = await handleUserPrompt(event.session_id, promptText || undefined, batchState);
         logger.debug('capture', 'Batch opened', { session_id: event.session_id, batch_id: batchId });
+
+        // Batch-threshold summary trigger
+        const batchCount = batchState.get(event.session_id)?.promptNumber ?? 0;
+        const summaryInterval = config.agent.summary_batch_interval;
+        if (summaryInterval > 0 && batchCount > 0 && batchCount % summaryInterval === 0) {
+          try {
+            const running = await getRunningRun(DEFAULT_AGENT_ID);
+            if (!running) {
+              const { runAgent } = await import('../agent/executor.js');
+              runAgent(vaultDir, {
+                task: 'title-summary',
+                instruction: `Process session ${event.session_id} only`,
+              }).catch(err => logger.warn('agent', 'Batch-threshold summary failed', { error: String(err) }));
+            }
+          } catch { /* agent unavailable */ }
+        }
       } catch (err) {
         logger.warn('capture', 'Failed to open batch', { session_id: event.session_id, error: (err as Error).message });
       }
@@ -644,6 +664,34 @@ export async function main(): Promise<void> {
 
     await updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
 
+    // Populate response_summary on batches from transcript AI responses.
+    // Maps by batch insertion order (id ASC) rather than prompt_number,
+    // which is resilient to daemon restarts that reset the prompt counter.
+    const responses: Array<{ turnIndex: number; response: string }> = [];
+    for (let i = 0; i < allTurns.length; i++) {
+      if (allTurns[i].aiResponse) {
+        responses.push({ turnIndex: i + 1, response: allTurns[i].aiResponse! });
+      }
+    }
+    // Also include last_assistant_message from the hook payload for the final turn
+    // (may duplicate the transcript's last response — populateBatchResponses is idempotent)
+    if (lastAssistantMessage && allTurns.length > 0) {
+      responses.push({ turnIndex: allTurns.length, response: lastAssistantMessage });
+    }
+    if (responses.length > 0) {
+      populateBatchResponses(sessionId, responses)
+        .catch(err => logger.warn('processor', 'Failed to populate batch responses', { error: String(err) }));
+    }
+
+    // Fire-and-forget: trigger title/summary generation via agent task
+    try {
+      const { runAgent } = await import('../agent/executor.js');
+      runAgent(vaultDir, {
+        task: 'title-summary',
+        instruction: `Process session ${sessionId} only`,
+      }).catch(err => logger.warn('agent', 'Title-summary task failed', { error: String(err) }));
+    } catch { /* agent unavailable */ }
+
     // Write images to attachments (keep this — images are binary, not in PGlite)
     const attachmentsDir = path.join(vaultDir, 'attachments');
     const hasImages = allTurns.some((t) => t.images?.length);
@@ -653,22 +701,28 @@ export async function main(): Promise<void> {
     for (let i = 0; i < allTurns.length; i++) {
       const turn = allTurns[i];
       if (!turn.images?.length) continue;
+      const promptNumber = i + 1;
+      // Look up batch ID for this turn (fire-and-forget — don't block on failure)
+      const batchIdPromise = getBatchIdByPromptNumber(sessionId, promptNumber).catch(() => null);
       for (let j = 0; j < turn.images.length; j++) {
         const img = turn.images[j];
         const ext = extensionForMimeType(img.mediaType);
         const sessionShort = sessionId.slice(-6);
-        const filename = `${sessionShort}-t${i + 1}-${j + 1}.${ext}`;
+        const filename = `${sessionShort}-t${promptNumber}-${j + 1}.${ext}`;
         const filePath = path.join(attachmentsDir, filename);
         if (!fs.existsSync(filePath)) {
           fs.writeFileSync(filePath, Buffer.from(img.data, 'base64'));
-          logger.debug('processor', 'Image saved', { filename, turn: i + 1 });
-          insertAttachment({
-            id: `${sessionShort}-t${i + 1}-${j + 1}`,
-            session_id: sessionId,
-            file_path: filename,
-            media_type: img.mediaType,
-            created_at: epochSeconds(),
-          }).catch(err => logger.warn('processor', 'Failed to record attachment', { error: String(err) }));
+          logger.debug('processor', 'Image saved', { filename, turn: promptNumber });
+          batchIdPromise.then(batchId => {
+            insertAttachment({
+              id: `${sessionShort}-t${promptNumber}-${j + 1}`,
+              session_id: sessionId,
+              prompt_batch_id: batchId ?? undefined,
+              file_path: filename,
+              media_type: img.mediaType,
+              created_at: epochSeconds(),
+            }).catch(err => logger.warn('processor', 'Failed to record attachment', { error: String(err) }));
+          });
         }
       }
     }

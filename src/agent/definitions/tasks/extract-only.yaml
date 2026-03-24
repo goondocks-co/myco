@@ -1,4 +1,9 @@
-# Extract-only task — spore extraction without graph building or digest.
+# =============================================================================
+# Built-in Task: Extract Only
+# =============================================================================
+# Quick pass: extract spores from unprocessed batches and update summaries.
+# No graph building, no consolidation, no digest.
+# =============================================================================
 
 name: extract-only
 displayName: Extract Only
@@ -7,19 +12,51 @@ description: >
   building graph entities/edges or regenerating digest. Useful for a
   quick pass that captures knowledge without full reasoning overhead.
 agent: myco-agent
-prompt: >
-  Process all unprocessed prompt batches. For each batch, extract relevant
-  observations as spores. For each session touched, evaluate and update the
-  session title and summary per the summary update criteria in your
-  instructions. Do not build graph entities or edges. Do not regenerate
-  digest extracts. Mark batches as processed when complete.
 isDefault: false
+maxTurns: 30
+timeoutSeconds: 300
+
+prompt: |
+  Extract spores from unprocessed batches. No graph or digest work.
+  Budget: ~25 turns.
+
+  ## Phase 1 — Read State (budget: 2 turns)
+
+  1. Call `vault_state` to get cursor (`last_processed_batch_id`)
+  2. Call `vault_unprocessed` with `after_id`
+
+  If no unprocessed batches, report "no work" and finish.
+
+  ## Phase 2 — Extract (budget: 18 turns)
+
+  For each batch:
+  1. Read `user_prompt` — understand what the developer asked
+  2. Extract observations as spores (genuine insights only)
+  3. Call `vault_create_spore` with session_id, prompt_batch_id,
+     importance, tags
+  4. Call `vault_mark_processed`
+  5. Update cursor via `vault_set_state`
+
+  ## Phase 3 — Session Summaries (budget: 4 turns)
+
+  For each session touched:
+  1. Call `vault_sessions` to check existing title/summary
+  2. If missing or stale, call `vault_update_session` with both fields
+
+  ## Phase 4 — Report (budget: 1 turn)
+
+  Call `vault_report` with action "extract":
+  - Batches processed: N
+  - Spores created: N (by type)
+  - Sessions updated: N
+
 toolOverrides:
-  - query_unprocessed
-  - query_spores
-  - semantic_search
-  - get_agent_state
-  - create_spore
-  - update_session_summary
-  - mark_processed
-  - set_agent_state
+  - vault_unprocessed
+  - vault_spores
+  - vault_search
+  - vault_state
+  - vault_create_spore
+  - vault_update_session
+  - vault_mark_processed
+  - vault_set_state
+  - vault_report

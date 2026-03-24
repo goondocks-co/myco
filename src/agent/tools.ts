@@ -26,7 +26,8 @@ import { insertReport } from '@myco/db/queries/reports.js';
 import { insertTurn } from '@myco/db/queries/turns.js';
 import { searchSimilar, EMBEDDABLE_TABLES, type EmbeddableTable } from '@myco/db/queries/embeddings.js';
 import { insertEntity } from '@myco/db/queries/entities.js';
-import { insertEdge } from '@myco/db/queries/edges.js';
+import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
+import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { upsertDigestExtract } from '@myco/db/queries/digest-extracts.js';
 
@@ -205,6 +206,7 @@ export function createVaultTools(agentId: string, runId: string) {
       tags: z.array(z.string()).optional().describe('Tags for categorization'),
       context: z.string().optional().describe('Additional context about the observation'),
       file_path: z.string().optional().describe('Related file path'),
+      properties: z.string().optional().describe('JSON metadata (e.g., {"consolidated_from": [...]} for wisdom spores)'),
     },
     async (args) => {
       const id = crypto.randomUUID();
@@ -221,8 +223,12 @@ export function createVaultTools(agentId: string, runId: string) {
         tags: args.tags ? JSON.stringify(args.tags) : null,
         context: args.context ?? null,
         file_path: args.file_path ?? null,
+        properties: args.properties ?? null,
         created_at: now,
       });
+
+      // Fire-and-forget lineage edges — failure should not break spore creation
+      try { await createSporeLineage(spore); } catch { /* lineage best-effort */ }
 
       recordTurn('vault_create_spore', args);
       return textResult(spore);
@@ -233,7 +239,7 @@ export function createVaultTools(agentId: string, runId: string) {
     'vault_create_entity',
     'Create or update an entity in the knowledge graph. Uses UPSERT on (agent_id, type, name).',
     {
-      type: z.enum(['component', 'concept', 'file', 'bug', 'decision', 'tool', 'person']).describe('Entity type'),
+      type: z.enum(['component', 'concept', 'person']).describe('Entity type'),
       name: z.string().describe('Entity name (unique within agent + type)'),
       properties: z.record(z.string(), z.unknown()).optional().describe('Additional properties as key-value pairs'),
     },
@@ -259,28 +265,30 @@ export function createVaultTools(agentId: string, runId: string) {
 
   const vaultCreateEdge = tool(
     'vault_create_edge',
-    'Create a directed edge between two entities in the knowledge graph.',
+    'Create a semantic edge in the knowledge graph. Lineage edges (FROM_SESSION, EXTRACTED_FROM, HAS_BATCH, DERIVED_FROM) are created automatically — do NOT create those.',
     {
-      source_id: z.string().describe('Source entity ID'),
-      target_id: z.string().describe('Target entity ID'),
-      type: z.enum(['DISCOVERED_IN', 'AFFECTS', 'RESOLVED_BY', 'SUPERSEDES', 'RELATES_TO', 'CONTRADICTS', 'CAUSED_BY', 'DEPENDS_ON']).describe('Edge relationship type'),
+      source_id: z.string().describe('Source node ID'),
+      source_type: z.enum(['session', 'batch', 'spore', 'entity']).describe('Source node type'),
+      target_id: z.string().describe('Target node ID'),
+      target_type: z.enum(['session', 'batch', 'spore', 'entity']).describe('Target node type'),
+      type: z.enum(['RELATES_TO', 'SUPERSEDED_BY', 'REFERENCES', 'DEPENDS_ON', 'AFFECTS']).describe('Semantic edge type'),
       session_id: z.string().optional().describe('Session where this relationship was observed'),
       confidence: z.number().optional().describe('Confidence score 0-1 (default 1.0)'),
-      valid_from: z.number().optional().describe('Epoch seconds when the relationship started'),
       properties: z.record(z.string(), z.unknown()).optional().describe('Additional properties as key-value pairs'),
     },
     async (args) => {
       const now = epochSeconds();
-      const props = args.properties ? JSON.stringify(args.properties) : null;
+      const props = args.properties ? JSON.stringify(args.properties) : undefined;
 
-      const edge = await insertEdge({
+      const edge = await insertGraphEdge({
         agent_id: agentId,
         source_id: args.source_id,
+        source_type: args.source_type,
         target_id: args.target_id,
+        target_type: args.target_type,
         type: args.type,
-        session_id: args.session_id ?? null,
+        session_id: args.session_id,
         confidence: args.confidence,
-        valid_from: args.valid_from ?? null,
         properties: props,
         created_at: now,
       });
@@ -295,7 +303,7 @@ export function createVaultTools(agentId: string, runId: string) {
     'Resolve a spore by updating its status and recording a resolution event.',
     {
       spore_id: z.string().describe('ID of the spore to resolve'),
-      action: z.enum(['supersede', 'archive', 'merge', 'split']).describe('Resolution action'),
+      action: z.enum(['supersede', 'archive', 'merge', 'split', 'consolidate']).describe('Resolution action'),
       new_spore_id: z.string().optional().describe('ID of the replacement spore (for supersede/merge)'),
       reason: z.string().optional().describe('Explanation for the resolution'),
       session_id: z.string().optional().describe('Session where this resolution occurred'),
@@ -309,6 +317,7 @@ export function createVaultTools(agentId: string, runId: string) {
         archive: 'archived',
         merge: 'merged',
         split: 'split',
+        consolidate: 'consolidated',
       };
       const newStatus = statusMap[args.action] ?? args.action;
       const updatedSpore = await updateSporeStatus(args.spore_id, newStatus, now);

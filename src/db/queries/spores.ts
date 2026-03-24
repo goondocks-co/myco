@@ -39,6 +39,7 @@ export interface SporeInsert {
   file_path?: string | null;
   tags?: string | null;
   content_hash?: string | null;
+  properties?: string | null;
   updated_at?: number | null;
 }
 
@@ -56,6 +57,7 @@ export interface SporeRow {
   file_path: string | null;
   tags: string | null;
   content_hash: string | null;
+  properties: string | null;
   created_at: number;
   updated_at: number | null;
 }
@@ -86,6 +88,7 @@ const SPORE_COLUMNS = [
   'file_path',
   'tags',
   'content_hash',
+  'properties',
   'created_at',
   'updated_at',
 ] as const;
@@ -111,6 +114,7 @@ function toSporeRow(row: Record<string, unknown>): SporeRow {
     file_path: (row.file_path as string) ?? null,
     tags: (row.tags as string) ?? null,
     content_hash: (row.content_hash as string) ?? null,
+    properties: (row.properties as string) ?? null,
     created_at: row.created_at as number,
     updated_at: (row.updated_at as number) ?? null,
   };
@@ -133,12 +137,12 @@ export async function insertSpore(data: SporeInsert): Promise<SporeRow> {
        id, agent_id, session_id, prompt_batch_id,
        observation_type, status, content, context,
        importance, file_path, tags, content_hash,
-       created_at, updated_at
+       properties, created_at, updated_at
      ) VALUES (
        $1, $2, $3, $4,
        $5, $6, $7, $8,
        $9, $10, $11, $12,
-       $13, $14
+       $13, $14, $15
      )
      RETURNING ${SELECT_COLUMNS}`,
     [
@@ -154,6 +158,7 @@ export async function insertSpore(data: SporeInsert): Promise<SporeRow> {
       data.file_path ?? null,
       data.tags ?? null,
       data.content_hash ?? null,
+      data.properties ?? null,
       data.created_at,
       data.updated_at ?? null,
     ],
