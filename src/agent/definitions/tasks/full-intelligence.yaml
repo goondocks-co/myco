@@ -8,7 +8,7 @@ description: >
   observations as spores, builds knowledge graph entities and edges, runs
   supersession checks, updates session summaries, and regenerates digest
   extracts.
-agent: myco-curator
+agent: myco-agent
 prompt: >
   Process all unprocessed prompt batches and sessions. For each batch:
   extract observations as spores, identify entities and relationships for the

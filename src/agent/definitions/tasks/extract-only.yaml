@@ -6,7 +6,7 @@ description: >
   Extract observations (spores) from unprocessed prompt batches without
   building graph entities/edges or regenerating digest. Useful for a
   quick pass that captures knowledge without full reasoning overhead.
-agent: myco-curator
+agent: myco-agent
 prompt: >
   Process all unprocessed prompt batches. For each batch, extract relevant
   observations as spores and update session summaries. Do not build graph

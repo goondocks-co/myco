@@ -1,7 +1,7 @@
 # Built-in Myco agent definition.
-# Loaded at startup and registered in the curators table as source: 'built-in'.
+# Loaded at startup and registered in the agents table as source: 'built-in'.
 
-name: myco-curator
+name: myco-agent
 displayName: Myco Agent
 description: >
   Default intelligence agent that processes captured session data, extracts
@@ -10,7 +10,7 @@ description: >
 model: claude-sonnet-4-20250514
 maxTurns: 25
 timeoutSeconds: 300
-systemPromptPath: ../prompts/curator.md
+systemPromptPath: ../prompts/agent.md
 
 tools:
   # Read tools

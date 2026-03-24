@@ -1,7 +1,7 @@
 /**
  * Agent definition and task YAML loader.
  *
- * Reads curator.yaml and tasks/*.yaml from the definitions directory,
+ * Reads agent.yaml and tasks/*.yaml from the definitions directory,
  * validates their shape, and provides helpers for merging built-in
  * definitions with database overrides into an EffectiveConfig.
  */
@@ -23,7 +23,7 @@ import type { AgentDefinition, AgentTask, EffectiveConfig } from './types.js';
 // ---------------------------------------------------------------------------
 
 /** Filename for the built-in agent definition. */
-const CURATOR_DEFINITION_FILE = 'curator.yaml';
+const AGENT_DEFINITION_FILE = 'agent.yaml';
 
 /** Subdirectory containing task YAML files. */
 const TASKS_SUBDIRECTORY = 'tasks';
@@ -38,7 +38,7 @@ const BUILT_IN_SOURCE = 'built-in';
 // Zod schemas for YAML validation
 // ---------------------------------------------------------------------------
 
-/** Schema for curator.yaml agent definition files. */
+/** Schema for agent.yaml agent definition files. */
 const AgentDefinitionSchema = z.object({
   name: z.string(),
   displayName: z.string(),
@@ -72,14 +72,14 @@ const AgentTaskSchema = z.object({
  * 1. Walk up from `import.meta.url` looking for `package.json`.
  * 2. From package root, try `dist/src/agent/definitions/` (tsup output).
  * 3. Fall back to `src/agent/definitions/` (dev mode / tsc output).
- * 4. Also check if the current file's directory already contains curator.yaml.
+ * 4. Also check if the current file's directory already contains agent.yaml.
  */
 export function resolveDefinitionsDir(): string {
   let dir = path.dirname(fileURLToPath(import.meta.url));
 
   // Check if we're already adjacent to the definitions
   const adjacentDefs = path.join(dir, 'definitions');
-  if (fs.existsSync(path.join(adjacentDefs, CURATOR_DEFINITION_FILE))) {
+  if (fs.existsSync(path.join(adjacentDefs, AGENT_DEFINITION_FILE))) {
     return adjacentDefs;
   }
 
@@ -88,12 +88,12 @@ export function resolveDefinitionsDir(): string {
     if (fs.existsSync(path.join(dir, 'package.json'))) {
       // Try dist path first (tsup bundled output)
       const distPath = path.join(dir, 'dist', 'src', 'agent', 'definitions');
-      if (fs.existsSync(path.join(distPath, CURATOR_DEFINITION_FILE))) {
+      if (fs.existsSync(path.join(distPath, AGENT_DEFINITION_FILE))) {
         return distPath;
       }
       // Fall back to src path (dev mode)
       const srcPath = path.join(dir, 'src', 'agent', 'definitions');
-      if (fs.existsSync(path.join(srcPath, CURATOR_DEFINITION_FILE))) {
+      if (fs.existsSync(path.join(srcPath, AGENT_DEFINITION_FILE))) {
         return srcPath;
       }
     }
@@ -109,14 +109,14 @@ export function resolveDefinitionsDir(): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Load and parse the built-in agent definition from `curator.yaml`.
+ * Load and parse the built-in agent definition from `agent.yaml`.
  *
  * @param definitionsDir — path to the definitions directory.
  * @returns the parsed AgentDefinition.
  * @throws if the file is missing or malformed.
  */
 export function loadAgentDefinition(definitionsDir: string): AgentDefinition {
-  const filePath = path.join(definitionsDir, CURATOR_DEFINITION_FILE);
+  const filePath = path.join(definitionsDir, AGENT_DEFINITION_FILE);
   const raw = fs.readFileSync(filePath, 'utf-8');
   const parsed = AgentDefinitionSchema.parse(parseYaml(raw));
 

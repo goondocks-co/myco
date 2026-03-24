@@ -6,7 +6,7 @@ description: >
   Generate titles and summaries for sessions that lack them. Reviews
   prompt batches and activities within each session to produce a concise
   title and informative summary.
-agent: myco-curator
+agent: myco-agent
 prompt: >
   Find sessions that are missing a title or summary. For each such session,
   review its prompt batches and activities to understand what happened.
