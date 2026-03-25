@@ -5,9 +5,8 @@
  * exercises the query function, and tears down the database.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertBatch } from '@myco/db/queries/batches.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';
@@ -63,17 +62,14 @@ function makeActivity(
 describe('activity query helpers', () => {
   let sessionId: string;
 
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => {
-    const db = await initDatabase(); // in-memory
-    await createSchema(db);
+    await cleanTestDb();
 
     const session = makeSession();
     await upsertSession(session);
     sessionId = session.id;
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
   });
 
   // ---------------------------------------------------------------------------

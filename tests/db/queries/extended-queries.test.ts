@@ -15,9 +15,8 @@
  * beforeEach and torn down in afterEach.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertBatch, listBatchesBySession } from '@myco/db/queries/batches.js';
@@ -157,9 +156,10 @@ function makeSpore(overrides: Partial<SporeInsert> = {}): SporeInsert {
 describe('extended list-by-parent query helpers', () => {
   let sessionId: string;
 
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => {
-    const db = await initDatabase();
-    await createSchema(db);
+    await cleanTestDb();
 
     // Agent FK required by several tables
     await registerAgent({
@@ -179,10 +179,6 @@ describe('extended list-by-parent query helpers', () => {
       agent_id: TEST_AGENT_ID,
       started_at: epochNow(),
     });
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
   });
 
   // =========================================================================

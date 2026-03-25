@@ -5,18 +5,15 @@
  * exercises the query function, and tears down the database.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertAttachment, listAttachmentsBySession } from '@myco/db/queries/attachments.js';
 
 describe('attachment queries', () => {
-  beforeEach(async () => {
-    const db = await initDatabase();
-    await createSchema(db);
-  });
-  afterEach(async () => { await closeDatabase(); });
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
+  beforeEach(async () => { await cleanTestDb(); });
 
   it('inserts and lists attachments by session', async () => {
     const now = Math.floor(Date.now() / 1000);

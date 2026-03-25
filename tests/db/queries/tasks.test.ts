@@ -5,9 +5,8 @@
  * exercises the query function, and tears down the database.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import {
   upsertTask,
@@ -39,19 +38,16 @@ function makeTask(overrides: Partial<TaskInsert> = {}): TaskInsert {
 }
 
 describe('task query helpers', () => {
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => {
-    const db = await initDatabase();
-    await createSchema(db);
+    await cleanTestDb();
     // Insert the agent FK target
     await registerAgent({
       id: TEST_AGENT_ID,
       name: 'Test Agent',
       created_at: epochNow(),
     });
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
   });
 
   // ---------------------------------------------------------------------------

@@ -5,9 +5,8 @@
  * exercises the query function, and tears down the database.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import {
   upsertSession,
   getSession,
@@ -33,14 +32,9 @@ function makeSession(overrides: Partial<SessionInsert> = {}): SessionInsert {
 }
 
 describe('session query helpers', () => {
-  beforeEach(async () => {
-    const db = await initDatabase(); // in-memory
-    await createSchema(db);
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
-  });
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
+  beforeEach(async () => { await cleanTestDb(); });
 
   // ---------------------------------------------------------------------------
   // upsertSession + getSession

@@ -2,9 +2,9 @@
  * Tests for graph edge CRUD query helpers.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { getDatabase } from '@myco/db/client.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import {
   insertGraphEdge,
   listGraphEdges,
@@ -41,14 +41,11 @@ function makeEdge(overrides: Partial<GraphEdgeInsert> = {}): GraphEdgeInsert {
 }
 
 describe('graph edge query helpers', () => {
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => {
-    const db = await initDatabase();
-    await createSchema(db);
+    await cleanTestDb();
     await createAgent(TEST_AGENT_ID);
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
   });
 
   describe('insertGraphEdge', () => {

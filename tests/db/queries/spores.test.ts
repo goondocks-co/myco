@@ -5,9 +5,9 @@
  * exercises the query function, and tears down the database.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { getDatabase } from '@myco/db/client.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';
 import {
@@ -64,9 +64,10 @@ describe('spore query helpers', () => {
   let agentId: string;
   let sessionId: string;
 
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => {
-    const db = await initDatabase(); // in-memory
-    await createSchema(db);
+    await cleanTestDb();
 
     // Create an agent for FK references
     agentId = await createAgent('agent-test');
@@ -75,10 +76,6 @@ describe('spore query helpers', () => {
     const session = makeSession();
     await upsertSession(session);
     sessionId = session.id;
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
   });
 
   // ---------------------------------------------------------------------------

@@ -8,11 +8,10 @@
  * - Registering built-in agents and tasks into PGlite
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { initDatabase, closeDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 import { getAgent } from '@myco/db/queries/agents.js';
 import { listTasks, getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
@@ -347,14 +346,9 @@ describe('agent loader', () => {
   // -------------------------------------------------------------------------
 
   describe('registerBuiltInAgentsAndTasks', () => {
-    beforeEach(async () => {
-      const db = await initDatabase(); // in-memory
-      await createSchema(db);
-    });
-
-    afterEach(async () => {
-      await closeDatabase();
-    });
+    beforeAll(async () => { await setupTestDb(); });
+    afterAll(async () => { await teardownTestDb(); });
+    beforeEach(async () => { await cleanTestDb(); });
 
     it('registers the built-in agent in the database', async () => {
       await registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);

@@ -7,9 +7,8 @@
  * Verifies: 1 session row, 2 batch rows, 4 activity rows, session is completed.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 import { upsertSession, getSession } from '@myco/db/queries/sessions.js';
 import { getUnprocessedBatches } from '@myco/db/queries/batches.js';
 import { listActivities, countActivities } from '@myco/db/queries/activities.js';
@@ -26,14 +25,11 @@ const epochNow = () => Math.floor(Date.now() / 1000);
 describe('daemon capture flow', () => {
   let batchState: BatchStateMap;
 
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => {
-    const db = await initDatabase(); // in-memory
-    await createSchema(db);
+    await cleanTestDb();
     batchState = new Map();
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
   });
 
   it('tracks batches and activities through a full session lifecycle', async () => {
