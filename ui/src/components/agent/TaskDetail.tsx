@@ -5,6 +5,7 @@ import { cn } from '../../lib/cn';
 import { capitalize } from '../../lib/format';
 import { taskSourceClass } from './helpers';
 import { TaskActions } from './TaskActions';
+import { TaskEditor } from './TaskEditor';
 
 /* ---------- Constants ---------- */
 
@@ -16,6 +17,7 @@ const CONFIG_GRID_COLS = 3;
 interface TaskDetailProps {
   taskId: string;
   onBack: () => void;
+  onNavigate?: (taskId: string) => void;
 }
 
 /* ---------- Helpers ---------- */
@@ -89,7 +91,7 @@ function PhaseCard({ phase, index }: { phase: PhaseDefinition; index: number }) 
 
 /* ---------- Component ---------- */
 
-export function TaskDetail({ taskId, onBack }: TaskDetailProps) {
+export function TaskDetail({ taskId, onBack, onNavigate }: TaskDetailProps) {
   const { data, isPending, isError } = useTask(taskId);
 
   if (isPending) {
@@ -145,7 +147,11 @@ export function TaskDetail({ taskId, onBack }: TaskDetailProps) {
           </span>
         </div>
 
-        <TaskActions task={task} />
+        <TaskActions
+          task={task}
+          onDeleted={onBack}
+          onCustomized={(newName) => onNavigate?.(newName)}
+        />
       </div>
 
       {/* Execution config */}
@@ -201,6 +207,9 @@ export function TaskDetail({ taskId, onBack }: TaskDetailProps) {
           </pre>
         </div>
       )}
+
+      {/* YAML Editor */}
+      <TaskEditor taskId={taskId} />
     </div>
   );
 }

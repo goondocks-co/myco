@@ -45,6 +45,8 @@ import { handleGetEmbeddingStatus } from './api/embedding.js';
 import {
   handleListTasks,
   handleGetTask,
+  handleGetTaskYaml,
+  handleUpdateTask,
   handleCreateTask,
   handleCopyTask,
   handleDeleteTask,
@@ -938,6 +940,8 @@ export async function main(): Promise<void> {
 
   server.registerRoute('GET', '/api/agent/tasks', async (req) => handleListTasks(req, vaultDir));
   server.registerRoute('GET', '/api/agent/tasks/:id', async (req) => handleGetTask(req, vaultDir));
+  server.registerRoute('GET', '/api/agent/tasks/:id/yaml', async (req) => handleGetTaskYaml(req, vaultDir));
+  server.registerRoute('PUT', '/api/agent/tasks/:id', async (req) => handleUpdateTask(req, vaultDir));
   server.registerRoute('POST', '/api/agent/tasks', async (req) => handleCreateTask(req, vaultDir));
   server.registerRoute('POST', '/api/agent/tasks/:id/copy', async (req) => handleCopyTask(req, vaultDir));
   server.registerRoute('DELETE', '/api/agent/tasks/:id', async (req) => handleDeleteTask(req, vaultDir));

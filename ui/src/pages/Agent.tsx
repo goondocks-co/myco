@@ -67,7 +67,11 @@ export default function Agent() {
       {/* Tasks tab */}
       {tab === 'tasks' && (
         selectedTaskId ? (
-          <TaskDetail taskId={selectedTaskId} onBack={() => setSelectedTaskId(undefined)} />
+          <TaskDetail
+            taskId={selectedTaskId}
+            onBack={() => setSelectedTaskId(undefined)}
+            onNavigate={setSelectedTaskId}
+          />
         ) : (
           <TaskList onSelect={setSelectedTaskId} />
         )

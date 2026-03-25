@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchJson, postJson, deleteJson } from '../lib/api';
+import { fetchJson, postJson, putJson, deleteJson } from '../lib/api';
 
 /* ---------- Constants ---------- */
 
@@ -228,6 +228,31 @@ export function useDeleteTask() {
     mutationFn: (taskId) => deleteJson<{ ok: boolean }>(`/agent/tasks/${taskId}`),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['agent-tasks'] });
+    },
+  });
+}
+
+/** Fetch a task's YAML representation for editing. */
+export function useTaskYaml(taskId: string | undefined) {
+  return useQuery<{ yaml: string; source: string }>({
+    queryKey: ['agent-task-yaml', taskId],
+    queryFn: ({ signal }) =>
+      fetchJson<{ yaml: string; source: string }>(`/agent/tasks/${taskId}/yaml`, { signal }),
+    enabled: taskId !== undefined,
+    staleTime: TASKS_STALE_TIME,
+  });
+}
+
+/** Update a user task from raw YAML content. */
+export function useUpdateTask() {
+  const queryClient = useQueryClient();
+  return useMutation<TaskDetailResponse, Error, { taskId: string; yaml: string }>({
+    mutationFn: ({ taskId, yaml }) =>
+      putJson<TaskDetailResponse>(`/agent/tasks/${taskId}`, { yaml }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['agent-tasks'] });
+      void queryClient.invalidateQueries({ queryKey: ['agent-task'] });
+      void queryClient.invalidateQueries({ queryKey: ['agent-task-yaml'] });
     },
   });
 }

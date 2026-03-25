@@ -184,6 +184,82 @@ export async function handleCopyTask(
 }
 
 /**
+ * Get the raw YAML content of a user task file.
+ *
+ * Built-in tasks return their serialized AgentTask as YAML.
+ * Returns 404 if the task doesn't exist.
+ */
+export async function handleGetTaskYaml(
+  req: RouteRequest,
+  vaultDir: string,
+): Promise<RouteResponse> {
+  const taskName = req.params.id;
+  const definitionsDir = resolveDefinitionsDir();
+  const allTasks = loadAllTasks(definitionsDir, vaultDir);
+  const task = allTasks.get(taskName);
+
+  if (!task) {
+    return { status: HTTP_NOT_FOUND, body: { error: 'task_not_found', name: taskName } };
+  }
+
+  // Serialize task to YAML (strip internal fields)
+  const { isBuiltin: _ib, source: _src, ...serializable } = task;
+  const { stringify } = await import('yaml');
+  const yaml = stringify(serializable);
+
+  return { status: HTTP_OK, body: { yaml, source: task.source } };
+}
+
+/**
+ * Update a user task from raw YAML content.
+ *
+ * Parses the YAML through AgentTaskSchema for validation.
+ * Built-in tasks cannot be updated (returns 403).
+ * Returns the updated task on success.
+ */
+export async function handleUpdateTask(
+  req: RouteRequest,
+  vaultDir: string,
+): Promise<RouteResponse> {
+  const taskName = req.params.id;
+  const definitionsDir = resolveDefinitionsDir();
+  const allTasks = loadAllTasks(definitionsDir, vaultDir);
+  const existing = allTasks.get(taskName);
+
+  if (!existing) {
+    return { status: HTTP_NOT_FOUND, body: { error: 'task_not_found', name: taskName } };
+  }
+
+  if (existing.isBuiltin || existing.source !== USER_TASK_SOURCE) {
+    return { status: HTTP_FORBIDDEN, body: { error: 'cannot_update_builtin', name: taskName } };
+  }
+
+  const body = req.body as Record<string, unknown> | undefined;
+  const yamlContent = body?.yaml;
+  if (typeof yamlContent !== 'string') {
+    return { status: HTTP_BAD_REQUEST, body: { error: 'missing_yaml_field' } };
+  }
+
+  try {
+    const { parse } = await import('yaml');
+    const parsed = AgentTaskSchema.parse(parse(yamlContent));
+    const { taskFromParsed } = await import('@myco/agent/loader.js');
+    const task = { ...taskFromParsed(parsed), isBuiltin: false, source: USER_TASK_SOURCE };
+
+    // Ensure the name matches the URL param (prevent renaming via YAML)
+    if (task.name !== taskName) {
+      return { status: HTTP_BAD_REQUEST, body: { error: 'name_mismatch', expected: taskName, got: task.name } };
+    }
+
+    writeUserTask(vaultDir, task);
+    return { status: HTTP_OK, body: { task } };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { status: HTTP_BAD_REQUEST, body: { error: 'validation_failed', message } };
+  }
+}
+
+/**
  * Delete a user task by name.
  *
  * Built-in tasks may not be deleted (returns 403).

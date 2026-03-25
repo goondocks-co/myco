@@ -8,11 +8,12 @@ interface TaskActionsProps {
   task: TaskRow;
   onRunTriggered?: () => void;
   onDeleted?: () => void;
+  onCustomized?: (newTaskName: string) => void;
 }
 
 /* ---------- Component ---------- */
 
-export function TaskActions({ task, onRunTriggered, onDeleted }: TaskActionsProps) {
+export function TaskActions({ task, onRunTriggered, onDeleted, onCustomized }: TaskActionsProps) {
   const triggerRun = useTriggerRun();
   const copyTask = useCopyTask();
   const deleteTask = useDeleteTask();
@@ -33,7 +34,12 @@ export function TaskActions({ task, onRunTriggered, onDeleted }: TaskActionsProp
         <Button
           variant="outline"
           size="sm"
-          onClick={() => copyTask.mutate({ taskId: task.name })}
+          onClick={() => copyTask.mutate({ taskId: task.name }, {
+            onSuccess: (data) => {
+              const newName = data?.task?.name;
+              if (newName && onCustomized) onCustomized(newName);
+            },
+          })}
         >
           Customize
         </Button>
