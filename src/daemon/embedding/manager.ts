@@ -22,6 +22,7 @@ import {
   type EmbeddingDetails,
   type ReconcileResult,
   type VectorStore,
+  type VectorSearchResult,
   type ManagerEmbeddingProvider,
   type EmbeddableRecordSource,
 } from './types.js';
@@ -323,18 +324,39 @@ export class EmbeddingManager {
     return this.embeddingProvider.embed(text);
   }
 
+  /**
+   * Pass-through for search handler — similarity search via the vector store.
+   * Keeps the VectorStore private to the manager.
+   */
+  searchVectors(query: number[], options?: {
+    namespace?: string;
+    limit?: number;
+    threshold?: number;
+    filters?: Record<string, unknown>;
+  }): VectorSearchResult[] {
+    return this.vectorStore.search(query, options);
+  }
+
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
 
-  /** Sweep orphan vectors for a single namespace. Returns count removed. */
+  /**
+   * Sweep orphan vectors for a single namespace. Returns count removed.
+   * Short-circuits when vector count matches active record count (common case).
+   */
   private sweepOrphans(namespace: EmbeddableNamespace): number {
-    const embeddedIds = new Set(this.vectorStore.getEmbeddedIds(namespace));
-    const activeIds = new Set(this.recordSource.getActiveRecordIds(namespace));
+    const embeddedIds = this.vectorStore.getEmbeddedIds(namespace);
+    const activeIds = this.recordSource.getActiveRecordIds(namespace);
+
+    // Fast path: if counts match, no orphans possible (common case on every 30s cycle)
+    if (embeddedIds.length === activeIds.length) return 0;
+
+    const activeSet = new Set(activeIds);
     let cleaned = 0;
 
     for (const vecId of embeddedIds) {
-      if (!activeIds.has(vecId)) {
+      if (!activeSet.has(vecId)) {
         this.vectorStore.remove(namespace, vecId);
         this.logger.warn(LOG_CATEGORY, 'Orphan vector cleaned', {
           namespace,

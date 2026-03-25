@@ -40,7 +40,7 @@ const DEFAULT_UNEMBEDDED_LIMIT = 100;
  *
  * @throws if the table name is not one of the embeddable tables.
  */
-function assertValidTable(table: string): asserts table is EmbeddableTable {
+export function assertValidTable(table: string): asserts table is EmbeddableTable {
   if (!(EMBEDDABLE_TABLES as readonly string[]).includes(table)) {
     throw new Error(INVALID_TABLE_MSG);
   }

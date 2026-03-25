@@ -92,6 +92,10 @@ export class SqliteVecVectorStore implements VectorStore {
   private upsertMetaStmt!: Statement;
   private deleteMetaStmt!: Statement;
   private searchStmts = new Map<string, Statement>();
+  private statsCountStmt!: Statement;
+  private statsModelsStmt!: Statement;
+  private staleIdsStmt!: Statement;
+  private embeddedIdsStmt!: Statement;
 
   constructor(dbPath?: string) {
     this.db = new Database(dbPath ?? ':memory:');
@@ -128,6 +132,18 @@ export class SqliteVecVectorStore implements VectorStore {
 
     this.deleteMetaStmt = this.db.prepare(
       `DELETE FROM embedding_metadata WHERE namespace = ? AND record_id = ?`
+    );
+    this.statsCountStmt = this.db.prepare(
+      `SELECT COUNT(*) AS cnt FROM embedding_metadata WHERE namespace = ?`
+    );
+    this.statsModelsStmt = this.db.prepare(
+      `SELECT model, COUNT(*) AS cnt FROM embedding_metadata WHERE namespace = ? GROUP BY model`
+    );
+    this.staleIdsStmt = this.db.prepare(
+      `SELECT record_id FROM embedding_metadata WHERE namespace = ? AND model != ? LIMIT ?`
+    );
+    this.embeddedIdsStmt = this.db.prepare(
+      `SELECT record_id FROM embedding_metadata WHERE namespace = ?`
     );
 
     // Per-namespace statements
@@ -313,19 +329,8 @@ export class SqliteVecVectorStore implements VectorStore {
     const models: Record<string, number> = {};
 
     for (const ns of targets) {
-      // Total embedded for this namespace
-      const countRow = this.db
-        .prepare(
-          `SELECT COUNT(*) as cnt FROM embedding_metadata WHERE namespace = ?`,
-        )
-        .get(ns) as { cnt: number };
-
-      // Count per model for this namespace
-      const modelRows = this.db
-        .prepare(
-          `SELECT model, COUNT(*) as cnt FROM embedding_metadata WHERE namespace = ? GROUP BY model`,
-        )
-        .all(ns) as Array<{ model: string; cnt: number }>;
+      const countRow = this.statsCountStmt.get(ns) as { cnt: number };
+      const modelRows = this.statsModelsStmt.all(ns) as Array<{ model: string; cnt: number }>;
 
       // "stale" = count of rows whose model is NOT the most common model.
       // Without knowing the "current model" (which stats() doesn't receive),
@@ -348,21 +353,13 @@ export class SqliteVecVectorStore implements VectorStore {
 
   getStaleIds(namespace: string, currentModel: string, limit: number): string[] {
     this.validateNamespace(namespace);
-    const rows = this.db
-      .prepare(
-        `SELECT record_id FROM embedding_metadata WHERE namespace = ? AND model != ? LIMIT ?`,
-      )
-      .all(namespace, currentModel, limit) as Array<{ record_id: string }>;
+    const rows = this.staleIdsStmt.all(namespace, currentModel, limit) as Array<{ record_id: string }>;
     return rows.map((r) => r.record_id);
   }
 
   getEmbeddedIds(namespace: string): string[] {
     this.validateNamespace(namespace);
-    const rows = this.db
-      .prepare(
-        `SELECT record_id FROM embedding_metadata WHERE namespace = ?`,
-      )
-      .all(namespace) as Array<{ record_id: string }>;
+    const rows = this.embeddedIdsStmt.all(namespace) as Array<{ record_id: string }>;
     return rows.map((r) => r.record_id);
   }
 

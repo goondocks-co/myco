@@ -11,6 +11,7 @@ import {
   markEmbedded as dbMarkEmbedded,
   clearEmbedded as dbClearEmbedded,
   getUnembedded,
+  assertValidTable as assertValidNamespace,
   EMBEDDABLE_TABLES,
   EMBEDDABLE_TEXT_COLUMNS,
   type EmbeddableTable,
@@ -21,22 +22,8 @@ import type { DomainMetadata, EmbeddableRecordSource } from '@myco/daemon/embedd
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Error message for invalid namespace. */
-const INVALID_NAMESPACE_MSG = 'Invalid namespace — must be one of: sessions, spores, plans, artifacts';
-
 /** Spore status that qualifies for embedding. */
 const ACTIVE_STATUS = 'active';
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Validate that a namespace is one of the embeddable tables. */
-function assertValidNamespace(namespace: string): asserts namespace is EmbeddableTable {
-  if (!(EMBEDDABLE_TABLES as readonly string[]).includes(namespace)) {
-    throw new Error(INVALID_NAMESPACE_MSG);
-  }
-}
 
 /** Build metadata for a session row. */
 function sessionMetadata(row: Record<string, unknown>): DomainMetadata {

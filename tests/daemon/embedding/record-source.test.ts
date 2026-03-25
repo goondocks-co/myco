@@ -181,7 +181,7 @@ describe('SqliteRecordSource', () => {
 
     it('throws for invalid namespace', () => {
       expect(() => source.getEmbeddableRows('invalid_table', 10)).toThrow(
-        /Invalid namespace/,
+        /Invalid table name/,
       );
     });
   });
@@ -232,7 +232,7 @@ describe('SqliteRecordSource', () => {
     });
 
     it('throws for invalid namespace', () => {
-      expect(() => source.getActiveRecordIds('bad')).toThrow(/Invalid namespace/);
+      expect(() => source.getActiveRecordIds('bad')).toThrow(/Invalid table name/);
     });
   });
 
@@ -278,7 +278,7 @@ describe('SqliteRecordSource', () => {
     });
 
     it('throws for invalid namespace', () => {
-      expect(() => source.getRecordContent('nope', ['id1'])).toThrow(/Invalid namespace/);
+      expect(() => source.getRecordContent('nope', ['id1'])).toThrow(/Invalid table name/);
     });
   });
 
@@ -367,7 +367,7 @@ describe('SqliteRecordSource', () => {
     });
 
     it('throws for invalid namespace', () => {
-      expect(() => source.clearAllEmbedded('bad_table')).toThrow(/Invalid namespace/);
+      expect(() => source.clearAllEmbedded('bad_table')).toThrow(/Invalid table name/);
     });
   });
 });

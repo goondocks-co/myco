@@ -13,7 +13,6 @@ import {
 } from '@myco/constants.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
-import type { VectorStore } from '../embedding/types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,7 +24,6 @@ type SearchMode = 'auto' | 'semantic' | 'fts';
 /** Dependencies injected by the daemon when registering the route. */
 export interface SearchDeps {
   embeddingManager: EmbeddingManager;
-  vectorStore: VectorStore;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +69,7 @@ export function createSearchHandler(deps: SearchDeps) {
 
     // Vector search with optional namespace/type filtering
     const searchNamespace = namespace ?? type;
-    const vectorResults = deps.vectorStore.search(queryVector, {
+    const vectorResults = deps.embeddingManager.searchVectors(queryVector, {
       namespace: searchNamespace,
       limit,
       threshold: SEARCH_SIMILARITY_THRESHOLD,

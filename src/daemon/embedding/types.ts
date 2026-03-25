@@ -5,9 +5,11 @@
  * EmbeddableRecordSource, and ManagerEmbeddingProvider.
  */
 
-/** Embeddable namespaces — matches tables with `embedded` flag in the record store. */
-export const EMBEDDABLE_NAMESPACES = ['sessions', 'spores', 'plans', 'artifacts'] as const;
-export type EmbeddableNamespace = (typeof EMBEDDABLE_NAMESPACES)[number];
+/**
+ * Re-export from the DB layer — single source of truth for embeddable table names.
+ * Aliased as "namespaces" in the embedding subsystem since the VectorStore is DB-agnostic.
+ */
+export { EMBEDDABLE_TABLES as EMBEDDABLE_NAMESPACES, type EmbeddableTable as EmbeddableNamespace } from '@myco/db/queries/embeddings.js';
 
 /** Domain metadata passed by callers alongside content. */
 export interface DomainMetadata {
