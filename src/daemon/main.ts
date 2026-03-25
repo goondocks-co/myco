@@ -38,7 +38,7 @@ import {
   handleGetGraph,
   handleGetDigest,
 } from './api/mycelium.js';
-import { handleSearch } from './api/search.js';
+import { createSearchHandler } from './api/search.js';
 import { handleGetFeed } from './api/feed.js';
 import { handleGetEmbeddingStatus } from './api/embedding.js';
 import { EmbeddingManager, SqliteVecVectorStore, EmbeddingProviderAdapter, SqliteRecordSource } from './embedding/index.js';
@@ -1388,7 +1388,7 @@ export async function main(): Promise<void> {
 
   // --- Search, activity feed, and embedding status ---
 
-  server.registerRoute('GET', '/api/search', handleSearch);
+  server.registerRoute('GET', '/api/search', createSearchHandler({ embeddingManager, vectorStore }));
   server.registerRoute('GET', '/api/activity', handleGetFeed);
   server.registerRoute('GET', '/api/embedding/status', async () => handleGetEmbeddingStatus(vaultDir));
 

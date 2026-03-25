@@ -12,6 +12,7 @@ import { getDatabase } from '@myco/db/client.js';
 import {
   SEARCH_RESULTS_DEFAULT_LIMIT,
 } from '@myco/constants.js';
+import type { VectorSearchResult } from '@myco/daemon/embedding/types.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -24,10 +25,19 @@ const SEARCH_PREVIEW_CHARS = 300;
 // Types
 // ---------------------------------------------------------------------------
 
-/** A single result returned from full-text search. */
+/** All result types that can appear in search results. */
+export type SearchResultType =
+  | 'session'
+  | 'spore'
+  | 'plan'
+  | 'artifact'
+  | 'prompt_batch'
+  | 'activity';
+
+/** A single result returned from full-text or semantic search. */
 export interface SearchResult {
   id: string;
-  type: 'prompt_batch' | 'activity';
+  type: SearchResultType;
   title: string;
   preview: string;
   score: number;
@@ -141,4 +151,159 @@ export function fullTextSearch(
   // Sort combined results by score DESC and apply limit.
   results.sort((a, b) => b.score - a.score);
   return results.slice(0, limit);
+}
+
+// ---------------------------------------------------------------------------
+// Hydration — convert VectorSearchResults into SearchResults
+// ---------------------------------------------------------------------------
+
+/** Row shape returned from sessions table for hydration. */
+interface SessionRow {
+  id: string;
+  title: string | null;
+  summary: string | null;
+  session_id?: undefined;
+}
+
+/** Row shape returned from spores table for hydration. */
+interface SporeRow {
+  id: string;
+  observation_type: string;
+  content: string;
+  session_id: string | null;
+}
+
+/** Row shape returned from plans table for hydration. */
+interface PlanRow {
+  id: string;
+  title: string | null;
+  content: string | null;
+}
+
+/** Row shape returned from artifacts table for hydration. */
+interface ArtifactRow {
+  id: string;
+  title: string;
+  content: string | null;
+}
+
+/**
+ * Hydrate vector search results into SearchResults by fetching full records
+ * from the record store.
+ *
+ * Groups results by namespace, queries each table for the relevant IDs, then
+ * maps them into SearchResult format with titles and previews.
+ */
+export function hydrateSearchResults(
+  vectorResults: VectorSearchResult[],
+): SearchResult[] {
+  if (vectorResults.length === 0) return [];
+
+  const db = getDatabase();
+  const results: SearchResult[] = [];
+
+  // Group result IDs by namespace
+  const byNamespace = new Map<string, VectorSearchResult[]>();
+  for (const vr of vectorResults) {
+    const group = byNamespace.get(vr.namespace) ?? [];
+    group.push(vr);
+    byNamespace.set(vr.namespace, group);
+  }
+
+  // --- sessions ---
+  const sessionResults = byNamespace.get('sessions');
+  if (sessionResults && sessionResults.length > 0) {
+    const placeholders = sessionResults.map(() => '?').join(', ');
+    const ids = sessionResults.map((r) => r.id);
+    const rows = db.prepare(
+      `SELECT id, title, summary FROM sessions WHERE id IN (${placeholders})`,
+    ).all(...ids) as SessionRow[];
+
+    const rowMap = new Map(rows.map((r) => [r.id, r]));
+    for (const vr of sessionResults) {
+      const row = rowMap.get(vr.id);
+      if (!row) continue;
+      results.push({
+        id: row.id,
+        type: 'session',
+        title: row.title ?? `Session ${row.id.slice(-6)}`,
+        preview: (row.summary ?? '').slice(0, SEARCH_PREVIEW_CHARS),
+        score: vr.similarity,
+      });
+    }
+  }
+
+  // --- spores ---
+  const sporeResults = byNamespace.get('spores');
+  if (sporeResults && sporeResults.length > 0) {
+    const placeholders = sporeResults.map(() => '?').join(', ');
+    const ids = sporeResults.map((r) => r.id);
+    const rows = db.prepare(
+      `SELECT id, observation_type, content, session_id FROM spores WHERE id IN (${placeholders})`,
+    ).all(...ids) as SporeRow[];
+
+    const rowMap = new Map(rows.map((r) => [r.id, r]));
+    for (const vr of sporeResults) {
+      const row = rowMap.get(vr.id);
+      if (!row) continue;
+      results.push({
+        id: row.id,
+        type: 'spore',
+        title: row.observation_type,
+        preview: row.content.slice(0, SEARCH_PREVIEW_CHARS),
+        score: vr.similarity,
+        ...(row.session_id != null ? { session_id: row.session_id } : {}),
+      });
+    }
+  }
+
+  // --- plans ---
+  const planResults = byNamespace.get('plans');
+  if (planResults && planResults.length > 0) {
+    const placeholders = planResults.map(() => '?').join(', ');
+    const ids = planResults.map((r) => r.id);
+    const rows = db.prepare(
+      `SELECT id, title, content FROM plans WHERE id IN (${placeholders})`,
+    ).all(...ids) as PlanRow[];
+
+    const rowMap = new Map(rows.map((r) => [r.id, r]));
+    for (const vr of planResults) {
+      const row = rowMap.get(vr.id);
+      if (!row) continue;
+      results.push({
+        id: row.id,
+        type: 'plan',
+        title: row.title ?? `Plan ${row.id.slice(-6)}`,
+        preview: (row.content ?? '').slice(0, SEARCH_PREVIEW_CHARS),
+        score: vr.similarity,
+      });
+    }
+  }
+
+  // --- artifacts ---
+  const artifactResults = byNamespace.get('artifacts');
+  if (artifactResults && artifactResults.length > 0) {
+    const placeholders = artifactResults.map(() => '?').join(', ');
+    const ids = artifactResults.map((r) => r.id);
+    const rows = db.prepare(
+      `SELECT id, title, content FROM artifacts WHERE id IN (${placeholders})`,
+    ).all(...ids) as ArtifactRow[];
+
+    const rowMap = new Map(rows.map((r) => [r.id, r]));
+    for (const vr of artifactResults) {
+      const row = rowMap.get(vr.id);
+      if (!row) continue;
+      results.push({
+        id: row.id,
+        type: 'artifact',
+        title: row.title,
+        preview: (row.content ?? '').slice(0, SEARCH_PREVIEW_CHARS),
+        score: vr.similarity,
+      });
+    }
+  }
+
+  // Preserve the original similarity-based ordering from vector search
+  results.sort((a, b) => b.score - a.score);
+  return results;
 }
