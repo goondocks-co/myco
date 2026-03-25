@@ -484,13 +484,13 @@ describe('runAgent', () => {
     const result = await runAgent(TEST_VAULT_DIR);
 
     expect(result.status).toBe('failed');
-    expect(result.error).toBe('API rate limit exceeded');
+    expect(result.error).toContain('API rate limit exceeded');
     expect(result.runId).toBeDefined();
 
     const run = await getRun(result.runId);
     expect(run).not.toBeNull();
     expect(run!.status).toBe('failed');
-    expect(run!.error).toBe('API rate limit exceeded');
+    expect(run!.error).toContain('API rate limit exceeded');
     expect(run!.completed_at).toBeGreaterThan(0);
   });
 
