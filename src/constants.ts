@@ -17,6 +17,15 @@ export function estimateTokens(text: string): number {
 /** Max characters of text sent to the embedding model. */
 export const EMBEDDING_INPUT_LIMIT = 8000;
 
+/** Embedding worker reconciliation interval (ms). */
+export const EMBEDDING_INTERVAL_MS = 30_000;
+
+/** Max rows per embedding worker cycle. */
+export const EMBEDDING_BATCH_SIZE = 10;
+
+/** Content hash algorithm for staleness detection. */
+export const CONTENT_HASH_ALGORITHM = 'sha256';
+
 // --- Truncation limits (display/preview) ---
 /** Max chars for a user prompt preview in event summaries. */
 export const PROMPT_PREVIEW_CHARS = 300;
