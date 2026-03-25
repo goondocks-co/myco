@@ -903,10 +903,25 @@ export async function main(): Promise<void> {
     // before the async SDK call. Wait for the result since it's fast to start.
     resultPromise
       .then((result) => {
-        logger.info('agent', 'Agent run completed', { runId: result.runId, status: result.status });
+        if (result.status === 'failed') {
+          logger.error('agent', 'Agent run failed', {
+            runId: result.runId,
+            error: result.error ?? 'No error message',
+            phases: result.phases?.map(p => `${p.name}:${p.status}`) ?? [],
+          });
+        } else {
+          logger.info('agent', 'Agent run completed', {
+            runId: result.runId,
+            status: result.status,
+            phases: result.phases?.map(p => `${p.name}:${p.status}`) ?? [],
+          });
+        }
       })
       .catch((err) => {
-        logger.error('agent', 'Agent run failed', { error: (err as Error).message });
+        logger.error('agent', 'Agent run threw unhandled error', {
+          error: (err as Error).message ?? String(err),
+          stack: (err as Error).stack?.split('\n').slice(0, 3).join(' | '),
+        });
       });
 
     // Return immediately — the caller can poll /api/agent/runs for status
