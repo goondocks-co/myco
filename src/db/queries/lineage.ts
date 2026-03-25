@@ -13,7 +13,7 @@
 
 import { insertGraphEdge } from './graph-edges.js';
 import { listEntities } from './entities.js';
-import { listSpores } from './spores.js';
+import { searchSimilar } from './embeddings.js';
 import {
   EDGE_TYPE_FROM_SESSION,
   EDGE_TYPE_EXTRACTED_FROM,
@@ -22,8 +22,14 @@ import {
   EDGE_TYPE_REFERENCES,
 } from '@myco/constants.js';
 
-/** Minimum entity name length to match (avoids false positives on short names). */
+/** Minimum entity name length for auto-linking (avoids false positives). */
 const MIN_ENTITY_NAME_LENGTH = 3;
+
+/** Similarity threshold for entity ↔ spore auto-linking. */
+const AUTO_LINK_SIMILARITY_THRESHOLD = 0.45;
+
+/** Max spore results to consider per entity auto-link search. */
+const AUTO_LINK_SEARCH_LIMIT = 20;
 
 // ---------------------------------------------------------------------------
 // Spore lineage
@@ -116,18 +122,12 @@ export async function createBatchLineage(
 // ---------------------------------------------------------------------------
 
 /**
- * Check if spore content mentions an entity name (case-insensitive word boundary match).
- */
-function contentMentionsEntity(content: string, entityName: string): boolean {
-  if (entityName.length < MIN_ENTITY_NAME_LENGTH) return false;
-  // Escape regex special chars in entity name, match case-insensitive
-  const escaped = entityName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(`\\b${escaped}\\b`, 'i');
-  return pattern.test(content);
-}
-
-/**
- * Auto-link a newly created spore to existing entities whose name appears in its content.
+ * Auto-link a newly created spore to existing entities.
+ *
+ * Uses a two-pass approach:
+ * 1. Name matching (fast): check if any entity name appears in the spore content
+ * 2. No embedding needed for spore→entity since entities are few and name match is reliable
+ *
  * Creates REFERENCES edges (spore → entity). Fire-and-forget safe.
  */
 export async function autoLinkSporeToEntities(spore: {
@@ -136,11 +136,15 @@ export async function autoLinkSporeToEntities(spore: {
   content: string;
   created_at: number;
 }): Promise<number> {
+  // Entities are few (tens, not thousands) — name matching is fast and precise
   const entities = await listEntities({ agent_id: spore.agent_id, status: 'active' });
+  const contentLower = spore.content.toLowerCase();
   const edges: Promise<unknown>[] = [];
 
   for (const entity of entities) {
-    if (contentMentionsEntity(spore.content, entity.name)) {
+    if (entity.name.length < MIN_ENTITY_NAME_LENGTH) continue;
+    // Case-insensitive substring match — entities have descriptive names
+    if (contentLower.includes(entity.name.toLowerCase())) {
       edges.push(insertGraphEdge({
         agent_id: spore.agent_id,
         source_id: spore.id,
@@ -158,7 +162,14 @@ export async function autoLinkSporeToEntities(spore: {
 }
 
 /**
- * Auto-link a newly created entity to existing spores whose content mentions it.
+ * Auto-link a newly created entity to existing spores.
+ *
+ * Uses semantic search (vector similarity) to find spores related to the
+ * entity name. This scales to large vaults without scanning all spore content —
+ * the embedding index handles the heavy lifting.
+ *
+ * Falls back to no-op if the embedding provider is unavailable.
+ *
  * Creates REFERENCES edges (spore → entity). Fire-and-forget safe.
  */
 export async function autoLinkEntityToSpores(entity: {
@@ -169,21 +180,33 @@ export async function autoLinkEntityToSpores(entity: {
 }): Promise<number> {
   if (entity.name.length < MIN_ENTITY_NAME_LENGTH) return 0;
 
-  const spores = await listSpores({ agent_id: entity.agent_id, status: 'active' });
-  const edges: Promise<unknown>[] = [];
+  // Use semantic search to find related spores via vector similarity
+  let embedding: number[] | null = null;
+  try {
+    const { tryEmbed } = await import('@myco/intelligence/embed-query.js');
+    embedding = await tryEmbed(entity.name);
+  } catch {
+    return 0; // Embedding unavailable — skip auto-linking
+  }
+  if (!embedding) return 0;
 
-  for (const spore of spores) {
-    if (contentMentionsEntity(spore.content, entity.name)) {
-      edges.push(insertGraphEdge({
-        agent_id: entity.agent_id,
-        source_id: spore.id,
-        source_type: 'spore',
-        target_id: entity.id,
-        target_type: 'entity',
-        type: EDGE_TYPE_REFERENCES,
-        created_at: entity.created_at,
-      }));
-    }
+  const results = await searchSimilar('spores', embedding, {
+    limit: AUTO_LINK_SEARCH_LIMIT,
+    filters: { agent_id: entity.agent_id },
+  });
+
+  const edges: Promise<unknown>[] = [];
+  for (const result of results) {
+    if ((result.similarity ?? 0) < AUTO_LINK_SIMILARITY_THRESHOLD) continue;
+    edges.push(insertGraphEdge({
+      agent_id: entity.agent_id,
+      source_id: result.id,
+      source_type: 'spore',
+      target_id: entity.id,
+      target_type: 'entity',
+      type: EDGE_TYPE_REFERENCES,
+      created_at: entity.created_at,
+    }));
   }
 
   await Promise.all(edges);
