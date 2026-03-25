@@ -55,7 +55,7 @@ import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession } from '../db/queries/sessions.js';
-import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, closeOpenBatches, insertBatchStateless } from '../db/queries/batches.js';
+import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, closeOpenBatches, insertBatchStateless, getLatestBatch } from '../db/queries/batches.js';
 import { insertActivityWithBatch } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
 import { listRuns, getRun, getRunningRun } from '../db/queries/runs.js';
@@ -867,7 +867,21 @@ export async function main(): Promise<void> {
       image_count: imageCount,
     });
 
-    // --- Phase 2: Close session in PGlite ---
+    // --- Phase 2: Capture response + close session ---
+
+    // Get the latest batch BEFORE closing — this is the batch for the current turn.
+    const latestBatch = await getLatestBatch(sessionId);
+
+    // Primary capture: put last_assistant_message directly on the latest batch.
+    // This is reliable — no positional mapping needed. The hook gives us the response.
+    if (lastAssistantMessage && latestBatch && !latestBatch.response_summary) {
+      const { getDatabase } = await import('../db/client.js');
+      const db = getDatabase();
+      await db.query(
+        `UPDATE prompt_batches SET response_summary = $1 WHERE id = $2 AND response_summary IS NULL`,
+        [lastAssistantMessage, latestBatch.id],
+      ).catch(err => logger.warn('processor', 'Failed to set response_summary on latest batch', { error: String(err) }));
+    }
 
     await handleSessionStop(sessionId);
 
@@ -891,19 +905,15 @@ export async function main(): Promise<void> {
 
     await updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
 
-    // Populate response_summary on batches from transcript AI responses.
-    // Maps by batch insertion order (id ASC) rather than prompt_number,
-    // which is resilient to daemon restarts that reset the prompt counter.
+    // Enhanced capture: populate response_summary on earlier batches from transcript.
+    // Maps by batch insertion order (id ASC) to transcript turn position.
+    // This is best-effort — the parser may skip empty-text turns, causing misalignment.
+    // The primary capture (above) handles the current turn reliably.
     const responses: Array<{ turnIndex: number; response: string }> = [];
     for (let i = 0; i < allTurns.length; i++) {
       if (allTurns[i].aiResponse) {
         responses.push({ turnIndex: i + 1, response: allTurns[i].aiResponse! });
       }
-    }
-    // Also include last_assistant_message from the hook payload for the final turn
-    // (may duplicate the transcript's last response — populateBatchResponses is idempotent)
-    if (lastAssistantMessage && allTurns.length > 0) {
-      responses.push({ turnIndex: allTurns.length, response: lastAssistantMessage });
     }
     if (responses.length > 0) {
       populateBatchResponses(sessionId, responses)
@@ -920,6 +930,9 @@ export async function main(): Promise<void> {
     } catch { /* agent unavailable */ }
 
     // Write images to attachments (keep this — images are binary, not in PGlite)
+    // Link images to the latest batch directly (primary capture) rather than
+    // relying on positional turn-to-batch mapping (which breaks when the parser
+    // drops empty-text turns).
     const attachmentsDir = path.join(vaultDir, 'attachments');
     const hasImages = allTurns.some((t) => t.images?.length);
     if (hasImages) {
@@ -929,8 +942,12 @@ export async function main(): Promise<void> {
       const turn = allTurns[i];
       if (!turn.images?.length) continue;
       const promptNumber = i + 1;
-      // Look up batch ID for this turn (fire-and-forget — don't block on failure)
-      const batchIdPromise = getBatchIdByPromptNumber(sessionId, promptNumber).catch(() => null);
+      // For the last turn, use latestBatch directly (reliable).
+      // For earlier turns, fall back to positional lookup (best-effort).
+      const isLastTurn = i === allTurns.length - 1;
+      const batchIdPromise = isLastTurn && latestBatch
+        ? Promise.resolve(latestBatch.id)
+        : getBatchIdByPromptNumber(sessionId, promptNumber).catch(() => null);
       for (let j = 0; j < turn.images.length; j++) {
         const img = turn.images[j];
         const ext = extensionForMimeType(img.mediaType);

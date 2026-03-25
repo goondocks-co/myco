@@ -394,6 +394,26 @@ export async function closeOpenBatches(
   return result.affectedRows ?? 0;
 }
 
+/**
+ * Get the most recent batch for a session (by id DESC), regardless of status.
+ *
+ * Used by processStopEvent to attach the AI response and images to the
+ * correct batch without positional turn mapping.
+ */
+export async function getLatestBatch(
+  sessionId: string,
+): Promise<BatchRow | null> {
+  const db = getDatabase();
+  const result = await db.query(
+    `SELECT ${SELECT_COLUMNS} FROM prompt_batches
+     WHERE session_id = $1
+     ORDER BY id DESC LIMIT 1`,
+    [sessionId],
+  );
+  if (result.rows.length === 0) return null;
+  return toBatchRow(result.rows[0] as Record<string, unknown>);
+}
+
 export async function listBatchesBySession(
   sessionId: string,
   options: ListBatchesBySessionOptions = {},
