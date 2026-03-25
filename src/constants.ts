@@ -51,8 +51,6 @@ export const EXTRACTION_MAX_TOKENS = 2048;
 export const SUMMARY_MAX_TOKENS = 512;
 /** Response token budget for session title generation. */
 export const TITLE_MAX_TOKENS = 32;
-/** Response token budget for artifact classification. */
-export const CLASSIFICATION_MAX_TOKENS = 1024;
 
 // --- Timeouts ---
 /** Daemon client HTTP request timeout (ms). */
@@ -105,11 +103,6 @@ export const DAEMON_EVICT_POLL_MS = 100;
 
 // --- Slug limits ---
 /** Max length for slugified artifact IDs. */
-export const MAX_SLUG_LENGTH = 100;
-
-// --- Content preview for classification prompt ---
-/** Max chars of file content per candidate in classification prompt. */
-export const CANDIDATE_CONTENT_PREVIEW = 2000;
 
 // --- Turn rendering ---
 /** Max file paths displayed per turn in session notes. */
