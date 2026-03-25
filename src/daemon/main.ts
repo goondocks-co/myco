@@ -54,7 +54,7 @@ import {
 import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
-import { upsertSession, closeSession, updateSession, listSessions, getSession } from '../db/queries/sessions.js';
+import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSession } from '../db/queries/sessions.js';
 import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary } from '../db/queries/batches.js';
 import { insertActivityWithBatch } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
@@ -1082,6 +1082,13 @@ export async function main(): Promise<void> {
   });
 
   server.registerRoute('GET', '/api/sessions/:id', handleGetSession);
+  server.registerRoute('DELETE', '/api/sessions/:id', async (req) => {
+    const sessionId = req.params.id;
+    const deleted = await deleteSession(sessionId);
+    if (!deleted) return { status: 404, body: { error: 'Session not found' } };
+    logger.info('api', 'Session deleted', { session_id: sessionId });
+    return { body: { ok: true } };
+  });
   server.registerRoute('GET', '/api/sessions/:id/batches', handleGetSessionBatches);
   server.registerRoute('GET', '/api/batches/:id/activities', handleGetBatchActivities);
   server.registerRoute('GET', '/api/sessions/:id/attachments', handleGetSessionAttachments);
