@@ -64,7 +64,7 @@ import { gatherStats } from '../services/stats.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSession } from '../db/queries/sessions.js';
-import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary } from '../db/queries/batches.js';
+import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary, listBatchesBySession } from '../db/queries/batches.js';
 import { insertActivityWithBatch } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
 import { listRuns, getRun, getRunningRun } from '../db/queries/runs.js';
@@ -623,6 +623,7 @@ export async function main(): Promise<void> {
               runAgent(vaultDir, {
                 task: 'title-summary',
                 instruction: `Process session ${event.session_id} only`,
+                embeddingManager,
               }).catch(err => logger.warn('agent', 'Batch-threshold summary failed', { error: String(err) }));
             }
           } catch { /* agent unavailable */ }
@@ -900,7 +901,10 @@ export async function main(): Promise<void> {
       catch (err) { logger.warn('processor', 'Failed to set response_summary on latest batch', { error: String(err) }); }
     }
 
-    handleSessionStop(sessionId);
+    // Close open batches but do NOT close the session — the Stop hook fires
+    // after every assistant turn, not just session end. The session is closed
+    // when the SessionEnd hook fires (via /sessions/unregister).
+    closeOpenBatches(sessionId, epochSeconds());
 
     // Derive a simple title from the first prompt (no LLM — that's Phase 2)
     let title: string | null = null;
@@ -943,6 +947,7 @@ export async function main(): Promise<void> {
       runAgent(vaultDir, {
         task: 'title-summary',
         instruction: `Process session ${sessionId} only`,
+        embeddingManager,
       }).catch(err => logger.warn('agent', 'Title-summary task failed', { error: String(err) }));
     } catch { /* agent unavailable */ }
 
@@ -1164,7 +1169,7 @@ export async function main(): Promise<void> {
 
     // Fire-and-forget: respond immediately with a runId placeholder, agent runs in background
     const { runAgent } = await import('../agent/executor.js');
-    const resultPromise = runAgent(vaultDir, { task, instruction, agentId });
+    const resultPromise = runAgent(vaultDir, { task, instruction, agentId, embeddingManager });
 
     // We need the runId from the executor, but the executor creates it synchronously
     // before the async SDK call. Wait for the result since it's fast to start.
@@ -1441,7 +1446,7 @@ export async function main(): Promise<void> {
 
           logger.info('agent', 'Unprocessed batches found, starting agent', { count });
           const { runAgent } = await import('../agent/executor.js');
-          const runResult = await runAgent(vaultDir);
+          const runResult = await runAgent(vaultDir, { embeddingManager });
           logger.info('agent', 'Agent run completed', { status: runResult.status, runId: runResult.runId });
         } catch (err) {
           logger.error('agent', 'Agent timer failed', { error: (err as Error).message });

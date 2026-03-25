@@ -521,8 +521,8 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
  * @param runId — the current agent run ID, injected into reports and turns.
  * @returns an MCP server config with instance, suitable for the SDK.
  */
-export function createVaultToolServer(agentId: string, runId: string) {
-  const tools = createVaultTools(agentId, runId);
+export function createVaultToolServer(agentId: string, runId: string, embeddingManager?: EmbeddingManager) {
+  const tools = createVaultTools(agentId, runId, 0, embeddingManager);
 
   return createSdkMcpServer({
     name: 'myco-vault',
@@ -547,8 +547,9 @@ export function createScopedVaultToolServer(
   runId: string,
   toolNames: string[],
   turnOffset = 0,
+  embeddingManager?: EmbeddingManager,
 ) {
-  const allTools = createVaultTools(agentId, runId, turnOffset);
+  const allTools = createVaultTools(agentId, runId, turnOffset, embeddingManager);
   const nameSet = new Set(toolNames);
   const scopedTools = allTools.filter((t) => nameSet.has(t.name));
 

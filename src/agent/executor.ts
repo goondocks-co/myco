@@ -176,9 +176,10 @@ async function executeSingleQuery(
   taskPrompt: string,
   agentId: string,
   runId: string,
+  embeddingManager?: RunOptions['embeddingManager'],
 ): Promise<{ tokensUsed: number; costUsd: number }> {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
-  const toolServer = createVaultToolServer(agentId, runId);
+  const toolServer = createVaultToolServer(agentId, runId, embeddingManager);
 
   let resultCostUsd = 0;
   let resultTokens = 0;
@@ -228,6 +229,7 @@ async function executePhasedQuery(
   agentId: string,
   runId: string,
   instruction?: string,
+  embeddingManager?: RunOptions['embeddingManager'],
 ): Promise<{ tokensUsed: number; costUsd: number; phases: PhaseResult[] }> {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
 
@@ -295,7 +297,7 @@ async function executePhasedQuery(
     );
 
     const phaseModel = phase.model ?? config.model;
-    const toolServer = createScopedVaultToolServer(agentId, runId, phase.tools, runningTurnCount);
+    const toolServer = createScopedVaultToolServer(agentId, runId, phase.tools, runningTurnCount, embeddingManager);
 
     let phaseCost = 0;
     let phaseTokens = 0;
@@ -476,6 +478,7 @@ export async function runAgent(
         agentId,
         runId,
         options?.instruction,
+        options?.embeddingManager,
       );
       tokensUsed = result.tokensUsed;
       costUsd = result.costUsd;
@@ -494,6 +497,7 @@ export async function runAgent(
         taskPrompt,
         agentId,
         runId,
+        options?.embeddingManager,
       );
       tokensUsed = result.tokensUsed;
       costUsd = result.costUsd;
