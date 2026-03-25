@@ -5,6 +5,7 @@ import Sessions from './pages/Sessions';
 import Mycelium from './pages/Mycelium';
 import Agent from './pages/Agent';
 import Settings from './pages/Settings';
+import Operations from './pages/Operations';
 import Logs from './pages/Logs';
 
 export default function App() {
@@ -17,6 +18,7 @@ export default function App() {
         <Route path="/mycelium" element={<Mycelium />} />
         <Route path="/agent" element={<Agent />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/operations" element={<Operations />} />
         <Route path="/logs" element={<Logs />} />
       </Route>
     </Routes>
