@@ -34,19 +34,32 @@ prompt: |
   If `vault_search` is unavailable (no embeddings), use `vault_spores`
   filtered by observation_type and compare manually. Report the limitation.
 
-  ## Phase 3 — Resolution (budget: 10 turns)
+  ## Phase 3 — Resolution and Wisdom Creation (budget: 10 turns)
 
-  For each cluster of duplicates:
+  For each cluster:
+
+  **If 3 or more related active spores cover the same topic:**
+  1. Create a wisdom spore via `vault_create_spore`:
+     - observation_type: "wisdom"
+     - properties: '{"consolidated_from": ["id-1", "id-2", "id-3"]}'
+     - Content MUST preserve ALL specific details from the sources —
+       file paths, error messages, concrete values. Wisdom is a
+       comprehensive reference, not a vague summary.
+  2. Resolve EACH source via `vault_resolve_spore` action "consolidate"
+     so they are removed from search results and context injection.
+
+  **If 2 related spores cover the same topic (pair):**
   1. Determine which spore has the best content (most complete, most accurate)
-  2. Call `vault_resolve_spore` with action "supersede" on the inferior spores:
+  2. Call `vault_resolve_spore` with action "supersede" on the inferior spore:
      - new_spore_id: the kept spore's ID
      - reason: specific explanation (not just "duplicate")
-  3. For truly outdated spores (no longer accurate):
-     - Call `vault_resolve_spore` with action "archive"
-     - reason: explain what changed
 
-  Only supersede when the new information genuinely replaces the old.
-  When in doubt, keep both.
+  **For truly outdated spores (no longer accurate):**
+  - Call `vault_resolve_spore` with action "archive"
+  - reason: explain what changed
+
+  Only supersede or consolidate when the new information genuinely replaces
+  the old. When in doubt, keep both.
 
   ## Phase 4 — Report (budget: 2 turns)
 
@@ -60,6 +73,7 @@ toolOverrides:
   - vault_spores
   - vault_search
   - vault_state
+  - vault_create_spore
   - vault_resolve_spore
   - vault_set_state
   - vault_report

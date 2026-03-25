@@ -1,4 +1,9 @@
-# Review a specific session — targeted extraction and summarization.
+# =============================================================================
+# Built-in Task: Review Session
+# =============================================================================
+# Targeted end-to-end pass over a single session: extract spores, build
+# graph entities and edges, run supersession checks, update title/summary.
+# =============================================================================
 
 name: review-session
 displayName: Review Session
@@ -7,10 +12,105 @@ description: >
   batches in the session, builds graph entities and edges, runs supersession
   checks, and generates the session title and summary.
 agent: myco-agent
-prompt: >
-  Review the specified session. Process all prompt batches within it:
-  extract observations as spores, identify entities and relationships,
-  and check for supersession. Evaluate and update the session title and
-  summary per the summary update criteria in your instructions. Mark all
-  batches and the session as processed when complete.
 isDefault: false
+maxTurns: 40
+timeoutSeconds: 480
+
+prompt: |
+  Review the specified session end-to-end. Budget: ~35 turns.
+
+  Target session: {{session_id}}
+
+  ## Phase 1 — Read State (budget: 3 turns)
+
+  1. Call `vault_state` to get current cursor and context
+  2. Call `vault_sessions` to find the target session and its current
+     title/summary/processed status
+  3. Call `vault_unprocessed` filtered to the target session to see what
+     batches need processing
+
+  If no batches are found for this session, call `vault_report` with
+  action "skip" and reason "no unprocessed batches for session", then stop.
+
+  ## Phase 2 — Extract Spores (budget: 15 turns)
+
+  Extract observations from all unprocessed batches in this session.
+  CRITICAL: the vault must stay sharp, not bloated — supersede, don't duplicate.
+
+  1. Read all batch content first — understand the full scope of the session
+  2. Group candidate observations by TOPIC across all batches
+  3. Call `vault_spores` to see existing spores for context
+
+  For each TOPIC group:
+  1. Call `vault_search` with the topic to check existing spore coverage
+  2. If a similar spore exists:
+     - If your observation adds meaningful new detail: call `vault_create_spore`
+       then supersede the old via `vault_resolve_spore` action "supersede"
+       with new_spore_id
+     - If your observation adds nothing new: skip it entirely
+  3. If no similar spore exists: call `vault_create_spore` with session_id,
+     prompt_batch_id, importance 1-10, and relevant tags
+
+  After processing all batches: call `vault_mark_processed` for each batch,
+  then call `vault_set_state` to update the cursor.
+
+  ## Phase 3 — Graph (budget: 10 turns)
+
+  Build entities and semantic edges for knowledge discovered in this session.
+
+  1. Call `vault_spores` to review the spores just created plus existing ones
+  2. For components, concepts, or people that appear in multiple spores:
+     - Call `vault_create_entity` with type: component | concept | person
+     - Good: "DaemonClient", "cursor-based pagination" — specific named things
+     - Bad: "testing phase", "code quality" — abstract categories
+  3. For each entity (new and existing relevant ones):
+     - Call `vault_search` with the entity name to find related spores
+     - Call `vault_create_edge` with type REFERENCES, source_type spore,
+       target_type entity for each relevant spore
+  4. Create structural edges: DEPENDS_ON (entity→entity), AFFECTS (spore→entity)
+
+  Always include source_type and target_type on every edge.
+  Do NOT create lineage edges (FROM_SESSION, EXTRACTED_FROM, etc.).
+
+  ## Phase 4 — Supersession Check (budget: 3 turns)
+
+  Scan active spores for newly introduced redundancy:
+  1. Call `vault_spores` with status "active" to see the current set
+  2. For any spores that are now outdated or contradicted by the newly created
+     ones, call `vault_resolve_spore` with action "supersede" or "archive"
+  3. Only supersede when the new information genuinely replaces the old;
+     when in doubt, keep both
+
+  ## Phase 5 — Title & Summary (budget: 3 turns)
+
+  1. Call `vault_sessions` to check the current title and summary
+  2. Call `vault_search` filtered by session_id to see all spores from
+     this session — use them to understand the full scope of work done
+  3. Call `vault_update_session` with BOTH title and summary:
+     - Title: under 80 characters, reflects the full session scope
+     - Summary: 2-4 sentences capturing key work, tools used, outcomes
+
+  ## Phase 6 — Report (budget: 1 turn)
+
+  Call `vault_report` with action "complete":
+  - Session reviewed: {{session_id}}
+  - Batches processed: N
+  - Spores created: N (by type)
+  - Spores superseded: N
+  - Entities created: N, edges created: N
+  - Title/summary updated: yes/no
+
+toolOverrides:
+  - vault_unprocessed
+  - vault_spores
+  - vault_sessions
+  - vault_search
+  - vault_create_spore
+  - vault_resolve_spore
+  - vault_create_entity
+  - vault_create_edge
+  - vault_update_session
+  - vault_mark_processed
+  - vault_set_state
+  - vault_state
+  - vault_report

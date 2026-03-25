@@ -19,45 +19,62 @@ timeoutSeconds: 300
 prompt: |
   Regenerate digest extracts from current vault state. Budget: ~15 turns.
 
-  ## Phase 1 — Survey Current Knowledge (budget: 5 turns)
+  ## Phase 1 — Assess Current State (budget: 4 turns)
 
   1. Call `vault_state` for context
-  2. Call `vault_spores` with status "active" to see current observations
-  3. Call `vault_sessions` to understand recent activity
-  4. Call `vault_search` with broad queries to sample vault breadth:
-     - "architecture decisions"
-     - "bugs and gotchas"
-     - "key components"
+  2. Call `vault_read_digest` (no tier param) to see current digest metadata
+     and assess whether any tiers exist and how fresh they are
+  3. Call `vault_spores` with status "active" to see current observations
+  4. Call `vault_sessions` to understand recent activity
 
-  ## Phase 2 — Generate Extracts (budget: 8 turns)
+  If the current digest is very recent and no meaningful vault changes have
+  occurred since it was written (check spore counts and session dates), call
+  `vault_report` with action "skip" and reason "digest is already current",
+  then stop. Only proceed if there is genuine new material to incorporate.
 
-  Write digest extracts at all five tiers. Each tier is a self-contained
-  summary at that token budget — NOT an incremental expansion.
+  ## Phase 2 — Survey New Material (budget: 3 turns)
 
-  For each tier, call `vault_write_digest`:
-  1. Tier 1500 — Executive briefing: what is this project, what's active,
-     what to avoid. Most critical knowledge only.
-  2. Tier 3000 — Team standup: decisions, plans, conventions. Enough to
-     start contributing.
-  3. Tier 5000 — Deep onboarding: trade-offs, patterns, team dynamics.
-  4. Tier 7500 — Comprehensive: thread history, design tensions.
-  5. Tier 10000 — Full institutional knowledge: everything worth knowing.
+  Call `vault_search` with broad queries to sample vault breadth and identify
+  themes that have changed since the last digest:
+  - "architecture decisions"
+  - "bugs and gotchas"
+  - "key components"
+
+  The existing digest is your baseline — your goal is to integrate new
+  material into it, not start from scratch.
+
+  ## Phase 3 — Update Extracts (budget: 7 turns)
+
+  For each tier, call `vault_read_digest` with the tier number to get the
+  current content, then call `vault_write_digest` with the updated version.
+
+  Preserve well-crafted existing content — only update sections affected by
+  new material. Tiers that need the most frequent updating:
+  1. Tier 10000 — Full institutional knowledge: update if any new content
+  2. Tier 7500 — Comprehensive: update if significant new content
+  3. Tier 5000 — Deep onboarding: update if new trade-offs or patterns
+  4. Tier 3000 — Team standup: update if new conventions or plans
+  5. Tier 1500 — Executive briefing: only if something critical changed
+
+  You do NOT need to update all 5 tiers — only those affected by new material.
 
   Prioritize: recent insights > active decisions > unresolved gotchas >
   architectural patterns > historical context.
 
-  ## Phase 3 — Report (budget: 1 turn)
+  ## Phase 4 — Report (budget: 1 turn)
 
   Call `vault_report` with action "digest":
-  - Tiers regenerated: [1500, 3000, 5000, 7500, 10000]
+  - Tiers updated: [list]
+  - Tiers skipped (already current): [list]
   - Active spores used as substrate: N
-  - Key themes captured
+  - Key themes incorporated
 
 toolOverrides:
   - vault_spores
   - vault_sessions
   - vault_search
   - vault_state
+  - vault_read_digest
   - vault_write_digest
   - vault_set_state
   - vault_report
