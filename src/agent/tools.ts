@@ -76,11 +76,12 @@ export const VAULT_TOOL_COUNT = 14;
  * @returns array of SdkMcpToolDefinition objects.
  */
 export function createVaultTools(agentId: string, runId: string, turnOffset = 0) {
-  /** Turn number counter — incremented per write tool call within a run. */
+  /** Turn number counter — incremented per tool call (read and write) within a run. */
   let turnCounter = turnOffset;
 
   /**
-   * Record a turn in the audit trail for write operations.
+   * Record a turn in the audit trail.
+   * Called for ALL tool invocations (read and write) for full visibility.
    * Fire-and-forget — does not block the tool response.
    */
   function recordTurn(toolName: string, toolInput: unknown): void {
@@ -109,6 +110,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
       limit: z.number().optional().describe('Maximum number of batches to return'),
     },
     async (args) => {
+      recordTurn('vault_unprocessed', args);
       const batches = await getUnprocessedBatches({
         after_id: args.after_id,
         limit: args.limit ?? DEFAULT_UNPROCESSED_LIMIT,
@@ -127,6 +129,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
       limit: z.number().optional().describe('Maximum number of spores to return'),
     },
     async (args) => {
+      recordTurn('vault_spores', args);
       const spores = await listSpores({
         agent_id: args.agent_id,
         observation_type: args.observation_type,
@@ -145,6 +148,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
       status: z.string().optional().describe('Filter by status (active, completed)'),
     },
     async (args) => {
+      recordTurn('vault_sessions', args);
       const sessions = await listSessions({
         limit: args.limit ?? DEFAULT_SESSIONS_LIMIT,
         status: args.status,
@@ -162,6 +166,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
       limit: z.number().optional().describe('Maximum number of results to return'),
     },
     async (args) => {
+      recordTurn('vault_search', args);
       try {
         const { tryEmbed } = await import('@myco/intelligence/embed-query.js');
         const embedding = await tryEmbed(args.query);
@@ -185,6 +190,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
     'Get all state key-value pairs for the current agent.',
     {},
     async () => {
+      recordTurn('vault_state', {});
       const states = await getStatesForAgent(agentId);
       return textResult(states);
     },
@@ -425,6 +431,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
       details: z.record(z.string(), z.unknown()).optional().describe('Structured details as key-value pairs'),
     },
     async (args) => {
+      recordTurn('vault_report', args);
       const now = epochSeconds();
 
       const report = await insertReport({

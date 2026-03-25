@@ -17,8 +17,8 @@ description: >
   regenerates digest extracts.
 agent: myco-agent
 isDefault: true
-maxTurns: 50
-timeoutSeconds: 600
+maxTurns: 103
+timeoutSeconds: 900
 model: claude-sonnet-4-6
 
 orchestrator:
@@ -63,7 +63,7 @@ phases:
       - vault_state
       - vault_unprocessed
       - vault_report
-    maxTurns: 3
+    maxTurns: 6
     required: true
 
   - name: extract
@@ -89,7 +89,7 @@ phases:
       - vault_mark_processed
       - vault_set_state
       - vault_report
-    maxTurns: 20
+    maxTurns: 30
     required: true
 
   - name: summarize
@@ -133,7 +133,7 @@ phases:
       - vault_create_spore
       - vault_resolve_spore
       - vault_report
-    maxTurns: 12
+    maxTurns: 18
     required: true
 
   - name: graph
@@ -158,7 +158,7 @@ phases:
       - vault_create_entity
       - vault_create_edge
       - vault_report
-    maxTurns: 12
+    maxTurns: 20
     required: true
 
   - name: digest
@@ -184,7 +184,7 @@ phases:
       - vault_sessions
       - vault_write_digest
       - vault_report
-    maxTurns: 10
+    maxTurns: 18
     required: true
 
   - name: report
@@ -202,5 +202,5 @@ phases:
       This report MUST be the last tool call of the run.
     tools:
       - vault_report
-    maxTurns: 2
+    maxTurns: 3
     required: true
