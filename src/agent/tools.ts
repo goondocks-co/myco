@@ -75,9 +75,9 @@ export const VAULT_TOOL_COUNT = 14;
  * @param runId — the current agent run ID, injected into reports and turns.
  * @returns array of SdkMcpToolDefinition objects.
  */
-export function createVaultTools(agentId: string, runId: string) {
+export function createVaultTools(agentId: string, runId: string, turnOffset = 0) {
   /** Turn number counter — incremented per write tool call within a run. */
-  let turnCounter = 0;
+  let turnCounter = turnOffset;
 
   /**
    * Record a turn in the audit trail for write operations.
@@ -501,8 +501,9 @@ export function createScopedVaultToolServer(
   agentId: string,
   runId: string,
   toolNames: string[],
+  turnOffset = 0,
 ) {
-  const allTools = createVaultTools(agentId, runId);
+  const allTools = createVaultTools(agentId, runId, turnOffset);
   const nameSet = new Set(toolNames);
   const scopedTools = allTools.filter((t) => nameSet.has(t.name));
 

@@ -233,6 +233,7 @@ async function executePhasedQuery(
   const phaseResults: PhaseResult[] = [];
   let totalTokens = 0;
   let totalCost = 0;
+  let runningTurnCount = 0;
 
   // ---------------------------------------------------------------------------
   // Orchestrator planning (opt-in via config.orchestrator.enabled)
@@ -292,7 +293,7 @@ async function executePhasedQuery(
     );
 
     const phaseModel = phase.model ?? config.model;
-    const toolServer = createScopedVaultToolServer(agentId, runId, phase.tools);
+    const toolServer = createScopedVaultToolServer(agentId, runId, phase.tools, runningTurnCount);
 
     let phaseCost = 0;
     let phaseTokens = 0;
@@ -355,17 +356,16 @@ async function executePhasedQuery(
       // If a required phase fails, stop the pipeline.
       // finally runs before break, so provider env is always restored.
       if (phase.required) {
-        totalTokens += phaseTokens;
-        totalCost += phaseCost;
         break;
       }
     } finally {
       // Always restore provider env after each phase query (including on break).
       if (savedEnv) restoreProviderEnv(savedEnv);
+      // Accumulate totals and advance turn count (runs even on break).
+      totalTokens += phaseTokens;
+      totalCost += phaseCost;
+      runningTurnCount += phaseTurns;
     }
-
-    totalTokens += phaseTokens;
-    totalCost += phaseCost;
   }
 
   return { tokensUsed: totalTokens, costUsd: totalCost, phases: phaseResults };
