@@ -323,25 +323,111 @@ export async function getBatchIdByPromptNumber(
   return result.rows.length > 0 ? result.rows[0].id : null;
 }
 
+
+/** Fields required when inserting a batch statelessly (prompt_number derived from DB). */
+export interface StatelessBatchInsert {
+  session_id: string;
+  created_at: number;
+  user_prompt?: string | null;
+  started_at?: number | null;
+  status?: string;
+}
+
 /**
- * Recover batch state for a session from the database.
+ * Insert a new prompt batch with prompt_number derived from an inline subquery.
  *
- * Returns the next prompt number and the ID of any currently open batch.
- * Used by the daemon to resume batch tracking after a restart.
+ * The prompt_number is set to `COALESCE(MAX(prompt_number), 0) + 1` for the
+ * session, so the caller never needs a separate SELECT. This makes the insert
+ * stateless — no in-memory counter required.
  */
-export async function recoverBatchState(
-  sessionId: string,
-): Promise<{ nextPromptNumber: number; openBatchId: number | null }> {
+export async function insertBatchStateless(data: StatelessBatchInsert): Promise<BatchRow> {
   const db = getDatabase();
-  const result = await db.query<{ max_pn: number | null; last_batch_id: number | null }>(
-    `SELECT MAX(prompt_number) as max_pn,
-            (SELECT id FROM prompt_batches WHERE session_id = $1 AND ended_at IS NULL ORDER BY id DESC LIMIT 1) as last_batch_id
-     FROM prompt_batches WHERE session_id = $1`,
+
+  const result = await db.query(
+    `INSERT INTO prompt_batches (
+       session_id, prompt_number, user_prompt, response_summary,
+       classification, started_at, ended_at, status,
+       activity_count, processed, content_hash, created_at,
+       search_vector
+     ) VALUES (
+       $1,
+       (SELECT COALESCE(MAX(prompt_number), 0) + 1 FROM prompt_batches WHERE session_id = $1),
+       $2, NULL,
+       NULL, $3, NULL, $4,
+       $5, $6, NULL, $7,
+       to_tsvector('english', COALESCE($2, ''))
+     )
+     RETURNING ${SELECT_COLUMNS}`,
+    [
+      data.session_id,
+      data.user_prompt ?? null,
+      data.started_at ?? null,
+      data.status ?? DEFAULT_STATUS,
+      DEFAULT_ACTIVITY_COUNT,
+      DEFAULT_PROCESSED,
+      data.created_at,
+    ],
+  );
+
+  return toBatchRow(result.rows[0] as Record<string, unknown>);
+}
+
+/**
+ * Close all open batches for a session — blind UPDATE, no prior SELECT needed.
+ *
+ * Sets `status = 'completed'` and `ended_at` on every batch that has no
+ * `ended_at` value yet. Returns the number of batches closed.
+ */
+export async function closeOpenBatches(
+  sessionId: string,
+  endedAt: number,
+): Promise<number> {
+  const db = getDatabase();
+
+  const result = await db.query(
+    `UPDATE prompt_batches
+     SET status = $1, ended_at = $2
+     WHERE session_id = $3 AND ended_at IS NULL`,
+    [STATUS_COMPLETED, endedAt, sessionId],
+  );
+
+  return result.affectedRows ?? 0;
+}
+
+/**
+ * Set response_summary on a batch if it doesn't already have one.
+ *
+ * Idempotent — only updates NULL response_summary.
+ */
+export async function setResponseSummary(
+  batchId: number,
+  summary: string,
+): Promise<void> {
+  const db = getDatabase();
+  await db.query(
+    `UPDATE prompt_batches SET response_summary = $1 WHERE id = $2 AND response_summary IS NULL`,
+    [summary, batchId],
+  );
+}
+
+/**
+ * Get the most recent batch for a session (by id DESC), regardless of status.
+ *
+ * Used by processStopEvent to attach the AI response and images to the
+ * correct batch without positional turn mapping.
+ */
+export async function getLatestBatch(
+  sessionId: string,
+): Promise<BatchRow | null> {
+  const db = getDatabase();
+  const result = await db.query(
+    `SELECT ${SELECT_COLUMNS} FROM prompt_batches
+     WHERE session_id = $1
+     ORDER BY id DESC LIMIT 1`,
     [sessionId],
   );
-  const maxPn = result.rows[0]?.max_pn ?? 0;
-  const openBatchId = result.rows[0]?.last_batch_id ?? null;
-  return { nextPromptNumber: maxPn + 1, openBatchId };
+  if (result.rows.length === 0) return null;
+  return toBatchRow(result.rows[0] as Record<string, unknown>);
 }
 
 export async function listBatchesBySession(
