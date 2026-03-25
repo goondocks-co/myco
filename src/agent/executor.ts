@@ -517,15 +517,20 @@ export async function runAgent(
     };
   } catch (err) {
     // 7. Error handling — mark run as failed, preserve phase results
-    const errorMessage = err instanceof Error
-      ? err.message || err.constructor.name
-      : String(err) || 'Unknown error';
+    // Aggressively extract error info — the SDK may throw non-Error objects
+    let errorMessage: string;
+    if (err instanceof Error) {
+      errorMessage = err.message || err.constructor.name || 'Error (no message)';
+      if (err.stack) errorMessage += `\n${err.stack.split('\n').slice(0, 3).join('\n')}`;
+    } else if (typeof err === 'string') {
+      errorMessage = err || 'Empty string error';
+    } else {
+      try { errorMessage = JSON.stringify(err); } catch { errorMessage = 'Unserializable error'; }
+    }
     const failedAt = epochSeconds();
 
-    console.error(`[agent] Run ${runId} failed:`, errorMessage);
-    if (err instanceof Error && err.stack) {
-      console.error(`[agent] Stack:`, err.stack);
-    }
+    // Log to stderr (daemon may capture) and to structured log
+    console.error(`[agent] Run ${runId} failed: ${errorMessage}`);
 
     try {
       await updateRunStatus(runId, STATUS_FAILED, {
@@ -534,8 +539,9 @@ export async function runAgent(
         // Preserve phase results collected before the failure
         actions_taken: phaseResults ? JSON.stringify({ phases: phaseResults }) : undefined,
       });
-    } catch {
-      // DB failure in error path — do not mask the original error
+    } catch (dbErr) {
+      // DB failure in error path — log it but don't mask the original error
+      console.error(`[agent] Failed to save error to DB:`, dbErr);
     }
 
     return {
