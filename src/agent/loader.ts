@@ -9,14 +9,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { z } from 'zod/v4';
+import { findPackageRoot } from '@myco/utils/find-package-root.js';
 import { parse as parseYaml } from 'yaml';
-import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
+import { epochSeconds, DEFAULT_AGENT_ID, BUILT_IN_SOURCE } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertTask } from '@myco/db/queries/tasks.js';
 import type { AgentRow } from '@myco/db/queries/agents.js';
 import type { AgentDefinition, AgentTask, EffectiveConfig } from './types.js';
+import { AgentDefinitionSchema, AgentTaskSchema } from './schemas.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -28,41 +29,9 @@ const AGENT_DEFINITION_FILE = 'agent.yaml';
 /** Subdirectory containing task YAML files. */
 const TASKS_SUBDIRECTORY = 'tasks';
 
-/** Max parent directories to walk when resolving the package root. */
-const MAX_PARENT_WALK_DEPTH = 10;
+// Package root resolution uses shared findPackageRoot from @myco/utils
 
-/** Source label for built-in agents and tasks in the database. */
-const BUILT_IN_SOURCE = 'built-in';
-
-// ---------------------------------------------------------------------------
-// Zod schemas for YAML validation
-// ---------------------------------------------------------------------------
-
-/** Schema for agent.yaml agent definition files. */
-const AgentDefinitionSchema = z.object({
-  name: z.string(),
-  displayName: z.string(),
-  description: z.string(),
-  model: z.string(),
-  maxTurns: z.number(),
-  timeoutSeconds: z.number(),
-  systemPromptPath: z.string(),
-  tools: z.array(z.string()),
-});
-
-/** Schema for task YAML files in tasks/. */
-const AgentTaskSchema = z.object({
-  name: z.string(),
-  displayName: z.string(),
-  description: z.string(),
-  agent: z.string(),
-  prompt: z.string(),
-  isDefault: z.boolean(),
-  toolOverrides: z.array(z.string()).optional(),
-  model: z.string().optional(),
-  maxTurns: z.number().optional(),
-  timeoutSeconds: z.number().optional(),
-});
+// BUILT_IN_SOURCE imported from @myco/constants.js
 
 // ---------------------------------------------------------------------------
 // Definitions directory resolution
@@ -78,33 +47,31 @@ const AgentTaskSchema = z.object({
  * 4. Also check if the current file's directory already contains agent.yaml.
  */
 export function resolveDefinitionsDir(): string {
-  let dir = path.dirname(fileURLToPath(import.meta.url));
+  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
-  // Check if we're already adjacent to the definitions
-  const adjacentDefs = path.join(dir, 'definitions');
+  // Check if we're already adjacent to the definitions (tsc output or dev mode)
+  const adjacentDefs = path.join(scriptDir, 'definitions');
   if (fs.existsSync(path.join(adjacentDefs, AGENT_DEFINITION_FILE))) {
     return adjacentDefs;
   }
 
-  // Walk up to find package.json
-  for (let i = 0; i < MAX_PARENT_WALK_DEPTH; i++) {
-    if (fs.existsSync(path.join(dir, 'package.json'))) {
-      // Try dist path first (tsup bundled output)
-      const distPath = path.join(dir, 'dist', 'src', 'agent', 'definitions');
-      if (fs.existsSync(path.join(distPath, AGENT_DEFINITION_FILE))) {
-        return distPath;
-      }
-      // Fall back to src path (dev mode)
-      const srcPath = path.join(dir, 'src', 'agent', 'definitions');
-      if (fs.existsSync(path.join(srcPath, AGENT_DEFINITION_FILE))) {
-        return srcPath;
-      }
+  // Walk up to package root using shared utility
+  const root = findPackageRoot(scriptDir);
+  if (root) {
+    // Try dist path first (tsup bundled output)
+    const distPath = path.join(root, 'dist', 'src', 'agent', 'definitions');
+    if (fs.existsSync(path.join(distPath, AGENT_DEFINITION_FILE))) {
+      return distPath;
     }
-    dir = path.dirname(dir);
+    // Fall back to src path (dev mode)
+    const srcPath = path.join(root, 'src', 'agent', 'definitions');
+    if (fs.existsSync(path.join(srcPath, AGENT_DEFINITION_FILE))) {
+      return srcPath;
+    }
   }
 
   // Final fallback: adjacent to current file
-  return path.join(path.dirname(fileURLToPath(import.meta.url)), 'definitions');
+  return adjacentDefs;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,19 +117,35 @@ export function loadAgentTasks(definitionsDir: string): AgentTask[] {
     const raw = fs.readFileSync(path.join(tasksDir, file), 'utf-8');
     const parsed = AgentTaskSchema.parse(parseYaml(raw));
 
-    return {
-      name: parsed.name,
-      displayName: parsed.displayName,
-      description: parsed.description.trim(),
-      agent: parsed.agent,
-      prompt: parsed.prompt.trim(),
-      isDefault: parsed.isDefault,
-      ...(parsed.toolOverrides ? { toolOverrides: parsed.toolOverrides } : {}),
-      ...(parsed.model ? { model: parsed.model } : {}),
-      ...(parsed.maxTurns ? { maxTurns: parsed.maxTurns } : {}),
-      ...(parsed.timeoutSeconds ? { timeoutSeconds: parsed.timeoutSeconds } : {}),
-    };
+    return taskFromParsed(parsed);
   });
+}
+
+/**
+ * Convert a Zod-parsed task schema result to an AgentTask object.
+ *
+ * Shared by loadAgentTasks (built-in) and registry (user tasks) to ensure
+ * all optional fields are consistently spread. Adding a new optional field
+ * to AgentTaskSchema only requires updating this one function.
+ */
+export function taskFromParsed(parsed: AgentTask): AgentTask {
+  return {
+    name: parsed.name,
+    displayName: parsed.displayName,
+    description: parsed.description.trim(),
+    agent: parsed.agent,
+    prompt: parsed.prompt.trim(),
+    isDefault: parsed.isDefault,
+    ...(parsed.toolOverrides ? { toolOverrides: parsed.toolOverrides } : {}),
+    ...(parsed.model ? { model: parsed.model } : {}),
+    ...(parsed.maxTurns ? { maxTurns: parsed.maxTurns } : {}),
+    ...(parsed.timeoutSeconds ? { timeoutSeconds: parsed.timeoutSeconds } : {}),
+    ...(parsed.phases ? { phases: parsed.phases } : {}),
+    ...(parsed.orchestrator ? { orchestrator: parsed.orchestrator } : {}),
+    ...(parsed.contextQueries ? { contextQueries: parsed.contextQueries } : {}),
+    ...(parsed.execution ? { execution: parsed.execution } : {}),
+    ...(parsed.schemaVersion ? { schemaVersion: parsed.schemaVersion } : {}),
+  };
 }
 
 /**
@@ -230,6 +213,14 @@ export function resolveEffectiveConfig(
     tools = [...taskOverrides.toolOverrides];
   }
 
+  // Apply execution config overrides (highest priority)
+  // Precedence: execution.model > task.model > agent.model
+  if (taskOverrides?.execution) {
+    if (taskOverrides.execution.model) model = taskOverrides.execution.model;
+    if (taskOverrides.execution.maxTurns) maxTurns = taskOverrides.execution.maxTurns;
+    if (taskOverrides.execution.timeoutSeconds) timeoutSeconds = taskOverrides.execution.timeoutSeconds;
+  }
+
   // Task prompt and display info (fall back to a generic prompt)
   const taskName = taskOverrides?.name ?? 'full-intelligence';
   const taskDisplayName = taskOverrides?.displayName ?? 'Full Intelligence';
@@ -245,6 +236,10 @@ export function resolveEffectiveConfig(
     taskName,
     taskDisplayName,
     taskPrompt,
+    ...(taskOverrides?.phases ? { phases: taskOverrides.phases } : {}),
+    ...(taskOverrides?.orchestrator ? { orchestrator: taskOverrides.orchestrator } : {}),
+    ...(taskOverrides?.contextQueries ? { contextQueries: taskOverrides.contextQueries } : {}),
+    ...(taskOverrides?.execution ? { execution: taskOverrides.execution } : {}),
   };
 }
 
@@ -289,6 +284,12 @@ export async function registerBuiltInAgentsAndTasks(definitionsDir: string): Pro
       prompt: task.prompt,
       is_default: task.isDefault ? 1 : 0,
       tool_overrides: task.toolOverrides ? JSON.stringify(task.toolOverrides) : null,
+      config: JSON.stringify({
+        phases: task.phases ?? null,
+        execution: task.execution ?? null,
+        contextQueries: task.contextQueries ?? null,
+        schemaVersion: task.schemaVersion ?? 1,
+      }),
       created_at: now,
       updated_at: now,
     });

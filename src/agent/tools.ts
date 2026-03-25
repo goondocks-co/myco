@@ -1,9 +1,9 @@
 /**
  * Vault MCP tool server for the agent.
  *
- * Creates 14 tools that expose PGlite query helpers to the agent
+ * Creates 15 tools that expose PGlite query helpers to the agent
  * via the Claude Agent SDK. Tools are grouped into:
- * - Read tools: vault_unprocessed, vault_spores, vault_sessions, vault_search, vault_state
+ * - Read tools: vault_unprocessed, vault_spores, vault_sessions, vault_search, vault_state, vault_read_digest
  * - Write tools: vault_create_spore, vault_create_entity, vault_create_edge,
  *                vault_resolve_spore, vault_update_session, vault_set_state,
  *                vault_write_digest, vault_mark_processed
@@ -29,7 +29,7 @@ import { insertEntity } from '@myco/db/queries/entities.js';
 import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
 import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
-import { upsertDigestExtract } from '@myco/db/queries/digest-extracts.js';
+import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -64,10 +64,10 @@ function textResult(data: unknown): { content: Array<{ type: 'text'; text: strin
 // ---------------------------------------------------------------------------
 
 /** Total number of vault tools defined. */
-export const VAULT_TOOL_COUNT = 14;
+export const VAULT_TOOL_COUNT = 15;
 
 /**
- * Create the 14 vault tool definitions for the agent.
+ * Create the 15 vault tool definitions for the agent.
  *
  * Exposed for testing (call handler directly) and for the MCP server factory.
  *
@@ -75,12 +75,13 @@ export const VAULT_TOOL_COUNT = 14;
  * @param runId — the current agent run ID, injected into reports and turns.
  * @returns array of SdkMcpToolDefinition objects.
  */
-export function createVaultTools(agentId: string, runId: string) {
-  /** Turn number counter — incremented per write tool call within a run. */
-  let turnCounter = 0;
+export function createVaultTools(agentId: string, runId: string, turnOffset = 0) {
+  /** Turn number counter — incremented per tool call (read and write) within a run. */
+  let turnCounter = turnOffset;
 
   /**
-   * Record a turn in the audit trail for write operations.
+   * Record a turn in the audit trail.
+   * Called for ALL tool invocations (read and write) for full visibility.
    * Fire-and-forget — does not block the tool response.
    */
   function recordTurn(toolName: string, toolInput: unknown): void {
@@ -109,6 +110,7 @@ export function createVaultTools(agentId: string, runId: string) {
       limit: z.number().optional().describe('Maximum number of batches to return'),
     },
     async (args) => {
+      recordTurn('vault_unprocessed', args);
       const batches = await getUnprocessedBatches({
         after_id: args.after_id,
         limit: args.limit ?? DEFAULT_UNPROCESSED_LIMIT,
@@ -127,6 +129,7 @@ export function createVaultTools(agentId: string, runId: string) {
       limit: z.number().optional().describe('Maximum number of spores to return'),
     },
     async (args) => {
+      recordTurn('vault_spores', args);
       const spores = await listSpores({
         agent_id: args.agent_id,
         observation_type: args.observation_type,
@@ -145,6 +148,7 @@ export function createVaultTools(agentId: string, runId: string) {
       status: z.string().optional().describe('Filter by status (active, completed)'),
     },
     async (args) => {
+      recordTurn('vault_sessions', args);
       const sessions = await listSessions({
         limit: args.limit ?? DEFAULT_SESSIONS_LIMIT,
         status: args.status,
@@ -155,13 +159,15 @@ export function createVaultTools(agentId: string, runId: string) {
 
   const vaultSearch = tool(
     'vault_search',
-    'Semantic similarity search across vault content. Returns ranked results by cosine similarity. If no embeddings are available, returns an empty result set — use vault_spores or vault_sessions as a fallback.',
+    'Semantic similarity search across vault content. Returns ranked results by cosine similarity. Supports filtering by session_id (for spores table) to scope results. If no embeddings are available, returns an empty result set — use vault_spores or vault_sessions as a fallback.',
     {
       query: z.string().describe('Search query text to embed and compare'),
-      table: z.enum(EMBEDDABLE_TABLES).optional().describe('Table to search'),
+      table: z.enum(EMBEDDABLE_TABLES).optional().describe('Table to search (default: spores)'),
+      session_id: z.string().optional().describe('Filter results to a specific session (spores table only)'),
       limit: z.number().optional().describe('Maximum number of results to return'),
     },
     async (args) => {
+      recordTurn('vault_search', args);
       try {
         const { tryEmbed } = await import('@myco/intelligence/embed-query.js');
         const embedding = await tryEmbed(args.query);
@@ -170,8 +176,12 @@ export function createVaultTools(agentId: string, runId: string) {
         }
 
         const table = args.table ?? DEFAULT_SEARCH_TABLE;
+        const filters: Record<string, unknown> = {};
+        if (args.session_id) filters.session_id = args.session_id;
+
         const results = await searchSimilar(table, embedding, {
           limit: args.limit ?? DEFAULT_SEARCH_LIMIT,
+          filters: Object.keys(filters).length > 0 ? filters : undefined,
         });
         return textResult({ results });
       } catch {
@@ -185,6 +195,7 @@ export function createVaultTools(agentId: string, runId: string) {
     'Get all state key-value pairs for the current agent.',
     {},
     async () => {
+      recordTurn('vault_state', {});
       const states = await getStatesForAgent(agentId);
       return textResult(states);
     },
@@ -227,7 +238,7 @@ export function createVaultTools(agentId: string, runId: string) {
         created_at: now,
       });
 
-      // Fire-and-forget lineage edges — failure should not break spore creation
+      // Fire-and-forget: structural lineage edges (FROM_SESSION, EXTRACTED_FROM, DERIVED_FROM)
       try { await createSporeLineage(spore); } catch { /* lineage best-effort */ }
 
       recordTurn('vault_create_spore', args);
@@ -376,6 +387,31 @@ export function createVaultTools(agentId: string, runId: string) {
     },
   );
 
+  const vaultReadDigest = tool(
+    'vault_read_digest',
+    'Read current digest extracts. Without a tier parameter, returns a summary of all tiers (content length, generation time). With a tier parameter, returns the full content for that specific tier.',
+    {
+      tier: z.number().optional().describe('Specific tier to read in full (e.g., 1500, 3000). Omit to get summary of all tiers.'),
+    },
+    async (args) => {
+      recordTurn('vault_read_digest', args);
+      const extracts = await listDigestExtracts(agentId);
+
+      if (args.tier !== undefined) {
+        const extract = extracts.find(e => e.tier === args.tier);
+        if (!extract) return textResult({ tier: args.tier, content: null, message: 'No digest at this tier' });
+        return textResult({ tier: extract.tier, content: extract.content, generated_at: extract.generated_at });
+      }
+
+      // Summary mode — return metadata for all tiers
+      return textResult(extracts.map(e => ({
+        tier: e.tier,
+        content_length: e.content.length,
+        generated_at: e.generated_at,
+      })));
+    },
+  );
+
   const vaultWriteDigest = tool(
     'vault_write_digest',
     'Write or update a digest extract at a specific token tier. Uses UPSERT on (agent_id, tier).',
@@ -425,6 +461,7 @@ export function createVaultTools(agentId: string, runId: string) {
       details: z.record(z.string(), z.unknown()).optional().describe('Structured details as key-value pairs'),
     },
     async (args) => {
+      recordTurn('vault_report', args);
       const now = epochSeconds();
 
       const report = await insertReport({
@@ -456,6 +493,7 @@ export function createVaultTools(agentId: string, runId: string) {
     vaultResolveSpore,
     vaultUpdateSession,
     vaultSetState,
+    vaultReadDigest,
     vaultWriteDigest,
     vaultMarkProcessed,
     vaultReport,
@@ -467,7 +505,7 @@ export function createVaultTools(agentId: string, runId: string) {
 // ---------------------------------------------------------------------------
 
 /**
- * Create a vault MCP tool server with 14 tools for the agent.
+ * Create a vault MCP tool server with 15 tools for the agent.
  *
  * Wraps `createVaultTools()` with `createSdkMcpServer()` from the
  * Claude Agent SDK.
@@ -483,5 +521,33 @@ export function createVaultToolServer(agentId: string, runId: string) {
     name: 'myco-vault',
     version: getPluginVersion(),
     tools,
+  });
+}
+
+/**
+ * Create a vault MCP tool server scoped to a subset of tools.
+ *
+ * Used by the phased executor to restrict each phase to only the tools
+ * it needs. Tools not in `toolNames` are excluded from the server.
+ *
+ * @param agentId — the agent identity, injected into all write operations.
+ * @param runId — the current agent run ID, injected into reports and turns.
+ * @param toolNames — tool names to include (e.g., ['vault_unprocessed', 'vault_create_spore']).
+ * @returns an MCP server config with only the specified tools.
+ */
+export function createScopedVaultToolServer(
+  agentId: string,
+  runId: string,
+  toolNames: string[],
+  turnOffset = 0,
+) {
+  const allTools = createVaultTools(agentId, runId, turnOffset);
+  const nameSet = new Set(toolNames);
+  const scopedTools = allTools.filter((t) => nameSet.has(t.name));
+
+  return createSdkMcpServer({
+    name: 'myco-vault',
+    version: getPluginVersion(),
+    tools: scopedTools,
   });
 }

@@ -1,12 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { buildInjectedContext, buildPromptContext } from '@myco/context/injector';
-import { initDatabase, closeDatabase } from '@myco/db/client';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 
 // Mock tryEmbed to return null immediately — no real embedding provider in tests
 vi.mock('@myco/intelligence/embed-query.js', () => ({
   tryEmbed: async () => null,
 }));
-import { createSchema } from '@myco/db/schema';
 import { upsertSession } from '@myco/db/queries/sessions';
 import { upsertPlan } from '@myco/db/queries/plans';
 import { insertSpore } from '@myco/db/queries/spores';
@@ -18,14 +17,9 @@ describe('buildInjectedContext', () => {
     version: 3,
   });
 
-  beforeEach(async () => {
-    const db = await initDatabase(); // in-memory
-    await createSchema(db);
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
-  });
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
+  beforeEach(async () => { await cleanTestDb(); });
 
   it('returns empty text when DB has no data', async () => {
     const result = await buildInjectedContext(config, {});
@@ -131,14 +125,9 @@ describe('buildPromptContext', () => {
     version: 3,
   });
 
-  beforeEach(async () => {
-    const db = await initDatabase(); // in-memory
-    await createSchema(db);
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
-  });
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
+  beforeEach(async () => { await cleanTestDb(); });
 
   it('returns empty context for short prompts', async () => {
     const result = await buildPromptContext('hi', config);

@@ -128,7 +128,6 @@ export const EDGE_TYPE_EXTRACTED_FROM = 'EXTRACTED_FROM';
 export const EDGE_TYPE_DERIVED_FROM = 'DERIVED_FROM';
 /** Session contains this prompt batch. */
 export const EDGE_TYPE_HAS_BATCH = 'HAS_BATCH';
-
 // --- Query defaults ---
 /** Default row limit for query module list operations. */
 export const QUERY_DEFAULT_LIST_LIMIT = 100;
@@ -278,6 +277,22 @@ export const ITEM_STAGE_MAP: Record<string, PipelineStage[]> = {
   spore: ['capture', 'embedding', 'consolidation', 'digest'],
   artifact: ['capture', 'embedding', 'digest'],
 };
+
+// --- User task registry ---
+/** Subdirectory within the vault for user-created task YAML files. */
+export const USER_TASKS_DIR = 'tasks';
+
+/** Source label for user-created tasks. */
+export const USER_TASK_SOURCE = 'user';
+
+/** Source label for built-in tasks shipped with the package. */
+export const BUILT_IN_SOURCE = 'built-in';
+
+/** Task name validation pattern (lowercase, hyphens, digits). */
+export const TASK_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/;
+
+/** Maximum length for task names. */
+export const MAX_TASK_NAME_LENGTH = 50;
 
 // --- Automatic consolidation ---
 /** Minimum cluster size required before asking LLM to consolidate. */

@@ -5,14 +5,14 @@
  * and exercises tool handlers directly against the database.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client.js';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { getDatabase } from '@myco/db/client.js';
 
 // Mock tryEmbed to return null immediately — no real embedding provider in tests
 vi.mock('@myco/intelligence/embed-query.js', () => ({
   tryEmbed: async () => null,
 }));
-import { createSchema } from '@myco/db/schema.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { upsertSession, type SessionInsert } from '@myco/db/queries/sessions.js';
 import { insertBatch, type BatchInsert } from '@myco/db/queries/batches.js';
 import { insertRun, type RunInsert } from '@myco/db/queries/runs.js';
@@ -98,9 +98,10 @@ describe('vault tools', () => {
   let tools: ReturnType<typeof createVaultTools>;
   let sessionId: string;
 
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => {
-    const db = await initDatabase(); // in-memory
-    await createSchema(db);
+    await cleanTestDb();
 
     // Seed required parent rows
     await createAgent(TEST_AGENT_ID);
@@ -112,10 +113,6 @@ describe('vault tools', () => {
 
     // Create tools for this test
     tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID);
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
   });
 
   // -------------------------------------------------------------------------

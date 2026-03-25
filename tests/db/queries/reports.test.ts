@@ -5,9 +5,8 @@
  * exercises the query function, and tears down the database.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import {
@@ -37,9 +36,10 @@ function makeReport(overrides: Partial<ReportInsert> = {}): ReportInsert {
 }
 
 describe('report query helpers', () => {
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => {
-    const db = await initDatabase();
-    await createSchema(db);
+    await cleanTestDb();
     // Insert FK targets
     await registerAgent({
       id: TEST_AGENT_ID,
@@ -51,10 +51,6 @@ describe('report query helpers', () => {
       agent_id: TEST_AGENT_ID,
       started_at: epochNow(),
     });
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
   });
 
   // ---------------------------------------------------------------------------

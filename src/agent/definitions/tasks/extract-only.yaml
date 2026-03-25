@@ -31,9 +31,20 @@ prompt: |
 
   For each batch:
   1. Read `user_prompt` — understand what the developer asked
-  2. Extract observations as spores (genuine insights only)
-  3. Call `vault_create_spore` with session_id, prompt_batch_id,
-     importance, tags
+  2. Identify candidate observations — genuine insights only, not activity logs
+  3. **Group candidates by topic across all batches** before searching.
+     One search call per topic is cheaper than one per batch.
+
+  For each TOPIC group:
+  1. Call `vault_search` with the topic to check existing spore coverage
+  2. If a similar spore exists:
+     - If the new observation adds meaningful new detail: call
+       `vault_create_spore` then supersede the old via `vault_resolve_spore`
+       action "supersede" with new_spore_id
+     - If the new observation adds nothing new: skip it entirely
+  3. If no similar spore exists: call `vault_create_spore`
+
+  After processing each batch:
   4. Call `vault_mark_processed`
   5. Update cursor via `vault_set_state`
 
@@ -56,6 +67,7 @@ toolOverrides:
   - vault_search
   - vault_state
   - vault_create_spore
+  - vault_resolve_spore
   - vault_update_session
   - vault_mark_processed
   - vault_set_state

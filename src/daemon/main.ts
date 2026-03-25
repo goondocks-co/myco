@@ -42,8 +42,16 @@ import {
 import { handleSearch } from './api/search.js';
 import { handleGetFeed } from './api/feed.js';
 import { handleGetEmbeddingStatus } from './api/embedding.js';
+import {
+  handleListTasks,
+  handleGetTask,
+  handleGetTaskYaml,
+  handleUpdateTask,
+  handleCreateTask,
+  handleCopyTask,
+  handleDeleteTask,
+} from './api/agent-tasks.js';
 import { listTurnsByRun } from '../db/queries/turns.js';
-import { listTasksByAgent } from '../db/queries/tasks.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession } from '../db/queries/sessions.js';
@@ -895,10 +903,25 @@ export async function main(): Promise<void> {
     // before the async SDK call. Wait for the result since it's fast to start.
     resultPromise
       .then((result) => {
-        logger.info('agent', 'Agent run completed', { runId: result.runId, status: result.status });
+        if (result.status === 'failed') {
+          logger.error('agent', 'Agent run failed', {
+            runId: result.runId,
+            error: result.error ?? 'No error message',
+            phases: result.phases?.map(p => `${p.name}:${p.status}`) ?? [],
+          });
+        } else {
+          logger.info('agent', 'Agent run completed', {
+            runId: result.runId,
+            status: result.status,
+            phases: result.phases?.map(p => `${p.name}:${p.status}`) ?? [],
+          });
+        }
       })
       .catch((err) => {
-        logger.error('agent', 'Agent run failed', { error: (err as Error).message });
+        logger.error('agent', 'Agent run threw unhandled error', {
+          error: (err as Error).message ?? String(err),
+          stack: (err as Error).stack?.split('\n').slice(0, 3).join(' | '),
+        });
       });
 
     // Return immediately — the caller can poll /api/agent/runs for status
@@ -930,11 +953,13 @@ export async function main(): Promise<void> {
     return { body: turns };
   });
 
-  server.registerRoute('GET', '/api/agent/tasks', async (req) => {
-    const agentId = req.query.agent_id ?? DEFAULT_AGENT_ID;
-    const tasks = await listTasksByAgent(agentId);
-    return { body: tasks };
-  });
+  server.registerRoute('GET', '/api/agent/tasks', async (req) => handleListTasks(req, vaultDir));
+  server.registerRoute('GET', '/api/agent/tasks/:id', async (req) => handleGetTask(req, vaultDir));
+  server.registerRoute('GET', '/api/agent/tasks/:id/yaml', async (req) => handleGetTaskYaml(req, vaultDir));
+  server.registerRoute('PUT', '/api/agent/tasks/:id', async (req) => handleUpdateTask(req, vaultDir));
+  server.registerRoute('POST', '/api/agent/tasks', async (req) => handleCreateTask(req, vaultDir));
+  server.registerRoute('POST', '/api/agent/tasks/:id/copy', async (req) => handleCopyTask(req, vaultDir));
+  server.registerRoute('DELETE', '/api/agent/tasks/:id', async (req) => handleDeleteTask(req, vaultDir));
 
   // --- MCP proxy routes ---
   // These routes exist so the MCP server can proxy tool calls through the
