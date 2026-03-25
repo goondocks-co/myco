@@ -100,4 +100,6 @@ export interface EmbeddableRecordSource {
   markEmbedded(namespace: string, id: string): void;
   clearEmbedded(namespace: string, id: string): void;
   clearAllEmbedded(namespace?: string): void;
+  /** Count rows that need embedding (SELECT COUNT, not materialized). */
+  getPendingCount(namespace: string): number;
 }

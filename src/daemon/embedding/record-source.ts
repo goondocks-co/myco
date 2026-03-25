@@ -205,6 +205,23 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
     }
   }
 
+  /**
+   * Count rows that need embedding — lightweight SELECT COUNT(*), no row materialization.
+   */
+  getPendingCount(namespace: string): number {
+    assertValidNamespace(namespace);
+    const db = getDatabase();
+
+    const contentFilter = namespace === 'sessions' ? ' AND summary IS NOT NULL' : '';
+    const statusFilter = namespace === 'spores' ? ` AND status = '${ACTIVE_STATUS}'` : '';
+
+    const row = db.prepare(
+      `SELECT COUNT(*) AS cnt FROM ${namespace} WHERE embedded = 0${contentFilter}${statusFilter}`,
+    ).get() as { cnt: number };
+
+    return Number(row.cnt);
+  }
+
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------

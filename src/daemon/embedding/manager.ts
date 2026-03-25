@@ -33,8 +33,8 @@ import {
 /** Logger category for all embedding operations. */
 const LOG_CATEGORY = 'embedding';
 
-/** High limit for counting pending rows via getEmbeddableRows. */
-const PENDING_COUNT_LIMIT = 10_000;
+/** Spore status that qualifies for embedding. */
+const ACTIVE_STATUS = 'active';
 
 // ---------------------------------------------------------------------------
 // Logger interface (matches DaemonLogger method signatures)
@@ -120,7 +120,7 @@ export class EmbeddingManager {
    */
   onStatusChanged(namespace: 'spores', id: string, status: string): void {
     try {
-      if (status === 'active') return;
+      if (status === ACTIVE_STATUS) return;
 
       this.vectorStore.remove(namespace, id);
       this.recordSource.clearEmbedded(namespace, id);
@@ -209,19 +209,7 @@ export class EmbeddingManager {
       }
 
       // Phase 2: Orphan sweep
-      const embeddedIds = new Set(this.vectorStore.getEmbeddedIds(namespace));
-      const activeIds = new Set(this.recordSource.getActiveRecordIds(namespace));
-
-      for (const vecId of embeddedIds) {
-        if (!activeIds.has(vecId)) {
-          this.vectorStore.remove(namespace, vecId);
-          this.logger.warn(LOG_CATEGORY, 'Orphan vector cleaned', {
-            namespace,
-            id: vecId,
-          });
-          orphans_cleaned++;
-        }
-      }
+      orphans_cleaned += this.sweepOrphans(namespace);
     }
 
     const duration_ms = Date.now() - start;
@@ -239,27 +227,12 @@ export class EmbeddingManager {
 
   /**
    * Remove orphan vectors (vectors without corresponding active records).
-   * Standalone version of the orphan sweep from reconcile.
    */
   cleanOrphans(): { orphans_cleaned: number } {
     let orphans_cleaned = 0;
-
     for (const namespace of EMBEDDABLE_NAMESPACES) {
-      const embeddedIds = new Set(this.vectorStore.getEmbeddedIds(namespace));
-      const activeIds = new Set(this.recordSource.getActiveRecordIds(namespace));
-
-      for (const vecId of embeddedIds) {
-        if (!activeIds.has(vecId)) {
-          this.vectorStore.remove(namespace, vecId);
-          this.logger.warn(LOG_CATEGORY, 'Orphan vector cleaned', {
-            namespace,
-            id: vecId,
-          });
-          orphans_cleaned++;
-        }
-      }
+      orphans_cleaned += this.sweepOrphans(namespace);
     }
-
     return { orphans_cleaned };
   }
 
@@ -329,7 +302,7 @@ export class EmbeddingManager {
 
     const pending: Record<string, number> = {};
     for (const namespace of EMBEDDABLE_NAMESPACES) {
-      pending[namespace] = this.recordSource.getEmbeddableRows(namespace, PENDING_COUNT_LIMIT).length;
+      pending[namespace] = this.recordSource.getPendingCount(namespace);
     }
 
     return {
@@ -348,5 +321,29 @@ export class EmbeddingManager {
    */
   async embedQuery(text: string): Promise<number[] | null> {
     return this.embeddingProvider.embed(text);
+  }
+
+  // -------------------------------------------------------------------------
+  // Private helpers
+  // -------------------------------------------------------------------------
+
+  /** Sweep orphan vectors for a single namespace. Returns count removed. */
+  private sweepOrphans(namespace: EmbeddableNamespace): number {
+    const embeddedIds = new Set(this.vectorStore.getEmbeddedIds(namespace));
+    const activeIds = new Set(this.recordSource.getActiveRecordIds(namespace));
+    let cleaned = 0;
+
+    for (const vecId of embeddedIds) {
+      if (!activeIds.has(vecId)) {
+        this.vectorStore.remove(namespace, vecId);
+        this.logger.warn(LOG_CATEGORY, 'Orphan vector cleaned', {
+          namespace,
+          id: vecId,
+        });
+        cleaned++;
+      }
+    }
+
+    return cleaned;
   }
 }

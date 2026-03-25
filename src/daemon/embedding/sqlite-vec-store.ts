@@ -143,11 +143,14 @@ export class SqliteVecVectorStore implements VectorStore {
       this.searchStmts.set(
         ns,
         this.db.prepare(`
-          SELECT record_id, distance
-          FROM vec_${ns}
-          WHERE embedding MATCH ?
+          SELECT v.record_id, v.distance,
+                 em.model, em.provider, em.content_hash, em.embedded_at, em.domain_metadata
+          FROM vec_${ns} v
+          LEFT JOIN embedding_metadata em
+            ON em.namespace = '${ns}' AND em.record_id = v.record_id
+          WHERE v.embedding MATCH ?
             AND k = ?
-          ORDER BY distance
+          ORDER BY v.distance
         `)
       );
     }
@@ -261,7 +264,7 @@ export class SqliteVecVectorStore implements VectorStore {
     const results: VectorSearchResult[] = [];
 
     for (const ns of targets) {
-      let rows: Array<{ record_id: string; distance: number }>;
+      let rows: Array<Record<string, unknown>>;
 
       if (hasFilters) {
         // Build a filtered query that JOINs with embedding_metadata
@@ -271,32 +274,25 @@ export class SqliteVecVectorStore implements VectorStore {
           limit,
         );
         const stmt = this.db.prepare(sql);
-        rows = stmt.all(queryVec, limit, ...params) as Array<{
-          record_id: string;
-          distance: number;
-        }>;
+        rows = stmt.all(queryVec, limit, ...params) as Array<Record<string, unknown>>;
       } else {
-        rows = this.searchStmts.get(ns)!.all(queryVec, limit) as Array<{
-          record_id: string;
-          distance: number;
-        }>;
+        rows = this.searchStmts.get(ns)!.all(queryVec, limit) as Array<Record<string, unknown>>;
       }
 
       for (const row of rows) {
-        const similarity = cosineDistanceToSimilarity(row.distance);
+        const similarity = cosineDistanceToSimilarity(row.distance as number);
         if (similarity >= threshold) {
-          // Fetch metadata for this result
-          const meta = this.db
-            .prepare(
-              `SELECT * FROM embedding_metadata WHERE namespace = ? AND record_id = ?`,
-            )
-            .get(ns, row.record_id) as Record<string, unknown> | undefined;
-
           results.push({
-            id: row.record_id,
+            id: row.record_id as string,
             namespace: ns,
             similarity,
-            metadata: meta ?? {},
+            metadata: {
+              model: row.model,
+              provider: row.provider,
+              content_hash: row.content_hash,
+              embedded_at: row.embedded_at,
+              ...(row.domain_metadata ? JSON.parse(row.domain_metadata as string) : {}),
+            },
           });
         }
       }
@@ -425,7 +421,8 @@ export class SqliteVecVectorStore implements VectorStore {
           AND k = ?
         ORDER BY distance
       )
-      SELECT knn.record_id, knn.distance
+      SELECT knn.record_id, knn.distance,
+             em.model, em.provider, em.content_hash, em.embedded_at, em.domain_metadata
       FROM knn
       INNER JOIN embedding_metadata em
         ON em.namespace = '${namespace}' AND em.record_id = knn.record_id

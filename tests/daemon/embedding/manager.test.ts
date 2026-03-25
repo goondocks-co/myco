@@ -59,6 +59,7 @@ function createMockRecordSource(): EmbeddableRecordSource & {
   markEmbedded: ReturnType<typeof vi.fn>;
   clearEmbedded: ReturnType<typeof vi.fn>;
   clearAllEmbedded: ReturnType<typeof vi.fn>;
+  getPendingCount: ReturnType<typeof vi.fn>;
 } {
   return {
     getEmbeddableRows: vi.fn().mockReturnValue([]),
@@ -67,6 +68,7 @@ function createMockRecordSource(): EmbeddableRecordSource & {
     markEmbedded: vi.fn(),
     clearEmbedded: vi.fn(),
     clearAllEmbedded: vi.fn(),
+    getPendingCount: vi.fn().mockReturnValue(0),
   };
 }
 
@@ -442,13 +444,10 @@ describe('EmbeddingManager', () => {
         models: { [MOCK_MODEL]: 100 },
       } satisfies VectorStoreStats);
 
-      recordSource.getEmbeddableRows.mockImplementation((ns: string) => {
-        if (ns === 'sessions') return [{ id: 'p1', text: 't', metadata: {} }];
-        if (ns === 'spores') return [
-          { id: 'p2', text: 't', metadata: {} },
-          { id: 'p3', text: 't', metadata: {} },
-        ];
-        return [];
+      recordSource.getPendingCount.mockImplementation((ns: string) => {
+        if (ns === 'sessions') return 1;
+        if (ns === 'spores') return 2;
+        return 0;
       });
 
       const details = manager.getDetails();

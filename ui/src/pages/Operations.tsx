@@ -87,7 +87,7 @@ function NamespaceTable({ data }: { data: EmbeddingDetails }) {
             const embedded = nsStats?.embedded ?? 0;
             const stale = nsStats?.stale ?? 0;
             const pending = data.pending[ns] ?? 0;
-            const total = embedded + pending + stale;
+            const total = embedded + pending; // stale is a subset of embedded, not additive
             return (
               <tr key={ns} className="border-b border-border/40">
                 <td className="py-2 pr-4 font-mono">{ns}</td>
