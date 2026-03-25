@@ -463,10 +463,10 @@ export async function runAgent(
   const vaultContext = await buildVaultContext(agentId);
 
   // 6. Execute — phased or single query
+  let phaseResults: PhaseResult[] | undefined;
   try {
     let tokensUsed: number;
     let costUsd: number;
-    let phaseResults: PhaseResult[] | undefined;
 
     if (config.phases && config.phases.length > 0) {
       // Phased execution: sequential query() per phase with scoped tools
@@ -516,14 +516,23 @@ export async function runAgent(
       ...(phaseResults ? { phases: phaseResults } : {}),
     };
   } catch (err) {
-    // 7. Error handling — mark run as failed
-    const errorMessage = err instanceof Error ? err.message : String(err);
+    // 7. Error handling — mark run as failed, preserve phase results
+    const errorMessage = err instanceof Error
+      ? err.message || err.constructor.name
+      : String(err) || 'Unknown error';
     const failedAt = epochSeconds();
+
+    console.error(`[agent] Run ${runId} failed:`, errorMessage);
+    if (err instanceof Error && err.stack) {
+      console.error(`[agent] Stack:`, err.stack);
+    }
 
     try {
       await updateRunStatus(runId, STATUS_FAILED, {
         completed_at: failedAt,
         error: errorMessage,
+        // Preserve phase results collected before the failure
+        actions_taken: phaseResults ? JSON.stringify({ phases: phaseResults }) : undefined,
       });
     } catch {
       // DB failure in error path — do not mask the original error
@@ -533,6 +542,7 @@ export async function runAgent(
       runId,
       status: STATUS_FAILED,
       error: errorMessage,
+      ...(phaseResults ? { phases: phaseResults } : {}),
     };
   }
 }
