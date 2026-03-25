@@ -2,8 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Self-hosted Geist Mono — variable weight font for offline use.
-   SIL Open Font License. See public/fonts/GeistMono-LICENSE.txt */
+/* ---------- Self-hosted variable fonts ---------- */
+
 @font-face {
   font-family: 'Geist Mono';
   src: url('/fonts/GeistMono-Variable.woff2') format('woff2');
@@ -12,53 +12,163 @@
   font-display: swap;
 }
 
+@font-face {
+  font-family: 'Newsreader';
+  src: url('/fonts/Newsreader-Variable.woff2') format('woff2');
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Newsreader';
+  src: url('/fonts/Newsreader-Italic-Variable.woff2') format('woff2');
+  font-weight: 200 800;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('/fonts/Inter-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/fonts/JetBrainsMono-Variable.woff2') format('woff2');
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ---------- Design tokens ---------- */
+
 @layer base {
+  /* Dark mode (default) — Tactile Research palette */
   :root {
-    --background: 0 0% 100%;
-    --foreground: 140 20% 6%;
-    --card: 0 0% 98%;
-    --card-foreground: 140 20% 6%;
-    --primary: 142 71% 45%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 142 20% 94%;
-    --secondary-foreground: 142 40% 15%;
-    --muted: 140 10% 96%;
-    --muted-foreground: 140 5% 40%;
-    --accent: 142 50% 90%;
-    --accent-foreground: 142 40% 15%;
-    --destructive: 0 84% 60%;
-    --border: 140 10% 90%;
-    --input: 140 10% 90%;
-    --ring: 142 71% 45%;
-    --radius: 0.5rem;
+    --surface: #131313;
+    --surface-dim: #131313;
+    --surface-bright: #393939;
+    --surface-container-lowest: #0e0e0e;
+    --surface-container-low: #1b1c1c;
+    --surface-container: #1f2020;
+    --surface-container-high: #2a2a2a;
+    --surface-container-highest: #353535;
+    --surface-variant: #353535;
+
+    --on-surface: #e5e2e1;
+    --on-surface-variant: #c1c8c2;
+
+    --outline: #8b928c;
+    --outline-variant: #424843;
+
+    --primary: #abcfb8;
+    --on-primary: #163627;
+    --primary-container: #7b9e89;
+    --on-primary-container: #143525;
+
+    --secondary: #edbf7f;
+    --on-secondary: #442b00;
+    --secondary-container: #60410b;
+
+    --tertiary: #ffb4a1;
+    --on-tertiary: #5d1806;
+    --tertiary-container: #df7a60;
+
+    --inverse-surface: #e5e2e1;
+    --inverse-on-surface: #303030;
+    --inverse-primary: #446553;
+
+    --shadow-tint: 96, 65, 11;
+    --ghost-border: color-mix(in srgb, var(--outline-variant), transparent 85%);
+
+    /* Legacy compat */
+    --background: var(--surface);
+    --foreground: var(--on-surface);
+    --card: var(--surface-container-low);
+    --card-foreground: var(--on-surface);
+    --muted: var(--surface-container);
+    --muted-foreground: var(--on-surface-variant);
+    --accent: var(--surface-container-high);
+    --accent-foreground: var(--on-surface);
+    --border: var(--outline-variant);
+    --input: var(--outline-variant);
+    --ring: var(--primary);
+    --destructive: var(--tertiary);
+    --primary-foreground: var(--on-primary);
+    --secondary-foreground: var(--on-surface);
+
+    --radius: 0.375rem;
   }
 
-  .dark {
-    --background: 145 30% 4%;
-    --foreground: 215 20% 90%;
-    --card: 145 25% 7%;
-    --card-foreground: 215 20% 90%;
-    --primary: 142 71% 45%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 145 20% 12%;
-    --secondary-foreground: 142 50% 75%;
-    --muted: 145 15% 10%;
-    --muted-foreground: 215 10% 60%;
-    --accent: 145 25% 15%;
-    --accent-foreground: 142 50% 75%;
-    --destructive: 0 63% 50%;
-    --border: 145 15% 15%;
-    --input: 145 15% 15%;
-    --ring: 142 71% 45%;
+  /* Light mode — Warm Parchment */
+  .light {
+    --surface: #F9F5E6;
+    --surface-dim: #E8E1D1;
+    --surface-bright: #FFFFFF;
+    --surface-container-lowest: #F4EED8;
+    --surface-container-low: #FFFFFF;
+    --surface-container: #E8E1D1;
+    --surface-container-high: #DDD6C6;
+    --surface-container-highest: #D2CABB;
+    --surface-variant: #D2CABB;
+
+    --on-surface: #131313;
+    --on-surface-variant: #424843;
+
+    --outline: #8b928c;
+    --outline-variant: #c1c8c2;
+
+    --primary: #446553;
+    --on-primary: #FFFFFF;
+    --primary-container: #7b9e89;
+    --on-primary-container: #002113;
+
+    --secondary: #60410b;
+    --on-secondary: #FFFFFF;
+    --secondary-container: #ffddb2;
+
+    --tertiary: #8B5C44;
+    --on-tertiary: #FFFFFF;
+    --tertiary-container: #ffdbd2;
+
+    --inverse-surface: #303030;
+    --inverse-on-surface: #e5e2e1;
+    --inverse-primary: #abcfb8;
+
+    --shadow-tint: 96, 65, 11;
+    --ghost-border: color-mix(in srgb, var(--outline-variant), transparent 85%);
+
+    /* Legacy compat */
+    --background: var(--surface);
+    --foreground: var(--on-surface);
+    --card: var(--surface-container-low);
+    --card-foreground: var(--on-surface);
+    --muted: var(--surface-container);
+    --muted-foreground: var(--on-surface-variant);
+    --accent: var(--surface-container-high);
+    --accent-foreground: var(--on-surface);
+    --border: var(--outline-variant);
+    --input: var(--outline-variant);
+    --ring: var(--primary);
+    --destructive: var(--tertiary);
+    --primary-foreground: var(--on-primary);
+    --secondary-foreground: var(--on-surface);
+
+    --radius: 0.375rem;
   }
 }
 
 @layer base {
   * {
-    @apply border-border;
+    border-color: var(--ghost-border);
   }
   body {
-    @apply bg-background text-foreground;
-    font-family: var(--font-ui, 'Geist Mono', 'SF Mono', 'Fira Code', monospace);
+    background-color: var(--surface);
+    color: var(--on-surface);
+    font-family: var(--font-ui, 'Inter', system-ui, sans-serif);
   }
 }
