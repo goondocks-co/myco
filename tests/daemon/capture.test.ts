@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
-import { upsertSession, getSession } from '@myco/db/queries/sessions.js';
+import { upsertSession, getSession, closeSession } from '@myco/db/queries/sessions.js';
 import {
   insertBatch,
   insertBatchStateless,
@@ -26,7 +26,7 @@ import {
 import {
   handleUserPrompt,
   handleToolUse,
-  handleSessionStop,
+  handleStopBatches,
   handleToolFailure,
   handleSubagentStart,
   handleSubagentStop,
@@ -73,14 +73,14 @@ describe('daemon capture flow', () => {
     // --- PostToolUse × 1 ---
     handleToolUse(sessionId, 'Write', { file_path: '/tmp/hello.test.ts' }, 'Test file written');
 
-    // --- Stop ---
-    handleSessionStop(sessionId);
+    // --- Stop (closes batches, NOT the session) ---
+    handleStopBatches(sessionId);
 
-    // --- Verify session ---
+    // --- Verify session stays active (Stop != SessionEnd) ---
     const session = getSession(sessionId);
     expect(session).not.toBeNull();
-    expect(session!.status).toBe('completed');
-    expect(session!.ended_at).toBeGreaterThan(0);
+    expect(session!.status).toBe('active');
+    expect(session!.ended_at).toBeNull();
 
     // --- Verify batches ---
     // Both batches should be closed (status = 'completed')
@@ -148,7 +148,7 @@ describe('daemon capture flow', () => {
     expect(activities[0].tool_name).toBe('Read');
   });
 
-  it('handles session stop with no open batch', async () => {
+  it('handles stop with no open batch — session stays active', async () => {
     const sessionId = 'test-session-empty';
     const now = epochNow();
 
@@ -159,11 +159,35 @@ describe('daemon capture flow', () => {
       created_at: now,
     });
 
-    // Stop with no events — should close session cleanly
-    handleSessionStop(sessionId);
+    // Stop with no events — closes batches but session stays active
+    handleStopBatches(sessionId);
 
     const session = getSession(sessionId);
+    expect(session!.status).toBe('active');
+  });
+
+  it('closes session on SessionEnd (unregister), not on Stop', async () => {
+    const sessionId = 'test-session-lifecycle';
+    const now = epochNow();
+
+    upsertSession({
+      id: sessionId,
+      agent: 'claude-code',
+      started_at: now,
+      created_at: now,
+    });
+
+    handleUserPrompt(sessionId, 'First prompt');
+    handleStopBatches(sessionId);
+
+    // After Stop: session stays active
+    expect(getSession(sessionId)!.status).toBe('active');
+
+    // SessionEnd: session is now completed
+    closeSession(sessionId, epochNow());
+    const session = getSession(sessionId);
     expect(session!.status).toBe('completed');
+    expect(session!.ended_at).toBeGreaterThan(0);
   });
 
   it('truncates tool input to limit', async () => {

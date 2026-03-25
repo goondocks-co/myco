@@ -184,21 +184,19 @@ export function handleToolUse(
 }
 
 /**
- * Handle session stop: close all open batches, close session.
+ * Handle stop event: close all open batches for this session.
+ *
+ * Does NOT close the session — the Stop hook fires after every assistant
+ * turn, not just session end. Session closure happens in /sessions/unregister
+ * (SessionEnd hook).
  *
  * Fully stateless — uses `closeOpenBatches` (blind UPDATE) instead of
  * reading from an in-memory map.
  */
-export function handleSessionStop(
+export function handleStopBatches(
   sessionId: string,
 ): void {
-  const now = epochSeconds();
-
-  // Close all open batches for this session — blind UPDATE, no prior read
-  closeOpenBatches(sessionId, now);
-
-  // Close session
-  closeSession(sessionId, now);
+  closeOpenBatches(sessionId, epochSeconds());
 }
 
 /**
@@ -562,6 +560,10 @@ export async function main(): Promise<void> {
         }
       }
     } catch { /* buffer dir may not exist */ }
+    // Close the session in SQLite — this is the authoritative end-of-session.
+    // The Stop hook fires per-turn and does NOT close the session.
+    closeSession(session_id, epochSeconds());
+
     // Prune in-memory state
     sessionBuffers.delete(session_id);
     server.updateDaemonJsonSessions(registry.sessions);
@@ -906,11 +908,13 @@ export async function main(): Promise<void> {
     // when the SessionEnd hook fires (via /sessions/unregister).
     closeOpenBatches(sessionId, epochSeconds());
 
-    // Derive a simple title from the first prompt (no LLM — that's Phase 2)
+    // Derive a simple title from the first user prompt captured via hooks.
+    // Hook data (batches) is authoritative — transcript is for enhanced capture only.
     let title: string | null = null;
-    if (allTurns.length > 0 && allTurns[0].prompt) {
-      title = allTurns[0].prompt.slice(0, TITLE_PREVIEW_CHARS);
-      if (allTurns[0].prompt.length > TITLE_PREVIEW_CHARS) {
+    const firstBatch = listBatchesBySession(sessionId, { limit: 1 })[0];
+    if (firstBatch?.user_prompt) {
+      title = firstBatch.user_prompt.slice(0, TITLE_PREVIEW_CHARS);
+      if (firstBatch.user_prompt.length > TITLE_PREVIEW_CHARS) {
         title += '...';
       }
     }
@@ -983,19 +987,22 @@ export async function main(): Promise<void> {
         try {
           fs.writeFileSync(filePath, Buffer.from(img.data, 'base64'), { flag: 'wx' });
           logger.debug('processor', 'Image saved', { filename, turn: promptNumber });
-          try {
-            insertAttachment({
-              id: `${sessionShort}-t${promptNumber}-${j + 1}`,
-              session_id: sessionId,
-              prompt_batch_id: resolvedBatchId ?? undefined,
-              file_path: filename,
-              media_type: img.mediaType,
-              created_at: epochSeconds(),
-            });
-          } catch (err) { logger.warn('processor', 'Failed to record attachment', { error: String(err) }); }
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
         }
+        // Always upsert the DB record — insertAttachment is idempotent (ON CONFLICT DO NOTHING).
+        // Must be outside the file-write try block so the record is created even when the
+        // file already exists (Stop fires per-turn, not just on session end).
+        try {
+          insertAttachment({
+            id: `${sessionShort}-t${promptNumber}-${j + 1}`,
+            session_id: sessionId,
+            prompt_batch_id: resolvedBatchId ?? undefined,
+            file_path: filename,
+            media_type: img.mediaType,
+            created_at: epochSeconds(),
+          });
+        } catch (err) { logger.warn('processor', 'Failed to record attachment', { error: String(err) }); }
       }
     }
 

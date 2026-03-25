@@ -27,14 +27,14 @@ const MAX_GRAPH_DEPTH = 3;
 // ---------------------------------------------------------------------------
 
 export async function handleListSpores(req: RouteRequest): Promise<RouteResponse> {
-  const agentId = req.query.agent_id ?? DEFAULT_AGENT_ID;
+  const agentId = req.query.agent_id; // undefined = all agents
   const type = req.query.type;
   const status = req.query.status;
   const limit = req.query.limit ? Number(req.query.limit) : DEFAULT_LIST_LIMIT;
   const offset = req.query.offset ? Number(req.query.offset) : DEFAULT_LIST_OFFSET;
 
   const spores = listSpores({
-    agent_id: agentId,
+    ...(agentId ? { agent_id: agentId } : {}),
     observation_type: type,
     status,
     limit,
