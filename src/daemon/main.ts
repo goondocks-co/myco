@@ -72,6 +72,8 @@ import {
   LOG_MESSAGE_PREVIEW_CHARS,
   USER_AGENT_ID,
   USER_AGENT_NAME,
+  EMBEDDING_INTERVAL_MS,
+  EMBEDDING_BATCH_SIZE,
   epochSeconds,
 } from '../constants.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
@@ -1439,58 +1441,25 @@ export async function main(): Promise<void> {
     logger.info('agent', 'Auto-agent disabled (agent.auto_run = false)');
   }
 
-  // --- Embedding worker ---
-  // Drains the unembedded queue on a timer, embedding content that the agent
-  // or capture pipeline has written but not yet vectorized.
+  // --- Embedding reconcile worker ---
+  // Delegates to EmbeddingManager.reconcile() which handles: finding unembedded
+  // rows, embedding via provider, upserting vectors, marking embedded flags,
+  // and running orphan sweeps.
 
-  const EMBEDDING_INTERVAL_MS = 30 * SECONDS_TO_MS;
-  const EMBEDDING_BATCH_SIZE = 10;
-  let embeddingRunning = false;
-
-  const embeddingTimer = setInterval(async () => {
-    if (embeddingRunning) return;
-    embeddingRunning = true;
+  let reconcileRunning = false;
+  const reconcileTimer = setInterval(async () => {
+    if (reconcileRunning) return;
+    reconcileRunning = true;
     try {
-      const { getUnembedded, markEmbedded, EMBEDDABLE_TABLES } = await import('../db/queries/embeddings.js');
-      const { tryEmbed } = await import('../intelligence/embed-query.js');
-
-      let totalEmbedded = 0;
-      for (const table of EMBEDDABLE_TABLES) {
-        const rows = getUnembedded(table, EMBEDDING_BATCH_SIZE);
-        if (rows.length === 0) continue;
-
-        for (const row of rows) {
-          try {
-            if (!row.text) continue;
-
-            const embedding = await tryEmbed(row.text);
-            if (!embedding) {
-              if (totalEmbedded === 0) {
-                logger.debug('embedding', 'Provider unavailable, skipping cycle');
-              }
-              embeddingRunning = false;
-              return;
-            }
-
-            markEmbedded(table, row.id);
-            totalEmbedded++;
-          } catch (err) {
-            logger.warn('embedding', 'Failed to embed row', { table, id: row.id, error: (err as Error).message });
-          }
-        }
-      }
-
-      if (totalEmbedded > 0) {
-        logger.info('embedding', 'Embedding batch completed', { embedded: totalEmbedded });
-      }
+      await embeddingManager.reconcile(EMBEDDING_BATCH_SIZE);
     } catch (err) {
-      logger.error('embedding', 'Embedding worker failed', { error: (err as Error).message });
+      logger.error('embedding', 'Reconcile worker failed', { error: (err as Error).message });
     } finally {
-      embeddingRunning = false;
+      reconcileRunning = false;
     }
   }, EMBEDDING_INTERVAL_MS);
 
-  logger.info('embedding', 'Embedding worker started', {
+  logger.info('embedding', 'Reconcile worker started', {
     interval_ms: EMBEDDING_INTERVAL_MS,
     batch_size: EMBEDDING_BATCH_SIZE,
   });
@@ -1500,7 +1469,7 @@ export async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info('daemon', `${signal} received`);
     if (agentTimer) clearInterval(agentTimer);
-    clearInterval(embeddingTimer);
+    clearInterval(reconcileTimer);
     // Wait for any active stop processing to finish before shutting down
     if (activeStopProcessing) {
       logger.info('daemon', 'Waiting for active stop processing to complete...');
