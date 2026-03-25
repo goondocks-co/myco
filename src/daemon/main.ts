@@ -560,12 +560,14 @@ export async function main(): Promise<void> {
       registry.register(event.session_id, { started_at: event.timestamp });
       logger.debug('lifecycle', 'Auto-registered session from event', { session_id: event.session_id });
 
-      // Ensure PGlite session exists
+      // Ensure PGlite session exists — explicitly set status='active' so
+      // resumed sessions (previously 'completed') get reopened.
       const now = epochSeconds();
       const startedEpoch = Math.floor(new Date(event.timestamp).getTime() / 1000);
       await upsertSession({
         id: event.session_id,
         agent: 'claude-code',
+        status: 'active',
         started_at: startedEpoch,
         created_at: now,
       });
