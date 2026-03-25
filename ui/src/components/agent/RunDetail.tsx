@@ -121,7 +121,7 @@ function ReportCard({ report }: { report: ReportRow }) {
 function TurnTableRow({ turn }: { turn: TurnRow }) {
   const durationMs =
     turn.started_at !== null && turn.completed_at !== null
-      ? (turn.completed_at - turn.started_at) * 1000
+      ? (turn.completed_at - turn.started_at) * MS_PER_SECOND
       : null;
 
   return (
@@ -136,9 +136,9 @@ function TurnTableRow({ turn }: { turn: TurnRow }) {
       </td>
       <td className="px-3 py-2 text-xs text-muted-foreground font-mono">
         {durationMs !== null
-          ? durationMs < 1_000
+          ? durationMs < MS_PER_SECOND
             ? `${durationMs}ms`
-            : `${(durationMs / 1_000).toFixed(1)}s`
+            : `${(durationMs / MS_PER_SECOND).toFixed(1)}s`
           : '—'}
       </td>
     </tr>

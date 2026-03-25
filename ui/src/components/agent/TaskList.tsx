@@ -1,8 +1,14 @@
 import { useAgentTasks, type TaskRow } from '../../hooks/use-agent';
-import { taskSourceClass, formatPhaseCount } from './helpers';
+import { taskSourceClass } from './helpers';
 
 interface TaskListProps {
   onSelect: (taskId: string) => void;
+}
+
+/** Format phase count from the task's phases array. */
+function formatPhaseCount(task: TaskRow): string {
+  if (!task.phases || task.phases.length === 0) return 'Single query';
+  return `${task.phases.length} phases`;
 }
 
 export function TaskList({ onSelect }: TaskListProps) {
@@ -27,22 +33,22 @@ export function TaskList({ onSelect }: TaskListProps) {
     <div className="space-y-2">
       {tasks.map((task: TaskRow) => (
         <button
-          key={task.id}
-          onClick={() => onSelect(task.id)}
+          key={task.name}
+          onClick={() => onSelect(task.name)}
           className="w-full text-left p-4 rounded-lg border hover:bg-accent/50 transition-colors"
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <span className="font-medium text-sm">{task.display_name ?? task.id}</span>
-              <span className={`text-xs px-2 py-0.5 rounded-full ${taskSourceClass(task.source)}`}>
-                {task.source}
+              <span className="font-medium text-sm">{task.displayName}</span>
+              <span className={`text-xs px-2 py-0.5 rounded-full ${taskSourceClass(task.source ?? '')}`}>
+                {task.source ?? 'built-in'}
               </span>
-              {task.is_default === 1 && (
+              {task.isDefault && (
                 <span className="text-xs text-muted-foreground">(default)</span>
               )}
             </div>
             <span className="text-xs text-muted-foreground">
-              {formatPhaseCount(task.config)}
+              {formatPhaseCount(task)}
             </span>
           </div>
           {task.description && (

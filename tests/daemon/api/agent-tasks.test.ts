@@ -15,10 +15,14 @@ import path from 'node:path';
 // Mocks — must be declared before imports that use them
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/agent/loader.js', () => ({
-  loadAgentTasks: vi.fn(),
-  resolveDefinitionsDir: vi.fn(() => '/fake/definitions'),
-}));
+vi.mock('@myco/agent/loader.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@myco/agent/loader.js')>();
+  return {
+    ...original,
+    loadAgentTasks: vi.fn(),
+    resolveDefinitionsDir: vi.fn(() => '/fake/definitions'),
+  };
+});
 
 import { loadAgentTasks } from '@myco/agent/loader.js';
 import {
@@ -225,7 +229,7 @@ describe('handleCreateTask', () => {
       const result = await handleCreateTask(makeReq({ body }), vaultDir);
 
       expect(result.status).toBe(201);
-      const created = result.body as AgentTask;
+      const created = (result.body as { task: AgentTask }).task;
       expect(created.name).toBe('new-task');
       expect(created.source).toBe('user');
 
@@ -338,7 +342,7 @@ describe('handleCopyTask', () => {
       );
 
       expect(result.status).toBe(201);
-      const copy = result.body as AgentTask;
+      const copy = (result.body as { task: AgentTask }).task;
       expect(copy.name).toBe('full-intelligence-custom');
       expect(copy.isDefault).toBe(false);
       expect(copy.source).toBe('user');
@@ -359,7 +363,7 @@ describe('handleCopyTask', () => {
       );
 
       expect(result.status).toBe(201);
-      const copy = result.body as AgentTask;
+      const copy = (result.body as { task: AgentTask }).task;
       expect(copy.name).toBe('my-extract');
     } finally {
       removeTempDir(vaultDir);

@@ -393,11 +393,21 @@ export async function runAgent(
   // 1. Init DB
   await initDatabaseForVault(vaultDir);
 
-  // 2. Resolve config
+  const agentId = options?.agentId ?? DEFAULT_AGENT_ID;
+
+  // 2. Concurrency guard — check before expensive config loading
+  const running = await getRunningRun(agentId);
+  if (running) {
+    return {
+      runId: running.id,
+      status: STATUS_SKIPPED,
+      reason: SKIP_REASON_ALREADY_RUNNING,
+    };
+  }
+
+  // 3. Resolve config
   const definitionsDir = resolveDefinitionsDir();
   const definition = loadAgentDefinition(definitionsDir);
-
-  const agentId = options?.agentId ?? DEFAULT_AGENT_ID;
 
   // Load agent and task in parallel — both are independent DB lookups
   const taskPromise = options?.task
@@ -409,7 +419,6 @@ export async function runAgent(
     taskPromise,
   ]);
 
-  // Convert TaskRow to AgentTask shape for resolveEffectiveConfig.
   // Structural fields (phases, execution, contextQueries) come from the registry
   // (built-in YAML merged with user vault tasks) rather than the DB flat columns.
   const allTasks = loadAllTasks(definitionsDir, vaultDir);
@@ -427,7 +436,6 @@ export async function runAgent(
         ...(taskRow.tool_overrides
           ? { toolOverrides: JSON.parse(taskRow.tool_overrides) as string[] }
           : {}),
-        // Structural fields come from the registry (not DB flat columns)
         ...(yamlTask?.phases ? { phases: yamlTask.phases } : {}),
         ...(yamlTask?.execution ? { execution: yamlTask.execution } : {}),
         ...(yamlTask?.contextQueries ? { contextQueries: yamlTask.contextQueries } : {}),
@@ -436,16 +444,6 @@ export async function runAgent(
     : undefined;
 
   const config = resolveEffectiveConfig(definition, agentRow, taskOverrides);
-
-  // 3. Concurrency guard
-  const running = await getRunningRun(agentId);
-  if (running) {
-    return {
-      runId: running.id,
-      status: STATUS_SKIPPED,
-      reason: SKIP_REASON_ALREADY_RUNNING,
-    };
-  }
 
   // 4. Create run record
   const runId = crypto.randomUUID();

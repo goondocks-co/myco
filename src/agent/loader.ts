@@ -117,23 +117,35 @@ export function loadAgentTasks(definitionsDir: string): AgentTask[] {
     const raw = fs.readFileSync(path.join(tasksDir, file), 'utf-8');
     const parsed = AgentTaskSchema.parse(parseYaml(raw));
 
-    return {
-      name: parsed.name,
-      displayName: parsed.displayName,
-      description: parsed.description.trim(),
-      agent: parsed.agent,
-      prompt: parsed.prompt.trim(),
-      isDefault: parsed.isDefault,
-      ...(parsed.toolOverrides ? { toolOverrides: parsed.toolOverrides } : {}),
-      ...(parsed.model ? { model: parsed.model } : {}),
-      ...(parsed.maxTurns ? { maxTurns: parsed.maxTurns } : {}),
-      ...(parsed.timeoutSeconds ? { timeoutSeconds: parsed.timeoutSeconds } : {}),
-      ...(parsed.phases ? { phases: parsed.phases } : {}),
-      ...(parsed.orchestrator ? { orchestrator: parsed.orchestrator } : {}),
-      ...(parsed.contextQueries ? { contextQueries: parsed.contextQueries } : {}),
-      ...(parsed.execution ? { execution: parsed.execution } : {}),
-    };
+    return taskFromParsed(parsed);
   });
+}
+
+/**
+ * Convert a Zod-parsed task schema result to an AgentTask object.
+ *
+ * Shared by loadAgentTasks (built-in) and registry (user tasks) to ensure
+ * all optional fields are consistently spread. Adding a new optional field
+ * to AgentTaskSchema only requires updating this one function.
+ */
+export function taskFromParsed(parsed: AgentTask): AgentTask {
+  return {
+    name: parsed.name,
+    displayName: parsed.displayName,
+    description: parsed.description.trim(),
+    agent: parsed.agent,
+    prompt: parsed.prompt.trim(),
+    isDefault: parsed.isDefault,
+    ...(parsed.toolOverrides ? { toolOverrides: parsed.toolOverrides } : {}),
+    ...(parsed.model ? { model: parsed.model } : {}),
+    ...(parsed.maxTurns ? { maxTurns: parsed.maxTurns } : {}),
+    ...(parsed.timeoutSeconds ? { timeoutSeconds: parsed.timeoutSeconds } : {}),
+    ...(parsed.phases ? { phases: parsed.phases } : {}),
+    ...(parsed.orchestrator ? { orchestrator: parsed.orchestrator } : {}),
+    ...(parsed.contextQueries ? { contextQueries: parsed.contextQueries } : {}),
+    ...(parsed.execution ? { execution: parsed.execution } : {}),
+    ...(parsed.schemaVersion ? { schemaVersion: parsed.schemaVersion } : {}),
+  };
 }
 
 /**

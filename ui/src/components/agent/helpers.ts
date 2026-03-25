@@ -34,15 +34,3 @@ export function taskSourceClass(source: string): string {
     : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200';
 }
 
-/** Format phase count for display. */
-export function formatPhaseCount(config: string | null | undefined): string {
-  if (!config) return 'Single query';
-  try {
-    const parsed = JSON.parse(config);
-    const phases = parsed?.phases;
-    if (!Array.isArray(phases) || phases.length === 0) return 'Single query';
-    return `${phases.length} phases`;
-  } catch {
-    return 'Single query';
-  }
-}

@@ -15,9 +15,13 @@ import { parse as parseYaml } from 'yaml';
 // Mock loadAgentTasks so tests don't depend on the real definitions dir
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/agent/loader.js', () => ({
-  loadAgentTasks: vi.fn(),
-}));
+vi.mock('@myco/agent/loader.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@myco/agent/loader.js')>();
+  return {
+    ...original,
+    loadAgentTasks: vi.fn(),
+  };
+});
 
 import { loadAgentTasks } from '@myco/agent/loader.js';
 import { loadAllTasks, validateTaskName, writeUserTask, deleteUserTask, copyTaskToUser } from '@myco/agent/registry.js';

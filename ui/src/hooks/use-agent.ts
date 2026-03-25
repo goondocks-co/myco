@@ -71,18 +71,28 @@ export interface TurnRow {
   completed_at: number | null;
 }
 
+/**
+ * Task shape returned by the registry-backed API.
+ * Uses camelCase field names matching the AgentTask interface on the backend.
+ */
 export interface TaskRow {
-  id: string;
-  agent_id: string;
-  source: string;
-  display_name: string | null;
-  description: string | null;
+  name: string;
+  displayName: string;
+  description: string;
+  agent: string;
   prompt: string;
-  is_default: number;
-  tool_overrides: string | null;
-  config: string | null;
-  created_at: number;
-  updated_at: number | null;
+  isDefault: boolean;
+  source?: string;
+  isBuiltin?: boolean;
+  toolOverrides?: string[];
+  model?: string;
+  maxTurns?: number;
+  timeoutSeconds?: number;
+  phases?: PhaseDefinition[];
+  execution?: { model?: string; maxTurns?: number; timeoutSeconds?: number };
+  contextQueries?: Record<string, unknown[]>;
+  orchestrator?: { enabled: boolean; model?: string; maxTurns?: number };
+  schemaVersion?: number;
 }
 
 export interface TriggerRunPayload {

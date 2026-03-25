@@ -143,7 +143,7 @@ export async function handleCreateTask(
 
   writeUserTask(vaultDir, task);
 
-  return { status: HTTP_CREATED, body: task };
+  return { status: HTTP_CREATED, body: { task } };
 }
 
 /**
@@ -173,7 +173,7 @@ export async function handleCopyTask(
 
   try {
     const copy = copyTaskToUser(definitionsDir, vaultDir, sourceName, newName);
-    return { status: HTTP_CREATED, body: copy };
+    return { status: HTTP_CREATED, body: { task: copy } };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('not found')) {

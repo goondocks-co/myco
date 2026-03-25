@@ -1,5 +1,6 @@
 import { useTriggerRun, useCopyTask, useDeleteTask, type TaskRow } from '../../hooks/use-agent';
 import { TASK_SOURCE_BUILTIN, TASK_SOURCE_USER } from '../../lib/constants';
+import { Button } from '../ui/button';
 
 /* ---------- Types ---------- */
 
@@ -18,34 +19,36 @@ export function TaskActions({ task, onRunTriggered, onDeleted }: TaskActionsProp
 
   return (
     <div className="flex gap-2">
-      <button
+      <Button
+        size="sm"
         onClick={() => {
-          triggerRun.mutate({ task: task.id });
+          triggerRun.mutate({ task: task.name });
           onRunTriggered?.();
         }}
-        className="px-3 py-1.5 text-sm font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90"
       >
         Run Now
-      </button>
+      </Button>
 
       {task.source === TASK_SOURCE_BUILTIN && (
-        <button
-          onClick={() => copyTask.mutate({ taskId: task.id })}
-          className="px-3 py-1.5 text-sm font-medium rounded-md border hover:bg-accent"
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => copyTask.mutate({ taskId: task.name })}
         >
           Customize
-        </button>
+        </Button>
       )}
 
       {task.source === TASK_SOURCE_USER && (
-        <button
+        <Button
+          variant="destructive"
+          size="sm"
           onClick={() => {
-            deleteTask.mutate(task.id, { onSuccess: () => onDeleted?.() });
+            deleteTask.mutate(task.name, { onSuccess: () => onDeleted?.() });
           }}
-          className="px-3 py-1.5 text-sm font-medium rounded-md border border-destructive text-destructive hover:bg-destructive/10"
         >
           Delete
-        </button>
+        </Button>
       )}
     </div>
   );

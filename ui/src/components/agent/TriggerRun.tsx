@@ -21,7 +21,7 @@ import { useAgentTasks, useTriggerRun, type TaskRow } from '../../hooks/use-agen
 /* ---------- Helpers ---------- */
 
 function taskLabel(task: TaskRow): string {
-  return task.display_name ?? task.id;
+  return task.displayName ?? task.name;
 }
 
 /* ---------- Component ---------- */
@@ -41,8 +41,8 @@ export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps)
 
   // Pre-select the default task once tasks load
   const availableTasks = tasksData?.tasks ?? [];
-  const defaultTask = availableTasks.find(t => t.is_default === 1);
-  const effectiveSelection = selectedTask ?? defaultTask?.id ?? availableTasks[0]?.id ?? '';
+  const defaultTask = availableTasks.find(t => t.isDefault);
+  const effectiveSelection = selectedTask ?? defaultTask?.name ?? availableTasks[0]?.name ?? '';
 
   function handleRun() {
     const payload = {
@@ -86,9 +86,9 @@ export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps)
                 </SelectTrigger>
                 <SelectContent>
                   {availableTasks.map((task) => (
-                    <SelectItem key={task.id} value={task.id}>
+                    <SelectItem key={task.name} value={task.name}>
                       {taskLabel(task)}
-                      {task.is_default === 1 && (
+                      {task.isDefault && (
                         <span className="ml-1 text-xs text-muted-foreground">(default)</span>
                       )}
                     </SelectItem>

@@ -1,6 +1,6 @@
 import { ArrowLeft, AlertCircle } from 'lucide-react';
 import { Button } from '../ui/button';
-import { useTask } from '../../hooks/use-agent';
+import { useTask, type PhaseDefinition } from '../../hooks/use-agent';
 import { cn } from '../../lib/cn';
 import { capitalize } from '../../lib/format';
 import { taskSourceClass } from './helpers';
@@ -18,61 +18,15 @@ interface TaskDetailProps {
   onBack: () => void;
 }
 
-interface ParsedPhase {
-  name: string;
-  prompt: string;
-  tools: string[];
-  maxTurns: number;
-  model?: string;
-  required: boolean;
-}
-
-interface ParsedExecution {
-  model?: string;
-  maxTurns?: number;
-  timeoutSeconds?: number;
-}
-
-interface ParsedConfig {
-  phases?: ParsedPhase[];
-  execution?: ParsedExecution;
-  model?: string;
-  maxTurns?: number;
-  timeoutSeconds?: number;
-}
-
 /* ---------- Helpers ---------- */
 
-function parsePhases(config: string | null): ParsedPhase[] {
-  if (!config) return [];
-  try {
-    const parsed = JSON.parse(config) as unknown;
-    if (
-      parsed !== null &&
-      typeof parsed === 'object' &&
-      'phases' in parsed &&
-      Array.isArray((parsed as { phases: unknown }).phases)
-    ) {
-      return (parsed as { phases: ParsedPhase[] }).phases;
-    }
-    return [];
-  } catch {
-    return [];
-  }
-}
-
-function parseExecution(config: string | null): ParsedExecution {
-  if (!config) return {};
-  try {
-    const parsed = JSON.parse(config) as ParsedConfig;
-    return {
-      model: parsed.execution?.model ?? parsed.model,
-      maxTurns: parsed.execution?.maxTurns ?? parsed.maxTurns,
-      timeoutSeconds: parsed.execution?.timeoutSeconds ?? parsed.timeoutSeconds,
-    };
-  } catch {
-    return {};
-  }
+/** Resolve effective execution config from task fields. */
+function getExecution(task: { execution?: { model?: string; maxTurns?: number; timeoutSeconds?: number }; model?: string; maxTurns?: number; timeoutSeconds?: number }) {
+  return {
+    model: task.execution?.model ?? task.model,
+    maxTurns: task.execution?.maxTurns ?? task.maxTurns,
+    timeoutSeconds: task.execution?.timeoutSeconds ?? task.timeoutSeconds,
+  };
 }
 
 /* ---------- Sub-components ---------- */
@@ -95,7 +49,7 @@ function SkeletonDetail() {
   );
 }
 
-function PhaseCard({ phase, index }: { phase: ParsedPhase; index: number }) {
+function PhaseCard({ phase, index }: { phase: PhaseDefinition; index: number }) {
   return (
     <div className="rounded-lg border border-border bg-card p-4 space-y-3">
       <div className="flex items-center justify-between gap-3">
@@ -158,8 +112,8 @@ export function TaskDetail({ taskId, onBack }: TaskDetailProps) {
   }
 
   const task = data.task;
-  const phases = parsePhases(task.config);
-  const execution = parseExecution(task.config);
+  const phases = task.phases ?? [];
+  const execution = getExecution(task);
 
   return (
     <div className="space-y-6">
@@ -174,7 +128,7 @@ export function TaskDetail({ taskId, onBack }: TaskDetailProps) {
         <div className="flex flex-wrap items-start gap-3">
           <div className="flex-1 space-y-1 min-w-0">
             <h1 className="text-lg font-semibold text-foreground">
-              {task.display_name ?? task.id}
+              {task.displayName}
             </h1>
             {task.description && (
               <p className="text-sm text-muted-foreground">{task.description}</p>
@@ -184,10 +138,10 @@ export function TaskDetail({ taskId, onBack }: TaskDetailProps) {
           <span
             className={cn(
               'text-xs px-2 py-0.5 rounded-full shrink-0',
-              taskSourceClass(task.source),
+              taskSourceClass(task.source ?? ''),
             )}
           >
-            {capitalize(task.source)}
+            {capitalize(task.source ?? 'built-in')}
           </span>
         </div>
 

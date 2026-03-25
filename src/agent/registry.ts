@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { USER_TASKS_DIR, USER_TASK_SOURCE, BUILT_IN_SOURCE, TASK_NAME_PATTERN, MAX_TASK_NAME_LENGTH } from '@myco/constants.js';
-import { loadAgentTasks } from './loader.js';
+import { loadAgentTasks, taskFromParsed } from './loader.js';
 import { AgentTaskSchema } from './schemas.js';
 import type { AgentTask } from './types.js';
 
@@ -62,20 +62,7 @@ export function loadAllTasks(definitionsDir: string, vaultDir?: string): Map<str
           const raw = fs.readFileSync(filePath, 'utf-8');
           const parsed = AgentTaskSchema.parse(parseYaml(raw));
           const task: AgentTask = {
-            name: parsed.name,
-            displayName: parsed.displayName,
-            description: parsed.description.trim(),
-            agent: parsed.agent,
-            prompt: parsed.prompt.trim(),
-            isDefault: parsed.isDefault,
-            ...(parsed.toolOverrides ? { toolOverrides: parsed.toolOverrides } : {}),
-            ...(parsed.model ? { model: parsed.model } : {}),
-            ...(parsed.maxTurns ? { maxTurns: parsed.maxTurns } : {}),
-            ...(parsed.timeoutSeconds ? { timeoutSeconds: parsed.timeoutSeconds } : {}),
-            ...(parsed.phases ? { phases: parsed.phases } : {}),
-            ...(parsed.execution ? { execution: parsed.execution } : {}),
-            ...(parsed.contextQueries ? { contextQueries: parsed.contextQueries } : {}),
-            ...(parsed.schemaVersion ? { schemaVersion: parsed.schemaVersion } : {}),
+            ...taskFromParsed(parsed),
             isBuiltin: false,
             source: USER_TASK_SOURCE,
           };
