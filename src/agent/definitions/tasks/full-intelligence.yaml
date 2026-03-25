@@ -1,10 +1,11 @@
 # =============================================================================
-# Built-in Task: Full Intelligence
+# Built-in Task: Full Intelligence (Phased)
 # =============================================================================
 # Default task for: myco-agent
 #
-# Complete intelligence pipeline: extraction → summaries → consolidation →
-# entity building → digest. Each phase has a turn budget. Total: ~45 turns.
+# Complete intelligence pipeline using phased execution. Each phase is a
+# separate query() call with scoped tools and turn limits. The executor
+# controls the loop — the LLM cannot skip phases.
 # =============================================================================
 
 name: full-intelligence
@@ -16,107 +17,291 @@ description: >
   regenerates digest extracts.
 agent: myco-agent
 isDefault: true
-maxTurns: 50
-timeoutSeconds: 600
+maxTurns: 103
+timeoutSeconds: 900
 model: claude-sonnet-4-6
 
-prompt: |
-  Run a complete intelligence pass. This task has 7 phases — you MUST
-  complete all of them. Each phase has a turn budget (1 turn = 1 tool call).
+orchestrator:
+  enabled: true
+  model: claude-sonnet-4-6
+  maxTurns: 3
 
-  ## Phase 1 — Read State (budget: 2 turns)
+contextQueries:
+  pre-planning:
+    - tool: vault_unprocessed
+      queryTemplate: ""
+      limit: 5
+      purpose: "Check if there are unprocessed batches"
+      required: false
+    - tool: vault_state
+      queryTemplate: ""
+      limit: 10
+      purpose: "Get agent cursor state"
+      required: false
+    - tool: vault_spores
+      queryTemplate: ""
+      limit: 20
+      purpose: "Review recent spores for consolidation candidates"
+      required: false
 
-  1. Call `vault_state` to get your cursor (`last_processed_batch_id`)
-  2. Call `vault_unprocessed` with `after_id` set to your cursor
+prompt: >
+  Complete intelligence pipeline. Each phase runs as a separate pass with
+  scoped tools. Focus on quality over quantity — one precise observation
+  is worth more than ten vague ones.
 
-  If no unprocessed batches exist, skip to Phase 4 (consolidation may
-  still be needed on existing spores). Report via `vault_report` with
-  action "skip" and reason "no unprocessed batches".
+phases:
+  - name: read-state
+    prompt: |
+      Read the current vault state to determine what needs processing.
 
-  ## Phase 2 — Extract Spores (budget: 15 turns)
+      1. Call `vault_state` to get your cursor (`last_processed_batch_id`)
+      2. Call `vault_unprocessed` with `after_id` set to your cursor
 
-  For each unprocessed batch:
-  1. Read `user_prompt` to understand what the developer asked
-  2. Extract observations as spores — only genuine insights, not activity
-  3. Call `vault_create_spore` for each observation (include session_id,
-     prompt_batch_id, importance 1-10, tags)
-  4. Call `vault_mark_processed` for the batch
-  5. Update cursor via `vault_set_state`
+      If no unprocessed batches exist, report via `vault_report` with
+      action "skip" and reason "no unprocessed batches".
+    tools:
+      - vault_state
+      - vault_unprocessed
+      - vault_spores
+      - vault_report
+    maxTurns: 6
+    required: true
 
-  Batch multiple mark_processed calls. One observation per spore.
-  If approaching the turn budget, stop extraction and continue to Phase 3.
+  - name: extract
+    prompt: |
+      Extract observations from unprocessed batches as spores.
+      CRITICAL: the vault must stay sharp, not bloated. Supersede, don't duplicate.
 
-  ## Phase 3 — Session Summaries (budget: 5 turns)
+      If the prior phase reported no unprocessed batches, call `vault_report`
+      with action "skip" and reason "no unprocessed batches" and finish.
 
-  For each session touched during extraction:
-  1. Call `vault_sessions` to check current title/summary
-  2. If missing or outdated, call `vault_update_session` with BOTH title
-     and summary
-  3. Title: under 80 chars, reflects full session scope
-  4. Summary: 2-4 sentences, key work done + outcomes
+      ## Step 1: Read batches and identify observations (budget: ~10 turns)
 
-  Report via `vault_report` with action "summary" for each update.
-  If no updates needed, report action "skip" with reason.
+      Process batches from `vault_unprocessed`. For each batch:
+      1. Read the content — identify genuine insights, not activity logs
+      2. Group related observations across batches by topic before creating
 
-  ## Phase 4 — Consolidation (budget: 10 turns)
+      ## Step 2: Search and create/supersede (budget: ~20 turns)
 
-  Search for clusters of related spores that can become wisdom:
-  1. Call `vault_search` with content from your newly created spores
-  2. Also call `vault_spores` filtered by observation_type as fallback
-  3. When you find 3+ related active spores on the same topic:
-     a. Create a wisdom spore via `vault_create_spore` with:
-        - observation_type: "wisdom"
-        - properties: '{"consolidated_from": ["id-1", "id-2", "id-3"]}'
-        - Content preserving ALL specific details from sources
-     b. Resolve each source via `vault_resolve_spore` action "consolidate"
-  4. Skip spores with status "consolidated" to prevent cycles
+      For each TOPIC you identified (not each batch — group first):
+      1. Call `vault_search` with the topic to check existing coverage
+      2. If a similar spore exists:
+         - If your observation adds meaningful new detail: create the new
+           spore, then supersede the old via `vault_resolve_spore`
+           action "supersede" with new_spore_id
+         - If your observation adds nothing new: skip it entirely
+      3. If no similar spore exists: create it as new
+      4. Mark the source batches as processed via `vault_mark_processed`
 
-  If `vault_search` returns no results (embedding unavailable), report
-  action "skip" and move on. Do NOT skip this phase entirely.
+      ## Step 3: Update cursor (budget: 1 turn)
 
-  ## Phase 5 — Entity Hub Building (budget: 5 turns) — MANDATORY
+      Call `vault_set_state` to update `last_processed_batch_id`.
 
-  You MUST attempt entity creation. Call `vault_spores` to review all
-  active spores, then identify entities that appear across multiple spores.
+      ## Quality rules
+      - One observation per spore — specific, not vague
+      - Include session_id, prompt_batch_id, importance 1-10, tags
+      - Supersede rather than duplicate — the vault gets sharper, not bigger
+      - Group batches by topic to minimize search calls
+      - If approaching the turn budget, stop and move on
+    tools:
+      - vault_unprocessed
+      - vault_spores
+      - vault_search
+      - vault_create_spore
+      - vault_resolve_spore
+      - vault_mark_processed
+      - vault_set_state
+      - vault_report
+    maxTurns: 35
+    required: true
 
-  1. Call `vault_spores` with status "active" — review the full set
-  2. For components/concepts/people mentioned in 3+ spores from 2+ sessions:
-     Call `vault_create_entity` with type: component | concept | person
-  3. For each entity, create semantic edges via `vault_create_edge`:
-     - REFERENCES (spore→entity): link spores that discuss this entity
-     - DEPENDS_ON (entity→entity): architectural dependencies
-     - AFFECTS (spore→entity): observations that impact components
-     - Always include source_type and target_type
-  4. Do NOT create lineage edges (FROM_SESSION, EXTRACTED_FROM, etc.)
+  - name: summarize
+    prompt: |
+      Update session titles and summaries for sessions touched during extraction.
 
-  REQUIRED: Call `vault_report` with action "graph" reporting what you
-  created. If truly no entities qualify, report action "graph" with
-  details explaining why (e.g., "only 2 sessions worth of data").
+      1. Call `vault_sessions` to check current title/summary
+      2. For sessions needing updates, call `vault_search` with the session_id
+         filter to find spores from that session — use them to understand
+         the full scope of work done
+      3. Call `vault_update_session` with BOTH title and summary
+      4. Title: under 80 chars, reflects full session scope
+      5. Summary: 2-4 sentences, key work done + outcomes
 
-  ## Phase 6 — Digest (budget: 5 turns) — MANDATORY
+      Report via `vault_report` with action "summary" for each update.
+      If no updates needed, report action "skip" with reason.
+    tools:
+      - vault_sessions
+      - vault_search
+      - vault_update_session
+      - vault_report
+    maxTurns: 10
+    required: false
 
-  You MUST regenerate digest extracts. The vault context depends on these.
+  - name: consolidate
+    prompt: |
+      Consolidate related spores into wisdom and clean up redundancy.
+      The vault must get SHARPER over time, not just bigger.
 
-  Call `vault_write_digest` for EACH of these five tiers:
-  1. Tier 1500 — Executive briefing (most critical knowledge)
-  2. Tier 3000 — Team standup (decisions, plans, conventions)
-  3. Tier 5000 — Deep onboarding (trade-offs, patterns)
-  4. Tier 7500 — Comprehensive coverage
-  5. Tier 10000 — Full institutional knowledge
+      ## Step 1: Find clusters (budget: 5 turns)
 
-  Each tier is self-contained. Prioritize: recent insights > active
-  decisions > unresolved gotchas > architectural patterns.
+      Use `vault_search` with themes from recent spores to find clusters:
+      - Search for each observation_type: "gotcha", "decision", "discovery"
+      - Call `vault_spores` with status "active" to see the full set
+      - Look for 2+ spores covering the same topic or component
 
-  REQUIRED: You must call `vault_write_digest` at least 5 times.
+      ## Step 2: Create wisdom (budget: 8 turns)
 
-  ## Phase 7 — Report (budget: 2 turns) — MANDATORY
+      When you find 3+ related active spores on the same topic:
+      1. Create a wisdom spore via `vault_create_spore`:
+         - observation_type: "wisdom"
+         - properties: '{"consolidated_from": ["id-1", "id-2", "id-3"]}'
+         - Content MUST preserve ALL specific details from sources —
+           file paths, error messages, concrete values. Wisdom is a
+           comprehensive reference, not a vague summary.
+      2. Resolve EACH source via `vault_resolve_spore` action "consolidate"
+         — this removes them from search results and context injection
 
-  REQUIRED: Call `vault_report` with action "complete" and these details:
-  - Batches processed: N
-  - Spores created: N (by type)
-  - Sessions updated: N
-  - Wisdom created: N
-  - Entities created: N, edges created: N
-  - Digest tiers written: N
+      ## Step 3: Supersede stale spores (budget: 5 turns)
 
-  This report MUST be the last tool call of the run.
+      Also look for spores that are outdated or contradicted by newer ones:
+      - If two spores describe the same thing but one is more recent/detailed,
+        supersede the older one via `vault_resolve_spore` action "supersede"
+      - Superseded spores stay in the DB but are removed from search and
+        context injection — this keeps the vault relevant
+
+      Skip spores with status "consolidated" or "superseded" to prevent cycles.
+
+      If `vault_search` returns no results (embedding unavailable), report
+      action "skip" and move on.
+    tools:
+      - vault_spores
+      - vault_search
+      - vault_create_spore
+      - vault_resolve_spore
+      - vault_report
+    maxTurns: 22
+    required: true
+
+  - name: graph
+    prompt: |
+      Build the knowledge graph: create entities, then link spores to them.
+
+      The graph has two layers:
+      - Lineage (automatic): spore→session, spore→batch — already done
+      - Semantic (your job): spore→entity, entity→entity — you create these
+
+      ## Step 1: Review spores and existing entities (2 turns)
+
+      1. Call `vault_spores` with status "active" to see current spores
+      2. Call `vault_search` with "architecture components" to understand
+         the landscape of topics
+
+      ## Step 2: Create entities (budget: 6 turns)
+
+      For components/concepts/people that appear across multiple spores:
+      - Call `vault_create_entity` with type: component | concept | person
+      - Focus on entities that help understand the system architecture
+      - Prefer fewer well-defined entities over many vague ones
+
+      ## Step 3: Link spores to entities (budget: 12 turns) — CRITICAL
+
+      For EACH entity (newly created AND existing unlinked ones):
+      1. Call `vault_search` with the entity name to find related spores
+      2. For each relevant search result, call `vault_create_edge`:
+         - type: REFERENCES
+         - source_id: the spore ID, source_type: spore
+         - target_id: the entity ID, target_type: entity
+      3. Entities without edges are invisible — always link after creating
+
+      ## Step 4: Structural edges between entities (remaining turns)
+
+      For architectural dependencies between entities:
+      - DEPENDS_ON (entity→entity): "daemon" depends on "PGlite"
+      - AFFECTS (spore→entity): a gotcha that impacts a component
+
+      Do NOT create lineage edges (FROM_SESSION, EXTRACTED_FROM, etc.)
+
+      Call `vault_report` with action "graph" reporting:
+      - Entities created: N
+      - Spore→entity REFERENCES edges: N
+      - Entity→entity structural edges: N
+    tools:
+      - vault_spores
+      - vault_sessions
+      - vault_search
+      - vault_create_entity
+      - vault_create_edge
+      - vault_report
+    maxTurns: 25
+    required: true
+
+  - name: digest
+    prompt: |
+      Update digest extracts incrementally based on new vault substrate.
+
+      ## Step 1: Assess whether update is warranted (budget: 2 turns)
+
+      Call `vault_read_digest` (no tier param) to see current digest state.
+      Review the prior phase results (in your context):
+      - How many spores were created/superseded?
+      - How many entities/edges were added?
+
+      If changes are minor (< 3 new spores, 0 entity changes), call
+      `vault_report` with action "skip" and reason explaining why the
+      current digest is still sufficient. STOP.
+
+      ## Step 2: Read current digest + gather new material (budget: 6 turns)
+
+      For each tier you plan to update:
+      1. Call `vault_read_digest` with the tier number to get current content
+      2. Call `vault_search` with themes relevant to what changed:
+         - Topics from newly created/superseded spores
+         - New entity names
+      3. The existing digest is your baseline — integrate new material
+         into it, don't start from scratch
+
+      ## Step 3: Write updated extracts (budget: 8 turns)
+
+      Call `vault_write_digest` for tiers that need updating:
+      1. Tier 1500 — Executive briefing (most compressed, most sensitive
+         to changes — update if important new decisions or gotchas)
+      2. Tier 3000 — Team standup (update if new conventions or plans)
+      3. Tier 5000 — Deep onboarding (update if new trade-offs or patterns)
+      4. Tier 7500 — Comprehensive (update if significant new content)
+      5. Tier 10000 — Full institutional knowledge (update if any new content)
+
+      Each tier is self-contained. Preserve well-crafted existing content —
+      integrate new material, don't rewrite from scratch. Prioritize:
+      recent insights > active decisions > unresolved gotchas >
+      architectural patterns > historical context.
+
+      You do NOT need to update all 5 tiers. Only update tiers affected
+      by the new material. Tier 10000 (largest) is most likely to need
+      updating; tier 1500 (smallest) only if something critical changed.
+    tools:
+      - vault_spores
+      - vault_sessions
+      - vault_search
+      - vault_read_digest
+      - vault_write_digest
+      - vault_report
+    maxTurns: 20
+    required: true
+
+  - name: report
+    prompt: |
+      Summarize what was done across all phases.
+
+      Call `vault_report` with action "complete" and these details:
+      - Batches processed: N
+      - Spores created: N (by type)
+      - Sessions updated: N
+      - Wisdom created: N
+      - Entities created: N, edges created: N
+      - Digest tiers written: N
+
+      This report MUST be the last tool call of the run.
+    tools:
+      - vault_report
+    maxTurns: 3
+    required: true

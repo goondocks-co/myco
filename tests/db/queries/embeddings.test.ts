@@ -5,9 +5,10 @@
  * exercises the query function, and tears down the database.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client.js';
-import { createSchema, EMBEDDING_DIMENSIONS } from '@myco/db/schema.js';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { getDatabase } from '@myco/db/client.js';
+import { EMBEDDING_DIMENSIONS } from '@myco/db/schema.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertSpore } from '@myco/db/queries/spores.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';
@@ -75,14 +76,9 @@ function makeUnitVector(hotIndex: number): number[] {
 }
 
 describe('embedding query helpers', () => {
-  beforeEach(async () => {
-    const db = await initDatabase(); // in-memory
-    await createSchema(db);
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
-  });
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
+  beforeEach(async () => { await cleanTestDb(); });
 
   // ---------------------------------------------------------------------------
   // setEmbedding

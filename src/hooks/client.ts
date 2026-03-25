@@ -63,6 +63,24 @@ export class DaemonClient {
     }
   }
 
+  async delete(endpoint: string): Promise<ClientResult> {
+    try {
+      const info = this.readDaemonJson();
+      if (!info) return { ok: false };
+
+      const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
+        method: 'DELETE',
+        signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
+      });
+
+      if (!res.ok) return { ok: false };
+      const data = await res.json();
+      return { ok: true, data };
+    } catch {
+      return { ok: false };
+    }
+  }
+
   async isHealthy(cachedInfo?: DaemonInfo | null): Promise<boolean> {
     try {
       const info = cachedInfo ?? this.readDaemonJson();

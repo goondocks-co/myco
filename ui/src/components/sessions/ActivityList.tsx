@@ -5,11 +5,7 @@ import { cn } from '../../lib/cn';
 
 /* ---------- Helpers ---------- */
 
-function formatDuration(ms: number | null): string {
-  if (ms === null) return '—';
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
+import { formatDurationMs as formatDuration } from '../../lib/format';
 
 /* ---------- Sub-components ---------- */
 

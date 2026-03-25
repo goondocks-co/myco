@@ -6,6 +6,7 @@ import { useAgentRun, useAgentReports, useAgentTurns, type ReportRow, type TurnR
 import { cn } from '../../lib/cn';
 import { formatEpochAgo, truncate, capitalize } from '../../lib/format';
 import { runStatusClass, formatCost, formatTokens, formatDuration } from './helpers';
+import { PhaseTimeline, type PhaseResult } from './PhaseTimeline';
 
 /* ---------- Constants ---------- */
 
@@ -120,7 +121,7 @@ function ReportCard({ report }: { report: ReportRow }) {
 function TurnTableRow({ turn }: { turn: TurnRow }) {
   const durationMs =
     turn.started_at !== null && turn.completed_at !== null
-      ? (turn.completed_at - turn.started_at) * 1000
+      ? (turn.completed_at - turn.started_at) * MS_PER_SECOND
       : null;
 
   return (
@@ -135,9 +136,9 @@ function TurnTableRow({ turn }: { turn: TurnRow }) {
       </td>
       <td className="px-3 py-2 text-xs text-muted-foreground font-mono">
         {durationMs !== null
-          ? durationMs < 1_000
+          ? durationMs < MS_PER_SECOND
             ? `${durationMs}ms`
-            : `${(durationMs / 1_000).toFixed(1)}s`
+            : `${(durationMs / MS_PER_SECOND).toFixed(1)}s`
           : '—'}
       </td>
     </tr>
@@ -155,8 +156,9 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   const [showAudit, setShowAudit] = useState(false);
 
   const { data: runData, isLoading: runLoading, isError: runError } = useAgentRun(runId);
-  const { data: reportsData, isLoading: reportsLoading } = useAgentReports(runId);
-  const { data: turnsData, isLoading: turnsLoading } = useAgentTurns(showAudit ? runId : undefined);
+  const runStatus = runData?.run?.status;
+  const { data: reportsData, isLoading: reportsLoading } = useAgentReports(runId, runStatus);
+  const { data: turnsData, isLoading: turnsLoading } = useAgentTurns(showAudit ? runId : undefined, runStatus);
 
   if (runLoading) {
     return (
@@ -185,6 +187,24 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   const run = runData.run;
   const reports = reportsData?.reports ?? [];
   const turns = turnsData ?? [];
+
+  // Parse phase results from actions_taken if present
+  let phaseResults: PhaseResult[] | null = null;
+  if (run.actions_taken) {
+    try {
+      const parsed = JSON.parse(run.actions_taken) as unknown;
+      if (
+        parsed !== null &&
+        typeof parsed === 'object' &&
+        'phases' in parsed &&
+        Array.isArray((parsed as { phases: unknown }).phases)
+      ) {
+        phaseResults = (parsed as { phases: PhaseResult[] }).phases;
+      }
+    } catch {
+      // Malformed JSON — silently ignore, don't render timeline
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -226,6 +246,13 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
           </div>
         )}
       </div>
+
+      {/* Phase Timeline (only shown for phased runs) */}
+      {phaseResults && phaseResults.length > 0 && (
+        <div className="rounded-lg border border-border bg-card p-4">
+          <PhaseTimeline phases={phaseResults} />
+        </div>
+      )}
 
       {/* Decisions / Reports */}
       <div className="space-y-3">

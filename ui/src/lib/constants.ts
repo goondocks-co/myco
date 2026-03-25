@@ -14,3 +14,7 @@ export const MODELS_STALE_TIME = 30_000;
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
 export type LogLevel = (typeof LOG_LEVELS)[number];
 export const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
+
+/** Task source labels — must match backend BUILT_IN_SOURCE / USER_TASK_SOURCE. */
+export const TASK_SOURCE_BUILTIN = 'built-in';
+export const TASK_SOURCE_USER = 'user';

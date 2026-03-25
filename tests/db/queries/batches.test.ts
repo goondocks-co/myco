@@ -5,9 +5,8 @@
  * exercises the query function, and tears down the database.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';
 import {
@@ -48,18 +47,15 @@ function makeBatch(sessionId: string, overrides: Partial<BatchInsert> = {}): Bat
 describe('prompt batch query helpers', () => {
   let sessionId: string;
 
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => {
-    const db = await initDatabase(); // in-memory
-    await createSchema(db);
+    await cleanTestDb();
 
     // Create a parent session for FK references
     const session = makeSession();
     await upsertSession(session);
     sessionId = session.id;
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
   });
 
   // ---------------------------------------------------------------------------

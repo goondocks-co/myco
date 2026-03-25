@@ -18,15 +18,10 @@ import {
 } from '../ui/select';
 import { useAgentTasks, useTriggerRun, type TaskRow } from '../../hooks/use-agent';
 
-/* ---------- Constants ---------- */
-
-/** Placeholder value for "no task selected" in the Select component. */
-const NO_TASK_VALUE = '__default__';
-
 /* ---------- Helpers ---------- */
 
 function taskLabel(task: TaskRow): string {
-  return task.display_name ?? task.id;
+  return task.displayName ?? task.name;
 }
 
 /* ---------- Component ---------- */
@@ -41,13 +36,13 @@ export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps)
   const [selectedTask, setSelectedTask] = useState<string | undefined>(undefined);
   const [instruction, setInstruction] = useState('');
 
-  const { data: tasks, isLoading: tasksLoading } = useAgentTasks();
+  const { data: tasksData, isLoading: tasksLoading } = useAgentTasks();
   const { mutate: triggerRun, isPending, error } = useTriggerRun();
 
   // Pre-select the default task once tasks load
-  const availableTasks = tasks ?? [];
-  const defaultTask = availableTasks.find(t => t.is_default === 1);
-  const effectiveSelection = selectedTask ?? defaultTask?.id ?? availableTasks[0]?.id ?? '';
+  const availableTasks: TaskRow[] = tasksData?.tasks ?? [];
+  const defaultTask = availableTasks.find((t: TaskRow) => t.isDefault);
+  const effectiveSelection = selectedTask ?? defaultTask?.name ?? availableTasks[0]?.name ?? '';
 
   function handleRun() {
     const payload = {
@@ -91,9 +86,9 @@ export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps)
                 </SelectTrigger>
                 <SelectContent>
                   {availableTasks.map((task) => (
-                    <SelectItem key={task.id} value={task.id}>
+                    <SelectItem key={task.name} value={task.name}>
                       {taskLabel(task)}
-                      {task.is_default === 1 && (
+                      {task.isDefault && (
                         <span className="ml-1 text-xs text-muted-foreground">(default)</span>
                       )}
                     </SelectItem>

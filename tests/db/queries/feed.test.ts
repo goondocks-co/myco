@@ -5,9 +5,8 @@
  * exercises getActivityFeed, and tears down the database.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertRun } from '@myco/db/queries/runs.js';
@@ -21,19 +20,16 @@ const epochNow = () => Math.floor(Date.now() / 1000);
 const TEST_AGENT_ID = 'agent-feed-test';
 
 describe('getActivityFeed', () => {
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => {
-    const db = await initDatabase(); // in-memory
-    await createSchema(db);
+    await cleanTestDb();
     // Insert agent required as FK for agent_runs and spores
     await registerAgent({
       id: TEST_AGENT_ID,
       name: 'Feed Test Agent',
       created_at: epochNow(),
     });
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
   });
 
   // ---------------------------------------------------------------------------

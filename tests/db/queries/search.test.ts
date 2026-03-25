@@ -9,9 +9,10 @@
  * exercises the search function, and tears down the database.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client.js';
-import { createSchema, EMBEDDING_DIMENSIONS } from '@myco/db/schema.js';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { getDatabase } from '@myco/db/client.js';
+import { EMBEDDING_DIMENSIONS } from '@myco/db/schema.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertBatch } from '@myco/db/queries/batches.js';
 import { insertActivity } from '@myco/db/queries/activities.js';
@@ -111,17 +112,14 @@ async function insertSporeWithEmbedding(
 describe('fullTextSearch', () => {
   let sessionId: string;
 
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => {
-    const db = await initDatabase();
-    await createSchema(db);
+    await cleanTestDb();
 
     const session = makeSession();
     await upsertSession(session);
     sessionId = session.id;
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
   });
 
   it('finds matching prompt batches by keyword in user_prompt', async () => {
@@ -222,19 +220,16 @@ describe('semanticSearch', () => {
   let sessionId: string;
   let agentId: string;
 
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => {
-    const db = await initDatabase();
-    await createSchema(db);
+    await cleanTestDb();
 
     const session = makeSession();
     await upsertSession(session);
     sessionId = session.id;
 
     agentId = await createAgent('agent-search-test');
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
   });
 
   it('returns session with identical embedding first', async () => {

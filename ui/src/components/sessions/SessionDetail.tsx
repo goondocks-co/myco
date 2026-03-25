@@ -27,14 +27,8 @@ function epochToAbsolute(epoch: number | null): string {
   return new Date(epoch * 1000).toLocaleString();
 }
 
-function formatDurationSec(startEpoch: number | null, endEpoch: number | null): string {
-  if (startEpoch === null || endEpoch === null) return '—';
-  const seconds = endEpoch - startEpoch;
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const rem = seconds % 60;
-  return `${minutes}m ${rem}s`;
-}
+// Duration formatting imported from shared library
+import { formatDuration as formatDurationSec } from '../../lib/format';
 
 /* ---------- Sub-components ---------- */
 

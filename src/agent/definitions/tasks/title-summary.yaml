@@ -34,7 +34,10 @@ prompt: |
   For each session needing updates:
   1. Call `vault_unprocessed` or review existing batches to understand
      what happened in the session
-  2. Call `vault_update_session` with BOTH title and summary:
+  2. Call `vault_search` with the session_id to find spores extracted from
+     this session — use them to understand the full scope of work done and
+     the outcomes that matter most
+  3. Call `vault_update_session` with BOTH title and summary:
      - Title: under 80 characters, reflects the full session scope
      - Summary: 2-4 sentences capturing key work, tools used, outcomes
 
@@ -47,6 +50,7 @@ prompt: |
 toolOverrides:
   - vault_unprocessed
   - vault_sessions
+  - vault_search
   - vault_state
   - vault_update_session
   - vault_set_state

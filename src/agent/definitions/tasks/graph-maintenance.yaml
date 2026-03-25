@@ -38,15 +38,25 @@ prompt: |
 
   ## Phase 3 — Semantic Edges (budget: 10 turns)
 
-  Create edges between related nodes:
-  1. REFERENCES (spore→entity): when a spore discusses a specific entity
-  2. DEPENDS_ON (entity→entity): architectural dependencies
-  3. AFFECTS (spore→entity): when an observation impacts a component
-  4. RELATES_TO: general semantic connections
-  5. SUPERSEDED_BY: when a newer observation replaces an older one
+  Link spores and entities with semantic edges. For each entity:
+  1. Call `vault_search` with the entity name to find spores that discuss it
+  2. For each relevant spore found, call `vault_create_edge`:
+     - type: REFERENCES
+     - source_id: the spore ID, source_type: spore
+     - target_id: the entity ID, target_type: entity
+  3. Before creating any edge, verify it does not already exist — use
+     `vault_sessions` to review existing session context if needed, and
+     avoid creating duplicate edges for the same (source, type, target) triple
+
+  Also create structural edges between entities:
+  - DEPENDS_ON (entity→entity): architectural dependencies
+  - AFFECTS (spore→entity): when an observation directly impacts a component
+  - RELATES_TO: general semantic connections
 
   Always include source_type and target_type on every edge.
   Do NOT create lineage edges (FROM_SESSION, EXTRACTED_FROM, etc.).
+  Entities without any edges are invisible in the graph — always link after
+  creating.
 
   ## Phase 4 — Deduplication (budget: 5 turns)
 

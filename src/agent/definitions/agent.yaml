@@ -26,6 +26,7 @@ tools:
   - vault_resolve_spore
   - vault_update_session
   - vault_mark_processed
+  - vault_read_digest
   - vault_write_digest
   - vault_set_state
   - vault_report

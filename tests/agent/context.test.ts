@@ -5,9 +5,9 @@
  * and verifies the markdown output of buildVaultContext.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { getDatabase } from '@myco/db/client.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { upsertSession, type SessionInsert } from '@myco/db/queries/sessions.js';
 import { insertBatch, type BatchInsert } from '@myco/db/queries/batches.js';
 import { insertSpore, type SporeInsert } from '@myco/db/queries/spores.js';
@@ -54,14 +54,11 @@ function makeSession(overrides: Partial<SessionInsert> = {}): SessionInsert {
 // ---------------------------------------------------------------------------
 
 describe('buildVaultContext', () => {
+  beforeAll(async () => { await setupTestDb(); });
+  afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => {
-    const db = await initDatabase(); // in-memory
-    await createSchema(db);
+    await cleanTestDb();
     await createAgent(TEST_AGENT_ID);
-  });
-
-  afterEach(async () => {
-    await closeDatabase();
   });
 
   it('returns context with all zeros for empty vault', async () => {

@@ -21,6 +21,7 @@ Commands:
   setup-llm [options]      Configure LLM and embedding providers
   setup-digest [options]   Configure digest and capture settings
   agent [options]          Run the intelligence agent
+  task <subcommand>        Manage agent task definitions
   restart                  Restart the daemon
   version                  Show plugin version
   mcp                     Start the MCP stdio server
@@ -77,6 +78,7 @@ async function main(): Promise<void> {
     case 'setup-llm': return (await import('./cli/setup-llm.js')).run(args, vaultDir);
     case 'setup-digest': return (await import('./cli/setup-digest.js')).run(args, vaultDir);
     case 'agent': return (await import('./cli/agent-run.js')).run(args, vaultDir);
+    case 'task': return (await import('./cli/agent-tasks.js')).run(args, vaultDir);
     case 'restart': return (await import('./cli/restart.js')).run(args, vaultDir);
     case 'logs': return (await import('./cli/logs.js')).run(args, vaultDir);
     default:
