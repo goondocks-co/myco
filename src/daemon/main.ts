@@ -56,7 +56,7 @@ import { gatherStats } from '../services/stats.js';
 import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession } from '../db/queries/sessions.js';
 import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, closeOpenBatches, insertBatchStateless } from '../db/queries/batches.js';
-import { insertActivity, insertActivityWithBatch } from '../db/queries/activities.js';
+import { insertActivityWithBatch } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
 import { listRuns, getRun, getRunningRun } from '../db/queries/runs.js';
 import { listReports } from '../db/queries/reports.js';
@@ -206,9 +206,8 @@ export async function handleToolFailure(
   const inputObj = toolInput as Record<string, unknown> | undefined;
   const filePath = typeof inputObj?.file_path === 'string' ? inputObj.file_path : null;
 
-  await insertActivity({
+  const activity = await insertActivityWithBatch({
     session_id: sessionId,
-    prompt_batch_id: null,
     tool_name: toolName,
     tool_input: toolInput ? JSON.stringify(toolInput).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
     tool_output_summary: error?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
@@ -218,6 +217,10 @@ export async function handleToolFailure(
     timestamp: now,
     created_at: now,
   });
+
+  if (activity.prompt_batch_id !== null) {
+    incrementActivityCount(activity.prompt_batch_id).catch(() => {});
+  }
 }
 
 /**
@@ -229,13 +232,10 @@ export async function handleSubagentStart(
   agentType: string | undefined,
 ): Promise<void> {
   const now = epochSeconds();
-  await insertActivity({
+  await insertActivityWithBatch({
     session_id: sessionId,
-    prompt_batch_id: null,
     tool_name: 'subagent_start',
     tool_input: JSON.stringify({ agent_id: agentId, agent_type: agentType }).slice(0, TOOL_INPUT_STORE_LIMIT),
-    tool_output_summary: null,
-    file_path: null,
     timestamp: now,
     created_at: now,
   });
@@ -251,13 +251,11 @@ export async function handleSubagentStop(
   lastAssistantMessage: string | undefined,
 ): Promise<void> {
   const now = epochSeconds();
-  await insertActivity({
+  await insertActivityWithBatch({
     session_id: sessionId,
-    prompt_batch_id: null,
     tool_name: 'subagent_stop',
     tool_input: JSON.stringify({ agent_id: agentId, agent_type: agentType }).slice(0, TOOL_INPUT_STORE_LIMIT),
     tool_output_summary: lastAssistantMessage?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
-    file_path: null,
     timestamp: now,
     created_at: now,
   });
@@ -272,13 +270,10 @@ export async function handleStopFailure(
   errorDetails: string | undefined,
 ): Promise<void> {
   const now = epochSeconds();
-  await insertActivity({
+  await insertActivityWithBatch({
     session_id: sessionId,
-    prompt_batch_id: null,
     tool_name: 'stop_failure',
-    tool_input: null,
     tool_output_summary: errorDetails?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
-    file_path: null,
     success: 0,
     error_message: error?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
     timestamp: now,
@@ -296,13 +291,11 @@ export async function handleTaskCompleted(
   taskDescription: string | undefined,
 ): Promise<void> {
   const now = epochSeconds();
-  await insertActivity({
+  await insertActivityWithBatch({
     session_id: sessionId,
-    prompt_batch_id: null,
     tool_name: 'task_completed',
     tool_input: JSON.stringify({ task_id: taskId, task_subject: taskSubject, task_description: taskDescription }).slice(0, TOOL_INPUT_STORE_LIMIT),
     tool_output_summary: taskSubject?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
-    file_path: null,
     timestamp: now,
     created_at: now,
   });
@@ -318,13 +311,11 @@ export async function handleCompact(
   compactSummary: string | undefined,
 ): Promise<void> {
   const now = epochSeconds();
-  await insertActivity({
+  await insertActivityWithBatch({
     session_id: sessionId,
-    prompt_batch_id: null,
     tool_name: `${phase}_compact`,
     tool_input: trigger ? JSON.stringify({ trigger }).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
     tool_output_summary: compactSummary?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
-    file_path: null,
     timestamp: now,
     created_at: now,
   });
