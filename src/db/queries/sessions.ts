@@ -369,3 +369,20 @@ export async function closeSession(
   if (result.rows.length === 0) return null;
   return toSessionRow(result.rows[0] as Record<string, unknown>);
 }
+
+/**
+ * Delete a session and all its child rows (batches, activities, attachments).
+ *
+ * No ON DELETE CASCADE in the schema, so we delete children first.
+ * Returns true if the session existed and was deleted.
+ */
+export async function deleteSession(id: string): Promise<boolean> {
+  const db = getDatabase();
+
+  await db.query(`DELETE FROM activities WHERE session_id = $1`, [id]);
+  await db.query(`DELETE FROM attachments WHERE session_id = $1`, [id]);
+  await db.query(`DELETE FROM prompt_batches WHERE session_id = $1`, [id]);
+  const result = await db.query(`DELETE FROM sessions WHERE id = $1`, [id]);
+
+  return (result.affectedRows ?? 0) > 0;
+}

@@ -1,5 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
-import { fetchJson } from '../lib/api';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { fetchJson, deleteJson } from '../lib/api';
 
 /* ---------- Constants ---------- */
 
@@ -150,5 +150,15 @@ export function useSessionAttachments(sessionId: string | undefined) {
       fetchJson<AttachmentRow[]>(`/sessions/${sessionId}/attachments`, { signal }),
     enabled: sessionId !== undefined,
     staleTime: ATTACHMENTS_STALE_TIME,
+  });
+}
+
+export function useDeleteSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (sessionId: string) => deleteJson(`/sessions/${sessionId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    },
   });
 }

@@ -54,9 +54,9 @@ import {
 import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
-import { upsertSession, closeSession, updateSession, listSessions, getSession } from '../db/queries/sessions.js';
-import { insertBatch, closeBatch, incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, recoverBatchState } from '../db/queries/batches.js';
-import { insertActivity } from '../db/queries/activities.js';
+import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSession } from '../db/queries/sessions.js';
+import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary } from '../db/queries/batches.js';
+import { insertActivityWithBatch } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
 import { listRuns, getRun, getRunningRun } from '../db/queries/runs.js';
 import { listReports } from '../db/queries/reports.js';
@@ -87,9 +87,6 @@ const SECONDS_TO_MS = 1000;
 /** Default limit for listing agent runs in the API. */
 const AGENT_RUNS_DEFAULT_LIMIT = 50;
 
-/** Prompt count tracking key prefix for in-memory session state. */
-const INITIAL_PROMPT_NUMBER = 1;
-
 /** Max chars of tool input stored in the activity row. */
 const TOOL_INPUT_STORE_LIMIT = 4000;
 
@@ -103,82 +100,63 @@ const TITLE_PREVIEW_CHARS = 80;
 // Event handling helpers (exported for testing)
 // ---------------------------------------------------------------------------
 
-/** Per-session state for prompt batch tracking. */
-export interface SessionBatchState {
-  currentBatchId: number | null;
-  promptNumber: number;
-}
-
-/** In-memory map of session_id → current batch state. */
-export type BatchStateMap = Map<string, SessionBatchState>;
-
 /**
  * Handle a UserPromptSubmit event: close previous batch, open new one.
  *
- * @returns the new batch ID
+ * Fully stateless — prompt_number is derived from an inline DB subquery,
+ * and open batches are closed with a blind UPDATE (no prior SELECT).
+ *
+ * @returns the new batch ID and prompt number
  */
 export async function handleUserPrompt(
   sessionId: string,
   prompt: string | undefined,
-  batchState: BatchStateMap,
-): Promise<number> {
+): Promise<{ batchId: number; promptNumber: number }> {
   const now = epochSeconds();
-  let state = batchState.get(sessionId);
-  if (!state) {
-    // Recover from database — the DB is the source of truth, not in-memory state.
-    const recovered = await recoverBatchState(sessionId);
-    state = { currentBatchId: recovered.openBatchId, promptNumber: recovered.nextPromptNumber };
-  }
 
-  // Close previous batch if open
-  if (state.currentBatchId !== null) {
-    await closeBatch(state.currentBatchId, now);
-  }
+  // Close any open batches for this session — blind UPDATE, no prior read
+  await closeOpenBatches(sessionId, now);
 
-  // Insert new batch
-  const batch = await insertBatch({
+  // Insert new batch with prompt_number derived from DB
+  const batch = await insertBatchStateless({
     session_id: sessionId,
-    prompt_number: state.promptNumber,
     user_prompt: prompt ?? null,
     started_at: now,
     created_at: now,
   });
 
+  // insertBatchStateless guarantees non-null prompt_number via COALESCE subquery
+  const promptNumber = batch.prompt_number!;
+
   // Create HAS_BATCH lineage edge (fire-and-forget)
   createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now).catch(() => { /* lineage best-effort */ });
 
-  // Update state
-  state.currentBatchId = batch.id;
-  state.promptNumber++;
-  batchState.set(sessionId, state);
+  // Update session prompt count
+  await updateSession(sessionId, { prompt_count: promptNumber });
 
-  // Increment session prompt count
-  await updateSession(sessionId, { prompt_count: state.promptNumber - 1 });
-
-  return batch.id;
+  return { batchId: batch.id, promptNumber };
 }
 
 /**
- * Handle a PostToolUse event: insert activity, increment batch count.
+ * Handle a PostToolUse event: insert activity with inline batch linkage.
+ *
+ * Fully stateless — the batch ID is resolved via an inline subquery in
+ * `insertActivityWithBatch`, so no in-memory state is needed.
  */
 export async function handleToolUse(
   sessionId: string,
   toolName: string,
   toolInput: unknown,
   toolOutput: string | undefined,
-  batchState: BatchStateMap,
 ): Promise<void> {
   const now = epochSeconds();
-  const state = batchState.get(sessionId);
-  const batchId = state?.currentBatchId ?? null;
 
   // Extract file_path from tool input if present
   const inputObj = toolInput as Record<string, unknown> | undefined;
   const filePath = typeof inputObj?.file_path === 'string' ? inputObj.file_path : null;
 
-  const activityPromise = insertActivity({
+  const activity = await insertActivityWithBatch({
     session_id: sessionId,
-    prompt_batch_id: batchId,
     tool_name: toolName,
     tool_input: toolInput ? JSON.stringify(toolInput).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
     tool_output_summary: toolOutput?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
@@ -187,33 +165,158 @@ export async function handleToolUse(
     created_at: now,
   });
 
-  if (batchId !== null) {
-    await Promise.all([activityPromise, incrementActivityCount(batchId)]);
-  } else {
-    await activityPromise;
+  // Increment batch activity count if linked to a batch
+  if (activity.prompt_batch_id !== null) {
+    await incrementActivityCount(activity.prompt_batch_id);
   }
   // Session-level tool_count is updated at stop time from transcript data.
 }
 
 /**
- * Handle session stop: close batch, close session, mine transcript for title.
+ * Handle session stop: close all open batches, close session.
+ *
+ * Fully stateless — uses `closeOpenBatches` (blind UPDATE) instead of
+ * reading from an in-memory map.
  */
 export async function handleSessionStop(
   sessionId: string,
-  batchState: BatchStateMap,
 ): Promise<void> {
   const now = epochSeconds();
-  const state = batchState.get(sessionId);
 
-  // Close current batch if open
-  if (state?.currentBatchId !== null && state?.currentBatchId !== undefined) {
-    await closeBatch(state.currentBatchId, now);
-    state.currentBatchId = null;
-    batchState.set(sessionId, state);
-  }
+  // Close all open batches for this session — blind UPDATE, no prior read
+  await closeOpenBatches(sessionId, now);
 
   // Close session
   await closeSession(sessionId, now);
+}
+
+/**
+ * Handle a tool failure event: insert activity with success=0.
+ */
+export async function handleToolFailure(
+  sessionId: string,
+  toolName: string,
+  toolInput: unknown,
+  error: string | undefined,
+  isInterrupt: boolean | undefined,
+): Promise<void> {
+  const now = epochSeconds();
+  const inputObj = toolInput as Record<string, unknown> | undefined;
+  const filePath = typeof inputObj?.file_path === 'string' ? inputObj.file_path : null;
+
+  const activity = await insertActivityWithBatch({
+    session_id: sessionId,
+    tool_name: toolName,
+    tool_input: toolInput ? JSON.stringify(toolInput).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
+    tool_output_summary: error?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
+    file_path: filePath,
+    success: 0,
+    error_message: error?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? (isInterrupt ? 'interrupted' : null),
+    timestamp: now,
+    created_at: now,
+  });
+
+  if (activity.prompt_batch_id !== null) {
+    await incrementActivityCount(activity.prompt_batch_id);
+  }
+}
+
+/**
+ * Handle a subagent start event: record that a subagent was spawned.
+ */
+export async function handleSubagentStart(
+  sessionId: string,
+  agentId: string | undefined,
+  agentType: string | undefined,
+): Promise<void> {
+  const now = epochSeconds();
+  await insertActivityWithBatch({
+    session_id: sessionId,
+    tool_name: 'subagent_start',
+    tool_input: JSON.stringify({ agent_id: agentId, agent_type: agentType }).slice(0, TOOL_INPUT_STORE_LIMIT),
+    timestamp: now,
+    created_at: now,
+  });
+}
+
+/**
+ * Handle a subagent stop event: record that a subagent completed.
+ */
+export async function handleSubagentStop(
+  sessionId: string,
+  agentId: string | undefined,
+  agentType: string | undefined,
+  lastAssistantMessage: string | undefined,
+): Promise<void> {
+  const now = epochSeconds();
+  await insertActivityWithBatch({
+    session_id: sessionId,
+    tool_name: 'subagent_stop',
+    tool_input: JSON.stringify({ agent_id: agentId, agent_type: agentType }).slice(0, TOOL_INPUT_STORE_LIMIT),
+    tool_output_summary: lastAssistantMessage?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
+    timestamp: now,
+    created_at: now,
+  });
+}
+
+/**
+ * Handle a stop failure event: record that the stop hook encountered an error.
+ */
+export async function handleStopFailure(
+  sessionId: string,
+  error: string | undefined,
+  errorDetails: string | undefined,
+): Promise<void> {
+  const now = epochSeconds();
+  await insertActivityWithBatch({
+    session_id: sessionId,
+    tool_name: 'stop_failure',
+    tool_output_summary: errorDetails?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
+    success: 0,
+    error_message: error?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
+    timestamp: now,
+    created_at: now,
+  });
+}
+
+/**
+ * Handle a task completed event: record task completion as an activity.
+ */
+export async function handleTaskCompleted(
+  sessionId: string,
+  taskId: string | undefined,
+  taskSubject: string | undefined,
+  taskDescription: string | undefined,
+): Promise<void> {
+  const now = epochSeconds();
+  await insertActivityWithBatch({
+    session_id: sessionId,
+    tool_name: 'task_completed',
+    tool_input: JSON.stringify({ task_id: taskId, task_subject: taskSubject, task_description: taskDescription }).slice(0, TOOL_INPUT_STORE_LIMIT),
+    tool_output_summary: taskSubject?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
+    timestamp: now,
+    created_at: now,
+  });
+}
+
+/**
+ * Handle a compact event (pre or post): record compaction in the activity stream.
+ */
+export async function handleCompact(
+  sessionId: string,
+  phase: 'pre' | 'post',
+  trigger: string | undefined,
+  compactSummary: string | undefined,
+): Promise<void> {
+  const now = epochSeconds();
+  await insertActivityWithBatch({
+    session_id: sessionId,
+    tool_name: `${phase}_compact`,
+    tool_input: trigger ? JSON.stringify({ trigger }).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
+    tool_output_summary: compactSummary?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
+    timestamp: now,
+    created_at: now,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -337,9 +440,6 @@ export async function main(): Promise<void> {
   const bufferDir = path.join(vaultDir, 'buffer');
   const sessionBuffers = new Map<string, EventBuffer>();
 
-  // Prompt batch state tracking: session_id → current batch state
-  const batchState: BatchStateMap = new Map();
-
   // Clean up stale buffer files (>24h) on startup
   let startupCleanedCount = 0;
   if (fs.existsSync(bufferDir)) {
@@ -441,7 +541,6 @@ export async function main(): Promise<void> {
     } catch { /* buffer dir may not exist */ }
     // Prune in-memory state
     sessionBuffers.delete(session_id);
-    batchState.delete(session_id);
     server.updateDaemonJsonSessions(registry.sessions);
     logger.info('lifecycle', 'Session unregistered', { session_id });
     return { body: { ok: true, sessions: registry.sessions } };
@@ -459,12 +558,14 @@ export async function main(): Promise<void> {
       registry.register(event.session_id, { started_at: event.timestamp });
       logger.debug('lifecycle', 'Auto-registered session from event', { session_id: event.session_id });
 
-      // Ensure PGlite session exists
+      // Ensure PGlite session exists — explicitly set status='active' so
+      // resumed sessions (previously 'completed') get reopened.
       const now = epochSeconds();
       const startedEpoch = Math.floor(new Date(event.timestamp).getTime() / 1000);
       await upsertSession({
         id: event.session_id,
         agent: 'claude-code',
+        status: 'active',
         started_at: startedEpoch,
         created_at: now,
       });
@@ -485,11 +586,11 @@ export async function main(): Promise<void> {
         prompt_length: promptText.length,
       });
       try {
-        const batchId = await handleUserPrompt(event.session_id, promptText || undefined, batchState);
-        logger.debug('capture', 'Batch opened', { session_id: event.session_id, batch_id: batchId });
+        const { batchId, promptNumber } = await handleUserPrompt(event.session_id, promptText || undefined);
+        logger.debug('capture', 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });
 
         // Batch-threshold summary trigger
-        const batchCount = batchState.get(event.session_id)?.promptNumber ?? 0;
+        const batchCount = promptNumber;
         const summaryInterval = config.agent.summary_batch_interval;
         if (summaryInterval > 0 && batchCount > 0 && batchCount % summaryInterval === 0) {
           try {
@@ -521,10 +622,126 @@ export async function main(): Promise<void> {
           toolName,
           event.tool_input,
           typeof event.output_preview === 'string' ? event.output_preview : undefined,
-          batchState,
         );
       } catch (err) {
         logger.warn('capture', 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });
+      }
+    }
+
+    if (event.type === 'tool_failure') {
+      const toolName = String(event.tool_name ?? '');
+      logger.info('hooks', 'Tool failure event', {
+        session_id: event.session_id,
+        tool_name: toolName,
+        is_interrupt: !!event.is_interrupt,
+      });
+      try {
+        await handleToolFailure(
+          event.session_id,
+          toolName,
+          event.tool_input,
+          typeof event.error === 'string' ? event.error : undefined,
+          !!event.is_interrupt,
+        );
+      } catch (err) {
+        logger.warn('capture', 'Failed to record tool failure', { session_id: event.session_id, error: (err as Error).message });
+      }
+    }
+
+    if (event.type === 'subagent_start') {
+      logger.info('hooks', 'Subagent start event', {
+        session_id: event.session_id,
+        agent_id: event.agent_id,
+        agent_type: event.agent_type,
+      });
+      try {
+        await handleSubagentStart(
+          event.session_id,
+          typeof event.agent_id === 'string' ? event.agent_id : undefined,
+          typeof event.agent_type === 'string' ? event.agent_type : undefined,
+        );
+      } catch (err) {
+        logger.warn('capture', 'Failed to record subagent start', { session_id: event.session_id, error: (err as Error).message });
+      }
+    }
+
+    if (event.type === 'subagent_stop') {
+      logger.info('hooks', 'Subagent stop event', {
+        session_id: event.session_id,
+        agent_id: event.agent_id,
+        agent_type: event.agent_type,
+      });
+      try {
+        await handleSubagentStop(
+          event.session_id,
+          typeof event.agent_id === 'string' ? event.agent_id : undefined,
+          typeof event.agent_type === 'string' ? event.agent_type : undefined,
+          typeof event.last_assistant_message === 'string' ? event.last_assistant_message : undefined,
+        );
+      } catch (err) {
+        logger.warn('capture', 'Failed to record subagent stop', { session_id: event.session_id, error: (err as Error).message });
+      }
+    }
+
+    if (event.type === 'stop_failure') {
+      logger.warn('hooks', 'Stop failure event', {
+        session_id: event.session_id,
+        error: event.error,
+      });
+      try {
+        await handleStopFailure(
+          event.session_id,
+          typeof event.error === 'string' ? event.error : undefined,
+          typeof event.error_details === 'string' ? event.error_details : undefined,
+        );
+      } catch (err) {
+        logger.warn('capture', 'Failed to record stop failure', { session_id: event.session_id, error: (err as Error).message });
+      }
+    }
+
+    if (event.type === 'task_completed') {
+      logger.info('hooks', 'Task completed event', {
+        session_id: event.session_id,
+        task_id: event.task_id,
+        task_subject: event.task_subject,
+      });
+      try {
+        await handleTaskCompleted(
+          event.session_id,
+          typeof event.task_id === 'string' ? event.task_id : undefined,
+          typeof event.task_subject === 'string' ? event.task_subject : undefined,
+          typeof event.task_description === 'string' ? event.task_description : undefined,
+        );
+      } catch (err) {
+        logger.warn('capture', 'Failed to record task completion', { session_id: event.session_id, error: (err as Error).message });
+      }
+    }
+
+    if (event.type === 'pre_compact') {
+      logger.info('hooks', 'Pre-compact event', { session_id: event.session_id });
+      try {
+        await handleCompact(
+          event.session_id,
+          'pre',
+          typeof event.trigger === 'string' ? event.trigger : undefined,
+          undefined,
+        );
+      } catch (err) {
+        logger.warn('capture', 'Failed to record pre-compact', { session_id: event.session_id, error: (err as Error).message });
+      }
+    }
+
+    if (event.type === 'post_compact') {
+      logger.info('hooks', 'Post-compact event', { session_id: event.session_id });
+      try {
+        await handleCompact(
+          event.session_id,
+          'post',
+          typeof event.trigger === 'string' ? event.trigger : undefined,
+          typeof event.compact_summary === 'string' ? event.compact_summary : undefined,
+        );
+      } catch (err) {
+        logger.warn('capture', 'Failed to record post-compact', { session_id: event.session_id, error: (err as Error).message });
       }
     }
 
@@ -648,9 +865,19 @@ export async function main(): Promise<void> {
       image_count: imageCount,
     });
 
-    // --- Phase 2: Close session in PGlite ---
+    // --- Phase 2: Capture response + close session ---
 
-    await handleSessionStop(sessionId, batchState);
+    // Get the latest batch BEFORE closing — this is the batch for the current turn.
+    const latestBatch = await getLatestBatch(sessionId);
+
+    // Primary capture: put last_assistant_message directly on the latest batch.
+    // No positional mapping needed — the hook gives us the response directly.
+    if (lastAssistantMessage && latestBatch && !latestBatch.response_summary) {
+      await setResponseSummary(latestBatch.id, lastAssistantMessage)
+        .catch(err => logger.warn('processor', 'Failed to set response_summary on latest batch', { error: String(err) }));
+    }
+
+    await handleSessionStop(sessionId);
 
     // Derive a simple title from the first prompt (no LLM — that's Phase 2)
     let title: string | null = null;
@@ -672,19 +899,15 @@ export async function main(): Promise<void> {
 
     await updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
 
-    // Populate response_summary on batches from transcript AI responses.
-    // Maps by batch insertion order (id ASC) rather than prompt_number,
-    // which is resilient to daemon restarts that reset the prompt counter.
+    // Enhanced capture: populate response_summary on earlier batches from transcript.
+    // Maps by batch insertion order (id ASC) to transcript turn position.
+    // This is best-effort — the parser may skip empty-text turns, causing misalignment.
+    // The primary capture (above) handles the current turn reliably.
     const responses: Array<{ turnIndex: number; response: string }> = [];
     for (let i = 0; i < allTurns.length; i++) {
       if (allTurns[i].aiResponse) {
         responses.push({ turnIndex: i + 1, response: allTurns[i].aiResponse! });
       }
-    }
-    // Also include last_assistant_message from the hook payload for the final turn
-    // (may duplicate the transcript's last response — populateBatchResponses is idempotent)
-    if (lastAssistantMessage && allTurns.length > 0) {
-      responses.push({ turnIndex: allTurns.length, response: lastAssistantMessage });
     }
     if (responses.length > 0) {
       populateBatchResponses(sessionId, responses)
@@ -701,6 +924,9 @@ export async function main(): Promise<void> {
     } catch { /* agent unavailable */ }
 
     // Write images to attachments (keep this — images are binary, not in PGlite)
+    // Link images to the latest batch directly (primary capture) rather than
+    // relying on positional turn-to-batch mapping (which breaks when the parser
+    // drops empty-text turns).
     const attachmentsDir = path.join(vaultDir, 'attachments');
     const hasImages = allTurns.some((t) => t.images?.length);
     if (hasImages) {
@@ -710,16 +936,20 @@ export async function main(): Promise<void> {
       const turn = allTurns[i];
       if (!turn.images?.length) continue;
       const promptNumber = i + 1;
-      // Look up batch ID for this turn (fire-and-forget — don't block on failure)
-      const batchIdPromise = getBatchIdByPromptNumber(sessionId, promptNumber).catch(() => null);
+      // For the last turn, use latestBatch directly (reliable).
+      // For earlier turns, fall back to positional lookup (best-effort).
+      const isLastTurn = i === allTurns.length - 1;
+      const batchIdPromise = isLastTurn && latestBatch
+        ? Promise.resolve(latestBatch.id)
+        : getBatchIdByPromptNumber(sessionId, promptNumber).catch(() => null);
       for (let j = 0; j < turn.images.length; j++) {
         const img = turn.images[j];
         const ext = extensionForMimeType(img.mediaType);
         const sessionShort = sessionId.slice(-6);
         const filename = `${sessionShort}-t${promptNumber}-${j + 1}.${ext}`;
         const filePath = path.join(attachmentsDir, filename);
-        if (!fs.existsSync(filePath)) {
-          fs.writeFileSync(filePath, Buffer.from(img.data, 'base64'));
+        try {
+          fs.writeFileSync(filePath, Buffer.from(img.data, 'base64'), { flag: 'wx' });
           logger.debug('processor', 'Image saved', { filename, turn: promptNumber });
           batchIdPromise.then(batchId => {
             insertAttachment({
@@ -731,6 +961,8 @@ export async function main(): Promise<void> {
               created_at: epochSeconds(),
             }).catch(err => logger.warn('processor', 'Failed to record attachment', { error: String(err) }));
           });
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
         }
       }
     }
@@ -850,6 +1082,13 @@ export async function main(): Promise<void> {
   });
 
   server.registerRoute('GET', '/api/sessions/:id', handleGetSession);
+  server.registerRoute('DELETE', '/api/sessions/:id', async (req) => {
+    const sessionId = req.params.id;
+    const deleted = await deleteSession(sessionId);
+    if (!deleted) return { status: 404, body: { error: 'Session not found' } };
+    logger.info('api', 'Session deleted', { session_id: sessionId });
+    return { body: { ok: true } };
+  });
   server.registerRoute('GET', '/api/sessions/:id/batches', handleGetSessionBatches);
   server.registerRoute('GET', '/api/batches/:id/activities', handleGetBatchActivities);
   server.registerRoute('GET', '/api/sessions/:id/attachments', handleGetSessionAttachments);

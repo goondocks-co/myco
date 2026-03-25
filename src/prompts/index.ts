@@ -6,8 +6,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ARTIFACT_TYPES } from '../vault/types.js';
-import { CANDIDATE_CONTENT_PREVIEW } from '../constants.js';
 import { findPackageRoot } from '../utils/find-package-root.js';
 
 /**
@@ -96,14 +94,6 @@ export function buildTitlePrompt(
   });
 }
 
-const ARTIFACT_TYPE_DESCRIPTIONS = [
-  '"spec" — Design specifications, architecture documents',
-  '"plan" — Implementation plans, roadmaps',
-  '"rfc" — Requests for comment, proposals',
-  '"doc" — Documentation, guides, READMEs',
-  '"other" — Other substantive documents',
-];
-
 export function buildSimilarityPrompt(
   currentSummary: string,
   candidateSummary: string,
@@ -114,23 +104,3 @@ export function buildSimilarityPrompt(
   });
 }
 
-export function buildClassificationPrompt(
-  sessionId: string,
-  candidates: Array<{ path: string; content: string }>,
-  maxTokens?: number,
-): string {
-  const fileList = candidates
-    .map((c) => {
-      const truncated = c.content.slice(0, CANDIDATE_CONTENT_PREVIEW);
-      return `### ${c.path}\n\`\`\`\n${truncated}\n\`\`\``;
-    })
-    .join('\n\n');
-
-  return interpolate(loadPrompt('classification'), {
-    sessionId,
-    fileList,
-    artifactTypes: ARTIFACT_TYPE_DESCRIPTIONS.map((d) => `- ${d}`).join('\n'),
-    validTypes: ARTIFACT_TYPES.join('|'),
-    maxTokens: String(maxTokens ?? 1024),
-  });
-}

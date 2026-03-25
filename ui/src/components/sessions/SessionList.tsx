@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom';
-import { AlertCircle, MessageSquare } from 'lucide-react';
+import { AlertCircle, MessageSquare, Trash2 } from 'lucide-react';
 import { Badge } from '../ui/badge';
-import { useSessions, type SessionSummary } from '../../hooks/use-sessions';
+import { useSessions, useDeleteSession, type SessionSummary } from '../../hooks/use-sessions';
 import { cn } from '../../lib/cn';
 
 /* ---------- Constants ---------- */
@@ -23,10 +23,18 @@ function statusLabel(status: string): string {
 
 /* ---------- Sub-components ---------- */
 
-function SessionRow({ session, onClick }: { session: SessionSummary; onClick: () => void }) {
+function SessionRow({
+  session,
+  onClick,
+  onDelete,
+}: {
+  session: SessionSummary;
+  onClick: () => void;
+  onDelete: () => void;
+}) {
   return (
     <tr
-      className="border-b border-border last:border-0 hover:bg-accent/50 cursor-pointer transition-colors"
+      className="border-b border-border last:border-0 hover:bg-accent/50 cursor-pointer transition-colors group"
       onClick={onClick}
     >
       <td className="px-4 py-3">
@@ -46,7 +54,19 @@ function SessionRow({ session, onClick }: { session: SessionSummary; onClick: ()
         {session.date}
       </td>
       <td className="px-4 py-3 text-sm text-muted-foreground font-mono text-xs">
-        {session.id.slice(0, 8)}
+        <div className="flex items-center justify-between">
+          <span>{session.id.slice(0, 8)}</span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-destructive/10 hover:text-destructive transition-all"
+            title="Delete session"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </td>
     </tr>
   );
@@ -69,6 +89,15 @@ function SkeletonRow() {
 export function SessionList() {
   const navigate = useNavigate();
   const { data, isLoading, isError, error } = useSessions({ limit: DEFAULT_SESSIONS_LIMIT });
+  const deleteSession = useDeleteSession();
+
+  function handleDelete(session: SessionSummary) {
+    const label = session.title || session.id.slice(0, 8);
+    if (!window.confirm(`Delete session "${label}"?\n\nThis will permanently remove all batches, activities, and attachments for this session.`)) {
+      return;
+    }
+    deleteSession.mutate(session.id);
+  }
 
   if (isLoading) {
     return (
@@ -140,6 +169,7 @@ export function SessionList() {
                   key={session.id}
                   session={session}
                   onClick={() => navigate(`/sessions/${session.id}`)}
+                  onDelete={() => handleDelete(session)}
                 />
               ))}
             </tbody>
