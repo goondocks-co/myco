@@ -62,6 +62,7 @@ phases:
     tools:
       - vault_state
       - vault_unprocessed
+      - vault_spores
       - vault_report
     maxTurns: 6
     required: true
@@ -69,32 +70,42 @@ phases:
   - name: extract
     prompt: |
       Extract observations from unprocessed batches as spores.
-      CRITICAL: search before creating — the vault must stay sharp, not bloated.
+      CRITICAL: the vault must stay sharp, not bloated. Supersede, don't duplicate.
 
       If the prior phase reported no unprocessed batches, call `vault_report`
       with action "skip" and reason "no unprocessed batches" and finish.
 
-      For each unprocessed batch:
-      1. Read the batch content to understand what happened
-      2. Identify genuine insights (not activity — "added file X" is not a spore)
-      3. For EACH potential observation, BEFORE creating:
-         a. Call `vault_search` with the key phrase of the observation
-         b. If a similar spore exists and yours adds meaningful new detail:
-            - Create the new spore via `vault_create_spore`
-            - Supersede the old one via `vault_resolve_spore` action "supersede"
-              with new_spore_id pointing to the replacement
-         c. If a similar spore exists and yours adds nothing new: skip it
-         d. If no similar spore exists: create it as new
-      4. Call `vault_mark_processed` for the batch
-      5. Update cursor via `vault_set_state` periodically
+      ## Step 1: Read batches and identify observations (budget: ~10 turns)
+
+      Process batches from `vault_unprocessed`. For each batch:
+      1. Read the content — identify genuine insights, not activity logs
+      2. Group related observations across batches by topic before creating
+
+      ## Step 2: Search and create/supersede (budget: ~20 turns)
+
+      For each TOPIC you identified (not each batch — group first):
+      1. Call `vault_search` with the topic to check existing coverage
+      2. If a similar spore exists:
+         - If your observation adds meaningful new detail: create the new
+           spore, then supersede the old via `vault_resolve_spore`
+           action "supersede" with new_spore_id
+         - If your observation adds nothing new: skip it entirely
+      3. If no similar spore exists: create it as new
+      4. Mark the source batches as processed via `vault_mark_processed`
+
+      ## Step 3: Update cursor (budget: 1 turn)
+
+      Call `vault_set_state` to update `last_processed_batch_id`.
 
       ## Quality rules
       - One observation per spore — specific, not vague
       - Include session_id, prompt_batch_id, importance 1-10, tags
       - Supersede rather than duplicate — the vault gets sharper, not bigger
+      - Group batches by topic to minimize search calls
       - If approaching the turn budget, stop and move on
     tools:
       - vault_unprocessed
+      - vault_spores
       - vault_search
       - vault_create_spore
       - vault_resolve_spore
@@ -216,6 +227,7 @@ phases:
       - Entity→entity structural edges: N
     tools:
       - vault_spores
+      - vault_sessions
       - vault_search
       - vault_create_entity
       - vault_create_edge
