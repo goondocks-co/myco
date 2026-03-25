@@ -40,7 +40,14 @@ import {
 } from './api/mycelium.js';
 import { createSearchHandler } from './api/search.js';
 import { handleGetFeed } from './api/feed.js';
-import { handleGetEmbeddingStatus } from './api/embedding.js';
+import {
+  handleGetEmbeddingStatus,
+  handleEmbeddingDetails,
+  handleEmbeddingRebuild,
+  handleEmbeddingReconcile,
+  handleEmbeddingCleanOrphans,
+  handleEmbeddingReembedStale,
+} from './api/embedding.js';
 import { EmbeddingManager, SqliteVecVectorStore, EmbeddingProviderAdapter, SqliteRecordSource } from './embedding/index.js';
 import { createEmbeddingProvider } from '../intelligence/llm.js';
 import {
@@ -1391,6 +1398,11 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/search', createSearchHandler({ embeddingManager, vectorStore }));
   server.registerRoute('GET', '/api/activity', handleGetFeed);
   server.registerRoute('GET', '/api/embedding/status', async () => handleGetEmbeddingStatus(vaultDir));
+  server.registerRoute('GET', '/api/embedding/details', async () => handleEmbeddingDetails(embeddingManager));
+  server.registerRoute('POST', '/api/embedding/rebuild', async () => handleEmbeddingRebuild(embeddingManager));
+  server.registerRoute('POST', '/api/embedding/reconcile', async () => handleEmbeddingReconcile(embeddingManager));
+  server.registerRoute('POST', '/api/embedding/clean-orphans', async () => handleEmbeddingCleanOrphans(embeddingManager));
+  server.registerRoute('POST', '/api/embedding/reembed-stale', async () => handleEmbeddingReembedStale(embeddingManager));
 
   // --- Start server ---
 
