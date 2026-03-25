@@ -2,7 +2,7 @@
  * myco_consolidate — merge related spores into a single comprehensive note.
  *
  * Phase 1 stub: consolidation requires intelligence configuration (LLM) which
- * is not yet wired into the PGlite flow. Returns a helpful message directing
+ * is not yet wired into the SQLite flow. Returns a helpful message directing
  * users to Phase 2.
  */
 

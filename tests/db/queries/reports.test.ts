@@ -36,17 +36,17 @@ function makeReport(overrides: Partial<ReportInsert> = {}): ReportInsert {
 }
 
 describe('report query helpers', () => {
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
   beforeEach(async () => {
-    await cleanTestDb();
+    cleanTestDb();
     // Insert FK targets
-    await registerAgent({
+    registerAgent({
       id: TEST_AGENT_ID,
       name: 'Test Agent',
       created_at: epochNow(),
     });
-    await insertRun({
+    insertRun({
       id: TEST_RUN_ID,
       agent_id: TEST_AGENT_ID,
       started_at: epochNow(),
@@ -60,7 +60,7 @@ describe('report query helpers', () => {
   describe('insertReport', () => {
     it('inserts a report and returns it with auto-generated id', async () => {
       const data = makeReport();
-      const row = await insertReport(data);
+      const row = insertReport(data);
 
       expect(typeof row.id).toBe('number');
       expect(row.run_id).toBe(TEST_RUN_ID);
@@ -74,7 +74,7 @@ describe('report query helpers', () => {
     it('stores details as JSON string', async () => {
       const details = JSON.stringify({ spore_id: 'spore-abc', type: 'gotcha' });
       const data = makeReport({ details });
-      const row = await insertReport(data);
+      const row = insertReport(data);
 
       expect(row.details).toBe(details);
     });
@@ -87,11 +87,11 @@ describe('report query helpers', () => {
   describe('listReports', () => {
     it('returns reports for a run ordered by created_at ASC', async () => {
       const now = epochNow();
-      await insertReport(makeReport({ summary: 'First', created_at: now - 20 }));
-      await insertReport(makeReport({ summary: 'Second', created_at: now - 10 }));
-      await insertReport(makeReport({ summary: 'Third', created_at: now }));
+      insertReport(makeReport({ summary: 'First', created_at: now - 20 }));
+      insertReport(makeReport({ summary: 'Second', created_at: now - 10 }));
+      insertReport(makeReport({ summary: 'Third', created_at: now }));
 
-      const rows = await listReports(TEST_RUN_ID);
+      const rows = listReports(TEST_RUN_ID);
       expect(rows).toHaveLength(3);
       expect(rows[0].summary).toBe('First');
       expect(rows[1].summary).toBe('Second');
@@ -99,7 +99,7 @@ describe('report query helpers', () => {
     });
 
     it('returns empty array for run with no reports', async () => {
-      const rows = await listReports('no-such-run');
+      const rows = listReports('no-such-run');
       expect(rows).toEqual([]);
     });
   });
@@ -111,10 +111,10 @@ describe('report query helpers', () => {
   describe('listReportsByAgent', () => {
     it('returns reports by agent ordered by created_at DESC', async () => {
       const now = epochNow();
-      await insertReport(makeReport({ summary: 'Old', created_at: now - 100 }));
-      await insertReport(makeReport({ summary: 'New', created_at: now }));
+      insertReport(makeReport({ summary: 'Old', created_at: now - 100 }));
+      insertReport(makeReport({ summary: 'New', created_at: now }));
 
-      const rows = await listReportsByAgent(TEST_AGENT_ID);
+      const rows = listReportsByAgent(TEST_AGENT_ID);
       expect(rows).toHaveLength(2);
       expect(rows[0].summary).toBe('New');
       expect(rows[1].summary).toBe('Old');
@@ -122,16 +122,16 @@ describe('report query helpers', () => {
 
     it('respects limit', async () => {
       const now = epochNow();
-      await insertReport(makeReport({ created_at: now - 2 }));
-      await insertReport(makeReport({ created_at: now - 1 }));
-      await insertReport(makeReport({ created_at: now }));
+      insertReport(makeReport({ created_at: now - 2 }));
+      insertReport(makeReport({ created_at: now - 1 }));
+      insertReport(makeReport({ created_at: now }));
 
-      const rows = await listReportsByAgent(TEST_AGENT_ID, { limit: 2 });
+      const rows = listReportsByAgent(TEST_AGENT_ID, { limit: 2 });
       expect(rows).toHaveLength(2);
     });
 
     it('returns empty array for agent with no reports', async () => {
-      const rows = await listReportsByAgent('no-such-agent');
+      const rows = listReportsByAgent('no-such-agent');
       expect(rows).toEqual([]);
     });
   });

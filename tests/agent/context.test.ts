@@ -1,7 +1,7 @@
 /**
  * Tests for vault context builder.
  *
- * Each test initializes an in-memory PGlite instance, creates the schema,
+ * Each test initializes an in-memory SQLite instance, creates the schema,
  * and verifies the markdown output of buildVaultContext.
  */
 
@@ -28,13 +28,12 @@ const epochNow = () => Math.floor(Date.now() / 1000);
 // ---------------------------------------------------------------------------
 
 /** Insert an agent directly into the agents table. */
-async function createAgent(id: string): Promise<void> {
+function createAgent(id: string): void {
   const db = getDatabase();
   const now = epochNow();
-  await db.query(
-    `INSERT INTO agents (id, name, created_at) VALUES ($1, $2, $3)`,
-    [id, `agent-${id}`, now],
-  );
+  db.prepare(
+    `INSERT INTO agents (id, name, created_at) VALUES (?, ?, ?)`,
+  ).run(id, `agent-${id}`, now);
 }
 
 /** Factory for minimal valid session data. */
@@ -54,15 +53,15 @@ function makeSession(overrides: Partial<SessionInsert> = {}): SessionInsert {
 // ---------------------------------------------------------------------------
 
 describe('buildVaultContext', () => {
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
-  beforeEach(async () => {
-    await cleanTestDb();
-    await createAgent(TEST_AGENT_ID);
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => {
+    cleanTestDb();
+    createAgent(TEST_AGENT_ID);
   });
 
-  it('returns context with all zeros for empty vault', async () => {
-    const context = await buildVaultContext(TEST_AGENT_ID);
+  it('returns context with all zeros for empty vault', () => {
+    const context = buildVaultContext(TEST_AGENT_ID);
 
     expect(context).toContain('## Current Vault State');
     expect(context).toContain(`agent_id: ${TEST_AGENT_ID}`);
@@ -75,29 +74,29 @@ describe('buildVaultContext', () => {
     expect(context).toContain('last_digest_at: 0');
   });
 
-  it('includes cursor position from agent state', async () => {
+  it('includes cursor position from agent state', () => {
     const now = epochNow();
-    await setState(TEST_AGENT_ID, 'last_processed_batch_id', '42', now);
+    setState(TEST_AGENT_ID, 'last_processed_batch_id', '42', now);
 
-    const context = await buildVaultContext(TEST_AGENT_ID);
+    const context = buildVaultContext(TEST_AGENT_ID);
 
     expect(context).toContain('last_processed_batch_id: 42');
   });
 
-  it('counts sessions correctly', async () => {
-    await upsertSession(makeSession());
-    await upsertSession(makeSession());
-    await upsertSession(makeSession());
+  it('counts sessions correctly', () => {
+    upsertSession(makeSession());
+    upsertSession(makeSession());
+    upsertSession(makeSession());
 
-    const context = await buildVaultContext(TEST_AGENT_ID);
+    const context = buildVaultContext(TEST_AGENT_ID);
 
     expect(context).toContain('total_sessions: 3');
   });
 
-  it('counts only active spores', async () => {
+  it('counts only active spores', () => {
     const now = epochNow();
 
-    await insertSpore({
+    insertSpore({
       id: 'spore-active-1',
       agent_id: TEST_AGENT_ID,
       observation_type: 'gotcha',
@@ -105,7 +104,7 @@ describe('buildVaultContext', () => {
       status: 'active',
       created_at: now,
     });
-    await insertSpore({
+    insertSpore({
       id: 'spore-active-2',
       agent_id: TEST_AGENT_ID,
       observation_type: 'decision',
@@ -113,7 +112,7 @@ describe('buildVaultContext', () => {
       status: 'active',
       created_at: now,
     });
-    await insertSpore({
+    insertSpore({
       id: 'spore-superseded',
       agent_id: TEST_AGENT_ID,
       observation_type: 'gotcha',
@@ -122,81 +121,76 @@ describe('buildVaultContext', () => {
       created_at: now,
     });
 
-    const context = await buildVaultContext(TEST_AGENT_ID);
+    const context = buildVaultContext(TEST_AGENT_ID);
 
     expect(context).toContain('total_active_spores: 2');
   });
 
-  it('counts unprocessed batches', async () => {
+  it('counts unprocessed batches', () => {
     const session = makeSession();
-    await upsertSession(session);
+    upsertSession(session);
 
     const now = epochNow();
-    await insertBatch({ session_id: session.id, created_at: now, processed: 0 });
-    await insertBatch({ session_id: session.id, created_at: now, processed: 0 });
-    await insertBatch({ session_id: session.id, created_at: now, processed: 1 });
+    insertBatch({ session_id: session.id, created_at: now, processed: 0 });
+    insertBatch({ session_id: session.id, created_at: now, processed: 0 });
+    insertBatch({ session_id: session.id, created_at: now, processed: 1 });
 
-    const context = await buildVaultContext(TEST_AGENT_ID);
+    const context = buildVaultContext(TEST_AGENT_ID);
 
     expect(context).toContain('unprocessed_batches: 2');
   });
 
-  it('counts entities and edges', async () => {
+  it('counts entities and edges', () => {
     const db = getDatabase();
     const now = epochNow();
 
-    await db.query(
+    db.prepare(
       `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      ['e1', TEST_AGENT_ID, 'component', 'CompA', now, now],
-    );
-    await db.query(
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run('e1', TEST_AGENT_ID, 'component', 'CompA', now, now);
+    db.prepare(
       `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      ['e2', TEST_AGENT_ID, 'component', 'CompB', now, now],
-    );
-    await db.query(
-      `INSERT INTO edges (agent_id, source_id, target_id, type, created_at)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [TEST_AGENT_ID, 'e1', 'e2', 'depends_on', now],
-    );
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run('e2', TEST_AGENT_ID, 'component', 'CompB', now, now);
+    db.prepare(
+      `INSERT INTO graph_edges (id, agent_id, source_id, source_type, target_id, target_type, type, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('edge-1', TEST_AGENT_ID, 'e1', 'entity', 'e2', 'entity', 'depends_on', now);
 
-    const context = await buildVaultContext(TEST_AGENT_ID);
+    const context = buildVaultContext(TEST_AGENT_ID);
 
     expect(context).toContain('total_entities: 2');
     expect(context).toContain('total_edges: 1');
   });
 
-  it('includes last digest timestamp', async () => {
+  it('includes last digest timestamp', () => {
     const db = getDatabase();
     const digestTime = 1711234567;
 
-    await db.query(
+    db.prepare(
       `INSERT INTO digest_extracts (agent_id, tier, content, generated_at)
-       VALUES ($1, $2, $3, $4)`,
-      [TEST_AGENT_ID, 1500, 'some context', digestTime],
-    );
-    await db.query(
+       VALUES (?, ?, ?, ?)`,
+    ).run(TEST_AGENT_ID, 1500, 'some context', digestTime);
+    db.prepare(
       `INSERT INTO digest_extracts (agent_id, tier, content, generated_at)
-       VALUES ($1, $2, $3, $4)`,
-      [TEST_AGENT_ID, 3000, 'more context', digestTime + 100],
-    );
+       VALUES (?, ?, ?, ?)`,
+    ).run(TEST_AGENT_ID, 3000, 'more context', digestTime + 100);
 
-    const context = await buildVaultContext(TEST_AGENT_ID);
+    const context = buildVaultContext(TEST_AGENT_ID);
 
     expect(context).toContain(`last_digest_at: ${digestTime + 100}`);
   });
 
-  it('returns correct counts with populated vault', async () => {
+  it('returns correct counts with populated vault', () => {
     const now = epochNow();
     const db = getDatabase();
 
     // Add 2 sessions
-    await upsertSession(makeSession());
-    await upsertSession(makeSession());
+    upsertSession(makeSession());
+    upsertSession(makeSession());
 
     // Add spores
-    await insertSpore({
+    insertSpore({
       id: 'spore-1',
       agent_id: TEST_AGENT_ID,
       observation_type: 'gotcha',
@@ -205,16 +199,15 @@ describe('buildVaultContext', () => {
     });
 
     // Add entity
-    await db.query(
+    db.prepare(
       `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      ['e1', TEST_AGENT_ID, 'concept', 'PGlite', now, now],
-    );
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run('e1', TEST_AGENT_ID, 'concept', 'PGlite', now, now);
 
     // Set cursor state
-    await setState(TEST_AGENT_ID, 'last_processed_batch_id', '99', now);
+    setState(TEST_AGENT_ID, 'last_processed_batch_id', '99', now);
 
-    const context = await buildVaultContext(TEST_AGENT_ID);
+    const context = buildVaultContext(TEST_AGENT_ID);
 
     expect(context).toContain('agent_id: test-agent');
     expect(context).toContain('last_processed_batch_id: 99');

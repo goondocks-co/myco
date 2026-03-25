@@ -1,7 +1,7 @@
 /**
  * CLI `task` subcommands — manage agent task definitions via daemon API.
  *
- * Routes through the daemon HTTP API to avoid PGlite file lock conflicts.
+ * Routes through the daemon HTTP API for centralized processing.
  *
  * Subcommands:
  *   task list [--source built-in|user]   List all tasks

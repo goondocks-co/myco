@@ -4,19 +4,19 @@ import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
 
-// Mock PGlite database layer — avoid native extension dependency in tests
+// Mock SQLite database layer — avoid native extension dependency in tests
 const { mockDb } = vi.hoisted(() => {
   const mockDb = {};
   return { mockDb };
 });
 
 vi.mock('@myco/db/client.js', () => ({
-  initDatabase: vi.fn().mockResolvedValue(mockDb),
-  initDatabaseForVault: vi.fn().mockResolvedValue(mockDb),
-  closeDatabase: vi.fn().mockResolvedValue(undefined),
+  initDatabase: vi.fn().mockReturnValue(mockDb),
+  vaultDbPath: vi.fn((dir: string) => `${dir}/myco.db`),
+  closeDatabase: vi.fn(),
 }));
 vi.mock('@myco/db/schema.js', () => ({
-  createSchema: vi.fn().mockResolvedValue(undefined),
+  createSchema: vi.fn(),
   SCHEMA_VERSION: 1,
   EMBEDDING_DIMENSIONS: 1024,
 }));
@@ -34,7 +34,7 @@ vi.mock('@myco/symbionts/detect.js', () => ({
 }));
 
 import { run } from '@myco/cli/init.js';
-import { initDatabaseForVault, closeDatabase } from '@myco/db/client.js';
+import { initDatabase, closeDatabase } from '@myco/db/client.js';
 
 describe('myco init', () => {
   let testDir: string;
@@ -56,11 +56,11 @@ describe('myco init', () => {
     expect(fs.existsSync(path.join(vault, '.gitignore'))).toBe(true);
   });
 
-  it('initializes PGlite database in pgdata/', async () => {
+  it('initializes SQLite database', async () => {
     const vault = path.join(testDir, 'vault');
     await run(['--vault', vault, '--embedding-model', 'bge-m3']);
 
-    expect(initDatabaseForVault).toHaveBeenCalledWith(vault);
+    expect(initDatabase).toHaveBeenCalled();
     expect(closeDatabase).toHaveBeenCalled();
   });
 
@@ -68,7 +68,7 @@ describe('myco init', () => {
     const vault = path.join(testDir, 'vault');
     await run(['--vault', vault, '--embedding-model', 'bge-m3']);
 
-    const dirs = ['pgdata', 'buffer', 'attachments', 'logs'];
+    const dirs = ['buffer', 'attachments', 'logs'];
     for (const dir of dirs) {
       expect(fs.existsSync(path.join(vault, dir))).toBe(true);
     }
@@ -105,7 +105,6 @@ describe('myco init', () => {
     await run(['--vault', customVault, '--embedding-model', 'bge-m3']);
 
     expect(fs.existsSync(path.join(customVault, 'myco.yaml'))).toBe(true);
-    expect(fs.existsSync(path.join(customVault, 'pgdata'))).toBe(true);
   });
 
   it('writes .gitignore excluding runtime artifacts', async () => {
@@ -113,7 +112,7 @@ describe('myco init', () => {
     await run(['--vault', vault, '--embedding-model', 'bge-m3']);
 
     const gitignore = fs.readFileSync(path.join(vault, '.gitignore'), 'utf-8');
-    expect(gitignore).toContain('pgdata/');
+    expect(gitignore).toContain('myco.db');
     expect(gitignore).toContain('daemon.json');
     expect(gitignore).toContain('buffer/');
     expect(gitignore).toContain('logs/');

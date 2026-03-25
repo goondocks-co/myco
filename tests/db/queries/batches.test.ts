@@ -47,14 +47,14 @@ function makeBatch(sessionId: string, overrides: Partial<BatchInsert> = {}): Bat
 describe('prompt batch query helpers', () => {
   let sessionId: string;
 
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
-  beforeEach(async () => {
-    await cleanTestDb();
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => {
+    cleanTestDb();
 
     // Create a parent session for FK references
     const session = makeSession();
-    await upsertSession(session);
+    upsertSession(session);
     sessionId = session.id;
   });
 
@@ -63,9 +63,9 @@ describe('prompt batch query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('insertBatch', () => {
-    it('inserts a new batch and returns it with a generated id', async () => {
+    it('inserts a new batch and returns it with a generated id', () => {
       const data = makeBatch(sessionId, { user_prompt: 'Hello world' });
-      const row = await insertBatch(data);
+      const row = insertBatch(data);
 
       expect(row.id).toBeGreaterThan(0);
       expect(row.session_id).toBe(sessionId);
@@ -75,21 +75,21 @@ describe('prompt batch query helpers', () => {
       expect(row.processed).toBe(0);
     });
 
-    it('assigns sequential ids', async () => {
-      const b1 = await insertBatch(makeBatch(sessionId));
-      const b2 = await insertBatch(makeBatch(sessionId));
+    it('assigns sequential ids', () => {
+      const b1 = insertBatch(makeBatch(sessionId));
+      const b2 = insertBatch(makeBatch(sessionId));
 
       expect(b2.id).toBeGreaterThan(b1.id);
     });
 
-    it('stores optional fields', async () => {
+    it('stores optional fields', () => {
       const data = makeBatch(sessionId, {
         prompt_number: 3,
         user_prompt: 'What is Myco?',
         response_summary: 'Myco is a knowledge capture system.',
         classification: 'question',
       });
-      const row = await insertBatch(data);
+      const row = insertBatch(data);
 
       expect(row.prompt_number).toBe(3);
       expect(row.user_prompt).toBe('What is Myco?');
@@ -103,18 +103,18 @@ describe('prompt batch query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('closeBatch', () => {
-    it('sets status to completed and records ended_at', async () => {
-      const batch = await insertBatch(makeBatch(sessionId));
+    it('sets status to completed and records ended_at', () => {
+      const batch = insertBatch(makeBatch(sessionId));
       const endTime = epochNow();
-      const row = await closeBatch(batch.id, endTime);
+      const row = closeBatch(batch.id, endTime);
 
       expect(row).not.toBeNull();
       expect(row!.status).toBe('completed');
       expect(row!.ended_at).toBe(endTime);
     });
 
-    it('returns null for non-existent batch', async () => {
-      const result = await closeBatch(999999, epochNow());
+    it('returns null for non-existent batch', () => {
+      const result = closeBatch(999999, epochNow());
       expect(result).toBeNull();
     });
   });
@@ -124,20 +124,20 @@ describe('prompt batch query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('incrementActivityCount', () => {
-    it('increments activity_count by 1', async () => {
-      const batch = await insertBatch(makeBatch(sessionId));
+    it('increments activity_count by 1', () => {
+      const batch = insertBatch(makeBatch(sessionId));
       expect(batch.activity_count).toBe(0);
 
-      const updated = await incrementActivityCount(batch.id);
+      const updated = incrementActivityCount(batch.id);
       expect(updated).not.toBeNull();
       expect(updated!.activity_count).toBe(1);
 
-      const again = await incrementActivityCount(batch.id);
+      const again = incrementActivityCount(batch.id);
       expect(again!.activity_count).toBe(2);
     });
 
-    it('returns null for non-existent batch', async () => {
-      const result = await incrementActivityCount(999999);
+    it('returns null for non-existent batch', () => {
+      const result = incrementActivityCount(999999);
       expect(result).toBeNull();
     });
   });
@@ -147,17 +147,17 @@ describe('prompt batch query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('markBatchProcessed', () => {
-    it('sets processed flag to 1', async () => {
-      const batch = await insertBatch(makeBatch(sessionId));
+    it('sets processed flag to 1', () => {
+      const batch = insertBatch(makeBatch(sessionId));
       expect(batch.processed).toBe(0);
 
-      const row = await markBatchProcessed(batch.id);
+      const row = markBatchProcessed(batch.id);
       expect(row).not.toBeNull();
       expect(row!.processed).toBe(1);
     });
 
-    it('returns null for non-existent batch', async () => {
-      const result = await markBatchProcessed(999999);
+    it('returns null for non-existent batch', () => {
+      const result = markBatchProcessed(999999);
       expect(result).toBeNull();
     });
   });
@@ -167,60 +167,60 @@ describe('prompt batch query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('getUnprocessedBatches', () => {
-    it('returns only unprocessed batches ordered by id ASC', async () => {
-      const b1 = await insertBatch(makeBatch(sessionId, { user_prompt: 'first' }));
-      const b2 = await insertBatch(makeBatch(sessionId, { user_prompt: 'second' }));
-      await insertBatch(makeBatch(sessionId, { user_prompt: 'third' }));
+    it('returns only unprocessed batches ordered by id ASC', () => {
+      const b1 = insertBatch(makeBatch(sessionId, { user_prompt: 'first' }));
+      const b2 = insertBatch(makeBatch(sessionId, { user_prompt: 'second' }));
+      insertBatch(makeBatch(sessionId, { user_prompt: 'third' }));
 
       // Mark b2 as processed
-      await markBatchProcessed(b2.id);
+      markBatchProcessed(b2.id);
 
-      const rows = await getUnprocessedBatches();
+      const rows = getUnprocessedBatches();
       expect(rows).toHaveLength(2);
       expect(rows[0].id).toBe(b1.id);
       expect(rows[0].user_prompt).toBe('first');
       expect(rows[1].user_prompt).toBe('third');
     });
 
-    it('respects the limit option', async () => {
+    it('respects the limit option', () => {
       for (let i = 0; i < 5; i++) {
-        await insertBatch(makeBatch(sessionId));
+        insertBatch(makeBatch(sessionId));
       }
 
-      const rows = await getUnprocessedBatches({ limit: 2 });
+      const rows = getUnprocessedBatches({ limit: 2 });
       expect(rows).toHaveLength(2);
     });
 
-    it('supports cursor-based pagination via after_id', async () => {
-      const b1 = await insertBatch(makeBatch(sessionId, { user_prompt: 'a' }));
-      const b2 = await insertBatch(makeBatch(sessionId, { user_prompt: 'b' }));
-      const b3 = await insertBatch(makeBatch(sessionId, { user_prompt: 'c' }));
+    it('supports cursor-based pagination via after_id', () => {
+      const b1 = insertBatch(makeBatch(sessionId, { user_prompt: 'a' }));
+      const b2 = insertBatch(makeBatch(sessionId, { user_prompt: 'b' }));
+      const b3 = insertBatch(makeBatch(sessionId, { user_prompt: 'c' }));
 
-      const rows = await getUnprocessedBatches({ after_id: b1.id });
+      const rows = getUnprocessedBatches({ after_id: b1.id });
       expect(rows).toHaveLength(2);
       expect(rows[0].id).toBe(b2.id);
       expect(rows[1].id).toBe(b3.id);
     });
 
-    it('combines cursor and limit', async () => {
-      const b1 = await insertBatch(makeBatch(sessionId));
-      await insertBatch(makeBatch(sessionId));
-      await insertBatch(makeBatch(sessionId));
+    it('combines cursor and limit', () => {
+      const b1 = insertBatch(makeBatch(sessionId));
+      insertBatch(makeBatch(sessionId));
+      insertBatch(makeBatch(sessionId));
 
-      const rows = await getUnprocessedBatches({ after_id: b1.id, limit: 1 });
+      const rows = getUnprocessedBatches({ after_id: b1.id, limit: 1 });
       expect(rows).toHaveLength(1);
     });
 
-    it('returns empty array when all batches are processed', async () => {
-      const batch = await insertBatch(makeBatch(sessionId));
-      await markBatchProcessed(batch.id);
+    it('returns empty array when all batches are processed', () => {
+      const batch = insertBatch(makeBatch(sessionId));
+      markBatchProcessed(batch.id);
 
-      const rows = await getUnprocessedBatches();
+      const rows = getUnprocessedBatches();
       expect(rows).toEqual([]);
     });
 
-    it('returns empty array when no batches exist', async () => {
-      const rows = await getUnprocessedBatches();
+    it('returns empty array when no batches exist', () => {
+      const rows = getUnprocessedBatches();
       expect(rows).toEqual([]);
     });
   });
@@ -230,9 +230,9 @@ describe('prompt batch query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('batch lifecycle', () => {
-    it('progresses through full lifecycle', async () => {
+    it('progresses through full lifecycle', () => {
       // Insert
-      const batch = await insertBatch(makeBatch(sessionId, {
+      const batch = insertBatch(makeBatch(sessionId, {
         prompt_number: 1,
         user_prompt: 'Implement feature X',
       }));
@@ -241,28 +241,28 @@ describe('prompt batch query helpers', () => {
       expect(batch.processed).toBe(0);
 
       // Increment activity count as tools are used
-      await incrementActivityCount(batch.id);
-      await incrementActivityCount(batch.id);
-      await incrementActivityCount(batch.id);
+      incrementActivityCount(batch.id);
+      incrementActivityCount(batch.id);
+      incrementActivityCount(batch.id);
 
       // Close the batch
       const endTime = epochNow();
-      const closed = await closeBatch(batch.id, endTime);
+      const closed = closeBatch(batch.id, endTime);
       expect(closed!.status).toBe('completed');
       expect(closed!.ended_at).toBe(endTime);
       expect(closed!.activity_count).toBe(3);
 
       // Still shows as unprocessed
-      const unprocessed = await getUnprocessedBatches();
+      const unprocessed = getUnprocessedBatches();
       expect(unprocessed).toHaveLength(1);
       expect(unprocessed[0].id).toBe(batch.id);
 
       // Mark as processed
-      const processed = await markBatchProcessed(batch.id);
+      const processed = markBatchProcessed(batch.id);
       expect(processed!.processed).toBe(1);
 
       // No longer in unprocessed list
-      const empty = await getUnprocessedBatches();
+      const empty = getUnprocessedBatches();
       expect(empty).toEqual([]);
     });
   });

@@ -2,7 +2,8 @@ import { DaemonClient } from './client.js';
 import { readStdin } from './read-stdin.js';
 import { loadConfig } from '../config/loader.js';
 import { buildInjectedContext } from '../context/injector.js';
-import { initDatabaseForVault } from '../db/client.js';
+import { initDatabase, vaultDbPath } from '../db/client.js';
+import { createSchema } from '../db/schema.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -43,8 +44,9 @@ export async function main() {
       }
     }
 
-    // Degraded: local PGlite context only
-    await initDatabaseForVault(VAULT_DIR);
+    // Degraded: local SQLite context only
+    const db = initDatabase(vaultDbPath(VAULT_DIR));
+    createSchema(db);
     const injected = await buildInjectedContext(config, { branch });
     if (injected.text) process.stdout.write(injected.text);
   } catch (error) {

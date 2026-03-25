@@ -29,9 +29,9 @@ function makeAgent(overrides: Partial<AgentInsert> = {}): AgentInsert {
 }
 
 describe('agent query helpers', () => {
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
-  beforeEach(async () => { await cleanTestDb(); });
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => { cleanTestDb(); });
 
   // ---------------------------------------------------------------------------
   // registerAgent + getAgent
@@ -40,7 +40,7 @@ describe('agent query helpers', () => {
   describe('registerAgent', () => {
     it('inserts a new agent and retrieves it', async () => {
       const data = makeAgent({ name: 'Digest Agent' });
-      const row = await registerAgent(data);
+      const row = registerAgent(data);
 
       expect(row.id).toBe(data.id);
       expect(row.name).toBe('Digest Agent');
@@ -57,7 +57,7 @@ describe('agent query helpers', () => {
       expect(row.created_at).toBe(data.created_at);
       expect(row.updated_at).toBeNull();
 
-      const fetched = await getAgent(data.id);
+      const fetched = getAgent(data.id);
       expect(fetched).not.toBeNull();
       expect(fetched!.id).toBe(data.id);
       expect(fetched!.name).toBe('Digest Agent');
@@ -79,7 +79,7 @@ describe('agent query helpers', () => {
         enabled: 0,
         updated_at: now,
       });
-      const row = await registerAgent(data);
+      const row = registerAgent(data);
 
       expect(row.provider).toBe('ollama');
       expect(row.model).toBe('bge-m3');
@@ -96,9 +96,9 @@ describe('agent query helpers', () => {
 
     it('upserts on conflict — updates name and optional fields', async () => {
       const data = makeAgent({ name: 'Original Name' });
-      await registerAgent(data);
+      registerAgent(data);
 
-      const updated = await registerAgent({
+      const updated = registerAgent({
         ...data,
         name: 'Updated Name',
         provider: 'anthropic',
@@ -113,8 +113,8 @@ describe('agent query helpers', () => {
 
     it('is idempotent — same data produces same result', async () => {
       const data = makeAgent({ name: 'Idempotent' });
-      const first = await registerAgent(data);
-      const second = await registerAgent(data);
+      const first = registerAgent(data);
+      const second = registerAgent(data);
 
       expect(first).toEqual(second);
     });
@@ -126,7 +126,7 @@ describe('agent query helpers', () => {
 
   describe('getAgent', () => {
     it('returns null for non-existent id', async () => {
-      const row = await getAgent('does-not-exist');
+      const row = getAgent('does-not-exist');
       expect(row).toBeNull();
     });
   });
@@ -138,11 +138,11 @@ describe('agent query helpers', () => {
   describe('listAgents', () => {
     it('returns agents ordered by created_at ASC', async () => {
       const now = epochNow();
-      await registerAgent(makeAgent({ id: 'agent-old', created_at: now - 100 }));
-      await registerAgent(makeAgent({ id: 'agent-mid', created_at: now - 50 }));
-      await registerAgent(makeAgent({ id: 'agent-new', created_at: now }));
+      registerAgent(makeAgent({ id: 'agent-old', created_at: now - 100 }));
+      registerAgent(makeAgent({ id: 'agent-mid', created_at: now - 50 }));
+      registerAgent(makeAgent({ id: 'agent-new', created_at: now }));
 
-      const rows = await listAgents();
+      const rows = listAgents();
       expect(rows).toHaveLength(3);
       expect(rows[0].id).toBe('agent-old');
       expect(rows[1].id).toBe('agent-mid');
@@ -150,7 +150,7 @@ describe('agent query helpers', () => {
     });
 
     it('returns empty array when no agents exist', async () => {
-      const rows = await listAgents();
+      const rows = listAgents();
       expect(rows).toEqual([]);
     });
   });

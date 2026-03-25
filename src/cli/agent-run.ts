@@ -1,7 +1,7 @@
 /**
  * CLI `agent` command — trigger an intelligence agent run via daemon API.
  *
- * Routes through the daemon HTTP API to avoid PGlite file lock conflicts.
+ * Routes through the daemon HTTP API for centralized processing.
  * The daemon's /api/agent/run endpoint fires-and-forgets the run.
  */
 

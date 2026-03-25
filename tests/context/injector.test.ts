@@ -17,9 +17,9 @@ describe('buildInjectedContext', () => {
     version: 3,
   });
 
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
-  beforeEach(async () => { await cleanTestDb(); });
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => { cleanTestDb(); });
 
   it('returns empty text when DB has no data', async () => {
     const result = await buildInjectedContext(config, {});
@@ -29,7 +29,7 @@ describe('buildInjectedContext', () => {
 
   it('returns session-based context when sessions exist', async () => {
     const now = Math.floor(Date.now() / 1000);
-    await upsertSession({
+    upsertSession({
       id: 'sess-001',
       agent: 'claude-code',
       started_at: now,
@@ -46,7 +46,7 @@ describe('buildInjectedContext', () => {
 
   it('includes active plans in context', async () => {
     const now = Math.floor(Date.now() / 1000);
-    await upsertPlan({
+    upsertPlan({
       id: 'plan-auth',
       created_at: now,
       status: 'active',
@@ -61,12 +61,12 @@ describe('buildInjectedContext', () => {
 
   it('includes active spores in context', async () => {
     const now = Math.floor(Date.now() / 1000);
-    await registerAgent({
+    registerAgent({
       id: 'agent-1',
       name: 'test-agent',
       created_at: now,
     });
-    await insertSpore({
+    insertSpore({
       id: 'spore-001',
       agent_id: 'agent-1',
       observation_type: 'gotcha',
@@ -82,12 +82,12 @@ describe('buildInjectedContext', () => {
 
   it('excludes superseded spores', async () => {
     const now = Math.floor(Date.now() / 1000);
-    await registerAgent({
+    registerAgent({
       id: 'agent-1',
       name: 'test-agent',
       created_at: now,
     });
-    await insertSpore({
+    insertSpore({
       id: 'spore-old',
       agent_id: 'agent-1',
       observation_type: 'gotcha',
@@ -104,7 +104,7 @@ describe('buildInjectedContext', () => {
     const now = Math.floor(Date.now() / 1000);
     // Add many sessions to potentially exceed budget
     for (let i = 0; i < 20; i++) {
-      await upsertSession({
+      upsertSession({
         id: `sess-${i.toString().padStart(3, '0')}`,
         agent: 'claude-code',
         started_at: now - i,
@@ -125,9 +125,9 @@ describe('buildPromptContext', () => {
     version: 3,
   });
 
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
-  beforeEach(async () => { await cleanTestDb(); });
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => { cleanTestDb(); });
 
   it('returns empty context for short prompts', async () => {
     const result = await buildPromptContext('hi', config);

@@ -346,14 +346,14 @@ describe('agent loader', () => {
   // -------------------------------------------------------------------------
 
   describe('registerBuiltInAgentsAndTasks', () => {
-    beforeAll(async () => { await setupTestDb(); });
-    afterAll(async () => { await teardownTestDb(); });
-    beforeEach(async () => { await cleanTestDb(); });
+    beforeAll(() => { setupTestDb(); });
+    afterAll(() => { teardownTestDb(); });
+    beforeEach(() => { cleanTestDb(); });
 
     it('registers the built-in agent in the database', async () => {
-      await registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
+      registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
 
-      const agent = await getAgent(BUILT_IN_AGENT_NAME);
+      const agent = getAgent(BUILT_IN_AGENT_NAME);
       expect(agent).not.toBeNull();
       expect(agent!.id).toBe(BUILT_IN_AGENT_NAME);
       expect(agent!.name).toBe('Myco Agent');
@@ -364,9 +364,9 @@ describe('agent loader', () => {
     });
 
     it('registers all built-in tasks in the database', async () => {
-      await registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
+      registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
 
-      const tasks = await listTasks({ agent_id: BUILT_IN_AGENT_NAME });
+      const tasks = listTasks({ agent_id: BUILT_IN_AGENT_NAME });
       expect(tasks).toHaveLength(EXPECTED_TASK_COUNT);
 
       const names = tasks.map((t) => t.id).sort();
@@ -380,29 +380,29 @@ describe('agent loader', () => {
     });
 
     it('marks full-intelligence as the default task', async () => {
-      await registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
+      registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
 
-      const defaultTask = await getDefaultTask(BUILT_IN_AGENT_NAME);
+      const defaultTask = getDefaultTask(BUILT_IN_AGENT_NAME);
       expect(defaultTask).not.toBeNull();
       expect(defaultTask!.id).toBe('full-intelligence');
       expect(defaultTask!.is_default).toBe(1);
     });
 
     it('is idempotent — running twice produces the same result', async () => {
-      await registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
-      await registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
+      registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
+      registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
 
-      const agent = await getAgent(BUILT_IN_AGENT_NAME);
+      const agent = getAgent(BUILT_IN_AGENT_NAME);
       expect(agent).not.toBeNull();
 
-      const tasks = await listTasks({ agent_id: BUILT_IN_AGENT_NAME });
+      const tasks = listTasks({ agent_id: BUILT_IN_AGENT_NAME });
       expect(tasks).toHaveLength(EXPECTED_TASK_COUNT);
     });
 
     it('stores tool_access as JSON string on agent', async () => {
-      await registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
+      registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
 
-      const agent = await getAgent(BUILT_IN_AGENT_NAME);
+      const agent = getAgent(BUILT_IN_AGENT_NAME);
       expect(agent).not.toBeNull();
       expect(agent!.tool_access).not.toBeNull();
 
@@ -413,9 +413,9 @@ describe('agent loader', () => {
     });
 
     it('stores toolOverrides as JSON on tasks that have them', async () => {
-      await registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
+      registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
 
-      const tasks = await listTasks({ agent_id: BUILT_IN_AGENT_NAME });
+      const tasks = listTasks({ agent_id: BUILT_IN_AGENT_NAME });
       const digestOnly = tasks.find((t) => t.id === 'digest-only');
       expect(digestOnly).not.toBeUndefined();
       expect(digestOnly!.tool_overrides).not.toBeNull();

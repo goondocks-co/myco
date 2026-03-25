@@ -18,12 +18,11 @@ const epochNow = () => Math.floor(Date.now() / 1000);
 const TEST_AGENT_ID = 'test-agent';
 
 /** Insert an agent directly into the agents table. */
-async function createAgent(id: string): Promise<void> {
+function createAgent(id: string): void {
   const db = getDatabase();
-  await db.query(
-    `INSERT INTO agents (id, name, created_at) VALUES ($1, $2, $3)`,
-    [id, `agent-${id}`, epochNow()],
-  );
+  db.prepare(
+    `INSERT INTO agents (id, name, created_at) VALUES (?, ?, ?)`,
+  ).run(id, `agent-${id}`, epochNow());
 }
 
 /** Factory for minimal valid graph edge data. */
@@ -41,16 +40,16 @@ function makeEdge(overrides: Partial<GraphEdgeInsert> = {}): GraphEdgeInsert {
 }
 
 describe('graph edge query helpers', () => {
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
-  beforeEach(async () => {
-    await cleanTestDb();
-    await createAgent(TEST_AGENT_ID);
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => {
+    cleanTestDb();
+    createAgent(TEST_AGENT_ID);
   });
 
   describe('insertGraphEdge', () => {
-    it('inserts an edge and returns it with generated id', async () => {
-      const edge = await insertGraphEdge(makeEdge());
+    it('inserts an edge and returns it with generated id', () => {
+      const edge = insertGraphEdge(makeEdge());
 
       expect(edge.id).toBeDefined();
       expect(edge.agent_id).toBe(TEST_AGENT_ID);
@@ -62,8 +61,8 @@ describe('graph edge query helpers', () => {
       expect(edge.confidence).toBe(1.0);
     });
 
-    it('stores optional fields', async () => {
-      const edge = await insertGraphEdge(makeEdge({
+    it('stores optional fields', () => {
+      const edge = insertGraphEdge(makeEdge({
         session_id: 'sess-abc',
         confidence: 0.8,
         properties: JSON.stringify({ reason: 'test' }),
@@ -76,112 +75,112 @@ describe('graph edge query helpers', () => {
   });
 
   describe('listGraphEdges', () => {
-    it('returns edges ordered by created_at DESC', async () => {
+    it('returns edges ordered by created_at DESC', () => {
       const now = epochNow();
-      await insertGraphEdge(makeEdge({ source_id: 'old', created_at: now - 100 }));
-      await insertGraphEdge(makeEdge({ source_id: 'new', created_at: now }));
+      insertGraphEdge(makeEdge({ source_id: 'old', created_at: now - 100 }));
+      insertGraphEdge(makeEdge({ source_id: 'new', created_at: now }));
 
-      const edges = await listGraphEdges();
+      const edges = listGraphEdges();
       expect(edges).toHaveLength(2);
       expect(edges[0].source_id).toBe('new');
       expect(edges[1].source_id).toBe('old');
     });
 
-    it('filters by sourceId', async () => {
-      await insertGraphEdge(makeEdge({ source_id: 'spore-a' }));
-      await insertGraphEdge(makeEdge({ source_id: 'spore-b' }));
+    it('filters by sourceId', () => {
+      insertGraphEdge(makeEdge({ source_id: 'spore-a' }));
+      insertGraphEdge(makeEdge({ source_id: 'spore-b' }));
 
-      const edges = await listGraphEdges({ sourceId: 'spore-a' });
+      const edges = listGraphEdges({ sourceId: 'spore-a' });
       expect(edges).toHaveLength(1);
       expect(edges[0].source_id).toBe('spore-a');
     });
 
-    it('filters by targetId', async () => {
-      await insertGraphEdge(makeEdge({ target_id: 'session-x' }));
-      await insertGraphEdge(makeEdge({ target_id: 'session-y' }));
+    it('filters by targetId', () => {
+      insertGraphEdge(makeEdge({ target_id: 'session-x' }));
+      insertGraphEdge(makeEdge({ target_id: 'session-y' }));
 
-      const edges = await listGraphEdges({ targetId: 'session-x' });
+      const edges = listGraphEdges({ targetId: 'session-x' });
       expect(edges).toHaveLength(1);
       expect(edges[0].target_id).toBe('session-x');
     });
 
-    it('filters by type', async () => {
-      await insertGraphEdge(makeEdge({ type: 'FROM_SESSION' }));
-      await insertGraphEdge(makeEdge({ type: 'EXTRACTED_FROM' }));
+    it('filters by type', () => {
+      insertGraphEdge(makeEdge({ type: 'FROM_SESSION' }));
+      insertGraphEdge(makeEdge({ type: 'EXTRACTED_FROM' }));
 
-      const edges = await listGraphEdges({ type: 'FROM_SESSION' });
+      const edges = listGraphEdges({ type: 'FROM_SESSION' });
       expect(edges).toHaveLength(1);
       expect(edges[0].type).toBe('FROM_SESSION');
     });
 
-    it('respects limit', async () => {
+    it('respects limit', () => {
       for (let i = 0; i < 5; i++) {
-        await insertGraphEdge(makeEdge({ source_id: `s-${i}`, created_at: epochNow() + i }));
+        insertGraphEdge(makeEdge({ source_id: `s-${i}`, created_at: epochNow() + i }));
       }
 
-      const edges = await listGraphEdges({ limit: 2 });
+      const edges = listGraphEdges({ limit: 2 });
       expect(edges).toHaveLength(2);
     });
   });
 
   describe('getGraphForNode', () => {
-    it('returns edges connected to the starting node', async () => {
-      await insertGraphEdge(makeEdge({
+    it('returns edges connected to the starting node', () => {
+      insertGraphEdge(makeEdge({
         source_id: 'spore-1', source_type: 'spore',
         target_id: 'session-1', target_type: 'session',
         type: 'FROM_SESSION',
       }));
-      await insertGraphEdge(makeEdge({
+      insertGraphEdge(makeEdge({
         source_id: 'spore-1', source_type: 'spore',
         target_id: 'batch-1', target_type: 'batch',
         type: 'EXTRACTED_FROM',
       }));
 
-      const result = await getGraphForNode('spore-1', 'spore', { depth: 1 });
+      const result = getGraphForNode('spore-1', 'spore', { depth: 1 });
       expect(result.edges).toHaveLength(2);
     });
 
-    it('traverses multiple hops', async () => {
+    it('traverses multiple hops', () => {
       // spore-1 → session-1 → batch-1 (via separate edges)
-      await insertGraphEdge(makeEdge({
+      insertGraphEdge(makeEdge({
         source_id: 'spore-1', source_type: 'spore',
         target_id: 'session-1', target_type: 'session',
         type: 'FROM_SESSION',
       }));
-      await insertGraphEdge(makeEdge({
+      insertGraphEdge(makeEdge({
         source_id: 'session-1', source_type: 'session',
         target_id: 'batch-1', target_type: 'batch',
         type: 'HAS_BATCH',
       }));
 
       // Depth 1 should find only the first edge
-      const shallow = await getGraphForNode('spore-1', 'spore', { depth: 1 });
+      const shallow = getGraphForNode('spore-1', 'spore', { depth: 1 });
       expect(shallow.edges).toHaveLength(1);
 
       // Depth 2 should find both
-      const deep = await getGraphForNode('spore-1', 'spore', { depth: 2 });
+      const deep = getGraphForNode('spore-1', 'spore', { depth: 2 });
       expect(deep.edges).toHaveLength(2);
     });
 
-    it('deduplicates edges across hops', async () => {
+    it('deduplicates edges across hops', () => {
       // Create a cycle: A → B → A (via different edge types)
-      await insertGraphEdge(makeEdge({
+      insertGraphEdge(makeEdge({
         source_id: 'A', source_type: 'spore',
         target_id: 'B', target_type: 'spore',
         type: 'RELATES_TO',
       }));
-      await insertGraphEdge(makeEdge({
+      insertGraphEdge(makeEdge({
         source_id: 'B', source_type: 'spore',
         target_id: 'A', target_type: 'spore',
         type: 'DERIVED_FROM',
       }));
 
-      const result = await getGraphForNode('A', 'spore', { depth: 3 });
+      const result = getGraphForNode('A', 'spore', { depth: 3 });
       expect(result.edges).toHaveLength(2);
     });
 
-    it('returns empty edges for isolated node', async () => {
-      const result = await getGraphForNode('isolated', 'entity');
+    it('returns empty edges for isolated node', () => {
+      const result = getGraphForNode('isolated', 'entity');
       expect(result.edges).toEqual([]);
     });
   });

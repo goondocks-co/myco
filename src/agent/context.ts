@@ -1,7 +1,7 @@
 /**
  * Vault context builder for agent task prompt injection.
  *
- * Queries PGlite for aggregate vault metrics and agent state,
+ * Queries SQLite for aggregate vault metrics and agent state,
  * then formats them as a markdown block suitable for inclusion
  * in the agent's task prompt.
  */
@@ -32,29 +32,27 @@ const SPORE_STATUS_ACTIVE = 'active';
  * The table name is validated by the caller (always a literal from this module).
  * Parameterized `conditions` protect against SQL injection for dynamic values.
  */
-async function countRows(
+function countRows(
   table: string,
   conditions: Array<{ clause: string; value: unknown }> = [],
-): Promise<number> {
+): number {
   const db = getDatabase();
 
   const whereParts: string[] = [];
   const params: unknown[] = [];
-  let paramIndex = 1;
 
   for (const { clause, value } of conditions) {
-    whereParts.push(clause.replace('?', `$${paramIndex++}`));
+    whereParts.push(clause);
     params.push(value);
   }
 
   const whereClause = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
 
-  const result = await db.query<{ count: string }>(
+  const row = db.prepare(
     `SELECT count(*) AS count FROM ${table} ${whereClause}`,
-    params,
-  );
+  ).get(...params) as { count: number };
 
-  return Number(result.rows[0].count);
+  return Number(row.count);
 }
 
 // ---------------------------------------------------------------------------
@@ -73,25 +71,16 @@ async function countRows(
  * @param agentId — the agent to build context for.
  * @returns a markdown-formatted string.
  */
-export async function buildVaultContext(agentId: string): Promise<string> {
-  // Fetch all state entries and aggregate counts in parallel
-  const [
-    states,
-    totalSessions,
-    totalActiveSpores,
-    totalEntities,
-    totalEdges,
-    unprocessedBatches,
-    lastDigestAt,
-  ] = await Promise.all([
-    getStatesForAgent(agentId),
-    countRows('sessions'),
-    countRows('spores', [{ clause: 'status = ?', value: SPORE_STATUS_ACTIVE }]),
-    countRows('entities'),
-    countRows('edges'),
-    countRows('prompt_batches', [{ clause: 'processed = ?', value: 0 }]),
-    getLastDigestTimestamp(agentId),
-  ]);
+export function buildVaultContext(agentId: string): string {
+  // All queries are synchronous
+  const states = getStatesForAgent(agentId);
+  const totalSessions = countRows('sessions');
+  const totalActiveSpores = countRows('spores', [{ clause: 'status = ?', value: SPORE_STATUS_ACTIVE }]);
+  const totalEntities = countRows('entities');
+  const totalEdges = countRows('graph_edges');
+  const unprocessedBatches = countRows('prompt_batches', [{ clause: 'processed = ?', value: 0 }]);
+  const lastDigestAt = getLastDigestTimestamp(agentId);
+
   const stateMap = new Map(states.map((s) => [s.key, s.value]));
 
   const lastProcessedBatchId = stateMap.get(STATE_KEY_LAST_PROCESSED_BATCH) ?? STATE_UNSET;
@@ -116,15 +105,14 @@ export async function buildVaultContext(agentId: string): Promise<string> {
  *
  * @returns epoch seconds of the last digest, or 0 if no digests exist.
  */
-async function getLastDigestTimestamp(agentId: string): Promise<number> {
+function getLastDigestTimestamp(agentId: string): number {
   const db = getDatabase();
 
-  const result = await db.query<{ max_at: number | null }>(
+  const row = db.prepare(
     `SELECT MAX(generated_at) AS max_at
      FROM digest_extracts
-     WHERE agent_id = $1`,
-    [agentId],
-  );
+     WHERE agent_id = ?`,
+  ).get(agentId) as { max_at: number | null } | undefined;
 
-  return result.rows[0]?.max_at ?? 0;
+  return row?.max_at ?? 0;
 }

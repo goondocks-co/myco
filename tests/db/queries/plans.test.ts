@@ -28,9 +28,9 @@ function makePlan(overrides: Partial<PlanInsert> = {}): PlanInsert {
 }
 
 describe('plan query helpers', () => {
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
-  beforeEach(async () => { await cleanTestDb(); });
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => { cleanTestDb(); });
 
   // ---------------------------------------------------------------------------
   // upsertPlan + getPlan
@@ -39,14 +39,14 @@ describe('plan query helpers', () => {
   describe('upsertPlan', () => {
     it('inserts a new plan and retrieves it', async () => {
       const data = makePlan({ title: 'Migration plan' });
-      const row = await upsertPlan(data);
+      const row = upsertPlan(data);
 
       expect(row.id).toBe(data.id);
       expect(row.title).toBe('Migration plan');
       expect(row.status).toBe('active');
       expect(row.processed).toBe(0);
 
-      const fetched = await getPlan(data.id);
+      const fetched = getPlan(data.id);
       expect(fetched).not.toBeNull();
       expect(fetched!.id).toBe(data.id);
       expect(fetched!.title).toBe('Migration plan');
@@ -61,7 +61,7 @@ describe('plan query helpers', () => {
         tags: 'v2,migration',
         status: 'draft',
       });
-      const row = await upsertPlan(data);
+      const row = upsertPlan(data);
 
       expect(row.author).toBe('chris');
       expect(row.content).toBe('## Steps\n1. Do thing\n2. Do other thing');
@@ -72,33 +72,33 @@ describe('plan query helpers', () => {
 
     it('is idempotent — second upsert updates without error', async () => {
       const data = makePlan({ title: 'Original' });
-      await upsertPlan(data);
-      await upsertPlan({ ...data, title: 'Updated' });
+      upsertPlan(data);
+      upsertPlan({ ...data, title: 'Updated' });
 
-      const row = await getPlan(data.id);
+      const row = getPlan(data.id);
       expect(row).not.toBeNull();
       expect(row!.title).toBe('Updated');
     });
 
     it('updates status on conflict', async () => {
       const data = makePlan({ title: 'Plan', status: 'active' });
-      await upsertPlan(data);
+      upsertPlan(data);
 
-      await upsertPlan({ ...data, status: 'completed' });
+      upsertPlan({ ...data, status: 'completed' });
 
-      const row = await getPlan(data.id);
+      const row = getPlan(data.id);
       expect(row!.status).toBe('completed');
     });
 
     it('sets updated_at on conflict update', async () => {
       const now = epochNow();
       const data = makePlan({ created_at: now });
-      await upsertPlan(data);
+      upsertPlan(data);
 
       const later = now + 60;
-      await upsertPlan({ ...data, title: 'Changed', updated_at: later });
+      upsertPlan({ ...data, title: 'Changed', updated_at: later });
 
-      const row = await getPlan(data.id);
+      const row = getPlan(data.id);
       expect(row!.updated_at).toBe(later);
     });
   });
@@ -109,7 +109,7 @@ describe('plan query helpers', () => {
 
   describe('getPlan', () => {
     it('returns null for non-existent id', async () => {
-      const row = await getPlan('does-not-exist');
+      const row = getPlan('does-not-exist');
       expect(row).toBeNull();
     });
   });
@@ -121,11 +121,11 @@ describe('plan query helpers', () => {
   describe('listPlans', () => {
     it('returns plans ordered by created_at DESC', async () => {
       const now = epochNow();
-      await upsertPlan(makePlan({ id: 'plan-old', created_at: now - 100 }));
-      await upsertPlan(makePlan({ id: 'plan-mid', created_at: now - 50 }));
-      await upsertPlan(makePlan({ id: 'plan-new', created_at: now }));
+      upsertPlan(makePlan({ id: 'plan-old', created_at: now - 100 }));
+      upsertPlan(makePlan({ id: 'plan-mid', created_at: now - 50 }));
+      upsertPlan(makePlan({ id: 'plan-new', created_at: now }));
 
-      const rows = await listPlans();
+      const rows = listPlans();
       expect(rows).toHaveLength(3);
       expect(rows[0].id).toBe('plan-new');
       expect(rows[1].id).toBe('plan-mid');
@@ -134,11 +134,11 @@ describe('plan query helpers', () => {
 
     it('filters by status', async () => {
       const now = epochNow();
-      await upsertPlan(makePlan({ id: 'plan-active', status: 'active', created_at: now }));
-      await upsertPlan(makePlan({ id: 'plan-done', status: 'completed', created_at: now + 1 }));
-      await upsertPlan(makePlan({ id: 'plan-draft', status: 'draft', created_at: now + 2 }));
+      upsertPlan(makePlan({ id: 'plan-active', status: 'active', created_at: now }));
+      upsertPlan(makePlan({ id: 'plan-done', status: 'completed', created_at: now + 1 }));
+      upsertPlan(makePlan({ id: 'plan-draft', status: 'draft', created_at: now + 2 }));
 
-      const rows = await listPlans({ status: 'active' });
+      const rows = listPlans({ status: 'active' });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('plan-active');
     });
@@ -146,21 +146,21 @@ describe('plan query helpers', () => {
     it('respects the limit option', async () => {
       const now = epochNow();
       for (let i = 0; i < 5; i++) {
-        await upsertPlan(makePlan({ created_at: now + i }));
+        upsertPlan(makePlan({ created_at: now + i }));
       }
 
-      const rows = await listPlans({ limit: 2 });
+      const rows = listPlans({ limit: 2 });
       expect(rows).toHaveLength(2);
     });
 
     it('combines status and limit filters', async () => {
       const now = epochNow();
       for (let i = 0; i < 5; i++) {
-        await upsertPlan(makePlan({ status: 'active', created_at: now + i }));
+        upsertPlan(makePlan({ status: 'active', created_at: now + i }));
       }
-      await upsertPlan(makePlan({ status: 'completed', created_at: now + 10 }));
+      upsertPlan(makePlan({ status: 'completed', created_at: now + 10 }));
 
-      const rows = await listPlans({ status: 'active', limit: 3 });
+      const rows = listPlans({ status: 'active', limit: 3 });
       expect(rows).toHaveLength(3);
       // All should be active
       for (const row of rows) {
@@ -169,12 +169,12 @@ describe('plan query helpers', () => {
     });
 
     it('returns empty array when no plans match', async () => {
-      const rows = await listPlans({ status: 'nonexistent' });
+      const rows = listPlans({ status: 'nonexistent' });
       expect(rows).toEqual([]);
     });
 
     it('returns empty array when no plans exist', async () => {
-      const rows = await listPlans();
+      const rows = listPlans();
       expect(rows).toEqual([]);
     });
   });

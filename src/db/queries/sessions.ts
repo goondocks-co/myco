@@ -1,8 +1,8 @@
 /**
  * Session CRUD query helpers.
  *
- * All functions obtain the PGlite instance internally via `getDatabase()`.
- * Queries use parameterized placeholders ($1, $2, ...) throughout.
+ * All functions obtain the SQLite instance internally via `getDatabase()`.
+ * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
 import { getDatabase } from '@myco/db/client.js';
@@ -55,7 +55,7 @@ export interface SessionInsert {
   content_hash?: string | null;
 }
 
-/** Row shape returned from session queries (all columns, no embedding). */
+/** Row shape returned from session queries (all columns). */
 export interface SessionRow {
   id: string;
   agent: string;
@@ -74,6 +74,7 @@ export interface SessionRow {
   parent_session_reason: string | null;
   processed: number;
   content_hash: string | null;
+  embedded: number;
   created_at: number;
 }
 
@@ -104,7 +105,7 @@ export interface ListSessionsOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Column list (excludes embedding — not useful in CRUD results)
+// Column list
 // ---------------------------------------------------------------------------
 
 const SESSION_COLUMNS = [
@@ -125,6 +126,7 @@ const SESSION_COLUMNS = [
   'parent_session_reason',
   'processed',
   'content_hash',
+  'embedded',
   'created_at',
 ] as const;
 
@@ -135,10 +137,9 @@ const SELECT_COLUMNS = SESSION_COLUMNS.join(', ');
 // ---------------------------------------------------------------------------
 
 /**
- * Normalize a PGlite result row into a typed SessionRow.
+ * Normalize a SQLite result row into a typed SessionRow.
  *
- * PGlite returns rows with column names as-is; the quoted "user" column
- * comes back as `user` in the result object.
+ * The quoted "user" column comes back as `user` in the result object.
  */
 function toSessionRow(row: Record<string, unknown>): SessionRow {
   return {
@@ -159,6 +160,7 @@ function toSessionRow(row: Record<string, unknown>): SessionRow {
     parent_session_reason: (row.parent_session_reason as string) ?? null,
     processed: row.processed as number,
     content_hash: (row.content_hash as string) ?? null,
+    embedded: (row.embedded as number) ?? 0,
     created_at: row.created_at as number,
   };
 }
@@ -173,10 +175,10 @@ function toSessionRow(row: Record<string, unknown>): SessionRow {
  * On conflict the row is updated with the values from `data`, preserving
  * any columns not supplied via COALESCE with EXCLUDED values.
  */
-export async function upsertSession(data: SessionInsert): Promise<SessionRow> {
+export function upsertSession(data: SessionInsert): SessionRow {
   const db = getDatabase();
 
-  const result = await db.query(
+  db.prepare(
     `INSERT INTO sessions (
        id, agent, "user", project_root, branch,
        started_at, ended_at, status, prompt_count, tool_count,
@@ -184,11 +186,11 @@ export async function upsertSession(data: SessionInsert): Promise<SessionRow> {
        parent_session_id, parent_session_reason,
        processed, content_hash, created_at
      ) VALUES (
-       $1, $2, $3, $4, $5,
-       $6, $7, $8, $9, $10,
-       $11, $12, $13,
-       $14, $15,
-       $16, $17, $18
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?,
+       ?, ?,
+       ?, ?, ?
      )
      ON CONFLICT (id) DO UPDATE SET
        agent                 = EXCLUDED.agent,
@@ -198,41 +200,41 @@ export async function upsertSession(data: SessionInsert): Promise<SessionRow> {
        started_at            = EXCLUDED.started_at,
        ended_at              = COALESCE(EXCLUDED.ended_at, sessions.ended_at),
        status                = COALESCE(EXCLUDED.status, sessions.status),
-       prompt_count          = CASE WHEN $19 THEN EXCLUDED.prompt_count ELSE sessions.prompt_count END,
-       tool_count            = CASE WHEN $20 THEN EXCLUDED.tool_count ELSE sessions.tool_count END,
+       prompt_count          = CASE WHEN ? THEN EXCLUDED.prompt_count ELSE sessions.prompt_count END,
+       tool_count            = CASE WHEN ? THEN EXCLUDED.tool_count ELSE sessions.tool_count END,
        title                 = COALESCE(EXCLUDED.title, sessions.title),
        summary               = COALESCE(EXCLUDED.summary, sessions.summary),
        transcript_path       = COALESCE(EXCLUDED.transcript_path, sessions.transcript_path),
        parent_session_id     = EXCLUDED.parent_session_id,
        parent_session_reason = EXCLUDED.parent_session_reason,
        processed             = COALESCE(EXCLUDED.processed, sessions.processed),
-       content_hash          = EXCLUDED.content_hash
-     RETURNING ${SELECT_COLUMNS}`,
-    [
-      data.id,
-      data.agent,
-      data.user ?? null,
-      data.project_root ?? null,
-      data.branch ?? null,
-      data.started_at,
-      data.ended_at ?? null,
-      data.status ?? DEFAULT_STATUS,
-      data.prompt_count ?? DEFAULT_PROMPT_COUNT,
-      data.tool_count ?? DEFAULT_TOOL_COUNT,
-      data.title ?? null,
-      data.summary ?? null,
-      data.transcript_path ?? null,
-      data.parent_session_id ?? null,
-      data.parent_session_reason ?? null,
-      data.processed ?? DEFAULT_PROCESSED,
-      data.content_hash ?? null,
-      data.created_at,
-      data.prompt_count !== undefined,
-      data.tool_count !== undefined,
-    ],
+       content_hash          = EXCLUDED.content_hash`,
+  ).run(
+    data.id,
+    data.agent,
+    data.user ?? null,
+    data.project_root ?? null,
+    data.branch ?? null,
+    data.started_at,
+    data.ended_at ?? null,
+    data.status ?? DEFAULT_STATUS,
+    data.prompt_count ?? DEFAULT_PROMPT_COUNT,
+    data.tool_count ?? DEFAULT_TOOL_COUNT,
+    data.title ?? null,
+    data.summary ?? null,
+    data.transcript_path ?? null,
+    data.parent_session_id ?? null,
+    data.parent_session_reason ?? null,
+    data.processed ?? DEFAULT_PROCESSED,
+    data.content_hash ?? null,
+    data.created_at,
+    data.prompt_count !== undefined ? 1 : 0,
+    data.tool_count !== undefined ? 1 : 0,
   );
 
-  return toSessionRow(result.rows[0] as Record<string, unknown>);
+  return toSessionRow(
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ?`).get(data.id) as Record<string, unknown>,
+  );
 }
 
 /**
@@ -240,37 +242,35 @@ export async function upsertSession(data: SessionInsert): Promise<SessionRow> {
  *
  * @returns the session row, or null if not found.
  */
-export async function getSession(id: string): Promise<SessionRow | null> {
+export function getSession(id: string): SessionRow | null {
   const db = getDatabase();
 
-  const result = await db.query(
-    `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = $1`,
-    [id],
-  );
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ?`,
+  ).get(id) as Record<string, unknown> | undefined;
 
-  if (result.rows.length === 0) return null;
-  return toSessionRow(result.rows[0] as Record<string, unknown>);
+  if (!row) return null;
+  return toSessionRow(row);
 }
 
 /**
  * List sessions with optional filters, ordered by created_at DESC.
  */
-export async function listSessions(
+export function listSessions(
   options: ListSessionsOptions = {},
-): Promise<SessionRow[]> {
+): SessionRow[] {
   const db = getDatabase();
 
   const conditions: string[] = [];
   const params: unknown[] = [];
-  let paramIndex = 1;
 
   if (options.status !== undefined) {
-    conditions.push(`status = $${paramIndex++}`);
+    conditions.push(`status = ?`);
     params.push(options.status);
   }
 
   if (options.agent !== undefined) {
-    conditions.push(`agent = $${paramIndex++}`);
+    conditions.push(`agent = ?`);
     params.push(options.agent);
   }
 
@@ -279,16 +279,15 @@ export async function listSessions(
 
   params.push(limit);
 
-  const result = await db.query(
+  const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM sessions
      ${where}
      ORDER BY created_at DESC
-     LIMIT $${paramIndex}`,
-    params,
-  );
+     LIMIT ?`,
+  ).all(...params) as Record<string, unknown>[];
 
-  return (result.rows as Record<string, unknown>[]).map(toSessionRow);
+  return rows.map(toSessionRow);
 }
 
 /**
@@ -296,15 +295,14 @@ export async function listSessions(
  *
  * @returns the updated row, or null if the session does not exist.
  */
-export async function updateSession(
+export function updateSession(
   id: string,
   updates: SessionUpdate,
-): Promise<SessionRow | null> {
+): SessionRow | null {
   const db = getDatabase();
 
   const setClauses: string[] = [];
   const params: unknown[] = [];
-  let paramIndex = 1;
 
   const fieldMap: Record<string, string> = {
     agent: 'agent',
@@ -326,7 +324,7 @@ export async function updateSession(
 
   for (const [key, column] of Object.entries(fieldMap)) {
     if (key in updates) {
-      setClauses.push(`${column} = $${paramIndex++}`);
+      setClauses.push(`${column} = ?`);
       params.push((updates as Record<string, unknown>)[key] ?? null);
     }
   }
@@ -335,16 +333,13 @@ export async function updateSession(
 
   params.push(id);
 
-  const result = await db.query(
+  db.prepare(
     `UPDATE sessions
      SET ${setClauses.join(', ')}
-     WHERE id = $${paramIndex}
-     RETURNING ${SELECT_COLUMNS}`,
-    params,
-  );
+     WHERE id = ?`,
+  ).run(...params);
 
-  if (result.rows.length === 0) return null;
-  return toSessionRow(result.rows[0] as Record<string, unknown>);
+  return getSession(id);
 }
 
 /**
@@ -352,22 +347,19 @@ export async function updateSession(
  *
  * @returns the updated row, or null if the session does not exist.
  */
-export async function closeSession(
+export function closeSession(
   id: string,
   endedAt: number,
-): Promise<SessionRow | null> {
+): SessionRow | null {
   const db = getDatabase();
 
-  const result = await db.query(
+  db.prepare(
     `UPDATE sessions
-     SET status = $1, ended_at = $2
-     WHERE id = $3
-     RETURNING ${SELECT_COLUMNS}`,
-    [STATUS_COMPLETED, endedAt, id],
-  );
+     SET status = ?, ended_at = ?
+     WHERE id = ?`,
+  ).run(STATUS_COMPLETED, endedAt, id);
 
-  if (result.rows.length === 0) return null;
-  return toSessionRow(result.rows[0] as Record<string, unknown>);
+  return getSession(id);
 }
 
 /**
@@ -376,13 +368,13 @@ export async function closeSession(
  * No ON DELETE CASCADE in the schema, so we delete children first.
  * Returns true if the session existed and was deleted.
  */
-export async function deleteSession(id: string): Promise<boolean> {
+export function deleteSession(id: string): boolean {
   const db = getDatabase();
 
-  await db.query(`DELETE FROM activities WHERE session_id = $1`, [id]);
-  await db.query(`DELETE FROM attachments WHERE session_id = $1`, [id]);
-  await db.query(`DELETE FROM prompt_batches WHERE session_id = $1`, [id]);
-  const result = await db.query(`DELETE FROM sessions WHERE id = $1`, [id]);
+  db.prepare(`DELETE FROM activities WHERE session_id = ?`).run(id);
+  db.prepare(`DELETE FROM attachments WHERE session_id = ?`).run(id);
+  db.prepare(`DELETE FROM prompt_batches WHERE session_id = ?`).run(id);
+  const info = db.prepare(`DELETE FROM sessions WHERE id = ?`).run(id);
 
-  return (result.affectedRows ?? 0) > 0;
+  return info.changes > 0;
 }

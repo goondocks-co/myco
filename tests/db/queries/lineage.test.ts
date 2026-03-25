@@ -14,25 +14,24 @@ const TEST_AGENT_ID = 'test-agent';
 const epochNow = () => Math.floor(Date.now() / 1000);
 
 /** Insert an agent directly into the agents table. */
-async function createAgent(id: string): Promise<void> {
+function createAgent(id: string): void {
   const db = getDatabase();
-  await db.query(
-    `INSERT INTO agents (id, name, created_at) VALUES ($1, $2, $3)`,
-    [id, `agent-${id}`, epochNow()],
-  );
+  db.prepare(
+    `INSERT INTO agents (id, name, created_at) VALUES (?, ?, ?)`,
+  ).run(id, `agent-${id}`, epochNow());
 }
 
 describe('lineage helpers', () => {
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
-  beforeEach(async () => {
-    await cleanTestDb();
-    await createAgent(TEST_AGENT_ID);
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => {
+    cleanTestDb();
+    createAgent(TEST_AGENT_ID);
   });
 
   describe('createSporeLineage', () => {
-    it('creates FROM_SESSION and EXTRACTED_FROM edges for a regular spore', async () => {
-      await createSporeLineage({
+    it('creates FROM_SESSION and EXTRACTED_FROM edges for a regular spore', () => {
+      createSporeLineage({
         id: 'spore-1',
         agent_id: TEST_AGENT_ID,
         session_id: 'session-1',
@@ -40,39 +39,39 @@ describe('lineage helpers', () => {
         created_at: epochNow(),
       });
 
-      const edges = await listGraphEdges({ sourceId: 'spore-1' });
+      const edges = listGraphEdges({ sourceId: 'spore-1' });
       expect(edges).toHaveLength(2);
 
       const types = edges.map(e => e.type).sort();
       expect(types).toEqual(['EXTRACTED_FROM', 'FROM_SESSION']);
     });
 
-    it('creates only FROM_SESSION when no batch id', async () => {
-      await createSporeLineage({
+    it('creates only FROM_SESSION when no batch id', () => {
+      createSporeLineage({
         id: 'spore-2',
         agent_id: TEST_AGENT_ID,
         session_id: 'session-1',
         created_at: epochNow(),
       });
 
-      const edges = await listGraphEdges({ sourceId: 'spore-2' });
+      const edges = listGraphEdges({ sourceId: 'spore-2' });
       expect(edges).toHaveLength(1);
       expect(edges[0].type).toBe('FROM_SESSION');
     });
 
-    it('creates no edges when no session_id or batch', async () => {
-      await createSporeLineage({
+    it('creates no edges when no session_id or batch', () => {
+      createSporeLineage({
         id: 'spore-3',
         agent_id: TEST_AGENT_ID,
         created_at: epochNow(),
       });
 
-      const edges = await listGraphEdges({ sourceId: 'spore-3' });
+      const edges = listGraphEdges({ sourceId: 'spore-3' });
       expect(edges).toHaveLength(0);
     });
 
-    it('creates DERIVED_FROM edges for wisdom spores with consolidated_from', async () => {
-      await createSporeLineage({
+    it('creates DERIVED_FROM edges for wisdom spores with consolidated_from', () => {
+      createSporeLineage({
         id: 'wisdom-1',
         agent_id: TEST_AGENT_ID,
         session_id: 'session-1',
@@ -81,7 +80,7 @@ describe('lineage helpers', () => {
         created_at: epochNow(),
       });
 
-      const edges = await listGraphEdges({ sourceId: 'wisdom-1' });
+      const edges = listGraphEdges({ sourceId: 'wisdom-1' });
       // 1 FROM_SESSION + 3 DERIVED_FROM = 4
       expect(edges).toHaveLength(4);
 
@@ -91,8 +90,8 @@ describe('lineage helpers', () => {
       expect(targetIds).toEqual(['spore-a', 'spore-b', 'spore-c']);
     });
 
-    it('handles malformed properties JSON gracefully', async () => {
-      await createSporeLineage({
+    it('handles malformed properties JSON gracefully', () => {
+      createSporeLineage({
         id: 'spore-bad',
         agent_id: TEST_AGENT_ID,
         session_id: 'session-1',
@@ -101,7 +100,7 @@ describe('lineage helpers', () => {
         created_at: epochNow(),
       });
 
-      const edges = await listGraphEdges({ sourceId: 'spore-bad' });
+      const edges = listGraphEdges({ sourceId: 'spore-bad' });
       // Only FROM_SESSION, no DERIVED_FROM because JSON parse failed
       expect(edges).toHaveLength(1);
       expect(edges[0].type).toBe('FROM_SESSION');
@@ -109,11 +108,11 @@ describe('lineage helpers', () => {
   });
 
   describe('createBatchLineage', () => {
-    it('creates a HAS_BATCH edge from session to batch', async () => {
+    it('creates a HAS_BATCH edge from session to batch', () => {
       const now = epochNow();
-      await createBatchLineage(TEST_AGENT_ID, 'session-1', 42, now);
+      createBatchLineage(TEST_AGENT_ID, 'session-1', 42, now);
 
-      const edges = await listGraphEdges({ sourceId: 'session-1', type: 'HAS_BATCH' });
+      const edges = listGraphEdges({ sourceId: 'session-1', type: 'HAS_BATCH' });
       expect(edges).toHaveLength(1);
       expect(edges[0].source_type).toBe('session');
       expect(edges[0].target_id).toBe('42');

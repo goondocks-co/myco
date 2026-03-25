@@ -1,11 +1,10 @@
 /**
- * Myco daemon — PGlite capture engine.
+ * Myco daemon — SQLite capture engine.
  *
- * This is the v2 rewrite: all data goes to PGlite instead of markdown vault +
- * SQLite. The intelligence pipeline (extraction, embedding, consolidation,
- * digest) is removed — it moves to Phase 2 Agent SDK. What remains is the
- * capture layer: session lifecycle, prompt batch tracking, activity recording,
- * and transcript mining.
+ * All data goes to a local SQLite database (better-sqlite3). The intelligence
+ * pipeline (extraction, embedding, consolidation, digest) is removed — it
+ * moves to Phase 2 Agent SDK. What remains is the capture layer: session
+ * lifecycle, prompt batch tracking, activity recording, and transcript mining.
  */
 
 import { DaemonServer } from './server.js';
@@ -17,7 +16,7 @@ import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-m
 import { createPerProjectAdapter, extensionForMimeType, type TranscriptTurn } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findPackageRoot } from '../utils/find-package-root.js';
-import { EventBuffer } from '../capture/buffer.js';
+import { EventBuffer, listBufferSessionIds, cleanStaleBuffers } from '../capture/buffer.js';
 import { PlanWatcher } from './watcher.js';
 import type { RegisteredSession } from './lifecycle.js';
 import { handleGetConfig, handlePutConfig } from './api/config.js';
@@ -39,9 +38,18 @@ import {
   handleGetGraph,
   handleGetDigest,
 } from './api/mycelium.js';
-import { handleSearch } from './api/search.js';
+import { createSearchHandler } from './api/search.js';
 import { handleGetFeed } from './api/feed.js';
-import { handleGetEmbeddingStatus } from './api/embedding.js';
+import {
+  handleGetEmbeddingStatus,
+  handleEmbeddingDetails,
+  handleEmbeddingRebuild,
+  handleEmbeddingReconcile,
+  handleEmbeddingCleanOrphans,
+  handleEmbeddingReembedStale,
+} from './api/embedding.js';
+import { EmbeddingManager, SqliteVecVectorStore, EmbeddingProviderAdapter, SqliteRecordSource } from './embedding/index.js';
+import { createEmbeddingProvider } from '../intelligence/llm.js';
 import {
   handleListTasks,
   handleGetTask,
@@ -53,9 +61,10 @@ import {
 } from './api/agent-tasks.js';
 import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
-import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
+import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
+import { createSchema } from '../db/schema.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSession } from '../db/queries/sessions.js';
-import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary } from '../db/queries/batches.js';
+import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary, listBatchesBySession } from '../db/queries/batches.js';
 import { insertActivityWithBatch } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
 import { listRuns, getRun, getRunningRun } from '../db/queries/runs.js';
@@ -70,6 +79,8 @@ import {
   LOG_MESSAGE_PREVIEW_CHARS,
   USER_AGENT_ID,
   USER_AGENT_NAME,
+  EMBEDDING_INTERVAL_MS,
+  EMBEDDING_BATCH_SIZE,
   epochSeconds,
 } from '../constants.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
@@ -96,6 +107,21 @@ const TOOL_OUTPUT_STORE_LIMIT = 2000;
 /** Max chars for deriving a title from the first user prompt. */
 const TITLE_PREVIEW_CHARS = 80;
 
+/** Prefixes that identify system-injected messages (not real user prompts). */
+const SYSTEM_MESSAGE_PREFIXES = [
+  '<task-notification>',
+  '<system-reminder>',
+] as const;
+
+/** Returns true if the prompt is a system-injected message, not a real user prompt. */
+function isSystemMessage(prompt: string): boolean {
+  const trimmed = prompt.trimStart();
+  return SYSTEM_MESSAGE_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
+}
+
+/** Event types replayed during buffer reconciliation. */
+const REPLAYABLE_EVENT_TYPES: ReadonlySet<string> = new Set(['user_prompt', 'tool_use', 'tool_failure']);
+
 // ---------------------------------------------------------------------------
 // Event handling helpers (exported for testing)
 // ---------------------------------------------------------------------------
@@ -108,17 +134,17 @@ const TITLE_PREVIEW_CHARS = 80;
  *
  * @returns the new batch ID and prompt number
  */
-export async function handleUserPrompt(
+export function handleUserPrompt(
   sessionId: string,
   prompt: string | undefined,
-): Promise<{ batchId: number; promptNumber: number }> {
+): { batchId: number; promptNumber: number } {
   const now = epochSeconds();
 
   // Close any open batches for this session — blind UPDATE, no prior read
-  await closeOpenBatches(sessionId, now);
+  closeOpenBatches(sessionId, now);
 
   // Insert new batch with prompt_number derived from DB
-  const batch = await insertBatchStateless({
+  const batch = insertBatchStateless({
     session_id: sessionId,
     user_prompt: prompt ?? null,
     started_at: now,
@@ -128,11 +154,11 @@ export async function handleUserPrompt(
   // insertBatchStateless guarantees non-null prompt_number via COALESCE subquery
   const promptNumber = batch.prompt_number!;
 
-  // Create HAS_BATCH lineage edge (fire-and-forget)
-  createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now).catch(() => { /* lineage best-effort */ });
+  // Create HAS_BATCH lineage edge (best-effort)
+  try { createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now); } catch { /* lineage best-effort */ }
 
   // Update session prompt count
-  await updateSession(sessionId, { prompt_count: promptNumber });
+  updateSession(sessionId, { prompt_count: promptNumber });
 
   return { batchId: batch.id, promptNumber };
 }
@@ -143,19 +169,19 @@ export async function handleUserPrompt(
  * Fully stateless — the batch ID is resolved via an inline subquery in
  * `insertActivityWithBatch`, so no in-memory state is needed.
  */
-export async function handleToolUse(
+export function handleToolUse(
   sessionId: string,
   toolName: string,
   toolInput: unknown,
   toolOutput: string | undefined,
-): Promise<void> {
+): void {
   const now = epochSeconds();
 
   // Extract file_path from tool input if present
   const inputObj = toolInput as Record<string, unknown> | undefined;
   const filePath = typeof inputObj?.file_path === 'string' ? inputObj.file_path : null;
 
-  const activity = await insertActivityWithBatch({
+  const activity = insertActivityWithBatch({
     session_id: sessionId,
     tool_name: toolName,
     tool_input: toolInput ? JSON.stringify(toolInput).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
@@ -167,44 +193,42 @@ export async function handleToolUse(
 
   // Increment batch activity count if linked to a batch
   if (activity.prompt_batch_id !== null) {
-    await incrementActivityCount(activity.prompt_batch_id);
+    incrementActivityCount(activity.prompt_batch_id);
   }
   // Session-level tool_count is updated at stop time from transcript data.
 }
 
 /**
- * Handle session stop: close all open batches, close session.
+ * Handle stop event: close all open batches for this session.
+ *
+ * Does NOT close the session — the Stop hook fires after every assistant
+ * turn, not just session end. Session closure happens in /sessions/unregister
+ * (SessionEnd hook).
  *
  * Fully stateless — uses `closeOpenBatches` (blind UPDATE) instead of
  * reading from an in-memory map.
  */
-export async function handleSessionStop(
+export function handleStopBatches(
   sessionId: string,
-): Promise<void> {
-  const now = epochSeconds();
-
-  // Close all open batches for this session — blind UPDATE, no prior read
-  await closeOpenBatches(sessionId, now);
-
-  // Close session
-  await closeSession(sessionId, now);
+): void {
+  closeOpenBatches(sessionId, epochSeconds());
 }
 
 /**
  * Handle a tool failure event: insert activity with success=0.
  */
-export async function handleToolFailure(
+export function handleToolFailure(
   sessionId: string,
   toolName: string,
   toolInput: unknown,
   error: string | undefined,
   isInterrupt: boolean | undefined,
-): Promise<void> {
+): void {
   const now = epochSeconds();
   const inputObj = toolInput as Record<string, unknown> | undefined;
   const filePath = typeof inputObj?.file_path === 'string' ? inputObj.file_path : null;
 
-  const activity = await insertActivityWithBatch({
+  const activity = insertActivityWithBatch({
     session_id: sessionId,
     tool_name: toolName,
     tool_input: toolInput ? JSON.stringify(toolInput).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
@@ -217,20 +241,20 @@ export async function handleToolFailure(
   });
 
   if (activity.prompt_batch_id !== null) {
-    await incrementActivityCount(activity.prompt_batch_id);
+    incrementActivityCount(activity.prompt_batch_id);
   }
 }
 
 /**
  * Handle a subagent start event: record that a subagent was spawned.
  */
-export async function handleSubagentStart(
+export function handleSubagentStart(
   sessionId: string,
   agentId: string | undefined,
   agentType: string | undefined,
-): Promise<void> {
+): void {
   const now = epochSeconds();
-  await insertActivityWithBatch({
+  insertActivityWithBatch({
     session_id: sessionId,
     tool_name: 'subagent_start',
     tool_input: JSON.stringify({ agent_id: agentId, agent_type: agentType }).slice(0, TOOL_INPUT_STORE_LIMIT),
@@ -242,14 +266,14 @@ export async function handleSubagentStart(
 /**
  * Handle a subagent stop event: record that a subagent completed.
  */
-export async function handleSubagentStop(
+export function handleSubagentStop(
   sessionId: string,
   agentId: string | undefined,
   agentType: string | undefined,
   lastAssistantMessage: string | undefined,
-): Promise<void> {
+): void {
   const now = epochSeconds();
-  await insertActivityWithBatch({
+  insertActivityWithBatch({
     session_id: sessionId,
     tool_name: 'subagent_stop',
     tool_input: JSON.stringify({ agent_id: agentId, agent_type: agentType }).slice(0, TOOL_INPUT_STORE_LIMIT),
@@ -262,13 +286,13 @@ export async function handleSubagentStop(
 /**
  * Handle a stop failure event: record that the stop hook encountered an error.
  */
-export async function handleStopFailure(
+export function handleStopFailure(
   sessionId: string,
   error: string | undefined,
   errorDetails: string | undefined,
-): Promise<void> {
+): void {
   const now = epochSeconds();
-  await insertActivityWithBatch({
+  insertActivityWithBatch({
     session_id: sessionId,
     tool_name: 'stop_failure',
     tool_output_summary: errorDetails?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
@@ -282,14 +306,14 @@ export async function handleStopFailure(
 /**
  * Handle a task completed event: record task completion as an activity.
  */
-export async function handleTaskCompleted(
+export function handleTaskCompleted(
   sessionId: string,
   taskId: string | undefined,
   taskSubject: string | undefined,
   taskDescription: string | undefined,
-): Promise<void> {
+): void {
   const now = epochSeconds();
-  await insertActivityWithBatch({
+  insertActivityWithBatch({
     session_id: sessionId,
     tool_name: 'task_completed',
     tool_input: JSON.stringify({ task_id: taskId, task_subject: taskSubject, task_description: taskDescription }).slice(0, TOOL_INPUT_STORE_LIMIT),
@@ -302,14 +326,14 @@ export async function handleTaskCompleted(
 /**
  * Handle a compact event (pre or post): record compaction in the activity stream.
  */
-export async function handleCompact(
+export function handleCompact(
   sessionId: string,
   phase: 'pre' | 'post',
   trigger: string | undefined,
   compactSummary: string | undefined,
-): Promise<void> {
+): void {
   const now = epochSeconds();
-  await insertActivityWithBatch({
+  insertActivityWithBatch({
     session_id: sessionId,
     tool_name: `${phase}_compact`,
     tool_input: trigger ? JSON.stringify({ trigger }).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
@@ -374,15 +398,25 @@ export async function main(): Promise<void> {
     embedding_provider: config.embedding.provider,
   });
 
-  // --- PGlite initialization ---
-  await initDatabaseForVault(vaultDir);
-  logger.info('daemon', 'PGlite initialized', { vault: vaultDir });
+  // --- SQLite initialization ---
+  const db = initDatabase(vaultDbPath(vaultDir));
+  createSchema(db);
+  logger.info('daemon', 'SQLite initialized', { vault: vaultDir });
+
+  // --- Embedding lifecycle manager ---
+  const vectorsDbPath = path.join(vaultDir, 'vectors.db');
+  const vectorStore = new SqliteVecVectorStore(vectorsDbPath);
+  const llmProvider = createEmbeddingProvider(config.embedding);
+  const embeddingProvider = new EmbeddingProviderAdapter(llmProvider, config.embedding);
+  const recordSource = new SqliteRecordSource();
+  const embeddingManager = new EmbeddingManager(vectorStore, embeddingProvider, recordSource, logger);
+  logger.info('embedding', 'EmbeddingManager initialized', { vectors_db: vectorsDbPath });
 
   // --- Register built-in agents and tasks ---
   try {
     const { registerBuiltInAgentsAndTasks, resolveDefinitionsDir } = await import('../agent/loader.js');
     const definitionsDir = resolveDefinitionsDir();
-    await registerBuiltInAgentsAndTasks(definitionsDir);
+    registerBuiltInAgentsAndTasks(definitionsDir);
     logger.info('agent', 'Built-in agents and tasks registered');
   } catch (err) {
     logger.warn('agent', 'Failed to register built-in agents/tasks', { error: (err as Error).message });
@@ -390,17 +424,19 @@ export async function main(): Promise<void> {
 
   // Clean up stale "running" agent runs from previous daemon — they'll never complete
   try {
-    const db = getDatabase();
-    const staleRuns = await db.query(
-      `UPDATE agent_runs SET status = 'failed', completed_at = $1
-       WHERE status = 'running'
-       RETURNING id`,
-      [epochSeconds()],
-    );
-    if (staleRuns.rows.length > 0) {
+    const staleDb = getDatabase();
+    // SQLite doesn't support RETURNING — query first, then update
+    const staleRows = staleDb.prepare(
+      `SELECT id FROM agent_runs WHERE status = 'running'`,
+    ).all() as Array<{ id: string }>;
+
+    if (staleRows.length > 0) {
+      staleDb.prepare(
+        `UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE status = 'running'`,
+      ).run(epochSeconds());
       logger.info('agent', 'Cleaned stale running agent runs', {
-        count: staleRuns.rows.length,
-        ids: staleRuns.rows.map((r: unknown) => (r as Record<string, unknown>).id),
+        count: staleRows.length,
+        ids: staleRows.map((r) => r.id),
       });
     }
   } catch (err) {
@@ -437,27 +473,142 @@ export async function main(): Promise<void> {
 
   let activeStopProcessing: Promise<void> | null = null;
 
+  // Cache derived titles per session — the title comes from the first prompt
+  // and never changes, so we only need to query the DB once.
+  const sessionTitleCache = new Map<string, string>();
+
   const bufferDir = path.join(vaultDir, 'buffer');
   const sessionBuffers = new Map<string, EventBuffer>();
 
   // Clean up stale buffer files (>24h) on startup
-  let startupCleanedCount = 0;
-  if (fs.existsSync(bufferDir)) {
-    const cutoff = Date.now() - STALE_BUFFER_MAX_AGE_MS;
-    for (const file of fs.readdirSync(bufferDir)) {
-      const filePath = path.join(bufferDir, file);
-      const stat = fs.statSync(filePath);
-      if (stat.mtimeMs < cutoff) {
-        fs.unlinkSync(filePath);
-        startupCleanedCount++;
-        logger.debug('daemon', 'Cleaned stale buffer', { file });
-      }
+  const startupCleanedCount = cleanStaleBuffers(bufferDir, STALE_BUFFER_MAX_AGE_MS);
+  if (startupCleanedCount > 0) {
+    logger.info('daemon', 'Buffer cleanup complete', { stale_removed: startupCleanedCount });
+  }
+
+  // Reconcile all remaining buffer files on startup — recover events from
+  // sessions that had activity while the daemon was down.
+  for (const sessionId of listBufferSessionIds(bufferDir)) {
+    try {
+      reconcileSession(sessionId);
+    } catch (err) {
+      logger.warn('daemon', 'Startup reconciliation failed', { session_id: sessionId, error: String(err) });
     }
   }
-  if (startupCleanedCount > 0) {
-    logger.info('daemon', 'Buffer cleanup complete', {
-      stale_removed: startupCleanedCount,
-    });
+
+  /**
+   * Replay a single buffer event into the DB via the appropriate handler.
+   *
+   * Shared between reconcileSession (buffer replay) and the live /events
+   * route to eliminate dispatch duplication.
+   *
+   * @returns 'prompt' | 'activity' | null indicating what was created.
+   */
+  function replayEvent(sessionId: string, event: Record<string, unknown>): 'prompt' | 'activity' | null {
+    if (event.type === 'user_prompt') {
+      if (isSystemMessage(String(event.prompt ?? ''))) return null;
+      handleUserPrompt(sessionId, String(event.prompt ?? ''));
+      return 'prompt';
+    }
+    if (event.type === 'tool_use') {
+      handleToolUse(
+        sessionId,
+        String(event.tool_name ?? ''),
+        event.tool_input,
+        typeof event.output_preview === 'string' ? event.output_preview : undefined,
+      );
+      return 'activity';
+    }
+    if (event.type === 'tool_failure') {
+      handleToolFailure(
+        sessionId,
+        String(event.tool_name ?? ''),
+        event.tool_input,
+        typeof event.error === 'string' ? event.error : undefined,
+        !!event.is_interrupt,
+      );
+      return 'activity';
+    }
+    return null;
+  }
+
+  // Track sessions already reconciled this daemon lifetime to avoid
+  // redundant file reads (startup scan + register + event can all fire).
+  const reconciledSessions = new Set<string>();
+
+  /**
+   * Reconcile buffer events against DB state for a session.
+   *
+   * The buffer is the authoritative event log. The DB (prompt_batches +
+   * activities) is a derived view. After a daemon restart, the DB may be
+   * missing events the daemon didn't process while it was down.
+   *
+   * Activities belong to batches — they're linked via the latest open batch
+   * at insertion time. So we can't reconcile them separately. Instead, we
+   * find where the DB diverges from the buffer (by prompt count) and replay
+   * the FULL event stream from that point: prompts open batches, tool events
+   * attach to the open batch — exactly the normal flow.
+   */
+  function reconcileSession(sessionId: string): void {
+    if (reconciledSessions.has(sessionId)) return;
+    reconciledSessions.add(sessionId);
+
+    // Read buffer file directly — avoid EventBuffer constructor which reads
+    // the file to compute a count we don't need.
+    const bufferPath = path.join(bufferDir, `${sessionId}.jsonl`);
+    if (!fs.existsSync(bufferPath)) return;
+    const content = fs.readFileSync(bufferPath, 'utf-8').trim();
+    if (!content) return;
+
+    const allEvents: Array<Record<string, unknown>> = content.split('\n').map((line) => JSON.parse(line));
+
+    // Find the divergence point: how many real prompts does the DB have?
+    const existingBatchCount = listBatchesBySession(sessionId).length;
+
+    let promptsSeen = 0;
+    let replayStartIndex = -1;
+
+    for (let i = 0; i < allEvents.length; i++) {
+      const e = allEvents[i];
+      if (e.type === 'user_prompt' && !isSystemMessage(String(e.prompt ?? ''))) {
+        promptsSeen++;
+        if (promptsSeen === existingBatchCount + 1) {
+          replayStartIndex = i;
+          break;
+        }
+      }
+    }
+
+    if (replayStartIndex === -1) return;
+
+    // Replay full event stream from the divergence point
+    const eventsToReplay = allEvents.slice(replayStartIndex).filter(
+      (e) => REPLAYABLE_EVENT_TYPES.has(String(e.type)),
+    );
+
+    let promptsRecovered = 0;
+    let activitiesRecovered = 0;
+
+    for (const event of eventsToReplay) {
+      try {
+        const result = replayEvent(sessionId, event);
+        if (result === 'prompt') promptsRecovered++;
+        else if (result === 'activity') activitiesRecovered++;
+      } catch (err) {
+        logger.warn('lifecycle', 'Reconciliation: failed to replay event', {
+          type: String(event.type),
+          error: String(err),
+        });
+      }
+    }
+
+    if (promptsRecovered > 0 || activitiesRecovered > 0) {
+      logger.info('lifecycle', 'Buffer reconciliation complete', {
+        session_id: sessionId,
+        prompts_recovered: promptsRecovered,
+        activities_recovered: activitiesRecovered,
+      });
+    }
   }
 
   // Route body schemas
@@ -485,7 +636,7 @@ export async function main(): Promise<void> {
     watchPaths: config.capture.artifact_watch,
     onPlan: (event) => {
       logger.info('watcher', 'Plan detected', { source: event.source, file: event.filePath });
-      // Plan indexing deferred to Phase 2 (PGlite plans table + Agent SDK)
+      // Plan indexing deferred to Phase 2 (SQLite plans table + Agent SDK)
     },
   });
   planWatcher.startFileWatcher();
@@ -498,10 +649,10 @@ export async function main(): Promise<void> {
     registry.register(session_id, { started_at: resolvedStartedAt, branch });
     server.updateDaemonJsonSessions(registry.sessions);
 
-    // Upsert session in PGlite — always reset to active on register
+    // Upsert session in SQLite — always reset to active on register
     const now = epochSeconds();
     const startedEpoch = Math.floor(new Date(resolvedStartedAt).getTime() / 1000);
-    await upsertSession({
+    upsertSession({
       id: session_id,
       agent: 'claude-code',
       user: null,
@@ -512,7 +663,10 @@ export async function main(): Promise<void> {
       status: 'active',
     });
     // Clear ended_at if session was previously completed (reload scenario)
-    await updateSession(session_id, { ended_at: null, status: 'active' });
+    updateSession(session_id, { ended_at: null, status: 'active' });
+
+    // Reconcile buffer against DB — recover prompts lost if daemon was down mid-session.
+    reconcileSession(session_id);
 
     logger.info('lifecycle', 'Session registered', { session_id, branch, started_at: started_at ?? null });
     return { body: { ok: true, sessions: registry.sessions } };
@@ -521,26 +675,17 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/sessions/unregister', async (req) => {
     const { session_id } = UnregisterBody.parse(req.body);
     registry.unregister(session_id);
-    // Note: we do NOT delete the buffer FILE for THIS session. Session reload
-    // (SessionEnd → SessionStart) reuses the same session_id, and deleting
-    // would wipe all prior events.
-    // We DO opportunistically clean stale buffers for OTHER sessions (>24h).
-    try {
-      const cutoff = Date.now() - STALE_BUFFER_MAX_AGE_MS;
-      for (const file of fs.readdirSync(bufferDir)) {
-        if (!file.endsWith('.jsonl')) continue;
-        const bufferSessionId = file.replace('.jsonl', '');
-        if (bufferSessionId === session_id) continue; // skip current session
-        const filePath = path.join(bufferDir, file);
-        const stat = fs.statSync(filePath);
-        if (stat.mtimeMs < cutoff) {
-          fs.unlinkSync(filePath);
-          logger.debug('daemon', 'Cleaned stale buffer', { file });
-        }
-      }
-    } catch { /* buffer dir may not exist */ }
+    // Opportunistically clean stale buffers for OTHER sessions (>24h).
+    // We do NOT delete THIS session's buffer — session reload reuses the same ID.
+    cleanStaleBuffers(bufferDir, STALE_BUFFER_MAX_AGE_MS, session_id);
+    // Close the session in SQLite — this is the authoritative end-of-session.
+    // The Stop hook fires per-turn and does NOT close the session.
+    closeSession(session_id, epochSeconds());
+
     // Prune in-memory state
     sessionBuffers.delete(session_id);
+    sessionTitleCache.delete(session_id);
+    reconciledSessions.delete(session_id);
     server.updateDaemonJsonSessions(registry.sessions);
     logger.info('lifecycle', 'Session unregistered', { session_id });
     return { body: { ok: true, sessions: registry.sessions } };
@@ -558,17 +703,20 @@ export async function main(): Promise<void> {
       registry.register(event.session_id, { started_at: event.timestamp });
       logger.debug('lifecycle', 'Auto-registered session from event', { session_id: event.session_id });
 
-      // Ensure PGlite session exists — explicitly set status='active' so
+      // Ensure SQLite session exists — explicitly set status='active' so
       // resumed sessions (previously 'completed') get reopened.
       const now = epochSeconds();
       const startedEpoch = Math.floor(new Date(event.timestamp).getTime() / 1000);
-      await upsertSession({
+      upsertSession({
         id: event.session_id,
         agent: 'claude-code',
         status: 'active',
         started_at: startedEpoch,
         created_at: now,
       });
+
+      // Reconcile buffer against DB — recover any prompts lost during downtime.
+      reconcileSession(event.session_id);
     }
 
     // Persist to disk so events survive daemon restarts
@@ -580,32 +728,43 @@ export async function main(): Promise<void> {
     // --- Prompt batch tracking ---
     if (event.type === 'user_prompt') {
       const promptText = String(event.prompt ?? '');
-      logger.info('hooks', 'User prompt received', {
-        session_id: event.session_id,
-        prompt_preview: promptText.slice(0, LOG_PROMPT_PREVIEW_CHARS),
-        prompt_length: promptText.length,
-      });
-      try {
-        const { batchId, promptNumber } = await handleUserPrompt(event.session_id, promptText || undefined);
-        logger.debug('capture', 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });
 
-        // Batch-threshold summary trigger
-        const batchCount = promptNumber;
-        const summaryInterval = config.agent.summary_batch_interval;
-        if (summaryInterval > 0 && batchCount > 0 && batchCount % summaryInterval === 0) {
-          try {
-            const running = await getRunningRun(DEFAULT_AGENT_ID);
-            if (!running) {
-              const { runAgent } = await import('../agent/executor.js');
-              runAgent(vaultDir, {
-                task: 'title-summary',
-                instruction: `Process session ${event.session_id} only`,
-              }).catch(err => logger.warn('agent', 'Batch-threshold summary failed', { error: String(err) }));
-            }
-          } catch { /* agent unavailable */ }
+      // Skip system-injected messages (task notifications, system reminders) —
+      // they trigger UserPromptSubmit but are not real user prompts.
+      if (isSystemMessage(promptText)) {
+        logger.debug('hooks', 'Skipped system-injected message', {
+          session_id: event.session_id,
+          prefix: promptText.trimStart().slice(0, LOG_PROMPT_PREVIEW_CHARS),
+        });
+      } else {
+        logger.info('hooks', 'User prompt received', {
+          session_id: event.session_id,
+          prompt_preview: promptText.slice(0, LOG_PROMPT_PREVIEW_CHARS),
+          prompt_length: promptText.length,
+        });
+        try {
+          const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined);
+          logger.debug('capture', 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });
+
+          // Batch-threshold summary trigger
+          const batchCount = promptNumber;
+          const summaryInterval = config.agent.summary_batch_interval;
+          if (summaryInterval > 0 && batchCount > 0 && batchCount % summaryInterval === 0) {
+            try {
+              const running = getRunningRun(DEFAULT_AGENT_ID);
+              if (!running) {
+                const { runAgent } = await import('../agent/executor.js');
+                runAgent(vaultDir, {
+                  task: 'title-summary',
+                  instruction: `Process session ${event.session_id} only`,
+                  embeddingManager,
+                }).catch(err => logger.warn('agent', 'Batch-threshold summary failed', { error: String(err) }));
+              }
+            } catch { /* agent unavailable */ }
+          }
+        } catch (err) {
+          logger.warn('capture', 'Failed to open batch', { session_id: event.session_id, error: (err as Error).message });
         }
-      } catch (err) {
-        logger.warn('capture', 'Failed to open batch', { session_id: event.session_id, error: (err as Error).message });
       }
     }
 
@@ -617,7 +776,7 @@ export async function main(): Promise<void> {
       });
       planWatcher.checkToolEvent({ tool_name: toolName, tool_input: event.tool_input, session_id: event.session_id });
       try {
-        await handleToolUse(
+        handleToolUse(
           event.session_id,
           toolName,
           event.tool_input,
@@ -636,7 +795,7 @@ export async function main(): Promise<void> {
         is_interrupt: !!event.is_interrupt,
       });
       try {
-        await handleToolFailure(
+        handleToolFailure(
           event.session_id,
           toolName,
           event.tool_input,
@@ -655,7 +814,7 @@ export async function main(): Promise<void> {
         agent_type: event.agent_type,
       });
       try {
-        await handleSubagentStart(
+        handleSubagentStart(
           event.session_id,
           typeof event.agent_id === 'string' ? event.agent_id : undefined,
           typeof event.agent_type === 'string' ? event.agent_type : undefined,
@@ -672,7 +831,7 @@ export async function main(): Promise<void> {
         agent_type: event.agent_type,
       });
       try {
-        await handleSubagentStop(
+        handleSubagentStop(
           event.session_id,
           typeof event.agent_id === 'string' ? event.agent_id : undefined,
           typeof event.agent_type === 'string' ? event.agent_type : undefined,
@@ -689,7 +848,7 @@ export async function main(): Promise<void> {
         error: event.error,
       });
       try {
-        await handleStopFailure(
+        handleStopFailure(
           event.session_id,
           typeof event.error === 'string' ? event.error : undefined,
           typeof event.error_details === 'string' ? event.error_details : undefined,
@@ -706,7 +865,7 @@ export async function main(): Promise<void> {
         task_subject: event.task_subject,
       });
       try {
-        await handleTaskCompleted(
+        handleTaskCompleted(
           event.session_id,
           typeof event.task_id === 'string' ? event.task_id : undefined,
           typeof event.task_subject === 'string' ? event.task_subject : undefined,
@@ -720,7 +879,7 @@ export async function main(): Promise<void> {
     if (event.type === 'pre_compact') {
       logger.info('hooks', 'Pre-compact event', { session_id: event.session_id });
       try {
-        await handleCompact(
+        handleCompact(
           event.session_id,
           'pre',
           typeof event.trigger === 'string' ? event.trigger : undefined,
@@ -734,7 +893,7 @@ export async function main(): Promise<void> {
     if (event.type === 'post_compact') {
       logger.info('hooks', 'Post-compact event', { session_id: event.session_id });
       try {
-        await handleCompact(
+        handleCompact(
           event.session_id,
           'post',
           typeof event.trigger === 'string' ? event.trigger : undefined,
@@ -868,23 +1027,31 @@ export async function main(): Promise<void> {
     // --- Phase 2: Capture response + close session ---
 
     // Get the latest batch BEFORE closing — this is the batch for the current turn.
-    const latestBatch = await getLatestBatch(sessionId);
+    const latestBatch = getLatestBatch(sessionId);
 
     // Primary capture: put last_assistant_message directly on the latest batch.
     // No positional mapping needed — the hook gives us the response directly.
     if (lastAssistantMessage && latestBatch && !latestBatch.response_summary) {
-      await setResponseSummary(latestBatch.id, lastAssistantMessage)
-        .catch(err => logger.warn('processor', 'Failed to set response_summary on latest batch', { error: String(err) }));
+      try { setResponseSummary(latestBatch.id, lastAssistantMessage); }
+      catch (err) { logger.warn('processor', 'Failed to set response_summary on latest batch', { error: String(err) }); }
     }
 
-    await handleSessionStop(sessionId);
+    // Close open batches but do NOT close the session — the Stop hook fires
+    // after every assistant turn, not just session end. The session is closed
+    // when the SessionEnd hook fires (via /sessions/unregister).
+    closeOpenBatches(sessionId, epochSeconds());
 
-    // Derive a simple title from the first prompt (no LLM — that's Phase 2)
-    let title: string | null = null;
-    if (allTurns.length > 0 && allTurns[0].prompt) {
-      title = allTurns[0].prompt.slice(0, TITLE_PREVIEW_CHARS);
-      if (allTurns[0].prompt.length > TITLE_PREVIEW_CHARS) {
-        title += '...';
+    // Derive a simple title from the first user prompt captured via hooks.
+    // Cached — the first prompt never changes, so skip the DB query after the first hit.
+    let title = sessionTitleCache.get(sessionId) ?? null;
+    if (!title) {
+      const firstBatch = listBatchesBySession(sessionId, { limit: 1 })[0];
+      if (firstBatch?.user_prompt) {
+        title = firstBatch.user_prompt.slice(0, TITLE_PREVIEW_CHARS);
+        if (firstBatch.user_prompt.length > TITLE_PREVIEW_CHARS) {
+          title += '...';
+        }
+        sessionTitleCache.set(sessionId, title);
       }
     }
 
@@ -897,7 +1064,7 @@ export async function main(): Promise<void> {
     if (user) updateFields.user = user;
     if (title) updateFields.title = title;
 
-    await updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
+    updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
 
     // Enhanced capture: populate response_summary on earlier batches from transcript.
     // Maps by batch insertion order (id ASC) to transcript turn position.
@@ -910,8 +1077,8 @@ export async function main(): Promise<void> {
       }
     }
     if (responses.length > 0) {
-      populateBatchResponses(sessionId, responses)
-        .catch(err => logger.warn('processor', 'Failed to populate batch responses', { error: String(err) }));
+      try { populateBatchResponses(sessionId, responses); }
+      catch (err) { logger.warn('processor', 'Failed to populate batch responses', { error: String(err) }); }
     }
 
     // Fire-and-forget: trigger title/summary generation via agent task
@@ -920,28 +1087,32 @@ export async function main(): Promise<void> {
       runAgent(vaultDir, {
         task: 'title-summary',
         instruction: `Process session ${sessionId} only`,
+        embeddingManager,
       }).catch(err => logger.warn('agent', 'Title-summary task failed', { error: String(err) }));
     } catch { /* agent unavailable */ }
 
-    // Write images to attachments (keep this — images are binary, not in PGlite)
-    // Link images to the latest batch directly (primary capture) rather than
-    // relying on positional turn-to-batch mapping (which breaks when the parser
-    // drops empty-text turns).
+    // Write images to attachments (keep this — images are binary, not in SQLite).
+    // Only process the current turn onward — prior turns were handled by earlier Stops.
     const attachmentsDir = path.join(vaultDir, 'attachments');
-    const hasImages = allTurns.some((t) => t.images?.length);
-    if (hasImages) {
+    const attachmentStartIndex = latestBatch?.prompt_number ? latestBatch.prompt_number - 1 : 0;
+    const hasNewImages = allTurns.slice(attachmentStartIndex).some((t) => t.images?.length);
+    if (hasNewImages) {
       fs.mkdirSync(attachmentsDir, { recursive: true });
     }
-    for (let i = 0; i < allTurns.length; i++) {
+    for (let i = attachmentStartIndex; i < allTurns.length; i++) {
       const turn = allTurns[i];
       if (!turn.images?.length) continue;
       const promptNumber = i + 1;
       // For the last turn, use latestBatch directly (reliable).
       // For earlier turns, fall back to positional lookup (best-effort).
       const isLastTurn = i === allTurns.length - 1;
-      const batchIdPromise = isLastTurn && latestBatch
-        ? Promise.resolve(latestBatch.id)
-        : getBatchIdByPromptNumber(sessionId, promptNumber).catch(() => null);
+      let resolvedBatchId: number | null = null;
+      if (isLastTurn && latestBatch) {
+        resolvedBatchId = latestBatch.id;
+      } else {
+        try { resolvedBatchId = getBatchIdByPromptNumber(sessionId, promptNumber); }
+        catch { resolvedBatchId = null; }
+      }
       for (let j = 0; j < turn.images.length; j++) {
         const img = turn.images[j];
         const ext = extensionForMimeType(img.mediaType);
@@ -951,19 +1122,22 @@ export async function main(): Promise<void> {
         try {
           fs.writeFileSync(filePath, Buffer.from(img.data, 'base64'), { flag: 'wx' });
           logger.debug('processor', 'Image saved', { filename, turn: promptNumber });
-          batchIdPromise.then(batchId => {
-            insertAttachment({
-              id: `${sessionShort}-t${promptNumber}-${j + 1}`,
-              session_id: sessionId,
-              prompt_batch_id: batchId ?? undefined,
-              file_path: filename,
-              media_type: img.mediaType,
-              created_at: epochSeconds(),
-            }).catch(err => logger.warn('processor', 'Failed to record attachment', { error: String(err) }));
-          });
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
         }
+        // Always upsert the DB record — insertAttachment is idempotent (ON CONFLICT DO NOTHING).
+        // Must be outside the file-write try block so the record is created even when the
+        // file already exists (Stop fires per-turn, not just on session end).
+        try {
+          insertAttachment({
+            id: `${sessionShort}-t${promptNumber}-${j + 1}`,
+            session_id: sessionId,
+            prompt_batch_id: resolvedBatchId ?? undefined,
+            file_path: filename,
+            media_type: img.mediaType,
+            created_at: epochSeconds(),
+          });
+        } catch (err) { logger.warn('processor', 'Failed to record attachment', { error: String(err) }); }
       }
     }
 
@@ -1037,7 +1211,7 @@ export async function main(): Promise<void> {
 
   // V2 stats — vault counts, embedding coverage, agent status, digest freshness
   server.registerRoute('GET', '/api/stats', async () => {
-    const stats = await gatherStats(vaultDir, { active_sessions: registry.sessions });
+    const stats = gatherStats(vaultDir, { active_sessions: registry.sessions });
     // Overlay live daemon fields from the running process (more accurate than daemon.json)
     stats.daemon.pid = process.pid;
     stats.daemon.port = server.port;
@@ -1066,9 +1240,9 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir, progressTracker }, req.body));
   server.registerRoute('GET', '/api/progress/:token', async (req) => handleGetProgress(progressTracker, req.params.token));
 
-  // Simplified sessions endpoint — PGlite based
+  // Simplified sessions endpoint — SQLite based
   server.registerRoute('GET', '/api/sessions', async () => {
-    const sessions = await listSessions({ limit: 100 });
+    const sessions = listSessions({ limit: 100 });
     return {
       body: {
         sessions: sessions.map((s) => ({
@@ -1084,8 +1258,9 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/sessions/:id', handleGetSession);
   server.registerRoute('DELETE', '/api/sessions/:id', async (req) => {
     const sessionId = req.params.id;
-    const deleted = await deleteSession(sessionId);
+    const deleted = deleteSession(sessionId);
     if (!deleted) return { status: 404, body: { error: 'Session not found' } };
+    try { embeddingManager.onRemoved('sessions', sessionId); } catch { /* best-effort */ }
     logger.info('api', 'Session deleted', { session_id: sessionId });
     return { body: { ok: true } };
   });
@@ -1136,7 +1311,7 @@ export async function main(): Promise<void> {
 
     // Fire-and-forget: respond immediately with a runId placeholder, agent runs in background
     const { runAgent } = await import('../agent/executor.js');
-    const resultPromise = runAgent(vaultDir, { task, instruction, agentId });
+    const resultPromise = runAgent(vaultDir, { task, instruction, agentId, embeddingManager });
 
     // We need the runId from the executor, but the executor creates it synchronously
     // before the async SDK call. Wait for the result since it's fast to start.
@@ -1170,12 +1345,12 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/agent/runs', async (req) => {
     const limit = req.query.limit ? Number(req.query.limit) : AGENT_RUNS_DEFAULT_LIMIT;
     const agentId = req.query.agentId || undefined;
-    const runs = await listRuns({ limit, agent_id: agentId });
+    const runs = listRuns({ limit, agent_id: agentId });
     return { body: { runs } };
   });
 
   server.registerRoute('GET', '/api/agent/runs/:id', async (req) => {
-    const run = await getRun(req.params.id);
+    const run = getRun(req.params.id);
     if (!run) {
       return { status: 404, body: { error: 'Run not found' } };
     }
@@ -1183,12 +1358,12 @@ export async function main(): Promise<void> {
   });
 
   server.registerRoute('GET', '/api/agent/runs/:id/reports', async (req) => {
-    const reports = await listReports(req.params.id);
+    const reports = listReports(req.params.id);
     return { body: { reports } };
   });
 
   server.registerRoute('GET', '/api/agent/runs/:id/turns', async (req) => {
-    const turns = await listTurnsByRun(req.params.id);
+    const turns = listTurnsByRun(req.params.id);
     return { body: turns };
   });
 
@@ -1202,7 +1377,7 @@ export async function main(): Promise<void> {
 
   // --- MCP proxy routes ---
   // These routes exist so the MCP server can proxy tool calls through the
-  // daemon instead of opening its own PGlite connection.
+  // daemon instead of opening its own SQLite connection.
 
   const SPORE_ID_RANDOM_BYTES = 4;
   const RESOLUTION_ID_RANDOM_BYTES = 8;
@@ -1222,13 +1397,13 @@ export async function main(): Promise<void> {
     const now = epochSeconds();
 
     // Ensure the user agent exists (idempotent upsert)
-    await registerAgent({
+    registerAgent({
       id: USER_AGENT_ID,
       name: USER_AGENT_NAME,
       created_at: now,
     });
 
-    const spore = await insertSpore({
+    const spore = insertSpore({
       id,
       agent_id: USER_AGENT_ID,
       observation_type: observationType,
@@ -1236,6 +1411,11 @@ export async function main(): Promise<void> {
       tags: tags ? tags.join(', ') : null,
       created_at: now,
     });
+
+    embeddingManager.onContentWritten('spores', spore.id, content, {
+      status: 'active',
+      observation_type: observationType,
+    }).catch(() => {});
 
     return {
       body: {
@@ -1251,7 +1431,7 @@ export async function main(): Promise<void> {
     const statusFilter = req.query.status === 'all' ? undefined : req.query.status;
     const limit = req.query.limit ? Number(req.query.limit) : undefined;
 
-    const rows = await listPlans({ status: statusFilter, limit });
+    const rows = listPlans({ status: statusFilter, limit });
 
     const plans = rows.map((row) => {
       const content = row.content ?? '';
@@ -1277,7 +1457,7 @@ export async function main(): Promise<void> {
     const limit = req.query.limit ? Number(req.query.limit) : 20;
     const status = req.query.status;
 
-    const rows = await listSessions({ limit, status });
+    const rows = listSessions({ limit, status });
     const sessions = rows.map((row) => ({
       id: row.id,
       agent: row.agent,
@@ -1297,14 +1477,14 @@ export async function main(): Promise<void> {
   });
 
   server.registerRoute('GET', '/api/mcp/team', async () => {
-    const db = getDatabase();
-    const result = await db.query(
+    const teamDb = getDatabase();
+    const rows = teamDb.prepare(
       `SELECT id, "user", role, joined, tags
        FROM team_members
        ORDER BY id ASC`,
-    );
+    ).all() as Array<Record<string, unknown>>;
 
-    const members = (result.rows as Record<string, unknown>[]).map((row) => ({
+    const members = rows.map((row) => ({
       id: row.id as string,
       user: row.user as string,
       role: (row.role as string) ?? null,
@@ -1327,32 +1507,29 @@ export async function main(): Promise<void> {
     const now = epochSeconds();
 
     // Update status to superseded
-    await updateSporeStatus(old_spore_id, 'superseded', now);
+    updateSporeStatus(old_spore_id, 'superseded', now);
+    try { embeddingManager.onStatusChanged('spores', old_spore_id, 'superseded'); } catch { /* best-effort */ }
 
     // Ensure user agent exists (idempotent)
-    await registerAgent({
+    registerAgent({
       id: USER_AGENT_ID,
       name: USER_AGENT_NAME,
       created_at: now,
     });
 
     // Record resolution event for audit trail
-    const db = getDatabase();
+    const { insertResolutionEvent } = await import('../db/queries/resolution-events.js');
     const resolutionId = `res-${randomBytes(RESOLUTION_ID_RANDOM_BYTES).toString('hex')}`;
 
-    await db.query(
-      `INSERT INTO resolution_events (id, agent_id, spore_id, action, new_spore_id, reason, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        resolutionId,
-        USER_AGENT_ID,
-        old_spore_id,
-        'supersede',
-        new_spore_id,
-        reason ?? null,
-        now,
-      ],
-    );
+    insertResolutionEvent({
+      id: resolutionId,
+      agent_id: USER_AGENT_ID,
+      spore_id: old_spore_id,
+      action: 'supersede',
+      new_spore_id,
+      reason: reason ?? null,
+      created_at: now,
+    });
 
     return {
       body: {
@@ -1365,9 +1542,14 @@ export async function main(): Promise<void> {
 
   // --- Search, activity feed, and embedding status ---
 
-  server.registerRoute('GET', '/api/search', handleSearch);
+  server.registerRoute('GET', '/api/search', createSearchHandler({ embeddingManager }));
   server.registerRoute('GET', '/api/activity', handleGetFeed);
   server.registerRoute('GET', '/api/embedding/status', async () => handleGetEmbeddingStatus(vaultDir));
+  server.registerRoute('GET', '/api/embedding/details', async () => handleEmbeddingDetails(embeddingManager));
+  server.registerRoute('POST', '/api/embedding/rebuild', async () => handleEmbeddingRebuild(embeddingManager));
+  server.registerRoute('POST', '/api/embedding/reconcile', async () => handleEmbeddingReconcile(embeddingManager));
+  server.registerRoute('POST', '/api/embedding/clean-orphans', async () => handleEmbeddingCleanOrphans(embeddingManager));
+  server.registerRoute('POST', '/api/embedding/reembed-stale', async () => handleEmbeddingReembedStale(embeddingManager));
 
   // --- Start server ---
 
@@ -1396,9 +1578,9 @@ export async function main(): Promise<void> {
     ? setInterval(async () => {
         try {
           // Pre-check: only spawn agent if there's unprocessed work
-          const db = getDatabase();
-          const checkResult = await db.query('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0');
-          const count = Number((checkResult.rows[0] as Record<string, unknown>).count);
+          const agentDb = getDatabase();
+          const checkRow = agentDb.prepare('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0').get() as { count: number };
+          const count = Number(checkRow.count);
           if (count === 0) {
             logger.debug('agent', 'No unprocessed batches, skipping cycle');
             return;
@@ -1406,7 +1588,7 @@ export async function main(): Promise<void> {
 
           logger.info('agent', 'Unprocessed batches found, starting agent', { count });
           const { runAgent } = await import('../agent/executor.js');
-          const runResult = await runAgent(vaultDir);
+          const runResult = await runAgent(vaultDir, { embeddingManager });
           logger.info('agent', 'Agent run completed', { status: runResult.status, runId: runResult.runId });
         } catch (err) {
           logger.error('agent', 'Agent timer failed', { error: (err as Error).message });
@@ -1418,58 +1600,25 @@ export async function main(): Promise<void> {
     logger.info('agent', 'Auto-agent disabled (agent.auto_run = false)');
   }
 
-  // --- Embedding worker ---
-  // Drains the unembedded queue on a timer, embedding content that the agent
-  // or capture pipeline has written but not yet vectorized.
+  // --- Embedding reconcile worker ---
+  // Delegates to EmbeddingManager.reconcile() which handles: finding unembedded
+  // rows, embedding via provider, upserting vectors, marking embedded flags,
+  // and running orphan sweeps.
 
-  const EMBEDDING_INTERVAL_MS = 30 * SECONDS_TO_MS;
-  const EMBEDDING_BATCH_SIZE = 10;
-  let embeddingRunning = false;
-
-  const embeddingTimer = setInterval(async () => {
-    if (embeddingRunning) return;
-    embeddingRunning = true;
+  let reconcileRunning = false;
+  const reconcileTimer = setInterval(async () => {
+    if (reconcileRunning) return;
+    reconcileRunning = true;
     try {
-      const { getUnembedded, setEmbedding, EMBEDDABLE_TABLES } = await import('../db/queries/embeddings.js');
-      const { tryEmbed } = await import('../intelligence/embed-query.js');
-
-      let totalEmbedded = 0;
-      for (const table of EMBEDDABLE_TABLES) {
-        const rows = await getUnembedded(table, { limit: EMBEDDING_BATCH_SIZE });
-        if (rows.length === 0) continue;
-
-        for (const row of rows) {
-          try {
-            if (!row.text) continue;
-
-            const embedding = await tryEmbed(row.text);
-            if (!embedding) {
-              if (totalEmbedded === 0) {
-                logger.debug('embedding', 'Provider unavailable, skipping cycle');
-              }
-              embeddingRunning = false;
-              return;
-            }
-
-            await setEmbedding(table, row.id, embedding);
-            totalEmbedded++;
-          } catch (err) {
-            logger.warn('embedding', 'Failed to embed row', { table, id: row.id, error: (err as Error).message });
-          }
-        }
-      }
-
-      if (totalEmbedded > 0) {
-        logger.info('embedding', 'Embedding batch completed', { embedded: totalEmbedded });
-      }
+      await embeddingManager.reconcile(EMBEDDING_BATCH_SIZE);
     } catch (err) {
-      logger.error('embedding', 'Embedding worker failed', { error: (err as Error).message });
+      logger.error('embedding', 'Reconcile worker failed', { error: (err as Error).message });
     } finally {
-      embeddingRunning = false;
+      reconcileRunning = false;
     }
   }, EMBEDDING_INTERVAL_MS);
 
-  logger.info('embedding', 'Embedding worker started', {
+  logger.info('embedding', 'Reconcile worker started', {
     interval_ms: EMBEDDING_INTERVAL_MS,
     batch_size: EMBEDDING_BATCH_SIZE,
   });
@@ -1479,7 +1628,7 @@ export async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info('daemon', `${signal} received`);
     if (agentTimer) clearInterval(agentTimer);
-    clearInterval(embeddingTimer);
+    clearInterval(reconcileTimer);
     // Wait for any active stop processing to finish before shutting down
     if (activeStopProcessing) {
       logger.info('daemon', 'Waiting for active stop processing to complete...');
@@ -1488,7 +1637,8 @@ export async function main(): Promise<void> {
     planWatcher.stopFileWatcher();
     registry.destroy();
     await server.stop();
-    await closeDatabase();
+    vectorStore.close();
+    closeDatabase();
     logger.close();
     process.exit(0);
   };

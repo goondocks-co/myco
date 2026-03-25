@@ -170,6 +170,10 @@ export function parseJsonlTurns(content: string, opts: ParseJsonlOptions): Trans
     const timestamp = opts.extractTimestamp ? (entry.timestamp as string ?? '') : '';
 
     if (role === 'user') {
+      // Skip meta messages (skill injections, deprecation notices, etc.) — they are
+      // not real user prompts and should not appear as turns or influence the title.
+      if (entry.isMeta === true) continue;
+
       const msg = entry.message as { content?: Array<{ type: string; text?: string; source?: { type?: string; data?: string; media_type?: string } }> } | undefined;
       const blocks = Array.isArray(msg?.content) ? msg!.content : [];
       const hasText = blocks.some((b) => b.type === 'text' && b.text?.trim());

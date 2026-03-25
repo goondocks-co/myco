@@ -15,7 +15,8 @@
 import crypto from 'node:crypto';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
-import { initDatabaseForVault } from '@myco/db/client.js';
+import { initDatabase, vaultDbPath } from '@myco/db/client.js';
+import { createSchema } from '@myco/db/schema.js';
 import { getAgent } from '@myco/db/queries/agents.js';
 import { getTask, getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
@@ -175,9 +176,10 @@ async function executeSingleQuery(
   taskPrompt: string,
   agentId: string,
   runId: string,
+  embeddingManager?: RunOptions['embeddingManager'],
 ): Promise<{ tokensUsed: number; costUsd: number }> {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
-  const toolServer = createVaultToolServer(agentId, runId);
+  const toolServer = createVaultToolServer(agentId, runId, embeddingManager);
 
   let resultCostUsd = 0;
   let resultTokens = 0;
@@ -227,6 +229,7 @@ async function executePhasedQuery(
   agentId: string,
   runId: string,
   instruction?: string,
+  embeddingManager?: RunOptions['embeddingManager'],
 ): Promise<{ tokensUsed: number; costUsd: number; phases: PhaseResult[] }> {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
 
@@ -294,7 +297,7 @@ async function executePhasedQuery(
     );
 
     const phaseModel = phase.model ?? config.model;
-    const toolServer = createScopedVaultToolServer(agentId, runId, phase.tools, runningTurnCount);
+    const toolServer = createScopedVaultToolServer(agentId, runId, phase.tools, runningTurnCount, embeddingManager);
 
     let phaseCost = 0;
     let phaseTokens = 0;
@@ -391,13 +394,14 @@ export async function runAgent(
   vaultDir: string,
   options?: RunOptions,
 ): Promise<AgentRunResult> {
-  // 1. Init DB
-  await initDatabaseForVault(vaultDir);
+  // 1. Init DB (idempotent — returns existing instance if already open)
+  const db = initDatabase(vaultDbPath(vaultDir));
+  createSchema(db);
 
   const agentId = options?.agentId ?? DEFAULT_AGENT_ID;
 
   // 2. Concurrency guard — check before expensive config loading
-  const running = await getRunningRun(agentId);
+  const running = getRunningRun(agentId);
   if (running) {
     return {
       runId: running.id,
@@ -410,15 +414,11 @@ export async function runAgent(
   const definitionsDir = resolveDefinitionsDir();
   const definition = loadAgentDefinition(definitionsDir);
 
-  // Load agent and task in parallel — both are independent DB lookups
-  const taskPromise = options?.task
+  // Load agent and task — both are sync DB lookups
+  const agentRow = getAgent(agentId);
+  const taskRow = options?.task
     ? getTask(options.task)
     : getDefaultTask(agentId);
-
-  const [agentRow, taskRow] = await Promise.all([
-    getAgent(agentId),
-    taskPromise,
-  ]);
 
   // Structural fields (phases, execution, contextQueries) come from the registry
   // (built-in YAML merged with user vault tasks) rather than the DB flat columns.
@@ -450,7 +450,7 @@ export async function runAgent(
   const runId = crypto.randomUUID();
   const now = epochSeconds();
 
-  await insertRun({
+  insertRun({
     id: runId,
     agent_id: agentId,
     task: config.taskName,
@@ -461,7 +461,7 @@ export async function runAgent(
 
   // 5. Build prompt components
   const systemPrompt = loadSystemPrompt(definitionsDir, config.systemPromptPath);
-  const vaultContext = await buildVaultContext(agentId);
+  const vaultContext = buildVaultContext(agentId);
 
   // 6. Execute — phased or single query
   let phaseResults: PhaseResult[] | undefined;
@@ -478,6 +478,7 @@ export async function runAgent(
         agentId,
         runId,
         options?.instruction,
+        options?.embeddingManager,
       );
       tokensUsed = result.tokensUsed;
       costUsd = result.costUsd;
@@ -496,13 +497,14 @@ export async function runAgent(
         taskPrompt,
         agentId,
         runId,
+        options?.embeddingManager,
       );
       tokensUsed = result.tokensUsed;
       costUsd = result.costUsd;
     }
 
     const completedAt = epochSeconds();
-    await updateRunStatus(runId, STATUS_COMPLETED, {
+    updateRunStatus(runId, STATUS_COMPLETED, {
       completed_at: completedAt,
       tokens_used: tokensUsed,
       cost_usd: costUsd,
@@ -534,7 +536,7 @@ export async function runAgent(
     console.error(`[agent] Run ${runId} failed: ${errorMessage}`);
 
     try {
-      await updateRunStatus(runId, STATUS_FAILED, {
+      updateRunStatus(runId, STATUS_FAILED, {
         completed_at: failedAt,
         error: errorMessage,
         // Preserve phase results collected before the failure

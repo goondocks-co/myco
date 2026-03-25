@@ -1,74 +1,79 @@
 /**
- * PGlite client — connection lifecycle management.
+ * SQLite client -- connection lifecycle management.
  *
- * Provides init/get/close for a singleton PGlite instance backed by
- * pgvector. The instance is created via the async factory `PGlite.create()`
- * and reused for the lifetime of the process.
+ * Provides init/get/close for a singleton better-sqlite3 instance.
+ * The instance is synchronous and reused for the lifetime of the process.
  */
 
-import { PGlite } from '@electric-sql/pglite';
-import { vector } from '@electric-sql/pglite/vector';
+import Database from 'better-sqlite3';
+import type { Database as DatabaseType } from 'better-sqlite3';
 import path from 'node:path';
 
-const NOT_INITIALIZED_MSG = 'Database not initialized — call initDatabase() first';
+const NOT_INITIALIZED_MSG = 'Database not initialized -- call initDatabase() first';
 
-/** Standard subdirectory name for PGlite data within a vault. */
-export const PGLITE_DATA_DIR = 'pgdata';
+/** Standard filename for SQLite data within a vault. */
+export const SQLITE_DB_FILE = 'myco.db';
 
-/** Singleton PGlite instance. */
-let instance: PGlite | null = null;
+/** Singleton Database instance. */
+let instance: DatabaseType | null = null;
 
 /**
- * Initialize (or return existing) PGlite instance with pgvector enabled.
+ * Initialize (or return existing) SQLite instance with WAL mode.
  *
- * @param dataDir — filesystem path for persistent storage. Omit for in-memory.
- * @returns the PGlite instance.
+ * @param dbPath -- filesystem path for the database file. Omit for in-memory.
+ * @returns the Database instance.
  */
-export async function initDatabase(dataDir?: string): Promise<PGlite> {
+export function initDatabase(dbPath?: string): DatabaseType {
   if (instance) return instance;
 
-  instance = await PGlite.create({
-    ...(dataDir ? { dataDir } : {}),
-    extensions: { vector },
-  });
+  instance = new Database(dbPath ?? ':memory:');
 
-  await instance.query('CREATE EXTENSION IF NOT EXISTS vector');
+  // Performance and safety PRAGMAs
+  instance.pragma('journal_mode = WAL');
+  instance.pragma('foreign_keys = ON');
+  instance.pragma('busy_timeout = 5000');
+  instance.pragma('cache_size = -64000');
+  instance.pragma('temp_store = MEMORY');
 
   return instance;
 }
 
 /**
- * Return the current PGlite instance.
+ * Return the current Database instance.
  *
  * @throws if `initDatabase()` has not been called.
  */
-export function getDatabase(): PGlite {
+export function getDatabase(): DatabaseType {
   if (!instance) throw new Error(NOT_INITIALIZED_MSG);
   return instance;
 }
 
 /**
- * Close the PGlite instance and reset the singleton.
+ * Close the Database instance and reset the singleton.
  *
  * Safe to call when already closed or never initialized.
  */
-export async function closeDatabase(): Promise<void> {
+export function closeDatabase(): void {
   if (!instance) return;
-  await instance.close();
+  instance.close();
   instance = null;
 }
 
 /**
- * Initialize PGlite for a vault directory and create the schema.
+ * Open a read-only connection to a vault database.
  *
- * Convenience wrapper that combines `initDatabase()` + `createSchema()` with
- * the standard `PGLITE_DATA_DIR` subdirectory. Eliminates the two-step pattern
- * and the 'pgdata' magic string at every call site.
+ * Used by CLI commands for direct reads without the daemon.
+ * Caller is responsible for closing the returned instance.
  */
-export async function initDatabaseForVault(vaultDir: string): Promise<PGlite> {
-  // Lazy import to avoid circular dependency (schema.ts imports from PGlite types)
-  const { createSchema } = await import('./schema.js');
-  const db = await initDatabase(path.join(vaultDir, PGLITE_DATA_DIR));
-  await createSchema(db);
+export function openReadonly(dbPath: string): DatabaseType {
+  const db = new Database(dbPath, { readonly: true });
+  db.pragma('busy_timeout = 5000');
   return db;
+}
+
+/**
+ * Build the standard database path for a vault directory.
+ */
+export function vaultDbPath(vaultDir: string): string {
+  return path.join(vaultDir, SQLITE_DB_FILE);
 }

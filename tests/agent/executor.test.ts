@@ -220,7 +220,7 @@ vi.mock('@myco/agent/registry.js', () => ({
 // ---------------------------------------------------------------------------
 
 vi.mock('@myco/agent/context.js', () => ({
-  buildVaultContext: async () => '## Current Vault State\nagent_id: myco-agent\nunprocessed_batches: 5',
+  buildVaultContext: () => '## Current Vault State\nagent_id: myco-agent\nunprocessed_batches: 5',
 }));
 
 // ---------------------------------------------------------------------------
@@ -264,7 +264,7 @@ vi.mock('@myco/db/client.js', async (importOriginal) => {
 
 async function createTestAgent(id: string): Promise<void> {
   const now = epochNow();
-  await registerAgent({
+  registerAgent({
     id,
     name: `agent-${id}`,
     created_at: now,
@@ -274,7 +274,7 @@ async function createTestAgent(id: string): Promise<void> {
 
 async function createTestTask(): Promise<void> {
   const now = epochNow();
-  await upsertTask({
+  upsertTask({
     id: TEST_TASK_NAME,
     agent_id: TEST_AGENT_ID,
     prompt: TEST_TASK_PROMPT,
@@ -411,11 +411,11 @@ describe('composePhasePrompt', () => {
 // ---------------------------------------------------------------------------
 
 describe('runAgent', () => {
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
   beforeEach(async () => {
     resetMockState();
-    await cleanTestDb();
+    cleanTestDb();
     await createTestAgent(TEST_AGENT_ID);
     await createTestTask();
   });
@@ -430,7 +430,7 @@ describe('runAgent', () => {
     expect(result.tokensUsed).toBe(1850);
     expect(result.costUsd).toBe(0.0042);
 
-    const run = await getRun(result.runId);
+    const run = getRun(result.runId);
     expect(run).not.toBeNull();
     expect(run!.status).toBe('completed');
     expect(run!.tokens_used).toBe(1850);
@@ -457,7 +457,7 @@ describe('runAgent', () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
     const existingRunId = crypto.randomUUID();
-    await insertRun({
+    insertRun({
       id: existingRunId,
       agent_id: TEST_AGENT_ID,
       status: 'running',
@@ -484,7 +484,7 @@ describe('runAgent', () => {
     expect(result.error).toContain('API rate limit exceeded');
     expect(result.runId).toBeDefined();
 
-    const run = await getRun(result.runId);
+    const run = getRun(result.runId);
     expect(run).not.toBeNull();
     expect(run!.status).toBe('failed');
     expect(run!.error).toContain('API rate limit exceeded');
@@ -500,7 +500,7 @@ describe('runAgent', () => {
 
     expect(result.status).toBe('completed');
 
-    const run = await getRun(result.runId);
+    const run = getRun(result.runId);
     expect(run!.instruction).toBe('Focus on security observations only.');
 
     expect(capturedQueryArgs!.prompt).toContain('## User Instruction');
@@ -527,10 +527,9 @@ describe('runAgent', () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
     const db = getDatabase();
-    await db.query(
-      `UPDATE agents SET model = $1, max_turns = $2 WHERE id = $3`,
-      ['claude-opus-4-20250514', 20, TEST_AGENT_ID],
-    );
+    db.prepare(
+      `UPDATE agents SET model = ?, max_turns = ? WHERE id = ?`,
+    ).run('claude-opus-4-20250514', 20, TEST_AGENT_ID);
 
     await runAgent(TEST_VAULT_DIR);
 
@@ -604,12 +603,12 @@ describe('runAgent — phased execution', () => {
     },
   ];
 
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
   beforeEach(async () => {
     resetMockState();
     mockYamlPhases = TEST_PHASES;
-    await cleanTestDb();
+    cleanTestDb();
     await createTestAgent(TEST_AGENT_ID);
     await createTestTask();
   });
@@ -772,7 +771,7 @@ describe('runAgent — phased execution', () => {
     expect(result.costUsd).toBeCloseTo(0.0126);
 
     // Verify DB record
-    const run = await getRun(result.runId);
+    const run = getRun(result.runId);
     expect(run!.tokens_used).toBe(5550);
     expect(run!.cost_usd).toBeCloseTo(0.0126);
   });

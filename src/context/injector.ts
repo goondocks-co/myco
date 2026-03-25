@@ -1,17 +1,15 @@
 /**
- * Context injector — assembles context from PGlite for hook injection.
+ * Context injector — assembles context from SQLite for hook injection.
  *
- * Queries sessions, plans, and spores from PGlite. For prompt-submit context,
- * optionally performs semantic search via pgvector. If no data exists (zero-config),
- * returns empty context gracefully.
+ * Queries sessions, plans, and spores from SQLite. For prompt-submit context,
+ * semantic search is deferred to Phase 2 (requires daemon vector store).
+ * If no data exists (zero-config), returns empty context gracefully.
  */
 
 import { getDatabase } from '@myco/db/client.js';
 import { listSessions } from '@myco/db/queries/sessions.js';
 import { listPlans } from '@myco/db/queries/plans.js';
 import { listSpores } from '@myco/db/queries/spores.js';
-import { searchSimilar } from '@myco/db/queries/embeddings.js';
-import { tryEmbed } from '@myco/intelligence/embed-query.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import {
   estimateTokens,
@@ -19,8 +17,6 @@ import {
   CONTEXT_SESSION_PREVIEW_CHARS,
   CONTEXT_SPORE_PREVIEW_CHARS,
   SESSION_CONTEXT_MAX_PLANS,
-  PROMPT_CONTEXT_MAX_SPORES,
-  PROMPT_CONTEXT_MIN_SIMILARITY,
   PROMPT_CONTEXT_MIN_LENGTH,
   EXCLUDED_SPORE_STATUSES,
 } from '@myco/constants.js';
@@ -83,7 +79,7 @@ interface InjectedContext {
 // ---------------------------------------------------------------------------
 
 /**
- * Build injected context from PGlite data.
+ * Build injected context from SQLite data.
  *
  * Returns empty context gracefully when no data exists (zero-config behavior).
  */
@@ -173,9 +169,10 @@ export async function buildInjectedContext(
 /**
  * Build per-prompt context using semantic search on spores.
  *
- * If the user's prompt is long enough and embeddings exist, searches for
- * relevant spores via pgvector. Returns empty context gracefully when no
- * embedding provider is configured or no embeddings exist.
+ * Semantic search via the daemon's in-process vector store is deferred to
+ * Phase 2. For now, returns empty context. The hook (`user-prompt-submit`)
+ * routes through the daemon API at `/context/prompt`, which will implement
+ * vector search when ready.
  */
 export async function buildPromptContext(
   prompt: string,
@@ -185,51 +182,8 @@ export async function buildPromptContext(
     return emptyContext();
   }
 
-  // Verify database is available
-  try {
-    getDatabase();
-  } catch {
-    return emptyContext();
-  }
-
-  // Try to embed the prompt and search for similar spores
-  const queryVector = await tryEmbed(prompt);
-  if (!queryVector) {
-    return emptyContext();
-  }
-
-  const results = await searchSimilar('spores', queryVector, {
-    limit: PROMPT_CONTEXT_MAX_SPORES,
-    filters: { status: 'active' },
-  });
-
-  const relevant = results.filter((r) => r.similarity >= PROMPT_CONTEXT_MIN_SIMILARITY);
-  if (relevant.length === 0) {
-    return emptyContext();
-  }
-
-  const sporesText = formatLayer(
-    'Relevant Knowledge',
-    relevant.map((r) => {
-      const content = ((r.content as string) ?? '').slice(0, CONTEXT_SPORE_PREVIEW_CHARS);
-      const type = r.observation_type as string;
-      return `- **${type}** (${r.similarity.toFixed(2)}): ${content}`;
-    }),
-    DEFAULT_SPORES_BUDGET,
-  );
-
-  const totalTokens = estimateTokens(sporesText);
-
-  return {
-    text: sporesText,
-    tokenEstimate: totalTokens,
-    layers: {
-      plans: '',
-      sessions: '',
-      spores: sporesText,
-      team: '',
-    },
-  };
+  // Per-prompt semantic search deferred to Phase 2 (requires daemon vector store)
+  return emptyContext();
 }
 
 // ---------------------------------------------------------------------------

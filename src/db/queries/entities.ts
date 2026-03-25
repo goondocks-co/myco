@@ -1,8 +1,8 @@
 /**
  * Entity CRUD query helpers for the knowledge graph.
  *
- * All functions obtain the PGlite instance internally via `getDatabase()`.
- * Queries use parameterized placeholders ($1, $2, ...) throughout.
+ * All functions obtain the SQLite instance internally via `getDatabase()`.
+ * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
 import { getDatabase } from '@myco/db/client.js';
@@ -84,7 +84,7 @@ const SELECT_COLUMNS = ENTITY_COLUMNS.join(', ');
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Normalize a PGlite result row into a typed EntityRow. */
+/** Normalize a SQLite result row into a typed EntityRow. */
 function toEntityRow(row: Record<string, unknown>): EntityRow {
   return {
     id: row.id as string,
@@ -107,28 +107,33 @@ function toEntityRow(row: Record<string, unknown>): EntityRow {
  *
  * On conflict, updates properties (if provided) and last_seen.
  */
-export async function insertEntity(data: EntityInsert): Promise<EntityRow> {
+export function insertEntity(data: EntityInsert): EntityRow {
   const db = getDatabase();
 
-  const result = await db.query(
+  db.prepare(
     `INSERT INTO entities (id, agent_id, type, name, properties, first_seen, last_seen)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (agent_id, type, name) DO UPDATE SET
        properties = COALESCE(EXCLUDED.properties, entities.properties),
-       last_seen = EXCLUDED.last_seen
-     RETURNING ${SELECT_COLUMNS}`,
-    [
-      data.id,
+       last_seen = EXCLUDED.last_seen`,
+  ).run(
+    data.id,
+    data.agent_id,
+    data.type,
+    data.name,
+    data.properties ?? null,
+    data.first_seen,
+    data.last_seen,
+  );
+
+  // On conflict, the passed-in id may not be the actual row id. Look up by unique key.
+  return toEntityRow(
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM entities WHERE agent_id = ? AND type = ? AND name = ?`).get(
       data.agent_id,
       data.type,
       data.name,
-      data.properties ?? null,
-      data.first_seen,
-      data.last_seen,
-    ],
+    ) as Record<string, unknown>,
   );
-
-  return toEntityRow(result.rows[0] as Record<string, unknown>);
 }
 
 /**
@@ -136,16 +141,15 @@ export async function insertEntity(data: EntityInsert): Promise<EntityRow> {
  *
  * @returns the entity row, or null if not found.
  */
-export async function getEntity(id: string): Promise<EntityRow | null> {
+export function getEntity(id: string): EntityRow | null {
   const db = getDatabase();
 
-  const result = await db.query(
-    `SELECT ${SELECT_COLUMNS} FROM entities WHERE id = $1`,
-    [id],
-  );
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM entities WHERE id = ?`,
+  ).get(id) as Record<string, unknown> | undefined;
 
-  if (result.rows.length === 0) return null;
-  return toEntityRow(result.rows[0] as Record<string, unknown>);
+  if (!row) return null;
+  return toEntityRow(row);
 }
 
 /**
@@ -158,37 +162,36 @@ export async function getEntity(id: string): Promise<EntityRow | null> {
  * When both `mentioned_in` and `note_type` are provided, filters to entities
  * referenced in a specific note via the entity_mentions subquery.
  */
-export async function listEntities(
+export function listEntities(
   options: ListEntitiesOptions = {},
-): Promise<EntityRow[]> {
+): EntityRow[] {
   const db = getDatabase();
 
   const conditions: string[] = [];
   const params: unknown[] = [];
-  let paramIndex = 1;
 
   if (options.agent_id !== undefined) {
-    conditions.push(`agent_id = $${paramIndex++}`);
+    conditions.push(`agent_id = ?`);
     params.push(options.agent_id);
   }
 
   if (options.type !== undefined) {
-    conditions.push(`type = $${paramIndex++}`);
+    conditions.push(`type = ?`);
     params.push(options.type);
   }
 
   // Default: only show active entities (status column added in v5)
   if (options.status !== undefined) {
-    conditions.push(`status = $${paramIndex++}`);
+    conditions.push(`status = ?`);
     params.push(options.status);
   } else {
-    conditions.push(`status = $${paramIndex++}`);
+    conditions.push(`status = ?`);
     params.push('active');
   }
 
   if (options.mentioned_in !== undefined && options.note_type !== undefined) {
     conditions.push(
-      `id IN (SELECT entity_id FROM entity_mentions WHERE note_id = $${paramIndex++} AND note_type = $${paramIndex++})`,
+      `id IN (SELECT entity_id FROM entity_mentions WHERE note_id = ? AND note_type = ?)`,
     );
     params.push(options.mentioned_in);
     params.push(options.note_type);
@@ -201,17 +204,16 @@ export async function listEntities(
   params.push(limit);
   params.push(offset);
 
-  const result = await db.query(
+  const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM entities
      ${where}
      ORDER BY last_seen DESC
-     LIMIT $${paramIndex}
-     OFFSET $${paramIndex + 1}`,
-    params,
-  );
+     LIMIT ?
+     OFFSET ?`,
+  ).all(...params) as Record<string, unknown>[];
 
-  return (result.rows as Record<string, unknown>[]).map(toEntityRow);
+  return rows.map(toEntityRow);
 }
 
 /**
@@ -221,21 +223,21 @@ export async function listEntities(
  * then fetches entity rows for all connected entity nodes.
  *
  * @param entityId - The center entity to expand from.
- * @param depth    - Number of hops to traverse (1–3, default 1).
+ * @param depth    - Number of hops to traverse (1-3, default 1).
  * @returns `{ center, nodes, edges }` where nodes are all connected entities
  *          (excluding center) and edges are deduplicated across BFS iterations.
  */
-export async function getEntityWithEdges(
+export function getEntityWithEdges(
   entityId: string,
   depth = 1,
-): Promise<EntityGraph | null> {
+): EntityGraph | null {
   const db = getDatabase();
 
-  const center = await getEntity(entityId);
+  const center = getEntity(entityId);
   if (center === null) return null;
 
   const clampedDepth = Math.min(Math.max(depth, 1), 3);
-  const graph = await getGraphForNode(entityId, 'entity', { depth: clampedDepth });
+  const graph = getGraphForNode(entityId, 'entity', { depth: clampedDepth });
 
   // Collect all entity node IDs from edges (excluding center)
   const nodeIdSet = new Set<string>();
@@ -248,12 +250,11 @@ export async function getEntityWithEdges(
   const nodeIds = Array.from(nodeIdSet);
   let nodes: EntityRow[] = [];
   if (nodeIds.length > 0) {
-    const placeholders = nodeIds.map((_, i) => `$${i + 1}`).join(', ');
-    const nodeResult = await db.query(
+    const placeholders = nodeIds.map(() => `?`).join(', ');
+    const nodeRows = db.prepare(
       `SELECT ${SELECT_COLUMNS} FROM entities WHERE id IN (${placeholders})`,
-      nodeIds,
-    );
-    nodes = (nodeResult.rows as Record<string, unknown>[]).map(toEntityRow);
+    ).all(...nodeIds) as Record<string, unknown>[];
+    nodes = nodeRows.map(toEntityRow);
   }
 
   return { center, nodes, edges: graph.edges };

@@ -20,12 +20,12 @@ const epochNow = () => Math.floor(Date.now() / 1000);
 const TEST_AGENT_ID = 'agent-feed-test';
 
 describe('getActivityFeed', () => {
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
   beforeEach(async () => {
-    await cleanTestDb();
+    cleanTestDb();
     // Insert agent required as FK for agent_runs and spores
-    await registerAgent({
+    registerAgent({
       id: TEST_AGENT_ID,
       name: 'Feed Test Agent',
       created_at: epochNow(),
@@ -37,7 +37,7 @@ describe('getActivityFeed', () => {
   // ---------------------------------------------------------------------------
 
   it('returns empty array when no data exists', async () => {
-    const feed = await getActivityFeed();
+    const feed = getActivityFeed();
     expect(feed).toEqual([]);
   });
 
@@ -49,7 +49,7 @@ describe('getActivityFeed', () => {
     const base = epochNow();
 
     // Session at base+30 (newest)
-    await upsertSession({
+    upsertSession({
       id: 'sess-feed-1',
       agent: 'claude-code',
       started_at: base + 30,
@@ -58,7 +58,7 @@ describe('getActivityFeed', () => {
     });
 
     // Agent run at base+20
-    await insertRun({
+    insertRun({
       id: 'run-feed-1',
       agent_id: TEST_AGENT_ID,
       task: 'curate spores',
@@ -68,7 +68,7 @@ describe('getActivityFeed', () => {
     });
 
     // Spore at base+10 (oldest)
-    await insertSpore({
+    insertSpore({
       id: 'spore-feed-1',
       agent_id: TEST_AGENT_ID,
       observation_type: 'gotcha',
@@ -76,7 +76,7 @@ describe('getActivityFeed', () => {
       created_at: base + 10,
     });
 
-    const feed = await getActivityFeed();
+    const feed = getActivityFeed();
 
     expect(feed).toHaveLength(3);
 
@@ -108,7 +108,7 @@ describe('getActivityFeed', () => {
     const now = epochNow();
     const sessionId = 'abcdefgh-1234-5678-abcd-ef0123456789';
 
-    await upsertSession({
+    upsertSession({
       id: sessionId,
       agent: 'claude-code',
       started_at: now,
@@ -116,7 +116,7 @@ describe('getActivityFeed', () => {
       title: null,
     });
 
-    const feed = await getActivityFeed();
+    const feed = getActivityFeed();
     expect(feed).toHaveLength(1);
     expect(feed[0].summary).toBe('Session abcdefgh');
   });
@@ -129,7 +129,7 @@ describe('getActivityFeed', () => {
     const now = epochNow();
     const longContent = 'A'.repeat(200);
 
-    await insertSpore({
+    insertSpore({
       id: 'spore-long',
       agent_id: TEST_AGENT_ID,
       observation_type: 'decision',
@@ -137,7 +137,7 @@ describe('getActivityFeed', () => {
       created_at: now,
     });
 
-    const feed = await getActivityFeed();
+    const feed = getActivityFeed();
     expect(feed).toHaveLength(1);
     // summary = "decision: " + LEFT(content, 80) = "decision: " + 80 A's
     expect(feed[0].summary).toBe('decision: ' + 'A'.repeat(80));
@@ -150,7 +150,7 @@ describe('getActivityFeed', () => {
   it('excludes spores with non-active status', async () => {
     const now = epochNow();
 
-    await insertSpore({
+    insertSpore({
       id: 'spore-active',
       agent_id: TEST_AGENT_ID,
       observation_type: 'gotcha',
@@ -159,7 +159,7 @@ describe('getActivityFeed', () => {
       status: 'active',
     });
 
-    await insertSpore({
+    insertSpore({
       id: 'spore-superseded',
       agent_id: TEST_AGENT_ID,
       observation_type: 'gotcha',
@@ -168,7 +168,7 @@ describe('getActivityFeed', () => {
       status: 'superseded',
     });
 
-    const feed = await getActivityFeed();
+    const feed = getActivityFeed();
     expect(feed).toHaveLength(1);
     expect(feed[0].id).toBe('spore-active');
   });
@@ -182,7 +182,7 @@ describe('getActivityFeed', () => {
 
     // Insert 5 sessions with distinct timestamps
     for (let i = 0; i < 5; i++) {
-      await upsertSession({
+      upsertSession({
         id: `sess-limit-${i}`,
         agent: 'claude-code',
         started_at: base + i,
@@ -190,7 +190,7 @@ describe('getActivityFeed', () => {
       });
     }
 
-    const feed = await getActivityFeed(3);
+    const feed = getActivityFeed(3);
     expect(feed).toHaveLength(3);
   });
 
@@ -199,7 +199,7 @@ describe('getActivityFeed', () => {
 
     // Insert 60 sessions
     for (let i = 0; i < 60; i++) {
-      await upsertSession({
+      upsertSession({
         id: `sess-def-${String(i).padStart(3, '0')}`,
         agent: 'claude-code',
         started_at: base + i,
@@ -207,7 +207,7 @@ describe('getActivityFeed', () => {
       });
     }
 
-    const feed = await getActivityFeed();
+    const feed = getActivityFeed();
     expect(feed).toHaveLength(50);
   });
 
@@ -218,7 +218,7 @@ describe('getActivityFeed', () => {
   it('uses completed_at as timestamp for finished agent runs', async () => {
     const now = epochNow();
 
-    await insertRun({
+    insertRun({
       id: 'run-done',
       agent_id: TEST_AGENT_ID,
       task: 'prune',
@@ -227,7 +227,7 @@ describe('getActivityFeed', () => {
       completed_at: now + 100,
     });
 
-    const feed = await getActivityFeed();
+    const feed = getActivityFeed();
     expect(feed).toHaveLength(1);
     expect(feed[0].timestamp).toBe(now + 100);
   });
@@ -240,7 +240,7 @@ describe('getActivityFeed', () => {
     const now = epochNow();
 
     // Only a spore — no sessions or runs
-    await insertSpore({
+    insertSpore({
       id: 'spore-only',
       agent_id: TEST_AGENT_ID,
       observation_type: 'discovery',
@@ -248,7 +248,7 @@ describe('getActivityFeed', () => {
       created_at: now,
     });
 
-    const feed = await getActivityFeed();
+    const feed = getActivityFeed();
     expect(feed).toHaveLength(1);
     expect(feed[0].type).toBe('spore');
   });

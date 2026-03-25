@@ -1,8 +1,8 @@
 /**
  * Agent task CRUD query helpers.
  *
- * All functions obtain the PGlite instance internally via `getDatabase()`.
- * Queries use parameterized placeholders ($1, $2, ...) throughout.
+ * All functions obtain the SQLite instance internally via `getDatabase()`.
+ * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
 import { getDatabase } from '@myco/db/client.js';
@@ -93,7 +93,7 @@ const SELECT_COLUMNS = TASK_COLUMNS.join(', ');
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Normalize a PGlite result row into a typed TaskRow. */
+/** Normalize a SQLite result row into a typed TaskRow. */
 function toTaskRow(row: Record<string, unknown>): TaskRow {
   return {
     id: row.id as string,
@@ -138,18 +138,18 @@ export function deserializeConfig(raw: string | null): TaskConfig | null {
  * This is the idempotent upsert — calling twice with the same data
  * produces the same result.
  */
-export async function upsertTask(data: TaskInsert): Promise<TaskRow> {
+export function upsertTask(data: TaskInsert): TaskRow {
   const db = getDatabase();
 
-  const result = await db.query(
+  db.prepare(
     `INSERT INTO agent_tasks (
        id, agent_id, source, display_name, description,
        prompt, is_default, tool_overrides, model, config,
        created_at, updated_at
      ) VALUES (
-       $1, $2, $3, $4, $5,
-       $6, $7, $8, $9, $10,
-       $11, $12
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?
      )
      ON CONFLICT (id) DO UPDATE SET
        agent_id       = EXCLUDED.agent_id,
@@ -161,25 +161,25 @@ export async function upsertTask(data: TaskInsert): Promise<TaskRow> {
        tool_overrides = EXCLUDED.tool_overrides,
        model          = EXCLUDED.model,
        config         = EXCLUDED.config,
-       updated_at     = EXCLUDED.updated_at
-     RETURNING ${SELECT_COLUMNS}`,
-    [
-      data.id,
-      data.agent_id,
-      data.source ?? DEFAULT_SOURCE,
-      data.display_name ?? null,
-      data.description ?? null,
-      data.prompt,
-      data.is_default ?? DEFAULT_IS_DEFAULT,
-      data.tool_overrides ?? null,
-      data.model ?? null,
-      data.config ?? null,
-      data.created_at,
-      data.updated_at ?? null,
-    ],
+       updated_at     = EXCLUDED.updated_at`,
+  ).run(
+    data.id,
+    data.agent_id,
+    data.source ?? DEFAULT_SOURCE,
+    data.display_name ?? null,
+    data.description ?? null,
+    data.prompt,
+    data.is_default ?? DEFAULT_IS_DEFAULT,
+    data.tool_overrides ?? null,
+    data.model ?? null,
+    data.config ?? null,
+    data.created_at,
+    data.updated_at ?? null,
   );
 
-  return toTaskRow(result.rows[0] as Record<string, unknown>);
+  return toTaskRow(
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM agent_tasks WHERE id = ?`).get(data.id) as Record<string, unknown>,
+  );
 }
 
 /**
@@ -187,37 +187,35 @@ export async function upsertTask(data: TaskInsert): Promise<TaskRow> {
  *
  * @returns the task row, or null if not found.
  */
-export async function getTask(id: string): Promise<TaskRow | null> {
+export function getTask(id: string): TaskRow | null {
   const db = getDatabase();
 
-  const result = await db.query(
-    `SELECT ${SELECT_COLUMNS} FROM agent_tasks WHERE id = $1`,
-    [id],
-  );
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM agent_tasks WHERE id = ?`,
+  ).get(id) as Record<string, unknown> | undefined;
 
-  if (result.rows.length === 0) return null;
-  return toTaskRow(result.rows[0] as Record<string, unknown>);
+  if (!row) return null;
+  return toTaskRow(row);
 }
 
 /**
  * List tasks with optional filters, ordered by created_at ASC.
  */
-export async function listTasks(
+export function listTasks(
   options: ListTasksOptions = {},
-): Promise<TaskRow[]> {
+): TaskRow[] {
   const db = getDatabase();
 
   const conditions: string[] = [];
   const params: unknown[] = [];
-  let paramIndex = 1;
 
   if (options.agent_id !== undefined) {
-    conditions.push(`agent_id = $${paramIndex++}`);
+    conditions.push(`agent_id = ?`);
     params.push(options.agent_id);
   }
 
   if (options.source !== undefined) {
-    conditions.push(`source = $${paramIndex++}`);
+    conditions.push(`source = ?`);
     params.push(options.source);
   }
 
@@ -226,16 +224,15 @@ export async function listTasks(
 
   params.push(limit);
 
-  const result = await db.query(
+  const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_tasks
      ${where}
      ORDER BY created_at ASC
-     LIMIT $${paramIndex}`,
-    params,
-  );
+     LIMIT ?`,
+  ).all(...params) as Record<string, unknown>[];
 
-  return (result.rows as Record<string, unknown>[]).map(toTaskRow);
+  return rows.map(toTaskRow);
 }
 
 /**
@@ -243,21 +240,20 @@ export async function listTasks(
  *
  * @returns the default task row, or null if no default exists.
  */
-export async function getDefaultTask(
+export function getDefaultTask(
   agentId: string,
-): Promise<TaskRow | null> {
+): TaskRow | null {
   const db = getDatabase();
 
-  const result = await db.query(
+  const row = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_tasks
-     WHERE agent_id = $1 AND is_default = $2
+     WHERE agent_id = ? AND is_default = ?
      LIMIT 1`,
-    [agentId, IS_DEFAULT_TRUE],
-  );
+  ).get(agentId, IS_DEFAULT_TRUE) as Record<string, unknown> | undefined;
 
-  if (result.rows.length === 0) return null;
-  return toTaskRow(result.rows[0] as Record<string, unknown>);
+  if (!row) return null;
+  return toTaskRow(row);
 }
 
 /**
@@ -265,20 +261,19 @@ export async function getDefaultTask(
  *
  * Rows with a null display_name sort before named tasks.
  */
-export async function listTasksByAgent(
+export function listTasksByAgent(
   agentId: string,
-): Promise<TaskRow[]> {
+): TaskRow[] {
   const db = getDatabase();
 
-  const result = await db.query(
+  const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_tasks
-     WHERE agent_id = $1
+     WHERE agent_id = ?
      ORDER BY display_name ASC`,
-    [agentId],
-  );
+  ).all(agentId) as Record<string, unknown>[];
 
-  return (result.rows as Record<string, unknown>[]).map(toTaskRow);
+  return rows.map(toTaskRow);
 }
 
 /**
@@ -288,11 +283,10 @@ export async function listTasksByAgent(
  *
  * @returns true if the task was deleted, false if not found or protected.
  */
-export async function deleteTask(id: string): Promise<boolean> {
+export function deleteTask(id: string): boolean {
   const db = getDatabase();
-  const result = await db.query(
-    `DELETE FROM agent_tasks WHERE id = $1 AND source != $2 RETURNING id`,
-    [id, BUILT_IN_SOURCE],
-  );
-  return result.rows.length > 0;
+  const info = db.prepare(
+    `DELETE FROM agent_tasks WHERE id = ? AND source != ?`,
+  ).run(id, BUILT_IN_SOURCE);
+  return info.changes > 0;
 }

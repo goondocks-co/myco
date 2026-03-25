@@ -65,7 +65,7 @@ Bad entity names: "testing phase", "technical debt", "code quality"
 
 Three types only:
 
-- **component** — A module, class, service, or significant function (e.g., "EventBuffer", "DaemonClient", "PGlite")
+- **component** — A module, class, service, or significant function (e.g., "EventBuffer", "DaemonClient", "SQLite")
 - **concept** — An architectural pattern or domain concept that spans multiple sessions. Must be specific and named, not abstract categories (e.g., "idempotent writes", "cursor-based pagination")
 - **person** — A contributor or team member mentioned in sessions
 
