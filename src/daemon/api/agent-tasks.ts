@@ -12,6 +12,8 @@
  *   DELETE /api/agent/tasks/:id      — delete a user task (built-ins blocked)
  */
 
+import { stringify as stringifyYaml, parse as parseYaml } from 'yaml';
+import { taskFromParsed } from '@myco/agent/loader.js';
 import { AgentTaskSchema } from '@myco/agent/schemas.js';
 import {
   loadAllTasks,
@@ -204,8 +206,7 @@ export async function handleGetTaskYaml(
 
   // Serialize task to YAML (strip internal fields)
   const { isBuiltin: _ib, source: _src, ...serializable } = task;
-  const { stringify } = await import('yaml');
-  const yaml = stringify(serializable);
+  const yaml = stringifyYaml(serializable);
 
   return { status: HTTP_OK, body: { yaml, source: task.source } };
 }
@@ -241,9 +242,7 @@ export async function handleUpdateTask(
   }
 
   try {
-    const { parse } = await import('yaml');
-    const parsed = AgentTaskSchema.parse(parse(yamlContent));
-    const { taskFromParsed } = await import('@myco/agent/loader.js');
+    const parsed = AgentTaskSchema.parse(parseYaml(yamlContent));
     const task = { ...taskFromParsed(parsed), isBuiltin: false, source: USER_TASK_SOURCE };
 
     // Ensure the name matches the URL param (prevent renaming via YAML)
