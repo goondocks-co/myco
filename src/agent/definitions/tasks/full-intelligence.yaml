@@ -225,20 +225,27 @@ phases:
 
   - name: digest
     prompt: |
-      Regenerate digest extracts at all five tiers. The vault context
-      injected into every session depends on these — they must be
-      comprehensive and accurate.
+      Regenerate digest extracts — but ONLY if the vault changed.
 
-      ## Gather knowledge (budget: 5 turns)
+      ## Step 1: Check if digest needs updating (budget: 1 turn)
 
-      Use `vault_search` to query specific themes. Suggested queries:
+      Review the prior phase results (provided in your context). If:
+      - Extract created 0 new spores AND
+      - Consolidate resolved 0 spores AND
+      - Graph created 0 new entities/edges
+      Then call `vault_report` with action "skip" and reason
+      "no vault changes since last digest" and STOP. Do not regenerate.
+
+      ## Step 2: Gather knowledge (budget: 5 turns)
+
+      If the vault DID change, use `vault_search` to query themes:
       - "architecture decisions and trade-offs"
       - "bugs gotchas and workarounds"
       - "key components and how they interact"
       - "active work and plans"
-      Also call `vault_spores` and `vault_sessions` for a broad overview.
+      Also call `vault_spores` and `vault_sessions` for a broad view.
 
-      ## Write extracts (budget: 10 turns)
+      ## Step 3: Write extracts (budget: 10 turns)
 
       Call `vault_write_digest` for EACH of these five tiers:
       1. Tier 1500 — Executive briefing: what is this project, what's
@@ -253,7 +260,7 @@ phases:
       recent insights > active decisions > unresolved gotchas >
       architectural patterns > historical context.
 
-      You MUST call `vault_write_digest` exactly 5 times.
+      When regenerating, call `vault_write_digest` exactly 5 times.
     tools:
       - vault_spores
       - vault_sessions
