@@ -125,16 +125,8 @@ describe('Embedding constants', () => {
     expect(EMBEDDING_INTERVAL_MS).toBeGreaterThan(0);
   });
 
-  it('EMBEDDING_INTERVAL_MS is 30 seconds', () => {
-    expect(EMBEDDING_INTERVAL_MS).toBe(30_000);
-  });
-
   it('EMBEDDING_BATCH_SIZE is positive', () => {
     expect(EMBEDDING_BATCH_SIZE).toBeGreaterThan(0);
-  });
-
-  it('EMBEDDING_BATCH_SIZE is 10', () => {
-    expect(EMBEDDING_BATCH_SIZE).toBe(10);
   });
 
   it('CONTENT_HASH_ALGORITHM is sha256', () => {

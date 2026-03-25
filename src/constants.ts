@@ -13,12 +13,16 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
+// --- Time (primitives — must precede derived constants) ---
+/** Milliseconds per second. */
+export const MS_PER_SECOND = 1000;
+
 // --- Embedding ---
 /** Max characters of text sent to the embedding model. */
 export const EMBEDDING_INPUT_LIMIT = 8000;
 
 /** Embedding worker reconciliation interval (ms). */
-export const EMBEDDING_INTERVAL_MS = 30_000;
+export const EMBEDDING_INTERVAL_MS = 30 * MS_PER_SECOND;
 
 /** Max rows per embedding worker cycle. */
 export const EMBEDDING_BATCH_SIZE = 10;
@@ -82,9 +86,6 @@ export const PROVIDER_DETECT_TIMEOUT_MS = 3000;
 // --- Time ---
 /** Milliseconds in one day. */
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-/** Milliseconds-to-seconds divisor for Unix epoch conversion. */
-const MS_PER_SECOND = 1000;
 
 /** Current Unix epoch in seconds. */
 export function epochSeconds(): number {
