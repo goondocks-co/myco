@@ -1,8 +1,8 @@
 /**
  * Agent state key-value query helpers.
  *
- * All functions obtain the PGlite instance internally via `getDatabase()`.
- * Queries use parameterized placeholders ($1, $2, ...) throughout.
+ * All functions obtain the SQLite instance internally via `getDatabase()`.
+ * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
 import { getDatabase } from '@myco/db/client.js';
@@ -36,7 +36,7 @@ const SELECT_COLUMNS = STATE_COLUMNS.join(', ');
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Normalize a PGlite result row into a typed AgentStateRow. */
+/** Normalize a SQLite result row into a typed AgentStateRow. */
 function toAgentStateRow(row: Record<string, unknown>): AgentStateRow {
   return {
     agent_id: row.agent_id as string,
@@ -55,19 +55,18 @@ function toAgentStateRow(row: Record<string, unknown>): AgentStateRow {
  *
  * @returns the state row, or null if not found.
  */
-export async function getState(
+export function getState(
   agentId: string,
   key: string,
-): Promise<AgentStateRow | null> {
+): AgentStateRow | null {
   const db = getDatabase();
 
-  const result = await db.query(
-    `SELECT ${SELECT_COLUMNS} FROM agent_state WHERE agent_id = $1 AND key = $2`,
-    [agentId, key],
-  );
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM agent_state WHERE agent_id = ? AND key = ?`,
+  ).get(agentId, key) as Record<string, unknown> | undefined;
 
-  if (result.rows.length === 0) return null;
-  return toAgentStateRow(result.rows[0] as Record<string, unknown>);
+  if (!row) return null;
+  return toAgentStateRow(row);
 }
 
 /**
@@ -77,42 +76,41 @@ export async function getState(
  * has at most one value per key. On conflict, the value and updated_at
  * are overwritten.
  */
-export async function setState(
+export function setState(
   agentId: string,
   key: string,
   value: string,
   updatedAt: number,
-): Promise<AgentStateRow> {
+): AgentStateRow {
   const db = getDatabase();
 
-  const result = await db.query(
+  db.prepare(
     `INSERT INTO agent_state (agent_id, key, value, updated_at)
-     VALUES ($1, $2, $3, $4)
+     VALUES (?, ?, ?, ?)
      ON CONFLICT (agent_id, key) DO UPDATE SET
        value      = EXCLUDED.value,
-       updated_at = EXCLUDED.updated_at
-     RETURNING ${SELECT_COLUMNS}`,
-    [agentId, key, value, updatedAt],
-  );
+       updated_at = EXCLUDED.updated_at`,
+  ).run(agentId, key, value, updatedAt);
 
-  return toAgentStateRow(result.rows[0] as Record<string, unknown>);
+  return toAgentStateRow(
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM agent_state WHERE agent_id = ? AND key = ?`).get(agentId, key) as Record<string, unknown>,
+  );
 }
 
 /**
  * Get all state key-value pairs for an agent, ordered by key ASC.
  */
-export async function getStatesForAgent(
+export function getStatesForAgent(
   agentId: string,
-): Promise<AgentStateRow[]> {
+): AgentStateRow[] {
   const db = getDatabase();
 
-  const result = await db.query(
+  const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_state
-     WHERE agent_id = $1
+     WHERE agent_id = ?
      ORDER BY key ASC`,
-    [agentId],
-  );
+  ).all(agentId) as Record<string, unknown>[];
 
-  return (result.rows as Record<string, unknown>[]).map(toAgentStateRow);
+  return rows.map(toAgentStateRow);
 }

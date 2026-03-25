@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 /**
  * Resolve the vault directory.
  *
- * Always `.myco/` in the project root. The vault is a PGlite database
+ * Always `.myco/` in the project root. The vault is a SQLite database
  * that lives with the project — no external overrides needed.
  *
  * Uses git to find the repo root so this works correctly in

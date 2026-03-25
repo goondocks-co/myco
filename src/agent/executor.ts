@@ -15,7 +15,8 @@
 import crypto from 'node:crypto';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
-import { initDatabaseForVault } from '@myco/db/client.js';
+import { initDatabase, vaultDbPath } from '@myco/db/client.js';
+import { createSchema } from '@myco/db/schema.js';
 import { getAgent } from '@myco/db/queries/agents.js';
 import { getTask, getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
@@ -391,13 +392,14 @@ export async function runAgent(
   vaultDir: string,
   options?: RunOptions,
 ): Promise<AgentRunResult> {
-  // 1. Init DB
-  await initDatabaseForVault(vaultDir);
+  // 1. Init DB (idempotent — returns existing instance if already open)
+  const db = initDatabase(vaultDbPath(vaultDir));
+  createSchema(db);
 
   const agentId = options?.agentId ?? DEFAULT_AGENT_ID;
 
   // 2. Concurrency guard — check before expensive config loading
-  const running = await getRunningRun(agentId);
+  const running = getRunningRun(agentId);
   if (running) {
     return {
       runId: running.id,
@@ -410,15 +412,11 @@ export async function runAgent(
   const definitionsDir = resolveDefinitionsDir();
   const definition = loadAgentDefinition(definitionsDir);
 
-  // Load agent and task in parallel — both are independent DB lookups
-  const taskPromise = options?.task
+  // Load agent and task — both are sync DB lookups
+  const agentRow = getAgent(agentId);
+  const taskRow = options?.task
     ? getTask(options.task)
     : getDefaultTask(agentId);
-
-  const [agentRow, taskRow] = await Promise.all([
-    getAgent(agentId),
-    taskPromise,
-  ]);
 
   // Structural fields (phases, execution, contextQueries) come from the registry
   // (built-in YAML merged with user vault tasks) rather than the DB flat columns.
@@ -450,7 +448,7 @@ export async function runAgent(
   const runId = crypto.randomUUID();
   const now = epochSeconds();
 
-  await insertRun({
+  insertRun({
     id: runId,
     agent_id: agentId,
     task: config.taskName,
@@ -461,7 +459,7 @@ export async function runAgent(
 
   // 5. Build prompt components
   const systemPrompt = loadSystemPrompt(definitionsDir, config.systemPromptPath);
-  const vaultContext = await buildVaultContext(agentId);
+  const vaultContext = buildVaultContext(agentId);
 
   // 6. Execute — phased or single query
   let phaseResults: PhaseResult[] | undefined;
@@ -502,7 +500,7 @@ export async function runAgent(
     }
 
     const completedAt = epochSeconds();
-    await updateRunStatus(runId, STATUS_COMPLETED, {
+    updateRunStatus(runId, STATUS_COMPLETED, {
       completed_at: completedAt,
       tokens_used: tokensUsed,
       cost_usd: costUsd,
@@ -534,7 +532,7 @@ export async function runAgent(
     console.error(`[agent] Run ${runId} failed: ${errorMessage}`);
 
     try {
-      await updateRunStatus(runId, STATUS_FAILED, {
+      updateRunStatus(runId, STATUS_FAILED, {
         completed_at: failedAt,
         error: errorMessage,
         // Preserve phase results collected before the failure

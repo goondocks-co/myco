@@ -219,7 +219,7 @@ export const SUPERSESSION_MAX_TOKENS = 256;
 export const AGENT_CLUSTER_SIMILARITY = 0.75;
 
 // --- Search ---
-/** Default number of results returned by semanticSearch and fullTextSearch. */
+/** Default number of results returned by vector search and fullTextSearch. */
 export const SEARCH_RESULTS_DEFAULT_LIMIT = 20;
 /** Minimum cosine similarity score for semantic search results (0-1). */
 export const SEARCH_SIMILARITY_THRESHOLD = 0.3;

@@ -1,8 +1,8 @@
 /**
  * Plan CRUD query helpers.
  *
- * All functions obtain the PGlite instance internally via `getDatabase()`.
- * Queries use parameterized placeholders ($1, $2, ...) throughout.
+ * All functions obtain the SQLite instance internally via `getDatabase()`.
+ * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
 import { getDatabase } from '@myco/db/client.js';
@@ -48,6 +48,7 @@ export interface PlanRow {
   source_path: string | null;
   tags: string | null;
   processed: number;
+  embedded: number;
   created_at: number;
   updated_at: number | null;
 }
@@ -71,6 +72,7 @@ const PLAN_COLUMNS = [
   'source_path',
   'tags',
   'processed',
+  'embedded',
   'created_at',
   'updated_at',
 ] as const;
@@ -81,7 +83,7 @@ const SELECT_COLUMNS = PLAN_COLUMNS.join(', ');
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Normalize a PGlite result row into a typed PlanRow. */
+/** Normalize a SQLite result row into a typed PlanRow. */
 function toPlanRow(row: Record<string, unknown>): PlanRow {
   return {
     id: row.id as string,
@@ -92,6 +94,7 @@ function toPlanRow(row: Record<string, unknown>): PlanRow {
     source_path: (row.source_path as string) ?? null,
     tags: (row.tags as string) ?? null,
     processed: row.processed as number,
+    embedded: (row.embedded as number) ?? 0,
     created_at: row.created_at as number,
     updated_at: (row.updated_at as number) ?? null,
   };
@@ -106,16 +109,16 @@ function toPlanRow(row: Record<string, unknown>): PlanRow {
  *
  * On conflict the row is updated with the values from `data`.
  */
-export async function upsertPlan(data: PlanInsert): Promise<PlanRow> {
+export function upsertPlan(data: PlanInsert): PlanRow {
   const db = getDatabase();
 
-  const result = await db.query(
+  db.prepare(
     `INSERT INTO plans (
        id, status, author, title, content,
        source_path, tags, processed, created_at, updated_at
      ) VALUES (
-       $1, $2, $3, $4, $5,
-       $6, $7, $8, $9, $10
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?
      )
      ON CONFLICT (id) DO UPDATE SET
        status      = EXCLUDED.status,
@@ -125,23 +128,23 @@ export async function upsertPlan(data: PlanInsert): Promise<PlanRow> {
        source_path = EXCLUDED.source_path,
        tags        = EXCLUDED.tags,
        processed   = EXCLUDED.processed,
-       updated_at  = EXCLUDED.updated_at
-     RETURNING ${SELECT_COLUMNS}`,
-    [
-      data.id,
-      data.status ?? DEFAULT_STATUS,
-      data.author ?? null,
-      data.title ?? null,
-      data.content ?? null,
-      data.source_path ?? null,
-      data.tags ?? null,
-      data.processed ?? DEFAULT_PROCESSED,
-      data.created_at,
-      data.updated_at ?? null,
-    ],
+       updated_at  = EXCLUDED.updated_at`,
+  ).run(
+    data.id,
+    data.status ?? DEFAULT_STATUS,
+    data.author ?? null,
+    data.title ?? null,
+    data.content ?? null,
+    data.source_path ?? null,
+    data.tags ?? null,
+    data.processed ?? DEFAULT_PROCESSED,
+    data.created_at,
+    data.updated_at ?? null,
   );
 
-  return toPlanRow(result.rows[0] as Record<string, unknown>);
+  return toPlanRow(
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM plans WHERE id = ?`).get(data.id) as Record<string, unknown>,
+  );
 }
 
 /**
@@ -149,32 +152,30 @@ export async function upsertPlan(data: PlanInsert): Promise<PlanRow> {
  *
  * @returns the plan row, or null if not found.
  */
-export async function getPlan(id: string): Promise<PlanRow | null> {
+export function getPlan(id: string): PlanRow | null {
   const db = getDatabase();
 
-  const result = await db.query(
-    `SELECT ${SELECT_COLUMNS} FROM plans WHERE id = $1`,
-    [id],
-  );
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM plans WHERE id = ?`,
+  ).get(id) as Record<string, unknown> | undefined;
 
-  if (result.rows.length === 0) return null;
-  return toPlanRow(result.rows[0] as Record<string, unknown>);
+  if (!row) return null;
+  return toPlanRow(row);
 }
 
 /**
  * List plans with optional filters, ordered by created_at DESC.
  */
-export async function listPlans(
+export function listPlans(
   options: ListPlansOptions = {},
-): Promise<PlanRow[]> {
+): PlanRow[] {
   const db = getDatabase();
 
   const conditions: string[] = [];
   const params: unknown[] = [];
-  let paramIndex = 1;
 
   if (options.status !== undefined) {
-    conditions.push(`status = $${paramIndex++}`);
+    conditions.push(`status = ?`);
     params.push(options.status);
   }
 
@@ -183,14 +184,13 @@ export async function listPlans(
 
   params.push(limit);
 
-  const result = await db.query(
+  const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM plans
      ${where}
      ORDER BY created_at DESC
-     LIMIT $${paramIndex}`,
-    params,
-  );
+     LIMIT ?`,
+  ).all(...params) as Record<string, unknown>[];
 
-  return (result.rows as Record<string, unknown>[]).map(toPlanRow);
+  return rows.map(toPlanRow);
 }

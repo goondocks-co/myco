@@ -36,18 +36,17 @@ const epochNow = () => Math.floor(Date.now() / 1000);
 // ---------------------------------------------------------------------------
 
 /** Insert an agent directly into the agents table. */
-async function createAgent(id: string): Promise<void> {
+function createAgent(id: string): void {
   const db = getDatabase();
   const now = epochNow();
-  await db.query(
-    `INSERT INTO agents (id, name, created_at) VALUES ($1, $2, $3)`,
-    [id, `agent-${id}`, now],
-  );
+  db.prepare(
+    `INSERT INTO agents (id, name, created_at) VALUES (?, ?, ?)`,
+  ).run(id, `agent-${id}`, now);
 }
 
 /** Insert an agent run directly (required FK for reports and turns). */
-async function createRun(id: string, agentId: string): Promise<void> {
-  await insertRun({
+function createRun(id: string, agentId: string): void {
+  insertRun({
     id,
     agent_id: agentId,
     status: 'running',
@@ -98,17 +97,17 @@ describe('vault tools', () => {
   let tools: ReturnType<typeof createVaultTools>;
   let sessionId: string;
 
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
-  beforeEach(async () => {
-    await cleanTestDb();
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => {
+    cleanTestDb();
 
     // Seed required parent rows
-    await createAgent(TEST_AGENT_ID);
-    await createRun(TEST_RUN_ID, TEST_AGENT_ID);
+    createAgent(TEST_AGENT_ID);
+    createRun(TEST_RUN_ID, TEST_AGENT_ID);
 
     const session = makeSession();
-    await upsertSession(session);
+    upsertSession(session);
     sessionId = session.id;
 
     // Create tools for this test
@@ -152,8 +151,8 @@ describe('vault tools', () => {
     });
 
     it('returns unprocessed batches', async () => {
-      await insertBatch(makeBatch(sessionId));
-      await insertBatch(makeBatch(sessionId));
+      insertBatch(makeBatch(sessionId));
+      insertBatch(makeBatch(sessionId));
 
       const t = findTool(tools, 'vault_unprocessed');
       const result = await t.handler({}, undefined);
@@ -162,8 +161,8 @@ describe('vault tools', () => {
     });
 
     it('supports cursor-based pagination via after_id', async () => {
-      const b1 = await insertBatch(makeBatch(sessionId));
-      await insertBatch(makeBatch(sessionId));
+      const b1 = insertBatch(makeBatch(sessionId));
+      insertBatch(makeBatch(sessionId));
 
       const t = findTool(tools, 'vault_unprocessed');
       const result = await t.handler({ after_id: b1.id }, undefined);
@@ -181,14 +180,14 @@ describe('vault tools', () => {
     });
 
     it('returns spores filtered by observation_type', async () => {
-      await insertSpore({
+      insertSpore({
         id: 'spore-1',
         agent_id: TEST_AGENT_ID,
         observation_type: 'gotcha',
         content: 'A gotcha',
         created_at: epochNow(),
       });
-      await insertSpore({
+      insertSpore({
         id: 'spore-2',
         agent_id: TEST_AGENT_ID,
         observation_type: 'decision',
@@ -239,8 +238,8 @@ describe('vault tools', () => {
     });
 
     it('returns state entries after setting them', async () => {
-      await setState(TEST_AGENT_ID, 'cursor', '42', epochNow());
-      await setState(TEST_AGENT_ID, 'mode', 'full', epochNow());
+      setState(TEST_AGENT_ID, 'cursor', '42', epochNow());
+      setState(TEST_AGENT_ID, 'mode', 'full', epochNow());
 
       const t = findTool(tools, 'vault_state');
       const result = await t.handler({}, undefined);
@@ -300,11 +299,10 @@ describe('vault tools', () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       const db = getDatabase();
-      const turns = await db.query(
-        `SELECT * FROM agent_turns WHERE run_id = $1`,
-        [TEST_RUN_ID],
-      );
-      expect(turns.rows.length).toBeGreaterThanOrEqual(1);
+      const turns = db.prepare(
+        `SELECT * FROM agent_turns WHERE run_id = ?`,
+      ).all(TEST_RUN_ID);
+      expect(turns.length).toBeGreaterThanOrEqual(1);
     });
   });
 
@@ -341,10 +339,10 @@ describe('vault tools', () => {
 
       // Verify only one entity exists
       const db = getDatabase();
-      const count = await db.query(
+      const row = db.prepare(
         `SELECT count(*) AS count FROM entities WHERE name = 'AuthModule'`,
-      );
-      expect(Number((count.rows[0] as { count: string }).count)).toBe(1);
+      ).get() as { count: number };
+      expect(row.count).toBe(1);
     });
   });
 
@@ -353,16 +351,14 @@ describe('vault tools', () => {
       // Create two entities first
       const db = getDatabase();
       const now = epochNow();
-      await db.query(
+      db.prepare(
         `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        ['entity-a', TEST_AGENT_ID, 'component', 'CompA', now, now],
-      );
-      await db.query(
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run('entity-a', TEST_AGENT_ID, 'component', 'CompA', now, now);
+      db.prepare(
         `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        ['entity-b', TEST_AGENT_ID, 'component', 'CompB', now, now],
-      );
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run('entity-b', TEST_AGENT_ID, 'component', 'CompB', now, now);
 
       const t = findTool(tools, 'vault_create_edge');
       const result = await t.handler(
@@ -386,18 +382,18 @@ describe('vault tools', () => {
       expect(edge.source_type).toBe('entity');
       expect(edge.target_type).toBe('entity');
 
-      // Verify it's stored in graph_edges, not edges
-      const graphEdges = await db.query(
+      // Verify it's stored in graph_edges
+      const graphEdges = db.prepare(
         `SELECT * FROM graph_edges WHERE type = 'DEPENDS_ON'`,
-      );
-      expect(graphEdges.rows).toHaveLength(1);
+      ).all();
+      expect(graphEdges).toHaveLength(1);
     });
   });
 
   describe('vault_resolve_spore', () => {
     it('updates spore status and creates resolution event', async () => {
       // Create a spore to resolve
-      await insertSpore({
+      insertSpore({
         id: 'spore-resolve-test',
         agent_id: TEST_AGENT_ID,
         observation_type: 'gotcha',
@@ -424,11 +420,10 @@ describe('vault tools', () => {
 
       // Verify resolution event in DB
       const db = getDatabase();
-      const events = await db.query(
-        `SELECT * FROM resolution_events WHERE spore_id = $1`,
-        ['spore-resolve-test'],
-      );
-      expect(events.rows).toHaveLength(1);
+      const events = db.prepare(
+        `SELECT * FROM resolution_events WHERE spore_id = ?`,
+      ).all('spore-resolve-test');
+      expect(events).toHaveLength(1);
     });
   });
 
@@ -493,17 +488,16 @@ describe('vault tools', () => {
 
       // Verify only one row
       const db = getDatabase();
-      const count = await db.query(
-        `SELECT count(*) AS count FROM digest_extracts WHERE agent_id = $1 AND tier = $2`,
-        [TEST_AGENT_ID, 3000],
-      );
-      expect(Number((count.rows[0] as { count: string }).count)).toBe(1);
+      const row = db.prepare(
+        `SELECT count(*) AS count FROM digest_extracts WHERE agent_id = ? AND tier = ?`,
+      ).get(TEST_AGENT_ID, 3000) as { count: number };
+      expect(row.count).toBe(1);
     });
   });
 
   describe('vault_mark_processed', () => {
     it('marks a batch as processed', async () => {
-      const batch = await insertBatch(makeBatch(sessionId));
+      const batch = insertBatch(makeBatch(sessionId));
 
       const t = findTool(tools, 'vault_mark_processed');
       const result = await t.handler({ batch_id: batch.id }, undefined);
@@ -512,7 +506,7 @@ describe('vault tools', () => {
     });
 
     it('batch no longer appears in unprocessed', async () => {
-      const batch = await insertBatch(makeBatch(sessionId));
+      const batch = insertBatch(makeBatch(sessionId));
 
       const markTool = findTool(tools, 'vault_mark_processed');
       await markTool.handler({ batch_id: batch.id }, undefined);
@@ -571,11 +565,10 @@ describe('vault tools', () => {
       );
 
       const db = getDatabase();
-      const result = await db.query(
-        `SELECT * FROM agent_reports WHERE run_id = $1`,
-        [TEST_RUN_ID],
-      );
-      expect(result.rows.length).toBeGreaterThanOrEqual(1);
+      const rows = db.prepare(
+        `SELECT * FROM agent_reports WHERE run_id = ?`,
+      ).all(TEST_RUN_ID);
+      expect(rows.length).toBeGreaterThanOrEqual(1);
     });
   });
 });

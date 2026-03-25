@@ -19,7 +19,7 @@ const EMBEDDING_STATUS_PENDING = 'pending';
 export async function handleGetEmbeddingStatus(vaultDir: string): Promise<RouteResponse> {
   const config = loadConfig(vaultDir);
 
-  const { queue_depth, embedded_count } = await getEmbeddingQueueDepth();
+  const { queue_depth, embedded_count } = getEmbeddingQueueDepth();
 
   return {
     body: {

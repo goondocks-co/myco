@@ -1,7 +1,7 @@
 /**
  * Vault MCP tool server for the agent.
  *
- * Creates 15 tools that expose PGlite query helpers to the agent
+ * Creates 15 tools that expose SQLite query helpers to the agent
  * via the Claude Agent SDK. Tools are grouped into:
  * - Read tools: vault_unprocessed, vault_spores, vault_sessions, vault_search, vault_state, vault_read_digest
  * - Write tools: vault_create_spore, vault_create_entity, vault_create_edge,
@@ -24,7 +24,8 @@ import { listSessions, updateSession } from '@myco/db/queries/sessions.js';
 import { getStatesForAgent, setState } from '@myco/db/queries/agent-state.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { insertTurn } from '@myco/db/queries/turns.js';
-import { searchSimilar, EMBEDDABLE_TABLES, type EmbeddableTable } from '@myco/db/queries/embeddings.js';
+import { EMBEDDABLE_TABLES, type EmbeddableTable } from '@myco/db/queries/embeddings.js';
+import { fullTextSearch } from '@myco/db/queries/search.js';
 import { insertEntity } from '@myco/db/queries/entities.js';
 import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
 import { createSporeLineage } from '@myco/db/queries/lineage.js';
@@ -86,16 +87,18 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
    */
   function recordTurn(toolName: string, toolInput: unknown): void {
     turnCounter++;
-    insertTurn({
-      run_id: runId,
-      agent_id: agentId,
-      turn_number: turnCounter,
-      tool_name: toolName,
-      tool_input: JSON.stringify(toolInput),
-      started_at: epochSeconds(),
-    }).catch(() => {
+    try {
+      insertTurn({
+        run_id: runId,
+        agent_id: agentId,
+        turn_number: turnCounter,
+        tool_name: toolName,
+        tool_input: JSON.stringify(toolInput),
+        started_at: epochSeconds(),
+      });
+    } catch {
       /* audit trail is best-effort */
-    });
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -111,7 +114,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
     },
     async (args) => {
       recordTurn('vault_unprocessed', args);
-      const batches = await getUnprocessedBatches({
+      const batches = getUnprocessedBatches({
         after_id: args.after_id,
         limit: args.limit ?? DEFAULT_UNPROCESSED_LIMIT,
       });
@@ -130,7 +133,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
     },
     async (args) => {
       recordTurn('vault_spores', args);
-      const spores = await listSpores({
+      const spores = listSpores({
         agent_id: args.agent_id,
         observation_type: args.observation_type,
         status: args.status,
@@ -149,7 +152,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
     },
     async (args) => {
       recordTurn('vault_sessions', args);
-      const sessions = await listSessions({
+      const sessions = listSessions({
         limit: args.limit ?? DEFAULT_SESSIONS_LIMIT,
         status: args.status,
       });
@@ -159,29 +162,18 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
 
   const vaultSearch = tool(
     'vault_search',
-    'Semantic similarity search across vault content. Returns ranked results by cosine similarity. Supports filtering by session_id (for spores table) to scope results. If no embeddings are available, returns an empty result set — use vault_spores or vault_sessions as a fallback.',
+    'Full-text search across vault content using FTS5. Returns ranked results. Use vault_spores or vault_sessions for structured queries.',
     {
-      query: z.string().describe('Search query text to embed and compare'),
-      table: z.enum(EMBEDDABLE_TABLES).optional().describe('Table to search (default: spores)'),
-      session_id: z.string().optional().describe('Filter results to a specific session (spores table only)'),
+      query: z.string().describe('Search query text'),
+      type: z.string().optional().describe('Restrict to a result type (prompt_batch, activity)'),
       limit: z.number().optional().describe('Maximum number of results to return'),
     },
     async (args) => {
       recordTurn('vault_search', args);
       try {
-        const { tryEmbed } = await import('@myco/intelligence/embed-query.js');
-        const embedding = await tryEmbed(args.query);
-        if (!embedding) {
-          return textResult({ results: [], message: 'Embedding provider unavailable' });
-        }
-
-        const table = args.table ?? DEFAULT_SEARCH_TABLE;
-        const filters: Record<string, unknown> = {};
-        if (args.session_id) filters.session_id = args.session_id;
-
-        const results = await searchSimilar(table, embedding, {
+        const results = fullTextSearch(args.query, {
+          type: args.type,
           limit: args.limit ?? DEFAULT_SEARCH_LIMIT,
-          filters: Object.keys(filters).length > 0 ? filters : undefined,
         });
         return textResult({ results });
       } catch {
@@ -196,7 +188,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
     {},
     async () => {
       recordTurn('vault_state', {});
-      const states = await getStatesForAgent(agentId);
+      const states = getStatesForAgent(agentId);
       return textResult(states);
     },
   );
@@ -223,7 +215,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
       const id = crypto.randomUUID();
       const now = epochSeconds();
 
-      const spore = await insertSpore({
+      const spore = insertSpore({
         id,
         agent_id: agentId,
         observation_type: args.observation_type,
@@ -238,8 +230,8 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
         created_at: now,
       });
 
-      // Fire-and-forget: structural lineage edges (FROM_SESSION, EXTRACTED_FROM, DERIVED_FROM)
-      try { await createSporeLineage(spore); } catch { /* lineage best-effort */ }
+      // Best-effort: structural lineage edges (FROM_SESSION, EXTRACTED_FROM, DERIVED_FROM)
+      try { createSporeLineage(spore); } catch { /* lineage best-effort */ }
 
       recordTurn('vault_create_spore', args);
       return textResult(spore);
@@ -259,7 +251,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
       const now = epochSeconds();
       const props = args.properties ? JSON.stringify(args.properties) : null;
 
-      const entity = await insertEntity({
+      const entity = insertEntity({
         id,
         agent_id: agentId,
         type: args.type,
@@ -291,7 +283,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
       const now = epochSeconds();
       const props = args.properties ? JSON.stringify(args.properties) : undefined;
 
-      const edge = await insertGraphEdge({
+      const edge = insertGraphEdge({
         agent_id: agentId,
         source_id: args.source_id,
         source_type: args.source_type,
@@ -331,11 +323,11 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
         consolidate: 'consolidated',
       };
       const newStatus = statusMap[args.action] ?? args.action;
-      const updatedSpore = await updateSporeStatus(args.spore_id, newStatus, now);
+      const updatedSpore = updateSporeStatus(args.spore_id, newStatus, now);
 
       // Record resolution event
       const eventId = crypto.randomUUID();
-      await insertResolutionEvent({
+      insertResolutionEvent({
         id: eventId,
         agent_id: agentId,
         spore_id: args.spore_id,
@@ -364,7 +356,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
       if (args.title !== undefined) updates.title = args.title;
       if (args.summary !== undefined) updates.summary = args.summary;
 
-      const session = await updateSession(args.session_id, updates);
+      const session = updateSession(args.session_id, updates);
 
       recordTurn('vault_update_session', args);
       return textResult(session);
@@ -380,7 +372,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
     },
     async (args) => {
       const now = epochSeconds();
-      const state = await setState(agentId, args.key, args.value, now);
+      const state = setState(agentId, args.key, args.value, now);
 
       recordTurn('vault_set_state', args);
       return textResult(state);
@@ -395,7 +387,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
     },
     async (args) => {
       recordTurn('vault_read_digest', args);
-      const extracts = await listDigestExtracts(agentId);
+      const extracts = listDigestExtracts(agentId);
 
       if (args.tier !== undefined) {
         const extract = extracts.find(e => e.tier === args.tier);
@@ -422,7 +414,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
     async (args) => {
       const now = epochSeconds();
 
-      const extract = await upsertDigestExtract({
+      const extract = upsertDigestExtract({
         agent_id: agentId,
         tier: args.tier,
         content: args.content,
@@ -441,7 +433,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
       batch_id: z.number().describe('ID of the prompt batch to mark as processed'),
     },
     async (args) => {
-      const batch = await markBatchProcessed(args.batch_id);
+      const batch = markBatchProcessed(args.batch_id);
 
       recordTurn('vault_mark_processed', args);
       return textResult(batch);
@@ -464,7 +456,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
       recordTurn('vault_report', args);
       const now = epochSeconds();
 
-      const report = await insertReport({
+      const report = insertReport({
         run_id: runId,
         agent_id: agentId,
         action: args.action,

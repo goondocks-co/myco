@@ -1,22 +1,25 @@
 /**
- * CLI: myco stats — display vault statistics via daemon API.
+ * CLI: myco stats — display vault statistics.
  *
- * Routes through the daemon HTTP API to avoid PGlite file lock conflicts.
+ * Opens the SQLite database directly (WAL mode allows concurrent reads).
+ * Does NOT require the daemon to be running.
  */
 
 import type { V2Stats } from '../services/stats.js';
-import { connectToDaemon } from './shared.js';
+import { gatherStats } from '../services/stats.js';
+import { initVaultDb } from './shared.js';
 
 export async function run(_args: string[], vaultDir: string): Promise<void> {
-  const client = await connectToDaemon(vaultDir);
-
-  const result = await client.get('/api/stats');
-  if (!result.ok || !result.data) {
-    console.error('Failed to fetch stats from daemon');
+  const cleanup = initVaultDb(vaultDir);
+  let stats: V2Stats;
+  try {
+    stats = gatherStats(vaultDir);
+  } catch (err) {
+    cleanup();
+    console.error('Failed to read vault database:', (err as Error).message);
     process.exit(1);
   }
-
-  const stats = result.data as V2Stats;
+  cleanup();
 
   console.log('=== Myco Vault ===');
   console.log(`Path:  ${stats.vault.path}`);

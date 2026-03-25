@@ -1,65 +1,44 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createSchema, SCHEMA_VERSION, EMBEDDING_DIMENSIONS } from '@myco/db/schema.js';
-import type { PGlite } from '@electric-sql/pglite';
+import type { Database } from 'better-sqlite3';
 
-/** Helper: query pg_catalog for a table's existence. */
-async function tableExists(db: PGlite, tableName: string): Promise<boolean> {
-  const result = await db.query<{ exists: boolean }>(
-    `SELECT EXISTS (
-       SELECT 1 FROM information_schema.tables
-       WHERE table_schema = 'public' AND table_name = $1
-     ) AS exists`,
-    [tableName],
-  );
-  return result.rows[0].exists;
+/** Helper: check if a table exists in SQLite. */
+function tableExists(db: Database, tableName: string): boolean {
+  const row = db.prepare(
+    `SELECT count(*) AS cnt FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?`,
+  ).get(tableName) as { cnt: number };
+  return row.cnt > 0;
 }
 
-/** Helper: query column info for a table. */
-async function getColumns(
-  db: PGlite,
-  tableName: string,
-): Promise<Array<{ column_name: string; data_type: string; is_nullable: string }>> {
-  const result = await db.query<{
-    column_name: string;
-    data_type: string;
-    is_nullable: string;
-  }>(
-    `SELECT column_name, data_type, is_nullable
-     FROM information_schema.columns
-     WHERE table_schema = 'public' AND table_name = $1
-     ORDER BY ordinal_position`,
-    [tableName],
-  );
-  return result.rows;
+/** Helper: get column names for a table. */
+function getColumnNames(db: Database, tableName: string): string[] {
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+  return rows.map((r) => r.name);
 }
 
 /** Helper: check if an index exists. */
-async function indexExists(db: PGlite, indexName: string): Promise<boolean> {
-  const result = await db.query<{ exists: boolean }>(
-    `SELECT EXISTS (
-       SELECT 1 FROM pg_indexes
-       WHERE schemaname = 'public' AND indexname = $1
-     ) AS exists`,
-    [indexName],
-  );
-  return result.rows[0].exists;
+function indexExists(db: Database, indexName: string): boolean {
+  const row = db.prepare(
+    `SELECT count(*) AS cnt FROM sqlite_master WHERE type = 'index' AND name = ?`,
+  ).get(indexName) as { cnt: number };
+  return row.cnt > 0;
 }
 
 describe('Database schema', () => {
-  let db: PGlite;
+  let db: Database;
 
-  beforeEach(async () => {
-    db = await initDatabase();
+  beforeEach(() => {
+    db = initDatabase();
   });
 
-  afterEach(async () => {
-    await closeDatabase();
+  afterEach(() => {
+    closeDatabase();
   });
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(5);
+      expect(SCHEMA_VERSION).toBe(1);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -69,30 +48,29 @@ describe('Database schema', () => {
   });
 
   describe('createSchema()', () => {
-    it('is idempotent — running twice does not throw', async () => {
-      await createSchema(db);
-      await expect(createSchema(db)).resolves.not.toThrow();
+    it('is idempotent — running twice does not throw', () => {
+      createSchema(db);
+      expect(() => createSchema(db)).not.toThrow();
     });
 
     describe('schema_version table', () => {
-      it('records the current schema version', async () => {
-        await createSchema(db);
-        const result = await db.query<{ version: number; applied_at: number }>(
+      it('records the current schema version', () => {
+        createSchema(db);
+        const result = db.prepare(
           'SELECT version, applied_at FROM schema_version ORDER BY version DESC LIMIT 1',
-        );
-        expect(result.rows).toHaveLength(1);
-        expect(result.rows[0].version).toBe(SCHEMA_VERSION);
-        expect(typeof result.rows[0].applied_at).toBe('number');
+        ).get() as { version: number; applied_at: number };
+        expect(result).toBeDefined();
+        expect(result.version).toBe(SCHEMA_VERSION);
+        expect(typeof result.applied_at).toBe('number');
       });
 
-      it('does not insert duplicate version rows on re-run', async () => {
-        await createSchema(db);
-        await createSchema(db);
-        const result = await db.query<{ count: string }>(
-          'SELECT count(*) AS count FROM schema_version WHERE version = $1',
-          [SCHEMA_VERSION],
-        );
-        expect(Number(result.rows[0].count)).toBe(1);
+      it('does not insert duplicate version rows on re-run', () => {
+        createSchema(db);
+        createSchema(db);
+        const result = db.prepare(
+          'SELECT count(*) AS count FROM schema_version WHERE version = ?',
+        ).get(SCHEMA_VERSION) as { count: number };
+        expect(result.count).toBe(1);
       });
     });
 
@@ -107,15 +85,14 @@ describe('Database schema', () => {
         'attachments',
       ];
 
-      it.each(captureTables)('creates %s table', async (table) => {
-        await createSchema(db);
-        expect(await tableExists(db, table)).toBe(true);
+      it.each(captureTables)('creates %s table', (table) => {
+        createSchema(db);
+        expect(tableExists(db, table)).toBe(true);
       });
 
-      it('sessions table has correct columns', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'sessions');
-        const colNames = cols.map((c) => c.column_name);
+      it('sessions table has correct columns', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'sessions');
         expect(colNames).toContain('id');
         expect(colNames).toContain('agent');
         expect(colNames).toContain('user');
@@ -134,13 +111,12 @@ describe('Database schema', () => {
         expect(colNames).toContain('processed');
         expect(colNames).toContain('content_hash');
         expect(colNames).toContain('created_at');
-        expect(colNames).toContain('embedding');
+        expect(colNames).toContain('embedded');
       });
 
-      it('prompt_batches table has correct columns', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'prompt_batches');
-        const colNames = cols.map((c) => c.column_name);
+      it('prompt_batches table has correct columns', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'prompt_batches');
         expect(colNames).toContain('id');
         expect(colNames).toContain('session_id');
         expect(colNames).toContain('prompt_number');
@@ -154,14 +130,11 @@ describe('Database schema', () => {
         expect(colNames).toContain('processed');
         expect(colNames).toContain('content_hash');
         expect(colNames).toContain('created_at');
-        expect(colNames).toContain('embedding');
-        expect(colNames).toContain('search_vector');
       });
 
-      it('activities table has correct columns', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'activities');
-        const colNames = cols.map((c) => c.column_name);
+      it('activities table has correct columns', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'activities');
         expect(colNames).toContain('id');
         expect(colNames).toContain('session_id');
         expect(colNames).toContain('prompt_batch_id');
@@ -177,13 +150,11 @@ describe('Database schema', () => {
         expect(colNames).toContain('processed');
         expect(colNames).toContain('content_hash');
         expect(colNames).toContain('created_at');
-        expect(colNames).toContain('search_vector');
       });
 
-      it('plans table has correct columns', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'plans');
-        const colNames = cols.map((c) => c.column_name);
+      it('plans table has correct columns', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'plans');
         expect(colNames).toContain('id');
         expect(colNames).toContain('status');
         expect(colNames).toContain('author');
@@ -194,13 +165,12 @@ describe('Database schema', () => {
         expect(colNames).toContain('processed');
         expect(colNames).toContain('created_at');
         expect(colNames).toContain('updated_at');
-        expect(colNames).toContain('embedding');
+        expect(colNames).toContain('embedded');
       });
 
-      it('artifacts table has correct columns', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'artifacts');
-        const colNames = cols.map((c) => c.column_name);
+      it('artifacts table has correct columns', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'artifacts');
         expect(colNames).toContain('id');
         expect(colNames).toContain('artifact_type');
         expect(colNames).toContain('source_path');
@@ -210,13 +180,12 @@ describe('Database schema', () => {
         expect(colNames).toContain('tags');
         expect(colNames).toContain('created_at');
         expect(colNames).toContain('updated_at');
-        expect(colNames).toContain('embedding');
+        expect(colNames).toContain('embedded');
       });
 
-      it('team_members table has correct columns', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'team_members');
-        const colNames = cols.map((c) => c.column_name);
+      it('team_members table has correct columns', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'team_members');
         expect(colNames).toContain('id');
         expect(colNames).toContain('user');
         expect(colNames).toContain('role');
@@ -224,10 +193,9 @@ describe('Database schema', () => {
         expect(colNames).toContain('tags');
       });
 
-      it('attachments table has correct columns', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'attachments');
-        const colNames = cols.map((c) => c.column_name);
+      it('attachments table has correct columns', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'attachments');
         expect(colNames).toContain('id');
         expect(colNames).toContain('session_id');
         expect(colNames).toContain('prompt_batch_id');
@@ -249,22 +217,20 @@ describe('Database schema', () => {
         'digest_extracts',
       ];
 
-      it.each(intelligenceTables)('creates %s table', async (table) => {
-        await createSchema(db);
-        expect(await tableExists(db, table)).toBe(true);
+      it.each(intelligenceTables)('creates %s table', (table) => {
+        createSchema(db);
+        expect(tableExists(db, table)).toBe(true);
       });
 
-      it('spores table has embedding column', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'spores');
-        const colNames = cols.map((c) => c.column_name);
-        expect(colNames).toContain('embedding');
+      it('spores table has embedded flag column', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'spores');
+        expect(colNames).toContain('embedded');
       });
 
-      it('entities table has correct columns including compound unique', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'entities');
-        const colNames = cols.map((c) => c.column_name);
+      it('entities table has correct columns including compound unique', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'entities');
         expect(colNames).toContain('id');
         expect(colNames).toContain('agent_id');
         expect(colNames).toContain('type');
@@ -274,20 +240,18 @@ describe('Database schema', () => {
         expect(colNames).toContain('last_seen');
       });
 
-      it('entity_mentions table has correct columns', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'entity_mentions');
-        const colNames = cols.map((c) => c.column_name);
+      it('entity_mentions table has correct columns', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'entity_mentions');
         expect(colNames).toContain('entity_id');
         expect(colNames).toContain('note_id');
         expect(colNames).toContain('note_type');
         expect(colNames).toContain('agent_id');
       });
 
-      it('resolution_events table has correct columns', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'resolution_events');
-        const colNames = cols.map((c) => c.column_name);
+      it('resolution_events table has correct columns', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'resolution_events');
         expect(colNames).toContain('id');
         expect(colNames).toContain('agent_id');
         expect(colNames).toContain('spore_id');
@@ -298,10 +262,9 @@ describe('Database schema', () => {
         expect(colNames).toContain('created_at');
       });
 
-      it('digest_extracts table has correct columns', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'digest_extracts');
-        const colNames = cols.map((c) => c.column_name);
+      it('digest_extracts table has correct columns', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'digest_extracts');
         expect(colNames).toContain('id');
         expect(colNames).toContain('agent_id');
         expect(colNames).toContain('tier');
@@ -310,10 +273,9 @@ describe('Database schema', () => {
         expect(colNames).toContain('generated_at');
       });
 
-      it('graph_edges table has correct columns', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'graph_edges');
-        const colNames = cols.map((c) => c.column_name);
+      it('graph_edges table has correct columns', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'graph_edges');
         expect(colNames).toContain('id');
         expect(colNames).toContain('agent_id');
         expect(colNames).toContain('source_id');
@@ -327,34 +289,30 @@ describe('Database schema', () => {
         expect(colNames).toContain('created_at');
       });
 
-      it('spores table has properties column', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'spores');
-        const colNames = cols.map((c) => c.column_name);
+      it('spores table has properties column', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'spores');
         expect(colNames).toContain('properties');
       });
 
-      it('entities table has status column', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'entities');
-        const colNames = cols.map((c) => c.column_name);
+      it('entities table has status column', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'entities');
         expect(colNames).toContain('status');
       });
 
-      it('agent_tasks table has model column', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'agent_tasks');
-        const colNames = cols.map((c) => c.column_name);
+      it('agent_tasks table has model column', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'agent_tasks');
         expect(colNames).toContain('model');
       });
     });
 
     describe('agent state tables', () => {
-      it('creates agent_runs table with instruction column', async () => {
-        await createSchema(db);
-        expect(await tableExists(db, 'agent_runs')).toBe(true);
-        const cols = await getColumns(db, 'agent_runs');
-        const colNames = cols.map((c) => c.column_name);
+      it('creates agent_runs table with instruction column', () => {
+        createSchema(db);
+        expect(tableExists(db, 'agent_runs')).toBe(true);
+        const colNames = getColumnNames(db, 'agent_runs');
         expect(colNames).toContain('id');
         expect(colNames).toContain('agent_id');
         expect(colNames).toContain('task');
@@ -368,11 +326,10 @@ describe('Database schema', () => {
         expect(colNames).toContain('error');
       });
 
-      it('creates agent_state table with compound primary key', async () => {
-        await createSchema(db);
-        expect(await tableExists(db, 'agent_state')).toBe(true);
-        const cols = await getColumns(db, 'agent_state');
-        const colNames = cols.map((c) => c.column_name);
+      it('creates agent_state table with compound primary key', () => {
+        createSchema(db);
+        expect(tableExists(db, 'agent_state')).toBe(true);
+        const colNames = getColumnNames(db, 'agent_state');
         expect(colNames).toContain('agent_id');
         expect(colNames).toContain('key');
         expect(colNames).toContain('value');
@@ -381,11 +338,10 @@ describe('Database schema', () => {
     });
 
     describe('phase 2 tables', () => {
-      it('creates agent_reports table with correct columns', async () => {
-        await createSchema(db);
-        expect(await tableExists(db, 'agent_reports')).toBe(true);
-        const cols = await getColumns(db, 'agent_reports');
-        const colNames = cols.map((c) => c.column_name);
+      it('creates agent_reports table with correct columns', () => {
+        createSchema(db);
+        expect(tableExists(db, 'agent_reports')).toBe(true);
+        const colNames = getColumnNames(db, 'agent_reports');
         expect(colNames).toContain('id');
         expect(colNames).toContain('run_id');
         expect(colNames).toContain('agent_id');
@@ -395,11 +351,10 @@ describe('Database schema', () => {
         expect(colNames).toContain('created_at');
       });
 
-      it('creates agent_turns table with correct columns', async () => {
-        await createSchema(db);
-        expect(await tableExists(db, 'agent_turns')).toBe(true);
-        const cols = await getColumns(db, 'agent_turns');
-        const colNames = cols.map((c) => c.column_name);
+      it('creates agent_turns table with correct columns', () => {
+        createSchema(db);
+        expect(tableExists(db, 'agent_turns')).toBe(true);
+        const colNames = getColumnNames(db, 'agent_turns');
         expect(colNames).toContain('id');
         expect(colNames).toContain('run_id');
         expect(colNames).toContain('agent_id');
@@ -411,11 +366,10 @@ describe('Database schema', () => {
         expect(colNames).toContain('completed_at');
       });
 
-      it('creates agent_tasks table with correct columns', async () => {
-        await createSchema(db);
-        expect(await tableExists(db, 'agent_tasks')).toBe(true);
-        const cols = await getColumns(db, 'agent_tasks');
-        const colNames = cols.map((c) => c.column_name);
+      it('creates agent_tasks table with correct columns', () => {
+        createSchema(db);
+        expect(tableExists(db, 'agent_tasks')).toBe(true);
+        const colNames = getColumnNames(db, 'agent_tasks');
         expect(colNames).toContain('id');
         expect(colNames).toContain('agent_id');
         expect(colNames).toContain('source');
@@ -429,10 +383,9 @@ describe('Database schema', () => {
         expect(colNames).toContain('updated_at');
       });
 
-      it('agents table has expanded Phase 2 columns', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'agents');
-        const colNames = cols.map((c) => c.column_name);
+      it('agents table has expanded Phase 2 columns', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'agents');
         expect(colNames).toContain('source');
         expect(colNames).toContain('system_prompt');
         expect(colNames).toContain('max_turns');
@@ -442,320 +395,129 @@ describe('Database schema', () => {
         expect(colNames).toContain('updated_at');
       });
 
-      it('creates indexes on Phase 2 tables', async () => {
-        await createSchema(db);
-        expect(await indexExists(db, 'idx_agent_reports_run_id')).toBe(true);
-        expect(await indexExists(db, 'idx_agent_turns_run_id')).toBe(true);
-        expect(await indexExists(db, 'idx_agent_tasks_agent_id')).toBe(true);
+      it('creates indexes on Phase 2 tables', () => {
+        createSchema(db);
+        expect(indexExists(db, 'idx_agent_reports_run_id')).toBe(true);
+        expect(indexExists(db, 'idx_agent_turns_run_id')).toBe(true);
+        expect(indexExists(db, 'idx_agent_tasks_agent_id')).toBe(true);
       });
     });
 
-    describe('v3 to v4 migration', () => {
-      it('is idempotent — running createSchema twice produces same result', async () => {
-        await createSchema(db);
-        await expect(createSchema(db)).resolves.not.toThrow();
-
-        // Verify agents still has the new columns after double-run
-        const cols = await getColumns(db, 'agents');
-        const colNames = cols.map((c) => c.column_name);
-        expect(colNames).toContain('source');
-        expect(colNames).toContain('enabled');
-        expect(colNames).toContain('updated_at');
+    describe('FTS5 virtual tables', () => {
+      it('creates prompt_batches_fts virtual table', () => {
+        createSchema(db);
+        expect(tableExists(db, 'prompt_batches_fts')).toBe(true);
       });
 
-      it('records schema version 5', async () => {
-        await createSchema(db);
-        const result = await db.query<{ version: number }>(
-          'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1',
-        );
-        expect(result.rows[0].version).toBe(5);
-      });
-
-      it('migrates a v3 database: renames curators→agents and curator_id→agent_id', async () => {
-        // Build a v3-state database by running a full schema at v4 and then
-        // simulating the pre-migration state: rename agents→curators and
-        // agent_id→curator_id in spores, and downgrade schema_version to 3.
-        // This lets createSchema see a real v3 state and verify the migration
-        // path without fighting the DDL index loop with under-specified tables.
-        await createSchema(db);
-
-        // Downgrade to v3 state: undo the curator→agent rename on key tables
-        await db.query('ALTER TABLE agents RENAME TO curators');
-        await db.query('ALTER TABLE spores RENAME COLUMN agent_id TO curator_id');
-        await db.query(`UPDATE schema_version SET version = 3 WHERE version = ${SCHEMA_VERSION}`);
-
-        // Re-run createSchema — must detect v3 and apply v3→v4 migration
-        await createSchema(db);
-
-        // agents table must exist; curators must not
-        expect(await tableExists(db, 'agents')).toBe(true);
-        expect(await tableExists(db, 'curators')).toBe(false);
-
-        // agent_id column must exist in spores; curator_id must not
-        const sporesCols = await getColumns(db, 'spores');
-        const sporesColNames = sporesCols.map((c) => c.column_name);
-        expect(sporesColNames).toContain('agent_id');
-        expect(sporesColNames).not.toContain('curator_id');
-
-        // Schema version must be 5
-        const result = await db.query<{ version: number }>(
-          'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1',
-        );
-        expect(result.rows[0].version).toBe(5);
-      });
-    });
-
-    describe('v2 to v3 migration', () => {
-      it('adds search_vector column to prompt_batches', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'prompt_batches');
-        const colNames = cols.map((c) => c.column_name);
-        expect(colNames).toContain('search_vector');
-      });
-
-      it('adds search_vector column to activities', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'activities');
-        const colNames = cols.map((c) => c.column_name);
-        expect(colNames).toContain('search_vector');
-      });
-
-      it('adds embedding column to plans', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'plans');
-        const colNames = cols.map((c) => c.column_name);
-        expect(colNames).toContain('embedding');
-      });
-
-      it('adds embedding column to artifacts', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'artifacts');
-        const colNames = cols.map((c) => c.column_name);
-        expect(colNames).toContain('embedding');
-      });
-
-      it('creates GIN index on prompt_batches.search_vector', async () => {
-        await createSchema(db);
-        expect(await indexExists(db, 'idx_prompt_batches_search')).toBe(true);
-      });
-
-      it('creates GIN index on activities.search_vector', async () => {
-        await createSchema(db);
-        expect(await indexExists(db, 'idx_activities_search')).toBe(true);
-      });
-
-      it('creates HNSW index on plans.embedding', async () => {
-        await createSchema(db);
-        expect(await indexExists(db, 'idx_plans_embedding')).toBe(true);
-      });
-
-      it('creates HNSW index on artifacts.embedding', async () => {
-        await createSchema(db);
-        expect(await indexExists(db, 'idx_artifacts_embedding')).toBe(true);
-      });
-
-      it('is idempotent — running createSchema twice produces same result', async () => {
-        await createSchema(db);
-        await expect(createSchema(db)).resolves.not.toThrow();
-
-        const cols = await getColumns(db, 'prompt_batches');
-        const colNames = cols.map((c) => c.column_name);
-        expect(colNames).toContain('search_vector');
-        expect(colNames).toContain('embedding');
-      });
-    });
-
-    describe('pgvector embedding columns', () => {
-      it('sessions table has a vector embedding column', async () => {
-        await createSchema(db);
-        // Verify we can insert and query a vector value
-        await db.query(
-          `INSERT INTO sessions (id, agent, started_at, created_at)
-           VALUES ('test-session', 'test', 1000, 1000)`,
-        );
-        // A valid vector literal for dimension 1024
-        const zeros = new Array(EMBEDDING_DIMENSIONS).fill(0).join(',');
-        await db.query(
-          `UPDATE sessions SET embedding = '[${zeros}]' WHERE id = 'test-session'`,
-        );
-        const result = await db.query<{ id: string }>(
-          `SELECT id FROM sessions WHERE embedding IS NOT NULL`,
-        );
-        expect(result.rows).toHaveLength(1);
-      });
-
-      it('prompt_batches table has a vector embedding column', async () => {
-        await createSchema(db);
-        await db.query(
-          `INSERT INTO sessions (id, agent, started_at, created_at)
-           VALUES ('test-session', 'test', 1000, 1000)`,
-        );
-        await db.query(
-          `INSERT INTO prompt_batches (session_id, created_at)
-           VALUES ('test-session', 1000)`,
-        );
-        const zeros = new Array(EMBEDDING_DIMENSIONS).fill(0).join(',');
-        await db.query(
-          `UPDATE prompt_batches SET embedding = '[${zeros}]' WHERE session_id = 'test-session'`,
-        );
-        const result = await db.query<{ id: number }>(
-          `SELECT id FROM prompt_batches WHERE embedding IS NOT NULL`,
-        );
-        expect(result.rows).toHaveLength(1);
-      });
-
-      it('spores table has a vector embedding column', async () => {
-        await createSchema(db);
-        await db.query(
-          `INSERT INTO agents (id, name, created_at) VALUES ('test-agent', 'Test', 1000)`,
-        );
-        await db.query(
-          `INSERT INTO spores (id, agent_id, observation_type, content, created_at)
-           VALUES ('test-spore', 'test-agent', 'gotcha', 'Test observation', 1000)`,
-        );
-        const zeros = new Array(EMBEDDING_DIMENSIONS).fill(0).join(',');
-        await db.query(
-          `UPDATE spores SET embedding = '[${zeros}]' WHERE id = 'test-spore'`,
-        );
-        const result = await db.query<{ id: string }>(
-          `SELECT id FROM spores WHERE embedding IS NOT NULL`,
-        );
-        expect(result.rows).toHaveLength(1);
-      });
-    });
-
-    describe('HNSW indexes', () => {
-      it('creates HNSW index on sessions.embedding', async () => {
-        await createSchema(db);
-        expect(await indexExists(db, 'idx_sessions_embedding')).toBe(true);
-      });
-
-      it('creates HNSW index on prompt_batches.embedding', async () => {
-        await createSchema(db);
-        expect(await indexExists(db, 'idx_prompt_batches_embedding')).toBe(true);
-      });
-
-      it('creates HNSW index on spores.embedding', async () => {
-        await createSchema(db);
-        expect(await indexExists(db, 'idx_spores_embedding')).toBe(true);
-      });
-    });
-
-    describe('secondary indexes', () => {
-      it('creates indexes on commonly queried columns', async () => {
-        await createSchema(db);
-        // Spot-check a few critical indexes
-        expect(await indexExists(db, 'idx_sessions_status')).toBe(true);
-        expect(await indexExists(db, 'idx_sessions_processed')).toBe(true);
-        expect(await indexExists(db, 'idx_prompt_batches_session_id')).toBe(true);
-        expect(await indexExists(db, 'idx_activities_session_id')).toBe(true);
-        expect(await indexExists(db, 'idx_spores_agent_id')).toBe(true);
-        expect(await indexExists(db, 'idx_spores_status')).toBe(true);
-        expect(await indexExists(db, 'idx_entities_agent_id')).toBe(true);
-        expect(await indexExists(db, 'idx_graph_edges_source')).toBe(true);
-        expect(await indexExists(db, 'idx_graph_edges_target')).toBe(true);
-        expect(await indexExists(db, 'idx_graph_edges_type')).toBe(true);
-        expect(await indexExists(db, 'idx_graph_edges_agent')).toBe(true);
+      it('creates activities_fts virtual table', () => {
+        createSchema(db);
+        expect(tableExists(db, 'activities_fts')).toBe(true);
       });
     });
 
     describe('unique constraints', () => {
-      it('enforces content_hash uniqueness on sessions', async () => {
-        await createSchema(db);
-        await db.query(
+      it('enforces content_hash uniqueness on sessions', () => {
+        createSchema(db);
+        db.prepare(
           `INSERT INTO sessions (id, agent, started_at, created_at, content_hash)
            VALUES ('s1', 'test', 1000, 1000, 'hash-abc')`,
-        );
-        await expect(
-          db.query(
+        ).run();
+        expect(() =>
+          db.prepare(
             `INSERT INTO sessions (id, agent, started_at, created_at, content_hash)
              VALUES ('s2', 'test', 1001, 1001, 'hash-abc')`,
-          ),
-        ).rejects.toThrow();
+          ).run(),
+        ).toThrow();
       });
 
-      it('enforces compound unique on entities (agent_id, type, name)', async () => {
-        await createSchema(db);
-        await db.query(
+      it('enforces compound unique on entities (agent_id, type, name)', () => {
+        createSchema(db);
+        db.prepare(
           `INSERT INTO agents (id, name, created_at) VALUES ('c1', 'Test', 1000)`,
-        );
-        await db.query(
+        ).run();
+        db.prepare(
           `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
            VALUES ('e1', 'c1', 'component', 'AuthModule', 1000, 1000)`,
-        );
-        await expect(
-          db.query(
+        ).run();
+        expect(() =>
+          db.prepare(
             `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
              VALUES ('e2', 'c1', 'component', 'AuthModule', 1001, 1001)`,
-          ),
-        ).rejects.toThrow();
+          ).run(),
+        ).toThrow();
       });
 
-      it('enforces compound unique on entity_mentions', async () => {
-        await createSchema(db);
-        await db.query(
+      it('enforces compound unique on entity_mentions', () => {
+        createSchema(db);
+        db.prepare(
           `INSERT INTO agents (id, name, created_at) VALUES ('c1', 'Test', 1000)`,
-        );
-        await db.query(
+        ).run();
+        db.prepare(
           `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
            VALUES ('e1', 'c1', 'component', 'X', 1000, 1000)`,
-        );
-        await db.query(
+        ).run();
+        db.prepare(
           `INSERT INTO entity_mentions (entity_id, note_id, note_type, agent_id)
            VALUES ('e1', 'spore-1', 'spore', 'c1')`,
-        );
-        await expect(
-          db.query(
+        ).run();
+        expect(() =>
+          db.prepare(
             `INSERT INTO entity_mentions (entity_id, note_id, note_type, agent_id)
              VALUES ('e1', 'spore-1', 'spore', 'c1')`,
-          ),
-        ).rejects.toThrow();
+          ).run(),
+        ).toThrow();
       });
 
-      it('enforces compound unique on digest_extracts (agent_id, tier)', async () => {
-        await createSchema(db);
-        await db.query(
+      it('enforces compound unique on digest_extracts (agent_id, tier)', () => {
+        createSchema(db);
+        db.prepare(
           `INSERT INTO agents (id, name, created_at) VALUES ('c1', 'Test', 1000)`,
-        );
-        await db.query(
+        ).run();
+        db.prepare(
           `INSERT INTO digest_extracts (agent_id, tier, content, generated_at)
            VALUES ('c1', 1500, 'context', 1000)`,
-        );
-        await expect(
-          db.query(
+        ).run();
+        expect(() =>
+          db.prepare(
             `INSERT INTO digest_extracts (agent_id, tier, content, generated_at)
              VALUES ('c1', 1500, 'updated context', 1001)`,
-          ),
-        ).rejects.toThrow();
+          ).run(),
+        ).toThrow();
       });
 
-      it('enforces compound primary key on agent_state', async () => {
-        await createSchema(db);
-        await db.query(
+      it('enforces compound primary key on agent_state', () => {
+        createSchema(db);
+        db.prepare(
           `INSERT INTO agents (id, name, created_at) VALUES ('c1', 'Test', 1000)`,
-        );
-        await db.query(
+        ).run();
+        db.prepare(
           `INSERT INTO agent_state (agent_id, key, value, updated_at)
            VALUES ('c1', 'cursor', '42', 1000)`,
-        );
-        await expect(
-          db.query(
+        ).run();
+        expect(() =>
+          db.prepare(
             `INSERT INTO agent_state (agent_id, key, value, updated_at)
              VALUES ('c1', 'cursor', '43', 1001)`,
-          ),
-        ).rejects.toThrow();
+          ).run(),
+        ).toThrow();
       });
     });
 
-    describe('timestamp convention', () => {
-      it('stores timestamps as integers (Unix epoch)', async () => {
-        await createSchema(db);
-        const cols = await getColumns(db, 'sessions');
-        const startedAt = cols.find((c) => c.column_name === 'started_at');
-        const createdAt = cols.find((c) => c.column_name === 'created_at');
-        // PGlite reports INTEGER as 'integer'
-        expect(startedAt?.data_type).toBe('integer');
-        expect(createdAt?.data_type).toBe('integer');
+    describe('secondary indexes', () => {
+      it('creates indexes on commonly queried columns', () => {
+        createSchema(db);
+        // Spot-check a few critical indexes
+        expect(indexExists(db, 'idx_sessions_status')).toBe(true);
+        expect(indexExists(db, 'idx_sessions_processed')).toBe(true);
+        expect(indexExists(db, 'idx_prompt_batches_session_id')).toBe(true);
+        expect(indexExists(db, 'idx_activities_session_id')).toBe(true);
+        expect(indexExists(db, 'idx_spores_agent_id')).toBe(true);
+        expect(indexExists(db, 'idx_spores_status')).toBe(true);
+        expect(indexExists(db, 'idx_entities_agent_id')).toBe(true);
+        expect(indexExists(db, 'idx_graph_edges_source')).toBe(true);
+        expect(indexExists(db, 'idx_graph_edges_target')).toBe(true);
+        expect(indexExists(db, 'idx_graph_edges_type')).toBe(true);
+        expect(indexExists(db, 'idx_graph_edges_agent')).toBe(true);
       });
     });
   });

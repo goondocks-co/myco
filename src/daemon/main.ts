@@ -1,11 +1,10 @@
 /**
- * Myco daemon — PGlite capture engine.
+ * Myco daemon — SQLite capture engine.
  *
- * This is the v2 rewrite: all data goes to PGlite instead of markdown vault +
- * SQLite. The intelligence pipeline (extraction, embedding, consolidation,
- * digest) is removed — it moves to Phase 2 Agent SDK. What remains is the
- * capture layer: session lifecycle, prompt batch tracking, activity recording,
- * and transcript mining.
+ * All data goes to a local SQLite database (better-sqlite3). The intelligence
+ * pipeline (extraction, embedding, consolidation, digest) is removed — it
+ * moves to Phase 2 Agent SDK. What remains is the capture layer: session
+ * lifecycle, prompt batch tracking, activity recording, and transcript mining.
  */
 
 import { DaemonServer } from './server.js';
@@ -53,7 +52,8 @@ import {
 } from './api/agent-tasks.js';
 import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
-import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
+import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
+import { createSchema } from '../db/schema.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSession } from '../db/queries/sessions.js';
 import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary } from '../db/queries/batches.js';
 import { insertActivityWithBatch } from '../db/queries/activities.js';
@@ -108,17 +108,17 @@ const TITLE_PREVIEW_CHARS = 80;
  *
  * @returns the new batch ID and prompt number
  */
-export async function handleUserPrompt(
+export function handleUserPrompt(
   sessionId: string,
   prompt: string | undefined,
-): Promise<{ batchId: number; promptNumber: number }> {
+): { batchId: number; promptNumber: number } {
   const now = epochSeconds();
 
   // Close any open batches for this session — blind UPDATE, no prior read
-  await closeOpenBatches(sessionId, now);
+  closeOpenBatches(sessionId, now);
 
   // Insert new batch with prompt_number derived from DB
-  const batch = await insertBatchStateless({
+  const batch = insertBatchStateless({
     session_id: sessionId,
     user_prompt: prompt ?? null,
     started_at: now,
@@ -128,11 +128,11 @@ export async function handleUserPrompt(
   // insertBatchStateless guarantees non-null prompt_number via COALESCE subquery
   const promptNumber = batch.prompt_number!;
 
-  // Create HAS_BATCH lineage edge (fire-and-forget)
-  createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now).catch(() => { /* lineage best-effort */ });
+  // Create HAS_BATCH lineage edge (best-effort)
+  try { createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now); } catch { /* lineage best-effort */ }
 
   // Update session prompt count
-  await updateSession(sessionId, { prompt_count: promptNumber });
+  updateSession(sessionId, { prompt_count: promptNumber });
 
   return { batchId: batch.id, promptNumber };
 }
@@ -143,19 +143,19 @@ export async function handleUserPrompt(
  * Fully stateless — the batch ID is resolved via an inline subquery in
  * `insertActivityWithBatch`, so no in-memory state is needed.
  */
-export async function handleToolUse(
+export function handleToolUse(
   sessionId: string,
   toolName: string,
   toolInput: unknown,
   toolOutput: string | undefined,
-): Promise<void> {
+): void {
   const now = epochSeconds();
 
   // Extract file_path from tool input if present
   const inputObj = toolInput as Record<string, unknown> | undefined;
   const filePath = typeof inputObj?.file_path === 'string' ? inputObj.file_path : null;
 
-  const activity = await insertActivityWithBatch({
+  const activity = insertActivityWithBatch({
     session_id: sessionId,
     tool_name: toolName,
     tool_input: toolInput ? JSON.stringify(toolInput).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
@@ -167,7 +167,7 @@ export async function handleToolUse(
 
   // Increment batch activity count if linked to a batch
   if (activity.prompt_batch_id !== null) {
-    await incrementActivityCount(activity.prompt_batch_id);
+    incrementActivityCount(activity.prompt_batch_id);
   }
   // Session-level tool_count is updated at stop time from transcript data.
 }
@@ -178,33 +178,33 @@ export async function handleToolUse(
  * Fully stateless — uses `closeOpenBatches` (blind UPDATE) instead of
  * reading from an in-memory map.
  */
-export async function handleSessionStop(
+export function handleSessionStop(
   sessionId: string,
-): Promise<void> {
+): void {
   const now = epochSeconds();
 
   // Close all open batches for this session — blind UPDATE, no prior read
-  await closeOpenBatches(sessionId, now);
+  closeOpenBatches(sessionId, now);
 
   // Close session
-  await closeSession(sessionId, now);
+  closeSession(sessionId, now);
 }
 
 /**
  * Handle a tool failure event: insert activity with success=0.
  */
-export async function handleToolFailure(
+export function handleToolFailure(
   sessionId: string,
   toolName: string,
   toolInput: unknown,
   error: string | undefined,
   isInterrupt: boolean | undefined,
-): Promise<void> {
+): void {
   const now = epochSeconds();
   const inputObj = toolInput as Record<string, unknown> | undefined;
   const filePath = typeof inputObj?.file_path === 'string' ? inputObj.file_path : null;
 
-  const activity = await insertActivityWithBatch({
+  const activity = insertActivityWithBatch({
     session_id: sessionId,
     tool_name: toolName,
     tool_input: toolInput ? JSON.stringify(toolInput).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
@@ -217,20 +217,20 @@ export async function handleToolFailure(
   });
 
   if (activity.prompt_batch_id !== null) {
-    await incrementActivityCount(activity.prompt_batch_id);
+    incrementActivityCount(activity.prompt_batch_id);
   }
 }
 
 /**
  * Handle a subagent start event: record that a subagent was spawned.
  */
-export async function handleSubagentStart(
+export function handleSubagentStart(
   sessionId: string,
   agentId: string | undefined,
   agentType: string | undefined,
-): Promise<void> {
+): void {
   const now = epochSeconds();
-  await insertActivityWithBatch({
+  insertActivityWithBatch({
     session_id: sessionId,
     tool_name: 'subagent_start',
     tool_input: JSON.stringify({ agent_id: agentId, agent_type: agentType }).slice(0, TOOL_INPUT_STORE_LIMIT),
@@ -242,14 +242,14 @@ export async function handleSubagentStart(
 /**
  * Handle a subagent stop event: record that a subagent completed.
  */
-export async function handleSubagentStop(
+export function handleSubagentStop(
   sessionId: string,
   agentId: string | undefined,
   agentType: string | undefined,
   lastAssistantMessage: string | undefined,
-): Promise<void> {
+): void {
   const now = epochSeconds();
-  await insertActivityWithBatch({
+  insertActivityWithBatch({
     session_id: sessionId,
     tool_name: 'subagent_stop',
     tool_input: JSON.stringify({ agent_id: agentId, agent_type: agentType }).slice(0, TOOL_INPUT_STORE_LIMIT),
@@ -262,13 +262,13 @@ export async function handleSubagentStop(
 /**
  * Handle a stop failure event: record that the stop hook encountered an error.
  */
-export async function handleStopFailure(
+export function handleStopFailure(
   sessionId: string,
   error: string | undefined,
   errorDetails: string | undefined,
-): Promise<void> {
+): void {
   const now = epochSeconds();
-  await insertActivityWithBatch({
+  insertActivityWithBatch({
     session_id: sessionId,
     tool_name: 'stop_failure',
     tool_output_summary: errorDetails?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
@@ -282,14 +282,14 @@ export async function handleStopFailure(
 /**
  * Handle a task completed event: record task completion as an activity.
  */
-export async function handleTaskCompleted(
+export function handleTaskCompleted(
   sessionId: string,
   taskId: string | undefined,
   taskSubject: string | undefined,
   taskDescription: string | undefined,
-): Promise<void> {
+): void {
   const now = epochSeconds();
-  await insertActivityWithBatch({
+  insertActivityWithBatch({
     session_id: sessionId,
     tool_name: 'task_completed',
     tool_input: JSON.stringify({ task_id: taskId, task_subject: taskSubject, task_description: taskDescription }).slice(0, TOOL_INPUT_STORE_LIMIT),
@@ -302,14 +302,14 @@ export async function handleTaskCompleted(
 /**
  * Handle a compact event (pre or post): record compaction in the activity stream.
  */
-export async function handleCompact(
+export function handleCompact(
   sessionId: string,
   phase: 'pre' | 'post',
   trigger: string | undefined,
   compactSummary: string | undefined,
-): Promise<void> {
+): void {
   const now = epochSeconds();
-  await insertActivityWithBatch({
+  insertActivityWithBatch({
     session_id: sessionId,
     tool_name: `${phase}_compact`,
     tool_input: trigger ? JSON.stringify({ trigger }).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
@@ -374,15 +374,16 @@ export async function main(): Promise<void> {
     embedding_provider: config.embedding.provider,
   });
 
-  // --- PGlite initialization ---
-  await initDatabaseForVault(vaultDir);
-  logger.info('daemon', 'PGlite initialized', { vault: vaultDir });
+  // --- SQLite initialization ---
+  const db = initDatabase(vaultDbPath(vaultDir));
+  createSchema(db);
+  logger.info('daemon', 'SQLite initialized', { vault: vaultDir });
 
   // --- Register built-in agents and tasks ---
   try {
     const { registerBuiltInAgentsAndTasks, resolveDefinitionsDir } = await import('../agent/loader.js');
     const definitionsDir = resolveDefinitionsDir();
-    await registerBuiltInAgentsAndTasks(definitionsDir);
+    registerBuiltInAgentsAndTasks(definitionsDir);
     logger.info('agent', 'Built-in agents and tasks registered');
   } catch (err) {
     logger.warn('agent', 'Failed to register built-in agents/tasks', { error: (err as Error).message });
@@ -390,17 +391,19 @@ export async function main(): Promise<void> {
 
   // Clean up stale "running" agent runs from previous daemon — they'll never complete
   try {
-    const db = getDatabase();
-    const staleRuns = await db.query(
-      `UPDATE agent_runs SET status = 'failed', completed_at = $1
-       WHERE status = 'running'
-       RETURNING id`,
-      [epochSeconds()],
-    );
-    if (staleRuns.rows.length > 0) {
+    const staleDb = getDatabase();
+    // SQLite doesn't support RETURNING — query first, then update
+    const staleRows = staleDb.prepare(
+      `SELECT id FROM agent_runs WHERE status = 'running'`,
+    ).all() as Array<{ id: string }>;
+
+    if (staleRows.length > 0) {
+      staleDb.prepare(
+        `UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE status = 'running'`,
+      ).run(epochSeconds());
       logger.info('agent', 'Cleaned stale running agent runs', {
-        count: staleRuns.rows.length,
-        ids: staleRuns.rows.map((r: unknown) => (r as Record<string, unknown>).id),
+        count: staleRows.length,
+        ids: staleRows.map((r) => r.id),
       });
     }
   } catch (err) {
@@ -485,7 +488,7 @@ export async function main(): Promise<void> {
     watchPaths: config.capture.artifact_watch,
     onPlan: (event) => {
       logger.info('watcher', 'Plan detected', { source: event.source, file: event.filePath });
-      // Plan indexing deferred to Phase 2 (PGlite plans table + Agent SDK)
+      // Plan indexing deferred to Phase 2 (SQLite plans table + Agent SDK)
     },
   });
   planWatcher.startFileWatcher();
@@ -498,10 +501,10 @@ export async function main(): Promise<void> {
     registry.register(session_id, { started_at: resolvedStartedAt, branch });
     server.updateDaemonJsonSessions(registry.sessions);
 
-    // Upsert session in PGlite — always reset to active on register
+    // Upsert session in SQLite — always reset to active on register
     const now = epochSeconds();
     const startedEpoch = Math.floor(new Date(resolvedStartedAt).getTime() / 1000);
-    await upsertSession({
+    upsertSession({
       id: session_id,
       agent: 'claude-code',
       user: null,
@@ -512,7 +515,7 @@ export async function main(): Promise<void> {
       status: 'active',
     });
     // Clear ended_at if session was previously completed (reload scenario)
-    await updateSession(session_id, { ended_at: null, status: 'active' });
+    updateSession(session_id, { ended_at: null, status: 'active' });
 
     logger.info('lifecycle', 'Session registered', { session_id, branch, started_at: started_at ?? null });
     return { body: { ok: true, sessions: registry.sessions } };
@@ -558,11 +561,11 @@ export async function main(): Promise<void> {
       registry.register(event.session_id, { started_at: event.timestamp });
       logger.debug('lifecycle', 'Auto-registered session from event', { session_id: event.session_id });
 
-      // Ensure PGlite session exists — explicitly set status='active' so
+      // Ensure SQLite session exists — explicitly set status='active' so
       // resumed sessions (previously 'completed') get reopened.
       const now = epochSeconds();
       const startedEpoch = Math.floor(new Date(event.timestamp).getTime() / 1000);
-      await upsertSession({
+      upsertSession({
         id: event.session_id,
         agent: 'claude-code',
         status: 'active',
@@ -586,7 +589,7 @@ export async function main(): Promise<void> {
         prompt_length: promptText.length,
       });
       try {
-        const { batchId, promptNumber } = await handleUserPrompt(event.session_id, promptText || undefined);
+        const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined);
         logger.debug('capture', 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });
 
         // Batch-threshold summary trigger
@@ -594,7 +597,7 @@ export async function main(): Promise<void> {
         const summaryInterval = config.agent.summary_batch_interval;
         if (summaryInterval > 0 && batchCount > 0 && batchCount % summaryInterval === 0) {
           try {
-            const running = await getRunningRun(DEFAULT_AGENT_ID);
+            const running = getRunningRun(DEFAULT_AGENT_ID);
             if (!running) {
               const { runAgent } = await import('../agent/executor.js');
               runAgent(vaultDir, {
@@ -617,7 +620,7 @@ export async function main(): Promise<void> {
       });
       planWatcher.checkToolEvent({ tool_name: toolName, tool_input: event.tool_input, session_id: event.session_id });
       try {
-        await handleToolUse(
+        handleToolUse(
           event.session_id,
           toolName,
           event.tool_input,
@@ -636,7 +639,7 @@ export async function main(): Promise<void> {
         is_interrupt: !!event.is_interrupt,
       });
       try {
-        await handleToolFailure(
+        handleToolFailure(
           event.session_id,
           toolName,
           event.tool_input,
@@ -655,7 +658,7 @@ export async function main(): Promise<void> {
         agent_type: event.agent_type,
       });
       try {
-        await handleSubagentStart(
+        handleSubagentStart(
           event.session_id,
           typeof event.agent_id === 'string' ? event.agent_id : undefined,
           typeof event.agent_type === 'string' ? event.agent_type : undefined,
@@ -672,7 +675,7 @@ export async function main(): Promise<void> {
         agent_type: event.agent_type,
       });
       try {
-        await handleSubagentStop(
+        handleSubagentStop(
           event.session_id,
           typeof event.agent_id === 'string' ? event.agent_id : undefined,
           typeof event.agent_type === 'string' ? event.agent_type : undefined,
@@ -689,7 +692,7 @@ export async function main(): Promise<void> {
         error: event.error,
       });
       try {
-        await handleStopFailure(
+        handleStopFailure(
           event.session_id,
           typeof event.error === 'string' ? event.error : undefined,
           typeof event.error_details === 'string' ? event.error_details : undefined,
@@ -706,7 +709,7 @@ export async function main(): Promise<void> {
         task_subject: event.task_subject,
       });
       try {
-        await handleTaskCompleted(
+        handleTaskCompleted(
           event.session_id,
           typeof event.task_id === 'string' ? event.task_id : undefined,
           typeof event.task_subject === 'string' ? event.task_subject : undefined,
@@ -720,7 +723,7 @@ export async function main(): Promise<void> {
     if (event.type === 'pre_compact') {
       logger.info('hooks', 'Pre-compact event', { session_id: event.session_id });
       try {
-        await handleCompact(
+        handleCompact(
           event.session_id,
           'pre',
           typeof event.trigger === 'string' ? event.trigger : undefined,
@@ -734,7 +737,7 @@ export async function main(): Promise<void> {
     if (event.type === 'post_compact') {
       logger.info('hooks', 'Post-compact event', { session_id: event.session_id });
       try {
-        await handleCompact(
+        handleCompact(
           event.session_id,
           'post',
           typeof event.trigger === 'string' ? event.trigger : undefined,
@@ -868,16 +871,16 @@ export async function main(): Promise<void> {
     // --- Phase 2: Capture response + close session ---
 
     // Get the latest batch BEFORE closing — this is the batch for the current turn.
-    const latestBatch = await getLatestBatch(sessionId);
+    const latestBatch = getLatestBatch(sessionId);
 
     // Primary capture: put last_assistant_message directly on the latest batch.
     // No positional mapping needed — the hook gives us the response directly.
     if (lastAssistantMessage && latestBatch && !latestBatch.response_summary) {
-      await setResponseSummary(latestBatch.id, lastAssistantMessage)
-        .catch(err => logger.warn('processor', 'Failed to set response_summary on latest batch', { error: String(err) }));
+      try { setResponseSummary(latestBatch.id, lastAssistantMessage); }
+      catch (err) { logger.warn('processor', 'Failed to set response_summary on latest batch', { error: String(err) }); }
     }
 
-    await handleSessionStop(sessionId);
+    handleSessionStop(sessionId);
 
     // Derive a simple title from the first prompt (no LLM — that's Phase 2)
     let title: string | null = null;
@@ -897,7 +900,7 @@ export async function main(): Promise<void> {
     if (user) updateFields.user = user;
     if (title) updateFields.title = title;
 
-    await updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
+    updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
 
     // Enhanced capture: populate response_summary on earlier batches from transcript.
     // Maps by batch insertion order (id ASC) to transcript turn position.
@@ -910,8 +913,8 @@ export async function main(): Promise<void> {
       }
     }
     if (responses.length > 0) {
-      populateBatchResponses(sessionId, responses)
-        .catch(err => logger.warn('processor', 'Failed to populate batch responses', { error: String(err) }));
+      try { populateBatchResponses(sessionId, responses); }
+      catch (err) { logger.warn('processor', 'Failed to populate batch responses', { error: String(err) }); }
     }
 
     // Fire-and-forget: trigger title/summary generation via agent task
@@ -923,7 +926,7 @@ export async function main(): Promise<void> {
       }).catch(err => logger.warn('agent', 'Title-summary task failed', { error: String(err) }));
     } catch { /* agent unavailable */ }
 
-    // Write images to attachments (keep this — images are binary, not in PGlite)
+    // Write images to attachments (keep this — images are binary, not in SQLite)
     // Link images to the latest batch directly (primary capture) rather than
     // relying on positional turn-to-batch mapping (which breaks when the parser
     // drops empty-text turns).
@@ -939,9 +942,13 @@ export async function main(): Promise<void> {
       // For the last turn, use latestBatch directly (reliable).
       // For earlier turns, fall back to positional lookup (best-effort).
       const isLastTurn = i === allTurns.length - 1;
-      const batchIdPromise = isLastTurn && latestBatch
-        ? Promise.resolve(latestBatch.id)
-        : getBatchIdByPromptNumber(sessionId, promptNumber).catch(() => null);
+      let resolvedBatchId: number | null = null;
+      if (isLastTurn && latestBatch) {
+        resolvedBatchId = latestBatch.id;
+      } else {
+        try { resolvedBatchId = getBatchIdByPromptNumber(sessionId, promptNumber); }
+        catch { resolvedBatchId = null; }
+      }
       for (let j = 0; j < turn.images.length; j++) {
         const img = turn.images[j];
         const ext = extensionForMimeType(img.mediaType);
@@ -951,16 +958,16 @@ export async function main(): Promise<void> {
         try {
           fs.writeFileSync(filePath, Buffer.from(img.data, 'base64'), { flag: 'wx' });
           logger.debug('processor', 'Image saved', { filename, turn: promptNumber });
-          batchIdPromise.then(batchId => {
+          try {
             insertAttachment({
               id: `${sessionShort}-t${promptNumber}-${j + 1}`,
               session_id: sessionId,
-              prompt_batch_id: batchId ?? undefined,
+              prompt_batch_id: resolvedBatchId ?? undefined,
               file_path: filename,
               media_type: img.mediaType,
               created_at: epochSeconds(),
-            }).catch(err => logger.warn('processor', 'Failed to record attachment', { error: String(err) }));
-          });
+            });
+          } catch (err) { logger.warn('processor', 'Failed to record attachment', { error: String(err) }); }
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
         }
@@ -1037,7 +1044,7 @@ export async function main(): Promise<void> {
 
   // V2 stats — vault counts, embedding coverage, agent status, digest freshness
   server.registerRoute('GET', '/api/stats', async () => {
-    const stats = await gatherStats(vaultDir, { active_sessions: registry.sessions });
+    const stats = gatherStats(vaultDir, { active_sessions: registry.sessions });
     // Overlay live daemon fields from the running process (more accurate than daemon.json)
     stats.daemon.pid = process.pid;
     stats.daemon.port = server.port;
@@ -1066,9 +1073,9 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir, progressTracker }, req.body));
   server.registerRoute('GET', '/api/progress/:token', async (req) => handleGetProgress(progressTracker, req.params.token));
 
-  // Simplified sessions endpoint — PGlite based
+  // Simplified sessions endpoint — SQLite based
   server.registerRoute('GET', '/api/sessions', async () => {
-    const sessions = await listSessions({ limit: 100 });
+    const sessions = listSessions({ limit: 100 });
     return {
       body: {
         sessions: sessions.map((s) => ({
@@ -1084,7 +1091,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/sessions/:id', handleGetSession);
   server.registerRoute('DELETE', '/api/sessions/:id', async (req) => {
     const sessionId = req.params.id;
-    const deleted = await deleteSession(sessionId);
+    const deleted = deleteSession(sessionId);
     if (!deleted) return { status: 404, body: { error: 'Session not found' } };
     logger.info('api', 'Session deleted', { session_id: sessionId });
     return { body: { ok: true } };
@@ -1170,12 +1177,12 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/agent/runs', async (req) => {
     const limit = req.query.limit ? Number(req.query.limit) : AGENT_RUNS_DEFAULT_LIMIT;
     const agentId = req.query.agentId || undefined;
-    const runs = await listRuns({ limit, agent_id: agentId });
+    const runs = listRuns({ limit, agent_id: agentId });
     return { body: { runs } };
   });
 
   server.registerRoute('GET', '/api/agent/runs/:id', async (req) => {
-    const run = await getRun(req.params.id);
+    const run = getRun(req.params.id);
     if (!run) {
       return { status: 404, body: { error: 'Run not found' } };
     }
@@ -1183,12 +1190,12 @@ export async function main(): Promise<void> {
   });
 
   server.registerRoute('GET', '/api/agent/runs/:id/reports', async (req) => {
-    const reports = await listReports(req.params.id);
+    const reports = listReports(req.params.id);
     return { body: { reports } };
   });
 
   server.registerRoute('GET', '/api/agent/runs/:id/turns', async (req) => {
-    const turns = await listTurnsByRun(req.params.id);
+    const turns = listTurnsByRun(req.params.id);
     return { body: turns };
   });
 
@@ -1202,7 +1209,7 @@ export async function main(): Promise<void> {
 
   // --- MCP proxy routes ---
   // These routes exist so the MCP server can proxy tool calls through the
-  // daemon instead of opening its own PGlite connection.
+  // daemon instead of opening its own SQLite connection.
 
   const SPORE_ID_RANDOM_BYTES = 4;
   const RESOLUTION_ID_RANDOM_BYTES = 8;
@@ -1222,13 +1229,13 @@ export async function main(): Promise<void> {
     const now = epochSeconds();
 
     // Ensure the user agent exists (idempotent upsert)
-    await registerAgent({
+    registerAgent({
       id: USER_AGENT_ID,
       name: USER_AGENT_NAME,
       created_at: now,
     });
 
-    const spore = await insertSpore({
+    const spore = insertSpore({
       id,
       agent_id: USER_AGENT_ID,
       observation_type: observationType,
@@ -1251,7 +1258,7 @@ export async function main(): Promise<void> {
     const statusFilter = req.query.status === 'all' ? undefined : req.query.status;
     const limit = req.query.limit ? Number(req.query.limit) : undefined;
 
-    const rows = await listPlans({ status: statusFilter, limit });
+    const rows = listPlans({ status: statusFilter, limit });
 
     const plans = rows.map((row) => {
       const content = row.content ?? '';
@@ -1277,7 +1284,7 @@ export async function main(): Promise<void> {
     const limit = req.query.limit ? Number(req.query.limit) : 20;
     const status = req.query.status;
 
-    const rows = await listSessions({ limit, status });
+    const rows = listSessions({ limit, status });
     const sessions = rows.map((row) => ({
       id: row.id,
       agent: row.agent,
@@ -1297,14 +1304,14 @@ export async function main(): Promise<void> {
   });
 
   server.registerRoute('GET', '/api/mcp/team', async () => {
-    const db = getDatabase();
-    const result = await db.query(
+    const teamDb = getDatabase();
+    const rows = teamDb.prepare(
       `SELECT id, "user", role, joined, tags
        FROM team_members
        ORDER BY id ASC`,
-    );
+    ).all() as Array<Record<string, unknown>>;
 
-    const members = (result.rows as Record<string, unknown>[]).map((row) => ({
+    const members = rows.map((row) => ({
       id: row.id as string,
       user: row.user as string,
       role: (row.role as string) ?? null,
@@ -1327,32 +1334,28 @@ export async function main(): Promise<void> {
     const now = epochSeconds();
 
     // Update status to superseded
-    await updateSporeStatus(old_spore_id, 'superseded', now);
+    updateSporeStatus(old_spore_id, 'superseded', now);
 
     // Ensure user agent exists (idempotent)
-    await registerAgent({
+    registerAgent({
       id: USER_AGENT_ID,
       name: USER_AGENT_NAME,
       created_at: now,
     });
 
     // Record resolution event for audit trail
-    const db = getDatabase();
+    const { insertResolutionEvent } = await import('../db/queries/resolution-events.js');
     const resolutionId = `res-${randomBytes(RESOLUTION_ID_RANDOM_BYTES).toString('hex')}`;
 
-    await db.query(
-      `INSERT INTO resolution_events (id, agent_id, spore_id, action, new_spore_id, reason, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        resolutionId,
-        USER_AGENT_ID,
-        old_spore_id,
-        'supersede',
-        new_spore_id,
-        reason ?? null,
-        now,
-      ],
-    );
+    insertResolutionEvent({
+      id: resolutionId,
+      agent_id: USER_AGENT_ID,
+      spore_id: old_spore_id,
+      action: 'supersede',
+      new_spore_id,
+      reason: reason ?? null,
+      created_at: now,
+    });
 
     return {
       body: {
@@ -1396,9 +1399,9 @@ export async function main(): Promise<void> {
     ? setInterval(async () => {
         try {
           // Pre-check: only spawn agent if there's unprocessed work
-          const db = getDatabase();
-          const checkResult = await db.query('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0');
-          const count = Number((checkResult.rows[0] as Record<string, unknown>).count);
+          const agentDb = getDatabase();
+          const checkRow = agentDb.prepare('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0').get() as { count: number };
+          const count = Number(checkRow.count);
           if (count === 0) {
             logger.debug('agent', 'No unprocessed batches, skipping cycle');
             return;
@@ -1430,12 +1433,12 @@ export async function main(): Promise<void> {
     if (embeddingRunning) return;
     embeddingRunning = true;
     try {
-      const { getUnembedded, setEmbedding, EMBEDDABLE_TABLES } = await import('../db/queries/embeddings.js');
+      const { getUnembedded, markEmbedded, EMBEDDABLE_TABLES } = await import('../db/queries/embeddings.js');
       const { tryEmbed } = await import('../intelligence/embed-query.js');
 
       let totalEmbedded = 0;
       for (const table of EMBEDDABLE_TABLES) {
-        const rows = await getUnembedded(table, { limit: EMBEDDING_BATCH_SIZE });
+        const rows = getUnembedded(table, EMBEDDING_BATCH_SIZE);
         if (rows.length === 0) continue;
 
         for (const row of rows) {
@@ -1451,7 +1454,7 @@ export async function main(): Promise<void> {
               return;
             }
 
-            await setEmbedding(table, row.id, embedding);
+            markEmbedded(table, row.id);
             totalEmbedded++;
           } catch (err) {
             logger.warn('embedding', 'Failed to embed row', { table, id: row.id, error: (err as Error).message });
@@ -1488,7 +1491,7 @@ export async function main(): Promise<void> {
     planWatcher.stopFileWatcher();
     registry.destroy();
     await server.stop();
-    await closeDatabase();
+    closeDatabase();
     logger.close();
     process.exit(0);
   };

@@ -6,8 +6,21 @@ import { OllamaBackend } from '../intelligence/ollama.js';
 import { LmStudioBackend } from '../intelligence/lm-studio.js';
 
 import { DaemonClient } from '../hooks/client.js';
+import { initDatabase, closeDatabase, vaultDbPath } from '../db/client.js';
 
 export { parseStringFlag, parseIntFlag } from '../logs/format.js';
+
+/**
+ * Initialize the singleton database for direct CLI reads.
+ * Used by CLI commands that only need reads (stats, search, session).
+ * Does NOT require the daemon to be running — WAL mode allows concurrent reads.
+ *
+ * @returns a cleanup function that closes the database.
+ */
+export function initVaultDb(vaultDir: string): () => void {
+  initDatabase(vaultDbPath(vaultDir));
+  return closeDatabase;
+}
 
 /** Connect to the daemon, ensuring it's running. Exits on failure. */
 export async function connectToDaemon(vaultDir: string): Promise<DaemonClient> {
@@ -43,8 +56,10 @@ export const PROVIDER_DEFAULTS: Record<string, { base_url: string }> = {
 };
 
 
-export const VAULT_GITIGNORE = `# PGlite database — rebuilt from capture data
-pgdata/
+export const VAULT_GITIGNORE = `# SQLite database
+myco.db
+myco.db-wal
+myco.db-shm
 
 # Daemon state — per-machine, ephemeral
 daemon.json

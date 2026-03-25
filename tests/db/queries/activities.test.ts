@@ -62,13 +62,13 @@ function makeActivity(
 describe('activity query helpers', () => {
   let sessionId: string;
 
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
-  beforeEach(async () => {
-    await cleanTestDb();
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => {
+    cleanTestDb();
 
     const session = makeSession();
-    await upsertSession(session);
+    upsertSession(session);
     sessionId = session.id;
   });
 
@@ -77,9 +77,9 @@ describe('activity query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('insertActivity', () => {
-    it('inserts a new activity and returns it with a generated id', async () => {
+    it('inserts a new activity and returns it with a generated id', () => {
       const data = makeActivity(sessionId, { tool_name: 'Bash' });
-      const row = await insertActivity(data);
+      const row = insertActivity(data);
 
       expect(row.id).toBeGreaterThan(0);
       expect(row.session_id).toBe(sessionId);
@@ -88,7 +88,7 @@ describe('activity query helpers', () => {
       expect(row.processed).toBe(0);
     });
 
-    it('stores all optional fields', async () => {
+    it('stores all optional fields', () => {
       const data = makeActivity(sessionId, {
         tool_name: 'Edit',
         tool_input: '{"file": "src/main.ts"}',
@@ -100,7 +100,7 @@ describe('activity query helpers', () => {
         error_message: 'Permission denied',
         content_hash: 'abc123',
       });
-      const row = await insertActivity(data);
+      const row = insertActivity(data);
 
       expect(row.tool_input).toBe('{"file": "src/main.ts"}');
       expect(row.tool_output_summary).toBe('File edited successfully');
@@ -112,10 +112,10 @@ describe('activity query helpers', () => {
       expect(row.content_hash).toBe('abc123');
     });
 
-    it('links to a prompt batch via prompt_batch_id', async () => {
-      const batch = await insertBatch(makeBatch(sessionId));
+    it('links to a prompt batch via prompt_batch_id', () => {
+      const batch = insertBatch(makeBatch(sessionId));
       const data = makeActivity(sessionId, { prompt_batch_id: batch.id });
-      const row = await insertActivity(data);
+      const row = insertActivity(data);
 
       expect(row.prompt_batch_id).toBe(batch.id);
     });
@@ -126,61 +126,61 @@ describe('activity query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('listActivities', () => {
-    it('lists activities by session_id ordered by timestamp ASC', async () => {
+    it('lists activities by session_id ordered by timestamp ASC', () => {
       const now = epochNow();
-      await insertActivity(makeActivity(sessionId, { tool_name: 'Read', timestamp: now }));
-      await insertActivity(makeActivity(sessionId, { tool_name: 'Edit', timestamp: now + 1 }));
-      await insertActivity(makeActivity(sessionId, { tool_name: 'Bash', timestamp: now + 2 }));
+      insertActivity(makeActivity(sessionId, { tool_name: 'Read', timestamp: now }));
+      insertActivity(makeActivity(sessionId, { tool_name: 'Edit', timestamp: now + 1 }));
+      insertActivity(makeActivity(sessionId, { tool_name: 'Bash', timestamp: now + 2 }));
 
-      const rows = await listActivities({ session_id: sessionId });
+      const rows = listActivities({ session_id: sessionId });
       expect(rows).toHaveLength(3);
       expect(rows[0].tool_name).toBe('Read');
       expect(rows[1].tool_name).toBe('Edit');
       expect(rows[2].tool_name).toBe('Bash');
     });
 
-    it('filters by prompt_batch_id', async () => {
-      const batch1 = await insertBatch(makeBatch(sessionId));
-      const batch2 = await insertBatch(makeBatch(sessionId));
+    it('filters by prompt_batch_id', () => {
+      const batch1 = insertBatch(makeBatch(sessionId));
+      const batch2 = insertBatch(makeBatch(sessionId));
 
       const now = epochNow();
-      await insertActivity(makeActivity(sessionId, { prompt_batch_id: batch1.id, tool_name: 'Read', timestamp: now }));
-      await insertActivity(makeActivity(sessionId, { prompt_batch_id: batch2.id, tool_name: 'Edit', timestamp: now + 1 }));
-      await insertActivity(makeActivity(sessionId, { prompt_batch_id: batch1.id, tool_name: 'Bash', timestamp: now + 2 }));
+      insertActivity(makeActivity(sessionId, { prompt_batch_id: batch1.id, tool_name: 'Read', timestamp: now }));
+      insertActivity(makeActivity(sessionId, { prompt_batch_id: batch2.id, tool_name: 'Edit', timestamp: now + 1 }));
+      insertActivity(makeActivity(sessionId, { prompt_batch_id: batch1.id, tool_name: 'Bash', timestamp: now + 2 }));
 
-      const rows = await listActivities({ prompt_batch_id: batch1.id });
+      const rows = listActivities({ prompt_batch_id: batch1.id });
       expect(rows).toHaveLength(2);
       expect(rows[0].tool_name).toBe('Read');
       expect(rows[1].tool_name).toBe('Bash');
     });
 
-    it('combines session_id and prompt_batch_id filters', async () => {
+    it('combines session_id and prompt_batch_id filters', () => {
       const session2 = makeSession();
-      await upsertSession(session2);
+      upsertSession(session2);
 
-      const batch = await insertBatch(makeBatch(sessionId));
+      const batch = insertBatch(makeBatch(sessionId));
 
       const now = epochNow();
-      await insertActivity(makeActivity(sessionId, { prompt_batch_id: batch.id, tool_name: 'Read', timestamp: now }));
-      await insertActivity(makeActivity(sessionId, { tool_name: 'Edit', timestamp: now + 1 }));
+      insertActivity(makeActivity(sessionId, { prompt_batch_id: batch.id, tool_name: 'Read', timestamp: now }));
+      insertActivity(makeActivity(sessionId, { tool_name: 'Edit', timestamp: now + 1 }));
 
-      const rows = await listActivities({ session_id: sessionId, prompt_batch_id: batch.id });
+      const rows = listActivities({ session_id: sessionId, prompt_batch_id: batch.id });
       expect(rows).toHaveLength(1);
       expect(rows[0].tool_name).toBe('Read');
     });
 
-    it('respects the limit option', async () => {
+    it('respects the limit option', () => {
       const now = epochNow();
       for (let i = 0; i < 5; i++) {
-        await insertActivity(makeActivity(sessionId, { timestamp: now + i }));
+        insertActivity(makeActivity(sessionId, { timestamp: now + i }));
       }
 
-      const rows = await listActivities({ session_id: sessionId, limit: 2 });
+      const rows = listActivities({ session_id: sessionId, limit: 2 });
       expect(rows).toHaveLength(2);
     });
 
-    it('returns empty array when no activities match', async () => {
-      const rows = await listActivities({ session_id: 'nonexistent' });
+    it('returns empty array when no activities match', () => {
+      const rows = listActivities({ session_id: 'nonexistent' });
       expect(rows).toEqual([]);
     });
   });
@@ -190,30 +190,30 @@ describe('activity query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('countActivities', () => {
-    it('returns 0 when no activities exist for a session', async () => {
-      const count = await countActivities(sessionId);
+    it('returns 0 when no activities exist for a session', () => {
+      const count = countActivities(sessionId);
       expect(count).toBe(0);
     });
 
-    it('counts activities for a specific session', async () => {
+    it('counts activities for a specific session', () => {
       const now = epochNow();
-      await insertActivity(makeActivity(sessionId, { timestamp: now }));
-      await insertActivity(makeActivity(sessionId, { timestamp: now + 1 }));
-      await insertActivity(makeActivity(sessionId, { timestamp: now + 2 }));
+      insertActivity(makeActivity(sessionId, { timestamp: now }));
+      insertActivity(makeActivity(sessionId, { timestamp: now + 1 }));
+      insertActivity(makeActivity(sessionId, { timestamp: now + 2 }));
 
-      const count = await countActivities(sessionId);
+      const count = countActivities(sessionId);
       expect(count).toBe(3);
     });
 
-    it('does not count activities from other sessions', async () => {
+    it('does not count activities from other sessions', () => {
       const session2 = makeSession();
-      await upsertSession(session2);
+      upsertSession(session2);
 
       const now = epochNow();
-      await insertActivity(makeActivity(sessionId, { timestamp: now }));
-      await insertActivity(makeActivity(session2.id, { timestamp: now + 1 }));
+      insertActivity(makeActivity(sessionId, { timestamp: now }));
+      insertActivity(makeActivity(session2.id, { timestamp: now + 1 }));
 
-      const count = await countActivities(sessionId);
+      const count = countActivities(sessionId);
       expect(count).toBe(1);
     });
   });

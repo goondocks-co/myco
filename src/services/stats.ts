@@ -1,5 +1,5 @@
 /**
- * Vault statistics — gathered from PGlite (v2).
+ * Vault statistics — gathered from SQLite.
  */
 
 import { getDatabase } from '@myco/db/client.js';
@@ -60,73 +60,65 @@ export interface V2Stats {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Count rows in a table (sync). */
+function countTable(db: ReturnType<typeof getDatabase>, table: string): number {
+  const row = db.prepare(`SELECT COUNT(*) AS cnt FROM ${table}`).get() as { cnt: number };
+  return Number(row.cnt);
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-export async function gatherStats(vaultDir: string, options?: { active_sessions?: string[] }): Promise<V2Stats> {
+export function gatherStats(vaultDir: string, options?: { active_sessions?: string[] }): V2Stats {
   const db = getDatabase();
 
   // Load config for embedding provider info (sync — already on disk)
   const config = loadConfig(vaultDir);
 
-  // Run all independent COUNT queries in parallel
-  const [
-    sessionResult,
-    batchResult,
-    sporeResult,
-    planResult,
-    artifactResult,
-    entityResult,
-    edgeResult,
-    embeddingStats,
-    unprocessedBatchResult,
-    agentRunResult,
-    agentTotalResult,
-    digestResult,
-  ] = await Promise.all([
-    db.query('SELECT COUNT(*) AS cnt FROM sessions'),
-    db.query('SELECT COUNT(*) AS cnt FROM prompt_batches'),
-    db.query('SELECT COUNT(*) AS cnt FROM spores'),
-    db.query('SELECT COUNT(*) AS cnt FROM plans'),
-    db.query('SELECT COUNT(*) AS cnt FROM artifacts'),
-    db.query('SELECT COUNT(*) AS cnt FROM entities'),
-    db.query('SELECT COUNT(*) AS cnt FROM graph_edges'),
-    // Shared embedding queue depth helper (consistent filter logic)
-    getEmbeddingQueueDepth(),
-    // Unprocessed batches
-    db.query('SELECT COUNT(*) AS cnt FROM prompt_batches WHERE processed = 0'),
-    // Most recent agent run
-    db.query('SELECT started_at, status FROM agent_runs ORDER BY started_at DESC LIMIT 1'),
-    // Total agent runs
-    db.query('SELECT COUNT(*) AS cnt FROM agent_runs'),
-    // Digest extracts: tiers and freshest
-    db.query('SELECT tier, generated_at FROM digest_extracts ORDER BY tier ASC'),
-  ]);
+  // All queries are synchronous — no Promise.all needed
+  const session_count = countTable(db, 'sessions');
+  const batch_count = countTable(db, 'prompt_batches');
+  const spore_count = countTable(db, 'spores');
+  const plan_count = countTable(db, 'plans');
+  const artifact_count = countTable(db, 'artifacts');
+  const entity_count = countTable(db, 'entities');
+  const edge_count = countTable(db, 'graph_edges');
 
-  const session_count = (sessionResult.rows[0] as Record<string, unknown>).cnt as number;
-  const batch_count = (batchResult.rows[0] as Record<string, unknown>).cnt as number;
-  const spore_count = (sporeResult.rows[0] as Record<string, unknown>).cnt as number;
-  const plan_count = (planResult.rows[0] as Record<string, unknown>).cnt as number;
-  const artifact_count = (artifactResult.rows[0] as Record<string, unknown>).cnt as number;
-  const entity_count = (entityResult.rows[0] as Record<string, unknown>).cnt as number;
-  const edge_count = (edgeResult.rows[0] as Record<string, unknown>).cnt as number;
-
+  // Shared embedding queue depth helper (consistent filter logic)
+  const embeddingStats = getEmbeddingQueueDepth();
   const { queue_depth, embedded_count, total: total_embeddable } = embeddingStats;
 
-  const unprocessed_batches = Number((unprocessedBatchResult.rows[0] as Record<string, unknown>).cnt ?? 0);
+  // Unprocessed batches
+  const unprocessedRow = db.prepare(
+    'SELECT COUNT(*) AS cnt FROM prompt_batches WHERE processed = 0',
+  ).get() as { cnt: number };
+  const unprocessed_batches = Number(unprocessedRow.cnt ?? 0);
 
-  // Agent: last run
-  const lastRun = agentRunResult.rows[0] as Record<string, unknown> | undefined;
-  const last_run_at = lastRun ? (lastRun.started_at as number | null) : null;
-  const last_run_status = lastRun ? (lastRun.status as string | null) : null;
-  const total_runs = Number((agentTotalResult.rows[0] as Record<string, unknown>).cnt ?? 0);
+  // Agent: most recent run
+  const lastRun = db.prepare(
+    'SELECT started_at, status FROM agent_runs ORDER BY started_at DESC LIMIT 1',
+  ).get() as { started_at: number; status: string } | undefined;
+  const last_run_at = lastRun ? lastRun.started_at : null;
+  const last_run_status = lastRun ? lastRun.status : null;
 
-  // Digest: available tiers and freshest
-  const digestRows = digestResult.rows as Array<Record<string, unknown>>;
-  const tiers_available = digestRows.map((r) => r.tier as number);
+  // Total agent runs
+  const agentTotalRow = db.prepare(
+    'SELECT COUNT(*) AS cnt FROM agent_runs',
+  ).get() as { cnt: number };
+  const total_runs = Number(agentTotalRow.cnt ?? 0);
+
+  // Digest extracts: tiers and freshest
+  const digestRows = db.prepare(
+    'SELECT tier, generated_at FROM digest_extracts ORDER BY tier ASC',
+  ).all() as Array<{ tier: number; generated_at: number }>;
+  const tiers_available = digestRows.map((r) => r.tier);
   const freshest_tier = tiers_available.length > 0 ? Math.max(...tiers_available) : null;
   const freshestRow = digestRows.find((r) => r.tier === freshest_tier);
-  const generated_at = freshestRow ? (freshestRow.generated_at as number) : null;
+  const generated_at = freshestRow ? freshestRow.generated_at : null;
 
   // Daemon info from daemon.json
   let daemonPid = 0;

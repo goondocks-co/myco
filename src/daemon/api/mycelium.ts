@@ -33,7 +33,7 @@ export async function handleListSpores(req: RouteRequest): Promise<RouteResponse
   const limit = req.query.limit ? Number(req.query.limit) : DEFAULT_LIST_LIMIT;
   const offset = req.query.offset ? Number(req.query.offset) : DEFAULT_LIST_OFFSET;
 
-  const spores = await listSpores({
+  const spores = listSpores({
     agent_id: agentId,
     observation_type: type,
     status,
@@ -45,7 +45,7 @@ export async function handleListSpores(req: RouteRequest): Promise<RouteResponse
 }
 
 export async function handleGetSpore(req: RouteRequest): Promise<RouteResponse> {
-  const spore = await getSpore(req.params.id);
+  const spore = getSpore(req.params.id);
   if (!spore) return { status: 404, body: { error: 'not_found' } };
   return { body: spore };
 }
@@ -62,7 +62,7 @@ export async function handleListEntities(req: RouteRequest): Promise<RouteRespon
   const limit = req.query.limit ? Number(req.query.limit) : DEFAULT_LIST_LIMIT;
   const offset = req.query.offset ? Number(req.query.offset) : DEFAULT_LIST_OFFSET;
 
-  const entities = await listEntities({
+  const entities = listEntities({
     agent_id: agentId,
     type,
     mentioned_in,
@@ -82,13 +82,13 @@ export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> 
   const depth = Math.min(Number(req.query.depth) || DEFAULT_GRAPH_DEPTH, MAX_GRAPH_DEPTH);
 
   // Verify center entity exists
-  const center = await getEntity(req.params.id);
+  const center = getEntity(req.params.id);
   if (!center) return { status: 404, body: { error: 'not_found' } };
 
   // Use graph_edges for BFS traversal
-  const graph = await getGraphForNode(req.params.id, 'entity', { depth });
+  const graph = getGraphForNode(req.params.id, 'entity', { depth });
 
-  const db = getDatabase();
+  const graphDb = getDatabase();
 
   // Collect all unique entity IDs from edges for node fetching + mention counts
   const entityIds = new Set<string>();
@@ -102,26 +102,23 @@ export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> 
   const nodeIdArray = Array.from(entityIds);
   let nodes: Array<Record<string, unknown>> = [];
   if (nodeIdArray.length > 0) {
-    const placeholders = nodeIdArray.map((_, i) => `$${i + 1}`).join(', ');
-    const nodeResult = await db.query(
+    const placeholders = nodeIdArray.map(() => '?').join(', ');
+    nodes = graphDb.prepare(
       `SELECT id, agent_id, type, name, properties, first_seen, last_seen, status
        FROM entities WHERE id IN (${placeholders})`,
-      nodeIdArray,
-    );
-    nodes = nodeResult.rows as Array<Record<string, unknown>>;
+    ).all(...nodeIdArray) as Array<Record<string, unknown>>;
   }
 
   // Batch-fetch mention counts for all entity nodes (including center)
   const allEntityIds = [center.id, ...nodeIdArray];
   const mentionCounts = new Map<string, number>();
   if (allEntityIds.length > 0) {
-    const placeholders = allEntityIds.map((_, i) => `$${i + 1}`).join(', ');
-    const result = await db.query(
+    const placeholders = allEntityIds.map(() => '?').join(', ');
+    const mentionRows = graphDb.prepare(
       `SELECT entity_id, COUNT(*) as count FROM entity_mentions
        WHERE entity_id IN (${placeholders}) GROUP BY entity_id`,
-      allEntityIds,
-    );
-    for (const row of result.rows as Array<Record<string, unknown>>) {
+    ).all(...allEntityIds) as Array<Record<string, unknown>>;
+    for (const row of mentionRows) {
       mentionCounts.set(row.entity_id as string, Number(row.count));
     }
   }
@@ -147,6 +144,6 @@ export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> 
 
 export async function handleGetDigest(req: RouteRequest): Promise<RouteResponse> {
   const agentId = req.query.agent_id ?? DEFAULT_AGENT_ID;
-  const extracts = await listDigestExtracts(agentId);
+  const extracts = listDigestExtracts(agentId);
   return { body: { tiers: extracts } };
 }

@@ -1,8 +1,5 @@
 /**
  * Tests for spore CRUD query helpers.
- *
- * Each test initializes an in-memory PGlite instance, creates the schema,
- * exercises the query function, and tears down the database.
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
@@ -34,13 +31,12 @@ function makeSession(overrides: Partial<SessionInsert> = {}): SessionInsert {
 }
 
 /** Insert an agent directly into the agents table and return its id. */
-async function createAgent(id: string): Promise<string> {
+function createAgent(id: string): string {
   const db = getDatabase();
   const now = epochNow();
-  await db.query(
-    `INSERT INTO agents (id, name, created_at) VALUES ($1, $2, $3)`,
-    [id, `agent-${id}`, now],
-  );
+  db.prepare(
+    `INSERT INTO agents (id, name, created_at) VALUES (?, ?, ?)`,
+  ).run(id, `agent-${id}`, now);
   return id;
 }
 
@@ -64,17 +60,17 @@ describe('spore query helpers', () => {
   let agentId: string;
   let sessionId: string;
 
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
-  beforeEach(async () => {
-    await cleanTestDb();
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => {
+    cleanTestDb();
 
     // Create an agent for FK references
-    agentId = await createAgent('agent-test');
+    agentId = createAgent('agent-test');
 
     // Create a session for optional FK references
     const session = makeSession();
-    await upsertSession(session);
+    upsertSession(session);
     sessionId = session.id;
   });
 
@@ -83,9 +79,9 @@ describe('spore query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('insertSpore', () => {
-    it('inserts a new spore and retrieves it', async () => {
+    it('inserts a new spore and retrieves it', () => {
       const data = makeSpore(agentId, { content: 'Watch out for this' });
-      const row = await insertSpore(data);
+      const row = insertSpore(data);
 
       expect(row.id).toBe(data.id);
       expect(row.agent_id).toBe(agentId);
@@ -94,13 +90,13 @@ describe('spore query helpers', () => {
       expect(row.status).toBe('active');
       expect(row.importance).toBe(5);
 
-      const fetched = await getSpore(data.id);
+      const fetched = getSpore(data.id);
       expect(fetched).not.toBeNull();
       expect(fetched!.id).toBe(data.id);
       expect(fetched!.content).toBe('Watch out for this');
     });
 
-    it('stores all optional fields', async () => {
+    it('stores all optional fields', () => {
       const data = makeSpore(agentId, {
         session_id: sessionId,
         prompt_batch_id: null,
@@ -111,7 +107,7 @@ describe('spore query helpers', () => {
         tags: 'architecture,refactor',
         content_hash: 'hash-abc',
       });
-      const row = await insertSpore(data);
+      const row = insertSpore(data);
 
       expect(row.session_id).toBe(sessionId);
       expect(row.observation_type).toBe('decision');
@@ -122,21 +118,21 @@ describe('spore query helpers', () => {
       expect(row.content_hash).toBe('hash-abc');
     });
 
-    it('stores and retrieves properties as JSON string', async () => {
+    it('stores and retrieves properties as JSON string', () => {
       const props = JSON.stringify({ consolidated_from: ['spore-a', 'spore-b'] });
       const data = makeSpore(agentId, { properties: props });
-      const row = await insertSpore(data);
+      const row = insertSpore(data);
 
       expect(row.properties).toBe(props);
 
-      const fetched = await getSpore(data.id);
+      const fetched = getSpore(data.id);
       expect(fetched!.properties).toBe(props);
       expect(JSON.parse(fetched!.properties!)).toEqual({ consolidated_from: ['spore-a', 'spore-b'] });
     });
 
-    it('accepts any observation_type string', async () => {
+    it('accepts any observation_type string', () => {
       const data = makeSpore(agentId, { observation_type: 'custom_weird_type' });
-      const row = await insertSpore(data);
+      const row = insertSpore(data);
 
       expect(row.observation_type).toBe('custom_weird_type');
     });
@@ -147,8 +143,8 @@ describe('spore query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('getSpore', () => {
-    it('returns null for non-existent id', async () => {
-      const row = await getSpore('does-not-exist');
+    it('returns null for non-existent id', () => {
+      const row = getSpore('does-not-exist');
       expect(row).toBeNull();
     });
   });
@@ -158,79 +154,79 @@ describe('spore query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('listSpores', () => {
-    it('returns spores ordered by created_at DESC', async () => {
+    it('returns spores ordered by created_at DESC', () => {
       const now = epochNow();
-      await insertSpore(makeSpore(agentId, { id: 'spore-old', created_at: now - 100 }));
-      await insertSpore(makeSpore(agentId, { id: 'spore-mid', created_at: now - 50 }));
-      await insertSpore(makeSpore(agentId, { id: 'spore-new', created_at: now }));
+      insertSpore(makeSpore(agentId, { id: 'spore-old', created_at: now - 100 }));
+      insertSpore(makeSpore(agentId, { id: 'spore-mid', created_at: now - 50 }));
+      insertSpore(makeSpore(agentId, { id: 'spore-new', created_at: now }));
 
-      const rows = await listSpores();
+      const rows = listSpores();
       expect(rows).toHaveLength(3);
       expect(rows[0].id).toBe('spore-new');
       expect(rows[1].id).toBe('spore-mid');
       expect(rows[2].id).toBe('spore-old');
     });
 
-    it('filters by agent_id', async () => {
-      const agentId2 = await createAgent('agent-other');
+    it('filters by agent_id', () => {
+      const agentId2 = createAgent('agent-other');
       const now = epochNow();
 
-      await insertSpore(makeSpore(agentId, { id: 'spore-c1', created_at: now }));
-      await insertSpore(makeSpore(agentId2, { id: 'spore-c2', created_at: now + 1 }));
+      insertSpore(makeSpore(agentId, { id: 'spore-c1', created_at: now }));
+      insertSpore(makeSpore(agentId2, { id: 'spore-c2', created_at: now + 1 }));
 
-      const rows = await listSpores({ agent_id: agentId });
+      const rows = listSpores({ agent_id: agentId });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('spore-c1');
     });
 
-    it('filters by observation_type', async () => {
+    it('filters by observation_type', () => {
       const now = epochNow();
-      await insertSpore(makeSpore(agentId, { id: 'spore-gotcha', observation_type: 'gotcha', created_at: now }));
-      await insertSpore(makeSpore(agentId, { id: 'spore-decision', observation_type: 'decision', created_at: now + 1 }));
-      await insertSpore(makeSpore(agentId, { id: 'spore-gotcha2', observation_type: 'gotcha', created_at: now + 2 }));
+      insertSpore(makeSpore(agentId, { id: 'spore-gotcha', observation_type: 'gotcha', created_at: now }));
+      insertSpore(makeSpore(agentId, { id: 'spore-decision', observation_type: 'decision', created_at: now + 1 }));
+      insertSpore(makeSpore(agentId, { id: 'spore-gotcha2', observation_type: 'gotcha', created_at: now + 2 }));
 
-      const rows = await listSpores({ observation_type: 'gotcha' });
+      const rows = listSpores({ observation_type: 'gotcha' });
       expect(rows).toHaveLength(2);
       expect(rows[0].id).toBe('spore-gotcha2');
       expect(rows[1].id).toBe('spore-gotcha');
     });
 
-    it('filters by status', async () => {
+    it('filters by status', () => {
       const now = epochNow();
-      await insertSpore(makeSpore(agentId, { id: 'spore-active', created_at: now }));
-      await insertSpore(makeSpore(agentId, { id: 'spore-superseded', created_at: now + 1 }));
-      await updateSporeStatus('spore-superseded', 'superseded', now + 2);
+      insertSpore(makeSpore(agentId, { id: 'spore-active', created_at: now }));
+      insertSpore(makeSpore(agentId, { id: 'spore-superseded', created_at: now + 1 }));
+      updateSporeStatus('spore-superseded', 'superseded', now + 2);
 
-      const rows = await listSpores({ status: 'active' });
+      const rows = listSpores({ status: 'active' });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('spore-active');
     });
 
-    it('combines multiple filters', async () => {
-      const agentId2 = await createAgent('agent-combo');
+    it('combines multiple filters', () => {
+      const agentId2 = createAgent('agent-combo');
       const now = epochNow();
 
-      await insertSpore(makeSpore(agentId, { id: 's1', observation_type: 'gotcha', created_at: now }));
-      await insertSpore(makeSpore(agentId, { id: 's2', observation_type: 'decision', created_at: now + 1 }));
-      await insertSpore(makeSpore(agentId2, { id: 's3', observation_type: 'gotcha', created_at: now + 2 }));
+      insertSpore(makeSpore(agentId, { id: 's1', observation_type: 'gotcha', created_at: now }));
+      insertSpore(makeSpore(agentId, { id: 's2', observation_type: 'decision', created_at: now + 1 }));
+      insertSpore(makeSpore(agentId2, { id: 's3', observation_type: 'gotcha', created_at: now + 2 }));
 
-      const rows = await listSpores({ agent_id: agentId, observation_type: 'gotcha' });
+      const rows = listSpores({ agent_id: agentId, observation_type: 'gotcha' });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('s1');
     });
 
-    it('respects the limit option', async () => {
+    it('respects the limit option', () => {
       const now = epochNow();
       for (let i = 0; i < 5; i++) {
-        await insertSpore(makeSpore(agentId, { created_at: now + i }));
+        insertSpore(makeSpore(agentId, { created_at: now + i }));
       }
 
-      const rows = await listSpores({ limit: 2 });
+      const rows = listSpores({ limit: 2 });
       expect(rows).toHaveLength(2);
     });
 
-    it('returns empty array when no spores match', async () => {
-      const rows = await listSpores({ observation_type: 'nonexistent' });
+    it('returns empty array when no spores match', () => {
+      const rows = listSpores({ observation_type: 'nonexistent' });
       expect(rows).toEqual([]);
     });
   });
@@ -240,30 +236,30 @@ describe('spore query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('updateSporeStatus', () => {
-    it('updates status and updated_at', async () => {
+    it('updates status and updated_at', () => {
       const data = makeSpore(agentId);
-      await insertSpore(data);
+      insertSpore(data);
 
       const updatedAt = epochNow() + 10;
-      const row = await updateSporeStatus(data.id, 'superseded', updatedAt);
+      const row = updateSporeStatus(data.id, 'superseded', updatedAt);
 
       expect(row).not.toBeNull();
       expect(row!.status).toBe('superseded');
       expect(row!.updated_at).toBe(updatedAt);
     });
 
-    it('returns null for non-existent spore', async () => {
-      const result = await updateSporeStatus('nope', 'superseded', epochNow());
+    it('returns null for non-existent spore', () => {
+      const result = updateSporeStatus('nope', 'superseded', epochNow());
       expect(result).toBeNull();
     });
 
-    it('is idempotent — same status update produces same result', async () => {
+    it('is idempotent — same status update produces same result', () => {
       const data = makeSpore(agentId);
-      await insertSpore(data);
+      insertSpore(data);
 
       const updatedAt = epochNow() + 10;
-      await updateSporeStatus(data.id, 'consolidated', updatedAt);
-      const row = await updateSporeStatus(data.id, 'consolidated', updatedAt);
+      updateSporeStatus(data.id, 'consolidated', updatedAt);
+      const row = updateSporeStatus(data.id, 'consolidated', updatedAt);
 
       expect(row).not.toBeNull();
       expect(row!.status).toBe('consolidated');

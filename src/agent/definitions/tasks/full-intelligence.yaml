@@ -216,7 +216,7 @@ phases:
       ## Step 4: Structural edges between entities (remaining turns)
 
       For architectural dependencies between entities:
-      - DEPENDS_ON (entity→entity): "daemon" depends on "PGlite"
+      - DEPENDS_ON (entity→entity): "daemon" depends on "SQLite"
       - AFFECTS (spore→entity): a gotcha that impacts a component
 
       Do NOT create lineage edges (FROM_SESSION, EXTRACTED_FROM, etc.)

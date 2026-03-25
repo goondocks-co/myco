@@ -38,12 +38,12 @@ function makeTask(overrides: Partial<TaskInsert> = {}): TaskInsert {
 }
 
 describe('task query helpers', () => {
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
   beforeEach(async () => {
-    await cleanTestDb();
+    cleanTestDb();
     // Insert the agent FK target
-    await registerAgent({
+    registerAgent({
       id: TEST_AGENT_ID,
       name: 'Test Agent',
       created_at: epochNow(),
@@ -57,7 +57,7 @@ describe('task query helpers', () => {
   describe('upsertTask', () => {
     it('inserts a new task and retrieves it', async () => {
       const data = makeTask({ display_name: 'Default Digest' });
-      const row = await upsertTask(data);
+      const row = upsertTask(data);
 
       expect(row.id).toBe(data.id);
       expect(row.agent_id).toBe(TEST_AGENT_ID);
@@ -71,7 +71,7 @@ describe('task query helpers', () => {
       expect(row.created_at).toBe(data.created_at);
       expect(row.updated_at).toBeNull();
 
-      const fetched = await getTask(data.id);
+      const fetched = getTask(data.id);
       expect(fetched).not.toBeNull();
       expect(fetched!.id).toBe(data.id);
     });
@@ -87,7 +87,7 @@ describe('task query helpers', () => {
         config: '{"max_spores": 10}',
         updated_at: now,
       });
-      const row = await upsertTask(data);
+      const row = upsertTask(data);
 
       expect(row.source).toBe('user');
       expect(row.display_name).toBe('Custom Task');
@@ -100,9 +100,9 @@ describe('task query helpers', () => {
 
     it('upserts on conflict — updates fields', async () => {
       const data = makeTask({ display_name: 'Original' });
-      await upsertTask(data);
+      upsertTask(data);
 
-      const updated = await upsertTask({
+      const updated = upsertTask({
         ...data,
         display_name: 'Updated',
         prompt: 'New prompt text.',
@@ -116,8 +116,8 @@ describe('task query helpers', () => {
 
     it('is idempotent — same data produces same result', async () => {
       const data = makeTask({ display_name: 'Idempotent Task' });
-      const first = await upsertTask(data);
-      const second = await upsertTask(data);
+      const first = upsertTask(data);
+      const second = upsertTask(data);
 
       expect(first).toEqual(second);
     });
@@ -129,7 +129,7 @@ describe('task query helpers', () => {
 
   describe('getTask', () => {
     it('returns null for non-existent id', async () => {
-      const row = await getTask('does-not-exist');
+      const row = getTask('does-not-exist');
       expect(row).toBeNull();
     });
   });
@@ -141,11 +141,11 @@ describe('task query helpers', () => {
   describe('listTasks', () => {
     it('returns tasks ordered by created_at ASC', async () => {
       const now = epochNow();
-      await upsertTask(makeTask({ id: 'task-old', created_at: now - 100 }));
-      await upsertTask(makeTask({ id: 'task-mid', created_at: now - 50 }));
-      await upsertTask(makeTask({ id: 'task-new', created_at: now }));
+      upsertTask(makeTask({ id: 'task-old', created_at: now - 100 }));
+      upsertTask(makeTask({ id: 'task-mid', created_at: now - 50 }));
+      upsertTask(makeTask({ id: 'task-new', created_at: now }));
 
-      const rows = await listTasks();
+      const rows = listTasks();
       expect(rows).toHaveLength(3);
       expect(rows[0].id).toBe('task-old');
       expect(rows[1].id).toBe('task-mid');
@@ -153,40 +153,40 @@ describe('task query helpers', () => {
     });
 
     it('filters by agent_id', async () => {
-      await registerAgent({
+      registerAgent({
         id: 'agent-other',
         name: 'Other',
         created_at: epochNow(),
       });
-      await upsertTask(makeTask({ id: 'task-a' }));
-      await upsertTask(makeTask({ id: 'task-b', agent_id: 'agent-other' }));
+      upsertTask(makeTask({ id: 'task-a' }));
+      upsertTask(makeTask({ id: 'task-b', agent_id: 'agent-other' }));
 
-      const rows = await listTasks({ agent_id: TEST_AGENT_ID });
+      const rows = listTasks({ agent_id: TEST_AGENT_ID });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('task-a');
     });
 
     it('filters by source', async () => {
-      await upsertTask(makeTask({ id: 'task-builtin', source: 'built-in' }));
-      await upsertTask(makeTask({ id: 'task-user', source: 'user' }));
+      upsertTask(makeTask({ id: 'task-builtin', source: 'built-in' }));
+      upsertTask(makeTask({ id: 'task-user', source: 'user' }));
 
-      const rows = await listTasks({ source: 'user' });
+      const rows = listTasks({ source: 'user' });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('task-user');
     });
 
     it('respects limit', async () => {
       const now = epochNow();
-      await upsertTask(makeTask({ id: 'task-1', created_at: now - 2 }));
-      await upsertTask(makeTask({ id: 'task-2', created_at: now - 1 }));
-      await upsertTask(makeTask({ id: 'task-3', created_at: now }));
+      upsertTask(makeTask({ id: 'task-1', created_at: now - 2 }));
+      upsertTask(makeTask({ id: 'task-2', created_at: now - 1 }));
+      upsertTask(makeTask({ id: 'task-3', created_at: now }));
 
-      const rows = await listTasks({ limit: 2 });
+      const rows = listTasks({ limit: 2 });
       expect(rows).toHaveLength(2);
     });
 
     it('returns empty array when no tasks exist', async () => {
-      const rows = await listTasks();
+      const rows = listTasks();
       expect(rows).toEqual([]);
     });
   });
@@ -197,24 +197,24 @@ describe('task query helpers', () => {
 
   describe('getDefaultTask', () => {
     it('returns the default task for an agent', async () => {
-      await upsertTask(makeTask({ id: 'task-regular', is_default: 0 }));
-      await upsertTask(makeTask({ id: 'task-default', is_default: 1, display_name: 'Default' }));
+      upsertTask(makeTask({ id: 'task-regular', is_default: 0 }));
+      upsertTask(makeTask({ id: 'task-default', is_default: 1, display_name: 'Default' }));
 
-      const defaultTask = await getDefaultTask(TEST_AGENT_ID);
+      const defaultTask = getDefaultTask(TEST_AGENT_ID);
       expect(defaultTask).not.toBeNull();
       expect(defaultTask!.id).toBe('task-default');
       expect(defaultTask!.is_default).toBe(1);
     });
 
     it('returns null when no default task exists', async () => {
-      await upsertTask(makeTask({ is_default: 0 }));
+      upsertTask(makeTask({ is_default: 0 }));
 
-      const defaultTask = await getDefaultTask(TEST_AGENT_ID);
+      const defaultTask = getDefaultTask(TEST_AGENT_ID);
       expect(defaultTask).toBeNull();
     });
 
     it('returns null for agent with no tasks', async () => {
-      const defaultTask = await getDefaultTask('no-such-agent');
+      const defaultTask = getDefaultTask('no-such-agent');
       expect(defaultTask).toBeNull();
     });
   });
@@ -244,9 +244,9 @@ describe('task query helpers', () => {
       const config: TaskConfig = { phases, schemaVersion: 1 };
 
       const data = makeTask({ config: serializeConfig(config) });
-      await upsertTask(data);
+      upsertTask(data);
 
-      const row = await getTask(data.id);
+      const row = getTask(data.id);
       expect(row).not.toBeNull();
       expect(row!.config).not.toBeNull();
 
@@ -269,9 +269,9 @@ describe('task query helpers', () => {
       };
 
       const data = makeTask({ config: serializeConfig(config) });
-      await upsertTask(data);
+      upsertTask(data);
 
-      const row = await getTask(data.id);
+      const row = getTask(data.id);
       expect(row).not.toBeNull();
 
       const parsed = deserializeConfig(row!.config);
@@ -284,11 +284,11 @@ describe('task query helpers', () => {
 
     it('config column is null when no extended config provided', async () => {
       const data = makeTask(); // no config field
-      const row = await upsertTask(data);
+      const row = upsertTask(data);
 
       expect(row.config).toBeNull();
 
-      const fetched = await getTask(data.id);
+      const fetched = getTask(data.id);
       expect(fetched!.config).toBeNull();
     });
   });
@@ -334,28 +334,28 @@ describe('task query helpers', () => {
   describe('deleteTask', () => {
     it('deletes a user task (source=user) and returns true', async () => {
       const data = makeTask({ id: 'task-to-delete', source: 'user' });
-      await upsertTask(data);
+      upsertTask(data);
 
-      const deleted = await deleteTask(data.id);
+      const deleted = deleteTask(data.id);
       expect(deleted).toBe(true);
 
-      const fetched = await getTask(data.id);
+      const fetched = getTask(data.id);
       expect(fetched).toBeNull();
     });
 
     it('returns false for a non-existent task', async () => {
-      const deleted = await deleteTask('does-not-exist');
+      const deleted = deleteTask('does-not-exist');
       expect(deleted).toBe(false);
     });
 
     it('returns false for a built-in task and does not delete it', async () => {
       const data = makeTask({ id: 'task-builtin', source: 'built-in' });
-      await upsertTask(data);
+      upsertTask(data);
 
-      const deleted = await deleteTask(data.id);
+      const deleted = deleteTask(data.id);
       expect(deleted).toBe(false);
 
-      const fetched = await getTask(data.id);
+      const fetched = getTask(data.id);
       expect(fetched).not.toBeNull();
     });
   });

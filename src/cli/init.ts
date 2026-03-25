@@ -1,4 +1,5 @@
-import { initDatabaseForVault, closeDatabase } from '../db/client.js';
+import { initDatabase, vaultDbPath, closeDatabase } from '../db/client.js';
+import { createSchema } from '../db/schema.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import {
   parseStringFlag,
@@ -14,7 +15,7 @@ import os from 'node:os';
 import YAML from 'yaml';
 
 /** Directories that must exist inside a vault for correct operation. */
-const VAULT_REQUIRED_DIRS = ['pgdata', 'buffer', 'attachments', 'logs'] as const;
+const VAULT_REQUIRED_DIRS = ['buffer', 'attachments', 'logs'] as const;
 
 export async function run(args: string[]): Promise<void> {
   const vaultPath = parseStringFlag(args, '--vault');
@@ -59,9 +60,10 @@ export async function run(args: string[]): Promise<void> {
     // Write .gitignore
     fs.writeFileSync(path.join(vaultDir, '.gitignore'), VAULT_GITIGNORE, 'utf-8');
 
-    // Initialize PGlite database
-    await initDatabaseForVault(vaultDir);
-    await closeDatabase();
+    // Initialize SQLite database
+    const db = initDatabase(vaultDbPath(vaultDir));
+    createSchema(db);
+    closeDatabase();
   }
 
   // Detect and register symbionts — runs even on re-init so newly
