@@ -12,7 +12,7 @@ import { getDatabase } from '@myco/db/client.js';
 vi.mock('@myco/intelligence/embed-query.js', () => ({
   tryEmbed: async () => null,
 }));
-import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { upsertSession, type SessionInsert } from '@myco/db/queries/sessions.js';
 import { insertBatch, type BatchInsert } from '@myco/db/queries/batches.js';
 import { insertRun, type RunInsert } from '@myco/db/queries/runs.js';

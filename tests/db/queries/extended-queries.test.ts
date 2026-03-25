@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
-import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertBatch, listBatchesBySession } from '@myco/db/queries/batches.js';

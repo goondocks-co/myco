@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { getDatabase } from '@myco/db/client.js';
-import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { upsertSession, type SessionInsert } from '@myco/db/queries/sessions.js';
 import { insertBatch, type BatchInsert } from '@myco/db/queries/batches.js';
 import { insertSpore, type SporeInsert } from '@myco/db/queries/spores.js';

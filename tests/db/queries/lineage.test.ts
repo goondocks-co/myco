@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { getDatabase } from '@myco/db/client.js';
-import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { createSporeLineage, createBatchLineage } from '@myco/db/queries/lineage.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
 

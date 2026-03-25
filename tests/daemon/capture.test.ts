@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
-import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { upsertSession, getSession } from '@myco/db/queries/sessions.js';
 import { getUnprocessedBatches } from '@myco/db/queries/batches.js';
 import { listActivities, countActivities } from '@myco/db/queries/activities.js';

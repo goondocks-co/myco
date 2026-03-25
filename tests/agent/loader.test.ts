@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { getAgent } from '@myco/db/queries/agents.js';
 import { listTasks, getDefaultTask } from '@myco/db/queries/tasks.js';
 import {

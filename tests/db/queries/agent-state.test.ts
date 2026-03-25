@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { getDatabase } from '@myco/db/client.js';
-import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import {
   getState,
   setState,

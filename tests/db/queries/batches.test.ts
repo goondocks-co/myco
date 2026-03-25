@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
-import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';
 import {

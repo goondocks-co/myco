@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
 import { getDatabase } from '@myco/db/client.js';
-import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertTask } from '@myco/db/queries/tasks.js';
 import { insertRun, getRun } from '@myco/db/queries/runs.js';

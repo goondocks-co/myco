@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { getDatabase } from '@myco/db/client.js';
 import { EMBEDDING_DIMENSIONS } from '@myco/db/schema.js';
-import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertBatch } from '@myco/db/queries/batches.js';
 import { insertActivity } from '@myco/db/queries/activities.js';

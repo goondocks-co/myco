@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { getDatabase } from '@myco/db/client.js';
 import { EMBEDDING_DIMENSIONS } from '@myco/db/schema.js';
-import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertSpore } from '@myco/db/queries/spores.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';

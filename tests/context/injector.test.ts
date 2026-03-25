@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { buildInjectedContext, buildPromptContext } from '@myco/context/injector';
-import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 
 // Mock tryEmbed to return null immediately — no real embedding provider in tests
 vi.mock('@myco/intelligence/embed-query.js', () => ({
