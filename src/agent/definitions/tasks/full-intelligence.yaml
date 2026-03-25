@@ -69,27 +69,39 @@ phases:
   - name: extract
     prompt: |
       Extract observations from unprocessed batches as spores.
-
-      For each unprocessed batch:
-      1. Read `user_prompt` to understand what the developer asked
-      2. Extract observations as spores — only genuine insights, not activity
-      3. Call `vault_create_spore` for each observation (include session_id,
-         prompt_batch_id, importance 1-10, tags)
-      4. Call `vault_mark_processed` for the batch
-      5. Update cursor via `vault_set_state`
-
-      Batch multiple mark_processed calls. One observation per spore.
-      If approaching the turn budget, stop extraction and move on.
+      CRITICAL: search before creating — the vault must stay sharp, not bloated.
 
       If the prior phase reported no unprocessed batches, call `vault_report`
       with action "skip" and reason "no unprocessed batches" and finish.
+
+      For each unprocessed batch:
+      1. Read the batch content to understand what happened
+      2. Identify genuine insights (not activity — "added file X" is not a spore)
+      3. For EACH potential observation, BEFORE creating:
+         a. Call `vault_search` with the key phrase of the observation
+         b. If a similar spore exists and yours adds meaningful new detail:
+            - Create the new spore via `vault_create_spore`
+            - Supersede the old one via `vault_resolve_spore` action "supersede"
+              with new_spore_id pointing to the replacement
+         c. If a similar spore exists and yours adds nothing new: skip it
+         d. If no similar spore exists: create it as new
+      4. Call `vault_mark_processed` for the batch
+      5. Update cursor via `vault_set_state` periodically
+
+      ## Quality rules
+      - One observation per spore — specific, not vague
+      - Include session_id, prompt_batch_id, importance 1-10, tags
+      - Supersede rather than duplicate — the vault gets sharper, not bigger
+      - If approaching the turn budget, stop and move on
     tools:
       - vault_unprocessed
+      - vault_search
       - vault_create_spore
+      - vault_resolve_spore
       - vault_mark_processed
       - vault_set_state
       - vault_report
-    maxTurns: 30
+    maxTurns: 35
     required: true
 
   - name: summarize
@@ -116,17 +128,37 @@ phases:
 
   - name: consolidate
     prompt: |
-      Search for clusters of related spores that can become wisdom.
+      Consolidate related spores into wisdom and clean up redundancy.
+      The vault must get SHARPER over time, not just bigger.
 
-      1. Call `vault_search` with content from newly created spores
-      2. Also call `vault_spores` filtered by observation_type as fallback
-      3. When you find 3+ related active spores on the same topic:
-         a. Create a wisdom spore via `vault_create_spore` with:
-            - observation_type: "wisdom"
-            - properties: '{"consolidated_from": ["id-1", "id-2", "id-3"]}'
-            - Content preserving ALL specific details from sources
-         b. Resolve each source via `vault_resolve_spore` action "consolidate"
-      4. Skip spores with status "consolidated" to prevent cycles
+      ## Step 1: Find clusters (budget: 5 turns)
+
+      Use `vault_search` with themes from recent spores to find clusters:
+      - Search for each observation_type: "gotcha", "decision", "discovery"
+      - Call `vault_spores` with status "active" to see the full set
+      - Look for 2+ spores covering the same topic or component
+
+      ## Step 2: Create wisdom (budget: 8 turns)
+
+      When you find 3+ related active spores on the same topic:
+      1. Create a wisdom spore via `vault_create_spore`:
+         - observation_type: "wisdom"
+         - properties: '{"consolidated_from": ["id-1", "id-2", "id-3"]}'
+         - Content MUST preserve ALL specific details from sources —
+           file paths, error messages, concrete values. Wisdom is a
+           comprehensive reference, not a vague summary.
+      2. Resolve EACH source via `vault_resolve_spore` action "consolidate"
+         — this removes them from search results and context injection
+
+      ## Step 3: Supersede stale spores (budget: 5 turns)
+
+      Also look for spores that are outdated or contradicted by newer ones:
+      - If two spores describe the same thing but one is more recent/detailed,
+        supersede the older one via `vault_resolve_spore` action "supersede"
+      - Superseded spores stay in the DB but are removed from search and
+        context injection — this keeps the vault relevant
+
+      Skip spores with status "consolidated" or "superseded" to prevent cycles.
 
       If `vault_search` returns no results (embedding unavailable), report
       action "skip" and move on.
@@ -136,7 +168,7 @@ phases:
       - vault_create_spore
       - vault_resolve_spore
       - vault_report
-    maxTurns: 18
+    maxTurns: 22
     required: true
 
   - name: graph
