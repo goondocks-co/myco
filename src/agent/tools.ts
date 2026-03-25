@@ -1,9 +1,9 @@
 /**
  * Vault MCP tool server for the agent.
  *
- * Creates 14 tools that expose PGlite query helpers to the agent
+ * Creates 15 tools that expose PGlite query helpers to the agent
  * via the Claude Agent SDK. Tools are grouped into:
- * - Read tools: vault_unprocessed, vault_spores, vault_sessions, vault_search, vault_state
+ * - Read tools: vault_unprocessed, vault_spores, vault_sessions, vault_search, vault_state, vault_read_digest
  * - Write tools: vault_create_spore, vault_create_entity, vault_create_edge,
  *                vault_resolve_spore, vault_update_session, vault_set_state,
  *                vault_write_digest, vault_mark_processed
@@ -67,7 +67,7 @@ function textResult(data: unknown): { content: Array<{ type: 'text'; text: strin
 export const VAULT_TOOL_COUNT = 15;
 
 /**
- * Create the 14 vault tool definitions for the agent.
+ * Create the 15 vault tool definitions for the agent.
  *
  * Exposed for testing (call handler directly) and for the MCP server factory.
  *
@@ -505,7 +505,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
 // ---------------------------------------------------------------------------
 
 /**
- * Create a vault MCP tool server with 14 tools for the agent.
+ * Create a vault MCP tool server with 15 tools for the agent.
  *
  * Wraps `createVaultTools()` with `createSdkMcpServer()` from the
  * Claude Agent SDK.

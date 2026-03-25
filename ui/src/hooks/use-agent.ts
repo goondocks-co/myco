@@ -14,6 +14,9 @@ const RUN_DETAIL_POLL_INTERVAL = POLL_INTERVALS.HEALTH;
 /** Poll interval for run reports (moderate — updates during execution). */
 const REPORTS_POLL_INTERVAL = POLL_INTERVALS.STATS;
 
+/** Run statuses that indicate the run is finished — stop polling. */
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'skipped']);
+
 /** Poll interval for audit trail turns. */
 const TURNS_POLL_INTERVAL = POLL_INTERVALS.STATS;
 
@@ -157,35 +160,43 @@ export function useAgentRuns(options?: { limit?: number }) {
 }
 
 export function useAgentRun(id: string | undefined) {
-  return usePowerQuery<RunDetailResponse>({
+  const result = useQuery<RunDetailResponse>({
     queryKey: ['agent-run', id],
     queryFn: ({ signal }) =>
       fetchJson<RunDetailResponse>(`/agent/runs/${id}`, { signal }),
     enabled: id !== undefined,
-    pollCategory: 'realtime',
-    refetchInterval: RUN_DETAIL_POLL_INTERVAL,
+    refetchInterval: (query) => {
+      const status = query.state.data?.run?.status;
+      if (status && TERMINAL_STATUSES.has(status)) return false;
+      return RUN_DETAIL_POLL_INTERVAL;
+    },
   });
+  return result;
 }
 
-export function useAgentReports(runId: string | undefined) {
+export function useAgentReports(runId: string | undefined, runStatus?: string) {
+  const isTerminal = runStatus ? TERMINAL_STATUSES.has(runStatus) : false;
+
   return usePowerQuery<ReportsResponse>({
     queryKey: ['agent-reports', runId],
     queryFn: ({ signal }) =>
       fetchJson<ReportsResponse>(`/agent/runs/${runId}/reports`, { signal }),
     enabled: runId !== undefined,
     pollCategory: 'standard',
-    refetchInterval: REPORTS_POLL_INTERVAL,
+    refetchInterval: isTerminal ? 0 : REPORTS_POLL_INTERVAL,
   });
 }
 
-export function useAgentTurns(runId: string | undefined) {
+export function useAgentTurns(runId: string | undefined, runStatus?: string) {
+  const isTerminal = runStatus ? TERMINAL_STATUSES.has(runStatus) : false;
+
   return usePowerQuery<TurnRow[]>({
     queryKey: ['agent-turns', runId],
     queryFn: ({ signal }) =>
       fetchJson<TurnRow[]>(`/agent/runs/${runId}/turns`, { signal }),
     enabled: runId !== undefined,
     pollCategory: 'standard',
-    refetchInterval: TURNS_POLL_INTERVAL,
+    refetchInterval: isTerminal ? 0 : TURNS_POLL_INTERVAL,
   });
 }
 

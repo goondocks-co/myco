@@ -13,6 +13,7 @@
  */
 
 import { stringify as stringifyYaml, parse as parseYaml } from 'yaml';
+import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
 import { taskFromParsed } from '@myco/agent/loader.js';
 import { AgentTaskSchema } from '@myco/agent/schemas.js';
 import {
@@ -177,7 +178,7 @@ export async function handleCopyTask(
     const copy = copyTaskToUser(definitionsDir, vaultDir, sourceName, newName);
     return { status: HTTP_CREATED, body: { task: copy } };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = toErrorMessage(err);
     if (message.includes('not found')) {
       return { status: HTTP_NOT_FOUND, body: { error: 'task_not_found', name: sourceName } };
     }
@@ -253,7 +254,7 @@ export async function handleUpdateTask(
     writeUserTask(vaultDir, task);
     return { status: HTTP_OK, body: { task } };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = toErrorMessage(err);
     return { status: HTTP_BAD_REQUEST, body: { error: 'validation_failed', message } };
   }
 }

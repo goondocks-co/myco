@@ -26,11 +26,12 @@ prompt: |
   1. Call `vault_state` to get current cursor and context
   2. Call `vault_sessions` to find the target session and its current
      title/summary/processed status
-  3. Call `vault_unprocessed` filtered to the target session to see what
-     batches need processing
+  3. Call `vault_unprocessed` to get all unprocessed batches — note which
+     ones belong to the target session (by matching session_id in the batch data)
 
-  If no batches are found for this session, call `vault_report` with
+  If no unprocessed batches belong to this session, call `vault_report` with
   action "skip" and reason "no unprocessed batches for session", then stop.
+  Only process batches from the target session — ignore batches from other sessions.
 
   ## Phase 2 — Extract Spores (budget: 15 turns)
 

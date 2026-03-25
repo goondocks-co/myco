@@ -7,6 +7,7 @@
  */
 
 import type { ContextQuery } from './types.js';
+import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
 import { getUnprocessedBatches } from '@myco/db/queries/batches.js';
 import { listSpores } from '@myco/db/queries/spores.js';
 import { listSessions } from '@myco/db/queries/sessions.js';
@@ -76,9 +77,7 @@ export async function executeContextQueries(
     if (outcome.status === 'fulfilled') {
       results.push(outcome.value);
     } else {
-      const message = outcome.reason instanceof Error
-        ? outcome.reason.message
-        : String(outcome.reason);
+      const message = toErrorMessage(outcome.reason);
 
       if (query.required) {
         throw new Error(

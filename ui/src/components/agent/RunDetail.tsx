@@ -156,8 +156,9 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   const [showAudit, setShowAudit] = useState(false);
 
   const { data: runData, isLoading: runLoading, isError: runError } = useAgentRun(runId);
-  const { data: reportsData, isLoading: reportsLoading } = useAgentReports(runId);
-  const { data: turnsData, isLoading: turnsLoading } = useAgentTurns(showAudit ? runId : undefined);
+  const runStatus = runData?.run?.status;
+  const { data: reportsData, isLoading: reportsLoading } = useAgentReports(runId, runStatus);
+  const { data: turnsData, isLoading: turnsLoading } = useAgentTurns(showAudit ? runId : undefined, runStatus);
 
   if (runLoading) {
     return (

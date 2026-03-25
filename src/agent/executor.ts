@@ -14,6 +14,7 @@
 
 import crypto from 'node:crypto';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
+import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
 import { initDatabaseForVault } from '@myco/db/client.js';
 import { getAgent } from '@myco/db/queries/agents.js';
 import { getTask, getDefaultTask } from '@myco/db/queries/tasks.js';
@@ -342,7 +343,7 @@ async function executePhasedQuery(
         summary: phaseSummary,
       });
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
+      const phaseError = toErrorMessage(err);
 
       phaseResults.push({
         name: phase.name,
@@ -350,7 +351,7 @@ async function executePhasedQuery(
         turnsUsed: phaseTurns,
         tokensUsed: phaseTokens,
         costUsd: phaseCost,
-        summary: `Error: ${errorMessage}`,
+        summary: `Error: ${phaseError}`,
       });
 
       // If a required phase fails, stop the pipeline.
