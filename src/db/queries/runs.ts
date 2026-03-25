@@ -1,8 +1,8 @@
 /**
  * Agent run CRUD query helpers.
  *
- * All functions obtain the PGlite instance internally via `getDatabase()`.
- * Queries use parameterized placeholders ($1, $2, ...) throughout.
+ * All functions obtain the SQLite instance internally via `getDatabase()`.
+ * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
 import { getDatabase } from '@myco/db/client.js';
@@ -100,7 +100,7 @@ const SELECT_COLUMNS = RUN_COLUMNS.join(', ');
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Normalize a PGlite result row into a typed RunRow. */
+/** Normalize a SQLite result row into a typed RunRow. */
 function toRunRow(row: Record<string, unknown>): RunRow {
   return {
     id: row.id as string,
@@ -124,36 +124,36 @@ function toRunRow(row: Record<string, unknown>): RunRow {
 /**
  * Insert a new agent run.
  */
-export async function insertRun(data: RunInsert): Promise<RunRow> {
+export function insertRun(data: RunInsert): RunRow {
   const db = getDatabase();
 
-  const result = await db.query(
+  db.prepare(
     `INSERT INTO agent_runs (
        id, agent_id, task, instruction, status,
        started_at, completed_at, tokens_used, cost_usd,
        actions_taken, error
      ) VALUES (
-       $1, $2, $3, $4, $5,
-       $6, $7, $8, $9,
-       $10, $11
-     )
-     RETURNING ${SELECT_COLUMNS}`,
-    [
-      data.id,
-      data.agent_id,
-      data.task ?? null,
-      data.instruction ?? null,
-      data.status ?? DEFAULT_STATUS,
-      data.started_at ?? null,
-      data.completed_at ?? null,
-      data.tokens_used ?? null,
-      data.cost_usd ?? null,
-      data.actions_taken ?? null,
-      data.error ?? null,
-    ],
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?,
+       ?, ?
+     )`,
+  ).run(
+    data.id,
+    data.agent_id,
+    data.task ?? null,
+    data.instruction ?? null,
+    data.status ?? DEFAULT_STATUS,
+    data.started_at ?? null,
+    data.completed_at ?? null,
+    data.tokens_used ?? null,
+    data.cost_usd ?? null,
+    data.actions_taken ?? null,
+    data.error ?? null,
   );
 
-  return toRunRow(result.rows[0] as Record<string, unknown>);
+  return toRunRow(
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM agent_runs WHERE id = ?`).get(data.id) as Record<string, unknown>,
+  );
 }
 
 /**
@@ -161,37 +161,35 @@ export async function insertRun(data: RunInsert): Promise<RunRow> {
  *
  * @returns the run row, or null if not found.
  */
-export async function getRun(id: string): Promise<RunRow | null> {
+export function getRun(id: string): RunRow | null {
   const db = getDatabase();
 
-  const result = await db.query(
-    `SELECT ${SELECT_COLUMNS} FROM agent_runs WHERE id = $1`,
-    [id],
-  );
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM agent_runs WHERE id = ?`,
+  ).get(id) as Record<string, unknown> | undefined;
 
-  if (result.rows.length === 0) return null;
-  return toRunRow(result.rows[0] as Record<string, unknown>);
+  if (!row) return null;
+  return toRunRow(row);
 }
 
 /**
  * List runs with optional filters, ordered by started_at DESC (nulls last).
  */
-export async function listRuns(
+export function listRuns(
   options: ListRunsOptions = {},
-): Promise<RunRow[]> {
+): RunRow[] {
   const db = getDatabase();
 
   const conditions: string[] = [];
   const params: unknown[] = [];
-  let paramIndex = 1;
 
   if (options.agent_id !== undefined) {
-    conditions.push(`agent_id = $${paramIndex++}`);
+    conditions.push(`agent_id = ?`);
     params.push(options.agent_id);
   }
 
   if (options.status !== undefined) {
-    conditions.push(`status = $${paramIndex++}`);
+    conditions.push(`status = ?`);
     params.push(options.status);
   }
 
@@ -200,16 +198,15 @@ export async function listRuns(
 
   params.push(limit);
 
-  const result = await db.query(
+  const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_runs
      ${where}
      ORDER BY started_at DESC NULLS LAST
-     LIMIT $${paramIndex}`,
-    params,
-  );
+     LIMIT ?`,
+  ).all(...params) as Record<string, unknown>[];
 
-  return (result.rows as Record<string, unknown>[]).map(toRunRow);
+  return rows.map(toRunRow);
 }
 
 /**
@@ -217,54 +214,54 @@ export async function listRuns(
  *
  * @returns the updated row, or null if the run does not exist.
  */
-export async function updateRunStatus(
+export function updateRunStatus(
   id: string,
   status: string,
   completion?: RunCompletion,
-): Promise<RunRow | null> {
+): RunRow | null {
   const db = getDatabase();
 
-  const setClauses: string[] = ['status = $1'];
+  const setClauses: string[] = ['status = ?'];
   const params: unknown[] = [status];
-  let paramIndex = 2;
 
   if (completion?.completed_at !== undefined) {
-    setClauses.push(`completed_at = $${paramIndex++}`);
+    setClauses.push(`completed_at = ?`);
     params.push(completion.completed_at);
   }
 
   if (completion?.tokens_used !== undefined) {
-    setClauses.push(`tokens_used = $${paramIndex++}`);
+    setClauses.push(`tokens_used = ?`);
     params.push(completion.tokens_used);
   }
 
   if (completion?.cost_usd !== undefined) {
-    setClauses.push(`cost_usd = $${paramIndex++}`);
+    setClauses.push(`cost_usd = ?`);
     params.push(completion.cost_usd);
   }
 
   if (completion?.actions_taken !== undefined) {
-    setClauses.push(`actions_taken = $${paramIndex++}`);
+    setClauses.push(`actions_taken = ?`);
     params.push(completion.actions_taken);
   }
 
   if (completion?.error !== undefined) {
-    setClauses.push(`error = $${paramIndex++}`);
+    setClauses.push(`error = ?`);
     params.push(completion.error);
   }
 
   params.push(id);
 
-  const result = await db.query(
+  const info = db.prepare(
     `UPDATE agent_runs
      SET ${setClauses.join(', ')}
-     WHERE id = $${paramIndex}
-     RETURNING ${SELECT_COLUMNS}`,
-    params,
-  );
+     WHERE id = ?`,
+  ).run(...params);
 
-  if (result.rows.length === 0) return null;
-  return toRunRow(result.rows[0] as Record<string, unknown>);
+  if (info.changes === 0) return null;
+
+  return toRunRow(
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM agent_runs WHERE id = ?`).get(id) as Record<string, unknown>,
+  );
 }
 
 /**
@@ -272,20 +269,19 @@ export async function updateRunStatus(
  *
  * @returns the running run row, or null if no run is active.
  */
-export async function getRunningRun(
+export function getRunningRun(
   agentId: string,
-): Promise<RunRow | null> {
+): RunRow | null {
   const db = getDatabase();
 
-  const result = await db.query(
+  const row = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_runs
-     WHERE agent_id = $1 AND status = $2
+     WHERE agent_id = ? AND status = ?
      ORDER BY started_at DESC NULLS LAST
      LIMIT 1`,
-    [agentId, STATUS_RUNNING],
-  );
+  ).get(agentId, STATUS_RUNNING) as Record<string, unknown> | undefined;
 
-  if (result.rows.length === 0) return null;
-  return toRunRow(result.rows[0] as Record<string, unknown>);
+  if (!row) return null;
+  return toRunRow(row);
 }

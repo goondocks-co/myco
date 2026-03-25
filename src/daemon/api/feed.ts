@@ -8,6 +8,6 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 
 export async function handleGetFeed(req: RouteRequest): Promise<RouteResponse> {
   const limit = Number(req.query.limit) || FEED_DEFAULT_LIMIT;
-  const feed = await getActivityFeed(limit);
+  const feed = getActivityFeed(limit);
   return { body: feed };
 }

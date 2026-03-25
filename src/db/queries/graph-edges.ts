@@ -4,7 +4,8 @@
  * Unlike the `edges` table (which has FK constraints to entities), `graph_edges`
  * supports edges between any node types (session, batch, spore, entity).
  *
- * All functions obtain the PGlite instance internally via `getDatabase()`.
+ * All functions obtain the SQLite instance internally via `getDatabase()`.
+ * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
 import crypto from 'node:crypto';
@@ -99,7 +100,7 @@ const SELECT_COLUMNS = GRAPH_EDGE_COLUMNS.join(', ');
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Normalize a PGlite result row into a typed GraphEdgeRow. */
+/** Normalize a SQLite result row into a typed GraphEdgeRow. */
 function toGraphEdgeRow(row: Record<string, unknown>): GraphEdgeRow {
   return {
     id: row.id as string,
@@ -125,63 +126,62 @@ function toGraphEdgeRow(row: Record<string, unknown>): GraphEdgeRow {
  *
  * Generates a UUID id automatically.
  */
-export async function insertGraphEdge(data: GraphEdgeInsert): Promise<GraphEdgeRow> {
+export function insertGraphEdge(data: GraphEdgeInsert): GraphEdgeRow {
   const db = getDatabase();
   const id = crypto.randomUUID();
 
-  const result = await db.query(
+  db.prepare(
     `INSERT INTO graph_edges (
        id, agent_id, source_id, source_type, target_id, target_type,
        type, session_id, confidence, properties, created_at
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-     RETURNING ${SELECT_COLUMNS}`,
-    [
-      id,
-      data.agent_id,
-      data.source_id,
-      data.source_type,
-      data.target_id,
-      data.target_type,
-      data.type,
-      data.session_id ?? null,
-      data.confidence ?? GRAPH_EDGE_DEFAULT_CONFIDENCE,
-      data.properties ?? null,
-      data.created_at,
-    ],
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    data.agent_id,
+    data.source_id,
+    data.source_type,
+    data.target_id,
+    data.target_type,
+    data.type,
+    data.session_id ?? null,
+    data.confidence ?? GRAPH_EDGE_DEFAULT_CONFIDENCE,
+    data.properties ?? null,
+    data.created_at,
   );
 
-  return toGraphEdgeRow(result.rows[0] as Record<string, unknown>);
+  return toGraphEdgeRow(
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM graph_edges WHERE id = ?`).get(id) as Record<string, unknown>,
+  );
 }
 
 /**
  * List graph edges with optional filters, ordered by created_at DESC.
  */
-export async function listGraphEdges(
+export function listGraphEdges(
   options: ListGraphEdgesOptions = {},
-): Promise<GraphEdgeRow[]> {
+): GraphEdgeRow[] {
   const db = getDatabase();
 
   const conditions: string[] = [];
   const params: unknown[] = [];
-  let paramIndex = 1;
 
   if (options.sourceId !== undefined) {
-    conditions.push(`source_id = $${paramIndex++}`);
+    conditions.push(`source_id = ?`);
     params.push(options.sourceId);
   }
 
   if (options.targetId !== undefined) {
-    conditions.push(`target_id = $${paramIndex++}`);
+    conditions.push(`target_id = ?`);
     params.push(options.targetId);
   }
 
   if (options.type !== undefined) {
-    conditions.push(`type = $${paramIndex++}`);
+    conditions.push(`type = ?`);
     params.push(options.type);
   }
 
   if (options.agentId !== undefined) {
-    conditions.push(`agent_id = $${paramIndex++}`);
+    conditions.push(`agent_id = ?`);
     params.push(options.agentId);
   }
 
@@ -190,16 +190,15 @@ export async function listGraphEdges(
 
   params.push(limit);
 
-  const result = await db.query(
+  const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM graph_edges
      ${where}
      ORDER BY created_at DESC
-     LIMIT $${paramIndex}`,
-    params,
-  );
+     LIMIT ?`,
+  ).all(...params) as Record<string, unknown>[];
 
-  return (result.rows as Record<string, unknown>[]).map(toGraphEdgeRow);
+  return rows.map(toGraphEdgeRow);
 }
 
 /**
@@ -211,11 +210,11 @@ export async function listGraphEdges(
  * @param nodeType - The starting node type.
  * @param options  - Optional depth limit (default 2, max 5).
  */
-export async function getGraphForNode(
+export function getGraphForNode(
   nodeId: string,
   nodeType: GraphNodeType,
   options?: { depth?: number },
-): Promise<{ edges: GraphEdgeRow[] }> {
+): { edges: GraphEdgeRow[] } {
   const db = getDatabase();
   const depth = Math.min(Math.max(options?.depth ?? DEFAULT_BFS_DEPTH, 1), MAX_BFS_DEPTH);
 
@@ -228,18 +227,17 @@ export async function getGraphForNode(
     if (frontier.size === 0) break;
 
     const frontierArray = Array.from(frontier);
-    const placeholders = frontierArray.map((_, i) => `$${i + 1}`).join(', ');
+    const placeholders = frontierArray.map(() => `?`).join(', ');
 
-    const result = await db.query(
+    const rows = db.prepare(
       `SELECT ${SELECT_COLUMNS}
        FROM graph_edges
        WHERE source_id IN (${placeholders}) OR target_id IN (${placeholders})`,
-      frontierArray,
-    );
+    ).all(...frontierArray, ...frontierArray) as Record<string, unknown>[];
 
     const nextFrontier = new Set<string>();
 
-    for (const row of result.rows as Record<string, unknown>[]) {
+    for (const row of rows) {
       const edge = toGraphEdgeRow(row);
       if (!seenEdgeIds.has(edge.id)) {
         seenEdgeIds.add(edge.id);

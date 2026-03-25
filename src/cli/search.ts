@@ -1,12 +1,15 @@
 /**
- * CLI: myco search / myco vectors — search via daemon API.
+ * CLI: myco search — full-text search via direct SQLite reads.
+ * CLI: myco vectors — semantic search via daemon API (requires vector store).
  *
- * Routes through the daemon HTTP API to avoid PGlite file lock conflicts.
- * The daemon handles embedding, semantic search, and FTS internally.
+ * The `search` command opens the database directly (WAL mode allows concurrent
+ * reads) and does NOT require the daemon. The `vectors` command still routes
+ * through the daemon because it needs the in-process vector store.
  */
 
 import { CONTENT_SNIPPET_CHARS } from '@myco/constants.js';
-import { connectToDaemon } from './shared.js';
+import { fullTextSearch } from '@myco/db/queries/search.js';
+import { connectToDaemon, initVaultDb } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -32,51 +35,18 @@ interface SearchResult {
 }
 
 // ---------------------------------------------------------------------------
-// search command
+// search command — direct DB read
 // ---------------------------------------------------------------------------
 
 export async function run(args: string[], vaultDir: string): Promise<void> {
   const query = args.join(' ');
   if (!query) { console.error('Usage: myco search <query>'); process.exit(1); }
 
-  const client = await connectToDaemon(vaultDir);
+  const cleanup = initVaultDb(vaultDir);
+  try {
+    const results = fullTextSearch(query, { limit: CLI_SEARCH_LIMIT });
 
-  // Semantic search
-  const semanticParams = new URLSearchParams({
-    q: query,
-    limit: String(CLI_SEARCH_LIMIT),
-    mode: 'semantic',
-  });
-  const semanticResult = await client.get(`/api/search?${semanticParams.toString()}`);
-
-  if (semanticResult.ok && semanticResult.data?.results) {
-    const results = semanticResult.data.results as SearchResult[];
-    console.log(`=== Semantic Search: "${query}" ===`);
-    if (results.length === 0) {
-      if (semanticResult.data.error === 'embedding_unavailable') {
-        console.log('  Semantic search unavailable: embedding provider not configured');
-      } else {
-        console.log('  (no results)');
-      }
-    } else {
-      for (const r of results) {
-        const preview = (r.preview ?? r.title ?? '').slice(0, CONTENT_SNIPPET_CHARS);
-        console.log(`  sim: ${r.score.toFixed(3)} | [${r.type}] ${preview}`);
-      }
-    }
-  }
-
-  // FTS fallback
-  const ftsParams = new URLSearchParams({
-    q: query,
-    limit: String(CLI_SEARCH_LIMIT),
-    mode: 'fts',
-  });
-  const ftsResult = await client.get(`/api/search?${ftsParams.toString()}`);
-
-  console.log(`\n=== Text Search: "${query}" ===`);
-  if (ftsResult.ok && ftsResult.data?.results) {
-    const results = ftsResult.data.results as SearchResult[];
+    console.log(`=== Text Search: "${query}" ===`);
     if (results.length === 0) {
       console.log('  (no results)');
     } else {
@@ -85,13 +55,16 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
         console.log(`  [${r.type}] ${preview}`);
       }
     }
-  } else {
-    console.log('  (no results)');
+  } catch (err) {
+    console.error('Search failed:', (err as Error).message);
+    process.exit(1);
+  } finally {
+    cleanup();
   }
 }
 
 // ---------------------------------------------------------------------------
-// vectors command
+// vectors command — requires daemon for vector store
 // ---------------------------------------------------------------------------
 
 export async function runVectors(args: string[], vaultDir: string): Promise<void> {

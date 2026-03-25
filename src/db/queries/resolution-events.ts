@@ -1,8 +1,8 @@
 /**
  * Resolution event CRUD query helpers.
  *
- * All functions obtain the PGlite instance internally via `getDatabase()`.
- * Queries use parameterized placeholders ($1, $2, ...) throughout.
+ * All functions obtain the SQLite instance internally via `getDatabase()`.
+ * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
 import { getDatabase } from '@myco/db/client.js';
@@ -70,7 +70,7 @@ const SELECT_COLUMNS = EVENT_COLUMNS.join(', ');
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Normalize a PGlite result row into a typed ResolutionEventRow. */
+/** Normalize a SQLite result row into a typed ResolutionEventRow. */
 function toResolutionEventRow(row: Record<string, unknown>): ResolutionEventRow {
   return {
     id: row.id as string,
@@ -91,50 +91,49 @@ function toResolutionEventRow(row: Record<string, unknown>): ResolutionEventRow 
 /**
  * Insert a new resolution event.
  */
-export async function insertResolutionEvent(
+export function insertResolutionEvent(
   data: ResolutionEventInsert,
-): Promise<ResolutionEventRow> {
+): ResolutionEventRow {
   const db = getDatabase();
 
-  const result = await db.query(
+  db.prepare(
     `INSERT INTO resolution_events (
        id, agent_id, spore_id, action, new_spore_id, reason, session_id, created_at
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     RETURNING ${SELECT_COLUMNS}`,
-    [
-      data.id,
-      data.agent_id,
-      data.spore_id,
-      data.action,
-      data.new_spore_id ?? null,
-      data.reason ?? null,
-      data.session_id ?? null,
-      data.created_at,
-    ],
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    data.id,
+    data.agent_id,
+    data.spore_id,
+    data.action,
+    data.new_spore_id ?? null,
+    data.reason ?? null,
+    data.session_id ?? null,
+    data.created_at,
   );
 
-  return toResolutionEventRow(result.rows[0] as Record<string, unknown>);
+  return toResolutionEventRow(
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM resolution_events WHERE id = ?`).get(data.id) as Record<string, unknown>,
+  );
 }
 
 /**
  * List resolution events with optional filters, ordered by created_at DESC.
  */
-export async function listResolutionEvents(
+export function listResolutionEvents(
   options: ListResolutionEventsOptions = {},
-): Promise<ResolutionEventRow[]> {
+): ResolutionEventRow[] {
   const db = getDatabase();
 
   const conditions: string[] = [];
   const params: unknown[] = [];
-  let paramIndex = 1;
 
   if (options.agent_id !== undefined) {
-    conditions.push(`agent_id = $${paramIndex++}`);
+    conditions.push(`agent_id = ?`);
     params.push(options.agent_id);
   }
 
   if (options.spore_id !== undefined) {
-    conditions.push(`spore_id = $${paramIndex++}`);
+    conditions.push(`spore_id = ?`);
     params.push(options.spore_id);
   }
 
@@ -143,14 +142,13 @@ export async function listResolutionEvents(
 
   params.push(limit);
 
-  const result = await db.query(
+  const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM resolution_events
      ${where}
      ORDER BY created_at DESC
-     LIMIT $${paramIndex}`,
-    params,
-  );
+     LIMIT ?`,
+  ).all(...params) as Record<string, unknown>[];
 
-  return (result.rows as Record<string, unknown>[]).map(toResolutionEventRow);
+  return rows.map(toResolutionEventRow);
 }

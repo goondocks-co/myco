@@ -1,8 +1,8 @@
 /**
  * Attachment CRUD query helpers.
  *
- * All functions obtain the PGlite instance internally via `getDatabase()`.
- * Queries use parameterized placeholders ($1, $2, ...) throughout.
+ * All functions obtain the SQLite instance internally via `getDatabase()`.
+ * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
 import { getDatabase } from '@myco/db/client.js';
@@ -34,10 +34,26 @@ export interface AttachmentRow {
 }
 
 // ---------------------------------------------------------------------------
+// Column list
+// ---------------------------------------------------------------------------
+
+const ATTACHMENT_COLUMNS = [
+  'id',
+  'session_id',
+  'prompt_batch_id',
+  'file_path',
+  'media_type',
+  'description',
+  'created_at',
+] as const;
+
+const SELECT_COLUMNS = ATTACHMENT_COLUMNS.join(', ');
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Normalize a PGlite result row into a typed AttachmentRow. */
+/** Normalize a SQLite result row into a typed AttachmentRow. */
 function toAttachmentRow(row: Record<string, unknown>): AttachmentRow {
   return {
     id: row.id as string,
@@ -62,25 +78,28 @@ function toAttachmentRow(row: Record<string, unknown>): AttachmentRow {
  *
  * @returns the inserted row, or undefined if the id already existed.
  */
-export async function insertAttachment(data: AttachmentInsert): Promise<AttachmentRow | undefined> {
+export function insertAttachment(data: AttachmentInsert): AttachmentRow | undefined {
   const db = getDatabase();
-  const result = await db.query(
-    `INSERT INTO attachments (id, session_id, prompt_batch_id, file_path, media_type, description, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (id) DO NOTHING
-     RETURNING *`,
-    [
-      data.id,
-      data.session_id,
-      data.prompt_batch_id ?? null,
-      data.file_path,
-      data.media_type ?? null,
-      data.description ?? null,
-      data.created_at,
-    ],
+
+  const info = db.prepare(
+    `INSERT INTO attachments (${SELECT_COLUMNS})
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (id) DO NOTHING`,
+  ).run(
+    data.id,
+    data.session_id,
+    data.prompt_batch_id ?? null,
+    data.file_path,
+    data.media_type ?? null,
+    data.description ?? null,
+    data.created_at,
   );
-  if (result.rows.length === 0) return undefined;
-  return toAttachmentRow(result.rows[0] as Record<string, unknown>);
+
+  if (info.changes === 0) return undefined;
+
+  return toAttachmentRow(
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM attachments WHERE id = ?`).get(data.id) as Record<string, unknown>,
+  );
 }
 
 /**
@@ -88,11 +107,12 @@ export async function insertAttachment(data: AttachmentInsert): Promise<Attachme
  *
  * @returns array of attachment rows (empty array if none exist).
  */
-export async function listAttachmentsBySession(sessionId: string): Promise<AttachmentRow[]> {
+export function listAttachmentsBySession(sessionId: string): AttachmentRow[] {
   const db = getDatabase();
-  const result = await db.query(
-    'SELECT * FROM attachments WHERE session_id = $1 ORDER BY created_at ASC',
-    [sessionId],
-  );
-  return (result.rows as Record<string, unknown>[]).map(toAttachmentRow);
+
+  const rows = db.prepare(
+    'SELECT * FROM attachments WHERE session_id = ? ORDER BY created_at ASC',
+  ).all(sessionId) as Record<string, unknown>[];
+
+  return rows.map(toAttachmentRow);
 }

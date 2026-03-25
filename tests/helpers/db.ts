@@ -1,20 +1,16 @@
 /**
  * Shared test database helpers.
  *
- * Provides a fast setup/teardown pattern for tests that need PGlite:
- * - `setupTestDb()` in beforeAll — creates DB + schema once per suite
- * - `cleanTestDb()` in beforeEach — truncates all tables (fast, no re-init)
- * - `teardownTestDb()` in afterAll — closes the DB
- *
- * This replaces the per-test initDatabase()/createSchema()/closeDatabase()
- * pattern which was creating a fresh PGlite instance for every single test.
+ * Each test suite gets a fresh in-memory SQLite database via `setupTestDb()`.
+ * `cleanTestDb()` deletes all rows between tests (fast, no re-init).
+ * `teardownTestDb()` closes the database after all tests.
  */
 
 import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 
-/** Tables to truncate between tests (order matters for FK constraints). */
-const TRUNCATE_TABLES = [
+/** Tables to delete between tests (FK dependency order -- children first). */
+const DELETE_TABLES = [
   'agent_turns',
   'agent_reports',
   'agent_state',
@@ -23,7 +19,6 @@ const TRUNCATE_TABLES = [
   'resolution_events',
   'entity_mentions',
   'graph_edges',
-  'edges',
   'entities',
   'digest_extracts',
   'attachments',
@@ -38,29 +33,53 @@ const TRUNCATE_TABLES = [
 ];
 
 /**
+ * FTS5 external-content virtual tables.
+ * These cannot use plain DELETE — we drop and recreate them instead.
+ */
+const FTS_DDL = [
+  {
+    name: 'prompt_batches_fts',
+    ddl: `CREATE VIRTUAL TABLE IF NOT EXISTS prompt_batches_fts
+          USING fts5(user_prompt, content='prompt_batches', content_rowid='id')`,
+  },
+  {
+    name: 'activities_fts',
+    ddl: `CREATE VIRTUAL TABLE IF NOT EXISTS activities_fts
+          USING fts5(tool_name, tool_input, file_path, content='activities', content_rowid='id')`,
+  },
+];
+
+/**
  * Initialize the test database once per suite.
  * Call in `beforeAll`.
  */
-export async function setupTestDb() {
-  const db = await initDatabase();
-  await createSchema(db);
+export function setupTestDb() {
+  const db = initDatabase(); // in-memory
+  createSchema(db);
   return db;
 }
 
 /**
- * Truncate all tables between tests.
- * Call in `beforeEach` — much faster than re-creating the DB.
+ * Delete all rows between tests.
+ * Call in `beforeEach`.
  */
-export async function cleanTestDb() {
+export function cleanTestDb() {
   const db = getDatabase();
-  // TRUNCATE CASCADE handles FK constraints in one statement
-  await db.query(`TRUNCATE ${TRUNCATE_TABLES.join(', ')} CASCADE`);
+  // Delete regular table data (children first for FK ordering)
+  for (const table of DELETE_TABLES) {
+    db.prepare(`DELETE FROM ${table}`).run();
+  }
+  // Drop and recreate FTS5 external-content tables (plain DELETE is not supported)
+  for (const fts of FTS_DDL) {
+    db.exec(`DROP TABLE IF EXISTS ${fts.name}`);
+    db.exec(fts.ddl);
+  }
 }
 
 /**
  * Close the test database after all tests in a suite.
  * Call in `afterAll`.
  */
-export async function teardownTestDb() {
-  await closeDatabase();
+export function teardownTestDb() {
+  closeDatabase();
 }

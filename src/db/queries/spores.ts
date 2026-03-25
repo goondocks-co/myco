@@ -1,8 +1,8 @@
 /**
  * Spore CRUD query helpers.
  *
- * All functions obtain the PGlite instance internally via `getDatabase()`.
- * Queries use parameterized placeholders ($1, $2, ...) throughout.
+ * All functions obtain the SQLite instance internally via `getDatabase()`.
+ * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
 import { getDatabase } from '@myco/db/client.js';
@@ -43,7 +43,7 @@ export interface SporeInsert {
   updated_at?: number | null;
 }
 
-/** Row shape returned from spore queries (all columns, no embedding). */
+/** Row shape returned from spore queries (all columns). */
 export interface SporeRow {
   id: string;
   agent_id: string;
@@ -58,6 +58,7 @@ export interface SporeRow {
   tags: string | null;
   content_hash: string | null;
   properties: string | null;
+  embedded: number;
   created_at: number;
   updated_at: number | null;
 }
@@ -72,7 +73,7 @@ export interface ListSporesOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Column list (excludes embedding — not useful in CRUD results)
+// Column list
 // ---------------------------------------------------------------------------
 
 const SPORE_COLUMNS = [
@@ -89,6 +90,7 @@ const SPORE_COLUMNS = [
   'tags',
   'content_hash',
   'properties',
+  'embedded',
   'created_at',
   'updated_at',
 ] as const;
@@ -99,7 +101,7 @@ const SELECT_COLUMNS = SPORE_COLUMNS.join(', ');
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Normalize a PGlite result row into a typed SporeRow. */
+/** Normalize a SQLite result row into a typed SporeRow. */
 function toSporeRow(row: Record<string, unknown>): SporeRow {
   return {
     id: row.id as string,
@@ -115,6 +117,7 @@ function toSporeRow(row: Record<string, unknown>): SporeRow {
     tags: (row.tags as string) ?? null,
     content_hash: (row.content_hash as string) ?? null,
     properties: (row.properties as string) ?? null,
+    embedded: (row.embedded as number) ?? 0,
     created_at: row.created_at as number,
     updated_at: (row.updated_at as number) ?? null,
   };
@@ -129,42 +132,42 @@ function toSporeRow(row: Record<string, unknown>): SporeRow {
  *
  * Requires a valid `agent_id` (foreign key to agents table).
  */
-export async function insertSpore(data: SporeInsert): Promise<SporeRow> {
+export function insertSpore(data: SporeInsert): SporeRow {
   const db = getDatabase();
 
-  const result = await db.query(
+  db.prepare(
     `INSERT INTO spores (
        id, agent_id, session_id, prompt_batch_id,
        observation_type, status, content, context,
        importance, file_path, tags, content_hash,
        properties, created_at, updated_at
      ) VALUES (
-       $1, $2, $3, $4,
-       $5, $6, $7, $8,
-       $9, $10, $11, $12,
-       $13, $14, $15
-     )
-     RETURNING ${SELECT_COLUMNS}`,
-    [
-      data.id,
-      data.agent_id,
-      data.session_id ?? null,
-      data.prompt_batch_id ?? null,
-      data.observation_type,
-      data.status ?? DEFAULT_STATUS,
-      data.content,
-      data.context ?? null,
-      data.importance ?? DEFAULT_IMPORTANCE,
-      data.file_path ?? null,
-      data.tags ?? null,
-      data.content_hash ?? null,
-      data.properties ?? null,
-      data.created_at,
-      data.updated_at ?? null,
-    ],
+       ?, ?, ?, ?,
+       ?, ?, ?, ?,
+       ?, ?, ?, ?,
+       ?, ?, ?
+     )`,
+  ).run(
+    data.id,
+    data.agent_id,
+    data.session_id ?? null,
+    data.prompt_batch_id ?? null,
+    data.observation_type,
+    data.status ?? DEFAULT_STATUS,
+    data.content,
+    data.context ?? null,
+    data.importance ?? DEFAULT_IMPORTANCE,
+    data.file_path ?? null,
+    data.tags ?? null,
+    data.content_hash ?? null,
+    data.properties ?? null,
+    data.created_at,
+    data.updated_at ?? null,
   );
 
-  return toSporeRow(result.rows[0] as Record<string, unknown>);
+  return toSporeRow(
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM spores WHERE id = ?`).get(data.id) as Record<string, unknown>,
+  );
 }
 
 /**
@@ -172,42 +175,40 @@ export async function insertSpore(data: SporeInsert): Promise<SporeRow> {
  *
  * @returns the spore row, or null if not found.
  */
-export async function getSpore(id: string): Promise<SporeRow | null> {
+export function getSpore(id: string): SporeRow | null {
   const db = getDatabase();
 
-  const result = await db.query(
-    `SELECT ${SELECT_COLUMNS} FROM spores WHERE id = $1`,
-    [id],
-  );
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM spores WHERE id = ?`,
+  ).get(id) as Record<string, unknown> | undefined;
 
-  if (result.rows.length === 0) return null;
-  return toSporeRow(result.rows[0] as Record<string, unknown>);
+  if (!row) return null;
+  return toSporeRow(row);
 }
 
 /**
  * List spores with optional filters, ordered by created_at DESC.
  */
-export async function listSpores(
+export function listSpores(
   options: ListSporesOptions = {},
-): Promise<SporeRow[]> {
+): SporeRow[] {
   const db = getDatabase();
 
   const conditions: string[] = [];
   const params: unknown[] = [];
-  let paramIndex = 1;
 
   if (options.agent_id !== undefined) {
-    conditions.push(`agent_id = $${paramIndex++}`);
+    conditions.push(`agent_id = ?`);
     params.push(options.agent_id);
   }
 
   if (options.observation_type !== undefined) {
-    conditions.push(`observation_type = $${paramIndex++}`);
+    conditions.push(`observation_type = ?`);
     params.push(options.observation_type);
   }
 
   if (options.status !== undefined) {
-    conditions.push(`status = $${paramIndex++}`);
+    conditions.push(`status = ?`);
     params.push(options.status);
   }
 
@@ -218,17 +219,16 @@ export async function listSpores(
   params.push(limit);
   params.push(offset);
 
-  const result = await db.query(
+  const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM spores
      ${where}
      ORDER BY created_at DESC
-     LIMIT $${paramIndex}
-     OFFSET $${paramIndex + 1}`,
-    params,
-  );
+     LIMIT ?
+     OFFSET ?`,
+  ).all(...params) as Record<string, unknown>[];
 
-  return (result.rows as Record<string, unknown>[]).map(toSporeRow);
+  return rows.map(toSporeRow);
 }
 
 /**
@@ -236,21 +236,22 @@ export async function listSpores(
  *
  * @returns the updated row, or null if the spore does not exist.
  */
-export async function updateSporeStatus(
+export function updateSporeStatus(
   id: string,
   status: string,
   updatedAt: number,
-): Promise<SporeRow | null> {
+): SporeRow | null {
   const db = getDatabase();
 
-  const result = await db.query(
+  const info = db.prepare(
     `UPDATE spores
-     SET status = $1, updated_at = $2
-     WHERE id = $3
-     RETURNING ${SELECT_COLUMNS}`,
-    [status, updatedAt, id],
-  );
+     SET status = ?, updated_at = ?
+     WHERE id = ?`,
+  ).run(status, updatedAt, id);
 
-  if (result.rows.length === 0) return null;
-  return toSporeRow(result.rows[0] as Record<string, unknown>);
+  if (info.changes === 0) return null;
+
+  return toSporeRow(
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM spores WHERE id = ?`).get(id) as Record<string, unknown>,
+  );
 }

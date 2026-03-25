@@ -31,17 +31,17 @@ function makeTurn(overrides: Partial<TurnInsert> = {}): TurnInsert {
 }
 
 describe('turn query helpers', () => {
-  beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
   beforeEach(async () => {
-    await cleanTestDb();
+    cleanTestDb();
     // Insert FK targets
-    await registerAgent({
+    registerAgent({
       id: TEST_AGENT_ID,
       name: 'Test Agent',
       created_at: epochNow(),
     });
-    await insertRun({
+    insertRun({
       id: TEST_RUN_ID,
       agent_id: TEST_AGENT_ID,
       started_at: epochNow(),
@@ -61,7 +61,7 @@ describe('turn query helpers', () => {
         started_at: now - 2,
         completed_at: now,
       });
-      const row = await insertTurn(data);
+      const row = insertTurn(data);
 
       expect(typeof row.id).toBe('number');
       expect(row.run_id).toBe(TEST_RUN_ID);
@@ -76,7 +76,7 @@ describe('turn query helpers', () => {
 
     it('inserts a turn with minimal fields', async () => {
       const data = makeTurn();
-      const row = await insertTurn(data);
+      const row = insertTurn(data);
 
       expect(row.tool_input).toBeNull();
       expect(row.tool_output_summary).toBeNull();
@@ -91,11 +91,11 @@ describe('turn query helpers', () => {
 
   describe('listTurns', () => {
     it('returns turns for a run ordered by turn_number ASC', async () => {
-      await insertTurn(makeTurn({ turn_number: 3, tool_name: 'vault_report' }));
-      await insertTurn(makeTurn({ turn_number: 1, tool_name: 'vault_search' }));
-      await insertTurn(makeTurn({ turn_number: 2, tool_name: 'vault_read' }));
+      insertTurn(makeTurn({ turn_number: 3, tool_name: 'vault_report' }));
+      insertTurn(makeTurn({ turn_number: 1, tool_name: 'vault_search' }));
+      insertTurn(makeTurn({ turn_number: 2, tool_name: 'vault_read' }));
 
-      const rows = await listTurns(TEST_RUN_ID);
+      const rows = listTurns(TEST_RUN_ID);
       expect(rows).toHaveLength(3);
       expect(rows[0].turn_number).toBe(1);
       expect(rows[0].tool_name).toBe('vault_search');
@@ -106,7 +106,7 @@ describe('turn query helpers', () => {
     });
 
     it('returns empty array for run with no turns', async () => {
-      const rows = await listTurns('no-such-run');
+      const rows = listTurns('no-such-run');
       expect(rows).toEqual([]);
     });
   });

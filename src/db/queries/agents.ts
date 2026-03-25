@@ -1,8 +1,8 @@
 /**
  * Agent CRUD query helpers.
  *
- * All functions obtain the PGlite instance internally via `getDatabase()`.
- * Queries use parameterized placeholders ($1, $2, ...) throughout.
+ * All functions obtain the SQLite instance internally via `getDatabase()`.
+ * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
 import { getDatabase } from '@myco/db/client.js';
@@ -84,7 +84,7 @@ const SELECT_COLUMNS = AGENT_COLUMNS.join(', ');
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Normalize a PGlite result row into a typed AgentRow. */
+/** Normalize a SQLite result row into a typed AgentRow. */
 function toAgentRow(row: Record<string, unknown>): AgentRow {
   return {
     id: row.id as string,
@@ -115,18 +115,18 @@ function toAgentRow(row: Record<string, unknown>): AgentRow {
  * This is the idempotent upsert — calling twice with the same data
  * produces the same result.
  */
-export async function registerAgent(data: AgentInsert): Promise<AgentRow> {
+export function registerAgent(data: AgentInsert): AgentRow {
   const db = getDatabase();
 
-  const result = await db.query(
+  db.prepare(
     `INSERT INTO agents (
        id, name, provider, model, system_prompt_hash, config,
        source, system_prompt, max_turns, timeout_seconds, tool_access,
        enabled, created_at, updated_at
      ) VALUES (
-       $1, $2, $3, $4, $5, $6,
-       $7, $8, $9, $10, $11,
-       $12, $13, $14
+       ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?
      )
      ON CONFLICT (id) DO UPDATE SET
        name               = EXCLUDED.name,
@@ -140,27 +140,27 @@ export async function registerAgent(data: AgentInsert): Promise<AgentRow> {
        timeout_seconds    = EXCLUDED.timeout_seconds,
        tool_access        = EXCLUDED.tool_access,
        enabled            = EXCLUDED.enabled,
-       updated_at         = EXCLUDED.updated_at
-     RETURNING ${SELECT_COLUMNS}`,
-    [
-      data.id,
-      data.name,
-      data.provider ?? null,
-      data.model ?? null,
-      data.system_prompt_hash ?? null,
-      data.config ?? null,
-      data.source ?? DEFAULT_SOURCE,
-      data.system_prompt ?? null,
-      data.max_turns ?? null,
-      data.timeout_seconds ?? null,
-      data.tool_access ?? null,
-      data.enabled ?? DEFAULT_ENABLED,
-      data.created_at,
-      data.updated_at ?? null,
-    ],
+       updated_at         = EXCLUDED.updated_at`,
+  ).run(
+    data.id,
+    data.name,
+    data.provider ?? null,
+    data.model ?? null,
+    data.system_prompt_hash ?? null,
+    data.config ?? null,
+    data.source ?? DEFAULT_SOURCE,
+    data.system_prompt ?? null,
+    data.max_turns ?? null,
+    data.timeout_seconds ?? null,
+    data.tool_access ?? null,
+    data.enabled ?? DEFAULT_ENABLED,
+    data.created_at,
+    data.updated_at ?? null,
   );
 
-  return toAgentRow(result.rows[0] as Record<string, unknown>);
+  return toAgentRow(
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM agents WHERE id = ?`).get(data.id) as Record<string, unknown>,
+  );
 }
 
 /**
@@ -168,29 +168,28 @@ export async function registerAgent(data: AgentInsert): Promise<AgentRow> {
  *
  * @returns the agent row, or null if not found.
  */
-export async function getAgent(id: string): Promise<AgentRow | null> {
+export function getAgent(id: string): AgentRow | null {
   const db = getDatabase();
 
-  const result = await db.query(
-    `SELECT ${SELECT_COLUMNS} FROM agents WHERE id = $1`,
-    [id],
-  );
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM agents WHERE id = ?`,
+  ).get(id) as Record<string, unknown> | undefined;
 
-  if (result.rows.length === 0) return null;
-  return toAgentRow(result.rows[0] as Record<string, unknown>);
+  if (!row) return null;
+  return toAgentRow(row);
 }
 
 /**
  * List all agents, ordered by created_at ASC.
  */
-export async function listAgents(): Promise<AgentRow[]> {
+export function listAgents(): AgentRow[] {
   const db = getDatabase();
 
-  const result = await db.query(
+  const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agents
      ORDER BY created_at ASC`,
-  );
+  ).all() as Record<string, unknown>[];
 
-  return (result.rows as Record<string, unknown>[]).map(toAgentRow);
+  return rows.map(toAgentRow);
 }

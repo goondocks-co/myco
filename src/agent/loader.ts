@@ -255,13 +255,13 @@ export function resolveEffectiveConfig(
  *
  * @param definitionsDir — path to the definitions directory.
  */
-export async function registerBuiltInAgentsAndTasks(definitionsDir: string): Promise<void> {
+export function registerBuiltInAgentsAndTasks(definitionsDir: string): void {
   const definition = loadAgentDefinition(definitionsDir);
   const tasks = loadAgentTasks(definitionsDir);
   const now = epochSeconds();
 
   // Upsert the built-in agent
-  await registerAgent({
+  registerAgent({
     id: definition.name,
     name: definition.displayName,
     model: definition.model,
@@ -275,7 +275,7 @@ export async function registerBuiltInAgentsAndTasks(definitionsDir: string): Pro
 
   // Upsert all built-in tasks
   for (const task of tasks) {
-    await upsertTask({
+    upsertTask({
       id: task.name,
       agent_id: definition.name,
       source: BUILT_IN_SOURCE,
@@ -297,10 +297,12 @@ export async function registerBuiltInAgentsAndTasks(definitionsDir: string): Pro
 
   // Remove built-in tasks that no longer have YAML definitions
   const validTaskIds = tasks.map(t => t.name);
-  const db = getDatabase();
-  await db.query(
-    `DELETE FROM agent_tasks
-     WHERE source = $1 AND agent_id = $2 AND id != ALL($3)`,
-    [BUILT_IN_SOURCE, definition.name, validTaskIds],
-  );
+  if (validTaskIds.length > 0) {
+    const db = getDatabase();
+    const placeholders = validTaskIds.map(() => '?').join(', ');
+    db.prepare(
+      `DELETE FROM agent_tasks
+       WHERE source = ? AND agent_id = ? AND id NOT IN (${placeholders})`,
+    ).run(BUILT_IN_SOURCE, definition.name, ...validTaskIds);
+  }
 }

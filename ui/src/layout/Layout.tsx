@@ -16,6 +16,7 @@ import {
   ChevronRight,
   MessageSquare,
   Bot,
+  Wrench,
   Search,
 } from 'lucide-react';
 import { useTheme } from '../providers/theme';
@@ -34,6 +35,7 @@ const NAV_ITEMS = [
   { to: '/mycelium', label: 'Mycelium', icon: Network },
   { to: '/agent', label: 'Agent', icon: Bot },
   { to: '/settings', label: 'Settings', icon: Settings },
+  { to: '/operations', label: 'Operations', icon: Wrench },
   { to: '/logs', label: 'Logs', icon: ScrollText },
 ] as const;
 

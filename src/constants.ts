@@ -13,9 +13,22 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
+// --- Time (primitives — must precede derived constants) ---
+/** Milliseconds per second. */
+export const MS_PER_SECOND = 1000;
+
 // --- Embedding ---
 /** Max characters of text sent to the embedding model. */
 export const EMBEDDING_INPUT_LIMIT = 8000;
+
+/** Embedding worker reconciliation interval (ms). */
+export const EMBEDDING_INTERVAL_MS = 30 * MS_PER_SECOND;
+
+/** Max rows per embedding worker cycle. */
+export const EMBEDDING_BATCH_SIZE = 10;
+
+/** Content hash algorithm for staleness detection. */
+export const CONTENT_HASH_ALGORITHM = 'sha256';
 
 // --- Truncation limits (display/preview) ---
 /** Max chars for a user prompt preview in event summaries. */
@@ -73,9 +86,6 @@ export const PROVIDER_DETECT_TIMEOUT_MS = 3000;
 // --- Time ---
 /** Milliseconds in one day. */
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-/** Milliseconds-to-seconds divisor for Unix epoch conversion. */
-const MS_PER_SECOND = 1000;
 
 /** Current Unix epoch in seconds. */
 export function epochSeconds(): number {
@@ -219,7 +229,7 @@ export const SUPERSESSION_MAX_TOKENS = 256;
 export const AGENT_CLUSTER_SIMILARITY = 0.75;
 
 // --- Search ---
-/** Default number of results returned by semanticSearch and fullTextSearch. */
+/** Default number of results returned by vector search and fullTextSearch. */
 export const SEARCH_RESULTS_DEFAULT_LIMIT = 20;
 /** Minimum cosine similarity score for semantic search results (0-1). */
 export const SEARCH_SIMILARITY_THRESHOLD = 0.3;

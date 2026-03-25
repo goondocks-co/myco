@@ -1,8 +1,8 @@
 /**
  * Digest extract CRUD query helpers.
  *
- * All functions obtain the PGlite instance internally via `getDatabase()`.
- * Queries use parameterized placeholders ($1, $2, ...) throughout.
+ * All functions obtain the SQLite instance internally via `getDatabase()`.
+ * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
 import { getDatabase } from '@myco/db/client.js';
@@ -48,7 +48,7 @@ const SELECT_COLUMNS = EXTRACT_COLUMNS.join(', ');
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Normalize a PGlite result row into a typed DigestExtractRow. */
+/** Normalize a SQLite result row into a typed DigestExtractRow. */
 function toDigestExtractRow(row: Record<string, unknown>): DigestExtractRow {
   return {
     id: row.id as number,
@@ -68,23 +68,28 @@ function toDigestExtractRow(row: Record<string, unknown>): DigestExtractRow {
  * Upsert a digest extract. Uses ON CONFLICT on (agent_id, tier).
  *
  * Creates or updates the extract for the given agent and token tier.
+ * Uses lastInsertRowid for SERIAL PK on insert, or falls back to
+ * SELECT for the conflict (update) case.
  */
-export async function upsertDigestExtract(
+export function upsertDigestExtract(
   data: DigestExtractUpsert,
-): Promise<DigestExtractRow> {
+): DigestExtractRow {
   const db = getDatabase();
 
-  const result = await db.query(
+  db.prepare(
     `INSERT INTO digest_extracts (agent_id, tier, content, generated_at)
-     VALUES ($1, $2, $3, $4)
+     VALUES (?, ?, ?, ?)
      ON CONFLICT (agent_id, tier) DO UPDATE SET
        content = EXCLUDED.content,
-       generated_at = EXCLUDED.generated_at
-     RETURNING ${SELECT_COLUMNS}`,
-    [data.agent_id, data.tier, data.content, data.generated_at],
-  );
+       generated_at = EXCLUDED.generated_at`,
+  ).run(data.agent_id, data.tier, data.content, data.generated_at);
 
-  return toDigestExtractRow(result.rows[0] as Record<string, unknown>);
+  // Always look up by composite unique key — works for both insert and update cases.
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM digest_extracts WHERE agent_id = ? AND tier = ?`,
+  ).get(data.agent_id, data.tier);
+
+  return toDigestExtractRow(row as Record<string, unknown>);
 }
 
 /**
@@ -92,37 +97,35 @@ export async function upsertDigestExtract(
  *
  * @returns the extract row, or null if not found.
  */
-export async function getDigestExtract(
+export function getDigestExtract(
   agentId: string,
   tier: number,
-): Promise<DigestExtractRow | null> {
+): DigestExtractRow | null {
   const db = getDatabase();
 
-  const result = await db.query(
+  const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM digest_extracts
-     WHERE agent_id = $1 AND tier = $2`,
-    [agentId, tier],
-  );
+     WHERE agent_id = ? AND tier = ?`,
+  ).get(agentId, tier) as Record<string, unknown> | undefined;
 
-  if (result.rows.length === 0) return null;
-  return toDigestExtractRow(result.rows[0] as Record<string, unknown>);
+  if (!row) return null;
+  return toDigestExtractRow(row);
 }
 
 /**
  * List all digest extracts for an agent, ordered by tier ASC.
  */
-export async function listDigestExtracts(
+export function listDigestExtracts(
   agentId: string,
-): Promise<DigestExtractRow[]> {
+): DigestExtractRow[] {
   const db = getDatabase();
 
-  const result = await db.query(
+  const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM digest_extracts
-     WHERE agent_id = $1
+     WHERE agent_id = ?
      ORDER BY tier ASC`,
-    [agentId],
-  );
+  ).all(agentId) as Record<string, unknown>[];
 
-  return (result.rows as Record<string, unknown>[]).map(toDigestExtractRow);
+  return rows.map(toDigestExtractRow);
 }

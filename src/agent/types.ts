@@ -157,6 +157,8 @@ export interface RunOptions {
   agentId?: string;
   task?: string;
   instruction?: string;
+  /** Embedding manager for immediate vector operations during agent tool calls. */
+  embeddingManager?: import('@myco/daemon/embedding/manager.js').EmbeddingManager;
 }
 
 /** Result of a single agent run. */
