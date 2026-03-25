@@ -27,7 +27,7 @@ import { insertTurn } from '@myco/db/queries/turns.js';
 import { searchSimilar, EMBEDDABLE_TABLES, type EmbeddableTable } from '@myco/db/queries/embeddings.js';
 import { insertEntity } from '@myco/db/queries/entities.js';
 import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
-import { createSporeLineage, autoLinkSporeToEntities, autoLinkEntityToSpores } from '@myco/db/queries/lineage.js';
+import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { upsertDigestExtract } from '@myco/db/queries/digest-extracts.js';
 
@@ -233,9 +233,8 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
         created_at: now,
       });
 
-      // Fire-and-forget: lineage edges + entity auto-linking
+      // Fire-and-forget: structural lineage edges (FROM_SESSION, EXTRACTED_FROM, DERIVED_FROM)
       try { await createSporeLineage(spore); } catch { /* lineage best-effort */ }
-      try { await autoLinkSporeToEntities({ ...spore, content: args.content }); } catch { /* auto-link best-effort */ }
 
       recordTurn('vault_create_spore', args);
       return textResult(spore);
@@ -264,9 +263,6 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
         first_seen: now,
         last_seen: now,
       });
-
-      // Fire-and-forget: auto-link entity to existing spores that mention it
-      try { await autoLinkEntityToSpores({ id, agent_id: agentId, name: args.name, created_at: now }); } catch { /* auto-link best-effort */ }
 
       recordTurn('vault_create_entity', args);
       return textResult(entity);

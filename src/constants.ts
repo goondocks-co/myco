@@ -128,9 +128,6 @@ export const EDGE_TYPE_EXTRACTED_FROM = 'EXTRACTED_FROM';
 export const EDGE_TYPE_DERIVED_FROM = 'DERIVED_FROM';
 /** Session contains this prompt batch. */
 export const EDGE_TYPE_HAS_BATCH = 'HAS_BATCH';
-/** Spore references an entity (auto-created by name matching). */
-export const EDGE_TYPE_REFERENCES = 'REFERENCES';
-
 // --- Query defaults ---
 /** Default row limit for query module list operations. */
 export const QUERY_DEFAULT_LIST_LIMIT = 100;
