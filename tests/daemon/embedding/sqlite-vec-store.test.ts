@@ -257,6 +257,48 @@ describe('SqliteVecVectorStore', () => {
       expect(top.metadata['model']).toBe('test-model');
       expect(top.metadata['provider']).toBe('test-provider');
     });
+
+    it('filters by model when filters.model is set', () => {
+      store.upsert('sessions', 'model-a', unitVector(3), testMeta({ model: 'alpha' }));
+      store.upsert('sessions', 'model-b', unitVector(4), testMeta({ model: 'beta' }));
+
+      const results = store.search(uniformVector(), {
+        namespace: 'sessions',
+        filters: { model: 'alpha' },
+      });
+      // Only model-a and the beforeEach entries with 'test-model' go through KNN,
+      // but the JOIN filter keeps only model='alpha' rows.
+      const models = results.map((r) => r.metadata['model']);
+      expect(models.every((m) => m === 'alpha')).toBe(true);
+      expect(results.some((r) => r.id === 'model-a')).toBe(true);
+    });
+
+    it('filters by provider when filters.provider is set', () => {
+      store.upsert('sessions', 'prov-x', unitVector(5), testMeta({ provider: 'ollama' }));
+      store.upsert('sessions', 'prov-y', unitVector(6), testMeta({ provider: 'openai' }));
+
+      const results = store.search(uniformVector(), {
+        namespace: 'sessions',
+        filters: { provider: 'ollama' },
+      });
+      const providers = results.map((r) => r.metadata['provider']);
+      expect(providers.every((p) => p === 'ollama')).toBe(true);
+      expect(results.some((r) => r.id === 'prov-x')).toBe(true);
+    });
+
+    it('silently ignores unrecognized filter keys', () => {
+      // 'bogus_key' is not in FILTERABLE_COLUMNS — should not cause an error
+      // and should not affect results (acts as if no filter was given)
+      const withBogus = store.search(unitVector(0), {
+        namespace: 'sessions',
+        filters: { bogus_key: 'whatever' },
+      });
+      const withoutFilter = store.search(unitVector(0), {
+        namespace: 'sessions',
+      });
+      // Same results since the unrecognized key is ignored
+      expect(withBogus.map((r) => r.id)).toEqual(withoutFilter.map((r) => r.id));
+    });
   });
 
   // -------------------------------------------------------------------------

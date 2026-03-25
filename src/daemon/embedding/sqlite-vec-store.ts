@@ -30,6 +30,18 @@ const DEFAULT_SEARCH_LIMIT = 10;
 /** Default similarity threshold — results below this are excluded. */
 const DEFAULT_SIMILARITY_THRESHOLD = 0;
 
+/** Fallback model name when metadata omits it. */
+const DEFAULT_META_MODEL = 'unknown';
+
+/** Fallback provider name when metadata omits it. */
+const DEFAULT_META_PROVIDER = 'unknown';
+
+/** Fallback content hash when metadata omits it. */
+const DEFAULT_META_CONTENT_HASH = '';
+
+/** Metadata columns safe to filter on in search queries (prevents SQL injection via key names). */
+const FILTERABLE_COLUMNS = new Set(['model', 'provider', 'namespace']);
+
 /**
  * Convert cosine *distance* (0 = identical, 2 = opposite) to a similarity
  * score in [−1, 1]. Cosine distance = 1 − cosine_similarity.
@@ -165,10 +177,10 @@ export class SqliteVecVectorStore implements VectorStore {
       this.upsertMetaStmt.run({
         namespace: ns,
         record_id: id,
-        model: (metadata?.['model'] as string) ?? 'unknown',
-        provider: (metadata?.['provider'] as string) ?? 'unknown',
+        model: (metadata?.['model'] as string) ?? DEFAULT_META_MODEL,
+        provider: (metadata?.['provider'] as string) ?? DEFAULT_META_PROVIDER,
         dimensions: embedding.length,
-        content_hash: (metadata?.['content_hash'] as string) ?? '',
+        content_hash: (metadata?.['content_hash'] as string) ?? DEFAULT_META_CONTENT_HASH,
         embedded_at: (metadata?.['embedded_at'] as number) ?? Date.now(),
         domain_metadata: metadata?.['domain_metadata']
           ? JSON.stringify(metadata['domain_metadata'])
@@ -220,6 +232,14 @@ export class SqliteVecVectorStore implements VectorStore {
     return { cleared };
   }
 
+  /**
+   * KNN similarity search across one or all namespaces.
+   *
+   * Threshold filtering is applied **post-KNN**: sqlite-vec returns the top-k
+   * nearest neighbors first, then results below `threshold` are discarded.
+   * This means fewer than `limit` results may be returned when a threshold is set.
+   * This is standard KNN behavior, not a bug.
+   */
   search(
     query: number[],
     options?: {
@@ -386,9 +406,6 @@ export class SqliteVecVectorStore implements VectorStore {
   ): { sql: string; params: unknown[] } {
     const conditions: string[] = [];
     const params: unknown[] = [];
-
-    /** Metadata columns safe to filter on (prevents SQL injection via key names). */
-    const FILTERABLE_COLUMNS = new Set(['model', 'provider', 'namespace']);
 
     for (const [key, value] of Object.entries(filters)) {
       if (FILTERABLE_COLUMNS.has(key)) {
