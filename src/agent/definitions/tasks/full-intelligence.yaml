@@ -97,18 +97,21 @@ phases:
       Update session titles and summaries for sessions touched during extraction.
 
       1. Call `vault_sessions` to check current title/summary
-      2. If missing or outdated, call `vault_update_session` with BOTH title
-         and summary
-      3. Title: under 80 chars, reflects full session scope
-      4. Summary: 2-4 sentences, key work done + outcomes
+      2. For sessions needing updates, call `vault_search` with the session_id
+         filter to find spores from that session — use them to understand
+         the full scope of work done
+      3. Call `vault_update_session` with BOTH title and summary
+      4. Title: under 80 chars, reflects full session scope
+      5. Summary: 2-4 sentences, key work done + outcomes
 
       Report via `vault_report` with action "summary" for each update.
       If no updates needed, report action "skip" with reason.
     tools:
       - vault_sessions
+      - vault_search
       - vault_update_session
       - vault_report
-    maxTurns: 8
+    maxTurns: 10
     required: false
 
   - name: consolidate
@@ -191,27 +194,41 @@ phases:
   - name: digest
     prompt: |
       Regenerate digest extracts at all five tiers. The vault context
-      depends on these.
+      injected into every session depends on these — they must be
+      comprehensive and accurate.
 
-      Call `vault_write_digest` for EACH of these tiers:
-      1. Tier 1500 — Executive briefing (most critical knowledge)
-      2. Tier 3000 — Team standup (decisions, plans, conventions)
-      3. Tier 5000 — Deep onboarding (trade-offs, patterns)
-      4. Tier 7500 — Comprehensive coverage
-      5. Tier 10000 — Full institutional knowledge
+      ## Gather knowledge (budget: 5 turns)
 
-      Read vault_spores and vault_sessions first to understand the full
-      corpus, then write each tier as a self-contained extract.
-      Prioritize: recent insights > active decisions > unresolved gotchas
-      > architectural patterns.
+      Use `vault_search` to query specific themes. Suggested queries:
+      - "architecture decisions and trade-offs"
+      - "bugs gotchas and workarounds"
+      - "key components and how they interact"
+      - "active work and plans"
+      Also call `vault_spores` and `vault_sessions` for a broad overview.
 
-      You must call `vault_write_digest` at least 5 times.
+      ## Write extracts (budget: 10 turns)
+
+      Call `vault_write_digest` for EACH of these five tiers:
+      1. Tier 1500 — Executive briefing: what is this project, what's
+         active, what to avoid. Most critical knowledge only.
+      2. Tier 3000 — Team standup: decisions, plans, conventions.
+         Enough to start contributing.
+      3. Tier 5000 — Deep onboarding: trade-offs, patterns, team dynamics.
+      4. Tier 7500 — Comprehensive: thread history, design tensions.
+      5. Tier 10000 — Full institutional knowledge: everything worth knowing.
+
+      Each tier is self-contained (not incremental). Prioritize:
+      recent insights > active decisions > unresolved gotchas >
+      architectural patterns > historical context.
+
+      You MUST call `vault_write_digest` exactly 5 times.
     tools:
       - vault_spores
       - vault_sessions
+      - vault_search
       - vault_write_digest
       - vault_report
-    maxTurns: 18
+    maxTurns: 20
     required: true
 
   - name: report

@@ -159,10 +159,11 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
 
   const vaultSearch = tool(
     'vault_search',
-    'Semantic similarity search across vault content. Returns ranked results by cosine similarity. If no embeddings are available, returns an empty result set — use vault_spores or vault_sessions as a fallback.',
+    'Semantic similarity search across vault content. Returns ranked results by cosine similarity. Supports filtering by session_id (for spores table) to scope results. If no embeddings are available, returns an empty result set — use vault_spores or vault_sessions as a fallback.',
     {
       query: z.string().describe('Search query text to embed and compare'),
-      table: z.enum(EMBEDDABLE_TABLES).optional().describe('Table to search'),
+      table: z.enum(EMBEDDABLE_TABLES).optional().describe('Table to search (default: spores)'),
+      session_id: z.string().optional().describe('Filter results to a specific session (spores table only)'),
       limit: z.number().optional().describe('Maximum number of results to return'),
     },
     async (args) => {
@@ -175,8 +176,12 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
         }
 
         const table = args.table ?? DEFAULT_SEARCH_TABLE;
+        const filters: Record<string, unknown> = {};
+        if (args.session_id) filters.session_id = args.session_id;
+
         const results = await searchSimilar(table, embedding, {
           limit: args.limit ?? DEFAULT_SEARCH_LIMIT,
+          filters: Object.keys(filters).length > 0 ? filters : undefined,
         });
         return textResult({ results });
       } catch {
