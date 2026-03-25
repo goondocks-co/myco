@@ -40,8 +40,8 @@ export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps)
   const { mutate: triggerRun, isPending, error } = useTriggerRun();
 
   // Pre-select the default task once tasks load
-  const availableTasks = tasksData?.tasks ?? [];
-  const defaultTask = availableTasks.find(t => t.isDefault);
+  const availableTasks: TaskRow[] = tasksData?.tasks ?? [];
+  const defaultTask = availableTasks.find((t: TaskRow) => t.isDefault);
   const effectiveSelection = selectedTask ?? defaultTask?.name ?? availableTasks[0]?.name ?? '';
 
   function handleRun() {

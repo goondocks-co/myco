@@ -1,19 +1,21 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { usePowerQuery } from './use-power-query';
 import { fetchJson, postJson, putJson, deleteJson } from '../lib/api';
+import { POLL_INTERVALS } from '../lib/constants';
 
 /* ---------- Constants ---------- */
 
-/** Cache TTL for agent run list (10 seconds — runs are polled while one is active). */
-const RUNS_STALE_TIME = 10_000;
+/** Poll interval for agent run list (matches POLL_INTERVALS.STATS). */
+const RUNS_POLL_INTERVAL = POLL_INTERVALS.STATS;
 
-/** Cache TTL for a single run detail (10 seconds). */
-const RUN_DETAIL_STALE_TIME = 10_000;
+/** Poll interval for a single run detail (faster — watching active run). */
+const RUN_DETAIL_POLL_INTERVAL = POLL_INTERVALS.HEALTH;
 
-/** Cache TTL for run reports (30 seconds — reports don't change after a run ends). */
-const REPORTS_STALE_TIME = 30_000;
+/** Poll interval for run reports (moderate — updates during execution). */
+const REPORTS_POLL_INTERVAL = POLL_INTERVALS.STATS;
 
-/** Cache TTL for audit trail turns (30 seconds). */
-const TURNS_STALE_TIME = 30_000;
+/** Poll interval for audit trail turns. */
+const TURNS_POLL_INTERVAL = POLL_INTERVALS.STATS;
 
 /** Cache TTL for available task definitions (60 seconds — rarely changes). */
 const TASKS_STALE_TIME = 60_000;
@@ -145,41 +147,45 @@ export interface CopyTaskPayload {
 export function useAgentRuns(options?: { limit?: number }) {
   const limit = options?.limit ?? DEFAULT_RUNS_LIMIT;
 
-  return useQuery<RunsResponse>({
+  return usePowerQuery<RunsResponse>({
     queryKey: ['agent-runs', limit],
     queryFn: ({ signal }) =>
       fetchJson<RunsResponse>(`/agent/runs?limit=${limit}`, { signal }),
-    staleTime: RUNS_STALE_TIME,
+    pollCategory: 'standard',
+    refetchInterval: RUNS_POLL_INTERVAL,
   });
 }
 
 export function useAgentRun(id: string | undefined) {
-  return useQuery<RunDetailResponse>({
+  return usePowerQuery<RunDetailResponse>({
     queryKey: ['agent-run', id],
     queryFn: ({ signal }) =>
       fetchJson<RunDetailResponse>(`/agent/runs/${id}`, { signal }),
     enabled: id !== undefined,
-    staleTime: RUN_DETAIL_STALE_TIME,
+    pollCategory: 'realtime',
+    refetchInterval: RUN_DETAIL_POLL_INTERVAL,
   });
 }
 
 export function useAgentReports(runId: string | undefined) {
-  return useQuery<ReportsResponse>({
+  return usePowerQuery<ReportsResponse>({
     queryKey: ['agent-reports', runId],
     queryFn: ({ signal }) =>
       fetchJson<ReportsResponse>(`/agent/runs/${runId}/reports`, { signal }),
     enabled: runId !== undefined,
-    staleTime: REPORTS_STALE_TIME,
+    pollCategory: 'standard',
+    refetchInterval: REPORTS_POLL_INTERVAL,
   });
 }
 
 export function useAgentTurns(runId: string | undefined) {
-  return useQuery<TurnRow[]>({
+  return usePowerQuery<TurnRow[]>({
     queryKey: ['agent-turns', runId],
     queryFn: ({ signal }) =>
       fetchJson<TurnRow[]>(`/agent/runs/${runId}/turns`, { signal }),
     enabled: runId !== undefined,
-    staleTime: TURNS_STALE_TIME,
+    pollCategory: 'standard',
+    refetchInterval: TURNS_POLL_INTERVAL,
   });
 }
 

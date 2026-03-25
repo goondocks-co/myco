@@ -114,7 +114,7 @@ export function TaskDetail({ taskId, onBack, onNavigate }: TaskDetailProps) {
   }
 
   const task = data.task;
-  const phases = task.phases ?? [];
+  const phases: PhaseDefinition[] = task.phases ?? [];
   const execution = getExecution(task);
 
   return (
