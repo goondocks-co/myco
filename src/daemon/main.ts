@@ -16,7 +16,7 @@ import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-m
 import { createPerProjectAdapter, extensionForMimeType, type TranscriptTurn } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findPackageRoot } from '../utils/find-package-root.js';
-import { EventBuffer } from '../capture/buffer.js';
+import { EventBuffer, listBufferSessionIds, cleanStaleBuffers } from '../capture/buffer.js';
 import { PlanWatcher } from './watcher.js';
 import type { RegisteredSession } from './lifecycle.js';
 import { handleGetConfig, handlePutConfig } from './api/config.js';
@@ -106,6 +106,21 @@ const TOOL_OUTPUT_STORE_LIMIT = 2000;
 
 /** Max chars for deriving a title from the first user prompt. */
 const TITLE_PREVIEW_CHARS = 80;
+
+/** Prefixes that identify system-injected messages (not real user prompts). */
+const SYSTEM_MESSAGE_PREFIXES = [
+  '<task-notification>',
+  '<system-reminder>',
+] as const;
+
+/** Returns true if the prompt is a system-injected message, not a real user prompt. */
+function isSystemMessage(prompt: string): boolean {
+  const trimmed = prompt.trimStart();
+  return SYSTEM_MESSAGE_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
+}
+
+/** Event types replayed during buffer reconciliation. */
+const REPLAYABLE_EVENT_TYPES: ReadonlySet<string> = new Set(['user_prompt', 'tool_use', 'tool_failure']);
 
 // ---------------------------------------------------------------------------
 // Event handling helpers (exported for testing)
@@ -458,27 +473,142 @@ export async function main(): Promise<void> {
 
   let activeStopProcessing: Promise<void> | null = null;
 
+  // Cache derived titles per session — the title comes from the first prompt
+  // and never changes, so we only need to query the DB once.
+  const sessionTitleCache = new Map<string, string>();
+
   const bufferDir = path.join(vaultDir, 'buffer');
   const sessionBuffers = new Map<string, EventBuffer>();
 
   // Clean up stale buffer files (>24h) on startup
-  let startupCleanedCount = 0;
-  if (fs.existsSync(bufferDir)) {
-    const cutoff = Date.now() - STALE_BUFFER_MAX_AGE_MS;
-    for (const file of fs.readdirSync(bufferDir)) {
-      const filePath = path.join(bufferDir, file);
-      const stat = fs.statSync(filePath);
-      if (stat.mtimeMs < cutoff) {
-        fs.unlinkSync(filePath);
-        startupCleanedCount++;
-        logger.debug('daemon', 'Cleaned stale buffer', { file });
-      }
+  const startupCleanedCount = cleanStaleBuffers(bufferDir, STALE_BUFFER_MAX_AGE_MS);
+  if (startupCleanedCount > 0) {
+    logger.info('daemon', 'Buffer cleanup complete', { stale_removed: startupCleanedCount });
+  }
+
+  // Reconcile all remaining buffer files on startup — recover events from
+  // sessions that had activity while the daemon was down.
+  for (const sessionId of listBufferSessionIds(bufferDir)) {
+    try {
+      reconcileSession(sessionId);
+    } catch (err) {
+      logger.warn('daemon', 'Startup reconciliation failed', { session_id: sessionId, error: String(err) });
     }
   }
-  if (startupCleanedCount > 0) {
-    logger.info('daemon', 'Buffer cleanup complete', {
-      stale_removed: startupCleanedCount,
-    });
+
+  /**
+   * Replay a single buffer event into the DB via the appropriate handler.
+   *
+   * Shared between reconcileSession (buffer replay) and the live /events
+   * route to eliminate dispatch duplication.
+   *
+   * @returns 'prompt' | 'activity' | null indicating what was created.
+   */
+  function replayEvent(sessionId: string, event: Record<string, unknown>): 'prompt' | 'activity' | null {
+    if (event.type === 'user_prompt') {
+      if (isSystemMessage(String(event.prompt ?? ''))) return null;
+      handleUserPrompt(sessionId, String(event.prompt ?? ''));
+      return 'prompt';
+    }
+    if (event.type === 'tool_use') {
+      handleToolUse(
+        sessionId,
+        String(event.tool_name ?? ''),
+        event.tool_input,
+        typeof event.output_preview === 'string' ? event.output_preview : undefined,
+      );
+      return 'activity';
+    }
+    if (event.type === 'tool_failure') {
+      handleToolFailure(
+        sessionId,
+        String(event.tool_name ?? ''),
+        event.tool_input,
+        typeof event.error === 'string' ? event.error : undefined,
+        !!event.is_interrupt,
+      );
+      return 'activity';
+    }
+    return null;
+  }
+
+  // Track sessions already reconciled this daemon lifetime to avoid
+  // redundant file reads (startup scan + register + event can all fire).
+  const reconciledSessions = new Set<string>();
+
+  /**
+   * Reconcile buffer events against DB state for a session.
+   *
+   * The buffer is the authoritative event log. The DB (prompt_batches +
+   * activities) is a derived view. After a daemon restart, the DB may be
+   * missing events the daemon didn't process while it was down.
+   *
+   * Activities belong to batches — they're linked via the latest open batch
+   * at insertion time. So we can't reconcile them separately. Instead, we
+   * find where the DB diverges from the buffer (by prompt count) and replay
+   * the FULL event stream from that point: prompts open batches, tool events
+   * attach to the open batch — exactly the normal flow.
+   */
+  function reconcileSession(sessionId: string): void {
+    if (reconciledSessions.has(sessionId)) return;
+    reconciledSessions.add(sessionId);
+
+    // Read buffer file directly — avoid EventBuffer constructor which reads
+    // the file to compute a count we don't need.
+    const bufferPath = path.join(bufferDir, `${sessionId}.jsonl`);
+    if (!fs.existsSync(bufferPath)) return;
+    const content = fs.readFileSync(bufferPath, 'utf-8').trim();
+    if (!content) return;
+
+    const allEvents: Array<Record<string, unknown>> = content.split('\n').map((line) => JSON.parse(line));
+
+    // Find the divergence point: how many real prompts does the DB have?
+    const existingBatchCount = listBatchesBySession(sessionId).length;
+
+    let promptsSeen = 0;
+    let replayStartIndex = -1;
+
+    for (let i = 0; i < allEvents.length; i++) {
+      const e = allEvents[i];
+      if (e.type === 'user_prompt' && !isSystemMessage(String(e.prompt ?? ''))) {
+        promptsSeen++;
+        if (promptsSeen === existingBatchCount + 1) {
+          replayStartIndex = i;
+          break;
+        }
+      }
+    }
+
+    if (replayStartIndex === -1) return;
+
+    // Replay full event stream from the divergence point
+    const eventsToReplay = allEvents.slice(replayStartIndex).filter(
+      (e) => REPLAYABLE_EVENT_TYPES.has(String(e.type)),
+    );
+
+    let promptsRecovered = 0;
+    let activitiesRecovered = 0;
+
+    for (const event of eventsToReplay) {
+      try {
+        const result = replayEvent(sessionId, event);
+        if (result === 'prompt') promptsRecovered++;
+        else if (result === 'activity') activitiesRecovered++;
+      } catch (err) {
+        logger.warn('lifecycle', 'Reconciliation: failed to replay event', {
+          type: String(event.type),
+          error: String(err),
+        });
+      }
+    }
+
+    if (promptsRecovered > 0 || activitiesRecovered > 0) {
+      logger.info('lifecycle', 'Buffer reconciliation complete', {
+        session_id: sessionId,
+        prompts_recovered: promptsRecovered,
+        activities_recovered: activitiesRecovered,
+      });
+    }
   }
 
   // Route body schemas
@@ -535,6 +665,9 @@ export async function main(): Promise<void> {
     // Clear ended_at if session was previously completed (reload scenario)
     updateSession(session_id, { ended_at: null, status: 'active' });
 
+    // Reconcile buffer against DB — recover prompts lost if daemon was down mid-session.
+    reconcileSession(session_id);
+
     logger.info('lifecycle', 'Session registered', { session_id, branch, started_at: started_at ?? null });
     return { body: { ok: true, sessions: registry.sessions } };
   });
@@ -542,30 +675,17 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/sessions/unregister', async (req) => {
     const { session_id } = UnregisterBody.parse(req.body);
     registry.unregister(session_id);
-    // Note: we do NOT delete the buffer FILE for THIS session. Session reload
-    // (SessionEnd → SessionStart) reuses the same session_id, and deleting
-    // would wipe all prior events.
-    // We DO opportunistically clean stale buffers for OTHER sessions (>24h).
-    try {
-      const cutoff = Date.now() - STALE_BUFFER_MAX_AGE_MS;
-      for (const file of fs.readdirSync(bufferDir)) {
-        if (!file.endsWith('.jsonl')) continue;
-        const bufferSessionId = file.replace('.jsonl', '');
-        if (bufferSessionId === session_id) continue; // skip current session
-        const filePath = path.join(bufferDir, file);
-        const stat = fs.statSync(filePath);
-        if (stat.mtimeMs < cutoff) {
-          fs.unlinkSync(filePath);
-          logger.debug('daemon', 'Cleaned stale buffer', { file });
-        }
-      }
-    } catch { /* buffer dir may not exist */ }
+    // Opportunistically clean stale buffers for OTHER sessions (>24h).
+    // We do NOT delete THIS session's buffer — session reload reuses the same ID.
+    cleanStaleBuffers(bufferDir, STALE_BUFFER_MAX_AGE_MS, session_id);
     // Close the session in SQLite — this is the authoritative end-of-session.
     // The Stop hook fires per-turn and does NOT close the session.
     closeSession(session_id, epochSeconds());
 
     // Prune in-memory state
     sessionBuffers.delete(session_id);
+    sessionTitleCache.delete(session_id);
+    reconciledSessions.delete(session_id);
     server.updateDaemonJsonSessions(registry.sessions);
     logger.info('lifecycle', 'Session unregistered', { session_id });
     return { body: { ok: true, sessions: registry.sessions } };
@@ -594,6 +714,9 @@ export async function main(): Promise<void> {
         started_at: startedEpoch,
         created_at: now,
       });
+
+      // Reconcile buffer against DB — recover any prompts lost during downtime.
+      reconcileSession(event.session_id);
     }
 
     // Persist to disk so events survive daemon restarts
@@ -605,33 +728,43 @@ export async function main(): Promise<void> {
     // --- Prompt batch tracking ---
     if (event.type === 'user_prompt') {
       const promptText = String(event.prompt ?? '');
-      logger.info('hooks', 'User prompt received', {
-        session_id: event.session_id,
-        prompt_preview: promptText.slice(0, LOG_PROMPT_PREVIEW_CHARS),
-        prompt_length: promptText.length,
-      });
-      try {
-        const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined);
-        logger.debug('capture', 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });
 
-        // Batch-threshold summary trigger
-        const batchCount = promptNumber;
-        const summaryInterval = config.agent.summary_batch_interval;
-        if (summaryInterval > 0 && batchCount > 0 && batchCount % summaryInterval === 0) {
-          try {
-            const running = getRunningRun(DEFAULT_AGENT_ID);
-            if (!running) {
-              const { runAgent } = await import('../agent/executor.js');
-              runAgent(vaultDir, {
-                task: 'title-summary',
-                instruction: `Process session ${event.session_id} only`,
-                embeddingManager,
-              }).catch(err => logger.warn('agent', 'Batch-threshold summary failed', { error: String(err) }));
-            }
-          } catch { /* agent unavailable */ }
+      // Skip system-injected messages (task notifications, system reminders) —
+      // they trigger UserPromptSubmit but are not real user prompts.
+      if (isSystemMessage(promptText)) {
+        logger.debug('hooks', 'Skipped system-injected message', {
+          session_id: event.session_id,
+          prefix: promptText.trimStart().slice(0, LOG_PROMPT_PREVIEW_CHARS),
+        });
+      } else {
+        logger.info('hooks', 'User prompt received', {
+          session_id: event.session_id,
+          prompt_preview: promptText.slice(0, LOG_PROMPT_PREVIEW_CHARS),
+          prompt_length: promptText.length,
+        });
+        try {
+          const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined);
+          logger.debug('capture', 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });
+
+          // Batch-threshold summary trigger
+          const batchCount = promptNumber;
+          const summaryInterval = config.agent.summary_batch_interval;
+          if (summaryInterval > 0 && batchCount > 0 && batchCount % summaryInterval === 0) {
+            try {
+              const running = getRunningRun(DEFAULT_AGENT_ID);
+              if (!running) {
+                const { runAgent } = await import('../agent/executor.js');
+                runAgent(vaultDir, {
+                  task: 'title-summary',
+                  instruction: `Process session ${event.session_id} only`,
+                  embeddingManager,
+                }).catch(err => logger.warn('agent', 'Batch-threshold summary failed', { error: String(err) }));
+              }
+            } catch { /* agent unavailable */ }
+          }
+        } catch (err) {
+          logger.warn('capture', 'Failed to open batch', { session_id: event.session_id, error: (err as Error).message });
         }
-      } catch (err) {
-        logger.warn('capture', 'Failed to open batch', { session_id: event.session_id, error: (err as Error).message });
       }
     }
 
@@ -909,13 +1042,16 @@ export async function main(): Promise<void> {
     closeOpenBatches(sessionId, epochSeconds());
 
     // Derive a simple title from the first user prompt captured via hooks.
-    // Hook data (batches) is authoritative — transcript is for enhanced capture only.
-    let title: string | null = null;
-    const firstBatch = listBatchesBySession(sessionId, { limit: 1 })[0];
-    if (firstBatch?.user_prompt) {
-      title = firstBatch.user_prompt.slice(0, TITLE_PREVIEW_CHARS);
-      if (firstBatch.user_prompt.length > TITLE_PREVIEW_CHARS) {
-        title += '...';
+    // Cached — the first prompt never changes, so skip the DB query after the first hit.
+    let title = sessionTitleCache.get(sessionId) ?? null;
+    if (!title) {
+      const firstBatch = listBatchesBySession(sessionId, { limit: 1 })[0];
+      if (firstBatch?.user_prompt) {
+        title = firstBatch.user_prompt.slice(0, TITLE_PREVIEW_CHARS);
+        if (firstBatch.user_prompt.length > TITLE_PREVIEW_CHARS) {
+          title += '...';
+        }
+        sessionTitleCache.set(sessionId, title);
       }
     }
 
@@ -955,16 +1091,15 @@ export async function main(): Promise<void> {
       }).catch(err => logger.warn('agent', 'Title-summary task failed', { error: String(err) }));
     } catch { /* agent unavailable */ }
 
-    // Write images to attachments (keep this — images are binary, not in SQLite)
-    // Link images to the latest batch directly (primary capture) rather than
-    // relying on positional turn-to-batch mapping (which breaks when the parser
-    // drops empty-text turns).
+    // Write images to attachments (keep this — images are binary, not in SQLite).
+    // Only process the current turn onward — prior turns were handled by earlier Stops.
     const attachmentsDir = path.join(vaultDir, 'attachments');
-    const hasImages = allTurns.some((t) => t.images?.length);
-    if (hasImages) {
+    const attachmentStartIndex = latestBatch?.prompt_number ? latestBatch.prompt_number - 1 : 0;
+    const hasNewImages = allTurns.slice(attachmentStartIndex).some((t) => t.images?.length);
+    if (hasNewImages) {
       fs.mkdirSync(attachmentsDir, { recursive: true });
     }
-    for (let i = 0; i < allTurns.length; i++) {
+    for (let i = attachmentStartIndex; i < allTurns.length; i++) {
       const turn = allTurns[i];
       if (!turn.images?.length) continue;
       const promptNumber = i + 1;

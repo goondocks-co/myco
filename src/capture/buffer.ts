@@ -68,6 +68,48 @@ export class EventBuffer {
 }
 
 /**
+ * List all session IDs that have buffer files in the given directory.
+ * Returns an empty array if the directory doesn't exist.
+ */
+export function listBufferSessionIds(bufferDir: string): string[] {
+  try {
+    return fs.readdirSync(bufferDir)
+      .filter((f) => f.endsWith('.jsonl'))
+      .map((f) => f.replace('.jsonl', ''));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Remove buffer files older than `maxAgeMs`.
+ *
+ * @param excludeSessionId - skip this session (e.g., the currently active one)
+ * @returns count of files removed
+ */
+export function cleanStaleBuffers(
+  bufferDir: string,
+  maxAgeMs: number,
+  excludeSessionId?: string,
+): number {
+  let removed = 0;
+  try {
+    const cutoff = Date.now() - maxAgeMs;
+    for (const file of fs.readdirSync(bufferDir)) {
+      if (!file.endsWith('.jsonl')) continue;
+      if (excludeSessionId && file === `${excludeSessionId}.jsonl`) continue;
+      const filePath = path.join(bufferDir, file);
+      const stat = fs.statSync(filePath);
+      if (stat.mtimeMs < cutoff) {
+        fs.unlinkSync(filePath);
+        removed++;
+      }
+    }
+  } catch { /* buffer dir may not exist */ }
+  return removed;
+}
+
+/**
  * Find the most recently active session by buffer file mtime.
  * The UserPromptSubmit hook appends to the session's buffer on every prompt,
  * so the most recently modified buffer is the calling session.
