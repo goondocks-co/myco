@@ -55,7 +55,7 @@ import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabaseForVault, closeDatabase, getDatabase } from '../db/client.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession } from '../db/queries/sessions.js';
-import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, closeOpenBatches, insertBatchStateless, getLatestBatch } from '../db/queries/batches.js';
+import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary } from '../db/queries/batches.js';
 import { insertActivityWithBatch } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
 import { listRuns, getRun, getRunningRun } from '../db/queries/runs.js';
@@ -86,9 +86,6 @@ const SECONDS_TO_MS = 1000;
 
 /** Default limit for listing agent runs in the API. */
 const AGENT_RUNS_DEFAULT_LIMIT = 50;
-
-/** Prompt count tracking key prefix for in-memory session state. */
-const INITIAL_PROMPT_NUMBER = 1;
 
 /** Max chars of tool input stored in the activity row. */
 const TOOL_INPUT_STORE_LIMIT = 4000;
@@ -128,7 +125,8 @@ export async function handleUserPrompt(
     created_at: now,
   });
 
-  const promptNumber = batch.prompt_number ?? INITIAL_PROMPT_NUMBER;
+  // insertBatchStateless guarantees non-null prompt_number via COALESCE subquery
+  const promptNumber = batch.prompt_number!;
 
   // Create HAS_BATCH lineage edge (fire-and-forget)
   createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now).catch(() => { /* lineage best-effort */ });
@@ -169,7 +167,7 @@ export async function handleToolUse(
 
   // Increment batch activity count if linked to a batch
   if (activity.prompt_batch_id !== null) {
-    incrementActivityCount(activity.prompt_batch_id).catch(() => { /* best-effort */ });
+    await incrementActivityCount(activity.prompt_batch_id);
   }
   // Session-level tool_count is updated at stop time from transcript data.
 }
@@ -219,7 +217,7 @@ export async function handleToolFailure(
   });
 
   if (activity.prompt_batch_id !== null) {
-    incrementActivityCount(activity.prompt_batch_id).catch(() => {});
+    await incrementActivityCount(activity.prompt_batch_id);
   }
 }
 
@@ -873,14 +871,10 @@ export async function main(): Promise<void> {
     const latestBatch = await getLatestBatch(sessionId);
 
     // Primary capture: put last_assistant_message directly on the latest batch.
-    // This is reliable — no positional mapping needed. The hook gives us the response.
+    // No positional mapping needed — the hook gives us the response directly.
     if (lastAssistantMessage && latestBatch && !latestBatch.response_summary) {
-      const { getDatabase } = await import('../db/client.js');
-      const db = getDatabase();
-      await db.query(
-        `UPDATE prompt_batches SET response_summary = $1 WHERE id = $2 AND response_summary IS NULL`,
-        [lastAssistantMessage, latestBatch.id],
-      ).catch(err => logger.warn('processor', 'Failed to set response_summary on latest batch', { error: String(err) }));
+      await setResponseSummary(latestBatch.id, lastAssistantMessage)
+        .catch(err => logger.warn('processor', 'Failed to set response_summary on latest batch', { error: String(err) }));
     }
 
     await handleSessionStop(sessionId);
@@ -954,8 +948,8 @@ export async function main(): Promise<void> {
         const sessionShort = sessionId.slice(-6);
         const filename = `${sessionShort}-t${promptNumber}-${j + 1}.${ext}`;
         const filePath = path.join(attachmentsDir, filename);
-        if (!fs.existsSync(filePath)) {
-          fs.writeFileSync(filePath, Buffer.from(img.data, 'base64'));
+        try {
+          fs.writeFileSync(filePath, Buffer.from(img.data, 'base64'), { flag: 'wx' });
           logger.debug('processor', 'Image saved', { filename, turn: promptNumber });
           batchIdPromise.then(batchId => {
             insertAttachment({
@@ -967,6 +961,8 @@ export async function main(): Promise<void> {
               created_at: epochSeconds(),
             }).catch(err => logger.warn('processor', 'Failed to record attachment', { error: String(err) }));
           });
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
         }
       }
     }

@@ -395,6 +395,22 @@ export async function closeOpenBatches(
 }
 
 /**
+ * Set response_summary on a batch if it doesn't already have one.
+ *
+ * Idempotent — only updates NULL response_summary.
+ */
+export async function setResponseSummary(
+  batchId: number,
+  summary: string,
+): Promise<void> {
+  const db = getDatabase();
+  await db.query(
+    `UPDATE prompt_batches SET response_summary = $1 WHERE id = $2 AND response_summary IS NULL`,
+    [summary, batchId],
+  );
+}
+
+/**
  * Get the most recent batch for a session (by id DESC), regardless of status.
  *
  * Used by processStopEvent to attach the AI response and images to the
