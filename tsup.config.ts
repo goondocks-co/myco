@@ -31,6 +31,7 @@ export default defineConfig({
   },
   external: [
     'better-sqlite3',
+    'sqlite-vec',
     '@anthropic-ai/claude-agent-sdk',
   ],
   // Do not generate .d.ts — this is a plugin, not a library
