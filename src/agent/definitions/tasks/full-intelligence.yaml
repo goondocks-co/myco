@@ -138,27 +138,54 @@ phases:
 
   - name: graph
     prompt: |
-      Create entities and semantic edges for the knowledge graph.
+      Build the knowledge graph: create entities, then link spores to them.
 
-      1. Call `vault_spores` with status "active" — review the full set
-      2. For components/concepts/people mentioned in 3+ spores from 2+ sessions:
-         Call `vault_create_entity` with type: component | concept | person
-      3. For each entity, create semantic edges via `vault_create_edge`:
-         - REFERENCES (spore→entity): link spores that discuss this entity
-         - DEPENDS_ON (entity→entity): architectural dependencies
-         - AFFECTS (spore→entity): observations that impact components
-         - Always include source_type and target_type
-      4. Do NOT create lineage edges (FROM_SESSION, EXTRACTED_FROM, etc.)
+      The graph has two layers:
+      - Lineage (automatic): spore→session, spore→batch — already done
+      - Semantic (your job): spore→entity, entity→entity — you create these
 
-      Call `vault_report` with action "graph" reporting what you created.
-      If truly no entities qualify, report action "graph" with details
-      explaining why.
+      ## Step 1: Review spores and existing entities (2 turns)
+
+      1. Call `vault_spores` with status "active" to see current spores
+      2. Call `vault_search` with "architecture components" to understand
+         the landscape of topics
+
+      ## Step 2: Create entities (budget: 6 turns)
+
+      For components/concepts/people that appear across multiple spores:
+      - Call `vault_create_entity` with type: component | concept | person
+      - Focus on entities that help understand the system architecture
+      - Prefer fewer well-defined entities over many vague ones
+
+      ## Step 3: Link spores to entities (budget: 12 turns) — CRITICAL
+
+      For EACH entity (newly created AND existing unlinked ones):
+      1. Call `vault_search` with the entity name to find related spores
+      2. For each relevant search result, call `vault_create_edge`:
+         - type: REFERENCES
+         - source_id: the spore ID, source_type: spore
+         - target_id: the entity ID, target_type: entity
+      3. Entities without edges are invisible — always link after creating
+
+      ## Step 4: Structural edges between entities (remaining turns)
+
+      For architectural dependencies between entities:
+      - DEPENDS_ON (entity→entity): "daemon" depends on "PGlite"
+      - AFFECTS (spore→entity): a gotcha that impacts a component
+
+      Do NOT create lineage edges (FROM_SESSION, EXTRACTED_FROM, etc.)
+
+      Call `vault_report` with action "graph" reporting:
+      - Entities created: N
+      - Spore→entity REFERENCES edges: N
+      - Entity→entity structural edges: N
     tools:
       - vault_spores
+      - vault_search
       - vault_create_entity
       - vault_create_edge
       - vault_report
-    maxTurns: 20
+    maxTurns: 25
     required: true
 
   - name: digest
