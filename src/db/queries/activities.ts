@@ -165,6 +165,71 @@ export async function insertActivity(data: ActivityInsert): Promise<ActivityRow>
   return toActivityRow(result.rows[0] as Record<string, unknown>);
 }
 
+/** Fields required when inserting an activity with inline batch linkage. */
+export interface StatelessActivityInsert {
+  session_id: string;
+  tool_name: string;
+  timestamp: number;
+  created_at: number;
+  tool_input?: string | null;
+  tool_output_summary?: string | null;
+  file_path?: string | null;
+  files_affected?: string | null;
+  duration_ms?: number | null;
+  success?: number;
+  error_message?: string | null;
+  content_hash?: string | null;
+}
+
+/**
+ * Insert an activity with batch linkage resolved via inline subquery.
+ *
+ * The `prompt_batch_id` is set to the latest open batch for the session
+ * (i.e., `ended_at IS NULL`, ordered by `id DESC`). If no open batch exists,
+ * `prompt_batch_id` will be NULL. The caller never needs a separate SELECT.
+ */
+export async function insertActivityWithBatch(
+  data: StatelessActivityInsert,
+): Promise<ActivityRow> {
+  const db = getDatabase();
+
+  const result = await db.query(
+    `INSERT INTO activities (
+       session_id, prompt_batch_id, tool_name, tool_input,
+       tool_output_summary, file_path, files_affected, duration_ms,
+       success, error_message, timestamp, processed,
+       content_hash, created_at,
+       search_vector
+     ) VALUES (
+       $1,
+       (SELECT id FROM prompt_batches WHERE session_id = $1 AND ended_at IS NULL ORDER BY id DESC LIMIT 1),
+       $2, $3,
+       $4, $5, $6, $7,
+       $8, $9, $10, $11,
+       $12, $13,
+       to_tsvector('english', COALESCE($2, '') || ' ' || COALESCE($3, '') || ' ' || COALESCE($5, ''))
+     )
+     RETURNING ${SELECT_COLUMNS}`,
+    [
+      data.session_id,
+      data.tool_name,
+      data.tool_input ?? null,
+      data.tool_output_summary ?? null,
+      data.file_path ?? null,
+      data.files_affected ?? null,
+      data.duration_ms ?? null,
+      data.success ?? DEFAULT_SUCCESS,
+      data.error_message ?? null,
+      data.timestamp,
+      DEFAULT_PROCESSED,
+      data.content_hash ?? null,
+      data.created_at,
+    ],
+  );
+
+  return toActivityRow(result.rows[0] as Record<string, unknown>);
+}
+
 /**
  * List activities with optional filters, ordered by timestamp ASC.
  *
