@@ -46,6 +46,7 @@ const VAULT_OPEN_OPTIONS = [
 ] as const;
 
 const FONT_OPTIONS: { value: FontOption; label: string }[] = [
+  { value: 'default', label: 'Default' },
   { value: 'geist-mono', label: 'Geist Mono' },
   { value: 'system', label: 'System' },
   { value: 'sf-mono', label: 'SF Mono' },

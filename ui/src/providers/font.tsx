@@ -6,7 +6,7 @@ import {
   type ReactNode,
 } from 'react';
 
-type FontOption = 'geist-mono' | 'system' | 'sf-mono' | 'fira-code' | 'jetbrains-mono';
+type FontOption = 'default' | 'geist-mono' | 'system' | 'sf-mono' | 'fira-code' | 'jetbrains-mono';
 
 interface FontContextValue {
   font: FontOption;
@@ -14,15 +14,45 @@ interface FontContextValue {
 }
 
 const STORAGE_KEY = 'myco-ui-font';
-const DEFAULT_FONT: FontOption = 'geist-mono';
-const CSS_PROPERTY = '--font-ui';
+const DEFAULT_FONT: FontOption = 'default';
 
-const FONT_STACKS: Record<FontOption, string> = {
-  'geist-mono': "'Geist Mono', 'SF Mono', 'Fira Code', monospace",
-  'system': "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace",
-  'sf-mono': "'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace",
-  'fira-code': "'Fira Code', 'Fira Mono', ui-monospace, monospace",
-  'jetbrains-mono': "'JetBrains Mono', ui-monospace, monospace",
+interface FontStack {
+  heading: string;
+  ui: string;
+  data: string;
+}
+
+const FONT_STACKS: Record<FontOption, FontStack> = {
+  'default': {
+    heading: "'Newsreader', Georgia, serif",
+    ui: "'Inter', system-ui, sans-serif",
+    data: "'JetBrains Mono', 'Fira Code', monospace",
+  },
+  'geist-mono': {
+    heading: "'Geist Mono', 'SF Mono', 'Fira Code', monospace",
+    ui: "'Geist Mono', 'SF Mono', 'Fira Code', monospace",
+    data: "'Geist Mono', 'SF Mono', 'Fira Code', monospace",
+  },
+  'system': {
+    heading: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace",
+    ui: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace",
+    data: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace",
+  },
+  'sf-mono': {
+    heading: "'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace",
+    ui: "'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace",
+    data: "'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace",
+  },
+  'fira-code': {
+    heading: "'Fira Code', 'Fira Mono', ui-monospace, monospace",
+    ui: "'Fira Code', 'Fira Mono', ui-monospace, monospace",
+    data: "'Fira Code', 'Fira Mono', ui-monospace, monospace",
+  },
+  'jetbrains-mono': {
+    heading: "'JetBrains Mono', ui-monospace, monospace",
+    ui: "'JetBrains Mono', ui-monospace, monospace",
+    data: "'JetBrains Mono', ui-monospace, monospace",
+  },
 };
 
 const VALID_FONTS = new Set<string>(Object.keys(FONT_STACKS));
@@ -38,7 +68,11 @@ function getStoredFont(): FontOption {
 }
 
 function applyFont(font: FontOption): void {
-  document.documentElement.style.setProperty(CSS_PROPERTY, FONT_STACKS[font]);
+  const stack = FONT_STACKS[font];
+  const root = document.documentElement.style;
+  root.setProperty('--font-heading', stack.heading);
+  root.setProperty('--font-ui', stack.ui);
+  root.setProperty('--font-data', stack.data);
 }
 
 export function FontProvider({ children }: { children: ReactNode }) {
