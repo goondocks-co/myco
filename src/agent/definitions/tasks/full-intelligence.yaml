@@ -225,46 +225,52 @@ phases:
 
   - name: digest
     prompt: |
-      Regenerate digest extracts — but ONLY if the vault changed.
+      Update digest extracts incrementally based on new vault substrate.
 
-      ## Step 1: Check if digest needs updating (budget: 1 turn)
+      ## Step 1: Assess whether update is warranted (budget: 2 turns)
 
-      Review the prior phase results (provided in your context). If:
-      - Extract created 0 new spores AND
-      - Consolidate resolved 0 spores AND
-      - Graph created 0 new entities/edges
-      Then call `vault_report` with action "skip" and reason
-      "no vault changes since last digest" and STOP. Do not regenerate.
+      Call `vault_read_digest` (no tier param) to see current digest state.
+      Review the prior phase results (in your context):
+      - How many spores were created/superseded?
+      - How many entities/edges were added?
 
-      ## Step 2: Gather knowledge (budget: 5 turns)
+      If changes are minor (< 3 new spores, 0 entity changes), call
+      `vault_report` with action "skip" and reason explaining why the
+      current digest is still sufficient. STOP.
 
-      If the vault DID change, use `vault_search` to query themes:
-      - "architecture decisions and trade-offs"
-      - "bugs gotchas and workarounds"
-      - "key components and how they interact"
-      - "active work and plans"
-      Also call `vault_spores` and `vault_sessions` for a broad view.
+      ## Step 2: Read current digest + gather new material (budget: 6 turns)
 
-      ## Step 3: Write extracts (budget: 10 turns)
+      For each tier you plan to update:
+      1. Call `vault_read_digest` with the tier number to get current content
+      2. Call `vault_search` with themes relevant to what changed:
+         - Topics from newly created/superseded spores
+         - New entity names
+      3. The existing digest is your baseline — integrate new material
+         into it, don't start from scratch
 
-      Call `vault_write_digest` for EACH of these five tiers:
-      1. Tier 1500 — Executive briefing: what is this project, what's
-         active, what to avoid. Most critical knowledge only.
-      2. Tier 3000 — Team standup: decisions, plans, conventions.
-         Enough to start contributing.
-      3. Tier 5000 — Deep onboarding: trade-offs, patterns, team dynamics.
-      4. Tier 7500 — Comprehensive: thread history, design tensions.
-      5. Tier 10000 — Full institutional knowledge: everything worth knowing.
+      ## Step 3: Write updated extracts (budget: 8 turns)
 
-      Each tier is self-contained (not incremental). Prioritize:
+      Call `vault_write_digest` for tiers that need updating:
+      1. Tier 1500 — Executive briefing (most compressed, most sensitive
+         to changes — update if important new decisions or gotchas)
+      2. Tier 3000 — Team standup (update if new conventions or plans)
+      3. Tier 5000 — Deep onboarding (update if new trade-offs or patterns)
+      4. Tier 7500 — Comprehensive (update if significant new content)
+      5. Tier 10000 — Full institutional knowledge (update if any new content)
+
+      Each tier is self-contained. Preserve well-crafted existing content —
+      integrate new material, don't rewrite from scratch. Prioritize:
       recent insights > active decisions > unresolved gotchas >
       architectural patterns > historical context.
 
-      When regenerating, call `vault_write_digest` exactly 5 times.
+      You do NOT need to update all 5 tiers. Only update tiers affected
+      by the new material. Tier 10000 (largest) is most likely to need
+      updating; tier 1500 (smallest) only if something critical changed.
     tools:
       - vault_spores
       - vault_sessions
       - vault_search
+      - vault_read_digest
       - vault_write_digest
       - vault_report
     maxTurns: 20

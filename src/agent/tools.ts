@@ -29,7 +29,7 @@ import { insertEntity } from '@myco/db/queries/entities.js';
 import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
 import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
-import { upsertDigestExtract } from '@myco/db/queries/digest-extracts.js';
+import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -64,7 +64,7 @@ function textResult(data: unknown): { content: Array<{ type: 'text'; text: strin
 // ---------------------------------------------------------------------------
 
 /** Total number of vault tools defined. */
-export const VAULT_TOOL_COUNT = 14;
+export const VAULT_TOOL_COUNT = 15;
 
 /**
  * Create the 14 vault tool definitions for the agent.
@@ -387,6 +387,31 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
     },
   );
 
+  const vaultReadDigest = tool(
+    'vault_read_digest',
+    'Read current digest extracts. Without a tier parameter, returns a summary of all tiers (content length, generation time). With a tier parameter, returns the full content for that specific tier.',
+    {
+      tier: z.number().optional().describe('Specific tier to read in full (e.g., 1500, 3000). Omit to get summary of all tiers.'),
+    },
+    async (args) => {
+      recordTurn('vault_read_digest', args);
+      const extracts = await listDigestExtracts(agentId);
+
+      if (args.tier !== undefined) {
+        const extract = extracts.find(e => e.tier === args.tier);
+        if (!extract) return textResult({ tier: args.tier, content: null, message: 'No digest at this tier' });
+        return textResult({ tier: extract.tier, content: extract.content, generated_at: extract.generated_at });
+      }
+
+      // Summary mode — return metadata for all tiers
+      return textResult(extracts.map(e => ({
+        tier: e.tier,
+        content_length: e.content.length,
+        generated_at: e.generated_at,
+      })));
+    },
+  );
+
   const vaultWriteDigest = tool(
     'vault_write_digest',
     'Write or update a digest extract at a specific token tier. Uses UPSERT on (agent_id, tier).',
@@ -468,6 +493,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
     vaultResolveSpore,
     vaultUpdateSession,
     vaultSetState,
+    vaultReadDigest,
     vaultWriteDigest,
     vaultMarkProcessed,
     vaultReport,
