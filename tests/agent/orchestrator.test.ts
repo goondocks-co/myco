@@ -14,8 +14,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('node:fs', () => ({
   default: {
     readFileSync: vi.fn(),
+    existsSync: vi.fn(() => true),
   },
   readFileSync: vi.fn(),
+  existsSync: vi.fn(() => true),
 }));
 
 import fs from 'node:fs';

@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findPackageRoot } from '@myco/utils/find-package-root.js';
 import { extractJson } from '@myco/intelligence/response.js';
 import type { PhaseDefinition, OrchestratorPlan, OrchestratorPhaseDirective } from './types.js';
 import type { ContextQueryResult } from './context-queries.js';
@@ -63,9 +64,30 @@ let cachedPromptTemplate: string | undefined;
 
 function loadPromptTemplate(): string {
   if (!cachedPromptTemplate) {
-    const dir = path.dirname(fileURLToPath(import.meta.url));
-    const filePath = path.join(dir, 'prompts', ORCHESTRATOR_PROMPT_FILE);
-    cachedPromptTemplate = fs.readFileSync(filePath, 'utf-8');
+    const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+
+    // Check sibling prompts/ directory first (tsc output or dev mode)
+    const adjacentPath = path.join(scriptDir, 'prompts', ORCHESTRATOR_PROMPT_FILE);
+    if (fs.existsSync(adjacentPath)) {
+      cachedPromptTemplate = fs.readFileSync(adjacentPath, 'utf-8');
+      return cachedPromptTemplate;
+    }
+
+    // tsup bundles into dist/chunk-XXXX.js — walk up to package root
+    const root = findPackageRoot(scriptDir);
+    if (root) {
+      const distPath = path.join(root, 'dist', 'src', 'agent', 'prompts', ORCHESTRATOR_PROMPT_FILE);
+      if (fs.existsSync(distPath)) {
+        cachedPromptTemplate = fs.readFileSync(distPath, 'utf-8');
+        return cachedPromptTemplate;
+      }
+      const srcPath = path.join(root, 'src', 'agent', 'prompts', ORCHESTRATOR_PROMPT_FILE);
+      cachedPromptTemplate = fs.readFileSync(srcPath, 'utf-8');
+      return cachedPromptTemplate;
+    }
+
+    // Final fallback
+    cachedPromptTemplate = fs.readFileSync(adjacentPath, 'utf-8');
   }
   return cachedPromptTemplate;
 }
