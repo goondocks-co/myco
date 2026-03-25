@@ -41,6 +41,8 @@ import {
 import { handleSearch } from './api/search.js';
 import { handleGetFeed } from './api/feed.js';
 import { handleGetEmbeddingStatus } from './api/embedding.js';
+import { EmbeddingManager, SqliteVecVectorStore, EmbeddingProviderAdapter, SqliteRecordSource } from './embedding/index.js';
+import { createEmbeddingProvider } from '../intelligence/llm.js';
 import {
   handleListTasks,
   handleGetTask,
@@ -378,6 +380,15 @@ export async function main(): Promise<void> {
   const db = initDatabase(vaultDbPath(vaultDir));
   createSchema(db);
   logger.info('daemon', 'SQLite initialized', { vault: vaultDir });
+
+  // --- Embedding lifecycle manager ---
+  const vectorsDbPath = path.join(vaultDir, 'vectors.db');
+  const vectorStore = new SqliteVecVectorStore(vectorsDbPath);
+  const llmProvider = createEmbeddingProvider(config.embedding);
+  const embeddingProvider = new EmbeddingProviderAdapter(llmProvider, config.embedding);
+  const recordSource = new SqliteRecordSource();
+  const embeddingManager = new EmbeddingManager(vectorStore, embeddingProvider, recordSource, logger);
+  logger.info('embedding', 'EmbeddingManager initialized', { vectors_db: vectorsDbPath });
 
   // --- Register built-in agents and tasks ---
   try {
@@ -1093,6 +1104,7 @@ export async function main(): Promise<void> {
     const sessionId = req.params.id;
     const deleted = deleteSession(sessionId);
     if (!deleted) return { status: 404, body: { error: 'Session not found' } };
+    try { embeddingManager.onRemoved('sessions', sessionId); } catch { /* best-effort */ }
     logger.info('api', 'Session deleted', { session_id: sessionId });
     return { body: { ok: true } };
   });
@@ -1244,6 +1256,11 @@ export async function main(): Promise<void> {
       created_at: now,
     });
 
+    embeddingManager.onContentWritten('spores', spore.id, content, {
+      status: 'active',
+      observation_type: observationType,
+    }).catch(() => {});
+
     return {
       body: {
         id: spore.id,
@@ -1335,6 +1352,7 @@ export async function main(): Promise<void> {
 
     // Update status to superseded
     updateSporeStatus(old_spore_id, 'superseded', now);
+    try { embeddingManager.onStatusChanged('spores', old_spore_id, 'superseded'); } catch { /* best-effort */ }
 
     // Ensure user agent exists (idempotent)
     registerAgent({
@@ -1491,6 +1509,7 @@ export async function main(): Promise<void> {
     planWatcher.stopFileWatcher();
     registry.destroy();
     await server.stop();
+    vectorStore.close();
     closeDatabase();
     logger.close();
     process.exit(0);

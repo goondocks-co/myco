@@ -31,6 +31,7 @@ import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
 import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
+import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -76,7 +77,7 @@ export const VAULT_TOOL_COUNT = 15;
  * @param runId — the current agent run ID, injected into reports and turns.
  * @returns array of SdkMcpToolDefinition objects.
  */
-export function createVaultTools(agentId: string, runId: string, turnOffset = 0) {
+export function createVaultTools(agentId: string, runId: string, turnOffset = 0, embeddingManager?: EmbeddingManager) {
   /** Turn number counter — incremented per tool call (read and write) within a run. */
   let turnCounter = turnOffset;
 
@@ -233,6 +234,12 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
       // Best-effort: structural lineage edges (FROM_SESSION, EXTRACTED_FROM, DERIVED_FROM)
       try { createSporeLineage(spore); } catch { /* lineage best-effort */ }
 
+      embeddingManager?.onContentWritten('spores', spore.id, args.content, {
+        status: 'active',
+        observation_type: args.observation_type,
+        session_id: args.session_id,
+      }).catch(() => {});
+
       recordTurn('vault_create_spore', args);
       return textResult(spore);
     },
@@ -338,6 +345,10 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
         created_at: now,
       });
 
+      if (newStatus !== 'active') {
+        try { embeddingManager?.onStatusChanged('spores', args.spore_id, newStatus); } catch { /* best-effort */ }
+      }
+
       recordTurn('vault_resolve_spore', args);
       return textResult({ spore: updatedSpore, resolution_event_id: eventId });
     },
@@ -357,6 +368,10 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0)
       if (args.summary !== undefined) updates.summary = args.summary;
 
       const session = updateSession(args.session_id, updates);
+
+      if (args.summary) {
+        embeddingManager?.onContentWritten('sessions', args.session_id, args.summary, {}).catch(() => {});
+      }
 
       recordTurn('vault_update_session', args);
       return textResult(session);
