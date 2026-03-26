@@ -1,9 +1,8 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, MessageSquare } from 'lucide-react';
-import { Card, CardContent, CardHeader } from '../ui/card';
+import { Surface } from '../ui/surface';
 import { useSessionBatches, useSessionAttachments, type BatchRow, type AttachmentRow } from '../../hooks/use-sessions';
 import { ActivityList } from './ActivityList';
-import { cn } from '../../lib/cn';
 
 /* ---------- Constants ---------- */
 
@@ -19,7 +18,7 @@ function formatTimestamp(epochSeconds: number): string {
 function promptPreview(text: string | null): string {
   if (!text) return '(no prompt)';
   return text.length > PROMPT_PREVIEW_CHARS
-    ? text.slice(0, PROMPT_PREVIEW_CHARS) + '…'
+    ? text.slice(0, PROMPT_PREVIEW_CHARS) + '\u2026'
     : text;
 }
 
@@ -39,42 +38,46 @@ function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) 
   );
 
   return (
-    <Card className="overflow-hidden">
-      <CardHeader className="p-0">
-        <button
-          type="button"
-          className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-accent/40 transition-colors"
-          onClick={() => setOpen((prev) => !prev)}
-        >
-          {open ? (
-            <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-          )}
-          <div className="flex-1 min-w-0">
-            <div className="flex items-baseline justify-between gap-2 mb-0.5">
-              <span className="text-xs font-semibold text-muted-foreground">
-                #{batch.prompt_number ?? batch.id}
+    <Surface level="low" className="overflow-hidden">
+      {/* Collapsible header */}
+      <button
+        type="button"
+        className="flex w-full items-start gap-3 px-4 py-3 text-left hover:brightness-110 dark:hover:brightness-[1.04] transition-all"
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        {open ? (
+          <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-on-surface-variant" />
+        ) : (
+          <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-on-surface-variant" />
+        )}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline justify-between gap-2 mb-0.5">
+            <span className="font-sans text-xs font-medium text-on-surface-variant">
+              #{batch.prompt_number ?? batch.id}
+            </span>
+            {batch.activity_count > 0 && (
+              <span className="font-mono text-xs text-on-surface-variant/70">
+                {batch.activity_count} tool call{batch.activity_count !== 1 ? 's' : ''}
               </span>
-              {batch.started_at && (
-                <span className="shrink-0 text-xs text-muted-foreground font-mono">
-                  {formatTimestamp(batch.started_at)}
-                </span>
-              )}
-            </div>
-            <p className="text-sm text-foreground truncate">
-              {open ? (batch.user_prompt ?? '(no prompt)') : promptPreview(batch.user_prompt)}
-            </p>
+            )}
+            {batch.started_at && (
+              <span className="shrink-0 font-mono text-xs text-on-surface-variant">
+                {formatTimestamp(batch.started_at)}
+              </span>
+            )}
           </div>
-        </button>
-      </CardHeader>
+          <p className="font-sans text-sm text-on-surface truncate">
+            {open ? (batch.user_prompt ?? '(no prompt)') : promptPreview(batch.user_prompt)}
+          </p>
+        </div>
+      </button>
 
       {open && (
-        <CardContent className="p-0">
+        <div>
           {/* User prompt (full) */}
           <div className="px-4 pt-0 pb-3">
             {batch.user_prompt && batch.user_prompt.length > PROMPT_PREVIEW_CHARS && (
-              <p className="text-sm text-foreground whitespace-pre-wrap break-words">
+              <p className="font-sans text-sm text-on-surface whitespace-pre-wrap break-words">
                 {batch.user_prompt}
               </p>
             )}
@@ -87,7 +90,7 @@ function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) 
                     key={att.id}
                     src={`/api/attachments/${att.file_path}`}
                     alt={att.description ?? att.file_path}
-                    className="max-w-md rounded border border-border"
+                    className="max-w-md rounded-md"
                     loading="lazy"
                   />
                 ))}
@@ -98,7 +101,7 @@ function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) 
           {/* Activities */}
           {batch.activity_count > 0 && (
             <div>
-              <div className="px-4 py-1 text-xs font-semibold text-muted-foreground uppercase tracking-wide border-t border-border/60">
+              <div className="px-4 py-1 font-sans text-xs font-medium uppercase tracking-wide text-on-surface-variant">
                 Tool calls
               </div>
               <ActivityList batchId={batch.id} activityCount={batch.activity_count} />
@@ -107,18 +110,18 @@ function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) 
 
           {/* AI summary */}
           {batch.response_summary && (
-            <div className="border-t border-border/60 px-4 py-3">
-              <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">
+            <div className="px-4 py-3">
+              <div className="font-sans text-xs font-medium uppercase tracking-wide text-on-surface-variant mb-1">
                 Response
               </div>
-              <p className="text-sm text-muted-foreground whitespace-pre-wrap break-words">
+              <p className="font-sans text-sm text-on-surface-variant whitespace-pre-wrap break-words">
                 {batch.response_summary}
               </p>
             </div>
           )}
-        </CardContent>
+        </div>
       )}
-    </Card>
+    </Surface>
   );
 }
 
@@ -138,7 +141,7 @@ export function BatchTimeline({ sessionId }: BatchTimelineProps) {
     return (
       <div className="space-y-3">
         {[1, 2, 3].map((i) => (
-          <div key={i} className="h-16 animate-pulse rounded-lg bg-muted" />
+          <div key={i} className="h-16 animate-pulse rounded-md bg-surface-container-low" />
         ))}
       </div>
     );
@@ -149,15 +152,15 @@ export function BatchTimeline({ sessionId }: BatchTimelineProps) {
 
   if (batchList.length === 0) {
     return (
-      <div className={cn('flex h-40 flex-col items-center justify-center gap-2 text-muted-foreground')}>
+      <div className="flex h-40 flex-col items-center justify-center gap-2 text-on-surface-variant">
         <MessageSquare className="h-8 w-8 opacity-30" />
-        <span className="text-sm">No batches recorded</span>
+        <span className="font-sans text-sm">No batches recorded</span>
       </div>
     );
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {batchList.map((batch, idx) => (
         <BatchCard
           key={batch.id}

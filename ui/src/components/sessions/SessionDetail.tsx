@@ -3,40 +3,42 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, AlertCircle, Loader2, Sparkles } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
+import { Surface } from '../ui/surface';
 import { useSession } from '../../hooks/use-sessions';
 import { useTriggerRun } from '../../hooks/use-agent';
 import { BatchTimeline } from './BatchTimeline';
-import { formatTimeAgo } from '../../lib/format';
+import { formatTimeAgo, formatDuration as formatDurationSec } from '../../lib/format';
+
+/* ---------- Constants ---------- */
+
+/** Characters shown from session ID in compact view. */
+const SESSION_ID_PREVIEW_LENGTH = 8;
 
 /* ---------- Helpers ---------- */
 
-function statusVariant(status: string): 'default' | 'secondary' | 'outline' {
+function statusVariant(status: string): 'default' | 'secondary' | 'warning' {
   if (status === 'active') return 'default';
   if (status === 'completed') return 'secondary';
-  return 'outline';
+  return 'warning';
 }
 
 function epochToRelative(epoch: number | null): string {
-  if (epoch === null) return '—';
+  if (epoch === null) return '\u2014';
   return formatTimeAgo(new Date(epoch * 1000).toISOString());
 }
 
 function epochToAbsolute(epoch: number | null): string {
-  if (epoch === null) return '—';
+  if (epoch === null) return '\u2014';
   return new Date(epoch * 1000).toLocaleString();
 }
 
-// Duration formatting imported from shared library
-import { formatDuration as formatDurationSec } from '../../lib/format';
-
 /* ---------- Sub-components ---------- */
 
-function MetaRow({ label, value }: { label: string; value: string }) {
+function MetaItem({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-start justify-between gap-3 py-1.5 border-b border-border last:border-0">
-      <span className="shrink-0 text-xs text-muted-foreground">{label}</span>
-      <span className="text-xs text-foreground font-mono text-right break-all">{value}</span>
+    <div className="flex items-start justify-between gap-3 py-1.5">
+      <span className="shrink-0 font-sans text-xs font-medium text-on-surface-variant">{label}</span>
+      <span className="font-mono text-xs text-on-surface text-right break-all">{value}</span>
     </div>
   );
 }
@@ -56,13 +58,13 @@ export function SessionDetail({ id }: SessionDetailProps) {
   if (isLoading) {
     return (
       <div className="p-6 space-y-4">
-        <Button variant="ghost" size="sm" onClick={() => navigate('/sessions')} className="gap-2 text-muted-foreground">
+        <Button variant="ghost" size="sm" onClick={() => navigate('/sessions')} className="gap-2 text-on-surface-variant">
           <ArrowLeft className="h-4 w-4" />
           Sessions
         </Button>
-        <div className="flex h-64 items-center justify-center gap-2 text-muted-foreground">
+        <div className="flex h-64 items-center justify-center gap-2 text-on-surface-variant">
           <Loader2 className="h-5 w-5 animate-spin" />
-          <span>Loading session...</span>
+          <span className="font-sans text-sm">Loading session...</span>
         </div>
       </div>
     );
@@ -71,14 +73,14 @@ export function SessionDetail({ id }: SessionDetailProps) {
   if (isError || !session) {
     return (
       <div className="p-6 space-y-4">
-        <Button variant="ghost" size="sm" onClick={() => navigate('/sessions')} className="gap-2 text-muted-foreground">
+        <Button variant="ghost" size="sm" onClick={() => navigate('/sessions')} className="gap-2 text-on-surface-variant">
           <ArrowLeft className="h-4 w-4" />
           Sessions
         </Button>
-        <div className="flex h-40 flex-col items-center justify-center gap-2 text-destructive">
+        <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary">
           <AlertCircle className="h-5 w-5" />
-          <span className="text-sm">Session not found</span>
-          <span className="text-xs text-muted-foreground">
+          <span className="font-sans text-sm">Session not found</span>
+          <span className="font-sans text-xs text-on-surface-variant">
             {error instanceof Error ? error.message : 'Unknown error'}
           </span>
         </div>
@@ -93,21 +95,23 @@ export function SessionDetail({ id }: SessionDetailProps) {
         variant="ghost"
         size="sm"
         onClick={() => navigate('/sessions')}
-        className="gap-2 text-muted-foreground"
+        className="gap-2 text-on-surface-variant"
       >
         <ArrowLeft className="h-4 w-4" />
         Sessions
       </Button>
 
       {/* Header */}
-      <div className="space-y-1">
+      <div className="space-y-2">
         <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold">{session.title ?? session.id.slice(0, 8)}</h1>
+          <h1 className="font-serif text-2xl font-normal text-on-surface tracking-wide">
+            {session.title ?? session.id.slice(0, SESSION_ID_PREVIEW_LENGTH)}
+          </h1>
           <Badge variant={statusVariant(session.status)}>
             {session.status.charAt(0).toUpperCase() + session.status.slice(1)}
           </Badge>
           <Button
-            variant="outline"
+            variant="secondary"
             size="sm"
             className="ml-auto gap-2"
             disabled={summaryStatus === 'running'}
@@ -132,10 +136,16 @@ export function SessionDetail({ id }: SessionDetailProps) {
             {summaryStatus === 'done' ? 'Summary Requested' : 'Generate Summary'}
           </Button>
         </div>
-        <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
-          {session.agent && <span>Agent: <span className="text-foreground">{session.agent}</span></span>}
-          {session.user && <span>User: <span className="text-foreground">{session.user}</span></span>}
-          {session.branch && <span>Branch: <span className="text-foreground font-mono">{session.branch}</span></span>}
+        <div className="flex flex-wrap gap-4 font-sans text-sm text-on-surface-variant">
+          {session.agent && (
+            <span>Agent: <span className="text-on-surface">{session.agent}</span></span>
+          )}
+          {session.user && (
+            <span>User: <span className="text-on-surface">{session.user}</span></span>
+          )}
+          {session.branch && (
+            <span>Branch: <span className="font-mono text-on-surface">{session.branch}</span></span>
+          )}
           <span>Started {epochToRelative(session.started_at)}</span>
           {session.ended_at && (
             <span>Duration: {formatDurationSec(session.started_at, session.ended_at)}</span>
@@ -145,64 +155,52 @@ export function SessionDetail({ id }: SessionDetailProps) {
 
       {/* Summary */}
       {session.summary && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Summary</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground whitespace-pre-wrap">{session.summary}</p>
-          </CardContent>
-        </Card>
+        <Surface level="low" className="p-4">
+          <h3 className="font-serif text-sm text-on-surface mb-2">Summary</h3>
+          <p className="font-sans text-sm text-on-surface-variant whitespace-pre-wrap">{session.summary}</p>
+        </Surface>
       )}
 
-      {/* Main layout: timeline + metadata sidebar */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        {/* Batch timeline */}
-        <div className="lg:col-span-2">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+      {/* Two-column layout: conversation + metadata sidebar */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_minmax(280px,35%)]">
+        {/* Conversation column (~65%) */}
+        <div>
+          <h2 className="font-sans text-xs font-medium uppercase tracking-wide text-on-surface-variant mb-3">
             Conversation
           </h2>
           <BatchTimeline sessionId={id} />
         </div>
 
-        {/* Metadata sidebar */}
-        <div className="space-y-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Stats</CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm">
-              <MetaRow label="Prompts" value={String(session.prompt_count)} />
-              <MetaRow label="Tool calls" value={String(session.tool_count)} />
-              <MetaRow label="Status" value={session.status} />
-              <MetaRow label="Started" value={epochToAbsolute(session.started_at)} />
-              <MetaRow label="Ended" value={epochToAbsolute(session.ended_at)} />
-            </CardContent>
-          </Card>
+        {/* Metadata sidebar (~35%) */}
+        <div className="space-y-4 lg:sticky lg:top-6 lg:self-start">
+          <Surface level="low" className="p-4">
+            <h3 className="font-serif text-sm text-on-surface mb-2">Stats</h3>
+            <MetaItem label="Prompts" value={String(session.prompt_count)} />
+            <MetaItem label="Tool calls" value={String(session.tool_count)} />
+            <MetaItem label="Status" value={session.status} />
+            <MetaItem label="Started" value={epochToAbsolute(session.started_at)} />
+            <MetaItem label="Ended" value={epochToAbsolute(session.ended_at)} />
+          </Surface>
 
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Metadata</CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm">
-              <MetaRow label="Session ID" value={id} />
-              {session.parent_session_id && (
-                <MetaRow label="Parent" value={session.parent_session_id} />
-              )}
-              {session.parent_session_reason && (
-                <MetaRow label="Reason" value={session.parent_session_reason} />
-              )}
-              {session.content_hash && (
-                <MetaRow label="Hash" value={session.content_hash.slice(0, 16) + '…'} />
-              )}
-              {session.transcript_path && (
-                <MetaRow label="Transcript" value={session.transcript_path} />
-              )}
-              {session.project_root && (
-                <MetaRow label="Project" value={session.project_root} />
-              )}
-            </CardContent>
-          </Card>
+          <Surface level="low" className="p-4">
+            <h3 className="font-serif text-sm text-on-surface mb-2">Metadata</h3>
+            <MetaItem label="Session ID" value={id} />
+            {session.parent_session_id && (
+              <MetaItem label="Parent" value={session.parent_session_id} />
+            )}
+            {session.parent_session_reason && (
+              <MetaItem label="Reason" value={session.parent_session_reason} />
+            )}
+            {session.content_hash && (
+              <MetaItem label="Hash" value={session.content_hash.slice(0, 16) + '\u2026'} />
+            )}
+            {session.transcript_path && (
+              <MetaItem label="Transcript" value={session.transcript_path} />
+            )}
+            {session.project_root && (
+              <MetaItem label="Project" value={session.project_root} />
+            )}
+          </Surface>
         </div>
       </div>
     </div>
