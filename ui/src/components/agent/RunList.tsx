@@ -3,20 +3,13 @@ import { Bot, AlertCircle, Play } from 'lucide-react';
 import { Button } from '../ui/button';
 import { useAgentRuns, useAgentTasks, type RunRow } from '../../hooks/use-agent';
 import { cn } from '../../lib/cn';
-import { formatEpochAgo, capitalize } from '../../lib/format';
+import { formatEpochRelative, capitalize } from '../../lib/format';
 import { statusBadgeVariant, formatCost, formatTokens, formatDuration, UNKNOWN_TASK_LABEL } from './helpers';
 
 /* ---------- Constants ---------- */
 
 /** Default limit for the run list. */
 const DEFAULT_LIMIT = 50;
-
-/* ---------- Helpers ---------- */
-
-function formatEpochRelative(epoch: number | null): string {
-  if (epoch === null) return '\u2014';
-  return formatEpochAgo(epoch);
-}
 
 /* ---------- Sub-components ---------- */
 

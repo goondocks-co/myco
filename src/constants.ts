@@ -21,9 +21,6 @@ export const MS_PER_SECOND = 1000;
 /** Max characters of text sent to the embedding model. */
 export const EMBEDDING_INPUT_LIMIT = 8000;
 
-/** Embedding worker reconciliation interval (ms). */
-export const EMBEDDING_INTERVAL_MS = 30 * MS_PER_SECOND;
-
 /** Max rows per embedding worker cycle. */
 export const EMBEDDING_BATCH_SIZE = 10;
 

@@ -4,6 +4,8 @@ import { useConfig, type MycoConfig } from '../hooks/use-config';
 import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
 import { fetchJson } from '../lib/api';
+import { parseNumericField } from '../lib/format';
+import { DEFAULT_INTERVAL_SECONDS, DEFAULT_SUMMARY_BATCH_INTERVAL } from '../lib/constants';
 import { Surface } from '../components/ui/surface';
 import { PageHeader } from '../components/ui/page-header';
 import { SectionHeader } from '../components/ui/section-header';
@@ -26,12 +28,6 @@ const PROVIDERS: { value: Provider; label: string }[] = [
   { value: 'openai-compatible', label: 'OpenAI-compatible' },
 ];
 
-/** Default agent run interval in seconds. */
-const DEFAULT_INTERVAL_SECONDS = 300;
-
-/** Default summary batch interval (0 = disabled). */
-const DEFAULT_SUMMARY_BATCH_INTERVAL = 5;
-
 type TestState = 'idle' | 'testing' | 'success' | 'error';
 
 interface FormState {
@@ -43,17 +39,6 @@ interface FormState {
   agentAutoRun: boolean;
   agentIntervalSeconds: string;
   agentSummaryBatchInterval: string;
-}
-
-/**
- * Parse a string to a number, returning `fallback` when the input is empty,
- * non-numeric, or NaN. Unlike `Number(s) || fallback`, this correctly handles
- * the value `0` (which is a valid input for "disabled" fields).
- */
-function parseNumericField(value: string, fallback: number): number {
-  if (value.trim() === '') return fallback;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
 }
 
 function toFormState(config: MycoConfig): FormState {

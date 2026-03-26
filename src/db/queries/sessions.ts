@@ -413,23 +413,15 @@ export interface DeleteCascadeResult {
 export function getSessionImpact(sessionId: string): SessionImpact {
   const db = getDatabase();
 
-  const promptCount = (db.prepare(
-    `SELECT COUNT(*) as count FROM prompt_batches WHERE session_id = ?`,
-  ).get(sessionId) as { count: number }).count;
+  const row = db.prepare(
+    `SELECT
+       (SELECT COUNT(*) FROM prompt_batches WHERE session_id = ?) AS promptCount,
+       (SELECT COUNT(*) FROM spores WHERE session_id = ?) AS sporeCount,
+       (SELECT COUNT(*) FROM attachments WHERE session_id = ?) AS attachmentCount,
+       (SELECT COUNT(*) FROM graph_edges WHERE session_id = ?) AS graphEdgeCount`,
+  ).get(sessionId, sessionId, sessionId, sessionId) as SessionImpact;
 
-  const sporeCount = (db.prepare(
-    `SELECT COUNT(*) as count FROM spores WHERE session_id = ?`,
-  ).get(sessionId) as { count: number }).count;
-
-  const attachmentCount = (db.prepare(
-    `SELECT COUNT(*) as count FROM attachments WHERE session_id = ?`,
-  ).get(sessionId) as { count: number }).count;
-
-  const graphEdgeCount = (db.prepare(
-    `SELECT COUNT(*) as count FROM graph_edges WHERE session_id = ?`,
-  ).get(sessionId) as { count: number }).count;
-
-  return { promptCount, sporeCount, attachmentCount, graphEdgeCount };
+  return row;
 }
 
 /**

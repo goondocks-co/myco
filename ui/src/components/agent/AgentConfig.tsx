@@ -13,7 +13,7 @@ import { useDaemon, type StatsResponse } from '../../hooks/use-daemon';
 import { useAgentTasks, type TaskRow } from '../../hooks/use-agent';
 import { useRestart } from '../../hooks/use-restart';
 import { fetchJson } from '../../lib/api';
-import { formatUptime, formatEpochAgo } from '../../lib/format';
+import { formatUptime, formatEpochAgo, parseNumericField } from '../../lib/format';
 import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
 import { Input } from '../ui/input';
@@ -26,27 +26,12 @@ import {
   SelectValue,
 } from '../ui/select';
 
+import { DEFAULT_INTERVAL_SECONDS, DEFAULT_SUMMARY_BATCH_INTERVAL } from '../../lib/constants';
+
 /* ---------- Constants ---------- */
 
 /** Minimum allowed interval in seconds. */
 const MIN_INTERVAL_SECONDS = 30;
-
-/** Default interval fallback. */
-const DEFAULT_INTERVAL_SECONDS = 300;
-
-/** Default summary batch interval. */
-const DEFAULT_SUMMARY_BATCH_INTERVAL = 5;
-
-/**
- * Parse a string to a number, returning `fallback` when the input is empty,
- * non-numeric, or NaN. Unlike `Number(s) || fallback`, this correctly handles
- * the value `0` (which is a valid input for "disabled" fields).
- */
-function parseNumericField(value: string, fallback: number): number {
-  if (value.trim() === '') return fallback;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
 
 type TestState = 'idle' | 'testing' | 'success' | 'error';
 

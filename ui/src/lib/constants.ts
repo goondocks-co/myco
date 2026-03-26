@@ -19,6 +19,12 @@ export const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 
 export const TASK_SOURCE_BUILTIN = 'built-in';
 export const TASK_SOURCE_USER = 'user';
 
+/** Default agent run interval in seconds. */
+export const DEFAULT_INTERVAL_SECONDS = 300;
+
+/** Default summary batch interval (0 = disabled). */
+export const DEFAULT_SUMMARY_BATCH_INTERVAL = 5;
+
 /** Map log level to Badge variant. */
 export function levelBadgeVariant(level: LogLevel): 'default' | 'secondary' | 'warning' | 'destructive' {
   switch (level) {

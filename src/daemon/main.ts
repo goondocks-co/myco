@@ -64,7 +64,7 @@ import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
-import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSession, deleteSessionCascade, getSessionImpact } from '../db/queries/sessions.js';
+import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSessionCascade, getSessionImpact } from '../db/queries/sessions.js';
 import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, findBatchByPromptPrefix, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary, listBatchesBySession } from '../db/queries/batches.js';
 import { insertActivityWithBatch } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
@@ -87,9 +87,11 @@ import {
   POWER_ACTIVE_INTERVAL_MS,
   POWER_SLEEP_INTERVAL_MS,
   epochSeconds,
+  MS_PER_SECOND,
 } from '../constants.js';
 import { PowerManager } from './power.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
+import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
 import { z } from 'zod';
 import fs from 'node:fs';
@@ -99,8 +101,6 @@ import path from 'node:path';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Seconds-to-milliseconds multiplier for config intervals. */
-const SECONDS_TO_MS = 1000;
 
 /** Default limit for listing agent runs in the API. */
 const AGENT_RUNS_DEFAULT_LIMIT = 50;
@@ -1318,38 +1318,8 @@ export async function main(): Promise<void> {
     const result = deleteSessionCascade(sessionId);
     if (!result.deleted) return { status: 404, body: { error: 'Session not found' } };
 
-    // Post-transaction cleanup: embedding vectors
-    try { embeddingManager.onRemoved('sessions', sessionId); } catch { /* best-effort */ }
-    for (const sporeId of result.deletedSporeIds) {
-      try { embeddingManager.onRemoved('spores', sporeId); } catch { /* best-effort */ }
-    }
-
-    // Post-transaction cleanup: vault files (fire-and-forget)
-    const vaultCleanup = async () => {
-      const { unlink, glob } = await import('node:fs/promises');
-
-      // Session markdown
-      try {
-        for await (const f of glob(`sessions/**/session-${sessionId}.md`, { cwd: vaultDir })) {
-          await unlink(`${vaultDir}/${f}`).catch(() => {});
-        }
-      } catch { /* best-effort */ }
-
-      // Spore markdown files
-      for (const sporeId of result.deletedSporeIds) {
-        try {
-          for await (const f of glob(`spores/**/${sporeId}*.md`, { cwd: vaultDir })) {
-            await unlink(`${vaultDir}/${f}`).catch(() => {});
-          }
-        } catch { /* best-effort */ }
-      }
-
-      // Attachment files on disk
-      for (const filePath of result.deletedAttachmentPaths) {
-        try { await unlink(filePath); } catch { /* best-effort */ }
-      }
-    };
-    vaultCleanup().catch(() => {});
+    // Post-transaction cleanup (fire-and-forget)
+    cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir).catch(() => {});
 
     logger.info('api', 'Session cascade deleted', {
       session_id: sessionId,
@@ -1665,34 +1635,6 @@ export async function main(): Promise<void> {
     }
   }
 
-  // --- Agent timer ---
-
-  const agentTimer = config.agent.auto_run
-    ? setInterval(async () => {
-        try {
-          // Pre-check: only spawn agent if there's unprocessed work
-          const agentDb = getDatabase();
-          const checkRow = agentDb.prepare('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0').get() as { count: number };
-          const count = Number(checkRow.count);
-          if (count === 0) {
-            logger.debug('agent', 'No unprocessed batches, skipping cycle');
-            return;
-          }
-
-          logger.info('agent', 'Unprocessed batches found, starting agent', { count });
-          const { runAgent } = await import('../agent/executor.js');
-          const runResult = await runAgent(vaultDir, { embeddingManager });
-          logger.info('agent', 'Agent run completed', { status: runResult.status, runId: runResult.runId });
-        } catch (err) {
-          logger.error('agent', 'Agent timer failed', { error: (err as Error).message });
-        }
-      }, config.agent.interval_seconds * SECONDS_TO_MS)
-    : null;
-
-  if (!config.agent.auto_run) {
-    logger.info('agent', 'Auto-agent disabled (agent.auto_run = false)');
-  }
-
   // --- Register power-managed jobs ---
 
   let reconcileRunning = false;
@@ -1721,13 +1663,54 @@ export async function main(): Promise<void> {
     }),
   });
 
+  // Agent auto-run: only when enabled, with its own interval guard.
+  // Runs on the PowerManager tick but skips unless enough time has elapsed
+  // since the last run (config.agent.interval_seconds).
+  if (config.agent.auto_run) {
+    let agentRunning = false;
+    let lastAgentRun = 0;
+    const agentIntervalMs = config.agent.interval_seconds * MS_PER_SECOND;
+
+    powerManager.register({
+      name: 'agent-auto-run',
+      runIn: ['active', 'idle'],
+      fn: async () => {
+        if (agentRunning) return;
+        if (Date.now() - lastAgentRun < agentIntervalMs) return;
+
+        // Pre-check: only spawn agent if there's unprocessed work
+        const agentDb = getDatabase();
+        const checkRow = agentDb.prepare('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0').get() as { count: number };
+        const count = Number(checkRow.count);
+        if (count === 0) {
+          logger.debug('agent', 'No unprocessed batches, skipping cycle');
+          return;
+        }
+
+        agentRunning = true;
+        lastAgentRun = Date.now();
+        try {
+          logger.info('agent', 'Unprocessed batches found, starting agent', { count });
+          const { runAgent } = await import('../agent/executor.js');
+          const runResult = await runAgent(vaultDir, { embeddingManager });
+          logger.info('agent', 'Agent run completed', { status: runResult.status, runId: runResult.runId });
+        } catch (err) {
+          logger.error('agent', 'Agent auto-run failed', { error: (err as Error).message });
+        } finally {
+          agentRunning = false;
+        }
+      },
+    });
+  } else {
+    logger.info('agent', 'Auto-agent disabled (agent.auto_run = false)');
+  }
+
   powerManager.start();
 
   // --- Shutdown ---
 
   const shutdown = async (signal: string) => {
     logger.info('daemon', `${signal} received`);
-    if (agentTimer) clearInterval(agentTimer);
     powerManager.stop();
     // Wait for any active stop processing to finish before shutting down
     if (activeStopProcessing) {

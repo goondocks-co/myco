@@ -18,6 +18,7 @@ import {
 } from '../../constants.js';
 import type { DaemonLogger } from '../logger.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
+import { cleanupAfterSessionCascade } from './session-cleanup.js';
 
 const LOG_CATEGORY = 'session-maintenance';
 
@@ -111,29 +112,7 @@ export async function runSessionMaintenance(deps: SessionMaintenanceDeps): Promi
     const result = deleteSessionCascade(sessionId);
     if (!result.deleted) continue;
 
-    // Post-transaction cleanup: embedding vectors
-    try { embeddingManager.onRemoved('sessions', sessionId); } catch { /* best-effort */ }
-    for (const sporeId of result.deletedSporeIds) {
-      try { embeddingManager.onRemoved('spores', sporeId); } catch { /* best-effort */ }
-    }
-
-    // Post-transaction cleanup: vault files (fire-and-forget)
-    try {
-      const { unlink, glob } = await import('node:fs/promises');
-      try {
-        for await (const f of glob(`sessions/**/session-${sessionId}.md`, { cwd: vaultDir })) {
-          await unlink(`${vaultDir}/${f}`).catch(() => {});
-        }
-      } catch { /* best-effort */ }
-
-      for (const sporeId of result.deletedSporeIds) {
-        try {
-          for await (const f of glob(`spores/**/${sporeId}*.md`, { cwd: vaultDir })) {
-            await unlink(`${vaultDir}/${f}`).catch(() => {});
-          }
-        } catch { /* best-effort */ }
-      }
-    } catch { /* best-effort */ }
+    await cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir);
 
     deletedCount++;
     logger.info(LOG_CATEGORY, 'Deleted dead session', {

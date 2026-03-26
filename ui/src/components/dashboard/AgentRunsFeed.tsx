@@ -1,9 +1,9 @@
-import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Bot } from 'lucide-react';
 import { useAgentRuns, useAgentTasks, type RunRow } from '../../hooks/use-agent';
 import { formatEpochAgo, formatDuration } from '../../lib/format';
 import { cn } from '../../lib/cn';
+import { resolveTaskName } from '../agent/helpers';
 
 /* ---------- Constants ---------- */
 
@@ -18,9 +18,6 @@ const STATUS_DOT: Record<string, string> = {
   skipped: 'bg-outline/40',
   pending: 'bg-outline/40',
 };
-
-/** Fallback label when no task name is available. */
-const UNKNOWN_TASK_LABEL = 'Default task';
 
 /* ---------- Sub-components ---------- */
 
@@ -39,7 +36,10 @@ function RunCard({
     <div
       className="flex items-center justify-between gap-3 py-2.5 border-b border-outline-variant/5 last:border-0 cursor-pointer hover:bg-surface-container-high/50 -mx-2 px-2 rounded transition-colors"
       onClick={onClick}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
       role="link"
+      tabIndex={0}
+      aria-label={`View run: ${taskName}`}
     >
       {/* Left: status dot + task name */}
       <div className="flex items-center gap-2.5 min-w-0">
@@ -63,14 +63,7 @@ export function AgentRunsFeed() {
   const { data: tasksData } = useAgentTasks();
   const navigate = useNavigate();
 
-  const taskNameMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const task of tasksData?.tasks ?? []) {
-      map.set(task.name, task.displayName);
-    }
-    return map;
-  }, [tasksData]);
-
+  const tasks = tasksData?.tasks ?? [];
   const runs = data?.runs ?? [];
 
   return (
@@ -92,7 +85,7 @@ export function AgentRunsFeed() {
             <RunCard
               key={run.id}
               run={run}
-              taskName={run.task ? taskNameMap.get(run.task) ?? run.task : UNKNOWN_TASK_LABEL}
+              taskName={resolveTaskName(run.task, tasks)}
               onClick={() => navigate('/agent')}
             />
           ))}

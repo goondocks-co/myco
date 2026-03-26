@@ -80,11 +80,11 @@ export class DaemonServer {
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    this.onRequest?.();
     // API/daemon routes take priority over static files
     const match = this.router.match(req.method!, req.url!);
 
     if (match) {
+      this.onRequest?.();
       try {
         const body = (req.method === 'POST' || req.method === 'PUT') ? await readBody(req) : undefined;
         const result = await match.handler({
