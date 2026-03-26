@@ -21,9 +21,6 @@ export const MS_PER_SECOND = 1000;
 /** Max characters of text sent to the embedding model. */
 export const EMBEDDING_INPUT_LIMIT = 8000;
 
-/** Embedding worker reconciliation interval (ms). */
-export const EMBEDDING_INTERVAL_MS = 30 * MS_PER_SECOND;
-
 /** Max rows per embedding worker cycle. */
 export const EMBEDDING_BATCH_SIZE = 10;
 
@@ -307,3 +304,21 @@ export const CONSOLIDATION_VECTOR_FETCH_LIMIT = 20;
 /** Max output tokens for consolidation LLM synthesis.
  *  Must be large enough for the full JSON response including content field. */
 export const CONSOLIDATION_MAX_TOKENS = 2048;
+
+// --- Power management ---
+/** Time without activity before transitioning to idle (ms). */
+export const POWER_IDLE_THRESHOLD_MS = 5 * 60 * MS_PER_SECOND;
+/** Time without activity before transitioning to sleep (ms). */
+export const POWER_SLEEP_THRESHOLD_MS = 30 * 60 * MS_PER_SECOND;
+/** Time without activity before transitioning to deep sleep (ms). */
+export const POWER_DEEP_SLEEP_THRESHOLD_MS = 90 * 60 * MS_PER_SECOND;
+/** Job cycle interval during active/idle states (ms). */
+export const POWER_ACTIVE_INTERVAL_MS = 60 * MS_PER_SECOND;
+/** Job cycle interval during sleep state (ms). */
+export const POWER_SLEEP_INTERVAL_MS = 5 * 60 * MS_PER_SECOND;
+
+// --- Session maintenance ---
+/** Time without new prompts before an active session is auto-completed (ms). */
+export const STALE_SESSION_THRESHOLD_MS = 60 * 60 * MS_PER_SECOND;
+/** Max prompt count for a session to be considered dead and auto-deleted. */
+export const DEAD_SESSION_MAX_PROMPTS = 1;

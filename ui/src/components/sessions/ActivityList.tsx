@@ -14,13 +14,18 @@ const SKELETON_MAX_ROWS = 3;
 function ActivityItem({ activity }: { activity: ActivityRow }) {
   const [expanded, setExpanded] = useState(false);
   const succeeded = activity.success === 1;
+  const hasDetail = Boolean(activity.tool_input || activity.tool_output_summary || activity.error_message);
 
   return (
-    <div className="border-l-2 border-transparent hover:border-l-primary/30 transition-colors">
+    <div className={cn(
+      'border-l-2 transition-colors',
+      expanded ? 'border-l-primary/30' : 'border-transparent hover:border-l-primary/20',
+    )}>
       <button
         type="button"
         className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-container/30 transition-all"
         onClick={() => setExpanded((prev) => !prev)}
+        aria-expanded={expanded}
       >
         {expanded ? (
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-on-surface-variant" />
@@ -46,34 +51,45 @@ function ActivityItem({ activity }: { activity: ActivityRow }) {
         )}
       </button>
 
-      {expanded && (
-        <div className="px-8 pb-3 space-y-2">
-          {activity.tool_input && (
-            <div>
-              <div className="font-sans text-xs font-medium text-on-surface-variant mb-1">Input</div>
-              <pre className="font-mono text-xs bg-surface-container-lowest rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-all text-on-surface">
-                {activity.tool_input}
-              </pre>
-            </div>
-          )}
-          {activity.tool_output_summary && (
-            <div>
-              <div className="font-sans text-xs font-medium text-on-surface-variant mb-1">Output</div>
-              <pre className="font-mono text-xs bg-surface-container-lowest rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-all text-on-surface">
-                {activity.tool_output_summary}
-              </pre>
-            </div>
-          )}
-          {activity.error_message && (
-            <div>
-              <div className="font-sans text-xs font-medium text-tertiary mb-1">Error</div>
-              <pre className="font-mono text-xs bg-tertiary/10 text-tertiary rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-all">
-                {activity.error_message}
-              </pre>
-            </div>
-          )}
+      {/* Expandable detail — CSS grid for smooth animation */}
+      <div
+        className="grid transition-[grid-template-rows] duration-150 ease-out"
+        style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
+      >
+        <div className="overflow-hidden">
+          <div className="px-8 pb-3 space-y-2">
+            {!hasDetail && (
+              <p className="font-sans text-xs text-on-surface-variant/60 italic py-1">
+                No input/output details captured
+              </p>
+            )}
+            {activity.tool_input && (
+              <div>
+                <div className="font-sans text-xs font-medium text-on-surface-variant mb-1">Input</div>
+                <pre className="font-mono text-xs bg-surface-container-lowest rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-all text-on-surface">
+                  {activity.tool_input}
+                </pre>
+              </div>
+            )}
+            {activity.tool_output_summary && (
+              <div>
+                <div className="font-sans text-xs font-medium text-on-surface-variant mb-1">Output</div>
+                <pre className="font-mono text-xs bg-surface-container-lowest rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-all text-on-surface">
+                  {activity.tool_output_summary}
+                </pre>
+              </div>
+            )}
+            {activity.error_message && (
+              <div>
+                <div className="font-sans text-xs font-medium text-tertiary mb-1">Error</div>
+                <pre className="font-mono text-xs bg-tertiary/10 text-tertiary rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-all">
+                  {activity.error_message}
+                </pre>
+              </div>
+            )}
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -94,7 +110,6 @@ export function ActivityList({ batchId, activityCount }: ActivityListProps) {
   }
 
   const activities = data ?? [];
-  const loaded = expanded && !isLoading && activities.length > 0;
 
   return (
     <div className="border-t border-[var(--ghost-border)]">
@@ -120,23 +135,31 @@ export function ActivityList({ batchId, activityCount }: ActivityListProps) {
         </span>
       </button>
 
-      {/* Loading skeleton */}
-      {expanded && isLoading && (
-        <div className="px-3 py-2 space-y-1">
-          {Array.from({ length: Math.min(activityCount, SKELETON_MAX_ROWS) }).map((_, i) => (
-            <div key={i} className="h-3 animate-pulse rounded bg-surface-container-high w-full" />
-          ))}
-        </div>
-      )}
+      {/* Expandable body — CSS grid for smooth animation */}
+      <div
+        className="grid transition-[grid-template-rows] duration-200 ease-out"
+        style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
+      >
+        <div className="overflow-hidden">
+          {/* Loading skeleton */}
+          {isLoading && (
+            <div className="px-3 py-2 space-y-1">
+              {Array.from({ length: Math.min(activityCount, SKELETON_MAX_ROWS) }).map((_, i) => (
+                <div key={i} className="h-3 animate-pulse rounded bg-surface-container-high w-full" />
+              ))}
+            </div>
+          )}
 
-      {/* Activity items */}
-      {loaded && (
-        <div className="space-y-0">
-          {activities.map((activity) => (
-            <ActivityItem key={activity.id} activity={activity} />
-          ))}
+          {/* Activity items */}
+          {!isLoading && activities.length > 0 && (
+            <div className="space-y-0">
+              {activities.map((activity) => (
+                <ActivityItem key={activity.id} activity={activity} />
+              ))}
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

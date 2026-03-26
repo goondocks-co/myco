@@ -3,7 +3,7 @@ import { PageLoading } from '../components/ui/page-loading';
 import { StatusHero } from '../components/dashboard/StatusHero';
 import { VaultStats } from '../components/dashboard/VaultStats';
 import { SessionPodGrid } from '../components/dashboard/SessionPodGrid';
-import { SporeChart } from '../components/dashboard/SporeChart';
+import { AgentRunsFeed } from '../components/dashboard/AgentRunsFeed';
 import { ActivityLogFeed } from '../components/dashboard/ActivityLogFeed';
 import { FooterStatus } from '../components/dashboard/FooterStatus';
 
@@ -58,7 +58,7 @@ export default function Dashboard() {
 
             {/* Visualization row: chart + logs */}
             <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <SporeChart />
+              <AgentRunsFeed />
               <ActivityLogFeed />
             </section>
 

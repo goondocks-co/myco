@@ -73,3 +73,22 @@ export function formatDurationMs(ms: number | null): string {
   if (ms < MS_PER_SECOND) return `${ms}ms`;
   return `${(ms / MS_PER_SECOND).toFixed(1)}s`;
 }
+
+/**
+ * Parse a string to a number, returning `fallback` when the input is empty,
+ * non-numeric, or NaN. Unlike `Number(s) || fallback`, this correctly handles
+ * the value `0` (which is a valid input for "disabled" fields).
+ */
+export function parseNumericField(value: string, fallback: number): number {
+  if (value.trim() === '') return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Format a nullable epoch timestamp as a relative label, or return an em dash.
+ * Convenience wrapper for components that frequently null-check before calling formatEpochAgo.
+ */
+export function formatEpochRelative(epoch: number | null): string {
+  return epoch !== null ? formatEpochAgo(epoch) : '\u2014';
+}

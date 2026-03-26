@@ -13,7 +13,7 @@ export function GraphCanvas({ nodes, edges, onNodeSelect }: GraphCanvasProps) {
   const { containerRef, resetView } = useGraphCanvas({ nodes, edges, onNodeSelect });
 
   return (
-    <div className="relative flex-1 min-h-[400px]">
+    <div className="absolute inset-0">
       {/* Mycelial mesh background pattern */}
       <div
         className="absolute inset-0 rounded-md bg-surface-container-lowest"

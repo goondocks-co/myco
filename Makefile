@@ -1,4 +1,4 @@
-.PHONY: build build-only check test lint clean watch install dev-link dev-unlink
+.PHONY: build build-only check test lint clean watch install dev-link dev-unlink ui-dev
 
 build: check
 	npm run build
@@ -22,6 +22,15 @@ clean:
 
 install:
 	npm install
+
+ui-dev:
+	@port=$${MYCO_DAEMON_PORT:-$$(node -e ' \
+		var fs=require("fs"),p=require("path"),v=p.join(require("os").homedir(),".myco/vaults/myco"); \
+		try{console.log(JSON.parse(fs.readFileSync(p.join(v,"daemon.json"),"utf-8")).port);process.exit(0)}catch{} \
+		try{var y=fs.readFileSync(p.join(v,"myco.yaml"),"utf-8"),m=y.match(/^\\s*port:\\s*(\\d+)/m);if(m){console.log(m[1]);process.exit(0)}}catch{} \
+		console.log(19200)')}; \
+	echo "Proxying API to daemon on port $$port (override with MYCO_DAEMON_PORT=<port> make ui-dev)"; \
+	cd ui && MYCO_DAEMON_PORT=$$port npx vite dev
 
 dev-link:
 	npm run build

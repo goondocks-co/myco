@@ -64,7 +64,7 @@ import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
-import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSession } from '../db/queries/sessions.js';
+import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSessionCascade, getSessionImpact } from '../db/queries/sessions.js';
 import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, findBatchByPromptPrefix, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary, listBatchesBySession } from '../db/queries/batches.js';
 import { insertActivityWithBatch } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
@@ -80,10 +80,18 @@ import {
   LOG_MESSAGE_PREVIEW_CHARS,
   USER_AGENT_ID,
   USER_AGENT_NAME,
-  EMBEDDING_INTERVAL_MS,
   EMBEDDING_BATCH_SIZE,
+  POWER_IDLE_THRESHOLD_MS,
+  POWER_SLEEP_THRESHOLD_MS,
+  POWER_DEEP_SLEEP_THRESHOLD_MS,
+  POWER_ACTIVE_INTERVAL_MS,
+  POWER_SLEEP_INTERVAL_MS,
   epochSeconds,
+  MS_PER_SECOND,
 } from '../constants.js';
+import { PowerManager } from './power.js';
+import { runSessionMaintenance } from './jobs/session-maintenance.js';
+import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
 import { z } from 'zod';
 import fs from 'node:fs';
@@ -93,8 +101,6 @@ import path from 'node:path';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Seconds-to-milliseconds multiplier for config intervals. */
-const SECONDS_TO_MS = 1000;
 
 /** Default limit for listing agent runs in the API. */
 const AGENT_RUNS_DEFAULT_LIMIT = 50;
@@ -457,7 +463,21 @@ export async function main(): Promise<void> {
     logger.debug('daemon', 'Static UI directory found', { path: uiDir });
   }
 
-  const server = new DaemonServer({ vaultDir, logger, uiDir: uiDir ?? undefined });
+  const powerManager = new PowerManager({
+    idleThresholdMs: POWER_IDLE_THRESHOLD_MS,
+    sleepThresholdMs: POWER_SLEEP_THRESHOLD_MS,
+    deepSleepThresholdMs: POWER_DEEP_SLEEP_THRESHOLD_MS,
+    activeIntervalMs: POWER_ACTIVE_INTERVAL_MS,
+    sleepIntervalMs: POWER_SLEEP_INTERVAL_MS,
+    logger,
+  });
+
+  const server = new DaemonServer({
+    vaultDir,
+    logger,
+    uiDir: uiDir ?? undefined,
+    onRequest: () => powerManager.recordActivity(),
+  });
 
   // The daemon serves the dashboard UI and must stay running regardless of
   // active sessions. No auto-shutdown — runs until explicitly killed.
@@ -1285,13 +1305,27 @@ export async function main(): Promise<void> {
   });
 
   server.registerRoute('GET', '/api/sessions/:id', handleGetSession);
+  server.registerRoute('GET', '/api/sessions/:id/impact', async (req) => {
+    const sessionId = req.params.id;
+    const session = getSession(sessionId);
+    if (!session) return { status: 404, body: { error: 'Session not found' } };
+    const impact = getSessionImpact(sessionId);
+    return { body: impact };
+  });
+
   server.registerRoute('DELETE', '/api/sessions/:id', async (req) => {
     const sessionId = req.params.id;
-    const deleted = deleteSession(sessionId);
-    if (!deleted) return { status: 404, body: { error: 'Session not found' } };
-    try { embeddingManager.onRemoved('sessions', sessionId); } catch { /* best-effort */ }
-    logger.info('api', 'Session deleted', { session_id: sessionId });
-    return { body: { ok: true } };
+    const result = deleteSessionCascade(sessionId);
+    if (!result.deleted) return { status: 404, body: { error: 'Session not found' } };
+
+    // Post-transaction cleanup (fire-and-forget)
+    cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir).catch(() => {});
+
+    logger.info('api', 'Session cascade deleted', {
+      session_id: sessionId,
+      counts: result.counts,
+    });
+    return { body: { ok: true, counts: result.counts } };
   });
   server.registerRoute('GET', '/api/sessions/:id/batches', handleGetSessionBatches);
   server.registerRoute('GET', '/api/batches/:id/activities', handleGetBatchActivities);
@@ -1601,63 +1635,83 @@ export async function main(): Promise<void> {
     }
   }
 
-  // --- Agent timer ---
+  // --- Register power-managed jobs ---
 
-  const agentTimer = config.agent.auto_run
-    ? setInterval(async () => {
+  let reconcileRunning = false;
+  powerManager.register({
+    name: 'embedding-reconcile',
+    runIn: ['active', 'idle'],
+    fn: async () => {
+      if (reconcileRunning) return;
+      reconcileRunning = true;
+      try {
+        await embeddingManager.reconcile(EMBEDDING_BATCH_SIZE);
+      } finally {
+        reconcileRunning = false;
+      }
+    },
+  });
+
+  powerManager.register({
+    name: 'session-maintenance',
+    runIn: ['active', 'idle', 'sleep'],
+    fn: () => runSessionMaintenance({
+      logger,
+      registeredSessionIds: () => registry.sessions,
+      embeddingManager,
+      vaultDir,
+    }),
+  });
+
+  // Agent auto-run: only when enabled, with its own interval guard.
+  // Runs on the PowerManager tick but skips unless enough time has elapsed
+  // since the last run (config.agent.interval_seconds).
+  if (config.agent.auto_run) {
+    let agentRunning = false;
+    let lastAgentRun = 0;
+    const agentIntervalMs = config.agent.interval_seconds * MS_PER_SECOND;
+
+    powerManager.register({
+      name: 'agent-auto-run',
+      runIn: ['active', 'idle'],
+      fn: async () => {
+        if (agentRunning) return;
+        if (Date.now() - lastAgentRun < agentIntervalMs) return;
+
+        // Pre-check: only spawn agent if there's unprocessed work
+        const agentDb = getDatabase();
+        const checkRow = agentDb.prepare('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0').get() as { count: number };
+        const count = Number(checkRow.count);
+        if (count === 0) {
+          logger.debug('agent', 'No unprocessed batches, skipping cycle');
+          return;
+        }
+
+        agentRunning = true;
+        lastAgentRun = Date.now();
         try {
-          // Pre-check: only spawn agent if there's unprocessed work
-          const agentDb = getDatabase();
-          const checkRow = agentDb.prepare('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0').get() as { count: number };
-          const count = Number(checkRow.count);
-          if (count === 0) {
-            logger.debug('agent', 'No unprocessed batches, skipping cycle');
-            return;
-          }
-
           logger.info('agent', 'Unprocessed batches found, starting agent', { count });
           const { runAgent } = await import('../agent/executor.js');
           const runResult = await runAgent(vaultDir, { embeddingManager });
           logger.info('agent', 'Agent run completed', { status: runResult.status, runId: runResult.runId });
         } catch (err) {
-          logger.error('agent', 'Agent timer failed', { error: (err as Error).message });
+          logger.error('agent', 'Agent auto-run failed', { error: (err as Error).message });
+        } finally {
+          agentRunning = false;
         }
-      }, config.agent.interval_seconds * SECONDS_TO_MS)
-    : null;
-
-  if (!config.agent.auto_run) {
+      },
+    });
+  } else {
     logger.info('agent', 'Auto-agent disabled (agent.auto_run = false)');
   }
 
-  // --- Embedding reconcile worker ---
-  // Delegates to EmbeddingManager.reconcile() which handles: finding unembedded
-  // rows, embedding via provider, upserting vectors, marking embedded flags,
-  // and running orphan sweeps.
-
-  let reconcileRunning = false;
-  const reconcileTimer = setInterval(async () => {
-    if (reconcileRunning) return;
-    reconcileRunning = true;
-    try {
-      await embeddingManager.reconcile(EMBEDDING_BATCH_SIZE);
-    } catch (err) {
-      logger.error('embedding', 'Reconcile worker failed', { error: (err as Error).message });
-    } finally {
-      reconcileRunning = false;
-    }
-  }, EMBEDDING_INTERVAL_MS);
-
-  logger.info('embedding', 'Reconcile worker started', {
-    interval_ms: EMBEDDING_INTERVAL_MS,
-    batch_size: EMBEDDING_BATCH_SIZE,
-  });
+  powerManager.start();
 
   // --- Shutdown ---
 
   const shutdown = async (signal: string) => {
     logger.info('daemon', `${signal} received`);
-    if (agentTimer) clearInterval(agentTimer);
-    clearInterval(reconcileTimer);
+    powerManager.stop();
     // Wait for any active stop processing to finish before shutting down
     if (activeStopProcessing) {
       logger.info('daemon', 'Waiting for active stop processing to complete...');

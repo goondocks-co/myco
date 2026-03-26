@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import {
   Settings2,
   Cpu,
@@ -13,8 +13,9 @@ import { useDaemon, type StatsResponse } from '../../hooks/use-daemon';
 import { useAgentTasks, type TaskRow } from '../../hooks/use-agent';
 import { useRestart } from '../../hooks/use-restart';
 import { fetchJson } from '../../lib/api';
-import { formatUptime, formatEpochAgo } from '../../lib/format';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
+import { formatUptime, formatEpochAgo, parseNumericField } from '../../lib/format';
+import { Surface } from '../ui/surface';
+import { SectionHeader } from '../ui/section-header';
 import { Input } from '../ui/input';
 import { Button } from '../ui/button';
 import {
@@ -25,16 +26,12 @@ import {
   SelectValue,
 } from '../ui/select';
 
+import { DEFAULT_INTERVAL_SECONDS, DEFAULT_SUMMARY_BATCH_INTERVAL } from '../../lib/constants';
+
 /* ---------- Constants ---------- */
 
 /** Minimum allowed interval in seconds. */
 const MIN_INTERVAL_SECONDS = 30;
-
-/** Default interval fallback. */
-const DEFAULT_INTERVAL_SECONDS = 300;
-
-/** Default summary batch interval. */
-const DEFAULT_SUMMARY_BATCH_INTERVAL = 5;
 
 type TestState = 'idle' | 'testing' | 'success' | 'error';
 
@@ -102,7 +99,7 @@ function MetricGauge({
             cx="40" cy="40" r="36"
             fill="none"
             stroke="currentColor"
-            className="text-muted/30"
+            className="text-surface-container/30"
             strokeWidth="6"
           />
           <circle
@@ -117,10 +114,10 @@ function MetricGauge({
           />
         </svg>
         <div className="absolute inset-0 flex items-center justify-center">
-          <span className="text-sm font-semibold font-mono text-foreground">{pct}%</span>
+          <span className="text-sm font-semibold font-mono text-on-surface">{pct}%</span>
         </div>
       </div>
-      <span className="text-xs text-muted-foreground text-center">{label}</span>
+      <span className="text-xs text-on-surface-variant text-center font-sans">{label}</span>
     </div>
   );
 }
@@ -134,8 +131,8 @@ function StatRow({
 }) {
   return (
     <div className="flex items-center justify-between py-1">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span className="text-xs font-mono text-foreground">{value}</span>
+      <span className="text-xs text-on-surface-variant font-sans">{label}</span>
+      <span className="text-xs font-mono text-on-surface">{value}</span>
     </div>
   );
 }
@@ -148,7 +145,7 @@ function SystemHealthSection({ stats }: { stats: StatsResponse }) {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-2">
+      <h2 className="text-xs font-semibold text-on-surface-variant uppercase tracking-widest flex items-center gap-2 font-sans">
         <Activity className="h-3.5 w-3.5" />
         System Health
       </h2>
@@ -207,12 +204,16 @@ export function AgentConfig() {
   const tasks: TaskRow[] = tasksData?.tasks ?? [];
   const defaultTaskFromApi = tasks.find((t) => t.isDefault)?.name ?? '';
 
-  // Initialise form once config + tasks load
-  useEffect(() => {
-    if (config && form === null && !tasksLoading) {
+  // Initialise form from config once config + tasks load. A ref tracks whether
+  // we have initialised so we only seed once — subsequent refetches do NOT
+  // overwrite user edits. This replaces the previous useEffect pattern.
+  const formInitialised = useRef(false);
+  if (config && !tasksLoading && !formInitialised.current) {
+    formInitialised.current = true;
+    if (form === null) {
       setForm(toAgentForm(config, defaultTaskFromApi));
     }
-  }, [config, form, tasksLoading, defaultTaskFromApi]);
+  }
 
   const dirty = form && config ? isAgentDirty(form, config, defaultTaskFromApi) : false;
 
@@ -229,8 +230,8 @@ export function AgentConfig() {
         ...config,
         agent: {
           auto_run: form.autoRun,
-          interval_seconds: Math.max(MIN_INTERVAL_SECONDS, Number(form.intervalSeconds) || DEFAULT_INTERVAL_SECONDS),
-          summary_batch_interval: Number(form.summaryBatchInterval) ?? DEFAULT_SUMMARY_BATCH_INTERVAL,
+          interval_seconds: Math.max(MIN_INTERVAL_SECONDS, parseNumericField(form.intervalSeconds, DEFAULT_INTERVAL_SECONDS)),
+          summary_batch_interval: parseNumericField(form.summaryBatchInterval, DEFAULT_SUMMARY_BATCH_INTERVAL),
         },
       };
       await saveConfig(updated);
@@ -271,7 +272,7 @@ export function AgentConfig() {
     return (
       <div className="space-y-4">
         {[1, 2, 3].map((i) => (
-          <div key={i} className="h-32 rounded-lg border animate-pulse bg-muted" />
+          <div key={i} className="h-32 rounded-md animate-pulse bg-surface-container-low" />
         ))}
       </div>
     );
@@ -280,218 +281,212 @@ export function AgentConfig() {
   return (
     <div className="space-y-6">
       {/* ---------- Agent Operations (editable) ---------- */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-sm">
-            <Settings2 className="h-4 w-4 text-[#abcfb8]" />
+      <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-sage">
+        <SectionHeader>
+          <span className="flex items-center gap-2">
+            <Settings2 className="h-4 w-4 text-primary" />
             Agent Operations
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          {/* Auto-run toggle */}
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <label className="text-sm font-medium">Auto Run</label>
-              <p className="text-xs text-muted-foreground">
-                Automatically process unprocessed batches on a timer.
-              </p>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={form.autoRun}
-              onClick={() => setField('autoRun', !form.autoRun)}
-              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
-                form.autoRun ? 'bg-[#abcfb8]' : 'bg-muted'
+          </span>
+        </SectionHeader>
+
+        {/* Auto-run toggle */}
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <label className="font-sans text-sm font-medium text-on-surface">Auto Run</label>
+            <p className="font-sans text-xs text-on-surface-variant">
+              Automatically process unprocessed batches on a timer.
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={form.autoRun}
+            onClick={() => setField('autoRun', !form.autoRun)}
+            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 ${
+              form.autoRun ? 'bg-primary' : 'bg-surface-container-high'
+            }`}
+          >
+            <span
+              className={`pointer-events-none block h-5 w-5 rounded-full bg-on-surface shadow-lg ring-0 transition-transform ${
+                form.autoRun ? 'translate-x-5' : 'translate-x-0'
               }`}
-            >
-              <span
-                className={`pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${
-                  form.autoRun ? 'translate-x-5' : 'translate-x-0'
-                }`}
-              />
-            </button>
-          </div>
+            />
+          </button>
+        </div>
 
-          {/* Run interval */}
-          <div className="space-y-1">
-            <label className="text-sm font-medium">Run Interval</label>
-            <div className="flex items-center gap-3">
-              <Input
-                type="number"
-                min={MIN_INTERVAL_SECONDS}
-                placeholder={String(DEFAULT_INTERVAL_SECONDS)}
-                value={form.intervalSeconds}
-                onChange={(e) => setField('intervalSeconds', e.target.value)}
-                className="w-32 font-mono"
-              />
-              <span className="text-xs text-muted-foreground">
-                seconds
-                {form.intervalSeconds && (
-                  <span className="ml-1 text-foreground">({formatMinutes(form.intervalSeconds)})</span>
-                )}
-              </span>
+        {/* Run interval */}
+        <div className="space-y-1">
+          <label className="font-sans text-sm font-medium text-on-surface">Run Interval</label>
+          <div className="flex items-center gap-3">
+            <Input
+              type="number"
+              min={MIN_INTERVAL_SECONDS}
+              placeholder={String(DEFAULT_INTERVAL_SECONDS)}
+              value={form.intervalSeconds}
+              onChange={(e) => setField('intervalSeconds', e.target.value)}
+              className="w-32 font-mono"
+            />
+            <span className="font-sans text-xs text-on-surface-variant">
+              seconds
+              {form.intervalSeconds && (
+                <span className="ml-1 text-on-surface">({formatMinutes(form.intervalSeconds)})</span>
+              )}
+            </span>
+          </div>
+          <p className="font-sans text-xs text-on-surface-variant">
+            How often the agent checks for unprocessed work. Minimum {MIN_INTERVAL_SECONDS}s.
+          </p>
+        </div>
+
+        {/* Summary batch interval */}
+        <div className="space-y-1">
+          <label className="font-sans text-sm font-medium text-on-surface">Summary Batch Interval</label>
+          <div className="flex items-center gap-3">
+            <Input
+              type="number"
+              min={0}
+              placeholder={String(DEFAULT_SUMMARY_BATCH_INTERVAL)}
+              value={form.summaryBatchInterval}
+              onChange={(e) => setField('summaryBatchInterval', e.target.value)}
+              className="w-32 font-mono"
+            />
+            <span className="font-sans text-xs text-on-surface-variant">batches</span>
+          </div>
+          <p className="font-sans text-xs text-on-surface-variant">
+            Trigger a session summary every N batches. Set to 0 to disable.
+          </p>
+        </div>
+
+        {/* Default task */}
+        <div className="space-y-1">
+          <label className="font-sans text-sm font-medium text-on-surface">Default Task</label>
+          {tasksLoading ? (
+            <div className="flex h-9 items-center gap-2 text-on-surface-variant font-sans text-sm">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading tasks...
             </div>
-            <p className="text-xs text-muted-foreground">
-              How often the agent checks for unprocessed work. Minimum {MIN_INTERVAL_SECONDS}s.
-            </p>
-          </div>
-
-          {/* Summary batch interval */}
-          <div className="space-y-1">
-            <label className="text-sm font-medium">Summary Batch Interval</label>
-            <div className="flex items-center gap-3">
-              <Input
-                type="number"
-                min={0}
-                placeholder={String(DEFAULT_SUMMARY_BATCH_INTERVAL)}
-                value={form.summaryBatchInterval}
-                onChange={(e) => setField('summaryBatchInterval', e.target.value)}
-                className="w-32 font-mono"
-              />
-              <span className="text-xs text-muted-foreground">batches</span>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Trigger a session summary every N batches. Set to 0 to disable.
-            </p>
-          </div>
-
-          {/* Default task */}
-          <div className="space-y-1">
-            <label className="text-sm font-medium">Default Task</label>
-            {tasksLoading ? (
-              <div className="flex h-9 items-center gap-2 text-muted-foreground text-sm">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Loading tasks...
-              </div>
-            ) : (
-              <Select
-                value={form.defaultTask}
-                onValueChange={(v) => setField('defaultTask', v)}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select default task" />
-                </SelectTrigger>
-                <SelectContent>
-                  {tasks.map((task) => (
-                    <SelectItem key={task.name} value={task.name}>
-                      {task.displayName}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-            <p className="text-xs text-muted-foreground">
-              The task used when auto-run triggers or no task is specified.
-            </p>
-          </div>
-
-          {/* Save row */}
-          <div className="flex items-center gap-3 pt-2 border-t border-border">
-            <Button
-              onClick={handleSave}
-              disabled={!dirty || isSaving}
-              size="sm"
+          ) : (
+            <Select
+              value={form.defaultTask}
+              onValueChange={(v) => setField('defaultTask', v)}
             >
-              {isSaving ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
-              Save Changes
-            </Button>
-            {saveMessage && (
-              <span
-                className={
-                  saveMessage.type === 'success'
-                    ? 'text-xs text-green-600 dark:text-green-400'
-                    : 'text-xs text-destructive'
-                }
-              >
-                {saveMessage.text}
-              </span>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+              <SelectTrigger>
+                <SelectValue placeholder="Select default task" />
+              </SelectTrigger>
+              <SelectContent>
+                {tasks.map((task) => (
+                  <SelectItem key={task.name} value={task.name}>
+                    {task.displayName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          <p className="font-sans text-xs text-on-surface-variant">
+            The task used when auto-run triggers or no task is specified.
+          </p>
+        </div>
+
+        {/* Save row */}
+        <div className="flex items-center gap-3 pt-2 border-t border-outline-variant/20">
+          <Button
+            onClick={handleSave}
+            disabled={!dirty || isSaving}
+            size="sm"
+          >
+            {isSaving ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
+            Save Changes
+          </Button>
+          {saveMessage && (
+            <span
+              className={
+                saveMessage.type === 'success'
+                  ? 'font-sans text-xs text-primary'
+                  : 'font-sans text-xs text-tertiary'
+              }
+            >
+              {saveMessage.text}
+            </span>
+          )}
+        </div>
+      </Surface>
 
       {/* ---------- Embedding Configuration (read-only summary + link) ---------- */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-sm">
-            <Cpu className="h-4 w-4 text-[#edbf7f]" />
+      <Surface level="low" className="p-6 space-y-4 border-t-2 border-t-ochre">
+        <SectionHeader>
+          <span className="flex items-center gap-2">
+            <Cpu className="h-4 w-4 text-secondary" />
             Embedding Configuration
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid grid-cols-2 gap-x-6 gap-y-2">
-            <div>
-              <p className="text-xs text-muted-foreground">Provider</p>
-              <p className="text-sm font-mono text-foreground mt-0.5">
-                {config.embedding.provider}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Model</p>
-              <p className="text-sm font-mono text-foreground mt-0.5 truncate" title={config.embedding.model}>
-                {config.embedding.model}
-              </p>
-            </div>
-            {config.embedding.base_url && (
-              <div className="col-span-2">
-                <p className="text-xs text-muted-foreground">Base URL</p>
-                <p className="text-sm font-mono text-foreground mt-0.5 truncate" title={config.embedding.base_url}>
-                  {config.embedding.base_url}
-                </p>
-              </div>
-            )}
-          </div>
+          </span>
+        </SectionHeader>
 
-          <div className="flex items-center gap-3 pt-2 border-t border-border">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={handleTestEmbedding}
-              disabled={testState === 'testing'}
-            >
-              {testState === 'testing' ? (
-                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-              ) : null}
-              Test Connection
-            </Button>
-            <a
-              href="/settings"
-              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <ExternalLink className="h-3 w-3" />
-              Edit in Settings
-            </a>
-            {testState === 'success' && (
-              <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
-                <CheckCircle className="h-3.5 w-3.5" />
-                {testMessage}
-              </span>
-            )}
-            {testState === 'error' && (
-              <span className="flex items-center gap-1 text-xs text-destructive">
-                <XCircle className="h-3.5 w-3.5" />
-                {testMessage}
-              </span>
-            )}
+        <div className="grid grid-cols-2 gap-x-6 gap-y-2">
+          <div>
+            <p className="font-sans text-xs text-on-surface-variant">Provider</p>
+            <p className="text-sm font-mono text-on-surface mt-0.5">
+              {config.embedding.provider}
+            </p>
           </div>
-        </CardContent>
-      </Card>
+          <div>
+            <p className="font-sans text-xs text-on-surface-variant">Model</p>
+            <p className="text-sm font-mono text-on-surface mt-0.5 truncate" title={config.embedding.model}>
+              {config.embedding.model}
+            </p>
+          </div>
+          {config.embedding.base_url && (
+            <div className="col-span-2">
+              <p className="font-sans text-xs text-on-surface-variant">Base URL</p>
+              <p className="text-sm font-mono text-on-surface mt-0.5 truncate" title={config.embedding.base_url}>
+                {config.embedding.base_url}
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-3 pt-2 border-t border-outline-variant/20">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={handleTestEmbedding}
+            disabled={testState === 'testing'}
+          >
+            {testState === 'testing' ? (
+              <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+            ) : null}
+            Test Connection
+          </Button>
+          <a
+            href="/settings"
+            className="flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface transition-colors"
+          >
+            <ExternalLink className="h-3 w-3" />
+            Edit in Settings
+          </a>
+          {testState === 'success' && (
+            <span className="flex items-center gap-1 font-sans text-xs text-primary">
+              <CheckCircle className="h-3.5 w-3.5" />
+              {testMessage}
+            </span>
+          )}
+          {testState === 'error' && (
+            <span className="flex items-center gap-1 font-sans text-xs text-tertiary">
+              <XCircle className="h-3.5 w-3.5" />
+              {testMessage}
+            </span>
+          )}
+        </div>
+      </Surface>
 
       {/* ---------- System Health (read-only) ---------- */}
       {statsLoading ? (
-        <Card>
-          <CardContent className="p-6">
-            <div className="h-32 animate-pulse rounded bg-muted" />
-          </CardContent>
-        </Card>
+        <Surface level="low" className="p-6">
+          <div className="h-32 animate-pulse rounded-md bg-surface-container" />
+        </Surface>
       ) : stats ? (
-        <Card>
-          <CardContent className="p-6">
-            <SystemHealthSection stats={stats} />
-          </CardContent>
-        </Card>
+        <Surface level="low" className="p-6">
+          <SystemHealthSection stats={stats} />
+        </Surface>
       ) : null}
     </div>
   );

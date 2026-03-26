@@ -36,7 +36,7 @@ export function StatCard({ label, value, sublabel, accent, sparklineData, classN
   return (
     <div
       className={cn(
-        'rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2',
+        'rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2 transition-[border-color,background-color] duration-200 hover:border-outline-variant/25 hover:bg-surface-container/80',
         ACCENT_BORDER[accent],
         className,
       )}

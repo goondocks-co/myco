@@ -101,7 +101,7 @@ export function Inspector({ node, edges, nodes, metadata, markdownPreview, conne
   const previewLabel = node.type === 'spore' ? 'Observation' : node.type === 'session' ? 'Summary' : 'Notes';
 
   return (
-    <Surface glass className="w-[320px] shrink-0 overflow-y-auto max-h-full flex flex-col">
+    <Surface glass className="absolute top-0 right-0 z-20 w-[320px] max-h-full overflow-y-auto flex flex-col shadow-lg border border-outline-variant/15 rounded-md">
       {/* Header */}
       <div className="p-4 pb-3">
         <div className="flex items-start justify-between gap-2">

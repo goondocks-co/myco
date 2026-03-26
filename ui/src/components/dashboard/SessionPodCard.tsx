@@ -85,11 +85,20 @@ export function SessionPodCard({ event }: { event: ActivityEvent }) {
   return (
     <div
       className={cn(
-        'p-5 rounded-lg border-l-4 bg-surface-container/60 hover:bg-surface-container-high transition-colors cursor-pointer group',
+        'p-5 rounded-lg border-l-4 bg-surface-container/60 hover:bg-surface-container-high group hover-lift transition-colors',
+        route && 'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
         BORDER_CLASSES[variant],
       )}
       onClick={() => route && navigate(route)}
+      onKeyDown={(e) => {
+        if (route && (e.key === 'Enter' || e.key === ' ')) {
+          e.preventDefault();
+          navigate(route);
+        }
+      }}
+      tabIndex={route ? 0 : undefined}
       role={route ? 'link' : undefined}
+      aria-label={`${titleForEvent(event)} - ${status.label} - ${timeAgo}`}
     >
       {/* Header: ID + Status dot */}
       <div className="flex justify-between items-start mb-3">
