@@ -6,7 +6,8 @@ import { Surface } from '../ui/surface';
 import { PageHeader } from '../ui/page-header';
 import { Input } from '../ui/input';
 import { StatCard } from '../ui/stat-card';
-import { useSessions, useDeleteSession, type SessionSummary } from '../../hooks/use-sessions';
+import { ConfirmDialog } from '../ui/confirm-dialog';
+import { useSessions, useDeleteSession, useSessionImpact, type SessionSummary } from '../../hooks/use-sessions';
 import { StatusBadge } from './status-helpers';
 import { cn } from '../../lib/cn';
 
@@ -183,14 +184,15 @@ export function SessionList() {
   const navigate = useNavigate();
   const [filter, setFilter] = useState('');
   const { data, isLoading, isError, error } = useSessions({ limit: DEFAULT_SESSIONS_LIMIT });
+  const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
   const deleteSession = useDeleteSession();
+  const { data: impact } = useSessionImpact(deleteTarget?.id ?? null);
 
-  function handleDelete(session: SessionSummary) {
-    const label = session.title || session.id.slice(0, SESSION_ID_PREVIEW_LENGTH);
-    if (!window.confirm(`Delete session "${label}"?\n\nThis will permanently remove all batches, activities, and attachments for this session.`)) {
-      return;
-    }
-    deleteSession.mutate(session.id);
+  function handleDeleteConfirm() {
+    if (!deleteTarget) return;
+    deleteSession.mutate(deleteTarget.id, {
+      onSuccess: () => setDeleteTarget(null),
+    });
   }
 
   const sessions = data?.sessions ?? [];
@@ -302,13 +304,35 @@ export function SessionList() {
                   key={session.id}
                   session={session}
                   onClick={() => navigate(`/sessions/${session.id}`)}
-                  onDelete={() => handleDelete(session)}
+                  onDelete={() => setDeleteTarget(session)}
                 />
               ))}
             </tbody>
           </table>
         </Surface>
       )}
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        title="Delete Session"
+        description="This will permanently remove this session and all related data. This action cannot be undone."
+        icon={<Trash2 className="h-4 w-4 text-tertiary" />}
+        meta={deleteTarget ? [
+          { label: 'ID', value: deleteTarget.id.slice(0, SESSION_ID_PREVIEW_LENGTH) },
+          { label: 'Title', value: deleteTarget.title || deleteTarget.id.slice(0, SESSION_ID_PREVIEW_LENGTH) },
+        ] : []}
+        impact={impact ? [
+          { label: 'Prompts', value: impact.promptCount },
+          { label: 'Spores', value: impact.sporeCount },
+          { label: 'Attachments', value: impact.attachmentCount },
+          { label: 'Graph Edges', value: impact.graphEdgeCount },
+        ] : []}
+        confirmLabel="Delete Session"
+        variant="destructive"
+        onConfirm={handleDeleteConfirm}
+        isPending={deleteSession.isPending}
+      />
     </div>
   );
 }
