@@ -4,6 +4,7 @@ import { usePowerQuery } from '../hooks/use-power-query';
 import { fetchJson } from '../lib/api';
 import { POLL_INTERVALS, LOG_LEVELS, LEVEL_ORDER, type LogLevel } from '../lib/constants';
 import { PageHeader } from '../components/ui/page-header';
+import { Surface } from '../components/ui/surface';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
@@ -56,6 +57,17 @@ function levelBadgeVariant(level: LogLevel): 'default' | 'secondary' | 'warning'
   }
 }
 
+/** Colored dot indicator for log level. */
+function levelDotColor(level: LogLevel): string {
+  switch (level) {
+    case 'info':  return 'bg-primary';
+    case 'debug': return 'bg-outline';
+    case 'warn':  return 'bg-secondary';
+    case 'error': return 'bg-tertiary';
+    default:      return 'bg-outline';
+  }
+}
+
 /* ---------- Logs Page ---------- */
 
 export default function Logs() {
@@ -86,7 +98,7 @@ export default function Logs() {
     pollCategory: 'standard',
   });
 
-  /* Accumulate entries when new data arrives (replaces deprecated onSuccess) */
+  /* Accumulate entries when new data arrives */
   useEffect(() => {
     if (!logsData?.entries.length) return;
 
@@ -101,7 +113,6 @@ export default function Logs() {
       } else {
         combined = [...prev, ...logsData.entries];
       }
-      // Cap entries to prevent unbounded memory growth
       return combined.length > MAX_LOG_ENTRIES
         ? combined.slice(-MAX_LOG_ENTRIES)
         : combined;
@@ -109,7 +120,7 @@ export default function Logs() {
 
     setCursor(logsData.cursor);
 
-    // Incrementally discover new categories from incoming entries
+    // Incrementally discover new categories
     setKnownCategories((prev) => {
       const known = new Set(prev);
       let changed = false;
@@ -177,107 +188,112 @@ export default function Logs() {
     <div className="flex h-full flex-col">
       {/* Page header */}
       <div className="px-6 pt-6">
-        <PageHeader title="Logs" />
+        <PageHeader title="Logs" subtitle="Real-time daemon log stream" />
       </div>
 
       {/* Filter toolbar */}
-      <div className="flex flex-wrap items-center gap-2 bg-surface-container px-6 py-3">
-        {/* Level filter buttons */}
-        <div className="flex items-center gap-1">
-          {LOG_LEVELS.map((level) => (
-            <Button
-              key={level}
-              size="sm"
-              variant={activeLevel === level ? 'default' : 'ghost'}
-              className="h-7 px-2 text-xs capitalize"
-              onClick={() => setActiveLevel(level)}
-            >
-              {level}
-            </Button>
-          ))}
-        </div>
-
-        {/* Category filter chips */}
-        {knownCategories.length > 0 && (
-          <div className="flex items-center gap-1 flex-wrap">
-            <span className="font-sans text-[10px] text-on-surface-variant mr-0.5">cat:</span>
-            {knownCategories.map((cat) => (
+      <Surface level="default" className="mx-6 mb-4 rounded-md p-3">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Level filter buttons */}
+          <div className="flex items-center gap-1">
+            {LOG_LEVELS.map((level) => (
               <Button
-                key={cat}
+                key={level}
                 size="sm"
-                variant={activeCategories.has(cat) ? 'default' : 'ghost'}
-                className="h-5 px-1.5 text-[10px]"
-                onClick={() => {
-                  setActiveCategories((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(cat)) {
-                      next.delete(cat);
-                    } else {
-                      next.add(cat);
-                    }
-                    return next;
-                  });
-                }}
+                variant={activeLevel === level ? 'default' : 'ghost'}
+                className="h-7 px-2 text-xs capitalize gap-1.5"
+                onClick={() => setActiveLevel(level)}
               >
-                {cat}
+                <div className={cn('h-1.5 w-1.5 rounded-full', levelDotColor(level))} />
+                {level}
               </Button>
             ))}
-            {activeCategories.size > 0 && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-5 px-1.5 text-[10px] text-on-surface-variant"
-                onClick={() => setActiveCategories(new Set())}
-              >
-                clear
-              </Button>
-            )}
           </div>
-        )}
 
-        {/* Search */}
-        <Input
-          className="h-7 w-48 text-xs"
-          placeholder="Filter messages..."
-          value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
-        />
+          {/* Category filter chips */}
+          {knownCategories.length > 0 && (
+            <div className="flex items-center gap-1 flex-wrap">
+              <span className="font-sans text-[10px] uppercase tracking-widest text-on-surface-variant mr-0.5">
+                cat:
+              </span>
+              {knownCategories.map((cat) => (
+                <Button
+                  key={cat}
+                  size="sm"
+                  variant={activeCategories.has(cat) ? 'default' : 'ghost'}
+                  className="h-5 px-1.5 text-[10px]"
+                  onClick={() => {
+                    setActiveCategories((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(cat)) {
+                        next.delete(cat);
+                      } else {
+                        next.add(cat);
+                      }
+                      return next;
+                    });
+                  }}
+                >
+                  {cat}
+                </Button>
+              ))}
+              {activeCategories.size > 0 && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-5 px-1.5 text-[10px] text-on-surface-variant"
+                  onClick={() => setActiveCategories(new Set())}
+                >
+                  clear
+                </Button>
+              )}
+            </div>
+          )}
 
-        <div className="ml-auto flex items-center gap-1">
-          {/* Auto-scroll toggle */}
-          <Button
-            size="sm"
-            variant={autoScroll ? 'default' : 'ghost'}
-            className="h-7 gap-1.5 px-2 text-xs"
-            onClick={() => {
-              if (autoScroll) {
-                setAutoScroll(false);
-              } else {
-                scrollToBottom();
-              }
-            }}
-            title={autoScroll ? 'Pause auto-scroll' : 'Resume auto-scroll'}
-          >
-            {autoScroll ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
-            {autoScroll ? 'Pause' : 'Resume'}
-          </Button>
+          {/* Search */}
+          <Input
+            className="h-7 w-48 text-xs"
+            placeholder="Filter messages..."
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+          />
 
-          {/* Clear */}
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 gap-1.5 px-2 text-xs text-on-surface-variant"
-            onClick={clearEntries}
-            title="Clear log entries"
-          >
-            <Trash2 className="h-3 w-3" />
-            Clear
-          </Button>
+          <div className="ml-auto flex items-center gap-1">
+            {/* Auto-scroll toggle */}
+            <Button
+              size="sm"
+              variant={autoScroll ? 'default' : 'ghost'}
+              className="h-7 gap-1.5 px-2 text-xs"
+              onClick={() => {
+                if (autoScroll) {
+                  setAutoScroll(false);
+                } else {
+                  scrollToBottom();
+                }
+              }}
+              title={autoScroll ? 'Pause auto-scroll' : 'Resume auto-scroll'}
+            >
+              {autoScroll ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+              {autoScroll ? 'Pause' : 'Resume'}
+            </Button>
+
+            {/* Clear */}
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 gap-1.5 px-2 text-xs text-on-surface-variant"
+              onClick={clearEntries}
+              title="Clear log entries"
+            >
+              <Trash2 className="h-3 w-3" />
+              Clear
+            </Button>
+          </div>
         </div>
-      </div>
+      </Surface>
 
-      {/* Log entry list */}
-      <div className="relative flex-1 overflow-hidden">
+      {/* Log viewer — recessed terminal feel */}
+      <div className="relative flex-1 overflow-hidden mx-6 mb-6 rounded-md">
         <div
           ref={scrollRef}
           onScroll={handleScroll}
@@ -325,12 +341,17 @@ function LogRow({ entry }: { entry: LogEntry }) {
   return (
     <tr className="hover:bg-surface-container-high/30 transition-colors">
       {/* Timestamp */}
-      <td className="whitespace-nowrap py-1 pl-4 pr-3 text-on-surface-variant/70 align-top w-[68px]">
+      <td className="whitespace-nowrap py-1.5 pl-4 pr-3 text-on-surface-variant/60 align-top w-[68px]">
         {formatTimestamp(entry.timestamp)}
       </td>
 
+      {/* Level dot */}
+      <td className="whitespace-nowrap py-1.5 pr-2 align-top w-[16px]">
+        <div className={cn('h-2 w-2 rounded-full mt-1', levelDotColor(entry.level))} />
+      </td>
+
       {/* Level badge */}
-      <td className="whitespace-nowrap py-1 pr-3 align-top w-[54px]">
+      <td className="whitespace-nowrap py-1.5 pr-3 align-top w-[54px]">
         <Badge
           variant={levelBadgeVariant(entry.level)}
           className="px-1.5 py-0 text-[10px] uppercase"
@@ -340,12 +361,12 @@ function LogRow({ entry }: { entry: LogEntry }) {
       </td>
 
       {/* Category */}
-      <td className="whitespace-nowrap py-1 pr-3 text-on-surface-variant align-top w-[120px] truncate max-w-[120px]">
+      <td className="whitespace-nowrap py-1.5 pr-3 text-on-surface-variant align-top w-[120px] truncate max-w-[120px]">
         {entry.category}
       </td>
 
       {/* Message */}
-      <td className="py-1 pr-4 text-on-surface align-top break-words">
+      <td className="py-1.5 pr-4 text-on-surface align-top break-words">
         {entry.message}
       </td>
     </tr>
