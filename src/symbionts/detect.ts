@@ -13,22 +13,32 @@ export interface DetectedSymbiont {
 
 const MANIFESTS_SUBDIR = 'symbionts/manifests';
 
+/** Cached manifests — static files that never change at runtime. */
+let manifestCache: SymbiontManifest[] | null = null;
+
 /** Load all symbiont manifests from the package's dist directory. */
 export function loadManifests(): SymbiontManifest[] {
+  if (manifestCache) return manifestCache;
   const candidates = [
+    // Source layout: src/symbionts/detect.ts → src/symbionts/manifests/
     path.resolve(import.meta.dirname, MANIFESTS_SUBDIR),
+    // Dist layout: dist/src/symbionts/ → dist/src/symbionts/manifests/
+    // (or dist/src/daemon/ → dist/src/symbionts/manifests/)
     path.resolve(import.meta.dirname, '..', MANIFESTS_SUBDIR),
     path.resolve(import.meta.dirname, '..', '..', MANIFESTS_SUBDIR),
+    // Chunk layout: dist/chunk-*.js → dist/src/symbionts/manifests/
+    path.resolve(import.meta.dirname, 'src', MANIFESTS_SUBDIR),
   ];
 
   for (const dir of candidates) {
     if (!fs.existsSync(dir)) continue;
     const files = fs.readdirSync(dir).filter(f => f.endsWith('.yaml'));
     if (files.length === 0) continue;
-    return files.map(f => {
+    manifestCache = files.map(f => {
       const raw = YAML.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
       return SymbiontManifestSchema.parse(raw);
     });
+    return manifestCache;
   }
   return [];
 }

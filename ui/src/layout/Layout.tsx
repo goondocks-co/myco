@@ -7,7 +7,7 @@ import {
   ScrollText,
   Sun,
   Moon,
-  FolderOpen,
+  Monitor,
   RotateCcw,
   Type,
   Minus,
@@ -39,13 +39,8 @@ const NAV_ITEMS = [
   { to: '/logs', label: 'Logs', icon: ScrollText },
 ] as const;
 
-const VAULT_OPEN_OPTIONS = [
-  { value: 'obsidian', label: 'Obsidian' },
-  { value: 'vscode', label: 'VS Code' },
-  { value: 'finder', label: 'Finder' },
-] as const;
-
 const FONT_OPTIONS: { value: FontOption; label: string }[] = [
+  { value: 'default', label: 'Default' },
   { value: 'geist-mono', label: 'Geist Mono' },
   { value: 'system', label: 'System' },
   { value: 'sf-mono', label: 'SF Mono' },
@@ -126,36 +121,42 @@ function useSidebarCollapse() {
 
 /* ---------- Sub-components ---------- */
 
-function ThemeToggle() {
+/** Theme cycle order: light → dark → system → light. */
+const THEME_CYCLE = ['light', 'dark', 'system'] as const;
+
+const THEME_ICONS = { light: Sun, dark: Moon, system: Monitor } as const;
+const THEME_LABELS = { light: 'Light', dark: 'Dark', system: 'System' } as const;
+
+function ThemeToggle({ collapsed = false }: { collapsed?: boolean }) {
   const { theme, setTheme } = useTheme();
 
-  const toggleTheme = () => {
-    if (theme === 'dark') {
-      setTheme('light');
-    } else {
-      setTheme('dark');
-    }
+  const cycleTheme = () => {
+    const idx = THEME_CYCLE.indexOf(theme as typeof THEME_CYCLE[number]);
+    const next = THEME_CYCLE[(idx + 1) % THEME_CYCLE.length]!;
+    setTheme(next);
   };
 
-  const isDark =
-    theme === 'dark' ||
-    (theme === 'system' &&
-      window.matchMedia('(prefers-color-scheme: dark)').matches);
+  const Icon = THEME_ICONS[theme as keyof typeof THEME_ICONS] ?? Monitor;
+  const label = THEME_LABELS[theme as keyof typeof THEME_LABELS] ?? 'System';
 
   return (
     <Button
       variant="ghost"
       size="sm"
-      onClick={toggleTheme}
-      className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
+      onClick={cycleTheme}
+      title={collapsed ? `${label} mode` : undefined}
+      className={cn(
+        'text-on-surface-variant hover:text-on-surface',
+        collapsed ? 'w-8 p-0 justify-center' : 'w-full justify-start gap-2',
+      )}
     >
-      {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-      <span>{isDark ? 'Light mode' : 'Dark mode'}</span>
+      <Icon className="h-4 w-4" />
+      {!collapsed && <span>{label}</span>}
     </Button>
   );
 }
 
-function RestartButton() {
+function RestartButton({ collapsed = false }: { collapsed?: boolean }) {
   const { restart, isRestarting } = useRestart();
 
   return (
@@ -164,45 +165,15 @@ function RestartButton() {
       size="sm"
       onClick={() => restart()}
       disabled={isRestarting}
-      className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
+      title={collapsed ? (isRestarting ? 'Restarting...' : 'Restart Daemon') : undefined}
+      className={cn(
+        'text-on-surface-variant hover:text-on-surface',
+        collapsed ? 'w-8 p-0 justify-center' : 'w-full justify-start gap-2',
+      )}
     >
       <RotateCcw className={cn('h-4 w-4', isRestarting && 'animate-spin')} />
-      <span>{isRestarting ? 'Restarting...' : 'Restart Daemon'}</span>
+      {!collapsed && <span>{isRestarting ? 'Restarting...' : 'Restart Daemon'}</span>}
     </Button>
-  );
-}
-
-function OpenVaultSelect() {
-  const { data: stats } = useDaemon();
-
-  const handleOpenVault = (value: string) => {
-    if (!stats) return;
-    let uri: string;
-    if (value === 'obsidian') {
-      uri = `obsidian://open?vault=${encodeURIComponent(stats.vault.name)}`;
-    } else if (value === 'vscode') {
-      uri = `vscode://file${stats.vault.path}`;
-    } else {
-      uri = `file://${stats.vault.path}`;
-    }
-    window.location.href = uri;
-  };
-
-  return (
-    <label className="flex items-center gap-2 px-2 py-1 text-sm text-muted-foreground hover:text-foreground cursor-pointer">
-      <FolderOpen className="h-4 w-4 shrink-0" />
-      <select
-        value=""
-        onChange={(e) => { if (e.target.value) handleOpenVault(e.target.value); e.target.value = ''; }}
-        disabled={!stats}
-        className="w-full bg-transparent border-none outline-none cursor-pointer text-sm appearance-none disabled:opacity-50"
-      >
-        <option value="" disabled>Open Vault</option>
-        {VAULT_OPEN_OPTIONS.map((opt) => (
-          <option key={opt.value} value={opt.value}>{opt.label}</option>
-        ))}
-      </select>
-    </label>
   );
 }
 
@@ -210,7 +181,7 @@ function FontSelector() {
   const { font, setFont } = useFont();
 
   return (
-    <label className="flex items-center gap-2 px-2 py-1 text-sm text-muted-foreground hover:text-foreground cursor-pointer">
+    <label className="flex items-center gap-2 px-2 py-1 text-sm text-on-surface-variant hover:text-on-surface cursor-pointer">
       <Type className="h-4 w-4 shrink-0" />
       <select
         value={font}
@@ -225,8 +196,7 @@ function FontSelector() {
   );
 }
 
-function DensityControl() {
-  const { density, setDensity } = useDensity();
+function DensityControl({ density, setDensity }: { density: Density; setDensity: (d: Density) => void }) {
   const currentIndex = DENSITY_ORDER.indexOf(density);
 
   const decrease = () => {
@@ -248,20 +218,20 @@ function DensityControl() {
       <button
         onClick={decrease}
         disabled={currentIndex === 0}
-        className="rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-30"
+        className="rounded p-0.5 text-on-surface-variant hover:text-on-surface disabled:opacity-30"
         aria-label="Decrease density"
       >
         <Minus className="h-3 w-3" />
       </button>
       <div className="flex flex-1 justify-center">
-        <span className="text-xs text-muted-foreground select-none">
+        <span className="text-xs text-on-surface-variant select-none">
           {DENSITY_LABELS[density]}
         </span>
       </div>
       <button
         onClick={increase}
         disabled={currentIndex === DENSITY_ORDER.length - 1}
-        className="rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-30"
+        className="rounded p-0.5 text-on-surface-variant hover:text-on-surface disabled:opacity-30"
         aria-label="Increase density"
       >
         <Plus className="h-3 w-3" />
@@ -274,6 +244,7 @@ function DensityControl() {
 
 export default function Layout() {
   const { collapsed, toggle } = useSidebarCollapse();
+  const { density, setDensity } = useDensity();
   const { data: stats } = useDaemon();
   const vaultName = stats?.vault.name;
   const [searchOpen, setSearchOpen] = useState(false);
@@ -296,7 +267,7 @@ export default function Layout() {
       {/* Sidebar */}
       <aside
         className={cn(
-          'flex flex-col border-r border-border bg-card transition-[width] duration-200',
+          'flex flex-col bg-surface-container transition-[width] duration-200',
           collapsed ? 'w-14' : 'w-56',
         )}
       >
@@ -304,19 +275,19 @@ export default function Layout() {
         <div className={cn('px-4 py-5', collapsed && 'px-2 py-4 flex justify-center')}>
           {collapsed ? (
             <div className="relative flex items-center">
-              <span className="text-base font-bold tracking-tight text-primary">m</span>
-              <span className="ml-1 h-2 w-2 rounded-full bg-muted-foreground/40" />
+              <span className="font-serif text-base text-primary">m</span>
+              <span className="ml-1 h-2 w-2 rounded-full bg-on-surface-variant/40" />
             </div>
           ) : (
             <div>
               <div className="flex items-center">
-                <span className="text-sm font-medium tracking-tight text-muted-foreground">
+                <span className="font-serif text-base text-primary tracking-wider">
                   myco
                 </span>
-                <span className="ml-2 h-2 w-2 rounded-full bg-muted-foreground/40" />
+                <span className="ml-2 h-2 w-2 rounded-full bg-on-surface-variant/40" />
               </div>
               {vaultName && (
-                <span className="text-lg font-bold tracking-tight text-primary">
+                <span className="font-mono text-xs text-outline uppercase tracking-widest mt-0.5">
                   {vaultName}
                 </span>
               )}
@@ -331,7 +302,7 @@ export default function Layout() {
             onClick={() => setSearchOpen(true)}
             title={collapsed ? 'Search (⌘K)' : undefined}
             className={cn(
-              'flex w-full items-center rounded-md text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
+              'flex w-full items-center rounded-md text-sm text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface',
               collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
             )}
           >
@@ -340,7 +311,7 @@ export default function Layout() {
               <span className="flex-1 text-left">Search</span>
             )}
             {!collapsed && (
-              <kbd className="text-xs text-muted-foreground/60 font-mono">⌘K</kbd>
+              <kbd className="text-xs text-on-surface-variant/60 font-mono">⌘K</kbd>
             )}
           </button>
         </div>
@@ -359,7 +330,7 @@ export default function Layout() {
                   collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
                   isActive
                     ? 'bg-primary/10 text-primary'
-                    : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                    : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
                 )
               }
             >
@@ -370,24 +341,21 @@ export default function Layout() {
         </nav>
 
         {/* Footer */}
-        {!collapsed && (
-          <div className="border-t border-border px-2 py-3 space-y-1">
-            <RestartButton />
-            <OpenVaultSelect />
-            <FontSelector />
-            <DensityControl />
-            <ThemeToggle />
-          </div>
-        )}
+        <div className={cn('py-3 space-y-1 mt-auto', collapsed ? 'px-1 flex flex-col items-center' : 'px-2')}>
+          <RestartButton collapsed={collapsed} />
+          {!collapsed && <FontSelector />}
+          {!collapsed && <DensityControl density={density} setDensity={setDensity} />}
+          <ThemeToggle collapsed={collapsed} />
+        </div>
 
         {/* Collapse toggle */}
-        <div className={cn('border-t border-border px-2 py-2', collapsed && 'flex justify-center')}>
+        <div className={cn('px-2 py-2', collapsed && 'flex justify-center')}>
           <Button
             variant="ghost"
             size="sm"
             onClick={toggle}
             className={cn(
-              'text-muted-foreground hover:text-foreground',
+              'text-on-surface-variant hover:text-on-surface',
               collapsed ? 'w-8 p-0 justify-center' : 'w-full justify-start gap-2',
             )}
             title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
@@ -399,7 +367,7 @@ export default function Layout() {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto">
+      <main className="flex-1 overflow-auto bg-surface">
         <Outlet />
       </main>
     </div>

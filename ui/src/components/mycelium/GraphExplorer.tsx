@@ -101,7 +101,7 @@ function ConnectedNode({
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm font-medium truncate">{node.name}</span>
           <EntityTypeBadge type={node.type} />
-          {node.depth > 1 && (
+          {node.depth != null && node.depth > 1 && (
             <span className="text-xs text-muted-foreground">depth {node.depth}</span>
           )}
         </div>

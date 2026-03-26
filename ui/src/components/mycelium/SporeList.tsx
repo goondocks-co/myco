@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import { AlertCircle, Sprout } from 'lucide-react';
+import { AlertCircle, Sprout, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Button } from '../ui/button';
+import { Surface } from '../ui/surface';
 import {
   Select,
   SelectContent,
@@ -23,6 +25,9 @@ const DEFAULT_SPORES_LIMIT = 50;
 /** Milliseconds per second for epoch conversion. */
 const MS_PER_SECOND = 1_000;
 
+/** Session ID preview length. */
+const SESSION_ID_PREVIEW = 8;
+
 const OBSERVATION_TYPES = ['all', 'gotcha', 'decision', 'discovery', 'trade_off', 'bug_fix'] as const;
 const STATUS_OPTIONS = ['all', 'active', 'superseded', 'consolidated'] as const;
 
@@ -44,63 +49,75 @@ function SporeRow({
   isSelected: boolean;
 }) {
   return (
-    <tr
+    <Surface
+      level={isSelected ? 'high' : 'low'}
       className={cn(
-        'border-b border-border last:border-0 hover:bg-accent/50 cursor-pointer transition-colors',
-        isSelected && 'bg-accent',
+        'p-4 cursor-pointer transition-colors hover:bg-surface-container-high rounded-lg',
+        isSelected && 'ring-1 ring-primary/30',
       )}
       onClick={onClick}
     >
-      <td className="px-4 py-3">
-        <span
-          className={cn(
-            'inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold',
-            observationTypeClass(spore.observation_type),
+      <div className="flex items-start gap-3">
+        <div className="flex-1 min-w-0 space-y-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span
+              className={cn(
+                'inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold',
+                observationTypeClass(spore.observation_type),
+              )}
+            >
+              {formatLabel(spore.observation_type)}
+            </span>
+            <span
+              className={cn(
+                'inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold',
+                statusClass(spore.status),
+              )}
+            >
+              {formatLabel(spore.status)}
+            </span>
+            {spore.importance !== null && (
+              <span className="font-mono text-xs text-on-surface-variant">
+                {spore.importance.toFixed(1)}
+              </span>
+            )}
+          </div>
+          <p className="font-sans text-sm text-on-surface">
+            {truncate(spore.content, CONTENT_PREVIEW_CHARS)}
+          </p>
+        </div>
+        <div className="shrink-0 text-right space-y-1">
+          {spore.session_id && (
+            <div className="font-mono text-xs text-on-surface-variant">
+              {spore.session_id.slice(0, SESSION_ID_PREVIEW)}
+            </div>
           )}
-        >
-          {formatLabel(spore.observation_type)}
-        </span>
-      </td>
-      <td className="px-4 py-3">
-        <span
-          className={cn(
-            'inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold',
-            statusClass(spore.status),
-          )}
-        >
-          {formatLabel(spore.status)}
-        </span>
-      </td>
-      <td className="px-4 py-3 text-xs text-muted-foreground text-center">
-        {spore.importance !== null ? spore.importance.toFixed(1) : '—'}
-      </td>
-      <td className="px-4 py-3 max-w-xs">
-        <span className="text-sm text-foreground">
-          {truncate(spore.content, CONTENT_PREVIEW_CHARS)}
-        </span>
-      </td>
-      <td className="px-4 py-3 text-xs text-muted-foreground font-mono">
-        {spore.session_id ? spore.session_id.slice(0, 8) : '—'}
-      </td>
-      <td className="px-4 py-3 text-xs text-muted-foreground">
-        {epochToDate(spore.created_at)}
-      </td>
-    </tr>
+          <div className="font-sans text-xs text-on-surface-variant">
+            {epochToDate(spore.created_at)}
+          </div>
+        </div>
+      </div>
+    </Surface>
   );
 }
 
 function SkeletonRow() {
   return (
-    <tr className="border-b border-border">
-      {[80, 60, 40, 300, 60, 80].map((w, i) => (
-        <td key={i} className="px-4 py-3">
-          <div
-            className="h-4 animate-pulse rounded bg-muted"
-            style={{ width: `${w}px` }}
-          />
-        </td>
-      ))}
-    </tr>
+    <Surface level="low" className="p-4 rounded-lg">
+      <div className="flex items-start gap-3">
+        <div className="flex-1 space-y-2">
+          <div className="flex gap-2">
+            <div className="h-5 w-16 animate-pulse rounded bg-surface-container" />
+            <div className="h-5 w-14 animate-pulse rounded bg-surface-container" />
+          </div>
+          <div className="h-4 w-3/4 animate-pulse rounded bg-surface-container" />
+        </div>
+        <div className="shrink-0 space-y-1">
+          <div className="h-3 w-14 animate-pulse rounded bg-surface-container" />
+          <div className="h-3 w-16 animate-pulse rounded bg-surface-container" />
+        </div>
+      </div>
+    </Surface>
   );
 }
 
@@ -114,21 +131,39 @@ export interface SporeListProps {
 export function SporeList({ onSelectSpore, selectedSporeId }: SporeListProps) {
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [page, setPage] = useState(0);
+
+  // Reset to first page when filters change
+  function handleTypeChange(value: string) {
+    setTypeFilter(value);
+    setPage(0);
+  }
+  function handleStatusChange(value: string) {
+    setStatusFilter(value);
+    setPage(0);
+  }
+
+  const offset = page * DEFAULT_SPORES_LIMIT;
 
   const { data, isLoading, isError, error } = useSpores({
     type: typeFilter !== 'all' ? typeFilter : undefined,
     status: statusFilter !== 'all' ? statusFilter : undefined,
     limit: DEFAULT_SPORES_LIMIT,
+    offset,
   });
 
   const spores = data?.spores ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = Math.ceil(total / DEFAULT_SPORES_LIMIT);
+  const hasPrev = page > 0;
+  const hasNext = page < totalPages - 1;
 
   return (
     <div className="space-y-3">
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="w-40">
-          <Select value={typeFilter} onValueChange={setTypeFilter}>
+          <Select value={typeFilter} onValueChange={handleTypeChange}>
             <SelectTrigger>
               <SelectValue placeholder="Type" />
             </SelectTrigger>
@@ -142,7 +177,7 @@ export function SporeList({ onSelectSpore, selectedSporeId }: SporeListProps) {
           </Select>
         </div>
         <div className="w-40">
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <Select value={statusFilter} onValueChange={handleStatusChange}>
             <SelectTrigger>
               <SelectValue placeholder="Status" />
             </SelectTrigger>
@@ -156,69 +191,71 @@ export function SporeList({ onSelectSpore, selectedSporeId }: SporeListProps) {
           </Select>
         </div>
         {data && (
-          <span className="text-sm text-muted-foreground ml-auto">
-            {data.total} spore{data.total !== 1 ? 's' : ''}
+          <span className="font-sans text-sm text-on-surface-variant ml-auto">
+            {total} spore{total !== 1 ? 's' : ''}
           </span>
         )}
       </div>
 
-      {/* Table */}
+      {/* Spore list */}
       {isError ? (
         <div className="flex h-40 flex-col items-center justify-center gap-2 text-destructive">
           <AlertCircle className="h-5 w-5" />
-          <span className="text-sm">Failed to load spores</span>
-          <span className="text-xs text-muted-foreground">
+          <span className="font-sans text-sm">Failed to load spores</span>
+          <span className="font-sans text-xs text-on-surface-variant">
             {error instanceof Error ? error.message : 'Unknown error'}
           </span>
         </div>
       ) : (
-        <div className="rounded-lg border border-border overflow-hidden">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-border bg-muted/50">
-                {['Type', 'Status', 'Imp.', 'Content', 'Session', 'Date'].map((h) => (
-                  <th
-                    key={h}
-                    className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wide"
-                  >
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {isLoading
-                ? [1, 2, 3, 4, 5].map((i) => <SkeletonRow key={i} />)
-                : spores.length === 0
-                ? (
-                  <tr>
-                    <td colSpan={6}>
-                      <div className="flex h-40 flex-col items-center justify-center gap-2 text-muted-foreground">
-                        <Sprout className="h-8 w-8 opacity-30" />
-                        <span className="text-sm">No spores yet</span>
-                        <span className="text-xs">Spores are extracted from session activity by the agent</span>
-                      </div>
-                    </td>
-                  </tr>
-                )
-                : spores.map((spore) => (
-                  <SporeRow
-                    key={spore.id}
-                    spore={spore}
-                    onClick={() => onSelectSpore(spore)}
-                    isSelected={spore.id === selectedSporeId}
-                  />
-                ))}
-            </tbody>
-          </table>
+        <div className="space-y-2">
+          {isLoading
+            ? [1, 2, 3, 4, 5].map((i) => <SkeletonRow key={i} />)
+            : spores.length === 0
+            ? (
+              <div className="flex h-40 flex-col items-center justify-center gap-2 text-on-surface-variant">
+                <Sprout className="h-8 w-8 opacity-30" />
+                <span className="font-sans text-sm">No spores yet</span>
+                <span className="font-sans text-xs">Spores are extracted from session activity by the agent</span>
+              </div>
+            )
+            : spores.map((spore) => (
+              <SporeRow
+                key={spore.id}
+                spore={spore}
+                onClick={() => onSelectSpore(spore)}
+                isSelected={spore.id === selectedSporeId}
+              />
+            ))}
         </div>
       )}
 
-      {/* Pagination hint */}
-      {data && data.total > DEFAULT_SPORES_LIMIT && (
-        <p className="text-xs text-muted-foreground text-center">
-          Showing {spores.length} of {data.total} spores
-        </p>
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-3 pt-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={!hasPrev}
+            onClick={() => setPage((p) => p - 1)}
+            className="gap-1 text-on-surface-variant"
+          >
+            <ChevronLeft className="h-4 w-4" />
+            Prev
+          </Button>
+          <span className="font-mono text-xs text-on-surface-variant">
+            {offset + 1}\u2013{Math.min(offset + DEFAULT_SPORES_LIMIT, total)} of {total}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={!hasNext}
+            onClick={() => setPage((p) => p + 1)}
+            className="gap-1 text-on-surface-variant"
+          >
+            Next
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
       )}
     </div>
   );

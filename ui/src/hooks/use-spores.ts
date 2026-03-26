@@ -70,7 +70,14 @@ export interface GraphNode {
   id: string;
   name: string;
   type: string;
-  depth: number;
+  depth?: number;
+  // Extended fields for Inspector
+  status?: string;
+  created_at?: number;
+  content?: string;
+  properties?: string;
+  mention_count?: number;
+  observation_type?: string;
 }
 
 export interface GraphResponse {

@@ -32,6 +32,9 @@ const DEFAULT_PROCESSED = 0;
 /** Processed flag value indicating a batch has been processed. */
 const PROCESSED_FLAG = 1;
 
+/** Number of characters used for prompt prefix matching. */
+const PROMPT_PREFIX_MATCH_CHARS = 60;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -323,6 +326,26 @@ export function getBatchIdByPromptNumber(
   ).get(sessionId, promptNumber) as { id: number } | undefined;
 
   return row ? row.id : null;
+}
+
+/**
+ * Find a batch by matching the start of its user_prompt text.
+ * Used for attachment matching after transcript compaction where turn indices no longer
+ * align with prompt_numbers.
+ */
+export function findBatchByPromptPrefix(
+  sessionId: string,
+  promptPrefix: string,
+): { id: number; prompt_number: number } | null {
+  const db = getDatabase();
+  // Match first N chars — enough to be unique, tolerant of minor differences
+  const prefix = promptPrefix.slice(0, PROMPT_PREFIX_MATCH_CHARS);
+  const row = db.prepare(
+    `SELECT id, prompt_number FROM prompt_batches
+     WHERE session_id = ? AND user_prompt LIKE ? || '%'
+     LIMIT 1`,
+  ).get(sessionId, prefix) as { id: number; prompt_number: number } | undefined;
+  return row ?? null;
 }
 
 /** Fields required when inserting a batch statelessly (prompt_number derived from DB). */

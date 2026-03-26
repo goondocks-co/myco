@@ -16,33 +16,50 @@
   <!-- Favicon -->
   <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 
-  <!-- Fonts -->
+  <!-- Fonts — same three-font system as the dashboard -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,200..800;1,6..72,200..800&family=Inter:wght@100..900&family=JetBrains+Mono:wght@100..800&display=swap" rel="stylesheet">
 
   <style>
     /* Reset */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-    /* Color tokens */
+    /* Tactile Research color tokens */
     :root {
-      --base-black: #0a0f0a;
-      --base-deep: #0d1f17;
-      --base-mid: #132a1e;
-      --accent-primary: #22c55e;
-      --accent-light: #4ade80;
-      --accent-muted: #86efac;
-      --text-primary: #e2e8f0;
-      --text-secondary: #9ca3af;
+      --surface: #111111;
+      --surface-dim: #0c0c0c;
+      --surface-container-lowest: #080808;
+      --surface-container-low: #1a1a1a;
+      --surface-container: #242424;
+      --surface-container-high: #333333;
+
+      --on-surface: #e5e2e1;
+      --on-surface-variant: #c1c8c2;
+      --outline: #8b928c;
+      --outline-variant: #424843;
+
+      --sage: #abcfb8;
+      --sage-dim: #7b9e89;
+      --sage-deep: #446553;
+
+      --ochre: #edbf7f;
+      --ochre-dim: #d4a86a;
+
+      --terracotta: #ffb4a1;
+      --terracotta-dim: #df7a60;
+
+      --font-heading: 'Newsreader', Georgia, serif;
+      --font-ui: 'Inter', system-ui, sans-serif;
+      --font-data: 'JetBrains Mono', 'Fira Code', monospace;
     }
 
     html { scroll-behavior: smooth; }
 
     body {
-      background: var(--base-black);
-      color: var(--text-primary);
-      font-family: -apple-system, system-ui, sans-serif;
+      background: var(--surface);
+      color: var(--on-surface);
+      font-family: var(--font-ui);
       line-height: 1.6;
       -webkit-font-smoothing: antialiased;
     }
@@ -56,10 +73,10 @@
       align-items: center;
       justify-content: space-between;
       padding: 16px 24px;
-      background: rgba(10, 15, 10, 0.85);
+      background: rgba(17, 17, 17, 0.85);
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
-      border-bottom: 1px solid var(--base-mid);
+      border-bottom: 1px solid var(--outline-variant);
     }
 
     .nav-logo {
@@ -72,11 +89,11 @@
     .nav-logo svg { width: 28px; height: 28px; }
 
     .nav-logo span {
-      font-family: 'Geist Mono', monospace;
+      font-family: var(--font-heading);
       font-size: 20px;
-      font-weight: 700;
-      color: var(--text-primary);
-      letter-spacing: -1px;
+      font-weight: 500;
+      color: var(--on-surface);
+      letter-spacing: 0.02em;
     }
 
     .nav-links {
@@ -86,13 +103,13 @@
     }
 
     .nav-links a {
-      color: var(--text-secondary);
+      color: var(--on-surface-variant);
       text-decoration: none;
       font-size: 14px;
       transition: color 0.2s;
     }
 
-    .nav-links a:hover { color: var(--accent-light); }
+    .nav-links a:hover { color: var(--sage); }
 
     /* Hero */
     .hero {
@@ -110,23 +127,26 @@
       transform: translate(-50%, -50%);
       width: 600px;
       height: 600px;
-      background: radial-gradient(circle, var(--base-deep) 0%, transparent 70%);
+      background: radial-gradient(circle, rgba(171, 207, 184, 0.06) 0%, transparent 70%);
       pointer-events: none;
     }
 
     .hero-logo { width: 88px; height: 88px; position: relative; }
 
     .hero h1 {
-      font-family: 'Geist Mono', monospace;
-      font-size: 48px;
-      font-weight: 700;
-      letter-spacing: -2px;
+      font-family: var(--font-heading);
+      font-size: 56px;
+      font-weight: 500;
+      font-style: italic;
+      letter-spacing: -1px;
       margin-top: 20px;
       position: relative;
+      color: var(--on-surface);
     }
 
     .hero .tagline {
-      color: var(--accent-muted);
+      color: var(--on-surface-variant);
+      font-family: var(--font-ui);
       font-size: 18px;
       margin-top: 12px;
       position: relative;
@@ -146,20 +166,23 @@
       border-radius: 8px;
       font-size: 15px;
       font-weight: 600;
+      font-family: var(--font-ui);
       text-decoration: none;
-      transition: opacity 0.2s;
+      transition: opacity 0.2s, transform 0.1s;
     }
 
     .btn:hover { opacity: 0.85; }
+    .btn:active { transform: scale(0.98); }
 
     .btn-primary {
-      background: var(--accent-primary);
-      color: var(--base-black);
+      background: var(--sage-deep);
+      color: var(--on-surface);
+      border: 1px solid var(--sage-dim);
     }
 
     .btn-outline {
-      border: 1px solid var(--accent-primary);
-      color: var(--accent-primary);
+      border: 1px solid var(--outline-variant);
+      color: var(--sage);
     }
 
     /* Install */
@@ -171,21 +194,24 @@
 
     .install h2 {
       text-align: center;
-      font-size: 28px;
+      font-family: var(--font-heading);
+      font-size: 32px;
+      font-weight: 500;
       margin-bottom: 32px;
     }
 
     .tabs {
       display: flex;
       gap: 0;
-      border-bottom: 1px solid var(--base-mid);
+      border-bottom: 1px solid var(--outline-variant);
       margin-bottom: 24px;
     }
 
     .tab {
       padding: 10px 20px;
       font-size: 14px;
-      color: var(--text-secondary);
+      font-family: var(--font-ui);
+      color: var(--on-surface-variant);
       cursor: pointer;
       border-bottom: 2px solid transparent;
       transition: color 0.2s, border-color 0.2s;
@@ -193,22 +219,21 @@
       border-top: none;
       border-left: none;
       border-right: none;
-      font-family: inherit;
     }
 
-    .tab:hover { color: var(--accent-light); }
+    .tab:hover { color: var(--sage); }
 
     .tab.active {
-      color: var(--accent-primary);
-      border-bottom-color: var(--accent-primary);
+      color: var(--sage);
+      border-bottom-color: var(--sage);
     }
 
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
     .code-block {
-      background: var(--base-deep);
-      border: 1px solid var(--base-mid);
+      background: var(--surface-container-low);
+      border: 1px solid var(--outline-variant);
       border-radius: 8px;
       padding: 20px;
       margin-bottom: 16px;
@@ -216,20 +241,23 @@
     }
 
     .code-block code {
-      font-family: 'Geist Mono', monospace;
+      font-family: var(--font-data);
       font-size: 14px;
-      color: var(--accent-muted);
+      color: var(--sage);
       line-height: 1.7;
       white-space: pre;
     }
 
-    .code-block .comment { color: var(--text-secondary); }
+    .code-block .comment { color: var(--outline); }
 
     .install-note {
-      color: var(--text-secondary);
+      color: var(--on-surface-variant);
       font-size: 14px;
       margin-top: 8px;
     }
+
+    .install-note a { color: var(--ochre); transition: color 0.2s; }
+    .install-note a:hover { color: var(--ochre-dim); }
 
     /* Features */
     .features {
@@ -242,27 +270,38 @@
     }
 
     .feature-card {
-      background: var(--base-deep);
-      border: 1px solid var(--base-mid);
+      background: var(--surface-container-low);
+      border: 1px solid var(--outline-variant);
       border-radius: 12px;
       padding: 28px;
+      border-top: 2px solid var(--outline-variant);
+      transition: border-top-color 0.3s;
     }
+
+    .feature-card:nth-child(1) { border-top-color: var(--sage); }
+    .feature-card:nth-child(2) { border-top-color: var(--ochre); }
+    .feature-card:nth-child(3) { border-top-color: var(--terracotta); }
 
     .feature-card .icon {
       width: 10px;
       height: 10px;
-      background: var(--accent-primary);
       border-radius: 50%;
       margin-bottom: 16px;
     }
 
+    .feature-card:nth-child(1) .icon { background: var(--sage); }
+    .feature-card:nth-child(2) .icon { background: var(--ochre); }
+    .feature-card:nth-child(3) .icon { background: var(--terracotta); }
+
     .feature-card h3 {
-      font-size: 18px;
+      font-family: var(--font-heading);
+      font-size: 20px;
+      font-weight: 500;
       margin-bottom: 8px;
     }
 
     .feature-card p {
-      color: var(--text-secondary);
+      color: var(--on-surface-variant);
       font-size: 14px;
       line-height: 1.6;
     }
@@ -271,7 +310,7 @@
     .footer {
       text-align: center;
       padding: 48px 24px;
-      border-top: 1px solid var(--base-mid);
+      border-top: 1px solid var(--outline-variant);
     }
 
     .footer-links {
@@ -282,17 +321,18 @@
     }
 
     .footer-links a {
-      color: var(--accent-muted);
+      color: var(--on-surface-variant);
       text-decoration: none;
       font-size: 14px;
       transition: color 0.2s;
     }
 
-    .footer-links a:hover { color: var(--accent-light); }
+    .footer-links a:hover { color: var(--sage); }
 
     .footer .origin {
-      color: var(--text-secondary);
+      color: var(--outline);
       font-size: 13px;
+      font-family: var(--font-heading);
       font-style: italic;
     }
 
@@ -301,7 +341,7 @@
       .nav-links .quick-start-link { display: none; }
 
       .hero { padding: 60px 24px 50px; }
-      .hero h1 { font-size: 36px; }
+      .hero h1 { font-size: 40px; }
       .hero .tagline { font-size: 16px; }
       .hero-ctas { flex-direction: column; align-items: center; }
       .hero-logo { width: 64px; height: 64px; }
@@ -319,12 +359,12 @@
     <a href="/" class="nav-logo">
       <svg viewBox="0 0 160 160" fill="none">
         <g stroke-linecap="round" stroke-linejoin="round">
-          <path d="M30,130 L30,40 L80,85 L130,40 L130,130" stroke="#22c55e" stroke-width="8" opacity="0.85"/>
-          <circle cx="30" cy="130" r="7" fill="#22c55e" opacity="0.9"/>
-          <circle cx="30" cy="40" r="7" fill="#4ade80" opacity="0.8"/>
-          <circle cx="80" cy="85" r="8" fill="#22c55e" opacity="0.95"/>
-          <circle cx="130" cy="40" r="7" fill="#4ade80" opacity="0.8"/>
-          <circle cx="130" cy="130" r="7" fill="#22c55e" opacity="0.9"/>
+          <path d="M30,130 L30,40 L80,85 L130,40 L130,130" stroke="var(--sage)" stroke-width="8" opacity="0.85"/>
+          <circle cx="30" cy="130" r="7" fill="var(--sage)" opacity="0.9"/>
+          <circle cx="30" cy="40" r="7" fill="var(--ochre)" opacity="0.8"/>
+          <circle cx="80" cy="85" r="8" fill="var(--sage)" opacity="0.95"/>
+          <circle cx="130" cy="40" r="7" fill="var(--ochre)" opacity="0.8"/>
+          <circle cx="130" cy="130" r="7" fill="var(--sage)" opacity="0.9"/>
         </g>
       </svg>
       <span>myco</span>
@@ -339,16 +379,16 @@
   <section class="hero">
     <svg class="hero-logo" viewBox="0 0 160 160" fill="none">
       <g stroke-linecap="round" stroke-linejoin="round">
-        <path d="M30,130 L30,40 L80,85 L130,40 L130,130" stroke="#22c55e" stroke-width="8" opacity="0.85"/>
-        <circle cx="30" cy="130" r="7" fill="#22c55e" opacity="0.9"/>
-        <circle cx="30" cy="40" r="7" fill="#4ade80" opacity="0.8"/>
-        <circle cx="80" cy="85" r="8" fill="#22c55e" opacity="0.95"/>
-        <circle cx="130" cy="40" r="7" fill="#4ade80" opacity="0.8"/>
-        <circle cx="130" cy="130" r="7" fill="#22c55e" opacity="0.9"/>
-        <line x1="30" y1="85" x2="80" y2="85" stroke="#4ade80" stroke-width="2" opacity="0.2"/>
-        <line x1="80" y1="85" x2="130" y2="85" stroke="#4ade80" stroke-width="2" opacity="0.2"/>
-        <circle cx="30" cy="85" r="4" fill="#86efac" opacity="0.35"/>
-        <circle cx="130" cy="85" r="4" fill="#86efac" opacity="0.35"/>
+        <path d="M30,130 L30,40 L80,85 L130,40 L130,130" stroke="var(--sage)" stroke-width="8" opacity="0.85"/>
+        <circle cx="30" cy="130" r="7" fill="var(--sage)" opacity="0.9"/>
+        <circle cx="30" cy="40" r="7" fill="var(--ochre)" opacity="0.8"/>
+        <circle cx="80" cy="85" r="8" fill="var(--sage)" opacity="0.95"/>
+        <circle cx="130" cy="40" r="7" fill="var(--ochre)" opacity="0.8"/>
+        <circle cx="130" cy="130" r="7" fill="var(--sage)" opacity="0.9"/>
+        <line x1="30" y1="85" x2="80" y2="85" stroke="var(--ochre)" stroke-width="2" opacity="0.2"/>
+        <line x1="80" y1="85" x2="130" y2="85" stroke="var(--ochre)" stroke-width="2" opacity="0.2"/>
+        <circle cx="30" cy="85" r="4" fill="var(--terracotta)" opacity="0.35"/>
+        <circle cx="130" cy="85" r="4" fill="var(--terracotta)" opacity="0.35"/>
       </g>
     </svg>
     <h1>myco</h1>
@@ -386,7 +426,7 @@ claude plugin install myco@myco-plugins</code></div>
 4. Review the parsed plugins and save</code></div>
       <p class="install-note">Then initialize in your project:</p>
       <div class="code-block"><code>/myco-setup</code></div>
-      <p class="install-note" style="margin-top: 16px; font-size: 13px;">See the <a href="https://cursor.com/docs/plugins" style="color: var(--accent-muted);">Cursor plugin docs</a> for details.</p>
+      <p class="install-note" style="margin-top: 16px; font-size: 13px;">See the <a href="https://cursor.com/docs/plugins">Cursor plugin docs</a> for details.</p>
     </div>
 
     <div class="tab-panel" id="panel-vscode">
@@ -399,7 +439,7 @@ claude plugin install myco@myco-plugins</code></div>
 }</code></div>
       <p class="install-note">Then initialize in your project:</p>
       <div class="code-block"><code>/myco-setup</code></div>
-      <p class="install-note" style="margin-top: 16px; font-size: 13px;">VS Code reads from <code>.claude-plugin/</code> — no separate manifest needed. See the <a href="https://code.visualstudio.com/docs/copilot/customization/agent-plugins" style="color: var(--accent-muted);">VS Code agent plugin docs</a> for details. Agent plugins are currently in preview.</p>
+      <p class="install-note" style="margin-top: 16px; font-size: 13px;">VS Code reads from <code style="font-family: var(--font-data); background: var(--surface-container); padding: 2px 6px; border-radius: 3px; font-size: 12px;">.claude-plugin/</code> — no separate manifest needed. See the <a href="https://code.visualstudio.com/docs/copilot/customization/agent-plugins">VS Code agent plugin docs</a> for details. Agent plugins are currently in preview.</p>
     </div>
   </section>
 
@@ -413,12 +453,12 @@ claude plugin install myco@myco-plugins</code></div>
     <div class="feature-card">
       <div class="icon"></div>
       <h3>Connect</h3>
-      <p>Obsidian backlinks create a navigable intelligence graph. Sessions link to plans, plans link to decisions, decisions link to memories. Browse it visually or let agents traverse it.</p>
+      <p>An intelligence graph links sessions to plans, plans to decisions, decisions to memories. Browse it visually or let agents traverse it via MCP tools.</p>
     </div>
     <div class="feature-card">
       <div class="icon"></div>
       <h3>Search</h3>
-      <p>Vector embeddings enable semantic search. Agents find conceptually related context via MCP tools — not keyword matching, real understanding. The index rebuilds from Markdown source of truth.</p>
+      <p>Vector embeddings enable semantic search. Agents find conceptually related context via MCP tools — not keyword matching, real understanding. The index rebuilds from the vault source of truth.</p>
     </div>
   </section>
 

@@ -45,9 +45,11 @@ contextQueries:
       required: false
 
 prompt: >
-  Complete intelligence pipeline. Each phase runs as a separate pass with
-  scoped tools. Focus on quality over quantity — one precise observation
-  is worth more than ten vague ones.
+  You are executing one phase of a multi-phase intelligence pipeline.
+  Each phase has its own scoped tools — only use the tools available to you.
+  Do NOT report on tools or work outside your current phase.
+  Focus on quality over quantity — one precise observation is worth more
+  than ten vague ones.
 
 phases:
   - name: read-state

@@ -1,11 +1,14 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { ArrowLeft, AlertCircle, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '../ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
-import { useAgentRun, useAgentReports, useAgentTurns, type ReportRow, type TurnRow } from '../../hooks/use-agent';
+import { Badge } from '../ui/badge';
+import { Surface } from '../ui/surface';
+import { StatCard } from '../ui/stat-card';
+import { MarkdownContent } from '../ui/markdown-content';
+import { useAgentRun, useAgentReports, useAgentTurns, useAgentTasks, type ReportRow, type TurnRow } from '../../hooks/use-agent';
 import { cn } from '../../lib/cn';
 import { formatEpochAgo, truncate, capitalize } from '../../lib/format';
-import { runStatusClass, formatCost, formatTokens, formatDuration } from './helpers';
+import { formatCost, formatTokens, formatDuration, resolveTaskName } from './helpers';
 import { PhaseTimeline, type PhaseResult } from './PhaseTimeline';
 
 /* ---------- Constants ---------- */
@@ -18,13 +21,14 @@ const MS_PER_SECOND = 1_000;
 
 /* ---------- Helpers ---------- */
 
-function actionClass(action: string): string {
+/** Map action type to Badge variant. */
+function actionBadgeVariant(action: string): 'default' | 'warning' | 'destructive' | 'secondary' {
   const a = action.toLowerCase();
-  if (a.includes('extract') || a.includes('create')) return 'bg-green-500/15 text-green-700 border-green-500/30 dark:text-green-400';
-  if (a.includes('supersed') || a.includes('update')) return 'bg-blue-500/15 text-blue-600 border-blue-500/30 dark:text-blue-400';
-  if (a.includes('skip') || a.includes('no-op'))      return 'bg-muted text-muted-foreground border-border';
-  if (a.includes('error') || a.includes('fail'))      return 'bg-red-500/15 text-red-600 border-red-500/30 dark:text-red-400';
-  return 'bg-purple-500/15 text-purple-600 border-purple-500/30 dark:text-purple-400';
+  if (a.includes('extract') || a.includes('create')) return 'default';
+  if (a.includes('supersed') || a.includes('update')) return 'default';
+  if (a.includes('skip') || a.includes('no-op')) return 'secondary';
+  if (a.includes('error') || a.includes('fail')) return 'destructive';
+  return 'default';
 }
 
 function formatEpochRelative(epoch: number | null): string {
@@ -44,35 +48,11 @@ function truncatePreview(text: string | null, limit: number): string {
 
 /* ---------- Sub-components ---------- */
 
-function StatusBadge({ status }: { status: string }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold',
-        runStatusClass(status),
-      )}
-    >
-      {capitalize(status)}
-    </span>
-  );
-}
-
-function ActionBadge({ action }: { action: string }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold shrink-0',
-        actionClass(action),
-      )}
-    >
-      {action}
-    </span>
-  );
-}
-
 function ReportCard({ report }: { report: ReportRow }) {
-  const [expanded, setExpanded] = useState(false);
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
   const hasDetails = report.details !== null && report.details.length > 0;
+  const isLongSummary = report.summary.length > 200 || report.summary.includes('\n');
 
   let parsedDetails: unknown = null;
   if (hasDetails) {
@@ -84,11 +64,25 @@ function ReportCard({ report }: { report: ReportRow }) {
   }
 
   return (
-    <div className="rounded-lg border border-border bg-card p-4 space-y-2">
+    <Surface level="low" className="p-4 space-y-2">
       <div className="flex items-start gap-3">
-        <ActionBadge action={report.action} />
-        <p className="text-sm text-foreground flex-1 leading-relaxed">{report.summary}</p>
-        <span className="text-xs text-muted-foreground shrink-0 font-mono">
+        <Badge variant={actionBadgeVariant(report.action)}>{report.action}</Badge>
+        <div className="flex-1 min-w-0">
+          <div className={!summaryExpanded && isLongSummary ? 'line-clamp-3' : undefined}>
+            <MarkdownContent content={report.summary} />
+          </div>
+          {isLongSummary && (
+            <button
+              className="flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface transition-colors mt-1"
+              onClick={() => setSummaryExpanded(!summaryExpanded)}
+            >
+              {summaryExpanded
+                ? <><ChevronDown className="h-3 w-3" /> Show less</>
+                : <><ChevronRight className="h-3 w-3" /> Show more</>}
+            </button>
+          )}
+        </div>
+        <span className="font-mono text-xs text-on-surface-variant shrink-0">
           {formatEpochAbsoluteTime(report.created_at)}
         </span>
       </div>
@@ -96,17 +90,17 @@ function ReportCard({ report }: { report: ReportRow }) {
       {hasDetails && (
         <div>
           <button
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-            onClick={() => setExpanded(!expanded)}
+            className="flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface transition-colors"
+            onClick={() => setDetailsExpanded(!detailsExpanded)}
           >
-            {expanded
+            {detailsExpanded
               ? <ChevronDown className="h-3.5 w-3.5" />
               : <ChevronRight className="h-3.5 w-3.5" />}
-            {expanded ? 'Hide details' : 'Show details'}
+            {detailsExpanded ? 'Hide details' : 'Show details'}
           </button>
 
-          {expanded && (
-            <pre className="mt-2 rounded bg-muted p-3 text-xs font-mono overflow-auto max-h-48 text-muted-foreground">
+          {detailsExpanded && (
+            <pre className="mt-2 rounded-md bg-surface-container-lowest p-3 font-mono text-xs overflow-auto max-h-48 text-on-surface-variant">
               {typeof parsedDetails === 'string'
                 ? parsedDetails
                 : JSON.stringify(parsedDetails, null, 2)}
@@ -114,34 +108,63 @@ function ReportCard({ report }: { report: ReportRow }) {
           )}
         </div>
       )}
-    </div>
+    </Surface>
   );
 }
 
-function TurnTableRow({ turn }: { turn: TurnRow }) {
-  const durationMs =
-    turn.started_at !== null && turn.completed_at !== null
-      ? (turn.completed_at - turn.started_at) * MS_PER_SECOND
-      : null;
+function TurnCard({ turn }: { turn: TurnRow }) {
+  const [expanded, setExpanded] = useState(false);
+
+  let parsedInput: unknown = null;
+  if (turn.tool_input) {
+    try {
+      parsedInput = JSON.parse(turn.tool_input);
+    } catch {
+      parsedInput = turn.tool_input;
+    }
+  }
+
+  const inputPreview = turn.tool_input
+    ? truncatePreview(turn.tool_input, TURN_PREVIEW_CHARS)
+    : '\u2014';
+  const hasExpandableInput = turn.tool_input !== null && turn.tool_input.length > TURN_PREVIEW_CHARS;
 
   return (
-    <tr className="border-b border-border last:border-0 align-top">
-      <td className="px-3 py-2 text-xs text-muted-foreground font-mono">{turn.turn_number}</td>
-      <td className="px-3 py-2 text-xs font-mono text-foreground">{turn.tool_name}</td>
-      <td className="px-3 py-2 text-xs text-muted-foreground font-mono max-w-[200px] truncate">
-        {truncatePreview(turn.tool_input, TURN_PREVIEW_CHARS)}
-      </td>
-      <td className="px-3 py-2 text-xs text-muted-foreground font-mono max-w-[200px] truncate">
-        {truncatePreview(turn.tool_output_summary, TURN_PREVIEW_CHARS)}
-      </td>
-      <td className="px-3 py-2 text-xs text-muted-foreground font-mono">
-        {durationMs !== null
-          ? durationMs < MS_PER_SECOND
-            ? `${durationMs}ms`
-            : `${(durationMs / MS_PER_SECOND).toFixed(1)}s`
-          : '—'}
-      </td>
-    </tr>
+    <div className="px-4 py-2.5 hover:bg-surface-container-high/30 transition-colors border-b border-outline-variant/10 last:border-b-0">
+      <div className="flex items-start gap-3">
+        <span className="font-mono text-xs text-on-surface-variant w-5 shrink-0 pt-0.5 text-right">
+          {turn.turn_number}
+        </span>
+        <span className="font-mono text-xs font-medium text-on-surface shrink-0 pt-0.5 min-w-[140px]">
+          {turn.tool_name}
+        </span>
+        <div className="flex-1 min-w-0">
+          {hasExpandableInput ? (
+            <button
+              className="flex items-start gap-1 text-left font-mono text-xs text-on-surface-variant hover:text-on-surface transition-colors w-full"
+              onClick={() => setExpanded(!expanded)}
+            >
+              {expanded
+                ? <ChevronDown className="h-3 w-3 mt-0.5 shrink-0" />
+                : <ChevronRight className="h-3 w-3 mt-0.5 shrink-0" />}
+              <span className={expanded ? undefined : 'truncate'}>{inputPreview}</span>
+            </button>
+          ) : (
+            <span className="font-mono text-xs text-on-surface-variant truncate block">
+              {inputPreview}
+            </span>
+          )}
+
+          {expanded && parsedInput !== null && (
+            <pre className="mt-1.5 ml-4 rounded-md bg-surface-container-lowest p-2.5 font-mono text-xs overflow-auto max-h-48 text-on-surface-variant">
+              {typeof parsedInput === 'string'
+                ? parsedInput
+                : JSON.stringify(parsedInput, null, 2)}
+            </pre>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -159,12 +182,14 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   const runStatus = runData?.run?.status;
   const { data: reportsData, isLoading: reportsLoading } = useAgentReports(runId, runStatus);
   const { data: turnsData, isLoading: turnsLoading } = useAgentTurns(showAudit ? runId : undefined, runStatus);
+  const { data: tasksData } = useAgentTasks();
+  const tasksList = useMemo(() => tasksData?.tasks ?? [], [tasksData]);
 
   if (runLoading) {
     return (
-      <div className="flex h-64 items-center justify-center gap-2 text-muted-foreground">
+      <div className="flex h-64 items-center justify-center gap-2 text-on-surface-variant">
         <Loader2 className="h-5 w-5 animate-spin" />
-        <span>Loading run...</span>
+        <span className="font-sans">Loading run...</span>
       </div>
     );
   }
@@ -172,13 +197,13 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   if (runError || !runData?.run) {
     return (
       <div className="space-y-4">
-        <Button variant="ghost" size="sm" onClick={onBack} className="gap-2 text-muted-foreground">
+        <Button variant="ghost" size="sm" onClick={onBack} className="gap-2 text-on-surface-variant">
           <ArrowLeft className="h-4 w-4" />
           Runs
         </Button>
-        <div className="flex h-40 flex-col items-center justify-center gap-2 text-destructive">
+        <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary">
           <AlertCircle className="h-5 w-5" />
-          <span className="text-sm">Run not found</span>
+          <span className="font-sans text-sm">Run not found</span>
         </div>
       </div>
     );
@@ -202,78 +227,61 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
         phaseResults = (parsed as { phases: PhaseResult[] }).phases;
       }
     } catch {
-      // Malformed JSON — silently ignore, don't render timeline
+      // Malformed JSON -- silently ignore, don't render timeline
     }
   }
 
   return (
     <div className="space-y-6">
       {/* Back nav */}
-      <Button variant="ghost" size="sm" onClick={onBack} className="gap-2 text-muted-foreground">
+      <Button variant="ghost" size="sm" onClick={onBack} className="gap-2 text-on-surface-variant">
         <ArrowLeft className="h-4 w-4" />
         Runs
       </Button>
 
-      {/* Summary bar */}
-      <div className="rounded-lg border border-border bg-card p-4">
-        <div className="flex flex-wrap items-center gap-4">
-          <StatusBadge status={run.status} />
-
-          <span className="text-sm text-muted-foreground">
-            Task: <span className="text-foreground font-medium">{run.task ?? 'Default task'}</span>
-          </span>
-
-          <span className="text-sm text-muted-foreground">
-            Started: <span className="text-foreground font-mono">{formatEpochRelative(run.started_at)}</span>
-          </span>
-
-          <span className="text-sm text-muted-foreground">
-            Duration: <span className="text-foreground font-mono">{formatDuration(run.started_at, run.completed_at)}</span>
-          </span>
-
-          <span className="text-sm text-muted-foreground">
-            Tokens: <span className="text-foreground font-mono">{formatTokens(run.tokens_used)}</span>
-          </span>
-
-          <span className="text-sm text-muted-foreground">
-            Cost: <span className="text-foreground font-mono">{formatCost(run.cost_usd)}</span>
-          </span>
-        </div>
-
-        {run.error && (
-          <div className="mt-3 rounded-md bg-destructive/10 border border-destructive/20 px-3 py-2">
-            <p className="text-xs text-destructive font-mono">{run.error}</p>
-          </div>
-        )}
+      {/* Stat cards */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        <StatCard label="Status" value={capitalize(run.status)} accent="sage" />
+        <StatCard label="Task" value={resolveTaskName(run.task, tasksList)} accent="outline" />
+        <StatCard label="Started" value={formatEpochRelative(run.started_at)} accent="outline" />
+        <StatCard label="Duration" value={formatDuration(run.started_at, run.completed_at)} accent="outline" />
+        <StatCard label="Tokens" value={formatTokens(run.tokens_used)} accent="ochre" />
+        <StatCard label="Cost" value={formatCost(run.cost_usd)} accent="ochre" />
       </div>
+
+      {run.error && (
+        <div className="rounded-md bg-tertiary/10 px-3 py-2">
+          <p className="font-mono text-xs text-tertiary">{run.error}</p>
+        </div>
+      )}
 
       {/* Phase Timeline (only shown for phased runs) */}
       {phaseResults && phaseResults.length > 0 && (
-        <div className="rounded-lg border border-border bg-card p-4">
+        <Surface level="low" className="p-4">
           <PhaseTimeline phases={phaseResults} />
-        </div>
+        </Surface>
       )}
 
       {/* Decisions / Reports */}
       <div className="space-y-3">
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+        <h2 className="font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide">
           Decisions
           {reports.length > 0 && (
-            <span className="ml-2 text-foreground normal-case font-normal">
+            <span className="ml-2 text-on-surface normal-case font-normal">
               {reports.length} {reports.length === 1 ? 'action' : 'actions'}
             </span>
           )}
         </h2>
 
         {reportsLoading ? (
-          <div className="flex items-center gap-2 text-muted-foreground py-4">
+          <div className="flex items-center gap-2 text-on-surface-variant py-4">
             <Loader2 className="h-4 w-4 animate-spin" />
-            <span className="text-sm">Loading decisions...</span>
+            <span className="font-sans text-sm">Loading decisions...</span>
           </div>
         ) : reports.length === 0 ? (
-          <div className="flex h-24 flex-col items-center justify-center gap-2 rounded-lg border border-border text-muted-foreground">
-            <span className="text-sm">No decisions recorded for this run</span>
-          </div>
+          <Surface level="low" className="flex h-24 items-center justify-center">
+            <span className="font-sans text-sm text-on-surface-variant">No decisions recorded for this run</span>
+          </Surface>
         ) : (
           <div className="space-y-2">
             {reports.map((report) => (
@@ -286,7 +294,7 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
       {/* Audit trail (collapsed by default) */}
       <div className="space-y-3">
         <button
-          className="flex items-center gap-2 text-sm font-semibold text-muted-foreground uppercase tracking-wide hover:text-foreground transition-colors"
+          className="flex items-center gap-2 font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide hover:text-on-surface transition-colors"
           onClick={() => setShowAudit(!showAudit)}
         >
           {showAudit
@@ -297,40 +305,27 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
         </button>
 
         {showAudit && (
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Turn-by-turn trace</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
+          <Surface level="low" className={cn('overflow-hidden')}>
+            <div className="p-4 pb-2">
+              <h3 className="font-sans text-sm font-medium text-on-surface">Turn-by-turn trace</h3>
+            </div>
+            <div className="p-0">
               {turnsLoading ? (
-                <div className="flex items-center gap-2 text-muted-foreground p-4">
+                <div className="flex items-center gap-2 text-on-surface-variant p-4">
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  <span className="text-sm">Loading turns...</span>
+                  <span className="font-sans text-sm">Loading turns...</span>
                 </div>
               ) : turns.length === 0 ? (
-                <p className="text-sm text-muted-foreground p-4">No turns recorded.</p>
+                <p className="font-sans text-sm text-on-surface-variant p-4">No turns recorded.</p>
               ) : (
-                <div className="overflow-auto">
-                  <table className="w-full text-left">
-                    <thead>
-                      <tr className="border-b border-border bg-muted/50">
-                        <th className="px-3 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">#</th>
-                        <th className="px-3 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">Tool</th>
-                        <th className="px-3 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">Input</th>
-                        <th className="px-3 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">Output</th>
-                        <th className="px-3 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">Time</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {turns.map((turn) => (
-                        <TurnTableRow key={turn.id} turn={turn} />
-                      ))}
-                    </tbody>
-                  </table>
+                <div>
+                  {turns.map((turn) => (
+                    <TurnCard key={turn.id} turn={turn} />
+                  ))}
                 </div>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </Surface>
         )}
       </div>
     </div>

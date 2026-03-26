@@ -114,14 +114,14 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
         <DialogTitle className="sr-only">Search vault</DialogTitle>
 
         {/* Search input row */}
-        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-          <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <div className="flex items-center gap-2 border-b border-[var(--ghost-border)] pl-4 pr-12 py-3">
+          <Search className="h-4 w-4 shrink-0 text-on-surface-variant" />
           <Input
             ref={inputRef}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             placeholder="Search sessions, spores, plans…"
-            className="border-0 shadow-none focus-visible:ring-0 px-0 h-auto text-base"
+            className="border-0 shadow-none focus-visible:ring-0 px-0 h-auto text-base bg-surface-bright font-mono"
           />
           <div className="flex items-center gap-1 shrink-0">
             <Toggle
@@ -129,18 +129,18 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
               pressed={mode === 'semantic'}
               onPressedChange={() => setMode('semantic')}
               aria-label="Semantic search"
-              title="Knowledge (semantic)"
+              title="Semantic (embedded knowledge)"
             >
-              Knowledge
+              Semantic
             </Toggle>
             <Toggle
               size="sm"
               pressed={mode === 'fts'}
               onPressedChange={() => setMode('fts')}
               aria-label="Full-text search"
-              title="Raw Data (full-text)"
+              title="Full text (raw data)"
             >
-              Raw
+              Full Text
             </Toggle>
           </div>
         </div>
@@ -149,7 +149,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
         <div className="max-h-96 overflow-y-auto">
           {isLoading && debouncedQuery.length > 2 && (
             <div className="px-4 py-8 text-center">
-              <div className="flex flex-col items-center gap-2 text-muted-foreground">
+              <div className="flex flex-col items-center gap-2 text-on-surface-variant">
                 <div className="h-4 w-32 rounded bg-muted animate-pulse" />
                 <div className="h-3 w-24 rounded bg-muted animate-pulse" />
                 <div className="h-3 w-28 rounded bg-muted animate-pulse" />
@@ -158,14 +158,14 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
           )}
 
           {showPrompt && (
-            <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+            <div className="px-4 py-8 text-center text-sm text-on-surface-variant">
               Type to search your vault…
             </div>
           )}
 
           {showEmpty && (
-            <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-              No results for <span className="font-medium text-foreground">"{debouncedQuery}"</span>
+            <div className="px-4 py-8 text-center text-sm text-on-surface-variant">
+              No results for <span className="font-medium text-on-surface">"{debouncedQuery}"</span>
             </div>
           )}
 
@@ -179,7 +179,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
         </div>
 
         {/* Footer hint */}
-        <div className="border-t border-border px-4 py-2 flex items-center gap-4 text-xs text-muted-foreground">
+        <div className="border-t border-[var(--ghost-border)] px-4 py-2 flex items-center gap-4 text-xs text-on-surface-variant">
           <span><kbd className="font-mono">↑↓</kbd> navigate</span>
           <span><kbd className="font-mono">↵</kbd> open</span>
           <span><kbd className="font-mono">Esc</kbd> close</span>

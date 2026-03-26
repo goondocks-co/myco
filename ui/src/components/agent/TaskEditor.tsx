@@ -55,12 +55,12 @@ export function TaskEditor({ taskId, onSaved }: TaskEditorProps) {
   }
 
   if (isLoading) {
-    return <div className="h-64 animate-pulse rounded-lg bg-muted" />;
+    return <div className="h-64 animate-pulse rounded-md bg-surface-container-low" />;
   }
 
   if (isError) {
     return (
-      <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+      <div className="rounded-md bg-tertiary-container/20 p-4 font-sans text-sm text-tertiary">
         Failed to load task YAML.
       </div>
     );
@@ -71,13 +71,13 @@ export function TaskEditor({ taskId, onSaved }: TaskEditorProps) {
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+        <h2 className="font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide">
           Task Definition {isReadOnly && '(read-only)'}
         </h2>
         {!isReadOnly && (
           <div className="flex gap-2">
             <Button
-              variant="outline"
+              variant="ghost"
               size="sm"
               onClick={handleReset}
               disabled={!dirty}
@@ -101,19 +101,19 @@ export function TaskEditor({ taskId, onSaved }: TaskEditorProps) {
         readOnly={isReadOnly}
         rows={EDITOR_MIN_ROWS}
         spellCheck={false}
-        className={`w-full rounded-lg border bg-muted p-4 font-mono text-sm text-foreground leading-relaxed resize-y focus:outline-none focus:ring-2 focus:ring-ring ${
+        className={`w-full rounded-md bg-surface-container-lowest p-4 font-mono text-sm text-on-surface leading-relaxed resize-y focus:outline-none focus:ring-2 focus:ring-primary/40 ${
           isReadOnly ? 'opacity-75 cursor-not-allowed' : ''
         }`}
       />
 
       {updateTask.isError && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+        <div className="rounded-md bg-tertiary-container/20 p-3 font-sans text-sm text-tertiary">
           {updateTask.error.message}
         </div>
       )}
 
       {updateTask.isSuccess && !dirty && (
-        <div className="rounded-lg border border-green-500/30 bg-green-500/5 p-3 text-sm text-green-700 dark:text-green-400">
+        <div className="rounded-md bg-primary-container/20 p-3 font-sans text-sm text-primary">
           Task saved successfully.
         </div>
       )}

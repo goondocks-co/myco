@@ -15,7 +15,7 @@ interface ThemeContextValue {
 
 const STORAGE_KEY = 'myco-ui-theme';
 const DEFAULT_THEME: Theme = 'system';
-const DARK_CLASS = 'dark';
+const LIGHT_CLASS = 'light';
 const MEDIA_QUERY = '(prefers-color-scheme: dark)';
 
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
@@ -30,14 +30,14 @@ function getStoredTheme(): Theme {
 
 function applyTheme(theme: Theme): void {
   const root = document.documentElement;
-  const isDark =
-    theme === 'dark' ||
-    (theme === 'system' && window.matchMedia(MEDIA_QUERY).matches);
+  const isLight =
+    theme === 'light' ||
+    (theme === 'system' && !window.matchMedia(MEDIA_QUERY).matches);
 
-  if (isDark) {
-    root.classList.add(DARK_CLASS);
+  if (isLight) {
+    root.classList.add(LIGHT_CLASS);
   } else {
-    root.classList.remove(DARK_CLASS);
+    root.classList.remove(LIGHT_CLASS);
   }
 }
 

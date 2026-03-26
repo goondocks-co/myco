@@ -73,9 +73,9 @@ export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps)
         <div className="space-y-4 py-2">
           {/* Task picker */}
           <div className="space-y-1.5">
-            <label className="text-sm font-medium text-foreground">Task</label>
+            <label className="font-sans text-sm font-medium text-on-surface">Task</label>
             {tasksLoading ? (
-              <div className="flex h-9 items-center gap-2 text-muted-foreground text-sm">
+              <div className="flex h-9 items-center gap-2 text-on-surface-variant font-sans text-sm">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 Loading tasks...
               </div>
@@ -89,7 +89,7 @@ export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps)
                     <SelectItem key={task.name} value={task.name}>
                       {taskLabel(task)}
                       {task.isDefault && (
-                        <span className="ml-1 text-xs text-muted-foreground">(default)</span>
+                        <span className="ml-1 font-sans text-xs text-on-surface-variant">(default)</span>
                       )}
                     </SelectItem>
                   ))}
@@ -100,14 +100,14 @@ export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps)
 
           {/* Instruction field */}
           <div className="space-y-1.5">
-            <label className="text-sm font-medium text-foreground">
+            <label className="font-sans text-sm font-medium text-on-surface">
               Instruction
-              <span className="ml-1 text-xs text-muted-foreground font-normal">(optional)</span>
+              <span className="ml-1 font-sans text-xs text-on-surface-variant font-normal">(optional)</span>
             </label>
             <textarea
-              className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 resize-none"
+              className="w-full rounded-md bg-surface-container-lowest px-3 py-2 font-sans text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-50 resize-none"
               rows={3}
-              placeholder="E.g. Focus on gotchas from yesterday's sessions…"
+              placeholder="E.g. Focus on gotchas from yesterday's sessions..."
               value={instruction}
               onChange={(e) => setInstruction(e.target.value)}
               disabled={isPending}
@@ -116,7 +116,7 @@ export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps)
 
           {/* Error */}
           {error && (
-            <p className="text-xs text-destructive">
+            <p className="font-sans text-xs text-tertiary">
               {error instanceof Error ? error.message : 'Failed to trigger run'}
             </p>
           )}
@@ -124,7 +124,7 @@ export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps)
 
         <DialogFooter>
           <Button
-            variant="outline"
+            variant="ghost"
             size="sm"
             onClick={() => onOpenChange(false)}
             disabled={isPending}
