@@ -1,8 +1,8 @@
 import { Surface } from '../ui/surface';
 import { Badge } from '../ui/badge';
-import { Button } from '../ui/button';
-import { X, ExternalLink, Search } from 'lucide-react';
-import type { GraphNode } from '../../hooks/use-graph-canvas';
+
+import { X, ArrowRight } from 'lucide-react';
+import type { GraphNode, GraphEdge } from '../../hooks/use-graph-canvas';
 
 /* ---------- Constants ---------- */
 
@@ -29,12 +29,23 @@ const TYPE_DOT_COLOR: Record<string, string> = {
 
 /* ---------- Types ---------- */
 
+interface Connection {
+  nodeId: string;
+  nodeName: string;
+  nodeType: string;
+  edgeLabel: string;
+  direction: 'outgoing' | 'incoming';
+}
+
 interface InspectorProps {
   node: GraphNode | null;
+  edges?: GraphEdge[];
+  nodes?: GraphNode[];
   metadata?: Record<string, string>;
   markdownPreview?: string;
   connectedSpores?: Array<{ id: string; name: string; type: string }>;
   onClose?: () => void;
+  onNodeSelect?: (node: GraphNode) => void;
 }
 
 /* ---------- Sub-components ---------- */
@@ -58,12 +69,29 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 
 /* ---------- Component ---------- */
 
-export function Inspector({ node, metadata, markdownPreview, connectedSpores, onClose }: InspectorProps) {
+export function Inspector({ node, edges, nodes, metadata, markdownPreview, connectedSpores, onClose, onNodeSelect }: InspectorProps) {
   if (!node) return null;
 
   const typeKey = node.type.toLowerCase();
   const badgeVariant = TYPE_BADGE_VARIANT[typeKey] ?? 'secondary';
   const dotColor = TYPE_DOT_COLOR[typeKey] ?? 'bg-outline';
+
+  // Build connections list from edges
+  const nodeMap = new Map((nodes ?? []).map((n) => [n.id, n]));
+  const connections: Connection[] = [];
+  for (const edge of edges ?? []) {
+    if (edge.source_id === node.id) {
+      const target = nodeMap.get(edge.target_id);
+      if (target) {
+        connections.push({ nodeId: target.id, nodeName: target.name, nodeType: target.type, edgeLabel: edge.label ?? 'connected', direction: 'outgoing' });
+      }
+    } else if (edge.target_id === node.id) {
+      const source = nodeMap.get(edge.source_id);
+      if (source) {
+        connections.push({ nodeId: source.id, nodeName: source.name, nodeType: source.type, edgeLabel: edge.label ?? 'connected', direction: 'incoming' });
+      }
+    }
+  }
 
   const truncatedPreview =
     markdownPreview && markdownPreview.length > MARKDOWN_PREVIEW_LIMIT
@@ -132,6 +160,39 @@ export function Inspector({ node, metadata, markdownPreview, connectedSpores, on
         </>
       )}
 
+      {/* Connections */}
+      {connections.length > 0 && (
+        <>
+          <div className="h-px bg-surface-container-high/50" />
+          <div className="px-4 py-3 space-y-2">
+            <SectionHeader>Connections ({connections.length})</SectionHeader>
+            <div className="space-y-1">
+              {connections.map((conn, i) => {
+                const connTypeKey = conn.nodeType.toLowerCase();
+                const connDot = TYPE_DOT_COLOR[connTypeKey] ?? 'bg-outline';
+                const targetNode = nodeMap.get(conn.nodeId);
+                return (
+                  <button
+                    key={`${conn.nodeId}-${conn.edgeLabel}-${i}`}
+                    className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-surface-container-high/50 transition-colors group"
+                    onClick={() => targetNode && onNodeSelect?.(targetNode)}
+                  >
+                    <div className={`h-2 w-2 rounded-full ${connDot} shrink-0`} />
+                    <span className="font-sans text-xs text-on-surface truncate flex-1 group-hover:text-primary transition-colors">
+                      {conn.nodeName}
+                    </span>
+                    <ArrowRight className={`h-3 w-3 shrink-0 ${conn.direction === 'incoming' ? 'rotate-180' : ''} text-on-surface-variant/50`} />
+                    <span className="font-mono text-[9px] text-on-surface-variant/60 shrink-0 max-w-[80px] truncate">
+                      {conn.edgeLabel}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
+
       {/* Connected spores */}
       {connectedSpores && connectedSpores.length > 0 && (
         <>
@@ -153,18 +214,6 @@ export function Inspector({ node, metadata, markdownPreview, connectedSpores, on
         </>
       )}
 
-      {/* Action buttons */}
-      <div className="h-px bg-surface-container-high/50" />
-      <div className="flex gap-2 p-4 pt-3">
-        <Button variant="secondary" size="sm" className="flex-1 gap-1.5">
-          <ExternalLink className="h-3.5 w-3.5" />
-          Open
-        </Button>
-        <Button variant="secondary" size="sm" className="flex-1 gap-1.5">
-          <Search className="h-3.5 w-3.5" />
-          Analyze
-        </Button>
-      </div>
     </Surface>
   );
 }

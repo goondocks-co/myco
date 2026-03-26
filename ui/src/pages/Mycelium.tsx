@@ -125,7 +125,10 @@ function GraphTab() {
       />
       <Inspector
         node={selectedNode}
+        edges={filteredEdges}
+        nodes={filteredNodes}
         onClose={() => setSelectedNode(null)}
+        onNodeSelect={(n) => setSelectedNode(n)}
       />
     </div>
   );
