@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Pause, Play, Trash2, ArrowDown } from 'lucide-react';
+import { Pause, Play, Trash2, ArrowDown, ScrollText, Filter } from 'lucide-react';
 import { usePowerQuery } from '../hooks/use-power-query';
 import { fetchJson } from '../lib/api';
 import { POLL_INTERVALS, LOG_LEVELS, LEVEL_ORDER, type LogLevel, levelBadgeVariant, levelDotColor } from '../lib/constants';
@@ -16,6 +16,14 @@ const DEFAULT_LOG_LIMIT = 200;
 /** Matches LOG_RING_BUFFER_CAPACITY in src/daemon/log-buffer.ts */
 const MAX_LOG_ENTRIES = 5000;
 const SCROLL_BOTTOM_THRESHOLD_PX = 40;
+
+/** Left-border color accent per log level for row emphasis. */
+const LEVEL_BORDER_LEFT: Record<LogLevel, string> = {
+  debug: 'border-l-outline/30',
+  info: 'border-l-primary/50',
+  warn: 'border-l-secondary/70',
+  error: 'border-l-tertiary/80',
+};
 
 /* ---------- Types ---------- */
 
@@ -163,6 +171,8 @@ export default function Logs() {
     });
   }, [entries, activeLevel, activeCategories, searchText]);
 
+  const isFiltered = activeLevel !== 'debug' || activeCategories.size > 0 || searchText.trim().length > 0;
+
   return (
     <div className="flex h-full flex-col">
       {/* Page header */}
@@ -189,12 +199,15 @@ export default function Logs() {
             ))}
           </div>
 
+          {/* Separator between level and category filters */}
+          {knownCategories.length > 0 && (
+            <div className="h-5 w-px bg-outline-variant/30" />
+          )}
+
           {/* Category filter chips */}
           {knownCategories.length > 0 && (
             <div className="flex items-center gap-1 flex-wrap">
-              <span className="font-sans text-[10px] uppercase tracking-widest text-on-surface-variant mr-0.5">
-                cat:
-              </span>
+              <Filter className="h-3 w-3 text-on-surface-variant/60 mr-0.5" />
               {knownCategories.map((cat) => (
                 <Button
                   key={cat}
@@ -235,6 +248,7 @@ export default function Logs() {
             placeholder="Filter messages..."
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
+            aria-label="Filter log messages"
           />
 
           <div className="ml-auto flex items-center gap-1">
@@ -271,19 +285,48 @@ export default function Logs() {
         </div>
       </Surface>
 
-      {/* Log viewer — recessed terminal feel */}
-      <div className="relative flex-1 overflow-hidden mx-6 mb-6 rounded-md">
+      {/* Log viewer — terminal window chrome */}
+      <div className="relative flex-1 overflow-hidden mx-6 mb-6 rounded-lg border border-outline-variant/10 flex flex-col" role="log" aria-label="Real-time daemon log stream" aria-live="polite">
+        {/* Terminal title bar */}
+        <div className="flex items-center gap-3 bg-surface-container-low px-4 py-2 border-b border-outline-variant/10">
+          <div className="flex items-center gap-1.5">
+            <span className={cn(
+              'h-2 w-2 rounded-full',
+              autoScroll ? 'bg-primary animate-pulse' : 'bg-secondary',
+            )} />
+            <span className="h-2 w-2 rounded-full bg-outline/30" />
+            <span className="h-2 w-2 rounded-full bg-outline/30" />
+          </div>
+          <span className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant/60">
+            {autoScroll ? 'streaming' : 'paused'}
+          </span>
+          <span className="ml-auto font-mono text-[10px] text-on-surface-variant/40 tabular-nums">
+            {entries.length > 0 && `${entries.length} buffered`}
+          </span>
+        </div>
+
+        {/* Scrollable log content */}
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className="h-full overflow-y-auto bg-surface-container-lowest font-mono text-xs"
+          className="flex-1 overflow-y-auto bg-surface-container-lowest font-mono text-xs"
         >
           {filteredEntries.length === 0 ? (
-            <div className="flex h-32 items-center justify-center font-sans text-on-surface-variant">
-              No log entries
+            <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-3 py-12">
+              <ScrollText className="h-8 w-8 text-outline/40" />
+              <div className="text-center space-y-1">
+                <p className="font-sans text-sm text-on-surface-variant">
+                  {entries.length === 0 ? 'Waiting for log entries' : 'No entries match current filters'}
+                </p>
+                <p className="font-sans text-xs text-on-surface-variant/60">
+                  {entries.length === 0
+                    ? 'Log output will appear here as the daemon operates.'
+                    : 'Try adjusting the level filter or clearing the search.'}
+                </p>
+              </div>
             </div>
           ) : (
-            <table className="w-full border-collapse">
+            <table className="w-full border-collapse" aria-label="Daemon log entries">
               <tbody>
                 {filteredEntries.map((entry, idx) => (
                   <LogRow key={`${entry.timestamp}-${idx}`} entry={entry} />
@@ -293,13 +336,35 @@ export default function Logs() {
           )}
         </div>
 
+        {/* Status footer bar */}
+        <div className="flex items-center gap-4 bg-surface-container-low px-4 py-1.5 border-t border-outline-variant/10">
+          <span className="font-mono text-[10px] text-on-surface-variant/50 tabular-nums">
+            {isFiltered
+              ? `${filteredEntries.length} of ${entries.length} entries`
+              : `${entries.length} entries`}
+          </span>
+          {isFiltered && (
+            <Badge variant="outline" className="px-1.5 py-0 text-[9px]">
+              filtered
+            </Badge>
+          )}
+          {activeCategories.size > 0 && (
+            <span className="font-mono text-[10px] text-on-surface-variant/40">
+              {activeCategories.size} {activeCategories.size === 1 ? 'category' : 'categories'}
+            </span>
+          )}
+          <span className="ml-auto font-mono text-[10px] text-on-surface-variant/40">
+            {activeLevel !== 'debug' && `>= ${activeLevel}`}
+          </span>
+        </div>
+
         {/* "New entries below" indicator */}
         {hasNewEntries && !autoScroll && (
           <button
             type="button"
             onClick={scrollToBottom}
             className={cn(
-              'absolute bottom-4 left-1/2 -translate-x-1/2',
+              'absolute bottom-10 left-1/2 -translate-x-1/2',
               'flex items-center gap-1.5 rounded-full',
               'bg-surface-container-high px-3 py-1.5 text-xs font-medium shadow-ambient',
               'text-on-surface-variant transition-colors hover:text-on-surface',
@@ -318,9 +383,12 @@ export default function Logs() {
 
 function LogRow({ entry }: { entry: LogEntry }) {
   return (
-    <tr className="hover:bg-surface-container-high/30 transition-colors">
+    <tr className={cn(
+      'hover:bg-surface-container-high/30 transition-colors border-l-2',
+      LEVEL_BORDER_LEFT[entry.level],
+    )}>
       {/* Timestamp */}
-      <td className="whitespace-nowrap py-1.5 pl-4 pr-3 text-on-surface-variant/60 align-top w-[68px]">
+      <td className="whitespace-nowrap py-1.5 pl-3 pr-3 text-on-surface-variant/60 align-top w-[68px]">
         {formatTimestamp(entry.timestamp)}
       </td>
 

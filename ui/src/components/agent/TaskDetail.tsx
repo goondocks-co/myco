@@ -157,7 +157,7 @@ export function TaskDetail({ taskId, onBack, onNavigate }: TaskDetailProps) {
           <h2 className="font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide">
             Execution Config
           </h2>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             {execution.model !== undefined && (
               <div>
                 <p className="font-sans text-xs text-on-surface-variant">Model</p>

@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router-dom';
+import { ScrollText } from 'lucide-react';
 import { useActivity, type ActivityEvent } from '../../hooks/use-activity';
 import { cn } from '../../lib/cn';
 
@@ -49,11 +50,19 @@ function LogEntry({ event, onClick }: { event: ActivityEvent; onClick?: () => vo
   return (
     <div
       className={cn(
-        'flex gap-4 items-start border-b border-outline-variant/5 pb-2 font-mono text-[11px]',
-        onClick && 'cursor-pointer hover:bg-surface-container-high/50 -mx-2 px-2 rounded transition-colors',
+        'flex gap-4 items-start border-b border-outline-variant/5 pb-2 font-mono text-[11px] transition-all duration-150',
+        onClick && 'cursor-pointer hover:bg-surface-container-high/50 hover:translate-x-1 -mx-2 px-2 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
       )}
       onClick={onClick}
+      onKeyDown={onClick ? (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick();
+        }
+      } : undefined}
+      tabIndex={onClick ? 0 : undefined}
       role={onClick ? 'link' : undefined}
+      aria-label={onClick ? `${event.type.replace(/_/g, ' ')}: ${event.summary}` : undefined}
     >
       <span className="text-outline shrink-0 tabular-nums">
         {formatLogTime(event.timestamp)}
@@ -77,7 +86,7 @@ export function ActivityLogFeed() {
   const events = data?.slice(0, LOG_FEED_DISPLAY) ?? [];
 
   return (
-    <div className="glass-panel p-6 rounded-xl border border-outline-variant/10">
+    <div className="glass-panel p-6 rounded-xl border border-outline-variant/10 transition-[border-color] duration-200 hover:border-outline-variant/25">
       {/* Header */}
       <div className="flex justify-between items-center mb-6">
         <h4 className="font-serif text-xl text-on-surface">System Integrity Logs</h4>
@@ -88,9 +97,20 @@ export function ActivityLogFeed() {
 
       {/* Log entries */}
       {isLoading ? (
-        <div className="font-mono text-[11px] text-outline py-4">Loading feed...</div>
+        <div className="space-y-3">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="flex gap-4 items-start pb-2 animate-pulse">
+              <div className="h-3 w-14 rounded bg-surface-container-high/50" />
+              <div className="h-3 w-8 rounded bg-surface-container-high/50" />
+              <div className="h-3 flex-1 rounded bg-surface-container-high/40" />
+            </div>
+          ))}
+        </div>
       ) : events.length === 0 ? (
-        <div className="font-mono text-[11px] text-outline py-4">No recent activity</div>
+        <div className="flex flex-col items-center justify-center py-8 gap-2">
+          <ScrollText className="h-8 w-8 text-outline/20" />
+          <p className="font-sans text-xs text-on-surface-variant">No log entries yet</p>
+        </div>
       ) : (
         <div className="space-y-3">
           {events.map((event) => {

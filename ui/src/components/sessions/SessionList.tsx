@@ -6,7 +6,8 @@ import { Surface } from '../ui/surface';
 import { PageHeader } from '../ui/page-header';
 import { Input } from '../ui/input';
 import { StatCard } from '../ui/stat-card';
-import { useSessions, useDeleteSession, type SessionSummary } from '../../hooks/use-sessions';
+import { ConfirmDialog } from '../ui/confirm-dialog';
+import { useSessions, useDeleteSession, useSessionImpact, type SessionSummary } from '../../hooks/use-sessions';
 import { StatusBadge } from './status-helpers';
 import { cn } from '../../lib/cn';
 
@@ -35,10 +36,21 @@ function SessionTableRow({
   onClick: () => void;
   onDelete: () => void;
 }) {
+  const sessionLabel = session.title || session.id.slice(0, SESSION_ID_PREVIEW_LENGTH);
+
   return (
     <tr
-      className="border-b border-[var(--ghost-border)] last:border-0 hover:bg-surface-container-low/60 cursor-pointer transition-colors group"
+      className="border-b border-[var(--ghost-border)] last:border-0 hover:bg-surface-container/60 cursor-pointer transition-all duration-150 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40 hover:shadow-[inset_3px_0_0_var(--primary)]"
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+      tabIndex={0}
+      role="row"
+      aria-label={`Session: ${sessionLabel}`}
     >
       {/* Session ID */}
       <td className="px-4 py-3">
@@ -50,7 +62,7 @@ function SessionTableRow({
       {/* Title */}
       <td className="px-4 py-3">
         <span className="font-sans text-sm font-medium text-on-surface truncate block max-w-xs">
-          {session.title || session.id.slice(0, SESSION_ID_PREVIEW_LENGTH)}
+          {sessionLabel}
         </span>
       </td>
 
@@ -84,7 +96,13 @@ function SessionTableRow({
               e.stopPropagation();
               onDelete();
             }}
-            className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-tertiary/10 hover:text-tertiary transition-all shrink-0"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.stopPropagation();
+              }
+            }}
+            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 rounded hover:bg-tertiary/10 hover:text-tertiary transition-all shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tertiary/40"
+            aria-label={`Delete session ${sessionLabel}`}
             title="Delete session"
           >
             <Trash2 className="h-3.5 w-3.5" />
@@ -183,14 +201,15 @@ export function SessionList() {
   const navigate = useNavigate();
   const [filter, setFilter] = useState('');
   const { data, isLoading, isError, error } = useSessions({ limit: DEFAULT_SESSIONS_LIMIT });
+  const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
   const deleteSession = useDeleteSession();
+  const { data: impact } = useSessionImpact(deleteTarget?.id ?? null);
 
-  function handleDelete(session: SessionSummary) {
-    const label = session.title || session.id.slice(0, SESSION_ID_PREVIEW_LENGTH);
-    if (!window.confirm(`Delete session "${label}"?\n\nThis will permanently remove all batches, activities, and attachments for this session.`)) {
-      return;
-    }
-    deleteSession.mutate(session.id);
+  function handleDeleteConfirm() {
+    if (!deleteTarget) return;
+    deleteSession.mutate(deleteTarget.id, {
+      onSuccess: () => setDeleteTarget(null),
+    });
   }
 
   const sessions = data?.sessions ?? [];
@@ -267,6 +286,7 @@ export function SessionList() {
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           className="bg-transparent border-none shadow-none focus-visible:ring-0 px-0 h-auto py-0 font-sans text-sm"
+          aria-label="Filter sessions by title, ID, or agent"
         />
         <span className="font-mono text-xs text-on-surface-variant shrink-0">
           {filtered.length}/{sessions.length}
@@ -285,7 +305,7 @@ export function SessionList() {
         </div>
       ) : (
         <Surface level="low" className="rounded-md overflow-hidden">
-          <table className="w-full">
+          <table className="w-full" aria-label="Session archive">
             <thead>
               <tr className="border-b border-[var(--ghost-border)] bg-surface-container/50">
                 <ColHeader>Session ID</ColHeader>
@@ -302,13 +322,35 @@ export function SessionList() {
                   key={session.id}
                   session={session}
                   onClick={() => navigate(`/sessions/${session.id}`)}
-                  onDelete={() => handleDelete(session)}
+                  onDelete={() => setDeleteTarget(session)}
                 />
               ))}
             </tbody>
           </table>
         </Surface>
       )}
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        title="Delete Session"
+        description="This will permanently remove this session and all related data. This action cannot be undone."
+        icon={<Trash2 className="h-4 w-4 text-tertiary" />}
+        meta={deleteTarget ? [
+          { label: 'ID', value: deleteTarget.id.slice(0, SESSION_ID_PREVIEW_LENGTH) },
+          { label: 'Title', value: deleteTarget.title || deleteTarget.id.slice(0, SESSION_ID_PREVIEW_LENGTH) },
+        ] : []}
+        impact={impact ? [
+          { label: 'Prompts', value: impact.promptCount },
+          { label: 'Spores', value: impact.sporeCount },
+          { label: 'Attachments', value: impact.attachmentCount },
+          { label: 'Graph Edges', value: impact.graphEdgeCount },
+        ] : []}
+        confirmLabel="Delete Session"
+        variant="destructive"
+        onConfirm={handleDeleteConfirm}
+        isPending={deleteSession.isPending}
+      />
     </div>
   );
 }

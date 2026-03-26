@@ -5,10 +5,11 @@ import { Inspector } from '../components/mycelium/Inspector';
 import { SporeList } from '../components/mycelium/SporeList';
 import { SporeDetail } from '../components/mycelium/SporeDetail';
 import { DigestView } from '../components/mycelium/DigestView';
+import { PageHeader } from '../components/ui/page-header';
 import { useEntities, useGraph } from '../hooks/use-spores';
 import type { GraphNode } from '../hooks/use-graph-canvas';
 import type { SporeSummary } from '../hooks/use-spores';
-import { cn } from '../lib/cn';
+import type { Tab } from '../components/ui/tab-switcher';
 
 /* ---------- Constants ---------- */
 
@@ -20,6 +21,13 @@ const DEFAULT_GRAPH_DEPTH = 2;
 /* ---------- Types ---------- */
 
 type ActiveTab = 'graph' | 'spores' | 'digest';
+
+/** Tab definitions for the PageHeader TabSwitcher. */
+const MYCELIUM_TABS: Tab[] = [
+  { id: 'graph', label: 'Graph' },
+  { id: 'spores', label: 'Spores' },
+  { id: 'digest', label: 'Digest' },
+];
 
 /* ---------- URL state helpers ---------- */
 
@@ -51,32 +59,6 @@ function writeUrlState(tab: ActiveTab, sporeId?: string): void {
   const search = params.toString();
   const url = search ? `${window.location.pathname}?${search}` : window.location.pathname;
   window.history.replaceState(null, '', url);
-}
-
-/* ---------- Sub-components ---------- */
-
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        'px-4 py-2 text-sm font-sans font-medium transition-colors rounded-t-md',
-        active
-          ? 'bg-surface-container text-on-surface'
-          : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container-low',
-      )}
-    >
-      {children}
-    </button>
-  );
 }
 
 /* ---------- Graph Tab ---------- */
@@ -147,19 +129,19 @@ function GraphTab() {
   }, []);
 
   return (
-    <div className="flex gap-3 h-[calc(100vh-180px)]">
+    <div className="relative h-[calc(100vh-180px)]">
+      <GraphCanvas
+        nodes={filteredNodes}
+        edges={filteredEdges}
+        onNodeSelect={handleNodeSelect}
+        selectedNode={selectedNode}
+      />
       <EntityFilter
         entityCounts={nodeCounts}
         enabledTypes={enabledTypes}
         onToggleType={handleToggleType}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
-      />
-      <GraphCanvas
-        nodes={filteredNodes}
-        edges={filteredEdges}
-        onNodeSelect={handleNodeSelect}
-        selectedNode={selectedNode}
       />
       <Inspector
         node={selectedNode}
@@ -205,25 +187,13 @@ export default function Mycelium() {
 
   return (
     <div className="p-6 space-y-4">
-      <div>
-        <h1 className="font-serif text-2xl text-on-surface">Mycelium</h1>
-        <p className="font-sans text-sm text-on-surface-variant mt-1">
-          Derived intelligence — spores, entity graph, and synthesized context.
-        </p>
-      </div>
-
-      {/* Tab bar */}
-      <div className="flex gap-0 bg-surface-container-low rounded-t-md">
-        <TabButton active={activeTab === 'graph'} onClick={() => handleTabChange('graph')}>
-          Graph
-        </TabButton>
-        <TabButton active={activeTab === 'spores'} onClick={() => handleTabChange('spores')}>
-          Spores
-        </TabButton>
-        <TabButton active={activeTab === 'digest'} onClick={() => handleTabChange('digest')}>
-          Digest
-        </TabButton>
-      </div>
+      <PageHeader
+        title="Mycelium"
+        subtitle="Derived intelligence — spores, entity graph, and synthesized context."
+        tabs={MYCELIUM_TABS}
+        activeTab={activeTab}
+        onTabChange={(tabId) => handleTabChange(tabId as ActiveTab)}
+      />
 
       {/* Tab content */}
       {activeTab === 'graph' && <GraphTab />}

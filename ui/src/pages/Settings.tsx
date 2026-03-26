@@ -1,9 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { CheckCircle, XCircle, Loader2 } from 'lucide-react';
 import { useConfig, type MycoConfig } from '../hooks/use-config';
 import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
 import { fetchJson } from '../lib/api';
+import { parseNumericField } from '../lib/format';
+import { DEFAULT_INTERVAL_SECONDS, DEFAULT_SUMMARY_BATCH_INTERVAL } from '../lib/constants';
 import { Surface } from '../components/ui/surface';
 import { PageHeader } from '../components/ui/page-header';
 import { SectionHeader } from '../components/ui/section-header';
@@ -47,8 +49,8 @@ function toFormState(config: MycoConfig): FormState {
     embeddingModel: config.embedding.model,
     embeddingBaseUrl: config.embedding.base_url ?? '',
     agentAutoRun: config.agent?.auto_run ?? true,
-    agentIntervalSeconds: String(config.agent?.interval_seconds ?? 300),
-    agentSummaryBatchInterval: String(config.agent?.summary_batch_interval ?? 5),
+    agentIntervalSeconds: String(config.agent?.interval_seconds ?? DEFAULT_INTERVAL_SECONDS),
+    agentSummaryBatchInterval: String(config.agent?.summary_batch_interval ?? DEFAULT_SUMMARY_BATCH_INTERVAL),
   };
 }
 
@@ -67,8 +69,8 @@ function formToConfig(form: FormState, original: MycoConfig): MycoConfig {
     },
     agent: {
       auto_run: form.agentAutoRun,
-      interval_seconds: Number(form.agentIntervalSeconds) || 300,
-      summary_batch_interval: Number(form.agentSummaryBatchInterval) ?? 5,
+      interval_seconds: parseNumericField(form.agentIntervalSeconds, DEFAULT_INTERVAL_SECONDS),
+      summary_batch_interval: parseNumericField(form.agentSummaryBatchInterval, DEFAULT_SUMMARY_BATCH_INTERVAL),
     },
   };
 }
@@ -111,17 +113,24 @@ export default function Settings() {
   const { data: stats } = useDaemon();
   const { restart } = useRestart();
 
+  // Initialise form from config on first load. A ref tracks whether we have
+  // initialised so we only seed once — subsequent config refetches do NOT
+  // overwrite user edits. This replaces the previous useEffect + null-check
+  // pattern which is a React anti-pattern for derived initial state.
+  const formInitialised = useRef(false);
   const [form, setForm] = useState<FormState | null>(null);
+  if (config && !formInitialised.current) {
+    formInitialised.current = true;
+    // Safe to call during render: React batches the setState and re-renders
+    // once. This avoids the "unnecessary Effect for initialising state" pattern.
+    if (form === null) {
+      setForm(toFormState(config));
+    }
+  }
+
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [testState, setTestState] = useState<TestState>('idle');
   const [testMessage, setTestMessage] = useState<string>('');
-
-  // Initialise form when config loads (only once)
-  useEffect(() => {
-    if (config && form === null) {
-      setForm(toFormState(config));
-    }
-  }, [config, form]);
 
   const dirty = form && config ? isDirty(form, config) : false;
 
@@ -130,7 +139,7 @@ export default function Settings() {
     setSaveMessage(null);
   }, []);
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     if (!form || !config) return;
     setSaveMessage(null);
     try {
@@ -146,9 +155,9 @@ export default function Settings() {
     } catch {
       setSaveMessage({ type: 'error', text: 'Failed to save settings.' });
     }
-  };
+  }, [form, config, saveConfig, restart]);
 
-  const handleTestConnection = async () => {
+  const handleTestConnection = useCallback(async () => {
     if (!form) return;
     setTestState('testing');
     setTestMessage('');
@@ -165,7 +174,7 @@ export default function Settings() {
       setTestState('error');
       setTestMessage(err instanceof Error ? err.message : 'Connection failed.');
     }
-  };
+  }, [form]);
 
   if (isLoading || !form || !config) {
     return (

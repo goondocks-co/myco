@@ -1,12 +1,13 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlertCircle, Loader2, Sparkles, Check } from 'lucide-react';
+import { ArrowLeft, AlertCircle, Loader2, Sparkles, Check, Trash2 } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Surface } from '../ui/surface';
 import { StatCard } from '../ui/stat-card';
 import { SectionHeader } from '../ui/section-header';
-import { useSession } from '../../hooks/use-sessions';
+import { ConfirmDialog } from '../ui/confirm-dialog';
+import { useSession, useDeleteSession, useSessionImpact } from '../../hooks/use-sessions';
 import { useSymbionts, buildResumeCommand } from '../../hooks/use-symbionts';
 import { useTriggerRun } from '../../hooks/use-agent';
 import { BatchTimeline } from './BatchTimeline';
@@ -92,6 +93,9 @@ export function SessionDetail({ id }: SessionDetailProps) {
   const { data: symbiontsData } = useSymbionts();
   const triggerRun = useTriggerRun();
   const [summaryStatus, setSummaryStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const deleteSession = useDeleteSession();
+  const { data: impact } = useSessionImpact(deleteOpen ? id : null);
 
   if (isLoading) {
     return (
@@ -180,6 +184,15 @@ export function SessionDetail({ id }: SessionDetailProps) {
             )}
             {summaryStatus === 'done' ? 'Summary Requested' : 'Generate Summary'}
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-2 text-tertiary hover:text-tertiary hover:bg-tertiary/10"
+            onClick={() => setDeleteOpen(true)}
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete
+          </Button>
         </div>
         <div className="flex flex-wrap gap-4 font-sans text-sm text-on-surface-variant">
           {session.user && (
@@ -241,6 +254,35 @@ export function SessionDetail({ id }: SessionDetailProps) {
         <SectionHeader className="mb-3">Conversation</SectionHeader>
         <BatchTimeline sessionId={id} />
       </div>
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title="Delete Session"
+        description="This will permanently remove this session and all related data. This action cannot be undone."
+        icon={<Trash2 className="h-4 w-4 text-tertiary" />}
+        meta={session ? [
+          { label: 'ID', value: session.id.slice(0, SESSION_ID_PREVIEW_LENGTH) },
+          { label: 'Title', value: session.title || session.id.slice(0, SESSION_ID_PREVIEW_LENGTH) },
+        ] : []}
+        impact={impact ? [
+          { label: 'Prompts', value: impact.promptCount },
+          { label: 'Spores', value: impact.sporeCount },
+          { label: 'Attachments', value: impact.attachmentCount },
+          { label: 'Graph Edges', value: impact.graphEdgeCount },
+        ] : []}
+        confirmLabel="Delete Session"
+        variant="destructive"
+        onConfirm={() => {
+          deleteSession.mutate(session!.id, {
+            onSuccess: () => {
+              setDeleteOpen(false);
+              navigate('/sessions');
+            },
+          });
+        }}
+        isPending={deleteSession.isPending}
+      />
     </div>
   );
 }

@@ -13,7 +13,6 @@ import {
   type EmbeddableRecordSource,
 } from '@myco/daemon/embedding/types';
 import {
-  EMBEDDING_INTERVAL_MS,
   EMBEDDING_BATCH_SIZE,
   CONTENT_HASH_ALGORITHM,
   SEARCH_SIMILARITY_THRESHOLD,
@@ -121,10 +120,6 @@ describe('Embedding types', () => {
 });
 
 describe('Embedding constants', () => {
-  it('EMBEDDING_INTERVAL_MS is positive', () => {
-    expect(EMBEDDING_INTERVAL_MS).toBeGreaterThan(0);
-  });
-
   it('EMBEDDING_BATCH_SIZE is positive', () => {
     expect(EMBEDDING_BATCH_SIZE).toBeGreaterThan(0);
   });

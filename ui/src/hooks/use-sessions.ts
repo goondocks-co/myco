@@ -20,6 +20,9 @@ const ACTIVITIES_STALE_TIME = 30_000;
 /** Cache TTL for attachments (60 seconds — rarely changes). */
 const ATTACHMENTS_STALE_TIME = 60_000;
 
+/** Cache TTL for session impact counts (10 seconds — stable between dialog opens). */
+const IMPACT_STALE_TIME = 10_000;
+
 /* ---------- Types ---------- */
 
 /** Simplified shape returned by the list endpoint. */
@@ -105,6 +108,14 @@ export interface AttachmentRow {
   created_at: number;
 }
 
+/** Cascade impact counts for a session delete. */
+export interface SessionImpact {
+  promptCount: number;
+  sporeCount: number;
+  attachmentCount: number;
+  graphEdgeCount: number;
+}
+
 /* ---------- Hooks ---------- */
 
 export function useSessions(filters?: { status?: string; limit?: number }) {
@@ -166,9 +177,19 @@ export function useSessionAttachments(sessionId: string | undefined) {
 export function useDeleteSession() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (sessionId: string) => deleteJson(`/sessions/${sessionId}`),
+    mutationFn: (sessionId: string) =>
+      deleteJson<{ ok: boolean; counts: Record<string, number> }>(`/sessions/${sessionId}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
     },
+  });
+}
+
+export function useSessionImpact(sessionId: string | null) {
+  return useQuery<SessionImpact>({
+    queryKey: ['session-impact', sessionId],
+    queryFn: ({ signal }) => fetchJson<SessionImpact>(`/sessions/${sessionId}/impact`, { signal }),
+    enabled: sessionId !== null,
+    staleTime: IMPACT_STALE_TIME,
   });
 }

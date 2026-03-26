@@ -72,14 +72,14 @@ function isAtBottom(el: HTMLElement): boolean {
 function NamespaceTable({ data }: { data: EmbeddingDetails }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full font-mono text-sm">
+      <table className="w-full font-mono text-sm" aria-label="Embedding namespace breakdown">
         <thead>
           <tr className="text-left text-on-surface-variant">
-            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest">Namespace</th>
-            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest text-right">Embedded</th>
-            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest text-right">Pending</th>
-            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest text-right">Stale</th>
-            <th className="pb-2 font-sans font-medium text-xs uppercase tracking-widest text-right">Total</th>
+            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest" scope="col">Namespace</th>
+            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest text-right" scope="col">Embedded</th>
+            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest text-right" scope="col">Pending</th>
+            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest text-right" scope="col">Stale</th>
+            <th className="pb-2 font-sans font-medium text-xs uppercase tracking-widest text-right" scope="col">Total</th>
           </tr>
         </thead>
         <tbody>
@@ -344,7 +344,7 @@ export default function Operations() {
               </div>
 
               {/* Stat cards */}
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <StatCard label="Total Vectors" value={String(data.total)} sparklineData={totalHistory} accent="sage" />
                 <StatCard label="Pending" value={String(totalPending)} accent={totalPending > 0 ? 'ochre' : 'outline'} />
                 <StatCard label="Stale" value={String(totalStale)} accent={totalStale > 0 ? 'terracotta' : 'outline'} />
@@ -423,7 +423,7 @@ export default function Operations() {
                         No embedding log entries
                       </div>
                     ) : (
-                      <table className="w-full border-collapse">
+                      <table className="w-full border-collapse" aria-label="Embedding activity log">
                         <tbody>
                           {filteredEntries.map((entry, idx) => (
                             <EmbeddingLogRow key={`${entry.timestamp}-${idx}`} entry={entry} />

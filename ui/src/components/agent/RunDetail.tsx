@@ -7,7 +7,7 @@ import { StatCard } from '../ui/stat-card';
 import { MarkdownContent } from '../ui/markdown-content';
 import { useAgentRun, useAgentReports, useAgentTurns, useAgentTasks, type ReportRow, type TurnRow } from '../../hooks/use-agent';
 import { cn } from '../../lib/cn';
-import { formatEpochAgo, truncate, capitalize } from '../../lib/format';
+import { formatEpochRelative, truncate, capitalize } from '../../lib/format';
 import { formatCost, formatTokens, formatDuration, resolveTaskName } from './helpers';
 import { PhaseTimeline, type PhaseResult } from './PhaseTimeline';
 
@@ -31,10 +31,6 @@ function actionBadgeVariant(action: string): 'default' | 'warning' | 'destructiv
   return 'default';
 }
 
-function formatEpochRelative(epoch: number | null): string {
-  if (epoch === null) return '\u2014';
-  return formatEpochAgo(epoch);
-}
 
 function formatEpochAbsoluteTime(epoch: number | null): string {
   if (epoch === null) return '\u2014';
