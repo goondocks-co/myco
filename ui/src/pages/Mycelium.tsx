@@ -129,22 +129,20 @@ function GraphTab() {
   }, []);
 
   return (
-    <div className="flex gap-3 h-[calc(100vh-180px)]">
-      <div className="relative flex-1 min-h-0">
-        <GraphCanvas
-          nodes={filteredNodes}
-          edges={filteredEdges}
-          onNodeSelect={handleNodeSelect}
-          selectedNode={selectedNode}
-        />
-        <EntityFilter
-          entityCounts={nodeCounts}
-          enabledTypes={enabledTypes}
-          onToggleType={handleToggleType}
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
-        />
-      </div>
+    <div className="relative h-[calc(100vh-180px)]">
+      <GraphCanvas
+        nodes={filteredNodes}
+        edges={filteredEdges}
+        onNodeSelect={handleNodeSelect}
+        selectedNode={selectedNode}
+      />
+      <EntityFilter
+        entityCounts={nodeCounts}
+        enabledTypes={enabledTypes}
+        onToggleType={handleToggleType}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+      />
       <Inspector
         node={selectedNode}
         edges={filteredEdges}
