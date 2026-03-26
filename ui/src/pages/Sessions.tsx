@@ -6,5 +6,10 @@ export default function Sessions() {
   const { id } = useParams<{ id: string }>();
 
   if (id) return <SessionDetail id={id} />;
-  return <SessionList />;
+
+  return (
+    <div className="p-6">
+      <SessionList />
+    </div>
+  );
 }
