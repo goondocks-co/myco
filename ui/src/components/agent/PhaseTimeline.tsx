@@ -1,6 +1,12 @@
+import { useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
-import { formatTokens, formatCost } from './helpers';
+import { MarkdownContent } from '../ui/markdown-content';
+import { formatTokens, formatCost, statusBadgeVariant } from './helpers';
+
+/** Lines of summary text before we clamp and show expand toggle. */
+const SUMMARY_CLAMP_LINES = 2;
 
 /* ---------- Types ---------- */
 
@@ -17,18 +23,30 @@ export interface PhaseTimelineProps {
   phases: PhaseResult[];
 }
 
-/* ---------- Helpers ---------- */
-
-/** Map phase status to Badge variant. */
-function statusBadgeVariant(status: string): 'default' | 'destructive' | 'secondary' {
-  switch (status) {
-    case 'completed': return 'default';
-    case 'failed':    return 'destructive';
-    default:          return 'secondary';
-  }
-}
-
 /* ---------- Component ---------- */
+
+function PhaseSummary({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = text.length > 200 || text.includes('\n');
+
+  return (
+    <div className="mt-1">
+      <div className={!expanded && isLong ? `line-clamp-${SUMMARY_CLAMP_LINES}` : undefined}>
+        <MarkdownContent content={text} className="text-on-surface-variant [&>*]:text-on-surface-variant" />
+      </div>
+      {isLong && (
+        <button
+          className="flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface transition-colors mt-1"
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded
+            ? <><ChevronDown className="h-3 w-3" /> Show less</>
+            : <><ChevronRight className="h-3 w-3" /> Show more</>}
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function PhaseTimeline({ phases }: PhaseTimelineProps) {
   return (
@@ -53,9 +71,7 @@ export function PhaseTimeline({ phases }: PhaseTimelineProps) {
                 <span>{formatCost(phase.costUsd)}</span>
               </div>
             </div>
-            {phase.summary && (
-              <p className="font-sans text-sm text-on-surface-variant mt-1 line-clamp-2">{phase.summary}</p>
-            )}
+            {phase.summary && <PhaseSummary text={phase.summary} />}
           </Surface>
         </div>
       ))}

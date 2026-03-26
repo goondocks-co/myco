@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, AlertCircle, Loader2, ArrowRight, ExternalLink } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Surface } from '../ui/surface';
+import { SectionHeader } from '../ui/section-header';
 import { MarkdownContent } from '../ui/markdown-content';
 import { useSpore } from '../../hooks/use-spores';
 import { cn } from '../../lib/cn';
@@ -126,14 +127,14 @@ export function SporeDetail({ id, onBack, onNavigateToSpore, onNavigateToGraph: 
 
       {/* Content */}
       <Surface level="low" className="p-5">
-        <div className="font-sans text-xs font-medium uppercase tracking-widest text-on-surface-variant mb-2">Observation</div>
+        <SectionHeader className="mb-2">Observation</SectionHeader>
         <MarkdownContent content={spore.content} />
       </Surface>
 
       {/* Context */}
       {spore.context && (
         <Surface level="low" className="p-5">
-          <div className="font-sans text-xs font-medium uppercase tracking-widest text-on-surface-variant mb-2">Context</div>
+          <SectionHeader className="mb-2">Context</SectionHeader>
           <MarkdownContent content={spore.context} />
         </Surface>
       )}
@@ -155,7 +156,7 @@ export function SporeDetail({ id, onBack, onNavigateToSpore, onNavigateToGraph: 
       {/* Resolution history */}
       {(spore.predecessor_id || spore.successor_id) && (
         <Surface level="low" className="p-5 space-y-2">
-          <div className="font-sans text-xs font-medium uppercase tracking-widest text-on-surface-variant">Resolution History</div>
+          <SectionHeader>Resolution History</SectionHeader>
           {spore.predecessor_id && (
             <div className="flex items-center gap-2 font-sans text-xs text-on-surface-variant">
               <span>Supersedes</span>
@@ -185,7 +186,7 @@ export function SporeDetail({ id, onBack, onNavigateToSpore, onNavigateToGraph: 
 
       {/* Metadata */}
       <Surface glass className="p-5">
-        <div className="font-sans text-xs font-medium uppercase tracking-widest text-on-surface-variant mb-2">Metadata</div>
+        <SectionHeader className="mb-2">Metadata</SectionHeader>
         <div className="text-sm">
           <MetaRow label="ID" value={spore.id} />
           <MetaRow label="Created" value={formatEpochAbsolute(spore.created_at)} />

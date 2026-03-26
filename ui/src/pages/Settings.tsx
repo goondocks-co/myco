@@ -6,6 +6,7 @@ import { useRestart } from '../hooks/use-restart';
 import { fetchJson } from '../lib/api';
 import { Surface } from '../components/ui/surface';
 import { PageHeader } from '../components/ui/page-header';
+import { SectionHeader } from '../components/ui/section-header';
 import { Input } from '../components/ui/input';
 import { Button } from '../components/ui/button';
 import {
@@ -87,14 +88,6 @@ function isDirty(form: FormState, original: MycoConfig): boolean {
 }
 
 /* ---------- Sub-components ---------- */
-
-function SectionHeader({ children }: { children: React.ReactNode }) {
-  return (
-    <h2 className="font-sans text-xs uppercase tracking-widest text-on-surface-variant">
-      {children}
-    </h2>
-  );
-}
 
 function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: string }) {
   return (

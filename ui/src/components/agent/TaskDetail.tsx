@@ -5,7 +5,7 @@ import { Surface } from '../ui/surface';
 import { MarkdownContent } from '../ui/markdown-content';
 import { useTask, type PhaseDefinition } from '../../hooks/use-agent';
 import { capitalize } from '../../lib/format';
-import { TASK_SOURCE_USER } from '../../lib/constants';
+import { sourceBadgeVariant } from './helpers';
 import { TaskActions } from './TaskActions';
 import { TaskEditor } from './TaskEditor';
 
@@ -31,11 +31,6 @@ function getExecution(task: { execution?: { model?: string; maxTurns?: number; t
     maxTurns: task.execution?.maxTurns ?? task.maxTurns,
     timeoutSeconds: task.execution?.timeoutSeconds ?? task.timeoutSeconds,
   };
-}
-
-/** Map task source to Badge variant. */
-function sourceBadgeVariant(source: string | undefined): 'warning' | 'secondary' {
-  return source === TASK_SOURCE_USER ? 'warning' : 'secondary';
 }
 
 /* ---------- Sub-components ---------- */

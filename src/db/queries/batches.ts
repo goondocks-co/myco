@@ -32,6 +32,9 @@ const DEFAULT_PROCESSED = 0;
 /** Processed flag value indicating a batch has been processed. */
 const PROCESSED_FLAG = 1;
 
+/** Number of characters used for prompt prefix matching. */
+const PROMPT_PREFIX_MATCH_CHARS = 60;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -335,8 +338,8 @@ export function findBatchByPromptPrefix(
   promptPrefix: string,
 ): { id: number; prompt_number: number } | null {
   const db = getDatabase();
-  // Match first 60 chars — enough to be unique, tolerant of minor differences
-  const prefix = promptPrefix.slice(0, 60);
+  // Match first N chars — enough to be unique, tolerant of minor differences
+  const prefix = promptPrefix.slice(0, PROMPT_PREFIX_MATCH_CHARS);
   const row = db.prepare(
     `SELECT id, prompt_number FROM prompt_batches
      WHERE session_id = ? AND user_prompt LIKE ? || '%'

@@ -1,5 +1,6 @@
 import { Surface } from '../ui/surface';
 import { Badge } from '../ui/badge';
+import { SectionHeader } from '../ui/section-header';
 
 import { X, ArrowRight } from 'lucide-react';
 import type { GraphNode, GraphEdge } from '../../hooks/use-graph-canvas';
@@ -59,14 +60,6 @@ function MetadataRow({ label, value }: { label: string; value: string }) {
     <div className="flex justify-between items-baseline py-1">
       <span className="font-sans text-xs text-on-surface-variant">{label}</span>
       <span className="font-mono text-xs text-on-surface text-right max-w-[160px] truncate">{value}</span>
-    </div>
-  );
-}
-
-function SectionHeader({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="font-sans text-xs font-medium uppercase tracking-widest text-on-surface-variant">
-      {children}
     </div>
   );
 }

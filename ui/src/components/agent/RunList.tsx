@@ -1,18 +1,15 @@
 import { useMemo } from 'react';
 import { Bot, AlertCircle, Play } from 'lucide-react';
 import { Button } from '../ui/button';
-import { useAgentRuns, useAgentTasks, type RunRow, type TaskRow } from '../../hooks/use-agent';
+import { useAgentRuns, useAgentTasks, type RunRow } from '../../hooks/use-agent';
 import { cn } from '../../lib/cn';
 import { formatEpochAgo, capitalize } from '../../lib/format';
-import { runStatusClass, formatCost, formatTokens, formatDuration } from './helpers';
+import { statusBadgeVariant, formatCost, formatTokens, formatDuration, UNKNOWN_TASK_LABEL } from './helpers';
 
 /* ---------- Constants ---------- */
 
 /** Default limit for the run list. */
 const DEFAULT_LIMIT = 50;
-
-/** Fallback label when no task name is available. */
-const UNKNOWN_TASK_LABEL = 'Default task';
 
 /* ---------- Helpers ---------- */
 
@@ -21,28 +18,18 @@ function formatEpochRelative(epoch: number | null): string {
   return formatEpochAgo(epoch);
 }
 
-/** Build a map from task name to display name for O(1) lookup. */
-function buildTaskNameMap(tasks: TaskRow[]): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const task of tasks) {
-    map.set(task.name, task.displayName);
-  }
-  return map;
-}
-
-function resolveTaskDisplayName(run: RunRow, nameMap: Map<string, string>): string {
-  if (!run.task) return UNKNOWN_TASK_LABEL;
-  return nameMap.get(run.task) ?? run.task;
-}
-
 /* ---------- Sub-components ---------- */
 
-function StatusBadge({ status }: { status: string }) {
+function RunStatusBadge({ status }: { status: string }) {
+  const variant = statusBadgeVariant(status);
   return (
     <span
       className={cn(
         'inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold',
-        runStatusClass(status),
+        variant === 'default' ? 'bg-primary-container/20 text-primary' :
+        variant === 'destructive' ? 'bg-tertiary-container/20 text-tertiary' :
+        variant === 'warning' ? 'bg-secondary-container/20 text-secondary' :
+        'bg-surface-container-high text-on-surface-variant',
       )}
     >
       {capitalize(status)}
@@ -80,12 +67,12 @@ function RunRowItem({
         <div className="flex items-center gap-2">
           <Bot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <span className="text-sm font-medium text-foreground truncate max-w-xs">
-            {resolveTaskDisplayName(run, taskNameMap)}
+            {run.task ? taskNameMap.get(run.task) ?? run.task : UNKNOWN_TASK_LABEL}
           </span>
         </div>
       </td>
       <td className="px-4 py-3">
-        <StatusBadge status={run.status} />
+        <RunStatusBadge status={run.status} />
       </td>
       <td className="px-4 py-3 text-xs text-muted-foreground font-mono">
         {formatEpochRelative(run.started_at)}
@@ -114,10 +101,13 @@ export function RunList({ onSelectRun, onTriggerRun }: RunListProps) {
   const { data, isLoading, isError, error } = useAgentRuns({ limit: DEFAULT_LIMIT });
   const { data: tasksData } = useAgentTasks();
   const runs = data?.runs ?? [];
-  const taskNameMap = useMemo(
-    () => buildTaskNameMap(tasksData?.tasks ?? []),
-    [tasksData],
-  );
+  const taskNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const task of tasksData?.tasks ?? []) {
+      map.set(task.name, task.displayName);
+    }
+    return map;
+  }, [tasksData]);
 
   const tableHeader = (
     <thead>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { ChevronDown, ChevronRight, MessageSquare } from 'lucide-react';
 import { Surface } from '../ui/surface';
 import { MarkdownContent } from '../ui/markdown-content';
@@ -28,24 +28,13 @@ function promptPreview(text: string | null): string {
 
 interface BatchCardProps {
   batch: BatchRow;
-  attachments: AttachmentRow[];
+  batchAttachments: AttachmentRow[];
   defaultOpen?: boolean;
 }
 
-function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) {
+function BatchCard({ batch, batchAttachments, defaultOpen = false }: BatchCardProps) {
   const [open, setOpen] = useState(defaultOpen);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
-
-  // Match attachments by batch ID, or by turn number from filename when batch_id is null
-  const batchAttachments = attachments.filter((a) => {
-    if (a.prompt_batch_id === batch.id) return true;
-    // Fallback: parse turn number from filename pattern {short}-t{turn}-{index}.ext
-    if (a.prompt_batch_id === null && batch.prompt_number !== null) {
-      const match = a.file_path?.match(/-t(\d+)-/);
-      return match != null && match[1] != null && parseInt(match[1]) === batch.prompt_number;
-    }
-    return false;
-  });
 
   return (
     <Surface level="low" className="overflow-hidden rounded-md max-w-full">
@@ -155,6 +144,26 @@ export function BatchTimeline({ sessionId }: BatchTimelineProps) {
 
   const allAttachments = attachments ?? [];
 
+  const { byBatchId, byTurnNumber } = useMemo(() => {
+    const byBatchId = new Map<number, AttachmentRow[]>();
+    const byTurnNumber = new Map<number, AttachmentRow[]>();
+    for (const a of allAttachments) {
+      if (a.prompt_batch_id != null) {
+        const arr = byBatchId.get(a.prompt_batch_id) ?? [];
+        arr.push(a);
+        byBatchId.set(a.prompt_batch_id, arr);
+      }
+      const match = a.file_path?.match(/-t(\d+)-/);
+      if (match?.[1]) {
+        const turn = parseInt(match[1]);
+        const arr = byTurnNumber.get(turn) ?? [];
+        arr.push(a);
+        byTurnNumber.set(turn, arr);
+      }
+    }
+    return { byBatchId, byTurnNumber };
+  }, [allAttachments]);
+
   if (batchesLoading) {
     return (
       <div className="space-y-3">
@@ -179,14 +188,18 @@ export function BatchTimeline({ sessionId }: BatchTimelineProps) {
 
   return (
     <div className="space-y-2">
-      {batchList.map((batch, idx) => (
-        <BatchCard
-          key={batch.id}
-          batch={batch}
-          attachments={allAttachments}
-          defaultOpen={idx === 0}
-        />
-      ))}
+      {batchList.map((batch, idx) => {
+        const resolved = byBatchId.get(batch.id)
+          ?? (batch.prompt_number !== null ? byTurnNumber.get(batch.prompt_number) ?? [] : []);
+        return (
+          <BatchCard
+            key={batch.id}
+            batch={batch}
+            batchAttachments={resolved}
+            defaultOpen={idx === 0}
+          />
+        );
+      })}
     </div>
   );
 }

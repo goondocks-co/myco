@@ -3,10 +3,12 @@ import { ArrowLeft, AlertCircle, Loader2, ChevronDown, ChevronRight } from 'luci
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
-import { useAgentRun, useAgentReports, useAgentTurns, useAgentTasks, type ReportRow, type TurnRow, type TaskRow } from '../../hooks/use-agent';
+import { StatCard } from '../ui/stat-card';
+import { MarkdownContent } from '../ui/markdown-content';
+import { useAgentRun, useAgentReports, useAgentTurns, useAgentTasks, type ReportRow, type TurnRow } from '../../hooks/use-agent';
 import { cn } from '../../lib/cn';
 import { formatEpochAgo, truncate, capitalize } from '../../lib/format';
-import { formatCost, formatTokens, formatDuration } from './helpers';
+import { formatCost, formatTokens, formatDuration, resolveTaskName } from './helpers';
 import { PhaseTimeline, type PhaseResult } from './PhaseTimeline';
 
 /* ---------- Constants ---------- */
@@ -17,20 +19,7 @@ const TURN_PREVIEW_CHARS = 80;
 /** Milliseconds per second for epoch conversion. */
 const MS_PER_SECOND = 1_000;
 
-/** Fallback label when no task name is available. */
-const UNKNOWN_TASK_LABEL = 'Default task';
-
 /* ---------- Helpers ---------- */
-
-/** Map run status to Badge variant. */
-function statusBadgeVariant(status: string): 'default' | 'warning' | 'destructive' | 'secondary' {
-  switch (status) {
-    case 'completed': return 'default';
-    case 'running':   return 'warning';
-    case 'failed':    return 'destructive';
-    default:          return 'secondary';
-  }
-}
 
 /** Map action type to Badge variant. */
 function actionBadgeVariant(action: string): 'default' | 'warning' | 'destructive' | 'secondary' {
@@ -52,13 +41,6 @@ function formatEpochAbsoluteTime(epoch: number | null): string {
   return new Date(epoch * MS_PER_SECOND).toLocaleTimeString();
 }
 
-/** Resolve a task name to its display name using a lookup map. */
-function resolveTaskName(taskName: string | null, tasks: TaskRow[]): string {
-  if (!taskName) return UNKNOWN_TASK_LABEL;
-  const found = tasks.find((t) => t.name === taskName);
-  return found?.displayName ?? taskName;
-}
-
 function truncatePreview(text: string | null, limit: number): string {
   if (!text) return '\u2014';
   return truncate(text, limit) || '\u2014';
@@ -67,8 +49,10 @@ function truncatePreview(text: string | null, limit: number): string {
 /* ---------- Sub-components ---------- */
 
 function ReportCard({ report }: { report: ReportRow }) {
-  const [expanded, setExpanded] = useState(false);
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
   const hasDetails = report.details !== null && report.details.length > 0;
+  const isLongSummary = report.summary.length > 200 || report.summary.includes('\n');
 
   let parsedDetails: unknown = null;
   if (hasDetails) {
@@ -83,7 +67,21 @@ function ReportCard({ report }: { report: ReportRow }) {
     <Surface level="low" className="p-4 space-y-2">
       <div className="flex items-start gap-3">
         <Badge variant={actionBadgeVariant(report.action)}>{report.action}</Badge>
-        <p className="font-sans text-sm text-on-surface flex-1 leading-relaxed">{report.summary}</p>
+        <div className="flex-1 min-w-0">
+          <div className={!summaryExpanded && isLongSummary ? 'line-clamp-3' : undefined}>
+            <MarkdownContent content={report.summary} />
+          </div>
+          {isLongSummary && (
+            <button
+              className="flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface transition-colors mt-1"
+              onClick={() => setSummaryExpanded(!summaryExpanded)}
+            >
+              {summaryExpanded
+                ? <><ChevronDown className="h-3 w-3" /> Show less</>
+                : <><ChevronRight className="h-3 w-3" /> Show more</>}
+            </button>
+          )}
+        </div>
         <span className="font-mono text-xs text-on-surface-variant shrink-0">
           {formatEpochAbsoluteTime(report.created_at)}
         </span>
@@ -93,15 +91,15 @@ function ReportCard({ report }: { report: ReportRow }) {
         <div>
           <button
             className="flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface transition-colors"
-            onClick={() => setExpanded(!expanded)}
+            onClick={() => setDetailsExpanded(!detailsExpanded)}
           >
-            {expanded
+            {detailsExpanded
               ? <ChevronDown className="h-3.5 w-3.5" />
               : <ChevronRight className="h-3.5 w-3.5" />}
-            {expanded ? 'Hide details' : 'Show details'}
+            {detailsExpanded ? 'Hide details' : 'Show details'}
           </button>
 
-          {expanded && (
+          {detailsExpanded && (
             <pre className="mt-2 rounded-md bg-surface-container-lowest p-3 font-mono text-xs overflow-auto max-h-48 text-on-surface-variant">
               {typeof parsedDetails === 'string'
                 ? parsedDetails
@@ -114,30 +112,59 @@ function ReportCard({ report }: { report: ReportRow }) {
   );
 }
 
-function TurnTableRow({ turn }: { turn: TurnRow }) {
-  const durationMs =
-    turn.started_at !== null && turn.completed_at !== null
-      ? (turn.completed_at - turn.started_at) * MS_PER_SECOND
-      : null;
+function TurnCard({ turn }: { turn: TurnRow }) {
+  const [expanded, setExpanded] = useState(false);
+
+  let parsedInput: unknown = null;
+  if (turn.tool_input) {
+    try {
+      parsedInput = JSON.parse(turn.tool_input);
+    } catch {
+      parsedInput = turn.tool_input;
+    }
+  }
+
+  const inputPreview = turn.tool_input
+    ? truncatePreview(turn.tool_input, TURN_PREVIEW_CHARS)
+    : '\u2014';
+  const hasExpandableInput = turn.tool_input !== null && turn.tool_input.length > TURN_PREVIEW_CHARS;
 
   return (
-    <tr className="hover:bg-surface-container-high/50 transition-colors align-top">
-      <td className="px-3 py-2 font-mono text-xs text-on-surface-variant">{turn.turn_number}</td>
-      <td className="px-3 py-2 font-mono text-xs text-on-surface">{turn.tool_name}</td>
-      <td className="px-3 py-2 font-mono text-xs text-on-surface-variant max-w-[200px] truncate">
-        {truncatePreview(turn.tool_input, TURN_PREVIEW_CHARS)}
-      </td>
-      <td className="px-3 py-2 font-mono text-xs text-on-surface-variant max-w-[200px] truncate">
-        {truncatePreview(turn.tool_output_summary, TURN_PREVIEW_CHARS)}
-      </td>
-      <td className="px-3 py-2 font-mono text-xs text-on-surface-variant">
-        {durationMs !== null
-          ? durationMs < MS_PER_SECOND
-            ? `${durationMs}ms`
-            : `${(durationMs / MS_PER_SECOND).toFixed(1)}s`
-          : '\u2014'}
-      </td>
-    </tr>
+    <div className="px-4 py-2.5 hover:bg-surface-container-high/30 transition-colors border-b border-outline-variant/10 last:border-b-0">
+      <div className="flex items-start gap-3">
+        <span className="font-mono text-xs text-on-surface-variant w-5 shrink-0 pt-0.5 text-right">
+          {turn.turn_number}
+        </span>
+        <span className="font-mono text-xs font-medium text-on-surface shrink-0 pt-0.5 min-w-[140px]">
+          {turn.tool_name}
+        </span>
+        <div className="flex-1 min-w-0">
+          {hasExpandableInput ? (
+            <button
+              className="flex items-start gap-1 text-left font-mono text-xs text-on-surface-variant hover:text-on-surface transition-colors w-full"
+              onClick={() => setExpanded(!expanded)}
+            >
+              {expanded
+                ? <ChevronDown className="h-3 w-3 mt-0.5 shrink-0" />
+                : <ChevronRight className="h-3 w-3 mt-0.5 shrink-0" />}
+              <span className={expanded ? undefined : 'truncate'}>{inputPreview}</span>
+            </button>
+          ) : (
+            <span className="font-mono text-xs text-on-surface-variant truncate block">
+              {inputPreview}
+            </span>
+          )}
+
+          {expanded && parsedInput !== null && (
+            <pre className="mt-1.5 ml-4 rounded-md bg-surface-container-lowest p-2.5 font-mono text-xs overflow-auto max-h-48 text-on-surface-variant">
+              {typeof parsedInput === 'string'
+                ? parsedInput
+                : JSON.stringify(parsedInput, null, 2)}
+            </pre>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -214,30 +241,12 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        <div className="rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2 border-t-sage">
-          <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">Status</p>
-          <Badge variant={statusBadgeVariant(run.status)}>{capitalize(run.status)}</Badge>
-        </div>
-        <div className="rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2 border-t-outline">
-          <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">Task</p>
-          <p className="font-sans text-sm font-medium text-on-surface truncate">{resolveTaskName(run.task, tasksList)}</p>
-        </div>
-        <div className="rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2 border-t-outline">
-          <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">Started</p>
-          <p className="font-mono text-sm text-on-surface">{formatEpochRelative(run.started_at)}</p>
-        </div>
-        <div className="rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2 border-t-outline">
-          <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">Duration</p>
-          <p className="font-mono text-sm text-on-surface">{formatDuration(run.started_at, run.completed_at)}</p>
-        </div>
-        <div className="rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2 border-t-ochre">
-          <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">Tokens</p>
-          <p className="font-serif text-xl font-bold text-ochre">{formatTokens(run.tokens_used)}</p>
-        </div>
-        <div className="rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2 border-t-ochre">
-          <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">Cost</p>
-          <p className="font-serif text-xl font-bold text-ochre">{formatCost(run.cost_usd)}</p>
-        </div>
+        <StatCard label="Status" value={capitalize(run.status)} accent="sage" />
+        <StatCard label="Task" value={resolveTaskName(run.task, tasksList)} accent="outline" />
+        <StatCard label="Started" value={formatEpochRelative(run.started_at)} accent="outline" />
+        <StatCard label="Duration" value={formatDuration(run.started_at, run.completed_at)} accent="outline" />
+        <StatCard label="Tokens" value={formatTokens(run.tokens_used)} accent="ochre" />
+        <StatCard label="Cost" value={formatCost(run.cost_usd)} accent="ochre" />
       </div>
 
       {run.error && (
@@ -309,23 +318,10 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
               ) : turns.length === 0 ? (
                 <p className="font-sans text-sm text-on-surface-variant p-4">No turns recorded.</p>
               ) : (
-                <div className="overflow-auto">
-                  <table className="w-full text-left">
-                    <thead>
-                      <tr className="bg-surface-container-high/50">
-                        <th className="px-3 py-2 font-sans text-xs font-medium text-on-surface-variant uppercase tracking-wide">#</th>
-                        <th className="px-3 py-2 font-sans text-xs font-medium text-on-surface-variant uppercase tracking-wide">Tool</th>
-                        <th className="px-3 py-2 font-sans text-xs font-medium text-on-surface-variant uppercase tracking-wide">Input</th>
-                        <th className="px-3 py-2 font-sans text-xs font-medium text-on-surface-variant uppercase tracking-wide">Output</th>
-                        <th className="px-3 py-2 font-sans text-xs font-medium text-on-surface-variant uppercase tracking-wide">Time</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {turns.map((turn) => (
-                        <TurnTableRow key={turn.id} turn={turn} />
-                      ))}
-                    </tbody>
-                  </table>
+                <div>
+                  {turns.map((turn) => (
+                    <TurnCard key={turn.id} turn={turn} />
+                  ))}
                 </div>
               )}
             </div>

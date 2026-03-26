@@ -4,11 +4,12 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useEmbeddingDetails, type EmbeddingDetails } from '../hooks/use-embedding-details';
 import { usePowerQuery } from '../hooks/use-power-query';
 import { fetchJson, postJson } from '../lib/api';
-import { POLL_INTERVALS, LEVEL_ORDER, type LogLevel } from '../lib/constants';
+import { POLL_INTERVALS, LEVEL_ORDER, type LogLevel, levelBadgeVariant, levelDotColor } from '../lib/constants';
 import { PageLoading } from '../components/ui/page-loading';
 import { PageHeader } from '../components/ui/page-header';
 import { Surface } from '../components/ui/surface';
-import { Sparkline } from '../components/ui/sparkline';
+import { StatCard } from '../components/ui/stat-card';
+import { SectionHeader } from '../components/ui/section-header';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { cn } from '../lib/cn';
@@ -66,63 +67,7 @@ function isAtBottom(el: HTMLElement): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX;
 }
 
-/** Map log level to Badge variant. */
-function levelBadgeVariant(level: LogLevel): 'default' | 'secondary' | 'warning' | 'destructive' {
-  switch (level) {
-    case 'info': return 'default';
-    case 'warn': return 'warning';
-    case 'error': return 'destructive';
-    default: return 'secondary';
-  }
-}
-
-/** Colored dot indicator for log level. */
-function levelDotColor(level: LogLevel): string {
-  switch (level) {
-    case 'info': return 'bg-primary';
-    case 'warn': return 'bg-secondary';
-    case 'error': return 'bg-tertiary';
-    default: return 'bg-outline';
-  }
-}
-
 /* ---------- Sub-components ---------- */
-
-function StatCard({
-  label,
-  value,
-  sparklineData,
-  accent = 'outline',
-}: {
-  label: string;
-  value: number;
-  sparklineData?: number[];
-  accent?: 'sage' | 'ochre' | 'terracotta' | 'outline';
-}) {
-  const borderClass: Record<string, string> = {
-    sage: 'border-t-sage',
-    ochre: 'border-t-ochre',
-    terracotta: 'border-t-terracotta',
-    outline: 'border-t-outline',
-  };
-  const valueClass: Record<string, string> = {
-    sage: 'text-sage',
-    ochre: 'text-ochre',
-    terracotta: 'text-terracotta',
-    outline: 'text-on-surface',
-  };
-  return (
-    <div className={cn('rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2', borderClass[accent])}>
-      <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">{label}</p>
-      <div className="flex items-end justify-between gap-2">
-        <p className={cn('font-serif text-2xl font-bold', valueClass[accent])}>{value}</p>
-        {sparklineData && sparklineData.length >= 2 && (
-          <Sparkline data={sparklineData} width={80} height={28} className="opacity-60" />
-        )}
-      </div>
-    </div>
-  );
-}
 
 function NamespaceTable({ data }: { data: EmbeddingDetails }) {
   return (
@@ -400,24 +345,20 @@ export default function Operations() {
 
               {/* Stat cards */}
               <div className="grid grid-cols-3 gap-3">
-                <StatCard label="Total Vectors" value={data.total} sparklineData={totalHistory} accent="sage" />
-                <StatCard label="Pending" value={totalPending} accent={totalPending > 0 ? 'ochre' : 'outline'} />
-                <StatCard label="Stale" value={totalStale} accent={totalStale > 0 ? 'terracotta' : 'outline'} />
+                <StatCard label="Total Vectors" value={String(data.total)} sparklineData={totalHistory} accent="sage" />
+                <StatCard label="Pending" value={String(totalPending)} accent={totalPending > 0 ? 'ochre' : 'outline'} />
+                <StatCard label="Stale" value={String(totalStale)} accent={totalStale > 0 ? 'terracotta' : 'outline'} />
               </div>
 
               {/* Namespace breakdown */}
               <Surface level="low" className="p-6 space-y-4">
-                <h2 className="font-sans text-xs uppercase tracking-widest text-on-surface-variant">
-                  Namespace Breakdown
-                </h2>
+                <SectionHeader>Namespace Breakdown</SectionHeader>
                 <NamespaceTable data={data} />
               </Surface>
 
               {/* Action toolbar */}
               <Surface level="low" className="p-6 space-y-3">
-                <h2 className="font-sans text-xs uppercase tracking-widest text-on-surface-variant">
-                  Actions
-                </h2>
+                <SectionHeader>Actions</SectionHeader>
                 <div className="flex flex-wrap gap-2">
                   <Button variant="ghost" size="sm" onClick={handleReembedStale}>
                     <RefreshCw className="mr-2 h-4 w-4" />
@@ -453,9 +394,7 @@ export default function Operations() {
               {/* Activity log — recessed terminal feel */}
               <Surface level="low" className="flex flex-col overflow-hidden">
                 <div className="flex items-center justify-between px-6 py-4">
-                  <h2 className="font-sans text-xs uppercase tracking-widest text-on-surface-variant">
-                    Activity Log
-                  </h2>
+                  <SectionHeader>Activity Log</SectionHeader>
                   <Button
                     size="sm"
                     variant={autoScroll ? 'default' : 'ghost'}

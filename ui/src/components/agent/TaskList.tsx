@@ -4,6 +4,7 @@ import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
 import { cn } from '../../lib/cn';
 import { TASK_SOURCE_USER } from '../../lib/constants';
+import { sourceBadgeVariant } from './helpers';
 
 interface TaskListProps {
   onSelect: (taskId: string) => void;
@@ -15,11 +16,6 @@ interface TaskListProps {
 function formatPhaseCount(task: TaskRow): string {
   if (!task.phases || task.phases.length === 0) return 'Single query';
   return `${task.phases.length} phases`;
-}
-
-/** Map task source to Badge variant. */
-function sourceBadgeVariant(source: string | undefined): 'warning' | 'secondary' {
-  return source === TASK_SOURCE_USER ? 'warning' : 'secondary';
 }
 
 /** Map task source to label. */

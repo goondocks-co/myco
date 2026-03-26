@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Pause, Play, Trash2, ArrowDown } from 'lucide-react';
 import { usePowerQuery } from '../hooks/use-power-query';
 import { fetchJson } from '../lib/api';
-import { POLL_INTERVALS, LOG_LEVELS, LEVEL_ORDER, type LogLevel } from '../lib/constants';
+import { POLL_INTERVALS, LOG_LEVELS, LEVEL_ORDER, type LogLevel, levelBadgeVariant, levelDotColor } from '../lib/constants';
 import { PageHeader } from '../components/ui/page-header';
 import { Surface } from '../components/ui/surface';
 import { Button } from '../components/ui/button';
@@ -45,27 +45,6 @@ function formatTimestamp(iso: string): string {
 
 function isAtBottom(el: HTMLElement): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX;
-}
-
-/** Map log level to Badge variant. */
-function levelBadgeVariant(level: LogLevel): 'default' | 'secondary' | 'warning' | 'destructive' {
-  switch (level) {
-    case 'info': return 'default';
-    case 'warn': return 'warning';
-    case 'error': return 'destructive';
-    default: return 'secondary';
-  }
-}
-
-/** Colored dot indicator for log level. */
-function levelDotColor(level: LogLevel): string {
-  switch (level) {
-    case 'info':  return 'bg-primary';
-    case 'debug': return 'bg-outline';
-    case 'warn':  return 'bg-secondary';
-    case 'error': return 'bg-tertiary';
-    default:      return 'bg-outline';
-  }
 }
 
 /* ---------- Logs Page ---------- */

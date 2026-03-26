@@ -4,9 +4,12 @@ import { ArrowLeft, AlertCircle, Loader2, Sparkles } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Surface } from '../ui/surface';
+import { StatCard } from '../ui/stat-card';
+import { SectionHeader } from '../ui/section-header';
 import { useSession } from '../../hooks/use-sessions';
 import { useTriggerRun } from '../../hooks/use-agent';
 import { BatchTimeline } from './BatchTimeline';
+import { StatusBadge } from './status-helpers';
 import { formatTimeAgo, formatDuration as formatDurationSec } from '../../lib/format';
 import { cn } from '../../lib/cn';
 
@@ -17,39 +20,6 @@ const SESSION_ID_PREVIEW_LENGTH = 8;
 
 /** Characters shown from content hash in metadata. */
 const CONTENT_HASH_PREVIEW_LENGTH = 16;
-
-/* ---------- Status helpers ---------- */
-
-type StatusColor = 'active' | 'completed' | 'error';
-
-function resolveStatusColor(status: string): StatusColor {
-  if (status === 'active') return 'active';
-  if (status === 'completed') return 'completed';
-  return 'error';
-}
-
-const STATUS_DOT_CLASSES: Record<StatusColor, string> = {
-  active: 'bg-primary',
-  completed: 'bg-secondary',
-  error: 'bg-tertiary',
-};
-
-const STATUS_BADGE_CLASSES: Record<StatusColor, string> = {
-  active: 'bg-primary/15 text-primary',
-  completed: 'bg-surface-container-high text-on-surface-variant',
-  error: 'bg-tertiary/15 text-tertiary',
-};
-
-function StatusBadge({ status }: { status: string }) {
-  const color = resolveStatusColor(status);
-  const label = status.charAt(0).toUpperCase() + status.slice(1);
-  return (
-    <span className={cn('inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 font-sans text-xs font-medium', STATUS_BADGE_CLASSES[color])}>
-      <span className={cn('inline-block h-2 w-2 rounded-full shrink-0', STATUS_DOT_CLASSES[color])} />
-      {label}
-    </span>
-  );
-}
 
 /* ---------- Helpers ---------- */
 
@@ -63,47 +33,7 @@ function epochToAbsolute(epoch: number | null): string {
   return new Date(epoch * 1000).toLocaleString();
 }
 
-/* ---------- Accent maps (match VaultStats pattern) ---------- */
-
-type StatAccent = 'sage' | 'ochre' | 'terracotta' | 'outline';
-
-const ACCENT_BORDER: Record<StatAccent, string> = {
-  sage: 'border-t-sage',
-  ochre: 'border-t-ochre',
-  terracotta: 'border-t-terracotta',
-  outline: 'border-t-outline',
-};
-
-const ACCENT_VALUE: Record<StatAccent, string> = {
-  sage: 'text-sage',
-  ochre: 'text-ochre',
-  terracotta: 'text-terracotta',
-  outline: 'text-on-surface',
-};
-
 /* ---------- Sub-components ---------- */
-
-function DetailStatCard({ label, value, sublabel, accent }: { label: string; value: string; sublabel?: string; accent: StatAccent }) {
-  return (
-    <div className={cn(
-      'rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2',
-      ACCENT_BORDER[accent],
-    )}>
-      <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">{label}</p>
-      <p className={cn('font-serif text-2xl font-bold truncate', ACCENT_VALUE[accent])}>{value}</p>
-      {sublabel && <p className="font-mono text-[10px] text-outline mt-1 truncate">{sublabel}</p>}
-    </div>
-  );
-}
-
-/** Section header with the uppercase label treatment. */
-function SectionLabel({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <h2 className={cn('font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant', className)}>
-      {children}
-    </h2>
-  );
-}
 
 /** Structured key-value row for metadata. */
 function MetaItem({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
@@ -227,12 +157,12 @@ export function SessionDetail({ id }: SessionDetailProps) {
 
       {/* Stats + Metadata cards (horizontal, above conversation) */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-        <DetailStatCard label="Prompts" value={String(session.prompt_count)} accent="sage" />
-        <DetailStatCard label="Tool Calls" value={String(session.tool_count)} accent="sage" />
-        <DetailStatCard label="Status" value={session.status.charAt(0).toUpperCase() + session.status.slice(1)} accent="outline" />
-        <DetailStatCard label="Started" value={epochToAbsolute(session.started_at)} accent="outline" />
-        <DetailStatCard label="Ended" value={epochToAbsolute(session.ended_at)} accent="outline" />
-        <DetailStatCard
+        <StatCard label="Prompts" value={String(session.prompt_count)} accent="sage" />
+        <StatCard label="Tool Calls" value={String(session.tool_count)} accent="sage" />
+        <StatCard label="Status" value={session.status.charAt(0).toUpperCase() + session.status.slice(1)} accent="outline" />
+        <StatCard label="Started" value={epochToAbsolute(session.started_at)} accent="outline" />
+        <StatCard label="Ended" value={epochToAbsolute(session.ended_at)} accent="outline" />
+        <StatCard
           label="Session ID"
           value={id.slice(0, SESSION_ID_PREVIEW_LENGTH)}
           sublabel={session.content_hash ? `hash: ${session.content_hash.slice(0, CONTENT_HASH_PREVIEW_LENGTH)}` : undefined}
@@ -242,7 +172,7 @@ export function SessionDetail({ id }: SessionDetailProps) {
 
       {/* Metadata details (collapsible-style row) */}
       <Surface level="low" className="p-4 overflow-hidden">
-        <SectionLabel className="mb-3">Metadata</SectionLabel>
+        <SectionHeader className="mb-3">Metadata</SectionHeader>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-6">
           <MetaItem label="Session ID" value={id} />
           {session.parent_session_id && (
@@ -263,14 +193,14 @@ export function SessionDetail({ id }: SessionDetailProps) {
       {/* Summary */}
       {session.summary && (
         <Surface level="low" className="p-4 overflow-hidden">
-          <SectionLabel className="mb-2">Summary</SectionLabel>
+          <SectionHeader className="mb-2">Summary</SectionHeader>
           <p className="font-sans text-sm text-on-surface-variant whitespace-pre-wrap break-words">{session.summary}</p>
         </Surface>
       )}
 
       {/* Conversation (full-width) */}
       <div className="min-w-0 overflow-hidden">
-        <SectionLabel className="mb-3">Conversation</SectionLabel>
+        <SectionHeader className="mb-3">Conversation</SectionHeader>
         <BatchTimeline sessionId={id} />
       </div>
     </div>

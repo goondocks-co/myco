@@ -1,20 +1,32 @@
 import { useEffect, useRef, useCallback } from 'react';
 import cytoscape, { type Core, type ElementDefinition, type NodeSingular } from 'cytoscape';
 
+/* ---------- Graph palette ---------- */
+
+const PALETTE = {
+  sage: '#abcfb8',
+  ochre: '#edbf7f',
+  terracotta: '#ffb4a1',
+  neutral: '#8b928c',
+  dimNeutral: '#6e7370',
+  onSurface: '#e5e2e1',
+  surface: '#111111',
+} as const;
+
 /* ---------- Constants ---------- */
 
 /** Node color by entity type — sage for concept, ochre for component, terracotta for bug, gray for tool/file. */
 const NODE_COLORS: Record<string, string> = {
-  concept: '#abcfb8',
-  component: '#edbf7f',
-  bug: '#ffb4a1',
-  tool: '#8b928c',
-  file: '#8b928c',
-  spore: '#abcfb8',
-  session: '#edbf7f',
-  other: '#6e7370',
+  concept: PALETTE.sage,
+  component: PALETTE.ochre,
+  bug: PALETTE.terracotta,
+  tool: PALETTE.neutral,
+  file: PALETTE.neutral,
+  spore: PALETTE.sage,
+  session: PALETTE.ochre,
+  other: PALETTE.dimNeutral,
 };
-const DEFAULT_NODE_COLOR = '#6e7370';
+const DEFAULT_NODE_COLOR = PALETTE.dimNeutral;
 
 /** Minimum node size (px) — nodes with 0–1 connections. */
 const NODE_SIZE_MIN = 24;
@@ -135,6 +147,8 @@ function nodeColor(type: string): string {
 export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOptions) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
+  const onNodeSelectRef = useRef(onNodeSelect);
+  onNodeSelectRef.current = onNodeSelect;
 
   useEffect(() => {
     if (!containerRef.current || nodes.length === 0) return;
@@ -188,12 +202,12 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
             label: 'data(label)',
             'background-color': (ele: NodeSingular) => nodeColor(ele.data('type')),
             'background-opacity': 0.9,
-            color: '#e5e2e1',
+            color: PALETTE.onSurface,
             'font-size': NODE_LABEL_FONT_SIZE,
             'font-family': 'Inter, system-ui, sans-serif',
             'text-valign': 'bottom',
             'text-margin-y': NODE_LABEL_MARGIN_Y,
-            'text-outline-color': '#111111',
+            'text-outline-color': PALETTE.surface,
             'text-outline-width': 2,
             'text-outline-opacity': 0.8,
             'text-wrap': 'wrap',
@@ -201,7 +215,7 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
             width: 'data(nodeSize)',
             height: 'data(nodeSize)',
             'border-width': 0,
-            'border-color': '#abcfb8',
+            'border-color': PALETTE.sage,
             'border-opacity': 0,
             'overlay-opacity': 0,
           },
@@ -211,7 +225,7 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
           selector: 'node:active',
           style: {
             'overlay-opacity': 0.08,
-            'overlay-color': '#abcfb8',
+            'overlay-color': PALETTE.sage,
           },
         },
         /* ---- Selected node — glowing border ring ---- */
@@ -229,22 +243,22 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
           selector: 'edge',
           style: {
             width: EDGE_WIDTH,
-            'line-color': '#8b928c',
+            'line-color': PALETTE.neutral,
             'line-opacity': EDGE_OPACITY,
             'curve-style': 'unbundled-bezier',
             'control-point-distances': [40],
             'control-point-weights': [0.5],
             'target-arrow-shape': 'triangle',
-            'target-arrow-color': '#8b928c',
+            'target-arrow-color': PALETTE.neutral,
             'arrow-scale': ARROW_SCALE,
             label: 'data(label)',
             'font-size': EDGE_LABEL_FONT_SIZE,
             'font-family': 'Inter, system-ui, sans-serif',
-            color: '#8b928c',
+            color: PALETTE.neutral,
             'text-opacity': 0,
             'text-rotation': 'autorotate',
             'text-margin-y': -8,
-            'text-outline-color': '#111111',
+            'text-outline-color': PALETTE.surface,
             'text-outline-width': 2,
             'text-outline-opacity': 0.7,
           },
@@ -308,7 +322,7 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
 
       // Look up the full node from the original array to pass extended fields
       const originalNode = nodeMap.get(d.id);
-      onNodeSelect?.(originalNode ?? { id: d.id, name: d.fullLabel ?? d.label, type: d.type });
+      onNodeSelectRef.current?.(originalNode ?? { id: d.id, name: d.fullLabel ?? d.label, type: d.type });
     });
 
     /* Background click — clear selection and fading */
@@ -321,7 +335,7 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
           'text-opacity': 0,
           width: EDGE_WIDTH,
         });
-        onNodeSelect?.(null);
+        onNodeSelectRef.current?.(null);
       }
     });
 
@@ -346,7 +360,7 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
       cy.destroy();
       cyRef.current = null;
     };
-  }, [nodes, edges, onNodeSelect]);
+  }, [nodes, edges]);
 
   const resetView = useCallback(() => {
     const cy = cyRef.current;

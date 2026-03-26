@@ -15,6 +15,13 @@ export function Lightbox({ images, index, onClose, onNavigate }: LightboxProps) 
   const hasPrev = index > 0;
   const hasNext = index < images.length - 1;
 
+  // Lock body scroll while lightbox is open
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();

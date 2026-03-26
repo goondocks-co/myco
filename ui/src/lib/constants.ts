@@ -18,3 +18,24 @@ export const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 
 /** Task source labels — must match backend BUILT_IN_SOURCE / USER_TASK_SOURCE. */
 export const TASK_SOURCE_BUILTIN = 'built-in';
 export const TASK_SOURCE_USER = 'user';
+
+/** Map log level to Badge variant. */
+export function levelBadgeVariant(level: LogLevel): 'default' | 'secondary' | 'warning' | 'destructive' {
+  switch (level) {
+    case 'info': return 'default';
+    case 'warn': return 'warning';
+    case 'error': return 'destructive';
+    default: return 'secondary';
+  }
+}
+
+/** Colored dot indicator for log level. */
+export function levelDotColor(level: LogLevel): string {
+  switch (level) {
+    case 'info':  return 'bg-primary';
+    case 'debug': return 'bg-outline';
+    case 'warn':  return 'bg-secondary';
+    case 'error': return 'bg-tertiary';
+    default:      return 'bg-outline';
+  }
+}

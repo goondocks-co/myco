@@ -5,7 +5,9 @@ import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
 import { PageHeader } from '../ui/page-header';
 import { Input } from '../ui/input';
+import { StatCard } from '../ui/stat-card';
 import { useSessions, useDeleteSession, type SessionSummary } from '../../hooks/use-sessions';
+import { StatusBadge } from './status-helpers';
 import { cn } from '../../lib/cn';
 
 /* ---------- Constants ---------- */
@@ -21,46 +23,6 @@ const SESSION_ID_PREVIEW_LENGTH = 8;
 
 /** Characters shown from session ID in table column. */
 const SESSION_ID_COLUMN_LENGTH = 12;
-
-/* ---------- Status helpers ---------- */
-
-type StatusColor = 'active' | 'completed' | 'error';
-
-function resolveStatusColor(status: string): StatusColor {
-  if (status === 'active') return 'active';
-  if (status === 'completed') return 'completed';
-  return 'error';
-}
-
-const STATUS_DOT_CLASSES: Record<StatusColor, string> = {
-  active: 'bg-primary',
-  completed: 'bg-secondary',
-  error: 'bg-tertiary',
-};
-
-const STATUS_BADGE_CLASSES: Record<StatusColor, string> = {
-  active: 'bg-primary/15 text-primary',
-  completed: 'bg-surface-container-high text-on-surface-variant',
-  error: 'bg-tertiary/15 text-tertiary',
-};
-
-function StatusDot({ status }: { status: string }) {
-  const color = resolveStatusColor(status);
-  return (
-    <span className={cn('inline-block h-2 w-2 rounded-full shrink-0', STATUS_DOT_CLASSES[color])} />
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const color = resolveStatusColor(status);
-  const label = status.charAt(0).toUpperCase() + status.slice(1);
-  return (
-    <span className={cn('inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 font-sans text-xs font-medium', STATUS_BADGE_CLASSES[color])}>
-      <StatusDot status={status} />
-      {label}
-    </span>
-  );
-}
 
 /* ---------- Sub-components ---------- */
 
@@ -152,37 +114,6 @@ function ColHeader({ children, className }: { children: React.ReactNode; classNa
     <th className={cn('px-4 py-3 text-left font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant', className)}>
       {children}
     </th>
-  );
-}
-
-/* ---------- Accent maps (match VaultStats pattern) ---------- */
-
-type StatAccent = 'sage' | 'ochre' | 'terracotta' | 'outline';
-
-const ACCENT_BORDER: Record<StatAccent, string> = {
-  sage: 'border-t-sage',
-  ochre: 'border-t-ochre',
-  terracotta: 'border-t-terracotta',
-  outline: 'border-t-outline',
-};
-
-const ACCENT_VALUE: Record<StatAccent, string> = {
-  sage: 'text-sage',
-  ochre: 'text-ochre',
-  terracotta: 'text-terracotta',
-  outline: 'text-on-surface',
-};
-
-function StatCard({ label, value, sublabel, accent }: { label: string; value: string; sublabel?: string; accent: StatAccent }) {
-  return (
-    <div className={cn(
-      'rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2',
-      ACCENT_BORDER[accent],
-    )}>
-      <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">{label}</p>
-      <p className={cn('font-serif text-2xl font-bold', ACCENT_VALUE[accent])}>{value}</p>
-      {sublabel && <p className="font-mono text-[10px] text-outline mt-1">{sublabel}</p>}
-    </div>
   );
 }
 
