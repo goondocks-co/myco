@@ -7,10 +7,10 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        default: 'bg-surface-container-high text-primary',
+        default: 'bg-primary/15 text-primary',
         secondary: 'bg-surface-container-high text-on-surface-variant',
-        destructive: 'bg-surface-container-high text-tertiary',
-        warning: 'bg-surface-container-high text-secondary',
+        destructive: 'bg-tertiary/15 text-tertiary',
+        warning: 'bg-secondary/15 text-secondary',
         outline: 'border border-[var(--ghost-border)] text-on-surface-variant',
       },
     },

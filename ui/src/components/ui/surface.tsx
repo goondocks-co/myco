@@ -13,7 +13,7 @@ const surfaceVariants = cva('rounded-md transition-colors', {
       bright: 'bg-surface-bright',
     },
     interactive: {
-      true: 'cursor-pointer hover:brightness-110 dark:hover:brightness-[1.04]',
+      true: 'cursor-pointer hover:brightness-[1.15]',
       false: '',
     },
     ghostBorder: {

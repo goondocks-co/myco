@@ -49,15 +49,15 @@
 @layer base {
   /* Dark mode (default) — Tactile Research palette */
   :root {
-    --surface: #131313;
-    --surface-dim: #131313;
-    --surface-bright: #393939;
-    --surface-container-lowest: #0e0e0e;
-    --surface-container-low: #1b1c1c;
-    --surface-container: #1f2020;
-    --surface-container-high: #2a2a2a;
-    --surface-container-highest: #353535;
-    --surface-variant: #353535;
+    --surface: #111111;
+    --surface-dim: #0c0c0c;
+    --surface-bright: #444444;
+    --surface-container-lowest: #080808;
+    --surface-container-low: #1a1a1a;
+    --surface-container: #242424;
+    --surface-container-high: #333333;
+    --surface-container-highest: #424242;
+    --surface-variant: #3a3a3a;
 
     --on-surface: #e5e2e1;
     --on-surface-variant: #c1c8c2;
@@ -83,7 +83,7 @@
     --inverse-primary: #446553;
 
     --shadow-tint: 96, 65, 11;
-    --ghost-border: color-mix(in srgb, var(--outline-variant), transparent 85%);
+    --ghost-border: color-mix(in srgb, var(--outline-variant), transparent 75%);
 
     /* Legacy compat */
     --background: var(--surface);
@@ -140,7 +140,7 @@
     --inverse-primary: #abcfb8;
 
     --shadow-tint: 96, 65, 11;
-    --ghost-border: color-mix(in srgb, var(--outline-variant), transparent 85%);
+    --ghost-border: color-mix(in srgb, var(--outline-variant), transparent 75%);
 
     /* Legacy compat */
     --background: var(--surface);
