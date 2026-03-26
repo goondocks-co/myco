@@ -10,6 +10,8 @@ const NODE_COLORS: Record<string, string> = {
   bug: '#ffb4a1',
   tool: '#8b928c',
   file: '#8b928c',
+  spore: '#abcfb8',
+  session: '#edbf7f',
   other: '#6e7370',
 };
 const DEFAULT_NODE_COLOR = '#6e7370';
@@ -68,6 +70,18 @@ const FIT_PADDING = 50;
 /** Label truncation length for long node names. */
 const NODE_LABEL_MAX_LENGTH = 20;
 
+/** Display labels for node types. */
+const NODE_TYPE_LABELS: Record<string, string> = {
+  concept: 'Concept',
+  component: 'Component',
+  bug: 'Bug',
+  tool: 'Tool',
+  file: 'File',
+  spore: 'Spore',
+  session: 'Session',
+  other: 'Other',
+};
+
 /* ---------- Types ---------- */
 
 export interface GraphNode {
@@ -75,6 +89,13 @@ export interface GraphNode {
   name: string;
   type: string;
   depth?: number;
+  // Extended fields for Inspector
+  status?: string;
+  created_at?: number;
+  content?: string;
+  properties?: string;
+  mention_count?: number;
+  observation_type?: string;
 }
 
 export interface GraphEdge {
@@ -118,6 +139,9 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
   useEffect(() => {
     if (!containerRef.current || nodes.length === 0) return;
 
+    /* Build a lookup map for node selection (pass extended fields through) */
+    const nodeMap = new Map<string, GraphNode>(nodes.map((n) => [n.id, n]));
+
     /* Build a degree map for sizing */
     const degreeMap = new Map<string, number>();
     for (const n of nodes) {
@@ -129,16 +153,19 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
     }
 
     const elements: ElementDefinition[] = [
-      ...nodes.map((n) => ({
-        data: {
-          id: n.id,
-          label: truncateLabel(n.name),
-          fullLabel: n.name,
-          type: n.type,
-          degree: degreeMap.get(n.id) ?? 0,
-          nodeSize: nodeSizeFromDegree(degreeMap.get(n.id) ?? 0),
-        },
-      })),
+      ...nodes.map((n) => {
+        const typeLabel = NODE_TYPE_LABELS[n.type?.toLowerCase()] ?? NODE_TYPE_LABELS.other;
+        return {
+          data: {
+            id: n.id,
+            label: `${truncateLabel(n.name)}\n${typeLabel}`,
+            fullLabel: n.name,
+            type: n.type,
+            degree: degreeMap.get(n.id) ?? 0,
+            nodeSize: nodeSizeFromDegree(degreeMap.get(n.id) ?? 0),
+          },
+        };
+      }),
       ...edges.map((e, i) => ({
         data: {
           id: `edge-${i}`,
@@ -169,6 +196,8 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
             'text-outline-color': '#111111',
             'text-outline-width': 2,
             'text-outline-opacity': 0.8,
+            'text-wrap': 'wrap',
+            'text-max-width': '120px',
             width: 'data(nodeSize)',
             height: 'data(nodeSize)',
             'border-width': 0,
@@ -277,7 +306,9 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
         width: 2,
       });
 
-      onNodeSelect?.({ id: d.id, name: d.fullLabel ?? d.label, type: d.type });
+      // Look up the full node from the original array to pass extended fields
+      const originalNode = nodeMap.get(d.id);
+      onNodeSelect?.(originalNode ?? { id: d.id, name: d.fullLabel ?? d.label, type: d.type });
     });
 
     /* Background click — clear selection and fading */

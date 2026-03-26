@@ -41,7 +41,7 @@ export function GraphCanvas({ nodes, edges, onNodeSelect }: GraphCanvasProps) {
       )}
       {nodes.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center">
-          <p className="font-sans text-sm text-on-surface-variant">No entities to display</p>
+          <p className="font-sans text-sm text-on-surface-variant">No nodes to display</p>
         </div>
       )}
     </div>

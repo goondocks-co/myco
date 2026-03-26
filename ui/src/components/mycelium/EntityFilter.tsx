@@ -9,6 +9,8 @@ const ENTITY_TYPES = [
   { type: 'bug', label: 'Bug', dotColor: 'bg-tertiary' },
   { type: 'tool', label: 'Tool', dotColor: 'bg-outline' },
   { type: 'file', label: 'File', dotColor: 'bg-outline' },
+  { type: 'spore', label: 'Spore', dotColor: 'bg-primary' },
+  { type: 'session', label: 'Session', dotColor: 'bg-secondary' },
   { type: 'other', label: 'Other', dotColor: 'bg-on-surface-variant' },
 ] as const;
 
@@ -48,7 +50,7 @@ export function EntityFilter({
       {/* Search */}
       <div>
         <Input
-          placeholder="Search entities..."
+          placeholder="Search nodes..."
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
           className="text-xs"
@@ -58,7 +60,7 @@ export function EntityFilter({
       {/* Entity type filters */}
       <div className="space-y-2">
         <div className="font-sans text-xs font-medium uppercase tracking-widest text-on-surface-variant">
-          Entities
+          Node Types
         </div>
         <div className="space-y-0.5">
           {ENTITY_TYPES.map((et) => {

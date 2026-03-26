@@ -9,22 +9,26 @@ import type { GraphNode, GraphEdge } from '../../hooks/use-graph-canvas';
 /** Truncation limit for markdown preview text. */
 const MARKDOWN_PREVIEW_LIMIT = 400;
 
-/** Entity type to badge variant mapping. */
+/** Node type to badge variant mapping. */
 const TYPE_BADGE_VARIANT: Record<string, 'default' | 'warning' | 'destructive' | 'secondary'> = {
   concept: 'default',
   component: 'warning',
   bug: 'destructive',
   tool: 'secondary',
   file: 'secondary',
+  spore: 'default',
+  session: 'warning',
 };
 
-/** Entity type to display color class. */
+/** Node type to display color class. */
 const TYPE_DOT_COLOR: Record<string, string> = {
   concept: 'bg-primary',
   component: 'bg-secondary',
   bug: 'bg-tertiary',
   tool: 'bg-outline',
   file: 'bg-outline',
+  spore: 'bg-primary',
+  session: 'bg-secondary',
 };
 
 /* ---------- Types ---------- */
@@ -93,10 +97,15 @@ export function Inspector({ node, edges, nodes, metadata, markdownPreview, conne
     }
   }
 
+  // Use explicit markdownPreview prop, or fall back to node content (spore/session)
+  const previewText = markdownPreview ?? node.content;
   const truncatedPreview =
-    markdownPreview && markdownPreview.length > MARKDOWN_PREVIEW_LIMIT
-      ? markdownPreview.slice(0, MARKDOWN_PREVIEW_LIMIT) + '\u2026'
-      : markdownPreview;
+    previewText && previewText.length > MARKDOWN_PREVIEW_LIMIT
+      ? previewText.slice(0, MARKDOWN_PREVIEW_LIMIT) + '\u2026'
+      : previewText;
+
+  // Determine the section label based on node type
+  const previewLabel = node.type === 'spore' ? 'Observation' : node.type === 'session' ? 'Summary' : 'Notes';
 
   return (
     <Surface glass className="w-[320px] shrink-0 overflow-y-auto max-h-full flex flex-col">
@@ -107,7 +116,7 @@ export function Inspector({ node, edges, nodes, metadata, markdownPreview, conne
             <div className="flex items-center gap-2 mb-1.5">
               <div className={`h-2 w-2 rounded-full ${dotColor} shrink-0`} />
               <Badge variant={badgeVariant} className="text-[10px] uppercase">
-                {node.type}
+                {node.observation_type ?? node.type}
               </Badge>
             </div>
             <h2 className="font-serif text-lg text-on-surface leading-tight break-words">
@@ -132,8 +141,18 @@ export function Inspector({ node, edges, nodes, metadata, markdownPreview, conne
       <div className="px-4 py-3 space-y-0.5">
         <SectionHeader>Metadata</SectionHeader>
         <div className="mt-1.5">
-          <MetadataRow label="Type" value={node.type} />
+          <MetadataRow label="Type" value={node.observation_type ?? node.type} />
           <MetadataRow label="ID" value={node.id.slice(0, 12) + '\u2026'} />
+          {node.status && (
+            <MetadataRow label="Status" value={node.status} />
+          )}
+          {node.created_at != null && (
+            <MetadataRow label="Created" value={new Date(node.created_at).toLocaleDateString()} />
+          )}
+          {node.mention_count != null && node.mention_count > 0 && (
+            <MetadataRow label="Mentions" value={String(node.mention_count)} />
+          )}
+          <MetadataRow label="Connections" value={String(connections.length)} />
           {node.depth !== undefined && (
             <MetadataRow label="Depth" value={String(node.depth)} />
           )}
@@ -149,7 +168,7 @@ export function Inspector({ node, edges, nodes, metadata, markdownPreview, conne
         <>
           <div className="h-px bg-surface-container-high/50" />
           <div className="px-4 py-3 space-y-1.5">
-            <SectionHeader>Notes</SectionHeader>
+            <SectionHeader>{previewLabel}</SectionHeader>
             <Surface
               level="lowest"
               className="p-3 font-sans text-xs text-on-surface-variant whitespace-pre-wrap leading-relaxed"

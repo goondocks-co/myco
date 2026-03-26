@@ -12,7 +12,7 @@ import { cn } from '../lib/cn';
 
 /* ---------- Constants ---------- */
 
-const ALL_ENTITY_TYPES = new Set(['concept', 'component', 'bug', 'tool', 'file', 'other']);
+const ALL_NODE_TYPES = new Set(['concept', 'component', 'bug', 'tool', 'file', 'spore', 'session', 'other']);
 
 /** Default graph traversal depth for full-graph mode. */
 const DEFAULT_GRAPH_DEPTH = 2;
@@ -50,7 +50,7 @@ function TabButton({
 /* ---------- Graph Tab ---------- */
 
 function GraphTab() {
-  const [enabledTypes, setEnabledTypes] = useState<Set<string>>(new Set(ALL_ENTITY_TYPES));
+  const [enabledTypes, setEnabledTypes] = useState<Set<string>>(new Set(ALL_NODE_TYPES));
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
 
@@ -61,29 +61,35 @@ function GraphTab() {
   const centerId = entities.length > 0 ? entities[0]?.id : undefined;
   const { data: graphData } = useGraph(centerId, DEFAULT_GRAPH_DEPTH);
 
-  /* Build entity type counts */
-  const entityCounts = useMemo(() => {
+  /* Merge center + nodes into a single array for filtering/display */
+  const allGraphNodes = useMemo(() => {
+    const nodes = [...(graphData?.nodes ?? [])];
+    if (graphData?.center) nodes.unshift(graphData.center);
+    return nodes;
+  }, [graphData?.center, graphData?.nodes]);
+
+  /* Build node type counts from graph data (all node types, not just entities) */
+  const nodeCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const e of entities) {
-      const type = e.type.toLowerCase();
-      const bucket = ALL_ENTITY_TYPES.has(type) ? type : 'other';
+    for (const n of allGraphNodes) {
+      const type = n.type.toLowerCase();
+      const bucket = ALL_NODE_TYPES.has(type) ? type : 'other';
       counts[bucket] = (counts[bucket] ?? 0) + 1;
     }
     return counts;
-  }, [entities]);
+  }, [allGraphNodes]);
 
   /* Filter nodes for the graph */
   const filteredNodes = useMemo(() => {
-    const nodes = graphData?.nodes ?? [];
     const lowerQuery = searchQuery.toLowerCase();
-    return nodes.filter((n) => {
+    return allGraphNodes.filter((n) => {
       const type = n.type.toLowerCase();
-      const bucket = ALL_ENTITY_TYPES.has(type) ? type : 'other';
+      const bucket = ALL_NODE_TYPES.has(type) ? type : 'other';
       if (!enabledTypes.has(bucket)) return false;
       if (lowerQuery && !n.name.toLowerCase().includes(lowerQuery)) return false;
       return true;
     });
-  }, [graphData?.nodes, enabledTypes, searchQuery]);
+  }, [allGraphNodes, enabledTypes, searchQuery]);
 
   /* Edges filtered to only include visible nodes */
   const filteredEdges = useMemo(() => {
@@ -111,7 +117,7 @@ function GraphTab() {
   return (
     <div className="flex gap-3 h-[calc(100vh-180px)]">
       <EntityFilter
-        entityCounts={entityCounts}
+        entityCounts={nodeCounts}
         enabledTypes={enabledTypes}
         onToggleType={handleToggleType}
         searchQuery={searchQuery}
