@@ -1,14 +1,9 @@
 import { useState, useMemo } from 'react';
 import { ArrowLeft, AlertCircle, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '../ui/button';
-<<<<<<< HEAD
 import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
-import { useAgentRun, useAgentReports, useAgentTurns, type ReportRow, type TurnRow } from '../../hooks/use-agent';
-=======
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { useAgentRun, useAgentReports, useAgentTurns, useAgentTasks, type ReportRow, type TurnRow, type TaskRow } from '../../hooks/use-agent';
->>>>>>> worktree-agent-a713ad10
 import { cn } from '../../lib/cn';
 import { formatEpochAgo, truncate, capitalize } from '../../lib/format';
 import { formatCost, formatTokens, formatDuration } from './helpers';
@@ -224,13 +219,8 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
             {capitalize(run.status)}
           </Badge>
 
-<<<<<<< HEAD
           <span className="font-sans text-sm text-on-surface-variant">
-            Task: <span className="text-on-surface font-medium">{run.task ?? 'Default task'}</span>
-=======
-          <span className="text-sm text-muted-foreground">
-            Task: <span className="text-foreground font-medium">{resolveTaskName(run.task, tasksList)}</span>
->>>>>>> worktree-agent-a713ad10
+            Task: <span className="text-on-surface font-medium">{resolveTaskName(run.task, tasksList)}</span>
           </span>
 
           <span className="font-sans text-sm text-on-surface-variant">
