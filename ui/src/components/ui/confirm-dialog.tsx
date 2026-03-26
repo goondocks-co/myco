@@ -66,7 +66,7 @@ export function ConfirmDialog({
 
         {/* Identity card — first item as mono badge, second as text */}
         {meta && meta.length > 0 && (
-          <div className="flex items-center gap-2 rounded-lg border border-[var(--ghost-border)] bg-surface-container px-4 py-3">
+          <div className="flex items-center gap-2 rounded-lg border border-[var(--ghost-border)] bg-surface-container-high px-4 py-3">
             <span className="font-mono text-xs text-on-surface-variant bg-surface-container-high px-1.5 py-0.5 rounded shrink-0">
               {meta[0]?.value}
             </span>
@@ -84,7 +84,7 @@ export function ConfirmDialog({
             {impact.map((item) => (
               <div
                 key={item.label}
-                className="rounded-md border border-[var(--ghost-border)] bg-surface-container px-3 py-2"
+                className="rounded-md border border-[var(--ghost-border)] bg-surface-container-high px-3 py-2"
               >
                 <div className="font-sans text-[10px] font-medium uppercase tracking-wider text-on-surface-variant">
                   {item.label}
