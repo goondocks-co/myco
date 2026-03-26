@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import {
   upsertSession,
@@ -13,6 +14,8 @@ import {
   listSessions,
   updateSession,
   closeSession,
+  getSessionImpact,
+  deleteSessionCascade,
 } from '@myco/db/queries/sessions.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';
 
@@ -217,6 +220,190 @@ describe('session query helpers', () => {
       const rows = listSessions({ agent: 'cursor', status: 'completed' });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('s3');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Helpers for cascade tests
+  // ---------------------------------------------------------------------------
+
+  /** Insert an agent row directly (needed as FK for spores / graph_edges). */
+  function createAgent(id: string): string {
+    const db = getDatabase();
+    db.prepare(`INSERT INTO agents (id, name, created_at) VALUES (?, ?, ?)`).run(id, `agent-${id}`, epochNow());
+    return id;
+  }
+
+  /** Insert a prompt_batch row directly and return its generated id. */
+  function createBatch(sessionId: string): number {
+    const db = getDatabase();
+    const now = epochNow();
+    const info = db.prepare(
+      `INSERT INTO prompt_batches (session_id, started_at, created_at) VALUES (?, ?, ?)`,
+    ).run(sessionId, now, now);
+    return info.lastInsertRowid as number;
+  }
+
+  /** Insert a spore row directly and return its id. */
+  function createSpore(agentId: string, sessionId: string, sporeId: string): string {
+    const db = getDatabase();
+    const now = epochNow();
+    db.prepare(
+      `INSERT INTO spores (id, agent_id, session_id, observation_type, content, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(sporeId, agentId, sessionId, 'gotcha', 'test content', now);
+    return sporeId;
+  }
+
+  /** Insert an attachment row directly. */
+  function createAttachment(sessionId: string, filePath: string): void {
+    const db = getDatabase();
+    const now = epochNow();
+    db.prepare(
+      `INSERT INTO attachments (session_id, file_path, created_at) VALUES (?, ?, ?)`,
+    ).run(sessionId, filePath, now);
+  }
+
+  /** Insert a graph_edge row directly. */
+  function createGraphEdge(agentId: string, sessionId: string): void {
+    const db = getDatabase();
+    const now = epochNow();
+    db.prepare(
+      `INSERT INTO graph_edges (id, agent_id, source_id, source_type, target_id, target_type, type, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(`edge-${Math.random().toString(36).slice(2, 8)}`, agentId, 'spore-x', 'spore', sessionId, 'session', 'FROM_SESSION', sessionId, now);
+  }
+
+  // ---------------------------------------------------------------------------
+  // getSessionImpact
+  // ---------------------------------------------------------------------------
+
+  describe('getSessionImpact', () => {
+    it('returns zeros for a session with no related data', () => {
+      const session = makeSession();
+      upsertSession(session);
+
+      const impact = getSessionImpact(session.id);
+      expect(impact.promptCount).toBe(0);
+      expect(impact.sporeCount).toBe(0);
+      expect(impact.attachmentCount).toBe(0);
+      expect(impact.graphEdgeCount).toBe(0);
+    });
+
+    it('returns correct counts of related data', () => {
+      const session = makeSession({ id: 'sess-impact' });
+      upsertSession(session);
+      const agentId = createAgent('agent-impact');
+
+      createBatch(session.id);
+      createBatch(session.id);
+      createSpore(agentId, session.id, 'spore-impact-1');
+      createSpore(agentId, session.id, 'spore-impact-2');
+      createSpore(agentId, session.id, 'spore-impact-3');
+      createAttachment(session.id, '/path/to/image1.png');
+      createGraphEdge(agentId, session.id);
+
+      const impact = getSessionImpact(session.id);
+      expect(impact.promptCount).toBe(2);
+      expect(impact.sporeCount).toBe(3);
+      expect(impact.attachmentCount).toBe(1);
+      expect(impact.graphEdgeCount).toBe(1);
+    });
+
+    it('does not count data from other sessions', () => {
+      const sess1 = makeSession({ id: 'sess-a' });
+      const sess2 = makeSession({ id: 'sess-b' });
+      upsertSession(sess1);
+      upsertSession(sess2);
+      const agentId = createAgent('agent-isolation');
+
+      createBatch(sess2.id);
+      createSpore(agentId, sess2.id, 'spore-other');
+
+      const impact = getSessionImpact(sess1.id);
+      expect(impact.promptCount).toBe(0);
+      expect(impact.sporeCount).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // deleteSessionCascade
+  // ---------------------------------------------------------------------------
+
+  describe('deleteSessionCascade', () => {
+    it('deletes session and all related data, returns correct counts', () => {
+      const session = makeSession({ id: 'sess-cascade' });
+      upsertSession(session);
+      const agentId = createAgent('agent-cascade');
+
+      createBatch(session.id);
+      createBatch(session.id);
+      createSpore(agentId, session.id, 'spore-cas-1');
+      createSpore(agentId, session.id, 'spore-cas-2');
+      createAttachment(session.id, '/path/file1.png');
+      createAttachment(session.id, '/path/file2.png');
+      createGraphEdge(agentId, session.id);
+
+      const result = deleteSessionCascade(session.id);
+
+      expect(result.deleted).toBe(true);
+      expect(result.counts.prompts).toBe(2);
+      expect(result.counts.spores).toBe(2);
+      expect(result.counts.attachments).toBe(2);
+      expect(result.counts.graphEdges).toBe(1);
+      expect(result.counts.resolutionEvents).toBe(0);
+      expect(result.deletedSporeIds).toHaveLength(2);
+      expect(result.deletedSporeIds).toContain('spore-cas-1');
+      expect(result.deletedSporeIds).toContain('spore-cas-2');
+      expect(result.deletedAttachmentPaths).toHaveLength(2);
+      expect(result.deletedAttachmentPaths).toContain('/path/file1.png');
+      expect(result.deletedAttachmentPaths).toContain('/path/file2.png');
+
+      // Session should no longer exist
+      expect(getSession(session.id)).toBeNull();
+    });
+
+    it('returns deleted: false for non-existent session', () => {
+      const result = deleteSessionCascade('does-not-exist');
+
+      expect(result.deleted).toBe(false);
+      expect(result.counts.prompts).toBe(0);
+      expect(result.counts.spores).toBe(0);
+      expect(result.counts.attachments).toBe(0);
+      expect(result.counts.graphEdges).toBe(0);
+      expect(result.counts.resolutionEvents).toBe(0);
+      expect(result.deletedSporeIds).toEqual([]);
+      expect(result.deletedAttachmentPaths).toEqual([]);
+    });
+
+    it('does not affect data belonging to other sessions', () => {
+      const sess1 = makeSession({ id: 'sess-del-1' });
+      const sess2 = makeSession({ id: 'sess-del-2' });
+      upsertSession(sess1);
+      upsertSession(sess2);
+      const agentId = createAgent('agent-other-sess');
+
+      createBatch(sess1.id);
+      createSpore(agentId, sess1.id, 'spore-keep-1');
+      createBatch(sess2.id);
+      createSpore(agentId, sess2.id, 'spore-keep-2');
+
+      deleteSessionCascade(sess1.id);
+
+      // sess2 data should be untouched
+      expect(getSession(sess2.id)).not.toBeNull();
+      const db = getDatabase();
+      const remaining = db.prepare(`SELECT COUNT(*) as count FROM spores WHERE session_id = ?`).get(sess2.id) as { count: number };
+      expect(remaining.count).toBe(1);
+    });
+
+    it('is idempotent — second call returns deleted: false', () => {
+      const session = makeSession({ id: 'sess-idem' });
+      upsertSession(session);
+
+      const first = deleteSessionCascade(session.id);
+      expect(first.deleted).toBe(true);
+
+      const second = deleteSessionCascade(session.id);
+      expect(second.deleted).toBe(false);
     });
   });
 });

@@ -378,3 +378,114 @@ export function deleteSession(id: string): boolean {
 
   return info.changes > 0;
 }
+
+// ---------------------------------------------------------------------------
+// Cascade delete + impact query
+// ---------------------------------------------------------------------------
+
+/** Counts of related data that would be affected by a session delete. */
+export interface SessionImpact {
+  promptCount: number;
+  sporeCount: number;
+  attachmentCount: number;
+  graphEdgeCount: number;
+}
+
+/** Result of a cascade delete operation. */
+export interface DeleteCascadeResult {
+  deleted: boolean;
+  counts: {
+    prompts: number;
+    spores: number;
+    attachments: number;
+    graphEdges: number;
+    resolutionEvents: number;
+  };
+  /** Spore IDs that were deleted (needed for vault file + vector cleanup). */
+  deletedSporeIds: string[];
+  /** Attachment file paths that were deleted from DB (needed for disk cleanup). */
+  deletedAttachmentPaths: string[];
+}
+
+/**
+ * Get counts of all data related to a session, for pre-delete impact display.
+ */
+export function getSessionImpact(sessionId: string): SessionImpact {
+  const db = getDatabase();
+
+  const promptCount = (db.prepare(
+    `SELECT COUNT(*) as count FROM prompt_batches WHERE session_id = ?`,
+  ).get(sessionId) as { count: number }).count;
+
+  const sporeCount = (db.prepare(
+    `SELECT COUNT(*) as count FROM spores WHERE session_id = ?`,
+  ).get(sessionId) as { count: number }).count;
+
+  const attachmentCount = (db.prepare(
+    `SELECT COUNT(*) as count FROM attachments WHERE session_id = ?`,
+  ).get(sessionId) as { count: number }).count;
+
+  const graphEdgeCount = (db.prepare(
+    `SELECT COUNT(*) as count FROM graph_edges WHERE session_id = ?`,
+  ).get(sessionId) as { count: number }).count;
+
+  return { promptCount, sporeCount, attachmentCount, graphEdgeCount };
+}
+
+/**
+ * Delete a session and ALL related data in a single transaction.
+ *
+ * Returns counts of deleted rows and IDs needed for post-transaction
+ * cleanup (vault files, embedding vectors).
+ */
+export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
+  const db = getDatabase();
+
+  const zeroCounts: DeleteCascadeResult = {
+    deleted: false,
+    counts: { prompts: 0, spores: 0, attachments: 0, graphEdges: 0, resolutionEvents: 0 },
+    deletedSporeIds: [],
+    deletedAttachmentPaths: [],
+  };
+
+  // Check session exists first
+  const exists = db.prepare(`SELECT id FROM sessions WHERE id = ?`).get(sessionId);
+  if (!exists) return zeroCounts;
+
+  // Collect IDs/paths needed for post-transaction cleanup before deleting
+  const sporeIds = (db.prepare(
+    `SELECT id FROM spores WHERE session_id = ?`,
+  ).all(sessionId) as { id: string }[]).map((r) => r.id);
+
+  const attachmentPaths = (db.prepare(
+    `SELECT file_path FROM attachments WHERE session_id = ?`,
+  ).all(sessionId) as { file_path: string }[]).map((r) => r.file_path);
+
+  // Run all deletes in a single transaction
+  const result = db.transaction(() => {
+    db.prepare(`DELETE FROM activities WHERE session_id = ?`).run(sessionId);
+    const attachments = db.prepare(`DELETE FROM attachments WHERE session_id = ?`).run(sessionId);
+    const prompts = db.prepare(`DELETE FROM prompt_batches WHERE session_id = ?`).run(sessionId);
+    const resEvents = db.prepare(`DELETE FROM resolution_events WHERE session_id = ?`).run(sessionId);
+    const edges = db.prepare(`DELETE FROM graph_edges WHERE session_id = ?`).run(sessionId);
+    const spores = db.prepare(`DELETE FROM spores WHERE session_id = ?`).run(sessionId);
+    const session = db.prepare(`DELETE FROM sessions WHERE id = ?`).run(sessionId);
+
+    return {
+      deleted: session.changes > 0,
+      counts: {
+        prompts: prompts.changes,
+        spores: spores.changes,
+        attachments: attachments.changes,
+        graphEdges: edges.changes,
+        resolutionEvents: resEvents.changes,
+      },
+    };
+  })();
+
+  return {
+    ...result,
+    deletedSporeIds: sporeIds,
+    deletedAttachmentPaths: attachmentPaths,
+  };
+}
