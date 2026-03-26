@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, AlertCircle, Loader2, ArrowRight, ExternalLink } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Surface } from '../ui/surface';
+import { MarkdownContent } from '../ui/markdown-content';
 import { useSpore } from '../../hooks/use-spores';
 import { cn } from '../../lib/cn';
 import { formatEpochAgo, formatEpochAbsolute } from '../../lib/format';
@@ -86,9 +87,15 @@ export function SporeDetail({ id, onBack, onNavigateToSpore, onNavigateToGraph: 
     );
   }
 
-  const tags = spore.tags
-    ? spore.tags.split(',').map((t) => t.trim()).filter(Boolean)
-    : [];
+  const tags = (() => {
+    if (!spore.tags) return [];
+    // Try JSON array first (e.g., '["tag1", "tag2"]')
+    if (spore.tags.startsWith('[')) {
+      try { return JSON.parse(spore.tags) as string[]; } catch { /* fall through */ }
+    }
+    // Comma-separated fallback
+    return spore.tags.split(',').map((t: string) => t.trim()).filter(Boolean);
+  })();
 
   return (
     <div className="space-y-6">
@@ -120,14 +127,14 @@ export function SporeDetail({ id, onBack, onNavigateToSpore, onNavigateToGraph: 
       {/* Content */}
       <Surface level="low" className="p-5">
         <div className="font-sans text-xs font-medium uppercase tracking-widest text-on-surface-variant mb-2">Observation</div>
-        <p className="font-sans text-sm text-on-surface whitespace-pre-wrap">{spore.content}</p>
+        <MarkdownContent content={spore.content} />
       </Surface>
 
       {/* Context */}
       {spore.context && (
         <Surface level="low" className="p-5">
           <div className="font-sans text-xs font-medium uppercase tracking-widest text-on-surface-variant mb-2">Context</div>
-          <p className="font-sans text-sm text-on-surface-variant whitespace-pre-wrap">{spore.context}</p>
+          <MarkdownContent content={spore.context} />
         </Surface>
       )}
 

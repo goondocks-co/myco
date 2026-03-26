@@ -235,3 +235,125 @@
     cursor: pointer;
   }
 }
+
+/* ---------- Markdown prose ---------- */
+
+.prose-myco {
+  font-family: var(--font-ui, 'Inter', system-ui, sans-serif);
+  font-size: 0.875rem;
+  line-height: 1.625;
+  color: var(--on-surface-variant);
+}
+
+.prose-myco h1,
+.prose-myco h2,
+.prose-myco h3,
+.prose-myco h4 {
+  font-family: var(--font-heading, 'Newsreader', serif);
+  color: var(--on-surface);
+  margin-top: 1.25em;
+  margin-bottom: 0.5em;
+  font-weight: 500;
+}
+
+.prose-myco h1 { font-size: 1.25rem; }
+.prose-myco h2 { font-size: 1.1rem; }
+.prose-myco h3 { font-size: 0.95rem; }
+
+.prose-myco p {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+.prose-myco strong {
+  color: var(--on-surface);
+  font-weight: 600;
+}
+
+.prose-myco em {
+  font-style: italic;
+}
+
+.prose-myco ul,
+.prose-myco ol {
+  padding-left: 1.25em;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+.prose-myco li {
+  margin-top: 0.25em;
+}
+
+.prose-myco code {
+  font-family: var(--font-data, 'JetBrains Mono', monospace);
+  font-size: 0.8em;
+  padding: 0.15em 0.35em;
+  border-radius: 0.2rem;
+  background: var(--surface-container);
+  color: var(--primary);
+}
+
+.prose-myco pre {
+  font-family: var(--font-data, 'JetBrains Mono', monospace);
+  font-size: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.375rem;
+  background: var(--surface-container-lowest);
+  color: var(--on-surface-variant);
+  overflow-x: auto;
+  margin-top: 0.75em;
+  margin-bottom: 0.75em;
+}
+
+.prose-myco pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+
+.prose-myco blockquote {
+  border-left: 2px solid var(--primary-container);
+  padding-left: 1em;
+  margin-left: 0;
+  color: var(--on-surface-variant);
+  font-style: italic;
+}
+
+.prose-myco hr {
+  border: none;
+  border-top: 1px solid var(--outline-variant);
+  margin: 1em 0;
+}
+
+.prose-myco table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.prose-myco th,
+.prose-myco td {
+  border: 1px solid var(--outline-variant);
+  padding: 0.35em 0.5em;
+  text-align: left;
+}
+
+.prose-myco th {
+  background: var(--surface-container);
+  font-weight: 600;
+  color: var(--on-surface);
+}
+
+.prose-myco a {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
+.prose-myco *:first-child {
+  margin-top: 0;
+}
+
+.prose-myco *:last-child {
+  margin-bottom: 0;
+}

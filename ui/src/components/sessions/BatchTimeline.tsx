@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, MessageSquare } from 'lucide-react';
 import { Surface } from '../ui/surface';
+import { MarkdownContent } from '../ui/markdown-content';
 import { useSessionBatches, useSessionAttachments, type BatchRow, type AttachmentRow } from '../../hooks/use-sessions';
 import { ActivityList } from './ActivityList';
 
@@ -77,9 +78,7 @@ function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) 
           {/* User prompt (full) */}
           <div className="px-4 pt-0 pb-3">
             {batch.user_prompt && batch.user_prompt.length > PROMPT_PREVIEW_CHARS && (
-              <p className="font-sans text-sm text-on-surface whitespace-pre-wrap break-words">
-                {batch.user_prompt}
-              </p>
+              <MarkdownContent content={batch.user_prompt} />
             )}
 
             {/* Inline attachments */}
@@ -114,9 +113,7 @@ function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) 
               <div className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant mb-1">
                 Response
               </div>
-              <p className="font-sans text-sm text-on-surface-variant whitespace-pre-wrap break-words">
-                {batch.response_summary}
-              </p>
+              <MarkdownContent content={batch.response_summary} />
             </div>
           )}
         </div>

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { AlertCircle, FlaskConical, ChevronDown, ChevronUp } from 'lucide-react';
 import { Surface } from '../ui/surface';
 import { Button } from '../ui/button';
+import { MarkdownContent } from '../ui/markdown-content';
 import { useDigest, type DigestTier } from '../../hooks/use-spores';
 import { formatEpochAgo } from '../../lib/format';
 
@@ -40,9 +41,7 @@ function TierPanel({ tier }: { tier: DigestTier }) {
           Generated {formatEpochAgo(tier.generated_at)}
         </span>
       </div>
-      <p className="font-sans text-sm text-on-surface-variant whitespace-pre-wrap leading-relaxed">
-        {displayContent}
-      </p>
+      <MarkdownContent content={displayContent} />
       {isLong && (
         <Button
           variant="ghost"

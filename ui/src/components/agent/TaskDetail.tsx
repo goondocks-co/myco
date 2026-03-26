@@ -2,6 +2,7 @@ import { ArrowLeft, AlertCircle } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
+import { MarkdownContent } from '../ui/markdown-content';
 import { useTask, type PhaseDefinition } from '../../hooks/use-agent';
 import { capitalize } from '../../lib/format';
 import { TASK_SOURCE_USER } from '../../lib/constants';
@@ -88,9 +89,9 @@ function PhaseCard({ phase, index }: { phase: PhaseDefinition; index: number }) 
         </div>
       )}
 
-      <pre className="rounded-md bg-surface-container-lowest p-3 font-mono text-xs text-on-surface-variant whitespace-pre-wrap break-words overflow-auto max-h-40">
-        {phase.prompt}
-      </pre>
+      <Surface level="lowest" className="p-3 overflow-auto max-h-40">
+        <MarkdownContent content={phase.prompt} />
+      </Surface>
     </Surface>
   );
 }
@@ -203,9 +204,9 @@ export function TaskDetail({ taskId, onBack, onNavigate }: TaskDetailProps) {
           <h2 className="font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide">
             Prompt
           </h2>
-          <pre className="rounded-md bg-surface-container-lowest p-4 font-mono text-xs text-on-surface-variant whitespace-pre-wrap break-words overflow-auto max-h-96">
-            {task.prompt}
-          </pre>
+          <Surface level="lowest" className="p-4 overflow-auto max-h-96">
+            <MarkdownContent content={task.prompt ?? ''} />
+          </Surface>
         </div>
       )}
 
