@@ -1092,14 +1092,15 @@ export async function main(): Promise<void> {
     } catch { /* agent unavailable */ }
 
     // Write images to attachments (keep this — images are binary, not in SQLite).
-    // Only process the current turn onward — prior turns were handled by earlier Stops.
+    // Process ALL turns — file write uses wx flag (skip existing) and DB uses ON CONFLICT DO NOTHING,
+    // so this is idempotent. We can't use latestBatch.prompt_number as a start index because
+    // transcript compaction can reduce allTurns.length below prompt_number.
     const attachmentsDir = path.join(vaultDir, 'attachments');
-    const attachmentStartIndex = latestBatch?.prompt_number ? latestBatch.prompt_number - 1 : 0;
-    const hasNewImages = allTurns.slice(attachmentStartIndex).some((t) => t.images?.length);
+    const hasNewImages = allTurns.some((t) => t.images?.length);
     if (hasNewImages) {
       fs.mkdirSync(attachmentsDir, { recursive: true });
     }
-    for (let i = attachmentStartIndex; i < allTurns.length; i++) {
+    for (let i = 0; i < allTurns.length; i++) {
       const turn = allTurns[i];
       if (!turn.images?.length) continue;
       const promptNumber = i + 1;
