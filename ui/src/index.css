@@ -176,8 +176,17 @@
 /* ---------- Dashboard design-system utilities ---------- */
 
 .glass-panel {
-  background: rgba(53, 53, 53, 0.4);
+  background: color-mix(in srgb, var(--surface-container) 60%, transparent);
   backdrop-filter: blur(12px);
+}
+
+/* Hover lift for interactive cards */
+.hover-lift {
+  transition: transform 200ms ease, box-shadow 200ms ease;
+}
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(var(--shadow-tint), 0.12);
 }
 
 .mycelial-connector {

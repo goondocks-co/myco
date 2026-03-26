@@ -53,9 +53,20 @@ function SporeRow({
       level={isSelected ? 'high' : 'low'}
       className={cn(
         'p-4 cursor-pointer transition-colors hover:bg-surface-container-high rounded-lg',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
         isSelected && 'ring-1 ring-primary/30',
       )}
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+      tabIndex={0}
+      role="button"
+      aria-label={`${formatLabel(spore.observation_type)} spore: ${truncate(spore.content, CONTENT_PREVIEW_CHARS)}`}
+      aria-pressed={isSelected}
     >
       <div className="flex items-start gap-3">
         <div className="flex-1 min-w-0 space-y-1">

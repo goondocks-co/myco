@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
   Settings,
@@ -18,6 +18,8 @@ import {
   Bot,
   Wrench,
   Search,
+  Menu,
+  X,
 } from 'lucide-react';
 import { useTheme } from '../providers/theme';
 import { useFont, type FontOption } from '../providers/font';
@@ -65,6 +67,9 @@ const DENSITY_LABELS: Record<Density, string> = {
 const DENSITY_ORDER: Density[] = ['compact', 'normal', 'comfy'];
 
 const SIDEBAR_COLLAPSED_KEY = 'myco-ui-sidebar-collapsed';
+
+/** Tailwind `md` breakpoint in pixels. Below this, the sidebar becomes a mobile drawer. */
+const MOBILE_BREAKPOINT_PX = 768;
 
 const DENSITY_STORAGE_KEY = 'myco-ui-density';
 const DENSITY_CSS_VAR = '--density';
@@ -117,6 +122,44 @@ function useSidebarCollapse() {
   }, []);
 
   return { collapsed, toggle };
+}
+
+/* ---------- Mobile drawer hook ---------- */
+
+function useMobileDrawer() {
+  const [open, setOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth < MOBILE_BREAKPOINT_PX,
+  );
+
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX - 1}px)`);
+    const onChange = (e: MediaQueryListEvent) => {
+      setIsMobile(e.matches);
+      if (!e.matches) setOpen(false); // close drawer when switching to desktop
+    };
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  // Close drawer on route change
+  const location = useLocation();
+  useEffect(() => {
+    setOpen(false);
+  }, [location.pathname]);
+
+  // Prevent body scroll when drawer is open
+  useEffect(() => {
+    if (open) {
+      document.body.style.overflow = 'hidden';
+      return () => { document.body.style.overflow = ''; };
+    }
+  }, [open]);
+
+  const toggle = useCallback(() => setOpen((prev) => !prev), []);
+  const close = useCallback(() => setOpen(false), []);
+
+  return { open, isMobile, toggle, close };
 }
 
 /* ---------- Sub-components ---------- */
@@ -240,6 +283,126 @@ function DensityControl({ density, setDensity }: { density: Density; setDensity:
   );
 }
 
+/* ---------- Sidebar content (shared between mobile and desktop) ---------- */
+
+function SidebarContent({
+  collapsed,
+  vaultName,
+  density,
+  setDensity,
+  onSearchOpen,
+  onCollapseToggle,
+  showCollapseToggle,
+}: {
+  collapsed: boolean;
+  vaultName: string | undefined;
+  density: Density;
+  setDensity: (d: Density) => void;
+  onSearchOpen: () => void;
+  onCollapseToggle?: () => void;
+  showCollapseToggle: boolean;
+}) {
+  return (
+    <>
+      {/* Brand + vault name */}
+      <div className={cn('px-4 py-5', collapsed && 'px-2 py-4 flex justify-center')}>
+        {collapsed ? (
+          <div className="relative flex items-center">
+            <span className="font-serif text-base text-primary">m</span>
+            <span className="ml-1 h-2 w-2 rounded-full bg-on-surface-variant/40" />
+          </div>
+        ) : (
+          <div>
+            <div className="flex items-center">
+              <span className="font-serif text-base text-primary tracking-wider">
+                myco
+              </span>
+              <span className="ml-2 h-2 w-2 rounded-full bg-on-surface-variant/40" />
+            </div>
+            {vaultName && (
+              <span className="font-mono text-xs text-outline uppercase tracking-widest mt-0.5">
+                {vaultName}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Search trigger */}
+      <div className="px-2 pt-2 pb-1">
+        <button
+          type="button"
+          onClick={onSearchOpen}
+          title={collapsed ? 'Search (\u2318K)' : undefined}
+          className={cn(
+            'flex w-full items-center rounded-md text-sm text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface',
+            collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
+          )}
+        >
+          <Search className="h-4 w-4 shrink-0" />
+          {!collapsed && (
+            <span className="flex-1 text-left">Search</span>
+          )}
+          {!collapsed && (
+            <kbd className="text-xs text-on-surface-variant/60 font-mono">{'\u2318'}K</kbd>
+          )}
+        </button>
+      </div>
+
+      {/* Navigation */}
+      <nav className="flex-1 space-y-1 px-2 py-2" aria-label="Main navigation">
+        {NAV_ITEMS.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.to === '/'}
+            title={collapsed ? item.label : undefined}
+            className={({ isActive }) =>
+              cn(
+                'flex items-center rounded-md text-sm font-medium transition-colors',
+                collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
+                isActive
+                  ? 'bg-primary/10 text-primary'
+                  : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
+              )
+            }
+          >
+            <item.icon className="h-4 w-4 shrink-0" />
+            {!collapsed && item.label}
+          </NavLink>
+        ))}
+      </nav>
+
+      {/* Footer */}
+      <div className={cn('py-3 space-y-1 mt-auto', collapsed ? 'px-1 flex flex-col items-center' : 'px-2')}>
+        <RestartButton collapsed={collapsed} />
+        {!collapsed && <FontSelector />}
+        {!collapsed && <DensityControl density={density} setDensity={setDensity} />}
+        <ThemeToggle collapsed={collapsed} />
+      </div>
+
+      {/* Collapse toggle — desktop only */}
+      {showCollapseToggle && onCollapseToggle && (
+        <div className={cn('px-2 py-2', collapsed && 'flex justify-center')}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onCollapseToggle}
+            className={cn(
+              'text-on-surface-variant hover:text-on-surface',
+              collapsed ? 'w-8 p-0 justify-center' : 'w-full justify-start gap-2',
+            )}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+            {!collapsed && <span>Collapse</span>}
+          </Button>
+        </div>
+      )}
+    </>
+  );
+}
+
 /* ---------- Layout ---------- */
 
 export default function Layout() {
@@ -248,6 +411,7 @@ export default function Layout() {
   const { data: stats } = useDaemon();
   const vaultName = stats?.vault.name;
   const [searchOpen, setSearchOpen] = useState(false);
+  const drawer = useMobileDrawer();
 
   // Register Cmd+K / Ctrl+K global shortcut
   useEffect(() => {
@@ -261,113 +425,109 @@ export default function Layout() {
     return () => document.removeEventListener('keydown', handler);
   }, []);
 
+  // Close drawer when Escape is pressed
+  useEffect(() => {
+    if (!drawer.open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        drawer.close();
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [drawer.open, drawer.close]);
+
+  const openSearch = useCallback(() => setSearchOpen(true), []);
+
   return (
     <div className="flex h-screen bg-background">
       <GlobalSearch open={searchOpen} onOpenChange={setSearchOpen} />
-      {/* Sidebar */}
-      <aside
-        className={cn(
-          'flex flex-col bg-surface-container transition-[width] duration-200',
-          collapsed ? 'w-14' : 'w-56',
-        )}
-      >
-        {/* Brand + vault name */}
-        <div className={cn('px-4 py-5', collapsed && 'px-2 py-4 flex justify-center')}>
-          {collapsed ? (
-            <div className="relative flex items-center">
-              <span className="font-serif text-base text-primary">m</span>
-              <span className="ml-1 h-2 w-2 rounded-full bg-on-surface-variant/40" />
-            </div>
-          ) : (
-            <div>
-              <div className="flex items-center">
-                <span className="font-serif text-base text-primary tracking-wider">
-                  myco
-                </span>
-                <span className="ml-2 h-2 w-2 rounded-full bg-on-surface-variant/40" />
-              </div>
-              {vaultName && (
-                <span className="font-mono text-xs text-outline uppercase tracking-widest mt-0.5">
-                  {vaultName}
-                </span>
-              )}
-            </div>
-          )}
-        </div>
 
-        {/* Search trigger */}
-        <div className="px-2 pt-2 pb-1">
+      {/* Mobile top bar — visible below md breakpoint */}
+      {drawer.isMobile && (
+        <div className="fixed top-0 left-0 right-0 z-40 flex h-12 items-center gap-3 border-b border-outline-variant/20 bg-surface-container px-3">
           <button
             type="button"
-            onClick={() => setSearchOpen(true)}
-            title={collapsed ? 'Search (⌘K)' : undefined}
-            className={cn(
-              'flex w-full items-center rounded-md text-sm text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface',
-              collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
-            )}
+            onClick={drawer.toggle}
+            className="rounded-md p-1.5 text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface"
+            aria-label={drawer.open ? 'Close navigation' : 'Open navigation'}
           >
-            <Search className="h-4 w-4 shrink-0" />
-            {!collapsed && (
-              <span className="flex-1 text-left">Search</span>
-            )}
-            {!collapsed && (
-              <kbd className="text-xs text-on-surface-variant/60 font-mono">⌘K</kbd>
-            )}
+            {drawer.open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </button>
+          <span className="font-serif text-base text-primary tracking-wider">myco</span>
+          {vaultName && (
+            <span className="font-mono text-[10px] text-outline uppercase tracking-widest">
+              {vaultName}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={openSearch}
+            className="ml-auto rounded-md p-1.5 text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface"
+            aria-label="Search"
+          >
+            <Search className="h-4 w-4" />
           </button>
         </div>
+      )}
 
-        {/* Navigation */}
-        <nav className="flex-1 space-y-1 px-2 py-2">
-          {NAV_ITEMS.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === '/'}
-              title={collapsed ? item.label : undefined}
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center rounded-md text-sm font-medium transition-colors',
-                  collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
-                  isActive
-                    ? 'bg-primary/10 text-primary'
-                    : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
-                )
-              }
-            >
-              <item.icon className="h-4 w-4 shrink-0" />
-              {!collapsed && item.label}
-            </NavLink>
-          ))}
-        </nav>
+      {/* Mobile drawer overlay */}
+      {drawer.isMobile && drawer.open && (
+        <div
+          className="fixed inset-0 z-40 bg-surface-dim/60 backdrop-blur-sm transition-opacity"
+          onClick={drawer.close}
+          aria-hidden="true"
+        />
+      )}
 
-        {/* Footer */}
-        <div className={cn('py-3 space-y-1 mt-auto', collapsed ? 'px-1 flex flex-col items-center' : 'px-2')}>
-          <RestartButton collapsed={collapsed} />
-          {!collapsed && <FontSelector />}
-          {!collapsed && <DensityControl density={density} setDensity={setDensity} />}
-          <ThemeToggle collapsed={collapsed} />
-        </div>
+      {/* Mobile drawer sidebar */}
+      {drawer.isMobile && (
+        <aside
+          className={cn(
+            'fixed top-12 left-0 bottom-0 z-50 w-64 flex flex-col bg-surface-container transition-transform duration-200 ease-out',
+            drawer.open ? 'translate-x-0' : '-translate-x-full',
+          )}
+        >
+          <SidebarContent
+            collapsed={false}
+            vaultName={vaultName}
+            density={density}
+            setDensity={setDensity}
+            onSearchOpen={openSearch}
+            showCollapseToggle={false}
+          />
+        </aside>
+      )}
 
-        {/* Collapse toggle */}
-        <div className={cn('px-2 py-2', collapsed && 'flex justify-center')}>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={toggle}
-            className={cn(
-              'text-on-surface-variant hover:text-on-surface',
-              collapsed ? 'w-8 p-0 justify-center' : 'w-full justify-start gap-2',
-            )}
-            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          >
-            {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-            {!collapsed && <span>Collapse</span>}
-          </Button>
-        </div>
-      </aside>
+      {/* Desktop sidebar — hidden below md breakpoint */}
+      {!drawer.isMobile && (
+        <aside
+          className={cn(
+            'flex flex-col bg-surface-container transition-[width] duration-200',
+            collapsed ? 'w-14' : 'w-56',
+          )}
+        >
+          <SidebarContent
+            collapsed={collapsed}
+            vaultName={vaultName}
+            density={density}
+            setDensity={setDensity}
+            onSearchOpen={openSearch}
+            onCollapseToggle={toggle}
+            showCollapseToggle={true}
+          />
+        </aside>
+      )}
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto bg-surface">
+      <main
+        className={cn(
+          'flex-1 overflow-auto bg-surface',
+          drawer.isMobile && 'pt-12', // offset for fixed mobile top bar
+        )}
+        aria-label="Page content"
+      >
         <Outlet />
       </main>
     </div>

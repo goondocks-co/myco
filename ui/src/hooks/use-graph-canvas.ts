@@ -191,6 +191,10 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
       })),
     ];
 
+    /* Ensure container has actual dimensions before initializing Cytoscape */
+    const rect = containerRef.current.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+
     const cy = cytoscape({
       container: containerRef.current,
       elements,
@@ -285,21 +289,30 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
           },
         },
       ],
-      layout: {
-        name: 'cose',
-        animate: true,
-        animationDuration: COSE_ANIMATION_DURATION,
-        nodeRepulsion: () => COSE_NODE_REPULSION,
-        idealEdgeLength: () => COSE_IDEAL_EDGE_LENGTH,
-        gravity: COSE_GRAVITY,
-        nodeDimensionsIncludeLabels: true,
-      },
+      layout: { name: 'preset' }, // start with no layout; we run COSE manually below
       userZoomingEnabled: true,
       userPanningEnabled: true,
       boxSelectionEnabled: false,
       minZoom: 0.3,
       maxZoom: 3,
     });
+
+    /* Run COSE layout and fit to viewport when done */
+    const layout = cy.layout({
+      name: 'cose',
+      animate: true,
+      animationDuration: COSE_ANIMATION_DURATION,
+      nodeRepulsion: () => COSE_NODE_REPULSION,
+      idealEdgeLength: () => COSE_IDEAL_EDGE_LENGTH,
+      gravity: COSE_GRAVITY,
+      nodeDimensionsIncludeLabels: true,
+      fit: true,
+      padding: FIT_PADDING,
+    });
+    layout.on('layoutstop', () => {
+      cy.fit(undefined, FIT_PADDING);
+    });
+    layout.run();
 
     /* Node click — select and highlight neighborhood */
     cy.on('tap', 'node', (evt) => {

@@ -36,10 +36,21 @@ function SessionTableRow({
   onClick: () => void;
   onDelete: () => void;
 }) {
+  const sessionLabel = session.title || session.id.slice(0, SESSION_ID_PREVIEW_LENGTH);
+
   return (
     <tr
-      className="border-b border-[var(--ghost-border)] last:border-0 hover:bg-surface-container-low/60 cursor-pointer transition-colors group"
+      className="border-b border-[var(--ghost-border)] last:border-0 hover:bg-surface-container/60 cursor-pointer transition-all duration-150 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40 hover:shadow-[inset_3px_0_0_var(--primary)]"
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+      tabIndex={0}
+      role="row"
+      aria-label={`Session: ${sessionLabel}`}
     >
       {/* Session ID */}
       <td className="px-4 py-3">
@@ -51,7 +62,7 @@ function SessionTableRow({
       {/* Title */}
       <td className="px-4 py-3">
         <span className="font-sans text-sm font-medium text-on-surface truncate block max-w-xs">
-          {session.title || session.id.slice(0, SESSION_ID_PREVIEW_LENGTH)}
+          {sessionLabel}
         </span>
       </td>
 
@@ -85,7 +96,13 @@ function SessionTableRow({
               e.stopPropagation();
               onDelete();
             }}
-            className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-tertiary/10 hover:text-tertiary transition-all shrink-0"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.stopPropagation();
+              }
+            }}
+            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 rounded hover:bg-tertiary/10 hover:text-tertiary transition-all shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tertiary/40"
+            aria-label={`Delete session ${sessionLabel}`}
             title="Delete session"
           >
             <Trash2 className="h-3.5 w-3.5" />
@@ -269,6 +286,7 @@ export function SessionList() {
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           className="bg-transparent border-none shadow-none focus-visible:ring-0 px-0 h-auto py-0 font-sans text-sm"
+          aria-label="Filter sessions by title, ID, or agent"
         />
         <span className="font-mono text-xs text-on-surface-variant shrink-0">
           {filtered.length}/{sessions.length}
@@ -287,7 +305,7 @@ export function SessionList() {
         </div>
       ) : (
         <Surface level="low" className="rounded-md overflow-hidden">
-          <table className="w-full">
+          <table className="w-full" aria-label="Session archive">
             <thead>
               <tr className="border-b border-[var(--ghost-border)] bg-surface-container/50">
                 <ColHeader>Session ID</ColHeader>
