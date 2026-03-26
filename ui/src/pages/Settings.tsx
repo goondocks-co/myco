@@ -191,7 +191,7 @@ export default function Settings() {
 
       <div className="space-y-6">
         {/* ---- Project section ---- */}
-        <Surface level="low" className="p-6 space-y-5">
+        <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-sage">
           <SectionHeader>Project</SectionHeader>
 
           <div className="space-y-4">
@@ -236,7 +236,7 @@ export default function Settings() {
         </Surface>
 
         {/* ---- Embedding section ---- */}
-        <Surface level="low" className="p-6 space-y-5">
+        <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-ochre">
           <SectionHeader>Embedding</SectionHeader>
 
           <div className="space-y-4">
@@ -320,7 +320,7 @@ export default function Settings() {
         </Surface>
 
         {/* ---- Agent section ---- */}
-        <Surface level="low" className="p-6 space-y-5">
+        <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-outline">
           <SectionHeader>Agent</SectionHeader>
 
           <div className="space-y-4">
@@ -376,7 +376,7 @@ export default function Settings() {
         </Surface>
 
         {/* ---- Save row ---- */}
-        <div className="flex items-center gap-4 pt-2">
+        <Surface level="low" className="p-4 flex items-center gap-4 border-t-2 border-t-sage">
           <Button onClick={handleSave} disabled={!dirty || isSaving}>
             {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
             Save Settings
@@ -392,7 +392,7 @@ export default function Settings() {
               {saveMessage.text}
             </span>
           )}
-        </div>
+        </Surface>
       </div>
     </div>
   );

@@ -92,21 +92,35 @@ function StatCard({
   label,
   value,
   sparklineData,
+  accent = 'outline',
 }: {
   label: string;
   value: number;
   sparklineData?: number[];
+  accent?: 'sage' | 'ochre' | 'terracotta' | 'outline';
 }) {
+  const borderClass: Record<string, string> = {
+    sage: 'border-t-sage',
+    ochre: 'border-t-ochre',
+    terracotta: 'border-t-terracotta',
+    outline: 'border-t-outline',
+  };
+  const valueClass: Record<string, string> = {
+    sage: 'text-sage',
+    ochre: 'text-ochre',
+    terracotta: 'text-terracotta',
+    outline: 'text-on-surface',
+  };
   return (
-    <Surface level="default" className="p-4 flex flex-col gap-2">
-      <p className="font-sans text-xs uppercase tracking-widest text-on-surface-variant">{label}</p>
+    <div className={cn('rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2', borderClass[accent])}>
+      <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">{label}</p>
       <div className="flex items-end justify-between gap-2">
-        <p className="font-mono text-2xl text-on-surface">{value}</p>
+        <p className={cn('font-serif text-2xl font-bold', valueClass[accent])}>{value}</p>
         {sparklineData && sparklineData.length >= 2 && (
           <Sparkline data={sparklineData} width={80} height={28} className="opacity-60" />
         )}
       </div>
-    </Surface>
+    </div>
   );
 }
 
@@ -386,9 +400,9 @@ export default function Operations() {
 
               {/* Stat cards */}
               <div className="grid grid-cols-3 gap-3">
-                <StatCard label="Total Vectors" value={data.total} sparklineData={totalHistory} />
-                <StatCard label="Pending" value={totalPending} />
-                <StatCard label="Stale" value={totalStale} />
+                <StatCard label="Total Vectors" value={data.total} sparklineData={totalHistory} accent="sage" />
+                <StatCard label="Pending" value={totalPending} accent={totalPending > 0 ? 'ochre' : 'outline'} />
+                <StatCard label="Stale" value={totalStale} accent={totalStale > 0 ? 'terracotta' : 'outline'} />
               </div>
 
               {/* Namespace breakdown */}
