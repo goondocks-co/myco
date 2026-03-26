@@ -110,7 +110,7 @@ function MetaItem({ label, value, mono = true }: { label: string; value: string;
   return (
     <div className="flex items-start justify-between gap-3 py-1.5 border-b border-[var(--ghost-border)] last:border-0">
       <span className="shrink-0 font-sans text-xs font-medium text-on-surface-variant">{label}</span>
-      <span className={cn('text-xs text-on-surface text-right break-all', mono && 'font-mono')}>{value}</span>
+      <span className={cn('text-xs text-on-surface text-right break-words', mono && 'font-mono')}>{value}</span>
     </div>
   );
 }

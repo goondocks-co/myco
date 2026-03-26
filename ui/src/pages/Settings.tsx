@@ -186,10 +186,12 @@ export default function Settings() {
   const vaultName = stats?.vault.name ?? config.embedding.provider;
 
   return (
-    <div className="p-6 max-w-2xl">
+    <div className="p-6">
       <PageHeader title="Settings" subtitle="Vault configuration and daemon settings" />
 
       <div className="space-y-6">
+        {/* ---- Top row: Project + Embedding side by side ---- */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* ---- Project section ---- */}
         <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-sage">
           <SectionHeader>Project</SectionHeader>
@@ -236,7 +238,7 @@ export default function Settings() {
         </Surface>
 
         {/* ---- Embedding section ---- */}
-        <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-ochre">
+        <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-ochre h-fit">
           <SectionHeader>Embedding</SectionHeader>
 
           <div className="space-y-4">
@@ -318,6 +320,7 @@ export default function Settings() {
             </div>
           </div>
         </Surface>
+        </div>{/* end top row grid */}
 
         {/* ---- Agent section ---- */}
         <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-outline">

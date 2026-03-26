@@ -51,6 +51,10 @@ export default {
         destructive: {
           DEFAULT: 'var(--destructive, var(--tertiary))',
         },
+        /* Named palette aliases for accent borders/text */
+        sage: 'var(--primary)',
+        ochre: 'var(--secondary)',
+        terracotta: 'var(--tertiary)',
         background: 'var(--background)',
         foreground: 'var(--foreground)',
         card: {
@@ -76,6 +80,9 @@ export default {
       },
       boxShadow: {
         ambient: '0 24px 48px rgba(var(--shadow-tint), 0.06)',
+        'sage-glow': '0 0 8px var(--primary)',
+        'ochre-glow': '0 0 8px var(--secondary)',
+        'terracotta-glow': '0 0 8px var(--tertiary)',
       },
     },
   },

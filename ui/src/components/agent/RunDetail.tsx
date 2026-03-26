@@ -212,40 +212,39 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
         Runs
       </Button>
 
-      {/* Summary bar */}
-      <Surface level="low" className="p-4">
-        <div className="flex flex-wrap items-center gap-4">
-          <Badge variant={statusBadgeVariant(run.status)}>
-            {capitalize(run.status)}
-          </Badge>
-
-          <span className="font-sans text-sm text-on-surface-variant">
-            Task: <span className="text-on-surface font-medium">{resolveTaskName(run.task, tasksList)}</span>
-          </span>
-
-          <span className="font-sans text-sm text-on-surface-variant">
-            Started: <span className="font-mono text-on-surface">{formatEpochRelative(run.started_at)}</span>
-          </span>
-
-          <span className="font-sans text-sm text-on-surface-variant">
-            Duration: <span className="font-mono text-on-surface">{formatDuration(run.started_at, run.completed_at)}</span>
-          </span>
-
-          <span className="font-sans text-sm text-on-surface-variant">
-            Tokens: <span className="font-mono text-on-surface">{formatTokens(run.tokens_used)}</span>
-          </span>
-
-          <span className="font-sans text-sm text-on-surface-variant">
-            Cost: <span className="font-mono text-on-surface">{formatCost(run.cost_usd)}</span>
-          </span>
+      {/* Stat cards */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        <div className="rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2 border-t-sage">
+          <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">Status</p>
+          <Badge variant={statusBadgeVariant(run.status)}>{capitalize(run.status)}</Badge>
         </div>
+        <div className="rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2 border-t-outline">
+          <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">Task</p>
+          <p className="font-sans text-sm font-medium text-on-surface truncate">{resolveTaskName(run.task, tasksList)}</p>
+        </div>
+        <div className="rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2 border-t-outline">
+          <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">Started</p>
+          <p className="font-mono text-sm text-on-surface">{formatEpochRelative(run.started_at)}</p>
+        </div>
+        <div className="rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2 border-t-outline">
+          <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">Duration</p>
+          <p className="font-mono text-sm text-on-surface">{formatDuration(run.started_at, run.completed_at)}</p>
+        </div>
+        <div className="rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2 border-t-ochre">
+          <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">Tokens</p>
+          <p className="font-serif text-xl font-bold text-ochre">{formatTokens(run.tokens_used)}</p>
+        </div>
+        <div className="rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2 border-t-ochre">
+          <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">Cost</p>
+          <p className="font-serif text-xl font-bold text-ochre">{formatCost(run.cost_usd)}</p>
+        </div>
+      </div>
 
-        {run.error && (
-          <div className="mt-3 rounded-md bg-tertiary-container/20 px-3 py-2">
-            <p className="font-mono text-xs text-tertiary">{run.error}</p>
-          </div>
-        )}
-      </Surface>
+      {run.error && (
+        <div className="rounded-md bg-tertiary/10 px-3 py-2">
+          <p className="font-mono text-xs text-tertiary">{run.error}</p>
+        </div>
+      )}
 
       {/* Phase Timeline (only shown for phased runs) */}
       {phaseResults && phaseResults.length > 0 && (

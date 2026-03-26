@@ -122,6 +122,14 @@ export function ActivityList({ batchId, activityCount }: ActivityListProps) {
       {activities.map((activity) => (
         <ActivityItem key={activity.id} activity={activity} />
       ))}
+      {/* Collapse toggle */}
+      <button
+        type="button"
+        className="w-full px-3 py-2 font-sans text-xs text-on-surface-variant hover:text-on-surface transition-colors text-left"
+        onClick={() => setLoaded(false)}
+      >
+        Hide tool calls
+      </button>
     </div>
   );
 }

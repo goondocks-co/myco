@@ -8,8 +8,9 @@ const POD_GRID_LIMIT = 6;
 /* ---------- Component ---------- */
 
 export function SessionPodGrid() {
-  const { data, isLoading } = useActivity(POD_GRID_LIMIT);
-  const events = data ?? [];
+  const { data, isLoading } = useActivity(POD_GRID_LIMIT * 2);
+  // Filter out agent runs — those are already visible in the activity log
+  const events = (data ?? []).filter((e) => e.type !== 'agent_run').slice(0, POD_GRID_LIMIT);
 
   return (
     <section className="space-y-5">
