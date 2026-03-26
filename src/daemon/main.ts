@@ -64,7 +64,7 @@ import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
-import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSession } from '../db/queries/sessions.js';
+import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSession, deleteSessionCascade, getSessionImpact } from '../db/queries/sessions.js';
 import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, findBatchByPromptPrefix, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary, listBatchesBySession } from '../db/queries/batches.js';
 import { insertActivityWithBatch } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
@@ -1285,13 +1285,57 @@ export async function main(): Promise<void> {
   });
 
   server.registerRoute('GET', '/api/sessions/:id', handleGetSession);
+  server.registerRoute('GET', '/api/sessions/:id/impact', async (req) => {
+    const sessionId = req.params.id;
+    const session = getSession(sessionId);
+    if (!session) return { status: 404, body: { error: 'Session not found' } };
+    const impact = getSessionImpact(sessionId);
+    return { body: impact };
+  });
+
   server.registerRoute('DELETE', '/api/sessions/:id', async (req) => {
     const sessionId = req.params.id;
-    const deleted = deleteSession(sessionId);
-    if (!deleted) return { status: 404, body: { error: 'Session not found' } };
+    const result = deleteSessionCascade(sessionId);
+    if (!result.deleted) return { status: 404, body: { error: 'Session not found' } };
+
+    // Post-transaction cleanup: embedding vectors
     try { embeddingManager.onRemoved('sessions', sessionId); } catch { /* best-effort */ }
-    logger.info('api', 'Session deleted', { session_id: sessionId });
-    return { body: { ok: true } };
+    for (const sporeId of result.deletedSporeIds) {
+      try { embeddingManager.onRemoved('spores', sporeId); } catch { /* best-effort */ }
+    }
+
+    // Post-transaction cleanup: vault files (fire-and-forget)
+    const vaultCleanup = async () => {
+      const { unlink, glob } = await import('node:fs/promises');
+
+      // Session markdown
+      try {
+        for await (const f of glob(`sessions/**/session-${sessionId}.md`, { cwd: vaultDir })) {
+          await unlink(`${vaultDir}/${f}`).catch(() => {});
+        }
+      } catch { /* best-effort */ }
+
+      // Spore markdown files
+      for (const sporeId of result.deletedSporeIds) {
+        try {
+          for await (const f of glob(`spores/**/${sporeId}*.md`, { cwd: vaultDir })) {
+            await unlink(`${vaultDir}/${f}`).catch(() => {});
+          }
+        } catch { /* best-effort */ }
+      }
+
+      // Attachment files on disk
+      for (const filePath of result.deletedAttachmentPaths) {
+        try { await unlink(filePath); } catch { /* best-effort */ }
+      }
+    };
+    vaultCleanup().catch(() => {});
+
+    logger.info('api', 'Session cascade deleted', {
+      session_id: sessionId,
+      counts: result.counts,
+    });
+    return { body: { ok: true, counts: result.counts } };
   });
   server.registerRoute('GET', '/api/sessions/:id/batches', handleGetSessionBatches);
   server.registerRoute('GET', '/api/batches/:id/activities', handleGetBatchActivities);
