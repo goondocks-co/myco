@@ -8,19 +8,50 @@ import { useSession } from '../../hooks/use-sessions';
 import { useTriggerRun } from '../../hooks/use-agent';
 import { BatchTimeline } from './BatchTimeline';
 import { formatTimeAgo, formatDuration as formatDurationSec } from '../../lib/format';
+import { cn } from '../../lib/cn';
 
 /* ---------- Constants ---------- */
 
 /** Characters shown from session ID in compact view. */
 const SESSION_ID_PREVIEW_LENGTH = 8;
 
-/* ---------- Helpers ---------- */
+/** Characters shown from content hash in metadata. */
+const CONTENT_HASH_PREVIEW_LENGTH = 16;
 
-function statusVariant(status: string): 'default' | 'secondary' | 'warning' {
-  if (status === 'active') return 'default';
-  if (status === 'completed') return 'secondary';
-  return 'warning';
+/* ---------- Status helpers ---------- */
+
+type StatusColor = 'active' | 'completed' | 'error';
+
+function resolveStatusColor(status: string): StatusColor {
+  if (status === 'active') return 'active';
+  if (status === 'completed') return 'completed';
+  return 'error';
 }
+
+const STATUS_DOT_CLASSES: Record<StatusColor, string> = {
+  active: 'bg-primary',
+  completed: 'bg-secondary',
+  error: 'bg-tertiary',
+};
+
+const STATUS_BADGE_CLASSES: Record<StatusColor, string> = {
+  active: 'bg-primary/15 text-primary',
+  completed: 'bg-surface-container-high text-on-surface-variant',
+  error: 'bg-tertiary/15 text-tertiary',
+};
+
+function StatusBadge({ status }: { status: string }) {
+  const color = resolveStatusColor(status);
+  const label = status.charAt(0).toUpperCase() + status.slice(1);
+  return (
+    <span className={cn('inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 font-sans text-xs font-medium', STATUS_BADGE_CLASSES[color])}>
+      <span className={cn('inline-block h-2 w-2 rounded-full shrink-0', STATUS_DOT_CLASSES[color])} />
+      {label}
+    </span>
+  );
+}
+
+/* ---------- Helpers ---------- */
 
 function epochToRelative(epoch: number | null): string {
   if (epoch === null) return '\u2014';
@@ -34,11 +65,21 @@ function epochToAbsolute(epoch: number | null): string {
 
 /* ---------- Sub-components ---------- */
 
-function MetaItem({ label, value }: { label: string; value: string }) {
+/** Section header with the uppercase label treatment. */
+function SectionLabel({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className="flex items-start justify-between gap-3 py-1.5">
+    <h2 className={cn('font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant', className)}>
+      {children}
+    </h2>
+  );
+}
+
+/** Structured key-value row for metadata. */
+function MetaItem({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex items-start justify-between gap-3 py-1.5 border-b border-[var(--ghost-border)] last:border-0">
       <span className="shrink-0 font-sans text-xs font-medium text-on-surface-variant">{label}</span>
-      <span className="font-mono text-xs text-on-surface text-right break-all">{value}</span>
+      <span className={cn('text-xs text-on-surface text-right break-all', mono && 'font-mono')}>{value}</span>
     </div>
   );
 }
@@ -60,7 +101,7 @@ export function SessionDetail({ id }: SessionDetailProps) {
       <div className="p-6 space-y-4">
         <Button variant="ghost" size="sm" onClick={() => navigate('/sessions')} className="gap-2 text-on-surface-variant">
           <ArrowLeft className="h-4 w-4" />
-          Sessions
+          <span className="font-sans text-sm">Session Archive</span>
         </Button>
         <div className="flex h-64 items-center justify-center gap-2 text-on-surface-variant">
           <Loader2 className="h-5 w-5 animate-spin" />
@@ -75,7 +116,7 @@ export function SessionDetail({ id }: SessionDetailProps) {
       <div className="p-6 space-y-4">
         <Button variant="ghost" size="sm" onClick={() => navigate('/sessions')} className="gap-2 text-on-surface-variant">
           <ArrowLeft className="h-4 w-4" />
-          Sessions
+          <span className="font-sans text-sm">Session Archive</span>
         </Button>
         <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary">
           <AlertCircle className="h-5 w-5" />
@@ -98,18 +139,21 @@ export function SessionDetail({ id }: SessionDetailProps) {
         className="gap-2 text-on-surface-variant"
       >
         <ArrowLeft className="h-4 w-4" />
-        Sessions
+        <span className="font-sans text-sm">Session Archive</span>
       </Button>
 
       {/* Header */}
       <div className="space-y-2">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <h1 className="font-serif text-2xl font-normal text-on-surface tracking-wide">
             {session.title ?? session.id.slice(0, SESSION_ID_PREVIEW_LENGTH)}
           </h1>
-          <Badge variant={statusVariant(session.status)}>
-            {session.status.charAt(0).toUpperCase() + session.status.slice(1)}
-          </Badge>
+          <StatusBadge status={session.status} />
+          {session.agent && (
+            <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">
+              {session.agent}
+            </Badge>
+          )}
           <Button
             variant="secondary"
             size="sm"
@@ -137,9 +181,6 @@ export function SessionDetail({ id }: SessionDetailProps) {
           </Button>
         </div>
         <div className="flex flex-wrap gap-4 font-sans text-sm text-on-surface-variant">
-          {session.agent && (
-            <span>Agent: <span className="text-on-surface">{session.agent}</span></span>
-          )}
           {session.user && (
             <span>User: <span className="text-on-surface">{session.user}</span></span>
           )}
@@ -156,25 +197,23 @@ export function SessionDetail({ id }: SessionDetailProps) {
       {/* Summary */}
       {session.summary && (
         <Surface level="low" className="p-4">
-          <h3 className="font-serif text-sm text-on-surface mb-2">Summary</h3>
+          <SectionLabel className="mb-2">Summary</SectionLabel>
           <p className="font-sans text-sm text-on-surface-variant whitespace-pre-wrap">{session.summary}</p>
         </Surface>
       )}
 
       {/* Two-column layout: conversation + metadata sidebar */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_minmax(280px,35%)]">
-        {/* Conversation column (~65%) */}
+        {/* Conversation column */}
         <div>
-          <h2 className="font-sans text-xs font-medium uppercase tracking-wide text-on-surface-variant mb-3">
-            Conversation
-          </h2>
+          <SectionLabel className="mb-3">Conversation</SectionLabel>
           <BatchTimeline sessionId={id} />
         </div>
 
-        {/* Metadata sidebar (~35%) */}
+        {/* Metadata sidebar */}
         <div className="space-y-4 lg:sticky lg:top-6 lg:self-start">
           <Surface level="low" className="p-4">
-            <h3 className="font-serif text-sm text-on-surface mb-2">Stats</h3>
+            <SectionLabel className="mb-3">Stats</SectionLabel>
             <MetaItem label="Prompts" value={String(session.prompt_count)} />
             <MetaItem label="Tool calls" value={String(session.tool_count)} />
             <MetaItem label="Status" value={session.status} />
@@ -183,16 +222,16 @@ export function SessionDetail({ id }: SessionDetailProps) {
           </Surface>
 
           <Surface level="low" className="p-4">
-            <h3 className="font-serif text-sm text-on-surface mb-2">Metadata</h3>
+            <SectionLabel className="mb-3">Metadata</SectionLabel>
             <MetaItem label="Session ID" value={id} />
             {session.parent_session_id && (
               <MetaItem label="Parent" value={session.parent_session_id} />
             )}
             {session.parent_session_reason && (
-              <MetaItem label="Reason" value={session.parent_session_reason} />
+              <MetaItem label="Reason" value={session.parent_session_reason} mono={false} />
             )}
             {session.content_hash && (
-              <MetaItem label="Hash" value={session.content_hash.slice(0, 16) + '\u2026'} />
+              <MetaItem label="Hash" value={session.content_hash.slice(0, CONTENT_HASH_PREVIEW_LENGTH) + '\u2026'} />
             )}
             {session.transcript_path && (
               <MetaItem label="Transcript" value={session.transcript_path} />

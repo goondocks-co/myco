@@ -26,6 +26,11 @@ export interface SessionSummary {
   date: string;
   title: string;
   status: string;
+  agent: string;
+  prompt_count: number;
+  tool_count: number;
+  started_at: number;
+  ended_at: number | null;
 }
 
 /** Full session row returned by the detail endpoint. */
