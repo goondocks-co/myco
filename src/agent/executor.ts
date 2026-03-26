@@ -8,7 +8,7 @@
  *   4. Creates a run record in the database.
  *   5. Builds the task prompt (vault context + task + optional instruction).
  *   6. Executes the Claude Agent SDK query — single call for flat tasks,
- *      sequential phase loop for phased tasks.
+ *      wave-based parallel execution for phased tasks.
  *   7. Records cost/token data and marks the run completed or failed.
  */
 
@@ -38,8 +38,10 @@ import { createVaultToolServer, createScopedVaultToolServer } from './tools.js';
 import { buildVaultContext } from './context.js';
 import { composeOrchestratorPrompt, parseOrchestratorPlan, applyDirectives, DEFAULT_ORCHESTRATOR_MAX_TURNS } from './orchestrator.js';
 import { executeContextQueries } from './context-queries.js';
-import { applyProviderEnv, restoreProviderEnv } from './provider.js';
+import { buildPhaseEnv } from './provider.js';
+import { loadConfig } from '@myco/config/loader.js';
 import type { ContextQueryResult } from './context-queries.js';
+import type { ProviderConfig } from './types.js';
 import type {
   RunOptions,
   AgentRunResult,
@@ -71,7 +73,7 @@ const PROMPT_SECTION_SEPARATOR = '\n\n';
 const MCP_SERVER_NAME = 'myco-vault';
 
 /** Whether to persist the agent session to disk. */
-const PERSIST_SESSION = false;
+const PERSIST_SESSION = true;
 
 /** Header for prior phase context in phased prompts. */
 const PROMPT_SECTION_PRIOR_PHASES = '## Prior Phase Results';
@@ -162,6 +164,222 @@ export function composePhasePrompt(
 }
 
 // ---------------------------------------------------------------------------
+// Ollama model pre-loading
+// ---------------------------------------------------------------------------
+
+/** Timeout for Ollama model pre-load request (ms). */
+const OLLAMA_PRELOAD_TIMEOUT_MS = 30_000;
+
+/**
+ * Ensure an Ollama model variant exists with the desired context length.
+ *
+ * The Anthropic-compatible endpoint (/v1/messages) always loads models at
+ * default context — it ignores /api/chat preloads and API-created params.
+ * The only reliable way is `ollama create` with a Modelfile containing
+ * `PARAMETER num_ctx`. Creates a variant named `{model}-ctx{contextLength}`.
+ *
+ * Returns the variant model name to use.
+ */
+async function ensureOllamaContextVariant(
+  model: string,
+  contextLength: number,
+): Promise<string> {
+  const { execFileSync } = await import('node:child_process');
+  const { writeFileSync, unlinkSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  const baseName = model.replace(/:latest$/, '');
+  const variantName = `${baseName}-ctx${contextLength}`;
+
+  try {
+    // Check if variant already exists
+    execFileSync('ollama', ['show', variantName], { stdio: 'ignore' });
+    return variantName;
+  } catch {
+    // Doesn't exist — create it
+  }
+
+  try {
+    const modelfilePath = join(tmpdir(), `myco-modelfile-${Date.now()}`);
+    writeFileSync(modelfilePath, `FROM ${model}\nPARAMETER num_ctx ${contextLength}\n`);
+    execFileSync('ollama', ['create', variantName, '-f', modelfilePath], {
+      stdio: 'ignore',
+      timeout: OLLAMA_PRELOAD_TIMEOUT_MS,
+    });
+    try { unlinkSync(modelfilePath); } catch { /* cleanup best-effort */ }
+    return variantName;
+  } catch {
+    return model; // Fall back to original
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Wave computation (Kahn's algorithm)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute execution waves from phase dependency graph.
+ *
+ * Uses Kahn's algorithm to topologically sort phases into waves.
+ * Phases in the same wave have no dependencies on each other and
+ * can execute in parallel via Promise.allSettled().
+ *
+ * @throws Error if circular dependencies are detected.
+ */
+export function computeWaves(phases: PhaseDefinition[]): PhaseDefinition[][] {
+  const nameToPhase = new Map(phases.map(p => [p.name, p]));
+  const inDegree = new Map<string, number>();
+  const dependents = new Map<string, string[]>(); // dependency → phases that depend on it
+
+  // Initialize
+  for (const phase of phases) {
+    inDegree.set(phase.name, 0);
+    dependents.set(phase.name, []);
+  }
+
+  // Build adjacency — skip dependencies on phases not in the set
+  // (they may have been removed by orchestrator directives)
+  for (const phase of phases) {
+    const deps = phase.dependsOn ?? [];
+    for (const dep of deps) {
+      if (!nameToPhase.has(dep)) continue; // skipped/removed phase — treat as satisfied
+      inDegree.set(phase.name, (inDegree.get(phase.name) ?? 0) + 1);
+      dependents.get(dep)!.push(phase.name);
+    }
+  }
+
+  // Collect waves
+  const waves: PhaseDefinition[][] = [];
+  const completed = new Set<string>();
+
+  while (completed.size < phases.length) {
+    // Find all phases with zero unsatisfied deps
+    const wave: PhaseDefinition[] = [];
+    for (const phase of phases) {
+      if (completed.has(phase.name)) continue;
+      if ((inDegree.get(phase.name) ?? 0) === 0) {
+        wave.push(phase);
+      }
+    }
+
+    if (wave.length === 0) {
+      const remaining = phases.filter(p => !completed.has(p.name)).map(p => p.name);
+      throw new Error(`Circular dependency detected among phases: ${remaining.join(', ')}`);
+    }
+
+    waves.push(wave);
+
+    // Mark wave as completed and decrement dependents' in-degrees
+    for (const phase of wave) {
+      completed.add(phase.name);
+      for (const dependent of (dependents.get(phase.name) ?? [])) {
+        inDegree.set(dependent, (inDegree.get(dependent) ?? 0) - 1);
+      }
+    }
+  }
+
+  return waves;
+}
+
+// ---------------------------------------------------------------------------
+// Session ID generation
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a deterministic session ID (UUID format) for a phase.
+ * Derived from run ID + phase name so the same run always produces
+ * the same session IDs.
+ */
+function phaseSessionId(runId: string, phaseName: string): string {
+  const hash = crypto.createHash('sha256').update(`${runId}-${phaseName}`).digest('hex');
+  // Format as UUID: 8-4-4-4-12
+  return [
+    hash.slice(0, 8),
+    hash.slice(8, 12),
+    hash.slice(12, 16),
+    hash.slice(16, 20),
+    hash.slice(20, 32),
+  ].join('-');
+}
+
+// ---------------------------------------------------------------------------
+// Single-phase execution helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute a single phase query.
+ *
+ * Isolated helper that runs one query() call with scoped tools,
+ * provider env, and phase-specific config.
+ */
+async function executePhase(
+  query: typeof import('@anthropic-ai/claude-agent-sdk').query,
+  phasePrompt: string,
+  phaseModel: string,
+  systemPrompt: string,
+  toolServer: ReturnType<typeof createScopedVaultToolServer>,
+  phase: PhaseDefinition,
+  env: Record<string, string | undefined> | undefined,
+  sessionId?: string,
+): Promise<PhaseResult> {
+  let phaseCost = 0;
+  let phaseTokens = 0;
+  let phaseTurns = 0;
+  let phaseSummary = '';
+
+  try {
+    for await (const message of query({
+      prompt: phasePrompt,
+      options: {
+        model: phaseModel,
+        systemPrompt,
+        mcpServers: { [MCP_SERVER_NAME]: toolServer },
+        maxTurns: phase.maxTurns,
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+        persistSession: PERSIST_SESSION,
+        env,
+        tools: [],
+        ...(sessionId ? { sessionId } : {}),
+      },
+    })) {
+      if (message.type === 'result') {
+        phaseCost = message.total_cost_usd ?? 0;
+        phaseTokens =
+          (message.usage.input_tokens ?? 0) + (message.usage.output_tokens ?? 0);
+        phaseTurns = message.num_turns ?? 0;
+        if ('result' in message && typeof message.result === 'string') {
+          phaseSummary = message.result;
+        }
+      }
+    }
+
+    if (phase.required && phaseTurns === 0) {
+      console.warn(`[agent] Required phase "${phase.name}" produced 0 turns`);
+    }
+
+    return {
+      name: phase.name,
+      status: 'completed',
+      turnsUsed: phaseTurns,
+      tokensUsed: phaseTokens,
+      costUsd: phaseCost,
+      summary: phaseSummary,
+    };
+  } catch (err) {
+    return {
+      name: phase.name,
+      status: 'failed',
+      turnsUsed: phaseTurns,
+      tokensUsed: phaseTokens,
+      costUsd: phaseCost,
+      summary: `Error: ${toErrorMessage(err)}`,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Single-query execution (non-phased tasks)
 // ---------------------------------------------------------------------------
 
@@ -176,10 +394,14 @@ async function executeSingleQuery(
   taskPrompt: string,
   agentId: string,
   runId: string,
+  provider?: ProviderConfig,
   embeddingManager?: RunOptions['embeddingManager'],
 ): Promise<{ tokensUsed: number; costUsd: number }> {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
   const toolServer = createVaultToolServer(agentId, runId, embeddingManager);
+  const env = buildPhaseEnv(provider);
+  // Model priority: provider model override → task YAML model
+  const effectiveModel = provider?.model ?? config.model;
 
   let resultCostUsd = 0;
   let resultTokens = 0;
@@ -187,13 +409,14 @@ async function executeSingleQuery(
   for await (const message of query({
     prompt: taskPrompt,
     options: {
-      model: config.model,
+      model: effectiveModel,
       systemPrompt,
       mcpServers: { [MCP_SERVER_NAME]: toolServer },
       maxTurns: config.maxTurns,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       persistSession: PERSIST_SESSION,
+      env,
       tools: [],
     },
   })) {
@@ -208,17 +431,20 @@ async function executeSingleQuery(
 }
 
 // ---------------------------------------------------------------------------
-// Phased execution
+// Phased execution (wave-based parallel)
 // ---------------------------------------------------------------------------
 
 /**
- * Execute a phased task — sequential query() calls, one per phase.
+ * Execute a phased task — wave-based parallel query() calls.
  *
- * Each phase gets:
+ * Phases are sorted into waves via `computeWaves()`. Phases within the same
+ * wave execute concurrently via `Promise.allSettled()`. Each phase gets:
  * - Scoped tools (only the tools listed in the phase definition)
  * - Its own turn budget (maxTurns)
  * - Optional model override (falls back to task/agent model)
- * - Context from prior phase results
+ * - Isolated provider env (via SDK `env` option — no process.env mutation)
+ * - Context from prior wave results
+ * - Deterministic session ID derived from run ID + phase name
  *
  * The executor controls the loop — the LLM cannot skip phases.
  */
@@ -228,6 +454,8 @@ async function executePhasedQuery(
   vaultContext: string,
   agentId: string,
   runId: string,
+  taskProviderOverride?: ProviderConfig,
+  phaseProviderOverrides?: Record<string, { provider?: ProviderConfig; maxTurns?: number }>,
   instruction?: string,
   embeddingManager?: RunOptions['embeddingManager'],
 ): Promise<{ tokensUsed: number; costUsd: number; phases: PhaseResult[] }> {
@@ -283,92 +511,94 @@ async function executePhasedQuery(
   }
 
   // ---------------------------------------------------------------------------
-  // Phase loop
+  // Wave-based phase execution
   // ---------------------------------------------------------------------------
 
-  for (const phase of effectivePhases) {
-    const phasePrompt = composePhasePrompt(
-      vaultContext,
-      config.taskDisplayName,
-      config.taskPrompt,
-      phase,
-      phaseResults,
-      instruction,
+  // Build a map from phase name to its YAML declaration order for stable output
+  const declarationOrder = new Map(phases.map((p, i) => [p.name, i]));
+
+  const waves = computeWaves(effectivePhases);
+
+  for (const wave of waves) {
+    const executions = wave.map((phase, indexInWave) => {
+      const phasePrompt = composePhasePrompt(
+        vaultContext,
+        config.taskDisplayName,
+        config.taskPrompt,
+        phase,
+        phaseResults,
+        instruction,
+      );
+
+      // Apply myco.yaml per-phase overrides (maxTurns, provider)
+      const phaseOverride = phaseProviderOverrides?.[phase.name];
+      const effectiveMaxTurns = phaseOverride?.maxTurns ?? phase.maxTurns;
+
+      // Model priority: phase YAML → myco.yaml phase provider → myco.yaml task provider → task YAML
+      const phaseModel = phase.model ?? phaseOverride?.provider?.model ?? taskProviderOverride?.model ?? config.model;
+      const toolServer = createScopedVaultToolServer(
+        agentId,
+        runId,
+        phase.tools,
+        runningTurnCount + (indexInWave * effectiveMaxTurns),
+        embeddingManager,
+      );
+
+      // Provider priority: phase YAML → myco.yaml phase → myco.yaml task → task YAML execution → default
+      const phaseProvider = phase.provider ?? phaseOverride?.provider ?? taskProviderOverride ?? config.execution?.provider;
+      const env = buildPhaseEnv(phaseProvider);
+      const sessionId = phaseSessionId(runId, phase.name);
+
+      // Pass effective maxTurns to executePhase via a modified phase object
+      const effectivePhase = effectiveMaxTurns !== phase.maxTurns
+        ? { ...phase, maxTurns: effectiveMaxTurns }
+        : phase;
+
+      return executePhase(query, phasePrompt, phaseModel, systemPrompt, toolServer, effectivePhase, env, sessionId);
+    });
+
+    const settled = await Promise.allSettled(executions);
+
+    // Map settled results to PhaseResult[]
+    const waveResults: PhaseResult[] = settled.map((outcome, i) => {
+      if (outcome.status === 'fulfilled') {
+        return outcome.value;
+      }
+      // Promise.allSettled rejected — shouldn't happen since executePhase catches,
+      // but handle defensively
+      return {
+        name: wave[i].name,
+        status: 'failed' as const,
+        turnsUsed: 0,
+        tokensUsed: 0,
+        costUsd: 0,
+        summary: `Error: ${toErrorMessage(outcome.reason)}`,
+      };
+    });
+
+    // Sort by YAML declaration order for stable output
+    waveResults.sort((a, b) =>
+      (declarationOrder.get(a.name) ?? 0) - (declarationOrder.get(b.name) ?? 0),
     );
 
-    const phaseModel = phase.model ?? config.model;
-    const toolServer = createScopedVaultToolServer(agentId, runId, phase.tools, runningTurnCount, embeddingManager);
+    // Accumulate results and totals
+    for (const result of waveResults) {
+      phaseResults.push(result);
+      totalTokens += result.tokensUsed;
+      totalCost += result.costUsd;
+      runningTurnCount += result.turnsUsed;
+    }
 
-    let phaseCost = 0;
-    let phaseTokens = 0;
-    let phaseTurns = 0;
-    let phaseSummary = '';
+    // If any required phase in this wave failed, stop the pipeline
+    const shouldStop = wave.some((phase, i) => {
+      if (!phase.required) return false;
+      const outcome = settled[i];
+      if (outcome.status === 'rejected') return true;
+      return outcome.value.status === 'failed';
+    });
 
-    // Apply provider env for this phase (if execution.provider is configured)
-    const phaseProvider = config.execution?.provider;
-    const savedEnv = phaseProvider ? applyProviderEnv(phaseProvider) : null;
-
-    try {
-      for await (const message of query({
-        prompt: phasePrompt,
-        options: {
-          model: phaseModel,
-          systemPrompt,
-          mcpServers: { [MCP_SERVER_NAME]: toolServer },
-          maxTurns: phase.maxTurns,
-          permissionMode: 'bypassPermissions',
-          allowDangerouslySkipPermissions: true,
-          persistSession: PERSIST_SESSION,
-          tools: [],
-        },
-      })) {
-        if (message.type === 'result') {
-          phaseCost = message.total_cost_usd ?? 0;
-          phaseTokens =
-            (message.usage.input_tokens ?? 0) + (message.usage.output_tokens ?? 0);
-          phaseTurns = message.num_turns ?? 0;
-          if ('result' in message && typeof message.result === 'string') {
-            phaseSummary = message.result;
-          }
-        }
-      }
-
-      if (phase.required && phaseTurns === 0) {
-        console.warn(`[agent] Required phase "${phase.name}" produced 0 turns`);
-      }
-
-      phaseResults.push({
-        name: phase.name,
-        status: 'completed',
-        turnsUsed: phaseTurns,
-        tokensUsed: phaseTokens,
-        costUsd: phaseCost,
-        summary: phaseSummary,
-      });
-    } catch (err) {
-      const phaseError = toErrorMessage(err);
-
-      phaseResults.push({
-        name: phase.name,
-        status: 'failed',
-        turnsUsed: phaseTurns,
-        tokensUsed: phaseTokens,
-        costUsd: phaseCost,
-        summary: `Error: ${phaseError}`,
-      });
-
-      // If a required phase fails, stop the pipeline.
-      // finally runs before break, so provider env is always restored.
-      if (phase.required) {
-        break;
-      }
-    } finally {
-      // Always restore provider env after each phase query (including on break).
-      if (savedEnv) restoreProviderEnv(savedEnv);
-      // Accumulate totals and advance turn count (runs even on break).
-      totalTokens += phaseTokens;
-      totalCost += phaseCost;
-      runningTurnCount += phaseTurns;
+    if (shouldStop) {
+      break;
     }
   }
 
@@ -382,9 +612,9 @@ async function executePhasedQuery(
 /**
  * Run an agent against a vault.
  *
- * For tasks with a `phases` array, uses phased execution (sequential query()
- * calls per phase with scoped tools). For tasks without phases, uses a single
- * query() call as before.
+ * For tasks with a `phases` array, uses wave-based parallel execution
+ * (phases sorted into dependency waves via Kahn's algorithm). For tasks
+ * without phases, uses a single query() call.
  *
  * @param vaultDir — absolute path to the vault directory.
  * @param options — optional overrides for agent, task, and instruction.
@@ -446,37 +676,95 @@ export async function runAgent(
 
   const config = resolveEffectiveConfig(definition, agentRow, taskOverrides);
 
+  // Load myco.yaml for provider overrides (global, per-task, per-phase)
+  let taskProviderOverride: ProviderConfig | undefined;
+  let phaseProviderOverrides: Record<string, { provider?: ProviderConfig; maxTurns?: number }> = {};
+  try {
+    const mycoConfig = loadConfig(vaultDir);
+
+    // Helper to convert myco.yaml snake_case provider to runtime camelCase
+    // API keys are NOT stored in myco.yaml — they flow via env vars (settings.json → hooks → daemon)
+    const toProviderConfig = (p: { type: 'cloud' | 'ollama' | 'lmstudio'; base_url?: string; model?: string; context_length?: number }): ProviderConfig => ({
+      type: p.type, baseUrl: p.base_url, model: p.model, contextLength: p.context_length,
+    });
+
+    // Per-task override takes priority over global
+    const taskConfig = taskName ? mycoConfig.agent.tasks?.[taskName] : undefined;
+    const globalProvider = mycoConfig.agent.provider;
+
+    if (taskConfig?.provider) {
+      taskProviderOverride = toProviderConfig(taskConfig.provider);
+    } else if (globalProvider) {
+      taskProviderOverride = toProviderConfig(globalProvider);
+    }
+
+    // Per-phase overrides from myco.yaml
+    if (taskConfig?.phases) {
+      for (const [phaseName, phaseConfig] of Object.entries(taskConfig.phases)) {
+        phaseProviderOverrides[phaseName] = {
+          ...(phaseConfig.provider ? { provider: toProviderConfig(phaseConfig.provider) } : {}),
+          ...(phaseConfig.maxTurns != null ? { maxTurns: phaseConfig.maxTurns } : {}),
+        };
+      }
+    }
+  } catch {
+    // Config load failure is non-fatal — proceed without overrides
+  }
+
   // 4. Create run record
-  const runId = crypto.randomUUID();
+  const runId = options?.resumeRunId ?? crypto.randomUUID();
   const now = epochSeconds();
 
-  insertRun({
-    id: runId,
-    agent_id: agentId,
-    task: config.taskName,
-    instruction: options?.instruction ?? null,
-    status: STATUS_RUNNING,
-    started_at: now,
-  });
+  if (!options?.resumeRunId) {
+    insertRun({
+      id: runId,
+      agent_id: agentId,
+      task: config.taskName,
+      instruction: options?.instruction ?? null,
+      status: STATUS_RUNNING,
+      started_at: now,
+    });
+  }
 
   // 5. Build prompt components
   const systemPrompt = loadSystemPrompt(definitionsDir, config.systemPromptPath);
   const vaultContext = buildVaultContext(agentId);
 
-  // 6. Execute — phased or single query
+  // 6. Build run metadata for audit trail
+  const effectiveProvider = taskProviderOverride ?? config.execution?.provider;
+  const effectiveModel = effectiveProvider?.model ?? config.model;
+  const runMeta = {
+    model: effectiveModel,
+    provider: effectiveProvider?.type ?? 'cloud',
+    ...(effectiveProvider?.baseUrl ? { baseUrl: effectiveProvider.baseUrl } : {}),
+  };
+
+  // 7. Ensure Ollama model has correct context length (creates variant if needed)
+  if (effectiveProvider?.type === 'ollama' && effectiveProvider.contextLength && effectiveProvider.model) {
+    const variantModel = await ensureOllamaContextVariant(
+      effectiveProvider.model,
+      effectiveProvider.contextLength,
+    );
+    // Override the model name so the SDK uses the context-aware variant
+    taskProviderOverride = { ...taskProviderOverride!, model: variantModel };
+  }
+
+  // 8. Execute — phased or single query
   let phaseResults: PhaseResult[] | undefined;
   try {
     let tokensUsed: number;
     let costUsd: number;
 
     if (config.phases && config.phases.length > 0) {
-      // Phased execution: sequential query() per phase with scoped tools
+      // Phased execution: wave-based parallel query() per phase with scoped tools
       const result = await executePhasedQuery(
         config,
         systemPrompt,
         vaultContext,
         agentId,
         runId,
+        taskProviderOverride,
+        phaseProviderOverrides,
         options?.instruction,
         options?.embeddingManager,
       );
@@ -491,12 +779,17 @@ export async function runAgent(
         config.taskPrompt,
         options?.instruction,
       );
+
+      // Provider priority for single-query: myco.yaml task override → task execution config → default
+      const singleProvider = taskProviderOverride ?? config.execution?.provider;
+
       const result = await executeSingleQuery(
         config,
         systemPrompt,
         taskPrompt,
         agentId,
         runId,
+        singleProvider,
         options?.embeddingManager,
       );
       tokensUsed = result.tokensUsed;
@@ -508,7 +801,7 @@ export async function runAgent(
       completed_at: completedAt,
       tokens_used: tokensUsed,
       cost_usd: costUsd,
-      actions_taken: phaseResults ? JSON.stringify({ phases: phaseResults }) : undefined,
+      actions_taken: JSON.stringify({ ...runMeta, ...(phaseResults ? { phases: phaseResults } : {}) }),
     });
 
     return {
@@ -540,7 +833,7 @@ export async function runAgent(
         completed_at: failedAt,
         error: errorMessage,
         // Preserve phase results collected before the failure
-        actions_taken: phaseResults ? JSON.stringify({ phases: phaseResults }) : undefined,
+        actions_taken: JSON.stringify({ ...runMeta, ...(phaseResults ? { phases: phaseResults } : {}) }),
       });
     } catch (dbErr) {
       // DB failure in error path — log it but don't mask the original error

@@ -142,7 +142,7 @@ flowchart TD
 
 **Inline (automatic)** — after every spore write (daemon batch processor and MCP `myco_remember`), a fire-and-forget supersession check runs. Sequential within a batch to avoid overwhelming the LLM.
 
-**CLI (manual)** — `myco agent` runs the intelligence agent to scan active spores, cluster by similarity within each observation type, and determine which are outdated. Use `--dry-run` to preview. Useful for catch-up after refactors or initial vault cleanup.
+**CLI (manual)** — `myco agent` runs the intelligence agent pipeline. The executor topologically sorts phases by their `dependsOn` fields into waves and runs each wave in parallel via `Promise.allSettled()`. A typical wave sequence: `[read-state]` → `[extract, summarize]` → `[consolidate, graph]` → `[digest]` → `[report]`. Use `--dry-run` to preview. Useful for catch-up after refactors or initial vault cleanup.
 
 Superseded spores are preserved with lineage metadata (`superseded_by` frontmatter + Obsidian wikilink) — never deleted. They are filtered from search results, recall, and digest substrate.
 

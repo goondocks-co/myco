@@ -33,6 +33,10 @@ The core question: **do the workers need to talk to each other?**
 - Only the result matters, not inter-worker discussion
 - Token budget is a concern
 
+### Not to be confused with: parallel phase execution
+
+The intelligence pipeline executor runs phases in parallel waves based on their `dependsOn` DAG — this is internal to a single agent task, not multi-agent collaboration. Agent teams are for independent agents that communicate and coordinate across separate contexts. Phase waves parallelize steps of a single pipeline; agent teams parallelize independent human-level work.
+
 ---
 
 ## Setup

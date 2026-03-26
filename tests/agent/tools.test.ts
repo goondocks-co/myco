@@ -119,7 +119,7 @@ describe('vault tools', () => {
   // -------------------------------------------------------------------------
 
   describe('tool count', () => {
-    it('creates exactly 14 tools', () => {
+    it('creates exactly VAULT_TOOL_COUNT tools', () => {
       expect(tools).toHaveLength(VAULT_TOOL_COUNT);
     });
 
@@ -220,12 +220,22 @@ describe('vault tools', () => {
     });
   });
 
-  describe('vault_search', () => {
-    it('returns empty results gracefully when embedding unavailable', async () => {
-      const t = findTool(tools, 'vault_search');
+  describe('vault_search_fts', () => {
+    it('returns empty results gracefully when no FTS matches', async () => {
+      const t = findTool(tools, 'vault_search_fts');
       const result = await t.handler({ query: 'test query' }, undefined);
       const data = parseResult(result) as { results: unknown[] };
       expect(data.results).toEqual([]);
+    });
+  });
+
+  describe('vault_search_semantic', () => {
+    it('returns unavailable message when no embedding manager', async () => {
+      const t = findTool(tools, 'vault_search_semantic');
+      const result = await t.handler({ query: 'test query' }, undefined);
+      const data = parseResult(result) as { results: unknown[]; message: string };
+      expect(data.results).toEqual([]);
+      expect(data.message).toBe('Embedding provider unavailable');
     });
   });
 

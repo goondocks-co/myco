@@ -229,6 +229,7 @@ export function AgentConfig() {
       const updated: MycoConfig = {
         ...config,
         agent: {
+          ...config.agent,
           auto_run: form.autoRun,
           interval_seconds: Math.max(MIN_INTERVAL_SECONDS, parseNumericField(form.intervalSeconds, DEFAULT_INTERVAL_SECONDS)),
           summary_batch_interval: parseNumericField(form.summaryBatchInterval, DEFAULT_SUMMARY_BATCH_INTERVAL),

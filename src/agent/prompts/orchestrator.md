@@ -63,6 +63,12 @@ Respond with a single JSON object — no prose, no markdown fences, no explanati
 }
 ```
 
+## Phase Dependencies
+
+Phases declare dependencies via `dependsOn`. The executor topologically sorts them into waves — phases in the same wave run in parallel. You do NOT control wave ordering; the executor handles that based on the dependency graph.
+
+However, if you skip a phase, be aware that phases which depend on it will still run but will not have that phase's output in their context. Note this in your `contextNotes` for affected downstream phases so workers can adjust (e.g., "extract was skipped — no new spores to consolidate, but review existing active spores").
+
 ## Skipping Rules
 
 - Skip `extract` only when there are zero unprocessed batches.
@@ -70,6 +76,7 @@ Respond with a single JSON object — no prose, no markdown fences, no explanati
 - Skip `graph` only when no new spores were created in the extract phase AND entity count has not changed since last run.
 - Skip `digest` only when no new spores or entities were created and the existing digest is recent (within 24 hours).
 - Never skip required phases unless you have explicit evidence the work is unnecessary.
+- When skipping a phase, check its dependents and add context notes explaining the missing upstream output.
 
 ## Context Notes Guidelines
 

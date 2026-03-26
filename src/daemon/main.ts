@@ -59,7 +59,10 @@ import {
   handleCreateTask,
   handleCopyTask,
   handleDeleteTask,
+  handleGetTaskConfig,
+  handleUpdateTaskConfig,
 } from './api/agent-tasks.js';
+import { handleGetProviders, handleTestProvider } from './api/providers.js';
 import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
@@ -423,7 +426,7 @@ export async function main(): Promise<void> {
   try {
     const { registerBuiltInAgentsAndTasks, resolveDefinitionsDir } = await import('../agent/loader.js');
     const definitionsDir = resolveDefinitionsDir();
-    registerBuiltInAgentsAndTasks(definitionsDir);
+    await registerBuiltInAgentsAndTasks(definitionsDir, vaultDir);
     logger.info('agent', 'Built-in agents and tasks registered');
   } catch (err) {
     logger.warn('agent', 'Failed to register built-in agents/tasks', { error: (err as Error).message });
@@ -1372,12 +1375,15 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/agent/run', async (req) => {
     const { task, instruction, agentId } = AgentRunBody.parse(req.body);
 
-    // Fire-and-forget: respond immediately with a runId placeholder, agent runs in background
     const { runAgent } = await import('../agent/executor.js');
     const resultPromise = runAgent(vaultDir, { task, instruction, agentId, embeddingManager });
 
-    // We need the runId from the executor, but the executor creates it synchronously
-    // before the async SDK call. Wait for the result since it's fast to start.
+    // runAgent inserts the run synchronously before the first await,
+    // so by the time it yields, the run is already in the DB.
+    const effectiveAgentId = agentId ?? 'myco-agent';
+    const latestRun = getRunningRun(effectiveAgentId);
+    const runId = latestRun?.id;
+
     resultPromise
       .then((result) => {
         if (result.status === 'failed') {
@@ -1401,8 +1407,7 @@ export async function main(): Promise<void> {
         });
       });
 
-    // Return immediately — the caller can poll /api/agent/runs for status
-    return { body: { ok: true, message: 'Agent started' } };
+    return { body: { ok: true, message: 'Agent started', runId } };
   });
 
   server.registerRoute('GET', '/api/agent/runs', async (req) => {
@@ -1437,6 +1442,12 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/agent/tasks', async (req) => handleCreateTask(req, vaultDir));
   server.registerRoute('POST', '/api/agent/tasks/:id/copy', async (req) => handleCopyTask(req, vaultDir));
   server.registerRoute('DELETE', '/api/agent/tasks/:id', async (req) => handleDeleteTask(req, vaultDir));
+  server.registerRoute('GET', '/api/agent/tasks/:id/config', async (req) => handleGetTaskConfig(req, vaultDir));
+  server.registerRoute('PUT', '/api/agent/tasks/:id/config', async (req) => handleUpdateTaskConfig(req, vaultDir));
+
+  // --- Provider detection & testing ---
+  server.registerRoute('GET', '/api/providers', async () => handleGetProviders());
+  server.registerRoute('POST', '/api/providers/test', async (req) => handleTestProvider(req));
 
   // --- MCP proxy routes ---
   // These routes exist so the MCP server can proxy tool calls through the

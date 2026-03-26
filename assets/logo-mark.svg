@@ -1,17 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" fill="none">
   <g stroke-linecap="round" stroke-linejoin="round">
     <!-- M path -->
-    <path d="M30,130 L30,40 L80,85 L130,40 L130,130" stroke="#22c55e" stroke-width="8" opacity="0.85"/>
+    <path d="M30,130 L30,40 L80,85 L130,40 L130,130" stroke="#abcfb8" stroke-width="8" opacity="0.85"/>
     <!-- Primary nodes -->
-    <circle cx="30" cy="130" r="7" fill="#22c55e" opacity="0.9"/>
-    <circle cx="30" cy="40" r="7" fill="#4ade80" opacity="0.8"/>
-    <circle cx="80" cy="85" r="8" fill="#22c55e" opacity="0.95"/>
-    <circle cx="130" cy="40" r="7" fill="#4ade80" opacity="0.8"/>
-    <circle cx="130" cy="130" r="7" fill="#22c55e" opacity="0.9"/>
+    <circle cx="30" cy="130" r="7" fill="#abcfb8" opacity="0.9"/>
+    <circle cx="30" cy="40" r="7" fill="#edbf7f" opacity="0.8"/>
+    <circle cx="80" cy="85" r="8" fill="#abcfb8" opacity="0.95"/>
+    <circle cx="130" cy="40" r="7" fill="#edbf7f" opacity="0.8"/>
+    <circle cx="130" cy="130" r="7" fill="#abcfb8" opacity="0.9"/>
     <!-- Cross-threads -->
-    <line x1="30" y1="85" x2="80" y2="85" stroke="#4ade80" stroke-width="2" opacity="0.2"/>
-    <line x1="80" y1="85" x2="130" y2="85" stroke="#4ade80" stroke-width="2" opacity="0.2"/>
-    <circle cx="30" cy="85" r="4" fill="#86efac" opacity="0.35"/>
-    <circle cx="130" cy="85" r="4" fill="#86efac" opacity="0.35"/>
+    <line x1="30" y1="85" x2="80" y2="85" stroke="#edbf7f" stroke-width="2" opacity="0.2"/>
+    <line x1="80" y1="85" x2="130" y2="85" stroke="#edbf7f" stroke-width="2" opacity="0.2"/>
+    <circle cx="30" cy="85" r="4" fill="#ffb4a1" opacity="0.35"/>
+    <circle cx="130" cy="85" r="4" fill="#ffb4a1" opacity="0.35"/>
   </g>
 </svg>

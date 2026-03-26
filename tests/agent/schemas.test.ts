@@ -512,6 +512,68 @@ describe('AgentTaskSchema — backward compatibility', () => {
 // AgentDefinitionSchema — basic coverage
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// PhaseDefinitionSchema — dependsOn and provider fields
+// ---------------------------------------------------------------------------
+
+describe('PhaseDefinitionSchema — dependsOn and provider', () => {
+  it('validates phase with dependsOn', () => {
+    const result = PhaseDefinitionSchema.parse({
+      name: 'consolidate',
+      prompt: 'Consolidate spores.',
+      tools: [],
+      maxTurns: 5,
+      required: true,
+      dependsOn: ['extract', 'summarize'],
+    });
+
+    expect(result.dependsOn).toEqual(['extract', 'summarize']);
+  });
+
+  it('validates phase with provider override', () => {
+    const result = PhaseDefinitionSchema.parse({
+      name: 'extract',
+      prompt: 'Extract spores.',
+      tools: [],
+      maxTurns: 5,
+      required: true,
+      provider: { type: 'ollama', baseUrl: 'http://localhost:11434' },
+    });
+
+    expect(result.provider).toBeDefined();
+    expect(result.provider!.type).toBe('ollama');
+    expect(result.provider!.baseUrl).toBe('http://localhost:11434');
+  });
+
+  it('validates phase without new optional fields (backward compat)', () => {
+    const result = PhaseDefinitionSchema.parse({
+      name: 'report',
+      prompt: 'Write report.',
+      tools: [],
+      maxTurns: 5,
+      required: true,
+    });
+
+    expect(result.dependsOn).toBeUndefined();
+    expect(result.provider).toBeUndefined();
+  });
+
+  it('rejects phase with invalid provider type', () => {
+    expect(() => PhaseDefinitionSchema.parse({
+      name: 'bad-phase',
+      prompt: 'Bad.',
+      tools: [],
+      maxTurns: 5,
+      required: true,
+      provider: { type: 'invalid' },
+    })).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AgentDefinitionSchema — basic coverage
+// ---------------------------------------------------------------------------
+
 describe('AgentDefinitionSchema', () => {
   it('validates a complete agent definition', () => {
     const result = AgentDefinitionSchema.parse({

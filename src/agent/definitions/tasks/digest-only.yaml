@@ -34,19 +34,27 @@ prompt: |
 
   ## Phase 2 — Survey New Material (budget: 3 turns)
 
-  Call `vault_search` with broad queries to sample vault breadth and identify
-  themes that have changed since the last digest:
-  - "architecture decisions"
-  - "bugs and gotchas"
-  - "key components"
+  Based on the spore types and tags you saw in Phase 1, construct targeted
+  search queries. Search for specific themes you identified, not generic
+  categories. For example, if Phase 1 showed new "gotcha" spores about SQLite
+  and new "decision" spores about caching, search for those specific topics.
+
+  Call `vault_search_semantic` with these targeted queries to gather the
+  material you will integrate into the digest.
 
   The existing digest is your baseline — your goal is to integrate new
   material into it, not start from scratch.
 
   ## Phase 3 — Update Extracts (budget: 7 turns)
 
-  For each tier, call `vault_read_digest` with the tier number to get the
-  current content, then call `vault_write_digest` with the updated version.
+  Phase 3 has 7 turns — enough for at most 3 tier updates (1 read + 1 write
+  each). Prioritize tiers 10000, 5000, 1500.
+
+  When updating a tier:
+  1. Read current content via `vault_read_digest` with the tier number
+  2. Identify sections affected by new material from Phase 2
+  3. Update only those sections; copy unaffected sections verbatim
+  4. Call `vault_write_digest` with the updated version
 
   Preserve well-crafted existing content — only update sections affected by
   new material. Tiers that need the most frequent updating:
@@ -72,7 +80,7 @@ prompt: |
 toolOverrides:
   - vault_spores
   - vault_sessions
-  - vault_search
+  - vault_search_semantic
   - vault_state
   - vault_read_digest
   - vault_write_digest

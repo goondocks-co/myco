@@ -21,25 +21,55 @@ prompt: |
 
   Target session: {{session_id}}
 
-  ## Phase 1 — Find Sessions Needing Updates (budget: 3 turns)
+  If the target session field above is empty, scan all recent sessions.
 
-  1. If a target session ID is specified above, process ONLY that session.
-     Call `vault_sessions` to find it by ID.
-  2. If no target session specified, call `vault_sessions` with limit 10
-     and identify sessions where title is null, summary is null, or the
-     title looks like a truncated first prompt (ends with "...")
+  ## Phase 1 — Find Sessions to Process (budget: 3 turns)
 
-  ## Phase 2 — Generate Titles and Summaries (budget: 8 turns)
+  **If a target session ID is specified above:**
+  Always process it — the user explicitly requested regeneration.
+  Call `vault_sessions` to get its current title/summary.
+  Call `vault_search_fts` with the session ID to find ALL its prompt
+  batches (processed and unprocessed). Do NOT skip even if there are
+  no new unprocessed batches.
 
-  For each session needing updates:
-  1. Call `vault_unprocessed` or review existing batches to understand
-     what happened in the session
-  2. Call `vault_search` with the session_id to find spores extracted from
-     this session — use them to understand the full scope of work done and
-     the outcomes that matter most
-  3. Call `vault_update_session` with BOTH title and summary:
-     - Title: under 80 characters, reflects the full session scope
-     - Summary: 2-4 sentences capturing key work, tools used, outcomes
+  **If no target session specified (automatic run):**
+  Call `vault_unprocessed` to find sessions with new prompt batches.
+  Group by session_id — each session with unprocessed batches needs
+  its summary updated. Call `vault_sessions` for those sessions.
+  If no sessions have unprocessed batches, report "skip" and finish.
+
+  ## Phase 2 — Update Each Session (budget: 8 turns)
+
+  For each session to process:
+  1. Read the EXISTING title and summary — context from prior runs.
+  2. Read the session's prompt batches — user_prompt + response_summary.
+     For targeted sessions, use `vault_search_fts` results from Phase 1.
+     For automatic runs, use `vault_unprocessed` results.
+     This is your PRIMARY source — read through the full set to understand
+     the complete arc of work.
+  3. Generate a title and summary from the full session content.
+  4. Call `vault_update_session` with BOTH title and summary.
+
+  ## Title Rules (CRITICAL)
+
+  The title describes WHAT WAS ACCOMPLISHED, not what was asked.
+
+  - Under 80 characters, sentence case
+  - Synthesize from the full arc of prompt batches, not just the first one
+  - NEVER use file paths, directory names, or working directory as the title
+  - NEVER copy the user's first message as the title
+  - NEVER use truncated prompts ending in "..."
+  - Good: "Wave-based parallel executor and per-task provider config"
+  - Good: "SQLite migration with FTS5 search and vector embeddings"
+  - Bad: "/git-worktree" (directory path, not a title)
+  - Bad: "Help me fix the bug in..." (user's prompt)
+  - Bad: "Working on code" (too vague)
+
+  ## Summary Rules
+
+  2-4 sentences. Rich in detail — session summaries are embedded and used
+  for semantic search. Include: what was built/fixed, key files touched,
+  tools used, and outcomes. Cover the FULL session arc, not just one prompt.
 
   ## Phase 3 — Report (budget: 1 turn)
 
@@ -50,7 +80,8 @@ prompt: |
 toolOverrides:
   - vault_unprocessed
   - vault_sessions
-  - vault_search
+  - vault_spores
+  - vault_search_fts
   - vault_state
   - vault_update_session
   - vault_set_state

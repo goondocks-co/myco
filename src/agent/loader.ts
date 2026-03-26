@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findPackageRoot } from '@myco/utils/find-package-root.js';
 import { parse as parseYaml } from 'yaml';
-import { epochSeconds, DEFAULT_AGENT_ID, BUILT_IN_SOURCE } from '@myco/constants.js';
+import { epochSeconds, DEFAULT_AGENT_ID, BUILT_IN_SOURCE, USER_TASK_SOURCE } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertTask } from '@myco/db/queries/tasks.js';
@@ -255,7 +255,7 @@ export function resolveEffectiveConfig(
  *
  * @param definitionsDir — path to the definitions directory.
  */
-export function registerBuiltInAgentsAndTasks(definitionsDir: string): void {
+export async function registerBuiltInAgentsAndTasks(definitionsDir: string, vaultDir?: string): Promise<void> {
   const definition = loadAgentDefinition(definitionsDir);
   const tasks = loadAgentTasks(definitionsDir);
   const now = epochSeconds();
@@ -304,5 +304,33 @@ export function registerBuiltInAgentsAndTasks(definitionsDir: string): void {
       `DELETE FROM agent_tasks
        WHERE source = ? AND agent_id = ? AND id NOT IN (${placeholders})`,
     ).run(BUILT_IN_SOURCE, definition.name, ...validTaskIds);
+  }
+
+  // Register user tasks from the vault (if vault dir provided)
+  if (vaultDir) {
+    const { loadAllTasks } = await import('./registry.js');
+    const allTasks = loadAllTasks(definitionsDir, vaultDir);
+    for (const [name, task] of allTasks) {
+      if (task.source === USER_TASK_SOURCE) {
+        upsertTask({
+          id: name,
+          agent_id: task.agent ?? definition.name,
+          source: USER_TASK_SOURCE,
+          display_name: task.displayName,
+          description: task.description,
+          prompt: task.prompt,
+          is_default: task.isDefault ? 1 : 0,
+          tool_overrides: task.toolOverrides ? JSON.stringify(task.toolOverrides) : null,
+          config: JSON.stringify({
+            phases: task.phases ?? null,
+            execution: task.execution ?? null,
+            contextQueries: task.contextQueries ?? null,
+            schemaVersion: task.schemaVersion ?? 1,
+          }),
+          created_at: now,
+          updated_at: now,
+        });
+      }
+    }
   }
 }

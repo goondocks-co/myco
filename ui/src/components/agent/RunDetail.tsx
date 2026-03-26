@@ -209,21 +209,20 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   const reports = reportsData?.reports ?? [];
   const turns = turnsData ?? [];
 
-  // Parse phase results from actions_taken if present
+  // Parse run metadata and phase results from actions_taken
   let phaseResults: PhaseResult[] | null = null;
+  let runModel: string | undefined;
+  let runProvider: string | undefined;
   if (run.actions_taken) {
     try {
-      const parsed = JSON.parse(run.actions_taken) as unknown;
-      if (
-        parsed !== null &&
-        typeof parsed === 'object' &&
-        'phases' in parsed &&
-        Array.isArray((parsed as { phases: unknown }).phases)
-      ) {
-        phaseResults = (parsed as { phases: PhaseResult[] }).phases;
+      const parsed = JSON.parse(run.actions_taken) as Record<string, unknown>;
+      if (parsed?.phases && Array.isArray(parsed.phases)) {
+        phaseResults = parsed.phases as PhaseResult[];
       }
+      if (typeof parsed?.model === 'string') runModel = parsed.model as string;
+      if (typeof parsed?.provider === 'string') runProvider = parsed.provider as string;
     } catch {
-      // Malformed JSON -- silently ignore, don't render timeline
+      // Malformed JSON -- silently ignore
     }
   }
 
@@ -244,6 +243,22 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
         <StatCard label="Tokens" value={formatTokens(run.tokens_used)} accent="ochre" />
         <StatCard label="Cost" value={formatCost(run.cost_usd)} accent="ochre" />
       </div>
+
+      {/* Model / Provider info */}
+      {(runModel || runProvider) && (
+        <div className="flex items-center gap-4 px-1">
+          {runProvider && (
+            <span className="font-sans text-xs text-on-surface-variant">
+              Provider: <span className="font-mono text-on-surface">{runProvider}</span>
+            </span>
+          )}
+          {runModel && (
+            <span className="font-sans text-xs text-on-surface-variant">
+              Model: <span className="font-mono text-on-surface">{runModel}</span>
+            </span>
+          )}
+        </div>
+      )}
 
       {run.error && (
         <div className="rounded-md bg-tertiary/10 px-3 py-2">

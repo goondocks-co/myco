@@ -17,4 +17,23 @@ capture:
 agent:
   auto_run: false
   interval_seconds: 1800
-  summary_batch_interval: 0
+  summary_batch_interval: 5
+  tasks:
+    full-intelligence:
+      provider:
+        type: cloud
+        model: claude-sonnet-4-6
+    title-summary:
+      provider:
+        type: ollama
+        base_url: http://localhost:11434
+        model: granite4:small-h
+    title-summary-custom:
+      provider:
+        type: cloud
+        model: claude-sonnet-4-6
+    review-session:
+      provider:
+        type: ollama
+        model: granite4:small-h
+        context_length: 32768

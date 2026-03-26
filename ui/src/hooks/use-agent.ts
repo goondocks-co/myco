@@ -108,6 +108,7 @@ export interface TriggerRunPayload {
 export interface TriggerRunResponse {
   ok: boolean;
   message: string;
+  runId?: string;
 }
 
 export interface TasksResponse {

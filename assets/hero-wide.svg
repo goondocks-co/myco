@@ -1,22 +1,22 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 400" fill="none">
   <defs>
     <radialGradient id="centerGlow" cx="50%" cy="50%" r="40%">
-      <stop offset="0%" style="stop-color:#0d1f17;stop-opacity:0.8"/>
-      <stop offset="100%" style="stop-color:#050a05;stop-opacity:0"/>
+      <stop offset="0%" style="stop-color:#111111;stop-opacity:0.8"/>
+      <stop offset="100%" style="stop-color:#0c0c0c;stop-opacity:0"/>
     </radialGradient>
     <radialGradient id="networkFade" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" style="stop-color:#22c55e;stop-opacity:0.4"/>
-      <stop offset="60%" style="stop-color:#22c55e;stop-opacity:0.15"/>
-      <stop offset="100%" style="stop-color:#22c55e;stop-opacity:0"/>
+      <stop offset="0%" style="stop-color:#abcfb8;stop-opacity:0.4"/>
+      <stop offset="60%" style="stop-color:#abcfb8;stop-opacity:0.15"/>
+      <stop offset="100%" style="stop-color:#abcfb8;stop-opacity:0"/>
     </radialGradient>
   </defs>
 
   <!-- Background -->
-  <rect width="1280" height="400" fill="#050a05"/>
+  <rect width="1280" height="400" fill="#0c0c0c"/>
   <rect width="1280" height="400" fill="url(#centerGlow)"/>
 
   <!-- Outer network — spreading mycelium tendrils -->
-  <g stroke="#22c55e" fill="none" stroke-linecap="round" opacity="0.12">
+  <g stroke="#abcfb8" fill="none" stroke-linecap="round" opacity="0.12">
     <path d="M80,250 Q150,220 240,200" stroke-width="1"/>
     <path d="M60,180 Q130,170 220,175" stroke-width="0.8"/>
     <path d="M100,320 Q170,290 260,260" stroke-width="0.8"/>
@@ -33,7 +33,7 @@
   </g>
 
   <!-- Outer network nodes -->
-  <g fill="#22c55e" opacity="0.1">
+  <g fill="#abcfb8" opacity="0.1">
     <circle cx="80" cy="250" r="3"/>
     <circle cx="60" cy="180" r="2.5"/>
     <circle cx="100" cy="320" r="2"/>
@@ -50,7 +50,7 @@
   </g>
 
   <!-- Mid-range network — connecting branches -->
-  <g stroke="#22c55e" fill="none" stroke-linecap="round" opacity="0.2">
+  <g stroke="#abcfb8" fill="none" stroke-linecap="round" opacity="0.2">
     <path d="M240,200 Q300,190 370,175" stroke-width="1.2"/>
     <path d="M220,175 Q280,170 350,160" stroke-width="1"/>
     <path d="M260,260 Q330,235 400,215" stroke-width="1"/>
@@ -67,7 +67,7 @@
   </g>
 
   <!-- Mid-range nodes -->
-  <g fill="#22c55e" opacity="0.2">
+  <g fill="#abcfb8" opacity="0.2">
     <circle cx="240" cy="200" r="3.5"/>
     <circle cx="220" cy="175" r="3"/>
     <circle cx="260" cy="260" r="3"/>
@@ -81,7 +81,7 @@
   </g>
 
   <!-- Inner network — dense connections near the M -->
-  <g stroke="#22c55e" fill="none" stroke-linecap="round" opacity="0.3">
+  <g stroke="#edbf7f" fill="none" stroke-linecap="round" opacity="0.3">
     <path d="M370,175 Q420,172 470,168" stroke-width="1.5"/>
     <path d="M400,215 Q450,205 500,195" stroke-width="1.2"/>
     <path d="M350,160 Q410,155 460,150" stroke-width="1"/>
@@ -93,7 +93,7 @@
   </g>
 
   <!-- Inner nodes -->
-  <g fill="#4ade80" opacity="0.35">
+  <g fill="#edbf7f" opacity="0.35">
     <circle cx="370" cy="175" r="4"/>
     <circle cx="400" cy="215" r="3.5"/>
     <circle cx="350" cy="160" r="3"/>
@@ -106,20 +106,20 @@
 
   <!-- The M mark — center focal point -->
   <g transform="translate(565, 110)" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M0,150 L0,0 L75,67 L150,0 L150,150" stroke="#22c55e" fill="none" stroke-width="6" opacity="0.9"/>
-    <circle cx="0" cy="150" r="8" fill="#22c55e" opacity="0.95"/>
-    <circle cx="0" cy="0" r="8" fill="#4ade80" opacity="0.9"/>
-    <circle cx="75" cy="67" r="9" fill="#22c55e"/>
-    <circle cx="150" cy="0" r="8" fill="#4ade80" opacity="0.9"/>
-    <circle cx="150" cy="150" r="8" fill="#22c55e" opacity="0.95"/>
-    <line x1="0" y1="75" x2="75" y2="67" stroke="#4ade80" stroke-width="1.5" opacity="0.25"/>
-    <line x1="75" y1="67" x2="150" y2="75" stroke="#4ade80" stroke-width="1.5" opacity="0.25"/>
-    <circle cx="0" cy="75" r="4.5" fill="#86efac" opacity="0.4"/>
-    <circle cx="150" cy="75" r="4.5" fill="#86efac" opacity="0.4"/>
+    <path d="M0,150 L0,0 L75,67 L150,0 L150,150" stroke="#abcfb8" fill="none" stroke-width="6" opacity="0.9"/>
+    <circle cx="0" cy="150" r="8" fill="#abcfb8" opacity="0.95"/>
+    <circle cx="0" cy="0" r="8" fill="#edbf7f" opacity="0.9"/>
+    <circle cx="75" cy="67" r="9" fill="#abcfb8"/>
+    <circle cx="150" cy="0" r="8" fill="#edbf7f" opacity="0.9"/>
+    <circle cx="150" cy="150" r="8" fill="#abcfb8" opacity="0.95"/>
+    <line x1="0" y1="75" x2="75" y2="67" stroke="#edbf7f" stroke-width="1.5" opacity="0.25"/>
+    <line x1="75" y1="67" x2="150" y2="75" stroke="#edbf7f" stroke-width="1.5" opacity="0.25"/>
+    <circle cx="0" cy="75" r="4.5" fill="#ffb4a1" opacity="0.4"/>
+    <circle cx="150" cy="75" r="4.5" fill="#ffb4a1" opacity="0.4"/>
   </g>
 
   <!-- Wordmark only — no tagline -->
-  <text x="640" y="315" text-anchor="middle" font-family="'Geist Mono', 'SF Mono', 'Fira Code', monospace" font-size="52" font-weight="700" fill="#e2e8f0" letter-spacing="-2">myco</text>
+  <text x="640" y="315" text-anchor="middle" font-family="'Newsreader', 'Georgia', 'Times New Roman', serif" font-size="52" font-weight="500" fill="#e5e2e1" letter-spacing="-1">myco</text>
 
   <!-- Subtle vignette -->
   <rect width="1280" height="400" fill="url(#networkFade)" opacity="0.05"/>
