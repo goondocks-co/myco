@@ -1,6 +1,7 @@
+import { useMemo } from 'react';
 import { Bot, AlertCircle, Play } from 'lucide-react';
 import { Button } from '../ui/button';
-import { useAgentRuns, type RunRow } from '../../hooks/use-agent';
+import { useAgentRuns, useAgentTasks, type RunRow, type TaskRow } from '../../hooks/use-agent';
 import { cn } from '../../lib/cn';
 import { formatEpochAgo, capitalize } from '../../lib/format';
 import { runStatusClass, formatCost, formatTokens, formatDuration } from './helpers';
@@ -10,6 +11,9 @@ import { runStatusClass, formatCost, formatTokens, formatDuration } from './help
 /** Default limit for the run list. */
 const DEFAULT_LIMIT = 50;
 
+/** Fallback label when no task name is available. */
+const UNKNOWN_TASK_LABEL = 'Default task';
+
 /* ---------- Helpers ---------- */
 
 function formatEpochRelative(epoch: number | null): string {
@@ -17,8 +21,18 @@ function formatEpochRelative(epoch: number | null): string {
   return formatEpochAgo(epoch);
 }
 
-function taskDisplayName(run: RunRow): string {
-  return run.task ?? 'Default task';
+/** Build a map from task name to display name for O(1) lookup. */
+function buildTaskNameMap(tasks: TaskRow[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const task of tasks) {
+    map.set(task.name, task.displayName);
+  }
+  return map;
+}
+
+function resolveTaskDisplayName(run: RunRow, nameMap: Map<string, string>): string {
+  if (!run.task) return UNKNOWN_TASK_LABEL;
+  return nameMap.get(run.task) ?? run.task;
 }
 
 /* ---------- Sub-components ---------- */
@@ -48,12 +62,14 @@ function SkeletonRow() {
   );
 }
 
-function RunRow({
+function RunRowItem({
   run,
   onClick,
+  taskNameMap,
 }: {
   run: RunRow;
   onClick: () => void;
+  taskNameMap: Map<string, string>;
 }) {
   return (
     <tr
@@ -64,7 +80,7 @@ function RunRow({
         <div className="flex items-center gap-2">
           <Bot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <span className="text-sm font-medium text-foreground truncate max-w-xs">
-            {taskDisplayName(run)}
+            {resolveTaskDisplayName(run, taskNameMap)}
           </span>
         </div>
       </td>
@@ -96,7 +112,12 @@ export interface RunListProps {
 
 export function RunList({ onSelectRun, onTriggerRun }: RunListProps) {
   const { data, isLoading, isError, error } = useAgentRuns({ limit: DEFAULT_LIMIT });
+  const { data: tasksData } = useAgentTasks();
   const runs = data?.runs ?? [];
+  const taskNameMap = useMemo(
+    () => buildTaskNameMap(tasksData?.tasks ?? []),
+    [tasksData],
+  );
 
   const tableHeader = (
     <thead>
@@ -162,7 +183,7 @@ export function RunList({ onSelectRun, onTriggerRun }: RunListProps) {
         {tableHeader}
         <tbody>
           {runs.map((run) => (
-            <RunRow key={run.id} run={run} onClick={() => onSelectRun(run.id)} />
+            <RunRowItem key={run.id} run={run} taskNameMap={taskNameMap} onClick={() => onSelectRun(run.id)} />
           ))}
         </tbody>
       </table>

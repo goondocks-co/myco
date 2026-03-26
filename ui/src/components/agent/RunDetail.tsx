@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { ArrowLeft, AlertCircle, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
-import { useAgentRun, useAgentReports, useAgentTurns, type ReportRow, type TurnRow } from '../../hooks/use-agent';
+import { useAgentRun, useAgentReports, useAgentTurns, useAgentTasks, type ReportRow, type TurnRow, type TaskRow } from '../../hooks/use-agent';
 import { cn } from '../../lib/cn';
 import { formatEpochAgo, truncate, capitalize } from '../../lib/format';
 import { runStatusClass, formatCost, formatTokens, formatDuration } from './helpers';
@@ -15,6 +15,9 @@ const TURN_PREVIEW_CHARS = 80;
 
 /** Milliseconds per second for epoch conversion. */
 const MS_PER_SECOND = 1_000;
+
+/** Fallback label when no task name is available. */
+const UNKNOWN_TASK_LABEL = 'Default task';
 
 /* ---------- Helpers ---------- */
 
@@ -35,6 +38,13 @@ function formatEpochRelative(epoch: number | null): string {
 function formatEpochAbsoluteTime(epoch: number | null): string {
   if (epoch === null) return '\u2014';
   return new Date(epoch * MS_PER_SECOND).toLocaleTimeString();
+}
+
+/** Resolve a task name to its display name using a lookup map. */
+function resolveTaskName(taskName: string | null, tasks: TaskRow[]): string {
+  if (!taskName) return UNKNOWN_TASK_LABEL;
+  const found = tasks.find((t) => t.name === taskName);
+  return found?.displayName ?? taskName;
 }
 
 function truncatePreview(text: string | null, limit: number): string {
@@ -159,6 +169,8 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   const runStatus = runData?.run?.status;
   const { data: reportsData, isLoading: reportsLoading } = useAgentReports(runId, runStatus);
   const { data: turnsData, isLoading: turnsLoading } = useAgentTurns(showAudit ? runId : undefined, runStatus);
+  const { data: tasksData } = useAgentTasks();
+  const tasksList = useMemo(() => tasksData?.tasks ?? [], [tasksData]);
 
   if (runLoading) {
     return (
@@ -220,7 +232,7 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
           <StatusBadge status={run.status} />
 
           <span className="text-sm text-muted-foreground">
-            Task: <span className="text-foreground font-medium">{run.task ?? 'Default task'}</span>
+            Task: <span className="text-foreground font-medium">{resolveTaskName(run.task, tasksList)}</span>
           </span>
 
           <span className="text-sm text-muted-foreground">
