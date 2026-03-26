@@ -172,3 +172,24 @@
     font-family: var(--font-ui, 'Inter', system-ui, sans-serif);
   }
 }
+
+/* ---------- Dashboard design-system utilities ---------- */
+
+.glass-panel {
+  background: rgba(53, 53, 53, 0.4);
+  backdrop-filter: blur(12px);
+}
+
+.mycelial-connector {
+  stroke-dasharray: 4;
+  opacity: 0.3;
+}
+
+@keyframes pulse-slow {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+.animate-pulse-slow {
+  animation: pulse-slow 3s ease-in-out infinite;
+}

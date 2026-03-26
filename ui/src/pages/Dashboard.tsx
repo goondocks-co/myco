@@ -1,30 +1,14 @@
-import { useState } from 'react';
 import { useDaemon } from '../hooks/use-daemon';
 import { PageLoading } from '../components/ui/page-loading';
-import { PageHeader } from '../components/ui/page-header';
-import { ActivityFeed } from '../components/dashboard/ActivityFeed';
-import { SystemStatus } from '../components/dashboard/SystemStatus';
-import { StatCards } from '../components/dashboard/StatCards';
-import type { Tab } from '../components/ui/tab-switcher';
-
-/* ---------- Constants ---------- */
-
-const DASHBOARD_TABS: Tab[] = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'activity', label: 'Activity' },
-];
-
-const ACTIVITY_TAB_LIMIT = 100;
-
-/* ---------- Component ---------- */
+import { StatusHero } from '../components/dashboard/StatusHero';
+import { VaultStats } from '../components/dashboard/VaultStats';
+import { SessionPodGrid } from '../components/dashboard/SessionPodGrid';
+import { SporeChart } from '../components/dashboard/SporeChart';
+import { ActivityLogFeed } from '../components/dashboard/ActivityLogFeed';
+import { FooterStatus } from '../components/dashboard/FooterStatus';
 
 export default function Dashboard() {
   const { data: stats, isLoading, isError, error } = useDaemon();
-  const [activeTab, setActiveTab] = useState('overview');
-
-  const subtitle = stats
-    ? `${stats.vault.session_count} sessions, ${stats.vault.spore_count} spores, ${stats.vault.entity_count} entities`
-    : 'Connecting...';
 
   return (
     <PageLoading
@@ -33,33 +17,54 @@ export default function Dashboard() {
       loadingText="Connecting to daemon..."
     >
       {stats && (
-        <div className="p-6">
-          <PageHeader
-            title="Dashboard"
-            subtitle={subtitle}
-            tabs={DASHBOARD_TABS}
-            activeTab={activeTab}
-            onTabChange={setActiveTab}
-          />
+        <div className="relative min-h-full">
+          {/* Background mycelial decoration */}
+          <div className="absolute inset-0 pointer-events-none opacity-[0.04]">
+            <svg height="100%" width="100%" viewBox="0 0 800 800" preserveAspectRatio="none">
+              <path
+                className="mycelial-connector"
+                d="M400 800C400 600 300 500 200 400C100 300 0 400 0 400"
+                fill="none"
+                stroke="#abcfb8"
+                strokeWidth="1"
+              />
+              <path
+                className="mycelial-connector"
+                d="M400 800C400 600 500 500 600 400C700 300 800 400 800 400"
+                fill="none"
+                stroke="#abcfb8"
+                strokeWidth="1"
+              />
+              <path
+                className="mycelial-connector"
+                d="M400 800C400 500 450 300 400 100"
+                fill="none"
+                stroke="#abcfb8"
+                strokeWidth="1"
+              />
+            </svg>
+          </div>
 
-          {activeTab === 'overview' && (
-            <div className="space-y-6">
-              <StatCards stats={stats} />
+          {/* Content */}
+          <div className="relative z-10 p-6 lg:p-8 max-w-7xl mx-auto space-y-10">
+            {/* Hero banner */}
+            <StatusHero stats={stats} />
 
-              <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-                <div className="lg:col-span-2">
-                  <ActivityFeed />
-                </div>
-                <div>
-                  <SystemStatus stats={stats} />
-                </div>
-              </div>
-            </div>
-          )}
+            {/* Stat row */}
+            <VaultStats stats={stats} />
 
-          {activeTab === 'activity' && (
-            <ActivityFeed limit={ACTIVITY_TAB_LIMIT} showHeader={false} />
-          )}
+            {/* Session pod cards */}
+            <SessionPodGrid />
+
+            {/* Visualization row: chart + logs */}
+            <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <SporeChart />
+              <ActivityLogFeed />
+            </section>
+
+            {/* Footer status bar */}
+            <FooterStatus stats={stats} />
+          </div>
         </div>
       )}
     </PageLoading>
