@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ChevronDown, ChevronRight, MessageSquare } from 'lucide-react';
 import { Surface } from '../ui/surface';
 import { MarkdownContent } from '../ui/markdown-content';
+import { Lightbox } from '../ui/lightbox';
 import { useSessionBatches, useSessionAttachments, type BatchRow, type AttachmentRow } from '../../hooks/use-sessions';
 import { ActivityList } from './ActivityList';
 
@@ -33,6 +34,7 @@ interface BatchCardProps {
 
 function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) {
   const [open, setOpen] = useState(defaultOpen);
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
 
   // Match attachments by batch ID, or by turn number from filename when batch_id is null
   const batchAttachments = attachments.filter((a) => {
@@ -91,16 +93,28 @@ function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) 
             {/* Inline attachments */}
             {batchAttachments.length > 0 && (
               <div className="mt-3 flex flex-wrap gap-3">
-                {batchAttachments.map((att) => (
-                  <img
-                    key={att.id}
-                    src={`/api/attachments/${att.file_path}`}
-                    alt={att.description ?? att.file_path}
-                    className="max-w-md rounded-md"
-                    loading="lazy"
-                  />
-                ))}
+                {batchAttachments.map((att) => {
+                  const src = `/api/attachments/${att.file_path}`;
+                  return (
+                    <button
+                      key={att.id}
+                      type="button"
+                      className="rounded-md overflow-hidden hover:ring-2 hover:ring-primary/40 transition-all"
+                      onClick={() => setLightboxSrc(src)}
+                    >
+                      <img
+                        src={src}
+                        alt={att.description ?? att.file_path ?? ''}
+                        className="max-w-[200px] max-h-[140px] object-cover rounded-md"
+                        loading="lazy"
+                      />
+                    </button>
+                  );
+                })}
               </div>
+            )}
+            {lightboxSrc && (
+              <Lightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
             )}
           </div>
 
