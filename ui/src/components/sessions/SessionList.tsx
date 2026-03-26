@@ -4,10 +4,9 @@ import { AlertCircle, MessageSquare, Trash2, Search } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
 import { PageHeader } from '../ui/page-header';
-import { SessionPod, PodTimestamp, PodTitle, PodMeta } from '../ui/session-pod';
+import { SessionPod, PodTimestamp, PodTitle } from '../ui/session-pod';
 import { Input } from '../ui/input';
 import { useSessions, useDeleteSession, type SessionSummary } from '../../hooks/use-sessions';
-import { cn } from '../../lib/cn';
 
 /* ---------- Constants ---------- */
 

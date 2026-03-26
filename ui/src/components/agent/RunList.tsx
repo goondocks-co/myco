@@ -1,10 +1,10 @@
 import { Bot, AlertCircle, Play } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
-import { SessionPod, PodTitle, PodTimestamp, PodMeta } from '../ui/session-pod';
 import { useAgentRuns, type RunRow } from '../../hooks/use-agent';
 import { formatEpochAgo, capitalize } from '../../lib/format';
 import { formatCost, formatTokens, formatDuration } from './helpers';
+import { cn } from '../../lib/cn';
 
 /* ---------- Constants ---------- */
 
@@ -32,14 +32,37 @@ function statusBadgeVariant(status: string): 'default' | 'warning' | 'destructiv
   }
 }
 
+/** Get the status dot color class. */
+function statusDotColor(status: string): string {
+  switch (status) {
+    case 'completed': return 'bg-primary';
+    case 'running':   return 'bg-secondary animate-pulse';
+    case 'failed':    return 'bg-tertiary';
+    default:          return 'bg-on-surface-variant';
+  }
+}
+
+/** Get the row accent class for failed/completed runs. */
+function rowAccentClass(status: string): string {
+  switch (status) {
+    case 'failed':    return 'border-l-2 border-l-tertiary/50';
+    case 'completed': return 'border-l-2 border-l-primary/30';
+    case 'running':   return 'border-l-2 border-l-secondary/40';
+    default:          return 'border-l-2 border-l-transparent';
+  }
+}
+
 /* ---------- Sub-components ---------- */
 
 function SkeletonPod() {
   return (
-    <div className="flex items-center gap-3 rounded-md bg-surface-container-low px-4 py-2.5 animate-pulse">
-      <div className="h-4 w-24 rounded bg-surface-container-high" />
+    <div className="flex items-center gap-3 rounded-md bg-surface-container-low px-4 py-3 animate-pulse">
+      <div className="h-2.5 w-2.5 rounded-full bg-surface-container-high" />
+      <div className="h-4 w-32 rounded bg-surface-container-high" />
       <div className="h-4 w-16 rounded bg-surface-container-high" />
       <div className="flex-1" />
+      <div className="h-4 w-12 rounded bg-surface-container-high" />
+      <div className="h-4 w-16 rounded bg-surface-container-high" />
       <div className="h-4 w-12 rounded bg-surface-container-high" />
     </div>
   );
@@ -53,18 +76,49 @@ function RunPod({
   onClick: () => void;
 }) {
   return (
-    <SessionPod onClick={onClick}>
-      <PodTitle className="min-w-0 flex-1 font-sans">
+    <div
+      onClick={onClick}
+      className={cn(
+        'flex items-center gap-3 rounded-md bg-surface-container-low px-4 py-3 transition-all cursor-pointer',
+        'hover:brightness-110 dark:hover:brightness-[1.04]',
+        rowAccentClass(run.status),
+      )}
+    >
+      {/* Status dot */}
+      <span className={cn('h-2.5 w-2.5 rounded-full shrink-0', statusDotColor(run.status))} />
+
+      {/* Task name */}
+      <span className="font-sans text-sm text-on-surface font-medium min-w-0 truncate max-w-[200px]">
         {taskDisplayName(run)}
-      </PodTitle>
+      </span>
+
+      {/* Status badge */}
       <Badge variant={statusBadgeVariant(run.status)}>
         {capitalize(run.status)}
       </Badge>
-      <PodTimestamp>{formatEpochRelative(run.started_at)}</PodTimestamp>
-      <PodMeta>{formatDuration(run.started_at, run.completed_at)}</PodMeta>
-      <PodMeta>{formatTokens(run.tokens_used)}</PodMeta>
-      <PodMeta>{formatCost(run.cost_usd)}</PodMeta>
-    </SessionPod>
+
+      <div className="flex-1" />
+
+      {/* Time ago */}
+      <span className="font-mono text-xs text-on-surface-variant shrink-0">
+        {formatEpochRelative(run.started_at)}
+      </span>
+
+      {/* Duration */}
+      <span className="font-mono text-xs text-on-surface-variant/70 shrink-0 hidden sm:inline">
+        {formatDuration(run.started_at, run.completed_at)}
+      </span>
+
+      {/* Tokens */}
+      <span className="font-mono text-xs text-on-surface-variant/70 shrink-0 hidden md:inline">
+        {formatTokens(run.tokens_used)}
+      </span>
+
+      {/* Cost */}
+      <span className="font-mono text-xs text-on-surface-variant/70 shrink-0 hidden md:inline">
+        {formatCost(run.cost_usd)}
+      </span>
+    </div>
   );
 }
 
@@ -81,8 +135,8 @@ export function RunList({ onSelectRun, onTriggerRun }: RunListProps) {
 
   if (isLoading) {
     return (
-      <div className="flex flex-col gap-0.5">
-        {[1, 2, 3].map((i) => <SkeletonPod key={i} />)}
+      <div className="flex flex-col gap-1">
+        {[1, 2, 3, 4].map((i) => <SkeletonPod key={i} />)}
       </div>
     );
   }
@@ -116,7 +170,19 @@ export function RunList({ onSelectRun, onTriggerRun }: RunListProps) {
   }
 
   return (
-    <div className="flex flex-col gap-0.5">
+    <div className="flex flex-col gap-1">
+      {/* Column headers */}
+      <div className="flex items-center gap-3 px-4 py-1.5 text-on-surface-variant">
+        <span className="w-2.5" />
+        <span className="font-sans text-xs uppercase tracking-wide font-medium min-w-0 max-w-[200px]">Task</span>
+        <span className="font-sans text-xs uppercase tracking-wide font-medium w-20">Status</span>
+        <div className="flex-1" />
+        <span className="font-sans text-xs uppercase tracking-wide font-medium w-14 text-right">When</span>
+        <span className="font-sans text-xs uppercase tracking-wide font-medium w-16 text-right hidden sm:inline">Duration</span>
+        <span className="font-sans text-xs uppercase tracking-wide font-medium w-16 text-right hidden md:inline">Tokens</span>
+        <span className="font-sans text-xs uppercase tracking-wide font-medium w-16 text-right hidden md:inline">Cost</span>
+      </div>
+
       {runs.map((run) => (
         <RunPod key={run.id} run={run} onClick={() => onSelectRun(run.id)} />
       ))}
