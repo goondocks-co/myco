@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { ScrollText, Pause, Play, Trash2, ArrowDown } from 'lucide-react';
+import { Pause, Play, Trash2, ArrowDown } from 'lucide-react';
 import { usePowerQuery } from '../hooks/use-power-query';
 import { fetchJson } from '../lib/api';
-import { POLL_INTERVALS, LOG_LEVELS, LEVEL_ORDER, type LogLevel } from '../lib/constants';
+import { POLL_INTERVALS, LOG_LEVELS, LEVEL_ORDER, type LogLevel, levelBadgeVariant, levelDotColor } from '../lib/constants';
+import { PageHeader } from '../components/ui/page-header';
+import { Surface } from '../components/ui/surface';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
@@ -14,13 +16,6 @@ const DEFAULT_LOG_LIMIT = 200;
 /** Matches LOG_RING_BUFFER_CAPACITY in src/daemon/log-buffer.ts */
 const MAX_LOG_ENTRIES = 5000;
 const SCROLL_BOTTOM_THRESHOLD_PX = 40;
-
-const LEVEL_BADGE_CLASS: Record<LogLevel, string> = {
-  debug: 'border-transparent bg-muted text-muted-foreground',
-  info: 'border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
-  warn: 'border-transparent bg-amber-500/15 text-amber-600 dark:text-amber-400',
-  error: 'border-transparent bg-red-500/15 text-red-600 dark:text-red-400',
-};
 
 /* ---------- Types ---------- */
 
@@ -70,7 +65,7 @@ export default function Logs() {
   const cursorRef = useRef(cursor);
   cursorRef.current = cursor;
 
-  /* Fetch new log entries — stable queryKey avoids cache bloat */
+  /* Fetch new log entries -- stable queryKey avoids cache bloat */
   const { data: logsData } = usePowerQuery<LogsResponse>({
     queryKey: ['logs'],
     queryFn: ({ signal }) => {
@@ -82,7 +77,7 @@ export default function Logs() {
     pollCategory: 'standard',
   });
 
-  /* Accumulate entries when new data arrives (replaces deprecated onSuccess) */
+  /* Accumulate entries when new data arrives */
   useEffect(() => {
     if (!logsData?.entries.length) return;
 
@@ -97,7 +92,6 @@ export default function Logs() {
       } else {
         combined = [...prev, ...logsData.entries];
       }
-      // Cap entries to prevent unbounded memory growth
       return combined.length > MAX_LOG_ENTRIES
         ? combined.slice(-MAX_LOG_ENTRIES)
         : combined;
@@ -105,7 +99,7 @@ export default function Logs() {
 
     setCursor(logsData.cursor);
 
-    // Incrementally discover new categories from incoming entries
+    // Incrementally discover new categories
     setKnownCategories((prev) => {
       const known = new Set(prev);
       let changed = false;
@@ -171,117 +165,121 @@ export default function Logs() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header toolbar */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-border bg-card px-4 py-3">
-        {/* Page title */}
-        <div className="flex items-center gap-2 mr-2">
-          <ScrollText className="h-4 w-4 text-primary" />
-          <span className="text-sm font-semibold">Logs</span>
-        </div>
-
-        {/* Level filter buttons */}
-        <div className="flex items-center gap-1">
-          {LOG_LEVELS.map((level) => (
-            <Button
-              key={level}
-              size="sm"
-              variant={activeLevel === level ? 'default' : 'outline'}
-              className="h-7 px-2 text-xs capitalize"
-              onClick={() => setActiveLevel(level)}
-            >
-              {level}
-            </Button>
-          ))}
-        </div>
-
-        {/* Category filter chips */}
-        {knownCategories.length > 0 && (
-          <div className="flex items-center gap-1 flex-wrap">
-            <span className="text-[10px] text-muted-foreground mr-0.5">cat:</span>
-            {knownCategories.map((cat) => (
-              <Button
-                key={cat}
-                size="sm"
-                variant={activeCategories.has(cat) ? 'default' : 'ghost'}
-                className="h-5 px-1.5 text-[10px]"
-                onClick={() => {
-                  setActiveCategories((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(cat)) {
-                      next.delete(cat);
-                    } else {
-                      next.add(cat);
-                    }
-                    return next;
-                  });
-                }}
-              >
-                {cat}
-              </Button>
-            ))}
-            {activeCategories.size > 0 && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-5 px-1.5 text-[10px] text-muted-foreground"
-                onClick={() => setActiveCategories(new Set())}
-              >
-                clear
-              </Button>
-            )}
-          </div>
-        )}
-
-        {/* Search */}
-        <Input
-          className="h-7 w-48 text-xs"
-          placeholder="Filter messages..."
-          value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
-        />
-
-        <div className="ml-auto flex items-center gap-1">
-          {/* Auto-scroll toggle */}
-          <Button
-            size="sm"
-            variant={autoScroll ? 'default' : 'outline'}
-            className="h-7 gap-1.5 px-2 text-xs"
-            onClick={() => {
-              if (autoScroll) {
-                setAutoScroll(false);
-              } else {
-                scrollToBottom();
-              }
-            }}
-            title={autoScroll ? 'Pause auto-scroll' : 'Resume auto-scroll'}
-          >
-            {autoScroll ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
-            {autoScroll ? 'Pause' : 'Resume'}
-          </Button>
-
-          {/* Clear */}
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 gap-1.5 px-2 text-xs text-muted-foreground"
-            onClick={clearEntries}
-            title="Clear log entries"
-          >
-            <Trash2 className="h-3 w-3" />
-            Clear
-          </Button>
-        </div>
+      {/* Page header */}
+      <div className="px-6 pt-6">
+        <PageHeader title="Logs" subtitle="Real-time daemon log stream" />
       </div>
 
-      {/* Log entry list */}
-      <div className="relative flex-1 overflow-hidden">
+      {/* Filter toolbar */}
+      <Surface level="default" className="mx-6 mb-4 rounded-md p-3">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Level filter buttons */}
+          <div className="flex items-center gap-1">
+            {LOG_LEVELS.map((level) => (
+              <Button
+                key={level}
+                size="sm"
+                variant={activeLevel === level ? 'default' : 'ghost'}
+                className="h-7 px-2 text-xs capitalize gap-1.5"
+                onClick={() => setActiveLevel(level)}
+              >
+                <div className={cn('h-1.5 w-1.5 rounded-full', levelDotColor(level))} />
+                {level}
+              </Button>
+            ))}
+          </div>
+
+          {/* Category filter chips */}
+          {knownCategories.length > 0 && (
+            <div className="flex items-center gap-1 flex-wrap">
+              <span className="font-sans text-[10px] uppercase tracking-widest text-on-surface-variant mr-0.5">
+                cat:
+              </span>
+              {knownCategories.map((cat) => (
+                <Button
+                  key={cat}
+                  size="sm"
+                  variant={activeCategories.has(cat) ? 'default' : 'ghost'}
+                  className="h-5 px-1.5 text-[10px]"
+                  onClick={() => {
+                    setActiveCategories((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(cat)) {
+                        next.delete(cat);
+                      } else {
+                        next.add(cat);
+                      }
+                      return next;
+                    });
+                  }}
+                >
+                  {cat}
+                </Button>
+              ))}
+              {activeCategories.size > 0 && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-5 px-1.5 text-[10px] text-on-surface-variant"
+                  onClick={() => setActiveCategories(new Set())}
+                >
+                  clear
+                </Button>
+              )}
+            </div>
+          )}
+
+          {/* Search */}
+          <Input
+            className="h-7 w-48 text-xs"
+            placeholder="Filter messages..."
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+          />
+
+          <div className="ml-auto flex items-center gap-1">
+            {/* Auto-scroll toggle */}
+            <Button
+              size="sm"
+              variant={autoScroll ? 'default' : 'ghost'}
+              className="h-7 gap-1.5 px-2 text-xs"
+              onClick={() => {
+                if (autoScroll) {
+                  setAutoScroll(false);
+                } else {
+                  scrollToBottom();
+                }
+              }}
+              title={autoScroll ? 'Pause auto-scroll' : 'Resume auto-scroll'}
+            >
+              {autoScroll ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+              {autoScroll ? 'Pause' : 'Resume'}
+            </Button>
+
+            {/* Clear */}
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 gap-1.5 px-2 text-xs text-on-surface-variant"
+              onClick={clearEntries}
+              title="Clear log entries"
+            >
+              <Trash2 className="h-3 w-3" />
+              Clear
+            </Button>
+          </div>
+        </div>
+      </Surface>
+
+      {/* Log viewer — recessed terminal feel */}
+      <div className="relative flex-1 overflow-hidden mx-6 mb-6 rounded-md">
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className="h-full overflow-y-auto font-mono text-xs"
+          className="h-full overflow-y-auto bg-surface-container-lowest font-mono text-xs"
         >
           {filteredEntries.length === 0 ? (
-            <div className="flex h-32 items-center justify-center text-muted-foreground">
+            <div className="flex h-32 items-center justify-center font-sans text-on-surface-variant">
               No log entries
             </div>
           ) : (
@@ -302,9 +300,9 @@ export default function Logs() {
             onClick={scrollToBottom}
             className={cn(
               'absolute bottom-4 left-1/2 -translate-x-1/2',
-              'flex items-center gap-1.5 rounded-full border border-border',
-              'bg-card px-3 py-1.5 text-xs font-medium shadow-md',
-              'text-muted-foreground transition-colors hover:text-foreground',
+              'flex items-center gap-1.5 rounded-full',
+              'bg-surface-container-high px-3 py-1.5 text-xs font-medium shadow-ambient',
+              'text-on-surface-variant transition-colors hover:text-on-surface',
             )}
           >
             <ArrowDown className="h-3 w-3" />
@@ -320,28 +318,34 @@ export default function Logs() {
 
 function LogRow({ entry }: { entry: LogEntry }) {
   return (
-    <tr className="border-b border-border/40 hover:bg-accent/30 transition-colors">
+    <tr className="hover:bg-surface-container-high/30 transition-colors">
       {/* Timestamp */}
-      <td className="whitespace-nowrap py-1 pl-4 pr-3 text-muted-foreground/70 align-top w-[68px]">
+      <td className="whitespace-nowrap py-1.5 pl-4 pr-3 text-on-surface-variant/60 align-top w-[68px]">
         {formatTimestamp(entry.timestamp)}
       </td>
 
+      {/* Level dot */}
+      <td className="whitespace-nowrap py-1.5 pr-2 align-top w-[16px]">
+        <div className={cn('h-2 w-2 rounded-full mt-1', levelDotColor(entry.level))} />
+      </td>
+
       {/* Level badge */}
-      <td className="whitespace-nowrap py-1 pr-3 align-top w-[54px]">
+      <td className="whitespace-nowrap py-1.5 pr-3 align-top w-[54px]">
         <Badge
-          className={cn('px-1.5 py-0 text-[10px] font-medium uppercase', LEVEL_BADGE_CLASS[entry.level])}
+          variant={levelBadgeVariant(entry.level)}
+          className="px-1.5 py-0 text-[10px] uppercase"
         >
           {entry.level}
         </Badge>
       </td>
 
       {/* Category */}
-      <td className="whitespace-nowrap py-1 pr-3 text-muted-foreground align-top w-[120px] truncate max-w-[120px]">
+      <td className="whitespace-nowrap py-1.5 pr-3 text-on-surface-variant align-top w-[120px] truncate max-w-[120px]">
         {entry.category}
       </td>
 
       {/* Message */}
-      <td className="py-1 pr-4 text-foreground align-top break-words">
+      <td className="py-1.5 pr-4 text-on-surface align-top break-words">
         {entry.message}
       </td>
     </tr>

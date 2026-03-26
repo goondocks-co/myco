@@ -1,16 +1,18 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, deleteJson } from '../lib/api';
+import { usePowerQuery } from './use-power-query';
+import { POLL_INTERVALS } from '../lib/constants';
 
 /* ---------- Constants ---------- */
 
-/** Cache TTL for session list (10 seconds). */
-const SESSIONS_STALE_TIME = 10_000;
+/** Poll interval for session list. */
+const SESSIONS_POLL_INTERVAL = POLL_INTERVALS.STATS;
 
-/** Cache TTL for session detail (30 seconds). */
-const SESSION_DETAIL_STALE_TIME = 30_000;
+/** Poll interval for session detail. */
+const SESSION_DETAIL_POLL_INTERVAL = POLL_INTERVALS.STATS;
 
-/** Cache TTL for batch list (30 seconds). */
-const BATCHES_STALE_TIME = 30_000;
+/** Poll interval for batch list. */
+const BATCHES_POLL_INTERVAL = POLL_INTERVALS.STATS;
 
 /** Cache TTL for activities list (30 seconds). */
 const ACTIVITIES_STALE_TIME = 30_000;
@@ -26,6 +28,11 @@ export interface SessionSummary {
   date: string;
   title: string;
   status: string;
+  agent: string;
+  prompt_count: number;
+  tool_count: number;
+  started_at: number;
+  ended_at: number | null;
 }
 
 /** Full session row returned by the detail endpoint. */
@@ -107,29 +114,32 @@ export function useSessions(filters?: { status?: string; limit?: number }) {
   const qs = params.toString();
   const path = qs ? `/sessions?${qs}` : '/sessions';
 
-  return useQuery<SessionsResponse>({
+  return usePowerQuery<SessionsResponse>({
     queryKey: ['sessions', filters],
     queryFn: ({ signal }) => fetchJson<SessionsResponse>(path, { signal }),
-    staleTime: SESSIONS_STALE_TIME,
+    pollCategory: 'standard',
+    refetchInterval: SESSIONS_POLL_INTERVAL,
   });
 }
 
 export function useSession(id: string | undefined) {
-  return useQuery<SessionDetail>({
+  return usePowerQuery<SessionDetail>({
     queryKey: ['session', id],
     queryFn: ({ signal }) => fetchJson<SessionDetail>(`/sessions/${id}`, { signal }),
     enabled: id !== undefined,
-    staleTime: SESSION_DETAIL_STALE_TIME,
+    pollCategory: 'standard',
+    refetchInterval: SESSION_DETAIL_POLL_INTERVAL,
   });
 }
 
 export function useSessionBatches(sessionId: string | undefined) {
-  return useQuery<BatchRow[]>({
+  return usePowerQuery<BatchRow[]>({
     queryKey: ['session-batches', sessionId],
     queryFn: ({ signal }) =>
       fetchJson<BatchRow[]>(`/sessions/${sessionId}/batches`, { signal }),
     enabled: sessionId !== undefined,
-    staleTime: BATCHES_STALE_TIME,
+    pollCategory: 'standard',
+    refetchInterval: BATCHES_POLL_INTERVAL,
   });
 }
 

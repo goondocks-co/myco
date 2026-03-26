@@ -1,7 +1,13 @@
+import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertCircle, MessageSquare, Trash2 } from 'lucide-react';
+import { AlertCircle, MessageSquare, Trash2, Filter } from 'lucide-react';
 import { Badge } from '../ui/badge';
+import { Surface } from '../ui/surface';
+import { PageHeader } from '../ui/page-header';
+import { Input } from '../ui/input';
+import { StatCard } from '../ui/stat-card';
 import { useSessions, useDeleteSession, type SessionSummary } from '../../hooks/use-sessions';
+import { StatusBadge } from './status-helpers';
 import { cn } from '../../lib/cn';
 
 /* ---------- Constants ---------- */
@@ -9,21 +15,18 @@ import { cn } from '../../lib/cn';
 /** Default limit for the sessions list. */
 const DEFAULT_SESSIONS_LIMIT = 100;
 
-/* ---------- Helpers ---------- */
+/** Number of skeleton rows to show during loading. */
+const SKELETON_ROW_COUNT = 5;
 
-function statusVariant(status: string): 'default' | 'secondary' | 'outline' {
-  if (status === 'active') return 'default';
-  if (status === 'completed') return 'secondary';
-  return 'outline';
-}
+/** Characters shown from session ID in compact view. */
+const SESSION_ID_PREVIEW_LENGTH = 8;
 
-function statusLabel(status: string): string {
-  return status.charAt(0).toUpperCase() + status.slice(1);
-}
+/** Characters shown from session ID in table column. */
+const SESSION_ID_COLUMN_LENGTH = 12;
 
 /* ---------- Sub-components ---------- */
 
-function SessionRow({
+function SessionTableRow({
   session,
   onClick,
   onDelete,
@@ -34,34 +37,54 @@ function SessionRow({
 }) {
   return (
     <tr
-      className="border-b border-border last:border-0 hover:bg-accent/50 cursor-pointer transition-colors group"
+      className="border-b border-[var(--ghost-border)] last:border-0 hover:bg-surface-container-low/60 cursor-pointer transition-colors group"
       onClick={onClick}
     >
+      {/* Session ID */}
       <td className="px-4 py-3">
-        <div className="flex items-center gap-2">
-          <MessageSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="text-sm font-medium text-foreground truncate max-w-xs">
-            {session.title}
-          </span>
-        </div>
+        <span className="font-mono text-xs text-on-surface-variant">
+          {session.id.slice(0, SESSION_ID_COLUMN_LENGTH)}
+        </span>
       </td>
+
+      {/* Title */}
       <td className="px-4 py-3">
-        <Badge variant={statusVariant(session.status)} className="text-xs">
-          {statusLabel(session.status)}
+        <span className="font-sans text-sm font-medium text-on-surface truncate block max-w-xs">
+          {session.title || session.id.slice(0, SESSION_ID_PREVIEW_LENGTH)}
+        </span>
+      </td>
+
+      {/* Agent */}
+      <td className="px-4 py-3">
+        <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">
+          {session.agent || 'unknown'}
         </Badge>
       </td>
-      <td className="px-4 py-3 text-sm text-muted-foreground font-mono text-xs">
-        {session.date}
+
+      {/* Status */}
+      <td className="px-4 py-3">
+        <StatusBadge status={session.status} />
       </td>
-      <td className="px-4 py-3 text-sm text-muted-foreground font-mono text-xs">
-        <div className="flex items-center justify-between">
-          <span>{session.id.slice(0, 8)}</span>
+
+      {/* Turns */}
+      <td className="px-4 py-3 text-center">
+        <span className="font-mono text-xs text-on-surface-variant">
+          {session.prompt_count}
+        </span>
+      </td>
+
+      {/* Last Activity */}
+      <td className="px-4 py-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-mono text-xs text-on-surface-variant">
+            {session.date}
+          </span>
           <button
             onClick={(e) => {
               e.stopPropagation();
               onDelete();
             }}
-            className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-destructive/10 hover:text-destructive transition-all"
+            className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-tertiary/10 hover:text-tertiary transition-all shrink-0"
             title="Delete session"
           >
             <Trash2 className="h-3.5 w-3.5" />
@@ -72,15 +95,85 @@ function SessionRow({
   );
 }
 
-function SkeletonRow() {
+function SkeletonTableRow() {
   return (
-    <tr className="border-b border-border">
-      {[1, 2, 3, 4].map((col) => (
-        <td key={col} className="px-4 py-3">
-          <div className={cn('h-4 animate-pulse rounded bg-muted', col === 1 ? 'w-48' : 'w-20')} />
-        </td>
-      ))}
+    <tr className="border-b border-[var(--ghost-border)]">
+      <td className="px-4 py-3"><div className="h-3 w-20 rounded bg-surface-container-high animate-pulse" /></td>
+      <td className="px-4 py-3"><div className="h-3 w-40 rounded bg-surface-container-high animate-pulse" /></td>
+      <td className="px-4 py-3"><div className="h-3 w-16 rounded bg-surface-container-high animate-pulse" /></td>
+      <td className="px-4 py-3"><div className="h-3 w-16 rounded bg-surface-container-high animate-pulse" /></td>
+      <td className="px-4 py-3"><div className="h-3 w-8 rounded bg-surface-container-high animate-pulse mx-auto" /></td>
+      <td className="px-4 py-3"><div className="h-3 w-20 rounded bg-surface-container-high animate-pulse" /></td>
     </tr>
+  );
+}
+
+/** Column header with consistent styling. */
+function ColHeader({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <th className={cn('px-4 py-3 text-left font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant', className)}>
+      {children}
+    </th>
+  );
+}
+
+/** Horizontal stat cards showing aggregate session data. */
+function SessionStats({ sessions }: { sessions: SessionSummary[] }) {
+  const stats = useMemo(() => {
+    const activeSessions = sessions.filter((s) => s.status === 'active');
+    const completedSessions = sessions.filter((s) => s.status === 'completed');
+    const totalPrompts = sessions.reduce((sum, s) => sum + s.prompt_count, 0);
+    const totalTools = sessions.reduce((sum, s) => sum + s.tool_count, 0);
+
+    // Date range
+    const dates = sessions.map((s) => s.started_at).filter(Boolean);
+    const earliest = dates.length > 0 ? new Date(Math.min(...dates) * 1000).toISOString().slice(0, 10) : null;
+    const latest = dates.length > 0 ? new Date(Math.max(...dates) * 1000).toISOString().slice(0, 10) : null;
+
+    return {
+      total: sessions.length,
+      active: activeSessions.length,
+      completed: completedSessions.length,
+      totalPrompts,
+      totalTools,
+      earliest,
+      latest,
+    };
+  }, [sessions]);
+
+  const dateRange = stats.earliest && stats.latest
+    ? `${stats.earliest} \u2014 ${stats.latest}`
+    : undefined;
+
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
+      <StatCard
+        label="Total Sessions"
+        value={String(stats.total)}
+        sublabel={dateRange}
+        accent="sage"
+      />
+      <StatCard
+        label="Active"
+        value={String(stats.active)}
+        accent="sage"
+      />
+      <StatCard
+        label="Completed"
+        value={String(stats.completed)}
+        accent="outline"
+      />
+      <StatCard
+        label="Prompts"
+        value={String(stats.totalPrompts)}
+        accent="outline"
+      />
+      <StatCard
+        label="Tool Calls"
+        value={String(stats.totalTools)}
+        accent="outline"
+      />
+    </div>
   );
 }
 
@@ -88,84 +181,124 @@ function SkeletonRow() {
 
 export function SessionList() {
   const navigate = useNavigate();
+  const [filter, setFilter] = useState('');
   const { data, isLoading, isError, error } = useSessions({ limit: DEFAULT_SESSIONS_LIMIT });
   const deleteSession = useDeleteSession();
 
   function handleDelete(session: SessionSummary) {
-    const label = session.title || session.id.slice(0, 8);
+    const label = session.title || session.id.slice(0, SESSION_ID_PREVIEW_LENGTH);
     if (!window.confirm(`Delete session "${label}"?\n\nThis will permanently remove all batches, activities, and attachments for this session.`)) {
       return;
     }
     deleteSession.mutate(session.id);
   }
 
+  const sessions = data?.sessions ?? [];
+  const filtered = filter
+    ? sessions.filter(
+        (s) =>
+          s.title.toLowerCase().includes(filter.toLowerCase()) ||
+          s.id.toLowerCase().includes(filter.toLowerCase()) ||
+          (s.agent && s.agent.toLowerCase().includes(filter.toLowerCase())),
+      )
+    : sessions;
+
   if (isLoading) {
     return (
-      <div className="space-y-4 p-6">
-        <h1 className="text-2xl font-bold">Sessions</h1>
-        <div className="rounded-lg border border-border">
+      <div>
+        <PageHeader title="Session Archive" subtitle="Loading..." />
+        <Surface level="low" className="rounded-md overflow-hidden">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-border bg-muted/50">
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wide">Title</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wide">Status</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wide">Date</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wide">ID</th>
+              <tr className="border-b border-[var(--ghost-border)] bg-surface-container/50">
+                <ColHeader>Session ID</ColHeader>
+                <ColHeader>Title</ColHeader>
+                <ColHeader>Agent</ColHeader>
+                <ColHeader>Status</ColHeader>
+                <ColHeader className="text-center">Turns</ColHeader>
+                <ColHeader>Date</ColHeader>
               </tr>
             </thead>
             <tbody>
-              {[1, 2, 3, 4, 5].map((i) => <SkeletonRow key={i} />)}
+              {Array.from({ length: SKELETON_ROW_COUNT }).map((_, i) => (
+                <SkeletonTableRow key={i} />
+              ))}
             </tbody>
           </table>
-        </div>
+        </Surface>
       </div>
     );
   }
 
   if (isError) {
     return (
-      <div className="p-6 space-y-4">
-        <h1 className="text-2xl font-bold">Sessions</h1>
-        <div className="flex h-40 flex-col items-center justify-center gap-2 text-destructive">
+      <div>
+        <PageHeader title="Session Archive" />
+        <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary">
           <AlertCircle className="h-5 w-5" />
-          <span className="text-sm">Failed to load sessions</span>
-          <span className="text-xs text-muted-foreground">{error instanceof Error ? error.message : 'Unknown error'}</span>
+          <span className="font-sans text-sm">Failed to load sessions</span>
+          <span className="font-sans text-xs text-on-surface-variant">
+            {error instanceof Error ? error.message : 'Unknown error'}
+          </span>
         </div>
       </div>
     );
   }
 
-  const sessions = data?.sessions ?? [];
-
   return (
-    <div className="space-y-4 p-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Sessions</h1>
-        <span className="text-sm text-muted-foreground">
-          {sessions.length} session{sessions.length !== 1 ? 's' : ''}
-        </span>
-      </div>
+    <div>
+      <PageHeader
+        title="Session Archive"
+        subtitle={`${sessions.length} session${sessions.length !== 1 ? 's' : ''} captured`}
+      />
 
-      {sessions.length === 0 ? (
-        <div className="flex h-40 flex-col items-center justify-center gap-2 text-muted-foreground">
+      {/* Stats cards */}
+      {sessions.length > 0 && (
+        <div className="mb-6">
+          <SessionStats sessions={sessions} />
+        </div>
+      )}
+
+      {/* Filter toolbar */}
+      <Surface level="bright" className="flex items-center gap-3 px-4 py-2 mb-4 rounded-md">
+        <Filter className="h-3.5 w-3.5 text-on-surface-variant shrink-0" />
+        <Input
+          placeholder="Filter sessions..."
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          className="bg-transparent border-none shadow-none focus-visible:ring-0 px-0 h-auto py-0 font-sans text-sm"
+        />
+        <span className="font-mono text-xs text-on-surface-variant shrink-0">
+          {filtered.length}/{sessions.length}
+        </span>
+      </Surface>
+
+      {filtered.length === 0 ? (
+        <div className="flex h-40 flex-col items-center justify-center gap-2 text-on-surface-variant">
           <MessageSquare className="h-8 w-8 opacity-30" />
-          <span className="text-sm">No sessions yet</span>
-          <span className="text-xs">Sessions appear here as you work with your agent</span>
+          <span className="font-sans text-sm">
+            {sessions.length === 0 ? 'No sessions yet' : 'No matching sessions'}
+          </span>
+          {sessions.length === 0 && (
+            <span className="font-sans text-xs">Sessions appear here as you work with your agent</span>
+          )}
         </div>
       ) : (
-        <div className="rounded-lg border border-border overflow-hidden">
+        <Surface level="low" className="rounded-md overflow-hidden">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-border bg-muted/50">
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wide">Title</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wide">Status</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wide">Date</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wide">ID</th>
+              <tr className="border-b border-[var(--ghost-border)] bg-surface-container/50">
+                <ColHeader>Session ID</ColHeader>
+                <ColHeader>Title</ColHeader>
+                <ColHeader>Agent</ColHeader>
+                <ColHeader>Status</ColHeader>
+                <ColHeader className="text-center">Turns</ColHeader>
+                <ColHeader>Date</ColHeader>
               </tr>
             </thead>
             <tbody>
-              {sessions.map((session) => (
-                <SessionRow
+              {filtered.map((session) => (
+                <SessionTableRow
                   key={session.id}
                   session={session}
                   onClick={() => navigate(`/sessions/${session.id}`)}
@@ -174,7 +307,7 @@ export function SessionList() {
               ))}
             </tbody>
           </table>
-        </div>
+        </Surface>
       )}
     </div>
   );

@@ -1,4 +1,4 @@
-import { listSpores, getSpore } from '@myco/db/queries/spores.js';
+import { listSpores, countSpores, getSpore } from '@myco/db/queries/spores.js';
 import { listEntities, getEntity } from '@myco/db/queries/entities.js';
 import { listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import { getGraphForNode } from '@myco/db/queries/graph-edges.js';
@@ -22,6 +22,12 @@ const DEFAULT_GRAPH_DEPTH = 1;
 /** Maximum graph traversal depth (capped for performance). */
 const MAX_GRAPH_DEPTH = 3;
 
+/** Spore node name preview length (first N chars of content). */
+const SPORE_NAME_PREVIEW_CHARS = 60;
+
+/** Edge types to exclude from graph visualization (too granular). */
+const EXCLUDED_GRAPH_EDGE_TYPES = new Set(['HAS_BATCH', 'EXTRACTED_FROM']);
+
 // ---------------------------------------------------------------------------
 // Spore handlers
 // ---------------------------------------------------------------------------
@@ -33,15 +39,16 @@ export async function handleListSpores(req: RouteRequest): Promise<RouteResponse
   const limit = req.query.limit ? Number(req.query.limit) : DEFAULT_LIST_LIMIT;
   const offset = req.query.offset ? Number(req.query.offset) : DEFAULT_LIST_OFFSET;
 
-  const spores = listSpores({
+  const filterOpts = {
     ...(agentId ? { agent_id: agentId } : {}),
     observation_type: type,
     status,
-    limit,
-    offset,
-  });
+  };
 
-  return { body: { spores, total: spores.length, offset, limit } };
+  const spores = listSpores({ ...filterOpts, limit, offset });
+  const total = countSpores(filterOpts);
+
+  return { body: { spores, total, offset, limit } };
 }
 
 export async function handleGetSpore(req: RouteRequest): Promise<RouteResponse> {
@@ -88,51 +95,127 @@ export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> 
   // Use graph_edges for BFS traversal
   const graph = getGraphForNode(req.params.id, 'entity', { depth });
 
+  // Filter out batch-related edges (too granular for visualization)
+  const filteredEdges = graph.edges.filter(
+    (e) => !EXCLUDED_GRAPH_EDGE_TYPES.has(e.type),
+  );
+
   const graphDb = getDatabase();
 
-  // Collect all unique entity IDs from edges for node fetching + mention counts
+  // Collect ALL unique node IDs from filtered edges, grouped by type
   const entityIds = new Set<string>();
-  for (const edge of graph.edges) {
-    if (edge.source_type === 'entity') entityIds.add(edge.source_id);
-    if (edge.target_type === 'entity') entityIds.add(edge.target_id);
-  }
-  entityIds.delete(center.id); // exclude center from "nodes" list
+  const sporeIds = new Set<string>();
+  const sessionIds = new Set<string>();
 
-  // Batch-fetch connected entity nodes
-  const nodeIdArray = Array.from(entityIds);
-  let nodes: Array<Record<string, unknown>> = [];
-  if (nodeIdArray.length > 0) {
-    const placeholders = nodeIdArray.map(() => '?').join(', ');
-    nodes = graphDb.prepare(
-      `SELECT id, agent_id, type, name, properties, first_seen, last_seen, status
+  for (const edge of filteredEdges) {
+    for (const [id, type] of [
+      [edge.source_id, edge.source_type],
+      [edge.target_id, edge.target_type],
+    ] as [string, string][]) {
+      switch (type) {
+        case 'entity': entityIds.add(id); break;
+        case 'spore': sporeIds.add(id); break;
+        case 'session': sessionIds.add(id); break;
+        // batch nodes are intentionally excluded
+      }
+    }
+  }
+  // Center entity is always included
+  entityIds.add(center.id);
+
+  // --- Batch-fetch entity nodes ---
+  const entityIdArray = Array.from(entityIds);
+  let entityNodes: Array<Record<string, unknown>> = [];
+  if (entityIdArray.length > 0) {
+    const placeholders = entityIdArray.map(() => '?').join(', ');
+    entityNodes = graphDb.prepare(
+      `SELECT id, type, name, properties, status, first_seen as created_at
        FROM entities WHERE id IN (${placeholders})`,
-    ).all(...nodeIdArray) as Array<Record<string, unknown>>;
+    ).all(...entityIdArray) as Array<Record<string, unknown>>;
   }
 
-  // Batch-fetch mention counts for all entity nodes (including center)
-  const allEntityIds = [center.id, ...nodeIdArray];
+  // --- Batch-fetch spore nodes ---
+  const sporeIdArray = Array.from(sporeIds);
+  let sporeNodes: Array<Record<string, unknown>> = [];
+  if (sporeIdArray.length > 0) {
+    const placeholders = sporeIdArray.map(() => '?').join(', ');
+    sporeNodes = graphDb.prepare(
+      `SELECT id, observation_type, status, content, properties, created_at
+       FROM spores WHERE id IN (${placeholders})`,
+    ).all(...sporeIdArray) as Array<Record<string, unknown>>;
+  }
+
+  // --- Batch-fetch session nodes ---
+  const sessionIdArray = Array.from(sessionIds);
+  let sessionNodes: Array<Record<string, unknown>> = [];
+  if (sessionIdArray.length > 0) {
+    const placeholders = sessionIdArray.map(() => '?').join(', ');
+    sessionNodes = graphDb.prepare(
+      `SELECT id, title, summary, status, started_at as created_at
+       FROM sessions WHERE id IN (${placeholders})`,
+    ).all(...sessionIdArray) as Array<Record<string, unknown>>;
+  }
+
+  // --- Batch-fetch mention counts for entity nodes ---
   const mentionCounts = new Map<string, number>();
-  if (allEntityIds.length > 0) {
-    const placeholders = allEntityIds.map(() => '?').join(', ');
+  if (entityIdArray.length > 0) {
+    const placeholders = entityIdArray.map(() => '?').join(', ');
     const mentionRows = graphDb.prepare(
       `SELECT entity_id, COUNT(*) as count FROM entity_mentions
        WHERE entity_id IN (${placeholders}) GROUP BY entity_id`,
-    ).all(...allEntityIds) as Array<Record<string, unknown>>;
+    ).all(...entityIdArray) as Array<Record<string, unknown>>;
     for (const row of mentionRows) {
       mentionCounts.set(row.entity_id as string, Number(row.count));
     }
   }
 
-  const nodesWithMentions = nodes.map((node) => ({
-    ...node,
-    mention_count: mentionCounts.get(node.id as string) ?? 0,
+  // --- Build unified nodes array ---
+  const allNodes = [
+    ...entityNodes.map((n) => ({
+      id: n.id as string,
+      name: n.name as string,
+      type: n.type as string,
+      status: (n.status as string) ?? undefined,
+      created_at: n.created_at as number | undefined,
+      properties: (n.properties as string) ?? undefined,
+      mention_count: mentionCounts.get(n.id as string) ?? 0,
+    })),
+    ...sporeNodes.map((n) => ({
+      id: n.id as string,
+      name: ((n.content as string) ?? '').slice(0, SPORE_NAME_PREVIEW_CHARS),
+      type: 'spore' as const,
+      status: (n.status as string) ?? undefined,
+      created_at: n.created_at as number | undefined,
+      content: n.content as string | undefined,
+      properties: (n.properties as string) ?? undefined,
+      observation_type: n.observation_type as string | undefined,
+    })),
+    ...sessionNodes.map((n) => ({
+      id: n.id as string,
+      name: (n.title as string) ?? `Session ${(n.id as string).slice(-6)}`,
+      type: 'session' as const,
+      status: (n.status as string) ?? undefined,
+      created_at: n.created_at as number | undefined,
+      content: (n.summary as string) ?? undefined,
+    })),
+  ];
+
+  // Identify the center node from the unified array
+  const centerNode = allNodes.find((n) => n.id === center.id);
+
+  // Map edges to UI-friendly shape (label + weight instead of type + confidence)
+  const uiEdges = filteredEdges.map((e) => ({
+    source_id: e.source_id,
+    target_id: e.target_id,
+    label: e.type,
+    weight: e.confidence,
   }));
 
   return {
     body: {
-      center: { ...center, mention_count: mentionCounts.get(center.id) ?? 0 },
-      nodes: nodesWithMentions,
-      edges: graph.edges,
+      center: centerNode ?? { ...center, mention_count: mentionCounts.get(center.id) ?? 0 },
+      nodes: allNodes.filter((n) => n.id !== center.id),
+      edges: uiEdges,
       depth,
     },
   };

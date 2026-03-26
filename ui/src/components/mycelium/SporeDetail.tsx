@@ -1,12 +1,21 @@
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, AlertCircle, Loader2, ArrowRight, ExternalLink } from 'lucide-react';
 import { Button } from '../ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
-import { MetaRow } from '../ui/meta-row';
+import { Surface } from '../ui/surface';
+import { SectionHeader } from '../ui/section-header';
+import { MarkdownContent } from '../ui/markdown-content';
 import { useSpore } from '../../hooks/use-spores';
 import { cn } from '../../lib/cn';
 import { formatEpochAgo, formatEpochAbsolute } from '../../lib/format';
 import { observationTypeClass, statusClass, formatLabel } from './helpers';
+
+/* ---------- Constants ---------- */
+
+/** Session ID preview length in metadata. */
+const SESSION_ID_PREVIEW = 12;
+
+/** Predecessor/successor ID preview length. */
+const RESOLUTION_ID_PREVIEW = 8;
 
 /* ---------- Sub-components ---------- */
 
@@ -14,7 +23,7 @@ function TypeBadge({ type }: { type: string }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold',
+        'inline-flex items-center rounded-md px-2.5 py-0.5 text-xs font-semibold',
         observationTypeClass(type),
       )}
     >
@@ -27,12 +36,21 @@ function StatusBadge({ status }: { status: string }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold',
+        'inline-flex items-center rounded-md px-2.5 py-0.5 text-xs font-semibold',
         statusClass(status),
       )}
     >
       {formatLabel(status)}
     </span>
+  );
+}
+
+function MetaRow({ label, value, children }: { label: string; value?: string; children?: React.ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-3 py-1.5">
+      <span className="shrink-0 font-sans text-xs text-on-surface-variant">{label}</span>
+      {children ?? <span className="font-mono text-xs text-on-surface text-right break-all">{value}</span>}
+    </div>
   );
 }
 
@@ -51,9 +69,9 @@ export function SporeDetail({ id, onBack, onNavigateToSpore, onNavigateToGraph: 
 
   if (isLoading) {
     return (
-      <div className="flex h-64 items-center justify-center gap-2 text-muted-foreground">
+      <div className="flex h-64 items-center justify-center gap-2 text-on-surface-variant">
         <Loader2 className="h-5 w-5 animate-spin" />
-        <span>Loading spore...</span>
+        <span className="font-sans">Loading spore...</span>
       </div>
     );
   }
@@ -62,17 +80,23 @@ export function SporeDetail({ id, onBack, onNavigateToSpore, onNavigateToGraph: 
     return (
       <div className="flex h-40 flex-col items-center justify-center gap-2 text-destructive">
         <AlertCircle className="h-5 w-5" />
-        <span className="text-sm">Spore not found</span>
-        <span className="text-xs text-muted-foreground">
+        <span className="font-sans text-sm">Spore not found</span>
+        <span className="font-sans text-xs text-on-surface-variant">
           {error instanceof Error ? error.message : 'Unknown error'}
         </span>
       </div>
     );
   }
 
-  const tags = spore.tags
-    ? spore.tags.split(',').map((t) => t.trim()).filter(Boolean)
-    : [];
+  const tags = (() => {
+    if (!spore.tags) return [];
+    // Try JSON array first (e.g., '["tag1", "tag2"]')
+    if (spore.tags.startsWith('[')) {
+      try { return JSON.parse(spore.tags) as string[]; } catch { /* fall through */ }
+    }
+    // Comma-separated fallback
+    return spore.tags.split(',').map((t: string) => t.trim()).filter(Boolean);
+  })();
 
   return (
     <div className="space-y-6">
@@ -81,7 +105,7 @@ export function SporeDetail({ id, onBack, onNavigateToSpore, onNavigateToGraph: 
         variant="ghost"
         size="sm"
         onClick={onBack}
-        className="gap-2 text-muted-foreground"
+        className="gap-2 text-on-surface-variant"
       >
         <ArrowLeft className="h-4 w-4" />
         Spores
@@ -92,35 +116,27 @@ export function SporeDetail({ id, onBack, onNavigateToSpore, onNavigateToGraph: 
         <TypeBadge type={spore.observation_type} />
         <StatusBadge status={spore.status} />
         {spore.importance !== null && (
-          <span className="text-xs text-muted-foreground">
-            Importance: <span className="text-foreground font-medium">{spore.importance.toFixed(1)}</span>
+          <span className="font-sans text-xs text-on-surface-variant">
+            Importance: <span className="text-on-surface font-medium">{spore.importance.toFixed(1)}</span>
           </span>
         )}
-        <span className="text-xs text-muted-foreground ml-auto">
+        <span className="font-sans text-xs text-on-surface-variant ml-auto">
           {formatEpochAgo(spore.created_at)}
         </span>
       </div>
 
       {/* Content */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Observation</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-foreground whitespace-pre-wrap">{spore.content}</p>
-        </CardContent>
-      </Card>
+      <Surface level="low" className="p-5">
+        <SectionHeader className="mb-2">Observation</SectionHeader>
+        <MarkdownContent content={spore.content} />
+      </Surface>
 
       {/* Context */}
       {spore.context && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Context</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground whitespace-pre-wrap">{spore.context}</p>
-          </CardContent>
-        </Card>
+        <Surface level="low" className="p-5">
+          <SectionHeader className="mb-2">Context</SectionHeader>
+          <MarkdownContent content={spore.context} />
+        </Surface>
       )}
 
       {/* Tags */}
@@ -129,7 +145,7 @@ export function SporeDetail({ id, onBack, onNavigateToSpore, onNavigateToGraph: 
           {tags.map((tag) => (
             <span
               key={tag}
-              className="inline-flex items-center rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs text-muted-foreground"
+              className="inline-flex items-center rounded-full bg-surface-container px-2.5 py-0.5 font-sans text-xs text-on-surface-variant"
             >
               {tag}
             </span>
@@ -139,65 +155,58 @@ export function SporeDetail({ id, onBack, onNavigateToSpore, onNavigateToGraph: 
 
       {/* Resolution history */}
       {(spore.predecessor_id || spore.successor_id) && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Resolution History</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {spore.predecessor_id && (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span>Supersedes</span>
-                <button
-                  className="font-mono text-primary hover:underline flex items-center gap-1"
-                  onClick={() => onNavigateToSpore?.(spore.predecessor_id!)}
-                >
-                  {spore.predecessor_id.slice(0, 8)}
-                  <ArrowRight className="h-3 w-3" />
-                </button>
-              </div>
-            )}
-            {spore.successor_id && (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span>Superseded by</span>
-                <button
-                  className="font-mono text-primary hover:underline flex items-center gap-1"
-                  onClick={() => onNavigateToSpore?.(spore.successor_id!)}
-                >
-                  {spore.successor_id.slice(0, 8)}
-                  <ArrowRight className="h-3 w-3" />
-                </button>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        <Surface level="low" className="p-5 space-y-2">
+          <SectionHeader>Resolution History</SectionHeader>
+          {spore.predecessor_id && (
+            <div className="flex items-center gap-2 font-sans text-xs text-on-surface-variant">
+              <span>Supersedes</span>
+              <button
+                className="font-mono text-primary hover:underline flex items-center gap-1"
+                onClick={() => onNavigateToSpore?.(spore.predecessor_id!)}
+              >
+                {spore.predecessor_id.slice(0, RESOLUTION_ID_PREVIEW)}
+                <ArrowRight className="h-3 w-3" />
+              </button>
+            </div>
+          )}
+          {spore.successor_id && (
+            <div className="flex items-center gap-2 font-sans text-xs text-on-surface-variant">
+              <span>Superseded by</span>
+              <button
+                className="font-mono text-primary hover:underline flex items-center gap-1"
+                onClick={() => onNavigateToSpore?.(spore.successor_id!)}
+              >
+                {spore.successor_id.slice(0, RESOLUTION_ID_PREVIEW)}
+                <ArrowRight className="h-3 w-3" />
+              </button>
+            </div>
+          )}
+        </Surface>
       )}
 
-      {/* Metadata sidebar */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Metadata</CardTitle>
-        </CardHeader>
-        <CardContent className="text-sm">
+      {/* Metadata */}
+      <Surface glass className="p-5">
+        <SectionHeader className="mb-2">Metadata</SectionHeader>
+        <div className="text-sm">
           <MetaRow label="ID" value={spore.id} />
           <MetaRow label="Created" value={formatEpochAbsolute(spore.created_at)} />
           <MetaRow label="Updated" value={formatEpochAbsolute(spore.updated_at)} />
           {spore.session_id && (
-            <div className="flex items-start justify-between gap-3 py-1.5 border-b border-border last:border-0">
-              <span className="shrink-0 text-xs text-muted-foreground">Session</span>
+            <MetaRow label="Session">
               <button
-                className="text-xs text-primary font-mono hover:underline flex items-center gap-1"
+                className="font-mono text-xs text-primary hover:underline flex items-center gap-1"
                 onClick={() => navigate(`/sessions/${spore.session_id}`)}
               >
-                {spore.session_id.slice(0, 12)}
+                {spore.session_id.slice(0, SESSION_ID_PREVIEW)}
                 <ExternalLink className="h-3 w-3" />
               </button>
-            </div>
+            </MetaRow>
           )}
           {spore.agent_id && (
             <MetaRow label="Agent" value={spore.agent_id} />
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </Surface>
     </div>
   );
 }

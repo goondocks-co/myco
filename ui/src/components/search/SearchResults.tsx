@@ -25,7 +25,7 @@ function truncate(text: string, max: number): string {
 function ScoreBadge({ score }: { score: number }) {
   const pct = Math.round(score * 100);
   return (
-    <Badge variant="outline" className="shrink-0 text-xs tabular-nums text-muted-foreground">
+    <Badge variant="outline" className="shrink-0 text-xs tabular-nums text-on-surface-variant">
       {pct}%
     </Badge>
   );
@@ -47,17 +47,17 @@ function ResultRow({ result, onSelect, isHighlighted }: ResultRowProps) {
       className={[
         'w-full flex items-start gap-3 px-3 py-2 text-left rounded-md transition-colors',
         isHighlighted
-          ? 'bg-accent text-accent-foreground'
-          : 'hover:bg-accent hover:text-accent-foreground',
+          ? 'bg-surface-container-high text-on-surface'
+          : 'hover:bg-surface-container-high hover:text-on-surface',
       ].join(' ')}
     >
-      <Icon className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
+      <Icon className="h-4 w-4 mt-0.5 shrink-0 text-on-surface-variant" />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium truncate">{result.title}</span>
         </div>
         {result.preview && (
-          <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
+          <p className="text-xs text-on-surface-variant mt-0.5 line-clamp-2">
             {truncate(result.preview, PREVIEW_MAX_CHARS)}
           </p>
         )}
@@ -94,7 +94,7 @@ export function SearchResults({ results, onSelect, highlightedIndex }: SearchRes
         return (
           <div key={type}>
             <div className="px-3 py-1">
-              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              <span className="text-xs font-semibold uppercase tracking-wider text-on-surface-variant">
                 {label}
               </span>
             </div>

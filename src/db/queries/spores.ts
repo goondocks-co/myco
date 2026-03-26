@@ -189,11 +189,10 @@ export function getSpore(id: string): SporeRow | null {
 /**
  * List spores with optional filters, ordered by created_at DESC.
  */
-export function listSpores(
-  options: ListSporesOptions = {},
-): SporeRow[] {
-  const db = getDatabase();
-
+/** Build WHERE clause and bound params from spore filter options. */
+function buildSporeWhere(
+  options: Omit<ListSporesOptions, 'limit' | 'offset'>,
+): { where: string; params: unknown[] } {
   const conditions: string[] = [];
   const params: unknown[] = [];
 
@@ -201,23 +200,31 @@ export function listSpores(
     conditions.push(`agent_id = ?`);
     params.push(options.agent_id);
   }
-
   if (options.observation_type !== undefined) {
     conditions.push(`observation_type = ?`);
     params.push(options.observation_type);
   }
-
   if (options.status !== undefined) {
     conditions.push(`status = ?`);
     params.push(options.status);
   }
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  return {
+    where: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
+    params,
+  };
+}
+
+/**
+ * List spores with optional filters, ordered by created_at DESC.
+ */
+export function listSpores(
+  options: ListSporesOptions = {},
+): SporeRow[] {
+  const db = getDatabase();
+  const { where, params } = buildSporeWhere(options);
   const limit = options.limit ?? DEFAULT_LIST_LIMIT;
   const offset = options.offset ?? 0;
-
-  params.push(limit);
-  params.push(offset);
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
@@ -226,9 +233,25 @@ export function listSpores(
      ORDER BY created_at DESC
      LIMIT ?
      OFFSET ?`,
-  ).all(...params) as Record<string, unknown>[];
+  ).all(...params, limit, offset) as Record<string, unknown>[];
 
   return rows.map(toSporeRow);
+}
+
+/**
+ * Count spores matching optional filters (for pagination totals).
+ */
+export function countSpores(
+  options: Omit<ListSporesOptions, 'limit' | 'offset'> = {},
+): number {
+  const db = getDatabase();
+  const { where, params } = buildSporeWhere(options);
+
+  const row = db.prepare(
+    `SELECT COUNT(*) as count FROM spores ${where}`,
+  ).get(...params) as { count: number };
+
+  return row.count;
 }
 
 /**

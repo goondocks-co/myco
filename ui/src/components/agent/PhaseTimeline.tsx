@@ -1,4 +1,11 @@
-import { formatTokens, formatCost } from './helpers';
+import { useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
+import { Badge } from '../ui/badge';
+import { Surface } from '../ui/surface';
+import { MarkdownContent } from '../ui/markdown-content';
+import { formatTokens, formatCost, statusBadgeVariant } from './helpers';
+
+/* Tailwind purge: line-clamp-2 must appear as a literal string. */
 
 /* ---------- Types ---------- */
 
@@ -15,41 +22,56 @@ export interface PhaseTimelineProps {
   phases: PhaseResult[];
 }
 
-/* ---------- Constants ---------- */
-
-/** Tailwind class map for phase status badge coloring. */
-const PHASE_STATUS_CLASSES: Record<string, string> = {
-  completed: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
-  failed: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
-  skipped: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
-};
-
 /* ---------- Component ---------- */
+
+function PhaseSummary({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = text.length > 200 || text.includes('\n');
+
+  return (
+    <div className="mt-1">
+      <div className={!expanded && isLong ? 'line-clamp-2' : undefined}>
+        <MarkdownContent content={text} className="text-on-surface-variant [&>*]:text-on-surface-variant" />
+      </div>
+      {isLong && (
+        <button
+          className="flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface transition-colors mt-1"
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded
+            ? <><ChevronDown className="h-3 w-3" /> Show less</>
+            : <><ChevronRight className="h-3 w-3" /> Show more</>}
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function PhaseTimeline({ phases }: PhaseTimelineProps) {
   return (
     <div className="space-y-3">
-      <h3 className="font-medium text-sm">Phase Execution</h3>
+      <h3 className="font-sans text-sm font-medium text-on-surface">Phase Execution</h3>
       {phases.map((phase, i) => (
         <div key={phase.name} className="flex items-start gap-3">
-          <div
-            className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium shrink-0 ${PHASE_STATUS_CLASSES[phase.status] ?? PHASE_STATUS_CLASSES['skipped']}`}
-          >
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-surface-container-high font-mono text-sm font-medium text-on-surface-variant shrink-0">
             {i + 1}
           </div>
-          <div className="flex-1 p-3 rounded-lg border text-sm">
+          <Surface level="default" className="flex-1 p-3">
             <div className="flex justify-between items-center">
-              <span className="font-medium">{phase.name}</span>
-              <div className="flex gap-3 text-muted-foreground">
+              <div className="flex items-center gap-2">
+                <span className="font-sans text-sm font-medium text-on-surface">{phase.name}</span>
+                <Badge variant={statusBadgeVariant(phase.status)}>
+                  {phase.status}
+                </Badge>
+              </div>
+              <div className="flex gap-3 font-mono text-xs text-on-surface-variant">
                 <span>{phase.turnsUsed} turns</span>
                 <span>{formatTokens(phase.tokensUsed)}</span>
                 <span>{formatCost(phase.costUsd)}</span>
               </div>
             </div>
-            {phase.summary && (
-              <p className="text-muted-foreground mt-1 line-clamp-2">{phase.summary}</p>
-            )}
-          </div>
+            {phase.summary && <PhaseSummary text={phase.summary} />}
+          </Surface>
         </div>
       ))}
     </div>

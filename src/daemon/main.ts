@@ -40,6 +40,7 @@ import {
 } from './api/mycelium.js';
 import { createSearchHandler } from './api/search.js';
 import { handleGetFeed } from './api/feed.js';
+import { handleListSymbionts } from './api/symbionts.js';
 import {
   handleGetEmbeddingStatus,
   handleEmbeddingDetails,
@@ -64,7 +65,7 @@ import { gatherStats } from '../services/stats.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSession } from '../db/queries/sessions.js';
-import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary, listBatchesBySession } from '../db/queries/batches.js';
+import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, findBatchByPromptPrefix, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary, listBatchesBySession } from '../db/queries/batches.js';
 import { insertActivityWithBatch } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
 import { listRuns, getRun, getRunningRun } from '../db/queries/runs.js';
@@ -477,6 +478,26 @@ export async function main(): Promise<void> {
   // and never changes, so we only need to query the DB once.
   const sessionTitleCache = new Map<string, string>();
 
+  /**
+   * Fire-and-forget trigger for the title-summary agent task.
+   * Guards: summary_batch_interval must be > 0 (0 = disabled), no run
+   * already in progress. Callers add their own preconditions (e.g. batch
+   * threshold, missing title).
+   */
+  async function triggerTitleSummary(sessionId: string): Promise<void> {
+    if (config.agent.summary_batch_interval <= 0) return;
+    const running = getRunningRun(DEFAULT_AGENT_ID);
+    if (running) return;
+    try {
+      const { runAgent } = await import('../agent/executor.js');
+      runAgent(vaultDir, {
+        task: 'title-summary',
+        instruction: `Process session ${sessionId} only`,
+        embeddingManager,
+      }).catch(err => logger.warn('agent', 'Title-summary task failed', { error: String(err) }));
+    } catch { /* agent unavailable */ }
+  }
+
   const bufferDir = path.join(vaultDir, 'buffer');
   const sessionBuffers = new Map<string, EventBuffer>();
 
@@ -750,17 +771,7 @@ export async function main(): Promise<void> {
           const batchCount = promptNumber;
           const summaryInterval = config.agent.summary_batch_interval;
           if (summaryInterval > 0 && batchCount > 0 && batchCount % summaryInterval === 0) {
-            try {
-              const running = getRunningRun(DEFAULT_AGENT_ID);
-              if (!running) {
-                const { runAgent } = await import('../agent/executor.js');
-                runAgent(vaultDir, {
-                  task: 'title-summary',
-                  instruction: `Process session ${event.session_id} only`,
-                  embeddingManager,
-                }).catch(err => logger.warn('agent', 'Batch-threshold summary failed', { error: String(err) }));
-              }
-            } catch { /* agent unavailable */ }
+            triggerTitleSummary(event.session_id);
           }
         } catch (err) {
           logger.warn('capture', 'Failed to open batch', { session_id: event.session_id, error: (err as Error).message });
@@ -1041,17 +1052,23 @@ export async function main(): Promise<void> {
     // when the SessionEnd hook fires (via /sessions/unregister).
     closeOpenBatches(sessionId, epochSeconds());
 
-    // Derive a simple title from the first user prompt captured via hooks.
-    // Cached — the first prompt never changes, so skip the DB query after the first hit.
-    let title = sessionTitleCache.get(sessionId) ?? null;
-    if (!title) {
-      const firstBatch = listBatchesBySession(sessionId, { limit: 1 })[0];
-      if (firstBatch?.user_prompt) {
-        title = firstBatch.user_prompt.slice(0, TITLE_PREVIEW_CHARS);
-        if (firstBatch.user_prompt.length > TITLE_PREVIEW_CHARS) {
-          title += '...';
+    // Derive a simple title from the first user prompt — but only if the
+    // session has no title yet. Once the LLM (or anything else) sets a title,
+    // stop overwriting it with the fallback.
+    const existingSession = getSession(sessionId);
+    const hasTitle = existingSession?.title !== null && existingSession?.title !== undefined;
+
+    if (!hasTitle) {
+      let title = sessionTitleCache.get(sessionId) ?? null;
+      if (!title) {
+        const firstBatch = listBatchesBySession(sessionId, { limit: 1 })[0];
+        if (firstBatch?.user_prompt) {
+          title = firstBatch.user_prompt.slice(0, TITLE_PREVIEW_CHARS);
+          if (firstBatch.user_prompt.length > TITLE_PREVIEW_CHARS) {
+            title += '...';
+          }
+          sessionTitleCache.set(sessionId, title);
         }
-        sessionTitleCache.set(sessionId, title);
       }
     }
 
@@ -1062,7 +1079,9 @@ export async function main(): Promise<void> {
       tool_count: allTurns.reduce((sum, t) => sum + t.toolCount, 0),
     };
     if (user) updateFields.user = user;
-    if (title) updateFields.title = title;
+    if (!hasTitle && sessionTitleCache.has(sessionId)) {
+      updateFields.title = sessionTitleCache.get(sessionId);
+    }
 
     updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
 
@@ -1081,56 +1100,60 @@ export async function main(): Promise<void> {
       catch (err) { logger.warn('processor', 'Failed to populate batch responses', { error: String(err) }); }
     }
 
-    // Fire-and-forget: trigger title/summary generation via agent task
-    try {
-      const { runAgent } = await import('../agent/executor.js');
-      runAgent(vaultDir, {
-        task: 'title-summary',
-        instruction: `Process session ${sessionId} only`,
-        embeddingManager,
-      }).catch(err => logger.warn('agent', 'Title-summary task failed', { error: String(err) }));
-    } catch { /* agent unavailable */ }
+    // Trigger title/summary if the session still needs one.
+    if (!hasTitle) {
+      triggerTitleSummary(sessionId);
+    }
 
-    // Write images to attachments (keep this — images are binary, not in SQLite).
-    // Only process the current turn onward — prior turns were handled by earlier Stops.
+    // Write images to attachments — decoupled from transcript turn indices.
+    // After context compaction, transcript turn indices no longer match batch prompt_numbers.
+    // Instead, match each turn to its batch by prompt text (content-based, not position-based).
+    // File write uses wx flag (skip existing) and DB uses ON CONFLICT DO NOTHING → idempotent.
     const attachmentsDir = path.join(vaultDir, 'attachments');
-    const attachmentStartIndex = latestBatch?.prompt_number ? latestBatch.prompt_number - 1 : 0;
-    const hasNewImages = allTurns.slice(attachmentStartIndex).some((t) => t.images?.length);
+    const hasNewImages = allTurns.some((t) => t.images?.length);
     if (hasNewImages) {
       fs.mkdirSync(attachmentsDir, { recursive: true });
     }
-    for (let i = attachmentStartIndex; i < allTurns.length; i++) {
+    const sessionShort = sessionId.slice(-6);
+    for (let i = 0; i < allTurns.length; i++) {
       const turn = allTurns[i];
       if (!turn.images?.length) continue;
-      const promptNumber = i + 1;
-      // For the last turn, use latestBatch directly (reliable).
-      // For earlier turns, fall back to positional lookup (best-effort).
+
+      // Resolve which batch this turn belongs to:
+      // 1. Last turn → use latestBatch (always correct, comes from the current stop event)
+      // 2. Earlier turns → match by prompt text prefix against DB
+      // 3. Fallback → null batch_id (still saved, UI matches by filename pattern)
       const isLastTurn = i === allTurns.length - 1;
       let resolvedBatchId: number | null = null;
+      let resolvedPromptNumber: number = i + 1; // default to turn index (pre-compaction compatible)
+
       if (isLastTurn && latestBatch) {
         resolvedBatchId = latestBatch.id;
-      } else {
-        try { resolvedBatchId = getBatchIdByPromptNumber(sessionId, promptNumber); }
-        catch { resolvedBatchId = null; }
+        resolvedPromptNumber = latestBatch.prompt_number ?? resolvedPromptNumber;
+      } else if (turn.prompt) {
+        try {
+          const match = findBatchByPromptPrefix(sessionId, turn.prompt);
+          if (match) {
+            resolvedBatchId = match.id;
+            resolvedPromptNumber = match.prompt_number;
+          }
+        } catch { /* fallback to index-based */ }
       }
+
       for (let j = 0; j < turn.images.length; j++) {
         const img = turn.images[j];
         const ext = extensionForMimeType(img.mediaType);
-        const sessionShort = sessionId.slice(-6);
-        const filename = `${sessionShort}-t${promptNumber}-${j + 1}.${ext}`;
+        const filename = `${sessionShort}-t${resolvedPromptNumber}-${j + 1}.${ext}`;
         const filePath = path.join(attachmentsDir, filename);
         try {
           fs.writeFileSync(filePath, Buffer.from(img.data, 'base64'), { flag: 'wx' });
-          logger.debug('processor', 'Image saved', { filename, turn: promptNumber });
+          logger.debug('processor', 'Image saved', { filename, batch: resolvedPromptNumber });
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
         }
-        // Always upsert the DB record — insertAttachment is idempotent (ON CONFLICT DO NOTHING).
-        // Must be outside the file-write try block so the record is created even when the
-        // file already exists (Stop fires per-turn, not just on session end).
         try {
           insertAttachment({
-            id: `${sessionShort}-t${promptNumber}-${j + 1}`,
+            id: `${sessionShort}-b${resolvedPromptNumber}-${j + 1}`,
             session_id: sessionId,
             prompt_batch_id: resolvedBatchId ?? undefined,
             file_path: filename,
@@ -1145,7 +1168,7 @@ export async function main(): Promise<void> {
       session_id: sessionId,
       turns: allTurns.length,
       source: turnSource,
-      title: title ?? '(untitled)',
+      title: existingSession?.title ?? sessionTitleCache.get(sessionId) ?? '(untitled)',
     });
   }
 
@@ -1201,6 +1224,7 @@ export async function main(): Promise<void> {
   let configHash = computeConfigHash(vaultDir);
 
   server.registerRoute('GET', '/api/config', async () => handleGetConfig(vaultDir));
+  server.registerRoute('GET', '/api/symbionts', handleListSymbionts);
   server.registerRoute('PUT', '/api/config', async (req) => {
     const result = await handlePutConfig(vaultDir, req.body);
     if (!result.status || result.status < 400) {
@@ -1250,6 +1274,11 @@ export async function main(): Promise<void> {
           date: new Date(s.started_at * 1000).toISOString().slice(0, 10),
           title: s.title || s.id.slice(0, 8),
           status: s.status,
+          agent: s.agent,
+          prompt_count: s.prompt_count,
+          tool_count: s.tool_count,
+          started_at: s.started_at,
+          ended_at: s.ended_at,
         })),
       },
     };

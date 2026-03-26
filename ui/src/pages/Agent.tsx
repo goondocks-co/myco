@@ -6,8 +6,9 @@ import { RunDetail } from '../components/agent/RunDetail';
 import { TriggerRun } from '../components/agent/TriggerRun';
 import { TaskList } from '../components/agent/TaskList';
 import { TaskDetail } from '../components/agent/TaskDetail';
+import { AgentConfig } from '../components/agent/AgentConfig';
 
-type AgentTab = 'runs' | 'tasks';
+type AgentTab = 'runs' | 'tasks' | 'config';
 
 /* ---------- URL state helpers ---------- */
 
@@ -16,10 +17,16 @@ const PARAM_TAB = 'tab';
 const PARAM_RUN = 'run';
 const PARAM_TASK = 'task';
 
+/** Valid tab values for URL parsing. */
+const VALID_TABS = new Set<AgentTab>(['runs', 'tasks', 'config']);
+
 /** Read initial state from URL search params. */
 function readUrlState(): { tab: AgentTab; runId?: string; taskId?: string } {
   const params = new URLSearchParams(window.location.search);
-  const tab = params.get(PARAM_TAB) === 'tasks' ? 'tasks' : 'runs';
+  const rawTab = params.get(PARAM_TAB);
+  const tab: AgentTab = rawTab && VALID_TABS.has(rawTab as AgentTab)
+    ? (rawTab as AgentTab)
+    : 'runs';
   return {
     tab,
     runId: params.get(PARAM_RUN) ?? undefined,
@@ -38,6 +45,14 @@ function writeUrlState(tab: AgentTab, runId?: string, taskId?: string): void {
   window.history.replaceState(null, '', url);
 }
 
+/* ---------- Tab definitions ---------- */
+
+const TABS: { key: AgentTab; label: string }[] = [
+  { key: 'runs', label: 'Runs' },
+  { key: 'tasks', label: 'Tasks' },
+  { key: 'config', label: 'Config' },
+];
+
 /* ---------- Component ---------- */
 
 export default function Agent() {
@@ -52,14 +67,10 @@ export default function Agent() {
     writeUrlState(tab, selectedRunId, selectedTaskId);
   }, [tab, selectedRunId, selectedTaskId]);
 
-  const switchToRuns = useCallback(() => {
-    setTab('runs');
-    setSelectedTaskId(undefined);
-  }, []);
-
-  const switchToTasks = useCallback(() => {
-    setTab('tasks');
-    setSelectedRunId(undefined);
+  const switchTab = useCallback((t: AgentTab) => {
+    setTab(t);
+    if (t !== 'runs') setSelectedRunId(undefined);
+    if (t !== 'tasks') setSelectedTaskId(undefined);
   }, []);
 
   return (
@@ -68,29 +79,24 @@ export default function Agent() {
         <div>
           <h1 className="text-2xl font-bold">Agent</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Intelligence runs and task configuration
+            Intelligence runs, task configuration, and operational settings
           </p>
         </div>
 
         <div className="flex items-center gap-3">
           {/* Tab switcher */}
           <div className="flex gap-1 p-1 rounded-lg bg-muted">
-            <button
-              onClick={switchToRuns}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                tab === 'runs' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              Runs
-            </button>
-            <button
-              onClick={switchToTasks}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                tab === 'tasks' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              Tasks
-            </button>
+            {TABS.map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => switchTab(key)}
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                  tab === key ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
 
           {tab === 'runs' && (
@@ -123,6 +129,9 @@ export default function Agent() {
           <TaskList onSelect={setSelectedTaskId} />
         )
       )}
+
+      {/* Config tab */}
+      {tab === 'config' && <AgentConfig />}
 
       <TriggerRun
         open={triggerOpen}
