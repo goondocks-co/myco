@@ -193,3 +193,45 @@
 .animate-pulse-slow {
   animation: pulse-slow 3s ease-in-out infinite;
 }
+
+/* ---------- Config slider — sage-themed range input ---------- */
+
+@layer components {
+  .config-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--surface-container-high);
+    outline: none;
+    cursor: pointer;
+  }
+  .config-slider:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .config-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--primary);
+    border: 2px solid var(--surface);
+    box-shadow: 0 0 0 1px var(--primary-container);
+    cursor: pointer;
+    transition: box-shadow 0.15s ease;
+  }
+  .config-slider::-webkit-slider-thumb:hover {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary), transparent 75%);
+  }
+  .config-slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--primary);
+    border: 2px solid var(--surface);
+    box-shadow: 0 0 0 1px var(--primary-container);
+    cursor: pointer;
+  }
+}

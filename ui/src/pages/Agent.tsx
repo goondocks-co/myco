@@ -8,15 +8,20 @@ import { RunDetail } from '../components/agent/RunDetail';
 import { TriggerRun } from '../components/agent/TriggerRun';
 import { TaskList } from '../components/agent/TaskList';
 import { TaskDetail } from '../components/agent/TaskDetail';
+import { AgentConfig } from '../components/agent/AgentConfig';
 
-type AgentTab = 'runs' | 'tasks';
+type AgentTab = 'runs' | 'tasks' | 'config';
 
 /* ---------- Constants ---------- */
 
 const AGENT_TABS: Tab[] = [
   { id: 'runs', label: 'Runs' },
   { id: 'tasks', label: 'Tasks' },
+  { id: 'config', label: 'Config' },
 ];
+
+/** Valid tab IDs for URL state parsing. */
+const VALID_TABS = new Set<string>(['runs', 'tasks', 'config']);
 
 /* ---------- URL state helpers ---------- */
 
@@ -28,7 +33,8 @@ const PARAM_TASK = 'task';
 /** Read initial state from URL search params. */
 function readUrlState(): { tab: AgentTab; runId?: string; taskId?: string } {
   const params = new URLSearchParams(window.location.search);
-  const tab = params.get(PARAM_TAB) === 'tasks' ? 'tasks' : 'runs';
+  const rawTab = params.get(PARAM_TAB) ?? 'runs';
+  const tab = VALID_TABS.has(rawTab) ? (rawTab as AgentTab) : 'runs';
   return {
     tab,
     runId: params.get(PARAM_RUN) ?? undefined,
@@ -71,6 +77,7 @@ export default function Agent() {
     <div className="p-6 space-y-2">
       <PageHeader
         title="Agent"
+        subtitle="Intelligence runs, task configuration, and system metrics"
         tabs={AGENT_TABS}
         activeTab={tab}
         onTabChange={handleTabChange}
@@ -104,6 +111,11 @@ export default function Agent() {
         ) : (
           <TaskList onSelect={setSelectedTaskId} />
         )
+      )}
+
+      {/* Config tab */}
+      {tab === 'config' && (
+        <AgentConfig />
       )}
 
       <TriggerRun
