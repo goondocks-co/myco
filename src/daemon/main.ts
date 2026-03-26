@@ -1250,6 +1250,11 @@ export async function main(): Promise<void> {
           date: new Date(s.started_at * 1000).toISOString().slice(0, 10),
           title: s.title || s.id.slice(0, 8),
           status: s.status,
+          agent: s.agent,
+          prompt_count: s.prompt_count,
+          tool_count: s.tool_count,
+          started_at: s.started_at,
+          ended_at: s.ended_at,
         })),
       },
     };

@@ -38,11 +38,11 @@ function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) 
   );
 
   return (
-    <Surface level="low" className="overflow-hidden">
+    <Surface level="low" className="overflow-hidden rounded-md">
       {/* Collapsible header */}
       <button
         type="button"
-        className="flex w-full items-start gap-3 px-4 py-3 text-left hover:brightness-110 dark:hover:brightness-[1.04] transition-all"
+        className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-surface-container/40 transition-colors"
         onClick={() => setOpen((prev) => !prev)}
       >
         {open ? (
@@ -52,11 +52,11 @@ function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) 
         )}
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline justify-between gap-2 mb-0.5">
-            <span className="font-sans text-xs font-medium text-on-surface-variant">
-              #{batch.prompt_number ?? batch.id}
+            <span className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant">
+              Batch #{batch.prompt_number ?? batch.id}
             </span>
             {batch.activity_count > 0 && (
-              <span className="font-mono text-xs text-on-surface-variant/70">
+              <span className="font-mono text-[10px] text-on-surface-variant/70">
                 {batch.activity_count} tool call{batch.activity_count !== 1 ? 's' : ''}
               </span>
             )}
@@ -100,9 +100,9 @@ function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) 
 
           {/* Activities */}
           {batch.activity_count > 0 && (
-            <div>
-              <div className="px-4 py-1 font-sans text-xs font-medium uppercase tracking-wide text-on-surface-variant">
-                Tool calls
+            <div className="border-t border-[var(--ghost-border)]">
+              <div className="px-4 py-1.5 font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant">
+                Tool Calls
               </div>
               <ActivityList batchId={batch.id} activityCount={batch.activity_count} />
             </div>
@@ -110,8 +110,8 @@ function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) 
 
           {/* AI summary */}
           {batch.response_summary && (
-            <div className="px-4 py-3">
-              <div className="font-sans text-xs font-medium uppercase tracking-wide text-on-surface-variant mb-1">
+            <div className="border-t border-[var(--ghost-border)] px-4 py-3">
+              <div className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant mb-1">
                 Response
               </div>
               <p className="font-sans text-sm text-on-surface-variant whitespace-pre-wrap break-words">
