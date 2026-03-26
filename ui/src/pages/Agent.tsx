@@ -1,8 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Play } from 'lucide-react';
 import { Button } from '../components/ui/button';
-import { PageHeader } from '../components/ui/page-header';
-import type { Tab } from '../components/ui/tab-switcher';
 import { RunList } from '../components/agent/RunList';
 import { RunDetail } from '../components/agent/RunDetail';
 import { TriggerRun } from '../components/agent/TriggerRun';
@@ -12,17 +10,6 @@ import { AgentConfig } from '../components/agent/AgentConfig';
 
 type AgentTab = 'runs' | 'tasks' | 'config';
 
-/* ---------- Constants ---------- */
-
-const AGENT_TABS: Tab[] = [
-  { id: 'runs', label: 'Runs' },
-  { id: 'tasks', label: 'Tasks' },
-  { id: 'config', label: 'Config' },
-];
-
-/** Valid tab IDs for URL state parsing. */
-const VALID_TABS = new Set<string>(['runs', 'tasks', 'config']);
-
 /* ---------- URL state helpers ---------- */
 
 /** URL search param keys for persistent navigation state. */
@@ -30,11 +17,16 @@ const PARAM_TAB = 'tab';
 const PARAM_RUN = 'run';
 const PARAM_TASK = 'task';
 
+/** Valid tab values for URL parsing. */
+const VALID_TABS = new Set<AgentTab>(['runs', 'tasks', 'config']);
+
 /** Read initial state from URL search params. */
 function readUrlState(): { tab: AgentTab; runId?: string; taskId?: string } {
   const params = new URLSearchParams(window.location.search);
-  const rawTab = params.get(PARAM_TAB) ?? 'runs';
-  const tab = VALID_TABS.has(rawTab) ? (rawTab as AgentTab) : 'runs';
+  const rawTab = params.get(PARAM_TAB);
+  const tab: AgentTab = rawTab && VALID_TABS.has(rawTab as AgentTab)
+    ? (rawTab as AgentTab)
+    : 'runs';
   return {
     tab,
     runId: params.get(PARAM_RUN) ?? undefined,
@@ -53,6 +45,14 @@ function writeUrlState(tab: AgentTab, runId?: string, taskId?: string): void {
   window.history.replaceState(null, '', url);
 }
 
+/* ---------- Tab definitions ---------- */
+
+const TABS: { key: AgentTab; label: string }[] = [
+  { key: 'runs', label: 'Runs' },
+  { key: 'tasks', label: 'Tasks' },
+  { key: 'config', label: 'Config' },
+];
+
 /* ---------- Component ---------- */
 
 export default function Agent() {
@@ -67,29 +67,46 @@ export default function Agent() {
     writeUrlState(tab, selectedRunId, selectedTaskId);
   }, [tab, selectedRunId, selectedTaskId]);
 
-  const handleTabChange = useCallback((tabId: string) => {
-    setTab(tabId as AgentTab);
-    if (tabId === 'runs') setSelectedTaskId(undefined);
-    if (tabId === 'tasks') setSelectedRunId(undefined);
+  const switchTab = useCallback((t: AgentTab) => {
+    setTab(t);
+    if (t !== 'runs') setSelectedRunId(undefined);
+    if (t !== 'tasks') setSelectedTaskId(undefined);
   }, []);
 
   return (
-    <div className="p-6 space-y-2">
-      <PageHeader
-        title="Agent"
-        subtitle="Intelligence runs, task configuration, and system metrics"
-        tabs={AGENT_TABS}
-        activeTab={tab}
-        onTabChange={handleTabChange}
-        actions={
-          tab === 'runs' ? (
-            <Button variant="ghost" size="sm" className="gap-2" onClick={() => setTriggerOpen(true)}>
+    <div className="p-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Agent</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Intelligence runs, task configuration, and operational settings
+          </p>
+        </div>
+
+        <div className="flex items-center gap-3">
+          {/* Tab switcher */}
+          <div className="flex gap-1 p-1 rounded-lg bg-muted">
+            {TABS.map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => switchTab(key)}
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                  tab === key ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {tab === 'runs' && (
+            <Button variant="outline" size="sm" className="gap-2" onClick={() => setTriggerOpen(true)}>
               <Play className="h-3.5 w-3.5" />
               Run Now
             </Button>
-          ) : undefined
-        }
-      />
+          )}
+        </div>
+      </div>
 
       {/* Runs tab */}
       {tab === 'runs' && (
@@ -114,9 +131,7 @@ export default function Agent() {
       )}
 
       {/* Config tab */}
-      {tab === 'config' && (
-        <AgentConfig />
-      )}
+      {tab === 'config' && <AgentConfig />}
 
       <TriggerRun
         open={triggerOpen}
