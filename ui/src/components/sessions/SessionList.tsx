@@ -155,21 +155,44 @@ function ColHeader({ children, className }: { children: React.ReactNode; classNa
   );
 }
 
-/** Stats sidebar showing aggregate session data. */
+/* ---------- Accent maps (match VaultStats pattern) ---------- */
+
+type StatAccent = 'sage' | 'ochre' | 'terracotta' | 'outline';
+
+const ACCENT_BORDER: Record<StatAccent, string> = {
+  sage: 'border-t-sage',
+  ochre: 'border-t-ochre',
+  terracotta: 'border-t-terracotta',
+  outline: 'border-t-outline',
+};
+
+const ACCENT_VALUE: Record<StatAccent, string> = {
+  sage: 'text-sage',
+  ochre: 'text-ochre',
+  terracotta: 'text-terracotta',
+  outline: 'text-on-surface',
+};
+
+function StatCard({ label, value, sublabel, accent }: { label: string; value: string; sublabel?: string; accent: StatAccent }) {
+  return (
+    <div className={cn(
+      'rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2',
+      ACCENT_BORDER[accent],
+    )}>
+      <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">{label}</p>
+      <p className={cn('font-serif text-2xl font-bold', ACCENT_VALUE[accent])}>{value}</p>
+      {sublabel && <p className="font-mono text-[10px] text-outline mt-1">{sublabel}</p>}
+    </div>
+  );
+}
+
+/** Horizontal stat cards showing aggregate session data. */
 function SessionStats({ sessions }: { sessions: SessionSummary[] }) {
   const stats = useMemo(() => {
     const activeSessions = sessions.filter((s) => s.status === 'active');
     const completedSessions = sessions.filter((s) => s.status === 'completed');
-    const errorSessions = sessions.filter((s) => s.status === 'error');
     const totalPrompts = sessions.reduce((sum, s) => sum + s.prompt_count, 0);
     const totalTools = sessions.reduce((sum, s) => sum + s.tool_count, 0);
-
-    // Agent breakdown
-    const agentCounts: Record<string, number> = {};
-    for (const s of sessions) {
-      const agent = s.agent || 'unknown';
-      agentCounts[agent] = (agentCounts[agent] || 0) + 1;
-    }
 
     // Date range
     const dates = sessions.map((s) => s.started_at).filter(Boolean);
@@ -180,118 +203,45 @@ function SessionStats({ sessions }: { sessions: SessionSummary[] }) {
       total: sessions.length,
       active: activeSessions.length,
       completed: completedSessions.length,
-      errors: errorSessions.length,
       totalPrompts,
       totalTools,
-      agentCounts,
       earliest,
       latest,
     };
   }, [sessions]);
 
+  const dateRange = stats.earliest && stats.latest
+    ? `${stats.earliest} \u2014 ${stats.latest}`
+    : undefined;
+
   return (
-    <div className="space-y-4">
-      <Surface level="low" className="p-4">
-        <h3 className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant mb-3">
-          Session Stats
-        </h3>
-
-        <div className="space-y-3">
-          {/* Total sessions */}
-          <div>
-            <div className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant mb-1">
-              Total Sessions
-            </div>
-            <div className="font-mono text-2xl text-on-surface font-light">
-              {stats.total}
-            </div>
-          </div>
-
-          {/* Status breakdown */}
-          <div className="flex gap-3">
-            <div className="flex-1">
-              <div className="flex items-center gap-1.5 mb-0.5">
-                <StatusDot status="active" />
-                <span className="font-sans text-[10px] text-on-surface-variant">Active</span>
-              </div>
-              <span className="font-mono text-sm text-on-surface">{stats.active}</span>
-            </div>
-            <div className="flex-1">
-              <div className="flex items-center gap-1.5 mb-0.5">
-                <StatusDot status="completed" />
-                <span className="font-sans text-[10px] text-on-surface-variant">Complete</span>
-              </div>
-              <span className="font-mono text-sm text-on-surface">{stats.completed}</span>
-            </div>
-            {stats.errors > 0 && (
-              <div className="flex-1">
-                <div className="flex items-center gap-1.5 mb-0.5">
-                  <StatusDot status="error" />
-                  <span className="font-sans text-[10px] text-on-surface-variant">Error</span>
-                </div>
-                <span className="font-mono text-sm text-on-surface">{stats.errors}</span>
-              </div>
-            )}
-          </div>
-
-          {/* Divider */}
-          <div className="border-t border-[var(--ghost-border)]" />
-
-          {/* Prompts / Tool calls */}
-          <div className="flex gap-3">
-            <div className="flex-1">
-              <div className="font-sans text-[10px] text-on-surface-variant mb-0.5">Prompts</div>
-              <span className="font-mono text-sm text-on-surface">{stats.totalPrompts}</span>
-            </div>
-            <div className="flex-1">
-              <div className="font-sans text-[10px] text-on-surface-variant mb-0.5">Tool Calls</div>
-              <span className="font-mono text-sm text-on-surface">{stats.totalTools}</span>
-            </div>
-          </div>
-
-          {/* Date range */}
-          {stats.earliest && stats.latest && (
-            <>
-              <div className="border-t border-[var(--ghost-border)]" />
-              <div>
-                <div className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant mb-1">
-                  Date Range
-                </div>
-                <div className="font-mono text-xs text-on-surface">
-                  {stats.earliest}
-                </div>
-                <div className="font-mono text-xs text-on-surface-variant">
-                  to {stats.latest}
-                </div>
-              </div>
-            </>
-          )}
-
-          {/* Agent breakdown */}
-          {Object.keys(stats.agentCounts).length > 0 && (
-            <>
-              <div className="border-t border-[var(--ghost-border)]" />
-              <div>
-                <div className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant mb-2">
-                  Agents
-                </div>
-                <div className="space-y-1.5">
-                  {Object.entries(stats.agentCounts)
-                    .sort(([, a], [, b]) => b - a)
-                    .map(([agent, count]) => (
-                      <div key={agent} className="flex items-center justify-between gap-2">
-                        <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">
-                          {agent}
-                        </Badge>
-                        <span className="font-mono text-xs text-on-surface-variant">{count}</span>
-                      </div>
-                    ))}
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-      </Surface>
+    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
+      <StatCard
+        label="Total Sessions"
+        value={String(stats.total)}
+        sublabel={dateRange}
+        accent="sage"
+      />
+      <StatCard
+        label="Active"
+        value={String(stats.active)}
+        accent="sage"
+      />
+      <StatCard
+        label="Completed"
+        value={String(stats.completed)}
+        accent="outline"
+      />
+      <StatCard
+        label="Prompts"
+        value={String(stats.totalPrompts)}
+        accent="outline"
+      />
+      <StatCard
+        label="Tool Calls"
+        value={String(stats.totalTools)}
+        accent="outline"
+      />
     </div>
   );
 }
@@ -371,68 +321,63 @@ export function SessionList() {
         subtitle={`${sessions.length} session${sessions.length !== 1 ? 's' : ''} captured`}
       />
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_280px]">
-        {/* Main table column */}
-        <div className="min-w-0">
-          {/* Filter toolbar */}
-          <Surface level="bright" className="flex items-center gap-3 px-4 py-2 mb-4 rounded-md">
-            <Filter className="h-3.5 w-3.5 text-on-surface-variant shrink-0" />
-            <Input
-              placeholder="Filter sessions..."
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              className="bg-transparent border-none shadow-none focus-visible:ring-0 px-0 h-auto py-0 font-sans text-sm"
-            />
-            <span className="font-mono text-xs text-on-surface-variant shrink-0">
-              {filtered.length}/{sessions.length}
-            </span>
-          </Surface>
+      {/* Stats cards */}
+      {sessions.length > 0 && (
+        <div className="mb-6">
+          <SessionStats sessions={sessions} />
+        </div>
+      )}
 
-          {filtered.length === 0 ? (
-            <div className="flex h-40 flex-col items-center justify-center gap-2 text-on-surface-variant">
-              <MessageSquare className="h-8 w-8 opacity-30" />
-              <span className="font-sans text-sm">
-                {sessions.length === 0 ? 'No sessions yet' : 'No matching sessions'}
-              </span>
-              {sessions.length === 0 && (
-                <span className="font-sans text-xs">Sessions appear here as you work with your agent</span>
-              )}
-            </div>
-          ) : (
-            <Surface level="low" className="rounded-md overflow-hidden">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-[var(--ghost-border)] bg-surface-container/50">
-                    <ColHeader>Session ID</ColHeader>
-                    <ColHeader>Title</ColHeader>
-                    <ColHeader>Agent</ColHeader>
-                    <ColHeader>Status</ColHeader>
-                    <ColHeader className="text-center">Turns</ColHeader>
-                    <ColHeader>Date</ColHeader>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map((session) => (
-                    <SessionTableRow
-                      key={session.id}
-                      session={session}
-                      onClick={() => navigate(`/sessions/${session.id}`)}
-                      onDelete={() => handleDelete(session)}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </Surface>
+      {/* Filter toolbar */}
+      <Surface level="bright" className="flex items-center gap-3 px-4 py-2 mb-4 rounded-md">
+        <Filter className="h-3.5 w-3.5 text-on-surface-variant shrink-0" />
+        <Input
+          placeholder="Filter sessions..."
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          className="bg-transparent border-none shadow-none focus-visible:ring-0 px-0 h-auto py-0 font-sans text-sm"
+        />
+        <span className="font-mono text-xs text-on-surface-variant shrink-0">
+          {filtered.length}/{sessions.length}
+        </span>
+      </Surface>
+
+      {filtered.length === 0 ? (
+        <div className="flex h-40 flex-col items-center justify-center gap-2 text-on-surface-variant">
+          <MessageSquare className="h-8 w-8 opacity-30" />
+          <span className="font-sans text-sm">
+            {sessions.length === 0 ? 'No sessions yet' : 'No matching sessions'}
+          </span>
+          {sessions.length === 0 && (
+            <span className="font-sans text-xs">Sessions appear here as you work with your agent</span>
           )}
         </div>
-
-        {/* Stats sidebar */}
-        {sessions.length > 0 && (
-          <div className="hidden lg:block">
-            <SessionStats sessions={sessions} />
-          </div>
-        )}
-      </div>
+      ) : (
+        <Surface level="low" className="rounded-md overflow-hidden">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-[var(--ghost-border)] bg-surface-container/50">
+                <ColHeader>Session ID</ColHeader>
+                <ColHeader>Title</ColHeader>
+                <ColHeader>Agent</ColHeader>
+                <ColHeader>Status</ColHeader>
+                <ColHeader className="text-center">Turns</ColHeader>
+                <ColHeader>Date</ColHeader>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((session) => (
+                <SessionTableRow
+                  key={session.id}
+                  session={session}
+                  onClick={() => navigate(`/sessions/${session.id}`)}
+                  onDelete={() => handleDelete(session)}
+                />
+              ))}
+            </tbody>
+          </table>
+        </Surface>
+      )}
     </div>
   );
 }

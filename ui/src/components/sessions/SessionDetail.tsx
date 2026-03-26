@@ -63,7 +63,38 @@ function epochToAbsolute(epoch: number | null): string {
   return new Date(epoch * 1000).toLocaleString();
 }
 
+/* ---------- Accent maps (match VaultStats pattern) ---------- */
+
+type StatAccent = 'sage' | 'ochre' | 'terracotta' | 'outline';
+
+const ACCENT_BORDER: Record<StatAccent, string> = {
+  sage: 'border-t-sage',
+  ochre: 'border-t-ochre',
+  terracotta: 'border-t-terracotta',
+  outline: 'border-t-outline',
+};
+
+const ACCENT_VALUE: Record<StatAccent, string> = {
+  sage: 'text-sage',
+  ochre: 'text-ochre',
+  terracotta: 'text-terracotta',
+  outline: 'text-on-surface',
+};
+
 /* ---------- Sub-components ---------- */
+
+function DetailStatCard({ label, value, sublabel, accent }: { label: string; value: string; sublabel?: string; accent: StatAccent }) {
+  return (
+    <div className={cn(
+      'rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2',
+      ACCENT_BORDER[accent],
+    )}>
+      <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">{label}</p>
+      <p className={cn('font-serif text-2xl font-bold truncate', ACCENT_VALUE[accent])}>{value}</p>
+      {sublabel && <p className="font-mono text-[10px] text-outline mt-1 truncate">{sublabel}</p>}
+    </div>
+  );
+}
 
 /** Section header with the uppercase label treatment. */
 function SectionLabel({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -130,7 +161,7 @@ export function SessionDetail({ id }: SessionDetailProps) {
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-6 space-y-6 overflow-hidden">
       {/* Back nav */}
       <Button
         variant="ghost"
@@ -194,53 +225,53 @@ export function SessionDetail({ id }: SessionDetailProps) {
         </div>
       </div>
 
+      {/* Stats + Metadata cards (horizontal, above conversation) */}
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+        <DetailStatCard label="Prompts" value={String(session.prompt_count)} accent="sage" />
+        <DetailStatCard label="Tool Calls" value={String(session.tool_count)} accent="sage" />
+        <DetailStatCard label="Status" value={session.status.charAt(0).toUpperCase() + session.status.slice(1)} accent="outline" />
+        <DetailStatCard label="Started" value={epochToAbsolute(session.started_at)} accent="outline" />
+        <DetailStatCard label="Ended" value={epochToAbsolute(session.ended_at)} accent="outline" />
+        <DetailStatCard
+          label="Session ID"
+          value={id.slice(0, SESSION_ID_PREVIEW_LENGTH)}
+          sublabel={session.content_hash ? `hash: ${session.content_hash.slice(0, CONTENT_HASH_PREVIEW_LENGTH)}` : undefined}
+          accent="outline"
+        />
+      </div>
+
+      {/* Metadata details (collapsible-style row) */}
+      <Surface level="low" className="p-4 overflow-hidden">
+        <SectionLabel className="mb-3">Metadata</SectionLabel>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-6">
+          <MetaItem label="Session ID" value={id} />
+          {session.parent_session_id && (
+            <MetaItem label="Parent" value={session.parent_session_id} />
+          )}
+          {session.parent_session_reason && (
+            <MetaItem label="Reason" value={session.parent_session_reason} mono={false} />
+          )}
+          {session.transcript_path && (
+            <MetaItem label="Transcript" value={session.transcript_path} />
+          )}
+          {session.project_root && (
+            <MetaItem label="Project" value={session.project_root} />
+          )}
+        </div>
+      </Surface>
+
       {/* Summary */}
       {session.summary && (
-        <Surface level="low" className="p-4">
+        <Surface level="low" className="p-4 overflow-hidden">
           <SectionLabel className="mb-2">Summary</SectionLabel>
-          <p className="font-sans text-sm text-on-surface-variant whitespace-pre-wrap">{session.summary}</p>
+          <p className="font-sans text-sm text-on-surface-variant whitespace-pre-wrap break-words">{session.summary}</p>
         </Surface>
       )}
 
-      {/* Two-column layout: conversation + metadata sidebar */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_minmax(280px,35%)]">
-        {/* Conversation column */}
-        <div>
-          <SectionLabel className="mb-3">Conversation</SectionLabel>
-          <BatchTimeline sessionId={id} />
-        </div>
-
-        {/* Metadata sidebar */}
-        <div className="space-y-4 lg:sticky lg:top-6 lg:self-start">
-          <Surface level="low" className="p-4">
-            <SectionLabel className="mb-3">Stats</SectionLabel>
-            <MetaItem label="Prompts" value={String(session.prompt_count)} />
-            <MetaItem label="Tool calls" value={String(session.tool_count)} />
-            <MetaItem label="Status" value={session.status} />
-            <MetaItem label="Started" value={epochToAbsolute(session.started_at)} />
-            <MetaItem label="Ended" value={epochToAbsolute(session.ended_at)} />
-          </Surface>
-
-          <Surface level="low" className="p-4">
-            <SectionLabel className="mb-3">Metadata</SectionLabel>
-            <MetaItem label="Session ID" value={id} />
-            {session.parent_session_id && (
-              <MetaItem label="Parent" value={session.parent_session_id} />
-            )}
-            {session.parent_session_reason && (
-              <MetaItem label="Reason" value={session.parent_session_reason} mono={false} />
-            )}
-            {session.content_hash && (
-              <MetaItem label="Hash" value={session.content_hash.slice(0, CONTENT_HASH_PREVIEW_LENGTH) + '\u2026'} />
-            )}
-            {session.transcript_path && (
-              <MetaItem label="Transcript" value={session.transcript_path} />
-            )}
-            {session.project_root && (
-              <MetaItem label="Project" value={session.project_root} />
-            )}
-          </Surface>
-        </div>
+      {/* Conversation (full-width) */}
+      <div className="min-w-0 overflow-hidden">
+        <SectionLabel className="mb-3">Conversation</SectionLabel>
+        <BatchTimeline sessionId={id} />
       </div>
     </div>
   );

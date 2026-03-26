@@ -39,11 +39,11 @@ function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) 
   );
 
   return (
-    <Surface level="low" className="overflow-hidden rounded-md">
+    <Surface level="low" className="overflow-hidden rounded-md max-w-full">
       {/* Collapsible header */}
       <button
         type="button"
-        className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-surface-container/40 transition-colors"
+        className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-surface-container/40 transition-colors overflow-hidden"
         onClick={() => setOpen((prev) => !prev)}
       >
         {open ? (
@@ -51,13 +51,13 @@ function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) 
         ) : (
           <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-on-surface-variant" />
         )}
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 overflow-hidden">
           <div className="flex items-baseline justify-between gap-2 mb-0.5">
-            <span className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant">
+            <span className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant shrink-0">
               Batch #{batch.prompt_number ?? batch.id}
             </span>
             {batch.activity_count > 0 && (
-              <span className="font-mono text-[10px] text-on-surface-variant/70">
+              <span className="font-mono text-[10px] text-on-surface-variant/70 shrink-0">
                 {batch.activity_count} tool call{batch.activity_count !== 1 ? 's' : ''}
               </span>
             )}
@@ -74,9 +74,9 @@ function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) 
       </button>
 
       {open && (
-        <div>
+        <div className="overflow-hidden">
           {/* User prompt (full) */}
-          <div className="px-4 pt-0 pb-3">
+          <div className="px-4 pt-0 pb-3 overflow-hidden">
             {batch.user_prompt && batch.user_prompt.length > PROMPT_PREVIEW_CHARS && (
               <MarkdownContent content={batch.user_prompt} />
             )}
@@ -109,7 +109,7 @@ function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) 
 
           {/* AI summary */}
           {batch.response_summary && (
-            <div className="border-t border-[var(--ghost-border)] px-4 py-3">
+            <div className="border-t border-[var(--ghost-border)] px-4 py-3 overflow-hidden">
               <div className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant mb-1">
                 Response
               </div>
