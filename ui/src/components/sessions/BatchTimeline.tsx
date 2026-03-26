@@ -34,9 +34,16 @@ interface BatchCardProps {
 function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) {
   const [open, setOpen] = useState(defaultOpen);
 
-  const batchAttachments = attachments.filter(
-    (a) => a.prompt_batch_id === batch.id,
-  );
+  // Match attachments by batch ID, or by turn number from filename when batch_id is null
+  const batchAttachments = attachments.filter((a) => {
+    if (a.prompt_batch_id === batch.id) return true;
+    // Fallback: parse turn number from filename pattern {short}-t{turn}-{index}.ext
+    if (a.prompt_batch_id === null && batch.prompt_number !== null) {
+      const match = a.file_path?.match(/-t(\d+)-/);
+      return match != null && match[1] != null && parseInt(match[1]) === batch.prompt_number;
+    }
+    return false;
+  });
 
   return (
     <Surface level="low" className="overflow-hidden rounded-md max-w-full">
@@ -97,14 +104,9 @@ function BatchCard({ batch, attachments, defaultOpen = false }: BatchCardProps) 
             )}
           </div>
 
-          {/* Activities */}
+          {/* Activities — header is built into ActivityList for expand/collapse */}
           {batch.activity_count > 0 && (
-            <div className="border-t border-[var(--ghost-border)]">
-              <div className="px-4 py-1.5 font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant">
-                Tool Calls
-              </div>
-              <ActivityList batchId={batch.id} activityCount={batch.activity_count} />
-            </div>
+            <ActivityList batchId={batch.id} activityCount={batch.activity_count} />
           )}
 
           {/* AI summary */}

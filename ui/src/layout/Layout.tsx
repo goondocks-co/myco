@@ -7,7 +7,6 @@ import {
   ScrollText,
   Sun,
   Moon,
-  FolderOpen,
   RotateCcw,
   Type,
   Minus,
@@ -37,12 +36,6 @@ const NAV_ITEMS = [
   { to: '/settings', label: 'Settings', icon: Settings },
   { to: '/operations', label: 'Operations', icon: Wrench },
   { to: '/logs', label: 'Logs', icon: ScrollText },
-] as const;
-
-const VAULT_OPEN_OPTIONS = [
-  { value: 'obsidian', label: 'Obsidian' },
-  { value: 'vscode', label: 'VS Code' },
-  { value: 'finder', label: 'Finder' },
 ] as const;
 
 const FONT_OPTIONS: { value: FontOption; label: string }[] = [
@@ -170,40 +163,6 @@ function RestartButton() {
       <RotateCcw className={cn('h-4 w-4', isRestarting && 'animate-spin')} />
       <span>{isRestarting ? 'Restarting...' : 'Restart Daemon'}</span>
     </Button>
-  );
-}
-
-function OpenVaultSelect() {
-  const { data: stats } = useDaemon();
-
-  const handleOpenVault = (value: string) => {
-    if (!stats) return;
-    let uri: string;
-    if (value === 'obsidian') {
-      uri = `obsidian://open?vault=${encodeURIComponent(stats.vault.name)}`;
-    } else if (value === 'vscode') {
-      uri = `vscode://file${stats.vault.path}`;
-    } else {
-      uri = `file://${stats.vault.path}`;
-    }
-    window.location.href = uri;
-  };
-
-  return (
-    <label className="flex items-center gap-2 px-2 py-1 text-sm text-on-surface-variant hover:text-on-surface cursor-pointer">
-      <FolderOpen className="h-4 w-4 shrink-0" />
-      <select
-        value=""
-        onChange={(e) => { if (e.target.value) handleOpenVault(e.target.value); e.target.value = ''; }}
-        disabled={!stats}
-        className="w-full bg-transparent border-none outline-none cursor-pointer text-sm appearance-none disabled:opacity-50"
-      >
-        <option value="" disabled>Open Vault</option>
-        {VAULT_OPEN_OPTIONS.map((opt) => (
-          <option key={opt.value} value={opt.value}>{opt.label}</option>
-        ))}
-      </select>
-    </label>
   );
 }
 
@@ -374,7 +333,6 @@ export default function Layout() {
         {!collapsed && (
           <div className="px-2 py-3 space-y-1 mt-auto">
             <RestartButton />
-            <OpenVaultSelect />
             <FontSelector />
             <DensityControl />
             <ThemeToggle />
