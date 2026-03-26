@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { AlertCircle, FlaskConical, ChevronDown, ChevronUp } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
+import { Surface } from '../ui/surface';
 import { Button } from '../ui/button';
 import { useDigest, type DigestTier } from '../../hooks/use-spores';
 import { formatEpochAgo } from '../../lib/format';
@@ -25,69 +25,61 @@ function tierLabel(tier: number): string {
 
 /* ---------- Sub-components ---------- */
 
-function TierCard({ tier }: { tier: DigestTier }) {
+function TierPanel({ tier }: { tier: DigestTier }) {
   const [expanded, setExpanded] = useState(false);
   const isLong = tier.content.length > DIGEST_PREVIEW_CHARS;
   const displayContent = isLong && !expanded
-    ? tier.content.slice(0, DIGEST_PREVIEW_CHARS) + '…'
+    ? tier.content.slice(0, DIGEST_PREVIEW_CHARS) + '\u2026'
     : tier.content;
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <CardTitle className="text-sm font-mono">{tierLabel(tier.tier)}</CardTitle>
-          <span className="text-xs text-muted-foreground">
-            Generated {formatEpochAgo(tier.generated_at)}
-          </span>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <p className="text-sm text-muted-foreground whitespace-pre-wrap leading-relaxed">
-          {displayContent}
-        </p>
-        {isLong && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1 text-xs text-muted-foreground"
-            onClick={() => setExpanded(!expanded)}
-          >
-            {expanded ? (
-              <>
-                <ChevronUp className="h-3 w-3" />
-                Show less
-              </>
-            ) : (
-              <>
-                <ChevronDown className="h-3 w-3" />
-                Show more ({tier.content.length - DIGEST_PREVIEW_CHARS} more chars)
-              </>
-            )}
-          </Button>
-        )}
-      </CardContent>
-    </Card>
+    <Surface level="low" className="p-5 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <span className="font-mono text-sm text-on-surface font-medium">{tierLabel(tier.tier)}</span>
+        <span className="font-sans text-xs text-on-surface-variant">
+          Generated {formatEpochAgo(tier.generated_at)}
+        </span>
+      </div>
+      <p className="font-sans text-sm text-on-surface-variant whitespace-pre-wrap leading-relaxed">
+        {displayContent}
+      </p>
+      {isLong && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 gap-1 text-xs text-on-surface-variant"
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded ? (
+            <>
+              <ChevronUp className="h-3 w-3" />
+              Show less
+            </>
+          ) : (
+            <>
+              <ChevronDown className="h-3 w-3" />
+              Show more ({tier.content.length - DIGEST_PREVIEW_CHARS} more chars)
+            </>
+          )}
+        </Button>
+      )}
+    </Surface>
   );
 }
 
-function SkeletonCard() {
+function SkeletonPanel() {
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="h-4 w-24 animate-pulse rounded bg-muted" />
-          <div className="h-3 w-20 animate-pulse rounded bg-muted" />
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-2">
-          <div className="h-3 animate-pulse rounded bg-muted" />
-          <div className="h-3 w-4/5 animate-pulse rounded bg-muted" />
-          <div className="h-3 w-3/5 animate-pulse rounded bg-muted" />
-        </div>
-      </CardContent>
-    </Card>
+    <Surface level="low" className="p-5">
+      <div className="flex items-center justify-between">
+        <div className="h-4 w-24 animate-pulse rounded bg-surface-container" />
+        <div className="h-3 w-20 animate-pulse rounded bg-surface-container" />
+      </div>
+      <div className="space-y-2 mt-3">
+        <div className="h-3 animate-pulse rounded bg-surface-container" />
+        <div className="h-3 w-4/5 animate-pulse rounded bg-surface-container" />
+        <div className="h-3 w-3/5 animate-pulse rounded bg-surface-container" />
+      </div>
+    </Surface>
   );
 }
 
@@ -104,7 +96,7 @@ export function DigestView({ agentId }: DigestViewProps) {
   if (isLoading) {
     return (
       <div className="space-y-4">
-        {[1, 2, 3].map((i) => <SkeletonCard key={i} />)}
+        {[1, 2, 3].map((i) => <SkeletonPanel key={i} />)}
       </div>
     );
   }
@@ -113,8 +105,8 @@ export function DigestView({ agentId }: DigestViewProps) {
     return (
       <div className="flex h-40 flex-col items-center justify-center gap-2 text-destructive">
         <AlertCircle className="h-5 w-5" />
-        <span className="text-sm">Failed to load digest</span>
-        <span className="text-xs text-muted-foreground">
+        <span className="font-sans text-sm">Failed to load digest</span>
+        <span className="font-sans text-xs text-on-surface-variant">
           {error instanceof Error ? error.message : 'Unknown error'}
         </span>
       </div>
@@ -123,10 +115,10 @@ export function DigestView({ agentId }: DigestViewProps) {
 
   if (tiers.length === 0) {
     return (
-      <div className="flex h-48 flex-col items-center justify-center gap-2 text-muted-foreground">
+      <div className="flex h-48 flex-col items-center justify-center gap-2 text-on-surface-variant">
         <FlaskConical className="h-8 w-8 opacity-30" />
-        <span className="text-sm">No digest generated yet</span>
-        <span className="text-xs text-center max-w-xs">
+        <span className="font-sans text-sm">No digest generated yet</span>
+        <span className="font-sans text-xs text-center max-w-xs">
           Run the agent with the digest-only task to synthesize your vault knowledge into context extracts.
         </span>
       </div>
@@ -135,11 +127,11 @@ export function DigestView({ agentId }: DigestViewProps) {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">
+      <p className="font-sans text-sm text-on-surface-variant">
         {tiers.length} tier{tiers.length !== 1 ? 's' : ''} — pre-computed context extracts at different token budgets.
       </p>
       {tiers.map((tier) => (
-        <TierCard key={tier.tier} tier={tier} />
+        <TierPanel key={tier.tier} tier={tier} />
       ))}
     </div>
   );
