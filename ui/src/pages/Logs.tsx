@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { ScrollText, Pause, Play, Trash2, ArrowDown } from 'lucide-react';
+import { Pause, Play, Trash2, ArrowDown } from 'lucide-react';
 import { usePowerQuery } from '../hooks/use-power-query';
 import { fetchJson } from '../lib/api';
 import { POLL_INTERVALS, LOG_LEVELS, LEVEL_ORDER, type LogLevel } from '../lib/constants';
+import { PageHeader } from '../components/ui/page-header';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
@@ -14,13 +15,6 @@ const DEFAULT_LOG_LIMIT = 200;
 /** Matches LOG_RING_BUFFER_CAPACITY in src/daemon/log-buffer.ts */
 const MAX_LOG_ENTRIES = 5000;
 const SCROLL_BOTTOM_THRESHOLD_PX = 40;
-
-const LEVEL_BADGE_CLASS: Record<LogLevel, string> = {
-  debug: 'border-transparent bg-muted text-muted-foreground',
-  info: 'border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
-  warn: 'border-transparent bg-amber-500/15 text-amber-600 dark:text-amber-400',
-  error: 'border-transparent bg-red-500/15 text-red-600 dark:text-red-400',
-};
 
 /* ---------- Types ---------- */
 
@@ -52,6 +46,16 @@ function isAtBottom(el: HTMLElement): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX;
 }
 
+/** Map log level to Badge variant. */
+function levelBadgeVariant(level: LogLevel): 'default' | 'secondary' | 'warning' | 'destructive' {
+  switch (level) {
+    case 'info': return 'default';
+    case 'warn': return 'warning';
+    case 'error': return 'destructive';
+    default: return 'secondary';
+  }
+}
+
 /* ---------- Logs Page ---------- */
 
 export default function Logs() {
@@ -70,7 +74,7 @@ export default function Logs() {
   const cursorRef = useRef(cursor);
   cursorRef.current = cursor;
 
-  /* Fetch new log entries — stable queryKey avoids cache bloat */
+  /* Fetch new log entries -- stable queryKey avoids cache bloat */
   const { data: logsData } = usePowerQuery<LogsResponse>({
     queryKey: ['logs'],
     queryFn: ({ signal }) => {
@@ -171,21 +175,20 @@ export default function Logs() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header toolbar */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-border bg-card px-4 py-3">
-        {/* Page title */}
-        <div className="flex items-center gap-2 mr-2">
-          <ScrollText className="h-4 w-4 text-primary" />
-          <span className="text-sm font-semibold">Logs</span>
-        </div>
+      {/* Page header */}
+      <div className="px-6 pt-6">
+        <PageHeader title="Logs" />
+      </div>
 
+      {/* Filter toolbar */}
+      <div className="flex flex-wrap items-center gap-2 bg-surface-container px-6 py-3">
         {/* Level filter buttons */}
         <div className="flex items-center gap-1">
           {LOG_LEVELS.map((level) => (
             <Button
               key={level}
               size="sm"
-              variant={activeLevel === level ? 'default' : 'outline'}
+              variant={activeLevel === level ? 'default' : 'ghost'}
               className="h-7 px-2 text-xs capitalize"
               onClick={() => setActiveLevel(level)}
             >
@@ -197,7 +200,7 @@ export default function Logs() {
         {/* Category filter chips */}
         {knownCategories.length > 0 && (
           <div className="flex items-center gap-1 flex-wrap">
-            <span className="text-[10px] text-muted-foreground mr-0.5">cat:</span>
+            <span className="font-sans text-[10px] text-on-surface-variant mr-0.5">cat:</span>
             {knownCategories.map((cat) => (
               <Button
                 key={cat}
@@ -223,7 +226,7 @@ export default function Logs() {
               <Button
                 size="sm"
                 variant="ghost"
-                className="h-5 px-1.5 text-[10px] text-muted-foreground"
+                className="h-5 px-1.5 text-[10px] text-on-surface-variant"
                 onClick={() => setActiveCategories(new Set())}
               >
                 clear
@@ -244,7 +247,7 @@ export default function Logs() {
           {/* Auto-scroll toggle */}
           <Button
             size="sm"
-            variant={autoScroll ? 'default' : 'outline'}
+            variant={autoScroll ? 'default' : 'ghost'}
             className="h-7 gap-1.5 px-2 text-xs"
             onClick={() => {
               if (autoScroll) {
@@ -262,8 +265,8 @@ export default function Logs() {
           {/* Clear */}
           <Button
             size="sm"
-            variant="outline"
-            className="h-7 gap-1.5 px-2 text-xs text-muted-foreground"
+            variant="ghost"
+            className="h-7 gap-1.5 px-2 text-xs text-on-surface-variant"
             onClick={clearEntries}
             title="Clear log entries"
           >
@@ -278,10 +281,10 @@ export default function Logs() {
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className="h-full overflow-y-auto font-mono text-xs"
+          className="h-full overflow-y-auto bg-surface-container-lowest font-mono text-xs"
         >
           {filteredEntries.length === 0 ? (
-            <div className="flex h-32 items-center justify-center text-muted-foreground">
+            <div className="flex h-32 items-center justify-center font-sans text-on-surface-variant">
               No log entries
             </div>
           ) : (
@@ -302,9 +305,9 @@ export default function Logs() {
             onClick={scrollToBottom}
             className={cn(
               'absolute bottom-4 left-1/2 -translate-x-1/2',
-              'flex items-center gap-1.5 rounded-full border border-border',
-              'bg-card px-3 py-1.5 text-xs font-medium shadow-md',
-              'text-muted-foreground transition-colors hover:text-foreground',
+              'flex items-center gap-1.5 rounded-full',
+              'bg-surface-container-high px-3 py-1.5 text-xs font-medium shadow-ambient',
+              'text-on-surface-variant transition-colors hover:text-on-surface',
             )}
           >
             <ArrowDown className="h-3 w-3" />
@@ -320,28 +323,29 @@ export default function Logs() {
 
 function LogRow({ entry }: { entry: LogEntry }) {
   return (
-    <tr className="border-b border-border/40 hover:bg-accent/30 transition-colors">
+    <tr className="hover:bg-surface-container-high/30 transition-colors">
       {/* Timestamp */}
-      <td className="whitespace-nowrap py-1 pl-4 pr-3 text-muted-foreground/70 align-top w-[68px]">
+      <td className="whitespace-nowrap py-1 pl-4 pr-3 text-on-surface-variant/70 align-top w-[68px]">
         {formatTimestamp(entry.timestamp)}
       </td>
 
       {/* Level badge */}
       <td className="whitespace-nowrap py-1 pr-3 align-top w-[54px]">
         <Badge
-          className={cn('px-1.5 py-0 text-[10px] font-medium uppercase', LEVEL_BADGE_CLASS[entry.level])}
+          variant={levelBadgeVariant(entry.level)}
+          className="px-1.5 py-0 text-[10px] uppercase"
         >
           {entry.level}
         </Badge>
       </td>
 
       {/* Category */}
-      <td className="whitespace-nowrap py-1 pr-3 text-muted-foreground align-top w-[120px] truncate max-w-[120px]">
+      <td className="whitespace-nowrap py-1 pr-3 text-on-surface-variant align-top w-[120px] truncate max-w-[120px]">
         {entry.category}
       </td>
 
       {/* Message */}
-      <td className="py-1 pr-4 text-foreground align-top break-words">
+      <td className="py-1 pr-4 text-on-surface align-top break-words">
         {entry.message}
       </td>
     </tr>

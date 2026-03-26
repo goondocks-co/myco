@@ -1,9 +1,10 @@
 import { ArrowLeft, AlertCircle } from 'lucide-react';
 import { Button } from '../ui/button';
+import { Badge } from '../ui/badge';
+import { Surface } from '../ui/surface';
 import { useTask, type PhaseDefinition } from '../../hooks/use-agent';
-import { cn } from '../../lib/cn';
 import { capitalize } from '../../lib/format';
-import { taskSourceClass } from './helpers';
+import { TASK_SOURCE_USER } from '../../lib/constants';
 import { TaskActions } from './TaskActions';
 import { TaskEditor } from './TaskEditor';
 
@@ -31,20 +32,25 @@ function getExecution(task: { execution?: { model?: string; maxTurns?: number; t
   };
 }
 
+/** Map task source to Badge variant. */
+function sourceBadgeVariant(source: string | undefined): 'warning' | 'secondary' {
+  return source === TASK_SOURCE_USER ? 'warning' : 'secondary';
+}
+
 /* ---------- Sub-components ---------- */
 
 function SkeletonDetail() {
   return (
     <div className="space-y-6">
-      <div className="h-8 w-24 animate-pulse rounded bg-muted" />
-      <div className="rounded-lg border border-border bg-card p-4 space-y-3">
-        <div className="h-6 w-48 animate-pulse rounded bg-muted" />
-        <div className="h-4 w-64 animate-pulse rounded bg-muted" />
-        <div className="h-8 w-32 animate-pulse rounded bg-muted" />
+      <div className="h-8 w-24 animate-pulse rounded bg-surface-container-high" />
+      <div className="rounded-md bg-surface-container-low p-4 space-y-3">
+        <div className="h-6 w-48 animate-pulse rounded bg-surface-container-high" />
+        <div className="h-4 w-64 animate-pulse rounded bg-surface-container-high" />
+        <div className="h-8 w-32 animate-pulse rounded bg-surface-container-high" />
       </div>
-      <div className="rounded-lg border border-border bg-card p-4 space-y-2">
+      <div className="rounded-md bg-surface-container-low p-4 space-y-2">
         {Array.from({ length: CONFIG_GRID_COLS }).map((_, i) => (
-          <div key={i} className="h-5 animate-pulse rounded bg-muted" />
+          <div key={i} className="h-5 animate-pulse rounded bg-surface-container-high" />
         ))}
       </div>
     </div>
@@ -53,18 +59,18 @@ function SkeletonDetail() {
 
 function PhaseCard({ phase, index }: { phase: PhaseDefinition; index: number }) {
   return (
-    <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+    <Surface level="low" className="p-4 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground shrink-0">
+          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-surface-container-high font-mono text-xs font-semibold text-on-surface-variant shrink-0">
             {index + 1}
           </span>
-          <span className="font-medium text-sm">{phase.name}</span>
+          <span className="font-sans text-sm font-medium text-on-surface">{phase.name}</span>
           {!phase.required && (
-            <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">optional</span>
+            <Badge variant="secondary">optional</Badge>
           )}
         </div>
-        <span className="text-xs text-muted-foreground font-mono shrink-0">
+        <span className="font-mono text-xs text-on-surface-variant shrink-0">
           max {phase.maxTurns} turns
         </span>
       </div>
@@ -74,7 +80,7 @@ function PhaseCard({ phase, index }: { phase: PhaseDefinition; index: number }) 
           {phase.tools.map((tool) => (
             <span
               key={tool}
-              className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-mono"
+              className="font-mono text-xs px-1.5 py-0.5 rounded-sm bg-surface-container-high text-on-surface-variant"
             >
               {tool}
             </span>
@@ -82,10 +88,10 @@ function PhaseCard({ phase, index }: { phase: PhaseDefinition; index: number }) 
         </div>
       )}
 
-      <pre className="rounded bg-muted p-3 text-xs font-mono text-muted-foreground whitespace-pre-wrap break-words overflow-auto max-h-40">
+      <pre className="rounded-md bg-surface-container-lowest p-3 font-mono text-xs text-on-surface-variant whitespace-pre-wrap break-words overflow-auto max-h-40">
         {phase.prompt}
       </pre>
-    </div>
+    </Surface>
   );
 }
 
@@ -101,13 +107,13 @@ export function TaskDetail({ taskId, onBack, onNavigate }: TaskDetailProps) {
   if (isError || !data?.task) {
     return (
       <div className="space-y-4">
-        <Button variant="ghost" size="sm" onClick={onBack} className="gap-2 text-muted-foreground">
+        <Button variant="ghost" size="sm" onClick={onBack} className="gap-2 text-on-surface-variant">
           <ArrowLeft className="h-4 w-4" />
           Tasks
         </Button>
-        <div className="flex h-40 flex-col items-center justify-center gap-2 text-destructive">
+        <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary">
           <AlertCircle className="h-5 w-5" />
-          <span className="text-sm">Task not found</span>
+          <span className="font-sans text-sm">Task not found</span>
         </div>
       </div>
     );
@@ -120,31 +126,26 @@ export function TaskDetail({ taskId, onBack, onNavigate }: TaskDetailProps) {
   return (
     <div className="space-y-6">
       {/* Back nav */}
-      <Button variant="ghost" size="sm" onClick={onBack} className="gap-2 text-muted-foreground">
+      <Button variant="ghost" size="sm" onClick={onBack} className="gap-2 text-on-surface-variant">
         <ArrowLeft className="h-4 w-4" />
         Tasks
       </Button>
 
       {/* Header card */}
-      <div className="rounded-lg border border-border bg-card p-4 space-y-4">
+      <Surface level="low" className="p-4 space-y-4">
         <div className="flex flex-wrap items-start gap-3">
           <div className="flex-1 space-y-1 min-w-0">
-            <h1 className="text-lg font-semibold text-foreground">
+            <h1 className="font-serif text-lg text-on-surface">
               {task.displayName}
             </h1>
             {task.description && (
-              <p className="text-sm text-muted-foreground">{task.description}</p>
+              <p className="font-sans text-sm text-on-surface-variant">{task.description}</p>
             )}
           </div>
 
-          <span
-            className={cn(
-              'text-xs px-2 py-0.5 rounded-full shrink-0',
-              taskSourceClass(task.source ?? ''),
-            )}
-          >
+          <Badge variant={sourceBadgeVariant(task.source)} className="shrink-0">
             {capitalize(task.source ?? 'built-in')}
-          </span>
+          </Badge>
         </div>
 
         <TaskActions
@@ -152,43 +153,43 @@ export function TaskDetail({ taskId, onBack, onNavigate }: TaskDetailProps) {
           onDeleted={onBack}
           onCustomized={(newName) => onNavigate?.(newName)}
         />
-      </div>
+      </Surface>
 
       {/* Execution config */}
       {(execution.model !== undefined || execution.maxTurns !== undefined || execution.timeoutSeconds !== undefined) && (
-        <div className="rounded-lg border border-border bg-card p-4 space-y-3">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+        <Surface level="low" className="p-4 space-y-3">
+          <h2 className="font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide">
             Execution Config
           </h2>
           <div className="grid grid-cols-3 gap-4">
             {execution.model !== undefined && (
               <div>
-                <p className="text-xs text-muted-foreground">Model</p>
-                <p className="text-sm font-mono text-foreground mt-0.5">{execution.model}</p>
+                <p className="font-sans text-xs text-on-surface-variant">Model</p>
+                <p className="font-mono text-sm text-on-surface mt-0.5">{execution.model}</p>
               </div>
             )}
             {execution.maxTurns !== undefined && (
               <div>
-                <p className="text-xs text-muted-foreground">Max Turns</p>
-                <p className="text-sm font-mono text-foreground mt-0.5">{execution.maxTurns}</p>
+                <p className="font-sans text-xs text-on-surface-variant">Max Turns</p>
+                <p className="font-mono text-sm text-on-surface mt-0.5">{execution.maxTurns}</p>
               </div>
             )}
             {execution.timeoutSeconds !== undefined && (
               <div>
-                <p className="text-xs text-muted-foreground">Timeout</p>
-                <p className="text-sm font-mono text-foreground mt-0.5">{execution.timeoutSeconds}s</p>
+                <p className="font-sans text-xs text-on-surface-variant">Timeout</p>
+                <p className="font-mono text-sm text-on-surface mt-0.5">{execution.timeoutSeconds}s</p>
               </div>
             )}
           </div>
-        </div>
+        </Surface>
       )}
 
       {/* Phases */}
       {phases.length > 0 ? (
         <div className="space-y-3">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+          <h2 className="font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide">
             Phases
-            <span className="ml-2 text-foreground normal-case font-normal">
+            <span className="ml-2 text-on-surface normal-case font-normal">
               {phases.length} {phases.length === 1 ? 'phase' : 'phases'}
             </span>
           </h2>
@@ -199,10 +200,10 @@ export function TaskDetail({ taskId, onBack, onNavigate }: TaskDetailProps) {
       ) : (
         /* Single-phase prompt */
         <div className="space-y-3">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+          <h2 className="font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide">
             Prompt
           </h2>
-          <pre className="rounded-lg border border-border bg-muted p-4 text-xs font-mono text-muted-foreground whitespace-pre-wrap break-words overflow-auto max-h-96">
+          <pre className="rounded-md bg-surface-container-lowest p-4 font-mono text-xs text-on-surface-variant whitespace-pre-wrap break-words overflow-auto max-h-96">
             {task.prompt}
           </pre>
         </div>

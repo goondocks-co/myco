@@ -2,13 +2,13 @@
 
 import { TASK_SOURCE_USER } from '../../lib/constants';
 
-/** Tailwind class string for run status badges. */
+/** Tailwind class string for run status badges (legacy — prefer Badge variant). */
 export function runStatusClass(status: string): string {
   switch (status) {
-    case 'completed': return 'bg-green-500/15 text-green-700 border-green-500/30 dark:text-green-400';
-    case 'failed':    return 'bg-red-500/15 text-red-600 border-red-500/30 dark:text-red-400';
-    case 'running':   return 'bg-amber-500/15 text-amber-700 border-amber-500/30 dark:text-amber-400';
-    default:          return 'bg-muted text-muted-foreground border-border';
+    case 'completed': return 'bg-primary-container/20 text-primary';
+    case 'failed':    return 'bg-tertiary-container/20 text-tertiary';
+    case 'running':   return 'bg-secondary-container/20 text-secondary';
+    default:          return 'bg-surface-container-high text-on-surface-variant';
   }
 }
 
@@ -30,7 +30,6 @@ export { formatDuration } from '../../lib/format';
 /** Badge classes for task source (built-in vs user). */
 export function taskSourceClass(source: string): string {
   return source === TASK_SOURCE_USER
-    ? 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200'
-    : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200';
+    ? 'bg-secondary-container/20 text-secondary'
+    : 'bg-surface-container-high text-on-surface-variant';
 }
-

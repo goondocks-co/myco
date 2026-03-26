@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { ArrowLeft, AlertCircle, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '../ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
+import { Badge } from '../ui/badge';
+import { Surface } from '../ui/surface';
 import { useAgentRun, useAgentReports, useAgentTurns, type ReportRow, type TurnRow } from '../../hooks/use-agent';
 import { cn } from '../../lib/cn';
 import { formatEpochAgo, truncate, capitalize } from '../../lib/format';
-import { runStatusClass, formatCost, formatTokens, formatDuration } from './helpers';
+import { formatCost, formatTokens, formatDuration } from './helpers';
 import { PhaseTimeline, type PhaseResult } from './PhaseTimeline';
 
 /* ---------- Constants ---------- */
@@ -18,13 +19,24 @@ const MS_PER_SECOND = 1_000;
 
 /* ---------- Helpers ---------- */
 
-function actionClass(action: string): string {
+/** Map run status to Badge variant. */
+function statusBadgeVariant(status: string): 'default' | 'warning' | 'destructive' | 'secondary' {
+  switch (status) {
+    case 'completed': return 'default';
+    case 'running':   return 'warning';
+    case 'failed':    return 'destructive';
+    default:          return 'secondary';
+  }
+}
+
+/** Map action type to Badge variant. */
+function actionBadgeVariant(action: string): 'default' | 'warning' | 'destructive' | 'secondary' {
   const a = action.toLowerCase();
-  if (a.includes('extract') || a.includes('create')) return 'bg-green-500/15 text-green-700 border-green-500/30 dark:text-green-400';
-  if (a.includes('supersed') || a.includes('update')) return 'bg-blue-500/15 text-blue-600 border-blue-500/30 dark:text-blue-400';
-  if (a.includes('skip') || a.includes('no-op'))      return 'bg-muted text-muted-foreground border-border';
-  if (a.includes('error') || a.includes('fail'))      return 'bg-red-500/15 text-red-600 border-red-500/30 dark:text-red-400';
-  return 'bg-purple-500/15 text-purple-600 border-purple-500/30 dark:text-purple-400';
+  if (a.includes('extract') || a.includes('create')) return 'default';
+  if (a.includes('supersed') || a.includes('update')) return 'default';
+  if (a.includes('skip') || a.includes('no-op')) return 'secondary';
+  if (a.includes('error') || a.includes('fail')) return 'destructive';
+  return 'default';
 }
 
 function formatEpochRelative(epoch: number | null): string {
@@ -44,32 +56,6 @@ function truncatePreview(text: string | null, limit: number): string {
 
 /* ---------- Sub-components ---------- */
 
-function StatusBadge({ status }: { status: string }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold',
-        runStatusClass(status),
-      )}
-    >
-      {capitalize(status)}
-    </span>
-  );
-}
-
-function ActionBadge({ action }: { action: string }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold shrink-0',
-        actionClass(action),
-      )}
-    >
-      {action}
-    </span>
-  );
-}
-
 function ReportCard({ report }: { report: ReportRow }) {
   const [expanded, setExpanded] = useState(false);
   const hasDetails = report.details !== null && report.details.length > 0;
@@ -84,11 +70,11 @@ function ReportCard({ report }: { report: ReportRow }) {
   }
 
   return (
-    <div className="rounded-lg border border-border bg-card p-4 space-y-2">
+    <Surface level="low" className="p-4 space-y-2">
       <div className="flex items-start gap-3">
-        <ActionBadge action={report.action} />
-        <p className="text-sm text-foreground flex-1 leading-relaxed">{report.summary}</p>
-        <span className="text-xs text-muted-foreground shrink-0 font-mono">
+        <Badge variant={actionBadgeVariant(report.action)}>{report.action}</Badge>
+        <p className="font-sans text-sm text-on-surface flex-1 leading-relaxed">{report.summary}</p>
+        <span className="font-mono text-xs text-on-surface-variant shrink-0">
           {formatEpochAbsoluteTime(report.created_at)}
         </span>
       </div>
@@ -96,7 +82,7 @@ function ReportCard({ report }: { report: ReportRow }) {
       {hasDetails && (
         <div>
           <button
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            className="flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface transition-colors"
             onClick={() => setExpanded(!expanded)}
           >
             {expanded
@@ -106,7 +92,7 @@ function ReportCard({ report }: { report: ReportRow }) {
           </button>
 
           {expanded && (
-            <pre className="mt-2 rounded bg-muted p-3 text-xs font-mono overflow-auto max-h-48 text-muted-foreground">
+            <pre className="mt-2 rounded-md bg-surface-container-lowest p-3 font-mono text-xs overflow-auto max-h-48 text-on-surface-variant">
               {typeof parsedDetails === 'string'
                 ? parsedDetails
                 : JSON.stringify(parsedDetails, null, 2)}
@@ -114,7 +100,7 @@ function ReportCard({ report }: { report: ReportRow }) {
           )}
         </div>
       )}
-    </div>
+    </Surface>
   );
 }
 
@@ -125,21 +111,21 @@ function TurnTableRow({ turn }: { turn: TurnRow }) {
       : null;
 
   return (
-    <tr className="border-b border-border last:border-0 align-top">
-      <td className="px-3 py-2 text-xs text-muted-foreground font-mono">{turn.turn_number}</td>
-      <td className="px-3 py-2 text-xs font-mono text-foreground">{turn.tool_name}</td>
-      <td className="px-3 py-2 text-xs text-muted-foreground font-mono max-w-[200px] truncate">
+    <tr className="hover:bg-surface-container-high/50 transition-colors align-top">
+      <td className="px-3 py-2 font-mono text-xs text-on-surface-variant">{turn.turn_number}</td>
+      <td className="px-3 py-2 font-mono text-xs text-on-surface">{turn.tool_name}</td>
+      <td className="px-3 py-2 font-mono text-xs text-on-surface-variant max-w-[200px] truncate">
         {truncatePreview(turn.tool_input, TURN_PREVIEW_CHARS)}
       </td>
-      <td className="px-3 py-2 text-xs text-muted-foreground font-mono max-w-[200px] truncate">
+      <td className="px-3 py-2 font-mono text-xs text-on-surface-variant max-w-[200px] truncate">
         {truncatePreview(turn.tool_output_summary, TURN_PREVIEW_CHARS)}
       </td>
-      <td className="px-3 py-2 text-xs text-muted-foreground font-mono">
+      <td className="px-3 py-2 font-mono text-xs text-on-surface-variant">
         {durationMs !== null
           ? durationMs < MS_PER_SECOND
             ? `${durationMs}ms`
             : `${(durationMs / MS_PER_SECOND).toFixed(1)}s`
-          : '—'}
+          : '\u2014'}
       </td>
     </tr>
   );
@@ -162,9 +148,9 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
 
   if (runLoading) {
     return (
-      <div className="flex h-64 items-center justify-center gap-2 text-muted-foreground">
+      <div className="flex h-64 items-center justify-center gap-2 text-on-surface-variant">
         <Loader2 className="h-5 w-5 animate-spin" />
-        <span>Loading run...</span>
+        <span className="font-sans">Loading run...</span>
       </div>
     );
   }
@@ -172,13 +158,13 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   if (runError || !runData?.run) {
     return (
       <div className="space-y-4">
-        <Button variant="ghost" size="sm" onClick={onBack} className="gap-2 text-muted-foreground">
+        <Button variant="ghost" size="sm" onClick={onBack} className="gap-2 text-on-surface-variant">
           <ArrowLeft className="h-4 w-4" />
           Runs
         </Button>
-        <div className="flex h-40 flex-col items-center justify-center gap-2 text-destructive">
+        <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary">
           <AlertCircle className="h-5 w-5" />
-          <span className="text-sm">Run not found</span>
+          <span className="font-sans text-sm">Run not found</span>
         </div>
       </div>
     );
@@ -202,78 +188,80 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
         phaseResults = (parsed as { phases: PhaseResult[] }).phases;
       }
     } catch {
-      // Malformed JSON — silently ignore, don't render timeline
+      // Malformed JSON -- silently ignore, don't render timeline
     }
   }
 
   return (
     <div className="space-y-6">
       {/* Back nav */}
-      <Button variant="ghost" size="sm" onClick={onBack} className="gap-2 text-muted-foreground">
+      <Button variant="ghost" size="sm" onClick={onBack} className="gap-2 text-on-surface-variant">
         <ArrowLeft className="h-4 w-4" />
         Runs
       </Button>
 
       {/* Summary bar */}
-      <div className="rounded-lg border border-border bg-card p-4">
+      <Surface level="low" className="p-4">
         <div className="flex flex-wrap items-center gap-4">
-          <StatusBadge status={run.status} />
+          <Badge variant={statusBadgeVariant(run.status)}>
+            {capitalize(run.status)}
+          </Badge>
 
-          <span className="text-sm text-muted-foreground">
-            Task: <span className="text-foreground font-medium">{run.task ?? 'Default task'}</span>
+          <span className="font-sans text-sm text-on-surface-variant">
+            Task: <span className="text-on-surface font-medium">{run.task ?? 'Default task'}</span>
           </span>
 
-          <span className="text-sm text-muted-foreground">
-            Started: <span className="text-foreground font-mono">{formatEpochRelative(run.started_at)}</span>
+          <span className="font-sans text-sm text-on-surface-variant">
+            Started: <span className="font-mono text-on-surface">{formatEpochRelative(run.started_at)}</span>
           </span>
 
-          <span className="text-sm text-muted-foreground">
-            Duration: <span className="text-foreground font-mono">{formatDuration(run.started_at, run.completed_at)}</span>
+          <span className="font-sans text-sm text-on-surface-variant">
+            Duration: <span className="font-mono text-on-surface">{formatDuration(run.started_at, run.completed_at)}</span>
           </span>
 
-          <span className="text-sm text-muted-foreground">
-            Tokens: <span className="text-foreground font-mono">{formatTokens(run.tokens_used)}</span>
+          <span className="font-sans text-sm text-on-surface-variant">
+            Tokens: <span className="font-mono text-on-surface">{formatTokens(run.tokens_used)}</span>
           </span>
 
-          <span className="text-sm text-muted-foreground">
-            Cost: <span className="text-foreground font-mono">{formatCost(run.cost_usd)}</span>
+          <span className="font-sans text-sm text-on-surface-variant">
+            Cost: <span className="font-mono text-on-surface">{formatCost(run.cost_usd)}</span>
           </span>
         </div>
 
         {run.error && (
-          <div className="mt-3 rounded-md bg-destructive/10 border border-destructive/20 px-3 py-2">
-            <p className="text-xs text-destructive font-mono">{run.error}</p>
+          <div className="mt-3 rounded-md bg-tertiary-container/20 px-3 py-2">
+            <p className="font-mono text-xs text-tertiary">{run.error}</p>
           </div>
         )}
-      </div>
+      </Surface>
 
       {/* Phase Timeline (only shown for phased runs) */}
       {phaseResults && phaseResults.length > 0 && (
-        <div className="rounded-lg border border-border bg-card p-4">
+        <Surface level="low" className="p-4">
           <PhaseTimeline phases={phaseResults} />
-        </div>
+        </Surface>
       )}
 
       {/* Decisions / Reports */}
       <div className="space-y-3">
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+        <h2 className="font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide">
           Decisions
           {reports.length > 0 && (
-            <span className="ml-2 text-foreground normal-case font-normal">
+            <span className="ml-2 text-on-surface normal-case font-normal">
               {reports.length} {reports.length === 1 ? 'action' : 'actions'}
             </span>
           )}
         </h2>
 
         {reportsLoading ? (
-          <div className="flex items-center gap-2 text-muted-foreground py-4">
+          <div className="flex items-center gap-2 text-on-surface-variant py-4">
             <Loader2 className="h-4 w-4 animate-spin" />
-            <span className="text-sm">Loading decisions...</span>
+            <span className="font-sans text-sm">Loading decisions...</span>
           </div>
         ) : reports.length === 0 ? (
-          <div className="flex h-24 flex-col items-center justify-center gap-2 rounded-lg border border-border text-muted-foreground">
-            <span className="text-sm">No decisions recorded for this run</span>
-          </div>
+          <Surface level="low" className="flex h-24 items-center justify-center">
+            <span className="font-sans text-sm text-on-surface-variant">No decisions recorded for this run</span>
+          </Surface>
         ) : (
           <div className="space-y-2">
             {reports.map((report) => (
@@ -286,7 +274,7 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
       {/* Audit trail (collapsed by default) */}
       <div className="space-y-3">
         <button
-          className="flex items-center gap-2 text-sm font-semibold text-muted-foreground uppercase tracking-wide hover:text-foreground transition-colors"
+          className="flex items-center gap-2 font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide hover:text-on-surface transition-colors"
           onClick={() => setShowAudit(!showAudit)}
         >
           {showAudit
@@ -297,28 +285,28 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
         </button>
 
         {showAudit && (
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Turn-by-turn trace</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
+          <Surface level="low" className={cn('overflow-hidden')}>
+            <div className="p-4 pb-2">
+              <h3 className="font-sans text-sm font-medium text-on-surface">Turn-by-turn trace</h3>
+            </div>
+            <div className="p-0">
               {turnsLoading ? (
-                <div className="flex items-center gap-2 text-muted-foreground p-4">
+                <div className="flex items-center gap-2 text-on-surface-variant p-4">
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  <span className="text-sm">Loading turns...</span>
+                  <span className="font-sans text-sm">Loading turns...</span>
                 </div>
               ) : turns.length === 0 ? (
-                <p className="text-sm text-muted-foreground p-4">No turns recorded.</p>
+                <p className="font-sans text-sm text-on-surface-variant p-4">No turns recorded.</p>
               ) : (
                 <div className="overflow-auto">
                   <table className="w-full text-left">
                     <thead>
-                      <tr className="border-b border-border bg-muted/50">
-                        <th className="px-3 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">#</th>
-                        <th className="px-3 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">Tool</th>
-                        <th className="px-3 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">Input</th>
-                        <th className="px-3 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">Output</th>
-                        <th className="px-3 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">Time</th>
+                      <tr className="bg-surface-container-high/50">
+                        <th className="px-3 py-2 font-sans text-xs font-medium text-on-surface-variant uppercase tracking-wide">#</th>
+                        <th className="px-3 py-2 font-sans text-xs font-medium text-on-surface-variant uppercase tracking-wide">Tool</th>
+                        <th className="px-3 py-2 font-sans text-xs font-medium text-on-surface-variant uppercase tracking-wide">Input</th>
+                        <th className="px-3 py-2 font-sans text-xs font-medium text-on-surface-variant uppercase tracking-wide">Output</th>
+                        <th className="px-3 py-2 font-sans text-xs font-medium text-on-surface-variant uppercase tracking-wide">Time</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -329,8 +317,8 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
                   </table>
                 </div>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </Surface>
         )}
       </div>
     </div>
