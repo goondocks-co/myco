@@ -325,6 +325,26 @@ export function getBatchIdByPromptNumber(
   return row ? row.id : null;
 }
 
+/**
+ * Find a batch by matching the start of its user_prompt text.
+ * Used for attachment matching after transcript compaction where turn indices no longer
+ * align with prompt_numbers.
+ */
+export function findBatchByPromptPrefix(
+  sessionId: string,
+  promptPrefix: string,
+): { id: number; prompt_number: number } | null {
+  const db = getDatabase();
+  // Match first 60 chars — enough to be unique, tolerant of minor differences
+  const prefix = promptPrefix.slice(0, 60);
+  const row = db.prepare(
+    `SELECT id, prompt_number FROM prompt_batches
+     WHERE session_id = ? AND user_prompt LIKE ? || '%'
+     LIMIT 1`,
+  ).get(sessionId, prefix) as { id: number; prompt_number: number } | undefined;
+  return row ?? null;
+}
+
 /** Fields required when inserting a batch statelessly (prompt_number derived from DB). */
 export interface StatelessBatchInsert {
   session_id: string;

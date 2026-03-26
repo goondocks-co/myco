@@ -64,7 +64,7 @@ import { gatherStats } from '../services/stats.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSession } from '../db/queries/sessions.js';
-import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary, listBatchesBySession } from '../db/queries/batches.js';
+import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, findBatchByPromptPrefix, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary, listBatchesBySession } from '../db/queries/batches.js';
 import { insertActivityWithBatch } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
 import { listRuns, getRun, getRunningRun } from '../db/queries/runs.js';
@@ -1091,47 +1091,55 @@ export async function main(): Promise<void> {
       }).catch(err => logger.warn('agent', 'Title-summary task failed', { error: String(err) }));
     } catch { /* agent unavailable */ }
 
-    // Write images to attachments (keep this — images are binary, not in SQLite).
-    // Process ALL turns — file write uses wx flag (skip existing) and DB uses ON CONFLICT DO NOTHING,
-    // so this is idempotent. We can't use latestBatch.prompt_number as a start index because
-    // transcript compaction can reduce allTurns.length below prompt_number.
+    // Write images to attachments — decoupled from transcript turn indices.
+    // After context compaction, transcript turn indices no longer match batch prompt_numbers.
+    // Instead, match each turn to its batch by prompt text (content-based, not position-based).
+    // File write uses wx flag (skip existing) and DB uses ON CONFLICT DO NOTHING → idempotent.
     const attachmentsDir = path.join(vaultDir, 'attachments');
     const hasNewImages = allTurns.some((t) => t.images?.length);
     if (hasNewImages) {
       fs.mkdirSync(attachmentsDir, { recursive: true });
     }
+    const sessionShort = sessionId.slice(-6);
     for (let i = 0; i < allTurns.length; i++) {
       const turn = allTurns[i];
       if (!turn.images?.length) continue;
-      const promptNumber = i + 1;
-      // For the last turn, use latestBatch directly (reliable).
-      // For earlier turns, fall back to positional lookup (best-effort).
+
+      // Resolve which batch this turn belongs to:
+      // 1. Last turn → use latestBatch (always correct, comes from the current stop event)
+      // 2. Earlier turns → match by prompt text prefix against DB
+      // 3. Fallback → null batch_id (still saved, UI matches by filename pattern)
       const isLastTurn = i === allTurns.length - 1;
       let resolvedBatchId: number | null = null;
+      let resolvedPromptNumber: number = i + 1; // default to turn index (pre-compaction compatible)
+
       if (isLastTurn && latestBatch) {
         resolvedBatchId = latestBatch.id;
-      } else {
-        try { resolvedBatchId = getBatchIdByPromptNumber(sessionId, promptNumber); }
-        catch { resolvedBatchId = null; }
+        resolvedPromptNumber = latestBatch.prompt_number ?? resolvedPromptNumber;
+      } else if (turn.prompt) {
+        try {
+          const match = findBatchByPromptPrefix(sessionId, turn.prompt);
+          if (match) {
+            resolvedBatchId = match.id;
+            resolvedPromptNumber = match.prompt_number;
+          }
+        } catch { /* fallback to index-based */ }
       }
+
       for (let j = 0; j < turn.images.length; j++) {
         const img = turn.images[j];
         const ext = extensionForMimeType(img.mediaType);
-        const sessionShort = sessionId.slice(-6);
-        const filename = `${sessionShort}-t${promptNumber}-${j + 1}.${ext}`;
+        const filename = `${sessionShort}-t${resolvedPromptNumber}-${j + 1}.${ext}`;
         const filePath = path.join(attachmentsDir, filename);
         try {
           fs.writeFileSync(filePath, Buffer.from(img.data, 'base64'), { flag: 'wx' });
-          logger.debug('processor', 'Image saved', { filename, turn: promptNumber });
+          logger.debug('processor', 'Image saved', { filename, batch: resolvedPromptNumber });
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
         }
-        // Always upsert the DB record — insertAttachment is idempotent (ON CONFLICT DO NOTHING).
-        // Must be outside the file-write try block so the record is created even when the
-        // file already exists (Stop fires per-turn, not just on session end).
         try {
           insertAttachment({
-            id: `${sessionShort}-t${promptNumber}-${j + 1}`,
+            id: `${sessionShort}-b${resolvedPromptNumber}-${j + 1}`,
             session_id: sessionId,
             prompt_batch_id: resolvedBatchId ?? undefined,
             file_path: filename,
