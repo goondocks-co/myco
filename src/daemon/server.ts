@@ -13,6 +13,7 @@ export interface DaemonServerConfig {
   vaultDir: string;
   logger: DaemonLogger;
   uiDir?: string;
+  onRequest?: () => void;
 }
 
 export class DaemonServer {
@@ -23,11 +24,13 @@ export class DaemonServer {
   private vaultDir: string;
   private logger: DaemonLogger;
   private router = new Router();
+  private onRequest: (() => void) | null;
 
   constructor(config: DaemonServerConfig) {
     this.vaultDir = config.vaultDir;
     this.logger = config.logger;
     this.uiDir = config.uiDir ?? null;
+    this.onRequest = config.onRequest ?? null;
     this.version = getPluginVersion();
     this.registerDefaultRoutes();
   }
@@ -77,6 +80,7 @@ export class DaemonServer {
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    this.onRequest?.();
     // API/daemon routes take priority over static files
     const match = this.router.match(req.method!, req.url!);
 

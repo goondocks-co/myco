@@ -80,10 +80,16 @@ import {
   LOG_MESSAGE_PREVIEW_CHARS,
   USER_AGENT_ID,
   USER_AGENT_NAME,
-  EMBEDDING_INTERVAL_MS,
   EMBEDDING_BATCH_SIZE,
+  POWER_IDLE_THRESHOLD_MS,
+  POWER_SLEEP_THRESHOLD_MS,
+  POWER_DEEP_SLEEP_THRESHOLD_MS,
+  POWER_ACTIVE_INTERVAL_MS,
+  POWER_SLEEP_INTERVAL_MS,
   epochSeconds,
 } from '../constants.js';
+import { PowerManager } from './power.js';
+import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
 import { z } from 'zod';
 import fs from 'node:fs';
@@ -457,7 +463,21 @@ export async function main(): Promise<void> {
     logger.debug('daemon', 'Static UI directory found', { path: uiDir });
   }
 
-  const server = new DaemonServer({ vaultDir, logger, uiDir: uiDir ?? undefined });
+  const powerManager = new PowerManager({
+    idleThresholdMs: POWER_IDLE_THRESHOLD_MS,
+    sleepThresholdMs: POWER_SLEEP_THRESHOLD_MS,
+    deepSleepThresholdMs: POWER_DEEP_SLEEP_THRESHOLD_MS,
+    activeIntervalMs: POWER_ACTIVE_INTERVAL_MS,
+    sleepIntervalMs: POWER_SLEEP_INTERVAL_MS,
+    logger,
+  });
+
+  const server = new DaemonServer({
+    vaultDir,
+    logger,
+    uiDir: uiDir ?? undefined,
+    onRequest: () => powerManager.recordActivity(),
+  });
 
   // The daemon serves the dashboard UI and must stay running regardless of
   // active sessions. No auto-shutdown — runs until explicitly killed.
@@ -1673,35 +1693,42 @@ export async function main(): Promise<void> {
     logger.info('agent', 'Auto-agent disabled (agent.auto_run = false)');
   }
 
-  // --- Embedding reconcile worker ---
-  // Delegates to EmbeddingManager.reconcile() which handles: finding unembedded
-  // rows, embedding via provider, upserting vectors, marking embedded flags,
-  // and running orphan sweeps.
+  // --- Register power-managed jobs ---
 
   let reconcileRunning = false;
-  const reconcileTimer = setInterval(async () => {
-    if (reconcileRunning) return;
-    reconcileRunning = true;
-    try {
-      await embeddingManager.reconcile(EMBEDDING_BATCH_SIZE);
-    } catch (err) {
-      logger.error('embedding', 'Reconcile worker failed', { error: (err as Error).message });
-    } finally {
-      reconcileRunning = false;
-    }
-  }, EMBEDDING_INTERVAL_MS);
-
-  logger.info('embedding', 'Reconcile worker started', {
-    interval_ms: EMBEDDING_INTERVAL_MS,
-    batch_size: EMBEDDING_BATCH_SIZE,
+  powerManager.register({
+    name: 'embedding-reconcile',
+    runIn: ['active', 'idle'],
+    fn: async () => {
+      if (reconcileRunning) return;
+      reconcileRunning = true;
+      try {
+        await embeddingManager.reconcile(EMBEDDING_BATCH_SIZE);
+      } finally {
+        reconcileRunning = false;
+      }
+    },
   });
+
+  powerManager.register({
+    name: 'session-maintenance',
+    runIn: ['active', 'idle', 'sleep'],
+    fn: () => runSessionMaintenance({
+      logger,
+      registeredSessionIds: () => registry.sessions,
+      embeddingManager,
+      vaultDir,
+    }),
+  });
+
+  powerManager.start();
 
   // --- Shutdown ---
 
   const shutdown = async (signal: string) => {
     logger.info('daemon', `${signal} received`);
     if (agentTimer) clearInterval(agentTimer);
-    clearInterval(reconcileTimer);
+    powerManager.stop();
     // Wait for any active stop processing to finish before shutting down
     if (activeStopProcessing) {
       logger.info('daemon', 'Waiting for active stop processing to complete...');
