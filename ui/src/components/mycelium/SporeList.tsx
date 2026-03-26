@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { AlertCircle, Sprout } from 'lucide-react';
+import { AlertCircle, Sprout, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Button } from '../ui/button';
 import { Surface } from '../ui/surface';
 import {
   Select,
@@ -130,21 +131,39 @@ export interface SporeListProps {
 export function SporeList({ onSelectSpore, selectedSporeId }: SporeListProps) {
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [page, setPage] = useState(0);
+
+  // Reset to first page when filters change
+  function handleTypeChange(value: string) {
+    setTypeFilter(value);
+    setPage(0);
+  }
+  function handleStatusChange(value: string) {
+    setStatusFilter(value);
+    setPage(0);
+  }
+
+  const offset = page * DEFAULT_SPORES_LIMIT;
 
   const { data, isLoading, isError, error } = useSpores({
     type: typeFilter !== 'all' ? typeFilter : undefined,
     status: statusFilter !== 'all' ? statusFilter : undefined,
     limit: DEFAULT_SPORES_LIMIT,
+    offset,
   });
 
   const spores = data?.spores ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = Math.ceil(total / DEFAULT_SPORES_LIMIT);
+  const hasPrev = page > 0;
+  const hasNext = page < totalPages - 1;
 
   return (
     <div className="space-y-3">
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="w-40">
-          <Select value={typeFilter} onValueChange={setTypeFilter}>
+          <Select value={typeFilter} onValueChange={handleTypeChange}>
             <SelectTrigger>
               <SelectValue placeholder="Type" />
             </SelectTrigger>
@@ -158,7 +177,7 @@ export function SporeList({ onSelectSpore, selectedSporeId }: SporeListProps) {
           </Select>
         </div>
         <div className="w-40">
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <Select value={statusFilter} onValueChange={handleStatusChange}>
             <SelectTrigger>
               <SelectValue placeholder="Status" />
             </SelectTrigger>
@@ -173,7 +192,7 @@ export function SporeList({ onSelectSpore, selectedSporeId }: SporeListProps) {
         </div>
         {data && (
           <span className="font-sans text-sm text-on-surface-variant ml-auto">
-            {data.total} spore{data.total !== 1 ? 's' : ''}
+            {total} spore{total !== 1 ? 's' : ''}
           </span>
         )}
       </div>
@@ -210,11 +229,33 @@ export function SporeList({ onSelectSpore, selectedSporeId }: SporeListProps) {
         </div>
       )}
 
-      {/* Pagination hint */}
-      {data && data.total > DEFAULT_SPORES_LIMIT && (
-        <p className="font-sans text-xs text-on-surface-variant text-center">
-          Showing {spores.length} of {data.total} spores
-        </p>
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-3 pt-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={!hasPrev}
+            onClick={() => setPage((p) => p - 1)}
+            className="gap-1 text-on-surface-variant"
+          >
+            <ChevronLeft className="h-4 w-4" />
+            Prev
+          </Button>
+          <span className="font-mono text-xs text-on-surface-variant">
+            {offset + 1}\u2013{Math.min(offset + DEFAULT_SPORES_LIMIT, total)} of {total}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={!hasNext}
+            onClick={() => setPage((p) => p + 1)}
+            className="gap-1 text-on-surface-variant"
+          >
+            Next
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
       )}
     </div>
   );

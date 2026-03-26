@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { GraphCanvas } from '../components/mycelium/GraphCanvas';
 import { EntityFilter } from '../components/mycelium/EntityFilter';
 import { Inspector } from '../components/mycelium/Inspector';
@@ -20,6 +20,38 @@ const DEFAULT_GRAPH_DEPTH = 2;
 /* ---------- Types ---------- */
 
 type ActiveTab = 'graph' | 'spores' | 'digest';
+
+/* ---------- URL state helpers ---------- */
+
+/** URL search param keys for persistent navigation state. */
+const PARAM_TAB = 'tab';
+const PARAM_SPORE = 'spore';
+
+/** Valid tab values for URL parsing. */
+const VALID_TABS = new Set<ActiveTab>(['graph', 'spores', 'digest']);
+
+/** Read initial state from URL search params. */
+function readUrlState(): { tab: ActiveTab; sporeId?: string } {
+  const params = new URLSearchParams(window.location.search);
+  const rawTab = params.get(PARAM_TAB);
+  const tab: ActiveTab = rawTab && VALID_TABS.has(rawTab as ActiveTab)
+    ? (rawTab as ActiveTab)
+    : 'graph';
+  return {
+    tab,
+    sporeId: params.get(PARAM_SPORE) ?? undefined,
+  };
+}
+
+/** Write navigation state to URL search params (replaceState, no history entry). */
+function writeUrlState(tab: ActiveTab, sporeId?: string): void {
+  const params = new URLSearchParams();
+  if (tab !== 'graph') params.set(PARAM_TAB, tab);
+  if (sporeId) params.set(PARAM_SPORE, sporeId);
+  const search = params.toString();
+  const url = search ? `${window.location.pathname}?${search}` : window.location.pathname;
+  window.history.replaceState(null, '', url);
+}
 
 /* ---------- Sub-components ---------- */
 
@@ -143,8 +175,16 @@ function GraphTab() {
 /* ---------- Component ---------- */
 
 export default function Mycelium() {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('graph');
-  const [selectedSpore, setSelectedSpore] = useState<SporeSummary | null>(null);
+  const initial = readUrlState();
+  const [activeTab, setActiveTab] = useState<ActiveTab>(initial.tab);
+  const [selectedSpore, setSelectedSpore] = useState<SporeSummary | null>(
+    initial.sporeId ? { id: initial.sporeId } as SporeSummary : null,
+  );
+
+  // Sync URL whenever state changes
+  useEffect(() => {
+    writeUrlState(activeTab, selectedSpore?.id);
+  }, [activeTab, selectedSpore?.id]);
 
   function handleSelectSpore(spore: SporeSummary) {
     setSelectedSpore(spore);
@@ -158,6 +198,11 @@ export default function Mycelium() {
     setSelectedSpore({ id } as SporeSummary);
   }
 
+  function handleTabChange(tab: ActiveTab) {
+    setActiveTab(tab);
+    if (tab !== 'spores') setSelectedSpore(null);
+  }
+
   return (
     <div className="p-6 space-y-4">
       <div>
@@ -169,13 +214,13 @@ export default function Mycelium() {
 
       {/* Tab bar */}
       <div className="flex gap-0 bg-surface-container-low rounded-t-md">
-        <TabButton active={activeTab === 'graph'} onClick={() => setActiveTab('graph')}>
+        <TabButton active={activeTab === 'graph'} onClick={() => handleTabChange('graph')}>
           Graph
         </TabButton>
-        <TabButton active={activeTab === 'spores'} onClick={() => { setActiveTab('spores'); setSelectedSpore(null); }}>
+        <TabButton active={activeTab === 'spores'} onClick={() => handleTabChange('spores')}>
           Spores
         </TabButton>
-        <TabButton active={activeTab === 'digest'} onClick={() => setActiveTab('digest')}>
+        <TabButton active={activeTab === 'digest'} onClick={() => handleTabChange('digest')}>
           Digest
         </TabButton>
       </div>

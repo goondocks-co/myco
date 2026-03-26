@@ -1,4 +1,4 @@
-import { listSpores, getSpore } from '@myco/db/queries/spores.js';
+import { listSpores, countSpores, getSpore } from '@myco/db/queries/spores.js';
 import { listEntities, getEntity } from '@myco/db/queries/entities.js';
 import { listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import { getGraphForNode } from '@myco/db/queries/graph-edges.js';
@@ -39,15 +39,16 @@ export async function handleListSpores(req: RouteRequest): Promise<RouteResponse
   const limit = req.query.limit ? Number(req.query.limit) : DEFAULT_LIST_LIMIT;
   const offset = req.query.offset ? Number(req.query.offset) : DEFAULT_LIST_OFFSET;
 
-  const spores = listSpores({
+  const filterOpts = {
     ...(agentId ? { agent_id: agentId } : {}),
     observation_type: type,
     status,
-    limit,
-    offset,
-  });
+  };
 
-  return { body: { spores, total: spores.length, offset, limit } };
+  const spores = listSpores({ ...filterOpts, limit, offset });
+  const total = countSpores(filterOpts);
+
+  return { body: { spores, total, offset, limit } };
 }
 
 export async function handleGetSpore(req: RouteRequest): Promise<RouteResponse> {

@@ -7,6 +7,7 @@ import {
   ScrollText,
   Sun,
   Moon,
+  Monitor,
   RotateCcw,
   Type,
   Minus,
@@ -120,36 +121,42 @@ function useSidebarCollapse() {
 
 /* ---------- Sub-components ---------- */
 
-function ThemeToggle() {
+/** Theme cycle order: light → dark → system → light. */
+const THEME_CYCLE = ['light', 'dark', 'system'] as const;
+
+const THEME_ICONS = { light: Sun, dark: Moon, system: Monitor } as const;
+const THEME_LABELS = { light: 'Light', dark: 'Dark', system: 'System' } as const;
+
+function ThemeToggle({ collapsed = false }: { collapsed?: boolean }) {
   const { theme, setTheme } = useTheme();
 
-  const toggleTheme = () => {
-    if (theme === 'dark') {
-      setTheme('light');
-    } else {
-      setTheme('dark');
-    }
+  const cycleTheme = () => {
+    const idx = THEME_CYCLE.indexOf(theme as typeof THEME_CYCLE[number]);
+    const next = THEME_CYCLE[(idx + 1) % THEME_CYCLE.length]!;
+    setTheme(next);
   };
 
-  const isDark =
-    theme === 'dark' ||
-    (theme === 'system' &&
-      window.matchMedia('(prefers-color-scheme: dark)').matches);
+  const Icon = THEME_ICONS[theme as keyof typeof THEME_ICONS] ?? Monitor;
+  const label = THEME_LABELS[theme as keyof typeof THEME_LABELS] ?? 'System';
 
   return (
     <Button
       variant="ghost"
       size="sm"
-      onClick={toggleTheme}
-      className="w-full justify-start gap-2 text-on-surface-variant hover:text-on-surface"
+      onClick={cycleTheme}
+      title={collapsed ? `${label} mode` : undefined}
+      className={cn(
+        'text-on-surface-variant hover:text-on-surface',
+        collapsed ? 'w-8 p-0 justify-center' : 'w-full justify-start gap-2',
+      )}
     >
-      {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-      <span>{isDark ? 'Light mode' : 'Dark mode'}</span>
+      <Icon className="h-4 w-4" />
+      {!collapsed && <span>{label}</span>}
     </Button>
   );
 }
 
-function RestartButton() {
+function RestartButton({ collapsed = false }: { collapsed?: boolean }) {
   const { restart, isRestarting } = useRestart();
 
   return (
@@ -158,10 +165,14 @@ function RestartButton() {
       size="sm"
       onClick={() => restart()}
       disabled={isRestarting}
-      className="w-full justify-start gap-2 text-on-surface-variant hover:text-on-surface"
+      title={collapsed ? (isRestarting ? 'Restarting...' : 'Restart Daemon') : undefined}
+      className={cn(
+        'text-on-surface-variant hover:text-on-surface',
+        collapsed ? 'w-8 p-0 justify-center' : 'w-full justify-start gap-2',
+      )}
     >
       <RotateCcw className={cn('h-4 w-4', isRestarting && 'animate-spin')} />
-      <span>{isRestarting ? 'Restarting...' : 'Restart Daemon'}</span>
+      {!collapsed && <span>{isRestarting ? 'Restarting...' : 'Restart Daemon'}</span>}
     </Button>
   );
 }
@@ -185,8 +196,7 @@ function FontSelector() {
   );
 }
 
-function DensityControl() {
-  const { density, setDensity } = useDensity();
+function DensityControl({ density, setDensity }: { density: Density; setDensity: (d: Density) => void }) {
   const currentIndex = DENSITY_ORDER.indexOf(density);
 
   const decrease = () => {
@@ -234,6 +244,7 @@ function DensityControl() {
 
 export default function Layout() {
   const { collapsed, toggle } = useSidebarCollapse();
+  const { density, setDensity } = useDensity();
   const { data: stats } = useDaemon();
   const vaultName = stats?.vault.name;
   const [searchOpen, setSearchOpen] = useState(false);
@@ -330,14 +341,12 @@ export default function Layout() {
         </nav>
 
         {/* Footer */}
-        {!collapsed && (
-          <div className="px-2 py-3 space-y-1 mt-auto">
-            <RestartButton />
-            <FontSelector />
-            <DensityControl />
-            <ThemeToggle />
-          </div>
-        )}
+        <div className={cn('py-3 space-y-1 mt-auto', collapsed ? 'px-1 flex flex-col items-center' : 'px-2')}>
+          <RestartButton collapsed={collapsed} />
+          {!collapsed && <FontSelector />}
+          {!collapsed && <DensityControl density={density} setDensity={setDensity} />}
+          <ThemeToggle collapsed={collapsed} />
+        </div>
 
         {/* Collapse toggle */}
         <div className={cn('px-2 py-2', collapsed && 'flex justify-center')}>

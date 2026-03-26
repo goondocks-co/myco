@@ -37,7 +37,7 @@ function BatchCard({ batch, batchAttachments, defaultOpen = false }: BatchCardPr
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   return (
-    <Surface level="low" className="overflow-hidden rounded-md max-w-full">
+    <Surface level="low" className="overflow-hidden rounded-md max-w-full border border-outline-variant/10">
       {/* Collapsible header */}
       <button
         type="button"
@@ -52,7 +52,7 @@ function BatchCard({ batch, batchAttachments, defaultOpen = false }: BatchCardPr
         <div className="flex-1 min-w-0 overflow-hidden">
           <div className="flex items-baseline justify-between gap-2 mb-0.5">
             <span className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant shrink-0">
-              Batch #{batch.prompt_number ?? batch.id}
+              Prompt #{batch.prompt_number ?? batch.id}
             </span>
             {batch.activity_count > 0 && (
               <span className="font-mono text-[10px] text-on-surface-variant/70 shrink-0">
@@ -181,7 +181,7 @@ export function BatchTimeline({ sessionId }: BatchTimelineProps) {
     return (
       <div className="flex h-40 flex-col items-center justify-center gap-2 text-on-surface-variant">
         <MessageSquare className="h-8 w-8 opacity-30" />
-        <span className="font-sans text-sm">No batches recorded</span>
+        <span className="font-sans text-sm">No prompts recorded</span>
       </div>
     );
   }

@@ -230,7 +230,7 @@ export function AgentConfig() {
         agent: {
           auto_run: form.autoRun,
           interval_seconds: Math.max(MIN_INTERVAL_SECONDS, Number(form.intervalSeconds) || DEFAULT_INTERVAL_SECONDS),
-          summary_batch_interval: Number(form.summaryBatchInterval) || DEFAULT_SUMMARY_BATCH_INTERVAL,
+          summary_batch_interval: Number(form.summaryBatchInterval) ?? DEFAULT_SUMMARY_BATCH_INTERVAL,
         },
       };
       await saveConfig(updated);

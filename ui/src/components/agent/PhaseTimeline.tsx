@@ -5,8 +5,7 @@ import { Surface } from '../ui/surface';
 import { MarkdownContent } from '../ui/markdown-content';
 import { formatTokens, formatCost, statusBadgeVariant } from './helpers';
 
-/** Lines of summary text before we clamp and show expand toggle. */
-const SUMMARY_CLAMP_LINES = 2;
+/* Tailwind purge: line-clamp-2 must appear as a literal string. */
 
 /* ---------- Types ---------- */
 
@@ -31,7 +30,7 @@ function PhaseSummary({ text }: { text: string }) {
 
   return (
     <div className="mt-1">
-      <div className={!expanded && isLong ? `line-clamp-${SUMMARY_CLAMP_LINES}` : undefined}>
+      <div className={!expanded && isLong ? 'line-clamp-2' : undefined}>
         <MarkdownContent content={text} className="text-on-surface-variant [&>*]:text-on-surface-variant" />
       </div>
       {isLong && (

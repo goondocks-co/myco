@@ -1,12 +1,13 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlertCircle, Loader2, Sparkles } from 'lucide-react';
+import { ArrowLeft, AlertCircle, Loader2, Sparkles, Check } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Surface } from '../ui/surface';
 import { StatCard } from '../ui/stat-card';
 import { SectionHeader } from '../ui/section-header';
 import { useSession } from '../../hooks/use-sessions';
+import { useSymbionts, buildResumeCommand } from '../../hooks/use-symbionts';
 import { useTriggerRun } from '../../hooks/use-agent';
 import { BatchTimeline } from './BatchTimeline';
 import { StatusBadge } from './status-helpers';
@@ -35,12 +36,46 @@ function epochToAbsolute(epoch: number | null): string {
 
 /* ---------- Sub-components ---------- */
 
+/** Duration before the "Copied" indicator resets. */
+const COPY_FEEDBACK_MS = 1500;
+
 /** Structured key-value row for metadata. */
-function MetaItem({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
+function MetaItem({ label, value, mono = true, copyable = false, code = false }: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  copyable?: boolean;
+  code?: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), COPY_FEEDBACK_MS);
+  }, [value]);
+
+  const valueEl = code ? (
+    <code className="text-xs font-mono text-primary bg-surface-container-lowest rounded px-1.5 py-0.5">{value}</code>
+  ) : (
+    <span className={cn('text-xs text-on-surface', mono && 'font-mono')}>{value}</span>
+  );
+
   return (
-    <div className="flex items-start justify-between gap-3 py-1.5 border-b border-[var(--ghost-border)] last:border-0">
-      <span className="shrink-0 font-sans text-xs font-medium text-on-surface-variant">{label}</span>
-      <span className={cn('text-xs text-on-surface text-right break-words', mono && 'font-mono')}>{value}</span>
+    <div className="flex items-baseline gap-3 py-1.5 border-b border-[var(--ghost-border)] last:border-0">
+      <span className="shrink-0 w-20 font-sans text-xs font-medium text-on-surface-variant">{label}</span>
+      {copyable ? (
+        <button
+          onClick={handleCopy}
+          title="Click to copy"
+          className="flex items-center gap-1.5 min-w-0 hover:text-primary transition-colors cursor-pointer"
+        >
+          {valueEl}
+          {copied && <Check className="h-3 w-3 text-primary shrink-0" />}
+        </button>
+      ) : (
+        <span className="min-w-0">{valueEl}</span>
+      )}
     </div>
   );
 }
@@ -54,6 +89,7 @@ export interface SessionDetailProps {
 export function SessionDetail({ id }: SessionDetailProps) {
   const navigate = useNavigate();
   const { data: session, isLoading, isError, error } = useSession(id);
+  const { data: symbiontsData } = useSymbionts();
   const triggerRun = useTriggerRun();
   const [summaryStatus, setSummaryStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
 
@@ -89,6 +125,10 @@ export function SessionDetail({ id }: SessionDetailProps) {
       </div>
     );
   }
+
+  const resumeCmd = symbiontsData
+    ? buildResumeCommand(symbiontsData.symbionts, session.agent, id)
+    : null;
 
   return (
     <div className="p-6 space-y-6 overflow-hidden">
@@ -173,16 +213,14 @@ export function SessionDetail({ id }: SessionDetailProps) {
       {/* Metadata details (collapsible-style row) */}
       <Surface level="low" className="p-4 overflow-hidden">
         <SectionHeader className="mb-3">Metadata</SectionHeader>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-6">
-          <MetaItem label="Session ID" value={id} />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6">
+          <MetaItem label="Session ID" value={id} copyable />
+          {resumeCmd && <MetaItem label="Resume" value={resumeCmd} copyable code />}
           {session.parent_session_id && (
             <MetaItem label="Parent" value={session.parent_session_id} />
           )}
           {session.parent_session_reason && (
             <MetaItem label="Reason" value={session.parent_session_reason} mono={false} />
-          )}
-          {session.transcript_path && (
-            <MetaItem label="Transcript" value={session.transcript_path} />
           )}
           {session.project_root && (
             <MetaItem label="Project" value={session.project_root} />

@@ -114,7 +114,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
         <DialogTitle className="sr-only">Search vault</DialogTitle>
 
         {/* Search input row */}
-        <div className="flex items-center gap-2 border-b border-[var(--ghost-border)] px-4 py-3">
+        <div className="flex items-center gap-2 border-b border-[var(--ghost-border)] pl-4 pr-12 py-3">
           <Search className="h-4 w-4 shrink-0 text-on-surface-variant" />
           <Input
             ref={inputRef}
@@ -129,18 +129,18 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
               pressed={mode === 'semantic'}
               onPressedChange={() => setMode('semantic')}
               aria-label="Semantic search"
-              title="Knowledge (semantic)"
+              title="Semantic (embedded knowledge)"
             >
-              Knowledge
+              Semantic
             </Toggle>
             <Toggle
               size="sm"
               pressed={mode === 'fts'}
               onPressedChange={() => setMode('fts')}
               aria-label="Full-text search"
-              title="Raw Data (full-text)"
+              title="Full text (raw data)"
             >
-              Raw
+              Full Text
             </Toggle>
           </div>
         </div>
