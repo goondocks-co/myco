@@ -8,6 +8,7 @@ import { POLL_INTERVALS, LEVEL_ORDER, type LogLevel } from '../lib/constants';
 import { PageLoading } from '../components/ui/page-loading';
 import { PageHeader } from '../components/ui/page-header';
 import { Surface } from '../components/ui/surface';
+import { Sparkline } from '../components/ui/sparkline';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { cn } from '../lib/cn';
@@ -19,6 +20,9 @@ const EMBEDDING_LOG_CATEGORY = 'embedding';
 const DEFAULT_LOG_LIMIT = 100;
 const MAX_LOG_ENTRIES = 2000;
 const SCROLL_BOTTOM_THRESHOLD_PX = 40;
+
+/** Number of recent data points to show in stat card sparklines. */
+const SPARKLINE_HISTORY_LENGTH = 20;
 
 /* ---------- Types ---------- */
 
@@ -38,14 +42,16 @@ interface LogsResponse {
 
 /* ---------- Helpers ---------- */
 
-function statusBadgeVariant(available: boolean): 'default' | 'destructive' {
-  return available ? 'default' : 'destructive';
-}
-
 function statusLabel(data: EmbeddingDetails): string {
   if (!data.provider.available) return 'unavailable';
   const hasPending = Object.values(data.pending).some((n) => n > 0);
   return hasPending ? 'processing' : 'idle';
+}
+
+function statusDotColor(data: EmbeddingDetails): string {
+  if (!data.provider.available) return 'bg-tertiary';
+  const hasPending = Object.values(data.pending).some((n) => n > 0);
+  return hasPending ? 'bg-secondary' : 'bg-primary';
 }
 
 function formatTimestamp(iso: string): string {
@@ -70,7 +76,39 @@ function levelBadgeVariant(level: LogLevel): 'default' | 'secondary' | 'warning'
   }
 }
 
+/** Colored dot indicator for log level. */
+function levelDotColor(level: LogLevel): string {
+  switch (level) {
+    case 'info': return 'bg-primary';
+    case 'warn': return 'bg-secondary';
+    case 'error': return 'bg-tertiary';
+    default: return 'bg-outline';
+  }
+}
+
 /* ---------- Sub-components ---------- */
+
+function StatCard({
+  label,
+  value,
+  sparklineData,
+}: {
+  label: string;
+  value: number;
+  sparklineData?: number[];
+}) {
+  return (
+    <Surface level="default" className="p-4 flex flex-col gap-2">
+      <p className="font-sans text-xs uppercase tracking-widest text-on-surface-variant">{label}</p>
+      <div className="flex items-end justify-between gap-2">
+        <p className="font-mono text-2xl text-on-surface">{value}</p>
+        {sparklineData && sparklineData.length >= 2 && (
+          <Sparkline data={sparklineData} width={80} height={28} className="opacity-60" />
+        )}
+      </div>
+    </Surface>
+  );
+}
 
 function NamespaceTable({ data }: { data: EmbeddingDetails }) {
   return (
@@ -78,27 +116,45 @@ function NamespaceTable({ data }: { data: EmbeddingDetails }) {
       <table className="w-full font-mono text-sm">
         <thead>
           <tr className="text-left text-on-surface-variant">
-            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-wide">Namespace</th>
-            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-wide text-right">Embedded</th>
-            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-wide text-right">Pending</th>
-            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-wide text-right">Stale</th>
-            <th className="pb-2 font-sans font-medium text-xs uppercase tracking-wide text-right">Total</th>
+            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest">Namespace</th>
+            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest text-right">Embedded</th>
+            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest text-right">Pending</th>
+            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest text-right">Stale</th>
+            <th className="pb-2 font-sans font-medium text-xs uppercase tracking-widest text-right">Total</th>
           </tr>
         </thead>
         <tbody>
-          {EMBEDDABLE_NAMESPACES.map((ns) => {
+          {EMBEDDABLE_NAMESPACES.map((ns, idx) => {
             const nsStats = data.by_namespace[ns];
             const embedded = nsStats?.embedded ?? 0;
             const stale = nsStats?.stale ?? 0;
             const pending = data.pending[ns] ?? 0;
-            const total = embedded + pending; // stale is a subset of embedded, not additive
+            const total = embedded + pending;
             return (
-              <tr key={ns} className="hover:bg-surface-container-high/50 transition-colors">
-                <td className="py-2 pr-4">{ns}</td>
-                <td className="py-2 pr-4 text-right">{embedded}</td>
-                <td className="py-2 pr-4 text-right">{pending}</td>
-                <td className="py-2 pr-4 text-right">{stale}</td>
-                <td className="py-2 text-right">{total}</td>
+              <tr
+                key={ns}
+                className={cn(
+                  'transition-colors hover:bg-surface-container-high/50',
+                  idx % 2 === 1 ? 'bg-surface-container-low/30' : '',
+                )}
+              >
+                <td className="py-2.5 pr-4">{ns}</td>
+                <td className="py-2.5 pr-4 text-right">{embedded}</td>
+                <td className="py-2.5 pr-4 text-right">
+                  {pending > 0 ? (
+                    <span className="text-secondary">{pending}</span>
+                  ) : (
+                    pending
+                  )}
+                </td>
+                <td className="py-2.5 pr-4 text-right">
+                  {stale > 0 ? (
+                    <span className="text-tertiary">{stale}</span>
+                  ) : (
+                    stale
+                  )}
+                </td>
+                <td className="py-2.5 text-right">{total}</td>
               </tr>
             );
           })}
@@ -110,16 +166,19 @@ function NamespaceTable({ data }: { data: EmbeddingDetails }) {
 
 function EmbeddingLogRow({ entry }: { entry: LogEntry }) {
   return (
-    <tr className="hover:bg-surface-container-high/50 transition-colors">
-      <td className="whitespace-nowrap py-1 pl-4 pr-3 text-on-surface-variant/70 align-top w-[68px]">
+    <tr className="hover:bg-surface-container-high/30 transition-colors">
+      <td className="whitespace-nowrap py-1.5 pl-4 pr-3 text-on-surface-variant/60 align-top w-[68px]">
         {formatTimestamp(entry.timestamp)}
       </td>
-      <td className="whitespace-nowrap py-1 pr-3 align-top w-[54px]">
+      <td className="whitespace-nowrap py-1.5 pr-3 align-top w-[20px]">
+        <div className={cn('h-2 w-2 rounded-full mt-1', levelDotColor(entry.level))} />
+      </td>
+      <td className="whitespace-nowrap py-1.5 pr-3 align-top w-[54px]">
         <Badge variant={levelBadgeVariant(entry.level)} className="px-1.5 py-0 text-[10px] uppercase">
           {entry.level}
         </Badge>
       </td>
-      <td className="py-1 pr-4 text-on-surface align-top break-words">
+      <td className="py-1.5 pr-4 text-on-surface align-top break-words">
         {entry.message}
       </td>
     </tr>
@@ -132,6 +191,20 @@ export default function Operations() {
   const { data, isLoading, isError, error } = useEmbeddingDetails();
   const queryClient = useQueryClient();
   const [actionResult, setActionResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // --- Sparkline history tracking ---
+  const [totalHistory, setTotalHistory] = useState<number[]>([]);
+
+  useEffect(() => {
+    if (data) {
+      setTotalHistory((prev) => {
+        const next = [...prev, data.total];
+        return next.length > SPARKLINE_HISTORY_LENGTH
+          ? next.slice(-SPARKLINE_HISTORY_LENGTH)
+          : next;
+      });
+    }
+  }, [data]);
 
   // --- Embedding log feed ---
   const [entries, setEntries] = useState<LogEntry[]>([]);
@@ -209,7 +282,7 @@ export default function Operations() {
     setHasNewEntries(false);
   }, []);
 
-  // Client-side filter to embedding category (in case server doesn't support category param)
+  // Client-side filter to embedding category
   const filteredEntries = useMemo(() => {
     const levelFloor = LEVEL_ORDER['debug'];
     return entries.filter((e) => {
@@ -287,66 +360,54 @@ export default function Operations() {
         <div className="flex h-full flex-col">
           {/* Header */}
           <div className="px-6 pt-6">
-            <PageHeader title="Operations" />
+            <PageHeader title="Operations" subtitle="Embedding health, maintenance actions, and activity log" />
           </div>
 
           <div className="flex-1 overflow-auto">
             <div className="space-y-6 px-6 pb-6">
-              {/* Panel 1: Embedding Overview */}
-              <Surface level="low" className="p-6 space-y-4">
+              {/* Provider status bar */}
+              <div className="flex flex-wrap items-center gap-4 font-sans text-sm">
                 <div className="flex items-center gap-2">
                   <Cpu className="h-4 w-4 text-primary" />
-                  <h2 className="font-sans text-base font-medium text-on-surface">Embedding Overview</h2>
+                  <span className="text-on-surface-variant">Provider</span>
+                  <span className="font-mono text-on-surface">{data.provider.name}</span>
                 </div>
-
-                {/* Provider info row */}
-                <div className="flex flex-wrap items-center gap-4 font-sans text-sm">
-                  <div className="flex items-center gap-2">
-                    <span className="text-on-surface-variant">Provider</span>
-                    <span className="font-mono text-on-surface">{data.provider.name}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-on-surface-variant">Model</span>
-                    <span className="font-mono text-xs text-on-surface truncate max-w-[200px]" title={data.provider.model}>
-                      {data.provider.model}
-                    </span>
-                  </div>
-                  <Badge variant={statusBadgeVariant(data.provider.available)} className="text-xs capitalize">
-                    {statusLabel(data)}
-                  </Badge>
+                <div className="flex items-center gap-2">
+                  <span className="text-on-surface-variant">Model</span>
+                  <span className="font-mono text-xs text-on-surface truncate max-w-[200px]" title={data.provider.model}>
+                    {data.provider.model}
+                  </span>
                 </div>
-
-                {/* Aggregate stat cards */}
-                <div className="grid grid-cols-3 gap-3">
-                  <Surface level="default" className="p-3">
-                    <p className="font-sans text-xs text-on-surface-variant">Total vectors</p>
-                    <p className="font-mono text-lg text-on-surface mt-0.5">{data.total}</p>
-                  </Surface>
-                  <Surface level="default" className="p-3">
-                    <p className="font-sans text-xs text-on-surface-variant">Pending</p>
-                    <p className="font-mono text-lg text-on-surface mt-0.5">{totalPending}</p>
-                  </Surface>
-                  <Surface level="default" className="p-3">
-                    <p className="font-sans text-xs text-on-surface-variant">Stale</p>
-                    <p className="font-mono text-lg text-on-surface mt-0.5">{totalStale}</p>
-                  </Surface>
+                <div className="flex items-center gap-2">
+                  <div className={cn('h-2 w-2 rounded-full', statusDotColor(data))} />
+                  <span className="text-on-surface-variant capitalize">{statusLabel(data)}</span>
                 </div>
+              </div>
 
-                {/* Per-namespace breakdown */}
+              {/* Stat cards */}
+              <div className="grid grid-cols-3 gap-3">
+                <StatCard label="Total Vectors" value={data.total} sparklineData={totalHistory} />
+                <StatCard label="Pending" value={totalPending} />
+                <StatCard label="Stale" value={totalStale} />
+              </div>
+
+              {/* Namespace breakdown */}
+              <Surface level="low" className="p-6 space-y-4">
+                <h2 className="font-sans text-xs uppercase tracking-widest text-on-surface-variant">
+                  Namespace Breakdown
+                </h2>
                 <NamespaceTable data={data} />
               </Surface>
 
-              {/* Panel 2: Actions */}
+              {/* Action toolbar */}
               <Surface level="low" className="p-6 space-y-3">
-                <h2 className="font-sans text-base font-medium text-on-surface">Actions</h2>
+                <h2 className="font-sans text-xs uppercase tracking-widest text-on-surface-variant">
+                  Actions
+                </h2>
                 <div className="flex flex-wrap gap-2">
                   <Button variant="ghost" size="sm" onClick={handleReembedStale}>
                     <RefreshCw className="mr-2 h-4 w-4" />
                     Re-embed stale
-                  </Button>
-                  <Button variant="destructive" size="sm" onClick={handleRebuild}>
-                    <RotateCcw className="mr-2 h-4 w-4" />
-                    Rebuild all
                   </Button>
                   <Button variant="ghost" size="sm" onClick={handleCleanOrphans}>
                     <Trash2 className="mr-2 h-4 w-4" />
@@ -355,6 +416,10 @@ export default function Operations() {
                   <Button variant="secondary" size="sm" onClick={handleReconcile}>
                     <Play className="mr-2 h-4 w-4" />
                     Force reconcile
+                  </Button>
+                  <Button variant="destructive" size="sm" onClick={handleRebuild}>
+                    <RotateCcw className="mr-2 h-4 w-4" />
+                    Rebuild all
                   </Button>
                 </div>
 
@@ -371,10 +436,12 @@ export default function Operations() {
                 )}
               </Surface>
 
-              {/* Panel 3: Recent Activity */}
+              {/* Activity log — recessed terminal feel */}
               <Surface level="low" className="flex flex-col overflow-hidden">
-                <div className="flex items-center justify-between p-6 pb-3">
-                  <h2 className="font-sans text-base font-medium text-on-surface">Recent Activity</h2>
+                <div className="flex items-center justify-between px-6 py-4">
+                  <h2 className="font-sans text-xs uppercase tracking-widest text-on-surface-variant">
+                    Activity Log
+                  </h2>
                   <Button
                     size="sm"
                     variant={autoScroll ? 'default' : 'ghost'}
@@ -396,10 +463,10 @@ export default function Operations() {
                   <div
                     ref={scrollRef}
                     onScroll={handleScroll}
-                    className="h-64 overflow-y-auto font-mono text-xs bg-surface-container-lowest rounded-b-md"
+                    className="h-64 overflow-y-auto font-mono text-xs bg-surface-container-lowest"
                   >
                     {filteredEntries.length === 0 ? (
-                      <div className="flex h-32 items-center justify-center text-on-surface-variant">
+                      <div className="flex h-32 items-center justify-center font-sans text-on-surface-variant">
                         No embedding log entries
                       </div>
                     ) : (
