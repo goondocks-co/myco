@@ -110,6 +110,11 @@ export default function Agent() {
             taskId={selectedTaskId}
             onBack={() => setSelectedTaskId(undefined)}
             onNavigate={setSelectedTaskId}
+            onRunTriggered={(runId) => {
+              setSelectedTaskId(undefined);
+              setTab('runs');
+              if (runId) setSelectedRunId(runId);
+            }}
           />
         ) : (
           <TaskList onSelect={setSelectedTaskId} />

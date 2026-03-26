@@ -46,6 +46,8 @@ export interface EntityRow {
 export interface ListEntitiesOptions {
   agent_id?: string;
   type?: string;
+  /** Filter by exact entity name. */
+  name?: string;
   /** Filter by status (default 'active'). */
   status?: string;
   /** Filter by entity_mentions subquery — must be paired with note_type. */
@@ -178,6 +180,11 @@ export function listEntities(
   if (options.type !== undefined) {
     conditions.push(`type = ?`);
     params.push(options.type);
+  }
+
+  if (options.name !== undefined) {
+    conditions.push(`name = ?`);
+    params.push(options.name);
   }
 
   // Default: only show active entities (status column added in v5)

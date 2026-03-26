@@ -1,9 +1,11 @@
 /**
  * Vault MCP tool server for the agent.
  *
- * Creates 15 tools that expose SQLite query helpers to the agent
+ * Creates 18 tools that expose SQLite query helpers to the agent
  * via the Claude Agent SDK. Tools are grouped into:
- * - Read tools: vault_unprocessed, vault_spores, vault_sessions, vault_search, vault_state, vault_read_digest
+ * - Read tools: vault_unprocessed, vault_spores, vault_sessions, vault_search_fts,
+ *               vault_search_semantic, vault_state, vault_entities, vault_edges,
+ *               vault_read_digest
  * - Write tools: vault_create_spore, vault_create_entity, vault_create_edge,
  *                vault_resolve_spore, vault_update_session, vault_set_state,
  *                vault_write_digest, vault_mark_processed
@@ -16,7 +18,7 @@
 import crypto from 'node:crypto';
 import { z } from 'zod/v4';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
-import { epochSeconds } from '@myco/constants.js';
+import { epochSeconds, SEARCH_SIMILARITY_THRESHOLD } from '@myco/constants.js';
 import { getPluginVersion } from '@myco/version.js';
 import { getUnprocessedBatches, markBatchProcessed } from '@myco/db/queries/batches.js';
 import { listSpores, insertSpore, updateSporeStatus, DEFAULT_IMPORTANCE } from '@myco/db/queries/spores.js';
@@ -26,8 +28,8 @@ import { insertReport } from '@myco/db/queries/reports.js';
 import { insertTurn } from '@myco/db/queries/turns.js';
 import { EMBEDDABLE_TABLES, type EmbeddableTable } from '@myco/db/queries/embeddings.js';
 import { fullTextSearch } from '@myco/db/queries/search.js';
-import { insertEntity } from '@myco/db/queries/entities.js';
-import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
+import { insertEntity, listEntities } from '@myco/db/queries/entities.js';
+import { insertGraphEdge, listGraphEdges } from '@myco/db/queries/graph-edges.js';
 import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
@@ -52,6 +54,12 @@ const DEFAULT_SEARCH_LIMIT = 10;
 /** Default embeddable table for search. */
 const DEFAULT_SEARCH_TABLE: EmbeddableTable = 'spores';
 
+/** Default limit for entity listing. */
+const DEFAULT_ENTITIES_LIMIT = 50;
+
+/** Default limit for edge listing. */
+const DEFAULT_EDGES_LIMIT = 50;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -66,10 +74,10 @@ function textResult(data: unknown): { content: Array<{ type: 'text'; text: strin
 // ---------------------------------------------------------------------------
 
 /** Total number of vault tools defined. */
-export const VAULT_TOOL_COUNT = 15;
+export const VAULT_TOOL_COUNT = 18;
 
 /**
- * Create the 15 vault tool definitions for the agent.
+ * Create the 18 vault tool definitions for the agent.
  *
  * Exposed for testing (call handler directly) and for the MCP server factory.
  *
@@ -121,15 +129,17 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
       });
       return textResult(batches);
     },
+    { annotations: { readOnlyHint: true } },
   );
 
   const vaultSpores = tool(
     'vault_spores',
-    'List spores with optional filters (agent, observation type, status).',
+    'List spores with optional filters (agent, observation type, status, session).',
     {
       agent_id: z.string().optional().describe('Filter by agent ID'),
       observation_type: z.string().optional().describe('Filter by observation type (e.g., gotcha, decision)'),
       status: z.enum(['active', 'superseded', 'archived']).optional().describe('Filter by status'),
+      session_id: z.string().optional().describe('Filter by session ID'),
       limit: z.number().optional().describe('Maximum number of spores to return'),
     },
     async (args) => {
@@ -138,10 +148,12 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
         agent_id: args.agent_id,
         observation_type: args.observation_type,
         status: args.status,
+        session_id: args.session_id,
         limit: args.limit ?? DEFAULT_SPORES_LIMIT,
       });
       return textResult(spores);
     },
+    { annotations: { readOnlyHint: true } },
   );
 
   const vaultSessions = tool(
@@ -159,18 +171,19 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
       });
       return textResult(sessions);
     },
+    { annotations: { readOnlyHint: true } },
   );
 
-  const vaultSearch = tool(
-    'vault_search',
-    'Full-text search across vault content using FTS5. Returns ranked results. Use vault_spores or vault_sessions for structured queries.',
+  const vaultSearchFts = tool(
+    'vault_search_fts',
+    'Full-text search across prompt batches and activities using FTS5. Best for finding specific text, keywords, or session content. Does NOT search spores or entities.',
     {
       query: z.string().describe('Search query text'),
       type: z.string().optional().describe('Restrict to a result type (prompt_batch, activity)'),
       limit: z.number().optional().describe('Maximum number of results to return'),
     },
     async (args) => {
-      recordTurn('vault_search', args);
+      recordTurn('vault_search_fts', args);
       try {
         const results = fullTextSearch(args.query, {
           type: args.type,
@@ -181,6 +194,38 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
         return textResult({ results: [], message: 'Search unavailable' });
       }
     },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const vaultSearchSemantic = tool(
+    'vault_search_semantic',
+    'Semantic similarity search across embedded vault content (spores, sessions). Best for finding conceptually related content. Returns results ranked by similarity score.',
+    {
+      query: z.string().describe('Search query text'),
+      namespace: z.string().optional().describe('Restrict to a content type: spores, sessions'),
+      limit: z.number().optional().describe('Maximum results to return'),
+    },
+    async (args) => {
+      recordTurn('vault_search_semantic', args);
+      if (!embeddingManager) {
+        return textResult({ results: [], message: 'Embedding provider unavailable' });
+      }
+      try {
+        const queryVector = await embeddingManager.embedQuery(args.query);
+        if (!queryVector) {
+          return textResult({ results: [], message: 'Embedding provider unavailable' });
+        }
+        const results = embeddingManager.searchVectors(queryVector, {
+          namespace: args.namespace,
+          limit: args.limit ?? DEFAULT_SEARCH_LIMIT,
+          threshold: SEARCH_SIMILARITY_THRESHOLD,
+        });
+        return textResult({ results });
+      } catch {
+        return textResult({ results: [], message: 'Semantic search unavailable' });
+      }
+    },
+    { annotations: { readOnlyHint: true } },
   );
 
   const vaultState = tool(
@@ -192,6 +237,51 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
       const states = getStatesForAgent(agentId);
       return textResult(states);
     },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const vaultEntities = tool(
+    'vault_entities',
+    'List knowledge graph entities with optional filters.',
+    {
+      type: z.enum(['component', 'concept', 'person']).optional().describe('Filter by entity type'),
+      name: z.string().optional().describe('Filter by entity name (exact match)'),
+      limit: z.number().optional().describe('Maximum entities to return'),
+    },
+    async (args) => {
+      recordTurn('vault_entities', args);
+      const entities = listEntities({
+        agent_id: agentId,
+        type: args.type,
+        name: args.name,
+        limit: args.limit ?? DEFAULT_ENTITIES_LIMIT,
+      });
+      return textResult(entities);
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const vaultEdges = tool(
+    'vault_edges',
+    'List knowledge graph edges with optional filters. Use to check existing relationships before creating new ones.',
+    {
+      source_id: z.string().optional().describe('Filter by source node ID'),
+      target_id: z.string().optional().describe('Filter by target node ID'),
+      type: z.string().optional().describe('Filter by edge type (REFERENCES, DEPENDS_ON, AFFECTS, etc.)'),
+      limit: z.number().optional().describe('Maximum edges to return'),
+    },
+    async (args) => {
+      recordTurn('vault_edges', args);
+      const edges = listGraphEdges({
+        sourceId: args.source_id,
+        targetId: args.target_id,
+        type: args.type,
+        agentId: agentId,
+        limit: args.limit ?? DEFAULT_EDGES_LIMIT,
+      });
+      return textResult(edges);
+    },
+    { annotations: { readOnlyHint: true } },
   );
 
   // -------------------------------------------------------------------------
@@ -417,6 +507,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
         generated_at: e.generated_at,
       })));
     },
+    { annotations: { readOnlyHint: true } },
   );
 
   const vaultWriteDigest = tool(
@@ -492,8 +583,11 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
     vaultUnprocessed,
     vaultSpores,
     vaultSessions,
-    vaultSearch,
+    vaultSearchFts,
+    vaultSearchSemantic,
     vaultState,
+    vaultEntities,
+    vaultEdges,
     vaultCreateSpore,
     vaultCreateEntity,
     vaultCreateEdge,
@@ -512,7 +606,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
 // ---------------------------------------------------------------------------
 
 /**
- * Create a vault MCP tool server with 15 tools for the agent.
+ * Create a vault MCP tool server with 18 tools for the agent.
  *
  * Wraps `createVaultTools()` with `createSdkMcpServer()` from the
  * Claude Agent SDK.

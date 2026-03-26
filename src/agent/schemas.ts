@@ -78,6 +78,8 @@ export const PhaseDefinitionSchema = z.object({
   maxTurns: z.number(),
   model: z.string().optional(),
   required: z.boolean(),
+  dependsOn: z.array(z.string()).optional(),
+  provider: ProviderConfigSchema.optional(),
 });
 
 /** Schema for task YAML files in tasks/. */

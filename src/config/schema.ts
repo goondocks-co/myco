@@ -18,6 +18,31 @@ const CaptureSchema = z.object({
   buffer_max_events: z.number().int().positive().default(500),
 });
 
+/** Provider config shape used in both task-level and phase-level overrides. */
+const ProviderOverrideSchema = z.object({
+  type: z.enum(['cloud', 'ollama', 'lmstudio']),
+  base_url: z.string().optional(),
+  model: z.string().optional(),
+  /** Context window size for local models (Ollama num_ctx, LM Studio context_length). */
+  context_length: z.number().int().positive().optional(),
+});
+
+/** Per-phase overrides within a task — keyed by phase name. */
+const PhaseOverrideSchema = z.object({
+  provider: ProviderOverrideSchema.optional(),
+  model: z.string().optional(),
+  maxTurns: z.number().int().positive().optional(),
+});
+
+/** Per-task config override — stored in myco.yaml under agent.tasks. */
+const TaskProviderOverrideSchema = z.object({
+  provider: ProviderOverrideSchema.optional(),
+  model: z.string().optional(),
+  maxTurns: z.number().int().positive().optional(),
+  timeoutSeconds: z.number().int().positive().optional(),
+  phases: z.record(z.string(), PhaseOverrideSchema).optional(),
+});
+
 const AgentSchema = z.object({
   /** Whether the daemon automatically runs the agent on unprocessed batches. */
   auto_run: z.boolean().default(true),
@@ -25,6 +50,12 @@ const AgentSchema = z.object({
   interval_seconds: z.number().int().positive().default(300),
   /** Number of batches between event-driven summary triggers (0 to disable). */
   summary_batch_interval: z.number().int().min(0).default(5),
+  /** Global default provider — applies to all tasks unless overridden per-task. */
+  provider: ProviderOverrideSchema.optional(),
+  /** Global default model — applies to all tasks unless overridden per-task. */
+  model: z.string().optional(),
+  /** Per-task overrides keyed by task name. */
+  tasks: z.record(z.string(), TaskProviderOverrideSchema).optional(),
 });
 
 export const MycoConfigSchema = z.preprocess(
@@ -47,3 +78,5 @@ export const MycoConfigSchema = z.preprocess(
 
 export type MycoConfig = z.output<typeof MycoConfigSchema>;
 export type EmbeddingProviderConfig = z.infer<typeof EmbeddingProviderSchema>;
+export type TaskProviderOverride = z.infer<typeof TaskProviderOverrideSchema>;
+export type PhaseOverride = z.infer<typeof PhaseOverrideSchema>;

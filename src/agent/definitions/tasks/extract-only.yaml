@@ -29,6 +29,9 @@ prompt: |
 
   ## Phase 2 — Extract (budget: 18 turns)
 
+  Budget ~3 turns per batch. If more batches than turns allow, prioritize
+  batches with longer prompts (these contain more substantive work).
+
   For each batch:
   1. Read `user_prompt` — understand what the developer asked
   2. Identify candidate observations — genuine insights only, not activity logs
@@ -36,7 +39,7 @@ prompt: |
      One search call per topic is cheaper than one per batch.
 
   For each TOPIC group:
-  1. Call `vault_search` with the topic to check existing spore coverage
+  1. Use `vault_search_semantic` to find existing spores that already cover this topic
   2. If a similar spore exists:
      - If the new observation adds meaningful new detail: call
        `vault_create_spore` then supersede the old via `vault_resolve_spore`
@@ -52,7 +55,15 @@ prompt: |
 
   For each session touched:
   1. Call `vault_sessions` to check existing title/summary
-  2. If missing or stale, call `vault_update_session` with both fields
+  2. If missing or stale, review the prompt batches you just processed —
+     use the user_prompt and response_summary from those batches as
+     your primary source for the title and summary
+  3. Call `vault_update_session` with BOTH title and summary
+
+  Title: describes WHAT WAS ACCOMPLISHED (under 80 chars, sentence case).
+  Synthesize from the full arc of batches, not just the first prompt.
+  NEVER use file paths, directory names, or the user's first message.
+  Summary: 2-4 sentences — rich in detail (files, tools, outcomes).
 
   ## Phase 4 — Report (budget: 1 turn)
 
@@ -64,7 +75,9 @@ prompt: |
 toolOverrides:
   - vault_unprocessed
   - vault_spores
-  - vault_search
+  - vault_sessions
+  - vault_search_fts
+  - vault_search_semantic
   - vault_state
   - vault_create_spore
   - vault_resolve_spore

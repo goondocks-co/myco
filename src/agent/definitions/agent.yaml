@@ -17,8 +17,11 @@ tools:
   - vault_unprocessed
   - vault_spores
   - vault_sessions
-  - vault_search
+  - vault_search_fts
+  - vault_search_semantic
   - vault_state
+  - vault_entities
+  - vault_edges
   # Write tools
   - vault_create_spore
   - vault_create_entity

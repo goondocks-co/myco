@@ -8,6 +8,7 @@ import { capitalize } from '../../lib/format';
 import { sourceBadgeVariant } from './helpers';
 import { TaskActions } from './TaskActions';
 import { TaskEditor } from './TaskEditor';
+import { TaskProviderConfig } from './TaskProviderConfig';
 
 /* ---------- Constants ---------- */
 
@@ -20,6 +21,7 @@ interface TaskDetailProps {
   taskId: string;
   onBack: () => void;
   onNavigate?: (taskId: string) => void;
+  onRunTriggered?: (runId?: string) => void;
 }
 
 /* ---------- Helpers ---------- */
@@ -93,7 +95,7 @@ function PhaseCard({ phase, index }: { phase: PhaseDefinition; index: number }) 
 
 /* ---------- Component ---------- */
 
-export function TaskDetail({ taskId, onBack, onNavigate }: TaskDetailProps) {
+export function TaskDetail({ taskId, onBack, onNavigate, onRunTriggered }: TaskDetailProps) {
   const { data, isPending, isError } = useTask(taskId);
 
   if (isPending) {
@@ -148,8 +150,16 @@ export function TaskDetail({ taskId, onBack, onNavigate }: TaskDetailProps) {
           task={task}
           onDeleted={onBack}
           onCustomized={(newName) => onNavigate?.(newName)}
+          onRunTriggered={onRunTriggered}
         />
       </Surface>
+
+      {/* Provider config */}
+      <TaskProviderConfig
+        taskId={taskId}
+        phases={phases}
+        defaults={{ model: execution.model, maxTurns: execution.maxTurns, timeoutSeconds: execution.timeoutSeconds }}
+      />
 
       {/* Execution config */}
       {(execution.model !== undefined || execution.maxTurns !== undefined || execution.timeoutSeconds !== undefined) && (

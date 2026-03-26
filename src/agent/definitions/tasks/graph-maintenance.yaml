@@ -23,30 +23,34 @@ prompt: |
 
   1. Call `vault_state` for context
   2. Call `vault_spores` with status "active" to see current observations
-  3. Call `vault_search` to check embedding availability
+  3. Call `vault_entities` to see existing entities
+  4. Call `vault_edges` to check existing relationships
 
   ## Phase 2 — Entity Discovery (budget: 15 turns)
 
+  Call `vault_entities` to see existing entities before creating new ones.
+
   Scan active spores for entity candidates:
-  1. Look for components, concepts, or people mentioned in 3+ spores
-     from 2+ different sessions
-  2. Call `vault_create_entity` for each valid candidate:
+  1. For each candidate: count distinct `session_id` values across spores
+     mentioning it. Only create if referenced in 2+ sessions AND 3+ spores.
+  2. Check `vault_entities` results — if the entity already exists, skip it
+  3. Call `vault_create_entity` for each valid NEW candidate:
      - type: component | concept | person
      - name: specific, named thing (not abstract categories)
-  3. Good: "DaemonClient", "cursor-based pagination", "Chris"
-  4. Bad: "testing phase", "technical debt", "code quality"
+  4. Good: "DaemonClient", "cursor-based pagination", "Chris"
+  5. Bad: "testing phase", "technical debt", "code quality"
 
   ## Phase 3 — Semantic Edges (budget: 10 turns)
 
   Link spores and entities with semantic edges. For each entity:
-  1. Call `vault_search` with the entity name to find spores that discuss it
+  1. Call `vault_search_semantic` with the entity name to find spores that discuss it
   2. For each relevant spore found, call `vault_create_edge`:
      - type: REFERENCES
      - source_id: the spore ID, source_type: spore
      - target_id: the entity ID, target_type: entity
-  3. Before creating any edge, verify it does not already exist — use
-     `vault_sessions` to review existing session context if needed, and
-     avoid creating duplicate edges for the same (source, type, target) triple
+  3. Before creating any edge, call `vault_edges` with source_id and target_id
+     to verify it does not already exist — avoid creating duplicate edges
+     for the same (source, type, target) triple
 
   Also create structural edges between entities:
   - DEPENDS_ON (entity→entity): architectural dependencies
@@ -60,9 +64,12 @@ prompt: |
 
   ## Phase 4 — Deduplication (budget: 5 turns)
 
-  Check for duplicate entities (same concept, different names):
-  1. Use `vault_search` to find semantically similar entities
-  2. If duplicates found, keep the better-named one and note the issue
+  Call `vault_entities` to list all entities. Look for entities of the same
+  type with similar names (e.g., "DaemonClient" and "daemon-client", or
+  "SQLite" and "sqlite-vec"):
+  1. Compare entity names within each type for near-duplicates
+  2. Use `vault_search_semantic` to confirm semantic similarity if unsure
+  3. If duplicates found, keep the better-named one and note the issue
      via `vault_report`
 
   ## Phase 5 — Report (budget: 2 turns)
@@ -75,8 +82,10 @@ prompt: |
 toolOverrides:
   - vault_spores
   - vault_sessions
-  - vault_search
+  - vault_search_semantic
   - vault_state
+  - vault_entities
+  - vault_edges
   - vault_create_entity
   - vault_create_edge
   - vault_set_state

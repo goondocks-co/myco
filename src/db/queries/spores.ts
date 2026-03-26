@@ -68,6 +68,7 @@ export interface ListSporesOptions {
   agent_id?: string;
   observation_type?: string;
   status?: string;
+  session_id?: string;
   limit?: number;
   offset?: number;
 }
@@ -207,6 +208,10 @@ function buildSporeWhere(
   if (options.status !== undefined) {
     conditions.push(`status = ?`);
     params.push(options.status);
+  }
+  if (options.session_id !== undefined) {
+    conditions.push(`session_id = ?`);
+    params.push(options.session_id);
   }
 
   return {

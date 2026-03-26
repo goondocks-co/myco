@@ -259,6 +259,21 @@ vi.mock('@myco/db/client.js', async (importOriginal) => {
 });
 
 // ---------------------------------------------------------------------------
+// Mock: config loader (avoid filesystem reads for myco.yaml)
+// ---------------------------------------------------------------------------
+
+vi.mock('@myco/config/loader.js', () => ({
+  loadConfig: () => ({
+    version: 3,
+    config_version: 0,
+    embedding: { provider: 'ollama', model: 'bge-m3' },
+    daemon: { port: null, log_level: 'info' },
+    capture: { transcript_paths: [], artifact_watch: [], artifact_extensions: [], buffer_max_events: 500 },
+    agent: { auto_run: true, interval_seconds: 300, summary_batch_interval: 5 },
+  }),
+}));
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -518,7 +533,7 @@ describe('runAgent', () => {
     expect(opts.maxTurns).toBe(10);
     expect(opts.permissionMode).toBe('bypassPermissions');
     expect(opts.allowDangerouslySkipPermissions).toBe(true);
-    expect(opts.persistSession).toBe(false);
+    expect(opts.persistSession).toBe(true);
     expect(opts.mcpServers).toBeDefined();
     expect(opts.tools).toEqual([]);
   });
@@ -593,6 +608,7 @@ describe('runAgent — phased execution', () => {
       tools: ['vault_unprocessed', 'vault_create_spore', 'vault_mark_processed'],
       maxTurns: 15,
       required: true,
+      dependsOn: ['read-state'],
     },
     {
       name: 'report',
@@ -600,6 +616,7 @@ describe('runAgent — phased execution', () => {
       tools: ['vault_report'],
       maxTurns: 2,
       required: true,
+      dependsOn: ['extract'],
     },
   ];
 
@@ -724,8 +741,8 @@ describe('runAgent — phased execution', () => {
     // Override phases to make the middle one optional
     mockYamlPhases = [
       { name: 'read-state', prompt: 'Read state.', tools: ['vault_state'], maxTurns: 3, required: true },
-      { name: 'summarize', prompt: 'Update summaries.', tools: ['vault_sessions'], maxTurns: 5, required: false },
-      { name: 'report', prompt: 'Write report.', tools: ['vault_report'], maxTurns: 2, required: true },
+      { name: 'summarize', prompt: 'Update summaries.', tools: ['vault_sessions'], maxTurns: 5, required: false, dependsOn: ['read-state'] },
+      { name: 'report', prompt: 'Write report.', tools: ['vault_report'], maxTurns: 2, required: true, dependsOn: ['summarize'] },
     ];
 
     const { runAgent } = await import('@myco/agent/executor.js');
@@ -747,7 +764,7 @@ describe('runAgent — phased execution', () => {
   it('uses phase-specific model when provided', async () => {
     mockYamlPhases = [
       { name: 'extract', prompt: 'Extract.', tools: ['vault_unprocessed'], maxTurns: 20, model: 'claude-haiku-4-5', required: true },
-      { name: 'graph', prompt: 'Build graph.', tools: ['vault_create_entity'], maxTurns: 10, required: true },
+      { name: 'graph', prompt: 'Build graph.', tools: ['vault_create_entity'], maxTurns: 10, required: true, dependsOn: ['extract'] },
     ];
 
     const { runAgent } = await import('@myco/agent/executor.js');
@@ -827,8 +844,8 @@ describe('runAgent — phased execution', () => {
     // Make middle phase optional so orchestrator can skip it
     mockYamlPhases = [
       { name: 'read-state', prompt: 'Read state.', tools: ['vault_state'], maxTurns: 3, required: true },
-      { name: 'summarize', prompt: 'Update summaries.', tools: ['vault_sessions'], maxTurns: 5, required: false },
-      { name: 'report', prompt: 'Write report.', tools: ['vault_report'], maxTurns: 2, required: true },
+      { name: 'summarize', prompt: 'Update summaries.', tools: ['vault_sessions'], maxTurns: 5, required: false, dependsOn: ['read-state'] },
+      { name: 'report', prompt: 'Write report.', tools: ['vault_report'], maxTurns: 2, required: true, dependsOn: ['summarize'] },
     ];
     mockOrchestratorConfig = { enabled: true };
 
@@ -911,5 +928,128 @@ describe('runAgent — phased execution', () => {
 
     // Phase calls start at index 1 (index 0 is orchestrator)
     expect((allQueryCalls[2].options as Record<string, unknown>).maxTurns).toBe(7);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: computeWaves — topological sort of phases into parallel waves
+// ---------------------------------------------------------------------------
+
+describe('computeWaves', () => {
+  /** Helper to create a minimal PhaseDefinition for wave computation tests. */
+  const makePhase = (name: string, dependsOn?: string[]): PhaseDefinition => ({
+    name,
+    dependsOn,
+    prompt: '',
+    tools: [],
+    maxTurns: 5,
+    required: true,
+  });
+
+  it('full intelligence DAG: 7 phases → 5 waves', async () => {
+    const { computeWaves } = await import('@myco/agent/executor.js');
+
+    // Matches full-intelligence.yaml dependency graph
+    const phases = [
+      makePhase('read-state'),
+      makePhase('extract', ['read-state']),
+      makePhase('summarize', ['read-state']),
+      makePhase('consolidate', ['extract']),
+      makePhase('graph', ['extract']),
+      makePhase('digest', ['consolidate']),
+      makePhase('report', ['extract', 'summarize', 'consolidate', 'graph', 'digest']),
+    ];
+
+    const waves = computeWaves(phases);
+
+    expect(waves.length).toBe(5);
+    expect(waves[0].map((p) => p.name)).toEqual(['read-state']);
+    expect(waves[1].map((p) => p.name).sort()).toEqual(['extract', 'summarize']);
+    expect(waves[2].map((p) => p.name).sort()).toEqual(['consolidate', 'graph']);
+    expect(waves[3].map((p) => p.name)).toEqual(['digest']);
+    expect(waves[4].map((p) => p.name)).toEqual(['report']);
+  });
+
+  it('all roots: 3 independent phases → single wave', async () => {
+    const { computeWaves } = await import('@myco/agent/executor.js');
+
+    const phases = [
+      makePhase('a'),
+      makePhase('b'),
+      makePhase('c'),
+    ];
+
+    const waves = computeWaves(phases);
+
+    expect(waves.length).toBe(1);
+    expect(waves[0].map((p) => p.name).sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('linear chain: A→B→C → 3 waves of 1 each', async () => {
+    const { computeWaves } = await import('@myco/agent/executor.js');
+
+    const phases = [
+      makePhase('a'),
+      makePhase('b', ['a']),
+      makePhase('c', ['b']),
+    ];
+
+    const waves = computeWaves(phases);
+
+    expect(waves.length).toBe(3);
+    expect(waves[0].map((p) => p.name)).toEqual(['a']);
+    expect(waves[1].map((p) => p.name)).toEqual(['b']);
+    expect(waves[2].map((p) => p.name)).toEqual(['c']);
+  });
+
+  it('diamond: A→[B,C]→D → 3 waves', async () => {
+    const { computeWaves } = await import('@myco/agent/executor.js');
+
+    const phases = [
+      makePhase('a'),
+      makePhase('b', ['a']),
+      makePhase('c', ['a']),
+      makePhase('d', ['b', 'c']),
+    ];
+
+    const waves = computeWaves(phases);
+
+    expect(waves.length).toBe(3);
+    expect(waves[0].map((p) => p.name)).toEqual(['a']);
+    expect(waves[1].map((p) => p.name).sort()).toEqual(['b', 'c']);
+    expect(waves[2].map((p) => p.name)).toEqual(['d']);
+  });
+
+  it('circular dependency throws', async () => {
+    const { computeWaves } = await import('@myco/agent/executor.js');
+
+    const phases = [
+      makePhase('a', ['b']),
+      makePhase('b', ['a']),
+    ];
+
+    expect(() => computeWaves(phases)).toThrow();
+  });
+
+  it('missing dependency treated as satisfied (supports orchestrator skip)', async () => {
+    const { computeWaves } = await import('@myco/agent/executor.js');
+
+    const phases = [
+      makePhase('a', ['nonexistent']),
+    ];
+
+    // Missing deps are treated as already satisfied (the phase may have been
+    // removed by orchestrator directives)
+    const waves = computeWaves(phases);
+    expect(waves.length).toBe(1);
+    expect(waves[0].map((p) => p.name)).toEqual(['a']);
+  });
+
+  it('empty phases returns empty array', async () => {
+    const { computeWaves } = await import('@myco/agent/executor.js');
+
+    const waves = computeWaves([]);
+
+    expect(waves).toEqual([]);
   });
 });

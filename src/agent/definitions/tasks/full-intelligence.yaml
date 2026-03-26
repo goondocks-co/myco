@@ -53,6 +53,7 @@ prompt: >
 
 phases:
   - name: read-state
+    # Root phase — no dependsOn
     prompt: |
       Read the current vault state to determine what needs processing.
 
@@ -70,6 +71,7 @@ phases:
     required: true
 
   - name: extract
+    dependsOn: [read-state]
     prompt: |
       Extract observations from unprocessed batches as spores.
       CRITICAL: the vault must stay sharp, not bloated. Supersede, don't duplicate.
@@ -79,14 +81,16 @@ phases:
 
       ## Step 1: Read batches and identify observations (budget: ~10 turns)
 
-      Process batches from `vault_unprocessed`. For each batch:
-      1. Read the content — identify genuine insights, not activity logs
-      2. Group related observations across batches by topic before creating
+      PASS 1: Read all batches via `vault_unprocessed`. For each, note candidate
+      insights as a mental list. Focus on genuine insights, not activity logs.
+
+      PASS 2: Group similar insights into topics. Batches often repeat the same
+      theme — group before searching to minimize tool calls.
 
       ## Step 2: Search and create/supersede (budget: ~20 turns)
 
       For each TOPIC you identified (not each batch — group first):
-      1. Call `vault_search` with the topic to check existing coverage
+      1. Call `vault_search_semantic` with the topic to check existing coverage
       2. If a similar spore exists:
          - If your observation adds meaningful new detail: create the new
            spore, then supersede the old via `vault_resolve_spore`
@@ -108,7 +112,8 @@ phases:
     tools:
       - vault_unprocessed
       - vault_spores
-      - vault_search
+      - vault_search_fts
+      - vault_search_semantic
       - vault_create_spore
       - vault_resolve_spore
       - vault_mark_processed
@@ -118,38 +123,79 @@ phases:
     required: true
 
   - name: summarize
+    dependsOn: [read-state]
     prompt: |
       Update session titles and summaries for sessions touched during extraction.
 
-      1. Call `vault_sessions` to check current title/summary
-      2. For sessions needing updates, call `vault_search` with the session_id
-         filter to find spores from that session — use them to understand
-         the full scope of work done
-      3. Call `vault_update_session` with BOTH title and summary
-      4. Title: under 80 chars, reflects full session scope
-      5. Summary: 2-4 sentences, key work done + outcomes
+      ## Step 1: Find sessions with new activity (budget: 2 turns)
+
+      1. Call `vault_unprocessed` — group batches by session_id. Each session
+         with unprocessed batches needs its summary updated.
+      2. Call `vault_sessions` to get existing titles/summaries for those sessions.
+
+      If no sessions have new activity, report "skip" and finish.
+
+      ## Step 2: Update each session (budget: 5 turns)
+
+      For each session with new batches:
+      1. Read the EXISTING title and summary — context from prior runs.
+      2. Read the NEW prompt batches (from Step 1) — user_prompt + response_summary.
+         This is your PRIMARY source. Understand the full arc of new work.
+      3. Generate an UPDATED title and summary incorporating both existing
+         context and new activity.
+
+      ## Step 3: Write updates (budget: 2 turns)
+
+      Call `vault_update_session` with BOTH title and summary.
+
+      ### Title Rules (CRITICAL)
+
+      The title describes WHAT WAS ACCOMPLISHED, not what was asked.
+      - Under 80 chars, sentence case
+      - Synthesize from the full arc of prompt batches, not just the first one
+      - NEVER use file paths, directory names, or working directory
+      - NEVER copy the user's first message as the title
+      - Good: "Wave-based parallel executor and per-task provider config"
+      - Bad: "/git-worktree" (directory path, not a title)
+
+      ### Summary Rules
+
+      2-4 sentences. Rich in detail — session summaries are embedded and used
+      for semantic search. Include: what was built/fixed, key files touched,
+      tools used, outcomes. Focus on what was accomplished across the FULL
+      session, not just the first or last prompt.
 
       Report via `vault_report` with action "summary" for each update.
       If no updates needed, report action "skip" with reason.
     tools:
       - vault_sessions
-      - vault_search
+      - vault_unprocessed
+      - vault_spores
       - vault_update_session
       - vault_report
     maxTurns: 10
     required: false
 
   - name: consolidate
+    dependsOn: [extract]
     prompt: |
       Consolidate related spores into wisdom and clean up redundancy.
       The vault must get SHARPER over time, not just bigger.
 
       ## Step 1: Find clusters (budget: 5 turns)
 
-      Use `vault_search` with themes from recent spores to find clusters:
-      - Search for each observation_type: "gotcha", "decision", "discovery"
-      - Call `vault_spores` with status "active" to see the full set
-      - Look for 2+ spores covering the same topic or component
+      1. Call `vault_spores` with each `observation_type` filter (gotcha, decision,
+         discovery, trade_off, bug_fix) to list spores by type
+      2. Call `vault_spores` with status "active" to see the full set
+      3. Look for 2+ spores covering the same topic or component
+      4. For candidate clusters, call `vault_search_semantic` to confirm
+         semantic similarity
+
+      ## Decision tree
+
+      - **3+ related active spores on same topic** → create wisdom, consolidate all
+      - **Exactly 2 related spores** → keep the better one, supersede the weaker
+      - **1 spore (no duplicates)** → no action
 
       ## Step 2: Create wisdom (budget: 8 turns)
 
@@ -173,11 +219,11 @@ phases:
 
       Skip spores with status "consolidated" or "superseded" to prevent cycles.
 
-      If `vault_search` returns no results (embedding unavailable), report
+      If `vault_search_semantic` returns no results (embedding unavailable), report
       action "skip" and move on.
     tools:
       - vault_spores
-      - vault_search
+      - vault_search_semantic
       - vault_create_spore
       - vault_resolve_spore
       - vault_report
@@ -185,6 +231,7 @@ phases:
     required: true
 
   - name: graph
+    dependsOn: [extract]
     prompt: |
       Build the knowledge graph: create entities, then link spores to them.
 
@@ -195,8 +242,8 @@ phases:
       ## Step 1: Review spores and existing entities (2 turns)
 
       1. Call `vault_spores` with status "active" to see current spores
-      2. Call `vault_search` with "architecture components" to understand
-         the landscape of topics
+      2. Call `vault_entities` to see existing graph entities
+      3. Call `vault_edges` to see existing relationships
 
       ## Step 2: Create entities (budget: 6 turns)
 
@@ -208,12 +255,14 @@ phases:
       ## Step 3: Link spores to entities (budget: 12 turns) — CRITICAL
 
       For EACH entity (newly created AND existing unlinked ones):
-      1. Call `vault_search` with the entity name to find related spores
-      2. For each relevant search result, call `vault_create_edge`:
+      1. Call `vault_search_semantic` with the entity name to find related spores
+      2. Before creating an edge, call `vault_edges` with `source_id` and
+         `target_id` to verify it does not already exist
+      3. For each relevant search result, call `vault_create_edge`:
          - type: REFERENCES
          - source_id: the spore ID, source_type: spore
          - target_id: the entity ID, target_type: entity
-      3. Entities without edges are invisible — always link after creating
+      4. Entities without edges are invisible — always link after creating
 
       ## Step 4: Structural edges between entities (remaining turns)
 
@@ -230,7 +279,9 @@ phases:
     tools:
       - vault_spores
       - vault_sessions
-      - vault_search
+      - vault_search_semantic
+      - vault_entities
+      - vault_edges
       - vault_create_entity
       - vault_create_edge
       - vault_report
@@ -238,6 +289,7 @@ phases:
     required: true
 
   - name: digest
+    dependsOn: [consolidate]
     prompt: |
       Update digest extracts incrementally based on new vault substrate.
 
@@ -256,13 +308,16 @@ phases:
 
       For each tier you plan to update:
       1. Call `vault_read_digest` with the tier number to get current content
-      2. Call `vault_search` with themes relevant to what changed:
+      2. Call `vault_search_semantic` with themes relevant to what changed:
          - Topics from newly created/superseded spores
          - New entity names
       3. The existing digest is your baseline — integrate new material
          into it, don't start from scratch
 
       ## Step 3: Write updated extracts (budget: 8 turns)
+
+      With 8 turns for writes, you can update at most 4 tiers (1 read + 1 write
+      per tier). Prioritize: tier 10000 > 5000 > 3000 > 7500 > 1500.
 
       Call `vault_write_digest` for tiers that need updating:
       1. Tier 1500 — Executive briefing (most compressed, most sensitive
@@ -283,7 +338,7 @@ phases:
     tools:
       - vault_spores
       - vault_sessions
-      - vault_search
+      - vault_search_semantic
       - vault_read_digest
       - vault_write_digest
       - vault_report
@@ -291,6 +346,7 @@ phases:
     required: true
 
   - name: report
+    dependsOn: [extract, summarize, consolidate, graph, digest]
     prompt: |
       Summarize what was done across all phases.
 

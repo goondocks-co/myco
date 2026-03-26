@@ -5,7 +5,7 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 const MODEL_LIST_TIMEOUT_MS = 5000;
 
 /** Well-known Anthropic models — no list API available locally. */
-const ANTHROPIC_MODELS = [
+export const ANTHROPIC_MODELS = [
   'claude-opus-4-6',
   'claude-sonnet-4-6',
   'claude-haiku-4-5-20251001',

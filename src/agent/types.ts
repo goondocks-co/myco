@@ -25,16 +25,22 @@ export interface AgentDefinition {
 /**
  * A single phase in a phased task pipeline.
  *
- * Phases run sequentially — the executor controls the loop, not the LLM.
- * Each phase gets its own `query()` call with scoped tools and turn limit.
+ * Phases execute in parallel waves based on their dependency graph (`dependsOn`).
+ * The executor topologically sorts phases into waves — phases in the same wave
+ * run concurrently via `Promise.allSettled()`. Each phase gets its own `query()`
+ * call with scoped tools, turn limit, and isolated provider env.
  */
 export interface PhaseDefinition {
   name: string;
   prompt: string;
   tools: string[];
   maxTurns: number;
-  model?: string; // override model for this phase (falls back to task/agent model)
+  model?: string;
   required: boolean;
+  /** Phase names this phase depends on. Phases with no dependencies are roots (wave 0). */
+  dependsOn?: string[];
+  /** Per-phase provider override. Isolated via SDK `env` option — no process.env mutation. */
+  provider?: ProviderConfig;
 }
 
 /** Result of a single phase execution within a phased run. */
@@ -62,6 +68,8 @@ export interface ProviderConfig {
   baseUrl?: string;
   apiKey?: string;
   model?: string;
+  /** Context window size for local models (Ollama num_ctx, LM Studio context_length). */
+  contextLength?: number;
 }
 
 /** Execution configuration overrides for a task. */
@@ -157,6 +165,8 @@ export interface RunOptions {
   agentId?: string;
   task?: string;
   instruction?: string;
+  /** Resume a previous run by its ID (re-uses existing session state). */
+  resumeRunId?: string;
   /** Embedding manager for immediate vector operations during agent tool calls. */
   embeddingManager?: import('@myco/daemon/embedding/manager.js').EmbeddingManager;
 }

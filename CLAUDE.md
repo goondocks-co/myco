@@ -46,7 +46,7 @@ After changing hook or daemon code, run `make build` — the wrapper script pick
 
 ```
 src/
-  symbionts/     # Symbiont adapters (Claude Code, Cursor) for transcript discovery, parsing, and plugin registration
+  agent/         # Intelligence pipeline: wave-based DAG executor, task definitions, orchestrator, provider abstraction
   capture/       # Event buffering (EventBuffer) and buffer-based turn fallback
   config/        # Vault config loading and Zod schema
   context/       # Context injection for UserPromptSubmit hook
@@ -56,6 +56,7 @@ src/
   intelligence/  # LLM backend abstraction (Ollama, LM Studio, Anthropic)
   mcp/           # MCP server + tool handlers
   prompts/       # LLM prompt templates (extraction, summary, title, classification)
+  symbionts/     # Symbiont adapters (Claude Code, Cursor) for transcript discovery, parsing, and plugin registration
   vault/         # Reader, writer, Zod schemas for vault notes
 tests/           # Mirrors src/ structure: tests/<module>.test.ts
 hooks/           # Hook registration shell scripts (invoke dist/src/hooks/*.js)
@@ -90,6 +91,7 @@ The daemon serves a React SPA at `http://localhost:<port>/` for configuration ma
 - **The daemon is the authority.** All event processing, session note writing, observation extraction, and embedding happen in the daemon (`src/daemon/main.ts`). Hooks send events; the daemon decides what to do with them.
 - **MCP server config MUST be in `plugin.json`.** The `mcpServers` field in `.claude-plugin/plugin.json` is the only way to register MCP servers for plugins loaded via `--plugin-dir`. Do NOT use standalone `.mcp.json` for plugin MCP servers.
 - **Digest is a daemon task.** The digest engine runs inside the daemon process alongside batch processing and plan watching. It is NOT a hook or MCP server — it produces vault files that are read by hooks and MCP tools at serve time.
+- **Agent phases execute in parallel waves.** The executor topologically sorts phases by their `dependsOn` fields into waves using Kahn's algorithm. Phases in the same wave run in parallel via `Promise.allSettled()`. Each phase gets isolated provider env via `buildPhaseEnv()`, passed to the SDK's `env` option — no `process.env` mutation.
 - **All periodic/polling work MUST use the PowerManager.** Do not use `setInterval` or `setTimeout` for recurring daemon jobs. Register jobs with `powerManager.register()` so they respect the activity-based power states (active → idle → sleep → deep_sleep). The PowerManager is the single authority for when background work executes.
 
 ## Data Preservation
@@ -158,6 +160,8 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
 | **Semantic edge** | Intelligence graph connection created by agent: RELATES_TO, SUPERSEDED_BY, REFERENCES, DEPENDS_ON, AFFECTS. LLM-driven. |
 | **Graph edge** | Stored in `graph_edges` table. Supports cross-type references between session, batch, spore, and entity nodes. |
 | **Symbiont** | External coding agent that Myco integrates with (Claude Code, Cursor). Named for the mycorrhizal symbiotic relationship. Declared via YAML manifests in `src/symbionts/manifests/`. |
+| **Wave** | Group of phases whose dependencies are all satisfied, executing in parallel via `Promise.allSettled()`. The executor computes waves from the phase `dependsOn` DAG using topological sort. |
+| **Phase dependency** | DAG edge between phases declared via `dependsOn` in task YAML. Phases depend on named predecessors; the executor resolves these into execution waves. |
 
 ## Vault Structure
 
@@ -256,6 +260,23 @@ Use the CLI: `myco <command>` (or `myco-dev` in dogfooding mode)
 2. Substrate formatting in `src/daemon/digest.ts` `formatSubstrate()` — change how notes are presented to the LLM
 3. Metabolism timing in `src/daemon/digest.ts` `Metabolism` class — change active/cooldown/dormancy intervals
 4. Config in `src/config/schema.ts` `DigestSchema` — change defaults or add new options
+
+### Configure a task to use a local model
+
+1. Add to `myco.yaml`:
+   ```yaml
+   agent:
+     tasks:
+       title-summary:
+         provider:
+           type: ollama
+           model: llama3.2
+           base_url: http://localhost:11434
+   ```
+2. Or use the dashboard: Configuration → Agent Tasks → select task → Provider Config
+3. Run `myco verify` to test provider connectivity
+
+Provider priority: phase YAML `provider` > `myco.yaml` `agent.tasks` > task execution `provider` > default Anthropic.
 
 ### Restart daemon after code changes
 

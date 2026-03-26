@@ -1,15 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" fill="none">
-  <rect width="160" height="160" rx="32" fill="#0d1f17"/>
+  <rect width="160" height="160" rx="32" fill="#111111"/>
   <g stroke-linecap="round" stroke-linejoin="round">
-    <path d="M35,120 L35,45 L80,82 L125,45 L125,120" stroke="#22c55e" stroke-width="9" opacity="0.85"/>
-    <circle cx="35" cy="120" r="8" fill="#22c55e" opacity="0.9"/>
-    <circle cx="35" cy="45" r="8" fill="#4ade80" opacity="0.85"/>
-    <circle cx="80" cy="82" r="9" fill="#22c55e" opacity="0.95"/>
-    <circle cx="125" cy="45" r="8" fill="#4ade80" opacity="0.85"/>
-    <circle cx="125" cy="120" r="8" fill="#22c55e" opacity="0.9"/>
-    <line x1="35" y1="82" x2="80" y2="82" stroke="#4ade80" stroke-width="2" opacity="0.2"/>
-    <line x1="80" y1="82" x2="125" y2="82" stroke="#4ade80" stroke-width="2" opacity="0.2"/>
-    <circle cx="35" cy="82" r="4.5" fill="#86efac" opacity="0.35"/>
-    <circle cx="125" cy="82" r="4.5" fill="#86efac" opacity="0.35"/>
+    <path d="M35,120 L35,45 L80,82 L125,45 L125,120" stroke="#abcfb8" stroke-width="9" opacity="0.85"/>
+    <circle cx="35" cy="120" r="8" fill="#abcfb8" opacity="0.9"/>
+    <circle cx="35" cy="45" r="8" fill="#edbf7f" opacity="0.85"/>
+    <circle cx="80" cy="82" r="9" fill="#abcfb8" opacity="0.95"/>
+    <circle cx="125" cy="45" r="8" fill="#edbf7f" opacity="0.85"/>
+    <circle cx="125" cy="120" r="8" fill="#abcfb8" opacity="0.9"/>
+    <line x1="35" y1="82" x2="80" y2="82" stroke="#edbf7f" stroke-width="2" opacity="0.2"/>
+    <line x1="80" y1="82" x2="125" y2="82" stroke="#edbf7f" stroke-width="2" opacity="0.2"/>
+    <circle cx="35" cy="82" r="4.5" fill="#ffb4a1" opacity="0.35"/>
+    <circle cx="125" cy="82" r="4.5" fill="#ffb4a1" opacity="0.35"/>
   </g>
 </svg>

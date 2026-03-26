@@ -43,7 +43,8 @@ prompt: |
   3. Call `vault_spores` to see existing spores for context
 
   For each TOPIC group:
-  1. Call `vault_search` with the topic to check existing spore coverage
+  1. Call `vault_search_semantic` with the topic to find existing spores that
+     already cover this topic
   2. If a similar spore exists:
      - If your observation adds meaningful new detail: call `vault_create_spore`
        then supersede the old via `vault_resolve_spore` action "supersede"
@@ -60,15 +61,21 @@ prompt: |
   Build entities and semantic edges for knowledge discovered in this session.
 
   1. Call `vault_spores` to review the spores just created plus existing ones
-  2. For components, concepts, or people that appear in multiple spores:
+  2. Call `vault_entities` and `vault_edges` to see what already exists
+  3. Check `vault_spores` for cross-session references before creating entities.
+     Only create entities referenced in 2+ sessions. For a single-session review,
+     this means the entity must also appear in spores from OTHER sessions.
+  4. For valid entity candidates:
      - Call `vault_create_entity` with type: component | concept | person
      - Good: "DaemonClient", "cursor-based pagination" — specific named things
      - Bad: "testing phase", "code quality" — abstract categories
-  3. For each entity (new and existing relevant ones):
-     - Call `vault_search` with the entity name to find related spores
+  5. For each entity (new and existing relevant ones):
+     - Call `vault_search_semantic` with the entity name to find related spores
+     - Before creating, call `vault_edges` with source_id and target_id to
+       check if the edge already exists
      - Call `vault_create_edge` with type REFERENCES, source_type spore,
        target_type entity for each relevant spore
-  4. Create structural edges: DEPENDS_ON (entity→entity), AFFECTS (spore→entity)
+  6. Create structural edges: DEPENDS_ON (entity→entity), AFFECTS (spore→entity)
 
   Always include source_type and target_type on every edge.
   Do NOT create lineage edges (FROM_SESSION, EXTRACTED_FROM, etc.).
@@ -85,11 +92,16 @@ prompt: |
   ## Phase 5 — Title & Summary (budget: 3 turns)
 
   1. Call `vault_sessions` to check the current title and summary
-  2. Call `vault_search` filtered by session_id to see all spores from
-     this session — use them to understand the full scope of work done
-  3. Call `vault_update_session` with BOTH title and summary:
-     - Title: under 80 characters, reflects the full session scope
-     - Summary: 2-4 sentences capturing key work, tools used, outcomes
+  2. Review the prompt batches you processed in Phase 2 — use user_prompt
+     and response_summary as your PRIMARY source for the title and summary.
+     Call `vault_spores` with `session_id` as supplemental context.
+  3. Call `vault_update_session` with BOTH title and summary
+
+  Title: describes WHAT WAS ACCOMPLISHED (under 80 chars, sentence case).
+  NEVER use file paths, directory names, or the user's first message as title.
+  Good: "SQLite migration with FTS5 and vector embeddings"
+  Bad: "/git-worktree", "Help me fix the bug in..."
+  Summary: 2-4 sentences on key work done + outcomes.
 
   ## Phase 6 — Report (budget: 1 turn)
 
@@ -105,7 +117,10 @@ toolOverrides:
   - vault_unprocessed
   - vault_spores
   - vault_sessions
-  - vault_search
+  - vault_search_fts
+  - vault_search_semantic
+  - vault_entities
+  - vault_edges
   - vault_create_spore
   - vault_resolve_spore
   - vault_create_entity

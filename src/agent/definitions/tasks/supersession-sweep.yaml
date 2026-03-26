@@ -27,14 +27,21 @@ prompt: |
   ## Phase 2 — Semantic Duplicate Detection (budget: 10 turns)
 
   For each observation type (gotcha, decision, discovery, trade_off, bug_fix):
-  1. Pick 2-3 representative spores of that type
-  2. Call `vault_search` with their content to find similar active spores
+  1. Pick the 2-3 MOST RECENT spores of that type (`vault_spores` returns
+     them in recency order). Use their content as `vault_search_semantic` queries.
+  2. Call `vault_search_semantic` with each representative's content to find
+     similar active spores
   3. When you find duplicates or near-duplicates, note the cluster
 
-  If `vault_search` is unavailable (no embeddings), use `vault_spores`
+  If `vault_search_semantic` is unavailable (no embeddings), use `vault_spores`
   filtered by observation_type and compare manually. Report the limitation.
 
   ## Phase 3 — Resolution and Wisdom Creation (budget: 10 turns)
+
+  Decision tree for each cluster:
+  - 3+ related active spores on same topic → create wisdom, consolidate all
+  - Exactly 2 related spores → keep the better one, supersede the other
+  - 1 spore (no duplicates) → no action
 
   For each cluster:
 
@@ -71,7 +78,7 @@ prompt: |
 
 toolOverrides:
   - vault_spores
-  - vault_search
+  - vault_search_semantic
   - vault_state
   - vault_create_spore
   - vault_resolve_spore
