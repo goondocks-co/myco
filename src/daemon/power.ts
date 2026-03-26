@@ -119,9 +119,13 @@ export class PowerManager {
     }
 
     // Run eligible jobs
-    for (const job of this.jobs) {
-      if (!job.runIn.includes(this.state)) continue;
+    const eligible = this.jobs.filter((j) => j.runIn.includes(this.state));
+    this.logger.debug(LOG_CATEGORY, 'Tick', {
+      state: this.state,
+      jobs: eligible.map((j) => j.name),
+    });
 
+    for (const job of eligible) {
       try {
         await job.fn();
       } catch (err) {
