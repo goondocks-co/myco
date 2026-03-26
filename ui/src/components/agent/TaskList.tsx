@@ -1,5 +1,7 @@
 import { useAgentTasks, type TaskRow } from '../../hooks/use-agent';
-import { taskSourceClass } from './helpers';
+import { Badge } from '../ui/badge';
+import { SessionPod, PodTitle, PodMeta } from '../ui/session-pod';
+import { TASK_SOURCE_USER } from '../../lib/constants';
 
 interface TaskListProps {
   onSelect: (taskId: string) => void;
@@ -11,50 +13,49 @@ function formatPhaseCount(task: TaskRow): string {
   return `${task.phases.length} phases`;
 }
 
+/** Map task source to Badge variant. */
+function sourceBadgeVariant(source: string | undefined): 'warning' | 'secondary' {
+  return source === TASK_SOURCE_USER ? 'warning' : 'secondary';
+}
+
 export function TaskList({ onSelect }: TaskListProps) {
   const { data, isLoading } = useAgentTasks();
   const tasks = data?.tasks ?? [];
 
   if (isLoading) {
     return (
-      <div className="space-y-2">
+      <div className="flex flex-col gap-0.5">
         {Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="h-20 rounded-lg border animate-pulse bg-muted" />
+          <div key={i} className="h-12 rounded-md animate-pulse bg-surface-container-low" />
         ))}
       </div>
     );
   }
 
   if (tasks.length === 0) {
-    return <p className="text-muted-foreground text-sm">No tasks found.</p>;
+    return <p className="font-sans text-sm text-on-surface-variant">No tasks found.</p>;
   }
 
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col gap-0.5">
       {tasks.map((task: TaskRow) => (
-        <button
-          key={task.name}
-          onClick={() => onSelect(task.name)}
-          className="w-full text-left p-4 rounded-lg border hover:bg-accent/50 transition-colors"
-        >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-sm">{task.displayName}</span>
-              <span className={`text-xs px-2 py-0.5 rounded-full ${taskSourceClass(task.source ?? '')}`}>
-                {task.source ?? 'built-in'}
-              </span>
-              {task.isDefault && (
-                <span className="text-xs text-muted-foreground">(default)</span>
-              )}
-            </div>
-            <span className="text-xs text-muted-foreground">
-              {formatPhaseCount(task)}
-            </span>
-          </div>
-          {task.description && (
-            <p className="text-xs text-muted-foreground mt-1 line-clamp-1">{task.description}</p>
+        <SessionPod key={task.name} onClick={() => onSelect(task.name)}>
+          <PodTitle className="font-sans min-w-0 flex-1">
+            {task.displayName}
+          </PodTitle>
+          <Badge variant={sourceBadgeVariant(task.source)}>
+            {task.source ?? 'built-in'}
+          </Badge>
+          {task.isDefault && (
+            <PodMeta>(default)</PodMeta>
           )}
-        </button>
+          {task.description && (
+            <PodMeta className="hidden sm:inline max-w-[200px] truncate">
+              {task.description}
+            </PodMeta>
+          )}
+          <PodMeta>{formatPhaseCount(task)}</PodMeta>
+        </SessionPod>
       ))}
     </div>
   );

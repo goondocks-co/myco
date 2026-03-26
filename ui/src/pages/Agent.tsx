@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Play } from 'lucide-react';
 import { Button } from '../components/ui/button';
+import { PageHeader } from '../components/ui/page-header';
+import type { Tab } from '../components/ui/tab-switcher';
 import { RunList } from '../components/agent/RunList';
 import { RunDetail } from '../components/agent/RunDetail';
 import { TriggerRun } from '../components/agent/TriggerRun';
@@ -8,6 +10,13 @@ import { TaskList } from '../components/agent/TaskList';
 import { TaskDetail } from '../components/agent/TaskDetail';
 
 type AgentTab = 'runs' | 'tasks';
+
+/* ---------- Constants ---------- */
+
+const AGENT_TABS: Tab[] = [
+  { id: 'runs', label: 'Runs' },
+  { id: 'tasks', label: 'Tasks' },
+];
 
 /* ---------- URL state helpers ---------- */
 
@@ -52,55 +61,28 @@ export default function Agent() {
     writeUrlState(tab, selectedRunId, selectedTaskId);
   }, [tab, selectedRunId, selectedTaskId]);
 
-  const switchToRuns = useCallback(() => {
-    setTab('runs');
-    setSelectedTaskId(undefined);
-  }, []);
-
-  const switchToTasks = useCallback(() => {
-    setTab('tasks');
-    setSelectedRunId(undefined);
+  const handleTabChange = useCallback((tabId: string) => {
+    setTab(tabId as AgentTab);
+    if (tabId === 'runs') setSelectedTaskId(undefined);
+    if (tabId === 'tasks') setSelectedRunId(undefined);
   }, []);
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Agent</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Intelligence runs and task configuration
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3">
-          {/* Tab switcher */}
-          <div className="flex gap-1 p-1 rounded-lg bg-muted">
-            <button
-              onClick={switchToRuns}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                tab === 'runs' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              Runs
-            </button>
-            <button
-              onClick={switchToTasks}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                tab === 'tasks' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              Tasks
-            </button>
-          </div>
-
-          {tab === 'runs' && (
-            <Button variant="outline" size="sm" className="gap-2" onClick={() => setTriggerOpen(true)}>
+    <div className="p-6 space-y-2">
+      <PageHeader
+        title="Agent"
+        tabs={AGENT_TABS}
+        activeTab={tab}
+        onTabChange={handleTabChange}
+        actions={
+          tab === 'runs' ? (
+            <Button variant="ghost" size="sm" className="gap-2" onClick={() => setTriggerOpen(true)}>
               <Play className="h-3.5 w-3.5" />
               Run Now
             </Button>
-          )}
-        </div>
-      </div>
+          ) : undefined
+        }
+      />
 
       {/* Runs tab */}
       {tab === 'runs' && (
