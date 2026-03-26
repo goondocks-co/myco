@@ -31,6 +31,14 @@
     --input: 140 10% 90%;
     --ring: 142 71% 45%;
     --radius: 0.5rem;
+    --surface-container-lowest: 0 0% 96%;
+    --surface-container-low: 0 0% 94%;
+    --surface-container: 0 0% 92%;
+    --surface-container-high: 0 0% 90%;
+    --on-surface: 140 20% 6%;
+    --on-surface-variant: 140 5% 40%;
+    --outline: 140 5% 55%;
+    --tertiary: 20 84% 55%;
   }
 
   .dark {
@@ -50,6 +58,14 @@
     --border: 145 15% 15%;
     --input: 145 15% 15%;
     --ring: 142 71% 45%;
+    --surface-container-lowest: 145 30% 3%;
+    --surface-container-low: 145 25% 6%;
+    --surface-container: 145 25% 8%;
+    --surface-container-high: 145 20% 11%;
+    --on-surface: 215 20% 90%;
+    --on-surface-variant: 215 10% 60%;
+    --outline: 215 5% 45%;
+    --tertiary: 20 84% 55%;
   }
 }
 

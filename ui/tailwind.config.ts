@@ -6,7 +6,8 @@ export default {
   theme: {
     fontFamily: {
       mono: 'var(--font-ui, ui-monospace, monospace)',
-      sans: 'var(--font-ui, ui-monospace, monospace)',
+      sans: ['Inter', 'system-ui', 'sans-serif'],
+      serif: ['Georgia', 'Cambria', 'serif'],
     },
     extend: {
       colors: {
@@ -35,6 +36,14 @@ export default {
         destructive: {
           DEFAULT: 'hsl(var(--destructive))',
         },
+        'surface-container-lowest': 'hsl(var(--surface-container-lowest))',
+        'surface-container-low': 'hsl(var(--surface-container-low))',
+        'surface-container': 'hsl(var(--surface-container))',
+        'surface-container-high': 'hsl(var(--surface-container-high))',
+        'on-surface': 'hsl(var(--on-surface))',
+        'on-surface-variant': 'hsl(var(--on-surface-variant))',
+        outline: 'hsl(var(--outline))',
+        tertiary: 'hsl(var(--tertiary))',
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
         ring: 'hsl(var(--ring))',
