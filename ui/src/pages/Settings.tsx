@@ -86,6 +86,33 @@ function isDirty(form: FormState, original: MycoConfig): boolean {
   );
 }
 
+/* ---------- Sub-components ---------- */
+
+function SectionHeader({ children }: { children: React.ReactNode }) {
+  return (
+    <h2 className="font-sans text-xs uppercase tracking-widest text-on-surface-variant">
+      {children}
+    </h2>
+  );
+}
+
+function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: string }) {
+  return (
+    <label className="font-sans text-sm font-medium text-on-surface">
+      {children}
+      {hint && (
+        <span className="ml-1 font-sans text-xs text-on-surface-variant font-normal">({hint})</span>
+      )}
+    </label>
+  );
+}
+
+function FieldHint({ children }: { children: React.ReactNode }) {
+  return <p className="font-sans text-xs text-on-surface-variant">{children}</p>;
+}
+
+/* ---------- Page ---------- */
+
 export default function Settings() {
   const { config, isLoading, saveConfig, isSaving } = useConfig();
   const { data: stats } = useDaemon();
@@ -159,214 +186,213 @@ export default function Settings() {
   const vaultName = stats?.vault.name ?? config.embedding.provider;
 
   return (
-    <div className="space-y-6 p-6">
-      <PageHeader title="Settings" />
+    <div className="p-6 max-w-2xl">
+      <PageHeader title="Settings" subtitle="Vault configuration and daemon settings" />
 
-      {/* Project section */}
-      <Surface level="low" className="p-6 space-y-4">
-        <h2 className="font-sans text-base font-medium text-on-surface">Project</h2>
+      <div className="space-y-6">
+        {/* ---- Project section ---- */}
+        <Surface level="low" className="p-6 space-y-5">
+          <SectionHeader>Project</SectionHeader>
 
-        {/* Vault name -- read-only */}
-        <div className="space-y-1">
-          <label className="font-sans text-sm font-medium text-on-surface">Vault Name</label>
-          <Input value={vaultName} readOnly disabled className="text-on-surface-variant" />
-        </div>
+          <div className="space-y-4">
+            {/* Vault name -- read-only */}
+            <div className="space-y-1.5">
+              <FieldLabel>Vault Name</FieldLabel>
+              <Input value={vaultName} readOnly disabled className="text-on-surface-variant bg-surface-container-lowest" />
+            </div>
 
-        {/* Daemon port */}
-        <div className="space-y-1">
-          <label className="font-sans text-sm font-medium text-on-surface">Daemon Port</label>
-          <Input
-            type="number"
-            placeholder="Auto"
-            value={form.daemonPort}
-            onChange={e => setField('daemonPort', e.target.value)}
-          />
-          <p className="font-sans text-xs text-on-surface-variant">Leave blank to use a random available port.</p>
-        </div>
+            {/* Daemon port */}
+            <div className="space-y-1.5">
+              <FieldLabel>Daemon Port</FieldLabel>
+              <Input
+                type="number"
+                placeholder="Auto"
+                value={form.daemonPort}
+                onChange={e => setField('daemonPort', e.target.value)}
+              />
+              <FieldHint>Leave blank to use a random available port.</FieldHint>
+            </div>
 
-        {/* Log level */}
-        <div className="space-y-1">
-          <label className="font-sans text-sm font-medium text-on-surface">Log Level</label>
-          <Select
-            value={form.logLevel}
-            onValueChange={v => setField('logLevel', v as LogLevel)}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {LOG_LEVELS.map(level => (
-                <SelectItem key={level} value={level}>
-                  {level}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </Surface>
-
-      {/* Embedding section */}
-      <Surface level="low" className="p-6 space-y-4">
-        <h2 className="font-sans text-base font-medium text-on-surface">Embedding</h2>
-
-        {/* Provider */}
-        <div className="space-y-1">
-          <label className="font-sans text-sm font-medium text-on-surface">Provider</label>
-          <Select
-            value={form.embeddingProvider}
-            onValueChange={v => {
-              setField('embeddingProvider', v as Provider);
-              setTestState('idle');
-              setTestMessage('');
-            }}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PROVIDERS.map(p => (
-                <SelectItem key={p.value} value={p.value}>
-                  {p.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        {/* Model */}
-        <div className="space-y-1">
-          <label className="font-sans text-sm font-medium text-on-surface">Model</label>
-          <Input
-            placeholder="bge-m3"
-            value={form.embeddingModel}
-            onChange={e => setField('embeddingModel', e.target.value)}
-          />
-        </div>
-
-        {/* Base URL */}
-        <div className="space-y-1">
-          <label className="font-sans text-sm font-medium text-on-surface">
-            Base URL
-            <span className="ml-1 font-sans text-xs text-on-surface-variant font-normal">(optional)</span>
-          </label>
-          <Input
-            type="url"
-            placeholder="http://localhost:11434"
-            value={form.embeddingBaseUrl}
-            onChange={e => {
-              setField('embeddingBaseUrl', e.target.value);
-              setTestState('idle');
-              setTestMessage('');
-            }}
-          />
-        </div>
-
-        {/* Test Connection */}
-        <div className="flex items-center gap-3 pt-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={handleTestConnection}
-            disabled={testState === 'testing'}
-          >
-            {testState === 'testing' ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : null}
-            Test Connection
-          </Button>
-          {testState === 'success' && (
-            <span className="flex items-center gap-1 font-sans text-sm text-primary">
-              <CheckCircle className="h-4 w-4" />
-              {testMessage}
-            </span>
-          )}
-          {testState === 'error' && (
-            <span className="flex items-center gap-1 font-sans text-sm text-tertiary">
-              <XCircle className="h-4 w-4" />
-              {testMessage}
-            </span>
-          )}
-        </div>
-      </Surface>
-
-      {/* Agent section */}
-      <Surface level="low" className="p-6 space-y-4">
-        <h2 className="font-sans text-base font-medium text-on-surface">Agent</h2>
-
-        {/* Auto-run toggle */}
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5">
-            <label className="font-sans text-sm font-medium text-on-surface">Auto Run</label>
-            <p className="font-sans text-xs text-on-surface-variant">
-              Automatically run the agent on unprocessed batches.
-            </p>
+            {/* Log level */}
+            <div className="space-y-1.5">
+              <FieldLabel>Log Level</FieldLabel>
+              <Select
+                value={form.logLevel}
+                onValueChange={v => setField('logLevel', v as LogLevel)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {LOG_LEVELS.map(level => (
+                    <SelectItem key={level} value={level}>
+                      {level}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={form.agentAutoRun}
-            onClick={() => setField('agentAutoRun', !form.agentAutoRun)}
-            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 ${
-              form.agentAutoRun ? 'bg-primary' : 'bg-surface-container-high'
-            }`}
-          >
+        </Surface>
+
+        {/* ---- Embedding section ---- */}
+        <Surface level="low" className="p-6 space-y-5">
+          <SectionHeader>Embedding</SectionHeader>
+
+          <div className="space-y-4">
+            {/* Provider */}
+            <div className="space-y-1.5">
+              <FieldLabel>Provider</FieldLabel>
+              <Select
+                value={form.embeddingProvider}
+                onValueChange={v => {
+                  setField('embeddingProvider', v as Provider);
+                  setTestState('idle');
+                  setTestMessage('');
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PROVIDERS.map(p => (
+                    <SelectItem key={p.value} value={p.value}>
+                      {p.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Model */}
+            <div className="space-y-1.5">
+              <FieldLabel>Model</FieldLabel>
+              <Input
+                placeholder="bge-m3"
+                value={form.embeddingModel}
+                onChange={e => setField('embeddingModel', e.target.value)}
+              />
+            </div>
+
+            {/* Base URL */}
+            <div className="space-y-1.5">
+              <FieldLabel hint="optional">Base URL</FieldLabel>
+              <Input
+                type="url"
+                placeholder="http://localhost:11434"
+                value={form.embeddingBaseUrl}
+                onChange={e => {
+                  setField('embeddingBaseUrl', e.target.value);
+                  setTestState('idle');
+                  setTestMessage('');
+                }}
+              />
+            </div>
+
+            {/* Test Connection */}
+            <div className="flex items-center gap-3 pt-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={handleTestConnection}
+                disabled={testState === 'testing'}
+              >
+                {testState === 'testing' ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
+                Test Connection
+              </Button>
+              {testState === 'success' && (
+                <span className="flex items-center gap-1 font-sans text-sm text-primary">
+                  <CheckCircle className="h-4 w-4" />
+                  {testMessage}
+                </span>
+              )}
+              {testState === 'error' && (
+                <span className="flex items-center gap-1 font-sans text-sm text-tertiary">
+                  <XCircle className="h-4 w-4" />
+                  {testMessage}
+                </span>
+              )}
+            </div>
+          </div>
+        </Surface>
+
+        {/* ---- Agent section ---- */}
+        <Surface level="low" className="p-6 space-y-5">
+          <SectionHeader>Agent</SectionHeader>
+
+          <div className="space-y-4">
+            {/* Auto-run toggle */}
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <FieldLabel>Auto Run</FieldLabel>
+                <FieldHint>Automatically run the agent on unprocessed batches.</FieldHint>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={form.agentAutoRun}
+                onClick={() => setField('agentAutoRun', !form.agentAutoRun)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 ${
+                  form.agentAutoRun ? 'bg-primary' : 'bg-surface-container-high'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none block h-5 w-5 rounded-full bg-on-surface shadow-lg ring-0 transition-transform ${
+                    form.agentAutoRun ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Interval */}
+            <div className="space-y-1.5">
+              <FieldLabel>Run Interval (seconds)</FieldLabel>
+              <Input
+                type="number"
+                min="30"
+                placeholder="300"
+                value={form.agentIntervalSeconds}
+                onChange={e => setField('agentIntervalSeconds', e.target.value)}
+              />
+              <FieldHint>Seconds between agent timer checks. Minimum 30.</FieldHint>
+            </div>
+
+            {/* Summary batch interval */}
+            <div className="space-y-1.5">
+              <FieldLabel>Summary Batch Interval</FieldLabel>
+              <Input
+                type="number"
+                min="0"
+                placeholder="5"
+                value={form.agentSummaryBatchInterval}
+                onChange={e => setField('agentSummaryBatchInterval', e.target.value)}
+              />
+              <FieldHint>Trigger a session summary every N batches. Set to 0 to disable.</FieldHint>
+            </div>
+          </div>
+        </Surface>
+
+        {/* ---- Save row ---- */}
+        <div className="flex items-center gap-4 pt-2">
+          <Button onClick={handleSave} disabled={!dirty || isSaving}>
+            {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            Save Settings
+          </Button>
+          {saveMessage && (
             <span
-              className={`pointer-events-none block h-5 w-5 rounded-full bg-on-surface shadow-lg ring-0 transition-transform ${
-                form.agentAutoRun ? 'translate-x-5' : 'translate-x-0'
-              }`}
-            />
-          </button>
+              className={
+                saveMessage.type === 'success'
+                  ? 'font-sans text-sm text-primary'
+                  : 'font-sans text-sm text-tertiary'
+              }
+            >
+              {saveMessage.text}
+            </span>
+          )}
         </div>
-
-        {/* Interval */}
-        <div className="space-y-1">
-          <label className="font-sans text-sm font-medium text-on-surface">Run Interval (seconds)</label>
-          <Input
-            type="number"
-            min="30"
-            placeholder="300"
-            value={form.agentIntervalSeconds}
-            onChange={e => setField('agentIntervalSeconds', e.target.value)}
-          />
-          <p className="font-sans text-xs text-on-surface-variant">
-            Seconds between agent timer checks. Minimum 30.
-          </p>
-        </div>
-
-        {/* Summary batch interval */}
-        <div className="space-y-1">
-          <label className="font-sans text-sm font-medium text-on-surface">Summary Batch Interval</label>
-          <Input
-            type="number"
-            min="0"
-            placeholder="5"
-            value={form.agentSummaryBatchInterval}
-            onChange={e => setField('agentSummaryBatchInterval', e.target.value)}
-          />
-          <p className="font-sans text-xs text-on-surface-variant">
-            Trigger a session summary every N batches. Set to 0 to disable.
-          </p>
-        </div>
-      </Surface>
-
-      {/* Save row */}
-      <div className="flex items-center gap-4">
-        <Button onClick={handleSave} disabled={!dirty || isSaving}>
-          {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-          Save Settings
-        </Button>
-        {saveMessage && (
-          <span
-            className={
-              saveMessage.type === 'success'
-                ? 'font-sans text-sm text-primary'
-                : 'font-sans text-sm text-tertiary'
-            }
-          >
-            {saveMessage.text}
-          </span>
-        )}
       </div>
     </div>
   );
