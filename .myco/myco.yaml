@@ -2,7 +2,7 @@ version: 3
 config_version: 2
 embedding:
   provider: ollama
-  model: bge-m3
+  model: bge-m3:latest
 daemon:
   port: 21039
   log_level: debug
@@ -18,6 +18,8 @@ agent:
   auto_run: false
   interval_seconds: 1800
   summary_batch_interval: 5
+  provider:
+    type: cloud
   tasks:
     full-intelligence:
       provider:

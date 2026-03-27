@@ -76,10 +76,11 @@ export function buildAgentConfig(
 // --- Interactive wizard ---
 
 /** Print the welcome banner with the current package version. */
-function printBanner(): void {
+export function printBanner(): void {
   const version = getPluginVersion();
   console.log('');
-  console.log(`  Myco v${version} — Collective Agent Intelligence`);
+  console.log('  🍄 Myco');
+  console.log(`  v${version} — Collective Agent Intelligence`);
   console.log('  ─────────────────────────────────────────────');
   console.log('');
 }
@@ -346,7 +347,6 @@ async function selectCloudEmbeddingModel(
 
 /** Run the interactive init wizard. Returns intelligence and embedding configuration choices. */
 export async function runWizard(): Promise<WizardAnswers> {
-  printBanner();
 
   // Step 1: Intelligence provider
   const intelligenceAnswers = await selectIntelligenceProvider();

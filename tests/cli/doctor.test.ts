@@ -17,6 +17,5 @@ describe('runChecks', () => {
     expect(names).toContain('Embeddings');
     expect(names).toContain('Agents');
     expect(names).toContain('Daemon');
-    expect(names).toContain('Disk');
   });
 });

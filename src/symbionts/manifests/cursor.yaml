@@ -3,7 +3,7 @@ displayName: Cursor
 binary: cursor
 configDir: .cursor
 pluginRootEnvVar: CURSOR_PLUGIN_ROOT
-pluginInstallCommand: null
+pluginInstallCommands: []
 mcpConfigPath: .cursor/mcp.json
 hookFields:
   transcriptPath: transcript_path
