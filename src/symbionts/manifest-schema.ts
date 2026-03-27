@@ -6,7 +6,7 @@ export const SymbiontManifestSchema = z.object({
   binary: z.string(),
   configDir: z.string(),
   pluginRootEnvVar: z.string(),
-  pluginInstallCommand: z.string().nullable(),
+  pluginInstallCommands: z.array(z.string()).default([]),
   settingsPath: z.string().optional(),
   mcpConfigPath: z.string().optional(),
   hookFields: z.object({

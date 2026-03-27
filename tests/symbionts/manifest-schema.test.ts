@@ -24,10 +24,11 @@ describe('symbiont manifests', () => {
     });
   }
 
-  it('claude-code manifest has pluginInstallCommand', () => {
+  it('claude-code manifest has pluginInstallCommands', () => {
     const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'claude-code.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
-    expect(manifest.pluginInstallCommand).toContain('{packageRoot}');
+    expect(manifest.pluginInstallCommands.length).toBeGreaterThan(0);
+    expect(manifest.pluginInstallCommands.some(c => c.includes('myco'))).toBe(true);
   });
 
   it('cursor manifest has mcpConfigPath', () => {

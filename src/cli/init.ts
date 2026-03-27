@@ -6,7 +6,7 @@ import {
   VAULT_GITIGNORE,
   collapseHomePath,
 } from './shared.js';
-import { detectSymbionts, resolvePackageRoot } from '../symbionts/detect.js';
+import { detectSymbionts } from '../symbionts/detect.js';
 import { SymbiontRegistry } from '../symbionts/registry.js';
 import { MycoConfigSchema } from '../config/schema.js';
 import { writeSecret } from '../config/secrets.js';
@@ -174,17 +174,19 @@ export async function run(args: string[]): Promise<void> {
       }
     }
 
-    const packageRoot = resolvePackageRoot();
     const portableVaultDir = collapseHomePath(vaultDir);
     const registry = new SymbiontRegistry();
 
     for (const d of selected) {
       try {
-        if (d.manifest.pluginInstallCommand) {
-          const cmd = d.manifest.pluginInstallCommand.replace('{packageRoot}', packageRoot);
-          const [bin, ...cmdArgs] = cmd.split(' ');
-          execFileSync(bin, cmdArgs, { stdio: 'inherit' });
+        if (d.manifest.pluginInstallCommands.length > 0) {
+          for (const cmd of d.manifest.pluginInstallCommands) {
+            const [bin, ...cmdArgs] = cmd.split(' ');
+            execFileSync(bin, cmdArgs, { stdio: 'inherit' });
+          }
           console.log(`  Registered plugin with ${d.manifest.displayName}`);
+        } else {
+          console.log(`  ${d.manifest.displayName}: install the plugin manually from the marketplace.`);
         }
 
         const adapter = registry.getAdapter(d.manifest.name);

@@ -145,13 +145,13 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
 | Term | Definition |
 |------|-----------|
 | **Digest** | Continuous reasoning process that synthesizes vault knowledge into pre-computed context extracts. Runs as a daemon task on an adaptive timer. |
-| **Extract** | Tiered context representation at a specific token budget (1500/3000/5000/10000). Stored in `vault/digest/`. |
+| **Extract** | Tiered context representation at a specific token budget (1500/3000/5000/10000). Stored in `digest_extracts` table. |
 | **Substrate** | New or updated database records not yet digested. Input to a digest cycle. |
-| **Trace** | Append-only audit chain of digest cycles. Stored as JSONL in `vault/digest/trace.jsonl`. |
+| **Trace** | Append-only audit chain of digest cycles. Stored in `agent_runs` and `agent_reports` tables. |
 | **Metabolism** | Adaptive processing rate of the digest system. Active → cooling → dormant. |
 | **Dormancy** | Digest timer suspended when no new substrate arrives for an extended period. |
 | **Activation** | Return from dormancy to active metabolism, triggered by new session events. |
-| **Spore** | Discrete observation extracted from session activity (gotcha, decision, discovery, trade-off, bug fix). Stored in `vault/spores/`. |
+| **Spore** | Discrete observation extracted from session activity (gotcha, decision, discovery, trade-off, bug fix). Stored in `spores` table. |
 | **Wisdom** | Higher-order observation synthesized from 3+ related spores. Stored as spore with `observation_type: 'wisdom'` and `properties.consolidated_from`. |
 | **Lineage edge** | Automatic graph connection created by daemon on insert: FROM_SESSION, EXTRACTED_FROM, HAS_BATCH, DERIVED_FROM. No LLM needed. |
 | **Semantic edge** | Intelligence graph connection created by agent: RELATES_TO, SUPERSEDED_BY, REFERENCES, DEPENDS_ON, AFFECTS. LLM-driven. |

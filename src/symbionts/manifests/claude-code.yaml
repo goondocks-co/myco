@@ -3,7 +3,9 @@ displayName: Claude Code
 binary: claude
 configDir: .claude
 pluginRootEnvVar: CLAUDE_PLUGIN_ROOT
-pluginInstallCommand: "claude plugin add {packageRoot}"
+pluginInstallCommands:
+  - "claude plugin marketplace add goondocks-co/myco"
+  - "claude plugin install myco@myco-plugins"
 settingsPath: .claude/settings.json
 hookFields:
   transcriptPath: transcript_path

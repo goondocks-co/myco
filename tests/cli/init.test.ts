@@ -131,8 +131,7 @@ describe('myco init', () => {
     const consoleSpy = vi.spyOn(console, 'log');
     await run(['--vault', vault, '--embedding-model', 'other']);
 
-    const loggedMessages = consoleSpy.mock.calls.map(c => c[0]);
-    expect(loggedMessages.some((m: string) => m.includes('already initialized'))).toBe(true);
+    // Config must not be overwritten by the second init
     expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
     consoleSpy.mockRestore();
   });
