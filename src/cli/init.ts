@@ -9,12 +9,12 @@ import {
 import { detectSymbionts } from '../symbionts/detect.js';
 import { SymbiontRegistry } from '../symbionts/registry.js';
 import { MycoConfigSchema } from '../config/schema.js';
+import { updateConfig, saveConfig } from '../config/loader.js';
 import { writeSecret } from '../config/secrets.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import YAML from 'yaml';
 
 /** Directories that must exist inside a vault for correct operation. */
 const VAULT_REQUIRED_DIRS = ['buffer', 'attachments', 'logs'] as const;
@@ -100,7 +100,7 @@ export async function run(args: string[]): Promise<void> {
       ...(agentOverrides ? { agent: agentOverrides } : {}),
     });
 
-    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), YAML.stringify(config), 'utf-8');
+    saveConfig(vaultDir, config);
     fs.writeFileSync(path.join(vaultDir, '.gitignore'), VAULT_GITIGNORE, 'utf-8');
 
     const db = initDatabase(vaultDbPath(vaultDir));
@@ -111,21 +111,20 @@ export async function run(args: string[]): Promise<void> {
   // --- Update existing vault config if wizard ran ---
 
   if (alreadyInitialized && (Object.keys(wizardOverrides).length > 0 || agentOverrides)) {
-    // Read raw YAML to preserve all existing fields (tasks, per-phase overrides, etc.)
-    const configPath = path.join(vaultDir, 'myco.yaml');
-    const raw = YAML.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-
-    // Replace embedding section entirely — avoids stale fields (e.g., old base_url) leaking through
-    if (Object.keys(wizardOverrides).length > 0) {
-      raw.embedding = wizardOverrides;
-    }
-    // Merge agent overrides — preserves tasks, intervals, and per-phase config
-    if (agentOverrides) {
-      const existingAgent = (raw.agent ?? {}) as Record<string, unknown>;
-      raw.agent = { ...existingAgent, ...agentOverrides };
-    }
-
-    fs.writeFileSync(configPath, YAML.stringify(raw), 'utf-8');
+    updateConfig(vaultDir, (config) => {
+      let updated = config;
+      if (Object.keys(wizardOverrides).length > 0) {
+        // Full replacement — avoids stale fields (e.g., old base_url) leaking when switching providers
+        updated = { ...updated, embedding: wizardOverrides as typeof updated.embedding };
+      }
+      if (agentOverrides) {
+        updated = {
+          ...updated,
+          agent: { ...updated.agent, ...agentOverrides },
+        };
+      }
+      return updated;
+    });
     console.log('  Updated myco.yaml');
   }
 
