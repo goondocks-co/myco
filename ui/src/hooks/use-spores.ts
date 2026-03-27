@@ -102,12 +102,14 @@ export interface DigestResponse {
 export function useSpores(filters?: {
   type?: string;
   status?: string;
+  search?: string;
   limit?: number;
   offset?: number;
 }) {
   const params = new URLSearchParams();
   if (filters?.type) params.set('type', filters.type);
   if (filters?.status) params.set('status', filters.status);
+  if (filters?.search) params.set('search', filters.search);
   if (filters?.limit !== undefined) params.set('limit', String(filters.limit));
   if (filters?.offset !== undefined) params.set('offset', String(filters.offset));
   const qs = params.toString();

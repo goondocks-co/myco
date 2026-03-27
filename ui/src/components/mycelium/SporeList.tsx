@@ -1,15 +1,10 @@
-import { useState } from 'react';
-import { AlertCircle, Sprout, ChevronLeft, ChevronRight } from 'lucide-react';
-import { Button } from '../ui/button';
+import { AlertCircle, Sprout } from 'lucide-react';
 import { Surface } from '../ui/surface';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../ui/select';
+import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
+import { Pagination } from '../ui/pagination';
 import { useSpores, type SporeSummary } from '../../hooks/use-spores';
+import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
+import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { truncate } from '../../lib/format';
 import { cn } from '../../lib/cn';
 import { observationTypeClass, statusClass, formatLabel } from './helpers';
@@ -19,17 +14,33 @@ import { observationTypeClass, statusClass, formatLabel } from './helpers';
 /** Maximum content preview length. */
 const CONTENT_PREVIEW_CHARS = 120;
 
-/** Default page size for the spore list. */
-const DEFAULT_SPORES_LIMIT = 50;
-
 /** Milliseconds per second for epoch conversion. */
 const MS_PER_SECOND = 1_000;
 
 /** Session ID preview length. */
 const SESSION_ID_PREVIEW = 8;
 
-const OBSERVATION_TYPES = ['all', 'gotcha', 'decision', 'discovery', 'trade_off', 'bug_fix'] as const;
-const STATUS_OPTIONS = ['all', 'active', 'superseded', 'consolidated'] as const;
+const OBSERVATION_TYPES = [FILTER_ALL, 'gotcha', 'decision', 'discovery', 'trade_off', 'bug_fix'] as const;
+const STATUS_OPTIONS = [FILTER_ALL, 'active', 'superseded', 'consolidated'] as const;
+
+const SPORE_FILTERS: FilterDefinition[] = [
+  {
+    key: 'type',
+    label: 'Type',
+    options: OBSERVATION_TYPES.map((t) => ({
+      value: t,
+      label: t === FILTER_ALL ? 'All types' : formatLabel(t),
+    })),
+  },
+  {
+    key: 'status',
+    label: 'Status',
+    options: STATUS_OPTIONS.map((s) => ({
+      value: s,
+      label: s === FILTER_ALL ? 'All statuses' : formatLabel(s),
+    })),
+  },
+];
 
 /* ---------- Helpers ---------- */
 
@@ -140,75 +151,35 @@ export interface SporeListProps {
 }
 
 export function SporeList({ onSelectSpore, selectedSporeId }: SporeListProps) {
-  const [typeFilter, setTypeFilter] = useState<string>('all');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [page, setPage] = useState(0);
+  const { searchInput, debouncedSearch, filterValues, offset, setOffset, handleSearchChange, handleFilterChange, activeFilter } = useListFilters({
+    initialFilters: { type: FILTER_ALL, status: FILTER_ALL },
+  });
 
-  // Reset to first page when filters change
-  function handleTypeChange(value: string) {
-    setTypeFilter(value);
-    setPage(0);
-  }
-  function handleStatusChange(value: string) {
-    setStatusFilter(value);
-    setPage(0);
-  }
-
-  const offset = page * DEFAULT_SPORES_LIMIT;
+  const activeType = activeFilter('type');
+  const activeStatus = activeFilter('status');
 
   const { data, isLoading, isError, error } = useSpores({
-    type: typeFilter !== 'all' ? typeFilter : undefined,
-    status: statusFilter !== 'all' ? statusFilter : undefined,
-    limit: DEFAULT_SPORES_LIMIT,
+    type: activeType,
+    status: activeStatus,
+    search: debouncedSearch,
+    limit: DEFAULT_PAGE_SIZE,
     offset,
   });
 
   const spores = data?.spores ?? [];
   const total = data?.total ?? 0;
-  const totalPages = Math.ceil(total / DEFAULT_SPORES_LIMIT);
-  const hasPrev = page > 0;
-  const hasNext = page < totalPages - 1;
 
   return (
     <div className="space-y-3">
-      {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="w-40">
-          <Select value={typeFilter} onValueChange={handleTypeChange}>
-            <SelectTrigger>
-              <SelectValue placeholder="Type" />
-            </SelectTrigger>
-            <SelectContent>
-              {OBSERVATION_TYPES.map((t) => (
-                <SelectItem key={t} value={t}>
-                  {t === 'all' ? 'All types' : formatLabel(t)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="w-40">
-          <Select value={statusFilter} onValueChange={handleStatusChange}>
-            <SelectTrigger>
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
-            <SelectContent>
-              {STATUS_OPTIONS.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {s === 'all' ? 'All statuses' : formatLabel(s)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        {data && (
-          <span className="font-sans text-sm text-on-surface-variant ml-auto">
-            {total} spore{total !== 1 ? 's' : ''}
-          </span>
-        )}
-      </div>
+      <ListToolbar
+        searchPlaceholder="Search spores..."
+        searchValue={searchInput}
+        onSearchChange={handleSearchChange}
+        filters={SPORE_FILTERS}
+        filterValues={filterValues}
+        onFilterChange={handleFilterChange}
+      />
 
-      {/* Spore list */}
       {isError ? (
         <div className="flex h-40 flex-col items-center justify-center gap-2 text-destructive">
           <AlertCircle className="h-5 w-5" />
@@ -225,8 +196,14 @@ export function SporeList({ onSelectSpore, selectedSporeId }: SporeListProps) {
             ? (
               <div className="flex h-40 flex-col items-center justify-center gap-2 text-on-surface-variant">
                 <Sprout className="h-8 w-8 opacity-30" />
-                <span className="font-sans text-sm">No spores yet</span>
-                <span className="font-sans text-xs">Spores are extracted from session activity by the agent</span>
+                <span className="font-sans text-sm">
+                  {total === 0 && !debouncedSearch && !activeType && !activeStatus
+                    ? 'No spores yet'
+                    : 'No matching spores'}
+                </span>
+                {total === 0 && !debouncedSearch && !activeType && !activeStatus && (
+                  <span className="font-sans text-xs">Spores are extracted from session activity by the agent</span>
+                )}
               </div>
             )
             : spores.map((spore) => (
@@ -240,34 +217,12 @@ export function SporeList({ onSelectSpore, selectedSporeId }: SporeListProps) {
         </div>
       )}
 
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-3 pt-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={!hasPrev}
-            onClick={() => setPage((p) => p - 1)}
-            className="gap-1 text-on-surface-variant"
-          >
-            <ChevronLeft className="h-4 w-4" />
-            Prev
-          </Button>
-          <span className="font-mono text-xs text-on-surface-variant">
-            {offset + 1}\u2013{Math.min(offset + DEFAULT_SPORES_LIMIT, total)} of {total}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={!hasNext}
-            onClick={() => setPage((p) => p + 1)}
-            className="gap-1 text-on-surface-variant"
-          >
-            Next
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
-      )}
+      <Pagination
+        total={total}
+        offset={offset}
+        limit={DEFAULT_PAGE_SIZE}
+        onPageChange={setOffset}
+      />
     </div>
   );
 }
