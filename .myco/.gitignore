@@ -8,3 +8,7 @@ logs/
 
 # Binary attachments — screenshots captured from transcripts
 attachments/
+
+# SQLite databases
+myco.db*
+vectors.db*
