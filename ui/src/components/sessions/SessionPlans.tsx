@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { cn } from '../../lib/cn';
+import { MarkdownContent } from '../ui/markdown-content';
 import { useSessionPlans, SessionPlanRow } from '../../hooks/use-sessions';
 import { formatEpochAgo, formatEpochAbsolute } from '../../lib/format';
 
@@ -117,9 +118,7 @@ function PlanCard({ plan }: PlanCardProps) {
       {/* Expanded content */}
       {expanded && plan.content && (
         <div className="border-t border-border px-4 py-3">
-          <pre className="font-mono text-xs text-on-surface-variant whitespace-pre-wrap break-words leading-relaxed">
-            {plan.content}
-          </pre>
+          <MarkdownContent content={plan.content} className="text-sm" />
         </div>
       )}
     </div>
