@@ -6,6 +6,7 @@ embedding:
 daemon:
   port: 21039
   log_level: debug
+  log_retention_days: 30
 capture:
   transcript_paths: []
   plan_dirs:
@@ -15,7 +16,7 @@ capture:
     - .md
   buffer_max_events: 500
 agent:
-  auto_run: false
+  auto_run: true
   interval_seconds: 1800
   summary_batch_interval: 5
   provider:
