@@ -11,3 +11,6 @@ hookFields:
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
   sessionId: session_id
+capture:
+  planDirs:
+    - .claude/plans/

@@ -140,7 +140,7 @@ intelligence:
       version: 3 as const,
       config_version: 0,
       embedding: { provider: 'ollama' as const, model: 'bge-m3' },
-      capture: { transcript_paths: [], artifact_watch: [], artifact_extensions: ['.md'], buffer_max_events: 500 },
+      capture: { transcript_paths: [], plan_dirs: [], artifact_extensions: ['.md'], buffer_max_events: 500 },
       daemon: { port: null, log_level: 'info' as const },
     };
     saveConfig(tmpDir, config);

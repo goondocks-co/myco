@@ -17,7 +17,8 @@ import { createPerProjectAdapter, extensionForMimeType, type TranscriptTurn } fr
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findPackageRoot } from '../utils/find-package-root.js';
 import { EventBuffer, listBufferSessionIds, cleanStaleBuffers } from '../capture/buffer.js';
-import { PlanWatcher } from './watcher.js';
+import { loadManifests } from '../symbionts/detect.js';
+import { isPlanWriteEvent, capturePlan, type PlanWatchConfig } from './plan-capture.js';
 import type { RegisteredSession } from './lifecycle.js';
 import { handleGetConfig, handlePutConfig } from './api/config.js';
 import { handleGetLogs } from './api/logs.js';
@@ -31,6 +32,7 @@ import {
   handleGetSessionBatches,
   handleGetBatchActivities,
   handleGetSessionAttachments,
+  handleGetSessionPlans,
 } from './api/sessions.js';
 import {
   handleListSpores,
@@ -72,7 +74,7 @@ import { createSchema } from '../db/schema.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSessionCascade, getSessionImpact } from '../db/queries/sessions.js';
 import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, findBatchByPromptPrefix, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary, listBatchesBySession } from '../db/queries/batches.js';
 import { insertActivityWithBatch } from '../db/queries/activities.js';
-import { insertAttachment } from '../db/queries/attachments.js';
+import { insertAttachment, getAttachmentByFilePath } from '../db/queries/attachments.js';
 import { listRuns, countRuns, getRun, getRunningRun } from '../db/queries/runs.js';
 import { listReports } from '../db/queries/reports.js';
 import { insertSpore, updateSporeStatus } from '../db/queries/spores.js';
@@ -403,6 +405,15 @@ export async function main(): Promise<void> {
 
   const config = loadConfig(vaultDir);
 
+  const manifests = loadManifests();
+  const symbiontPlanDirs = manifests.flatMap((m) => m.capture?.planDirs ?? []);
+  const projectRoot = process.cwd();
+  let planWatchConfig: PlanWatchConfig = {
+    watchDirs: [...new Set([...symbiontPlanDirs, ...(config.capture.plan_dirs ?? [])])],
+    projectRoot,
+    extensions: config.capture.artifact_extensions,
+  };
+
   const logger = new DaemonLogger(path.join(vaultDir, 'logs'), {
     level: config.daemon.log_level,
   });
@@ -414,6 +425,7 @@ export async function main(): Promise<void> {
     vault: vaultDir,
     embedding_provider: config.embedding.provider,
   });
+  logger.info('capture', 'Plan watch directories', { dirs: planWatchConfig.watchDirs });
 
   // --- SQLite initialization ---
   const db = initDatabase(vaultDbPath(vaultDir));
@@ -676,16 +688,6 @@ export async function main(): Promise<void> {
     transcript_path: z.string().optional(),
     last_assistant_message: z.string().optional(),
   });
-  const planWatcher = new PlanWatcher({
-    projectRoot: process.cwd(),
-    watchPaths: config.capture.artifact_watch,
-    onPlan: (event) => {
-      logger.info('watcher', 'Plan detected', { source: event.source, file: event.filePath });
-      // Plan indexing deferred to Phase 2 (SQLite plans table + Agent SDK)
-    },
-  });
-  planWatcher.startFileWatcher();
-
   // --- Session routes ---
 
   server.registerRoute('POST', '/sessions/register', async (req) => {
@@ -809,7 +811,33 @@ export async function main(): Promise<void> {
         session_id: event.session_id,
         tool_name: toolName,
       });
-      planWatcher.checkToolEvent({ tool_name: toolName, tool_input: event.tool_input, session_id: event.session_id });
+      // Plan capture — detect writes to watched directories (async, non-blocking)
+      const planFilePath = isPlanWriteEvent(
+        toolName,
+        event.tool_input as Record<string, unknown> | undefined,
+        planWatchConfig,
+      );
+      if (planFilePath) {
+        const captureSessionId = event.session_id;
+        fs.promises.readFile(planFilePath, 'utf-8').then((planContent) => {
+          const latestBatch = getLatestBatch(captureSessionId);
+          capturePlan({
+            sourcePath: path.relative(projectRoot, planFilePath),
+            content: planContent,
+            sessionId: captureSessionId,
+            promptBatchId: latestBatch?.id ?? null,
+          });
+          logger.info('capture', 'Plan captured', {
+            session_id: captureSessionId,
+            source_path: planFilePath,
+          });
+        }).catch((err) => {
+          logger.warn('capture', 'Failed to capture plan', {
+            error: (err as Error).message,
+            path: planFilePath,
+          });
+        });
+      }
       try {
         handleToolUse(
           event.session_id,
@@ -1132,12 +1160,7 @@ export async function main(): Promise<void> {
     // Write images to attachments — decoupled from transcript turn indices.
     // After context compaction, transcript turn indices no longer match batch prompt_numbers.
     // Instead, match each turn to its batch by prompt text (content-based, not position-based).
-    // File write uses wx flag (skip existing) and DB uses ON CONFLICT DO NOTHING → idempotent.
-    const attachmentsDir = path.join(vaultDir, 'attachments');
-    const hasNewImages = allTurns.some((t) => t.images?.length);
-    if (hasNewImages) {
-      fs.mkdirSync(attachmentsDir, { recursive: true });
-    }
+    // Binary data is stored in the DB BLOB column; DB uses ON CONFLICT DO NOTHING → idempotent.
     const sessionShort = sessionId.slice(-6);
     for (let i = 0; i < allTurns.length; i++) {
       const turn = allTurns[i];
@@ -1168,13 +1191,7 @@ export async function main(): Promise<void> {
         const img = turn.images[j];
         const ext = extensionForMimeType(img.mediaType);
         const filename = `${sessionShort}-t${resolvedPromptNumber}-${j + 1}.${ext}`;
-        const filePath = path.join(attachmentsDir, filename);
-        try {
-          fs.writeFileSync(filePath, Buffer.from(img.data, 'base64'), { flag: 'wx' });
-          logger.debug('processor', 'Image saved', { filename, batch: resolvedPromptNumber });
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-        }
+        const imageBuffer = Buffer.from(img.data, 'base64');
         try {
           insertAttachment({
             id: `${sessionShort}-b${resolvedPromptNumber}-${j + 1}`,
@@ -1182,9 +1199,13 @@ export async function main(): Promise<void> {
             prompt_batch_id: resolvedBatchId ?? undefined,
             file_path: filename,
             media_type: img.mediaType,
+            data: imageBuffer,
             created_at: epochSeconds(),
           });
-        } catch (err) { logger.warn('processor', 'Failed to record attachment', { error: String(err) }); }
+          logger.debug('processor', 'Image stored in DB', { filename, batch: resolvedPromptNumber });
+        } catch (err) {
+          logger.warn('processor', 'Failed to record attachment', { error: String(err) });
+        }
       }
     }
 
@@ -1213,6 +1234,31 @@ export async function main(): Promise<void> {
       configHash = computeConfigHash(vaultDir);
     }
     return result;
+  });
+
+  // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
+  const symbiontPlanDirsByAgent: Record<string, string[]> = {};
+  for (const m of manifests) {
+    const dirs = m.capture?.planDirs ?? [];
+    if (dirs.length > 0) symbiontPlanDirsByAgent[m.displayName] = dirs;
+  }
+
+  server.registerRoute('GET', '/api/config/plan-dirs', async () => {
+    return { body: { symbiont: symbiontPlanDirsByAgent, custom: planWatchConfig.watchDirs.filter((d) => !symbiontPlanDirs.includes(d)) } };
+  });
+
+  server.registerRoute('POST', '/api/config/plan-dirs', async (req) => {
+    const body = req.body as { plan_dirs: string[] };
+    if (!Array.isArray(body.plan_dirs)) {
+      return { status: 400, body: { error: 'plan_dirs must be an array' } };
+    }
+    const updated = updateConfig(vaultDir, (cfg) => ({
+      ...cfg,
+      capture: { ...cfg.capture, plan_dirs: body.plan_dirs },
+    }));
+    // Refresh in-memory config so plan capture picks up new dirs immediately
+    planWatchConfig = { ...planWatchConfig, watchDirs: [...new Set([...symbiontPlanDirs, ...body.plan_dirs])] };
+    return { body: { custom: updated.capture.plan_dirs } };
   });
 
   // V2 stats — vault counts, embedding coverage, agent status, digest freshness
@@ -1274,6 +1320,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/sessions/:id/batches', handleGetSessionBatches);
   server.registerRoute('GET', '/api/batches/:id/activities', handleGetBatchActivities);
   server.registerRoute('GET', '/api/sessions/:id/attachments', handleGetSessionAttachments);
+  server.registerRoute('GET', '/api/sessions/:id/plans', handleGetSessionPlans);
 
   // --- Mycelium API routes ---
   server.registerRoute('GET', '/api/spores', handleListSpores);
@@ -1297,12 +1344,25 @@ export async function main(): Promise<void> {
     if (filename.includes('..') || filename.includes('/')) {
       return { status: 400, body: { error: 'invalid_filename' } };
     }
+
+    // Try DB first (new path)
+    const att = getAttachmentByFilePath(filename);
+    if (att?.data) {
+      const contentType = att.media_type ?? 'application/octet-stream';
+      return { status: 200, headers: { 'Content-Type': contentType }, body: att.data };
+    }
+
+    // Fallback to disk for pre-migration attachments
     const filePath = path.join(vaultDir, 'attachments', filename);
-    if (!fs.existsSync(filePath)) return { status: 404, body: { error: 'not_found' } };
-    const data = fs.readFileSync(filePath);
+    let diskData: Buffer;
+    try {
+      diskData = fs.readFileSync(filePath);
+    } catch {
+      return { status: 404, body: { error: 'not_found' } };
+    }
     const ext = path.extname(filename).slice(1).toLowerCase();
     const contentType = ATTACHMENT_MEDIA_TYPES[ext] ?? 'application/octet-stream';
-    return { status: 200, headers: { 'Content-Type': contentType }, body: data };
+    return { status: 200, headers: { 'Content-Type': contentType }, body: diskData };
   });
 
   // --- Agent API routes ---
@@ -1679,7 +1739,6 @@ export async function main(): Promise<void> {
       logger.info('daemon', 'Waiting for active stop processing to complete...');
       await activeStopProcessing;
     }
-    planWatcher.stopFileWatcher();
     registry.destroy();
     await server.stop();
     vectorStore.close();

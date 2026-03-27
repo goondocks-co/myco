@@ -114,4 +114,17 @@ describe('MycoConfigSchema v3', () => {
     });
     expect(config.embedding.provider).toBe('openai');
   });
+
+  it('accepts plan_dirs in capture section', () => {
+    const config = MycoConfigSchema.parse({
+      version: 3,
+      capture: { plan_dirs: ['docs/superpowers/specs/', 'docs/superpowers/plans/'] },
+    });
+    expect(config.capture.plan_dirs).toEqual(['docs/superpowers/specs/', 'docs/superpowers/plans/']);
+  });
+
+  it('defaults plan_dirs to empty array', () => {
+    const config = MycoConfigSchema.parse({ version: 3 });
+    expect(config.capture.plan_dirs).toEqual([]);
+  });
 });

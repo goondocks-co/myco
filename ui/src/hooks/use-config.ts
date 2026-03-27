@@ -15,7 +15,7 @@ export interface MycoConfig {
   };
   capture: {
     transcript_paths: string[];
-    artifact_watch: string[];
+    plan_dirs: string[];
     artifact_extensions: string[];
     buffer_max_events: number;
   };

@@ -11,8 +11,11 @@ import {
   upsertPlan,
   getPlan,
   listPlans,
+  listPlansBySession,
 } from '@myco/db/queries/plans.js';
 import type { PlanInsert } from '@myco/db/queries/plans.js';
+import { upsertSession } from '@myco/db/queries/sessions.js';
+import type { SessionInsert } from '@myco/db/queries/sessions.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -22,6 +25,18 @@ function makePlan(overrides: Partial<PlanInsert> = {}): PlanInsert {
   const now = epochNow();
   return {
     id: `plan-${Math.random().toString(36).slice(2, 8)}`,
+    created_at: now,
+    ...overrides,
+  };
+}
+
+/** Factory for minimal valid session data. */
+function makeSession(overrides: Partial<SessionInsert> = {}): SessionInsert {
+  const now = epochNow();
+  return {
+    id: `sess-${Math.random().toString(36).slice(2, 8)}`,
+    agent: 'claude-code',
+    started_at: now,
     created_at: now,
     ...overrides,
   };
@@ -175,6 +190,130 @@ describe('plan query helpers', () => {
 
     it('returns empty array when no plans exist', async () => {
       const rows = listPlans();
+      expect(rows).toEqual([]);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // session_id, prompt_batch_id, content_hash columns
+  // ---------------------------------------------------------------------------
+
+  describe('session_id and content_hash columns', () => {
+    it('stores session_id when provided', async () => {
+      const session = makeSession();
+      upsertSession(session);
+
+      const data = makePlan({ session_id: session.id });
+      const row = upsertPlan(data);
+
+      expect(row.session_id).toBe(session.id);
+    });
+
+    it('stores content_hash when provided', async () => {
+      const data = makePlan({ content_hash: 'abc123hash' });
+      const row = upsertPlan(data);
+
+      expect(row.content_hash).toBe('abc123hash');
+    });
+
+    it('defaults session_id and content_hash to null when not provided', async () => {
+      const data = makePlan();
+      const row = upsertPlan(data);
+
+      expect(row.session_id).toBeNull();
+      expect(row.content_hash).toBeNull();
+    });
+
+    it('upsert updates session_id association on conflict', async () => {
+      const session1 = makeSession();
+      const session2 = makeSession();
+      upsertSession(session1);
+      upsertSession(session2);
+
+      const data = makePlan({ session_id: session1.id });
+      upsertPlan(data);
+      upsertPlan({ ...data, session_id: session2.id });
+
+      const row = getPlan(data.id);
+      expect(row!.session_id).toBe(session2.id);
+    });
+
+    it('preserves embedded flag when content_hash is unchanged on conflict', async () => {
+      const data = makePlan({ content_hash: 'stable-hash' });
+      // Insert then manually mark as embedded
+      upsertPlan(data);
+
+      // Simulate embedding having been set
+      const db = (await import('@myco/db/client.js')).getDatabase();
+      db.prepare(`UPDATE plans SET embedded = 1 WHERE id = ?`).run(data.id);
+
+      // Re-upsert with same content_hash
+      upsertPlan({ ...data, title: 'Same content, new title' });
+
+      const row = getPlan(data.id);
+      expect(row!.embedded).toBe(1);
+    });
+
+    it('resets embedded flag when content_hash changes on conflict', async () => {
+      const data = makePlan({ content_hash: 'original-hash' });
+      upsertPlan(data);
+
+      // Simulate embedding having been set
+      const db = (await import('@myco/db/client.js')).getDatabase();
+      db.prepare(`UPDATE plans SET embedded = 1 WHERE id = ?`).run(data.id);
+
+      // Re-upsert with different content_hash
+      upsertPlan({ ...data, content_hash: 'updated-hash' });
+
+      const row = getPlan(data.id);
+      expect(row!.embedded).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // listPlansBySession
+  // ---------------------------------------------------------------------------
+
+  describe('listPlansBySession', () => {
+    it('returns plans for the given session ordered by created_at DESC', async () => {
+      const session = makeSession();
+      upsertSession(session);
+
+      const now = epochNow();
+      upsertPlan(makePlan({ id: 'plan-old', session_id: session.id, created_at: now - 100 }));
+      upsertPlan(makePlan({ id: 'plan-new', session_id: session.id, created_at: now }));
+
+      const rows = listPlansBySession(session.id);
+      expect(rows).toHaveLength(2);
+      expect(rows[0].id).toBe('plan-new');
+      expect(rows[1].id).toBe('plan-old');
+    });
+
+    it('excludes plans from other sessions', async () => {
+      const session1 = makeSession();
+      const session2 = makeSession();
+      upsertSession(session1);
+      upsertSession(session2);
+
+      upsertPlan(makePlan({ id: 'plan-s1', session_id: session1.id }));
+      upsertPlan(makePlan({ id: 'plan-s2', session_id: session2.id }));
+      upsertPlan(makePlan({ id: 'plan-none' })); // no session
+
+      const rows = listPlansBySession(session1.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe('plan-s1');
+    });
+
+    it('returns empty array for session with no plans', async () => {
+      const session = makeSession();
+      upsertSession(session);
+
+      const rows = listPlansBySession(session.id);
+      expect(rows).toEqual([]);
+    });
+
+    it('returns empty array for unknown session id', async () => {
+      const rows = listPlansBySession('nonexistent-session');
       expect(rows).toEqual([]);
     });
   });

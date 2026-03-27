@@ -2,6 +2,7 @@ import { getSession, listSessions, countSessions } from '@myco/db/queries/sessio
 import { listBatchesBySession } from '@myco/db/queries/batches.js';
 import { listActivitiesByBatch } from '@myco/db/queries/activities.js';
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
+import { listPlansBySession } from '@myco/db/queries/plans.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 
 const DEFAULT_LIST_LIMIT = 50;
@@ -53,4 +54,9 @@ export async function handleGetBatchActivities(req: RouteRequest): Promise<Route
 export async function handleGetSessionAttachments(req: RouteRequest): Promise<RouteResponse> {
   const attachments = listAttachmentsBySession(req.params.id);
   return { body: attachments };
+}
+
+export async function handleGetSessionPlans(req: RouteRequest): Promise<RouteResponse> {
+  const plans = listPlansBySession(req.params.id);
+  return { body: plans };
 }

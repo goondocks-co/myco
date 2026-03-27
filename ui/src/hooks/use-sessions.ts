@@ -23,6 +23,9 @@ const ATTACHMENTS_STALE_TIME = 60_000;
 /** Cache TTL for session impact counts (10 seconds — stable between dialog opens). */
 const IMPACT_STALE_TIME = 10_000;
 
+/** Cache TTL for session plans (60 seconds — rarely changes mid-session). */
+const PLANS_STALE_TIME = 60_000;
+
 /* ---------- Types ---------- */
 
 /** Simplified shape returned by the list endpoint. */
@@ -109,6 +112,18 @@ export interface AttachmentRow {
   media_type: string | null;
   description: string | null;
   created_at: number;
+}
+
+export interface SessionPlanRow {
+  id: string;
+  status: string;
+  title: string | null;
+  content: string | null;
+  source_path: string | null;
+  content_hash: string | null;
+  session_id: string | null;
+  created_at: number;
+  updated_at: number | null;
 }
 
 /** Cascade impact counts for a session delete. */
@@ -203,5 +218,15 @@ export function useSessionImpact(sessionId: string | null) {
     queryFn: ({ signal }) => fetchJson<SessionImpact>(`/sessions/${sessionId}/impact`, { signal }),
     enabled: sessionId !== null,
     staleTime: IMPACT_STALE_TIME,
+  });
+}
+
+export function useSessionPlans(sessionId: string | undefined) {
+  return useQuery({
+    queryKey: ['session-plans', sessionId],
+    queryFn: ({ signal }) =>
+      fetchJson<SessionPlanRow[]>(`/sessions/${sessionId}/plans`, { signal }),
+    enabled: !!sessionId,
+    staleTime: PLANS_STALE_TIME,
   });
 }
