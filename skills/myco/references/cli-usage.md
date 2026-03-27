@@ -57,7 +57,7 @@ Reconfigures intelligence backend without reinitializing the vault.
 | `--embedding-url <url>` | string | Embedding base URL |
 | `--show` | boolean | Display current settings and exit |
 
-Note: changing the embedding model requires running `rebuild` afterward to re-embed all vault notes with the new model.
+Note: changing the embedding model requires running `rebuild` afterward to re-embed all records with the new model.
 
 **Example:**
 
@@ -275,7 +275,7 @@ Run this after any daemon code changes to pick up new behavior.
 
 ### `rebuild` — Full FTS + vector reindex
 
-Re-indexes all vault notes. Superseded and archived spores are skipped.
+Re-indexes all records. Superseded and archived spores are skipped.
 
 No flags.
 
@@ -296,7 +296,7 @@ Trigger a digest cycle manually. Use `--tier` to reprocess a specific tier from 
 | `--tier <number>` | number | Reprocess a specific tier (clean slate) |
 | `--full` | boolean | Reprocess all tiers from scratch |
 
-When `--tier` or `--full` is used, the cycle reads all vault notes (ignoring the last-cycle timestamp) and skips the previous extract, producing a fresh synthesis.
+When `--tier` or `--full` is used, the cycle reads all records (ignoring the last-cycle timestamp) and skips the previous extract, producing a fresh synthesis.
 
 **Examples:**
 

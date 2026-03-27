@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   sessionNoteId,
   bareSessionId,
-  sessionWikilink,
   sessionRelativePath,
 } from '../../src/vault/session-id.js';
 
@@ -24,12 +23,6 @@ describe('session-id utilities', () => {
 
     it('returns bare ID unchanged', () => {
       expect(bareSessionId('abc123')).toBe('abc123');
-    });
-  });
-
-  describe('sessionWikilink', () => {
-    it('wraps in wikilink syntax', () => {
-      expect(sessionWikilink('abc123')).toBe('[[session-abc123]]');
     });
   });
 

@@ -88,7 +88,7 @@ Read the last line of `<vault>/digest/trace.jsonl`. Each line is a JSON object w
 - `cycleId` — short identifier for the cycle
 - `timestamp` — ISO timestamp of when the cycle ran
 - `tiersGenerated` — which tiers were written
-- `substrateCount` — number of vault notes processed as input
+- `substrateCount` — number of records processed as input
 - `durationMs` — how long the cycle took
 
 **Metabolism config:**

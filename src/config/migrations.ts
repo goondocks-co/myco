@@ -78,7 +78,7 @@ export const MIGRATIONS: Migration[] = [
       };
       walkUpdate(sporesDir);
 
-      // Update wikilinks in ALL vault files: [[memories/...]] → [[spores/...]]
+      // Legacy: update wikilink references in Markdown files (pre-SQLite migration): [[memories/...]] → [[spores/...]]
       const walkLinks = (dir: string): void => {
         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
           const fullPath = path.join(dir, entry.name);

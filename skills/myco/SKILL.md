@@ -108,7 +108,7 @@ Filter by `plan`, `branch`, `user`, or `since` (ISO timestamp). Useful for under
 
 ### myco_graph — Traverse vault connections
 
-Follow wikilink connections between notes — find related sessions, spores, and plans.
+Follow graph connections between records — find related sessions, spores, and plans.
 
 ```json
 { "note_id": "session-abc123", "direction": "both", "depth": 2 }
@@ -118,7 +118,7 @@ Follow wikilink connections between notes — find related sessions, spores, and
 
 ### myco_orphans — Find disconnected notes
 
-Find vault notes with no incoming or outgoing wikilinks — potentially stale or unconnected knowledge.
+Find records with no incoming or outgoing graph connections — potentially stale or unconnected knowledge.
 
 ```json
 {}
@@ -260,7 +260,7 @@ For patterns on when to manually supersede or consolidate, see `references/wisdo
 
 ```
 node <plugin-root>/dist/src/cli.js version     # Check plugin version
-node <plugin-root>/dist/src/cli.js rebuild     # Re-index all vault notes
+node <plugin-root>/dist/src/cli.js rebuild     # Re-index all records
 node <plugin-root>/dist/src/cli.js stats       # Check vault health
 node <plugin-root>/dist/src/cli.js verify      # Test provider connectivity
 node <plugin-root>/dist/src/cli.js config get intelligence.llm.model

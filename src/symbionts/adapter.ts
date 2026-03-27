@@ -139,7 +139,7 @@ export function mimeTypeForExtension(ext: string): string {
 
 import { PROMPT_PREVIEW_CHARS } from '../constants.js';
 
-/** Claude Code injects [Image: source: /path] text alongside base64 image blocks. Strip these since the actual images are captured as Obsidian embeds. */
+/** Claude Code injects [Image: source: /path] text alongside base64 image blocks. Strip these since the actual images are captured as attachments. */
 const IMAGE_TEXT_REF_PATTERN = /\[Image: source: [^\]]+\]\n*/g;
 
 export interface ParseJsonlOptions {

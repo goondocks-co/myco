@@ -106,7 +106,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: TOOL_GRAPH,
-    description: 'Traverse connections between vault notes via wikilinks — explore how sessions, spores, and plans relate to each other.',
+    description: 'Traverse connections between records via graph edges — explore how sessions, spores, and plans relate to each other.',
     inputSchema: {
       type: 'object' as const,
       properties: {
