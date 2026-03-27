@@ -127,7 +127,7 @@ Check for these problems when assessing vault health:
 | **Stale buffers** | `.jsonl` files in `<vault>/buffer/` older than 24 hours | Events were captured but never processed — LLM may have been unavailable |
 | **Missing index** | `<vault>/index.db` does not exist | FTS search will not work; suggest `node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js rebuild` |
 | **Missing vectors** | `<vault>/vectors.db` does not exist | Semantic search disabled; embeddings may be unconfigured |
-| **Old config version** | `version` in `myco.yaml` is less than `2` | Vault may need migration; suggest running `/myco-setup` |
+| **Old config version** | `version` in `myco.yaml` is less than `2` | Vault may need migration; suggest running `myco init` |
 
 Report all issues found, or "None found." if the vault is clean.
 
@@ -221,4 +221,4 @@ Lineage tracks parent-child relationships between sessions. A high count of `sem
 | Stale buffers | Check if LLM provider was down during those sessions; events will process on next daemon start |
 | Missing index | Run `node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js rebuild` to regenerate FTS and vector indexes |
 | Provider unreachable | Ensure the provider is running (e.g., `ollama serve`); verify model name in `myco.yaml`; reconfigure with CLI commands |
-| Config version < 2 | Run `/myco-setup` to migrate the vault configuration |
+| Config version < 2 | Run `myco init` to migrate the vault configuration |

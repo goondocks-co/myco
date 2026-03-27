@@ -31,7 +31,7 @@ The MCP tools below are for going deeper than the automatic context injection pr
 
 ## Setup
 
-If the vault isn't configured, run `/myco-setup` for guided first-time setup.
+If the vault isn't configured, run `myco init` in the project directory for guided first-time setup.
 
 For reconfiguration, status checks, and ongoing management, use the CLI commands and MCP tools documented below. For detailed vault health checks, see `references/vault-status.md`.
 

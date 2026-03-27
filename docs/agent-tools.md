@@ -53,6 +53,5 @@ Skills are user-invocable slash commands that provide guided workflows. Type the
 
 | Command | Purpose |
 |---------|---------|
-| `/myco-setup` | Initialize Myco in a new project. Guides first-time setup for the vault, LLM provider, and embedding model. Run once per project. |
 | `/myco` | The primary skill for ongoing work. Use when making design decisions, debugging non-obvious issues, encountering gotchas, or needing context about prior work. Provides guidance on when and how to use each MCP tool, and patterns for vault hygiene (superseding stale spores, consolidating related observations). |
 | `/myco-rules` | Create, audit, or improve project rules files (CLAUDE.md, AGENTS.md). Helps write specific, enforceable rules that agents actually follow. Also triggered when Myco detects recurring patterns that should become project rules. |

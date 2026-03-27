@@ -8,6 +8,7 @@ import {
 } from './shared.js';
 import { detectSymbionts, resolvePackageRoot } from '../symbionts/detect.js';
 import { MycoConfigSchema } from '../config/schema.js';
+import { writeSecret } from '../config/secrets.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,6 +20,7 @@ const VAULT_REQUIRED_DIRS = ['buffer', 'attachments', 'logs'] as const;
 
 export async function run(args: string[]): Promise<void> {
   const vaultPath = parseStringFlag(args, '--vault');
+  const nonInteractive = args.includes('--non-interactive');
 
   // Resolve vault directory
   const vaultDir = vaultPath
@@ -28,6 +30,26 @@ export async function run(args: string[]): Promise<void> {
   const alreadyInitialized = fs.existsSync(path.join(vaultDir, 'myco.yaml'));
 
   if (!alreadyInitialized) {
+    // Check if user provided embedding flags
+    const embeddingProvider = parseStringFlag(args, '--embedding-provider');
+    const embeddingModel = parseStringFlag(args, '--embedding-model');
+    const embeddingUrl = parseStringFlag(args, '--embedding-url');
+    const hasEmbeddingFlags = !!(embeddingProvider || embeddingModel || embeddingUrl);
+
+    // Interactive wizard when no flags and stdin is a TTY
+    let wizardOverrides: Record<string, unknown> = {};
+    let agentOverrides: Record<string, unknown> | null = null;
+    let wizardAnswers: Awaited<ReturnType<typeof import('./init-wizard.js').runWizard>> | null = null;
+    if (!nonInteractive && !hasEmbeddingFlags && process.stdin.isTTY) {
+      const { runWizard, buildEmbeddingConfig, buildAgentConfig } = await import('./init-wizard.js');
+      const answers = await runWizard();
+      wizardAnswers = answers;
+      if (answers.embeddingProvider !== 'skip') {
+        wizardOverrides = { ...buildEmbeddingConfig(answers) };
+      }
+      agentOverrides = buildAgentConfig(answers);
+    }
+
     console.log(`Initializing Myco vault at ${vaultDir}`);
 
     // Create directory structure
@@ -35,12 +57,8 @@ export async function run(args: string[]): Promise<void> {
       fs.mkdirSync(path.join(vaultDir, dir), { recursive: true });
     }
 
-    // Build embedding config from flags
-    const embeddingProvider = parseStringFlag(args, '--embedding-provider');
-    const embeddingModel = parseStringFlag(args, '--embedding-model');
-    const embeddingUrl = parseStringFlag(args, '--embedding-url');
-
-    const embeddingOverrides: Record<string, unknown> = {};
+    // Build embedding config from flags (flags take precedence over wizard)
+    const embeddingOverrides: Record<string, unknown> = { ...wizardOverrides };
     if (embeddingProvider) embeddingOverrides.provider = embeddingProvider;
     if (embeddingModel) embeddingOverrides.model = embeddingModel;
     if (embeddingUrl) embeddingOverrides.base_url = embeddingUrl;
@@ -49,6 +67,7 @@ export async function run(args: string[]): Promise<void> {
     const config = MycoConfigSchema.parse({
       version: 3,
       ...(Object.keys(embeddingOverrides).length > 0 ? { embedding: embeddingOverrides } : {}),
+      ...(agentOverrides ? { agent: agentOverrides } : {}),
     });
 
     fs.writeFileSync(
@@ -59,6 +78,14 @@ export async function run(args: string[]): Promise<void> {
 
     // Write .gitignore
     fs.writeFileSync(path.join(vaultDir, '.gitignore'), VAULT_GITIGNORE, 'utf-8');
+
+    // Store embedding API key in secrets.env (not in myco.yaml)
+    if (wizardAnswers?.embeddingApiKey) {
+      const envVarName = wizardAnswers.embeddingProvider === 'openrouter'
+        ? 'MYCO_OPENROUTER_API_KEY'
+        : 'MYCO_OPENAI_API_KEY';
+      writeSecret(vaultDir, envVarName, wizardAnswers.embeddingApiKey);
+    }
 
     // Initialize SQLite database
     const db = initDatabase(vaultDbPath(vaultDir));

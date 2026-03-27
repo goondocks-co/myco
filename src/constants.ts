@@ -322,3 +322,16 @@ export const POWER_SLEEP_INTERVAL_MS = 5 * 60 * MS_PER_SECOND;
 export const STALE_SESSION_THRESHOLD_MS = 60 * 60 * MS_PER_SECOND;
 /** Max prompt count for a session to be considered dead and auto-deleted. */
 export const DEAD_SESSION_MAX_PROMPTS = 1;
+
+// --- Init wizard ---
+/** Minimum Node.js major version required by Myco. */
+export const MIN_NODE_MAJOR_VERSION = 22;
+
+/** Recommended context window for local intelligence models. */
+export const RECOMMENDED_LOCAL_CONTEXT_WINDOW = 8192;
+
+/** Default Ollama embedding model recommended during init. */
+export const DEFAULT_OLLAMA_EMBEDDING_MODEL = 'bge-m3';
+
+/** Default OpenAI embedding model recommended during init. */
+export const DEFAULT_OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';

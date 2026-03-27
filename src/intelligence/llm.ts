@@ -1,6 +1,8 @@
 import { OllamaBackend } from './ollama.js';
 import { LmStudioBackend } from './lm-studio.js';
 import { AnthropicBackend } from './anthropic.js';
+import { OpenRouterEmbeddingProvider } from '../cli/providers/openrouter.js';
+import { OpenAIEmbeddingProvider } from '../cli/providers/openai-embeddings.js';
 
 export interface LlmRequestOptions {
   maxTokens?: number;
@@ -69,7 +71,11 @@ export function createEmbeddingProvider(config: ProviderConfig): EmbeddingProvid
     case 'lm-studio':
     case 'openai-compatible':
       return new LmStudioBackend(config);
+    case 'openrouter':
+      return new OpenRouterEmbeddingProvider({ model: config.model });
+    case 'openai':
+      return new OpenAIEmbeddingProvider({ model: config.model });
     default:
-      throw new Error(`Provider "${config.provider}" does not support embeddings. Use ollama or lm-studio.`);
+      throw new Error(`Provider "${config.provider}" does not support embeddings.`);
   }
 }

@@ -66,6 +66,9 @@ daemon.json
 buffer/
 logs/
 
+# Secrets — API keys for cloud providers
+secrets.env
+
 # Binary attachments — screenshots captured from transcripts
 attachments/
 `;

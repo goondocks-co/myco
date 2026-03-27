@@ -16,17 +16,16 @@
 </p>
 
 ```bash
-# Add the Myco marketplace and install
-claude plugin marketplace add goondocks-co/myco
-claude plugin install myco@myco-plugins
+curl -fsSL https://myco.sh/install.sh | sh
 ```
 
 Then initialize in your project:
-```
-> /myco-setup
+```bash
+cd your-project
+myco init
 ```
 
-The agent sets up your vault, configures intelligence, and starts capturing. Works with Claude Code and Cursor out of the box.
+The wizard guides you through embedding setup, detects your coding agents, and starts capturing. Works with Claude Code and Cursor out of the box.
 
 ## What is Myco?
 

@@ -96,6 +96,7 @@ import { PowerManager } from './power.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
+import { loadSecrets } from '../config/secrets.js';
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -394,6 +395,10 @@ export async function main(): Promise<void> {
   }
 
   const vaultDir = path.resolve(vaultArg);
+
+  // Load API keys from secrets.env into process.env before any provider init
+  loadSecrets(vaultDir);
+
   const config = loadConfig(vaultDir);
 
   const logger = new DaemonLogger(path.join(vaultDir, 'logs'), {
