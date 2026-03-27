@@ -69,6 +69,7 @@ export interface ListSporesOptions {
   observation_type?: string;
   status?: string;
   session_id?: string;
+  search?: string;
   limit?: number;
   offset?: number;
 }
@@ -212,6 +213,11 @@ function buildSporeWhere(
   if (options.session_id !== undefined) {
     conditions.push(`session_id = ?`);
     params.push(options.session_id);
+  }
+  if (options.search !== undefined && options.search.length > 0) {
+    conditions.push(`(content LIKE ? OR observation_type LIKE ?)`);
+    const pattern = `%${options.search}%`;
+    params.push(pattern, pattern);
   }
 
   return {

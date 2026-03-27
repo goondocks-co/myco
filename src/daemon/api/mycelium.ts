@@ -38,11 +38,13 @@ export async function handleListSpores(req: RouteRequest): Promise<RouteResponse
   const status = req.query.status;
   const limit = req.query.limit ? Number(req.query.limit) : DEFAULT_LIST_LIMIT;
   const offset = req.query.offset ? Number(req.query.offset) : DEFAULT_LIST_OFFSET;
+  const search = req.query.search || undefined;
 
   const filterOpts = {
     ...(agentId ? { agent_id: agentId } : {}),
     observation_type: type,
     status,
+    search,
   };
 
   const spores = listSpores({ ...filterOpts, limit, offset });
