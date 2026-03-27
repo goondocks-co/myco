@@ -549,6 +549,10 @@ export async function main(): Promise<void> {
     logger.info('daemon', 'Buffer cleanup complete', { stale_removed: startupCleanedCount });
   }
 
+  // Track sessions already reconciled this daemon lifetime to avoid
+  // redundant file reads (startup scan + register + event can all fire).
+  const reconciledSessions = new Set<string>();
+
   // Reconcile all remaining buffer files on startup — recover events from
   // sessions that had activity while the daemon was down.
   for (const sessionId of listBufferSessionIds(bufferDir)) {
@@ -595,10 +599,6 @@ export async function main(): Promise<void> {
     return null;
   }
 
-  // Track sessions already reconciled this daemon lifetime to avoid
-  // redundant file reads (startup scan + register + event can all fire).
-  const reconciledSessions = new Set<string>();
-
   /**
    * Reconcile buffer events against DB state for a session.
    *
@@ -622,6 +622,14 @@ export async function main(): Promise<void> {
     if (!fs.existsSync(bufferPath)) return;
     const content = fs.readFileSync(bufferPath, 'utf-8').trim();
     if (!content) return;
+
+    // Buffer files outlive session rows — sessions may have been manually
+    // deleted or cleaned up by the session cleanup job. Skip reconciliation
+    // for sessions that no longer exist rather than resurrecting them.
+    if (!getSession(sessionId)) {
+      logger.debug('lifecycle', 'Skipping reconciliation for deleted session', { session_id: sessionId });
+      return;
+    }
 
     const allEvents: Array<Record<string, unknown>> = content.split('\n').map((line) => JSON.parse(line));
 
