@@ -11,6 +11,7 @@ import { hydrateSearchResults } from '@myco/db/queries/search.js';
 import {
   DEFAULT_AGENT_ID,
   EXCLUDED_SPORE_STATUSES,
+  LOG_CONTEXT_PREVIEW_CHARS,
   PROMPT_CONTEXT_MIN_LENGTH,
   PROMPT_CONTEXT_MIN_SIMILARITY,
   PROMPT_CONTEXT_MAX_TOKENS,
@@ -94,15 +95,19 @@ export function createSessionContextHandler(deps: ContextDeps) {
       const source = extract ? 'digest' : 'basic';
       const contextText = parts.join('\n\n');
 
+      const estimatedTokens = estimateTokens(contextText);
+      const preview = contextText.slice(0, LOG_CONTEXT_PREVIEW_CHARS);
       logger.info('context', 'Session context injected', {
         session_id,
         source,
         tier: extract ? tier : undefined,
         text_length: contextText.length,
+        estimated_tokens: estimatedTokens,
+        generated_at: extract?.generated_at,
+        preview,
       });
-      logger.debug('context', 'Injected context content', {
+      logger.debug('context', `Session context: "${preview}…" (${estimatedTokens} est. tokens, source=${source}${extract ? `, tier=${tier}, generated=${extract.generated_at}` : ''})`, {
         session_id,
-        text: contextText,
       });
 
       return {
@@ -203,12 +208,20 @@ export function createPromptContextHandler(deps: ContextDeps) {
     // Format spore context with token budget enforcement
     const text = formatSporeContext(spores);
 
+    const promptTokens = estimateTokens(text);
+    const titles = spores.map((s) => s.title);
     logger.info('context', 'Prompt context injected', {
       session_id,
       spore_count: spores.length,
       scores: spores.map((s) => s.score.toFixed(3)),
+      spore_titles: titles,
+      estimated_tokens: promptTokens,
+      preview: text.slice(0, LOG_CONTEXT_PREVIEW_CHARS),
     });
-    logger.debug('context', 'Prompt context content', { session_id, text });
+    logger.debug('context', `Prompt context: ${spores.length} spores [${titles.join(', ')}] (~${promptTokens} tokens)`, {
+      session_id,
+      scores: spores.map((s) => s.score.toFixed(3)),
+    });
 
     return { body: { text } };
   };
