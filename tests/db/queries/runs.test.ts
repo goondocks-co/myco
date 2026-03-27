@@ -12,6 +12,7 @@ import {
   insertRun,
   getRun,
   listRuns,
+  countRuns,
   updateRunStatus,
   getRunningRun,
 } from '@myco/db/queries/runs.js';
@@ -163,6 +164,124 @@ describe('run query helpers', () => {
     it('returns empty array when no runs exist', async () => {
       const rows = listRuns();
       expect(rows).toEqual([]);
+    });
+
+    it('paginates with offset', async () => {
+      const now = epochNow();
+      insertRun(makeRun({ id: 'run-1', started_at: now - 2 }));
+      insertRun(makeRun({ id: 'run-2', started_at: now - 1 }));
+      insertRun(makeRun({ id: 'run-3', started_at: now }));
+
+      // Page 1: first 2 rows
+      const page1 = listRuns({ limit: 2, offset: 0 });
+      expect(page1).toHaveLength(2);
+      expect(page1[0].id).toBe('run-3');
+      expect(page1[1].id).toBe('run-2');
+
+      // Page 2: remaining row
+      const page2 = listRuns({ limit: 2, offset: 2 });
+      expect(page2).toHaveLength(1);
+      expect(page2[0].id).toBe('run-1');
+    });
+
+    it('combines offset with status filter', async () => {
+      const now = epochNow();
+      insertRun(makeRun({ id: 'run-done-1', status: 'completed', started_at: now - 3 }));
+      insertRun(makeRun({ id: 'run-done-2', status: 'completed', started_at: now - 2 }));
+      insertRun(makeRun({ id: 'run-done-3', status: 'completed', started_at: now - 1 }));
+      insertRun(makeRun({ id: 'run-pending', status: 'pending', started_at: now }));
+
+      const rows = listRuns({ status: 'completed', limit: 2, offset: 1 });
+      expect(rows).toHaveLength(2);
+      expect(rows[0].id).toBe('run-done-2');
+      expect(rows[1].id).toBe('run-done-1');
+    });
+
+    it('searches by task name substring', async () => {
+      const now = epochNow();
+      insertRun(makeRun({ id: 'run-digest', task: 'digest', started_at: now - 2 }));
+      insertRun(makeRun({ id: 'run-curate', task: 'curate', started_at: now - 1 }));
+      insertRun(makeRun({ id: 'run-digest-full', task: 'full-digest', started_at: now }));
+
+      const rows = listRuns({ search: 'digest' });
+      expect(rows).toHaveLength(2);
+      const ids = rows.map((r) => r.id);
+      expect(ids).toContain('run-digest');
+      expect(ids).toContain('run-digest-full');
+    });
+
+    it('combines search with status and pagination', async () => {
+      const now = epochNow();
+      insertRun(makeRun({ id: 'run-a', task: 'digest', status: 'completed', started_at: now - 3 }));
+      insertRun(makeRun({ id: 'run-b', task: 'digest', status: 'completed', started_at: now - 2 }));
+      insertRun(makeRun({ id: 'run-c', task: 'digest', status: 'completed', started_at: now - 1 }));
+      insertRun(makeRun({ id: 'run-d', task: 'curate', status: 'completed', started_at: now }));
+
+      const rows = listRuns({ search: 'digest', status: 'completed', limit: 2, offset: 1 });
+      expect(rows).toHaveLength(2);
+      expect(rows[0].id).toBe('run-b');
+      expect(rows[1].id).toBe('run-a');
+    });
+
+    it('filters by exact task name', async () => {
+      const now = epochNow();
+      insertRun(makeRun({ id: 'run-digest', task: 'digest', started_at: now - 1 }));
+      insertRun(makeRun({ id: 'run-full-digest', task: 'full-digest', started_at: now }));
+
+      const rows = listRuns({ task: 'digest' });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe('run-digest');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // countRuns
+  // ---------------------------------------------------------------------------
+
+  describe('countRuns', () => {
+    it('counts all runs when no filter given', async () => {
+      insertRun(makeRun({ started_at: epochNow() }));
+      insertRun(makeRun({ started_at: epochNow() }));
+      insertRun(makeRun({ started_at: epochNow() }));
+
+      expect(countRuns()).toBe(3);
+    });
+
+    it('counts zero when no runs exist', async () => {
+      expect(countRuns()).toBe(0);
+    });
+
+    it('counts with status filter', async () => {
+      insertRun(makeRun({ status: 'completed', started_at: epochNow() }));
+      insertRun(makeRun({ status: 'completed', started_at: epochNow() }));
+      insertRun(makeRun({ status: 'pending', started_at: epochNow() }));
+
+      expect(countRuns({ status: 'completed' })).toBe(2);
+      expect(countRuns({ status: 'pending' })).toBe(1);
+    });
+
+    it('counts with search filter', async () => {
+      insertRun(makeRun({ task: 'digest', started_at: epochNow() }));
+      insertRun(makeRun({ task: 'full-digest', started_at: epochNow() }));
+      insertRun(makeRun({ task: 'curate', started_at: epochNow() }));
+
+      expect(countRuns({ search: 'digest' })).toBe(2);
+      expect(countRuns({ search: 'curate' })).toBe(1);
+    });
+
+    it('counts with exact task filter', async () => {
+      insertRun(makeRun({ task: 'digest', started_at: epochNow() }));
+      insertRun(makeRun({ task: 'full-digest', started_at: epochNow() }));
+
+      expect(countRuns({ task: 'digest' })).toBe(1);
+    });
+
+    it('counts with combined filters', async () => {
+      insertRun(makeRun({ task: 'digest', status: 'completed', started_at: epochNow() }));
+      insertRun(makeRun({ task: 'digest', status: 'pending', started_at: epochNow() }));
+      insertRun(makeRun({ task: 'curate', status: 'completed', started_at: epochNow() }));
+
+      expect(countRuns({ search: 'digest', status: 'completed' })).toBe(1);
     });
   });
 

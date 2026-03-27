@@ -26,6 +26,7 @@ import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
 import { computeConfigHash } from './api/stats.js';
 import {
+  handleListSessions,
   handleGetSession,
   handleGetSessionBatches,
   handleGetBatchActivities,
@@ -72,7 +73,7 @@ import { upsertSession, closeSession, updateSession, listSessions, getSession, d
 import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, findBatchByPromptPrefix, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary, listBatchesBySession } from '../db/queries/batches.js';
 import { insertActivityWithBatch } from '../db/queries/activities.js';
 import { insertAttachment } from '../db/queries/attachments.js';
-import { listRuns, getRun, getRunningRun } from '../db/queries/runs.js';
+import { listRuns, countRuns, getRun, getRunningRun } from '../db/queries/runs.js';
 import { listReports } from '../db/queries/reports.js';
 import { insertSpore, updateSporeStatus } from '../db/queries/spores.js';
 import { listPlans } from '../db/queries/plans.js';
@@ -1245,25 +1246,7 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir, progressTracker }, req.body));
   server.registerRoute('GET', '/api/progress/:token', async (req) => handleGetProgress(progressTracker, req.params.token));
 
-  // Simplified sessions endpoint — SQLite based
-  server.registerRoute('GET', '/api/sessions', async () => {
-    const sessions = listSessions({ limit: 100 });
-    return {
-      body: {
-        sessions: sessions.map((s) => ({
-          id: s.id,
-          date: new Date(s.started_at * 1000).toISOString().slice(0, 10),
-          title: s.title || s.id.slice(0, 8),
-          status: s.status,
-          agent: s.agent,
-          prompt_count: s.prompt_count,
-          tool_count: s.tool_count,
-          started_at: s.started_at,
-          ended_at: s.ended_at,
-        })),
-      },
-    };
-  });
+  server.registerRoute('GET', '/api/sessions', handleListSessions);
 
   server.registerRoute('GET', '/api/sessions/:id', handleGetSession);
   server.registerRoute('GET', '/api/sessions/:id/impact', async (req) => {
@@ -1370,9 +1353,17 @@ export async function main(): Promise<void> {
 
   server.registerRoute('GET', '/api/agent/runs', async (req) => {
     const limit = req.query.limit ? Number(req.query.limit) : AGENT_RUNS_DEFAULT_LIMIT;
+    const offset = req.query.offset ? Number(req.query.offset) : 0;
     const agentId = req.query.agentId || undefined;
-    const runs = listRuns({ limit, agent_id: agentId });
-    return { body: { runs } };
+    const status = req.query.status || undefined;
+    const task = req.query.task || undefined;
+    const search = req.query.search || undefined;
+
+    const filterOpts = { agent_id: agentId, status, task, search };
+    const runs = listRuns({ ...filterOpts, limit, offset });
+    const total = countRuns(filterOpts);
+
+    return { body: { runs, total, offset, limit } };
   });
 
   server.registerRoute('GET', '/api/agent/runs/:id', async (req) => {

@@ -62,6 +62,9 @@ export interface SessionDetail {
 
 export interface SessionsResponse {
   sessions: SessionSummary[];
+  total: number;
+  offset: number;
+  limit: number;
 }
 
 export interface BatchRow {
@@ -118,10 +121,19 @@ export interface SessionImpact {
 
 /* ---------- Hooks ---------- */
 
-export function useSessions(filters?: { status?: string; limit?: number }) {
+export function useSessions(filters?: {
+  status?: string;
+  agent?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}) {
   const params = new URLSearchParams();
   if (filters?.status) params.set('status', filters.status);
+  if (filters?.agent) params.set('agent', filters.agent);
+  if (filters?.search) params.set('search', filters.search);
   if (filters?.limit !== undefined) params.set('limit', String(filters.limit));
+  if (filters?.offset !== undefined) params.set('offset', String(filters.offset));
   const qs = params.toString();
   const path = qs ? `/sessions?${qs}` : '/sessions';
 

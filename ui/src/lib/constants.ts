@@ -19,6 +19,9 @@ export const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 
 export const TASK_SOURCE_BUILTIN = 'built-in';
 export const TASK_SOURCE_USER = 'user';
 
+/** Default page size for paginated list views. */
+export const DEFAULT_PAGE_SIZE = 50;
+
 /** Default agent run interval in seconds. */
 export const DEFAULT_INTERVAL_SECONDS = 300;
 
