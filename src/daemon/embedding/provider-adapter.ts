@@ -15,6 +15,24 @@ import type { ManagerEmbeddingProvider } from './types.js';
 /** TTL for cached availability check (ms). Avoids HTTP probe on every embed(). */
 const AVAILABILITY_CACHE_TTL_MS = 5_000;
 
+/** Ollama default tag — untagged model names implicitly resolve to :latest. */
+const OLLAMA_DEFAULT_TAG = ':latest';
+
+/** Providers that use Docker-style model tags where untagged means :latest. */
+const TAGGED_PROVIDERS = new Set(['ollama']);
+
+/**
+ * Normalize model string for consistent storage. Ollama treats 'bge-m3' and
+ * 'bge-m3:latest' as the same model — normalize to include the tag so vector
+ * metadata comparisons don't produce false stale counts.
+ */
+function normalizeModelName(model: string, provider: string): string {
+  if (TAGGED_PROVIDERS.has(provider) && !model.includes(':')) {
+    return model + OLLAMA_DEFAULT_TAG;
+  }
+  return model;
+}
+
 export class EmbeddingProviderAdapter implements ManagerEmbeddingProvider {
   readonly model: string;
   readonly providerName: string;
@@ -28,7 +46,7 @@ export class EmbeddingProviderAdapter implements ManagerEmbeddingProvider {
     private provider: EmbeddingProvider,
     config: EmbeddingProviderConfig,
   ) {
-    this.model = config.model;
+    this.model = normalizeModelName(config.model, config.provider);
     this.providerName = config.provider;
     this.dimensions = EMBEDDING_DIMENSIONS;
   }

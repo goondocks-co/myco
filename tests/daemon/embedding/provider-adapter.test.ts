@@ -96,8 +96,55 @@ describe('EmbeddingProviderAdapter', () => {
 
     const adapter = new EmbeddingProviderAdapter(mockProvider, config);
 
+    // Non-Ollama providers: model string passed through unchanged
     expect(adapter.model).toBe('text-embedding-3-small');
     expect(adapter.providerName).toBe('openai-compatible');
     expect(adapter.dimensions).toBe(EMBEDDING_DIMENSIONS);
+  });
+
+  // -------------------------------------------------------------------------
+  // Model string normalization
+  // -------------------------------------------------------------------------
+
+  describe('model name normalization', () => {
+    it('appends :latest to untagged Ollama model names', () => {
+      const adapter = new EmbeddingProviderAdapter(mockProvider, {
+        provider: 'ollama',
+        model: 'bge-m3',
+      });
+      expect(adapter.model).toBe('bge-m3:latest');
+    });
+
+    it('preserves explicit :latest tag on Ollama models', () => {
+      const adapter = new EmbeddingProviderAdapter(mockProvider, {
+        provider: 'ollama',
+        model: 'bge-m3:latest',
+      });
+      expect(adapter.model).toBe('bge-m3:latest');
+    });
+
+    it('preserves non-latest tags on Ollama models', () => {
+      const adapter = new EmbeddingProviderAdapter(mockProvider, {
+        provider: 'ollama',
+        model: 'nomic-embed-text:v1.5',
+      });
+      expect(adapter.model).toBe('nomic-embed-text:v1.5');
+    });
+
+    it('does NOT modify model names for non-Ollama providers', () => {
+      const adapter = new EmbeddingProviderAdapter(mockProvider, {
+        provider: 'openai',
+        model: 'text-embedding-3-small',
+      });
+      expect(adapter.model).toBe('text-embedding-3-small');
+    });
+
+    it('does NOT modify model names for openrouter provider', () => {
+      const adapter = new EmbeddingProviderAdapter(mockProvider, {
+        provider: 'openrouter',
+        model: 'openai/text-embedding-3-small',
+      });
+      expect(adapter.model).toBe('openai/text-embedding-3-small');
+    });
   });
 });

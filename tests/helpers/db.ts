@@ -30,6 +30,7 @@ const DELETE_TABLES = [
   'team_members',
   'sessions',
   'agents',
+  'log_entries',
 ];
 
 /**
@@ -46,6 +47,11 @@ const FTS_DDL = [
     name: 'activities_fts',
     ddl: `CREATE VIRTUAL TABLE IF NOT EXISTS activities_fts
           USING fts5(tool_name, tool_input, file_path, content='activities', content_rowid='id')`,
+  },
+  {
+    name: 'log_entries_fts',
+    ddl: `CREATE VIRTUAL TABLE IF NOT EXISTS log_entries_fts
+          USING fts5(message, content='log_entries', content_rowid='id')`,
   },
 ];
 

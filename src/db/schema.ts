@@ -17,7 +17,7 @@ import type { Database } from 'better-sqlite3';
 import { epochSeconds } from '@myco/constants.js';
 
 /** Current schema version -- fresh start for the SQLite era. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /** Embedding vector dimensions (bge-m3 default). */
 export const EMBEDDING_DIMENSIONS = 1024;
@@ -313,6 +313,20 @@ const AGENT_STATE_TABLE = `
     PRIMARY KEY (agent_id, key)
   )`;
 
+// -- Logging Layer ----------------------------------------------------------
+
+const LOG_ENTRIES_TABLE = `
+  CREATE TABLE IF NOT EXISTS log_entries (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp   TEXT    NOT NULL,
+    level       TEXT    NOT NULL,
+    component   TEXT    NOT NULL,
+    kind        TEXT    NOT NULL,
+    message     TEXT    NOT NULL,
+    data        TEXT,
+    session_id  TEXT
+  )`;
+
 // -- FTS5 Virtual Tables ----------------------------------------------------
 
 const FTS_TABLES = [
@@ -321,6 +335,18 @@ const FTS_TABLES = [
 
   `CREATE VIRTUAL TABLE IF NOT EXISTS activities_fts
      USING fts5(tool_name, tool_input, file_path, content='activities', content_rowid='id')`,
+
+  `CREATE VIRTUAL TABLE IF NOT EXISTS log_entries_fts
+     USING fts5(message, content='log_entries', content_rowid='id')`,
+
+  // FTS5 sync triggers for log_entries (external-content table)
+  `CREATE TRIGGER IF NOT EXISTS log_entries_ai AFTER INSERT ON log_entries BEGIN
+     INSERT INTO log_entries_fts(rowid, message) VALUES (new.id, new.message);
+   END`,
+
+  `CREATE TRIGGER IF NOT EXISTS log_entries_ad AFTER DELETE ON log_entries BEGIN
+     INSERT INTO log_entries_fts(log_entries_fts, rowid, message) VALUES('delete', old.id, old.message);
+   END`,
 ];
 
 // -- Indexes ----------------------------------------------------------------
@@ -393,6 +419,13 @@ const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_plans_content_hash ON plans (content_hash)',
   // Attachments
   'CREATE INDEX IF NOT EXISTS idx_attachments_file_path ON attachments (file_path)',
+
+  // Log entries
+  'CREATE INDEX IF NOT EXISTS idx_log_entries_timestamp ON log_entries (timestamp)',
+  'CREATE INDEX IF NOT EXISTS idx_log_entries_level ON log_entries (level)',
+  'CREATE INDEX IF NOT EXISTS idx_log_entries_component ON log_entries (component)',
+  'CREATE INDEX IF NOT EXISTS idx_log_entries_kind ON log_entries (kind)',
+  'CREATE INDEX IF NOT EXISTS idx_log_entries_session_id ON log_entries (session_id)',
 ];
 
 // -- Ordered table creation -------------------------------------------------
@@ -421,6 +454,8 @@ const TABLE_DDLS = [
   AGENT_TURNS_TABLE,
   AGENT_TASKS_TABLE,
   AGENT_STATE_TABLE,
+  // Logging layer
+  LOG_ENTRIES_TABLE,
 ];
 
 // ---------------------------------------------------------------------------
@@ -482,6 +517,63 @@ function migrateV1ToV2(db: Database): void {
   }
 }
 
+/**
+ * Migrate a version-2 database to version-3.
+ *
+ * Version 3 adds:
+ *   - log_entries table
+ *   - log_entries_fts virtual table (FTS5)
+ *   - indexes: idx_log_entries_timestamp, _level, _component, _kind, _session_id
+ *
+ * Uses `CREATE ... IF NOT EXISTS` throughout for idempotency.
+ */
+function migrateV2ToV3(db: Database): void {
+  db.exec('BEGIN');
+  try {
+    db.exec(LOG_ENTRIES_TABLE);
+
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS log_entries_fts
+         USING fts5(message, content='log_entries', content_rowid='id')`
+    );
+
+    // FTS5 sync triggers for log_entries
+    db.exec(
+      `CREATE TRIGGER IF NOT EXISTS log_entries_ai AFTER INSERT ON log_entries BEGIN
+         INSERT INTO log_entries_fts(rowid, message) VALUES (new.id, new.message);
+       END`
+    );
+    db.exec(
+      `CREATE TRIGGER IF NOT EXISTS log_entries_ad AFTER DELETE ON log_entries BEGIN
+         INSERT INTO log_entries_fts(log_entries_fts, rowid, message) VALUES('delete', old.id, old.message);
+       END`
+    );
+
+    const newIndexes = [
+      'CREATE INDEX IF NOT EXISTS idx_log_entries_timestamp ON log_entries (timestamp)',
+      'CREATE INDEX IF NOT EXISTS idx_log_entries_level ON log_entries (level)',
+      'CREATE INDEX IF NOT EXISTS idx_log_entries_component ON log_entries (component)',
+      'CREATE INDEX IF NOT EXISTS idx_log_entries_kind ON log_entries (kind)',
+      'CREATE INDEX IF NOT EXISTS idx_log_entries_session_id ON log_entries (session_id)',
+    ];
+
+    for (const idx of newIndexes) {
+      db.exec(idx);
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`
+    ).run(3, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -499,11 +591,18 @@ export function createSchema(db: Database): void {
       'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1'
     ).get() as { version: number } | undefined;
     if (row?.version === SCHEMA_VERSION) return;
-    // Migration path: version 1 → 2
+    // Migration path: version 1 → 2 (then fall through to check for 2 → 3)
     if (row?.version === 1) {
       migrateV1ToV2(db);
-      return;
     }
+    // Migration path: version 2 → 3
+    const afterV1Migration = (db.prepare(
+      'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1'
+    ).get() as { version: number } | undefined)?.version ?? 0;
+    if (afterV1Migration < 3) {
+      migrateV2ToV3(db);
+    }
+    return;
   } catch {
     // Table doesn't exist yet -- first run
   }

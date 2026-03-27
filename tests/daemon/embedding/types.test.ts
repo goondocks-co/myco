@@ -89,10 +89,12 @@ describe('Embedding types', () => {
     it('ReconcileResult has required fields', () => {
       const result: ReconcileResult = {
         embedded: 5,
+        stale_reembedded: 1,
         orphans_cleaned: 2,
         duration_ms: 1234,
       };
       expect(result.embedded).toBe(5);
+      expect(result.stale_reembedded).toBe(1);
     });
 
     // Interface types are verified at compile time — these type assertions

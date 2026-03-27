@@ -6,6 +6,7 @@ import { getPluginVersion } from '../version.js';
 import { Router, type RouteHandler } from './router.js';
 import { resolveStaticFile } from './static.js';
 import { DAEMON_EVICT_TIMEOUT_MS, DAEMON_EVICT_POLL_MS } from '../constants.js';
+import { LOG_KINDS } from '../constants/log-kinds.js';
 
 const DEFAULT_STATUS = 200;
 
@@ -48,7 +49,7 @@ export class DaemonServer {
         const addr = this.server!.address() as { port: number };
         this.port = addr.port;
         this.writeDaemonJson();
-        this.logger.info('daemon', 'Server started', { port: this.port, dashboard: `http://localhost:${this.port}/` });
+        this.logger.info(LOG_KINDS.DAEMON_PORT, 'Server started', { port: this.port, dashboard: `http://localhost:${this.port}/` });
         resolve();
       });
     });
@@ -59,7 +60,7 @@ export class DaemonServer {
       this.removeDaemonJson();
       if (this.server) {
         this.server.close(() => {
-          this.logger.info('daemon', 'Server stopped');
+          this.logger.info(LOG_KINDS.DAEMON_START, 'Server stopped');
           resolve();
         });
       } else {
@@ -103,7 +104,7 @@ export class DaemonServer {
         res.writeHead(status, headers);
         res.end(JSON.stringify(result.body));
       } catch (error) {
-        this.logger.error('daemon', 'Request handler error', {
+        this.logger.error(LOG_KINDS.SERVER_ERROR, 'Request handler error', {
           path: req.url,
           error: (error as Error).message,
         });
@@ -167,7 +168,7 @@ export class DaemonServer {
     // Check if the process is alive
     try { process.kill(existingPid, 0); } catch { return; /* already dead */ }
 
-    this.logger.info('daemon', 'Evicting existing daemon', { pid: existingPid });
+    this.logger.info(LOG_KINDS.DAEMON_START, 'Evicting existing daemon', { pid: existingPid });
     try { process.kill(existingPid, 'SIGTERM'); } catch { return; }
 
     // Give SIGTERM a grace period, then escalate to SIGKILL to guarantee port release
@@ -177,13 +178,13 @@ export class DaemonServer {
       try { process.kill(existingPid, 0); } catch { return; /* dead */ }
     }
 
-    this.logger.warn('daemon', 'Evicted daemon did not exit in time, sending SIGKILL', { pid: existingPid });
+    this.logger.warn(LOG_KINDS.DAEMON_START, 'Evicted daemon did not exit in time, sending SIGKILL', { pid: existingPid });
     try { process.kill(existingPid, 'SIGKILL'); } catch { return; }
 
     // Verify SIGKILL took effect
     await new Promise((r) => setTimeout(r, DAEMON_EVICT_POLL_MS));
     try { process.kill(existingPid, 0); } catch { return; /* dead */ }
-    this.logger.warn('daemon', 'Evicted daemon still alive after SIGKILL', { pid: existingPid });
+    this.logger.warn(LOG_KINDS.DAEMON_START, 'Evicted daemon still alive after SIGKILL', { pid: existingPid });
   }
 
   private writeDaemonJson(): void {

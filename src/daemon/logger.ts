@@ -1,16 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { LogRingBuffer } from './log-buffer.js';
+import { kindToComponent } from '@myco/constants/log-kinds.js';
 
 export interface LogEntry {
   timestamp: string;
   level: string;
+  kind: string;
   component: string;
   message: string;
   [key: string]: unknown;
 }
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+export type LogPersistFn = (entry: LogEntry) => void;
 
 export const LEVEL_ORDER: Record<LogLevel, number> = {
   debug: 0, info: 1, warn: 2, error: 3,
@@ -30,7 +33,7 @@ export class DaemonLogger {
   private maxSize: number;
   private maxFiles: number;
   private logDir: string;
-  private ringBuffer: LogRingBuffer;
+  private persistFn: LogPersistFn | null = null;
 
   constructor(logDir: string, options: LoggerOptions = {}) {
     this.logDir = logDir;
@@ -38,7 +41,6 @@ export class DaemonLogger {
     this.level = options.level ?? 'info';
     this.maxSize = options.maxSize ?? 5_242_880;
     this.maxFiles = options.maxFiles ?? 3;
-    this.ringBuffer = new LogRingBuffer();
 
     fs.mkdirSync(logDir, { recursive: true });
     this.fd = fs.openSync(this.logPath, 'a');
@@ -49,26 +51,30 @@ export class DaemonLogger {
     }
   }
 
-  debug(component: string, message: string, data?: Record<string, unknown>): void {
-    this.write('debug', component, message, data);
+  setPersistFn(fn: LogPersistFn): void {
+    this.persistFn = fn;
   }
 
-  info(component: string, message: string, data?: Record<string, unknown>): void {
-    this.write('info', component, message, data);
+  debug(kind: string, message: string, data?: Record<string, unknown>): void {
+    this.write('debug', kind, message, data);
   }
 
-  warn(component: string, message: string, data?: Record<string, unknown>): void {
-    this.write('warn', component, message, data);
+  info(kind: string, message: string, data?: Record<string, unknown>): void {
+    this.write('info', kind, message, data);
   }
 
-  error(component: string, message: string, data?: Record<string, unknown>): void {
-    this.write('error', component, message, data);
+  warn(kind: string, message: string, data?: Record<string, unknown>): void {
+    this.write('warn', kind, message, data);
+  }
+
+  error(kind: string, message: string, data?: Record<string, unknown>): void {
+    this.write('error', kind, message, data);
   }
 
   /** Dispatch a log entry by dynamic level string. */
-  log(level: string, component: string, message: string, data?: Record<string, unknown>): void {
+  log(level: string, kind: string, message: string, data?: Record<string, unknown>): void {
     if (level in LEVEL_ORDER) {
-      this.write(level as LogLevel, component, message, data);
+      this.write(level as LogLevel, kind, message, data);
     }
   }
 
@@ -79,22 +85,25 @@ export class DaemonLogger {
     }
   }
 
-  getRingBuffer(): LogRingBuffer {
-    return this.ringBuffer;
-  }
-
-  private write(level: LogLevel, component: string, message: string, data?: Record<string, unknown>): void {
+  private write(level: LogLevel, kind: string, message: string, data?: Record<string, unknown>): void {
     if (LEVEL_ORDER[level] < LEVEL_ORDER[this.level]) return;
 
     const entry: LogEntry = {
       timestamp: new Date().toISOString(),
       level,
-      component,
+      kind,
+      component: kindToComponent(kind),
       message,
       ...data,
     };
 
-    this.ringBuffer.push(entry);
+    if (this.persistFn !== null) {
+      try {
+        this.persistFn(entry);
+      } catch {
+        // File write is the safety net — persist failures are non-fatal
+      }
+    }
 
     const line = JSON.stringify(entry) + '\n';
     const bytes = Buffer.byteLength(line);

@@ -15,6 +15,7 @@
 
 import { createHash } from 'node:crypto';
 import { CONTENT_HASH_ALGORITHM, epochSeconds } from '@myco/constants.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import {
   EMBEDDABLE_NAMESPACES,
   type EmbeddableNamespace,
@@ -30,9 +31,6 @@ import {
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/** Logger category for all embedding operations. */
-const LOG_CATEGORY = 'embedding';
 
 /** Spore status that qualifies for embedding. */
 const ACTIVE_STATUS = 'active';
@@ -85,7 +83,7 @@ export class EmbeddingManager {
     try {
       const embedding = await this.embeddingProvider.embed(text);
       if (embedding === null) {
-        this.logger.warn(LOG_CATEGORY, 'Provider unavailable, skipping embed', {
+        this.logger.warn(LOG_KINDS.EMBEDDING_PROVIDER, 'Provider unavailable, skipping embed', {
           namespace,
           id,
         });
@@ -105,9 +103,9 @@ export class EmbeddingManager {
 
       this.recordSource.markEmbedded(namespace, id);
 
-      this.logger.debug(LOG_CATEGORY, 'Vector stored', { namespace, id });
+      this.logger.debug(LOG_KINDS.EMBEDDING_EMBED, 'Vector stored', { namespace, id });
     } catch (err) {
-      this.logger.warn(LOG_CATEGORY, 'Failed to embed content', {
+      this.logger.warn(LOG_KINDS.EMBEDDING_EMBED, 'Failed to embed content', {
         namespace,
         id,
         error: String(err),
@@ -126,13 +124,13 @@ export class EmbeddingManager {
       this.vectorStore.remove(namespace, id);
       this.recordSource.clearEmbedded(namespace, id);
 
-      this.logger.debug(LOG_CATEGORY, 'Vector removed', {
+      this.logger.debug(LOG_KINDS.EMBEDDING_CLEANUP, 'Vector removed', {
         namespace,
         id,
         reason: `status=${status}`,
       });
     } catch (err) {
-      this.logger.warn(LOG_CATEGORY, 'Failed to remove vector on status change', {
+      this.logger.warn(LOG_KINDS.EMBEDDING_CLEANUP, 'Failed to remove vector on status change', {
         namespace,
         id,
         status,
@@ -149,13 +147,13 @@ export class EmbeddingManager {
     try {
       this.vectorStore.remove(namespace, id);
 
-      this.logger.debug(LOG_CATEGORY, 'Vector removed', {
+      this.logger.debug(LOG_KINDS.EMBEDDING_CLEANUP, 'Vector removed', {
         namespace,
         id,
         reason: 'record deleted',
       });
     } catch (err) {
-      this.logger.warn(LOG_CATEGORY, 'Failed to remove vector on delete', {
+      this.logger.warn(LOG_KINDS.EMBEDDING_CLEANUP, 'Failed to remove vector on delete', {
         namespace,
         id,
         error: String(err),
@@ -168,13 +166,15 @@ export class EmbeddingManager {
   // -------------------------------------------------------------------------
 
   /**
-   * Embed missing rows and clean orphan vectors across all namespaces.
+   * Embed missing rows, re-embed stale vectors, and clean orphans across all namespaces.
    * Called by the reconcile worker on a timer.
    */
   async reconcile(batchSize: number): Promise<ReconcileResult> {
     const start = Date.now();
     let embedded = 0;
+    let stale_reembedded = 0;
     let orphans_cleaned = 0;
+    const currentModel = this.embeddingProvider.model;
 
     for (const namespace of EMBEDDABLE_NAMESPACES) {
       // Phase 1: Embed missing rows
@@ -183,12 +183,13 @@ export class EmbeddingManager {
       for (const row of rows) {
         const embedding = await this.embeddingProvider.embed(row.text);
         if (embedding === null) {
-          this.logger.warn(LOG_CATEGORY, 'Provider unavailable during reconcile, returning partial progress', {
+          this.logger.warn(LOG_KINDS.EMBEDDING_PROVIDER, 'Provider unavailable during reconcile, returning partial progress', {
             namespace,
             embedded,
           });
           return {
             embedded,
+            stale_reembedded,
             orphans_cleaned,
             duration_ms: Date.now() - start,
           };
@@ -197,7 +198,7 @@ export class EmbeddingManager {
         const hash = this.contentHash(row.text);
 
         this.vectorStore.upsert(namespace, row.id, embedding, {
-          model: this.embeddingProvider.model,
+          model: currentModel,
           provider: this.embeddingProvider.providerName,
           dimensions: this.embeddingProvider.dimensions,
           content_hash: hash,
@@ -209,21 +210,68 @@ export class EmbeddingManager {
         embedded++;
       }
 
-      // Phase 2: Orphan sweep
+      // Phase 2: Re-embed stale vectors (model mismatch)
+      const staleIds = this.vectorStore.getStaleIds(namespace, currentModel, batchSize);
+      if (staleIds.length > 0) {
+        const records = this.recordSource.getRecordContent(namespace, staleIds);
+        const foundIds = new Set(records.map((r) => r.id));
+
+        for (const record of records) {
+          const embedding = await this.embeddingProvider.embed(record.text);
+          if (embedding === null) {
+            this.logger.warn(LOG_KINDS.EMBEDDING_PROVIDER, 'Provider unavailable during stale re-embed, returning partial progress', {
+              namespace,
+              stale_reembedded,
+            });
+            return {
+              embedded,
+              stale_reembedded,
+              orphans_cleaned,
+              duration_ms: Date.now() - start,
+            };
+          }
+
+          this.vectorStore.upsert(namespace, record.id, embedding, {
+            model: currentModel,
+            provider: this.embeddingProvider.providerName,
+            dimensions: this.embeddingProvider.dimensions,
+            content_hash: this.contentHash(record.text),
+            embedded_at: epochSeconds(),
+            domain_metadata: record.metadata,
+          });
+
+          stale_reembedded++;
+        }
+
+        // Clean stale vectors whose source records no longer exist
+        for (const staleId of staleIds) {
+          if (!foundIds.has(staleId)) {
+            this.vectorStore.remove(namespace, staleId);
+            this.logger.warn(LOG_KINDS.EMBEDDING_CLEANUP, 'Stale orphan vector cleaned', {
+              namespace,
+              id: staleId,
+            });
+            orphans_cleaned++;
+          }
+        }
+      }
+
+      // Phase 3: Orphan sweep
       orphans_cleaned += this.sweepOrphans(namespace);
     }
 
     const duration_ms = Date.now() - start;
 
-    if (embedded > 0 || orphans_cleaned > 0) {
-      this.logger.info(LOG_CATEGORY, 'Reconcile cycle completed', {
+    if (embedded > 0 || stale_reembedded > 0 || orphans_cleaned > 0) {
+      this.logger.info(LOG_KINDS.EMBEDDING_RECONCILE, 'Reconcile cycle completed', {
         embedded,
+        stale_reembedded,
         orphans_cleaned,
         duration_ms,
       });
     }
 
-    return { embedded, orphans_cleaned, duration_ms };
+    return { embedded, stale_reembedded, orphans_cleaned, duration_ms };
   }
 
   /**
@@ -249,7 +297,7 @@ export class EmbeddingManager {
     const { cleared } = this.vectorStore.clear();
     this.recordSource.clearAllEmbedded();
 
-    this.logger.info(LOG_CATEGORY, 'Rebuild started', { cleared });
+    this.logger.info(LOG_KINDS.EMBEDDING_REBUILD, 'Rebuild started', { cleared });
 
     return { queued: cleared };
   }
@@ -270,7 +318,7 @@ export class EmbeddingManager {
       for (const record of records) {
         const embedding = await this.embeddingProvider.embed(record.text);
         if (embedding === null) {
-          this.logger.warn(LOG_CATEGORY, 'Provider unavailable during re-embed', {
+          this.logger.warn(LOG_KINDS.EMBEDDING_PROVIDER, 'Provider unavailable during re-embed', {
             namespace,
             reembedded,
           });
@@ -343,22 +391,24 @@ export class EmbeddingManager {
 
   /**
    * Sweep orphan vectors for a single namespace. Returns count removed.
-   * Short-circuits when vector count matches active record count (common case).
+   *
+   * Compares vector IDs against active record IDs — vectors without a matching
+   * active record are removed. Does NOT short-circuit on count equality because
+   * equal counts can mask orphans (e.g., 3 orphan vectors + 3 active records
+   * missing vectors = same count, zero cleanup).
    */
   private sweepOrphans(namespace: EmbeddableNamespace): number {
     const embeddedIds = this.vectorStore.getEmbeddedIds(namespace);
+    if (embeddedIds.length === 0) return 0;
+
     const activeIds = this.recordSource.getActiveRecordIds(namespace);
-
-    // Fast path: if counts match, no orphans possible (common case on every 30s cycle)
-    if (embeddedIds.length === activeIds.length) return 0;
-
     const activeSet = new Set(activeIds);
     let cleaned = 0;
 
     for (const vecId of embeddedIds) {
       if (!activeSet.has(vecId)) {
         this.vectorStore.remove(namespace, vecId);
-        this.logger.warn(LOG_CATEGORY, 'Orphan vector cleaned', {
+        this.logger.warn(LOG_KINDS.EMBEDDING_CLEANUP, 'Orphan vector cleaned', {
           namespace,
           id: vecId,
         });

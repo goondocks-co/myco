@@ -4,6 +4,8 @@
  * MUST NOT appear inline in logic."
  */
 
+export { LOG_KINDS, type LogKind, kindToComponent } from './constants/log-kinds.js';
+
 // --- Token estimation ---
 /** Approximate characters per token for the chars/4 heuristic. */
 export const CHARS_PER_TOKEN = 4;

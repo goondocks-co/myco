@@ -39,6 +39,6 @@ agent:
         type: cloud
         model: claude-sonnet-4-6
 context:
-  digest_tier: 5000
+  digest_tier: 7500
   prompt_search: true
   prompt_max_spores: 3

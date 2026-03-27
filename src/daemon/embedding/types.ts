@@ -58,6 +58,7 @@ export interface EmbeddingDetails extends VectorStoreStats {
 /** Result of a reconciliation cycle. */
 export interface ReconcileResult {
   embedded: number;
+  stale_reembedded: number;
   orphans_cleaned: number;
   duration_ms: number;
 }
