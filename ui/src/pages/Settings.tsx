@@ -43,6 +43,7 @@ type TestState = 'idle' | 'testing' | 'success' | 'error';
 interface FormState {
   daemonPort: string;
   logLevel: LogLevel;
+  logRetentionDays: string;
   embeddingProvider: Provider;
   embeddingModel: string;
   embeddingBaseUrl: string;
@@ -58,6 +59,7 @@ function toFormState(config: MycoConfig): FormState {
   return {
     daemonPort: config.daemon.port != null ? String(config.daemon.port) : '',
     logLevel: config.daemon.log_level,
+    logRetentionDays: String(config.daemon.log_retention_days),
     embeddingProvider: config.embedding.provider,
     embeddingModel: config.embedding.model,
     embeddingBaseUrl: config.embedding.base_url ?? '',
@@ -77,18 +79,22 @@ function formToConfig(form: FormState, original: MycoConfig): MycoConfig {
       ...original.daemon,
       port: form.daemonPort !== '' ? Number(form.daemonPort) : null,
       log_level: form.logLevel,
+      log_retention_days: Number(form.logRetentionDays),
     },
     embedding: {
+      ...original.embedding,
       provider: form.embeddingProvider,
       model: form.embeddingModel,
       base_url: form.embeddingBaseUrl !== '' ? form.embeddingBaseUrl : undefined,
     },
     agent: {
+      ...original.agent,
       auto_run: form.agentAutoRun,
       interval_seconds: parseNumericField(form.agentIntervalSeconds, DEFAULT_INTERVAL_SECONDS),
       summary_batch_interval: parseNumericField(form.agentSummaryBatchInterval, DEFAULT_SUMMARY_BATCH_INTERVAL),
     },
     context: {
+      ...original.context,
       digest_tier: parseNumericField(form.contextDigestTier, DEFAULT_DIGEST_TIER),
       prompt_search: form.contextPromptSearch,
       prompt_max_spores: parseNumericField(form.contextMaxSpores, DEFAULT_MAX_SPORES),
@@ -101,6 +107,7 @@ function isDirty(form: FormState, original: MycoConfig): boolean {
   return (
     form.daemonPort !== orig.daemonPort ||
     form.logLevel !== orig.logLevel ||
+    form.logRetentionDays !== orig.logRetentionDays ||
     form.embeddingProvider !== orig.embeddingProvider ||
     form.embeddingModel !== orig.embeddingModel ||
     form.embeddingBaseUrl !== orig.embeddingBaseUrl ||
@@ -259,6 +266,19 @@ export default function Settings() {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            {/* Log retention */}
+            <div className="space-y-1.5">
+              <FieldLabel>Log Retention (days)</FieldLabel>
+              <Input
+                type="number"
+                min={1}
+                max={365}
+                className="w-24"
+                value={form.logRetentionDays}
+                onChange={e => setField('logRetentionDays', e.target.value)}
+              />
             </div>
           </div>
         </Surface>

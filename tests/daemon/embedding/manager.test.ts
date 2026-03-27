@@ -131,7 +131,7 @@ describe('EmbeddingManager', () => {
       expect(typeof upsertMeta.embedded_at).toBe('number');
 
       expect(recordSource.markEmbedded).toHaveBeenCalledWith(namespace, id);
-      expect(logger.debug).toHaveBeenCalledWith('embedding', 'Vector stored', { namespace, id });
+      expect(logger.debug).toHaveBeenCalledWith('embedding.embed', 'Vector stored', { namespace, id });
     });
 
     it('does NOT call upsert or markEmbedded when provider returns null', async () => {
@@ -142,7 +142,7 @@ describe('EmbeddingManager', () => {
       expect(vectorStore.upsert).not.toHaveBeenCalled();
       expect(recordSource.markEmbedded).not.toHaveBeenCalled();
       expect(logger.warn).toHaveBeenCalledWith(
-        'embedding',
+        'embedding.provider',
         'Provider unavailable, skipping embed',
         expect.objectContaining({ namespace, id }),
       );
@@ -157,7 +157,7 @@ describe('EmbeddingManager', () => {
       expect(vectorStore.upsert).not.toHaveBeenCalled();
       expect(recordSource.markEmbedded).not.toHaveBeenCalled();
       expect(logger.warn).toHaveBeenCalledWith(
-        'embedding',
+        'embedding.embed',
         'Failed to embed content',
         expect.objectContaining({ namespace, id }),
       );
@@ -173,7 +173,7 @@ describe('EmbeddingManager', () => {
 
       expect(recordSource.markEmbedded).not.toHaveBeenCalled();
       expect(logger.warn).toHaveBeenCalledWith(
-        'embedding',
+        'embedding.embed',
         'Failed to embed content',
         expect.objectContaining({ namespace, id }),
       );
@@ -194,7 +194,7 @@ describe('EmbeddingManager', () => {
       expect(vectorStore.remove).toHaveBeenCalledWith(namespace, id);
       expect(recordSource.clearEmbedded).toHaveBeenCalledWith(namespace, id);
       expect(logger.debug).toHaveBeenCalledWith(
-        'embedding',
+        'embedding.cleanup',
         'Vector removed',
         expect.objectContaining({ namespace, id }),
       );
@@ -226,7 +226,7 @@ describe('EmbeddingManager', () => {
 
       expect(vectorStore.remove).toHaveBeenCalledWith('plans', 'plan-abc');
       expect(logger.debug).toHaveBeenCalledWith(
-        'embedding',
+        'embedding.cleanup',
         'Vector removed',
         expect.objectContaining({ namespace: 'plans', id: 'plan-abc' }),
       );
@@ -256,13 +256,15 @@ describe('EmbeddingManager', () => {
           }
           return [];
         });
-      // No orphans
+      // No stale, no orphans
+      vectorStore.getStaleIds.mockReturnValue([]);
       vectorStore.getEmbeddedIds.mockReturnValue([]);
       recordSource.getActiveRecordIds.mockReturnValue([]);
 
       const result = await manager.reconcile(BATCH_SIZE);
 
       expect(result.embedded).toBe(2);
+      expect(result.stale_reembedded).toBe(0);
       expect(result.orphans_cleaned).toBe(0);
       expect(result.duration_ms).toBeGreaterThanOrEqual(0);
 
@@ -270,9 +272,9 @@ describe('EmbeddingManager', () => {
       expect(vectorStore.upsert).toHaveBeenCalledTimes(2);
       expect(recordSource.markEmbedded).toHaveBeenCalledTimes(2);
       expect(logger.info).toHaveBeenCalledWith(
-        'embedding',
+        'embedding.reconcile',
         'Reconcile cycle completed',
-        expect.objectContaining({ embedded: 2, orphans_cleaned: 0 }),
+        expect.objectContaining({ embedded: 2, stale_reembedded: 0, orphans_cleaned: 0 }),
       );
     });
 
@@ -287,6 +289,7 @@ describe('EmbeddingManager', () => {
           }
           return [];
         });
+      vectorStore.getStaleIds.mockReturnValue([]);
 
       // First call succeeds, second returns null
       provider.embed
@@ -296,16 +299,18 @@ describe('EmbeddingManager', () => {
       const result = await manager.reconcile(BATCH_SIZE);
 
       expect(result.embedded).toBe(1);
+      expect(result.stale_reembedded).toBe(0);
       expect(logger.warn).toHaveBeenCalledWith(
-        'embedding',
+        'embedding.provider',
         'Provider unavailable during reconcile, returning partial progress',
         expect.objectContaining({ namespace: 'sessions', embedded: 1 }),
       );
     });
 
     it('detects and removes orphan vectors', async () => {
-      // No missing rows
+      // No missing rows, no stale
       recordSource.getEmbeddableRows.mockReturnValue([]);
+      vectorStore.getStaleIds.mockReturnValue([]);
 
       // sessions namespace has a vector that has no matching record
       vectorStore.getEmbeddedIds.mockImplementation((ns: string) => {
@@ -322,20 +327,100 @@ describe('EmbeddingManager', () => {
       expect(result.orphans_cleaned).toBe(1);
       expect(vectorStore.remove).toHaveBeenCalledWith('sessions', 's-orphan');
       expect(logger.warn).toHaveBeenCalledWith(
-        'embedding',
+        'embedding.cleanup',
         'Orphan vector cleaned',
         expect.objectContaining({ namespace: 'sessions', id: 's-orphan' }),
       );
     });
 
+    it('re-embeds stale vectors with model mismatch', async () => {
+      recordSource.getEmbeddableRows.mockReturnValue([]);
+      vectorStore.getEmbeddedIds.mockReturnValue([]);
+      recordSource.getActiveRecordIds.mockReturnValue([]);
+
+      // spores namespace has 2 stale vectors
+      vectorStore.getStaleIds.mockImplementation((ns: string) => {
+        if (ns === 'spores') return ['sp-old1', 'sp-old2'];
+        return [];
+      });
+      recordSource.getRecordContent.mockImplementation((ns: string, ids: string[]) => {
+        if (ns === 'spores') {
+          return ids.map((id) => ({ id, text: `content for ${id}`, metadata: {} }));
+        }
+        return [];
+      });
+
+      const result = await manager.reconcile(BATCH_SIZE);
+
+      expect(result.stale_reembedded).toBe(2);
+      expect(result.embedded).toBe(0);
+      // 2 embeds for stale re-embedding
+      expect(provider.embed).toHaveBeenCalledTimes(2);
+      expect(vectorStore.upsert).toHaveBeenCalledTimes(2);
+      // Verify model is set to current
+      const upsertMeta = vectorStore.upsert.mock.calls[0][3] as Record<string, unknown>;
+      expect(upsertMeta.model).toBe(MOCK_MODEL);
+    });
+
+    it('cleans stale vectors whose source records no longer exist', async () => {
+      recordSource.getEmbeddableRows.mockReturnValue([]);
+      vectorStore.getEmbeddedIds.mockReturnValue([]);
+      recordSource.getActiveRecordIds.mockReturnValue([]);
+
+      // 3 stale vectors, but only 1 has a source record
+      vectorStore.getStaleIds.mockImplementation((ns: string) => {
+        if (ns === 'spores') return ['sp1', 'sp-gone1', 'sp-gone2'];
+        return [];
+      });
+      recordSource.getRecordContent.mockImplementation((ns: string) => {
+        if (ns === 'spores') return [{ id: 'sp1', text: 'still here', metadata: {} }];
+        return [];
+      });
+
+      const result = await manager.reconcile(BATCH_SIZE);
+
+      expect(result.stale_reembedded).toBe(1);
+      expect(result.orphans_cleaned).toBe(2);
+      expect(vectorStore.remove).toHaveBeenCalledWith('spores', 'sp-gone1');
+      expect(vectorStore.remove).toHaveBeenCalledWith('spores', 'sp-gone2');
+      expect(logger.warn).toHaveBeenCalledWith(
+        'embedding.cleanup',
+        'Stale orphan vector cleaned',
+        expect.objectContaining({ namespace: 'spores', id: 'sp-gone1' }),
+      );
+    });
+
+    it('detects orphans even when vector count matches active count', async () => {
+      // This is the fast-path bug fix: equal counts with different members
+      recordSource.getEmbeddableRows.mockReturnValue([]);
+      vectorStore.getStaleIds.mockReturnValue([]);
+
+      // 3 vectors, 3 active records — but different IDs
+      vectorStore.getEmbeddedIds.mockImplementation((ns: string) => {
+        if (ns === 'sessions') return ['s1', 's2', 's-orphan'];
+        return [];
+      });
+      recordSource.getActiveRecordIds.mockImplementation((ns: string) => {
+        if (ns === 'sessions') return ['s1', 's2', 's3-no-vector'];
+        return [];
+      });
+
+      const result = await manager.reconcile(BATCH_SIZE);
+
+      expect(result.orphans_cleaned).toBe(1);
+      expect(vectorStore.remove).toHaveBeenCalledWith('sessions', 's-orphan');
+    });
+
     it('returns zeros when no work is needed', async () => {
       recordSource.getEmbeddableRows.mockReturnValue([]);
+      vectorStore.getStaleIds.mockReturnValue([]);
       vectorStore.getEmbeddedIds.mockReturnValue([]);
       recordSource.getActiveRecordIds.mockReturnValue([]);
 
       const result = await manager.reconcile(BATCH_SIZE);
 
       expect(result.embedded).toBe(0);
+      expect(result.stale_reembedded).toBe(0);
       expect(result.orphans_cleaned).toBe(0);
       // No info log when no work done
       expect(logger.info).not.toHaveBeenCalled();
@@ -372,6 +457,23 @@ describe('EmbeddingManager', () => {
 
       expect(result.orphans_cleaned).toBe(0);
     });
+
+    it('detects orphans even when counts match (fast-path bug fix)', () => {
+      // 2 vectors, 2 active records — but one vector is orphaned and one record is missing a vector
+      vectorStore.getEmbeddedIds.mockImplementation((ns: string) => {
+        if (ns === 'spores') return ['sp1', 'sp-orphan'];
+        return [];
+      });
+      recordSource.getActiveRecordIds.mockImplementation((ns: string) => {
+        if (ns === 'spores') return ['sp1', 'sp-new'];
+        return [];
+      });
+
+      const result = manager.cleanOrphans();
+
+      expect(result.orphans_cleaned).toBe(1);
+      expect(vectorStore.remove).toHaveBeenCalledWith('spores', 'sp-orphan');
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -388,7 +490,7 @@ describe('EmbeddingManager', () => {
       expect(recordSource.clearAllEmbedded).toHaveBeenCalled();
       expect(result.queued).toBe(42);
       expect(logger.info).toHaveBeenCalledWith(
-        'embedding',
+        'embedding.rebuild',
         'Rebuild started',
         expect.objectContaining({ cleared: 42 }),
       );

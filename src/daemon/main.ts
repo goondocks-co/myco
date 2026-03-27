@@ -21,7 +21,7 @@ import { loadManifests } from '../symbionts/detect.js';
 import { isPlanWriteEvent, capturePlan, type PlanWatchConfig } from './plan-capture.js';
 import type { RegisteredSession } from './lifecycle.js';
 import { handleGetConfig, handlePutConfig } from './api/config.js';
-import { handleGetLogs } from './api/logs.js';
+import { handleLogSearch, handleLogStream, handleLogDetail } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
@@ -80,6 +80,8 @@ import { listReports } from '../db/queries/reports.js';
 import { insertSpore, updateSporeStatus } from '../db/queries/spores.js';
 import { listPlans } from '../db/queries/plans.js';
 import { registerAgent } from '../db/queries/agents.js';
+import { insertLogEntry, deleteOldLogs, getMaxTimestamp } from '../db/queries/logs.js';
+import { reconcileLogBuffer } from './log-reconcile.js';
 import {
   DEFAULT_AGENT_ID,
   STALE_BUFFER_MAX_AGE_MS,
@@ -95,12 +97,14 @@ import {
   POWER_SLEEP_INTERVAL_MS,
   epochSeconds,
   MS_PER_SECOND,
+  MS_PER_DAY,
 } from '../constants.js';
 import { PowerManager } from './power.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
 import { loadSecrets } from '../config/secrets.js';
+import { LOG_KINDS } from '../constants/log-kinds.js';
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -380,7 +384,7 @@ function killStaleDaemon(vaultDir: string, logger: DaemonLogger): void {
     try {
       process.kill(info.pid, 0);
       process.kill(info.pid, 'SIGTERM');
-      logger.info('daemon', 'Killed stale daemon', { pid: info.pid });
+      logger.info(LOG_KINDS.DAEMON_START, 'Killed stale daemon', { pid: info.pid });
     } catch { /* already dead */ }
 
     fs.unlinkSync(daemonJsonPath);
@@ -421,16 +425,40 @@ export async function main(): Promise<void> {
   // Kill any stale daemon for this vault before starting
   killStaleDaemon(vaultDir, logger);
 
-  logger.info('daemon', 'Config loaded', {
+  logger.info(LOG_KINDS.DAEMON_CONFIG, 'Config loaded', {
     vault: vaultDir,
     embedding_provider: config.embedding.provider,
   });
-  logger.info('capture', 'Plan watch directories', { dirs: planWatchConfig.watchDirs });
+  logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan watch directories', { dirs: planWatchConfig.watchDirs });
 
   // --- SQLite initialization ---
   const db = initDatabase(vaultDbPath(vaultDir));
   createSchema(db);
-  logger.info('daemon', 'SQLite initialized', { vault: vaultDir });
+  logger.info(LOG_KINDS.DAEMON_START, 'SQLite initialized', { vault: vaultDir });
+
+  // Wire logger to SQLite persistence
+  logger.setPersistFn((entry) => {
+    const { timestamp, level, kind, component, message, ...rest } = entry;
+    insertLogEntry({
+      timestamp,
+      level,
+      kind,
+      component,
+      message,
+      data: Object.keys(rest).length > 0 ? JSON.stringify(rest) : null,
+      session_id: (rest.session_id as string) ?? null,
+    });
+  });
+
+  // Reconcile log entries missed while daemon was down
+  const lastLogTimestamp = getMaxTimestamp();
+  if (lastLogTimestamp) {
+    const logDir = path.join(vaultDir, 'logs');
+    const replayedCount = reconcileLogBuffer(logDir, lastLogTimestamp);
+    if (replayedCount > 0) {
+      logger.info(LOG_KINDS.DAEMON_RECONCILE, `Replayed ${replayedCount} log entries from buffer`, { replayed: replayedCount });
+    }
+  }
 
   // --- Embedding lifecycle manager ---
   const vectorsDbPath = path.join(vaultDir, 'vectors.db');
@@ -439,16 +467,16 @@ export async function main(): Promise<void> {
   const embeddingProvider = new EmbeddingProviderAdapter(llmProvider, config.embedding);
   const recordSource = new SqliteRecordSource();
   const embeddingManager = new EmbeddingManager(vectorStore, embeddingProvider, recordSource, logger);
-  logger.info('embedding', 'EmbeddingManager initialized', { vectors_db: vectorsDbPath });
+  logger.info(LOG_KINDS.EMBEDDING_EMBED, 'EmbeddingManager initialized', { vectors_db: vectorsDbPath });
 
   // --- Register built-in agents and tasks ---
   try {
     const { registerBuiltInAgentsAndTasks, resolveDefinitionsDir } = await import('../agent/loader.js');
     const definitionsDir = resolveDefinitionsDir();
     await registerBuiltInAgentsAndTasks(definitionsDir, vaultDir);
-    logger.info('agent', 'Built-in agents and tasks registered');
+    logger.info(LOG_KINDS.AGENT_TASK, 'Built-in agents and tasks registered');
   } catch (err) {
-    logger.warn('agent', 'Failed to register built-in agents/tasks', { error: (err as Error).message });
+    logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to register built-in agents/tasks', { error: (err as Error).message });
   }
 
   // Clean up stale "running" agent runs from previous daemon — they'll never complete
@@ -463,13 +491,13 @@ export async function main(): Promise<void> {
       staleDb.prepare(
         `UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE status = 'running'`,
       ).run(epochSeconds());
-      logger.info('agent', 'Cleaned stale running agent runs', {
+      logger.info(LOG_KINDS.AGENT_RUN, 'Cleaned stale running agent runs', {
         count: staleRows.length,
         ids: staleRows.map((r) => r.id),
       });
     }
   } catch (err) {
-    logger.warn('agent', 'Failed to clean stale runs', { error: (err as Error).message });
+    logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to clean stale runs', { error: (err as Error).message });
   }
 
   // Resolve dist/ui/ from the package root
@@ -482,7 +510,7 @@ export async function main(): Promise<void> {
     }
   }
   if (uiDir) {
-    logger.debug('daemon', 'Static UI directory found', { path: uiDir });
+    logger.debug(LOG_KINDS.DAEMON_START, 'Static UI directory found', { path: uiDir });
   }
 
   const powerManager = new PowerManager({
@@ -536,7 +564,7 @@ export async function main(): Promise<void> {
         task: 'title-summary',
         instruction: `Process session ${sessionId} only`,
         embeddingManager,
-      }).catch(err => logger.warn('agent', 'Title-summary task failed', { error: String(err) }));
+      }).catch(err => logger.warn(LOG_KINDS.AGENT_ERROR, 'Title-summary task failed', { error: String(err) }));
     } catch { /* agent unavailable */ }
   }
 
@@ -546,7 +574,7 @@ export async function main(): Promise<void> {
   // Clean up stale buffer files (>24h) on startup
   const startupCleanedCount = cleanStaleBuffers(bufferDir, STALE_BUFFER_MAX_AGE_MS);
   if (startupCleanedCount > 0) {
-    logger.info('daemon', 'Buffer cleanup complete', { stale_removed: startupCleanedCount });
+    logger.info(LOG_KINDS.CAPTURE_BUFFER, 'Buffer cleanup complete', { stale_removed: startupCleanedCount });
   }
 
   // Track sessions already reconciled this daemon lifetime to avoid
@@ -559,7 +587,7 @@ export async function main(): Promise<void> {
     try {
       reconcileSession(sessionId);
     } catch (err) {
-      logger.warn('daemon', 'Startup reconciliation failed', { session_id: sessionId, error: String(err) });
+      logger.warn(LOG_KINDS.LIFECYCLE_RECONCILE, 'Startup reconciliation failed', { session_id: sessionId, error: String(err) });
     }
   }
 
@@ -627,7 +655,7 @@ export async function main(): Promise<void> {
     // deleted or cleaned up by the session cleanup job. Skip reconciliation
     // for sessions that no longer exist rather than resurrecting them.
     if (!getSession(sessionId)) {
-      logger.debug('lifecycle', 'Skipping reconciliation for deleted session', { session_id: sessionId });
+      logger.debug(LOG_KINDS.LIFECYCLE_RECONCILE, 'Skipping reconciliation for deleted session', { session_id: sessionId });
       return;
     }
 
@@ -666,7 +694,7 @@ export async function main(): Promise<void> {
         if (result === 'prompt') promptsRecovered++;
         else if (result === 'activity') activitiesRecovered++;
       } catch (err) {
-        logger.warn('lifecycle', 'Reconciliation: failed to replay event', {
+        logger.warn(LOG_KINDS.LIFECYCLE_RECONCILE, 'Reconciliation: failed to replay event', {
           type: String(event.type),
           error: String(err),
         });
@@ -674,7 +702,7 @@ export async function main(): Promise<void> {
     }
 
     if (promptsRecovered > 0 || activitiesRecovered > 0) {
-      logger.info('lifecycle', 'Buffer reconciliation complete', {
+      logger.info(LOG_KINDS.LIFECYCLE_RECONCILE, 'Buffer reconciliation complete', {
         session_id: sessionId,
         prompts_recovered: promptsRecovered,
         activities_recovered: activitiesRecovered,
@@ -723,7 +751,7 @@ export async function main(): Promise<void> {
     // Reconcile buffer against DB — recover prompts lost if daemon was down mid-session.
     reconcileSession(session_id);
 
-    logger.info('lifecycle', 'Session registered', { session_id, branch, started_at: started_at ?? null });
+    logger.info(LOG_KINDS.LIFECYCLE_REGISTER, 'Session registered', { session_id, branch, started_at: started_at ?? null });
     return { body: { ok: true, sessions: registry.sessions } };
   });
 
@@ -742,7 +770,7 @@ export async function main(): Promise<void> {
     sessionTitleCache.delete(session_id);
     reconciledSessions.delete(session_id);
     server.updateDaemonJsonSessions(registry.sessions);
-    logger.info('lifecycle', 'Session unregistered', { session_id });
+    logger.info(LOG_KINDS.LIFECYCLE_UNREGISTER, 'Session unregistered', { session_id });
     return { body: { ok: true, sessions: registry.sessions } };
   });
 
@@ -751,12 +779,12 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/events', async (req) => {
     const validated = EventBody.parse(req.body);
     const event = { ...validated, timestamp: validated.timestamp ?? new Date().toISOString() } as Record<string, unknown> & { type: string; session_id: string; timestamp: string };
-    logger.debug('hooks', 'Event received', { type: event.type, session_id: event.session_id });
+    logger.debug(LOG_KINDS.HOOKS_EVENT, 'Event received', { type: event.type, session_id: event.session_id });
 
     // Ensure session is registered (idempotent — handles daemon restarts mid-session)
     if (!registry.getSession(event.session_id)) {
       registry.register(event.session_id, { started_at: event.timestamp });
-      logger.debug('lifecycle', 'Auto-registered session from event', { session_id: event.session_id });
+      logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from event', { session_id: event.session_id });
 
       // Ensure SQLite session exists — explicitly set status='active' so
       // resumed sessions (previously 'completed') get reopened.
@@ -787,19 +815,19 @@ export async function main(): Promise<void> {
       // Skip system-injected messages (task notifications, system reminders) —
       // they trigger UserPromptSubmit but are not real user prompts.
       if (isSystemMessage(promptText)) {
-        logger.debug('hooks', 'Skipped system-injected message', {
+        logger.debug(LOG_KINDS.HOOKS_PROMPT, 'Skipped system-injected message', {
           session_id: event.session_id,
           prefix: promptText.trimStart().slice(0, LOG_PROMPT_PREVIEW_CHARS),
         });
       } else {
-        logger.info('hooks', 'User prompt received', {
+        logger.info(LOG_KINDS.HOOKS_PROMPT, 'User prompt received', {
           session_id: event.session_id,
           prompt_preview: promptText.slice(0, LOG_PROMPT_PREVIEW_CHARS),
           prompt_length: promptText.length,
         });
         try {
           const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined);
-          logger.debug('capture', 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });
+          logger.debug(LOG_KINDS.CAPTURE_BATCH, 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });
 
           // Batch-threshold summary trigger
           const batchCount = promptNumber;
@@ -808,14 +836,14 @@ export async function main(): Promise<void> {
             triggerTitleSummary(event.session_id);
           }
         } catch (err) {
-          logger.warn('capture', 'Failed to open batch', { session_id: event.session_id, error: (err as Error).message });
+          logger.warn(LOG_KINDS.CAPTURE_BATCH, 'Failed to open batch', { session_id: event.session_id, error: (err as Error).message });
         }
       }
     }
 
     if (event.type === 'tool_use') {
       const toolName = String(event.tool_name ?? '');
-      logger.debug('hooks', 'Tool use event', {
+      logger.debug(LOG_KINDS.HOOKS_TOOL, 'Tool use event', {
         session_id: event.session_id,
         tool_name: toolName,
       });
@@ -835,12 +863,12 @@ export async function main(): Promise<void> {
             sessionId: captureSessionId,
             promptBatchId: latestBatch?.id ?? null,
           });
-          logger.info('capture', 'Plan captured', {
+          logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan captured', {
             session_id: captureSessionId,
             source_path: planFilePath,
           });
         }).catch((err) => {
-          logger.warn('capture', 'Failed to capture plan', {
+          logger.warn(LOG_KINDS.CAPTURE_PLAN, 'Failed to capture plan', {
             error: (err as Error).message,
             path: planFilePath,
           });
@@ -854,13 +882,13 @@ export async function main(): Promise<void> {
           typeof event.output_preview === 'string' ? event.output_preview : undefined,
         );
       } catch (err) {
-        logger.warn('capture', 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });
+        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });
       }
     }
 
     if (event.type === 'tool_failure') {
       const toolName = String(event.tool_name ?? '');
-      logger.info('hooks', 'Tool failure event', {
+      logger.info(LOG_KINDS.HOOKS_TOOL, 'Tool failure event', {
         session_id: event.session_id,
         tool_name: toolName,
         is_interrupt: !!event.is_interrupt,
@@ -874,12 +902,12 @@ export async function main(): Promise<void> {
           !!event.is_interrupt,
         );
       } catch (err) {
-        logger.warn('capture', 'Failed to record tool failure', { session_id: event.session_id, error: (err as Error).message });
+        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record tool failure', { session_id: event.session_id, error: (err as Error).message });
       }
     }
 
     if (event.type === 'subagent_start') {
-      logger.info('hooks', 'Subagent start event', {
+      logger.info(LOG_KINDS.HOOKS_SUBAGENT, 'Subagent start event', {
         session_id: event.session_id,
         agent_id: event.agent_id,
         agent_type: event.agent_type,
@@ -891,12 +919,12 @@ export async function main(): Promise<void> {
           typeof event.agent_type === 'string' ? event.agent_type : undefined,
         );
       } catch (err) {
-        logger.warn('capture', 'Failed to record subagent start', { session_id: event.session_id, error: (err as Error).message });
+        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record subagent start', { session_id: event.session_id, error: (err as Error).message });
       }
     }
 
     if (event.type === 'subagent_stop') {
-      logger.info('hooks', 'Subagent stop event', {
+      logger.info(LOG_KINDS.HOOKS_SUBAGENT, 'Subagent stop event', {
         session_id: event.session_id,
         agent_id: event.agent_id,
         agent_type: event.agent_type,
@@ -909,12 +937,12 @@ export async function main(): Promise<void> {
           typeof event.last_assistant_message === 'string' ? event.last_assistant_message : undefined,
         );
       } catch (err) {
-        logger.warn('capture', 'Failed to record subagent stop', { session_id: event.session_id, error: (err as Error).message });
+        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record subagent stop', { session_id: event.session_id, error: (err as Error).message });
       }
     }
 
     if (event.type === 'stop_failure') {
-      logger.warn('hooks', 'Stop failure event', {
+      logger.warn(LOG_KINDS.HOOKS_STOP, 'Stop failure event', {
         session_id: event.session_id,
         error: event.error,
       });
@@ -925,12 +953,12 @@ export async function main(): Promise<void> {
           typeof event.error_details === 'string' ? event.error_details : undefined,
         );
       } catch (err) {
-        logger.warn('capture', 'Failed to record stop failure', { session_id: event.session_id, error: (err as Error).message });
+        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record stop failure', { session_id: event.session_id, error: (err as Error).message });
       }
     }
 
     if (event.type === 'task_completed') {
-      logger.info('hooks', 'Task completed event', {
+      logger.info(LOG_KINDS.HOOKS_EVENT, 'Task completed event', {
         session_id: event.session_id,
         task_id: event.task_id,
         task_subject: event.task_subject,
@@ -943,12 +971,12 @@ export async function main(): Promise<void> {
           typeof event.task_description === 'string' ? event.task_description : undefined,
         );
       } catch (err) {
-        logger.warn('capture', 'Failed to record task completion', { session_id: event.session_id, error: (err as Error).message });
+        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record task completion', { session_id: event.session_id, error: (err as Error).message });
       }
     }
 
     if (event.type === 'pre_compact') {
-      logger.info('hooks', 'Pre-compact event', { session_id: event.session_id });
+      logger.info(LOG_KINDS.HOOKS_EVENT, 'Pre-compact event', { session_id: event.session_id });
       try {
         handleCompact(
           event.session_id,
@@ -957,12 +985,12 @@ export async function main(): Promise<void> {
           undefined,
         );
       } catch (err) {
-        logger.warn('capture', 'Failed to record pre-compact', { session_id: event.session_id, error: (err as Error).message });
+        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record pre-compact', { session_id: event.session_id, error: (err as Error).message });
       }
     }
 
     if (event.type === 'post_compact') {
-      logger.info('hooks', 'Post-compact event', { session_id: event.session_id });
+      logger.info(LOG_KINDS.HOOKS_EVENT, 'Post-compact event', { session_id: event.session_id });
       try {
         handleCompact(
           event.session_id,
@@ -971,7 +999,7 @@ export async function main(): Promise<void> {
           typeof event.compact_summary === 'string' ? event.compact_summary : undefined,
         );
       } catch (err) {
-        logger.warn('capture', 'Failed to record post-compact', { session_id: event.session_id, error: (err as Error).message });
+        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record post-compact', { session_id: event.session_id, error: (err as Error).message });
       }
     }
 
@@ -985,15 +1013,15 @@ export async function main(): Promise<void> {
     // Ensure session is registered (handles daemon restarts mid-session)
     if (!registry.getSession(sessionId)) {
       registry.register(sessionId, { started_at: new Date().toISOString() });
-      logger.debug('lifecycle', 'Auto-registered session from stop event', { session_id: sessionId });
+      logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from stop event', { session_id: sessionId });
     }
     const sessionMeta = registry.getSession(sessionId);
-    logger.info('hooks', 'Stop received', {
+    logger.info(LOG_KINDS.HOOKS_STOP, 'Stop received', {
       session_id: sessionId,
       has_transcript_path: !!hookTranscriptPath,
       has_response: !!lastAssistantMessage,
     });
-    logger.debug('hooks', 'Stop event detail', {
+    logger.debug(LOG_KINDS.HOOKS_STOP, 'Stop event detail', {
       session_id: sessionId,
       transcript_path: hookTranscriptPath ?? null,
       last_message_preview: lastAssistantMessage?.slice(0, LOG_MESSAGE_PREVIEW_CHARS) ?? null,
@@ -1001,7 +1029,7 @@ export async function main(): Promise<void> {
 
     // Respond immediately — the hook should not block on processing.
     const run = () => processStopEvent(sessionId, user, sessionMeta, hookTranscriptPath, lastAssistantMessage).catch((err) => {
-      logger.error('processor', 'Stop processing failed', { session_id: sessionId, error: (err as Error).message });
+      logger.error(LOG_KINDS.PROCESSOR_SESSION, 'Stop processing failed', { session_id: sessionId, error: (err as Error).message });
     });
 
     const prev = activeStopProcessing ?? Promise.resolve();
@@ -1071,7 +1099,7 @@ export async function main(): Promise<void> {
           const bufferTurns = extractTurnsFromBuffer(newerEvents);
           allTurns = [...allTurns, ...bufferTurns];
           turnSource = `${transcriptResult.source}+buffer`;
-          logger.info('processor', 'Appended buffer turns missing from transcript', {
+          logger.info(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Appended buffer turns missing from transcript', {
             session_id: sessionId, transcriptTurns: transcriptResult.turns.length, bufferTurns: bufferTurns.length,
           });
         }
@@ -1089,7 +1117,7 @@ export async function main(): Promise<void> {
     enrichTurnsWithToolMetadata(allTurns, bufferEvents);
 
     const imageCount = allTurns.reduce((sum, t) => sum + (t.images?.length ?? 0), 0);
-    logger.debug('processor', 'Transcript parsed', {
+    logger.debug(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Transcript parsed', {
       session_id: sessionId,
       turn_count: allTurns.length,
       image_count: imageCount,
@@ -1104,7 +1132,7 @@ export async function main(): Promise<void> {
     // No positional mapping needed — the hook gives us the response directly.
     if (lastAssistantMessage && latestBatch && !latestBatch.response_summary) {
       try { setResponseSummary(latestBatch.id, lastAssistantMessage); }
-      catch (err) { logger.warn('processor', 'Failed to set response_summary on latest batch', { error: String(err) }); }
+      catch (err) { logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to set response_summary on latest batch', { error: String(err) }); }
     }
 
     // Close open batches but do NOT close the session — the Stop hook fires
@@ -1157,7 +1185,7 @@ export async function main(): Promise<void> {
     }
     if (responses.length > 0) {
       try { populateBatchResponses(sessionId, responses); }
-      catch (err) { logger.warn('processor', 'Failed to populate batch responses', { error: String(err) }); }
+      catch (err) { logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to populate batch responses', { error: String(err) }); }
     }
 
     // Trigger title/summary if the session still needs one.
@@ -1210,14 +1238,14 @@ export async function main(): Promise<void> {
             data: imageBuffer,
             created_at: epochSeconds(),
           });
-          logger.debug('processor', 'Image stored in DB', { filename, batch: resolvedPromptNumber });
+          logger.debug(LOG_KINDS.CAPTURE_ATTACHMENT, 'Image stored in DB', { filename, batch: resolvedPromptNumber });
         } catch (err) {
-          logger.warn('processor', 'Failed to record attachment', { error: String(err) });
+          logger.warn(LOG_KINDS.CAPTURE_ATTACHMENT, 'Failed to record attachment', { error: String(err) });
         }
       }
     }
 
-    logger.info('processor', 'Session captured', {
+    logger.info(LOG_KINDS.PROCESSOR_SESSION, 'Session captured', {
       session_id: sessionId,
       turns: allTurns.length,
       source: turnSource,
@@ -1280,7 +1308,9 @@ export async function main(): Promise<void> {
     return { body: { ...stats, config_hash: configHash } };
   });
 
-  server.registerRoute('GET', '/api/logs', async (req) => handleGetLogs(logger.getRingBuffer(), req.query));
+  server.registerRoute('GET', '/api/logs/search', handleLogSearch);
+  server.registerRoute('GET', '/api/logs/stream', handleLogStream);
+  server.registerRoute('GET', '/api/logs/:id', handleLogDetail);
 
   // External log ingestion: allows MCP server (separate process) to write through the daemon logger
   const ExternalLogBody = z.object({
@@ -1292,7 +1322,7 @@ export async function main(): Promise<void> {
 
   server.registerRoute('POST', '/api/log', async (req) => {
     const { level, component, message, data } = ExternalLogBody.parse(req.body);
-    logger.log(level, component, message, data);
+    logger.log(level, LOG_KINDS.MCP_EVENT, message, { ...data, mcp_component: component });
     return { body: { ok: true } };
   });
 
@@ -1319,7 +1349,7 @@ export async function main(): Promise<void> {
     // Post-transaction cleanup (fire-and-forget)
     cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir).catch(() => {});
 
-    logger.info('api', 'Session cascade deleted', {
+    logger.info(LOG_KINDS.API_SESSION_DELETE, 'Session cascade deleted', {
       session_id: sessionId,
       counts: result.counts,
     });
@@ -1396,13 +1426,13 @@ export async function main(): Promise<void> {
     resultPromise
       .then((result) => {
         if (result.status === 'failed') {
-          logger.error('agent', 'Agent run failed', {
+          logger.error(LOG_KINDS.AGENT_ERROR, 'Agent run failed', {
             runId: result.runId,
             error: result.error ?? 'No error message',
             phases: result.phases?.map(p => `${p.name}:${p.status}`) ?? [],
           });
         } else {
-          logger.info('agent', 'Agent run completed', {
+          logger.info(LOG_KINDS.AGENT_RUN, 'Agent run completed', {
             runId: result.runId,
             status: result.status,
             phases: result.phases?.map(p => `${p.name}:${p.status}`) ?? [],
@@ -1410,7 +1440,7 @@ export async function main(): Promise<void> {
         }
       })
       .catch((err) => {
-        logger.error('agent', 'Agent run threw unhandled error', {
+        logger.error(LOG_KINDS.AGENT_ERROR, 'Agent run threw unhandled error', {
           error: (err as Error).message ?? String(err),
           stack: (err as Error).stack?.split('\n').slice(0, 3).join(' | '),
         });
@@ -1647,10 +1677,10 @@ export async function main(): Promise<void> {
   await server.evictExistingDaemon();
   const resolvedPort = await resolvePort(config.daemon.port, vaultDir);
   if (resolvedPort === 0) {
-    logger.warn('daemon', 'All preferred ports occupied, using ephemeral port');
+    logger.warn(LOG_KINDS.DAEMON_PORT, 'All preferred ports occupied, using ephemeral port');
   }
   await server.start(resolvedPort);
-  logger.info('daemon', 'Daemon ready', { vault: vaultDir, port: server.port });
+  logger.info(LOG_KINDS.DAEMON_READY, 'Daemon ready', { vault: vaultDir, port: server.port });
 
   // Persist the resolved port to config if it was auto-derived
   if (config.daemon.port === null && resolvedPort !== 0) {
@@ -1659,9 +1689,9 @@ export async function main(): Promise<void> {
         ...c,
         daemon: { ...c.daemon, port: resolvedPort },
       }));
-      logger.info('daemon', 'Persisted auto-derived port to myco.yaml', { port: resolvedPort });
+      logger.info(LOG_KINDS.DAEMON_CONFIG, 'Persisted auto-derived port to myco.yaml', { port: resolvedPort });
     } catch (err) {
-      logger.warn('daemon', 'Failed to persist auto-derived port', { error: (err as Error).message });
+      logger.warn(LOG_KINDS.DAEMON_CONFIG, 'Failed to persist auto-derived port', { error: (err as Error).message });
     }
   }
 
@@ -1713,38 +1743,51 @@ export async function main(): Promise<void> {
         const checkRow = agentDb.prepare('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0').get() as { count: number };
         const count = Number(checkRow.count);
         if (count === 0) {
-          logger.debug('agent', 'No unprocessed batches, skipping cycle');
+          logger.debug(LOG_KINDS.AGENT_AUTO_RUN, 'No unprocessed batches, skipping cycle');
           return;
         }
 
         agentRunning = true;
         lastAgentRun = Date.now();
         try {
-          logger.info('agent', 'Unprocessed batches found, starting agent', { count });
+          logger.info(LOG_KINDS.AGENT_AUTO_RUN, 'Unprocessed batches found, starting agent', { count });
           const { runAgent } = await import('../agent/executor.js');
           const runResult = await runAgent(vaultDir, { embeddingManager });
-          logger.info('agent', 'Agent run completed', { status: runResult.status, runId: runResult.runId });
+          logger.info(LOG_KINDS.AGENT_RUN, 'Agent run completed', { status: runResult.status, runId: runResult.runId });
         } catch (err) {
-          logger.error('agent', 'Agent auto-run failed', { error: (err as Error).message });
+          logger.error(LOG_KINDS.AGENT_ERROR, 'Agent auto-run failed', { error: (err as Error).message });
         } finally {
           agentRunning = false;
         }
       },
     });
   } else {
-    logger.info('agent', 'Auto-agent disabled (agent.auto_run = false)');
+    logger.info(LOG_KINDS.AGENT_AUTO_RUN, 'Auto-agent disabled (agent.auto_run = false)');
   }
+
+  powerManager.register({
+    name: 'log-retention',
+    runIn: ['idle', 'sleep'],
+    fn: async () => {
+      const retentionDays = config.daemon.log_retention_days;
+      const cutoff = new Date(Date.now() - retentionDays * MS_PER_DAY).toISOString();
+      const deleted = deleteOldLogs(cutoff);
+      if (deleted > 0) {
+        logger.info(LOG_KINDS.LOG_RETENTION, `Deleted ${deleted} log entries older than ${retentionDays} days`, { deleted, retention_days: retentionDays });
+      }
+    },
+  });
 
   powerManager.start();
 
   // --- Shutdown ---
 
   const shutdown = async (signal: string) => {
-    logger.info('daemon', `${signal} received`);
+    logger.info(LOG_KINDS.DAEMON_START, `${signal} received`);
     powerManager.stop();
     // Wait for any active stop processing to finish before shutting down
     if (activeStopProcessing) {
-      logger.info('daemon', 'Waiting for active stop processing to complete...');
+      logger.info(LOG_KINDS.DAEMON_START, 'Waiting for active stop processing to complete...');
       await activeStopProcessing;
     }
     registry.destroy();

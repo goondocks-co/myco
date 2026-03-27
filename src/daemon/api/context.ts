@@ -18,6 +18,7 @@ import {
   PROMPT_VECTOR_OVER_FETCH,
   estimateTokens,
 } from '@myco/constants.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
@@ -63,7 +64,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
     const { session_id, branch } = SessionContextBody.parse(req.body);
     const { logger, config } = deps;
 
-    logger.debug('context', 'Session context query', { session_id });
+    logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Session context query', { session_id });
 
     try {
       const parts: string[] = [];
@@ -74,14 +75,14 @@ export function createSessionContextHandler(deps: ContextDeps) {
 
       if (extract) {
         parts.push(extract.content);
-        logger.info('context', 'Digest extract found', {
+        logger.info(LOG_KINDS.CONTEXT_DIGEST, 'Digest extract found', {
           session_id,
           tier,
           content_length: extract.content.length,
           generated_at: extract.generated_at,
         });
       } else {
-        logger.debug('context', 'No digest extract available', { session_id, tier });
+        logger.debug(LOG_KINDS.CONTEXT_DIGEST, 'No digest extract available', { session_id, tier });
       }
 
       // Branch info
@@ -97,7 +98,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
 
       const estimatedTokens = estimateTokens(contextText);
       const preview = contextText.slice(0, LOG_CONTEXT_PREVIEW_CHARS);
-      logger.info('context', 'Session context injected', {
+      logger.info(LOG_KINDS.CONTEXT_SESSION, 'Session context injected', {
         session_id,
         source,
         tier: extract ? tier : undefined,
@@ -106,7 +107,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
         generated_at: extract?.generated_at,
         preview,
       });
-      logger.debug('context', `Session context: "${preview}…" (${estimatedTokens} est. tokens, source=${source}${extract ? `, tier=${tier}, generated=${extract.generated_at}` : ''})`, {
+      logger.debug(LOG_KINDS.CONTEXT_SESSION, `Session context: "${preview}…" (${estimatedTokens} est. tokens, source=${source}${extract ? `, tier=${tier}, generated=${extract.generated_at}` : ''})`, {
         session_id,
       });
 
@@ -118,7 +119,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
         },
       };
     } catch (error) {
-      logger.error('context', 'Session context failed', { error: (error as Error).message });
+      logger.error(LOG_KINDS.CONTEXT_SESSION, 'Session context failed', { error: (error as Error).message });
       return { body: { text: '' } };
     }
   };
@@ -141,13 +142,13 @@ export function createPromptContextHandler(deps: ContextDeps) {
 
     // Guard: prompt search disabled
     if (!config.context.prompt_search) {
-      logger.debug('context', 'Prompt search disabled by config', { session_id });
+      logger.debug(LOG_KINDS.CONTEXT_PROMPT, 'Prompt search disabled by config', { session_id });
       return { body: { text: '' } };
     }
 
     // Guard: prompt too short
     if (prompt.length < PROMPT_CONTEXT_MIN_LENGTH) {
-      logger.debug('context', 'Prompt too short for search', {
+      logger.debug(LOG_KINDS.CONTEXT_PROMPT, 'Prompt too short for search', {
         session_id,
         length: prompt.length,
         min: PROMPT_CONTEXT_MIN_LENGTH,
@@ -158,14 +159,14 @@ export function createPromptContextHandler(deps: ContextDeps) {
     // Guard: max spores is 0 (disabled)
     const maxSpores = config.context.prompt_max_spores;
     if (maxSpores === 0) {
-      logger.debug('context', 'Prompt spore injection disabled (max_spores=0)', { session_id });
+      logger.debug(LOG_KINDS.CONTEXT_PROMPT, 'Prompt spore injection disabled (max_spores=0)', { session_id });
       return { body: { text: '' } };
     }
 
     // Embed the prompt
     const queryVector = await embeddingManager.embedQuery(prompt);
     if (!queryVector) {
-      logger.debug('context', 'Embedding provider unavailable for prompt search', { session_id });
+      logger.debug(LOG_KINDS.CONTEXT_EMBED, 'Embedding provider unavailable for prompt search', { session_id });
       return { body: { text: '' } };
     }
 
@@ -176,7 +177,7 @@ export function createPromptContextHandler(deps: ContextDeps) {
       threshold: PROMPT_CONTEXT_MIN_SIMILARITY,
     });
 
-    logger.debug('context', 'Prompt vector search completed', {
+    logger.debug(LOG_KINDS.CONTEXT_SEARCH, 'Prompt vector search completed', {
       session_id,
       raw_results: vectorResults.length,
       top_similarity: vectorResults[0]?.similarity,
@@ -192,7 +193,7 @@ export function createPromptContextHandler(deps: ContextDeps) {
     );
 
     if (eligible.length === 0) {
-      logger.debug('context', 'All spore results excluded by status filter', { session_id });
+      logger.debug(LOG_KINDS.CONTEXT_FILTER, 'All spore results excluded by status filter', { session_id });
       return { body: { text: '' } };
     }
 
@@ -210,7 +211,7 @@ export function createPromptContextHandler(deps: ContextDeps) {
 
     const promptTokens = estimateTokens(text);
     const titles = spores.map((s) => s.title);
-    logger.info('context', 'Prompt context injected', {
+    logger.info(LOG_KINDS.CONTEXT_PROMPT, 'Prompt context injected', {
       session_id,
       spore_count: spores.length,
       scores: spores.map((s) => s.score.toFixed(3)),
@@ -218,7 +219,7 @@ export function createPromptContextHandler(deps: ContextDeps) {
       estimated_tokens: promptTokens,
       preview: text.slice(0, LOG_CONTEXT_PREVIEW_CHARS),
     });
-    logger.debug('context', `Prompt context: ${spores.length} spores [${titles.join(', ')}] (~${promptTokens} tokens)`, {
+    logger.debug(LOG_KINDS.CONTEXT_PROMPT, `Prompt context: ${spores.length} spores [${titles.join(', ')}] (~${promptTokens} tokens)`, {
       session_id,
       scores: spores.map((s) => s.score.toFixed(3)),
     });

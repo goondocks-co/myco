@@ -9,6 +9,7 @@ const EmbeddingProviderSchema = z.object({
 const DaemonSchema = z.object({
   port: z.number().int().min(1024).max(65535).nullable().default(null),
   log_level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  log_retention_days: z.number().int().min(1).max(365).default(30),
 });
 
 const CaptureSchema = z.object({

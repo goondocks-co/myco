@@ -108,7 +108,7 @@ describe('PowerManager', () => {
     expect(failingJob).toHaveBeenCalled();
     expect(passingJob).toHaveBeenCalled();
     expect(mockLogger.error).toHaveBeenCalledWith(
-      'power',
+      'power.job-error',
       'Job "failing" failed',
       expect.any(Object),
     );

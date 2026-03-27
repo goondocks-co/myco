@@ -19,8 +19,7 @@ import {
 import type { DaemonLogger } from '../logger.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import { cleanupAfterSessionCascade } from './session-cleanup.js';
-
-const LOG_CATEGORY = 'session-maintenance';
+import { LOG_KINDS } from '../../constants/log-kinds.js';
 
 /** Stale threshold in epoch seconds (derived from the ms constant). */
 const STALE_SESSION_THRESHOLD_S = STALE_SESSION_THRESHOLD_MS / MS_PER_SECOND;
@@ -100,7 +99,7 @@ export async function runSessionMaintenance(deps: SessionMaintenanceDeps): Promi
   // Task 1: Complete stale sessions
   const completed = completeStaleActiveSessions(registered);
   if (completed > 0) {
-    logger.info(LOG_CATEGORY, 'Completed stale sessions', { count: completed });
+    logger.info(LOG_KINDS.MAINTENANCE_SESSION, 'Completed stale sessions', { count: completed });
   }
 
   // Task 2: Delete dead sessions
@@ -115,13 +114,13 @@ export async function runSessionMaintenance(deps: SessionMaintenanceDeps): Promi
     await cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir);
 
     deletedCount++;
-    logger.info(LOG_CATEGORY, 'Deleted dead session', {
+    logger.info(LOG_KINDS.MAINTENANCE_SESSION, 'Deleted dead session', {
       session_id: sessionId,
       counts: result.counts,
     });
   }
 
   if (deletedCount > 0) {
-    logger.info(LOG_CATEGORY, 'Dead session cleanup complete', { deleted: deletedCount });
+    logger.info(LOG_KINDS.MAINTENANCE_SESSION, 'Dead session cleanup complete', { deleted: deletedCount });
   }
 }

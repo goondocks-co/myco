@@ -1,4 +1,5 @@
 import type { DaemonLogger } from './logger.js';
+import { LOG_KINDS } from '../constants/log-kinds.js';
 
 export type PowerState = 'active' | 'idle' | 'sleep' | 'deep_sleep';
 
@@ -16,8 +17,6 @@ export interface PowerManagerConfig {
   sleepIntervalMs: number;
   logger: DaemonLogger;
 }
-
-const LOG_CATEGORY = 'power';
 
 export class PowerManager {
   private state: PowerState = 'active';
@@ -41,7 +40,7 @@ export class PowerManager {
     this.lastActivity = Date.now();
 
     if (this.state === 'deep_sleep') {
-      this.logger.info(LOG_CATEGORY, 'Waking from deep sleep');
+      this.logger.info(LOG_KINDS.POWER_STATE, 'Waking from deep sleep');
       this.state = 'active';
       this.scheduleNextTick();
     }
@@ -52,7 +51,7 @@ export class PowerManager {
     this.state = 'active';
     this.running = true;
     this.scheduleNextTick();
-    this.logger.info(LOG_CATEGORY, 'PowerManager started', {
+    this.logger.info(LOG_KINDS.POWER_STATE, 'PowerManager started', {
       jobs: this.jobs.map((j) => j.name),
     });
   }
@@ -63,7 +62,7 @@ export class PowerManager {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    this.logger.info(LOG_CATEGORY, 'PowerManager stopped');
+    this.logger.info(LOG_KINDS.POWER_STATE, 'PowerManager stopped');
   }
 
   getState(): PowerState {
@@ -86,7 +85,7 @@ export class PowerManager {
     }
 
     if (target !== this.state) {
-      this.logger.info(LOG_CATEGORY, 'Power state transition', {
+      this.logger.info(LOG_KINDS.POWER_STATE, 'Power state transition', {
         from: this.state,
         to: target,
         idle_ms: idleMs,
@@ -113,14 +112,14 @@ export class PowerManager {
     this.evaluateState();
 
     if (this.state === 'deep_sleep') {
-      this.logger.info(LOG_CATEGORY, 'Entering deep sleep — timer stopped');
+      this.logger.info(LOG_KINDS.POWER_STATE, 'Entering deep sleep — timer stopped');
       this.timer = null;
       return;
     }
 
     // Run eligible jobs
     const eligible = this.jobs.filter((j) => j.runIn.includes(this.state));
-    this.logger.debug(LOG_CATEGORY, 'Tick', {
+    this.logger.debug(LOG_KINDS.POWER_TICK, 'Tick', {
       state: this.state,
       jobs: eligible.map((j) => j.name),
     });
@@ -129,7 +128,7 @@ export class PowerManager {
       try {
         await job.fn();
       } catch (err) {
-        this.logger.error(LOG_CATEGORY, `Job "${job.name}" failed`, {
+        this.logger.error(LOG_KINDS.POWER_JOB_ERROR, `Job "${job.name}" failed`, {
           error: (err as Error).message,
         });
       }
