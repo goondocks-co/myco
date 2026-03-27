@@ -89,9 +89,9 @@ The daemon serves a React SPA at `http://localhost:<port>/` for configuration ma
 ### Module Boundaries
 
 - **Hooks MUST be thin.** Hook entry points in `src/hooks/` MUST delegate to the daemon via `DaemonClient`. Hooks MUST NOT contain business logic, LLM calls, or complex processing. If the daemon is unreachable, hooks spawn it via `client.ensureRunning()` and buffer events to disk for later processing.
-- **The daemon is the authority.** All event processing, session note writing, observation extraction, and embedding happen in the daemon (`src/daemon/main.ts`). Hooks send events; the daemon decides what to do with them.
+- **The daemon is the authority.** All event processing, session recording, spore extraction, and embedding happen in the daemon (`src/daemon/main.ts`). Hooks send events; the daemon decides what to do with them.
 - **MCP server config MUST be in `plugin.json`.** The `mcpServers` field in `.claude-plugin/plugin.json` is the only way to register MCP servers for plugins loaded via `--plugin-dir`. Do NOT use standalone `.mcp.json` for plugin MCP servers.
-- **Digest is a daemon task.** The digest engine runs inside the daemon process alongside batch processing and plan watching. It is NOT a hook or MCP server — it produces vault files that are read by hooks and MCP tools at serve time.
+- **Digest is a daemon task.** The digest engine runs inside the daemon process alongside batch processing and plan watching. It is NOT a hook or MCP server — it produces digest extracts that are served by hooks and MCP tools at query time.
 - **Agent phases execute in parallel waves.** The executor topologically sorts phases by their `dependsOn` fields into waves using Kahn's algorithm. Phases in the same wave run in parallel via `Promise.allSettled()`. Each phase gets isolated provider env via `buildPhaseEnv()`, passed to the SDK's `env` option — no `process.env` mutation.
 - **All periodic/polling work MUST use the PowerManager.** Do not use `setInterval` or `setTimeout` for recurring daemon jobs. Register jobs with `powerManager.register()` so they respect the activity-based power states (active → idle → sleep → deep_sleep). The PowerManager is the single authority for when background work executes.
 
@@ -101,7 +101,7 @@ The daemon serves a React SPA at `http://localhost:<port>/` for configuration ma
 
 This is Myco's core contract. Violations:
 
-- Session notes are rebuilt from the agent's authoritative transcript on each stop event. The transcript file (e.g., Claude's `.jsonl`) is the source of truth — all turns are re-parsed and the `## Conversation` section is regenerated in full. Data preservation is guaranteed by the transcript being append-only, not by the session note's write logic.
+- Session records are rebuilt from the agent's authoritative transcript on each stop event. The transcript file (e.g., Claude's `.jsonl`) is the source of truth — all turns are re-parsed and the conversation section is regenerated in full. Data preservation is guaranteed by the transcript being append-only, not by the session record's write logic.
 - The degraded stop path (`src/hooks/stop.ts`) MUST NOT write a session file if one already exists. It returns early; the daemon handles it when it's back.
 - Buffer files (`buffer/<session-id>.jsonl`) MUST NOT be deleted on session unregister. Session reload (SessionEnd → SessionStart) reuses the same session ID. Buffers are cleaned up by age (>24h) on daemon startup only.
 - `observation_type` in spore frontmatter accepts any string (`z.string()`). The LLM prompt guides types; the schema MUST NOT reject unexpected values.

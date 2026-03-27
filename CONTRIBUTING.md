@@ -1,6 +1,6 @@
 # Contributing to Myco
 
-Myco is a plugin for collective agent intelligence, supporting Claude Code and Cursor. This guide covers development setup and project conventions. For architecture details, see [Lifecycle docs](docs/lifecycle.md).
+Myco is a collective intelligence plugin for coding projects, supporting Claude Code and Cursor. This guide covers development setup and project conventions. For architecture details, see [Lifecycle docs](docs/lifecycle.md).
 
 ## Installing Myco (End Users)
 
@@ -21,13 +21,13 @@ This sets up the vault, configures your LLM backend, and starts capturing sessio
 
 - Node.js 22+
 - Claude Code or Cursor
-- An LLM backend: [Ollama](https://ollama.com) (recommended) or an Anthropic API key
+- **Embedding provider** (one of): [Ollama](https://ollama.com) with `bge-m3` (local, free), [OpenRouter](https://openrouter.ai), or [OpenAI](https://platform.openai.com)
+- **Intelligence provider** (one of): Cloud (Claude), [Ollama](https://ollama.com), or [LM Studio](https://lmstudio.ai)
 
-For Ollama, pull the recommended models:
+For Ollama embeddings, pull the recommended model:
 
 ```bash
-ollama pull gpt-oss
-ollama pull nomic-embed-text
+ollama pull bge-m3
 ```
 
 ## Development Setup
@@ -51,8 +51,7 @@ claude --plugin-dir /path/to/myco
 For **persistent local dev** (survives across sessions):
 
 ```bash
-claude plugin marketplace add /path/to/myco/.claude-plugin
-claude plugin install myco
+claude plugin add /path/to/myco/.claude-plugin
 ```
 
 ### 3. Initialize the vault
@@ -66,7 +65,8 @@ For dogfooding, the vault lives at `~/.myco/vaults/myco/` (configured via `MYCO_
 ### 4. Verify
 
 ```bash
-node dist/src/cli.js stats
+myco doctor    # Health check
+myco stats     # Daemon status
 ```
 
 ## Development Workflow
@@ -85,31 +85,38 @@ make clean             # remove dist/
 Hooks pick up new code on the next invocation. The daemon must be restarted separately:
 
 ```bash
-make build && node dist/src/cli.js restart
+make build && myco restart
 ```
 
 ## Project Structure
 
 ```
 myco/
-├── .claude-plugin/        # Claude Code + VS Code plugin manifest + marketplace
-├── .cursor-plugin/        # Cursor plugin manifest + marketplace
+├── .claude-plugin/        # Claude Code plugin manifest + marketplace catalog
+├── .cursor-plugin/        # Cursor plugin manifest + marketplace catalog
+├── .github/               # CI workflows + VS Code Copilot agent manifest
 ├── hooks/                 # Hook registration shell scripts
-├── skills/                # Agent skills
+├── skills/                # Skill markdown files (subdirectory per skill)
 ├── src/
-│   ├── agents/            # Agent adapters (Claude Code, Cursor) — transcript parsing + image capture
-│   ├── capture/           # Event buffering + buffer-based turn fallback
-│   ├── config/            # Config schema and loader
+│   ├── agent/             # Intelligence pipeline: wave-based executor, task definitions, orchestrator
+│   ├── capture/           # Event buffering (EventBuffer) and buffer-based turn fallback
+│   ├── cli/               # CLI commands (init wizard, doctor, config)
+│   ├── config/            # Vault config loading and Zod schema
 │   ├── context/           # Context injection for UserPromptSubmit hook
-│   ├── daemon/            # Long-lived HTTP daemon: session lifecycle, batch processing, plan watching
+│   ├── daemon/            # Long-lived HTTP daemon: batch processing, session lifecycle, digest
+│   ├── db/                # SQLite database schema and migrations
+│   ├── entries/           # Hook entry wrappers
 │   ├── hooks/             # Hook entry points (thin — delegate to daemon)
 │   ├── index/             # SQLite FTS5 + sqlite-vec vector search
-│   ├── intelligence/      # LLM backends (Ollama, LM Studio, Anthropic)
+│   ├── intelligence/      # LLM backend abstraction (Ollama, LM Studio, Anthropic)
 │   ├── mcp/               # MCP server + tool handlers
-│   ├── prompts/           # LLM prompt templates
+│   ├── prompts/           # LLM prompt templates (extraction, summary, title, classification)
+│   ├── services/          # Shared service logic (used by both CLI and API)
+│   ├── symbionts/         # Symbiont adapters (Claude Code, Cursor) — transcript discovery + parsing
 │   └── vault/             # Reader, writer, Zod schemas for database records
 ├── tests/                 # Mirrors src/ structure
-├── docs/                  # Lifecycle, quickstart, doc site
+├── ui/                    # React + Tailwind dashboard (Vite build → dist/ui/)
+├── docs/                  # Lifecycle, quickstart, agent tools
 └── Makefile               # Dev shortcuts
 ```
 
@@ -118,9 +125,9 @@ myco/
 See [docs/lifecycle.md](docs/lifecycle.md) for the full lifecycle with diagrams. Key points:
 
 - **Hooks are thin** — they delegate to the daemon via HTTP. No business logic in hooks.
-- **The daemon is the authority** — all event processing, session note writing, and observation extraction happen there.
+- **The daemon is the authority** — all event processing, session recording, spore extraction, and embedding happen there.
 - **Transcripts are the source of truth** — session conversation turns are read from the agent's native transcript file (Claude Code `.jsonl`, Cursor `.txt`/`.jsonl`), not from Myco's event buffer. The buffer is the fallback when no transcript is available.
-- **Session notes are rebuilt** — on each stop event, the full conversation is re-parsed from the transcript and the session note is regenerated. Data preservation is guaranteed by the transcript being append-only.
+- **Sessions are rebuilt from transcripts** — on each stop event, the full conversation is re-parsed from the transcript and the session record is regenerated. Data preservation is guaranteed by the transcript being append-only.
 
 ## Distribution
 
@@ -129,7 +136,7 @@ Published as `@goondocks/myco` on [npmjs.org](https://www.npmjs.com/package/@goo
 1. Push to `main` — CI runs lint + tests
 2. Tag a release (`v0.x.y`) — triggers the publish workflow
 3. `npm publish` builds and pushes to npmjs.org
-4. Users get the new version via `claude plugin update myco`
+4. Users update via `npm update -g @goondocks/myco` or re-run the install script
 
 ## Conventions
 

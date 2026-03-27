@@ -27,15 +27,14 @@ agent:
         model: claude-sonnet-4-6
     title-summary:
       provider:
+        type: cloud
+        model: claude-sonnet-4-6
+    title-summary-custom:
+      provider:
         type: ollama
         base_url: http://localhost:11434
-        model: granite4:small-h
-    title-summary-custom:
+        model: glm-4.7-flash:latest
+    review-session:
       provider:
         type: cloud
         model: claude-sonnet-4-6
-    review-session:
-      provider:
-        type: ollama
-        model: granite4:small-h
-        context_length: 32768
