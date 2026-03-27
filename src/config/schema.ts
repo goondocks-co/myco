@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 const EmbeddingProviderSchema = z.object({
-  provider: z.enum(['ollama', 'openai-compatible']).default('ollama'),
+  provider: z.enum(['ollama', 'openai-compatible', 'openrouter', 'openai']).default('ollama'),
   model: z.string().default('bge-m3'),
   base_url: z.string().url().optional(),
 });

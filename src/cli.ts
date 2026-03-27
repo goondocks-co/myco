@@ -22,6 +22,7 @@ Commands:
   setup-digest [options]   Configure digest and capture settings
   agent [options]          Run the intelligence agent
   task <subcommand>        Manage agent task definitions
+  doctor [--fix]          Check vault health and repair issues
   restart                  Restart the daemon
   version                  Show plugin version
   mcp                     Start the MCP stdio server
@@ -68,6 +69,11 @@ async function main(): Promise<void> {
     return (await loader()).main();
   }
   if (cmd === 'daemon') return (await import('./daemon/main.js')).main();
+
+  if (cmd === 'doctor') {
+    const vaultDir = resolveVaultDir();
+    return (await import('./cli/doctor.js')).run(args, vaultDir);
+  }
 
   const vaultDir = resolveVaultDir();
   if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {

@@ -21,11 +21,12 @@ This sets `${CLAUDE_PLUGIN_ROOT}` to the repo root. The vault lives at `~/.myco/
 **How end users install Myco (not how we run it):**
 
 ```sh
-npm install -g @goondocks/myco    # Install the package globally
-myco init                          # Detects symbionts (Claude Code, Cursor), registers plugin
+curl -fsSL https://myco.sh/install.sh | sh   # Installs Node package globally
+cd your-project
+myco init                                       # Interactive wizard: embedding provider, model, plugin registration
 ```
 
-`myco init` detects which coding agents (symbionts) are available and runs the appropriate plugin registration command. The plugin provides hooks, skills, commands, and MCP server registration — all runtime invocations route through the `bin/myco-run` wrapper which resolves the `myco` CLI on PATH.
+`myco init` runs an interactive wizard that guides users through embedding provider selection (Ollama, OpenRouter, OpenAI, or skip), model selection, vault creation, and symbiont plugin registration. Use `myco doctor` to verify setup health.
 
 **Dev binary setup:**
 

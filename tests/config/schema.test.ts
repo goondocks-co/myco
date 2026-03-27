@@ -72,4 +72,26 @@ describe('MycoConfigSchema v3', () => {
     expect(raw.digest).toBeUndefined();
     expect(raw.pipeline).toBeUndefined();
   });
+
+  it('accepts openrouter embedding provider', () => {
+    const config = MycoConfigSchema.parse({
+      version: 3,
+      embedding: {
+        provider: 'openrouter',
+        model: 'openai/text-embedding-3-small',
+      },
+    });
+    expect(config.embedding.provider).toBe('openrouter');
+  });
+
+  it('accepts openai embedding provider', () => {
+    const config = MycoConfigSchema.parse({
+      version: 3,
+      embedding: {
+        provider: 'openai',
+        model: 'text-embedding-3-small',
+      },
+    });
+    expect(config.embedding.provider).toBe('openai');
+  });
 });

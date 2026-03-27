@@ -1,6 +1,6 @@
 # Myco Quick Start
 
-Myco is a collective agent intelligence plugin that captures session knowledge — events, observations, decisions, trade-offs — into a Markdown vault and serves it back via MCP tools. Install it in your coding agent, run `/myco-setup` to set up your vault, and start building institutional memory.
+Myco is a collective agent intelligence plugin that captures session knowledge — events, observations, decisions, trade-offs — into a Markdown vault and serves it back via MCP tools. Install it, run `myco init` to set up your vault, and start building institutional memory.
 
 ## Requirements
 
@@ -11,79 +11,47 @@ Myco is a collective agent intelligence plugin that captures session knowledge �
 
 ## Install
 
-### Claude Code
-
 ```bash
-# From the Goondocks marketplace
-claude plugin marketplace add goondocks-co/myco
-claude plugin install myco@goondocks-plugins
-
-# Or install directly from the repo
-claude plugin add goondocks-co/myco
+curl -fsSL https://myco.sh/install.sh | sh
 ```
 
-### Cursor
-
-Search for **myco** in the Cursor marketplace panel, or install from settings:
-
-```
-Settings → Extensions → Marketplace → Search "myco" → Install
+On Windows (PowerShell):
+```powershell
+irm https://myco.sh/install.ps1 | iex
 ```
 
-### VS Code Copilot
-
-Open the Extensions view and search for agent plugins:
-
-1. Press `Ctrl+Shift+X` (or `Cmd+Shift+X` on macOS)
-2. Type `@agentPlugins myco` in the search box
-3. Click **Install**
-
-Or add the marketplace source manually in your VS Code settings:
-
-```json
-{
-  "chat.plugins.marketplaces": [
-    "goondocks-co/myco"
-  ]
-}
-```
-
-### Manual (any agent)
-
-Clone and install from source:
-
+Or install manually:
 ```bash
-git clone https://github.com/goondocks-co/myco.git
-cd myco
-npm install
-npm run build
+npm install -g @goondocks/myco
 ```
-
-Then register as a local plugin:
-
-- **Claude Code**: `claude plugin add /path/to/myco`
-- **Cursor**: Add to `.cursor-plugin/` or install via settings
-- **VS Code**: Add path to `chat.plugins.paths` in settings
 
 ## Set Up Your Vault
 
-After installing, run the init command in your project:
+Run the interactive setup wizard in your project:
 
-```
-/myco-setup
+```bash
+cd your-project
+myco init
 ```
 
 This guides you through:
 
-1. **Vault location** — where to store your knowledge (default: `~/.myco/vaults/<project>/`)
-2. **Intelligence backend** — choose your LLM and embedding providers
-3. **Team or solo** — whether to share the vault via git
+1. **Embedding provider** — local (Ollama), cloud (OpenRouter), cloud (OpenAI), or skip
+2. **Model selection** — picks from available models with recommended defaults
+3. **Symbiont detection** — finds Claude Code, Cursor, and registers the plugin
 
-### Pull Ollama Models (if using local LLM)
+### Pull Ollama Models (if using local embeddings)
 
 ```bash
-ollama pull qwen3.5
 ollama pull bge-m3
+```
+
+### Health Check
+
+After setup, verify everything is connected:
+
+```bash
+myco doctor
 ```
 
 ## What Happens Next
@@ -147,10 +115,23 @@ Myco exposes these tools to your coding agent via MCP:
 
 | Command | What it does |
 |---------|-------------|
-| `/myco-setup` | Initialize Myco in your project |
 | `/myco-rules` | Audit or improve project rules files |
 
 ## Troubleshooting
+
+### Something not working?
+
+Run the health check:
+
+```bash
+myco doctor
+```
+
+To auto-repair fixable issues:
+
+```bash
+myco doctor --fix
+```
 
 ### Daemon not starting
 

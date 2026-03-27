@@ -5,14 +5,14 @@ Myco is a plugin for collective agent intelligence, supporting Claude Code and C
 ## Installing Myco (End Users)
 
 ```bash
-claude plugin marketplace add goondocks-co/myco
-claude plugin install myco@myco-plugins
+curl -fsSL https://myco.sh/install.sh | sh
 ```
 
 Then in any project:
 
-```
-/myco-setup
+```bash
+cd your-project
+myco init
 ```
 
 This sets up the vault, configures your LLM backend, and starts capturing session knowledge.
@@ -57,8 +57,8 @@ claude plugin install myco
 
 ### 3. Initialize the vault
 
-```
-/myco-setup
+```bash
+myco init
 ```
 
 For dogfooding, the vault lives at `~/.myco/vaults/myco/` (configured via `MYCO_VAULT_DIR` in `.claude/settings.json`).

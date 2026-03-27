@@ -403,43 +403,30 @@
   <section class="install" id="install">
     <h2>Get Started</h2>
     <div class="tabs">
-      <button class="tab active" data-tab="claude-code">Claude Code</button>
-      <button class="tab" data-tab="cursor">Cursor</button>
-      <button class="tab" data-tab="vscode">VS Code</button>
+      <button class="tab active" data-tab="quick">Quick Install</button>
+      <button class="tab" data-tab="windows">Windows</button>
+      <button class="tab" data-tab="manual">Manual</button>
     </div>
 
-    <div class="tab-panel active" id="panel-claude-code">
-      <div class="code-block"><code><span class="comment"># Add the Myco marketplace</span>
-claude plugin marketplace add goondocks-co/myco
-
-<span class="comment"># Install the myco plugin</span>
-claude plugin install myco@myco-plugins</code></div>
+    <div class="tab-panel active" id="panel-quick">
+      <div class="code-block"><code>curl -fsSL https://myco.sh/install.sh | sh</code></div>
       <p class="install-note">Then initialize in your project:</p>
-      <div class="code-block"><code>/myco-setup</code></div>
+      <div class="code-block"><code>cd your-project
+myco init</code></div>
     </div>
 
-    <div class="tab-panel" id="panel-cursor">
-      <p class="install-note">Add Myco as a team marketplace in your Cursor dashboard:</p>
-      <div class="code-block"><code>1. Go to Dashboard → Settings → Plugins
-2. In Team Marketplaces, click Import
-3. Paste: https://github.com/goondocks-co/myco
-4. Review the parsed plugins and save</code></div>
+    <div class="tab-panel" id="panel-windows">
+      <div class="code-block"><code>irm https://myco.sh/install.ps1 | iex</code></div>
       <p class="install-note">Then initialize in your project:</p>
-      <div class="code-block"><code>/myco-setup</code></div>
-      <p class="install-note" style="margin-top: 16px; font-size: 13px;">See the <a href="https://cursor.com/docs/plugins">Cursor plugin docs</a> for details.</p>
+      <div class="code-block"><code>cd your-project
+myco init</code></div>
     </div>
 
-    <div class="tab-panel" id="panel-vscode">
-      <p class="install-note">VS Code agent plugins use the same marketplace format as Claude Code. Add the marketplace in your settings:</p>
-      <div class="code-block"><code><span class="comment">// In settings.json, add the marketplace:</span>
-{
-  "chat.plugins.marketplaces": [
-    "goondocks-co/myco"
-  ]
-}</code></div>
+    <div class="tab-panel" id="panel-manual">
+      <div class="code-block"><code>npm install -g @goondocks/myco</code></div>
       <p class="install-note">Then initialize in your project:</p>
-      <div class="code-block"><code>/myco-setup</code></div>
-      <p class="install-note" style="margin-top: 16px; font-size: 13px;">VS Code reads from <code style="font-family: var(--font-data); background: var(--surface-container); padding: 2px 6px; border-radius: 3px; font-size: 12px;">.claude-plugin/</code> — no separate manifest needed. See the <a href="https://code.visualstudio.com/docs/copilot/customization/agent-plugins">VS Code agent plugin docs</a> for details. Agent plugins are currently in preview.</p>
+      <div class="code-block"><code>cd your-project
+myco init</code></div>
     </div>
   </section>
 
