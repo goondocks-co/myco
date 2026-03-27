@@ -36,7 +36,7 @@ node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js init \
   --llm-provider ollama \
   --llm-model qwen2.5-coder:14b \
   --embedding-provider ollama \
-  --embedding-model nomic-embed-text
+  --embedding-model bge-m3
 ```
 
 ---
@@ -145,7 +145,7 @@ Output is JSON:
 
 ```json
 {
-  "ollama": { "available": true, "models": ["qwen2.5-coder:14b", "nomic-embed-text"] },
+  "ollama": { "available": true, "models": ["qwen2.5-coder:14b", "bge-m3"] },
   "lm-studio": { "available": false, "models": [] },
   "anthropic": { "available": true, "models": [] }
 }
@@ -240,7 +240,7 @@ node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js vectors "session lifecycle hooks"
 
 ---
 
-### `session [id|latest]` — Display a session note
+### `session [id|latest]` — Display a session record
 
 | Argument | Description |
 |----------|-------------|

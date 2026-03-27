@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>The connected intelligence layer for agents and AI-assisted teams</strong>
+  <strong>The intelligence layer for your projects and team</strong>
 </p>
 
 <p align="center">
@@ -12,7 +12,7 @@
   <a href="https://www.npmjs.com/package/@goondocks/myco"><img src="https://img.shields.io/npm/v/@goondocks/myco?label=npm&color=22c55e" alt="npm"></a>
   <a href="https://github.com/goondocks-co/myco/blob/main/LICENSE"><img src="https://img.shields.io/github/license/goondocks-co/myco?color=22c55e" alt="License"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D22-22c55e" alt="Node 22+">
-  <img src="https://img.shields.io/badge/agents-Claude%20%7C%20Cursor%20%7C%20VS%20Code-22c55e" alt="Claude | Cursor | VS Code">
+  <img src="https://img.shields.io/badge/symbionts-Claude%20Code%20%7C%20Cursor%20%7C%20VS%20Code-22c55e" alt="Claude Code | Cursor | VS Code">
 </p>
 
 ```bash
@@ -25,58 +25,93 @@ cd your-project
 myco init
 ```
 
-The wizard guides you through provider setup, detects your coding agents, and starts capturing. Works with Claude Code and Cursor out of the box.
+The wizard detects your coding agents, sets up intelligence and embedding providers, and starts capturing. Works with Claude Code and Cursor out of the box.
 
 ## What is Myco?
 
-Myco captures everything your AI agents do — sessions, decisions, plans, discoveries — and connects them into a searchable intelligence graph backed by SQLite. Named after [mycorrhizal networks](https://en.wikipedia.org/wiki/Mycorrhizal_network), the underground fungal systems that connect trees in a forest, Myco is the invisible network linking your agents and team members, sharing intelligence beneath the surface.
+Myco is the intelligence layer beneath your projects. Named after [mycorrhizal networks](https://en.wikipedia.org/wiki/Mycorrhizal_network) — the underground fungal systems that connect trees in a forest — Myco captures what happens across your coding sessions and connects it into a living knowledge graph, sharing intelligence between agents and team members beneath the surface.
 
-**For agents** — [MCP tools and skills](docs/agent-tools.md) let any agent search, recall, and build on accumulated knowledge. A digest extract is injected at session start, and relevant spores are injected after each user prompt — agents get context automatically without being told to search.
+Every coding session produces knowledge: decisions made, gotchas discovered, trade-offs weighed, bugs fixed. Without Myco, that knowledge dies when the session ends. With Myco, it's captured as **spores** — discrete observations that persist, connect, and compound over time.
 
-**For humans** — a local web dashboard provides configuration management, operational triggers, and system monitoring. Manage intelligence providers, run agent and digest cycles, and view live logs.
+**For agents** — [MCP tools and skills](docs/agent-tools.md) let any agent search, recall, and build on accumulated knowledge. A digest extract is injected at session start and relevant spores surface after each prompt — agents get context without being told to search.
 
-**For teams** — the `.myco/` directory lives in your project root. Share configuration through your existing Git workflow.
+**For humans** — a local [dashboard](#dashboard) provides configuration, operational triggers, and monitoring. Manage providers, run intelligence cycles, and view live logs.
+
+**For teams** — vault configuration lives in your project. Share it through your existing Git workflow.
 
 ## How it works
 
 ### Capture
 
-Plugin hooks record prompts, AI responses, tool calls, and screenshots from your agent's conversation transcript. A background daemon extracts observations called **spores** (decisions, gotchas, discoveries, trade-offs, bug fixes) and stores them in the database alongside full session records.
+Myco hooks into your agent's lifecycle — session starts, prompts, tool calls, stops — and records activity in the vault's SQLite database. A background daemon parses the agent's conversation transcript to capture the full dialogue, including AI responses and any screenshots shared during the session.
 
 ### Intelligence
 
-The Myco agent runs in the background, reasoning about captured data in phases. It extracts Spores (observations), generates session summaries, and looks for patterns and deeper learnings which turn into long-term wisdom, along with building a connected knowledge graph — all automatically.
+The Myco agent is a multi-phase reasoning pipeline that runs in the background, processing captured data through a dependency graph of tasks. Phases are organized into **waves** — groups that execute in parallel — computed via topological sort from a DAG of dependencies.
+
+The full intelligence pipeline flows through five waves:
+
+```
+read-state → extract + summarize → consolidate + graph → digest → report
+```
+
+Each phase runs with scoped tools, a turn budget, isolated provider config, and results from prior phases as context. The agent extracts **spores** (observations like decisions, gotchas, discoveries, trade-offs, bug fixes), generates session summaries, links entities in the knowledge graph, and synthesizes digest extracts — all automatically.
+
+**Consolidation** is where individual observations become institutional knowledge. When the agent finds 3+ semantically similar spores, it synthesizes them into a **wisdom** spore — a higher-order observation that captures the pattern across sessions. Source spores are preserved with lineage metadata, and the wisdom spore becomes the canonical reference going forward.
+
+**Provider flexibility** — every task and phase can use a different LLM provider. Run title generation on a fast local model via Ollama, extraction on Claude, and consolidation on a larger local model via LM Studio. Configure globally or per-task in `myco.yaml`, or use the [dashboard](#dashboard) to manage assignments visually.
+
+Seven built-in tasks cover the full lifecycle, from lightweight `title-summary` to the complete `full-intelligence` pipeline. See the [Lifecycle docs](docs/lifecycle.md) for the full architecture.
 
 ### Digest
 
-A continuous reasoning engine synthesizes accumulated knowledge into tiered context extracts. Four tiers serve different needs: executive briefing (1.5K tokens), team standup (3K), deep onboarding (5K), and institutional knowledge (10K). These pre-computed extracts give agents instant, rich project understanding at session start — no searching required.
+The digest system synthesizes accumulated knowledge into tiered **extracts** — pre-computed context at different depths:
 
-### Index
+| Tier | Purpose |
+|------|---------|
+| **1,500 tokens** | Executive briefing — what this project is, what's active, what to avoid |
+| **3,000 tokens** | Team standup — enough to start contributing |
+| **5,000 tokens** | Deep onboarding — trade-offs, patterns, team dynamics |
+| **10,000 tokens** | Institutional knowledge — full thread history and design tensions |
 
-Every record is indexed for both keyword search (SQLite FTS5) and semantic search (vector embeddings via Ollama, OpenRouter, or OpenAI). The index is fully rebuildable from the database.
+The digest runs on an adaptive **metabolism**: active when new substrate (undigested data) arrives, slowing through cooling phases, and entering dormancy when the project goes quiet. New sessions reactivate it.
 
-### Serve
+### Search
 
-An MCP server exposes tools to any agent runtime. Two automatic injection points ensure agents always have relevant context:
+Every record is indexed for both keyword search (FTS5) and semantic similarity (vector embeddings). Embedding providers are pluggable — use [Ollama](https://ollama.com) locally, or [OpenRouter](https://openrouter.ai) / [OpenAI](https://platform.openai.com) in the cloud. The index is fully rebuildable from the database.
 
-- **Session start** — the digest extract is injected via the `SessionStart` hook, giving the agent a pre-computed understanding of the project before it asks a single question.
-- **Per-prompt** — after each user prompt, relevant spores are retrieved via vector search and injected via the `UserPromptSubmit` hook, providing targeted intelligence for the task at hand.
+### Context injection
+
+Two automatic injection points ensure agents always have relevant intelligence:
+
+- **Session start** — the digest extract gives the agent pre-computed project understanding before it asks a single question.
+- **Per-prompt** — after each user prompt, relevant spores are retrieved via semantic search, providing targeted context for the task at hand.
+
+Agents don't need to search explicitly — Myco surfaces what's relevant.
 
 ### Dashboard
 
-A local web dashboard at `http://localhost:<port>/` provides configuration management and operational triggers. Manage intelligence providers and per-task model assignments, run agent and digest cycles, monitor daemon health, and view live logs.
+A local web dashboard provides configuration and operations management. Manage intelligence providers and per-task model assignments, trigger agent and digest cycles, monitor daemon health, and view live logs.
 
-### Multi-agent
+### Symbionts
 
-Myco reads conversation transcripts from Claude Code, Cursor, and any agent that writes JSONL transcripts. Screenshots shared during sessions are extracted and stored as attachments. A plugin adapter registry makes adding new agents straightforward.
+Myco integrates with coding agents through **symbiont** adapters — named for the mycorrhizal symbiotic relationship between fungi and their host trees. Each adapter handles transcript discovery, conversation parsing, image extraction, and plugin registration for its host agent.
 
-## Health Check
+| Symbiont | Status |
+|----------|--------|
+| [Claude Code](https://claude.ai/code) | Supported |
+| [Cursor](https://cursor.com) | Supported |
+| VS Code (Copilot) | Agent manifest available |
+
+Adding a new symbiont is declarative — define a YAML manifest in `src/symbionts/manifests/` and implement the transcript parser.
+
+## Health check
 
 ```bash
 myco doctor
 ```
 
-Verifies vault config, database, intelligence provider, embedding provider, agent registration, and daemon status. Use `--fix` to auto-repair fixable issues.
+Verifies vault config, database, intelligence provider, embedding provider, symbiont registration, and daemon status. Use `--fix` to auto-repair fixable issues.
 
 ## Contributing
 

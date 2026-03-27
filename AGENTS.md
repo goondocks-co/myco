@@ -21,11 +21,12 @@ This sets `${CLAUDE_PLUGIN_ROOT}` to the repo root. The vault lives at `~/.myco/
 **How end users install Myco (not how we run it):**
 
 ```sh
-npm install -g @goondocks/myco    # Install the package globally
-myco init                          # Detects symbionts (Codex, Cursor), registers plugin
+curl -fsSL https://myco.sh/install.sh | sh   # Installs Node package globally
+cd your-project
+myco init                                       # Interactive wizard: embedding provider, model, plugin registration
 ```
 
-`myco init` detects which coding agents (symbionts) are available and runs the appropriate plugin registration command. The plugin provides hooks, skills, commands, and MCP server registration — all runtime invocations route through the `bin/myco-run` wrapper which resolves the `myco` CLI on PATH.
+`myco init` runs an interactive wizard that guides users through embedding provider selection (Ollama, OpenRouter, OpenAI, or skip), model selection, vault creation, and symbiont plugin registration. Use `myco doctor` to verify setup health.
 
 **Dev binary setup:**
 
@@ -87,9 +88,9 @@ The daemon serves a React SPA at `http://localhost:<port>/` for configuration ma
 ### Module Boundaries
 
 - **Hooks MUST be thin.** Hook entry points in `src/hooks/` MUST delegate to the daemon via `DaemonClient`. Hooks MUST NOT contain business logic, LLM calls, or complex processing. If the daemon is unreachable, hooks spawn it via `client.ensureRunning()` and buffer events to disk for later processing.
-- **The daemon is the authority.** All event processing, session note writing, observation extraction, and embedding happen in the daemon (`src/daemon/main.ts`). Hooks send events; the daemon decides what to do with them.
+- **The daemon is the authority.** All event processing, session recording, spore extraction, and embedding happen in the daemon (`src/daemon/main.ts`). Hooks send events; the daemon decides what to do with them.
 - **MCP server config MUST be in `plugin.json`.** The `mcpServers` field in `.Codex-plugin/plugin.json` is the only way to register MCP servers for plugins loaded via `--plugin-dir`. Do NOT use standalone `.mcp.json` for plugin MCP servers.
-- **Digest is a daemon task.** The digest engine runs inside the daemon process alongside batch processing and plan watching. It is NOT a hook or MCP server — it produces vault files that are read by hooks and MCP tools at serve time.
+- **Digest is a daemon task.** The digest engine runs inside the daemon process alongside batch processing and plan watching. It is NOT a hook or MCP server — it produces digest extracts that are served by hooks and MCP tools at query time.
 
 ## Data Preservation
 
@@ -97,7 +98,7 @@ The daemon serves a React SPA at `http://localhost:<port>/` for configuration ma
 
 This is Myco's core contract. Violations:
 
-- Session notes are rebuilt from the agent's authoritative transcript on each stop event. The transcript file (e.g., Codex's `.jsonl`) is the source of truth — all turns are re-parsed and the `## Conversation` section is regenerated in full. Data preservation is guaranteed by the transcript being append-only, not by the session note's write logic.
+- Session records are rebuilt from the agent's authoritative transcript on each stop event. The transcript file (e.g., the agent's `.jsonl`) is the source of truth — all turns are re-parsed and the conversation section is regenerated in full. Data preservation is guaranteed by the transcript being append-only, not by the session write logic.
 - The degraded stop path (`src/hooks/stop.ts`) MUST NOT write a session file if one already exists. It returns early; the daemon handles it when it's back.
 - Buffer files (`buffer/<session-id>.jsonl`) MUST NOT be deleted on session unregister. Session reload (SessionEnd → SessionStart) reuses the same session ID. Buffers are cleaned up by age (>24h) on daemon startup only.
 - `observation_type` in spore frontmatter accepts any string (`z.string()`). The LLM prompt guides types; the schema MUST NOT reject unexpected values.
@@ -157,6 +158,8 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
 | **Semantic edge** | Intelligence graph connection created by agent: RELATES_TO, SUPERSEDED_BY, REFERENCES, DEPENDS_ON, AFFECTS. LLM-driven. |
 | **Graph edge** | Stored in `graph_edges` table. Supports cross-type references between session, batch, spore, and entity nodes. |
 | **Symbiont** | External coding agent that Myco integrates with (Codex, Cursor). Named for the mycorrhizal symbiotic relationship. Declared via YAML manifests in `src/symbionts/manifests/`. |
+| **Wave** | Group of phases whose dependencies are all satisfied, executing in parallel via `Promise.allSettled()`. The executor computes waves from the phase `dependsOn` DAG using topological sort. |
+| **Phase dependency** | DAG edge between phases declared via `dependsOn` in task YAML. Phases depend on named predecessors; the executor resolves these into execution waves. |
 
 ## Vault Structure
 

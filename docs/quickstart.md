@@ -64,10 +64,10 @@ myco doctor
 
 Once installed and initialized, Myco works automatically:
 
-- **Session start**: Myco injects relevant context from the intelligence graph into the conversation
-- **During the session**: Events (tool calls, prompts, responses) are captured in the database
+- **Session start**: Myco injects a digest extract and relevant spores into the conversation
+- **During the session**: Activity (prompts, tool calls, responses) is captured in the vault
 - **Per-turn**: The daemon processes events and tracks session activity
-- **After the session**: The intelligence agent extracts observations, generates summaries, and maintains the knowledge graph
+- **After the session**: The intelligence agent extracts spores, generates summaries, and maintains the knowledge graph
 
 You don't need to do anything — Myco captures knowledge in the background.
 
@@ -98,7 +98,7 @@ Myco exposes these tools to your coding agent via MCP:
 | `myco_remember` | Capture a new observation or decision |
 | `myco_search` | Search by keyword or semantic similarity |
 | `myco_sessions` | List recent sessions with summaries |
-| `myco_graph` | Traverse relationships between notes |
+| `myco_graph` | Traverse connections in the knowledge graph |
 | `myco_plans` | List and read plan documents |
 | `myco_team` | View team member activity |
 

@@ -24,7 +24,7 @@ Myco works in the background without explicit tool calls:
 
 - **Session start**: relevant context is injected based on your git branch and active plans
 - **During the session**: tool calls, prompts, and responses are buffered as events
-- **Session stop**: the daemon extracts observations, writes session notes, detects parent sessions, and captures artifacts
+- **Session stop**: the daemon extracts spores, writes session records, detects parent sessions, and captures artifacts
 - **Lineage**: parent-child session relationships are detected automatically (clear context, same branch, semantic similarity)
 
 The MCP tools below are for going deeper than the automatic context injection provides.
@@ -264,5 +264,5 @@ node <plugin-root>/dist/src/cli.js rebuild     # Re-index all records
 node <plugin-root>/dist/src/cli.js stats       # Check vault health
 node <plugin-root>/dist/src/cli.js verify      # Test provider connectivity
 node <plugin-root>/dist/src/cli.js config get intelligence.llm.model
-node <plugin-root>/dist/src/cli.js config set intelligence.llm.model gpt-oss
+node <plugin-root>/dist/src/cli.js config set intelligence.llm.model phi4
 ```

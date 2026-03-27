@@ -67,4 +67,4 @@ body:
     id: llm
     attributes:
       label: LLM provider and model
-      placeholder: Ollama / gpt-oss
+      placeholder: Cloud (Claude) / Ollama / LM Studio
