@@ -11,11 +11,6 @@ import { isProcessAlive } from './shared.js';
 
 // --- Named constants (no magic literals) ---
 
-/** Directories required inside a vault for correct operation. */
-const REQUIRED_VAULT_DIRS = [
-  'buffer', 'attachments', 'logs', 'sessions',
-  'spores', 'plans', 'artifacts', 'team', 'digest',
-] as const;
 
 /** Filename of the vault config file. */
 const CONFIG_FILENAME = 'myco.yaml';
@@ -43,18 +38,18 @@ export interface DoctorCheck {
 
 // --- Checks ---
 
-/** Check that myco.yaml exists and parses. */
-async function checkVault(vaultDir: string): Promise<DoctorCheck> {
+/** Check that myco.yaml exists and parses. Returns the parsed config on success. */
+async function checkVault(vaultDir: string): Promise<{ check: DoctorCheck; config: import('../config/schema.js').MycoConfig | null }> {
   const configPath = path.join(vaultDir, CONFIG_FILENAME);
   if (!fs.existsSync(configPath)) {
-    return { name: 'Vault', status: 'fail', detail: `${CONFIG_FILENAME} not found in ${vaultDir}`, fixable: false };
+    return { check: { name: 'Vault', status: 'fail', detail: `${CONFIG_FILENAME} not found in ${vaultDir}`, fixable: false }, config: null };
   }
   try {
     const { loadConfig } = await import('../config/loader.js');
     const config = loadConfig(vaultDir);
-    return { name: 'Vault', status: 'ok', detail: `.myco/ (v${config.version})`, fixable: false };
+    return { check: { name: 'Vault', status: 'ok', detail: `.myco/ (v${config.version})`, fixable: false }, config };
   } catch (err) {
-    return { name: 'Vault', status: 'fail', detail: `${CONFIG_FILENAME} parse error: ${(err as Error).message}`, fixable: false };
+    return { check: { name: 'Vault', status: 'fail', detail: `${CONFIG_FILENAME} parse error: ${(err as Error).message}`, fixable: false }, config: null };
   }
 }
 
@@ -67,10 +62,10 @@ async function checkDatabase(vaultDir: string): Promise<DoctorCheck> {
   try {
     const { initDatabase, closeDatabase, vaultDbPath } = await import('../db/client.js');
     const db = initDatabase(vaultDbPath(vaultDir));
-    const row = db.prepare('SELECT count(*) AS cnt FROM notes').get() as { cnt: number } | undefined;
+    const row = db.prepare('SELECT count(*) AS cnt FROM sessions').get() as { cnt: number } | undefined;
     const count = row?.cnt ?? 0;
     closeDatabase();
-    return { name: 'Database', status: 'ok', detail: `${DB_FILENAME} (${count.toLocaleString()} notes indexed)`, fixable: false };
+    return { name: 'Database', status: 'ok', detail: `${DB_FILENAME} (${count.toLocaleString()} sessions)`, fixable: false };
   } catch (err) {
     // Ensure DB is closed even on error
     try { const { closeDatabase } = await import('../db/client.js'); closeDatabase(); } catch { /* ignore */ }
@@ -78,12 +73,41 @@ async function checkDatabase(vaultDir: string): Promise<DoctorCheck> {
   }
 }
 
-/** Check that the embedding provider is reachable. */
-async function checkEmbeddings(vaultDir: string): Promise<DoctorCheck> {
+/** Check that the intelligence (agent) provider is configured. */
+async function checkIntelligence(config: import('../config/schema.js').MycoConfig): Promise<DoctorCheck> {
   try {
-    const { loadConfig } = await import('../config/loader.js');
+    const provider = config.agent.provider;
+
+    if (!provider) {
+      return { name: 'Intelligence', status: 'warn', detail: 'No agent provider configured — run `myco init` to set up', fixable: false };
+    }
+
+    const label = `${provider.type}${provider.model ? ` / ${provider.model}` : ''}`;
+
+    if (provider.type === 'cloud') {
+      return { name: 'Intelligence', status: 'ok', detail: `${label} (SDK handles auth)`, fixable: false };
+    }
+
+    // Local provider — check reachability
+    if (provider.type === 'ollama' || provider.type === 'lmstudio') {
+      const { checkLocalProvider } = await import('../intelligence/provider-check.js');
+      const status = await checkLocalProvider(provider.type, provider.base_url);
+      if (!status.available) {
+        return { name: 'Intelligence', status: 'warn', detail: `${label} (not reachable)`, fixable: false };
+      }
+      return { name: 'Intelligence', status: 'ok', detail: label, fixable: false };
+    }
+
+    return { name: 'Intelligence', status: 'ok', detail: label, fixable: false };
+  } catch (err) {
+    return { name: 'Intelligence', status: 'fail', detail: `Intelligence check failed: ${(err as Error).message}`, fixable: false };
+  }
+}
+
+/** Check that the embedding provider is configured and reachable. */
+async function checkEmbeddings(config: import('../config/schema.js').MycoConfig): Promise<DoctorCheck> {
+  try {
     const { createEmbeddingProvider } = await import('../intelligence/llm.js');
-    const config = loadConfig(vaultDir);
     const provider = createEmbeddingProvider(config.embedding);
     const available = await provider.isAvailable();
     const label = `${config.embedding.provider} / ${config.embedding.model}`;
@@ -178,47 +202,30 @@ async function checkDaemon(vaultDir: string): Promise<DoctorCheck> {
   }
 }
 
-/** Check that all required vault directories exist. */
-async function checkDisk(vaultDir: string): Promise<DoctorCheck> {
-  const missing = REQUIRED_VAULT_DIRS.filter(
-    dir => !fs.existsSync(path.join(vaultDir, dir)),
-  );
-  if (missing.length === 0) {
-    return { name: 'Disk', status: 'ok', detail: 'All directories present', fixable: false };
-  }
-  return {
-    name: 'Disk',
-    status: 'warn',
-    detail: `Missing directories: ${missing.join(', ')}`,
-    fixable: true,
-  };
-}
 
 // --- Public API ---
 
 /** Run all health checks against a vault directory. */
 export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
-  const vaultCheck = await checkVault(vaultDir);
+  const { check: vaultCheck, config } = await checkVault(vaultDir);
   const checks: DoctorCheck[] = [vaultCheck];
 
-  // If vault config is broken, remaining checks can't run meaningfully.
-  // Still run them but they'll naturally fail due to missing config.
-  if (vaultCheck.status === 'fail') {
+  if (!config) {
     checks.push(
       { name: 'Database', status: 'fail', detail: 'Skipped (vault check failed)', fixable: false },
+      { name: 'Intelligence', status: 'fail', detail: 'Skipped (vault check failed)', fixable: false },
       { name: 'Embeddings', status: 'fail', detail: 'Skipped (vault check failed)', fixable: false },
       { name: 'Agents', status: 'fail', detail: 'Skipped (vault check failed)', fixable: false },
       await checkDaemon(vaultDir),
-      { name: 'Disk', status: 'fail', detail: 'Skipped (vault check failed)', fixable: false },
     );
     return checks;
   }
 
   checks.push(await checkDatabase(vaultDir));
-  checks.push(await checkEmbeddings(vaultDir));
+  checks.push(await checkIntelligence(config));
+  checks.push(await checkEmbeddings(config));
   checks.push(...await checkAgents(vaultDir));
   checks.push(await checkDaemon(vaultDir));
-  checks.push(await checkDisk(vaultDir));
 
   return checks;
 }
@@ -229,17 +236,6 @@ export async function fix(vaultDir: string, checks: DoctorCheck[]): Promise<stri
 
   for (const check of checks) {
     if (!check.fixable || check.status === 'ok') continue;
-
-    // Fix missing directories
-    if (check.name === 'Disk' && check.detail.startsWith('Missing directories:')) {
-      const missing = REQUIRED_VAULT_DIRS.filter(
-        dir => !fs.existsSync(path.join(vaultDir, dir)),
-      );
-      for (const dir of missing) {
-        fs.mkdirSync(path.join(vaultDir, dir), { recursive: true });
-        actions.push(`Created directory: ${dir}/`);
-      }
-    }
 
     // Fix stale daemon.json
     if (check.name === 'Daemon' && check.detail.includes('Stale')) {
@@ -271,19 +267,20 @@ export async function fix(vaultDir: string, checks: DoctorCheck[]): Promise<stri
 
 // --- Output formatting ---
 
-const STATUS_SYMBOLS: Record<DoctorCheck['status'], string> = {
-  ok: '\x1b[32mok\x1b[0m',
-  fail: '\x1b[31mFAIL\x1b[0m',
-  warn: '\x1b[33m!!\x1b[0m',
+/** Status label width (visible characters). */
+const STATUS_COL_WIDTH = 6;
+
+const STATUS_LABELS: Record<DoctorCheck['status'], { text: string; color: string }> = {
+  ok: { text: 'ok', color: '\x1b[32m' },
+  fail: { text: 'FAIL', color: '\x1b[31m' },
+  warn: { text: '!!', color: '\x1b[33m' },
 };
 
 function formatCheck(check: DoctorCheck): string {
   const name = check.name ? check.name.padEnd(NAME_COL_WIDTH) : CONTINUATION_INDENT;
-  const symbol = STATUS_SYMBOLS[check.status].padEnd(
-    // Pad based on visible width (ANSI codes add invisible chars)
-    check.status === 'ok' ? 6 : check.status === 'fail' ? 8 : 6,
-  );
-  return `  ${name}${symbol}${check.detail}`;
+  const { text, color } = STATUS_LABELS[check.status];
+  const paddedText = text.padEnd(STATUS_COL_WIDTH);
+  return `  ${name}${color}${paddedText}\x1b[0m${check.detail}`;
 }
 
 // --- CLI entry point ---

@@ -6,9 +6,9 @@
  *   POST /api/providers/test  — test connectivity to a specific provider
  */
 
-import { PROVIDER_DETECT_TIMEOUT_MS } from '../../constants.js';
 import { OllamaBackend } from '../../intelligence/ollama.js';
 import { LmStudioBackend } from '../../intelligence/lm-studio.js';
+import { checkLocalProvider } from '../../intelligence/provider-check.js';
 import { ANTHROPIC_MODELS } from './models.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 
@@ -45,8 +45,8 @@ interface TestResult {
  */
 export async function handleGetProviders(): Promise<RouteResponse> {
   const results = await Promise.allSettled([
-    detectLocalProvider(new OllamaBackend(), 'ollama', OllamaBackend.DEFAULT_BASE_URL),
-    detectLocalProvider(new LmStudioBackend(), 'lmstudio', LmStudioBackend.DEFAULT_BASE_URL),
+    detectLocalProviderInfo('ollama', OllamaBackend.DEFAULT_BASE_URL),
+    detectLocalProviderInfo('lmstudio', LmStudioBackend.DEFAULT_BASE_URL),
     detectCloud(),
   ]);
 
@@ -103,17 +103,15 @@ export async function handleTestProvider(req: RouteRequest): Promise<RouteRespon
 // Detection helpers
 // ---------------------------------------------------------------------------
 
-/** Detect a local provider (Ollama or LM Studio) — shared pattern. */
-async function detectLocalProvider(
-  backend: { isAvailable(): Promise<boolean>; listModels(timeout: number): Promise<string[]> },
-  type: string,
+/** Detect a local provider (Ollama or LM Studio) and wrap as ProviderInfo. */
+async function detectLocalProviderInfo(
+  type: 'ollama' | 'lmstudio',
   defaultBaseUrl: string,
 ): Promise<ProviderInfo> {
-  const available = await backend.isAvailable();
-  const allModels = available ? await backend.listModels(PROVIDER_DETECT_TIMEOUT_MS) : [];
+  const status = await checkLocalProvider(type);
   // Filter out Myco-created context variants (e.g., gpt-oss-ctx32768)
-  const models = allModels.filter(m => !/-ctx\d+/.test(m));
-  return { type, available, baseUrl: defaultBaseUrl, models };
+  const models = status.models.filter(m => !/-ctx\d+/.test(m));
+  return { type, available: status.available, baseUrl: defaultBaseUrl, models };
 }
 
 async function detectCloud(): Promise<ProviderInfo> {
