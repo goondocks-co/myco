@@ -72,8 +72,11 @@ export interface RunCompletion {
 /** Filter options for `listRuns`. */
 export interface ListRunsOptions {
   limit?: number;
+  offset?: number;
   agent_id?: string;
   status?: string;
+  task?: string;
+  search?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,14 +175,10 @@ export function getRun(id: string): RunRow | null {
   return toRunRow(row);
 }
 
-/**
- * List runs with optional filters, ordered by started_at DESC (nulls last).
- */
-export function listRuns(
-  options: ListRunsOptions = {},
-): RunRow[] {
-  const db = getDatabase();
-
+/** Build a WHERE clause and params array from ListRunsOptions filter fields. */
+function buildRunsWhere(
+  options: Omit<ListRunsOptions, 'limit' | 'offset'>,
+): { where: string; params: unknown[] } {
   const conditions: string[] = [];
   const params: unknown[] = [];
 
@@ -187,26 +186,62 @@ export function listRuns(
     conditions.push(`agent_id = ?`);
     params.push(options.agent_id);
   }
-
   if (options.status !== undefined) {
     conditions.push(`status = ?`);
     params.push(options.status);
   }
+  if (options.task !== undefined) {
+    conditions.push(`task = ?`);
+    params.push(options.task);
+  }
+  if (options.search !== undefined && options.search.length > 0) {
+    conditions.push(`task LIKE ?`);
+    params.push(`%${options.search}%`);
+  }
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  return {
+    where: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
+    params,
+  };
+}
+
+/**
+ * List runs with optional filters, ordered by started_at DESC (nulls last).
+ */
+export function listRuns(
+  options: ListRunsOptions = {},
+): RunRow[] {
+  const db = getDatabase();
+  const { where, params } = buildRunsWhere(options);
   const limit = options.limit ?? DEFAULT_LIST_LIMIT;
-
-  params.push(limit);
+  const offset = options.offset ?? 0;
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_runs
      ${where}
      ORDER BY started_at DESC NULLS LAST
-     LIMIT ?`,
-  ).all(...params) as Record<string, unknown>[];
+     LIMIT ?
+     OFFSET ?`,
+  ).all(...params, limit, offset) as Record<string, unknown>[];
 
   return rows.map(toRunRow);
+}
+
+/**
+ * Count runs matching the given filters (no limit/offset).
+ */
+export function countRuns(
+  options: Omit<ListRunsOptions, 'limit' | 'offset'> = {},
+): number {
+  const db = getDatabase();
+  const { where, params } = buildRunsWhere(options);
+
+  const row = db.prepare(
+    `SELECT COUNT(*) as count FROM agent_runs ${where}`,
+  ).get(...params) as { count: number };
+
+  return row.count;
 }
 
 /**

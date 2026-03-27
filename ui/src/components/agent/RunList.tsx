@@ -1,15 +1,24 @@
 import { useMemo } from 'react';
 import { Bot, AlertCircle, Play } from 'lucide-react';
 import { Button } from '../ui/button';
+import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
+import { Pagination } from '../ui/pagination';
 import { useAgentRuns, useAgentTasks, type RunRow } from '../../hooks/use-agent';
+import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
+import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { cn } from '../../lib/cn';
 import { formatEpochRelative, capitalize } from '../../lib/format';
 import { statusBadgeVariant, formatCost, formatTokens, formatDuration, UNKNOWN_TASK_LABEL } from './helpers';
 
 /* ---------- Constants ---------- */
 
-/** Default limit for the run list. */
-const DEFAULT_LIMIT = 50;
+const RUN_STATUS_OPTIONS = [
+  { value: FILTER_ALL, label: 'All statuses' },
+  { value: 'running', label: 'Running' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'cancelled', label: 'Cancelled' },
+];
 
 /* ---------- Sub-components ---------- */
 
@@ -102,9 +111,11 @@ export interface RunListProps {
 }
 
 export function RunList({ onSelectRun, onTriggerRun }: RunListProps) {
-  const { data, isLoading, isError, error } = useAgentRuns({ limit: DEFAULT_LIMIT });
+  const { searchInput, debouncedSearch, filterValues, offset, setOffset, handleSearchChange, handleFilterChange, activeFilter } = useListFilters({
+    initialFilters: { status: FILTER_ALL, task: FILTER_ALL },
+  });
+
   const { data: tasksData } = useAgentTasks();
-  const runs = data?.runs ?? [];
   const taskNameMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const task of tasksData?.tasks ?? []) {
@@ -112,6 +123,44 @@ export function RunList({ onSelectRun, onTriggerRun }: RunListProps) {
     }
     return map;
   }, [tasksData]);
+
+  const taskFilterOptions = useMemo(() => {
+    const opts = [{ value: FILTER_ALL, label: 'All tasks' }];
+    for (const task of tasksData?.tasks ?? []) {
+      opts.push({ value: task.name, label: task.displayName });
+    }
+    return opts;
+  }, [tasksData]);
+
+  const filters: FilterDefinition[] = useMemo(() => [
+    { key: 'status', label: 'Status', options: RUN_STATUS_OPTIONS },
+    { key: 'task', label: 'Task', options: taskFilterOptions },
+  ], [taskFilterOptions]);
+
+  const activeStatus = activeFilter('status');
+  const activeTask = activeFilter('task');
+
+  const { data, isLoading, isError, error } = useAgentRuns({
+    limit: DEFAULT_PAGE_SIZE,
+    offset,
+    search: debouncedSearch,
+    status: activeStatus,
+    task: activeTask,
+  });
+
+  const runs = data?.runs ?? [];
+  const total = data?.total ?? 0;
+
+  const toolbar = (
+    <ListToolbar
+      searchPlaceholder="Search runs..."
+      searchValue={searchInput}
+      onSearchChange={handleSearchChange}
+      filters={filters}
+      filterValues={filterValues}
+      onFilterChange={handleFilterChange}
+    />
+  );
 
   const tableHeader = (
     <thead>
@@ -126,9 +175,26 @@ export function RunList({ onSelectRun, onTriggerRun }: RunListProps) {
     </thead>
   );
 
-  if (isLoading) {
+  if (isError) {
     return (
       <div className="space-y-4">
+        {toolbar}
+        <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary">
+          <AlertCircle className="h-5 w-5" />
+          <span className="font-sans text-sm">Failed to load runs</span>
+          <span className="font-sans text-xs text-on-surface-variant">
+            {error instanceof Error ? error.message : 'Unknown error'}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {toolbar}
+
+      {isLoading ? (
         <div className="rounded-md bg-surface-container-low overflow-hidden">
           <table className="w-full">
             {tableHeader}
@@ -137,50 +203,45 @@ export function RunList({ onSelectRun, onTriggerRun }: RunListProps) {
             </tbody>
           </table>
         </div>
-      </div>
-    );
-  }
-
-  if (isError) {
-    return (
-      <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary">
-        <AlertCircle className="h-5 w-5" />
-        <span className="font-sans text-sm">Failed to load runs</span>
-        <span className="font-sans text-xs text-on-surface-variant">
-          {error instanceof Error ? error.message : 'Unknown error'}
-        </span>
-      </div>
-    );
-  }
-
-  if (runs.length === 0) {
-    return (
-      <div className="space-y-4">
+      ) : runs.length === 0 ? (
         <div className="flex h-48 flex-col items-center justify-center gap-3 rounded-md bg-surface-container-low text-on-surface-variant">
           <Bot className="h-10 w-10 opacity-30" />
           <div className="text-center font-sans">
-            <p className="text-sm">No agent runs yet</p>
-            <p className="text-xs mt-1">Trigger the first run to see the agent at work</p>
+            <p className="text-sm">
+              {total === 0 && !debouncedSearch && !activeStatus && !activeTask
+                ? 'No agent runs yet'
+                : 'No matching runs'}
+            </p>
+            {total === 0 && !debouncedSearch && !activeStatus && !activeTask && (
+              <p className="text-xs mt-1">Trigger the first run to see the agent at work</p>
+            )}
           </div>
-          <Button variant="outline" size="sm" className="gap-2 mt-2" onClick={onTriggerRun}>
-            <Play className="h-3.5 w-3.5" />
-            Run Now
-          </Button>
+          {total === 0 && !debouncedSearch && !activeStatus && !activeTask && (
+            <Button variant="outline" size="sm" className="gap-2 mt-2" onClick={onTriggerRun}>
+              <Play className="h-3.5 w-3.5" />
+              Run Now
+            </Button>
+          )}
         </div>
-      </div>
-    );
-  }
+      ) : (
+        <div className="rounded-md bg-surface-container-low overflow-hidden">
+          <table className="w-full" aria-label="Agent runs">
+            {tableHeader}
+            <tbody>
+              {runs.map((run) => (
+                <RunRowItem key={run.id} run={run} taskNameMap={taskNameMap} onClick={() => onSelectRun(run.id)} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
-  return (
-    <div className="rounded-md bg-surface-container-low overflow-hidden">
-      <table className="w-full" aria-label="Agent runs">
-        {tableHeader}
-        <tbody>
-          {runs.map((run) => (
-            <RunRowItem key={run.id} run={run} taskNameMap={taskNameMap} onClick={() => onSelectRun(run.id)} />
-          ))}
-        </tbody>
-      </table>
+      <Pagination
+        total={total}
+        offset={offset}
+        limit={DEFAULT_PAGE_SIZE}
+        onPageChange={setOffset}
+      />
     </div>
   );
 }

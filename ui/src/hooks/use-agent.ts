@@ -44,6 +44,9 @@ export interface RunRow {
 
 export interface RunsResponse {
   runs: RunRow[];
+  total: number;
+  offset: number;
+  limit: number;
 }
 
 export interface RunDetailResponse {
@@ -148,13 +151,26 @@ export interface CopyTaskPayload {
 
 /* ---------- Hooks ---------- */
 
-export function useAgentRuns(options?: { limit?: number }) {
-  const limit = options?.limit ?? DEFAULT_RUNS_LIMIT;
+export function useAgentRuns(filters?: {
+  limit?: number;
+  offset?: number;
+  search?: string;
+  status?: string;
+  task?: string;
+}) {
+  const limit = filters?.limit ?? DEFAULT_RUNS_LIMIT;
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+  if (filters?.offset !== undefined) params.set('offset', String(filters.offset));
+  if (filters?.search) params.set('search', filters.search);
+  if (filters?.status) params.set('status', filters.status);
+  if (filters?.task) params.set('task', filters.task);
+  const qs = params.toString();
 
   return usePowerQuery<RunsResponse>({
-    queryKey: ['agent-runs', limit],
+    queryKey: ['agent-runs', filters],
     queryFn: ({ signal }) =>
-      fetchJson<RunsResponse>(`/agent/runs?limit=${limit}`, { signal }),
+      fetchJson<RunsResponse>(`/agent/runs?${qs}`, { signal }),
     pollCategory: 'standard',
     refetchInterval: RUNS_POLL_INTERVAL,
   });

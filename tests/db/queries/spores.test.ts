@@ -11,6 +11,7 @@ import {
   insertSpore,
   getSpore,
   listSpores,
+  countSpores,
   updateSporeStatus,
 } from '@myco/db/queries/spores.js';
 import type { SporeInsert } from '@myco/db/queries/spores.js';
@@ -228,6 +229,75 @@ describe('spore query helpers', () => {
     it('returns empty array when no spores match', () => {
       const rows = listSpores({ observation_type: 'nonexistent' });
       expect(rows).toEqual([]);
+    });
+
+    it('filters by content substring (search)', () => {
+      const now = epochNow();
+      insertSpore(makeSpore(agentId, { id: 'spore-alpha', content: 'SQLite WAL mode rocks', created_at: now }));
+      insertSpore(makeSpore(agentId, { id: 'spore-beta', content: 'Unrelated note here', created_at: now + 1 }));
+      insertSpore(makeSpore(agentId, { id: 'spore-gamma', content: 'WAL is also fast', created_at: now + 2 }));
+
+      const rows = listSpores({ search: 'WAL' });
+      expect(rows).toHaveLength(2);
+      const ids = rows.map(r => r.id);
+      expect(ids).toContain('spore-alpha');
+      expect(ids).toContain('spore-gamma');
+    });
+
+    it('filters by observation_type substring (search)', () => {
+      const now = epochNow();
+      insertSpore(makeSpore(agentId, { id: 'spore-ot1', observation_type: 'gotcha', created_at: now }));
+      insertSpore(makeSpore(agentId, { id: 'spore-ot2', observation_type: 'discovery', created_at: now + 1 }));
+      insertSpore(makeSpore(agentId, { id: 'spore-ot3', observation_type: 'gotcha', content: 'nothing special', created_at: now + 2 }));
+
+      const rows = listSpores({ search: 'gotcha' });
+      expect(rows).toHaveLength(2);
+      const ids = rows.map(r => r.id);
+      expect(ids).toContain('spore-ot1');
+      expect(ids).toContain('spore-ot3');
+    });
+
+    it('combines search with type filter and respects pagination', () => {
+      const now = epochNow();
+      insertSpore(makeSpore(agentId, { id: 'sp1', observation_type: 'gotcha', content: 'needle here', created_at: now }));
+      insertSpore(makeSpore(agentId, { id: 'sp2', observation_type: 'gotcha', content: 'needle also', created_at: now + 1 }));
+      insertSpore(makeSpore(agentId, { id: 'sp3', observation_type: 'gotcha', content: 'needle third', created_at: now + 2 }));
+      insertSpore(makeSpore(agentId, { id: 'sp4', observation_type: 'decision', content: 'needle but wrong type', created_at: now + 3 }));
+
+      // Should find 3 gotcha+needle, then page them
+      const page1 = listSpores({ search: 'needle', observation_type: 'gotcha', limit: 2, offset: 0 });
+      expect(page1).toHaveLength(2);
+      expect(page1[0].id).toBe('sp3');
+      expect(page1[1].id).toBe('sp2');
+
+      const page2 = listSpores({ search: 'needle', observation_type: 'gotcha', limit: 2, offset: 2 });
+      expect(page2).toHaveLength(1);
+      expect(page2[0].id).toBe('sp1');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // countSpores
+  // ---------------------------------------------------------------------------
+
+  describe('countSpores', () => {
+    it('counts all spores when no filters given', () => {
+      const now = epochNow();
+      insertSpore(makeSpore(agentId, { created_at: now }));
+      insertSpore(makeSpore(agentId, { created_at: now + 1 }));
+
+      expect(countSpores()).toBe(2);
+    });
+
+    it('counts spores matching a search filter', () => {
+      const now = epochNow();
+      insertSpore(makeSpore(agentId, { id: 'c1', content: 'alpha beta', created_at: now }));
+      insertSpore(makeSpore(agentId, { id: 'c2', content: 'alpha gamma', created_at: now + 1 }));
+      insertSpore(makeSpore(agentId, { id: 'c3', content: 'delta epsilon', created_at: now + 2 }));
+
+      expect(countSpores({ search: 'alpha' })).toBe(2);
+      expect(countSpores({ search: 'delta' })).toBe(1);
+      expect(countSpores({ search: 'zeta' })).toBe(0);
     });
   });
 
