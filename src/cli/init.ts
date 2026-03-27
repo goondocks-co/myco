@@ -7,6 +7,7 @@ import {
   collapseHomePath,
 } from './shared.js';
 import { detectSymbionts, resolvePackageRoot } from '../symbionts/detect.js';
+import { SymbiontRegistry } from '../symbionts/registry.js';
 import { MycoConfigSchema } from '../config/schema.js';
 import { writeSecret } from '../config/secrets.js';
 import { execFileSync } from 'node:child_process';
@@ -21,6 +22,13 @@ const VAULT_REQUIRED_DIRS = ['buffer', 'attachments', 'logs'] as const;
 export async function run(args: string[]): Promise<void> {
   const vaultPath = parseStringFlag(args, '--vault');
   const nonInteractive = args.includes('--non-interactive');
+  const isInteractive = !nonInteractive && !!process.stdin.isTTY;
+
+  // Show banner in interactive mode
+  if (isInteractive) {
+    const { printBanner } = await import('./init-wizard.js');
+    printBanner();
+  }
 
   // Resolve vault directory
   const vaultDir = vaultPath
@@ -29,30 +37,53 @@ export async function run(args: string[]): Promise<void> {
 
   const alreadyInitialized = fs.existsSync(path.join(vaultDir, 'myco.yaml'));
 
-  if (!alreadyInitialized) {
-    // Check if user provided embedding flags
-    const embeddingProvider = parseStringFlag(args, '--embedding-provider');
-    const embeddingModel = parseStringFlag(args, '--embedding-model');
-    const embeddingUrl = parseStringFlag(args, '--embedding-url');
-    const hasEmbeddingFlags = !!(embeddingProvider || embeddingModel || embeddingUrl);
+  // --- Wizard: runs for both new and existing vaults ---
 
-    // Interactive wizard when no flags and stdin is a TTY
-    let wizardOverrides: Record<string, unknown> = {};
-    let agentOverrides: Record<string, unknown> | null = null;
-    let wizardAnswers: Awaited<ReturnType<typeof import('./init-wizard.js').runWizard>> | null = null;
-    if (!nonInteractive && !hasEmbeddingFlags && process.stdin.isTTY) {
-      const { runWizard, buildEmbeddingConfig, buildAgentConfig } = await import('./init-wizard.js');
-      const answers = await runWizard();
-      wizardAnswers = answers;
-      if (answers.embeddingProvider !== 'skip') {
-        wizardOverrides = { ...buildEmbeddingConfig(answers) };
-      }
-      agentOverrides = buildAgentConfig(answers);
+  const embeddingProvider = parseStringFlag(args, '--embedding-provider');
+  const embeddingModel = parseStringFlag(args, '--embedding-model');
+  const embeddingUrl = parseStringFlag(args, '--embedding-url');
+  const hasEmbeddingFlags = !!(embeddingProvider || embeddingModel || embeddingUrl);
+
+  let wizardOverrides: Record<string, unknown> = {};
+  let agentOverrides: Record<string, unknown> | null = null;
+  let wizardAnswers: Awaited<ReturnType<typeof import('./init-wizard.js').runWizard>> | null = null;
+
+  // Determine if the wizard should run
+  let shouldRunWizard = false;
+  if (isInteractive && !hasEmbeddingFlags) {
+    if (alreadyInitialized) {
+      const { loadConfig } = await import('../config/loader.js');
+      const config = loadConfig(vaultDir);
+      const agentProvider = config.agent.provider;
+      const embConfig = config.embedding;
+
+      console.log(`  Vault: ${vaultDir}`);
+      console.log(`  Intelligence: ${agentProvider?.type ?? 'not configured'}${agentProvider?.model ? ` / ${agentProvider.model}` : ''}`);
+      console.log(`  Embeddings: ${embConfig.provider} / ${embConfig.model}`);
+      console.log('');
+
+      const { confirm } = await import('@inquirer/prompts');
+      shouldRunWizard = await confirm({ message: 'Reconfigure providers?', default: false });
+    } else {
+      shouldRunWizard = true;
     }
+  }
 
+  if (shouldRunWizard) {
+    const { runWizard, buildEmbeddingConfig, buildAgentConfig } = await import('./init-wizard.js');
+    const answers = await runWizard();
+    wizardAnswers = answers;
+    if (answers.embeddingProvider !== 'skip') {
+      wizardOverrides = { ...buildEmbeddingConfig(answers) };
+    }
+    agentOverrides = buildAgentConfig(answers);
+  }
+
+  // --- Vault creation (new vaults only) ---
+
+  if (!alreadyInitialized) {
     console.log(`Initializing Myco vault at ${vaultDir}`);
 
-    // Create directory structure
     for (const dir of VAULT_REQUIRED_DIRS) {
       fs.mkdirSync(path.join(vaultDir, dir), { recursive: true });
     }
@@ -63,44 +94,59 @@ export async function run(args: string[]): Promise<void> {
     if (embeddingModel) embeddingOverrides.model = embeddingModel;
     if (embeddingUrl) embeddingOverrides.base_url = embeddingUrl;
 
-    // Write myco.yaml — only version is truly required, everything else has Zod defaults
     const config = MycoConfigSchema.parse({
       version: 3,
       ...(Object.keys(embeddingOverrides).length > 0 ? { embedding: embeddingOverrides } : {}),
       ...(agentOverrides ? { agent: agentOverrides } : {}),
     });
 
-    fs.writeFileSync(
-      path.join(vaultDir, 'myco.yaml'),
-      YAML.stringify(config),
-      'utf-8',
-    );
-
-    // Write .gitignore
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), YAML.stringify(config), 'utf-8');
     fs.writeFileSync(path.join(vaultDir, '.gitignore'), VAULT_GITIGNORE, 'utf-8');
 
-    // Store embedding API key in secrets.env (not in myco.yaml)
-    if (wizardAnswers?.embeddingApiKey) {
-      const envVarName = wizardAnswers.embeddingProvider === 'openrouter'
-        ? 'MYCO_OPENROUTER_API_KEY'
-        : 'MYCO_OPENAI_API_KEY';
-      writeSecret(vaultDir, envVarName, wizardAnswers.embeddingApiKey);
-    }
-
-    // Initialize SQLite database
     const db = initDatabase(vaultDbPath(vaultDir));
     createSchema(db);
     closeDatabase();
   }
 
-  // Detect and register symbionts — runs even on re-init so newly
-  // installed symbionts get registered without recreating the vault
+  // --- Update existing vault config if wizard ran ---
+
+  if (alreadyInitialized && (Object.keys(wizardOverrides).length > 0 || agentOverrides)) {
+    // Read raw YAML to preserve all existing fields (tasks, per-phase overrides, etc.)
+    const configPath = path.join(vaultDir, 'myco.yaml');
+    const raw = YAML.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+
+    // Replace embedding section entirely — avoids stale fields (e.g., old base_url) leaking through
+    if (Object.keys(wizardOverrides).length > 0) {
+      raw.embedding = wizardOverrides;
+    }
+    // Merge agent overrides — preserves tasks, intervals, and per-phase config
+    if (agentOverrides) {
+      const existingAgent = (raw.agent ?? {}) as Record<string, unknown>;
+      raw.agent = { ...existingAgent, ...agentOverrides };
+    }
+
+    fs.writeFileSync(configPath, YAML.stringify(raw), 'utf-8');
+    console.log('  Updated myco.yaml');
+  }
+
+  // --- Store embedding API key in secrets.env ---
+
+  if (wizardAnswers?.embeddingApiKey) {
+    const { OPENROUTER_API_KEY_ENV } = await import('./providers/openrouter.js');
+    const { OPENAI_API_KEY_ENV } = await import('./providers/openai-embeddings.js');
+    const envVarName = wizardAnswers.embeddingProvider === 'openrouter'
+      ? OPENROUTER_API_KEY_ENV
+      : OPENAI_API_KEY_ENV;
+    writeSecret(vaultDir, envVarName, wizardAnswers.embeddingApiKey);
+  }
+
+  // --- Symbiont detection and registration ---
+
   const projectRoot = path.dirname(resolveVaultDir());
   const detected = detectSymbionts(projectRoot);
 
   if (detected.length > 0) {
-    console.log(alreadyInitialized ? `Vault at ${vaultDir}` : '');
-    console.log('Detected symbionts:');
+    console.log('Detected agents:');
     for (const d of detected) {
       const signals = [
         d.binaryFound ? 'binary found' : null,
@@ -109,10 +155,30 @@ export async function run(args: string[]): Promise<void> {
       console.log(`  \u2713 ${d.manifest.displayName} (${signals})`);
     }
 
+    // Interactive: let user choose which agents to register
+    let selected = detected;
+    if (isInteractive && detected.length > 0) {
+      const { checkbox } = await import('@inquirer/prompts');
+      const choices = detected.map((d) => ({
+        value: d.manifest.name,
+        name: d.manifest.displayName,
+        checked: true,
+      }));
+      const selectedNames = await checkbox({
+        message: 'Register plugins for',
+        choices,
+      });
+      selected = detected.filter((d) => selectedNames.includes(d.manifest.name));
+      if (selected.length === 0) {
+        console.log('  Skipped plugin registration.');
+      }
+    }
+
     const packageRoot = resolvePackageRoot();
     const portableVaultDir = collapseHomePath(vaultDir);
+    const registry = new SymbiontRegistry();
 
-    for (const d of detected) {
+    for (const d of selected) {
       try {
         if (d.manifest.pluginInstallCommand) {
           const cmd = d.manifest.pluginInstallCommand.replace('{packageRoot}', packageRoot);
@@ -121,17 +187,17 @@ export async function run(args: string[]): Promise<void> {
           console.log(`  Registered plugin with ${d.manifest.displayName}`);
         }
 
-        const configured = configureSymbiontVaultEnv(d, projectRoot, portableVaultDir);
-        if (configured) {
+        const adapter = registry.getAdapter(d.manifest.name);
+        if (adapter?.configureVaultEnv(projectRoot, portableVaultDir)) {
           console.log(`  Set MYCO_VAULT_DIR for ${d.manifest.displayName}`);
         }
       } catch (err) {
         console.error(`  Failed to register with ${d.manifest.displayName}: ${(err as Error).message}`);
       }
     }
-  } else if (alreadyInitialized) {
-    console.log(`Vault already initialized at ${vaultDir}`);
   }
+
+  // --- Summary ---
 
   if (!alreadyInitialized) {
     console.log('');
@@ -139,39 +205,9 @@ export async function run(args: string[]): Promise<void> {
     console.log(`Path:               ${vaultDir}`);
     console.log('');
     console.log('Next: start a coding session — Myco will begin capturing automatically.');
+  } else {
+    console.log('');
+    console.log('Run `myco doctor` to verify setup health.');
   }
 }
 
-import type { DetectedSymbiont } from '../symbionts/detect.js';
-
-/** Write MYCO_VAULT_DIR into a symbiont's settings or MCP config file. */
-function configureSymbiontVaultEnv(
-  d: DetectedSymbiont,
-  projectRoot: string,
-  portableVaultDir: string,
-): boolean {
-  try {
-    if (d.manifest.settingsPath) {
-      const settingsFile = path.join(projectRoot, d.manifest.settingsPath);
-      let settings: Record<string, unknown> = {};
-      try { settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8')) as Record<string, unknown>; } catch { /* fresh */ }
-      const env = (settings.env ?? {}) as Record<string, string>;
-      env.MYCO_VAULT_DIR = portableVaultDir;
-      settings.env = env;
-      fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
-      return true;
-    }
-
-    if (d.manifest.mcpConfigPath) {
-      const mcpFile = path.join(projectRoot, d.manifest.mcpConfigPath);
-      const config = JSON.parse(fs.readFileSync(mcpFile, 'utf-8')) as Record<string, unknown>;
-      const servers = config.mcpServers as Record<string, { env?: Record<string, string> }> | undefined;
-      if (servers?.myco) {
-        servers.myco.env = { ...servers.myco.env, MYCO_VAULT_DIR: portableVaultDir };
-        fs.writeFileSync(mcpFile, JSON.stringify(config, null, 2) + '\n', 'utf-8');
-        return true;
-      }
-    }
-  } catch { /* settings dir doesn't exist or config malformed */ }
-  return false;
-}
