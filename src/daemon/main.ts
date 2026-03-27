@@ -10,7 +10,7 @@
 import { DaemonServer } from './server.js';
 import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger } from './logger.js';
-import { loadConfig, saveConfig } from '../config/loader.js';
+import { loadConfig, updateConfig } from '../config/loader.js';
 import { resolvePort } from './port.js';
 import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter, extensionForMimeType, type TranscriptTurn } from '../symbionts/adapter.js';
@@ -1643,8 +1643,10 @@ export async function main(): Promise<void> {
   // Persist the resolved port to config if it was auto-derived
   if (config.daemon.port === null && resolvedPort !== 0) {
     try {
-      config.daemon.port = resolvedPort;
-      saveConfig(vaultDir, config);
+      updateConfig(vaultDir, (c) => ({
+        ...c,
+        daemon: { ...c.daemon, port: resolvedPort },
+      }));
       logger.info('daemon', 'Persisted auto-derived port to myco.yaml', { port: resolvedPort });
     } catch (err) {
       logger.warn('daemon', 'Failed to persist auto-derived port', { error: (err as Error).message });

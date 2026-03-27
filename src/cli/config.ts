@@ -1,10 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import YAML from 'yaml';
-import { loadConfig } from '../config/loader.js';
-import { MycoConfigSchema } from '../config/schema.js';
+import { loadConfig, updateConfig } from '../config/loader.js';
+import { withValue } from '../config/updates.js';
 
-const CONFIG_FILENAME = 'myco.yaml';
 const DAEMON_STATE_FILENAME = 'daemon.json';
 
 export async function run(args: string[], vaultDir: string): Promise<void> {
@@ -42,23 +40,22 @@ function configGet(dotPath: string, vaultDir: string): void {
 }
 
 function configSet(dotPath: string, rawValue: string, vaultDir: string): void {
-  const configPath = path.join(vaultDir, CONFIG_FILENAME);
-  const raw = fs.readFileSync(configPath, 'utf-8');
-  const doc = YAML.parse(raw) as Record<string, unknown>;
-
   const value = parseValue(rawValue);
-  setPath(doc, dotPath, value);
 
-  const result = MycoConfigSchema.safeParse(doc);
-  if (!result.success) {
-    console.error('Validation error:');
-    for (const issue of result.error.issues) {
-      console.error(`  ${issue.path.join('.')}: ${issue.message}`);
+  try {
+    updateConfig(vaultDir, (config) => withValue(config, dotPath, value));
+  } catch (err) {
+    if (err instanceof Error && 'issues' in err) {
+      const issues = (err as { issues: Array<{ path: (string | number)[]; message: string }> }).issues;
+      console.error('Validation error:');
+      for (const issue of issues) {
+        console.error(`  ${issue.path.join('.')}: ${issue.message}`);
+      }
+      process.exit(1);
     }
-    process.exit(1);
+    throw err;
   }
 
-  fs.writeFileSync(configPath, YAML.stringify(doc), 'utf-8');
   console.log(`Set ${dotPath} = ${JSON.stringify(value)}`);
 
   if (fs.existsSync(path.join(vaultDir, DAEMON_STATE_FILENAME))) {
@@ -77,20 +74,6 @@ function walkPath(obj: Record<string, unknown>, dotPath: string): unknown {
     current = (current as Record<string, unknown>)[segment];
   }
   return current;
-}
-
-/** Set a value at a dot-separated path, creating intermediate objects as needed. */
-function setPath(obj: Record<string, unknown>, dotPath: string, value: unknown): void {
-  const segments = dotPath.split('.');
-  let current: Record<string, unknown> = obj;
-  for (let i = 0; i < segments.length - 1; i++) {
-    const segment = segments[i];
-    if (current[segment] === undefined || current[segment] === null || typeof current[segment] !== 'object') {
-      current[segment] = {};
-    }
-    current = current[segment] as Record<string, unknown>;
-  }
-  current[segments[segments.length - 1]] = value;
 }
 
 /** Parse a string value as JSON (number, boolean, array, object), falling back to raw string. */

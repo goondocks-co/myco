@@ -95,3 +95,13 @@ export function saveConfig(vaultDir: string, config: MycoConfig): void {
   fs.mkdirSync(vaultDir, { recursive: true });
   fs.writeFileSync(configPath, YAML.stringify(validated), 'utf-8');
 }
+
+export function updateConfig(
+  vaultDir: string,
+  fn: (config: MycoConfig) => MycoConfig,
+): MycoConfig {
+  const current = loadConfig(vaultDir);
+  const updated = fn(current);
+  saveConfig(vaultDir, updated);
+  return updated;
+}

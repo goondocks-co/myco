@@ -25,7 +25,9 @@ import {
 } from '@myco/agent/registry.js';
 import { resolveDefinitionsDir } from '@myco/agent/loader.js';
 import { USER_TASK_SOURCE } from '@myco/constants.js';
-import { loadConfig, saveConfig } from '../../config/loader.js';
+import { loadConfig, updateConfig } from '../../config/loader.js';
+import { withTaskConfig } from '../../config/updates.js';
+import type { TaskConfigUpdate } from '../../config/updates.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 
 // ---------------------------------------------------------------------------
@@ -321,100 +323,18 @@ export async function handleUpdateTaskConfig(
   vaultDir: string,
 ): Promise<RouteResponse> {
   const taskId = req.params.id;
-  const body = req.body as Record<string, unknown> | undefined;
+  const body = req.body as TaskConfigUpdate | undefined;
 
   if (!body) {
     return { status: HTTP_BAD_REQUEST, body: { error: 'missing_body' } };
   }
 
-  const config = loadConfig(vaultDir);
-  if (!config.agent.tasks) {
-    config.agent.tasks = {};
-  }
-  if (!config.agent.tasks[taskId]) {
-    config.agent.tasks[taskId] = {};
-  }
-
-  const taskEntry = config.agent.tasks[taskId];
-
-  // Apply each field if present in the body
-  if ('provider' in body) {
-    if (body.provider === null) {
-      delete taskEntry.provider;
-    } else {
-      const p = body.provider as Record<string, unknown>;
-      taskEntry.provider = {
-        type: p.type as 'cloud' | 'ollama' | 'lmstudio',
-        model: p.model as string | undefined,
-        base_url: p.base_url as string | undefined,
-        context_length: p.context_length as number | undefined,
-      };
-    }
-  }
-
-  if ('model' in body) {
-    if (body.model === null) delete taskEntry.model;
-    else taskEntry.model = body.model as string;
-  }
-
-  if ('maxTurns' in body) {
-    if (body.maxTurns === null) delete taskEntry.maxTurns;
-    else taskEntry.maxTurns = body.maxTurns as number;
-  }
-
-  if ('timeoutSeconds' in body) {
-    if (body.timeoutSeconds === null) delete taskEntry.timeoutSeconds;
-    else taskEntry.timeoutSeconds = body.timeoutSeconds as number;
-  }
-
-  if ('phases' in body) {
-    if (body.phases === null) {
-      delete taskEntry.phases;
-    } else {
-      const phasesInput = body.phases as Record<string, Record<string, unknown> | null>;
-      if (!taskEntry.phases) taskEntry.phases = {};
-      for (const [phaseName, phaseValue] of Object.entries(phasesInput)) {
-        if (phaseValue === null) {
-          delete taskEntry.phases[phaseName];
-        } else {
-          if (!taskEntry.phases[phaseName]) taskEntry.phases[phaseName] = {};
-          const pe = taskEntry.phases[phaseName];
-          if ('provider' in phaseValue) {
-            if (phaseValue.provider === null) delete pe.provider;
-            else {
-              const pp = phaseValue.provider as Record<string, unknown>;
-              pe.provider = {
-                type: pp.type as 'cloud' | 'ollama' | 'lmstudio',
-                model: pp.model as string | undefined,
-                base_url: pp.base_url as string | undefined,
-                context_length: pp.context_length as number | undefined,
-              };
-            }
-          }
-          if ('model' in phaseValue) {
-            if (phaseValue.model === null) delete pe.model;
-            else pe.model = phaseValue.model as string;
-          }
-          if ('maxTurns' in phaseValue) {
-            if (phaseValue.maxTurns === null) delete pe.maxTurns;
-            else pe.maxTurns = phaseValue.maxTurns as number;
-          }
-        }
-      }
-      // Clean up empty phases map
-      if (Object.keys(taskEntry.phases).length === 0) delete taskEntry.phases;
-    }
-  }
-
-  // Clean up empty task entry
-  if (Object.keys(taskEntry).length === 0) {
-    delete config.agent.tasks[taskId];
-  }
-
-  saveConfig(vaultDir, config);
+  const updated = updateConfig(vaultDir, (config) =>
+    withTaskConfig(config, taskId, body),
+  );
 
   return {
     status: HTTP_OK,
-    body: { taskId, config: config.agent.tasks[taskId] ?? null },
+    body: { taskId, config: updated.agent.tasks?.[taskId] ?? null },
   };
 }

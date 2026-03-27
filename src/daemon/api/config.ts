@@ -1,4 +1,4 @@
-import { loadConfig, saveConfig } from '../../config/loader.js';
+import { loadConfig, updateConfig } from '../../config/loader.js';
 import { MycoConfigSchema } from '../../config/schema.js';
 import type { RouteResponse } from '../router.js';
 
@@ -15,6 +15,6 @@ export async function handlePutConfig(vaultDir: string, body: unknown): Promise<
       body: { error: 'validation_failed', issues: result.error.issues },
     };
   }
-  saveConfig(vaultDir, result.data);
-  return { body: result.data };
+  const updated = updateConfig(vaultDir, () => result.data);
+  return { body: updated };
 }

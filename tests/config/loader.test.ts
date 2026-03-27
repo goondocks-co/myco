@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { loadConfig, saveConfig } from '@myco/config/loader';
+import { loadConfig, saveConfig, updateConfig } from '@myco/config/loader';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -102,6 +102,38 @@ intelligence:
     const config = loadConfig(tmpDir);
     expect(config.version).toBe(3);
     expect(config.embedding.provider).toBe('openai-compatible');
+  });
+
+  it('updateConfig applies transform and persists', () => {
+    const yaml = `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`;
+    fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), yaml);
+
+    const result = updateConfig(tmpDir, (config) => ({
+      ...config,
+      embedding: { ...config.embedding, model: 'nomic-embed-text' },
+    }));
+
+    expect(result.embedding.model).toBe('nomic-embed-text');
+
+    // Verify it was persisted to disk
+    const reloaded = loadConfig(tmpDir);
+    expect(reloaded.embedding.model).toBe('nomic-embed-text');
+  });
+
+  it('updateConfig rejects invalid transforms without writing', () => {
+    const yaml = `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`;
+    fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), yaml);
+
+    expect(() =>
+      updateConfig(tmpDir, (config) => ({
+        ...config,
+        version: 99 as never,
+      })),
+    ).toThrow();
+
+    // Original file should be untouched
+    const reloaded = loadConfig(tmpDir);
+    expect(reloaded.embedding.model).toBe('bge-m3');
   });
 
   it('saves v3 config with validation', () => {
