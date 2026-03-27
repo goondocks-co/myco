@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { MycoConfigSchema } from '@myco/config/schema';
 import type { MycoConfig } from '@myco/config/schema';
-import { withValue, withEmbedding, withTaskConfig } from '@myco/config/updates';
+import { withValue, withEmbedding, withTaskConfig, withContext } from '@myco/config/updates';
 
 function baseConfig(): MycoConfig {
   return MycoConfigSchema.parse({ version: 3 });
@@ -173,5 +173,36 @@ describe('withTaskConfig', () => {
     config = withTaskConfig(config, 'task-b', { model: 'model-b' });
     expect(config.agent.tasks?.['task-a']?.model).toBe('model-a');
     expect(config.agent.tasks?.['task-b']?.model).toBe('model-b');
+  });
+});
+
+describe('withContext', () => {
+  it('sets digest_tier', () => {
+    const result = withContext(baseConfig(), { digest_tier: 3000 });
+    expect(result.context.digest_tier).toBe(3000);
+  });
+
+  it('sets prompt_search', () => {
+    const result = withContext(baseConfig(), { prompt_search: false });
+    expect(result.context.prompt_search).toBe(false);
+  });
+
+  it('sets prompt_max_spores', () => {
+    const result = withContext(baseConfig(), { prompt_max_spores: 5 });
+    expect(result.context.prompt_max_spores).toBe(5);
+  });
+
+  it('preserves other context fields when updating one', () => {
+    const config = withContext(baseConfig(), { digest_tier: 1500 });
+    const result = withContext(config, { prompt_search: false });
+    expect(result.context.digest_tier).toBe(1500);
+    expect(result.context.prompt_search).toBe(false);
+    expect(result.context.prompt_max_spores).toBe(3);
+  });
+
+  it('does not mutate the input config', () => {
+    const config = baseConfig();
+    withContext(config, { digest_tier: 1500 });
+    expect(config.context.digest_tier).toBe(5000);
   });
 });

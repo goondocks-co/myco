@@ -24,6 +24,11 @@ export interface MycoConfig {
     interval_seconds: number;
     summary_batch_interval: number;
   };
+  context: {
+    digest_tier: number;
+    prompt_search: boolean;
+    prompt_max_spores: number;
+  };
 }
 
 export function useConfig() {

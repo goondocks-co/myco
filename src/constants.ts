@@ -42,6 +42,8 @@ export const TOOL_OUTPUT_PREVIEW_CHARS = 200;
 export const SESSION_SUMMARY_PREVIEW_CHARS = 300;
 /** Max chars for a recall summary preview. */
 export const RECALL_SUMMARY_PREVIEW_CHARS = 200;
+/** Max chars for search result and hydrated context previews. */
+export const SEARCH_PREVIEW_CHARS = 300;
 
 // --- Log preview limits (short previews for structured log fields) ---
 /** Max chars for a user prompt preview in log entries. */
@@ -153,6 +155,9 @@ export const SESSION_CONTEXT_MAX_TOKENS = 500;
 export const PROMPT_CONTEXT_MAX_TOKENS = 300;
 /** Minimum prompt length to trigger context search. */
 export const PROMPT_CONTEXT_MIN_LENGTH = 10;
+
+/** Over-fetch multiplier for vector search to compensate for post-filtering. */
+export const PROMPT_VECTOR_OVER_FETCH = 2;
 
 // --- Spore status filtering ---
 /** Spore statuses excluded from search results and context injection. */

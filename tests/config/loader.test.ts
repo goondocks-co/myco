@@ -83,7 +83,6 @@ digest:
     // Removed fields should not be present
     const raw = config as Record<string, unknown>;
     expect(raw.intelligence).toBeUndefined();
-    expect(raw.context).toBeUndefined();
     expect(raw.team).toBeUndefined();
     expect(raw.digest).toBeUndefined();
   });

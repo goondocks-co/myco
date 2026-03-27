@@ -25,6 +25,12 @@ export const DEFAULT_INTERVAL_SECONDS = 300;
 /** Default summary batch interval (0 = disabled). */
 export const DEFAULT_SUMMARY_BATCH_INTERVAL = 5;
 
+/** Default digest tier for context injection. */
+export const DEFAULT_DIGEST_TIER = 5000;
+
+/** Default max spores injected per prompt. */
+export const DEFAULT_MAX_SPORES = 3;
+
 /** Map log level to Badge variant. */
 export function levelBadgeVariant(level: LogLevel): 'default' | 'secondary' | 'warning' | 'destructive' {
   switch (level) {

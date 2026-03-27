@@ -25,6 +25,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../ui/select';
+import { Switch } from '../ui/switch';
 
 import { DEFAULT_INTERVAL_SECONDS, DEFAULT_SUMMARY_BATCH_INTERVAL } from '../../lib/constants';
 
@@ -298,21 +299,7 @@ export function AgentConfig() {
               Automatically process unprocessed batches on a timer.
             </p>
           </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={form.autoRun}
-            onClick={() => setField('autoRun', !form.autoRun)}
-            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 ${
-              form.autoRun ? 'bg-primary' : 'bg-surface-container-high'
-            }`}
-          >
-            <span
-              className={`pointer-events-none block h-5 w-5 rounded-full bg-on-surface shadow-lg ring-0 transition-transform ${
-                form.autoRun ? 'translate-x-5' : 'translate-x-0'
-              }`}
-            />
-          </button>
+          <Switch checked={form.autoRun} onCheckedChange={v => setField('autoRun', v)} />
         </div>
 
         {/* Run interval */}

@@ -5,7 +5,7 @@ import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
 import { fetchJson } from '../lib/api';
 import { parseNumericField } from '../lib/format';
-import { DEFAULT_INTERVAL_SECONDS, DEFAULT_SUMMARY_BATCH_INTERVAL } from '../lib/constants';
+import { DEFAULT_INTERVAL_SECONDS, DEFAULT_SUMMARY_BATCH_INTERVAL, DEFAULT_DIGEST_TIER, DEFAULT_MAX_SPORES } from '../lib/constants';
 import { Surface } from '../components/ui/surface';
 import { PageHeader } from '../components/ui/page-header';
 import { SectionHeader } from '../components/ui/section-header';
@@ -18,6 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../components/ui/select';
+import { Switch } from '../components/ui/switch';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 type Provider = 'ollama' | 'openai-compatible';
@@ -26,6 +27,14 @@ const LOG_LEVELS: LogLevel[] = ['debug', 'info', 'warn', 'error'];
 const PROVIDERS: { value: Provider; label: string }[] = [
   { value: 'ollama', label: 'Ollama' },
   { value: 'openai-compatible', label: 'OpenAI-compatible' },
+];
+
+const DIGEST_TIERS: { value: string; label: string }[] = [
+  { value: '1500', label: '1.5K — Executive briefing' },
+  { value: '3000', label: '3K — Team standup' },
+  { value: '5000', label: '5K — Deep onboarding' },
+  { value: '7500', label: '7.5K — Comprehensive' },
+  { value: '10000', label: '10K — Full institutional' },
 ];
 
 type TestState = 'idle' | 'testing' | 'success' | 'error';
@@ -39,6 +48,9 @@ interface FormState {
   agentAutoRun: boolean;
   agentIntervalSeconds: string;
   agentSummaryBatchInterval: string;
+  contextDigestTier: string;
+  contextPromptSearch: boolean;
+  contextMaxSpores: string;
 }
 
 function toFormState(config: MycoConfig): FormState {
@@ -51,6 +63,9 @@ function toFormState(config: MycoConfig): FormState {
     agentAutoRun: config.agent?.auto_run ?? true,
     agentIntervalSeconds: String(config.agent?.interval_seconds ?? DEFAULT_INTERVAL_SECONDS),
     agentSummaryBatchInterval: String(config.agent?.summary_batch_interval ?? DEFAULT_SUMMARY_BATCH_INTERVAL),
+    contextDigestTier: String(config.context?.digest_tier ?? DEFAULT_DIGEST_TIER),
+    contextPromptSearch: config.context?.prompt_search ?? true,
+    contextMaxSpores: String(config.context?.prompt_max_spores ?? DEFAULT_MAX_SPORES),
   };
 }
 
@@ -72,6 +87,11 @@ function formToConfig(form: FormState, original: MycoConfig): MycoConfig {
       interval_seconds: parseNumericField(form.agentIntervalSeconds, DEFAULT_INTERVAL_SECONDS),
       summary_batch_interval: parseNumericField(form.agentSummaryBatchInterval, DEFAULT_SUMMARY_BATCH_INTERVAL),
     },
+    context: {
+      digest_tier: parseNumericField(form.contextDigestTier, DEFAULT_DIGEST_TIER),
+      prompt_search: form.contextPromptSearch,
+      prompt_max_spores: parseNumericField(form.contextMaxSpores, DEFAULT_MAX_SPORES),
+    },
   };
 }
 
@@ -85,7 +105,10 @@ function isDirty(form: FormState, original: MycoConfig): boolean {
     form.embeddingBaseUrl !== orig.embeddingBaseUrl ||
     form.agentAutoRun !== orig.agentAutoRun ||
     form.agentIntervalSeconds !== orig.agentIntervalSeconds ||
-    form.agentSummaryBatchInterval !== orig.agentSummaryBatchInterval
+    form.agentSummaryBatchInterval !== orig.agentSummaryBatchInterval ||
+    form.contextDigestTier !== orig.contextDigestTier ||
+    form.contextPromptSearch !== orig.contextPromptSearch ||
+    form.contextMaxSpores !== orig.contextMaxSpores
   );
 }
 
@@ -335,21 +358,7 @@ export default function Settings() {
                 <FieldLabel>Auto Run</FieldLabel>
                 <FieldHint>Automatically run the agent on unprocessed batches.</FieldHint>
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={form.agentAutoRun}
-                onClick={() => setField('agentAutoRun', !form.agentAutoRun)}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 ${
-                  form.agentAutoRun ? 'bg-primary' : 'bg-surface-container-high'
-                }`}
-              >
-                <span
-                  className={`pointer-events-none block h-5 w-5 rounded-full bg-on-surface shadow-lg ring-0 transition-transform ${
-                    form.agentAutoRun ? 'translate-x-5' : 'translate-x-0'
-                  }`}
-                />
-              </button>
+              <Switch checked={form.agentAutoRun} onCheckedChange={v => setField('agentAutoRun', v)} />
             </div>
 
             {/* Interval */}
@@ -376,6 +385,57 @@ export default function Settings() {
                 onChange={e => setField('agentSummaryBatchInterval', e.target.value)}
               />
               <FieldHint>Trigger a session summary every N batches. Set to 0 to disable.</FieldHint>
+            </div>
+          </div>
+        </Surface>
+
+        {/* ---- Context Injection section ---- */}
+        <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-ochre">
+          <SectionHeader>Context Injection</SectionHeader>
+
+          <div className="space-y-4">
+            {/* Digest tier */}
+            <div className="space-y-1.5">
+              <FieldLabel>Digest Tier</FieldLabel>
+              <Select
+                value={form.contextDigestTier}
+                onValueChange={v => setField('contextDigestTier', v)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {DIGEST_TIERS.map(tier => (
+                    <SelectItem key={tier.value} value={tier.value}>
+                      {tier.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <FieldHint>Token budget for digest context injected at session start.</FieldHint>
+            </div>
+
+            {/* Prompt search toggle */}
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <FieldLabel>Prompt Search</FieldLabel>
+                <FieldHint>Search vault for relevant observations on each prompt.</FieldHint>
+              </div>
+              <Switch checked={form.contextPromptSearch} onCheckedChange={v => setField('contextPromptSearch', v)} />
+            </div>
+
+            {/* Max spores per prompt */}
+            <div className="space-y-1.5">
+              <FieldLabel>Max Spores per Prompt</FieldLabel>
+              <Input
+                type="number"
+                min="0"
+                max="10"
+                placeholder="3"
+                value={form.contextMaxSpores}
+                onChange={e => setField('contextMaxSpores', e.target.value)}
+              />
+              <FieldHint>Maximum observations injected per prompt. Lower = leaner context.</FieldHint>
             </div>
           </div>
         </Surface>

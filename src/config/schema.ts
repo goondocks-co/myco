@@ -43,6 +43,15 @@ const TaskProviderOverrideSchema = z.object({
   phases: z.record(z.string(), PhaseOverrideSchema).optional(),
 });
 
+const ContextSchema = z.object({
+  /** Which digest tier to inject at session start. */
+  digest_tier: z.number().int().default(5000),
+  /** Enable semantic spore search on each user prompt. */
+  prompt_search: z.boolean().default(true),
+  /** Max spores to inject per prompt (0-10). */
+  prompt_max_spores: z.number().int().min(0).max(10).default(3),
+});
+
 const AgentSchema = z.object({
   /** Whether the daemon automatically runs the agent on unprocessed batches. */
   auto_run: z.boolean().default(true),
@@ -73,6 +82,7 @@ export const MycoConfigSchema = z.preprocess(
     daemon: DaemonSchema.default(() => DaemonSchema.parse({})),
     capture: CaptureSchema.default(() => CaptureSchema.parse({})),
     agent: AgentSchema.default(() => AgentSchema.parse({})),
+    context: ContextSchema.default(() => ContextSchema.parse({})),
   }),
 );
 
@@ -80,3 +90,4 @@ export type MycoConfig = z.output<typeof MycoConfigSchema>;
 export type EmbeddingProviderConfig = z.infer<typeof EmbeddingProviderSchema>;
 export type TaskProviderOverride = z.infer<typeof TaskProviderOverrideSchema>;
 export type PhaseOverride = z.infer<typeof PhaseOverrideSchema>;
+export type ContextConfig = z.infer<typeof ContextSchema>;
