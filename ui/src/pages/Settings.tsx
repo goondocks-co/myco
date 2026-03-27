@@ -5,7 +5,7 @@ import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
 import { fetchJson } from '../lib/api';
 import { parseNumericField } from '../lib/format';
-import { DEFAULT_INTERVAL_SECONDS, DEFAULT_SUMMARY_BATCH_INTERVAL, DEFAULT_DIGEST_TIER, DEFAULT_MAX_SPORES } from '../lib/constants';
+import { DEFAULT_DIGEST_TIER, DEFAULT_MAX_SPORES } from '../lib/constants';
 import { Surface } from '../components/ui/surface';
 import { PageHeader } from '../components/ui/page-header';
 import { SectionHeader } from '../components/ui/section-header';
@@ -47,9 +47,6 @@ interface FormState {
   embeddingProvider: Provider;
   embeddingModel: string;
   embeddingBaseUrl: string;
-  agentAutoRun: boolean;
-  agentIntervalSeconds: string;
-  agentSummaryBatchInterval: string;
   contextDigestTier: string;
   contextPromptSearch: boolean;
   contextMaxSpores: string;
@@ -63,9 +60,6 @@ function toFormState(config: MycoConfig): FormState {
     embeddingProvider: config.embedding.provider,
     embeddingModel: config.embedding.model,
     embeddingBaseUrl: config.embedding.base_url ?? '',
-    agentAutoRun: config.agent?.auto_run ?? true,
-    agentIntervalSeconds: String(config.agent?.interval_seconds ?? DEFAULT_INTERVAL_SECONDS),
-    agentSummaryBatchInterval: String(config.agent?.summary_batch_interval ?? DEFAULT_SUMMARY_BATCH_INTERVAL),
     contextDigestTier: String(config.context?.digest_tier ?? DEFAULT_DIGEST_TIER),
     contextPromptSearch: config.context?.prompt_search ?? true,
     contextMaxSpores: String(config.context?.prompt_max_spores ?? DEFAULT_MAX_SPORES),
@@ -87,12 +81,7 @@ function formToConfig(form: FormState, original: MycoConfig): MycoConfig {
       model: form.embeddingModel,
       base_url: form.embeddingBaseUrl !== '' ? form.embeddingBaseUrl : undefined,
     },
-    agent: {
-      ...original.agent,
-      auto_run: form.agentAutoRun,
-      interval_seconds: parseNumericField(form.agentIntervalSeconds, DEFAULT_INTERVAL_SECONDS),
-      summary_batch_interval: parseNumericField(form.agentSummaryBatchInterval, DEFAULT_SUMMARY_BATCH_INTERVAL),
-    },
+    agent: original.agent,
     context: {
       ...original.context,
       digest_tier: parseNumericField(form.contextDigestTier, DEFAULT_DIGEST_TIER),
@@ -111,9 +100,6 @@ function isDirty(form: FormState, original: MycoConfig): boolean {
     form.embeddingProvider !== orig.embeddingProvider ||
     form.embeddingModel !== orig.embeddingModel ||
     form.embeddingBaseUrl !== orig.embeddingBaseUrl ||
-    form.agentAutoRun !== orig.agentAutoRun ||
-    form.agentIntervalSeconds !== orig.agentIntervalSeconds ||
-    form.agentSummaryBatchInterval !== orig.agentSummaryBatchInterval ||
     form.contextDigestTier !== orig.contextDigestTier ||
     form.contextPromptSearch !== orig.contextPromptSearch ||
     form.contextMaxSpores !== orig.contextMaxSpores
@@ -367,48 +353,6 @@ export default function Settings() {
           </div>
         </Surface>
         </div>{/* end top row grid */}
-
-        {/* ---- Agent section ---- */}
-        <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-outline">
-          <SectionHeader>Agent</SectionHeader>
-
-          <div className="space-y-4">
-            {/* Auto-run toggle */}
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <FieldLabel>Auto Run</FieldLabel>
-                <FieldHint>Automatically run the agent on unprocessed batches.</FieldHint>
-              </div>
-              <Switch checked={form.agentAutoRun} onCheckedChange={v => setField('agentAutoRun', v)} />
-            </div>
-
-            {/* Interval */}
-            <div className="space-y-1.5">
-              <FieldLabel>Run Interval (seconds)</FieldLabel>
-              <Input
-                type="number"
-                min="30"
-                placeholder="300"
-                value={form.agentIntervalSeconds}
-                onChange={e => setField('agentIntervalSeconds', e.target.value)}
-              />
-              <FieldHint>Seconds between agent timer checks. Minimum 30.</FieldHint>
-            </div>
-
-            {/* Summary batch interval */}
-            <div className="space-y-1.5">
-              <FieldLabel>Summary Batch Interval</FieldLabel>
-              <Input
-                type="number"
-                min="0"
-                placeholder="5"
-                value={form.agentSummaryBatchInterval}
-                onChange={e => setField('agentSummaryBatchInterval', e.target.value)}
-              />
-              <FieldHint>Trigger a session summary every N batches. Set to 0 to disable.</FieldHint>
-            </div>
-          </div>
-        </Surface>
 
         {/* ---- Context Injection section ---- */}
         <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-ochre">
