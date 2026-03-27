@@ -7,7 +7,6 @@ vi.mock('@myco/intelligence/embed-query.js', () => ({
   tryEmbed: async () => null,
 }));
 import { upsertSession } from '@myco/db/queries/sessions';
-import { upsertPlan } from '@myco/db/queries/plans';
 import { insertSpore } from '@myco/db/queries/spores';
 import { registerAgent } from '@myco/db/queries/agents';
 import { MycoConfigSchema } from '@myco/config/schema';
@@ -41,21 +40,6 @@ describe('buildInjectedContext', () => {
 
     const result = await buildInjectedContext(config, {});
     expect(result.layers.sessions).toContain('Auth Middleware Refactor');
-    expect(result.tokenEstimate).toBeGreaterThan(0);
-  });
-
-  it('includes active plans in context', async () => {
-    const now = Math.floor(Date.now() / 1000);
-    upsertPlan({
-      id: 'plan-auth',
-      created_at: now,
-      status: 'active',
-      title: 'Auth Redesign',
-      content: 'Replace JWT with session tokens for better security.',
-    });
-
-    const result = await buildInjectedContext(config, {});
-    expect(result.layers.plans).toContain('Auth Redesign');
     expect(result.tokenEstimate).toBeGreaterThan(0);
   });
 

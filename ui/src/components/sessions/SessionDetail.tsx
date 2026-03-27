@@ -11,6 +11,7 @@ import { useSession, useDeleteSession, useSessionImpact } from '../../hooks/use-
 import { useSymbionts, buildResumeCommand } from '../../hooks/use-symbionts';
 import { useTriggerRun } from '../../hooks/use-agent';
 import { BatchTimeline } from './BatchTimeline';
+import { SessionPlans } from './SessionPlans';
 import { StatusBadge } from './status-helpers';
 import { formatTimeAgo, formatDuration as formatDurationSec } from '../../lib/format';
 import { cn } from '../../lib/cn';
@@ -81,6 +82,29 @@ function MetaItem({ label, value, mono = true, copyable = false, code = false }:
   );
 }
 
+type TabValue = 'conversation' | 'plans';
+
+function TabButton({ label, value, activeTab, onClick }: {
+  label: string;
+  value: TabValue;
+  activeTab: TabValue;
+  onClick: (v: TabValue) => void;
+}) {
+  return (
+    <button
+      onClick={() => onClick(value)}
+      className={cn(
+        'px-4 py-2 font-sans text-sm font-medium transition-colors cursor-pointer',
+        activeTab === value
+          ? 'border-b-2 border-primary text-on-surface'
+          : 'text-muted-foreground hover:text-on-surface',
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
 /* ---------- Component ---------- */
 
 export interface SessionDetailProps {
@@ -94,6 +118,7 @@ export function SessionDetail({ id }: SessionDetailProps) {
   const triggerRun = useTriggerRun();
   const [summaryStatus, setSummaryStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<TabValue>('conversation');
   const deleteSession = useDeleteSession();
   const { data: impact } = useSessionImpact(deleteOpen ? id : null);
 
@@ -249,10 +274,15 @@ export function SessionDetail({ id }: SessionDetailProps) {
         </Surface>
       )}
 
-      {/* Conversation (full-width) */}
+      {/* Tab navigation */}
       <div className="min-w-0 overflow-hidden">
-        <SectionHeader className="mb-3">Conversation</SectionHeader>
-        <BatchTimeline sessionId={id} />
+        <div className="flex gap-0 border-b border-border mb-4">
+          <TabButton label="Conversation" value="conversation" activeTab={activeTab} onClick={setActiveTab} />
+          <TabButton label="Plans" value="plans" activeTab={activeTab} onClick={setActiveTab} />
+        </div>
+
+        {activeTab === 'conversation' && <BatchTimeline sessionId={id} />}
+        {activeTab === 'plans' && <SessionPlans sessionId={id} />}
       </div>
 
       <ConfirmDialog

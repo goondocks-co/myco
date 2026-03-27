@@ -41,9 +41,17 @@ function sporeMetadata(row: Record<string, unknown>): DomainMetadata {
   };
 }
 
-/** Build metadata for a plan or artifact row — empty. */
+/** Build metadata for an artifact row — empty. */
 function emptyMetadata(): DomainMetadata {
   return {};
+}
+
+/** Build metadata for a plan row. */
+function planMetadata(row: Record<string, unknown>): DomainMetadata {
+  return {
+    ...(row.session_id != null ? { session_id: row.session_id as string } : {}),
+    ...(row.source_path != null ? { source_path: row.source_path as string } : {}),
+  };
 }
 
 /** Get the metadata builder for a given namespace. */
@@ -54,6 +62,7 @@ function metadataFor(namespace: EmbeddableTable, row: Record<string, unknown>): 
     case 'spores':
       return sporeMetadata(row);
     case 'plans':
+      return planMetadata(row);
     case 'artifacts':
       return emptyMetadata();
   }

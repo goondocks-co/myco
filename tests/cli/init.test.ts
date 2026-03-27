@@ -136,12 +136,11 @@ describe('myco init', () => {
     consoleSpy.mockRestore();
   });
 
-  it('includes artifact_watch for both Claude and Cursor plan dirs', async () => {
+  it('initializes plan_dirs as empty array (agent-specific dirs come from symbiont manifests)', async () => {
     const vault = path.join(testDir, 'vault');
     await run(['--vault', vault, '--embedding-model', 'bge-m3']);
 
     const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
-    expect(config.capture.artifact_watch).toContain('.claude/plans/');
-    expect(config.capture.artifact_watch).toContain('.cursor/plans/');
+    expect(config.capture.plan_dirs).toEqual([]);
   });
 });

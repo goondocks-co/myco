@@ -52,7 +52,6 @@ export const LOG_PROMPT_PREVIEW_CHARS = 50;
 export const LOG_MESSAGE_PREVIEW_CHARS = 80;
 
 // --- Context injection layer budgets (chars, not tokens — used with .slice()) ---
-export const CONTEXT_PLAN_PREVIEW_CHARS = 100;
 export const CONTEXT_SESSION_PREVIEW_CHARS = 80;
 export const CONTEXT_SPORE_PREVIEW_CHARS = 80;
 
@@ -77,8 +76,6 @@ export const EMBEDDING_REQUEST_TIMEOUT_MS = 60_000;
 export const DIGEST_LLM_REQUEST_TIMEOUT_MS = 600_000;
 /** Stdin read timeout for hooks (ms). */
 export const STDIN_TIMEOUT_MS = 100;
-/** Chokidar write stability threshold (ms). */
-export const FILE_WATCH_STABILITY_MS = 1000;
 /** Provider detection timeout for detect-providers CLI command (ms). */
 export const PROVIDER_DETECT_TIMEOUT_MS = 3000;
 
@@ -143,8 +140,6 @@ export const LINEAGE_RECENT_SESSIONS_LIMIT = 5;
 export const RELATED_SPORES_LIMIT = 50;
 
 // --- Context injection ---
-/** Max active plans to inject at session start. */
-export const SESSION_CONTEXT_MAX_PLANS = 3;
 /** Max spores to inject per prompt. */
 export const PROMPT_CONTEXT_MAX_SPORES = 3;
 /** Minimum similarity score for prompt context injection (0-1). */

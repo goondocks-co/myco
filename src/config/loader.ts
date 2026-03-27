@@ -44,11 +44,16 @@ export function loadConfig(vaultDir: string): MycoConfig {
       parsed.daemon = { port: port ?? null, log_level: log_level ?? 'info' };
     }
 
-    // Keep capture basics, drop token-related fields
+    // Keep capture basics, drop token-related fields; migrate artifact_watch → plan_dirs
     const capture = parsed.capture as Record<string, unknown> | undefined;
     if (capture) {
-      const { transcript_paths, artifact_watch, artifact_extensions, buffer_max_events } = capture;
-      parsed.capture = { transcript_paths, artifact_watch, artifact_extensions, buffer_max_events };
+      const { transcript_paths, artifact_watch, plan_dirs, artifact_extensions, buffer_max_events } = capture;
+      parsed.capture = {
+        transcript_paths,
+        plan_dirs: plan_dirs ?? artifact_watch,
+        artifact_extensions,
+        buffer_max_events,
+      };
     }
 
     // Drop removed top-level sections

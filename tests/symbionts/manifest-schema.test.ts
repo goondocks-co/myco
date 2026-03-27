@@ -36,4 +36,42 @@ describe('symbiont manifests', () => {
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
     expect(manifest.mcpConfigPath).toBe('.cursor/mcp.json');
   });
+
+  it('accepts optional capture.planDirs field', () => {
+    const manifest = SymbiontManifestSchema.parse({
+      name: 'test-agent',
+      displayName: 'Test Agent',
+      binary: 'test',
+      configDir: '.test',
+      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
+      hookFields: { transcriptPath: 'tp', lastResponse: 'lr', sessionId: 'sid' },
+      capture: { planDirs: ['.test/plans/'] },
+    });
+    expect(manifest.capture?.planDirs).toEqual(['.test/plans/']);
+  });
+
+  it('defaults capture.planDirs to empty array when capture provided without planDirs', () => {
+    const manifest = SymbiontManifestSchema.parse({
+      name: 'test-agent',
+      displayName: 'Test Agent',
+      binary: 'test',
+      configDir: '.test',
+      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
+      hookFields: { transcriptPath: 'tp', lastResponse: 'lr', sessionId: 'sid' },
+      capture: {},
+    });
+    expect(manifest.capture?.planDirs).toEqual([]);
+  });
+
+  it('allows manifest without capture block', () => {
+    const manifest = SymbiontManifestSchema.parse({
+      name: 'test-agent',
+      displayName: 'Test Agent',
+      binary: 'test',
+      configDir: '.test',
+      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
+      hookFields: { transcriptPath: 'tp', lastResponse: 'lr', sessionId: 'sid' },
+    });
+    expect(manifest.capture).toBeUndefined();
+  });
 });

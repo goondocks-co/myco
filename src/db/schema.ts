@@ -17,7 +17,7 @@ import type { Database } from 'better-sqlite3';
 import { epochSeconds } from '@myco/constants.js';
 
 /** Current schema version -- fresh start for the SQLite era. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /** Embedding vector dimensions (bge-m3 default). */
 export const EMBEDDING_DIMENSIONS = 1024;
@@ -95,17 +95,20 @@ const ACTIVITIES_TABLE = `
 
 const PLANS_TABLE = `
   CREATE TABLE IF NOT EXISTS plans (
-    id          TEXT PRIMARY KEY,
-    status      TEXT DEFAULT 'active',
-    author      TEXT,
-    title       TEXT,
-    content     TEXT,
-    source_path TEXT,
-    tags        TEXT,
-    processed   INTEGER DEFAULT 0,
-    created_at  INTEGER NOT NULL,
-    updated_at  INTEGER,
-    embedded    INTEGER DEFAULT 0
+    id               TEXT PRIMARY KEY,
+    status           TEXT DEFAULT 'active',
+    author           TEXT,
+    title            TEXT,
+    content          TEXT,
+    source_path      TEXT,
+    tags             TEXT,
+    session_id       TEXT REFERENCES sessions(id),
+    prompt_batch_id  INTEGER REFERENCES prompt_batches(id),
+    content_hash     TEXT,
+    processed        INTEGER DEFAULT 0,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER,
+    embedded         INTEGER DEFAULT 0
   )`;
 
 const ARTIFACTS_TABLE = `
@@ -139,6 +142,8 @@ const ATTACHMENTS_TABLE = `
     file_path       TEXT NOT NULL,
     media_type      TEXT,
     description     TEXT,
+    data            BLOB,
+    content_hash    TEXT,
     created_at      INTEGER NOT NULL
   )`;
 
@@ -381,6 +386,13 @@ const SECONDARY_INDEXES = [
 
   // Agent tasks
   'CREATE INDEX IF NOT EXISTS idx_agent_tasks_agent_id ON agent_tasks (agent_id)',
+
+  // Plans
+  'CREATE INDEX IF NOT EXISTS idx_plans_session_id ON plans (session_id)',
+  'CREATE INDEX IF NOT EXISTS idx_plans_source_path ON plans (source_path)',
+  'CREATE INDEX IF NOT EXISTS idx_plans_content_hash ON plans (content_hash)',
+  // Attachments
+  'CREATE INDEX IF NOT EXISTS idx_attachments_file_path ON attachments (file_path)',
 ];
 
 // -- Ordered table creation -------------------------------------------------
@@ -412,6 +424,65 @@ const TABLE_DDLS = [
 ];
 
 // ---------------------------------------------------------------------------
+// Migrations
+// ---------------------------------------------------------------------------
+
+/**
+ * Migrate a version-1 database to version-2.
+ *
+ * Version 2 adds:
+ *   - plans.session_id, plans.prompt_batch_id, plans.content_hash
+ *   - attachments.data, attachments.content_hash
+ *   - indexes: idx_plans_session_id, idx_plans_source_path, idx_plans_content_hash
+ *
+ * Each ALTER TABLE is wrapped in try/catch so re-running is safe -- SQLite
+ * throws "duplicate column name" if the column already exists, which we ignore.
+ */
+function migrateV1ToV2(db: Database): void {
+  db.exec('BEGIN');
+  try {
+    const alterStatements = [
+      'ALTER TABLE plans ADD COLUMN session_id TEXT REFERENCES sessions(id)',
+      'ALTER TABLE plans ADD COLUMN prompt_batch_id INTEGER REFERENCES prompt_batches(id)',
+      'ALTER TABLE plans ADD COLUMN content_hash TEXT',
+      'ALTER TABLE attachments ADD COLUMN data BLOB',
+      'ALTER TABLE attachments ADD COLUMN content_hash TEXT',
+    ];
+
+    for (const stmt of alterStatements) {
+      try {
+        db.exec(stmt);
+      } catch {
+        // Column already exists -- safe to ignore on re-run
+      }
+    }
+
+    // Indexes use IF NOT EXISTS so they are idempotent
+    const newIndexes = [
+      'CREATE INDEX IF NOT EXISTS idx_plans_session_id ON plans (session_id)',
+      'CREATE INDEX IF NOT EXISTS idx_plans_source_path ON plans (source_path)',
+      'CREATE INDEX IF NOT EXISTS idx_plans_content_hash ON plans (content_hash)',
+      'CREATE INDEX IF NOT EXISTS idx_attachments_file_path ON attachments (file_path)',
+    ];
+
+    for (const idx of newIndexes) {
+      db.exec(idx);
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`
+    ).run(2, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -428,6 +499,11 @@ export function createSchema(db: Database): void {
       'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1'
     ).get() as { version: number } | undefined;
     if (row?.version === SCHEMA_VERSION) return;
+    // Migration path: version 1 → 2
+    if (row?.version === 1) {
+      migrateV1ToV2(db);
+      return;
+    }
   } catch {
     // Table doesn't exist yet -- first run
   }

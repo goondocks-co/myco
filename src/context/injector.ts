@@ -1,22 +1,19 @@
 /**
  * Context injector — assembles context from SQLite for hook injection.
  *
- * Queries sessions, plans, and spores from SQLite. For prompt-submit context,
+ * Queries sessions and spores from SQLite. For prompt-submit context,
  * semantic search is deferred to Phase 2 (requires daemon vector store).
  * If no data exists (zero-config), returns empty context gracefully.
  */
 
 import { getDatabase } from '@myco/db/client.js';
 import { listSessions } from '@myco/db/queries/sessions.js';
-import { listPlans } from '@myco/db/queries/plans.js';
 import { listSpores } from '@myco/db/queries/spores.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import {
   estimateTokens,
-  CONTEXT_PLAN_PREVIEW_CHARS,
   CONTEXT_SESSION_PREVIEW_CHARS,
   CONTEXT_SPORE_PREVIEW_CHARS,
-  SESSION_CONTEXT_MAX_PLANS,
   PROMPT_CONTEXT_MIN_LENGTH,
   EXCLUDED_SPORE_STATUSES,
 } from '@myco/constants.js';
@@ -36,12 +33,6 @@ const CONTEXT_SPORE_FETCH_LIMIT = 20;
 
 /** Max spores displayed after scoring. */
 const CONTEXT_SPORE_DISPLAY_LIMIT = 5;
-
-/** Active plan status values. */
-const ACTIVE_PLAN_STATUSES = new Set(['active', 'in_progress']);
-
-/** Default token budget for plans layer. */
-const DEFAULT_PLANS_BUDGET = 200;
 
 /** Default token budget for sessions layer. */
 const DEFAULT_SESSIONS_BUDGET = 500;
@@ -67,7 +58,6 @@ interface InjectedContext {
   text: string;
   tokenEstimate: number;
   layers: {
-    plans: string;
     sessions: string;
     spores: string;
     team: string;
@@ -94,26 +84,13 @@ export async function buildInjectedContext(
     return emptyContext();
   }
 
-  // Fetch plans, sessions, and spores in parallel
-  const [plans, sessions, spores] = await Promise.all([
-    listPlans({ limit: SESSION_CONTEXT_MAX_PLANS * 2 }),
+  // Fetch sessions and spores in parallel
+  const [sessions, spores] = await Promise.all([
     listSessions({ limit: CONTEXT_SESSION_LIMIT }),
     listSpores({ limit: CONTEXT_SPORE_FETCH_LIMIT, status: 'active' }),
   ]);
 
-  // Layer 1: Active plans
-  const activePlans = plans.filter((p) =>
-    ACTIVE_PLAN_STATUSES.has(p.status),
-  );
-  const plansText = formatLayer(
-    'Active Plans',
-    activePlans.slice(0, SESSION_CONTEXT_MAX_PLANS).map((p) =>
-      `- **${p.title ?? p.id}** (${p.status}): ${(p.content ?? '').slice(0, CONTEXT_PLAN_PREVIEW_CHARS)}`,
-    ),
-    DEFAULT_PLANS_BUDGET,
-  );
-
-  // Layer 2: Recent sessions
+  // Layer 1: Recent sessions
   const sessionsText = formatLayer(
     'Recent Sessions',
     sessions.slice(0, CONTEXT_SESSION_DISPLAY_LIMIT).map((s) => {
@@ -125,7 +102,7 @@ export async function buildInjectedContext(
     DEFAULT_SESSIONS_BUDGET,
   );
 
-  // Layer 3: Relevant spores (exclude superseded/archived)
+  // Layer 2: Relevant spores (exclude superseded/archived)
   const filteredSpores = spores.filter((s) =>
     !EXCLUDED_SPORE_STATUSES.has(s.status),
   );
@@ -137,11 +114,11 @@ export async function buildInjectedContext(
     DEFAULT_SPORES_BUDGET,
   );
 
-  // Layer 4: Team activity (placeholder — populated in Phase 2)
+  // Layer 3: Team activity (placeholder — populated in Phase 2)
   const teamText = formatLayer('Team Activity', [], DEFAULT_TEAM_BUDGET);
 
   // Enforce total max_tokens budget
-  const allLayers = [plansText, sessionsText, sporesText, teamText].filter(Boolean);
+  const allLayers = [sessionsText, sporesText, teamText].filter(Boolean);
   const parts: string[] = [];
   let totalTokens = 0;
 
@@ -158,7 +135,6 @@ export async function buildInjectedContext(
     text: fullText,
     tokenEstimate: totalTokens,
     layers: {
-      plans: plansText,
       sessions: sessionsText,
       spores: sporesText,
       team: teamText,
@@ -194,7 +170,7 @@ function emptyContext(): InjectedContext {
   return {
     text: '',
     tokenEstimate: 0,
-    layers: { plans: '', sessions: '', spores: '', team: '' },
+    layers: { sessions: '', spores: '', team: '' },
   };
 }
 

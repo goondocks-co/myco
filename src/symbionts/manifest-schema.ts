@@ -1,5 +1,9 @@
 import { z } from 'zod';
 
+const CaptureManifestSchema = z.object({
+  planDirs: z.array(z.string()).default([]),
+});
+
 export const SymbiontManifestSchema = z.object({
   name: z.string(),
   displayName: z.string(),
@@ -14,6 +18,7 @@ export const SymbiontManifestSchema = z.object({
     lastResponse: z.string(),
     sessionId: z.string(),
   }),
+  capture: CaptureManifestSchema.optional(),
 });
 
 export type SymbiontManifest = z.infer<typeof SymbiontManifestSchema>;

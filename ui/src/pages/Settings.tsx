@@ -19,6 +19,7 @@ import {
   SelectValue,
 } from '../components/ui/select';
 import { Switch } from '../components/ui/switch';
+import { PlanCaptureCard } from '../components/config/PlanCaptureCard';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 type Provider = 'ollama' | 'openai-compatible';
@@ -439,6 +440,9 @@ export default function Settings() {
             </div>
           </div>
         </Surface>
+
+        {/* ---- Plan Capture section ---- */}
+        <PlanCaptureCard />
 
         {/* ---- Save row ---- */}
         <Surface level="low" className="p-4 flex items-center gap-4 border-t-2 border-t-sage">

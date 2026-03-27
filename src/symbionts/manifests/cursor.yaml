@@ -9,3 +9,6 @@ hookFields:
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
   sessionId: conversation_id
+capture:
+  planDirs:
+    - .cursor/plans/
