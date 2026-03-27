@@ -12,6 +12,7 @@ import {
   upsertSession,
   getSession,
   listSessions,
+  countSessions,
   updateSession,
   closeSession,
   getSessionImpact,
@@ -220,6 +221,138 @@ describe('session query helpers', () => {
       const rows = listSessions({ agent: 'cursor', status: 'completed' });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('s3');
+    });
+
+    it('paginates with offset', async () => {
+      const now = epochNow();
+      for (let i = 0; i < 5; i++) {
+        upsertSession(makeSession({ id: `sess-pg-${i}`, created_at: now + i, started_at: now + i }));
+      }
+
+      const page1 = listSessions({ limit: 2, offset: 0 });
+      const page2 = listSessions({ limit: 2, offset: 2 });
+      expect(page1).toHaveLength(2);
+      expect(page2).toHaveLength(2);
+      // Pages should be distinct
+      expect(page1[0].id).not.toBe(page2[0].id);
+      expect(page1[1].id).not.toBe(page2[1].id);
+    });
+
+    it('applies offset together with a filter', async () => {
+      const now = epochNow();
+      for (let i = 0; i < 4; i++) {
+        upsertSession(makeSession({ id: `sess-off-${i}`, agent: 'cursor', created_at: now + i, started_at: now + i }));
+      }
+      upsertSession(makeSession({ id: 'sess-cc', agent: 'claude-code', created_at: now + 5, started_at: now + 5 }));
+
+      const page1 = listSessions({ agent: 'cursor', limit: 2, offset: 0 });
+      const page2 = listSessions({ agent: 'cursor', limit: 2, offset: 2 });
+      expect(page1).toHaveLength(2);
+      expect(page2).toHaveLength(2);
+      // All returned sessions must be cursor agent
+      for (const row of [...page1, ...page2]) {
+        expect(row.agent).toBe('cursor');
+      }
+    });
+
+    it('returns empty array when offset exceeds total', async () => {
+      const now = epochNow();
+      upsertSession(makeSession({ created_at: now, started_at: now }));
+
+      const rows = listSessions({ offset: 100 });
+      expect(rows).toEqual([]);
+    });
+
+    it('filters by search term in title', async () => {
+      const now = epochNow();
+      upsertSession(makeSession({ id: 'sess-match', title: 'Fix the nasty bug', created_at: now, started_at: now }));
+      upsertSession(makeSession({ id: 'sess-no', title: 'Refactor auth', created_at: now + 1, started_at: now + 1 }));
+
+      const rows = listSessions({ search: 'nasty' });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe('sess-match');
+    });
+
+    it('filters by search term in id', async () => {
+      const now = epochNow();
+      upsertSession(makeSession({ id: 'unique-abc123', created_at: now, started_at: now }));
+      upsertSession(makeSession({ id: 'other-xyz999', created_at: now + 1, started_at: now + 1 }));
+
+      const rows = listSessions({ search: 'abc123' });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe('unique-abc123');
+    });
+
+    it('combines search with filter and pagination', async () => {
+      const now = epochNow();
+      for (let i = 0; i < 3; i++) {
+        upsertSession(makeSession({
+          id: `sess-combo-${i}`,
+          agent: 'cursor',
+          title: `Feature work ${i}`,
+          created_at: now + i,
+          started_at: now + i,
+        }));
+      }
+      upsertSession(makeSession({ id: 'sess-other', agent: 'cursor', title: 'Unrelated', created_at: now + 10, started_at: now + 10 }));
+
+      const rows = listSessions({ agent: 'cursor', search: 'Feature', limit: 2, offset: 0 });
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        expect(row.agent).toBe('cursor');
+        expect(row.title).toMatch(/Feature/);
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // countSessions
+  // ---------------------------------------------------------------------------
+
+  describe('countSessions', () => {
+    it('returns total count of all sessions', async () => {
+      const now = epochNow();
+      for (let i = 0; i < 4; i++) {
+        upsertSession(makeSession({ created_at: now + i, started_at: now + i }));
+      }
+
+      expect(countSessions()).toBe(4);
+    });
+
+    it('counts sessions matching status filter', async () => {
+      const now = epochNow();
+      const s1 = makeSession({ id: 'cs-active', created_at: now, started_at: now });
+      const s2 = makeSession({ id: 'cs-done', created_at: now + 1, started_at: now + 1 });
+      upsertSession(s1);
+      upsertSession(s2);
+      closeSession(s2.id, now + 2);
+
+      expect(countSessions({ status: 'completed' })).toBe(1);
+      expect(countSessions({ status: 'active' })).toBe(1);
+    });
+
+    it('counts sessions matching agent filter', async () => {
+      const now = epochNow();
+      upsertSession(makeSession({ id: 'cnt-cc', agent: 'claude-code', created_at: now, started_at: now }));
+      upsertSession(makeSession({ id: 'cnt-cu1', agent: 'cursor', created_at: now + 1, started_at: now + 1 }));
+      upsertSession(makeSession({ id: 'cnt-cu2', agent: 'cursor', created_at: now + 2, started_at: now + 2 }));
+
+      expect(countSessions({ agent: 'cursor' })).toBe(2);
+      expect(countSessions({ agent: 'claude-code' })).toBe(1);
+    });
+
+    it('counts sessions matching search term', async () => {
+      const now = epochNow();
+      upsertSession(makeSession({ id: 'cnt-s1', title: 'Search feature impl', created_at: now, started_at: now }));
+      upsertSession(makeSession({ id: 'cnt-s2', title: 'Search bug fix', created_at: now + 1, started_at: now + 1 }));
+      upsertSession(makeSession({ id: 'cnt-s3', title: 'Unrelated work', created_at: now + 2, started_at: now + 2 }));
+
+      expect(countSessions({ search: 'Search' })).toBe(2);
+      expect(countSessions({ search: 'Unrelated' })).toBe(1);
+    });
+
+    it('returns 0 when no sessions match', async () => {
+      expect(countSessions({ status: 'completed' })).toBe(0);
     });
   });
 

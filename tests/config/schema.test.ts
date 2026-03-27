@@ -67,10 +67,30 @@ describe('MycoConfigSchema v3', () => {
     const config = MycoConfigSchema.parse({ version: 3 });
     const raw = config as Record<string, unknown>;
     expect(raw.intelligence).toBeUndefined();
-    expect(raw.context).toBeUndefined();
     expect(raw.team).toBeUndefined();
     expect(raw.digest).toBeUndefined();
     expect(raw.pipeline).toBeUndefined();
+  });
+
+  it('applies context injection defaults', () => {
+    const config = MycoConfigSchema.parse({ version: 3 });
+    expect(config.context.digest_tier).toBe(5000);
+    expect(config.context.prompt_search).toBe(true);
+    expect(config.context.prompt_max_spores).toBe(3);
+  });
+
+  it('accepts custom context injection config', () => {
+    const config = MycoConfigSchema.parse({
+      version: 3,
+      context: {
+        digest_tier: 3000,
+        prompt_search: false,
+        prompt_max_spores: 5,
+      },
+    });
+    expect(config.context.digest_tier).toBe(3000);
+    expect(config.context.prompt_search).toBe(false);
+    expect(config.context.prompt_max_spores).toBe(5);
   });
 
   it('accepts openrouter embedding provider', () => {

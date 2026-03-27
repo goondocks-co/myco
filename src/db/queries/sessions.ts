@@ -100,8 +100,10 @@ export interface SessionUpdate {
 /** Filter options for `listSessions`. */
 export interface ListSessionsOptions {
   limit?: number;
+  offset?: number;
   status?: string;
   agent?: string;
+  search?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -253,14 +255,10 @@ export function getSession(id: string): SessionRow | null {
   return toSessionRow(row);
 }
 
-/**
- * List sessions with optional filters, ordered by created_at DESC.
- */
-export function listSessions(
-  options: ListSessionsOptions = {},
-): SessionRow[] {
-  const db = getDatabase();
-
+/** Build WHERE clause and bound params from session filter options. */
+function buildSessionsWhere(
+  options: Omit<ListSessionsOptions, 'limit' | 'offset'>,
+): { where: string; params: unknown[] } {
   const conditions: string[] = [];
   const params: unknown[] = [];
 
@@ -274,20 +272,55 @@ export function listSessions(
     params.push(options.agent);
   }
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const limit = options.limit ?? DEFAULT_LIST_LIMIT;
+  if (options.search !== undefined && options.search.length > 0) {
+    conditions.push(`(title LIKE ? OR id LIKE ?)`);
+    const pattern = `%${options.search}%`;
+    params.push(pattern, pattern);
+  }
 
-  params.push(limit);
+  return {
+    where: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
+    params,
+  };
+}
+
+/**
+ * List sessions with optional filters, ordered by created_at DESC.
+ */
+export function listSessions(
+  options: ListSessionsOptions = {},
+): SessionRow[] {
+  const db = getDatabase();
+  const { where, params } = buildSessionsWhere(options);
+  const limit = options.limit ?? DEFAULT_LIST_LIMIT;
+  const offset = options.offset ?? 0;
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM sessions
      ${where}
      ORDER BY created_at DESC
-     LIMIT ?`,
-  ).all(...params) as Record<string, unknown>[];
+     LIMIT ?
+     OFFSET ?`,
+  ).all(...params, limit, offset) as Record<string, unknown>[];
 
   return rows.map(toSessionRow);
+}
+
+/**
+ * Count sessions matching optional filters (for pagination totals).
+ */
+export function countSessions(
+  options: Omit<ListSessionsOptions, 'limit' | 'offset'> = {},
+): number {
+  const db = getDatabase();
+  const { where, params } = buildSessionsWhere(options);
+
+  const row = db.prepare(
+    `SELECT COUNT(*) as count FROM sessions ${where}`,
+  ).get(...params) as { count: number };
+
+  return row.count;
 }
 
 /**

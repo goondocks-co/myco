@@ -1,4 +1,4 @@
-import type { MycoConfig, EmbeddingProviderConfig, TaskProviderOverride, PhaseOverride } from './schema.js';
+import type { MycoConfig, EmbeddingProviderConfig, ContextConfig, TaskProviderOverride, PhaseOverride } from './schema.js';
 
 /**
  * Set a value at a dot-separated path, returning a new config object.
@@ -145,5 +145,18 @@ export function withEmbedding(
   return {
     ...config,
     embedding: { ...config.embedding, ...updates },
+  };
+}
+
+/**
+ * Merge partial context injection updates into config, returning a new config object.
+ */
+export function withContext(
+  config: MycoConfig,
+  updates: Partial<ContextConfig>,
+): MycoConfig {
+  return {
+    ...config,
+    context: { ...config.context, ...updates },
   };
 }

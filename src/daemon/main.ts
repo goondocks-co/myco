@@ -39,6 +39,7 @@ import {
   handleGetDigest,
 } from './api/mycelium.js';
 import { createSearchHandler } from './api/search.js';
+import { createSessionContextHandler, createPromptContextHandler } from './api/context.js';
 import { handleGetFeed } from './api/feed.js';
 import { handleListSymbionts } from './api/symbionts.js';
 import {
@@ -674,12 +675,6 @@ export async function main(): Promise<void> {
     transcript_path: z.string().optional(),
     last_assistant_message: z.string().optional(),
   });
-  const ContextBody = z.object({
-    session_id: z.string().optional(),
-    branch: z.string().optional(),
-    files: z.array(z.string()).optional(),
-  });
-
   const planWatcher = new PlanWatcher({
     projectRoot: process.cwd(),
     watchPaths: config.capture.artifact_watch,
@@ -1200,52 +1195,10 @@ export async function main(): Promise<void> {
     });
   }
 
-  // --- Session-start context (simplified — no digest, no vault search) ---
-  server.registerRoute('POST', '/context', async (req) => {
-    const { session_id, branch } = ContextBody.parse(req.body);
-    logger.debug('hooks', 'Session context query', { session_id });
-    try {
-      const parts: string[] = [];
-
-      // Branch info for awareness
-      if (branch) {
-        parts.push(`Branch:: \`${branch}\``);
-      }
-
-      // Always include the session ID
-      parts.push(`Session:: \`${session_id}\``);
-
-      if (parts.length > 0) {
-        const contextText = parts.join('\n\n');
-        logger.info('context', 'Session context injected', {
-          session_id,
-          source: 'basic',
-          parts: parts.length,
-        });
-        logger.debug('context', 'Injected context content', {
-          session_id,
-          text: contextText,
-        });
-        return { body: { text: contextText } };
-      }
-      return { body: { text: '' } };
-    } catch (error) {
-      logger.error('daemon', 'Session context failed', { error: (error as Error).message });
-      return { body: { text: '' } };
-    }
-  });
-
-  // Per-prompt context: deferred to Phase 2 (Agent SDK)
-  const PromptContextBody = z.object({
-    prompt: z.string(),
-    session_id: z.string().optional(),
-  });
-
-  server.registerRoute('POST', '/context/prompt', async (req) => {
-    PromptContextBody.parse(req.body);
-    // Per-prompt semantic search deferred to Phase 2
-    return { body: { text: '' } };
-  });
+  // --- Context injection (digest + semantic spore search) ---
+  const contextDeps = { embeddingManager, config, logger };
+  server.registerRoute('POST', '/context', createSessionContextHandler(contextDeps));
+  server.registerRoute('POST', '/context/prompt', createPromptContextHandler(contextDeps));
 
   // --- Dashboard API routes ---
   const progressTracker = new ProgressTracker();

@@ -11,15 +11,9 @@
 import { getDatabase } from '@myco/db/client.js';
 import {
   SEARCH_RESULTS_DEFAULT_LIMIT,
+  SEARCH_PREVIEW_CHARS,
 } from '@myco/constants.js';
 import type { VectorSearchResult } from '@myco/daemon/embedding/types.js';
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Number of characters to include in search result previews. */
-const SEARCH_PREVIEW_CHARS = 300;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -210,14 +204,25 @@ export function hydrateSearchResults(
     byNamespace.set(vr.namespace, group);
   }
 
+  // Use json_each so the statement text is stable and SQLite can cache the plan.
+  const sessionStmt = db.prepare(
+    `SELECT id, title, summary FROM sessions WHERE id IN (SELECT value FROM json_each(?))`,
+  );
+  const sporeStmt = db.prepare(
+    `SELECT id, observation_type, content, session_id FROM spores WHERE id IN (SELECT value FROM json_each(?))`,
+  );
+  const planStmt = db.prepare(
+    `SELECT id, title, content FROM plans WHERE id IN (SELECT value FROM json_each(?))`,
+  );
+  const artifactStmt = db.prepare(
+    `SELECT id, title, content FROM artifacts WHERE id IN (SELECT value FROM json_each(?))`,
+  );
+
   // --- sessions ---
   const sessionResults = byNamespace.get('sessions');
   if (sessionResults && sessionResults.length > 0) {
-    const placeholders = sessionResults.map(() => '?').join(', ');
     const ids = sessionResults.map((r) => r.id);
-    const rows = db.prepare(
-      `SELECT id, title, summary FROM sessions WHERE id IN (${placeholders})`,
-    ).all(...ids) as SessionRow[];
+    const rows = sessionStmt.all(JSON.stringify(ids)) as SessionRow[];
 
     const rowMap = new Map(rows.map((r) => [r.id, r]));
     for (const vr of sessionResults) {
@@ -236,11 +241,8 @@ export function hydrateSearchResults(
   // --- spores ---
   const sporeResults = byNamespace.get('spores');
   if (sporeResults && sporeResults.length > 0) {
-    const placeholders = sporeResults.map(() => '?').join(', ');
     const ids = sporeResults.map((r) => r.id);
-    const rows = db.prepare(
-      `SELECT id, observation_type, content, session_id FROM spores WHERE id IN (${placeholders})`,
-    ).all(...ids) as SporeRow[];
+    const rows = sporeStmt.all(JSON.stringify(ids)) as SporeRow[];
 
     const rowMap = new Map(rows.map((r) => [r.id, r]));
     for (const vr of sporeResults) {
@@ -260,11 +262,8 @@ export function hydrateSearchResults(
   // --- plans ---
   const planResults = byNamespace.get('plans');
   if (planResults && planResults.length > 0) {
-    const placeholders = planResults.map(() => '?').join(', ');
     const ids = planResults.map((r) => r.id);
-    const rows = db.prepare(
-      `SELECT id, title, content FROM plans WHERE id IN (${placeholders})`,
-    ).all(...ids) as PlanRow[];
+    const rows = planStmt.all(JSON.stringify(ids)) as PlanRow[];
 
     const rowMap = new Map(rows.map((r) => [r.id, r]));
     for (const vr of planResults) {
@@ -283,11 +282,8 @@ export function hydrateSearchResults(
   // --- artifacts ---
   const artifactResults = byNamespace.get('artifacts');
   if (artifactResults && artifactResults.length > 0) {
-    const placeholders = artifactResults.map(() => '?').join(', ');
     const ids = artifactResults.map((r) => r.id);
-    const rows = db.prepare(
-      `SELECT id, title, content FROM artifacts WHERE id IN (${placeholders})`,
-    ).all(...ids) as ArtifactRow[];
+    const rows = artifactStmt.all(JSON.stringify(ids)) as ArtifactRow[];
 
     const rowMap = new Map(rows.map((r) => [r.id, r]));
     for (const vr of artifactResults) {
