@@ -50,6 +50,8 @@ export const SEARCH_PREVIEW_CHARS = 300;
 export const LOG_PROMPT_PREVIEW_CHARS = 50;
 /** Max chars for an assistant message preview in log entries. */
 export const LOG_MESSAGE_PREVIEW_CHARS = 80;
+/** Max chars for injected context preview in log entries. */
+export const LOG_CONTEXT_PREVIEW_CHARS = 200;
 
 // --- Context injection layer budgets (chars, not tokens — used with .slice()) ---
 export const CONTEXT_SESSION_PREVIEW_CHARS = 80;

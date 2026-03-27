@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Pause, Play, Trash2, ArrowDown, ScrollText, Filter } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
+import { Pause, Play, Trash2, ArrowDown, ScrollText, Filter, ChevronRight } from 'lucide-react';
 import { usePowerQuery } from '../hooks/use-power-query';
 import { fetchJson } from '../lib/api';
 import { POLL_INTERVALS, LOG_LEVELS, LEVEL_ORDER, type LogLevel, levelBadgeVariant, levelDotColor } from '../lib/constants';
@@ -381,41 +381,93 @@ export default function Logs() {
 
 /* ---------- Log Row ---------- */
 
-function LogRow({ entry }: { entry: LogEntry }) {
-  return (
-    <tr className={cn(
-      'hover:bg-surface-container-high/30 transition-colors border-l-2',
-      LEVEL_BORDER_LEFT[entry.level],
-    )}>
-      {/* Timestamp */}
-      <td className="whitespace-nowrap py-1.5 pl-3 pr-3 text-on-surface-variant/60 align-top w-[68px]">
-        {formatTimestamp(entry.timestamp)}
-      </td>
+/** Keys that are part of the log structure, not extra metadata. */
+const STRUCTURAL_KEYS = new Set(['timestamp', 'level', 'component', 'category', 'message']);
 
-      {/* Level dot */}
-      <td className="whitespace-nowrap py-1.5 pr-2 align-top w-[16px]">
-        <div className={cn('h-2 w-2 rounded-full mt-1', levelDotColor(entry.level))} />
-      </td>
-
-      {/* Level badge */}
-      <td className="whitespace-nowrap py-1.5 pr-3 align-top w-[54px]">
-        <Badge
-          variant={levelBadgeVariant(entry.level)}
-          className="px-1.5 py-0 text-[10px] uppercase"
-        >
-          {entry.level}
-        </Badge>
-      </td>
-
-      {/* Category */}
-      <td className="whitespace-nowrap py-1.5 pr-3 text-on-surface-variant align-top w-[120px] truncate max-w-[120px]">
-        {entry.category}
-      </td>
-
-      {/* Message */}
-      <td className="py-1.5 pr-4 text-on-surface align-top break-words">
-        {entry.message}
-      </td>
-    </tr>
-  );
+function getMetadata(entry: LogEntry): Record<string, unknown> | null {
+  const meta: Record<string, unknown> = {};
+  let count = 0;
+  for (const [k, v] of Object.entries(entry)) {
+    if (!STRUCTURAL_KEYS.has(k)) {
+      meta[k] = v;
+      count++;
+    }
+  }
+  return count > 0 ? meta : null;
 }
+
+function formatMetaValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.join(', ');
+  return JSON.stringify(value);
+}
+
+const LogRow = memo(function LogRow({ entry }: { entry: LogEntry }) {
+  const [expanded, setExpanded] = useState(false);
+  const meta = useMemo(() => getMetadata(entry), [entry]);
+
+  return (
+    <>
+      <tr
+        className={cn(
+          'hover:bg-surface-container-high/30 transition-colors border-l-2',
+          LEVEL_BORDER_LEFT[entry.level],
+          meta && 'cursor-pointer',
+        )}
+        onClick={meta ? () => setExpanded((e) => !e) : undefined}
+      >
+        {/* Timestamp */}
+        <td className="whitespace-nowrap py-1.5 pl-3 pr-3 text-on-surface-variant/60 align-top w-[68px]">
+          {formatTimestamp(entry.timestamp)}
+        </td>
+
+        {/* Level dot */}
+        <td className="whitespace-nowrap py-1.5 pr-2 align-top w-[16px]">
+          <div className={cn('h-2 w-2 rounded-full mt-1', levelDotColor(entry.level))} />
+        </td>
+
+        {/* Level badge */}
+        <td className="whitespace-nowrap py-1.5 pr-3 align-top w-[54px]">
+          <Badge
+            variant={levelBadgeVariant(entry.level)}
+            className="px-1.5 py-0 text-[10px] uppercase"
+          >
+            {entry.level}
+          </Badge>
+        </td>
+
+        {/* Category */}
+        <td className="whitespace-nowrap py-1.5 pr-3 text-on-surface-variant align-top w-[120px] truncate max-w-[120px]">
+          {entry.category}
+        </td>
+
+        {/* Message */}
+        <td className="py-1.5 pr-4 text-on-surface align-top break-words">
+          <span className="flex items-start gap-1.5">
+            {meta && (
+              <ChevronRight className={cn(
+                'h-3 w-3 mt-0.5 shrink-0 text-on-surface-variant/40 transition-transform',
+                expanded && 'rotate-90',
+              )} />
+            )}
+            <span>{entry.message}</span>
+          </span>
+        </td>
+      </tr>
+      {expanded && meta && (
+        <tr className={cn('border-l-2', LEVEL_BORDER_LEFT[entry.level])}>
+          <td colSpan={5} className="py-1 pl-[68px] pr-4 pb-2">
+            <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-on-surface-variant/70">
+              {Object.entries(meta).map(([k, v]) => (
+                <span key={k}>
+                  <span className="text-on-surface-variant/50">{k}:</span>{' '}
+                  <span className="text-on-surface/80">{formatMetaValue(v)}</span>
+                </span>
+              ))}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+});
