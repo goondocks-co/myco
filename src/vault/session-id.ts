@@ -19,11 +19,6 @@ export function bareSessionId(noteId: string): string {
   return noteId;
 }
 
-/** Convert a bare session ID to an Obsidian wikilink: "abc123" → "[[session-abc123]]" */
-export function sessionWikilink(bareId: string): string {
-  return `[[${sessionNoteId(bareId)}]]`;
-}
-
 /** Build the relative vault path for a session note */
 export function sessionRelativePath(bareId: string, date: string): string {
   return `sessions/${date}/${sessionNoteId(bareId)}.md`;

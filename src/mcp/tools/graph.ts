@@ -1,5 +1,5 @@
 /**
- * myco_graph — traverse connections between vault notes via entities and edges.
+ * myco_graph — traverse connections between database records via entities and graph edges.
  *
  * Proxies through the daemon HTTP API via DaemonClient.
  */

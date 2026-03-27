@@ -107,7 +107,7 @@ myco/
 │   ├── intelligence/      # LLM backends (Ollama, LM Studio, Anthropic)
 │   ├── mcp/               # MCP server + tool handlers
 │   ├── prompts/           # LLM prompt templates
-│   └── vault/             # Reader, writer, Zod schemas for vault notes
+│   └── vault/             # Reader, writer, Zod schemas for database records
 ├── tests/                 # Mirrors src/ structure
 ├── docs/                  # Lifecycle, quickstart, doc site
 └── Makefile               # Dev shortcuts
@@ -137,6 +137,6 @@ Published as `@goondocks/myco` on [npmjs.org](https://www.npmjs.com/package/@goo
 - `tsup` for bundled builds (native deps `better-sqlite3`/`sqlite-vec` are external, installed at runtime)
 - `make check` must pass before committing
 - Prompt templates are markdown with `{{placeholder}}` syntax
-- Config is YAML (`myco.yaml`), vault notes are markdown with YAML frontmatter
+- Config is YAML (`myco.yaml`), records are stored in SQLite (FTS5 + sqlite-vec)
 - No magic literals — extract named constants
 - Idempotent operations by default

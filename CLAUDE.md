@@ -1,6 +1,6 @@
 # Myco — Collective Agent Intelligence
 
-Claude Code plugin that captures session knowledge (events, observations, summaries) into a Markdown vault and serves it back via MCP tools.
+Claude Code plugin that captures session knowledge (events, observations, summaries) into a SQLite-backed intelligence graph and serves it back via MCP tools.
 
 ## Dogfooding
 
@@ -39,7 +39,7 @@ After changing hook or daemon code, run `make build` — the wrapper script pick
 
 ## Non-Goals
 
-- This is NOT a general-purpose knowledge base or note-taking app. Do not add external REST APIs or public-facing web services. The local dashboard is the configuration and operations interface — it is not a data viewer (Obsidian handles that).
+- This is NOT a general-purpose knowledge base or note-taking app. Do not add external REST APIs or public-facing web services. The local dashboard is the configuration and operations interface.
 - This is NOT a framework. Do not add plugin systems, extensibility hooks, or abstraction layers for hypothetical consumers.
 - Do not add dependencies on cloud services. All intelligence runs locally (Ollama, LM Studio) or via lightweight API (Anthropic).
 
@@ -58,7 +58,7 @@ src/
   mcp/           # MCP server + tool handlers
   prompts/       # LLM prompt templates (extraction, summary, title, classification)
   symbionts/     # Symbiont adapters (Claude Code, Cursor) for transcript discovery, parsing, and plugin registration
-  vault/         # Reader, writer, Zod schemas for vault notes
+  vault/         # Reader, writer, Zod schemas for database records
 tests/           # Mirrors src/ structure: tests/<module>.test.ts
 hooks/           # Hook registration shell scripts (invoke dist/src/hooks/*.js)
 skills/          # Skill markdown files (subdirectory per skill)
@@ -78,7 +78,7 @@ ui/              # React + Tailwind dashboard (Vite build → dist/ui/)
 
 ### Dashboard
 
-The daemon serves a React SPA at `http://localhost:<port>/` for configuration management and operational triggers. Obsidian remains the data viewer for sessions, spores, and digest extracts.
+The daemon serves a React SPA at `http://localhost:<port>/` for configuration management and operational triggers.
 
 **Development:** `cd ui && MYCO_DAEMON_PORT=<port> npx vite dev` — Vite dev server proxies API calls to the daemon.
 
@@ -150,7 +150,7 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
 |------|-----------|
 | **Digest** | Continuous reasoning process that synthesizes vault knowledge into pre-computed context extracts. Runs as a daemon task on an adaptive timer. |
 | **Extract** | Tiered context representation at a specific token budget (1500/3000/5000/10000). Stored in `vault/digest/`. |
-| **Substrate** | New or updated vault notes not yet digested. Input to a digest cycle. |
+| **Substrate** | New or updated database records not yet digested. Input to a digest cycle. |
 | **Trace** | Append-only audit chain of digest cycles. Stored as JSONL in `vault/digest/trace.jsonl`. |
 | **Metabolism** | Adaptive processing rate of the digest system. Active → cooling → dormant. |
 | **Dormancy** | Digest timer suspended when no new substrate arrives for an extended period. |
@@ -177,7 +177,7 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
   spores/            # Observation notes (subdirectories by type: gotcha/, decision/, etc.)
   plans/             # Plan notes
   artifacts/         # Artifact references
-  attachments/       # Images extracted from session transcripts (Obsidian embeds)
+  attachments/       # Images extracted from session transcripts
   team/              # Team member notes
   digest/            # Pre-computed context extracts and digest trace
   logs/              # Daemon logs
@@ -252,7 +252,7 @@ Use the CLI: `myco <command>` (or `myco-dev` in dogfooding mode)
 - `stats` — vault health, index counts, daemon status
 - `search <query>` — semantic search (primary) + FTS (fallback)
 - `vectors <query>` — raw similarity scores for threshold tuning
-- `rebuild` — reindex all vault notes (FTS + vectors)
+- `rebuild` — reindex all records (FTS + vectors)
 - `restart` — kill and respawn the daemon with current code
 
 ### Modify digest behavior

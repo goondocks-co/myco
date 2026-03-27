@@ -37,8 +37,8 @@ See the [Lifecycle docs](lifecycle.md) for the full event flow.
 |------|---------|
 | `myco_sessions` | Browse session history with filters: branch, plan, user, or date range. |
 | `myco_plans` | List active plans and their progress, or read a specific plan by ID. |
-| `myco_graph` | Traverse vault connections via wikilinks in either direction, with configurable depth. |
-| `myco_orphans` | Find vault notes with no incoming or outgoing wikilinks. |
+| `myco_graph` | Traverse connections via graph edges in either direction, with configurable depth. |
+| `myco_orphans` | Find records with no incoming or outgoing graph connections. |
 | `myco_team` | See teammate activity, filtered by files or plan. |
 
 ### Debugging

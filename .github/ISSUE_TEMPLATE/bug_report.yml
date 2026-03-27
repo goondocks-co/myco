@@ -11,9 +11,9 @@ body:
         - Daemon (capture, processing, lifecycle)
         - MCP tools (search, recall, remember, etc.)
         - Hooks (session start/stop, context injection)
-        - Vault (notes, indexing, embeddings)
+        - Vault (indexing, embeddings, SQLite)
         - CLI commands (init, stats, logs, rebuild)
-        - Obsidian integration (backlinks, graph, dashboard)
+        - Dashboard (configuration, operations, topology)
         - Plugin installation / configuration
         - Other
     validations:
