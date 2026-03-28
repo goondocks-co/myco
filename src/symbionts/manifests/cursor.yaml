@@ -5,9 +5,9 @@ configDir: .cursor
 pluginRootEnvVar: CURSOR_PLUGIN_ROOT
 settingsPath: .cursor/mcp.json
 hookFields:
+  sessionId: conversation_id
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
-  sessionId: conversation_id
 capture:
   planDirs:
     - .cursor/plans/

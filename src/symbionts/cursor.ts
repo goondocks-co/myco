@@ -35,9 +35,13 @@ export const cursorAdapter: SymbiontAdapter = {
   displayName: 'Cursor',
   pluginRootEnvVar: 'CURSOR_PLUGIN_ROOT',
   hookFields: {
+    sessionId: 'conversation_id',
     transcriptPath: 'transcript_path',
     lastResponse: 'last_assistant_message',
-    sessionId: 'conversation_id',
+    prompt: 'prompt',
+    toolName: 'tool_name',
+    toolInput: 'tool_input',
+    toolOutput: 'tool_output',
   },
 
   findTranscript(sessionId: string): string | null {

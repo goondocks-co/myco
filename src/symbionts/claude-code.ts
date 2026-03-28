@@ -10,9 +10,13 @@ export const claudeCodeAdapter: SymbiontAdapter = {
   displayName: 'Claude Code',
   pluginRootEnvVar: 'CLAUDE_PLUGIN_ROOT',
   hookFields: {
+    sessionId: 'session_id',
     transcriptPath: 'transcript_path',
     lastResponse: 'last_assistant_message',
-    sessionId: 'session_id',
+    prompt: 'prompt',
+    toolName: 'tool_name',
+    toolInput: 'tool_input',
+    toolOutput: 'tool_output',
   },
 
   findTranscript: (sessionId) => findJsonlInSubdirs(TRANSCRIPT_BASE, sessionId),

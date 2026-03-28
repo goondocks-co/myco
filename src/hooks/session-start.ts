@@ -1,5 +1,6 @@
 import { DaemonClient } from './client.js';
 import { readStdin } from './read-stdin.js';
+import { normalizeHookInput } from './normalize.js';
 import { loadConfig } from '../config/loader.js';
 import { buildInjectedContext } from '../context/injector.js';
 import { initDatabase, vaultDbPath } from '../db/client.js';
@@ -18,8 +19,8 @@ export async function main() {
     const client = new DaemonClient(VAULT_DIR);
     const healthy = await client.ensureRunning();
 
-    const input = JSON.parse(await readStdin());
-    const sessionId = input.session_id ?? `s-${Date.now()}`;
+    const rawInput = JSON.parse(await readStdin());
+    const { sessionId } = normalizeHookInput(rawInput);
 
     let branch: string | undefined;
     try {

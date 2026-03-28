@@ -5,9 +5,9 @@ configDir: .claude
 pluginRootEnvVar: CLAUDE_PLUGIN_ROOT
 settingsPath: .claude/settings.json
 hookFields:
+  sessionId: session_id
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
-  sessionId: session_id
 capture:
   planDirs:
     - .claude/plans/

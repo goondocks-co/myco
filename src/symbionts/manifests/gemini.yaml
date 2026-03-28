@@ -4,9 +4,10 @@ binary: gemini
 configDir: .gemini
 pluginRootEnvVar: GEMINI_PLUGIN_ROOT
 hookFields:
+  sessionId: session_id
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
-  sessionId: session_id
+  sessionIdEnv: GEMINI_SESSION_ID
 capture:
   planDirs:
     - .gemini/plans/

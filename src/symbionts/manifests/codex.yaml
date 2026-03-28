@@ -5,9 +5,9 @@ configDir: .codex
 pluginRootEnvVar: CODEX_PLUGIN_ROOT
 settingsPath: .codex/config.toml
 hookFields:
+  sessionId: session_id
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
-  sessionId: session_id
 capture:
   planDirs: []
 registration:

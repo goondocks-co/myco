@@ -4,9 +4,9 @@ binary: windsurf
 configDir: .windsurf
 pluginRootEnvVar: WINDSURF_PLUGIN_ROOT
 hookFields:
+  sessionId: trajectory_id
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
-  sessionId: trajectory_id
 capture:
   planDirs:
     - ~/.windsurf/plans/

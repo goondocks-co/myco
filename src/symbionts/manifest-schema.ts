@@ -20,9 +20,15 @@ export const SymbiontManifestSchema = z.object({
   pluginRootEnvVar: z.string(),
   settingsPath: z.string().optional(),
   hookFields: z.object({
+    sessionId: z.string(),
     transcriptPath: z.string(),
     lastResponse: z.string(),
-    sessionId: z.string(),
+    prompt: z.string().default('prompt'),
+    toolName: z.string().default('tool_name'),
+    toolInput: z.string().default('tool_input'),
+    toolOutput: z.string().default('tool_output'),
+    /** Env var fallback for session ID (e.g., GEMINI_SESSION_ID). */
+    sessionIdEnv: z.string().optional(),
   }),
   capture: CaptureManifestSchema.optional(),
   registration: RegistrationSchema.optional(),
