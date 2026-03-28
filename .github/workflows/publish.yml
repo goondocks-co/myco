@@ -123,8 +123,9 @@ jobs:
           ## Install
 
           \`\`\`bash
-          claude plugin marketplace add goondocks-co/myco
-          claude plugin install myco@myco-plugins
+          curl -fsSL https://myco.sh/install.sh | sh
+          cd your-project
+          myco init
           \`\`\`
           NOTES_EOF
           else
@@ -136,13 +137,15 @@ jobs:
           ## Install
 
           \`\`\`bash
-          claude plugin marketplace add goondocks-co/myco
-          claude plugin install myco@myco-plugins
+          curl -fsSL https://myco.sh/install.sh | sh
+          cd your-project
+          myco init
           \`\`\`
 
           ## Update
 
           \`\`\`bash
+          npm update -g @goondocks/myco
           claude plugin update myco
           \`\`\`
           NOTES_EOF
