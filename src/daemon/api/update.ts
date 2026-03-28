@@ -81,7 +81,25 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     }
 
     // Pass pre-read config and cache to avoid reading the files a second time.
-    return { body: { exempt: false, ...statusFromCache(currentVersion, cache, config) } };
+    const status = statusFromCache(currentVersion, cache, config);
+    if (!status) {
+      // No cache yet — return minimal response; background check will populate it.
+      return {
+        body: {
+          exempt: false,
+          update_available: false,
+          running_version: currentVersion,
+          latest_version: currentVersion,
+          latest_stable: currentVersion,
+          latest_beta: null,
+          channel: config.channel,
+          check_interval_hours: config.check_interval_hours,
+          last_check: '',
+          error: null,
+        },
+      };
+    }
+    return { body: { exempt: false, ...status } };
   }
 
   /**
@@ -140,7 +158,24 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     writeUpdateConfig({ ...config, channel });
     clearCachedCheck();
 
-    return { body: { exempt: false, ...statusFromCache(currentVersion) } };
+    const channelStatus = statusFromCache(currentVersion);
+    if (!channelStatus) {
+      return {
+        body: {
+          exempt: false,
+          update_available: false,
+          running_version: currentVersion,
+          latest_version: currentVersion,
+          latest_stable: currentVersion,
+          latest_beta: null,
+          channel,
+          check_interval_hours: config.check_interval_hours,
+          last_check: '',
+          error: null,
+        },
+      };
+    }
+    return { body: { exempt: false, ...channelStatus } };
   }
 
   return {

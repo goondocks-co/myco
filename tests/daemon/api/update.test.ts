@@ -156,6 +156,22 @@ describe('handleUpdateStatus', () => {
 
     expect((result.body as Record<string, unknown>).exempt).toBe(false);
   });
+
+  it('returns default status when cache is empty (null)', async () => {
+    vi.mocked(statusFromCache).mockReturnValue(null);
+    vi.mocked(isCacheStale).mockReturnValue(true);
+    vi.mocked(checkForUpdate).mockResolvedValue(NO_UPDATE_STATUS);
+
+    const { handleUpdateStatus } = createUpdateHandlers(makeDeps());
+    const result = await handleUpdateStatus(makeReq());
+    const body = result.body as Record<string, unknown>;
+
+    expect(body.exempt).toBe(false);
+    expect(body.update_available).toBe(false);
+    expect(body.running_version).toBe('1.0.0');
+    expect(body.channel).toBe('stable');
+    expect(body.last_check).toBe('');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -310,6 +326,19 @@ describe('handleUpdateChannel', () => {
     const result = await handleUpdateChannel(makeReq({ body: { channel: 'stable' } }));
 
     expect(result.body).toMatchObject({ exempt: false });
+  });
+
+  it('returns default status when cache is empty after channel switch', async () => {
+    vi.mocked(statusFromCache).mockReturnValue(null);
+    const { handleUpdateChannel } = createUpdateHandlers(makeDeps());
+
+    const result = await handleUpdateChannel(makeReq({ body: { channel: 'beta' } }));
+    const body = result.body as Record<string, unknown>;
+
+    expect(body.exempt).toBe(false);
+    expect(body.update_available).toBe(false);
+    expect(body.channel).toBe('beta');
+    expect(body.last_check).toBe('');
   });
 
   it('accepts both valid channels: stable and beta', async () => {
