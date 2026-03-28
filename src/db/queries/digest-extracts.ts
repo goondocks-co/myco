@@ -6,6 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { DIGEST_TIERS } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -113,19 +114,20 @@ export function getDigestExtract(
 }
 
 /**
- * List all digest extracts for an agent, ordered by tier ASC.
+ * List digest extracts for an agent, filtered to configured tiers, ordered by tier ASC.
  */
 export function listDigestExtracts(
   agentId: string,
 ): DigestExtractRow[] {
   const db = getDatabase();
+  const tierPlaceholders = DIGEST_TIERS.map(() => '?').join(', ');
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM digest_extracts
-     WHERE agent_id = ?
+     WHERE agent_id = ? AND tier IN (${tierPlaceholders})
      ORDER BY tier ASC`,
-  ).all(agentId) as Record<string, unknown>[];
+  ).all(agentId, ...DIGEST_TIERS) as Record<string, unknown>[];
 
   return rows.map(toDigestExtractRow);
 }

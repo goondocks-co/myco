@@ -188,6 +188,17 @@ describe('embedding flag helpers', () => {
       expect(rows[0].id).toBe('spore-unemb');
     });
 
+    it('excludes superseded spores from embedding queue', () => {
+      const agentId = createAgent('agent-status');
+      insertSpore(makeSpore(agentId, { id: 'spore-active', status: 'active' }));
+      insertSpore(makeSpore(agentId, { id: 'spore-superseded', status: 'superseded' }));
+
+      const rows = getUnembedded('spores');
+      const ids = rows.map((r) => r.id);
+      expect(ids).toContain('spore-active');
+      expect(ids).not.toContain('spore-superseded');
+    });
+
     it('rejects invalid table names', () => {
       expect(() => getUnembedded('evil_table')).toThrow();
     });
@@ -259,6 +270,17 @@ describe('embedding flag helpers', () => {
       const result = getEmbeddingQueueDepth();
       expect(result.embedded_count).toBe(1);
       expect(result.queue_depth).toBe(0);
+    });
+
+    it('excludes superseded spores from queue depth', () => {
+      const agentId = createAgent('agent-qdepth');
+      insertSpore(makeSpore(agentId, { id: 'spore-active-q', status: 'active' }));
+      insertSpore(makeSpore(agentId, { id: 'spore-superseded-q', status: 'superseded' }));
+
+      const result = getEmbeddingQueueDepth();
+      // Only the active spore should count
+      expect(result.queue_depth).toBe(1);
+      expect(result.total).toBe(1);
     });
   });
 

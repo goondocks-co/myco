@@ -6,6 +6,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { getEmbeddingQueueDepth } from '@myco/db/queries/embeddings.js';
 import { loadConfig } from '@myco/config/loader.js';
 import { isProcessAlive } from '@myco/cli/shared.js';
+import { DIGEST_TIERS } from '@myco/constants.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -111,13 +112,15 @@ export function gatherStats(vaultDir: string, options?: { active_sessions?: stri
   ).get() as { cnt: number };
   const total_runs = Number(agentTotalRow.cnt ?? 0);
 
-  // Digest extracts: tiers and freshest
+  // Digest extracts: only report tiers that are currently configured
   const digestRows = db.prepare(
     'SELECT tier, generated_at FROM digest_extracts ORDER BY tier ASC',
   ).all() as Array<{ tier: number; generated_at: number }>;
-  const tiers_available = digestRows.map((r) => r.tier);
+  const configuredTiers = new Set<number>(DIGEST_TIERS);
+  const activeDigestRows = digestRows.filter((r) => configuredTiers.has(r.tier));
+  const tiers_available = activeDigestRows.map((r) => r.tier);
   const freshest_tier = tiers_available.length > 0 ? Math.max(...tiers_available) : null;
-  const freshestRow = digestRows.find((r) => r.tier === freshest_tier);
+  const freshestRow = activeDigestRows.find((r) => r.tier === freshest_tier);
   const generated_at = freshestRow ? freshestRow.generated_at : null;
 
   // Daemon info from daemon.json

@@ -451,15 +451,26 @@ describe('extended list-by-parent query helpers', () => {
   describe('listDigestExtracts', () => {
     it('returns all extracts for an agent ordered by tier ASC', () => {
       const now = epochNow();
-      upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 3, content: 'tier 3', generated_at: now });
-      upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 1, content: 'tier 1', generated_at: now });
-      upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 2, content: 'tier 2', generated_at: now });
+      upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 10000, content: 'tier 10000', generated_at: now });
+      upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 1500, content: 'tier 1500', generated_at: now });
+      upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 5000, content: 'tier 5000', generated_at: now });
 
       const rows = listDigestExtracts(TEST_AGENT_ID);
       expect(rows).toHaveLength(3);
-      expect(rows[0].tier).toBe(1);
-      expect(rows[1].tier).toBe(2);
-      expect(rows[2].tier).toBe(3);
+      expect(rows[0].tier).toBe(1500);
+      expect(rows[1].tier).toBe(5000);
+      expect(rows[2].tier).toBe(10000);
+    });
+
+    it('excludes stale tiers not in DIGEST_TIERS', () => {
+      const now = epochNow();
+      upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 1500, content: 'active', generated_at: now });
+      upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 3000, content: 'stale', generated_at: now });
+      upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 7500, content: 'stale', generated_at: now });
+
+      const rows = listDigestExtracts(TEST_AGENT_ID);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].tier).toBe(1500);
     });
 
     it('returns empty array when agent has no extracts', () => {
@@ -470,8 +481,8 @@ describe('extended list-by-parent query helpers', () => {
     it('does not return extracts from other agents', () => {
       registerAgent({ id: 'agent-other', name: 'Other', created_at: epochNow() });
       const now = epochNow();
-      upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 1, content: 'mine', generated_at: now });
-      upsertDigestExtract({ agent_id: 'agent-other', tier: 1, content: 'theirs', generated_at: now });
+      upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 1500, content: 'mine', generated_at: now });
+      upsertDigestExtract({ agent_id: 'agent-other', tier: 1500, content: 'theirs', generated_at: now });
 
       const rows = listDigestExtracts(TEST_AGENT_ID);
       expect(rows).toHaveLength(1);
