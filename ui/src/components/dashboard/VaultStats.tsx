@@ -29,30 +29,35 @@ export function VaultStats({ stats }: { stats: StatsResponse }) {
         value={String(stats.vault.session_count)}
         sublabel={`${stats.daemon.active_sessions.length} active`}
         accent="sage"
+        href="/sessions"
       />
       <StatCard
         label="Spores"
         value={String(stats.vault.spore_count)}
         sublabel={`${stats.vault.entity_count} entities`}
         accent="sage"
+        href="/mycelium?tab=spores"
       />
       <StatCard
         label="Embedding"
         value={`${embeddingPercent}%`}
         sublabel={`${stats.embedding.embedded_count}/${stats.embedding.total_embeddable}`}
         accent={stats.embedding.queue_depth > 0 ? 'ochre' : 'sage'}
+        href="/operations"
       />
       <StatCard
         label="Agent"
         value={`${stats.agent.total_runs}`}
         sublabel={`last: ${agentLabel}`}
         accent={stats.agent.last_run_status === 'error' ? 'terracotta' : 'outline'}
+        href="/agent"
       />
       <StatCard
         label="Digest"
         value={digestLabel}
         sublabel={stats.digest.generated_at ? formatEpochAgo(stats.digest.generated_at) : undefined}
         accent="outline"
+        href="/mycelium?tab=digest"
       />
       <StatCard
         label="Uptime"

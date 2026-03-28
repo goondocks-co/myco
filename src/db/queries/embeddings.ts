@@ -73,11 +73,12 @@ export function getUnembedded(
   const db = getDatabase();
   const textCol = EMBEDDABLE_TEXT_COLUMNS[table as EmbeddableTable];
   const contentFilter = table === 'sessions' ? ' AND summary IS NOT NULL' : '';
+  const statusFilter = table === 'spores' ? " AND status = 'active'" : '';
 
   return db.prepare(
     `SELECT id, created_at, ${textCol} AS text
      FROM ${table}
-     WHERE embedded = 0${contentFilter}
+     WHERE embedded = 0${contentFilter}${statusFilter}
      ORDER BY created_at ASC
      LIMIT ?`
   ).all(limit) as Array<{ id: string | number; created_at: number; text: string }>;
@@ -94,7 +95,7 @@ export function getEmbeddingQueueDepth(): {
   const queueRow = db.prepare(`
     SELECT
       (SELECT COUNT(*) FROM sessions  WHERE embedded = 0 AND summary IS NOT NULL) +
-      (SELECT COUNT(*) FROM spores    WHERE embedded = 0) +
+      (SELECT COUNT(*) FROM spores    WHERE embedded = 0 AND status = 'active') +
       (SELECT COUNT(*) FROM plans     WHERE embedded = 0 AND content IS NOT NULL) +
       (SELECT COUNT(*) FROM artifacts WHERE embedded = 0 AND content IS NOT NULL)
     AS cnt

@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { Sparkline } from './sparkline';
 import { cn } from '../../lib/cn';
 
@@ -12,6 +13,7 @@ export interface StatCardProps {
   accent: StatAccent;
   sparklineData?: number[];
   className?: string;
+  href?: string;
 }
 
 /* ---------- Constants ---------- */
@@ -32,15 +34,16 @@ const ACCENT_VALUE: Record<StatAccent, string> = {
 
 /* ---------- Component ---------- */
 
-export function StatCard({ label, value, sublabel, accent, sparklineData, className }: StatCardProps) {
-  return (
-    <div
-      className={cn(
-        'rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2 transition-[border-color,background-color] duration-200 hover:border-outline-variant/25 hover:bg-surface-container/80',
-        ACCENT_BORDER[accent],
-        className,
-      )}
-    >
+export function StatCard({ label, value, sublabel, accent, sparklineData, className, href }: StatCardProps) {
+  const cardClasses = cn(
+    'rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2 transition-[border-color,background-color] duration-200 hover:border-outline-variant/25 hover:bg-surface-container/80',
+    href && 'cursor-pointer',
+    ACCENT_BORDER[accent],
+    className,
+  );
+
+  const content = (
+    <>
       <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">
         {label}
       </p>
@@ -55,6 +58,16 @@ export function StatCard({ label, value, sublabel, accent, sparklineData, classN
       {sublabel && (
         <p className="font-mono text-[10px] text-outline mt-1">{sublabel}</p>
       )}
-    </div>
+    </>
   );
+
+  if (href) {
+    return (
+      <Link to={href} className={cn(cardClasses, 'block no-underline')}>
+        {content}
+      </Link>
+    );
+  }
+
+  return <div className={cardClasses}>{content}</div>;
 }
