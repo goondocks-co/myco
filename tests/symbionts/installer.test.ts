@@ -85,6 +85,20 @@ const VSCODE_MANIFEST: SymbiontManifest = {
   },
 };
 
+const WINDSURF_MANIFEST: SymbiontManifest = {
+  name: 'windsurf',
+  displayName: 'Windsurf',
+  binary: 'windsurf',
+  configDir: '.windsurf',
+  pluginRootEnvVar: 'WINDSURF_PLUGIN_ROOT',
+  hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'trajectory_id' },
+  registration: {
+    hooksTarget: '.windsurf/hooks.json',
+    skillsTarget: '.agents/skills',
+    settingsTarget: '.windsurf/settings.json',
+  },
+};
+
 // --- Minimal hooks template for tests ---
 
 const HOOKS_TEMPLATE = {
@@ -172,6 +186,16 @@ function setupPackageRoot(): void {
   });
   writeJson(path.join(geminiTemplateDir, 'settings.json'), {
     coreTools: ['ShellTool(myco-run *)', 'ShellTool(myco *)'],
+  });
+
+  const windsurfTemplateDir = path.join(packageRoot, 'src/symbionts/templates/windsurf');
+  fs.mkdirSync(windsurfTemplateDir, { recursive: true });
+  writeJson(path.join(windsurfTemplateDir, 'hooks.json'), {
+    pre_user_prompt: [{ command: 'myco-run hook user-prompt-submit' }],
+    post_cascade_response: [{ command: 'myco-run hook stop' }],
+  });
+  writeJson(path.join(windsurfTemplateDir, 'settings.json'), {
+    'windsurf.cascadeCommandsAllowList': ['myco-run', 'myco'],
   });
 
   // Create a skill directory
@@ -981,6 +1005,145 @@ describe('uninstall', () => {
     expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco'))).toBe(false);
     // Settings file cleaned up (hooks + settings both removed = empty = deleted)
     expect(fs.existsSync(path.join(projectRoot, '.claude/settings.json'))).toBe(false);
+  });
+});
+
+// =====================
+// Windsurf flat hook format
+// =====================
+
+describe('Windsurf flat hook format', () => {
+  it('installs hooks in flat format', () => {
+    fs.mkdirSync(path.join(projectRoot, '.windsurf'), { recursive: true });
+    const installer = new SymbiontInstaller(WINDSURF_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+
+    const hooks = readJson(path.join(projectRoot, '.windsurf/hooks.json'));
+    const groups = (hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>;
+    expect(groups[0].command).toBe('myco-run hook user-prompt-submit');
+    // Should NOT have nested hooks array
+    expect(groups[0].hooks).toBeUndefined();
+  });
+
+  it('preserves non-Myco flat hooks', () => {
+    const hooksDir = path.join(projectRoot, '.windsurf');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'hooks.json'), JSON.stringify({
+      hooks: {
+        pre_user_prompt: [{ command: 'other-tool check' }],
+      },
+    }));
+
+    const installer = new SymbiontInstaller(WINDSURF_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+
+    const hooks = readJson(path.join(hooksDir, 'hooks.json'));
+    const commands = ((hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>)
+      .map((g) => g.command);
+    expect(commands).toContain('other-tool check');
+    expect(commands).toContain('myco-run hook user-prompt-submit');
+  });
+
+  it('replaces stale Myco flat hooks', () => {
+    const hooksDir = path.join(projectRoot, '.windsurf');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'hooks.json'), JSON.stringify({
+      hooks: {
+        pre_user_prompt: [{ command: 'myco-run hook old-event' }],
+      },
+    }));
+
+    const installer = new SymbiontInstaller(WINDSURF_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+
+    const hooks = readJson(path.join(hooksDir, 'hooks.json'));
+    const commands = ((hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>)
+      .map((g) => g.command);
+    expect(commands).not.toContain('myco-run hook old-event');
+    expect(commands).toContain('myco-run hook user-prompt-submit');
+  });
+
+  it('uninstalls flat Myco hooks', () => {
+    fs.mkdirSync(path.join(projectRoot, '.windsurf'), { recursive: true });
+    const installer = new SymbiontInstaller(WINDSURF_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+
+    const result = installer.uninstallHooks();
+    expect(result).toBe(true);
+
+    // File deleted when empty
+    expect(fs.existsSync(path.join(projectRoot, '.windsurf/hooks.json'))).toBe(false);
+  });
+
+  it('preserves non-Myco flat hooks on uninstall', () => {
+    const hooksDir = path.join(projectRoot, '.windsurf');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'hooks.json'), JSON.stringify({
+      hooks: {
+        pre_user_prompt: [
+          { command: 'other-tool check' },
+          { command: 'myco-run hook user-prompt-submit' },
+        ],
+      },
+    }));
+
+    const installer = new SymbiontInstaller(WINDSURF_MANIFEST, projectRoot, packageRoot);
+    installer.uninstallHooks();
+
+    const hooks = readJson(path.join(hooksDir, 'hooks.json'));
+    const commands = ((hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>)
+      .map((g) => g.command);
+    expect(commands).toContain('other-tool check');
+    expect(commands).not.toContain('myco-run hook user-prompt-submit');
+  });
+});
+
+// =====================
+// Windsurf install (integration)
+// =====================
+
+describe('Windsurf install', () => {
+  it('runs all steps for Windsurf (no MCP)', () => {
+    fs.mkdirSync(path.join(projectRoot, '.windsurf'), { recursive: true });
+    const installer = new SymbiontInstaller(WINDSURF_MANIFEST, projectRoot, packageRoot);
+    const result = installer.install();
+
+    expect(result.hooks).toBe(true);
+    expect(result.mcp).toBe(false); // No MCP for Windsurf
+    expect(result.skills).toBe(true);
+    expect(result.settings).toBe(true);
+
+    // Settings has cascadeCommandsAllowList
+    const settings = readJson(path.join(projectRoot, '.windsurf/settings.json'));
+    expect((settings as Record<string, unknown>)['windsurf.cascadeCommandsAllowList']).toContain('myco-run');
+  });
+
+  it('removes cascadeCommandsAllowList entries on uninstall', () => {
+    fs.mkdirSync(path.join(projectRoot, '.windsurf'), { recursive: true });
+    const installer = new SymbiontInstaller(WINDSURF_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    installer.uninstallSettings();
+
+    // File removed when empty
+    expect(fs.existsSync(path.join(projectRoot, '.windsurf/settings.json'))).toBe(false);
+  });
+
+  it('preserves non-Myco cascadeCommandsAllowList entries on uninstall', () => {
+    const settingsDir = path.join(projectRoot, '.windsurf');
+    fs.mkdirSync(settingsDir, { recursive: true });
+    writeJson(path.join(settingsDir, 'settings.json'), {
+      'windsurf.cascadeCommandsAllowList': ['other-cmd', 'myco-run', 'myco'],
+    });
+
+    const installer = new SymbiontInstaller(WINDSURF_MANIFEST, projectRoot, packageRoot);
+    installer.uninstallSettings();
+
+    const settings = readJson(path.join(settingsDir, 'settings.json'));
+    const allowList = (settings as Record<string, unknown>)['windsurf.cascadeCommandsAllowList'] as string[];
+    expect(allowList).toContain('other-cmd');
+    expect(allowList).not.toContain('myco-run');
+    expect(allowList).not.toContain('myco');
   });
 });
 

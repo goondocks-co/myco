@@ -1,0 +1,15 @@
+name: windsurf
+displayName: Windsurf
+binary: windsurf
+configDir: .windsurf
+pluginRootEnvVar: WINDSURF_PLUGIN_ROOT
+hookFields:
+  transcriptPath: transcript_path
+  lastResponse: last_assistant_message
+  sessionId: trajectory_id
+capture:
+  planDirs: []
+registration:
+  hooksTarget: .windsurf/hooks.json
+  skillsTarget: .agents/skills
+  settingsTarget: .windsurf/settings.json

@@ -5,6 +5,22 @@ import path from 'node:path';
 /** Prefix used to identify Myco-owned hooks in settings files. */
 const MYCO_HOOK_COMMAND_PREFIX = 'myco-run';
 
+/**
+ * Check if a hook group is Myco-owned.
+ * Handles both nested format (Claude Code, Codex, etc.) and flat format (Windsurf).
+ *
+ * Nested: { hooks: [{ command: "myco-run ..." }] }
+ * Flat:   { command: "myco-run ..." }
+ */
+function isMycoHookGroup(group: Record<string, unknown>): boolean {
+  // Nested format: { hooks: [{ command: "myco-run ..." }] }
+  const nestedHooks = group.hooks as Array<{ command?: string }> | undefined;
+  if (nestedHooks?.some((h) => h.command?.startsWith(MYCO_HOOK_COMMAND_PREFIX))) return true;
+  // Flat format: { command: "myco-run ..." }
+  if (typeof group.command === 'string' && group.command.startsWith(MYCO_HOOK_COMMAND_PREFIX)) return true;
+  return false;
+}
+
 /** Subdirectory within the package where symbiont templates live. */
 const TEMPLATES_SUBDIR = 'src/symbionts/templates';
 
@@ -130,8 +146,8 @@ export class SymbiontInstaller {
 
     // Preserve non-Myco hooks from existing config
     for (const [event, groups] of Object.entries(existingHooks)) {
-      const nonMycoGroups = (groups as Array<{ hooks?: Array<{ command?: string }> }>).filter(
-        (group) => !group.hooks?.some((h) => h.command?.startsWith(MYCO_HOOK_COMMAND_PREFIX)),
+      const nonMycoGroups = (groups as Array<Record<string, unknown>>).filter(
+        (group) => !isMycoHookGroup(group),
       );
       if (nonMycoGroups.length > 0) {
         mergedHooks[event] = nonMycoGroups;
@@ -306,6 +322,22 @@ export class SymbiontInstaller {
       }
     }
 
+    // Remove windsurf.cascadeCommandsAllowList entries
+    const allowList = settings['windsurf.cascadeCommandsAllowList'] as string[] | undefined;
+    if (Array.isArray(allowList)) {
+      const filtered = allowList.filter(
+        (cmd) => !MYCO_COMMAND_NAMES.some((name) => cmd === name),
+      );
+      if (filtered.length !== allowList.length) {
+        if (filtered.length > 0) {
+          settings['windsurf.cascadeCommandsAllowList'] = filtered;
+        } else {
+          delete settings['windsurf.cascadeCommandsAllowList'];
+        }
+        changed = true;
+      }
+    }
+
     if (!changed) return false;
 
     if (Object.keys(settings).length === 0) {
@@ -328,8 +360,8 @@ export class SymbiontInstaller {
 
     const cleaned: Record<string, unknown[]> = {};
     for (const [event, groups] of Object.entries(existingHooks)) {
-      const nonMyco = (groups as Array<{ hooks?: Array<{ command?: string }> }>).filter(
-        (group) => !group.hooks?.some((h) => h.command?.startsWith(MYCO_HOOK_COMMAND_PREFIX)),
+      const nonMyco = (groups as Array<Record<string, unknown>>).filter(
+        (group) => !isMycoHookGroup(group),
       );
       if (nonMyco.length > 0) {
         cleaned[event] = nonMyco;

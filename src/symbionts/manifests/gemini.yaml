@@ -8,7 +8,8 @@ hookFields:
   lastResponse: last_assistant_message
   sessionId: session_id
 capture:
-  planDirs: []
+  planDirs:
+    - .gemini/plans/
 registration:
   hooksTarget: .gemini/settings.json
   mcpTarget: .gemini/settings.json
