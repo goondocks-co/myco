@@ -1,6 +1,9 @@
 import type { SymbiontAdapter, TranscriptTurn } from './adapter.js';
 import { claudeCodeAdapter } from './claude-code.js';
 import { cursorAdapter } from './cursor.js';
+import { codexAdapter } from './codex.js';
+import { windsurfAdapter } from './windsurf.js';
+import { vscodeCopilotAdapter } from './vscode-copilot.js';
 import fs from 'node:fs';
 
 /**
@@ -11,6 +14,9 @@ import fs from 'node:fs';
 const ALL_ADAPTERS: SymbiontAdapter[] = [
   claudeCodeAdapter,
   cursorAdapter,
+  codexAdapter,
+  windsurfAdapter,
+  vscodeCopilotAdapter,
 ];
 
 export class SymbiontRegistry {
