@@ -574,3 +574,129 @@ describe('installMcp (TOML)', () => {
   });
 });
 
+// =====================
+// uninstall
+// =====================
+
+describe('uninstall', () => {
+  it('removes hooks from settings.json', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    const result = installer.uninstall();
+    expect(result.hooks).toBe(true);
+
+    // Settings file is deleted when empty (hooks was the only content)
+    expect(fs.existsSync(path.join(projectRoot, '.claude/settings.json'))).toBe(false);
+  });
+
+  it('preserves non-Myco hooks on uninstall', () => {
+    const settingsDir = path.join(projectRoot, '.claude');
+    fs.mkdirSync(settingsDir, { recursive: true });
+    fs.writeFileSync(path.join(settingsDir, 'settings.json'), JSON.stringify({
+      hooks: {
+        PostToolUse: [
+          { hooks: [{ type: 'command', command: 'npm run lint', timeout: 30 }] },
+          { hooks: [{ type: 'command', command: 'myco-run hook post-tool-use', timeout: 5 }] },
+        ],
+      },
+    }));
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.uninstallHooks();
+
+    const settings = readJson(path.join(settingsDir, 'settings.json'));
+    const commands = (settings.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>)
+      .PostToolUse.flatMap((g) => g.hooks.map((h) => h.command));
+    expect(commands).toContain('npm run lint');
+    expect(commands).not.toContain('myco-run hook post-tool-use');
+  });
+
+  it('removes MCP server from JSON config', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    installer.uninstallMcp();
+
+    // .mcp.json is deleted when empty (myco was the only server)
+    expect(fs.existsSync(path.join(projectRoot, '.mcp.json'))).toBe(false);
+  });
+
+  it('preserves other MCP servers on uninstall', () => {
+    fs.writeFileSync(path.join(projectRoot, '.mcp.json'), JSON.stringify({
+      mcpServers: { other: { command: 'other' }, myco: { command: 'myco-run', args: ['mcp'] } },
+    }));
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.uninstallMcp();
+
+    const config = readJson(path.join(projectRoot, '.mcp.json'));
+    expect(config.mcpServers.other).toBeDefined();
+    expect(config.mcpServers.myco).toBeUndefined();
+  });
+
+  it('removes MCP server from TOML config', () => {
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(path.join(codexDir, 'config.toml'),
+      'model = "gpt-5"\n\n[mcp_servers.myco]\ncommand = "myco-run"\nargs = ["mcp"]\n');
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    const result = installer.uninstallMcp();
+
+    expect(result).toBe(true);
+    const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
+    expect(content).toContain('model = "gpt-5"');
+    expect(content).not.toContain('[mcp_servers.myco]');
+  });
+
+  it('removes skill symlinks', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco'))).toBe(true);
+
+    installer.uninstallSkills();
+
+    expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.claude/skills/myco'))).toBe(false);
+  });
+
+  it('cleans gitignore entries', () => {
+    // Pre-create .gitignore with non-Myco content so it survives uninstall
+    fs.writeFileSync(path.join(projectRoot, '.gitignore'), 'node_modules/\n');
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    const gitignoreBefore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
+    expect(gitignoreBefore).toContain('.agents/skills/');
+
+    installer.uninstall();
+
+    const gitignoreAfter = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
+    expect(gitignoreAfter).not.toContain('.agents/skills/');
+    expect(gitignoreAfter).not.toContain('.claude/skills/myco');
+    expect(gitignoreAfter).toContain('node_modules/');
+  });
+
+  it('full uninstall removes everything install added', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    // Verify everything was installed
+    expect(fs.existsSync(path.join(projectRoot, '.claude/settings.json'))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.mcp.json'))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco'))).toBe(true);
+
+    const result = installer.uninstall();
+    expect(result.hooks).toBe(true);
+    expect(result.mcp).toBe(true);
+    expect(result.skills).toBe(true);
+
+    // .mcp.json should be gone (was only myco)
+    expect(fs.existsSync(path.join(projectRoot, '.mcp.json'))).toBe(false);
+    // Skills gone
+    expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco'))).toBe(false);
+  });
+});
+

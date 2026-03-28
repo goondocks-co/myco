@@ -57,6 +57,17 @@ export class SymbiontInstaller {
     return result;
   }
 
+  /** Remove all Myco registration from this symbiont's project files. */
+  uninstall(): InstallResult {
+    const result = {
+      hooks: this.uninstallHooks(),
+      mcp: this.uninstallMcp(),
+      skills: this.uninstallSkills(),
+    };
+    this.cleanGitignore();
+    return result;
+  }
+
   /** List skill directory names from the package root. Returns empty array if not found. */
   private listSkillDirs(): string[] {
     try {
@@ -216,6 +227,182 @@ export class SymbiontInstaller {
     return true;
   }
 
+  /** Remove Myco hook groups from the target settings file. */
+  uninstallHooks(): boolean {
+    const reg = this.manifest.registration;
+    if (!reg?.hooksTarget) return false;
+
+    const targetPath = path.join(this.projectRoot, reg.hooksTarget);
+    const settings = readJsonFile(targetPath);
+    const existingHooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
+    if (Object.keys(existingHooks).length === 0) return false;
+
+    const cleaned: Record<string, unknown[]> = {};
+    for (const [event, groups] of Object.entries(existingHooks)) {
+      const nonMyco = (groups as Array<{ hooks?: Array<{ command?: string }> }>).filter(
+        (group) => !group.hooks?.some((h) => h.command?.startsWith(MYCO_HOOK_COMMAND_PREFIX)),
+      );
+      if (nonMyco.length > 0) {
+        cleaned[event] = nonMyco;
+      }
+    }
+
+    if (Object.keys(cleaned).length === 0) {
+      delete settings.hooks;
+    } else {
+      settings.hooks = cleaned;
+    }
+
+    // Clean up empty settings file
+    if (Object.keys(settings).length === 0) {
+      try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
+    } else {
+      writeJsonFile(targetPath, settings);
+    }
+    return true;
+  }
+
+  /** Remove Myco MCP server entry from the target config file. */
+  uninstallMcp(): boolean {
+    const reg = this.manifest.registration;
+    if (!reg?.mcpTarget) return false;
+
+    const targetPath = path.join(this.projectRoot, reg.mcpTarget);
+    const mcpFormat = reg.mcpFormat ?? 'json';
+
+    if (mcpFormat === 'toml') {
+      return this.uninstallMcpToml(targetPath);
+    }
+    return this.uninstallMcpJson(targetPath);
+  }
+
+  private uninstallMcpJson(targetPath: string): boolean {
+    const config = readJsonFile(targetPath);
+    const servers = (config.mcpServers ?? {}) as Record<string, unknown>;
+    if (!servers[MYCO_MCP_SERVER_NAME]) return false;
+
+    delete servers[MYCO_MCP_SERVER_NAME];
+
+    if (Object.keys(servers).length === 0) {
+      delete config.mcpServers;
+    } else {
+      config.mcpServers = servers;
+    }
+
+    if (Object.keys(config).length === 0) {
+      try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
+    } else {
+      writeJsonFile(targetPath, config);
+    }
+    return true;
+  }
+
+  private uninstallMcpToml(targetPath: string): boolean {
+    let raw = '';
+    try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch { return false; }
+
+    const sectionHeader = `[mcp_servers.${MYCO_MCP_SERVER_NAME}]`;
+    if (!raw.includes(sectionHeader)) return false;
+
+    // Remove the myco section (header + all lines until next non-subsection)
+    const startIdx = raw.indexOf(sectionHeader);
+    const subsectionPrefix = `mcp_servers.${MYCO_MCP_SERVER_NAME}.`;
+    const searchStart = startIdx + sectionHeader.length;
+    const rawLines = raw.slice(searchStart).split('\n');
+    let offset = searchStart;
+    let afterIdx = -1;
+    for (const line of rawLines) {
+      offset += line.length + 1;
+      const m = line.match(TOML_SECTION_RE);
+      if (m && !m[1].startsWith(subsectionPrefix) && m[1] !== `mcp_servers.${MYCO_MCP_SERVER_NAME}`) {
+        afterIdx = offset - line.length - 1;
+        break;
+      }
+    }
+    const endIdx = afterIdx === -1 ? raw.length : afterIdx;
+    const before = raw.slice(0, startIdx).trimEnd();
+    const after = raw.slice(endIdx).trimStart();
+    const updated = (before + (before && after ? '\n\n' : '') + after).trimEnd();
+
+    if (!updated.trim()) {
+      try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
+    } else {
+      fs.writeFileSync(targetPath, updated + '\n', 'utf-8');
+    }
+    return true;
+  }
+
+  /** Remove skill symlinks (canonical + agent-specific). */
+  uninstallSkills(): boolean {
+    const reg = this.manifest.registration;
+    if (!reg?.skillsTarget) return false;
+
+    const skillNames = this.listSkillDirs();
+    if (skillNames.length === 0) return false;
+
+    let removed = false;
+
+    // Remove agent-specific symlinks
+    if (reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
+      for (const name of skillNames) {
+        const link = path.join(this.projectRoot, reg.skillsTarget, name);
+        try { fs.unlinkSync(link); removed = true; } catch { /* doesn't exist */ }
+      }
+      // Remove agent skills dir if empty
+      try {
+        const remaining = fs.readdirSync(path.join(this.projectRoot, reg.skillsTarget));
+        if (remaining.length === 0) fs.rmdirSync(path.join(this.projectRoot, reg.skillsTarget));
+      } catch { /* ignore */ }
+    }
+
+    // Remove canonical symlinks
+    const canonicalDir = path.join(this.projectRoot, CANONICAL_SKILLS_DIR);
+    for (const name of skillNames) {
+      const link = path.join(canonicalDir, name);
+      try { fs.unlinkSync(link); removed = true; } catch { /* doesn't exist */ }
+    }
+    // Remove .agents/skills/ if empty
+    try {
+      const remaining = fs.readdirSync(canonicalDir);
+      if (remaining.length === 0) {
+        fs.rmdirSync(canonicalDir);
+        // Also remove .agents/ if empty
+        const agentsDir = path.join(this.projectRoot, '.agents');
+        const agentsRemaining = fs.readdirSync(agentsDir);
+        if (agentsRemaining.length === 0) fs.rmdirSync(agentsDir);
+      }
+    } catch { /* ignore */ }
+
+    return removed;
+  }
+
+  /** Remove Myco entries from project .gitignore. */
+  private cleanGitignore(): void {
+    const gitignorePath = path.join(this.projectRoot, '.gitignore');
+    let content = '';
+    try { content = fs.readFileSync(gitignorePath, 'utf-8'); } catch { return; }
+
+    // Remove the Myco skill symlinks block and individual entries
+    const lines = content.split('\n');
+    const filtered = lines.filter((line) => {
+      if (line === '# Myco skill symlinks (machine-specific)') return false;
+      if (line === `${CANONICAL_SKILLS_DIR}/`) return false;
+      const reg = this.manifest.registration;
+      if (reg?.skillsTarget && reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
+        const skillNames = this.listSkillDirs();
+        if (skillNames.some((name) => line === `${reg.skillsTarget}/${name}`)) return false;
+      }
+      return true;
+    });
+
+    // Clean up consecutive blank lines left by removal
+    const cleaned = filtered.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    if (cleaned) {
+      fs.writeFileSync(gitignorePath, cleaned + '\n', 'utf-8');
+    } else {
+      try { fs.unlinkSync(gitignorePath); } catch { /* ignore */ }
+    }
+  }
 }
 
 // --- TOML helpers ---

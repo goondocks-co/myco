@@ -10,7 +10,8 @@ const USAGE = `Usage: myco <command> [args]
 
 Commands:
   init [options]           Initialize a new vault
-  update                   Update vault files and symbiont plugins
+  update                   Update vault files and agent registration
+  remove [--keep-vault]    Remove Myco from this project
   config <get|set> [args]  Get or set vault config values
   detect-providers         Detect available LLM/embedding providers (JSON)
   verify                   Test LLM and embedding connectivity
@@ -78,6 +79,7 @@ async function main(): Promise<void> {
   }
 
   if (cmd === 'update') return (await import('./cli/update.js')).run(args);
+  if (cmd === 'remove') return (await import('./cli/remove.js')).run(args);
 
   const vaultDir = resolveVaultDir();
   if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {
