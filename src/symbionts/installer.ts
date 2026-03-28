@@ -46,12 +46,47 @@ export class SymbiontInstaller {
 
   /** Run all registration steps. */
   install(vaultDir: string): InstallResult {
-    return {
+    const result = {
       hooks: this.installHooks(),
       mcp: this.installMcp(),
       skills: this.installSkills(),
       env: this.installEnv(vaultDir),
     };
+    this.updateGitignore();
+    return result;
+  }
+
+  /** Add skill symlink paths to project .gitignore. */
+  private updateGitignore(): void {
+    const reg = this.manifest.registration;
+    if (!reg?.skillsTarget) return;
+
+    const skillsSrc = path.join(this.packageRoot, SKILLS_SUBDIR);
+    if (!fs.existsSync(skillsSrc)) return;
+
+    const skillNames = fs.readdirSync(skillsSrc, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+
+    const entries = [
+      `${CANONICAL_SKILLS_DIR}/`,
+      ...(reg.skillsTarget !== CANONICAL_SKILLS_DIR
+        ? skillNames.map((name) => `${reg.skillsTarget}/${name}`)
+        : []
+      ),
+    ];
+
+    const gitignorePath = path.join(this.projectRoot, '.gitignore');
+    const existing = fs.existsSync(gitignorePath)
+      ? fs.readFileSync(gitignorePath, 'utf-8')
+      : '';
+
+    const newEntries = entries.filter((e) => !existing.includes(e));
+    if (newEntries.length === 0) return;
+
+    const separator = existing.endsWith('\n') || existing === '' ? '' : '\n';
+    const block = `${separator}\n# Myco skill symlinks (machine-specific)\n${newEntries.join('\n')}\n`;
+    fs.writeFileSync(gitignorePath, existing + block, 'utf-8');
   }
 
   /**

@@ -553,3 +553,52 @@ describe('install', () => {
     expect(hooks.Stop).toHaveLength(1);
   });
 });
+
+// =====================
+// gitignore management
+// =====================
+
+describe('gitignore management', () => {
+  it('adds .agents/skills/ to project .gitignore', () => {
+    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install('~/vaults/myco');
+
+    const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
+    expect(gitignore).toContain('.agents/skills/');
+  });
+
+  it('adds agent-specific skill symlinks to .gitignore', () => {
+    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install('~/vaults/myco');
+
+    const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
+    expect(gitignore).toContain('.claude/skills/myco');
+  });
+
+  it('does not duplicate existing entries', () => {
+    fs.writeFileSync(path.join(projectRoot, '.gitignore'), '.agents/skills/\n');
+    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install('~/vaults/myco');
+    installer.install('~/vaults/myco'); // Second run
+
+    const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
+    const matches = gitignore.match(/\.agents\/skills\//g);
+    expect(matches?.length).toBe(1);
+  });
+
+  it('appends to existing .gitignore content', () => {
+    fs.writeFileSync(path.join(projectRoot, '.gitignore'), 'node_modules/\n.env\n');
+    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install('~/vaults/myco');
+
+    const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
+    expect(gitignore).toContain('node_modules/');
+    expect(gitignore).toContain('.agents/skills/');
+  });
+});
