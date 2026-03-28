@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { SymbiontRegistry } from '../symbionts/registry.js';
 import { OllamaBackend } from '../intelligence/ollama.js';
 import { LmStudioBackend } from '../intelligence/lm-studio.js';
 
@@ -87,27 +86,3 @@ export function collapseHomePath(absPath: string): string {
   return absPath;
 }
 
-/** Set MYCO_VAULT_DIR in the active agent's config, falling back to all known agents. */
-export function configureVaultEnv(projectRoot: string, vaultDir: string): void {
-  const registry = new SymbiontRegistry();
-  const active = registry.detectActiveAgent();
-  // Store the portable ~/... form so config files don't leak the username
-  const portableDir = collapseHomePath(vaultDir);
-
-  if (active) {
-    if (active.configureVaultEnv(projectRoot, portableDir)) {
-      console.log(`Set MYCO_VAULT_DIR for ${active.displayName}`);
-    }
-  } else {
-    // No active agent detected — try all adapters
-    for (const name of registry.adapterNames) {
-      const adapter = registry.getAdapter(name);
-      if (adapter?.configureVaultEnv(projectRoot, portableDir)) {
-        console.log(`Set MYCO_VAULT_DIR for ${adapter.displayName}`);
-      }
-    }
-  }
-
-  console.log(`\nFor other agents, add to your shell profile:`);
-  console.log(`  export MYCO_VAULT_DIR="${portableDir}"\n`);
-}
