@@ -17,8 +17,8 @@ description: >
   regenerates digest extracts.
 agent: myco-agent
 isDefault: true
-maxTurns: 103
-timeoutSeconds: 900
+maxTurns: 130
+timeoutSeconds: 1800
 model: claude-sonnet-4-6
 
 orchestrator:
@@ -228,7 +228,7 @@ phases:
       - vault_resolve_spore
       - vault_report
     maxTurns: 22
-    required: true
+    required: false
 
   - name: graph
     dependsOn: [extract]
@@ -286,17 +286,24 @@ phases:
       - vault_create_edge
       - vault_report
     maxTurns: 25
-    required: true
+    required: false
 
-  - name: digest
+  # ---- Digest: assess + 3 parallel tier writes ----
+  # The assess phase gathers context, then each tier runs independently
+  # in the same wave via Promise.allSettled().
+
+  - name: digest-assess
     dependsOn: [consolidate]
     prompt: |
-      Update digest extracts incrementally based on new vault substrate.
+      Assess current digest state and gather material for tier updates.
+      The 3 digest tier phases run in parallel after you — your summary
+      is their primary input. Be thorough.
 
-      ## Step 1: Assess whether update is warranted (budget: 2 turns)
+      ## Step 1: Check current state (budget: 2 turns)
 
       Call `vault_read_digest` (no tier param) to see current digest state.
-      Review the prior phase results (in your context):
+      Note each tier's `generated_at` timestamp — this tells you how fresh
+      each tier is. Review the prior phase results (in your context):
       - How many spores were created/superseded?
       - How many entities/edges were added?
 
@@ -304,49 +311,149 @@ phases:
       `vault_report` with action "skip" and reason explaining why the
       current digest is still sufficient. STOP.
 
-      ## Step 2: Read current digest + gather new material (budget: 6 turns)
+      ## Step 2: Gather new material (budget: 5 turns)
 
-      For each tier you plan to update:
-      1. Call `vault_read_digest` with the tier number to get current content
-      2. Call `vault_search_semantic` with themes relevant to what changed:
-         - Topics from newly created/superseded spores
-         - New entity names
-      3. The existing digest is your baseline — integrate new material
-         into it, don't start from scratch
+      Search for material relevant to what changed:
+      1. Call `vault_search_semantic` with themes from newly created/superseded
+         spores and new entity names
+      2. Call `vault_spores` to see recently created observations
+      3. Call `vault_sessions` for recent session context
 
-      ## Step 3: Write updated extracts (budget: 8 turns)
+      ## Step 3: Produce detailed findings
 
-      With 8 turns for writes, you can update at most 4 tiers (1 read + 1 write
-      per tier). Prioritize: tier 10000 > 5000 > 3000 > 7500 > 1500.
+      Your final response is critical — the per-tier phases see it as their
+      primary context (they cannot call vault_spores or vault_sessions).
+      Structure your summary as:
 
-      Call `vault_write_digest` for tiers that need updating:
-      1. Tier 1500 — Executive briefing (most compressed, most sensitive
-         to changes — update if important new decisions or gotchas)
-      2. Tier 3000 — Team standup (update if new conventions or plans)
-      3. Tier 5000 — Deep onboarding (update if new trade-offs or patterns)
-      4. Tier 7500 — Comprehensive (update if significant new content)
-      5. Tier 10000 — Full institutional knowledge (update if any new content)
+      **New material to integrate:**
+      - List each new insight, decision, pattern, gotcha with enough detail
+        that a tier writer can incorporate it without re-searching
+      - Include specific spore content, not just "3 new spores were created"
 
-      Each tier is self-contained. Preserve well-crafted existing content —
-      integrate new material, don't rewrite from scratch. Prioritize:
-      recent insights > active decisions > unresolved gotchas >
-      architectural patterns > historical context.
+      **Themes and connections:**
+      - What overarching themes connect the new material?
+      - What existing digest sections are affected?
 
-      You do NOT need to update all 5 tiers. Only update tiers affected
-      by the new material. Tier 10000 (largest) is most likely to need
-      updating; tier 1500 (smallest) only if something critical changed.
+      **Per-tier freshness and guidance:**
+      For each tier, state whether it should UPDATE or SKIP based on both
+      the volume of new material AND the tier's `generated_at` freshness:
+      - A tier written < 30 minutes ago with only minor changes → SKIP
+      - A tier written hours ago or with significant changes → UPDATE
+      - Larger tiers (10000) tolerate more frequent updates since
+        they have room for incremental additions
+      - Smaller tiers (1500) should only update for material that
+        genuinely changes the executive picture
+
+      Per-tier directives:
+      - 10000: UPDATE/SKIP + what to add (any new content)
+      - 5000: UPDATE/SKIP + what to add (trade-offs and patterns)
+      - 1500: UPDATE/SKIP + what to add (only critical changes)
     tools:
       - vault_spores
       - vault_sessions
       - vault_search_semantic
       - vault_read_digest
-      - vault_write_digest
       - vault_report
-    maxTurns: 20
+    maxTurns: 8
     required: true
 
+  - name: digest-10000
+    dependsOn: [digest-assess]
+    prompt: |
+      Update digest tier 10000 — Full institutional knowledge.
+      Budget: 7 turns (1 read + 1-2 search + 1 write + buffer).
+
+      This is the largest tier (~10,000 tokens). Update if any new content
+      was found. The digest-assess phase summary in your context contains
+      the material to integrate and per-tier guidance.
+
+      1. Call `vault_read_digest` with tier 10000 to get current content
+      2. Call `vault_search_semantic` for themes identified in the assess
+         findings — gather specific details to weave in
+      3. Integrate new material into the existing digest
+      4. Call `vault_write_digest` with the updated content
+
+      The existing digest is your baseline — integrate new material, don't
+      rewrite from scratch. Preserve well-crafted existing content.
+
+      Prioritize: recent insights > active decisions > unresolved gotchas >
+      architectural patterns > historical context.
+
+      If this tier genuinely has no new material to integrate, call
+      `vault_report` with action "skip" for this tier.
+    tools:
+      - vault_search_semantic
+      - vault_read_digest
+      - vault_write_digest
+      - vault_report
+    maxTurns: 7
+    required: false
+
+  - name: digest-5000
+    dependsOn: [digest-assess]
+    prompt: |
+      Update digest tier 5000 — Deep onboarding.
+      Budget: 5 turns (1 read + 1 search + 1 write + buffer).
+
+      This tier (~5,000 tokens) focuses on trade-offs and patterns. The
+      digest-assess phase summary in your context contains the material
+      to integrate and per-tier guidance.
+
+      1. Call `vault_read_digest` with tier 5000 to get current content
+      2. Optionally call `vault_search_semantic` for additional context
+      3. Integrate new material from the assess findings
+      4. Call `vault_write_digest` with the updated content
+
+      The existing digest is your baseline — integrate new material, don't
+      rewrite from scratch. Preserve well-crafted existing content.
+
+      Prioritize: recent insights > active decisions > unresolved gotchas >
+      architectural patterns > historical context.
+
+      If this tier genuinely has no new material to integrate, call
+      `vault_report` with action "skip" for this tier.
+    tools:
+      - vault_search_semantic
+      - vault_read_digest
+      - vault_write_digest
+      - vault_report
+    maxTurns: 5
+    required: false
+
+  - name: digest-1500
+    dependsOn: [digest-assess]
+    prompt: |
+      Update digest tier 1500 — Executive briefing.
+      Budget: 3 turns (1 read + 1 write + buffer).
+
+      This is the most compressed tier (~1,500 tokens). Only update if
+      important new decisions, gotchas, or critical changes were found.
+      The digest-assess phase summary in your context contains the material
+      to integrate and per-tier guidance.
+
+      1. Call `vault_read_digest` with tier 1500 to get current content
+      2. Integrate new material from the assess findings — be very selective,
+         only critical changes belong at this tier
+      3. Call `vault_write_digest` with the updated content
+
+      The existing digest is your baseline — integrate new material, don't
+      rewrite from scratch. Preserve well-crafted existing content.
+
+      Prioritize: recent insights > active decisions > unresolved gotchas >
+      architectural patterns > historical context.
+
+      If this tier genuinely has no new material to integrate, call
+      `vault_report` with action "skip" for this tier.
+    tools:
+      - vault_read_digest
+      - vault_write_digest
+      - vault_report
+    maxTurns: 3
+    required: false
+
   - name: report
-    dependsOn: [extract, summarize, consolidate, graph, digest]
+    dependsOn: [extract, summarize, consolidate, graph, digest-assess, digest-10000, digest-5000, digest-1500]
+    skipPriorContext: true
     prompt: |
       Summarize what was done across all phases.
 

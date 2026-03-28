@@ -101,18 +101,18 @@ describe('createSessionContextHandler', () => {
   it('uses configured tier', async () => {
     upsertDigestExtract({
       agent_id: DEFAULT_AGENT_ID,
-      tier: 3000,
-      content: '# Tier 3000 digest',
+      tier: 10000,
+      content: '# Tier 10000 digest',
       generated_at: NOW,
     });
 
-    const handler = createSessionContextHandler(makeDeps({ config: makeConfig({ digest_tier: 3000 }) }));
+    const handler = createSessionContextHandler(makeDeps({ config: makeConfig({ digest_tier: 10000 }) }));
     const result = await handler(makeReq({ session_id: 'sess-3' }));
     const body = result.body as { text: string; source: string; tier?: number };
 
     expect(body.source).toBe('digest');
-    expect(body.tier).toBe(3000);
-    expect(body.text).toContain('# Tier 3000 digest');
+    expect(body.tier).toBe(10000);
+    expect(body.text).toContain('# Tier 10000 digest');
   });
 
   it('falls back to basic when configured tier has no extract', async () => {

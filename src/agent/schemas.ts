@@ -80,6 +80,7 @@ export const PhaseDefinitionSchema = z.object({
   required: z.boolean(),
   dependsOn: z.array(z.string()).optional(),
   provider: ProviderConfigSchema.optional(),
+  skipPriorContext: z.boolean().optional(),
 });
 
 /** Schema for task YAML files in tasks/. */

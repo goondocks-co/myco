@@ -41,6 +41,8 @@ export interface PhaseDefinition {
   dependsOn?: string[];
   /** Per-phase provider override. Isolated via SDK `env` option — no process.env mutation. */
   provider?: ProviderConfig;
+  /** If true, prior phase summaries are omitted from the composed prompt (avoids context bloat for terminal phases). */
+  skipPriorContext?: boolean;
 }
 
 /** Result of a single phase execution within a phased run. */

@@ -489,7 +489,7 @@ export async function main(): Promise<void> {
 
     if (staleRows.length > 0) {
       staleDb.prepare(
-        `UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE status = 'running'`,
+        `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = 'Daemon restarted while run was in progress' WHERE status = 'running'`,
       ).run(epochSeconds());
       logger.info(LOG_KINDS.AGENT_RUN, 'Cleaned stale running agent runs', {
         count: staleRows.length,
@@ -1728,8 +1728,14 @@ export async function main(): Promise<void> {
   // since the last run (config.agent.interval_seconds).
   if (config.agent.auto_run) {
     let agentRunning = false;
-    let lastAgentRun = 0;
     const agentIntervalMs = config.agent.interval_seconds * MS_PER_SECOND;
+
+    // Seed lastAgentRun from the most recent completed/failed run so daemon
+    // restarts don't immediately re-trigger the agent.
+    const lastRunRow = getDatabase().prepare(
+      `SELECT started_at FROM agent_runs WHERE agent_id = ? AND status IN ('completed', 'failed') ORDER BY started_at DESC LIMIT 1`,
+    ).get(DEFAULT_AGENT_ID) as { started_at: number } | undefined;
+    let lastAgentRun = lastRunRow ? lastRunRow.started_at * MS_PER_SECOND : 0;
 
     powerManager.register({
       name: 'agent-auto-run',

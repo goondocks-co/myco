@@ -13,11 +13,11 @@ description: >
   to spores or graph data.
 agent: myco-agent
 isDefault: false
-maxTurns: 20
-timeoutSeconds: 300
+maxTurns: 28
+timeoutSeconds: 1800
 
 prompt: |
-  Regenerate digest extracts from current vault state. Budget: ~15 turns.
+  Regenerate digest extracts from current vault state.
 
   ## Phase 1 — Assess Current State (budget: 4 turns)
 
@@ -32,7 +32,7 @@ prompt: |
   `vault_report` with action "skip" and reason "digest is already current",
   then stop. Only proceed if there is genuine new material to incorporate.
 
-  ## Phase 2 — Survey New Material (budget: 3 turns)
+  ## Phase 2 — Survey New Material (budget: 5 turns)
 
   Based on the spore types and tags you saw in Phase 1, construct targeted
   search queries. Search for specific themes you identified, not generic
@@ -45,29 +45,25 @@ prompt: |
   The existing digest is your baseline — your goal is to integrate new
   material into it, not start from scratch.
 
-  ## Phase 3 — Update Extracts (budget: 7 turns)
+  ## Phase 3 — Update Extracts (budget: 25 turns)
 
-  Phase 3 has 7 turns — enough for at most 3 tier updates (1 read + 1 write
-  each). Prioritize tiers 10000, 5000, 1500.
+  Update ALL 3 tiers in this order (largest first — each subsequent tier
+  is a compression of the one above):
+  1. Tier 10000 — Full institutional knowledge (update if any new content)
+  2. Tier 5000 — Deep onboarding (update if new trade-offs or patterns)
+  3. Tier 1500 — Executive briefing (most compressed — update if
+     important new decisions or gotchas)
 
-  When updating a tier:
-  1. Read current content via `vault_read_digest` with the tier number
-  2. Identify sections affected by new material from Phase 2
-  3. Update only those sections; copy unaffected sections verbatim
-  4. Call `vault_write_digest` with the updated version
+  For each tier: read current content via `vault_read_digest`, then write
+  the updated version via `vault_write_digest`. Each tier is self-contained.
+  Preserve well-crafted existing content — integrate new material, don't
+  rewrite from scratch.
 
-  Preserve well-crafted existing content — only update sections affected by
-  new material. Tiers that need the most frequent updating:
-  1. Tier 10000 — Full institutional knowledge: update if any new content
-  2. Tier 7500 — Comprehensive: update if significant new content
-  3. Tier 5000 — Deep onboarding: update if new trade-offs or patterns
-  4. Tier 3000 — Team standup: update if new conventions or plans
-  5. Tier 1500 — Executive briefing: only if something critical changed
+  If a tier genuinely has no new material to integrate, skip it — but
+  do not skip tiers just to save turns. All 3 tiers should be kept current.
 
-  You do NOT need to update all 5 tiers — only those affected by new material.
-
-  Prioritize: recent insights > active decisions > unresolved gotchas >
-  architectural patterns > historical context.
+  Prioritize within each tier: recent insights > active decisions >
+  unresolved gotchas > architectural patterns > historical context.
 
   ## Phase 4 — Report (budget: 1 turn)
 

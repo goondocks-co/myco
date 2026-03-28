@@ -13,7 +13,7 @@
  */
 
 import crypto from 'node:crypto';
-import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
+import { epochSeconds, DEFAULT_AGENT_ID, MS_PER_SECOND, PHASE_SUMMARY_MAX_CHARS } from '@myco/constants.js';
 import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
 import { initDatabase, vaultDbPath } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
@@ -81,9 +81,6 @@ const PROMPT_SECTION_PRIOR_PHASES = '## Prior Phase Results';
 /** Header for the current phase in phased prompts. */
 const PROMPT_SECTION_CURRENT_PHASE = '## Current Phase: ';
 
-/** Truncation limit for phase summary text passed to subsequent phases. */
-const PHASE_SUMMARY_MAX_CHARS = 2000;
-
 // ---------------------------------------------------------------------------
 // Prompt composition
 // ---------------------------------------------------------------------------
@@ -146,8 +143,8 @@ export function composePhasePrompt(
     parts.push(`${PROMPT_SECTION_INSTRUCTION}\n${instruction}`);
   }
 
-  // Include prior phase results as context
-  if (priorPhaseResults.length > 0) {
+  // Include prior phase results as context (unless the phase opts out)
+  if (priorPhaseResults.length > 0 && !phase.skipPriorContext) {
     const summaries = priorPhaseResults.map((pr) => {
       const truncated = pr.summary.length > PHASE_SUMMARY_MAX_CHARS
         ? pr.summary.slice(0, PHASE_SUMMARY_MAX_CHARS) + '...'
@@ -322,6 +319,7 @@ async function executePhase(
   phase: PhaseDefinition,
   env: Record<string, string | undefined> | undefined,
   sessionId?: string,
+  abortController?: AbortController,
 ): Promise<PhaseResult> {
   let phaseCost = 0;
   let phaseTokens = 0;
@@ -342,6 +340,7 @@ async function executePhase(
         env,
         tools: [],
         ...(sessionId ? { sessionId } : {}),
+        ...(abortController ? { abortController } : {}),
       },
     })) {
       if (message.type === 'result') {
@@ -396,6 +395,7 @@ async function executeSingleQuery(
   runId: string,
   provider?: ProviderConfig,
   embeddingManager?: RunOptions['embeddingManager'],
+  abortController?: AbortController,
 ): Promise<{ tokensUsed: number; costUsd: number }> {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
   const toolServer = createVaultToolServer(agentId, runId, embeddingManager);
@@ -418,6 +418,7 @@ async function executeSingleQuery(
       persistSession: PERSIST_SESSION,
       env,
       tools: [],
+      ...(abortController ? { abortController } : {}),
     },
   })) {
     if (message.type === 'result') {
@@ -458,6 +459,7 @@ async function executePhasedQuery(
   phaseProviderOverrides?: Record<string, { provider?: ProviderConfig; maxTurns?: number }>,
   instruction?: string,
   embeddingManager?: RunOptions['embeddingManager'],
+  abortController?: AbortController,
 ): Promise<{ tokensUsed: number; costUsd: number; phases: PhaseResult[] }> {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
 
@@ -554,7 +556,7 @@ async function executePhasedQuery(
         ? { ...phase, maxTurns: effectiveMaxTurns }
         : phase;
 
-      return executePhase(query, phasePrompt, phaseModel, systemPrompt, toolServer, effectivePhase, env, sessionId);
+      return executePhase(query, phasePrompt, phaseModel, systemPrompt, toolServer, effectivePhase, env, sessionId, abortController);
     });
 
     const settled = await Promise.allSettled(executions);
@@ -667,6 +669,11 @@ export async function runAgent(
         ...(taskRow.tool_overrides
           ? { toolOverrides: JSON.parse(taskRow.tool_overrides) as string[] }
           : {}),
+        // Scalar config from YAML (model, turns, timeout) — DB doesn't store these
+        ...(yamlTask?.model ? { model: yamlTask.model } : {}),
+        ...(yamlTask?.maxTurns ? { maxTurns: yamlTask.maxTurns } : {}),
+        ...(yamlTask?.timeoutSeconds ? { timeoutSeconds: yamlTask.timeoutSeconds } : {}),
+        // Structural config from YAML
         ...(yamlTask?.phases ? { phases: yamlTask.phases } : {}),
         ...(yamlTask?.execution ? { execution: yamlTask.execution } : {}),
         ...(yamlTask?.contextQueries ? { contextQueries: yamlTask.contextQueries } : {}),
@@ -750,6 +757,15 @@ export async function runAgent(
   }
 
   // 8. Execute — phased or single query
+  // Create abort controller for task-level timeout enforcement
+  const taskAbortController = new AbortController();
+  const timeoutMs = config.timeoutSeconds * MS_PER_SECOND;
+  const timeoutId = setTimeout(() => {
+    console.warn(`[agent] Run ${runId} exceeded timeout (${config.timeoutSeconds}s), aborting`);
+    taskAbortController.abort();
+  }, timeoutMs);
+  timeoutId.unref?.();
+
   let phaseResults: PhaseResult[] | undefined;
   try {
     let tokensUsed: number;
@@ -767,6 +783,7 @@ export async function runAgent(
         phaseProviderOverrides,
         options?.instruction,
         options?.embeddingManager,
+        taskAbortController,
       );
       tokensUsed = result.tokensUsed;
       costUsd = result.costUsd;
@@ -791,11 +808,13 @@ export async function runAgent(
         runId,
         singleProvider,
         options?.embeddingManager,
+        taskAbortController,
       );
       tokensUsed = result.tokensUsed;
       costUsd = result.costUsd;
     }
 
+    clearTimeout(timeoutId);
     const completedAt = epochSeconds();
     updateRunStatus(runId, STATUS_COMPLETED, {
       completed_at: completedAt,
@@ -812,6 +831,7 @@ export async function runAgent(
       ...(phaseResults ? { phases: phaseResults } : {}),
     };
   } catch (err) {
+    clearTimeout(timeoutId);
     // 7. Error handling — mark run as failed, preserve phase results
     // Aggressively extract error info — the SDK may throw non-Error objects
     let errorMessage: string;

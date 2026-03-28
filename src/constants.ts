@@ -6,6 +6,14 @@
 
 export { LOG_KINDS, type LogKind, kindToComponent } from './constants/log-kinds.js';
 
+// --- Agent phase prompt composition ---
+/**
+ * Maximum chars per phase summary passed to subsequent phases.
+ * Set to 4000 to ensure the digest-assess phase findings pass
+ * untruncated to parallel tier phases.
+ */
+export const PHASE_SUMMARY_MAX_CHARS = 4000;
+
 // --- Token estimation ---
 /** Approximate characters per token for the chars/4 heuristic. */
 export const CHARS_PER_TOKEN = 4;
@@ -184,16 +192,14 @@ export const FEED_DEFAULT_LIMIT = 50;
 
 // --- Digest — Tiers ---
 /** Available token-budget tiers for digest synthesis. */
-export const DIGEST_TIERS = [1500, 3000, 5000, 7500, 10000] as const;
+export const DIGEST_TIERS = [1500, 5000, 10000] as const;
 export type DigestTier = (typeof DIGEST_TIERS)[number];
 
 // --- Digest — Context window minimums per tier ---
 /** Minimum context window (tokens) required to run a digest at a given tier. */
 export const DIGEST_TIER_MIN_CONTEXT: Record<number, number> = {
   1500: 6500,
-  3000: 11500,
   5000: 18500,
-  7500: 24500,
   10000: 30500,
 };
 
