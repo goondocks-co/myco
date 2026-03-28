@@ -14,9 +14,7 @@ const DIGEST_PREVIEW_CHARS = 200;
 /** Display labels for each tier token budget. */
 const TIER_LABELS: Record<number, string> = {
   1500:  'T1500 — Compact',
-  3000:  'T3000 — Brief',
   5000:  'T5000 — Standard',
-  7500:  'T7500 — Extended',
   10000: 'T10000 — Full',
 };
 

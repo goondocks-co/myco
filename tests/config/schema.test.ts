@@ -83,12 +83,12 @@ describe('MycoConfigSchema v3', () => {
     const config = MycoConfigSchema.parse({
       version: 3,
       context: {
-        digest_tier: 3000,
+        digest_tier: 10000,
         prompt_search: false,
         prompt_max_spores: 5,
       },
     });
-    expect(config.context.digest_tier).toBe(3000);
+    expect(config.context.digest_tier).toBe(10000);
     expect(config.context.prompt_search).toBe(false);
     expect(config.context.prompt_max_spores).toBe(5);
   });

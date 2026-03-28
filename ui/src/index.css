@@ -170,6 +170,10 @@
     background-color: var(--surface);
     color: var(--on-surface);
     font-family: var(--font-ui, 'Inter', system-ui, sans-serif);
+    /* Override Radix DismissableLayer scroll-lock. Our layout uses overflow-auto
+       on <main>, not body scroll — the body pointer-events lock breaks Select
+       dropdowns inside the scrollable main area. */
+    pointer-events: auto !important;
   }
 }
 

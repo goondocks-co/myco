@@ -488,7 +488,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
     'vault_read_digest',
     'Read current digest extracts. Without a tier parameter, returns a summary of all tiers (content length, generation time). With a tier parameter, returns the full content for that specific tier.',
     {
-      tier: z.number().optional().describe('Specific tier to read in full (e.g., 1500, 3000). Omit to get summary of all tiers.'),
+      tier: z.number().optional().describe('Specific tier to read in full (e.g., 1500, 5000, 10000). Omit to get summary of all tiers.'),
     },
     async (args) => {
       recordTurn('vault_read_digest', args);
@@ -514,7 +514,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
     'vault_write_digest',
     'Write or update a digest extract at a specific token tier. Uses UPSERT on (agent_id, tier).',
     {
-      tier: z.number().describe('Token budget tier (e.g., 1500, 3000, 5000, 7500, 10000)'),
+      tier: z.number().describe('Token budget tier (e.g., 1500, 5000, 10000)'),
       content: z.string().describe('The digest extract content in markdown'),
     },
     async (args) => {

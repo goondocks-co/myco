@@ -146,14 +146,14 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: TOOL_CONTEXT,
-    description: "Retrieve Myco's synthesized understanding of this project. Returns a pre-computed context extract at the requested token tier. Available tiers: 1500 (executive briefing), 3000 (team standup), 5000 (deep onboarding), 10000 (institutional knowledge). This is a rich, always-current synthesis of project history, decisions, patterns, and active work — not a search result.",
+    description: "Retrieve Myco's synthesized understanding of this project. Returns a pre-computed context extract at the requested token tier. Available tiers: 1500 (executive briefing), 5000 (deep onboarding), 10000 (institutional knowledge). This is a rich, always-current synthesis of project history, decisions, patterns, and active work — not a search result.",
     inputSchema: {
       type: 'object' as const,
       properties: {
         tier: {
           type: 'number',
-          enum: [1500, 3000, 5000, 7500, 10000],
-          description: 'Token budget tier. Larger tiers include more detail. Default: 3000.',
+          enum: [1500, 5000, 10000],
+          description: 'Token budget tier. Larger tiers include more detail. Default: 5000.',
         },
       },
     },

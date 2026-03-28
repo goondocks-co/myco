@@ -174,7 +174,7 @@ describe('buildVaultContext', () => {
     db.prepare(
       `INSERT INTO digest_extracts (agent_id, tier, content, generated_at)
        VALUES (?, ?, ?, ?)`,
-    ).run(TEST_AGENT_ID, 3000, 'more context', digestTime + 100);
+    ).run(TEST_AGENT_ID, 5000, 'more context', digestTime + 100);
 
     const context = buildVaultContext(TEST_AGENT_ID);
 

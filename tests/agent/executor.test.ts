@@ -393,7 +393,7 @@ describe('composePhasePrompt', () => {
   });
 
   it('truncates long phase summaries', () => {
-    const longSummary = 'A'.repeat(3000);
+    const longSummary = 'A'.repeat(5000);
     const result = composePhasePrompt(
       vaultContext,
       taskName,

@@ -491,8 +491,8 @@ describe('vault tools', () => {
 
     it('upserts on (agent_id, tier) conflict', async () => {
       const t = findTool(tools, 'vault_write_digest');
-      await t.handler({ tier: 3000, content: 'v1' }, undefined);
-      const result = await t.handler({ tier: 3000, content: 'v2' }, undefined);
+      await t.handler({ tier: 5000, content: 'v1' }, undefined);
+      const result = await t.handler({ tier: 5000, content: 'v2' }, undefined);
       const extract = parseResult(result) as { content: string };
       expect(extract.content).toBe('v2');
 
@@ -500,7 +500,7 @@ describe('vault tools', () => {
       const db = getDatabase();
       const row = db.prepare(
         `SELECT count(*) AS count FROM digest_extracts WHERE agent_id = ? AND tier = ?`,
-      ).get(TEST_AGENT_ID, 3000) as { count: number };
+      ).get(TEST_AGENT_ID, 5000) as { count: number };
       expect(row.count).toBe(1);
     });
   });

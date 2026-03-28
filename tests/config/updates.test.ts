@@ -178,8 +178,8 @@ describe('withTaskConfig', () => {
 
 describe('withContext', () => {
   it('sets digest_tier', () => {
-    const result = withContext(baseConfig(), { digest_tier: 3000 });
-    expect(result.context.digest_tier).toBe(3000);
+    const result = withContext(baseConfig(), { digest_tier: 10000 });
+    expect(result.context.digest_tier).toBe(10000);
   });
 
   it('sets prompt_search', () => {

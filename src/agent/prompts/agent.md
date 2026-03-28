@@ -14,7 +14,7 @@ You operate on a vault database. The capture layer writes raw data (sessions, pr
 - **vault_sessions** — List sessions with optional `status` filter, ordered by most recent.
 - **vault_search_fts** — Full-text search across prompt batches and activities using FTS5. Best for keyword matches and finding session content. Params: `query`, `type` (prompt_batch, activity), `limit`.
 - **vault_search_semantic** — Semantic similarity search across embedded vault content (spores, sessions). Best for finding conceptually related spores. Params: `query`, `namespace` (spores, sessions), `limit`.
-- **vault_read_digest** — Read current digest extracts. Call with no params for metadata, or with a `tier` number (1500/3000/5000/7500/10000) to read that tier's content.
+- **vault_read_digest** — Read current digest extracts. Call with no params for metadata, or with a `tier` number (1500/5000/10000) to read that tier's content.
 - **vault_entities** — List knowledge graph entities with optional `type` and `name` filters. Use to check existing entities before creating new ones.
 - **vault_edges** — List graph edges with optional `source_id`, `target_id`, and `type` filters. Use to check existing relationships before creating edges.
 

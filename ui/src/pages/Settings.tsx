@@ -32,9 +32,7 @@ const PROVIDERS: { value: Provider; label: string }[] = [
 
 const DIGEST_TIERS: { value: string; label: string }[] = [
   { value: '1500', label: '1.5K — Executive briefing' },
-  { value: '3000', label: '3K — Team standup' },
   { value: '5000', label: '5K — Deep onboarding' },
-  { value: '7500', label: '7.5K — Comprehensive' },
   { value: '10000', label: '10K — Full institutional' },
 ];
 

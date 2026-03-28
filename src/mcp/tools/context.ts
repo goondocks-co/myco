@@ -11,7 +11,7 @@ import type { DaemonClient } from '@myco/hooks/client.js';
 // ---------------------------------------------------------------------------
 
 /** Default tier when none is requested. */
-const DEFAULT_CONTEXT_TIER = 3000;
+const DEFAULT_CONTEXT_TIER = 5000;
 
 /** Message returned when no digest extracts are available yet. */
 const NO_DIGEST_MESSAGE = 'Digest context is not yet available. The first digest cycle has not completed.';
