@@ -27,6 +27,7 @@ type SearchMode = 'auto' | 'semantic' | 'fts';
 export interface SearchDeps {
   embeddingManager: EmbeddingManager;
   getTeamClient?: () => TeamSyncClient | null;
+  machineId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,8 +100,13 @@ export function createSearchHandler(deps: SearchDeps) {
       }
     }
 
+    // Deduplicate: skip team results from this machine (we already have them locally)
+    const dedupedTeam = deps.machineId
+      ? teamResults.filter((r) => r.machine_id !== deps.machineId)
+      : teamResults;
+
     // Merge by score (highest first), slice to limit
-    const merged = [...localResults, ...teamResults]
+    const merged = [...localResults, ...dedupedTeam]
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
       .slice(0, limit);
 

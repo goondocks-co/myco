@@ -86,7 +86,7 @@ export const VAULT_TOOL_COUNT = 18;
  * @param runId — the current agent run ID, injected into reports and turns.
  * @returns array of SdkMcpToolDefinition objects.
  */
-export function createVaultTools(agentId: string, runId: string, turnOffset = 0, embeddingManager?: EmbeddingManager, teamClient?: TeamSyncClient | null) {
+export function createVaultTools(agentId: string, runId: string, turnOffset = 0, embeddingManager?: EmbeddingManager, teamClient?: TeamSyncClient | null, machineId?: string) {
   /** Turn number counter — incremented per tool call (read and write) within a run. */
   let turnCounter = turnOffset;
 
@@ -234,10 +234,15 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
             : Promise.resolve([] as Array<Record<string, unknown>>),
         ]);
 
+        // Deduplicate: skip team results from this machine (we already have them locally)
+        const dedupedTeam = machineId
+          ? teamResults.filter((r) => (r as Record<string, unknown>).machine_id !== machineId)
+          : teamResults;
+
         // Merge by similarity/score (normalize to common key), slice to limit
         const merged = [
           ...localResults.map((r) => ({ ...r, score: r.similarity })),
-          ...teamResults,
+          ...dedupedTeam,
         ]
           .sort((a, b) => ((b.score as number) ?? 0) - ((a.score as number) ?? 0))
           .slice(0, searchLimit);
