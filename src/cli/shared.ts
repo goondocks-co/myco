@@ -57,9 +57,8 @@ export const PROVIDER_DEFAULTS: Record<string, { base_url: string }> = {
 
 
 export const VAULT_GITIGNORE = `# SQLite database
-myco.db
-myco.db-wal
-myco.db-shm
+myco.db*
+vectors.db*
 
 # Daemon state — per-machine, ephemeral
 daemon.json
@@ -68,6 +67,9 @@ logs/
 
 # Secrets — API keys for cloud providers
 secrets.env
+
+# Machine ID
+machine_id
 
 # Binary attachments — screenshots captured from transcripts
 attachments/
