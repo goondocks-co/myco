@@ -1,0 +1,18 @@
+name: codex
+displayName: Codex
+binary: codex
+configDir: .codex
+pluginRootEnvVar: CODEX_PLUGIN_ROOT
+settingsPath: .codex/config.toml
+hookFields:
+  transcriptPath: transcript_path
+  lastResponse: last_assistant_message
+  sessionId: session_id
+capture:
+  planDirs: []
+registration:
+  hooksTarget: .codex/hooks.json
+  mcpTarget: .codex/config.toml
+  mcpFormat: toml
+  skillsTarget: .agents/skills
+  envTarget: mcp-server

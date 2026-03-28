@@ -7,6 +7,7 @@ const CaptureManifestSchema = z.object({
 const RegistrationSchema = z.object({
   hooksTarget: z.string().optional(),
   mcpTarget: z.string().optional(),
+  mcpFormat: z.enum(['json', 'toml']).default('json'),
   skillsTarget: z.string().optional(),
   envTarget: z.enum(['settings', 'mcp-server']).optional(),
 });

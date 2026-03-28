@@ -110,4 +110,30 @@ describe('symbiont manifests', () => {
     });
     expect(manifest.capture).toBeUndefined();
   });
+
+  it('codex manifest has registration with toml mcpFormat', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'codex.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.registration).toBeDefined();
+    expect(manifest.registration!.mcpTarget).toBe('.codex/config.toml');
+    expect(manifest.registration!.mcpFormat).toBe('toml');
+    expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
+    expect(manifest.registration!.envTarget).toBe('mcp-server');
+    expect(manifest.registration!.hooksTarget).toBe('.codex/hooks.json');
+  });
+
+  it('defaults mcpFormat to json when not specified', () => {
+    const manifest = SymbiontManifestSchema.parse({
+      name: 'test-agent',
+      displayName: 'Test Agent',
+      binary: 'test',
+      configDir: '.test',
+      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
+      hookFields: { transcriptPath: 'tp', lastResponse: 'lr', sessionId: 'sid' },
+      registration: {
+        mcpTarget: '.test/mcp.json',
+      },
+    });
+    expect(manifest.registration!.mcpFormat).toBe('json');
+  });
 });

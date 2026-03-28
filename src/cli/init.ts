@@ -5,9 +5,9 @@ import {
   parseStringFlag,
   VAULT_GITIGNORE,
   collapseHomePath,
+  registerSymbionts,
 } from './shared.js';
 import { detectSymbionts, resolvePackageRoot } from '../symbionts/detect.js';
-import { SymbiontInstaller } from '../symbionts/installer.js';
 import { MycoConfigSchema } from '../config/schema.js';
 import { updateConfig, saveConfig } from '../config/loader.js';
 import { writeSecret } from '../config/secrets.js';
@@ -175,27 +175,7 @@ export async function run(args: string[]): Promise<void> {
     const portableVaultDir = collapseHomePath(vaultDir);
     const pkgRoot = resolvePackageRoot();
 
-    for (const d of selected) {
-      try {
-        const installer = new SymbiontInstaller(d.manifest, projectRoot, pkgRoot);
-        const result = installer.install(portableVaultDir);
-
-        const installed = [
-          result.hooks && 'hooks',
-          result.mcp && 'MCP server',
-          result.skills && 'skills',
-          result.env && 'env',
-        ].filter(Boolean);
-
-        if (installed.length > 0) {
-          console.log(`  \u2713 ${d.manifest.displayName}: ${installed.join(', ')}`);
-        } else {
-          console.log(`  \u2013 ${d.manifest.displayName}: no registration targets configured`);
-        }
-      } catch (err) {
-        console.error(`  \u2717 Failed to register ${d.manifest.displayName}: ${(err as Error).message}`);
-      }
-    }
+    registerSymbionts(selected, projectRoot, pkgRoot, portableVaultDir, 'Registered');
   }
 
   // --- Summary ---

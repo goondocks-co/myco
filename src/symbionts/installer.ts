@@ -52,11 +52,13 @@ export class SymbiontInstaller {
 
   /** Run all registration steps. */
   install(vaultDir: string): InstallResult {
+    const envTarget = this.manifest.registration?.envTarget;
+    const mcpHandlesEnv = envTarget === 'mcp-server';
     const result = {
       hooks: this.installHooks(),
-      mcp: this.installMcp(),
+      mcp: this.installMcp(mcpHandlesEnv ? vaultDir : undefined),
       skills: this.installSkills(),
-      env: this.installEnv(vaultDir),
+      env: mcpHandlesEnv || this.installEnv(vaultDir),
     };
     this.updateGitignore();
     return result;
@@ -139,8 +141,10 @@ export class SymbiontInstaller {
   /**
    * Merge MCP server template into the target config file.
    * Replaces the `myco` server entry; preserves other servers.
+   * When vaultDir is provided and envTarget is 'mcp-server', env is merged
+   * into the MCP entry during the same write pass (avoids a double-read).
    */
-  installMcp(): boolean {
+  installMcp(vaultDir?: string): boolean {
     const reg = this.manifest.registration;
     if (!reg?.mcpTarget) return false;
 
@@ -148,6 +152,16 @@ export class SymbiontInstaller {
     if (!template) return false;
 
     const targetPath = path.join(this.projectRoot, reg.mcpTarget);
+    const mcpFormat = reg.mcpFormat ?? 'json';
+
+    if (mcpFormat === 'toml') {
+      return this.installMcpToml(targetPath, template, vaultDir);
+    }
+    return this.installMcpJson(targetPath, template, vaultDir);
+  }
+
+  /** Write MCP servers to a JSON config file. */
+  private installMcpJson(targetPath: string, template: Record<string, unknown>, vaultDir?: string): boolean {
     const config = readJsonFile(targetPath);
     const servers = (config.mcpServers ?? {}) as Record<string, unknown>;
 
@@ -155,8 +169,30 @@ export class SymbiontInstaller {
       servers[name] = def;
     }
 
+    // Merge env if this is an mcp-server envTarget
+    if (vaultDir && servers[MYCO_MCP_SERVER_NAME]) {
+      const entry = servers[MYCO_MCP_SERVER_NAME] as Record<string, unknown>;
+      entry.env = { ...(entry.env as Record<string, string> ?? {}), [MYCO_VAULT_DIR_ENV]: vaultDir };
+    }
+
     config.mcpServers = servers;
     writeJsonFile(targetPath, config);
+    return true;
+  }
+
+  /** Write MCP servers to a TOML config file. */
+  private installMcpToml(targetPath: string, template: Record<string, unknown>, vaultDir?: string): boolean {
+    let raw = '';
+    try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch { /* doesn't exist */ }
+
+    for (const [name, def] of Object.entries(template)) {
+      const server = { ...(def as Record<string, unknown>) };
+      // Merge env if this is an mcp-server envTarget
+      if (vaultDir && name === MYCO_MCP_SERVER_NAME) {
+        server.env = { ...(server.env as Record<string, string> ?? {}), [MYCO_VAULT_DIR_ENV]: vaultDir };
+      }
+      raw = writeTomlMcpServer(targetPath, raw, name, server);
+    }
     return true;
   }
 
@@ -239,7 +275,83 @@ export class SymbiontInstaller {
   }
 }
 
-// --- Helpers ---
+// --- TOML helpers ---
+
+/** TOML section header pattern. */
+const TOML_SECTION_RE = /^\[([^\]]+)\]/;
+
+/**
+ * Write/update a specific mcp_servers entry in a TOML file.
+ * Returns the updated raw content (caller must track it for multiple writes).
+ */
+function writeTomlMcpServer(
+  filePath: string,
+  raw: string,
+  serverName: string,
+  server: Record<string, unknown>,
+): string {
+  const sectionHeader = `[mcp_servers.${serverName}]`;
+
+  // Build the TOML block for this server
+  const lines: string[] = [sectionHeader];
+  for (const [key, val] of Object.entries(server)) {
+    if (key === 'env' && typeof val === 'object' && val !== null) continue; // Handle env as subtable
+    if (typeof val === 'string') {
+      lines.push(`${key} = "${val}"`);
+    } else if (Array.isArray(val)) {
+      lines.push(`${key} = [${val.map((v: unknown) => `"${v}"`).join(', ')}]`);
+    } else if (typeof val === 'boolean') {
+      lines.push(`${key} = ${val}`);
+    }
+  }
+
+  // Add env subtable if present
+  const env = server.env as Record<string, string> | undefined;
+  if (env && Object.keys(env).length > 0) {
+    lines.push('');
+    lines.push(`[mcp_servers.${serverName}.env]`);
+    for (const [key, val] of Object.entries(env)) {
+      lines.push(`${key} = "${val}"`);
+    }
+  }
+
+  const block = lines.join('\n');
+
+  let updated: string;
+  if (raw.includes(sectionHeader)) {
+    // Replace existing section (from header to next top-level section or EOF)
+    const startIdx = raw.indexOf(sectionHeader);
+    const searchStart = startIdx + sectionHeader.length;
+    // Find the next section that is NOT a subsection of this server
+    const subsectionPrefix = `mcp_servers.${serverName}.`;
+    let afterIdx = -1;
+    const rawLines = raw.slice(searchStart).split('\n');
+    let offset = searchStart;
+    for (const line of rawLines) {
+      offset += line.length + 1; // +1 for newline
+      const m = line.match(TOML_SECTION_RE);
+      if (m && !m[1].startsWith(subsectionPrefix) && m[1] !== `mcp_servers.${serverName}`) {
+        afterIdx = offset - line.length - 1;
+        break;
+      }
+    }
+    const endIdx = afterIdx === -1 ? raw.length : afterIdx;
+    const before = raw.slice(0, startIdx).trimEnd();
+    const after = raw.slice(endIdx);
+    const separator = before ? '\n\n' : '';
+    updated = (before + separator + block + after).trimEnd() + '\n';
+  } else {
+    // Append new section
+    const separator = raw.trim() ? '\n\n' : '';
+    updated = (raw.trimEnd() + separator + block).trimEnd() + '\n';
+  }
+
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, updated, 'utf-8');
+  return updated;
+}
+
+// --- JSON helpers ---
 
 function readJsonFile(filePath: string): Record<string, unknown> {
   try {

@@ -33,7 +33,25 @@ const CURSOR_MANIFEST: SymbiontManifest = {
   hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'conversation_id' },
   registration: {
     mcpTarget: '.cursor/mcp.json',
+    mcpFormat: 'json',
     skillsTarget: '.cursor/skills',
+    envTarget: 'mcp-server',
+  },
+};
+
+const CODEX_MANIFEST: SymbiontManifest = {
+  name: 'codex',
+  displayName: 'Codex',
+  binary: 'codex',
+  configDir: '.codex',
+  pluginRootEnvVar: 'CODEX_PLUGIN_ROOT',
+  settingsPath: '.codex/config.toml',
+  hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
+  registration: {
+    hooksTarget: '.codex/hooks.json',
+    mcpTarget: '.codex/config.toml',
+    mcpFormat: 'toml',
+    skillsTarget: '.agents/skills',
     envTarget: 'mcp-server',
   },
 };
@@ -83,12 +101,21 @@ function setupPackageRoot(): void {
   // Create template files in packageRoot
   const claudeTemplateDir = path.join(packageRoot, 'src/symbionts/templates/claude-code');
   const cursorTemplateDir = path.join(packageRoot, 'src/symbionts/templates/cursor');
+  const codexTemplateDir = path.join(packageRoot, 'src/symbionts/templates/codex');
   fs.mkdirSync(claudeTemplateDir, { recursive: true });
   fs.mkdirSync(cursorTemplateDir, { recursive: true });
+  fs.mkdirSync(codexTemplateDir, { recursive: true });
 
   writeJson(path.join(claudeTemplateDir, 'hooks.json'), HOOKS_TEMPLATE);
   writeJson(path.join(claudeTemplateDir, 'mcp.json'), MCP_TEMPLATE);
   writeJson(path.join(cursorTemplateDir, 'mcp.json'), MCP_TEMPLATE);
+  writeJson(path.join(codexTemplateDir, 'hooks.json'), {
+    SessionStart: [{ hooks: [{ type: 'command', command: 'myco-run hook session-start', timeout: 10 }] }],
+    Stop: [{ hooks: [{ type: 'command', command: 'myco-run hook stop', timeout: 30 }] }],
+  });
+  writeJson(path.join(codexTemplateDir, 'mcp.json'), {
+    myco: { command: 'myco-run', args: ['mcp'] },
+  });
 
   // Create a skill directory
   const skillDir = path.join(packageRoot, 'skills/myco');
@@ -519,14 +546,6 @@ describe('install', () => {
   });
 
   it('runs all four steps and returns results for Cursor', () => {
-    // Pre-create cursor mcp.json with myco server (needed for env install)
-    const mcpPath = path.join(projectRoot, '.cursor/mcp.json');
-    writeJson(mcpPath, {
-      mcpServers: {
-        myco: { type: 'stdio', command: 'myco-run', args: ['mcp'] },
-      },
-    });
-
     const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
     const result = installer.install('/vault/path');
 
@@ -535,6 +554,11 @@ describe('install', () => {
     expect(result.mcp).toBe(true);
     expect(result.skills).toBe(true);
     expect(result.env).toBe(true);
+
+    // Verify env was merged into MCP server entry
+    const config = readJson(path.join(projectRoot, '.cursor/mcp.json'));
+    const servers = config.mcpServers as Record<string, Record<string, unknown>>;
+    expect((servers.myco.env as Record<string, string>).MYCO_VAULT_DIR).toBe('/vault/path');
   });
 
   it('is idempotent — running twice produces same result', () => {
@@ -602,5 +626,112 @@ describe('gitignore management', () => {
     const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
     expect(gitignore).toContain('node_modules/');
     expect(gitignore).toContain('.agents/skills/');
+  });
+});
+
+// =====================
+// installMcp (TOML)
+// =====================
+
+describe('installMcp (TOML)', () => {
+  it('writes MCP server entry to TOML config', () => {
+    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installMcp();
+
+    expect(result).toBe(true);
+    const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
+    expect(content).toContain('[mcp_servers.myco]');
+    expect(content).toContain('command = "myco-run"');
+    expect(content).toContain('args = ["mcp"]');
+  });
+
+  it('preserves existing TOML content', () => {
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(path.join(codexDir, 'config.toml'), 'model = "gpt-5-codex"\n\n[mcp_servers.other]\ncommand = "other"\n');
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installMcp();
+
+    const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
+    expect(content).toContain('model = "gpt-5-codex"');
+    expect(content).toContain('[mcp_servers.other]');
+    expect(content).toContain('[mcp_servers.myco]');
+  });
+
+  it('includes env when vaultDir is provided', () => {
+    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installMcp('~/vaults/myco');
+
+    const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
+    expect(content).toContain('[mcp_servers.myco.env]');
+    expect(content).toContain('MYCO_VAULT_DIR = "~/vaults/myco"');
+  });
+
+  it('replaces existing myco section on update', () => {
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(path.join(codexDir, 'config.toml'), '[mcp_servers.myco]\ncommand = "old-command"\n');
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installMcp();
+
+    const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
+    expect(content).toContain('command = "myco-run"');
+    expect(content).not.toContain('old-command');
+  });
+});
+
+// =====================
+// install (mcp-server envTarget)
+// =====================
+
+describe('install (mcp-server envTarget)', () => {
+  it('writes env in MCP pass for Cursor, skips separate installEnv', () => {
+    fs.mkdirSync(path.join(projectRoot, '.cursor'), { recursive: true });
+    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
+    const result = installer.install('~/vaults/myco');
+
+    expect(result.mcp).toBe(true);
+    expect(result.env).toBe(true);
+
+    const config = readJson(path.join(projectRoot, '.cursor/mcp.json'));
+    expect((config.mcpServers as Record<string, Record<string, unknown>>).myco.env).toEqual({ MYCO_VAULT_DIR: '~/vaults/myco' });
+  });
+
+  it('writes env in TOML MCP pass for Codex', () => {
+    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    const result = installer.install('~/vaults/myco');
+
+    expect(result.mcp).toBe(true);
+    expect(result.env).toBe(true);
+
+    const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
+    expect(content).toContain('MYCO_VAULT_DIR = "~/vaults/myco"');
+  });
+
+  it('runs all steps for Codex including hooks and skills', () => {
+    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    const result = installer.install('~/vaults/myco');
+
+    expect(result.hooks).toBe(true);
+    expect(result.mcp).toBe(true);
+    expect(result.skills).toBe(true);
+    expect(result.env).toBe(true);
+
+    // Hooks file
+    const hooks = readJson(path.join(projectRoot, '.codex/hooks.json'));
+    expect(hooks.hooks).toBeDefined();
+
+    // TOML MCP config
+    const toml = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
+    expect(toml).toContain('[mcp_servers.myco]');
+
+    // Skills — canonical only (skillsTarget === CANONICAL_SKILLS_DIR)
+    expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco'))).toBe(true);
   });
 });

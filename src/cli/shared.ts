@@ -6,6 +6,8 @@ import { LmStudioBackend } from '../intelligence/lm-studio.js';
 
 import { DaemonClient } from '../hooks/client.js';
 import { initDatabase, closeDatabase, vaultDbPath } from '../db/client.js';
+import { SymbiontInstaller } from '../symbionts/installer.js';
+import type { DetectedSymbiont } from '../symbionts/detect.js';
 
 export { parseStringFlag, parseIntFlag } from '../logs/format.js';
 
@@ -84,5 +86,42 @@ export function collapseHomePath(absPath: string): string {
     return '~' + absPath.slice(home.length);
   }
   return absPath;
+}
+
+/**
+ * Run the SymbiontInstaller for each detected symbiont and log results.
+ * Shared between myco init and myco update.
+ */
+export function registerSymbionts(
+  detected: DetectedSymbiont[],
+  projectRoot: string,
+  packageRoot: string,
+  vaultDir: string,
+  verb: 'Registered' | 'Updated',
+): number {
+  let count = 0;
+  for (const d of detected) {
+    try {
+      const installer = new SymbiontInstaller(d.manifest, projectRoot, packageRoot);
+      const result = installer.install(vaultDir);
+
+      const installed = [
+        result.hooks && 'hooks',
+        result.mcp && 'MCP server',
+        result.skills && 'skills',
+        result.env && 'env',
+      ].filter(Boolean);
+
+      if (installed.length > 0) {
+        console.log(`  \u2713 ${verb} ${d.manifest.displayName}: ${installed.join(', ')}`);
+        count++;
+      } else {
+        console.log(`  \u2013 ${d.manifest.displayName}: no registration targets configured`);
+      }
+    } catch (err) {
+      console.error(`  \u2717 Failed to register ${d.manifest.displayName}: ${(err as Error).message}`);
+    }
+  }
+  return count;
 }
 

@@ -1,7 +1,6 @@
 import { resolveVaultDir } from '../vault/resolve.js';
-import { VAULT_GITIGNORE, collapseHomePath } from './shared.js';
+import { VAULT_GITIGNORE, collapseHomePath, registerSymbionts } from './shared.js';
 import { detectSymbionts, resolvePackageRoot } from '../symbionts/detect.js';
-import { SymbiontInstaller } from '../symbionts/installer.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -39,28 +38,8 @@ export async function run(args: string[]): Promise<void> {
   const portableVaultDir = collapseHomePath(vaultDir);
 
   if (detected.length > 0) {
-    for (const d of detected) {
-      try {
-        const installer = new SymbiontInstaller(d.manifest, projectRoot, pkgRoot);
-        const result = installer.install(portableVaultDir);
-
-        const installed = [
-          result.hooks && 'hooks',
-          result.mcp && 'MCP server',
-          result.skills && 'skills',
-          result.env && 'env',
-        ].filter(Boolean);
-
-        if (installed.length > 0) {
-          console.log(`  \u2713 Updated ${d.manifest.displayName}: ${installed.join(', ')}`);
-          updatedCount++;
-        } else {
-          console.log(`  \u2013 ${d.manifest.displayName}: no registration targets`);
-        }
-      } catch (err) {
-        console.error(`  \u2717 Failed to update ${d.manifest.displayName}: ${(err as Error).message}`);
-      }
-    }
+    const registered = registerSymbionts(detected, projectRoot, pkgRoot, portableVaultDir, 'Updated');
+    updatedCount += registered;
   } else {
     console.log('  \u2013 No agents detected');
   }
