@@ -363,3 +363,23 @@ export const TEAM_HEALTH_TIMEOUT_MS = 5000;
 export const TEAM_API_KEY_SECRET = 'MYCO_TEAM_API_KEY';
 /** Timeout for wrangler CLI commands (ms). */
 export const WRANGLER_COMMAND_TIMEOUT_MS = 60_000;
+
+// --- HTTP response flush ---
+/** Delay before initiating shutdown — allows the HTTP response to flush. */
+export const RESTART_RESPONSE_FLUSH_MS = 500;
+
+// --- Self-update ---
+export {
+  NPM_REGISTRY_URL,
+  MYCO_GLOBAL_DIR,
+  UPDATE_CHECK_CACHE_PATH,
+  UPDATE_CONFIG_PATH,
+  UPDATE_ERROR_PATH,
+  UPDATE_CHECK_INTERVAL_HOURS,
+  MS_PER_HOUR,
+  NPM_PACKAGE_NAME,
+  UPDATE_SCRIPT_DELAY_SECONDS,
+  RELEASE_CHANNELS,
+  DEFAULT_RELEASE_CHANNEL,
+  type ReleaseChannel,
+} from './constants/update.js';

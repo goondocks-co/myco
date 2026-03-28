@@ -45,10 +45,11 @@ function PlanStatusBadge({ status }: { status: string }) {
 
 interface PlanCardProps {
   plan: SessionPlanRow;
+  initialExpanded?: boolean;
 }
 
-function PlanCard({ plan }: PlanCardProps) {
-  const [expanded, setExpanded] = useState(false);
+function PlanCard({ plan, initialExpanded = false }: PlanCardProps) {
+  const [expanded, setExpanded] = useState(initialExpanded);
 
   const checklist = useMemo(
     () => plan.content ? parseChecklist(plan.content) : null,
@@ -129,9 +130,10 @@ function PlanCard({ plan }: PlanCardProps) {
 
 export interface SessionPlansProps {
   sessionId: string;
+  expandedPlanId?: string | null;
 }
 
-export function SessionPlans({ sessionId }: SessionPlansProps) {
+export function SessionPlans({ sessionId, expandedPlanId }: SessionPlansProps) {
   const { data: plans, isLoading, isError } = useSessionPlans(sessionId);
 
   if (isLoading) {
@@ -161,7 +163,7 @@ export function SessionPlans({ sessionId }: SessionPlansProps) {
   return (
     <div className="space-y-3">
       {plans.map(plan => (
-        <PlanCard key={plan.id} plan={plan} />
+        <PlanCard key={plan.id} plan={plan} initialExpanded={String(plan.id) === expandedPlanId} />
       ))}
     </div>
   );

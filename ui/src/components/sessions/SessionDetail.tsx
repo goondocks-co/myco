@@ -110,7 +110,17 @@ export function SessionDetail({ id }: SessionDetailProps) {
   const triggerRun = useTriggerRun();
   const [summaryStatus, setSummaryStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<TabValue>('conversation');
+
+  // Read initial tab and plan from URL query params (e.g., ?tab=plans&plan=123)
+  const [activeTab, setActiveTab] = useState<TabValue>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('tab') === 'plans' ? 'plans' : 'conversation';
+  });
+  const [expandedPlanId] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('plan');
+  });
+
   const deleteSession = useDeleteSession();
   const { data: impact } = useSessionImpact(deleteOpen ? id : null);
   const { data: plans } = useSessionPlans(id);
@@ -267,7 +277,7 @@ export function SessionDetail({ id }: SessionDetailProps) {
         </div>
 
         {activeTab === 'conversation' && <BatchTimeline sessionId={id} />}
-        {activeTab === 'plans' && <SessionPlans sessionId={id} />}
+        {activeTab === 'plans' && <SessionPlans sessionId={id} expandedPlanId={expandedPlanId} />}
       </div>
 
       <ConfirmDialog
