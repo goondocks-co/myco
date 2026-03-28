@@ -462,6 +462,7 @@ const SECONDARY_INDEXES = [
   // Team outbox
   'CREATE INDEX IF NOT EXISTS idx_team_outbox_pending ON team_outbox (sent_at, created_at)',
   'CREATE INDEX IF NOT EXISTS idx_team_outbox_table_name ON team_outbox (table_name)',
+  'CREATE INDEX IF NOT EXISTS idx_team_outbox_row_lookup ON team_outbox (table_name, row_id)',
 
   // Machine ID (synced tables)
   'CREATE INDEX IF NOT EXISTS idx_sessions_machine_id ON sessions (machine_id)',
@@ -678,6 +679,7 @@ function migrateV3ToV4(db: Database, machineId: string): void {
     const newIndexes = [
       'CREATE INDEX IF NOT EXISTS idx_team_outbox_pending ON team_outbox (sent_at, created_at)',
       'CREATE INDEX IF NOT EXISTS idx_team_outbox_table_name ON team_outbox (table_name)',
+      'CREATE INDEX IF NOT EXISTS idx_team_outbox_row_lookup ON team_outbox (table_name, row_id)',
       'CREATE INDEX IF NOT EXISTS idx_sessions_machine_id ON sessions (machine_id)',
       'CREATE INDEX IF NOT EXISTS idx_spores_machine_id ON spores (machine_id)',
       'CREATE INDEX IF NOT EXISTS idx_graph_edges_machine_id ON graph_edges (machine_id)',

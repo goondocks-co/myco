@@ -257,18 +257,20 @@ export async function handleGetFullGraph(_req: RouteRequest): Promise<RouteRespo
     allIds.add(r.id as string);
   }
 
-  // Fetch all edges between known nodes, excluding batch-level edges
+  // Fetch edges between known nodes, excluding batch-level edges
   const excludedTypes = Array.from(EXCLUDED_GRAPH_EDGE_TYPES).map(() => '?').join(', ');
+  const allIdsList = Array.from(allIds);
+  const idPlaceholders = allIdsList.map(() => '?').join(', ');
   const edgeRows = db.prepare(
     `SELECT source_id, source_type, target_id, target_type, type, confidence
      FROM graph_edges
-     WHERE agent_id = ? AND type NOT IN (${excludedTypes})`,
-  ).all(DEFAULT_AGENT_ID, ...Array.from(EXCLUDED_GRAPH_EDGE_TYPES)) as Array<Record<string, unknown>>;
+     WHERE agent_id = ?
+       AND type NOT IN (${excludedTypes})
+       AND source_id IN (${idPlaceholders})
+       AND target_id IN (${idPlaceholders})`,
+  ).all(DEFAULT_AGENT_ID, ...Array.from(EXCLUDED_GRAPH_EDGE_TYPES), ...allIdsList, ...allIdsList) as Array<Record<string, unknown>>;
 
-  // Only keep edges where both endpoints are in our node set
-  const filteredEdges = edgeRows.filter(
-    (e) => allIds.has(e.source_id as string) && allIds.has(e.target_id as string),
-  );
+  const filteredEdges = edgeRows;
 
   // Mention counts for entity sizing
   const mentionCounts = new Map<string, number>();

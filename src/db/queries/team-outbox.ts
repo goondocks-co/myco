@@ -258,33 +258,33 @@ export function backfillUnsynced(machineId: string): number {
 
   const now = Math.floor(Date.now() / MS_PER_SECOND);
 
-  const runBackfill = db.transaction(() => {
-    for (const table of BACKFILL_TABLES) {
-      // Get rows that haven't been synced and aren't already in the outbox
-      const rows = db.prepare(
-        `SELECT * FROM ${table}
-         WHERE synced_at IS NULL
-         AND NOT EXISTS (
-           SELECT 1 FROM team_outbox
-           WHERE team_outbox.table_name = ? AND team_outbox.row_id = CAST(${table}.id AS TEXT)
-         )`,
-      ).all(table) as Record<string, unknown>[];
+  // Process one table at a time in separate transactions to avoid long locks
+  for (const table of BACKFILL_TABLES) {
+    const rows = db.prepare(
+      `SELECT * FROM ${table}
+       WHERE synced_at IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM team_outbox
+         WHERE team_outbox.table_name = ? AND team_outbox.row_id = CAST(${table}.id AS TEXT)
+       )`,
+    ).all(table) as Record<string, unknown>[];
 
-      if (rows.length === 0) continue;
+    if (rows.length === 0) continue;
 
+    const insertBatch = db.transaction((batchRows: Record<string, unknown>[]) => {
       const stmt = db.prepare(
         `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
          VALUES (?, ?, 'upsert', ?, ?, ?)`,
       );
-
-      for (const row of rows) {
+      for (const row of batchRows) {
         stmt.run(table, String(row.id), JSON.stringify(row), machineId, now);
-        total++;
       }
-    }
-  });
+    });
 
-  runBackfill();
+    insertBatch(rows);
+    total += rows.length;
+  }
+
   return total;
 }
 

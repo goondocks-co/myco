@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig, updateTeamConfig } from '../config/loader.js';
 import { writeSecret } from '../config/secrets.js';
 import { findPackageRoot } from '../utils/find-package-root.js';
-import { WRANGLER_COMMAND_TIMEOUT_MS } from '../constants.js';
+import { WRANGLER_COMMAND_TIMEOUT_MS, TEAM_API_KEY_SECRET } from '../constants.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -34,8 +34,6 @@ const TEAM_RESOURCE_PREFIX = 'myco-team';
 /** Length of the project hash suffix for unique resource naming. */
 const PROJECT_HASH_LENGTH = 8;
 
-/** Secrets key for the team API key. */
-const TEAM_API_KEY_SECRET = 'MYCO_TEAM_API_KEY';
 
 /** Source directory for worker files (relative to package root). */
 const WORKER_SOURCE_DIR = 'src/worker';

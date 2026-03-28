@@ -6,7 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { DIGEST_TIERS } from '@myco/constants.js';
+import { DIGEST_TIERS, DEFAULT_MACHINE_ID } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -63,7 +63,7 @@ function toDigestExtractRow(row: Record<string, unknown>): DigestExtractRow {
     content: row.content as string,
     substrate_hash: (row.substrate_hash as string) ?? null,
     generated_at: row.generated_at as number,
-    machine_id: (row.machine_id as string) ?? 'local',
+    machine_id: (row.machine_id as string) ?? DEFAULT_MACHINE_ID,
     synced_at: (row.synced_at as number) ?? null,
   };
 }

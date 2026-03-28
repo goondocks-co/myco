@@ -9,7 +9,7 @@ import { updateTeamConfig, loadConfig } from '@myco/config/loader.js';
 import { writeSecret, readSecrets } from '@myco/config/secrets.js';
 import { countPending } from '@myco/db/queries/team-outbox.js';
 import { TeamSyncClient } from '../team-sync.js';
-import { SYNC_PROTOCOL_VERSION } from '@myco/constants.js';
+import { SYNC_PROTOCOL_VERSION, TEAM_API_KEY_SECRET } from '@myco/constants.js';
 import { getPluginVersion } from '@myco/version.js';
 import { SCHEMA_VERSION } from '@myco/db/schema.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -18,8 +18,6 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Secrets key for the team API key. */
-const TEAM_API_KEY_SECRET = 'MYCO_TEAM_API_KEY';
 
 // ---------------------------------------------------------------------------
 // Types

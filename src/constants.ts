@@ -359,5 +359,7 @@ export const TEAM_SOURCE_PREFIX = 'team:';
 export const TEAM_SEARCH_TIMEOUT_MS = 3000;
 /** Timeout for team health check requests (ms). */
 export const TEAM_HEALTH_TIMEOUT_MS = 5000;
+/** Secrets key for the team API key in secrets.env. */
+export const TEAM_API_KEY_SECRET = 'MYCO_TEAM_API_KEY';
 /** Timeout for wrangler CLI commands (ms). */
 export const WRANGLER_COMMAND_TIMEOUT_MS = 60_000;
