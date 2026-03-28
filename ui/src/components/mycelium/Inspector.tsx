@@ -1,8 +1,9 @@
+import { useNavigate } from 'react-router-dom';
 import { Surface } from '../ui/surface';
 import { Badge } from '../ui/badge';
 import { SectionHeader } from '../ui/section-header';
 
-import { X, ArrowRight } from 'lucide-react';
+import { X, ArrowRight, ExternalLink } from 'lucide-react';
 import type { GraphNode, GraphEdge } from '../../hooks/use-graph-canvas';
 
 /* ---------- Constants ---------- */
@@ -66,7 +67,15 @@ function MetadataRow({ label, value }: { label: string; value: string }) {
 
 /* ---------- Component ---------- */
 
+/** Returns the route path for a node, or null if no detail page exists. */
+function getNodeRoute(node: GraphNode): string | null {
+  if (node.type === 'session') return `/sessions/${node.id}`;
+  if (node.type === 'spore') return `/mycelium?tab=spores&spore=${node.id}`;
+  return null;
+}
+
 export function Inspector({ node, edges, nodes, metadata, markdownPreview, connectedSpores, onClose, onNodeSelect }: InspectorProps) {
+  const navigate = useNavigate();
   if (!node) return null;
 
   const typeKey = node.type.toLowerCase();
@@ -115,6 +124,15 @@ export function Inspector({ node, edges, nodes, metadata, markdownPreview, conne
             <h2 className="font-serif text-lg text-on-surface leading-tight break-words">
               {node.name}
             </h2>
+            {getNodeRoute(node) && (
+              <button
+                onClick={() => navigate(getNodeRoute(node)!)}
+                className="inline-flex items-center gap-1 mt-1.5 font-sans text-xs text-on-surface-variant hover:text-primary transition-colors group cursor-pointer"
+              >
+                <span>View {node.type}</span>
+                <ExternalLink className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
+              </button>
+            )}
           </div>
           {onClose && (
             <button

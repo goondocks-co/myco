@@ -7,7 +7,7 @@ import { Surface } from '../ui/surface';
 import { StatCard } from '../ui/stat-card';
 import { SectionHeader } from '../ui/section-header';
 import { ConfirmDialog } from '../ui/confirm-dialog';
-import { useSession, useDeleteSession, useSessionImpact } from '../../hooks/use-sessions';
+import { useSession, useDeleteSession, useSessionImpact, useSessionPlans } from '../../hooks/use-sessions';
 import { useSymbionts, buildResumeCommand } from '../../hooks/use-symbionts';
 import { useTriggerRun } from '../../hooks/use-agent';
 import { BatchTimeline } from './BatchTimeline';
@@ -21,19 +21,11 @@ import { cn } from '../../lib/cn';
 /** Characters shown from session ID in compact view. */
 const SESSION_ID_PREVIEW_LENGTH = 8;
 
-/** Characters shown from content hash in metadata. */
-const CONTENT_HASH_PREVIEW_LENGTH = 16;
-
 /* ---------- Helpers ---------- */
 
 function epochToRelative(epoch: number | null): string {
   if (epoch === null) return '\u2014';
   return formatTimeAgo(new Date(epoch * 1000).toISOString());
-}
-
-function epochToAbsolute(epoch: number | null): string {
-  if (epoch === null) return '\u2014';
-  return new Date(epoch * 1000).toLocaleString();
 }
 
 /* ---------- Sub-components ---------- */
@@ -121,6 +113,7 @@ export function SessionDetail({ id }: SessionDetailProps) {
   const [activeTab, setActiveTab] = useState<TabValue>('conversation');
   const deleteSession = useDeleteSession();
   const { data: impact } = useSessionImpact(deleteOpen ? id : null);
+  const { data: plans } = useSessionPlans(id);
 
   if (isLoading) {
     return (
@@ -233,19 +226,11 @@ export function SessionDetail({ id }: SessionDetailProps) {
         </div>
       </div>
 
-      {/* Stats + Metadata cards (horizontal, above conversation) */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+      {/* Key stats (compact row) */}
+      <div className="grid grid-cols-3 gap-4">
         <StatCard label="Prompts" value={String(session.prompt_count)} accent="sage" />
         <StatCard label="Tool Calls" value={String(session.tool_count)} accent="sage" />
-        <StatCard label="Status" value={session.status.charAt(0).toUpperCase() + session.status.slice(1)} accent="outline" />
-        <StatCard label="Started" value={epochToAbsolute(session.started_at)} accent="outline" />
-        <StatCard label="Ended" value={epochToAbsolute(session.ended_at)} accent="outline" />
-        <StatCard
-          label="Session ID"
-          value={id.slice(0, SESSION_ID_PREVIEW_LENGTH)}
-          sublabel={session.content_hash ? `hash: ${session.content_hash.slice(0, CONTENT_HASH_PREVIEW_LENGTH)}` : undefined}
-          accent="outline"
-        />
+        <StatCard label="Plans" value={String(plans?.length ?? 0)} accent="outline" />
       </div>
 
       {/* Metadata details (collapsible-style row) */}
