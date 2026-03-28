@@ -5,7 +5,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export async function run(args: string[]): Promise<void> {
-  const vaultDir = resolveVaultDir();
+  // Support --project <path> for detached update scripts
+  let projectRoot: string | undefined;
+  const projectIdx = args.indexOf('--project');
+  if (projectIdx !== -1 && args[projectIdx + 1]) {
+    projectRoot = args[projectIdx + 1];
+  }
+
+  const vaultDir = projectRoot
+    ? path.join(projectRoot, '.myco')
+    : resolveVaultDir();
   if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {
     console.error(`No myco.yaml found in ${vaultDir}. Run 'myco init' first.`);
     process.exit(1);
@@ -32,16 +41,16 @@ export async function run(args: string[]): Promise<void> {
 
   // --- Update symbiont registration (only agents already configured) ---
 
-  const projectRoot = path.dirname(vaultDir);
+  const resolvedProjectRoot = projectRoot ?? path.dirname(vaultDir);
   const allManifests = loadManifests();
   const pkgRoot = resolvePackageRoot();
   // Only update agents whose config directory already exists in the project
   const configured = allManifests.filter((m) =>
-    fs.existsSync(path.join(projectRoot, m.configDir)),
+    fs.existsSync(path.join(resolvedProjectRoot, m.configDir)),
   );
 
   if (configured.length > 0) {
-    const registered = registerSymbionts(configured, projectRoot, pkgRoot, 'Updated');
+    const registered = registerSymbionts(configured, resolvedProjectRoot, pkgRoot, 'Updated');
     updatedCount += registered;
   } else {
     console.log('  \u2013 No configured agents found');

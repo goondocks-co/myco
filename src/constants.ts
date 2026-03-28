@@ -364,6 +364,10 @@ export const TEAM_API_KEY_SECRET = 'MYCO_TEAM_API_KEY';
 /** Timeout for wrangler CLI commands (ms). */
 export const WRANGLER_COMMAND_TIMEOUT_MS = 60_000;
 
+// --- HTTP response flush ---
+/** Delay before initiating shutdown — allows the HTTP response to flush. */
+export const RESTART_RESPONSE_FLUSH_MS = 500;
+
 // --- Self-update ---
 export {
   NPM_REGISTRY_URL,
