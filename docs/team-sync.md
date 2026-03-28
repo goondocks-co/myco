@@ -8,15 +8,32 @@ Each machine runs its own Myco daemon with a local SQLite database. When team sy
 
 When an agent searches for knowledge, Myco queries both the local database and the team Worker in parallel. Results are merged by relevance score and tagged with their source machine, so agents benefit from the entire team's accumulated intelligence.
 
-```
-Local Node A                    Cloudflare                     Local Node B
-+-----------+                                                  +-----------+
-| myco.db   |    POST /sync     +------------------+           | myco.db   |
-| vectors.db| ───────────────> | Worker            |  <─────── | vectors.db|
-|           |                   |   D1 (SQLite)    |           |           |
-|           |  GET /search      |   Vectorize      |  GET /search
-|           | <───────────────> |   Workers AI     | <───────> |           |
-+-----------+                   +------------------+           +-----------+
+```mermaid
+graph LR
+    subgraph Node A
+        A_DB[(myco.db)]
+        A_Vec[(vectors.db)]
+    end
+
+    subgraph Cloudflare
+        W[Worker]
+        D1[(D1)]
+        V[(Vectorize)]
+        AI[Workers AI]
+        W --> D1
+        W --> V
+        W --> AI
+    end
+
+    subgraph Node B
+        B_DB[(myco.db)]
+        B_Vec[(vectors.db)]
+    end
+
+    A_DB -- "POST /sync" --> W
+    W -- "GET /search" --> A_DB
+    B_DB -- "POST /sync" --> W
+    W -- "GET /search" --> B_DB
 ```
 
 ## Quick start
@@ -42,23 +59,9 @@ The command outputs a **Worker URL** and **API key**. Share these with teammates
 
 ### 3. Connect teammates
 
-Each teammate opens the **Team** page in their Myco dashboard and pastes the Worker URL and API key. Click **Connect** — their node registers with the Worker and begins syncing.
+Each teammate opens the **Team** page in their Myco dashboard (`http://localhost:<port>/team`), pastes the Worker URL and API key, and clicks **Connect**. Their node registers with the Worker and begins syncing immediately.
 
-Alternatively, teammates can connect from the CLI by running `myco team init` with the same Cloudflare account, or by adding the credentials to their config manually:
-
-```yaml
-# myco.yaml
-team:
-  enabled: true
-  worker_url: https://myco-team-XXXXXXXX.your-account.workers.dev
-```
-
-```env
-# .myco/secrets.env
-MYCO_TEAM_API_KEY=your-api-key-here
-```
-
-Then restart the daemon.
+On first connect, all existing local knowledge is backfilled into the outbox and pushed to the team store in batches. New writes sync automatically going forward.
 
 ## What syncs
 
