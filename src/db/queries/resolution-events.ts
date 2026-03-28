@@ -6,6 +6,8 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -28,6 +30,7 @@ export interface ResolutionEventInsert {
   new_spore_id?: string | null;
   reason?: string | null;
   session_id?: string | null;
+  machine_id?: string;
 }
 
 /** Row shape returned from resolution_events queries (all columns). */
@@ -40,6 +43,8 @@ export interface ResolutionEventRow {
   reason: string | null;
   session_id: string | null;
   created_at: number;
+  machine_id: string;
+  synced_at: number | null;
 }
 
 /** Filter options for `listResolutionEvents`. */
@@ -62,6 +67,8 @@ const EVENT_COLUMNS = [
   'reason',
   'session_id',
   'created_at',
+  'machine_id',
+  'synced_at',
 ] as const;
 
 const SELECT_COLUMNS = EVENT_COLUMNS.join(', ');
@@ -81,6 +88,8 @@ function toResolutionEventRow(row: Record<string, unknown>): ResolutionEventRow 
     reason: (row.reason as string) ?? null,
     session_id: (row.session_id as string) ?? null,
     created_at: row.created_at as number,
+    machine_id: (row.machine_id as string) ?? DEFAULT_MACHINE_ID,
+    synced_at: (row.synced_at as number) ?? null,
   };
 }
 
@@ -98,8 +107,8 @@ export function insertResolutionEvent(
 
   db.prepare(
     `INSERT INTO resolution_events (
-       id, agent_id, spore_id, action, new_spore_id, reason, session_id, created_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       id, agent_id, spore_id, action, new_spore_id, reason, session_id, created_at, machine_id
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     data.id,
     data.agent_id,
@@ -109,11 +118,16 @@ export function insertResolutionEvent(
     data.reason ?? null,
     data.session_id ?? null,
     data.created_at,
+    data.machine_id ?? DEFAULT_MACHINE_ID,
   );
 
-  return toResolutionEventRow(
+  const row = toResolutionEventRow(
     db.prepare(`SELECT ${SELECT_COLUMNS} FROM resolution_events WHERE id = ?`).get(data.id) as Record<string, unknown>,
   );
+
+  syncRow('resolution_events', row);
+
+  return row;
 }
 
 /**

@@ -10,9 +10,11 @@ import { fullTextSearch, hydrateSearchResults } from '@myco/db/queries/search.js
 import {
   SEARCH_RESULTS_DEFAULT_LIMIT,
   SEARCH_SIMILARITY_THRESHOLD,
+  TEAM_SOURCE_PREFIX,
 } from '@myco/constants.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
+import type { TeamSyncClient, TeamSearchResult } from '../team-sync.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,6 +26,7 @@ type SearchMode = 'auto' | 'semantic' | 'fts';
 /** Dependencies injected by the daemon when registering the route. */
 export interface SearchDeps {
   embeddingManager: EmbeddingManager;
+  getTeamClient?: () => TeamSyncClient | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,9 +78,32 @@ export function createSearchHandler(deps: SearchDeps) {
       threshold: SEARCH_SIMILARITY_THRESHOLD,
     });
 
-    // Hydrate vector results into full SearchResults
-    const results = hydrateSearchResults(vectorResults);
+    // Hydrate local vector results into full SearchResults
+    const localResults = hydrateSearchResults(vectorResults).map((r) => ({
+      ...r,
+      source: 'local',
+    }));
 
-    return { body: { mode: 'semantic', results } };
+    // Fan out to team search in parallel (if connected)
+    const teamClient = deps.getTeamClient?.();
+    let teamResults: Array<TeamSearchResult & { source: string }> = [];
+    if (teamClient) {
+      try {
+        const teamResponse = await teamClient.search(query, { limit });
+        teamResults = teamResponse.results.map((r) => ({
+          ...r,
+          source: `${TEAM_SOURCE_PREFIX}${r.machine_id}`,
+        }));
+      } catch {
+        // Team search failure is non-blocking — local results still returned
+      }
+    }
+
+    // Merge by score (highest first), slice to limit
+    const merged = [...localResults, ...teamResults]
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+      .slice(0, limit);
+
+    return { body: { mode: 'semantic', results: merged } };
   };
 }

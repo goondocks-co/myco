@@ -6,7 +6,9 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { DEFAULT_MACHINE_ID } from '@myco/constants.js';
 import { getGraphForNode, type GraphEdgeRow } from '@myco/db/queries/graph-edges.js';
+import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -28,6 +30,7 @@ export interface EntityInsert {
   first_seen: number;
   last_seen: number;
   properties?: string | null;
+  machine_id?: string;
 }
 
 /** Row shape returned from entity queries (all columns). */
@@ -40,6 +43,8 @@ export interface EntityRow {
   first_seen: number;
   last_seen: number;
   status: string;
+  machine_id: string;
+  synced_at: number | null;
 }
 
 /** Filter options for `listEntities`. */
@@ -78,6 +83,8 @@ const ENTITY_COLUMNS = [
   'first_seen',
   'last_seen',
   'status',
+  'machine_id',
+  'synced_at',
 ] as const;
 
 const SELECT_COLUMNS = ENTITY_COLUMNS.join(', ');
@@ -97,6 +104,8 @@ function toEntityRow(row: Record<string, unknown>): EntityRow {
     first_seen: row.first_seen as number,
     last_seen: row.last_seen as number,
     status: (row.status as string) ?? 'active',
+    machine_id: (row.machine_id as string) ?? DEFAULT_MACHINE_ID,
+    synced_at: (row.synced_at as number) ?? null,
   };
 }
 
@@ -113,8 +122,8 @@ export function insertEntity(data: EntityInsert): EntityRow {
   const db = getDatabase();
 
   db.prepare(
-    `INSERT INTO entities (id, agent_id, type, name, properties, first_seen, last_seen)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO entities (id, agent_id, type, name, properties, first_seen, last_seen, machine_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (agent_id, type, name) DO UPDATE SET
        properties = COALESCE(EXCLUDED.properties, entities.properties),
        last_seen = EXCLUDED.last_seen`,
@@ -126,16 +135,21 @@ export function insertEntity(data: EntityInsert): EntityRow {
     data.properties ?? null,
     data.first_seen,
     data.last_seen,
+    data.machine_id ?? DEFAULT_MACHINE_ID,
   );
 
   // On conflict, the passed-in id may not be the actual row id. Look up by unique key.
-  return toEntityRow(
+  const row = toEntityRow(
     db.prepare(`SELECT ${SELECT_COLUMNS} FROM entities WHERE agent_id = ? AND type = ? AND name = ?`).get(
       data.agent_id,
       data.type,
       data.name,
     ) as Record<string, unknown>,
   );
+
+  syncRow('entities', row);
+
+  return row;
 }
 
 /**

@@ -14,10 +14,13 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import { epochSeconds } from '@myco/constants.js';
+import { epochSeconds, DEFAULT_MACHINE_ID } from '@myco/constants.js';
 
 /** Current schema version -- fresh start for the SQLite era. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
+
+// Re-export for backwards compat (other modules import from schema.ts)
+export { DEFAULT_MACHINE_ID };
 
 /** Embedding vector dimensions (bge-m3 default). */
 export const EMBEDDING_DIMENSIONS = 1024;
@@ -54,7 +57,9 @@ const SESSIONS_TABLE = `
     processed              INTEGER DEFAULT 0,
     content_hash           TEXT UNIQUE,
     created_at             INTEGER NOT NULL,
-    embedded               INTEGER DEFAULT 0
+    embedded               INTEGER DEFAULT 0,
+    machine_id             TEXT NOT NULL DEFAULT 'local',
+    synced_at              INTEGER
   )`;
 
 const PROMPT_BATCHES_TABLE = `
@@ -71,7 +76,9 @@ const PROMPT_BATCHES_TABLE = `
     activity_count    INTEGER DEFAULT 0,
     processed         INTEGER DEFAULT 0,
     content_hash      TEXT UNIQUE,
-    created_at        INTEGER NOT NULL
+    created_at        INTEGER NOT NULL,
+    machine_id        TEXT NOT NULL DEFAULT 'local',
+    synced_at         INTEGER
   )`;
 
 const ACTIVITIES_TABLE = `
@@ -108,7 +115,9 @@ const PLANS_TABLE = `
     processed        INTEGER DEFAULT 0,
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER,
-    embedded         INTEGER DEFAULT 0
+    embedded         INTEGER DEFAULT 0,
+    machine_id       TEXT NOT NULL DEFAULT 'local',
+    synced_at        INTEGER
   )`;
 
 const ARTIFACTS_TABLE = `
@@ -122,16 +131,20 @@ const ARTIFACTS_TABLE = `
     tags             TEXT,
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER,
-    embedded         INTEGER DEFAULT 0
+    embedded         INTEGER DEFAULT 0,
+    machine_id       TEXT NOT NULL DEFAULT 'local',
+    synced_at        INTEGER
   )`;
 
 const TEAM_MEMBERS_TABLE = `
   CREATE TABLE IF NOT EXISTS team_members (
-    id      TEXT PRIMARY KEY,
-    "user"  TEXT NOT NULL,
-    role    TEXT,
-    joined  TEXT,
-    tags    TEXT
+    id          TEXT PRIMARY KEY,
+    "user"      TEXT NOT NULL,
+    role        TEXT,
+    joined      TEXT,
+    tags        TEXT,
+    machine_id  TEXT NOT NULL DEFAULT 'local',
+    synced_at   INTEGER
   )`;
 
 const ATTACHMENTS_TABLE = `
@@ -184,7 +197,9 @@ const SPORES_TABLE = `
     properties        TEXT,
     created_at        INTEGER NOT NULL,
     updated_at        INTEGER,
-    embedded          INTEGER DEFAULT 0
+    embedded          INTEGER DEFAULT 0,
+    machine_id        TEXT NOT NULL DEFAULT 'local',
+    synced_at         INTEGER
   )`;
 
 const ENTITIES_TABLE = `
@@ -197,6 +212,8 @@ const ENTITIES_TABLE = `
     first_seen  INTEGER NOT NULL,
     last_seen   INTEGER NOT NULL,
     status      TEXT DEFAULT 'active',
+    machine_id  TEXT NOT NULL DEFAULT 'local',
+    synced_at   INTEGER,
     UNIQUE (agent_id, type, name)
   )`;
 
@@ -212,7 +229,9 @@ const GRAPH_EDGES_TABLE = `
     session_id      TEXT,
     confidence      REAL DEFAULT 1.0,
     properties      TEXT,
-    created_at      INTEGER NOT NULL
+    created_at      INTEGER NOT NULL,
+    machine_id      TEXT NOT NULL DEFAULT 'local',
+    synced_at       INTEGER
   )`;
 
 const ENTITY_MENTIONS_TABLE = `
@@ -221,6 +240,8 @@ const ENTITY_MENTIONS_TABLE = `
     note_id     TEXT NOT NULL,
     note_type   TEXT NOT NULL,
     agent_id    TEXT NOT NULL REFERENCES agents(id),
+    machine_id  TEXT NOT NULL DEFAULT 'local',
+    synced_at   INTEGER,
     UNIQUE (entity_id, note_id, note_type, agent_id)
   )`;
 
@@ -233,7 +254,9 @@ const RESOLUTION_EVENTS_TABLE = `
     new_spore_id  TEXT,
     reason        TEXT,
     session_id    TEXT,
-    created_at    INTEGER NOT NULL
+    created_at    INTEGER NOT NULL,
+    machine_id    TEXT NOT NULL DEFAULT 'local',
+    synced_at     INTEGER
   )`;
 
 const DIGEST_EXTRACTS_TABLE = `
@@ -244,6 +267,8 @@ const DIGEST_EXTRACTS_TABLE = `
     content         TEXT NOT NULL,
     substrate_hash  TEXT,
     generated_at    INTEGER NOT NULL,
+    machine_id      TEXT NOT NULL DEFAULT 'local',
+    synced_at       INTEGER,
     UNIQUE (agent_id, tier)
   )`;
 
@@ -311,6 +336,20 @@ const AGENT_STATE_TABLE = `
     value       TEXT NOT NULL,
     updated_at  INTEGER NOT NULL,
     PRIMARY KEY (agent_id, key)
+  )`;
+
+// -- Sync Layer -------------------------------------------------------------
+
+const TEAM_OUTBOX_TABLE = `
+  CREATE TABLE IF NOT EXISTS team_outbox (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_name  TEXT NOT NULL,
+    row_id      TEXT NOT NULL,
+    operation   TEXT NOT NULL DEFAULT 'upsert',
+    payload     TEXT NOT NULL,
+    machine_id  TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    sent_at     INTEGER
   )`;
 
 // -- Logging Layer ----------------------------------------------------------
@@ -420,6 +459,15 @@ const SECONDARY_INDEXES = [
   // Attachments
   'CREATE INDEX IF NOT EXISTS idx_attachments_file_path ON attachments (file_path)',
 
+  // Team outbox
+  'CREATE INDEX IF NOT EXISTS idx_team_outbox_pending ON team_outbox (sent_at, created_at)',
+  'CREATE INDEX IF NOT EXISTS idx_team_outbox_table_name ON team_outbox (table_name)',
+
+  // Machine ID (synced tables)
+  'CREATE INDEX IF NOT EXISTS idx_sessions_machine_id ON sessions (machine_id)',
+  'CREATE INDEX IF NOT EXISTS idx_spores_machine_id ON spores (machine_id)',
+  'CREATE INDEX IF NOT EXISTS idx_graph_edges_machine_id ON graph_edges (machine_id)',
+
   // Log entries
   'CREATE INDEX IF NOT EXISTS idx_log_entries_timestamp ON log_entries (timestamp)',
   'CREATE INDEX IF NOT EXISTS idx_log_entries_level ON log_entries (level)',
@@ -454,6 +502,8 @@ const TABLE_DDLS = [
   AGENT_TURNS_TABLE,
   AGENT_TASKS_TABLE,
   AGENT_STATE_TABLE,
+  // Sync layer
+  TEAM_OUTBOX_TABLE,
   // Logging layer
   LOG_ENTRIES_TABLE,
 ];
@@ -574,6 +624,82 @@ function migrateV2ToV3(db: Database): void {
   }
 }
 
+/**
+ * Migrate a version-3 database to version-4.
+ *
+ * Version 4 adds multi-machine support:
+ *   - machine_id TEXT NOT NULL DEFAULT 'local' on all synced tables
+ *   - synced_at INTEGER on all synced tables
+ *   - team_outbox table + indexes
+ *   - machine_id indexes on high-traffic tables
+ *
+ * Backfills existing rows with the provided machineId.
+ */
+function migrateV3ToV4(db: Database, machineId: string): void {
+  db.exec('BEGIN');
+  try {
+    // Tables that need machine_id + synced_at columns
+    const syncedTables = [
+      'sessions',
+      'prompt_batches',
+      'spores',
+      'entities',
+      'graph_edges',
+      'entity_mentions',
+      'resolution_events',
+      'plans',
+      'artifacts',
+      'digest_extracts',
+      'team_members',
+    ];
+
+    for (const table of syncedTables) {
+      try {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN machine_id TEXT NOT NULL DEFAULT 'local'`);
+      } catch {
+        // Column already exists -- safe to ignore on re-run
+      }
+      try {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN synced_at INTEGER`);
+      } catch {
+        // Column already exists -- safe to ignore on re-run
+      }
+    }
+
+    // Backfill machine_id on existing rows
+    for (const table of syncedTables) {
+      db.prepare(`UPDATE ${table} SET machine_id = ? WHERE machine_id = 'local'`).run(machineId);
+    }
+
+    // Create team_outbox table
+    db.exec(TEAM_OUTBOX_TABLE);
+
+    // Create new indexes (IF NOT EXISTS for idempotency)
+    const newIndexes = [
+      'CREATE INDEX IF NOT EXISTS idx_team_outbox_pending ON team_outbox (sent_at, created_at)',
+      'CREATE INDEX IF NOT EXISTS idx_team_outbox_table_name ON team_outbox (table_name)',
+      'CREATE INDEX IF NOT EXISTS idx_sessions_machine_id ON sessions (machine_id)',
+      'CREATE INDEX IF NOT EXISTS idx_spores_machine_id ON spores (machine_id)',
+      'CREATE INDEX IF NOT EXISTS idx_graph_edges_machine_id ON graph_edges (machine_id)',
+    ];
+
+    for (const idx of newIndexes) {
+      db.exec(idx);
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`
+    ).run(4, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -583,8 +709,12 @@ function migrateV2ToV3(db: Database): void {
  *
  * Fully idempotent -- safe to call on every startup. Uses `IF NOT EXISTS`
  * for all DDL and `ON CONFLICT DO NOTHING` for the version row.
+ *
+ * @param db — better-sqlite3 Database instance.
+ * @param machineId — machine identifier for backfilling existing rows during
+ *   v3→v4 migration. Defaults to `'local'` (tests, init).
  */
-export function createSchema(db: Database): void {
+export function createSchema(db: Database, machineId: string = DEFAULT_MACHINE_ID): void {
   // Fast-path: skip if already at current version
   try {
     const row = db.prepare(
@@ -601,6 +731,13 @@ export function createSchema(db: Database): void {
     ).get() as { version: number } | undefined)?.version ?? 0;
     if (afterV1Migration < 3) {
       migrateV2ToV3(db);
+    }
+    // Migration path: version 3 → 4
+    const afterV2Migration = (db.prepare(
+      'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1'
+    ).get() as { version: number } | undefined)?.version ?? 0;
+    if (afterV2Migration < 4) {
+      migrateV3ToV4(db, machineId);
     }
     return;
   } catch {

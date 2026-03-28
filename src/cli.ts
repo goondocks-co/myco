@@ -23,6 +23,7 @@ Commands:
   setup-digest [options]   Configure digest and capture settings
   agent [options]          Run the intelligence agent
   task <subcommand>        Manage agent task definitions
+  team <init|upgrade>      Provision or upgrade team sync infrastructure
   doctor [--fix]          Check vault health and repair issues
   restart                  Restart the daemon
   version                  Show plugin version
@@ -95,6 +96,14 @@ async function main(): Promise<void> {
     case 'setup-digest': return (await import('./cli/setup-digest.js')).run(args, vaultDir);
     case 'agent': return (await import('./cli/agent-run.js')).run(args, vaultDir);
     case 'task': return (await import('./cli/agent-tasks.js')).run(args, vaultDir);
+    case 'team': {
+      const sub = args[0];
+      if (sub === 'init') return (await import('./cli/team.js')).teamInit(vaultDir);
+      if (sub === 'upgrade') return (await import('./cli/team.js')).teamUpgrade(vaultDir);
+      console.error('Usage: myco team <init|upgrade>');
+      process.exit(1);
+      break;
+    }
     case 'restart': return (await import('./cli/restart.js')).run(args, vaultDir);
     case 'logs': return (await import('./cli/logs.js')).run(args, vaultDir);
     default:

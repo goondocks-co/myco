@@ -345,3 +345,19 @@ export const DEFAULT_OLLAMA_EMBEDDING_MODEL = 'bge-m3';
 
 /** Default OpenAI embedding model recommended during init. */
 export const DEFAULT_OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';
+
+// --- Sync protocol ---
+/** Protocol version for backup and team sync wire format. */
+export const SYNC_PROTOCOL_VERSION = 1;
+
+// --- Team sync ---
+/** Default machine ID for rows created before multi-machine support. */
+export const DEFAULT_MACHINE_ID = 'local';
+/** Prefix for team search result source attribution. */
+export const TEAM_SOURCE_PREFIX = 'team:';
+/** Timeout for team search requests (ms). */
+export const TEAM_SEARCH_TIMEOUT_MS = 3000;
+/** Timeout for team health check requests (ms). */
+export const TEAM_HEALTH_TIMEOUT_MS = 5000;
+/** Timeout for wrangler CLI commands (ms). */
+export const WRANGLER_COMMAND_TIMEOUT_MS = 60_000;

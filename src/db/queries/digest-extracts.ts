@@ -18,6 +18,7 @@ export interface DigestExtractUpsert {
   tier: number;
   content: string;
   generated_at: number;
+  machine_id?: string;
 }
 
 /** Row shape returned from digest_extracts queries (all columns). */
@@ -28,6 +29,8 @@ export interface DigestExtractRow {
   content: string;
   substrate_hash: string | null;
   generated_at: number;
+  machine_id: string;
+  synced_at: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -41,6 +44,8 @@ const EXTRACT_COLUMNS = [
   'content',
   'substrate_hash',
   'generated_at',
+  'machine_id',
+  'synced_at',
 ] as const;
 
 const SELECT_COLUMNS = EXTRACT_COLUMNS.join(', ');
@@ -58,6 +63,8 @@ function toDigestExtractRow(row: Record<string, unknown>): DigestExtractRow {
     content: row.content as string,
     substrate_hash: (row.substrate_hash as string) ?? null,
     generated_at: row.generated_at as number,
+    machine_id: (row.machine_id as string) ?? 'local',
+    synced_at: (row.synced_at as number) ?? null,
   };
 }
 

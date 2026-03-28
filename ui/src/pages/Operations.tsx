@@ -13,6 +13,7 @@ import { SectionHeader } from '../components/ui/section-header';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { cn } from '../lib/cn';
+import { BackupCard } from '../components/operations/BackupCard';
 
 /* ---------- Constants ---------- */
 
@@ -390,6 +391,9 @@ export default function Operations() {
                   </p>
                 )}
               </Surface>
+
+              {/* Backup & Restore */}
+              <BackupCard />
 
               {/* Activity log — recessed terminal feel */}
               <Surface level="low" className="flex flex-col overflow-hidden">

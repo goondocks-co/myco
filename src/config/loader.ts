@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
-import { MycoConfigSchema, type MycoConfig } from './schema.js';
+import { MycoConfigSchema, type MycoConfig, type BackupConfig, type TeamConfig } from './schema.js';
 import { runMigrations, CURRENT_MIGRATION_VERSION } from './migrations.js';
 
 export const CONFIG_FILENAME = 'myco.yaml';
@@ -109,4 +109,24 @@ export function updateConfig(
   const updated = fn(current);
   saveConfig(vaultDir, updated);
   return updated;
+}
+
+export function updateBackupConfig(
+  vaultDir: string,
+  backup: Partial<BackupConfig>,
+): MycoConfig {
+  return updateConfig(vaultDir, (config) => ({
+    ...config,
+    backup: { ...config.backup, ...backup },
+  }));
+}
+
+export function updateTeamConfig(
+  vaultDir: string,
+  team: Partial<TeamConfig>,
+): MycoConfig {
+  return updateConfig(vaultDir, (config) => ({
+    ...config,
+    team: { ...config.team, ...team },
+  }));
 }

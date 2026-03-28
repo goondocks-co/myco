@@ -6,6 +6,8 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -41,6 +43,7 @@ export interface SporeInsert {
   content_hash?: string | null;
   properties?: string | null;
   updated_at?: number | null;
+  machine_id?: string;
 }
 
 /** Row shape returned from spore queries (all columns). */
@@ -61,6 +64,8 @@ export interface SporeRow {
   embedded: number;
   created_at: number;
   updated_at: number | null;
+  machine_id: string;
+  synced_at: number | null;
 }
 
 /** Filter options for `listSpores`. */
@@ -95,6 +100,8 @@ const SPORE_COLUMNS = [
   'embedded',
   'created_at',
   'updated_at',
+  'machine_id',
+  'synced_at',
 ] as const;
 
 const SELECT_COLUMNS = SPORE_COLUMNS.join(', ');
@@ -122,6 +129,8 @@ function toSporeRow(row: Record<string, unknown>): SporeRow {
     embedded: (row.embedded as number) ?? 0,
     created_at: row.created_at as number,
     updated_at: (row.updated_at as number) ?? null,
+    machine_id: (row.machine_id as string) ?? DEFAULT_MACHINE_ID,
+    synced_at: (row.synced_at as number) ?? null,
   };
 }
 
@@ -142,12 +151,12 @@ export function insertSpore(data: SporeInsert): SporeRow {
        id, agent_id, session_id, prompt_batch_id,
        observation_type, status, content, context,
        importance, file_path, tags, content_hash,
-       properties, created_at, updated_at
+       properties, created_at, updated_at, machine_id
      ) VALUES (
        ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?,
-       ?, ?, ?
+       ?, ?, ?, ?
      )`,
   ).run(
     data.id,
@@ -165,11 +174,16 @@ export function insertSpore(data: SporeInsert): SporeRow {
     data.properties ?? null,
     data.created_at,
     data.updated_at ?? null,
+    data.machine_id ?? DEFAULT_MACHINE_ID,
   );
 
-  return toSporeRow(
+  const row = toSporeRow(
     db.prepare(`SELECT ${SELECT_COLUMNS} FROM spores WHERE id = ?`).get(data.id) as Record<string, unknown>,
   );
+
+  syncRow('spores', row);
+
+  return row;
 }
 
 /**
@@ -285,7 +299,11 @@ export function updateSporeStatus(
 
   if (info.changes === 0) return null;
 
-  return toSporeRow(
+  const row = toSporeRow(
     db.prepare(`SELECT ${SELECT_COLUMNS} FROM spores WHERE id = ?`).get(id) as Record<string, unknown>,
   );
+
+  syncRow('spores', row);
+
+  return row;
 }

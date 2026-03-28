@@ -67,7 +67,6 @@ describe('MycoConfigSchema v3', () => {
     const config = MycoConfigSchema.parse({ version: 3 });
     const raw = config as Record<string, unknown>;
     expect(raw.intelligence).toBeUndefined();
-    expect(raw.team).toBeUndefined();
     expect(raw.digest).toBeUndefined();
     expect(raw.pipeline).toBeUndefined();
   });
