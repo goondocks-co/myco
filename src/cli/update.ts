@@ -1,7 +1,6 @@
 import { resolveVaultDir } from '../vault/resolve.js';
 import { VAULT_GITIGNORE } from './shared.js';
 import { detectSymbionts } from '../symbionts/detect.js';
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -39,16 +38,8 @@ export async function run(args: string[]): Promise<void> {
   if (detected.length > 0) {
     for (const d of detected) {
       try {
-        if (d.manifest.pluginInstallCommands.length > 0) {
-          for (const cmd of d.manifest.pluginInstallCommands) {
-            const [bin, ...cmdArgs] = cmd.split(' ');
-            execFileSync(bin, cmdArgs, { stdio: 'inherit' });
-          }
-          console.log(`  \u2713 Updated ${d.manifest.displayName} plugin`);
-          updatedCount++;
-        } else {
-          console.log(`  \u2013 ${d.manifest.displayName}: no automated update available`);
-        }
+        // Registration will be handled by SymbiontInstaller (Task 6)
+        console.log(`  \u2013 ${d.manifest.displayName}: plugin update pending installer integration.`);
       } catch (err) {
         console.error(`  \u2717 Failed to update ${d.manifest.displayName}: ${(err as Error).message}`);
       }

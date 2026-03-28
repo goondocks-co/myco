@@ -11,7 +11,6 @@ import { SymbiontRegistry } from '../symbionts/registry.js';
 import { MycoConfigSchema } from '../config/schema.js';
 import { updateConfig, saveConfig } from '../config/loader.js';
 import { writeSecret } from '../config/secrets.js';
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -178,15 +177,8 @@ export async function run(args: string[]): Promise<void> {
 
     for (const d of selected) {
       try {
-        if (d.manifest.pluginInstallCommands.length > 0) {
-          for (const cmd of d.manifest.pluginInstallCommands) {
-            const [bin, ...cmdArgs] = cmd.split(' ');
-            execFileSync(bin, cmdArgs, { stdio: 'inherit' });
-          }
-          console.log(`  Registered plugin with ${d.manifest.displayName}`);
-        } else {
-          console.log(`  ${d.manifest.displayName}: install the plugin manually from the marketplace.`);
-        }
+        // Registration will be handled by SymbiontInstaller (Task 5)
+        console.log(`  ${d.manifest.displayName}: plugin registration pending installer integration.`);
 
         const adapter = registry.getAdapter(d.manifest.name);
         if (adapter?.configureVaultEnv(projectRoot, portableVaultDir)) {

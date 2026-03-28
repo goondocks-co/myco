@@ -171,8 +171,8 @@ function isSymbiontRegistered(
       return !!env?.MYCO_VAULT_DIR;
     }
 
-    if (d.manifest.mcpConfigPath) {
-      const mcpFile = path.join(projectRoot, d.manifest.mcpConfigPath);
+    if (d.manifest.registration?.mcpTarget) {
+      const mcpFile = path.join(projectRoot, d.manifest.registration.mcpTarget);
       if (!fs.existsSync(mcpFile)) return false;
       const config = JSON.parse(fs.readFileSync(mcpFile, 'utf-8')) as Record<string, unknown>;
       const servers = config.mcpServers as Record<string, { env?: Record<string, string> }> | undefined;

@@ -24,17 +24,53 @@ describe('symbiont manifests', () => {
     });
   }
 
-  it('claude-code manifest has pluginInstallCommands', () => {
+  it('claude-code manifest has registration with hooks and targets', () => {
     const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'claude-code.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
-    expect(manifest.pluginInstallCommands.length).toBeGreaterThan(0);
-    expect(manifest.pluginInstallCommands.some(c => c.includes('myco'))).toBe(true);
+    expect(manifest.registration).toBeDefined();
+    expect(manifest.registration?.hooksTarget).toBe('.claude/settings.json');
+    expect(manifest.registration?.mcpTarget).toBe('.mcp.json');
+    expect(manifest.registration?.skillsTarget).toBe('.claude/skills');
   });
 
-  it('cursor manifest has mcpConfigPath', () => {
+  it('cursor manifest has registration with mcpTarget and skillsTarget', () => {
     const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'cursor.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
-    expect(manifest.mcpConfigPath).toBe('.cursor/mcp.json');
+    expect(manifest.registration).toBeDefined();
+    expect(manifest.registration?.hooksTarget).toBeUndefined();
+    expect(manifest.registration?.mcpTarget).toBe('.cursor/mcp.json');
+    expect(manifest.registration?.skillsTarget).toBe('.cursor/skills');
+  });
+
+  it('accepts manifest with registration section', () => {
+    const manifest = SymbiontManifestSchema.parse({
+      name: 'test-agent',
+      displayName: 'Test Agent',
+      binary: 'test',
+      configDir: '.test',
+      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
+      hookFields: { transcriptPath: 'tp', lastResponse: 'lr', sessionId: 'sid' },
+      registration: {
+        hooksTarget: '.test/settings.json',
+        mcpTarget: '.test/mcp.json',
+        skillsTarget: '.test/skills',
+      },
+    });
+    expect(manifest.registration?.hooksTarget).toBe('.test/settings.json');
+    expect(manifest.registration?.mcpTarget).toBe('.test/mcp.json');
+    expect(manifest.registration?.skillsTarget).toBe('.test/skills');
+  });
+
+  it('allows manifest without registration block', () => {
+    const manifest = SymbiontManifestSchema.parse({
+      name: 'test-agent',
+      displayName: 'Test Agent',
+      binary: 'test',
+      configDir: '.test',
+      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
+      hookFields: { transcriptPath: 'tp', lastResponse: 'lr', sessionId: 'sid' },
+    });
+    expect(manifest.registration).toBeUndefined();
   });
 
   it('accepts optional capture.planDirs field', () => {

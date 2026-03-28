@@ -3,8 +3,6 @@ displayName: Cursor
 binary: cursor
 configDir: .cursor
 pluginRootEnvVar: CURSOR_PLUGIN_ROOT
-pluginInstallCommands: []
-mcpConfigPath: .cursor/mcp.json
 hookFields:
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
@@ -12,3 +10,6 @@ hookFields:
 capture:
   planDirs:
     - .cursor/plans/
+registration:
+  mcpTarget: .cursor/mcp.json
+  skillsTarget: .cursor/skills
