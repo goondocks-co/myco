@@ -102,5 +102,20 @@ export default defineConfig({
         }
       }
     }
+
+    // Copy symbiont registration templates (JSON)
+    const symbiontTemplates = 'src/symbionts/templates';
+    if (existsSync(symbiontTemplates)) {
+      for (const agentDir of readdirSync(symbiontTemplates)) {
+        const srcDir = path.join(symbiontTemplates, agentDir);
+        const destDir = `dist/src/symbionts/templates/${agentDir}`;
+        mkdirSync(destDir, { recursive: true });
+        for (const file of readdirSync(srcDir)) {
+          if (file.endsWith('.json')) {
+            copyFileSync(path.join(srcDir, file), path.join(destDir, file));
+          }
+        }
+      }
+    }
   },
 });
