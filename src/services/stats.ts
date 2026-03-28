@@ -153,7 +153,7 @@ export function gatherStats(vaultDir: string, options?: { active_sessions?: stri
     },
     vault: {
       path: vaultDir,
-      name: path.basename(vaultDir),
+      name: path.basename(path.dirname(vaultDir)),
       session_count,
       batch_count,
       spore_count,

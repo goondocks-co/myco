@@ -177,17 +177,34 @@ export async function run(args: string[]): Promise<void> {
     }
   }
 
-  // --- Summary ---
+  // --- Start daemon and show summary ---
 
-  if (!alreadyInitialized) {
-    console.log('');
-    console.log('=== Myco Vault Initialized ===');
-    console.log(`Path:               ${vaultDir}`);
-    console.log('');
-    console.log('Next: start a coding session — Myco will begin capturing automatically.');
-  } else {
-    console.log('');
-    console.log('Run `myco doctor` to verify setup health.');
+  const { DaemonClient } = await import('../hooks/client.js');
+  const client = new DaemonClient(vaultDir);
+  const daemonHealthy = await client.ensureRunning();
+
+  let daemonUrl = '';
+  if (daemonHealthy) {
+    try {
+      const daemonJson = JSON.parse(fs.readFileSync(path.join(vaultDir, 'daemon.json'), 'utf-8'));
+      daemonUrl = `http://localhost:${daemonJson.port}/`;
+    } catch { /* daemon.json not readable — skip URL */ }
   }
+
+  console.log('');
+  if (!alreadyInitialized) {
+    console.log('=== Myco Vault Initialized ===');
+  } else {
+    console.log('=== Myco Updated ===');
+  }
+  console.log(`Project:  ${path.basename(projectRoot)}`);
+  console.log(`Vault:    ${vaultDir}`);
+  if (daemonUrl) {
+    console.log(`Dashboard: ${daemonUrl}`);
+  } else if (!daemonHealthy) {
+    console.log('Dashboard: daemon failed to start — run `myco doctor` to diagnose');
+  }
+  console.log('');
+  console.log('Start a coding session — Myco will begin capturing automatically.');
 }
 

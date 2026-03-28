@@ -236,10 +236,15 @@ export class SymbiontInstaller {
    * - File doesn't exist: write the full stub template.
    * - File exists without reference: prepend a reference block.
    * - File already has reference: skip (idempotent).
+   *
+   * Also ensures AGENTS.md exists — creates a starter if missing.
    */
   installInstructions(): boolean {
     const reg = this.manifest.registration;
     if (!reg?.instructionsFile) return false;
+
+    // Ensure AGENTS.md exists before creating stubs that reference it
+    ensureAgentsMd(this.projectRoot, this.packageRoot);
 
     const targetPath = path.join(this.projectRoot, reg.instructionsFile);
 
@@ -825,6 +830,27 @@ function writeOrDeleteJsonFile(filePath: string, data: Record<string, unknown>):
     try { fs.unlinkSync(filePath); } catch { /* ignore */ }
   } else {
     writeJsonFile(filePath, data);
+  }
+}
+
+/**
+ * Create a starter AGENTS.md if the project doesn't have one.
+ * Idempotent — skips if AGENTS.md already exists.
+ */
+function ensureAgentsMd(projectRoot: string, packageRoot: string): void {
+  const agentsMdPath = path.join(projectRoot, 'AGENTS.md');
+  if (fs.existsSync(agentsMdPath)) return;
+
+  const candidates = [
+    path.join(packageRoot, 'src/symbionts/templates/agents-starter.md'),
+    path.join(packageRoot, 'dist/src/symbionts/templates/agents-starter.md'),
+  ];
+  for (const p of candidates) {
+    try {
+      const content = fs.readFileSync(p, 'utf-8');
+      fs.writeFileSync(agentsMdPath, content, 'utf-8');
+      return;
+    } catch { /* try next */ }
   }
 }
 
