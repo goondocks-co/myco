@@ -290,6 +290,22 @@ export class SymbiontInstaller {
       }
     }
 
+    // Remove coreTools entries containing myco
+    const coreTools = settings.coreTools as string[] | undefined;
+    if (Array.isArray(coreTools)) {
+      const filtered = coreTools.filter(
+        (t) => !MYCO_COMMAND_NAMES.some((cmd) => t.includes(cmd)),
+      );
+      if (filtered.length !== coreTools.length) {
+        if (filtered.length > 0) {
+          settings.coreTools = filtered;
+        } else {
+          delete settings.coreTools;
+        }
+        changed = true;
+      }
+    }
+
     if (!changed) return false;
 
     if (Object.keys(settings).length === 0) {

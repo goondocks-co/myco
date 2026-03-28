@@ -149,6 +149,16 @@ describe('symbiont manifests', () => {
     expect(manifest.registration!.hooksTarget).toBe('.codex/hooks.json');
   });
 
+  it('gemini manifest has registration with shared settings target', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'gemini.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.registration).toBeDefined();
+    expect(manifest.registration!.hooksTarget).toBe('.gemini/settings.json');
+    expect(manifest.registration!.mcpTarget).toBe('.gemini/settings.json');
+    expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
+    expect(manifest.registration!.settingsTarget).toBe('.gemini/settings.json');
+  });
+
   it('defaults mcpFormat to json when not specified', () => {
     const manifest = SymbiontManifestSchema.parse({
       name: 'test-agent',

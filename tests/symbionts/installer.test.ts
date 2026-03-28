@@ -55,6 +55,21 @@ const CODEX_MANIFEST: SymbiontManifest = {
   },
 };
 
+const GEMINI_MANIFEST: SymbiontManifest = {
+  name: 'gemini',
+  displayName: 'Gemini CLI',
+  binary: 'gemini',
+  configDir: '.gemini',
+  pluginRootEnvVar: 'GEMINI_PLUGIN_ROOT',
+  hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
+  registration: {
+    hooksTarget: '.gemini/settings.json',
+    mcpTarget: '.gemini/settings.json',
+    skillsTarget: '.agents/skills',
+    settingsTarget: '.gemini/settings.json',
+  },
+};
+
 const VSCODE_MANIFEST: SymbiontManifest = {
   name: 'vscode-copilot',
   displayName: 'VS Code Copilot',
@@ -117,10 +132,12 @@ function setupPackageRoot(): void {
   const cursorTemplateDir = path.join(packageRoot, 'src/symbionts/templates/cursor');
   const codexTemplateDir = path.join(packageRoot, 'src/symbionts/templates/codex');
   const vscodeTemplateDir = path.join(packageRoot, 'src/symbionts/templates/vscode-copilot');
+  const geminiTemplateDir = path.join(packageRoot, 'src/symbionts/templates/gemini');
   fs.mkdirSync(claudeTemplateDir, { recursive: true });
   fs.mkdirSync(cursorTemplateDir, { recursive: true });
   fs.mkdirSync(codexTemplateDir, { recursive: true });
   fs.mkdirSync(vscodeTemplateDir, { recursive: true });
+  fs.mkdirSync(geminiTemplateDir, { recursive: true });
 
   writeJson(path.join(claudeTemplateDir, 'hooks.json'), HOOKS_TEMPLATE);
   writeJson(path.join(claudeTemplateDir, 'mcp.json'), MCP_TEMPLATE);
@@ -145,6 +162,16 @@ function setupPackageRoot(): void {
   writeJson(path.join(vscodeTemplateDir, 'mcp.json'), MCP_TEMPLATE);
   writeJson(path.join(vscodeTemplateDir, 'settings.json'), {
     'chat.tools.terminal.autoApprove': { 'myco-run': true, 'myco': true },
+  });
+  writeJson(path.join(geminiTemplateDir, 'hooks.json'), {
+    SessionStart: [{ hooks: [{ name: 'myco-session-start', type: 'command', command: 'myco-run hook session-start', timeout: 10000 }] }],
+    AfterAgent: [{ hooks: [{ name: 'myco-stop', type: 'command', command: 'myco-run hook stop', timeout: 30000 }] }],
+  });
+  writeJson(path.join(geminiTemplateDir, 'mcp.json'), {
+    myco: { command: 'myco-run', args: ['mcp'] },
+  });
+  writeJson(path.join(geminiTemplateDir, 'settings.json'), {
+    coreTools: ['ShellTool(myco-run *)', 'ShellTool(myco *)'],
   });
 
   // Create a skill directory
@@ -611,6 +638,24 @@ describe('install', () => {
     });
   });
 
+  it('runs all steps for Gemini CLI (shared settings file)', () => {
+    fs.mkdirSync(path.join(projectRoot, '.gemini'), { recursive: true });
+    const installer = new SymbiontInstaller(GEMINI_MANIFEST, projectRoot, packageRoot);
+    const result = installer.install();
+
+    expect(result.hooks).toBe(true);
+    expect(result.mcp).toBe(true);
+    expect(result.skills).toBe(true);
+    expect(result.settings).toBe(true);
+
+    // All in one file
+    const settings = readJson(path.join(projectRoot, '.gemini/settings.json'));
+    expect(settings.hooks).toBeDefined();
+    expect((settings as Record<string, unknown>).mcpServers).toBeDefined();
+    expect(((settings as Record<string, unknown>).mcpServers as Record<string, unknown>).myco).toBeDefined();
+    expect((settings as Record<string, unknown>).coreTools).toContain('ShellTool(myco-run *)');
+  });
+
   it('is idempotent — running twice produces same result', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
 
@@ -868,6 +913,34 @@ describe('uninstall', () => {
     expect(autoApprove['other-tool']).toBe(true);
     expect(autoApprove['myco-run']).toBeUndefined();
     expect(autoApprove['myco']).toBeUndefined();
+  });
+
+  it('removes coreTools entries from Gemini settings', () => {
+    fs.mkdirSync(path.join(projectRoot, '.gemini'), { recursive: true });
+    const installer = new SymbiontInstaller(GEMINI_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+
+    installer.uninstallSettings();
+
+    // File removed when empty
+    expect(fs.existsSync(path.join(projectRoot, '.gemini/settings.json'))).toBe(false);
+  });
+
+  it('preserves non-Myco coreTools entries on uninstall', () => {
+    const geminiDir = path.join(projectRoot, '.gemini');
+    fs.mkdirSync(geminiDir, { recursive: true });
+    writeJson(path.join(geminiDir, 'settings.json'), {
+      coreTools: ['ShellTool(other-tool *)', 'ShellTool(myco-run *)', 'ShellTool(myco *)'],
+    });
+
+    const installer = new SymbiontInstaller(GEMINI_MANIFEST, projectRoot, packageRoot);
+    installer.uninstallSettings();
+
+    const settings = readJson(path.join(geminiDir, 'settings.json'));
+    const coreTools = settings.coreTools as string[];
+    expect(coreTools).toContain('ShellTool(other-tool *)');
+    expect(coreTools).not.toContain('ShellTool(myco-run *)');
+    expect(coreTools).not.toContain('ShellTool(myco *)');
   });
 
   it('preserves non-Myco permissions on uninstall', () => {

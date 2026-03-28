@@ -1,0 +1,6 @@
+{
+  "coreTools": [
+    "ShellTool(myco-run *)",
+    "ShellTool(myco *)"
+  ]
+}
