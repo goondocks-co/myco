@@ -92,6 +92,10 @@ Agents don't need to search explicitly — Myco surfaces what's relevant.
 
 A local web dashboard provides configuration and operations management. Manage intelligence providers and per-task model assignments, trigger agent and digest cycles, monitor daemon health, and view live logs.
 
+<p align="center">
+  <img src="assets/myco-dashboard.png" alt="Myco Dashboard" width="100%">
+</p>
+
 ### Symbionts
 
 Myco integrates with coding agents through **symbiont** adapters — named for the mycorrhizal symbiotic relationship between fungi and their host trees. Each adapter handles transcript discovery, conversation parsing, and project registration for its host agent.

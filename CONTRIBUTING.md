@@ -79,7 +79,6 @@ make build && myco restart
 ```
 myco/
 ├── .github/               # CI workflows + VS Code Copilot agent manifest
-├── hooks/                 # Hook registration shell scripts
 ├── skills/                # Skill markdown files (subdirectory per skill)
 ├── src/
 │   ├── agent/             # Intelligence pipeline: wave-based executor, task definitions, orchestrator

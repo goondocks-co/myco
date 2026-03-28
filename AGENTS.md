@@ -54,7 +54,6 @@ src/
   symbionts/     # Symbiont adapters and manifests for all supported agents
   vault/         # Reader, writer, Zod schemas for database records
 tests/           # Mirrors src/ structure: tests/<module>.test.ts
-hooks/           # Hook registration shell scripts (invoke dist/src/hooks/*.js)
 skills/          # Skill markdown files (subdirectory per skill)
 .mcp.json        # Project-level MCP config written by the SymbiontInstaller
 ui/              # React + Tailwind dashboard (Vite build → dist/ui/)
