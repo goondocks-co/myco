@@ -20,6 +20,7 @@ const CLAUDE_MANIFEST: SymbiontManifest = {
     mcpTarget: '.mcp.json',
     skillsTarget: '.claude/skills',
     settingsTarget: '.claude/settings.json',
+    instructionsFile: 'CLAUDE.md',
   },
 };
 
@@ -67,6 +68,7 @@ const GEMINI_MANIFEST: SymbiontManifest = {
     mcpTarget: '.gemini/settings.json',
     skillsTarget: '.agents/skills',
     settingsTarget: '.gemini/settings.json',
+    instructionsFile: 'GEMINI.md',
   },
 };
 
@@ -82,6 +84,7 @@ const VSCODE_MANIFEST: SymbiontManifest = {
     mcpTarget: '.vscode/mcp.json',
     skillsTarget: '.agents/skills',
     settingsTarget: '.vscode/settings.json',
+    instructionsFile: '.github/copilot-instructions.md',
   },
 };
 
@@ -197,6 +200,12 @@ function setupPackageRoot(): void {
   writeJson(path.join(windsurfTemplateDir, 'settings.json'), {
     'windsurf.cascadeCommandsAllowList': ['myco-run', 'myco'],
   });
+
+  // Create shared instruction stub template
+  fs.writeFileSync(
+    path.join(packageRoot, 'src/symbionts/templates/instructions-stub.md'),
+    '# Project Instructions\n\n> **Source of truth:** Read and follow [`AGENTS.md`](AGENTS.md)\n>\n> If anything in this file conflicts with `AGENTS.md`, **`AGENTS.md` wins**.\n\n<!-- This file exists so {agentDisplayName} discovers project instructions. -->\n<!-- All rules are maintained in AGENTS.md to avoid cross-agent duplication. -->\n<!-- Edit AGENTS.md, not this file, when adding or changing project rules. -->\n',
+  );
 
   // Create a skill directory
   const skillDir = path.join(packageRoot, 'skills/myco');
@@ -608,6 +617,7 @@ describe('install', () => {
     expect(result.mcp).toBe(true);
     expect(result.skills).toBe(true);
     expect(result.settings).toBe(true);
+    expect(result.instructions).toBe(true);
   });
 
   it('verifies all files exist after Claude Code install', () => {
@@ -634,11 +644,12 @@ describe('install', () => {
     const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
     const result = installer.install();
 
-    // Cursor has no hooks
+    // Cursor has no hooks and no instructionsFile
     expect(result.hooks).toBe(false);
     expect(result.mcp).toBe(true);
     expect(result.skills).toBe(true);
     expect(result.settings).toBe(true);
+    expect(result.instructions).toBe(false);
   });
 
   it('runs all steps for VS Code Copilot', () => {
@@ -649,6 +660,7 @@ describe('install', () => {
     expect(result.mcp).toBe(true);
     expect(result.skills).toBe(true);
     expect(result.settings).toBe(true);
+    expect(result.instructions).toBe(true);
 
     // Hooks in .github/hooks/myco-hooks.json
     expect(fs.existsSync(path.join(projectRoot, '.github/hooks/myco-hooks.json'))).toBe(true);
@@ -671,6 +683,7 @@ describe('install', () => {
     expect(result.mcp).toBe(true);
     expect(result.skills).toBe(true);
     expect(result.settings).toBe(true);
+    expect(result.instructions).toBe(true);
 
     // All in one file
     const settings = readJson(path.join(projectRoot, '.gemini/settings.json'));
@@ -686,7 +699,12 @@ describe('install', () => {
     const result1 = installer.install();
     const result2 = installer.install();
 
-    expect(result1).toEqual(result2);
+    // Instructions is false on second run (file already exists — never overwritten)
+    expect(result1.instructions).toBe(true);
+    expect(result2.instructions).toBe(false);
+
+    // All other fields should be identical
+    expect({ ...result1, instructions: undefined }).toEqual({ ...result2, instructions: undefined });
 
     // Settings file should be identical
     const settingsPath = path.join(projectRoot, '.claude/settings.json');
@@ -998,6 +1016,7 @@ describe('uninstall', () => {
     expect(result.mcp).toBe(true);
     expect(result.skills).toBe(true);
     expect(result.settings).toBe(true);
+    expect(result.instructions).toBe(true);
 
     // .mcp.json should be gone (was only myco)
     expect(fs.existsSync(path.join(projectRoot, '.mcp.json'))).toBe(false);
@@ -1112,6 +1131,7 @@ describe('Windsurf install', () => {
     expect(result.mcp).toBe(false); // No MCP for Windsurf
     expect(result.skills).toBe(true);
     expect(result.settings).toBe(true);
+    expect(result.instructions).toBe(false); // Windsurf reads AGENTS.md natively
 
     // Settings has cascadeCommandsAllowList
     const settings = readJson(path.join(projectRoot, '.windsurf/settings.json'));
@@ -1144,6 +1164,103 @@ describe('Windsurf install', () => {
     expect(allowList).toContain('other-cmd');
     expect(allowList).not.toContain('myco-run');
     expect(allowList).not.toContain('myco');
+  });
+});
+
+// =====================
+// installInstructions
+// =====================
+
+describe('installInstructions', () => {
+  it('creates instruction stub for Claude Code', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installInstructions();
+    expect(result).toBe(true);
+    const content = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf-8');
+    expect(content).toContain('AGENTS.md');
+    expect(content).toContain('Claude Code');
+  });
+
+  it('does not overwrite existing instruction file', () => {
+    fs.writeFileSync(path.join(projectRoot, 'CLAUDE.md'), '# My custom rules\n');
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installInstructions();
+    expect(result).toBe(false);
+    expect(fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf-8')).toBe('# My custom rules\n');
+  });
+
+  it('creates .github/ directory for VS Code instructions', () => {
+    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    installer.installInstructions();
+    expect(fs.existsSync(path.join(projectRoot, '.github/copilot-instructions.md'))).toBe(true);
+    const content = fs.readFileSync(path.join(projectRoot, '.github/copilot-instructions.md'), 'utf-8');
+    expect(content).toContain('VS Code Copilot');
+  });
+
+  it('creates instruction stub for Gemini CLI', () => {
+    const installer = new SymbiontInstaller(GEMINI_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installInstructions();
+    expect(result).toBe(true);
+    const content = fs.readFileSync(path.join(projectRoot, 'GEMINI.md'), 'utf-8');
+    expect(content).toContain('AGENTS.md');
+    expect(content).toContain('Gemini CLI');
+  });
+
+  it('returns false when no instructionsFile in manifest', () => {
+    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
+    expect(installer.installInstructions()).toBe(false);
+  });
+
+  it('loads template from dist layout as fallback', () => {
+    // Remove source layout template
+    const srcPath = path.join(packageRoot, 'src/symbionts/templates/instructions-stub.md');
+    fs.unlinkSync(srcPath);
+
+    // Create dist layout template
+    const distDir = path.join(packageRoot, 'dist/src/symbionts/templates');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(distDir, 'instructions-stub.md'),
+      '# Project Instructions\n\n<!-- This file exists so {agentDisplayName} discovers project instructions. -->\n<!-- Edit AGENTS.md, not this file, when adding or changing project rules. -->\n',
+    );
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installInstructions();
+    expect(result).toBe(true);
+    const content = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf-8');
+    expect(content).toContain('Claude Code');
+  });
+});
+
+// =====================
+// uninstallInstructions
+// =====================
+
+describe('uninstallInstructions', () => {
+  it('removes unmodified stub', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installInstructions();
+    expect(fs.existsSync(path.join(projectRoot, 'CLAUDE.md'))).toBe(true);
+
+    expect(installer.uninstallInstructions()).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, 'CLAUDE.md'))).toBe(false);
+  });
+
+  it('preserves customized instruction file', () => {
+    fs.writeFileSync(path.join(projectRoot, 'CLAUDE.md'), '# My custom rules\n');
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    expect(installer.uninstallInstructions()).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, 'CLAUDE.md'))).toBe(true);
+  });
+
+  it('returns false when no instructionsFile in manifest', () => {
+    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
+    expect(installer.uninstallInstructions()).toBe(false);
+  });
+
+  it('returns false when file does not exist', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    expect(installer.uninstallInstructions()).toBe(false);
   });
 });
 

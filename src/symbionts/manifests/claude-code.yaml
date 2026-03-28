@@ -17,3 +17,4 @@ registration:
   mcpTarget: .mcp.json
   skillsTarget: .claude/skills
   settingsTarget: .claude/settings.json
+  instructionsFile: CLAUDE.md

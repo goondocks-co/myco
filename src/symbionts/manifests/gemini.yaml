@@ -17,3 +17,4 @@ registration:
   mcpTarget: .gemini/settings.json
   skillsTarget: .agents/skills
   settingsTarget: .gemini/settings.json
+  instructionsFile: GEMINI.md

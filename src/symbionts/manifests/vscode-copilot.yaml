@@ -14,3 +14,4 @@ registration:
   mcpTarget: .vscode/mcp.json
   skillsTarget: .agents/skills
   settingsTarget: .vscode/settings.json
+  instructionsFile: .github/copilot-instructions.md

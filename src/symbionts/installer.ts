@@ -35,11 +35,15 @@ const CANONICAL_SKILLS_DIR = '.agents/skills';
 /** MCP server name used by Myco in all symbiont configurations. */
 export const MYCO_MCP_SERVER_NAME = 'myco';
 
+/** Marker text used to identify unmodified instruction stubs. */
+const INSTRUCTIONS_STUB_MARKER = 'Edit AGENTS.md, not this file';
+
 export interface InstallResult {
   hooks: boolean;
   mcp: boolean;
   skills: boolean;
   settings: boolean;
+  instructions: boolean;
 }
 
 export class SymbiontInstaller {
@@ -75,6 +79,7 @@ export class SymbiontInstaller {
           mcp: this.installMcp(),
           skills: this.installSkills(),
           settings: this.installSettings(),
+          instructions: this.installInstructions(),
         };
     this.updateGitignore();
     return result;
@@ -143,6 +148,7 @@ export class SymbiontInstaller {
       mcp,
       skills: this.installSkills(),
       settings,
+      instructions: this.installInstructions(),
     };
   }
 
@@ -156,6 +162,7 @@ export class SymbiontInstaller {
           mcp: this.uninstallMcp(),
           skills: this.uninstallSkills(),
           settings: this.uninstallSettings(),
+          instructions: this.uninstallInstructions(),
         };
     this.cleanGitignore();
     return result;
@@ -168,7 +175,7 @@ export class SymbiontInstaller {
     const targetPath = path.join(this.projectRoot, reg.hooksTarget ?? reg.mcpTarget ?? reg.settingsTarget!);
     const data = readJsonFile(targetPath);
     if (Object.keys(data).length === 0) {
-      return { hooks: false, mcp: false, skills: this.uninstallSkills(), settings: false };
+      return { hooks: false, mcp: false, skills: this.uninstallSkills(), settings: false, instructions: this.uninstallInstructions() };
     }
 
     let hooks = false, mcp = false, settings = false;
@@ -210,7 +217,54 @@ export class SymbiontInstaller {
 
     writeOrDeleteJsonFile(targetPath, data);
 
-    return { hooks, mcp, skills: this.uninstallSkills(), settings };
+    return { hooks, mcp, skills: this.uninstallSkills(), settings, instructions: this.uninstallInstructions() };
+  }
+
+  /**
+   * Write a thin instruction stub file that references AGENTS.md.
+   * Only writes if the file doesn't already exist — never overwrites
+   * user-maintained instruction files.
+   */
+  installInstructions(): boolean {
+    const reg = this.manifest.registration;
+    if (!reg?.instructionsFile) return false;
+
+    const targetPath = path.join(this.projectRoot, reg.instructionsFile);
+
+    // Never overwrite existing instruction files — they may have user content
+    try { fs.accessSync(targetPath); return false; } catch { /* doesn't exist — proceed */ }
+
+    // Load the stub template from package
+    const templateCandidates = [
+      path.join(this.packageRoot, 'src/symbionts/templates/instructions-stub.md'),
+      path.join(this.packageRoot, 'dist/src/symbionts/templates/instructions-stub.md'),
+    ];
+    let stub: string | null = null;
+    for (const p of templateCandidates) {
+      try { stub = fs.readFileSync(p, 'utf-8'); break; } catch { /* try next */ }
+    }
+    if (!stub) return false;
+
+    stub = stub.replace('{agentDisplayName}', this.manifest.displayName);
+
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, stub, 'utf-8');
+    return true;
+  }
+
+  /** Remove instruction stub if it's still the default template. */
+  uninstallInstructions(): boolean {
+    const reg = this.manifest.registration;
+    if (!reg?.instructionsFile) return false;
+
+    const targetPath = path.join(this.projectRoot, reg.instructionsFile);
+    try {
+      const content = fs.readFileSync(targetPath, 'utf-8');
+      // Only remove if it's still the unmodified stub
+      if (!content.includes(INSTRUCTIONS_STUB_MARKER)) return false;
+      fs.unlinkSync(targetPath);
+      return true;
+    } catch { return false; }
   }
 
   /** List skill directory names from the package root. Returns empty array if not found. */
