@@ -3,6 +3,7 @@ displayName: Gemini CLI
 binary: gemini
 configDir: .gemini
 pluginRootEnvVar: GEMINI_PLUGIN_ROOT
+resumeCommand: "gemini --resume {sessionId}"
 hookFields:
   sessionId: session_id
   transcriptPath: transcript_path

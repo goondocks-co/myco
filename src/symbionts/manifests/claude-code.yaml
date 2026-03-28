@@ -4,6 +4,7 @@ binary: claude
 configDir: .claude
 pluginRootEnvVar: CLAUDE_PLUGIN_ROOT
 settingsPath: .claude/settings.json
+resumeCommand: "claude --resume {sessionId}"
 hookFields:
   sessionId: session_id
   transcriptPath: transcript_path

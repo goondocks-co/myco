@@ -30,6 +30,8 @@ export const SymbiontManifestSchema = z.object({
     /** Env var fallback for session ID (e.g., GEMINI_SESSION_ID). */
     sessionIdEnv: z.string().optional(),
   }),
+  /** Resume command template with {sessionId} placeholder. Omit for IDE-based agents. */
+  resumeCommand: z.string().optional(),
   capture: CaptureManifestSchema.optional(),
   registration: RegistrationSchema.optional(),
 });

@@ -4,6 +4,7 @@ binary: codex
 configDir: .codex
 pluginRootEnvVar: CODEX_PLUGIN_ROOT
 settingsPath: .codex/config.toml
+resumeCommand: "codex --resume {sessionId}"
 hookFields:
   sessionId: session_id
   transcriptPath: transcript_path
