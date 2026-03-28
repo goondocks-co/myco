@@ -9,6 +9,7 @@ const RegistrationSchema = z.object({
   mcpTarget: z.string().optional(),
   mcpFormat: z.enum(['json', 'toml']).default('json'),
   skillsTarget: z.string().optional(),
+  settingsTarget: z.string().optional(),
 });
 
 export const SymbiontManifestSchema = z.object({

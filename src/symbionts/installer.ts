@@ -17,10 +17,14 @@ const CANONICAL_SKILLS_DIR = '.agents/skills';
 /** MCP server name used by Myco in all symbiont configurations. */
 export const MYCO_MCP_SERVER_NAME = 'myco';
 
+/** Command names used to identify Myco entries in settings files. */
+const MYCO_COMMAND_NAMES = ['myco-run', 'myco'] as const;
+
 export interface InstallResult {
   hooks: boolean;
   mcp: boolean;
   skills: boolean;
+  settings: boolean;
 }
 
 export class SymbiontInstaller {
@@ -52,6 +56,7 @@ export class SymbiontInstaller {
       hooks: this.installHooks(),
       mcp: this.installMcp(),
       skills: this.installSkills(),
+      settings: this.installSettings(),
     };
     this.updateGitignore();
     return result;
@@ -63,6 +68,7 @@ export class SymbiontInstaller {
       hooks: this.uninstallHooks(),
       mcp: this.uninstallMcp(),
       skills: this.uninstallSkills(),
+      settings: this.uninstallSettings(),
     };
     this.cleanGitignore();
     return result;
@@ -224,6 +230,73 @@ export class SymbiontInstaller {
       }
     }
 
+    return true;
+  }
+
+  /**
+   * Merge settings template into the target settings file.
+   * Deep merges objects and deduplicates arrays.
+   */
+  installSettings(): boolean {
+    const reg = this.manifest.registration;
+    if (!reg?.settingsTarget) return false;
+
+    const template = this.loadTemplate('settings');
+    if (!template) return false;
+
+    const targetPath = path.join(this.projectRoot, reg.settingsTarget);
+    const existing = readJsonFile(targetPath);
+    const merged = deepMergeSettings(existing, template);
+    writeJsonFile(targetPath, merged);
+    return true;
+  }
+
+  /** Remove Myco entries from the target settings file. */
+  uninstallSettings(): boolean {
+    const reg = this.manifest.registration;
+    if (!reg?.settingsTarget) return false;
+
+    const targetPath = path.join(this.projectRoot, reg.settingsTarget);
+    const settings = readJsonFile(targetPath);
+    if (Object.keys(settings).length === 0) return false;
+
+    let changed = false;
+
+    // Remove permissions.allow entries containing myco
+    const perms = settings.permissions as Record<string, unknown> | undefined;
+    if (perms?.allow && Array.isArray(perms.allow)) {
+      const filtered = (perms.allow as string[]).filter(
+        (p) => !MYCO_COMMAND_NAMES.some((cmd) => p.includes(cmd)),
+      );
+      if (filtered.length !== (perms.allow as string[]).length) {
+        perms.allow = filtered.length > 0 ? filtered : undefined;
+        if (!perms.allow) delete perms.allow;
+        if (Object.keys(perms).length === 0) delete settings.permissions;
+        changed = true;
+      }
+    }
+
+    // Remove chat.tools.terminal.autoApprove entries
+    const autoApprove = settings['chat.tools.terminal.autoApprove'] as Record<string, unknown> | undefined;
+    if (autoApprove) {
+      for (const cmd of MYCO_COMMAND_NAMES) {
+        if (cmd in autoApprove) {
+          delete autoApprove[cmd];
+          changed = true;
+        }
+      }
+      if (Object.keys(autoApprove).length === 0) {
+        delete settings['chat.tools.terminal.autoApprove'];
+      }
+    }
+
+    if (!changed) return false;
+
+    if (Object.keys(settings).length === 0) {
+      try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
+    } else {
+      writeJsonFile(targetPath, settings);
+    }
     return true;
   }
 
@@ -479,6 +552,34 @@ function writeTomlMcpServer(
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, updated, 'utf-8');
   return updated;
+}
+
+// --- Settings merge helpers ---
+
+/** Deep merge two settings objects. Arrays are appended + deduplicated; objects recurse. */
+function deepMergeSettings(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+): Record<string, unknown> {
+  const result = { ...target };
+  for (const [key, sourceVal] of Object.entries(source)) {
+    const targetVal = result[key];
+    if (Array.isArray(sourceVal) && Array.isArray(targetVal)) {
+      result[key] = [...new Set([...targetVal, ...sourceVal])];
+    } else if (isPlainObject(sourceVal) && isPlainObject(targetVal)) {
+      result[key] = deepMergeSettings(
+        targetVal as Record<string, unknown>,
+        sourceVal as Record<string, unknown>,
+      );
+    } else {
+      result[key] = sourceVal;
+    }
+  }
+  return result;
+}
+
+function isPlainObject(val: unknown): val is Record<string, unknown> {
+  return typeof val === 'object' && val !== null && !Array.isArray(val);
 }
 
 // --- JSON helpers ---

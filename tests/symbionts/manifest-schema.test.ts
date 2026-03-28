@@ -111,6 +111,34 @@ describe('symbiont manifests', () => {
     expect(manifest.capture).toBeUndefined();
   });
 
+  it('vscode-copilot manifest has registration with github hooks target', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'vscode-copilot.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.registration).toBeDefined();
+    expect(manifest.registration!.hooksTarget).toBe('.github/hooks/myco-hooks.json');
+    expect(manifest.registration!.mcpTarget).toBe('.vscode/mcp.json');
+    expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
+    expect(manifest.registration!.settingsTarget).toBe('.vscode/settings.json');
+  });
+
+  it('claude-code manifest has settingsTarget', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'claude-code.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.registration!.settingsTarget).toBe('.claude/settings.json');
+  });
+
+  it('cursor manifest has settingsTarget', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'cursor.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.registration!.settingsTarget).toBe('.cursor/settings.json');
+  });
+
+  it('codex manifest has settingsTarget', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'codex.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.registration!.settingsTarget).toBe('.codex/config.toml');
+  });
+
   it('codex manifest has registration with toml mcpFormat', () => {
     const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'codex.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));

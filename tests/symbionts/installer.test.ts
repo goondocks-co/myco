@@ -19,6 +19,7 @@ const CLAUDE_MANIFEST: SymbiontManifest = {
     hooksTarget: '.claude/settings.json',
     mcpTarget: '.mcp.json',
     skillsTarget: '.claude/skills',
+    settingsTarget: '.claude/settings.json',
   },
 };
 
@@ -34,6 +35,7 @@ const CURSOR_MANIFEST: SymbiontManifest = {
     mcpTarget: '.cursor/mcp.json',
     mcpFormat: 'json',
     skillsTarget: '.cursor/skills',
+    settingsTarget: '.cursor/settings.json',
   },
 };
 
@@ -50,6 +52,21 @@ const CODEX_MANIFEST: SymbiontManifest = {
     mcpTarget: '.codex/config.toml',
     mcpFormat: 'toml',
     skillsTarget: '.agents/skills',
+  },
+};
+
+const VSCODE_MANIFEST: SymbiontManifest = {
+  name: 'vscode-copilot',
+  displayName: 'VS Code Copilot',
+  binary: 'code',
+  configDir: '.vscode',
+  pluginRootEnvVar: 'VSCODE_PLUGIN_ROOT',
+  hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'sessionId' },
+  registration: {
+    hooksTarget: '.github/hooks/myco-hooks.json',
+    mcpTarget: '.vscode/mcp.json',
+    skillsTarget: '.agents/skills',
+    settingsTarget: '.vscode/settings.json',
   },
 };
 
@@ -99,19 +116,35 @@ function setupPackageRoot(): void {
   const claudeTemplateDir = path.join(packageRoot, 'src/symbionts/templates/claude-code');
   const cursorTemplateDir = path.join(packageRoot, 'src/symbionts/templates/cursor');
   const codexTemplateDir = path.join(packageRoot, 'src/symbionts/templates/codex');
+  const vscodeTemplateDir = path.join(packageRoot, 'src/symbionts/templates/vscode-copilot');
   fs.mkdirSync(claudeTemplateDir, { recursive: true });
   fs.mkdirSync(cursorTemplateDir, { recursive: true });
   fs.mkdirSync(codexTemplateDir, { recursive: true });
+  fs.mkdirSync(vscodeTemplateDir, { recursive: true });
 
   writeJson(path.join(claudeTemplateDir, 'hooks.json'), HOOKS_TEMPLATE);
   writeJson(path.join(claudeTemplateDir, 'mcp.json'), MCP_TEMPLATE);
+  writeJson(path.join(claudeTemplateDir, 'settings.json'), {
+    permissions: { allow: ['Bash(myco-run *)', 'Bash(myco-run:*)', 'Bash(myco *)', 'Bash(myco:*)'] },
+  });
   writeJson(path.join(cursorTemplateDir, 'mcp.json'), MCP_TEMPLATE);
+  writeJson(path.join(cursorTemplateDir, 'settings.json'), {
+    'chat.tools.terminal.autoApprove': { 'myco-run': true, 'myco': true },
+  });
   writeJson(path.join(codexTemplateDir, 'hooks.json'), {
     SessionStart: [{ hooks: [{ type: 'command', command: 'myco-run hook session-start', timeout: 10 }] }],
     Stop: [{ hooks: [{ type: 'command', command: 'myco-run hook stop', timeout: 30 }] }],
   });
   writeJson(path.join(codexTemplateDir, 'mcp.json'), {
     myco: { command: 'myco-run', args: ['mcp'] },
+  });
+  writeJson(path.join(vscodeTemplateDir, 'hooks.json'), {
+    SessionStart: [{ hooks: [{ type: 'command', command: 'myco-run hook session-start', timeout: 10 }] }],
+    Stop: [{ hooks: [{ type: 'command', command: 'myco-run hook stop', timeout: 30 }] }],
+  });
+  writeJson(path.join(vscodeTemplateDir, 'mcp.json'), MCP_TEMPLATE);
+  writeJson(path.join(vscodeTemplateDir, 'settings.json'), {
+    'chat.tools.terminal.autoApprove': { 'myco-run': true, 'myco': true },
   });
 
   // Create a skill directory
@@ -420,28 +453,122 @@ describe('installSkills', () => {
 });
 
 // =====================
+// installSettings
+// =====================
+
+describe('installSettings', () => {
+  it('writes permissions to Claude Code settings', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+
+    const settings = readJson(path.join(projectRoot, '.claude/settings.json'));
+    expect((settings.permissions as { allow: string[] }).allow).toContain('Bash(myco-run *)');
+    expect((settings.permissions as { allow: string[] }).allow).toContain('Bash(myco *)');
+  });
+
+  it('writes auto-approve to Cursor settings', () => {
+    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+
+    const settings = readJson(path.join(projectRoot, '.cursor/settings.json'));
+    expect((settings as Record<string, unknown>)['chat.tools.terminal.autoApprove']).toEqual({
+      'myco-run': true,
+      'myco': true,
+    });
+  });
+
+  it('writes auto-approve to VS Code settings', () => {
+    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+
+    const settings = readJson(path.join(projectRoot, '.vscode/settings.json'));
+    expect((settings as Record<string, unknown>)['chat.tools.terminal.autoApprove']).toEqual({
+      'myco-run': true,
+      'myco': true,
+    });
+  });
+
+  it('preserves existing settings', () => {
+    const settingsDir = path.join(projectRoot, '.claude');
+    fs.mkdirSync(settingsDir, { recursive: true });
+    writeJson(path.join(settingsDir, 'settings.json'), {
+      env: { FOO: 'bar' },
+      permissions: { allow: ['Bash(git *)'] },
+    });
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+
+    const settings = readJson(path.join(settingsDir, 'settings.json'));
+    expect((settings as Record<string, unknown>).env).toEqual({ FOO: 'bar' });
+    expect((settings.permissions as { allow: string[] }).allow).toContain('Bash(git *)');
+    expect((settings.permissions as { allow: string[] }).allow).toContain('Bash(myco-run *)');
+  });
+
+  it('deduplicates on repeated install', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+    installer.installSettings();
+
+    const settings = readJson(path.join(projectRoot, '.claude/settings.json'));
+    const allow = (settings.permissions as { allow: string[] }).allow;
+    const mycoEntries = allow.filter((e: string) => e === 'Bash(myco-run *)');
+    expect(mycoEntries.length).toBe(1);
+  });
+
+  it('returns false when no settingsTarget in manifest', () => {
+    const noSettingsManifest: SymbiontManifest = {
+      ...CODEX_MANIFEST,
+      registration: { ...CODEX_MANIFEST.registration, settingsTarget: undefined },
+    };
+    const installer = new SymbiontInstaller(noSettingsManifest, projectRoot, packageRoot);
+    const result = installer.installSettings();
+    expect(result).toBe(false);
+  });
+
+  it('merges auto-approve keys with existing keys', () => {
+    const settingsDir = path.join(projectRoot, '.vscode');
+    fs.mkdirSync(settingsDir, { recursive: true });
+    writeJson(path.join(settingsDir, 'settings.json'), {
+      'chat.tools.terminal.autoApprove': { 'other-tool': true },
+    });
+
+    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+
+    const settings = readJson(path.join(settingsDir, 'settings.json'));
+    const autoApprove = (settings as Record<string, unknown>)['chat.tools.terminal.autoApprove'] as Record<string, boolean>;
+    expect(autoApprove['other-tool']).toBe(true);
+    expect(autoApprove['myco-run']).toBe(true);
+    expect(autoApprove['myco']).toBe(true);
+  });
+});
+
+// =====================
 // install (integration)
 // =====================
 
 describe('install', () => {
-  it('runs all three steps and returns results for Claude Code', () => {
+  it('runs all steps and returns results for Claude Code', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     const result = installer.install();
 
     expect(result.hooks).toBe(true);
     expect(result.mcp).toBe(true);
     expect(result.skills).toBe(true);
+    expect(result.settings).toBe(true);
   });
 
   it('verifies all files exist after Claude Code install', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.install();
 
-    // Hooks in settings.json
+    // Hooks + settings in settings.json
     const settingsPath = path.join(projectRoot, '.claude/settings.json');
     expect(fs.existsSync(settingsPath)).toBe(true);
     const settings = readJson(settingsPath);
     expect(settings.hooks).toBeDefined();
+    expect((settings.permissions as { allow: string[] }).allow).toContain('Bash(myco-run *)');
 
     // MCP config
     const mcpPath = path.join(projectRoot, '.mcp.json');
@@ -452,7 +579,7 @@ describe('install', () => {
     expect(fs.existsSync(path.join(projectRoot, '.claude/skills/myco'))).toBe(true);
   });
 
-  it('runs all three steps and returns results for Cursor', () => {
+  it('runs all steps and returns results for Cursor', () => {
     const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
     const result = installer.install();
 
@@ -460,6 +587,28 @@ describe('install', () => {
     expect(result.hooks).toBe(false);
     expect(result.mcp).toBe(true);
     expect(result.skills).toBe(true);
+    expect(result.settings).toBe(true);
+  });
+
+  it('runs all steps for VS Code Copilot', () => {
+    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    const result = installer.install();
+
+    expect(result.hooks).toBe(true);
+    expect(result.mcp).toBe(true);
+    expect(result.skills).toBe(true);
+    expect(result.settings).toBe(true);
+
+    // Hooks in .github/hooks/myco-hooks.json
+    expect(fs.existsSync(path.join(projectRoot, '.github/hooks/myco-hooks.json'))).toBe(true);
+    // MCP in .vscode/mcp.json
+    expect(fs.existsSync(path.join(projectRoot, '.vscode/mcp.json'))).toBe(true);
+    // Settings in .vscode/settings.json
+    const settings = readJson(path.join(projectRoot, '.vscode/settings.json'));
+    expect((settings as Record<string, unknown>)['chat.tools.terminal.autoApprove']).toEqual({
+      'myco-run': true,
+      'myco': true,
+    });
   });
 
   it('is idempotent — running twice produces same result', () => {
@@ -679,6 +828,65 @@ describe('uninstall', () => {
     expect(gitignoreAfter).toContain('node_modules/');
   });
 
+  it('removes permissions from Claude Code settings', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    const settingsBefore = readJson(path.join(projectRoot, '.claude/settings.json'));
+    expect((settingsBefore.permissions as { allow: string[] }).allow).toContain('Bash(myco-run *)');
+
+    installer.uninstallSettings();
+
+    // settings.json still exists because it has hooks, but permissions.allow entries are gone
+    // (hooks were separately installed and not uninstalled here)
+    const settingsAfter = readJson(path.join(projectRoot, '.claude/settings.json'));
+    expect(settingsAfter.permissions).toBeUndefined();
+  });
+
+  it('removes auto-approve from VS Code settings', () => {
+    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+
+    installer.uninstallSettings();
+
+    // File removed when empty
+    expect(fs.existsSync(path.join(projectRoot, '.vscode/settings.json'))).toBe(false);
+  });
+
+  it('preserves non-Myco auto-approve entries on uninstall', () => {
+    const settingsDir = path.join(projectRoot, '.vscode');
+    fs.mkdirSync(settingsDir, { recursive: true });
+    writeJson(path.join(settingsDir, 'settings.json'), {
+      'chat.tools.terminal.autoApprove': { 'other-tool': true, 'myco-run': true, 'myco': true },
+    });
+
+    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    installer.uninstallSettings();
+
+    const settings = readJson(path.join(settingsDir, 'settings.json'));
+    const autoApprove = (settings as Record<string, unknown>)['chat.tools.terminal.autoApprove'] as Record<string, boolean>;
+    expect(autoApprove['other-tool']).toBe(true);
+    expect(autoApprove['myco-run']).toBeUndefined();
+    expect(autoApprove['myco']).toBeUndefined();
+  });
+
+  it('preserves non-Myco permissions on uninstall', () => {
+    const settingsDir = path.join(projectRoot, '.claude');
+    fs.mkdirSync(settingsDir, { recursive: true });
+    writeJson(path.join(settingsDir, 'settings.json'), {
+      permissions: { allow: ['Bash(git *)', 'Bash(myco-run *)', 'Bash(myco *)'] },
+    });
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.uninstallSettings();
+
+    const settings = readJson(path.join(settingsDir, 'settings.json'));
+    const allow = (settings.permissions as { allow: string[] }).allow;
+    expect(allow).toContain('Bash(git *)');
+    expect(allow).not.toContain('Bash(myco-run *)');
+    expect(allow).not.toContain('Bash(myco *)');
+  });
+
   it('full uninstall removes everything install added', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.install();
@@ -692,11 +900,14 @@ describe('uninstall', () => {
     expect(result.hooks).toBe(true);
     expect(result.mcp).toBe(true);
     expect(result.skills).toBe(true);
+    expect(result.settings).toBe(true);
 
     // .mcp.json should be gone (was only myco)
     expect(fs.existsSync(path.join(projectRoot, '.mcp.json'))).toBe(false);
     // Skills gone
     expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco'))).toBe(false);
+    // Settings file cleaned up (hooks + settings both removed = empty = deleted)
+    expect(fs.existsSync(path.join(projectRoot, '.claude/settings.json'))).toBe(false);
   });
 });
 

@@ -108,6 +108,7 @@ export function registerSymbionts(
         result.hooks && 'hooks',
         result.mcp && 'MCP server',
         result.skills && 'skills',
+        result.settings && 'settings',
       ].filter(Boolean);
 
       if (installed.length > 0) {

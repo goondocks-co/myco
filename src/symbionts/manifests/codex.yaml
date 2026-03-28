@@ -15,3 +15,4 @@ registration:
   mcpTarget: .codex/config.toml
   mcpFormat: toml
   skillsTarget: .agents/skills
+  settingsTarget: .codex/config.toml

@@ -14,3 +14,4 @@ capture:
 registration:
   mcpTarget: .cursor/mcp.json
   skillsTarget: .cursor/skills
+  settingsTarget: .cursor/settings.json
