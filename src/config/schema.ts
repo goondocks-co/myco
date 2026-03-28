@@ -68,6 +68,22 @@ const AgentSchema = z.object({
   tasks: z.record(z.string(), TaskProviderOverrideSchema).optional(),
 });
 
+const BackupSchema = z.object({
+  /** Override directory for backup files (absolute path). When unset, defaults to {vaultDir}/backups. */
+  dir: z.string().optional(),
+});
+
+const TeamSchema = z.object({
+  /** Whether team sync is enabled. */
+  enabled: z.boolean().default(false),
+  /** Cloudflare Worker URL for team sync. */
+  worker_url: z.string().url().optional(),
+  /** Team identifier for sync grouping. */
+  team_id: z.string().optional(),
+  /** Sync interval in minutes. */
+  interval_minutes: z.number().int().min(1).max(1440).default(15),
+});
+
 export const MycoConfigSchema = z.preprocess(
   (raw: unknown) => {
     if (raw && typeof raw === 'object' && 'curation' in raw && !('agent' in raw)) {
@@ -84,6 +100,8 @@ export const MycoConfigSchema = z.preprocess(
     capture: CaptureSchema.default(() => CaptureSchema.parse({})),
     agent: AgentSchema.default(() => AgentSchema.parse({})),
     context: ContextSchema.default(() => ContextSchema.parse({})),
+    backup: BackupSchema.default(() => BackupSchema.parse({})),
+    team: TeamSchema.default(() => TeamSchema.parse({})),
   }),
 );
 
@@ -92,3 +110,5 @@ export type EmbeddingProviderConfig = z.infer<typeof EmbeddingProviderSchema>;
 export type TaskProviderOverride = z.infer<typeof TaskProviderOverrideSchema>;
 export type PhaseOverride = z.infer<typeof PhaseOverrideSchema>;
 export type ContextConfig = z.infer<typeof ContextSchema>;
+export type BackupConfig = z.infer<typeof BackupSchema>;
+export type TeamConfig = z.infer<typeof TeamSchema>;

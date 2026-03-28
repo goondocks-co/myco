@@ -28,6 +28,7 @@ const DELETE_TABLES = [
   'prompt_batches',
   'artifacts',
   'team_members',
+  'team_outbox',
   'sessions',
   'agents',
   'log_entries',

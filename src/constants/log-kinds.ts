@@ -87,6 +87,16 @@ export const LOG_KINDS = {
 
   // Log retention
   LOG_RETENTION: 'log.retention',
+
+  // Backup
+  BACKUP_START: 'backup.start',
+  BACKUP_COMPLETE: 'backup.complete',
+  BACKUP_ERROR: 'backup.error',
+
+  // Team sync
+  TEAM_SYNC_START: 'team-sync.start',
+  TEAM_SYNC_COMPLETE: 'team-sync.complete',
+  TEAM_SYNC_ERROR: 'team-sync.error',
 } as const;
 
 export type LogKind = (typeof LOG_KINDS)[keyof typeof LOG_KINDS];

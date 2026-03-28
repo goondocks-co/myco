@@ -6,7 +6,7 @@ import { SporeList } from '../components/mycelium/SporeList';
 import { SporeDetail } from '../components/mycelium/SporeDetail';
 import { DigestView } from '../components/mycelium/DigestView';
 import { PageHeader } from '../components/ui/page-header';
-import { useEntities, useGraph } from '../hooks/use-spores';
+import { useEntities, useFullGraph } from '../hooks/use-spores';
 import type { GraphNode } from '../hooks/use-graph-canvas';
 import type { SporeSummary } from '../hooks/use-spores';
 import type { Tab } from '../components/ui/tab-switcher';
@@ -68,19 +68,12 @@ function GraphTab() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
 
-  const { data: entitiesData } = useEntities();
-  const entities = entitiesData?.entities ?? [];
+  const { data: graphData } = useFullGraph();
 
-  /* Pick the first entity as the center for the graph if available */
-  const centerId = entities.length > 0 ? entities[0]?.id : undefined;
-  const { data: graphData } = useGraph(centerId, DEFAULT_GRAPH_DEPTH);
-
-  /* Merge center + nodes into a single array for filtering/display */
+  /* All nodes from the full graph */
   const allGraphNodes = useMemo(() => {
-    const nodes = [...(graphData?.nodes ?? [])];
-    if (graphData?.center) nodes.unshift(graphData.center);
-    return nodes;
-  }, [graphData?.center, graphData?.nodes]);
+    return graphData?.nodes ?? [];
+  }, [graphData?.nodes]);
 
   /* Build node type counts from graph data (all node types, not just entities) */
   const nodeCounts = useMemo(() => {

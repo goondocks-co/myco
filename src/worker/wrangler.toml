@@ -1,0 +1,21 @@
+name = "myco-team-sync"
+main = "src/index.ts"
+compatibility_date = "2025-03-27"
+
+[vars]
+SYNC_PROTOCOL_VERSION = "1"
+
+# D1 database — fill database_id after `wrangler d1 create myco-team`
+[[d1_databases]]
+binding = "MYCO_TEAM_DB"
+database_name = "myco-team"
+database_id = "<YOUR_D1_DATABASE_ID>"
+
+# Vectorize index — fill index_name after `wrangler vectorize create myco-team-vectors`
+[[vectorize]]
+binding = "MYCO_TEAM_VECTORS"
+index_name = "myco-team-vectors"
+
+# Workers AI binding
+[ai]
+binding = "AI"

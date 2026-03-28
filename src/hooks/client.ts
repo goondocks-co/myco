@@ -9,6 +9,15 @@ interface DaemonInfo {
   port: number;
 }
 
+/**
+ * Resolve the CLI entry point for spawning daemon processes.
+ * Uses process.argv[1] so the daemon restarts from the same binary
+ * (myco-dev vs global myco) that launched the current process.
+ */
+export function resolveCliEntryPath(): { execPath: string; cliEntry: string } {
+  return { execPath: process.execPath, cliEntry: process.argv[1] };
+}
+
 interface HealthResponse {
   myco: boolean;
   version?: string;
@@ -169,8 +178,8 @@ export class DaemonClient {
   }
 
   spawnDaemon(): void {
-    const mycoCmd = process.env.MYCO_CMD || 'myco';
-    const child = spawn(mycoCmd, ['daemon', '--vault', this.vaultDir], {
+    const { execPath, cliEntry } = resolveCliEntryPath();
+    const child = spawn(execPath, [cliEntry, 'daemon', '--vault', this.vaultDir], {
       detached: true,
       stdio: 'ignore',
     });

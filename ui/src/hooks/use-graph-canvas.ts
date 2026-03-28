@@ -310,7 +310,18 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
       padding: FIT_PADDING,
     });
     layout.on('layoutstop', () => {
-      cy.fit(undefined, FIT_PADDING);
+      // Center on the most-connected node and zoom to show its neighborhood
+      const mostConnected = cy.nodes().maxDegree(false);
+      if (mostConnected.degree(false) > 2 && cy.nodes().length > 20) {
+        cy.animate({
+          center: { eles: mostConnected },
+          zoom: 1.2,
+          duration: 300,
+          easing: 'ease-out',
+        });
+      } else {
+        cy.fit(undefined, FIT_PADDING);
+      }
     });
     layout.run();
 

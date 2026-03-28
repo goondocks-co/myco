@@ -17,6 +17,7 @@ import {
   MessageSquare,
   Bot,
   Wrench,
+  Users,
   Search,
   Menu,
   X,
@@ -38,6 +39,7 @@ const NAV_ITEMS = [
   { to: '/agent', label: 'Agent', icon: Bot },
   { to: '/settings', label: 'Settings', icon: Settings },
   { to: '/operations', label: 'Operations', icon: Wrench },
+  { to: '/team', label: 'Team', icon: Users },
   { to: '/logs', label: 'Logs', icon: ScrollText },
 ] as const;
 

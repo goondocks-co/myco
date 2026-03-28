@@ -224,6 +224,110 @@ export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> 
 }
 
 // ---------------------------------------------------------------------------
+// Full graph handler
+// ---------------------------------------------------------------------------
+
+/** Maximum nodes returned in full graph view to prevent overload. */
+const FULL_GRAPH_NODE_LIMIT = 500;
+
+export async function handleGetFullGraph(_req: RouteRequest): Promise<RouteResponse> {
+  const db = getDatabase();
+
+  // Fetch all entities
+  const entityRows = db.prepare(
+    `SELECT id, type, name, properties, status, first_seen as created_at
+     FROM entities WHERE agent_id = ? LIMIT ?`,
+  ).all(DEFAULT_AGENT_ID, FULL_GRAPH_NODE_LIMIT) as Array<Record<string, unknown>>;
+
+  // Fetch active spores (skip superseded)
+  const sporeRows = db.prepare(
+    `SELECT id, observation_type, status, content, properties, created_at
+     FROM spores WHERE agent_id = ? AND status = 'active' LIMIT ?`,
+  ).all(DEFAULT_AGENT_ID, FULL_GRAPH_NODE_LIMIT) as Array<Record<string, unknown>>;
+
+  // Fetch recent sessions
+  const sessionRows = db.prepare(
+    `SELECT id, title, summary, status, started_at as created_at
+     FROM sessions ORDER BY created_at DESC LIMIT ?`,
+  ).all(FULL_GRAPH_NODE_LIMIT) as Array<Record<string, unknown>>;
+
+  // Collect all node IDs for edge filtering
+  const allIds = new Set<string>();
+  for (const r of [...entityRows, ...sporeRows, ...sessionRows]) {
+    allIds.add(r.id as string);
+  }
+
+  // Fetch edges between known nodes, excluding batch-level edges
+  const excludedTypes = Array.from(EXCLUDED_GRAPH_EDGE_TYPES).map(() => '?').join(', ');
+  const allIdsList = Array.from(allIds);
+  const idPlaceholders = allIdsList.map(() => '?').join(', ');
+  const edgeRows = db.prepare(
+    `SELECT source_id, source_type, target_id, target_type, type, confidence
+     FROM graph_edges
+     WHERE agent_id = ?
+       AND type NOT IN (${excludedTypes})
+       AND source_id IN (${idPlaceholders})
+       AND target_id IN (${idPlaceholders})`,
+  ).all(DEFAULT_AGENT_ID, ...Array.from(EXCLUDED_GRAPH_EDGE_TYPES), ...allIdsList, ...allIdsList) as Array<Record<string, unknown>>;
+
+  const filteredEdges = edgeRows;
+
+  // Mention counts for entity sizing
+  const mentionCounts = new Map<string, number>();
+  const entityIdArray = entityRows.map((r) => r.id as string);
+  if (entityIdArray.length > 0) {
+    const placeholders = entityIdArray.map(() => '?').join(', ');
+    const mentionRows = db.prepare(
+      `SELECT entity_id, COUNT(*) as count FROM entity_mentions
+       WHERE entity_id IN (${placeholders}) GROUP BY entity_id`,
+    ).all(...entityIdArray) as Array<Record<string, unknown>>;
+    for (const row of mentionRows) {
+      mentionCounts.set(row.entity_id as string, Number(row.count));
+    }
+  }
+
+  // Build nodes
+  const nodes = [
+    ...entityRows.map((n) => ({
+      id: n.id as string,
+      name: n.name as string,
+      type: n.type as string,
+      status: (n.status as string) ?? undefined,
+      created_at: n.created_at as number | undefined,
+      properties: (n.properties as string) ?? undefined,
+      mention_count: mentionCounts.get(n.id as string) ?? 0,
+    })),
+    ...sporeRows.map((n) => ({
+      id: n.id as string,
+      name: ((n.content as string) ?? '').slice(0, SPORE_NAME_PREVIEW_CHARS),
+      type: 'spore' as const,
+      status: (n.status as string) ?? undefined,
+      created_at: n.created_at as number | undefined,
+      content: n.content as string | undefined,
+      properties: (n.properties as string) ?? undefined,
+      observation_type: n.observation_type as string | undefined,
+    })),
+    ...sessionRows.map((n) => ({
+      id: n.id as string,
+      name: (n.title as string) ?? `Session ${(n.id as string).slice(-6)}`,
+      type: 'session' as const,
+      status: (n.status as string) ?? undefined,
+      created_at: n.created_at as number | undefined,
+      content: (n.summary as string) ?? undefined,
+    })),
+  ];
+
+  const edges = filteredEdges.map((e) => ({
+    source_id: e.source_id as string,
+    target_id: e.target_id as string,
+    label: e.type as string,
+    weight: e.confidence as number | undefined,
+  }));
+
+  return { body: { nodes, edges } };
+}
+
+// ---------------------------------------------------------------------------
 // Digest handler
 // ---------------------------------------------------------------------------
 

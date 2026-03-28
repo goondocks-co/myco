@@ -6,6 +6,8 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -59,6 +61,7 @@ export interface BatchInsert {
   activity_count?: number;
   processed?: number;
   content_hash?: string | null;
+  machine_id?: string;
 }
 
 /** Row shape returned from batch queries. */
@@ -76,6 +79,8 @@ export interface BatchRow {
   processed: number;
   content_hash: string | null;
   created_at: number;
+  machine_id: string;
+  synced_at: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +101,8 @@ const BATCH_COLUMNS = [
   'processed',
   'content_hash',
   'created_at',
+  'machine_id',
+  'synced_at',
 ] as const;
 
 const SELECT_COLUMNS = BATCH_COLUMNS.join(', ');
@@ -120,6 +127,8 @@ function toBatchRow(row: Record<string, unknown>): BatchRow {
     processed: row.processed as number,
     content_hash: (row.content_hash as string) ?? null,
     created_at: row.created_at as number,
+    machine_id: (row.machine_id as string) ?? DEFAULT_MACHINE_ID,
+    synced_at: (row.synced_at as number) ?? null,
   };
 }
 
@@ -140,11 +149,11 @@ export function insertBatch(data: BatchInsert): BatchRow {
     `INSERT INTO prompt_batches (
        session_id, prompt_number, user_prompt, response_summary,
        classification, started_at, ended_at, status,
-       activity_count, processed, content_hash, created_at
+       activity_count, processed, content_hash, created_at, machine_id
      ) VALUES (
        ?, ?, ?, ?,
        ?, ?, ?, ?,
-       ?, ?, ?, ?
+       ?, ?, ?, ?, ?
      )`,
   ).run(
     data.session_id,
@@ -159,6 +168,7 @@ export function insertBatch(data: BatchInsert): BatchRow {
     data.processed ?? DEFAULT_PROCESSED,
     data.content_hash ?? null,
     data.created_at,
+    data.machine_id ?? DEFAULT_MACHINE_ID,
   );
 
   const batchId = Number(info.lastInsertRowid);
@@ -169,9 +179,13 @@ export function insertBatch(data: BatchInsert): BatchRow {
     db.prepare('INSERT INTO prompt_batches_fts(rowid, user_prompt) VALUES (?, ?)').run(batchId, userPrompt);
   }
 
-  return toBatchRow(
+  const row = toBatchRow(
     db.prepare(`SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE id = ?`).get(batchId) as Record<string, unknown>,
   );
+
+  syncRow('prompt_batches', row);
+
+  return row;
 }
 
 /**
@@ -373,13 +387,13 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
     `INSERT INTO prompt_batches (
        session_id, prompt_number, user_prompt, response_summary,
        classification, started_at, ended_at, status,
-       activity_count, processed, content_hash, created_at
+       activity_count, processed, content_hash, created_at, machine_id
      ) VALUES (
        ?,
        (SELECT COALESCE(MAX(prompt_number), 0) + 1 FROM prompt_batches WHERE session_id = ?),
        ?, NULL,
        NULL, ?, NULL, ?,
-       ?, ?, NULL, ?
+       ?, ?, NULL, ?, ?
      )`,
   ).run(
     data.session_id,
@@ -390,6 +404,7 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
     DEFAULT_ACTIVITY_COUNT,
     DEFAULT_PROCESSED,
     data.created_at,
+    DEFAULT_MACHINE_ID,
   );
 
   const batchId = Number(info.lastInsertRowid);

@@ -155,6 +155,19 @@ export function useGraph(entityId: string | undefined, depth: number = 1) {
   });
 }
 
+export interface FullGraphResponse {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+export function useFullGraph() {
+  return useQuery<FullGraphResponse>({
+    queryKey: ['full-graph'],
+    queryFn: ({ signal }) => fetchJson<FullGraphResponse>('/graph', { signal }),
+    staleTime: GRAPH_STALE_TIME,
+  });
+}
+
 export function useDigest(agentId?: string) {
   const path = agentId
     ? `/digest?agent_id=${encodeURIComponent(agentId)}`

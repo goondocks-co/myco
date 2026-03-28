@@ -6,6 +6,8 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -53,6 +55,7 @@ export interface SessionInsert {
   parent_session_reason?: string | null;
   processed?: number;
   content_hash?: string | null;
+  machine_id?: string;
 }
 
 /** Row shape returned from session queries (all columns). */
@@ -76,6 +79,8 @@ export interface SessionRow {
   content_hash: string | null;
   embedded: number;
   created_at: number;
+  machine_id: string;
+  synced_at: number | null;
 }
 
 /** Updatable fields for `updateSession`. */
@@ -130,6 +135,8 @@ const SESSION_COLUMNS = [
   'content_hash',
   'embedded',
   'created_at',
+  'machine_id',
+  'synced_at',
 ] as const;
 
 const SELECT_COLUMNS = SESSION_COLUMNS.join(', ');
@@ -164,6 +171,8 @@ function toSessionRow(row: Record<string, unknown>): SessionRow {
     content_hash: (row.content_hash as string) ?? null,
     embedded: (row.embedded as number) ?? 0,
     created_at: row.created_at as number,
+    machine_id: (row.machine_id as string) ?? DEFAULT_MACHINE_ID,
+    synced_at: (row.synced_at as number) ?? null,
   };
 }
 
@@ -186,13 +195,13 @@ export function upsertSession(data: SessionInsert): SessionRow {
        started_at, ended_at, status, prompt_count, tool_count,
        title, summary, transcript_path,
        parent_session_id, parent_session_reason,
-       processed, content_hash, created_at
+       processed, content_hash, created_at, machine_id
      ) VALUES (
        ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?,
        ?, ?, ?,
        ?, ?,
-       ?, ?, ?
+       ?, ?, ?, ?
      )
      ON CONFLICT (id) DO UPDATE SET
        agent                 = EXCLUDED.agent,
@@ -230,13 +239,18 @@ export function upsertSession(data: SessionInsert): SessionRow {
     data.processed ?? DEFAULT_PROCESSED,
     data.content_hash ?? null,
     data.created_at,
+    data.machine_id ?? DEFAULT_MACHINE_ID,
     data.prompt_count !== undefined ? 1 : 0,
     data.tool_count !== undefined ? 1 : 0,
   );
 
-  return toSessionRow(
+  const row = toSessionRow(
     db.prepare(`SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ?`).get(data.id) as Record<string, unknown>,
   );
+
+  syncRow('sessions', row);
+
+  return row;
 }
 
 /**
@@ -372,7 +386,11 @@ export function updateSession(
      WHERE id = ?`,
   ).run(...params);
 
-  return getSession(id);
+  const updated = getSession(id);
+
+  if (updated) syncRow('sessions', updated);
+
+  return updated;
 }
 
 /**
@@ -392,7 +410,11 @@ export function closeSession(
      WHERE id = ?`,
   ).run(STATUS_COMPLETED, endedAt, id);
 
-  return getSession(id);
+  const closed = getSession(id);
+
+  if (closed) syncRow('sessions', closed);
+
+  return closed;
 }
 
 /**

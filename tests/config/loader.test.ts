@@ -80,10 +80,9 @@ digest:
     expect(config.embedding.model).toBe('bge-m3');
     expect(config.daemon.port).toBe(7432);
     expect(config.daemon.log_level).toBe('debug');
-    // Removed fields should not be present
+    // Removed fields should not be present (team is now a new section, not the v2 one)
     const raw = config as Record<string, unknown>;
     expect(raw.intelligence).toBeUndefined();
-    expect(raw.team).toBeUndefined();
     expect(raw.digest).toBeUndefined();
   });
 

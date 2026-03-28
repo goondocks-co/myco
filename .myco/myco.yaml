@@ -43,3 +43,9 @@ context:
   digest_tier: 5000
   prompt_search: true
   prompt_max_spores: 3
+backup:
+  dir: /Users/chris/Repos
+team:
+  enabled: true
+  worker_url: https://myco-team-71861c57.goondocks.workers.dev
+  interval_minutes: 15

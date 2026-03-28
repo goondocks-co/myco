@@ -15,3 +15,6 @@ machine_id
 
 # Binary attachments — screenshots captured from transcripts
 attachments/
+
+# Team worker deployment — patched wrangler.toml + source copy
+.team-worker/

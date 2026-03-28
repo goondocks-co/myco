@@ -18,7 +18,7 @@
 import crypto from 'node:crypto';
 import { z } from 'zod/v4';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
-import { epochSeconds, SEARCH_SIMILARITY_THRESHOLD } from '@myco/constants.js';
+import { epochSeconds, SEARCH_SIMILARITY_THRESHOLD, TEAM_SOURCE_PREFIX } from '@myco/constants.js';
 import { getPluginVersion } from '@myco/version.js';
 import { getUnprocessedBatches, markBatchProcessed } from '@myco/db/queries/batches.js';
 import { listSpores, insertSpore, updateSporeStatus, DEFAULT_IMPORTANCE } from '@myco/db/queries/spores.js';
@@ -34,6 +34,7 @@ import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
+import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -85,7 +86,7 @@ export const VAULT_TOOL_COUNT = 18;
  * @param runId — the current agent run ID, injected into reports and turns.
  * @returns array of SdkMcpToolDefinition objects.
  */
-export function createVaultTools(agentId: string, runId: string, turnOffset = 0, embeddingManager?: EmbeddingManager) {
+export function createVaultTools(agentId: string, runId: string, turnOffset = 0, embeddingManager?: EmbeddingManager, teamClient?: TeamSyncClient | null, machineId?: string) {
   /** Turn number counter — incremented per tool call (read and write) within a run. */
   let turnCounter = turnOffset;
 
@@ -215,12 +216,38 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
         if (!queryVector) {
           return textResult({ results: [], message: 'Embedding provider unavailable' });
         }
-        const results = embeddingManager.searchVectors(queryVector, {
-          namespace: args.namespace,
-          limit: args.limit ?? DEFAULT_SEARCH_LIMIT,
-          threshold: SEARCH_SIMILARITY_THRESHOLD,
-        });
-        return textResult({ results });
+        const searchLimit = args.limit ?? DEFAULT_SEARCH_LIMIT;
+
+        // Fire local and team search in parallel
+        const [localResults, teamResults] = await Promise.all([
+          Promise.resolve(
+            embeddingManager.searchVectors(queryVector, {
+              namespace: args.namespace,
+              limit: searchLimit,
+              threshold: SEARCH_SIMILARITY_THRESHOLD,
+            }).map((r) => ({ ...r, source: 'local' as const })),
+          ),
+          teamClient
+            ? teamClient.search(args.query, { limit: searchLimit })
+                .then((res) => res.results.map((r) => ({ ...r, source: `${TEAM_SOURCE_PREFIX}${r.machine_id}` })))
+                .catch(() => [] as Array<Record<string, unknown>>)
+            : Promise.resolve([] as Array<Record<string, unknown>>),
+        ]);
+
+        // Deduplicate: skip team results from this machine (we already have them locally)
+        const dedupedTeam = machineId
+          ? teamResults.filter((r) => (r as Record<string, unknown>).machine_id !== machineId)
+          : teamResults;
+
+        // Merge by similarity/score (normalize to common key), slice to limit
+        const merged = [
+          ...localResults.map((r) => ({ ...r, score: r.similarity })),
+          ...dedupedTeam,
+        ]
+          .sort((a, b) => ((b.score as number) ?? 0) - ((a.score as number) ?? 0))
+          .slice(0, searchLimit);
+
+        return textResult({ results: merged });
       } catch {
         return textResult({ results: [], message: 'Semantic search unavailable' });
       }

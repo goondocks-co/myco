@@ -37,7 +37,7 @@ Every coding session produces knowledge: decisions made, gotchas discovered, tra
 
 **For humans** — a local [dashboard](#dashboard) provides configuration, operational triggers, and monitoring. Manage providers, run intelligence cycles, and view live logs.
 
-**For teams** — vault configuration lives in your project. Share it through your existing Git workflow.
+**For teams** — [team sync](docs/team-sync.md) shares accumulated knowledge across machines through a Cloudflare Worker. Every teammate's agent gets access to the team's collective intelligence — spores, session context, and the knowledge graph — through the same search tools they already use.
 
 ## How it works
 
@@ -70,7 +70,6 @@ The digest system synthesizes accumulated knowledge into tiered **extracts** —
 | Tier | Purpose |
 |------|---------|
 | **1,500 tokens** | Executive briefing — what this project is, what's active, what to avoid |
-| **3,000 tokens** | Team standup — enough to start contributing |
 | **5,000 tokens** | Deep onboarding — trade-offs, patterns, team dynamics |
 | **10,000 tokens** | Institutional knowledge — full thread history and design tensions |
 
@@ -104,6 +103,24 @@ Myco integrates with coding agents through **symbiont** adapters — named for t
 | VS Code (Copilot) | Agent manifest available |
 
 Adding a new symbiont is declarative — define a YAML manifest in `src/symbionts/manifests/` and implement the transcript parser.
+
+### Team sync
+
+Share knowledge across machines and team members with one command:
+
+```bash
+myco team init    # Provisions Cloudflare D1 + Vectorize + Worker
+```
+
+Share the output URL and API key with teammates — they connect from the Team page in the dashboard. Once connected, knowledge syncs automatically: new spores, session summaries, plans, and graph edges push to the team store in the background. Search queries fan out to both local and cloud databases, merging results by relevance score.
+
+Local databases remain the source of truth. The cloud store is a queryable mirror — no data is pulled back down. Each record carries a machine identity for attribution.
+
+Runs on the Cloudflare free tier. See the [Team Sync docs](docs/team-sync.md) for the full guide.
+
+### Backup & restore
+
+Local SQL dump backups run automatically during daemon idle periods. Configure a custom backup directory (network share, git repo) from the Operations page. Restore with content-hash deduplication — never overwrites existing records.
 
 ## Health check
 
