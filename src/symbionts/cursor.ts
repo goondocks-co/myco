@@ -35,9 +35,13 @@ export const cursorAdapter: SymbiontAdapter = {
   displayName: 'Cursor',
   pluginRootEnvVar: 'CURSOR_PLUGIN_ROOT',
   hookFields: {
+    sessionId: 'conversation_id',
     transcriptPath: 'transcript_path',
     lastResponse: 'last_assistant_message',
-    sessionId: 'conversation_id',
+    prompt: 'prompt',
+    toolName: 'tool_name',
+    toolInput: 'tool_input',
+    toolOutput: 'tool_output',
   },
 
   findTranscript(sessionId: string): string | null {
@@ -67,21 +71,6 @@ export const cursorAdapter: SymbiontAdapter = {
       return parseCursorJsonl(content);
     }
     return parseCursorText(content);
-  },
-
-  configureVaultEnv(projectRoot: string, vaultDir: string): boolean {
-    const mcpPath = path.join(projectRoot, '.cursor', 'mcp.json');
-    if (!fs.existsSync(mcpPath)) return false;
-
-    try {
-      const config = JSON.parse(fs.readFileSync(mcpPath, 'utf-8'));
-      if (config.mcpServers?.myco) {
-        config.mcpServers.myco.env = { ...config.mcpServers.myco.env, MYCO_VAULT_DIR: vaultDir };
-        fs.writeFileSync(mcpPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
-        return true;
-      }
-    } catch { /* malformed config */ }
-    return false;
   },
 };
 

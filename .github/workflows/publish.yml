@@ -57,14 +57,12 @@ jobs:
         with:
           node-version: 22
 
-      - name: Set version in all manifests from tag
+      - name: Set version in package.json from tag
         env:
           VERSION: ${{ needs.validate-tag.outputs.version }}
         run: |
           npm version "$VERSION" --no-git-tag-version --allow-same-version
-          jq --arg v "$VERSION" '.version = $v' .claude-plugin/plugin.json > tmp.json && mv tmp.json .claude-plugin/plugin.json
-          jq --arg v "$VERSION" '.version = $v' .cursor-plugin/plugin.json > tmp.json && mv tmp.json .cursor-plugin/plugin.json
-          echo "Synced version $VERSION across package.json + Claude/Cursor plugin manifests"
+          echo "Synced version $VERSION to package.json"
 
       - run: npm ci
       - run: npm run lint
@@ -181,13 +179,11 @@ jobs:
       - name: Update npm for OIDC trusted publishing support
         run: npm install -g npm@latest
 
-      - name: Set version in all manifests from tag
+      - name: Set version in package.json from tag
         env:
           VERSION: ${{ needs.validate-tag.outputs.version }}
         run: |
           npm version "$VERSION" --no-git-tag-version --allow-same-version
-          jq --arg v "$VERSION" '.version = $v' .claude-plugin/plugin.json > tmp.json && mv tmp.json .claude-plugin/plugin.json
-          jq --arg v "$VERSION" '.version = $v' .cursor-plugin/plugin.json > tmp.json && mv tmp.json .cursor-plugin/plugin.json
 
       - run: npm ci
       - run: npm run build
@@ -219,14 +215,11 @@ jobs:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update version in all manifests
+      - name: Update version in package.json
         env:
           VERSION: ${{ needs.validate-tag.outputs.version }}
         run: |
           npm version "$VERSION" --no-git-tag-version --allow-same-version
-          jq --arg v "$VERSION" '.version = $v' .claude-plugin/plugin.json > tmp.json && mv tmp.json .claude-plugin/plugin.json
-          jq --arg v "$VERSION" '.version = $v' .cursor-plugin/plugin.json > tmp.json && mv tmp.json .cursor-plugin/plugin.json
-          jq --arg v "$VERSION" '.plugins[0].source.version = $v' .cursor-plugin/marketplace.json > tmp.json && mv tmp.json .cursor-plugin/marketplace.json
 
       - name: Commit version bump
         env:
@@ -234,7 +227,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json .claude-plugin/plugin.json .cursor-plugin/plugin.json .cursor-plugin/marketplace.json
+          git add package.json package-lock.json
           git diff --cached --quiet && exit 0
           git commit -m "chore: sync version to $VERSION [skip ci]"
           git push

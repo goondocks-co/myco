@@ -1,6 +1,5 @@
 import type { SymbiontAdapter } from './adapter.js';
 import { findJsonlInSubdirs, parseJsonlTurns } from './adapter.js';
-import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -11,9 +10,13 @@ export const claudeCodeAdapter: SymbiontAdapter = {
   displayName: 'Claude Code',
   pluginRootEnvVar: 'CLAUDE_PLUGIN_ROOT',
   hookFields: {
+    sessionId: 'session_id',
     transcriptPath: 'transcript_path',
     lastResponse: 'last_assistant_message',
-    sessionId: 'session_id',
+    prompt: 'prompt',
+    toolName: 'tool_name',
+    toolInput: 'tool_input',
+    toolOutput: 'tool_output',
   },
 
   findTranscript: (sessionId) => findJsonlInSubdirs(TRANSCRIPT_BASE, sessionId),
@@ -24,24 +27,4 @@ export const claudeCodeAdapter: SymbiontAdapter = {
     skipToolResultUsers: true,
     stripImageTextRefs: true,
   }),
-
-  configureVaultEnv: (projectRoot, vaultDir) => {
-    const settingsDir = path.join(projectRoot, '.claude');
-    if (!fs.existsSync(settingsDir)) return false;
-
-    // Write to settings.json — Claude Code only injects env vars from this
-    // file into hook processes (settings.user.json env is not propagated).
-    // The caller passes the collapsed ~/... form so the committed path
-    // doesn't leak the user's home directory.
-    const settingsPath = path.join(settingsDir, 'settings.json');
-    let settings: Record<string, unknown> = {};
-    if (fs.existsSync(settingsPath)) {
-      try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')); } catch { /* fresh */ }
-    }
-    const env = (settings.env ?? {}) as Record<string, string>;
-    env.MYCO_VAULT_DIR = vaultDir;
-    settings.env = env;
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
-    return true;
-  },
 };

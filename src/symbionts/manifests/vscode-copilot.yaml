@@ -1,0 +1,17 @@
+name: vscode-copilot
+displayName: VS Code Copilot
+binary: code
+configDir: .vscode
+pluginRootEnvVar: VSCODE_PLUGIN_ROOT
+hookFields:
+  sessionId: sessionId
+  transcriptPath: transcript_path
+  lastResponse: last_assistant_message
+capture:
+  planDirs: []
+registration:
+  hooksTarget: .github/hooks/myco-hooks.json
+  mcpTarget: .vscode/mcp.json
+  skillsTarget: .agents/skills
+  settingsTarget: .vscode/settings.json
+  instructionsFile: .github/copilot-instructions.md

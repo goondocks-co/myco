@@ -3,14 +3,18 @@ displayName: Claude Code
 binary: claude
 configDir: .claude
 pluginRootEnvVar: CLAUDE_PLUGIN_ROOT
-pluginInstallCommands:
-  - "claude plugin marketplace add goondocks-co/myco"
-  - "claude plugin install myco@myco-plugins"
 settingsPath: .claude/settings.json
+resumeCommand: "claude --resume {sessionId}"
 hookFields:
+  sessionId: session_id
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
-  sessionId: session_id
 capture:
   planDirs:
     - .claude/plans/
+registration:
+  hooksTarget: .claude/settings.json
+  mcpTarget: .mcp.json
+  skillsTarget: .claude/skills
+  settingsTarget: .claude/settings.json
+  instructionsFile: CLAUDE.md

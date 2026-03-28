@@ -9,6 +9,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import { CONTENT_HASH_ALGORITHM } from '@myco/constants.js';
 import { upsertPlan } from '@myco/db/queries/plans.js';
@@ -44,7 +45,9 @@ export function isInPlanDirectory(
 ): boolean {
   const abs = path.isAbsolute(filePath) ? filePath : path.resolve(projectRoot, filePath);
   return watchDirs.some((dir) => {
-    const absDir = path.resolve(projectRoot, dir);
+    // Expand ~ to home directory (manifests use ~/... for global plan dirs)
+    const expanded = dir.startsWith('~/') ? path.join(os.homedir(), dir.slice(2)) : dir;
+    const absDir = path.isAbsolute(expanded) ? expanded : path.resolve(projectRoot, expanded);
     // Ensure we match a directory boundary, not a prefix of a sibling dir name.
     // e.g. absDir = /foo/plans must NOT match /foo/plans-extra
     const prefix = absDir.endsWith(path.sep) ? absDir : absDir + path.sep;

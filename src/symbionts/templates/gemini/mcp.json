@@ -1,0 +1,6 @@
+{
+  "myco": {
+    "command": "myco-run",
+    "args": ["mcp"]
+  }
+}

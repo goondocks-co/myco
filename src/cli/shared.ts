@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { SymbiontRegistry } from '../symbionts/registry.js';
 import { OllamaBackend } from '../intelligence/ollama.js';
 import { LmStudioBackend } from '../intelligence/lm-studio.js';
 
 import { DaemonClient } from '../hooks/client.js';
 import { initDatabase, closeDatabase, vaultDbPath } from '../db/client.js';
+import { SymbiontInstaller } from '../symbionts/installer.js';
+import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
 
 export { parseStringFlag, parseIntFlag } from '../logs/format.js';
 
@@ -87,27 +88,40 @@ export function collapseHomePath(absPath: string): string {
   return absPath;
 }
 
-/** Set MYCO_VAULT_DIR in the active agent's config, falling back to all known agents. */
-export function configureVaultEnv(projectRoot: string, vaultDir: string): void {
-  const registry = new SymbiontRegistry();
-  const active = registry.detectActiveAgent();
-  // Store the portable ~/... form so config files don't leak the username
-  const portableDir = collapseHomePath(vaultDir);
+/**
+ * Run the SymbiontInstaller for each symbiont manifest and log results.
+ * Shared between myco init and myco update.
+ */
+export function registerSymbionts(
+  manifests: SymbiontManifest[],
+  projectRoot: string,
+  packageRoot: string,
+  verb: 'Registered' | 'Updated',
+): number {
+  let count = 0;
+  for (const manifest of manifests) {
+    try {
+      const installer = new SymbiontInstaller(manifest, projectRoot, packageRoot);
+      const result = installer.install();
 
-  if (active) {
-    if (active.configureVaultEnv(projectRoot, portableDir)) {
-      console.log(`Set MYCO_VAULT_DIR for ${active.displayName}`);
-    }
-  } else {
-    // No active agent detected — try all adapters
-    for (const name of registry.adapterNames) {
-      const adapter = registry.getAdapter(name);
-      if (adapter?.configureVaultEnv(projectRoot, portableDir)) {
-        console.log(`Set MYCO_VAULT_DIR for ${adapter.displayName}`);
+      const installed = [
+        result.hooks && 'hooks',
+        result.mcp && 'MCP server',
+        result.skills && 'skills',
+        result.settings && 'settings',
+        result.instructions && 'instructions',
+      ].filter(Boolean);
+
+      if (installed.length > 0) {
+        console.log(`  \u2713 ${verb} ${manifest.displayName}: ${installed.join(', ')}`);
+        count++;
+      } else {
+        console.log(`  \u2013 ${manifest.displayName}: no registration targets configured`);
       }
+    } catch (err) {
+      console.error(`  \u2717 Failed to register ${manifest.displayName}: ${(err as Error).message}`);
     }
   }
-
-  console.log(`\nFor other agents, add to your shell profile:`);
-  console.log(`  export MYCO_VAULT_DIR="${portableDir}"\n`);
+  return count;
 }
+

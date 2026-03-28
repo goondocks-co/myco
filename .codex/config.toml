@@ -3,3 +3,7 @@ inherit = "core"
 
 [shell_environment_policy.set]
 MYCO_CMD = "myco-dev"
+
+[mcp_servers.myco]
+command = "myco-run"
+args = ["mcp"]

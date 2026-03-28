@@ -1,0 +1,88 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "name": "myco-session-start",
+            "type": "command",
+            "command": "myco-run hook session-start",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "name": "myco-user-prompt-submit",
+            "type": "command",
+            "command": "myco-run hook user-prompt-submit",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "hooks": [
+          {
+            "name": "myco-post-tool-use",
+            "type": "command",
+            "command": "myco-run hook post-tool-use",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "AfterAgent": [
+      {
+        "hooks": [
+          {
+            "name": "myco-stop",
+            "type": "command",
+            "command": "myco-run hook stop",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "name": "myco-session-end",
+            "type": "command",
+            "command": "myco-run hook session-end",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "PreCompress": [
+      {
+        "hooks": [
+          {
+            "name": "myco-pre-compact",
+            "type": "command",
+            "command": "myco-run hook pre-compact",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  },
+  "mcpServers": {
+    "myco": {
+      "command": "myco-run",
+      "args": [
+        "mcp"
+      ]
+    }
+  },
+  "coreTools": [
+    "ShellTool(myco-run *)",
+    "ShellTool(myco *)"
+  ]
+}

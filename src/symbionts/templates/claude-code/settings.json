@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(myco-run *)",
+      "Bash(myco-run:*)",
+      "Bash(myco *)",
+      "Bash(myco:*)"
+    ]
+  }
+}

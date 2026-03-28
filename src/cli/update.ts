@@ -1,7 +1,6 @@
 import { resolveVaultDir } from '../vault/resolve.js';
-import { VAULT_GITIGNORE } from './shared.js';
-import { detectSymbionts } from '../symbionts/detect.js';
-import { execFileSync } from 'node:child_process';
+import { VAULT_GITIGNORE, registerSymbionts } from './shared.js';
+import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -31,30 +30,21 @@ export async function run(args: string[]): Promise<void> {
     console.log('  \u2013 .gitignore is current');
   }
 
-  // --- Update symbiont plugins ---
+  // --- Update symbiont registration (only agents already configured) ---
 
   const projectRoot = path.dirname(vaultDir);
-  const detected = detectSymbionts(projectRoot);
+  const allManifests = loadManifests();
+  const pkgRoot = resolvePackageRoot();
+  // Only update agents whose config directory already exists in the project
+  const configured = allManifests.filter((m) =>
+    fs.existsSync(path.join(projectRoot, m.configDir)),
+  );
 
-  if (detected.length > 0) {
-    for (const d of detected) {
-      try {
-        if (d.manifest.pluginInstallCommands.length > 0) {
-          for (const cmd of d.manifest.pluginInstallCommands) {
-            const [bin, ...cmdArgs] = cmd.split(' ');
-            execFileSync(bin, cmdArgs, { stdio: 'inherit' });
-          }
-          console.log(`  \u2713 Updated ${d.manifest.displayName} plugin`);
-          updatedCount++;
-        } else {
-          console.log(`  \u2013 ${d.manifest.displayName}: no automated update available`);
-        }
-      } catch (err) {
-        console.error(`  \u2717 Failed to update ${d.manifest.displayName}: ${(err as Error).message}`);
-      }
-    }
+  if (configured.length > 0) {
+    const registered = registerSymbionts(configured, projectRoot, pkgRoot, 'Updated');
+    updatedCount += registered;
   } else {
-    console.log('  \u2013 No agents detected');
+    console.log('  \u2013 No configured agents found');
   }
 
   // --- Summary ---

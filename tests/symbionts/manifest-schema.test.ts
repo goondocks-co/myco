@@ -24,17 +24,53 @@ describe('symbiont manifests', () => {
     });
   }
 
-  it('claude-code manifest has pluginInstallCommands', () => {
+  it('claude-code manifest has registration with hooks and targets', () => {
     const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'claude-code.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
-    expect(manifest.pluginInstallCommands.length).toBeGreaterThan(0);
-    expect(manifest.pluginInstallCommands.some(c => c.includes('myco'))).toBe(true);
+    expect(manifest.registration).toBeDefined();
+    expect(manifest.registration?.hooksTarget).toBe('.claude/settings.json');
+    expect(manifest.registration?.mcpTarget).toBe('.mcp.json');
+    expect(manifest.registration?.skillsTarget).toBe('.claude/skills');
   });
 
-  it('cursor manifest has mcpConfigPath', () => {
+  it('cursor manifest has registration with mcpTarget and skillsTarget', () => {
     const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'cursor.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
-    expect(manifest.mcpConfigPath).toBe('.cursor/mcp.json');
+    expect(manifest.registration).toBeDefined();
+    expect(manifest.registration?.hooksTarget).toBeUndefined();
+    expect(manifest.registration?.mcpTarget).toBe('.cursor/mcp.json');
+    expect(manifest.registration?.skillsTarget).toBe('.cursor/skills');
+  });
+
+  it('accepts manifest with registration section', () => {
+    const manifest = SymbiontManifestSchema.parse({
+      name: 'test-agent',
+      displayName: 'Test Agent',
+      binary: 'test',
+      configDir: '.test',
+      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
+      hookFields: { transcriptPath: 'tp', lastResponse: 'lr', sessionId: 'sid' },
+      registration: {
+        hooksTarget: '.test/settings.json',
+        mcpTarget: '.test/mcp.json',
+        skillsTarget: '.test/skills',
+      },
+    });
+    expect(manifest.registration?.hooksTarget).toBe('.test/settings.json');
+    expect(manifest.registration?.mcpTarget).toBe('.test/mcp.json');
+    expect(manifest.registration?.skillsTarget).toBe('.test/skills');
+  });
+
+  it('allows manifest without registration block', () => {
+    const manifest = SymbiontManifestSchema.parse({
+      name: 'test-agent',
+      displayName: 'Test Agent',
+      binary: 'test',
+      configDir: '.test',
+      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
+      hookFields: { transcriptPath: 'tp', lastResponse: 'lr', sessionId: 'sid' },
+    });
+    expect(manifest.registration).toBeUndefined();
   });
 
   it('accepts optional capture.planDirs field', () => {
@@ -73,5 +109,84 @@ describe('symbiont manifests', () => {
       hookFields: { transcriptPath: 'tp', lastResponse: 'lr', sessionId: 'sid' },
     });
     expect(manifest.capture).toBeUndefined();
+  });
+
+  it('vscode-copilot manifest has registration with github hooks target', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'vscode-copilot.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.registration).toBeDefined();
+    expect(manifest.registration!.hooksTarget).toBe('.github/hooks/myco-hooks.json');
+    expect(manifest.registration!.mcpTarget).toBe('.vscode/mcp.json');
+    expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
+    expect(manifest.registration!.settingsTarget).toBe('.vscode/settings.json');
+  });
+
+  it('claude-code manifest has settingsTarget', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'claude-code.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.registration!.settingsTarget).toBe('.claude/settings.json');
+  });
+
+  it('cursor manifest has settingsTarget', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'cursor.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.registration!.settingsTarget).toBe('.cursor/settings.json');
+  });
+
+  it('codex manifest has settingsTarget', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'codex.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.registration!.settingsTarget).toBe('.codex/config.toml');
+  });
+
+  it('codex manifest has registration with toml mcpFormat', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'codex.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.registration).toBeDefined();
+    expect(manifest.registration!.mcpTarget).toBe('.codex/config.toml');
+    expect(manifest.registration!.mcpFormat).toBe('toml');
+    expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
+    expect(manifest.registration!.hooksTarget).toBe('.codex/hooks.json');
+  });
+
+  it('gemini manifest has registration with shared settings target', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'gemini.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.registration).toBeDefined();
+    expect(manifest.registration!.hooksTarget).toBe('.gemini/settings.json');
+    expect(manifest.registration!.mcpTarget).toBe('.gemini/settings.json');
+    expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
+    expect(manifest.registration!.settingsTarget).toBe('.gemini/settings.json');
+  });
+
+  it('windsurf manifest has registration without mcpTarget', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'windsurf.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.registration).toBeDefined();
+    expect(manifest.registration!.hooksTarget).toBe('.windsurf/hooks.json');
+    expect(manifest.registration!.mcpTarget).toBeUndefined();
+    expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
+    expect(manifest.registration!.settingsTarget).toBe('.windsurf/settings.json');
+  });
+
+  it('gemini manifest has planDirs configured', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'gemini.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.capture?.planDirs).toEqual(['.gemini/plans/']);
+  });
+
+  it('defaults mcpFormat to json when not specified', () => {
+    const manifest = SymbiontManifestSchema.parse({
+      name: 'test-agent',
+      displayName: 'Test Agent',
+      binary: 'test',
+      configDir: '.test',
+      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
+      hookFields: { transcriptPath: 'tp', lastResponse: 'lr', sessionId: 'sid' },
+      registration: {
+        mcpTarget: '.test/mcp.json',
+      },
+    });
+    expect(manifest.registration!.mcpFormat).toBe('json');
   });
 });

@@ -4,14 +4,12 @@ import { resolveVaultDir } from '../vault/resolve.js';
 import {
   parseStringFlag,
   VAULT_GITIGNORE,
-  collapseHomePath,
+  registerSymbionts,
 } from './shared.js';
-import { detectSymbionts } from '../symbionts/detect.js';
-import { SymbiontRegistry } from '../symbionts/registry.js';
+import { detectSymbionts, loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { MycoConfigSchema } from '../config/schema.js';
 import { updateConfig, saveConfig } from '../config/loader.js';
 import { writeSecret } from '../config/secrets.js';
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -139,62 +137,43 @@ export async function run(args: string[]): Promise<void> {
     writeSecret(vaultDir, envVarName, wizardAnswers.embeddingApiKey);
   }
 
-  // --- Symbiont detection and registration ---
+  // --- Symbiont selection and registration ---
 
-  const projectRoot = path.dirname(resolveVaultDir());
+  const projectRoot = path.dirname(vaultDir);
+  const allManifests = loadManifests();
   const detected = detectSymbionts(projectRoot);
+  const detectedNames = new Set(detected.map((d) => d.manifest.name));
 
-  if (detected.length > 0) {
-    console.log('Detected agents:');
-    for (const d of detected) {
-      const signals = [
-        d.binaryFound ? 'binary found' : null,
-        d.configDirFound ? `${d.manifest.configDir}/ exists` : null,
-      ].filter(Boolean).join(', ');
-      console.log(`  \u2713 ${d.manifest.displayName} (${signals})`);
-    }
+  if (allManifests.length > 0) {
+    // Interactive: let user choose which agents to configure
+    let selectedManifests = allManifests.filter((m) => detectedNames.has(m.name));
 
-    // Interactive: let user choose which agents to register
-    let selected = detected;
-    if (isInteractive && detected.length > 0) {
+    if (isInteractive) {
       const { checkbox } = await import('@inquirer/prompts');
-      const choices = detected.map((d) => ({
-        value: d.manifest.name,
-        name: d.manifest.displayName,
-        checked: true,
-      }));
+      const choices = allManifests.map((m) => {
+        const det = detected.find((d) => d.manifest.name === m.name);
+        const hint = det
+          ? [det.binaryFound && 'detected', det.configDirFound && `${m.configDir}/ exists`].filter(Boolean).join(', ')
+          : '';
+        return {
+          value: m.name,
+          name: hint ? `${m.displayName} (${hint})` : m.displayName,
+          checked: detectedNames.has(m.name),
+        };
+      });
       const selectedNames = await checkbox({
-        message: 'Register plugins for',
+        message: 'Configure agents',
         choices,
       });
-      selected = detected.filter((d) => selectedNames.includes(d.manifest.name));
-      if (selected.length === 0) {
-        console.log('  Skipped plugin registration.');
+      selectedManifests = allManifests.filter((m) => selectedNames.includes(m.name));
+      if (selectedManifests.length === 0) {
+        console.log('  Skipped agent configuration.');
       }
     }
 
-    const portableVaultDir = collapseHomePath(vaultDir);
-    const registry = new SymbiontRegistry();
-
-    for (const d of selected) {
-      try {
-        if (d.manifest.pluginInstallCommands.length > 0) {
-          for (const cmd of d.manifest.pluginInstallCommands) {
-            const [bin, ...cmdArgs] = cmd.split(' ');
-            execFileSync(bin, cmdArgs, { stdio: 'inherit' });
-          }
-          console.log(`  Registered plugin with ${d.manifest.displayName}`);
-        } else {
-          console.log(`  ${d.manifest.displayName}: install the plugin manually from the marketplace.`);
-        }
-
-        const adapter = registry.getAdapter(d.manifest.name);
-        if (adapter?.configureVaultEnv(projectRoot, portableVaultDir)) {
-          console.log(`  Set MYCO_VAULT_DIR for ${d.manifest.displayName}`);
-        }
-      } catch (err) {
-        console.error(`  Failed to register with ${d.manifest.displayName}: ${(err as Error).message}`);
-      }
+    if (selectedManifests.length > 0) {
+      const pkgRoot = resolvePackageRoot();
+      registerSymbionts(selectedManifests, projectRoot, pkgRoot, 'Registered');
     }
   }
 
