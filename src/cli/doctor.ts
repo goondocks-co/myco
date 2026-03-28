@@ -147,8 +147,8 @@ async function checkAgents(vaultDir: string): Promise<DoctorCheck[]> {
         checks.push({
           name: checks.length === 0 ? 'Agents' : '',
           status: 'warn',
-          detail: `${d.manifest.displayName} (detected but not registered)`,
-          fixable: true,
+          detail: `${d.manifest.displayName} (detected but not registered — run \`myco init\`)`,
+          fixable: false,
         });
       }
     }
@@ -250,11 +250,6 @@ export async function fix(vaultDir: string, checks: DoctorCheck[]): Promise<stri
       const daemonFile = path.join(vaultDir, DAEMON_STATE_FILENAME);
       fs.unlinkSync(daemonFile);
       actions.push('Removed malformed daemon.json');
-    }
-
-    // Advise on agent registration
-    if ((check.name === 'Agents' || check.name === '') && check.detail.includes('not registered')) {
-      actions.push('Run `myco init` to register detected agents');
     }
 
     // Advise on database issues
