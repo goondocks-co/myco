@@ -16,6 +16,8 @@ function mergeConfigSections(current: MycoConfig, incoming: MycoConfig): MycoCon
     capture: { ...current.capture, ...incoming.capture },
     agent: { ...current.agent, ...incoming.agent },
     context: { ...current.context, ...incoming.context },
+    backup: { ...current.backup, ...incoming.backup },
+    team: { ...current.team, ...incoming.team },
   };
 }
 

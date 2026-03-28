@@ -6,6 +6,8 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -39,6 +41,7 @@ export interface PlanInsert {
   content_hash?: string | null;
   processed?: number;
   updated_at?: number | null;
+  machine_id?: string;
 }
 
 /** Row shape returned from plan queries. */
@@ -57,6 +60,8 @@ export interface PlanRow {
   embedded: number;
   created_at: number;
   updated_at: number | null;
+  machine_id: string;
+  synced_at: number | null;
 }
 
 /** Filter options for `listPlans`. */
@@ -84,6 +89,8 @@ const PLAN_COLUMNS = [
   'embedded',
   'created_at',
   'updated_at',
+  'machine_id',
+  'synced_at',
 ] as const;
 
 const SELECT_COLUMNS = PLAN_COLUMNS.join(', ');
@@ -109,6 +116,8 @@ function toPlanRow(row: Record<string, unknown>): PlanRow {
     embedded: (row.embedded as number) ?? 0,
     created_at: row.created_at as number,
     updated_at: (row.updated_at as number) ?? null,
+    machine_id: (row.machine_id as string) ?? DEFAULT_MACHINE_ID,
+    synced_at: (row.synced_at as number) ?? null,
   };
 }
 
@@ -128,11 +137,11 @@ export function upsertPlan(data: PlanInsert): PlanRow {
     `INSERT INTO plans (
        id, status, author, title, content,
        source_path, tags, session_id, prompt_batch_id, content_hash,
-       processed, created_at, updated_at
+       processed, created_at, updated_at, machine_id
      ) VALUES (
        ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?,
-       ?, ?, ?
+       ?, ?, ?, ?
      )
      ON CONFLICT (id) DO UPDATE SET
        status          = EXCLUDED.status,
@@ -164,11 +173,16 @@ export function upsertPlan(data: PlanInsert): PlanRow {
     data.processed ?? DEFAULT_PROCESSED,
     data.created_at,
     data.updated_at ?? null,
+    data.machine_id ?? DEFAULT_MACHINE_ID,
   );
 
-  return toPlanRow(
+  const row = toPlanRow(
     db.prepare(`SELECT ${SELECT_COLUMNS} FROM plans WHERE id = ?`).get(data.id) as Record<string, unknown>,
   );
+
+  syncRow('plans', row);
+
+  return row;
 }
 
 /**

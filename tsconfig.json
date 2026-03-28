@@ -17,5 +17,5 @@
     }
   },
   "include": ["src/**/*", "plugin/**/*"],
-  "exclude": ["node_modules", "dist", "tests", "ui"]
+  "exclude": ["node_modules", "dist", "tests", "ui", "src/worker"]
 }

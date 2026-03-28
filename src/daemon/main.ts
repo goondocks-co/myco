@@ -10,7 +10,7 @@
 import { DaemonServer } from './server.js';
 import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger } from './logger.js';
-import { loadConfig, updateConfig } from '../config/loader.js';
+import { loadConfig, updateConfig, updateBackupConfig } from '../config/loader.js';
 import { resolvePort } from './port.js';
 import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter, extensionForMimeType, type TranscriptTurn } from '../symbionts/adapter.js';
@@ -23,6 +23,14 @@ import type { RegisteredSession } from './lifecycle.js';
 import { handleGetConfig, handlePutConfig } from './api/config.js';
 import { handleLogSearch, handleLogStream, handleLogDetail } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
+import { getMachineId } from './machine-id.js';
+import { createBackupHandlers } from './api/backup.js';
+import { createTeamHandlers } from './api/team-connect.js';
+import { TeamSyncClient } from './team-sync.js';
+import { initTeamContext } from './team-context.js';
+import { createBackup } from './backup.js';
+import { listPending, markSent, pruneOld, backfillUnsynced } from '../db/queries/team-outbox.js';
+import { readSecrets } from '../config/secrets.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
 import { computeConfigHash } from './api/stats.js';
@@ -39,6 +47,7 @@ import {
   handleGetSpore,
   handleListEntities,
   handleGetGraph,
+  handleGetFullGraph,
   handleGetDigest,
 } from './api/mycelium.js';
 import { createSearchHandler } from './api/search.js';
@@ -95,6 +104,7 @@ import {
   POWER_DEEP_SLEEP_THRESHOLD_MS,
   POWER_ACTIVE_INTERVAL_MS,
   POWER_SLEEP_INTERVAL_MS,
+  SYNC_PROTOCOL_VERSION,
   epochSeconds,
   MS_PER_SECOND,
   MS_PER_DAY,
@@ -431,10 +441,17 @@ export async function main(): Promise<void> {
   });
   logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan watch directories', { dirs: planWatchConfig.watchDirs });
 
+  // --- Machine identity ---
+  const machineId = getMachineId(vaultDir);
+  logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
+
   // --- SQLite initialization ---
   const db = initDatabase(vaultDbPath(vaultDir));
-  createSchema(db);
+  createSchema(db, machineId);
   logger.info(LOG_KINDS.DAEMON_START, 'SQLite initialized', { vault: vaultDir });
+
+  // --- Team context ---
+  initTeamContext(config.team.enabled, machineId);
 
   // Wire logger to SQLite persistence
   logger.setPersistFn((entry) => {
@@ -1364,6 +1381,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/spores', handleListSpores);
   server.registerRoute('GET', '/api/spores/:id', handleGetSpore);
   server.registerRoute('GET', '/api/entities', handleListEntities);
+  server.registerRoute('GET', '/api/graph', handleGetFullGraph);
   server.registerRoute('GET', '/api/graph/:id', handleGetGraph);
   server.registerRoute('GET', '/api/digest', handleGetDigest);
 
@@ -1661,9 +1679,85 @@ export async function main(): Promise<void> {
     };
   });
 
+  // --- Backup routes ---
+  const backupDir = config.backup.dir
+    ? path.resolve(config.backup.dir)
+    : path.resolve(vaultDir, 'backups');
+  const backupHandlers = createBackupHandlers({ db, backupDir, machineId });
+  server.registerRoute('POST', '/api/backup', backupHandlers.handleCreateBackup);
+  server.registerRoute('GET', '/api/backups', backupHandlers.handleListBackups);
+  server.registerRoute('POST', '/api/restore/preview', backupHandlers.handleRestorePreview);
+  server.registerRoute('POST', '/api/restore', backupHandlers.handleRestore);
+
+  server.registerRoute('GET', '/api/backup/config', async () => {
+    const cfg = loadConfig(vaultDir);
+    return { body: { dir: cfg.backup.dir ?? null, default_dir: path.resolve(vaultDir, 'backups') } };
+  });
+
+  server.registerRoute('PUT', '/api/backup/config', async (req) => {
+    const { dir } = req.body as { dir?: string | null };
+    updateBackupConfig(vaultDir, { dir: dir || undefined });
+    return { body: { dir: dir || null } };
+  });
+
+  // --- Team sync routes ---
+  let teamClient: TeamSyncClient | null = null;
+
+  // Initialize team client from saved config if team sync is enabled
+  if (config.team.enabled && config.team.worker_url) {
+    const secrets = readSecrets(vaultDir);
+    const teamApiKey = secrets['MYCO_TEAM_API_KEY'];
+    if (teamApiKey) {
+      teamClient = new TeamSyncClient({
+        workerUrl: config.team.worker_url,
+        apiKey: teamApiKey,
+        machineId,
+        syncProtocolVersion: SYNC_PROTOCOL_VERSION,
+      });
+      logger.info(LOG_KINDS.TEAM_SYNC_START, 'Team sync client initialized', { worker_url: config.team.worker_url });
+
+      // Register this node with the team worker (fire-and-forget)
+      teamClient.connect({
+        machine_id: machineId,
+        version: server.version,
+      }).then(() => {
+        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Node registered with team worker');
+      }).catch((err) => {
+        logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Node registration failed (will retry on next flush)', { error: (err as Error).message });
+      });
+
+      // Backfill unsynced records into outbox (fire-and-forget — can be large)
+      setTimeout(() => {
+        try {
+          const backfilled = backfillUnsynced(machineId);
+          if (backfilled > 0) {
+            logger.info(LOG_KINDS.TEAM_SYNC_START, `Backfilled ${backfilled} unsynced records into outbox`);
+          }
+        } catch (err) {
+          logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Backfill failed', { error: (err as Error).message });
+        }
+      }, 0);
+    }
+  }
+
+  const teamHandlers = createTeamHandlers({
+    vaultDir,
+    machineId,
+    getTeamClient: () => teamClient,
+    setTeamClient: (c) => { teamClient = c; },
+  });
+  server.registerRoute('POST', '/api/team/connect', teamHandlers.handleConnect);
+  server.registerRoute('POST', '/api/team/disconnect', teamHandlers.handleDisconnect);
+  server.registerRoute('GET', '/api/team/status', teamHandlers.handleStatus);
+
+  server.registerRoute('POST', '/api/team/backfill', async () => {
+    const count = backfillUnsynced(machineId);
+    return { body: { enqueued: count } };
+  });
+
   // --- Search, activity feed, and embedding status ---
 
-  server.registerRoute('GET', '/api/search', createSearchHandler({ embeddingManager }));
+  server.registerRoute('GET', '/api/search', createSearchHandler({ embeddingManager, getTeamClient: () => teamClient, machineId }));
   server.registerRoute('GET', '/api/activity', handleGetFeed);
   server.registerRoute('GET', '/api/embedding/status', async () => handleGetEmbeddingStatus(vaultDir));
   server.registerRoute('GET', '/api/embedding/details', async () => handleEmbeddingDetails(embeddingManager));
@@ -1783,6 +1877,64 @@ export async function main(): Promise<void> {
       }
     },
   });
+
+  // Auto-backup: create a local SQL dump during idle/sleep cycles
+  powerManager.register({
+    name: 'auto-backup',
+    runIn: ['idle', 'sleep'],
+    fn: async () => {
+      try {
+        logger.info(LOG_KINDS.BACKUP_START, 'Auto-backup starting');
+        const filePath = createBackup(db, backupDir, machineId);
+        logger.info(LOG_KINDS.BACKUP_COMPLETE, 'Auto-backup complete', { file_path: filePath });
+      } catch (err) {
+        logger.error(LOG_KINDS.BACKUP_ERROR, 'Auto-backup failed', { error: (err as Error).message });
+      }
+    },
+  });
+
+  // Team outbox flush: push pending records to the team worker
+  if (config.team.enabled) {
+    powerManager.register({
+      name: 'team-sync-flush',
+      runIn: ['active', 'idle'],
+      fn: async () => {
+        const client = teamClient;
+        if (!client) return;
+
+        try {
+          const pending = listPending();
+          if (pending.length === 0) return;
+
+          logger.info(LOG_KINDS.TEAM_SYNC_START, 'Flushing outbox', { count: pending.length });
+          const result = await client.pushBatch(pending);
+
+          // Mark successfully synced records as sent
+          if (result.synced > 0 || result.skipped > 0) {
+            // Identify which records failed so we only mark the successes
+            const failedIds = new Set(result.errors.map((e) => e.id));
+            const sentIds = pending.filter((r) => !failedIds.has(String(r.row_id))).map((r) => r.id);
+            if (sentIds.length > 0) {
+              markSent(sentIds, epochSeconds());
+            }
+          }
+
+          if (result.errors.length > 0) {
+            logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, `Sync errors: ${result.errors.length}`, {
+              errors: result.errors.slice(0, 5),
+            });
+          }
+
+          pruneOld();
+          logger.info(LOG_KINDS.TEAM_SYNC_COMPLETE, 'Outbox flush complete', {
+            synced: result.synced, skipped: result.skipped, errors: result.errors.length, total: pending.length,
+          });
+        } catch (err) {
+          logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Outbox flush failed', { error: (err as Error).message });
+        }
+      },
+    });
+  }
 
   powerManager.start();
 
