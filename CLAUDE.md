@@ -4,7 +4,7 @@ Claude Code plugin that captures session knowledge (events, observations, summar
 
 ## Dogfooding
 
-We develop Myco using Myco. The vault lives at `~/.myco/vaults/myco/` (configured in `.env` and `.claude/settings.json`).
+We develop Myco using Myco. The vault lives at `.myco/` in the project root (configured in `.claude/settings.json`).
 
 **Implications for development:**
 
@@ -158,7 +158,7 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
 ## Vault Structure
 
 ```
-~/.myco/vaults/<vault-name>/
+.myco/   # Project-local vault
   myco.yaml          # Vault configuration
   daemon.json        # Running daemon PID/port
   index.db           # SQLite FTS5 index
@@ -278,7 +278,7 @@ The daemon persists across sessions. After modifying daemon code, you MUST resta
 myco restart     # or myco-dev restart in dogfooding mode
 ```
 
-Or manually: kill the PID in `~/.myco/vaults/myco/daemon.json`, then let the next session-start hook spawn a fresh one.
+Or manually: kill the PID in `.myco/daemon.json`, then let the next session-start hook spawn a fresh one.
 
 ## Agent Teams
 

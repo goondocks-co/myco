@@ -204,8 +204,11 @@ export class SymbiontInstaller {
     try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch { /* doesn't exist */ }
 
     for (const [name, def] of Object.entries(template)) {
-      raw = writeTomlMcpServer(targetPath, raw, name, def as Record<string, unknown>);
+      raw = buildTomlMcpSection(raw, name, def as Record<string, unknown>);
     }
+
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, raw, 'utf-8');
     return true;
   }
 
@@ -469,11 +472,8 @@ export class SymbiontInstaller {
         const link = path.join(this.projectRoot, reg.skillsTarget, name);
         try { fs.unlinkSync(link); removed = true; } catch { /* doesn't exist */ }
       }
-      // Remove agent skills dir if empty
-      try {
-        const remaining = fs.readdirSync(path.join(this.projectRoot, reg.skillsTarget));
-        if (remaining.length === 0) fs.rmdirSync(path.join(this.projectRoot, reg.skillsTarget));
-      } catch { /* ignore */ }
+      // Remove agent skills dir if now empty (rmdirSync fails atomically if non-empty)
+      try { fs.rmdirSync(path.join(this.projectRoot, reg.skillsTarget)); } catch { /* not empty or missing */ }
     }
 
     // Remove canonical symlinks
@@ -482,17 +482,9 @@ export class SymbiontInstaller {
       const link = path.join(canonicalDir, name);
       try { fs.unlinkSync(link); removed = true; } catch { /* doesn't exist */ }
     }
-    // Remove .agents/skills/ if empty
-    try {
-      const remaining = fs.readdirSync(canonicalDir);
-      if (remaining.length === 0) {
-        fs.rmdirSync(canonicalDir);
-        // Also remove .agents/ if empty
-        const agentsDir = path.join(this.projectRoot, '.agents');
-        const agentsRemaining = fs.readdirSync(agentsDir);
-        if (agentsRemaining.length === 0) fs.rmdirSync(agentsDir);
-      }
-    } catch { /* ignore */ }
+    // Remove empty dirs (rmdirSync fails atomically if non-empty)
+    try { fs.rmdirSync(canonicalDir); } catch { /* not empty or missing */ }
+    try { fs.rmdirSync(path.join(this.projectRoot, '.agents')); } catch { /* not empty or missing */ }
 
     return removed;
   }
@@ -504,15 +496,15 @@ export class SymbiontInstaller {
     try { content = fs.readFileSync(gitignorePath, 'utf-8'); } catch { return; }
 
     // Remove the Myco skill symlinks block and individual entries
+    const reg = this.manifest.registration;
+    const skillNames = reg?.skillsTarget && reg.skillsTarget !== CANONICAL_SKILLS_DIR
+      ? this.listSkillDirs()
+      : [];
     const lines = content.split('\n');
     const filtered = lines.filter((line) => {
       if (line === '# Myco skill symlinks (machine-specific)') return false;
       if (line === `${CANONICAL_SKILLS_DIR}/`) return false;
-      const reg = this.manifest.registration;
-      if (reg?.skillsTarget && reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
-        const skillNames = this.listSkillDirs();
-        if (skillNames.some((name) => line === `${reg.skillsTarget}/${name}`)) return false;
-      }
+      if (skillNames.some((name) => line === `${reg!.skillsTarget}/${name}`)) return false;
       return true;
     });
 
@@ -532,11 +524,10 @@ export class SymbiontInstaller {
 const TOML_SECTION_RE = /^\[([^\]]+)\]/;
 
 /**
- * Write/update a specific mcp_servers entry in a TOML file.
- * Returns the updated raw content (caller must track it for multiple writes).
+ * Build/update a specific mcp_servers entry in a TOML string.
+ * Pure transformation — returns updated content without writing to disk.
  */
-function writeTomlMcpServer(
-  filePath: string,
+function buildTomlMcpSection(
   raw: string,
   serverName: string,
   server: Record<string, unknown>,
@@ -597,8 +588,6 @@ function writeTomlMcpServer(
     updated = (raw.trimEnd() + separator + block).trimEnd() + '\n';
   }
 
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, updated, 'utf-8');
   return updated;
 }
 
