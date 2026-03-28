@@ -35,9 +35,6 @@ const CANONICAL_SKILLS_DIR = '.agents/skills';
 /** MCP server name used by Myco in all symbiont configurations. */
 export const MYCO_MCP_SERVER_NAME = 'myco';
 
-/** Command names used to identify Myco entries in settings files. */
-const MYCO_COMMAND_NAMES = ['myco-run', 'myco'] as const;
-
 export interface InstallResult {
   hooks: boolean;
   mcp: boolean;
@@ -70,26 +67,150 @@ export class SymbiontInstaller {
 
   /** Run all registration steps. */
   install(): InstallResult {
-    const result = {
-      hooks: this.installHooks(),
-      mcp: this.installMcp(),
-      skills: this.installSkills(),
-      settings: this.installSettings(),
-    };
+    const reg = this.manifest.registration;
+    const result = this.shouldBatchJsonTargets(reg)
+      ? this.installBatchedJson(reg!)
+      : {
+          hooks: this.installHooks(),
+          mcp: this.installMcp(),
+          skills: this.installSkills(),
+          settings: this.installSettings(),
+        };
     this.updateGitignore();
     return result;
   }
 
+  /**
+   * Check if ALL non-null JSON targets share the same file (e.g., Gemini).
+   * Only batches when every target resolves to one path — partial overlaps
+   * (e.g., Claude Code: hooks+settings share but MCP is separate) use normal path.
+   */
+  private shouldBatchJsonTargets(reg: typeof this.manifest.registration): boolean {
+    if (!reg) return false;
+    const mcpFormat = reg.mcpFormat ?? 'json';
+    if (mcpFormat !== 'json') return false;
+    const targets = [reg.hooksTarget, reg.mcpTarget, reg.settingsTarget].filter(Boolean);
+    return targets.length > 1 && new Set(targets).size === 1;
+  }
+
+  /**
+   * Batched install for agents where hooks, MCP, and settings share one JSON file.
+   * Single read → apply all transforms in memory → single write.
+   */
+  private installBatchedJson(reg: NonNullable<typeof this.manifest.registration>): InstallResult {
+    const targetPath = path.join(this.projectRoot, reg.hooksTarget ?? reg.mcpTarget ?? reg.settingsTarget!);
+    let data = readJsonFile(targetPath);
+    let hooks = false, mcp = false, settings = false;
+
+    // Apply hooks transform
+    const hooksTemplate = reg.hooksTarget ? this.loadTemplate('hooks') : null;
+    if (hooksTemplate) {
+      const existingHooks = (data.hooks ?? {}) as Record<string, unknown[]>;
+      const mergedHooks: Record<string, unknown[]> = {};
+      for (const [event, groups] of Object.entries(existingHooks)) {
+        const nonMyco = (groups as Array<Record<string, unknown>>).filter((g) => !isMycoHookGroup(g));
+        if (nonMyco.length > 0) mergedHooks[event] = nonMyco;
+      }
+      for (const [event, groups] of Object.entries(hooksTemplate)) {
+        mergedHooks[event] = [...(mergedHooks[event] ?? []), ...(groups as unknown[])];
+      }
+      data.hooks = mergedHooks;
+      hooks = true;
+    }
+
+    // Apply MCP transform
+    const mcpTemplate = reg.mcpTarget ? this.loadTemplate('mcp') : null;
+    if (mcpTemplate) {
+      const servers = (data.mcpServers ?? {}) as Record<string, unknown>;
+      for (const [name, def] of Object.entries(mcpTemplate)) {
+        servers[name] = def;
+      }
+      data.mcpServers = servers;
+      mcp = true;
+    }
+
+    // Apply settings transform
+    const settingsTemplate = reg.settingsTarget ? this.loadTemplate('settings') : null;
+    if (settingsTemplate) {
+      data = deepMergeSettings(data, settingsTemplate);
+      settings = true;
+    }
+
+    writeJsonFile(targetPath, data);
+
+    return {
+      hooks,
+      mcp,
+      skills: this.installSkills(),
+      settings,
+    };
+  }
+
   /** Remove all Myco registration from this symbiont's project files. */
   uninstall(): InstallResult {
-    const result = {
-      hooks: this.uninstallHooks(),
-      mcp: this.uninstallMcp(),
-      skills: this.uninstallSkills(),
-      settings: this.uninstallSettings(),
-    };
+    const reg = this.manifest.registration;
+    const result = this.shouldBatchJsonTargets(reg)
+      ? this.uninstallBatchedJson(reg!)
+      : {
+          hooks: this.uninstallHooks(),
+          mcp: this.uninstallMcp(),
+          skills: this.uninstallSkills(),
+          settings: this.uninstallSettings(),
+        };
     this.cleanGitignore();
     return result;
+  }
+
+  /**
+   * Batched uninstall for agents where hooks, MCP, and settings share one JSON file.
+   */
+  private uninstallBatchedJson(reg: NonNullable<typeof this.manifest.registration>): InstallResult {
+    const targetPath = path.join(this.projectRoot, reg.hooksTarget ?? reg.mcpTarget ?? reg.settingsTarget!);
+    const data = readJsonFile(targetPath);
+    if (Object.keys(data).length === 0) {
+      return { hooks: false, mcp: false, skills: this.uninstallSkills(), settings: false };
+    }
+
+    let hooks = false, mcp = false, settings = false;
+
+    // Remove hooks
+    if (reg.hooksTarget) {
+      const existingHooks = (data.hooks ?? {}) as Record<string, unknown[]>;
+      if (Object.keys(existingHooks).length > 0) {
+        const cleaned: Record<string, unknown[]> = {};
+        for (const [event, groups] of Object.entries(existingHooks)) {
+          const nonMyco = (groups as Array<Record<string, unknown>>).filter((g) => !isMycoHookGroup(g));
+          if (nonMyco.length > 0) cleaned[event] = nonMyco;
+        }
+        if (Object.keys(cleaned).length === 0) {
+          delete data.hooks;
+        } else {
+          data.hooks = cleaned;
+        }
+        hooks = true;
+      }
+    }
+
+    // Remove MCP
+    if (reg.mcpTarget) {
+      const servers = (data.mcpServers ?? {}) as Record<string, unknown>;
+      if (servers[MYCO_MCP_SERVER_NAME]) {
+        delete servers[MYCO_MCP_SERVER_NAME];
+        if (Object.keys(servers).length === 0) delete data.mcpServers;
+        else data.mcpServers = servers;
+        mcp = true;
+      }
+    }
+
+    // Remove settings
+    const settingsTemplate = reg.settingsTarget ? this.loadTemplate('settings') : null;
+    if (settingsTemplate) {
+      settings = deepRemoveSettings(data, settingsTemplate);
+    }
+
+    writeOrDeleteJsonFile(targetPath, data);
+
+    return { hooks, mcp, skills: this.uninstallSkills(), settings };
   }
 
   /** List skill directory names from the package root. Returns empty array if not found. */
@@ -272,77 +393,24 @@ export class SymbiontInstaller {
     return true;
   }
 
-  /** Remove Myco entries from the target settings file. */
+  /**
+   * Remove Myco entries from the target settings file.
+   * Template-driven: loads the settings template and removes matching values.
+   * Arrays: filter out values present in the template.
+   * Objects: delete keys present in the template.
+   */
   uninstallSettings(): boolean {
     const reg = this.manifest.registration;
     if (!reg?.settingsTarget) return false;
+
+    const template = this.loadTemplate('settings');
+    if (!template) return false;
 
     const targetPath = path.join(this.projectRoot, reg.settingsTarget);
     const settings = readJsonFile(targetPath);
     if (Object.keys(settings).length === 0) return false;
 
-    let changed = false;
-
-    // Remove permissions.allow entries containing myco
-    const perms = settings.permissions as Record<string, unknown> | undefined;
-    if (perms?.allow && Array.isArray(perms.allow)) {
-      const filtered = (perms.allow as string[]).filter(
-        (p) => !MYCO_COMMAND_NAMES.some((cmd) => p.includes(cmd)),
-      );
-      if (filtered.length !== (perms.allow as string[]).length) {
-        perms.allow = filtered.length > 0 ? filtered : undefined;
-        if (!perms.allow) delete perms.allow;
-        if (Object.keys(perms).length === 0) delete settings.permissions;
-        changed = true;
-      }
-    }
-
-    // Remove chat.tools.terminal.autoApprove entries
-    const autoApprove = settings['chat.tools.terminal.autoApprove'] as Record<string, unknown> | undefined;
-    if (autoApprove) {
-      for (const cmd of MYCO_COMMAND_NAMES) {
-        if (cmd in autoApprove) {
-          delete autoApprove[cmd];
-          changed = true;
-        }
-      }
-      if (Object.keys(autoApprove).length === 0) {
-        delete settings['chat.tools.terminal.autoApprove'];
-      }
-    }
-
-    // Remove coreTools entries containing myco
-    const coreTools = settings.coreTools as string[] | undefined;
-    if (Array.isArray(coreTools)) {
-      const filtered = coreTools.filter(
-        (t) => !MYCO_COMMAND_NAMES.some((cmd) => t.includes(cmd)),
-      );
-      if (filtered.length !== coreTools.length) {
-        if (filtered.length > 0) {
-          settings.coreTools = filtered;
-        } else {
-          delete settings.coreTools;
-        }
-        changed = true;
-      }
-    }
-
-    // Remove windsurf.cascadeCommandsAllowList entries
-    const allowList = settings['windsurf.cascadeCommandsAllowList'] as string[] | undefined;
-    if (Array.isArray(allowList)) {
-      const filtered = allowList.filter(
-        (cmd) => !MYCO_COMMAND_NAMES.some((name) => cmd === name),
-      );
-      if (filtered.length !== allowList.length) {
-        if (filtered.length > 0) {
-          settings['windsurf.cascadeCommandsAllowList'] = filtered;
-        } else {
-          delete settings['windsurf.cascadeCommandsAllowList'];
-        }
-        changed = true;
-      }
-    }
-
+    const changed = deepRemoveSettings(settings, template);
     if (!changed) return false;
 
     writeOrDeleteJsonFile(targetPath, settings);
@@ -592,6 +660,52 @@ function deepMergeSettings(
 
 function isPlainObject(val: unknown): val is Record<string, unknown> {
   return typeof val === 'object' && val !== null && !Array.isArray(val);
+}
+
+/**
+ * Remove values from target that match the template structure.
+ * Arrays: filter out values present in the template array.
+ * Objects: delete keys present in the template object, recurse into nested objects.
+ * Returns true if anything was removed.
+ */
+function deepRemoveSettings(
+  target: Record<string, unknown>,
+  template: Record<string, unknown>,
+): boolean {
+  let changed = false;
+  for (const [key, templateVal] of Object.entries(template)) {
+    const targetVal = target[key];
+    if (targetVal === undefined) continue;
+
+    if (Array.isArray(templateVal) && Array.isArray(targetVal)) {
+      // Filter out values that appear in the template array
+      const templateSet = new Set(templateVal.map(String));
+      const filtered = targetVal.filter((v) => !templateSet.has(String(v)));
+      if (filtered.length !== targetVal.length) {
+        if (filtered.length > 0) {
+          target[key] = filtered;
+        } else {
+          delete target[key];
+        }
+        changed = true;
+      }
+    } else if (isPlainObject(templateVal) && isPlainObject(targetVal)) {
+      // Recurse into nested objects, then prune if empty
+      if (deepRemoveSettings(targetVal, templateVal)) {
+        if (Object.keys(targetVal).length === 0) {
+          delete target[key];
+        }
+        changed = true;
+      }
+    } else {
+      // Scalar: delete if value matches
+      if (String(targetVal) === String(templateVal)) {
+        delete target[key];
+        changed = true;
+      }
+    }
+  }
+  return changed;
 }
 
 // --- JSON helpers ---
