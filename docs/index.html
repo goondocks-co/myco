@@ -336,6 +336,60 @@
       font-style: italic;
     }
 
+    /* Agents */
+    .agents {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 40px 24px 60px;
+      text-align: center;
+    }
+
+    .agents h2 {
+      font-family: var(--font-heading);
+      font-size: 32px;
+      font-weight: 500;
+      margin-bottom: 8px;
+    }
+
+    .agents-subtitle {
+      color: var(--on-surface-variant);
+      font-size: 15px;
+      margin-bottom: 28px;
+    }
+
+    .agents-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .agent-card {
+      background: var(--surface-container-low);
+      border: 1px solid var(--outline-variant);
+      border-radius: 8px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .agent-name {
+      font-family: var(--font-ui);
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--on-surface);
+    }
+
+    .agent-status {
+      font-family: var(--font-data);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .agent-status.full { color: var(--sage); }
+    .agent-status.partial { color: var(--ochre); }
+
     /* Mobile */
     @media (max-width: 768px) {
       .nav-links .quick-start-link { display: none; }
@@ -347,6 +401,7 @@
       .hero-logo { width: 64px; height: 64px; }
 
       .features { grid-template-columns: 1fr; }
+      .agents-grid { grid-template-columns: repeat(2, 1fr); }
 
       .code-block { font-size: 13px; }
     }
@@ -371,6 +426,7 @@
     </a>
     <div class="nav-links">
       <a href="#install" class="quick-start-link">Quick Start</a>
+      <a href="#agents">Agents</a>
       <a href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener">GitHub</a>
     </div>
   </nav>
@@ -427,6 +483,38 @@ myco init</code></div>
       <p class="install-note">Then initialize in your project:</p>
       <div class="code-block"><code>cd your-project
 myco init</code></div>
+    </div>
+  </section>
+
+  <!-- Supported Agents -->
+  <section class="agents" id="agents">
+    <h2>Works with your agent</h2>
+    <p class="agents-subtitle">Project-local registration — hooks, MCP, skills, and auto-approve configured per project.</p>
+    <div class="agents-grid">
+      <div class="agent-card">
+        <span class="agent-name">Claude Code</span>
+        <span class="agent-status full">Full support</span>
+      </div>
+      <div class="agent-card">
+        <span class="agent-name">Cursor</span>
+        <span class="agent-status full">Full support</span>
+      </div>
+      <div class="agent-card">
+        <span class="agent-name">Codex</span>
+        <span class="agent-status full">Full support</span>
+      </div>
+      <div class="agent-card">
+        <span class="agent-name">VS Code Copilot</span>
+        <span class="agent-status full">Full support</span>
+      </div>
+      <div class="agent-card">
+        <span class="agent-name">Gemini CLI</span>
+        <span class="agent-status full">Full support</span>
+      </div>
+      <div class="agent-card">
+        <span class="agent-name">Windsurf</span>
+        <span class="agent-status partial">Hooks + skills</span>
+      </div>
     </div>
   </section>
 

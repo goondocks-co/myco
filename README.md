@@ -12,7 +12,7 @@
   <a href="https://www.npmjs.com/package/@goondocks/myco"><img src="https://img.shields.io/npm/v/@goondocks/myco?label=npm&color=22c55e" alt="npm"></a>
   <a href="https://github.com/goondocks-co/myco/blob/main/LICENSE"><img src="https://img.shields.io/github/license/goondocks-co/myco?color=22c55e" alt="License"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D22-22c55e" alt="Node 22+">
-  <img src="https://img.shields.io/badge/symbionts-Claude%20Code%20%7C%20Cursor%20%7C%20VS%20Code-22c55e" alt="Claude Code | Cursor | VS Code">
+  <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Cursor%20%7C%20Codex%20%7C%20VS%20Code%20%7C%20Gemini%20%7C%20Windsurf-22c55e" alt="Claude Code | Cursor | Codex | VS Code | Gemini | Windsurf">
 </p>
 
 ```bash
@@ -25,7 +25,7 @@ cd your-project
 myco init
 ```
 
-The wizard detects your coding agents, sets up intelligence and embedding providers, and starts capturing. Works with Claude Code and Cursor out of the box.
+The wizard detects your coding agents, sets up intelligence and embedding providers, and starts capturing. Works with Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, and Windsurf.
 
 ## What is Myco?
 
@@ -94,15 +94,22 @@ A local web dashboard provides configuration and operations management. Manage i
 
 ### Symbionts
 
-Myco integrates with coding agents through **symbiont** adapters — named for the mycorrhizal symbiotic relationship between fungi and their host trees. Each adapter handles transcript discovery, conversation parsing, image extraction, and plugin registration for its host agent.
+Myco integrates with coding agents through **symbiont** adapters — named for the mycorrhizal symbiotic relationship between fungi and their host trees. Each adapter handles transcript discovery, conversation parsing, and project registration for its host agent.
 
-| Symbiont | Status |
-|----------|--------|
-| [Claude Code](https://claude.ai/code) | Supported |
-| [Cursor](https://cursor.com) | Supported |
-| VS Code (Copilot) | Agent manifest available |
+`myco init` detects available agents and lets you choose which to configure. Registration is project-local — hooks, MCP servers, skills, and auto-approve settings are written directly to each agent's config files.
 
-Adding a new symbiont is declarative — define a YAML manifest in `src/symbionts/manifests/` and implement the transcript parser.
+| Agent | Hooks | MCP | Skills | Auto-Approve | Plans |
+|-------|-------|-----|--------|-------------|-------|
+| [Claude Code](https://claude.ai/code) | `.claude/settings.json` | `.mcp.json` | `.claude/skills/` | `permissions.allow` | `.claude/plans/` |
+| [Cursor](https://cursor.com) | — | `.cursor/mcp.json` | `.cursor/skills/` | `autoApprove` | `.cursor/plans/` |
+| [Codex](https://github.com/openai/codex) | `.codex/hooks.json` | `.codex/config.toml` | `.agents/skills/` | — | — |
+| [VS Code Copilot](https://code.visualstudio.com/docs/copilot) | `.github/hooks/` | `.vscode/mcp.json` | `.agents/skills/` | `autoApprove` | — |
+| [Gemini CLI](https://geminicli.com) | `.gemini/settings.json` | `.gemini/settings.json` | `.agents/skills/` | `coreTools` | `.gemini/plans/` |
+| [Windsurf](https://windsurf.com) | `.windsurf/hooks.json` | — | `.agents/skills/` | `cascadeCommandsAllowList` | `~/.windsurf/plans/` |
+
+Skills are installed once to `.agents/skills/` (the emerging cross-agent standard) and symlinked to each agent's native skills directory. Adding a new agent requires only a YAML manifest and JSON templates — no code changes.
+
+See the [Symbiont docs](docs/symbionts.md) for detailed setup information per agent.
 
 ### Team sync
 
