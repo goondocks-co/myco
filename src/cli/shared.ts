@@ -73,6 +73,9 @@ machine_id
 
 # Binary attachments — screenshots captured from transcripts
 attachments/
+
+# Team worker deployment — patched wrangler.toml + source copy
+.team-worker/
 `;
 
 /** Collapse an absolute home-dir path to its `~/` form for portable config storage. */

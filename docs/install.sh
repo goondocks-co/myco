@@ -78,10 +78,22 @@ fi
 
 success "npm v$(npm -v) ✓"
 
-# Install
+# Install (suppress transitive deprecation warnings from native addons)
 echo ""
 info "Installing ${PACKAGE}..."
-npm install -g "${PACKAGE}"
+if ! npm install -g "${PACKAGE}" --loglevel=error 2>/tmp/myco-install-err.log; then
+  # EEXIST: a previous install or npm link left a conflicting binary
+  if grep -q "EEXIST" /tmp/myco-install-err.log 2>/dev/null; then
+    warn "Existing myco installation detected — removing before reinstall..."
+    npm rm -g "${PACKAGE}" 2>/dev/null || true
+    npm rm -g "@goondocks-co/myco" 2>/dev/null || true
+    npm install -g "${PACKAGE}" --loglevel=error
+  else
+    cat /tmp/myco-install-err.log >&2
+    exit 1
+  fi
+fi
+rm -f /tmp/myco-install-err.log
 
 echo ""
 success "Myco installed successfully!"
