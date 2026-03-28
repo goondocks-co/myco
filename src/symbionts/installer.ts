@@ -33,6 +33,7 @@ export class SymbiontInstaller {
     // Check both source layout and dist layout
     const candidates = [
       path.join(this.packageRoot, TEMPLATES_SUBDIR, this.manifest.name, `${name}.json`),
+      // tsup preserves the src/ prefix under dist/, so the same subdir works in both layouts
       path.join(this.packageRoot, 'dist', TEMPLATES_SUBDIR, this.manifest.name, `${name}.json`),
     ];
     for (const filePath of candidates) {
@@ -171,7 +172,7 @@ export class SymbiontInstaller {
     const targetPath = path.join(this.projectRoot, settingsPath);
 
     if (this.manifest.name === 'cursor') {
-      // Cursor: env goes on the MCP server entry
+      // For Cursor, the myco server entry must already exist (written by installMcp)
       const config = readJsonFile(targetPath);
       const servers = (config.mcpServers ?? {}) as Record<string, Record<string, unknown>>;
       if (servers.myco) {
@@ -211,12 +212,8 @@ function writeJsonFile(filePath: string, data: Record<string, unknown>): void {
 
 function ensureSymlink(linkPath: string, target: string): void {
   try {
-    const existing = fs.readlinkSync(linkPath);
-    if (existing === target) return;
-    fs.unlinkSync(linkPath);
-  } catch {
-    try { fs.unlinkSync(linkPath); } catch { /* doesn't exist */ }
-    try { fs.rmSync(linkPath, { recursive: true }); } catch { /* doesn't exist */ }
-  }
+    if (fs.readlinkSync(linkPath) === target) return;
+  } catch { /* does not exist or is not a symlink — proceed */ }
+  try { fs.rmSync(linkPath, { recursive: true, force: true }); } catch { /* ignore */ }
   fs.symlinkSync(target, linkPath);
 }
