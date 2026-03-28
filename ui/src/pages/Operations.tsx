@@ -14,6 +14,7 @@ import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { cn } from '../lib/cn';
 import { BackupCard } from '../components/operations/BackupCard';
+import { UpdateCard } from '../components/operations/UpdateCard';
 
 /* ---------- Constants ---------- */
 
@@ -391,6 +392,9 @@ export default function Operations() {
                   </p>
                 )}
               </Surface>
+
+              {/* Update */}
+              <UpdateCard />
 
               {/* Backup & Restore */}
               <BackupCard />

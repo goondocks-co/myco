@@ -23,6 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import { useTheme } from '../providers/theme';
+import { useUpdateStatus } from '../hooks/use-update-status';
 import { useFont, type FontOption } from '../providers/font';
 import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
@@ -295,6 +296,7 @@ function SidebarContent({
   onSearchOpen,
   onCollapseToggle,
   showCollapseToggle,
+  updateAvailable,
 }: {
   collapsed: boolean;
   vaultName: string | undefined;
@@ -303,6 +305,7 @@ function SidebarContent({
   onSearchOpen: () => void;
   onCollapseToggle?: () => void;
   showCollapseToggle: boolean;
+  updateAvailable: boolean;
 }) {
   return (
     <>
@@ -371,6 +374,9 @@ function SidebarContent({
           >
             <item.icon className="h-4 w-4 shrink-0" />
             {!collapsed && item.label}
+            {item.to === '/operations' && updateAvailable && (
+              <span className="h-2 w-2 rounded-full bg-secondary shrink-0 ml-auto" />
+            )}
           </NavLink>
         ))}
       </nav>
@@ -414,6 +420,8 @@ export default function Layout() {
   const vaultName = stats?.vault.name;
   const [searchOpen, setSearchOpen] = useState(false);
   const drawer = useMobileDrawer();
+  const { data: updateData } = useUpdateStatus();
+  const updateAvailable = !!(updateData && !updateData.exempt && updateData.update_available);
 
   // Register Cmd+K / Ctrl+K global shortcut
   useEffect(() => {
@@ -498,6 +506,7 @@ export default function Layout() {
             setDensity={setDensity}
             onSearchOpen={openSearch}
             showCollapseToggle={false}
+            updateAvailable={updateAvailable}
           />
         </aside>
       )}
@@ -518,6 +527,7 @@ export default function Layout() {
             onSearchOpen={openSearch}
             onCollapseToggle={toggle}
             showCollapseToggle={true}
+            updateAvailable={updateAvailable}
           />
         </aside>
       )}
