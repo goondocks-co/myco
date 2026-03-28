@@ -146,7 +146,7 @@ jobs:
 
           \`\`\`bash
           npm update -g @goondocks/myco
-          claude plugin update myco
+          myco update
           \`\`\`
           NOTES_EOF
           fi
