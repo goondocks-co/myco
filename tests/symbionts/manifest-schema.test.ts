@@ -118,7 +118,6 @@ describe('symbiont manifests', () => {
     expect(manifest.registration!.mcpTarget).toBe('.codex/config.toml');
     expect(manifest.registration!.mcpFormat).toBe('toml');
     expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
-    expect(manifest.registration!.envTarget).toBe('mcp-server');
     expect(manifest.registration!.hooksTarget).toBe('.codex/hooks.json');
   });
 

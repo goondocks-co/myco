@@ -14,4 +14,3 @@ capture:
 registration:
   mcpTarget: .cursor/mcp.json
   skillsTarget: .cursor/skills
-  envTarget: mcp-server

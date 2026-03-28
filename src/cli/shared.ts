@@ -96,20 +96,18 @@ export function registerSymbionts(
   manifests: SymbiontManifest[],
   projectRoot: string,
   packageRoot: string,
-  vaultDir: string,
   verb: 'Registered' | 'Updated',
 ): number {
   let count = 0;
   for (const manifest of manifests) {
     try {
       const installer = new SymbiontInstaller(manifest, projectRoot, packageRoot);
-      const result = installer.install(vaultDir);
+      const result = installer.install();
 
       const installed = [
         result.hooks && 'hooks',
         result.mcp && 'MCP server',
         result.skills && 'skills',
-        result.env && 'env',
       ].filter(Boolean);
 
       if (installed.length > 0) {

@@ -17,14 +17,10 @@ const CANONICAL_SKILLS_DIR = '.agents/skills';
 /** MCP server name used by Myco in all symbiont configurations. */
 export const MYCO_MCP_SERVER_NAME = 'myco';
 
-/** Environment variable name for the vault directory. */
-export const MYCO_VAULT_DIR_ENV = 'MYCO_VAULT_DIR';
-
 export interface InstallResult {
   hooks: boolean;
   mcp: boolean;
   skills: boolean;
-  env: boolean;
 }
 
 export class SymbiontInstaller {
@@ -51,14 +47,11 @@ export class SymbiontInstaller {
   }
 
   /** Run all registration steps. */
-  install(vaultDir: string): InstallResult {
-    const envTarget = this.manifest.registration?.envTarget;
-    const mcpHandlesEnv = envTarget === 'mcp-server';
+  install(): InstallResult {
     const result = {
       hooks: this.installHooks(),
-      mcp: this.installMcp(mcpHandlesEnv ? vaultDir : undefined),
+      mcp: this.installMcp(),
       skills: this.installSkills(),
-      env: mcpHandlesEnv || this.installEnv(vaultDir),
     };
     this.updateGitignore();
     return result;
@@ -141,10 +134,8 @@ export class SymbiontInstaller {
   /**
    * Merge MCP server template into the target config file.
    * Replaces the `myco` server entry; preserves other servers.
-   * When vaultDir is provided and envTarget is 'mcp-server', env is merged
-   * into the MCP entry during the same write pass (avoids a double-read).
    */
-  installMcp(vaultDir?: string): boolean {
+  installMcp(): boolean {
     const reg = this.manifest.registration;
     if (!reg?.mcpTarget) return false;
 
@@ -155,24 +146,18 @@ export class SymbiontInstaller {
     const mcpFormat = reg.mcpFormat ?? 'json';
 
     if (mcpFormat === 'toml') {
-      return this.installMcpToml(targetPath, template, vaultDir);
+      return this.installMcpToml(targetPath, template);
     }
-    return this.installMcpJson(targetPath, template, vaultDir);
+    return this.installMcpJson(targetPath, template);
   }
 
   /** Write MCP servers to a JSON config file. */
-  private installMcpJson(targetPath: string, template: Record<string, unknown>, vaultDir?: string): boolean {
+  private installMcpJson(targetPath: string, template: Record<string, unknown>): boolean {
     const config = readJsonFile(targetPath);
     const servers = (config.mcpServers ?? {}) as Record<string, unknown>;
 
     for (const [name, def] of Object.entries(template)) {
       servers[name] = def;
-    }
-
-    // Merge env if this is an mcp-server envTarget
-    if (vaultDir && servers[MYCO_MCP_SERVER_NAME]) {
-      const entry = servers[MYCO_MCP_SERVER_NAME] as Record<string, unknown>;
-      entry.env = { ...(entry.env as Record<string, string> ?? {}), [MYCO_VAULT_DIR_ENV]: vaultDir };
     }
 
     config.mcpServers = servers;
@@ -181,17 +166,12 @@ export class SymbiontInstaller {
   }
 
   /** Write MCP servers to a TOML config file. */
-  private installMcpToml(targetPath: string, template: Record<string, unknown>, vaultDir?: string): boolean {
+  private installMcpToml(targetPath: string, template: Record<string, unknown>): boolean {
     let raw = '';
     try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch { /* doesn't exist */ }
 
     for (const [name, def] of Object.entries(template)) {
-      const server = { ...(def as Record<string, unknown>) };
-      // Merge env if this is an mcp-server envTarget
-      if (vaultDir && name === MYCO_MCP_SERVER_NAME) {
-        server.env = { ...(server.env as Record<string, string> ?? {}), [MYCO_VAULT_DIR_ENV]: vaultDir };
-      }
-      raw = writeTomlMcpServer(targetPath, raw, name, server);
+      raw = writeTomlMcpServer(targetPath, raw, name, def as Record<string, unknown>);
     }
     return true;
   }
@@ -236,43 +216,6 @@ export class SymbiontInstaller {
     return true;
   }
 
-  /**
-   * Write MYCO_VAULT_DIR to the symbiont's settings file.
-   * Dispatch is manifest-driven via registration.envTarget:
-   *   'settings'    → top-level env key in settingsPath (Claude Code)
-   *   'mcp-server'  → env on the myco server entry in settingsPath (Cursor)
-   */
-  installEnv(vaultDir: string): boolean {
-    const settingsPath = this.manifest.settingsPath;
-    if (!settingsPath) return false;
-
-    const targetPath = path.join(this.projectRoot, settingsPath);
-    const envTarget = this.manifest.registration?.envTarget;
-
-    if (envTarget === 'mcp-server') {
-      // Env goes on the MCP server entry (must already exist — written by installMcp)
-      const config = readJsonFile(targetPath);
-      const servers = (config.mcpServers ?? {}) as Record<string, Record<string, unknown>>;
-      if (servers[MYCO_MCP_SERVER_NAME]) {
-        servers[MYCO_MCP_SERVER_NAME].env = {
-          ...(servers[MYCO_MCP_SERVER_NAME].env as Record<string, string> ?? {}),
-          [MYCO_VAULT_DIR_ENV]: vaultDir,
-        };
-        config.mcpServers = servers;
-        writeJsonFile(targetPath, config);
-        return true;
-      }
-      return false;
-    }
-
-    // Default ('settings' or unset): env goes in settings.json under env key
-    const settings = readJsonFile(targetPath);
-    const env = (settings.env ?? {}) as Record<string, string>;
-    env[MYCO_VAULT_DIR_ENV] = vaultDir;
-    settings.env = env;
-    writeJsonFile(targetPath, settings);
-    return true;
-  }
 }
 
 // --- TOML helpers ---

@@ -1,5 +1,5 @@
 import { resolveVaultDir } from '../vault/resolve.js';
-import { VAULT_GITIGNORE, collapseHomePath, registerSymbionts } from './shared.js';
+import { VAULT_GITIGNORE, registerSymbionts } from './shared.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -35,15 +35,13 @@ export async function run(args: string[]): Promise<void> {
   const projectRoot = path.dirname(vaultDir);
   const allManifests = loadManifests();
   const pkgRoot = resolvePackageRoot();
-  const portableVaultDir = collapseHomePath(vaultDir);
-
   // Only update agents whose config directory already exists in the project
   const configured = allManifests.filter((m) =>
     fs.existsSync(path.join(projectRoot, m.configDir)),
   );
 
   if (configured.length > 0) {
-    const registered = registerSymbionts(configured, projectRoot, pkgRoot, portableVaultDir, 'Updated');
+    const registered = registerSymbionts(configured, projectRoot, pkgRoot, 'Updated');
     updatedCount += registered;
   } else {
     console.log('  \u2013 No configured agents found');

@@ -19,7 +19,6 @@ const CLAUDE_MANIFEST: SymbiontManifest = {
     hooksTarget: '.claude/settings.json',
     mcpTarget: '.mcp.json',
     skillsTarget: '.claude/skills',
-    envTarget: 'settings',
   },
 };
 
@@ -35,7 +34,6 @@ const CURSOR_MANIFEST: SymbiontManifest = {
     mcpTarget: '.cursor/mcp.json',
     mcpFormat: 'json',
     skillsTarget: '.cursor/skills',
-    envTarget: 'mcp-server',
   },
 };
 
@@ -52,7 +50,6 @@ const CODEX_MANIFEST: SymbiontManifest = {
     mcpTarget: '.codex/config.toml',
     mcpFormat: 'toml',
     skillsTarget: '.agents/skills',
-    envTarget: 'mcp-server',
   },
 };
 
@@ -423,118 +420,28 @@ describe('installSkills', () => {
 });
 
 // =====================
-// installEnv
-// =====================
-
-describe('installEnv', () => {
-  it('writes MYCO_VAULT_DIR to Claude Code settings.json', () => {
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    const vaultDir = '/home/user/.myco/vaults/test';
-    const result = installer.installEnv(vaultDir);
-
-    expect(result).toBe(true);
-    const settingsPath = path.join(projectRoot, '.claude/settings.json');
-    const settings = readJson(settingsPath);
-    expect((settings.env as Record<string, string>).MYCO_VAULT_DIR).toBe(vaultDir);
-  });
-
-  it('preserves existing env vars', () => {
-    const settingsPath = path.join(projectRoot, '.claude/settings.json');
-    writeJson(settingsPath, { env: { EXISTING_VAR: 'keep-me' } });
-
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.installEnv('/vault/path');
-
-    const settings = readJson(settingsPath);
-    const env = settings.env as Record<string, string>;
-    expect(env.EXISTING_VAR).toBe('keep-me');
-    expect(env.MYCO_VAULT_DIR).toBe('/vault/path');
-  });
-
-  it('writes env to Cursor MCP server entry', () => {
-    // Pre-create the cursor mcp.json with the myco server (required)
-    const mcpPath = path.join(projectRoot, '.cursor/mcp.json');
-    writeJson(mcpPath, {
-      mcpServers: {
-        myco: { type: 'stdio', command: 'myco-run', args: ['mcp'] },
-      },
-    });
-
-    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
-    const result = installer.installEnv('/vault/path');
-
-    expect(result).toBe(true);
-    const config = readJson(mcpPath);
-    const servers = config.mcpServers as Record<string, Record<string, unknown>>;
-    const mycoEnv = servers.myco.env as Record<string, string>;
-    expect(mycoEnv.MYCO_VAULT_DIR).toBe('/vault/path');
-  });
-
-  it('returns false for Cursor when myco server entry does not exist', () => {
-    // Create cursor mcp.json without myco server
-    const mcpPath = path.join(projectRoot, '.cursor/mcp.json');
-    writeJson(mcpPath, { mcpServers: {} });
-
-    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
-    const result = installer.installEnv('/vault/path');
-    expect(result).toBe(false);
-  });
-
-  it('preserves existing env on Cursor MCP server entry', () => {
-    const mcpPath = path.join(projectRoot, '.cursor/mcp.json');
-    writeJson(mcpPath, {
-      mcpServers: {
-        myco: { type: 'stdio', command: 'myco-run', args: ['mcp'], env: { OTHER_VAR: 'hello' } },
-      },
-    });
-
-    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
-    installer.installEnv('/vault/path');
-
-    const config = readJson(mcpPath);
-    const servers = config.mcpServers as Record<string, Record<string, unknown>>;
-    const mycoEnv = servers.myco.env as Record<string, string>;
-    expect(mycoEnv.OTHER_VAR).toBe('hello');
-    expect(mycoEnv.MYCO_VAULT_DIR).toBe('/vault/path');
-  });
-
-  it('returns false when no settingsPath in manifest', () => {
-    const noSettingsManifest: SymbiontManifest = {
-      ...CLAUDE_MANIFEST,
-      settingsPath: undefined,
-    };
-    const installer = new SymbiontInstaller(noSettingsManifest, projectRoot, packageRoot);
-    const result = installer.installEnv('/vault/path');
-    expect(result).toBe(false);
-  });
-});
-
-// =====================
 // install (integration)
 // =====================
 
 describe('install', () => {
-  it('runs all four steps and returns results for Claude Code', () => {
+  it('runs all three steps and returns results for Claude Code', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    const vaultDir = '/home/user/.myco/vaults/test';
-    const result = installer.install(vaultDir);
+    const result = installer.install();
 
     expect(result.hooks).toBe(true);
     expect(result.mcp).toBe(true);
     expect(result.skills).toBe(true);
-    expect(result.env).toBe(true);
   });
 
   it('verifies all files exist after Claude Code install', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.install('/vault/path');
+    installer.install();
 
-    // Hooks and env in settings.json
+    // Hooks in settings.json
     const settingsPath = path.join(projectRoot, '.claude/settings.json');
     expect(fs.existsSync(settingsPath)).toBe(true);
     const settings = readJson(settingsPath);
     expect(settings.hooks).toBeDefined();
-    expect(settings.env).toBeDefined();
 
     // MCP config
     const mcpPath = path.join(projectRoot, '.mcp.json');
@@ -545,28 +452,21 @@ describe('install', () => {
     expect(fs.existsSync(path.join(projectRoot, '.claude/skills/myco'))).toBe(true);
   });
 
-  it('runs all four steps and returns results for Cursor', () => {
+  it('runs all three steps and returns results for Cursor', () => {
     const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
-    const result = installer.install('/vault/path');
+    const result = installer.install();
 
     // Cursor has no hooks
     expect(result.hooks).toBe(false);
     expect(result.mcp).toBe(true);
     expect(result.skills).toBe(true);
-    expect(result.env).toBe(true);
-
-    // Verify env was merged into MCP server entry
-    const config = readJson(path.join(projectRoot, '.cursor/mcp.json'));
-    const servers = config.mcpServers as Record<string, Record<string, unknown>>;
-    expect((servers.myco.env as Record<string, string>).MYCO_VAULT_DIR).toBe('/vault/path');
   });
 
   it('is idempotent — running twice produces same result', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    const vaultDir = '/vault/path';
 
-    const result1 = installer.install(vaultDir);
-    const result2 = installer.install(vaultDir);
+    const result1 = installer.install();
+    const result2 = installer.install();
 
     expect(result1).toEqual(result2);
 
@@ -588,7 +488,7 @@ describe('gitignore management', () => {
   it('adds .agents/skills/ to project .gitignore', () => {
     fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.install('~/vaults/myco');
+    installer.install();
 
     const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
     expect(gitignore).toContain('.agents/skills/');
@@ -597,7 +497,7 @@ describe('gitignore management', () => {
   it('adds agent-specific skill symlinks to .gitignore', () => {
     fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.install('~/vaults/myco');
+    installer.install();
 
     const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
     expect(gitignore).toContain('.claude/skills/myco');
@@ -608,8 +508,8 @@ describe('gitignore management', () => {
     fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
 
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.install('~/vaults/myco');
-    installer.install('~/vaults/myco'); // Second run
+    installer.install();
+    installer.install(); // Second run
 
     const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
     const matches = gitignore.match(/\.agents\/skills\//g);
@@ -621,7 +521,7 @@ describe('gitignore management', () => {
     fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
 
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.install('~/vaults/myco');
+    installer.install();
 
     const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
     expect(gitignore).toContain('node_modules/');
@@ -660,16 +560,6 @@ describe('installMcp (TOML)', () => {
     expect(content).toContain('[mcp_servers.myco]');
   });
 
-  it('includes env when vaultDir is provided', () => {
-    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
-    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
-    installer.installMcp('~/vaults/myco');
-
-    const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
-    expect(content).toContain('[mcp_servers.myco.env]');
-    expect(content).toContain('MYCO_VAULT_DIR = "~/vaults/myco"');
-  });
-
   it('replaces existing myco section on update', () => {
     const codexDir = path.join(projectRoot, '.codex');
     fs.mkdirSync(codexDir, { recursive: true });
@@ -684,54 +574,3 @@ describe('installMcp (TOML)', () => {
   });
 });
 
-// =====================
-// install (mcp-server envTarget)
-// =====================
-
-describe('install (mcp-server envTarget)', () => {
-  it('writes env in MCP pass for Cursor, skips separate installEnv', () => {
-    fs.mkdirSync(path.join(projectRoot, '.cursor'), { recursive: true });
-    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
-    const result = installer.install('~/vaults/myco');
-
-    expect(result.mcp).toBe(true);
-    expect(result.env).toBe(true);
-
-    const config = readJson(path.join(projectRoot, '.cursor/mcp.json'));
-    expect((config.mcpServers as Record<string, Record<string, unknown>>).myco.env).toEqual({ MYCO_VAULT_DIR: '~/vaults/myco' });
-  });
-
-  it('writes env in TOML MCP pass for Codex', () => {
-    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
-    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
-    const result = installer.install('~/vaults/myco');
-
-    expect(result.mcp).toBe(true);
-    expect(result.env).toBe(true);
-
-    const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
-    expect(content).toContain('MYCO_VAULT_DIR = "~/vaults/myco"');
-  });
-
-  it('runs all steps for Codex including hooks and skills', () => {
-    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
-    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
-    const result = installer.install('~/vaults/myco');
-
-    expect(result.hooks).toBe(true);
-    expect(result.mcp).toBe(true);
-    expect(result.skills).toBe(true);
-    expect(result.env).toBe(true);
-
-    // Hooks file
-    const hooks = readJson(path.join(projectRoot, '.codex/hooks.json'));
-    expect(hooks.hooks).toBeDefined();
-
-    // TOML MCP config
-    const toml = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
-    expect(toml).toContain('[mcp_servers.myco]');
-
-    // Skills — canonical only (skillsTarget === CANONICAL_SKILLS_DIR)
-    expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco'))).toBe(true);
-  });
-});

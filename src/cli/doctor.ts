@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { isProcessAlive } from './shared.js';
-import { MYCO_MCP_SERVER_NAME, MYCO_VAULT_DIR_ENV } from '../symbionts/installer.js';
+import { MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
 
 // --- Named constants (no magic literals) ---
 
@@ -158,27 +158,27 @@ async function checkAgents(vaultDir: string): Promise<DoctorCheck[]> {
   }
 }
 
-/** Check if a symbiont has MYCO_VAULT_DIR configured in its settings/MCP config. */
+/** Check if a symbiont has the Myco MCP server registered. */
 function isSymbiontRegistered(
   d: import('../symbionts/detect.js').DetectedSymbiont,
   projectRoot: string,
 ): boolean {
   try {
-    if (d.manifest.settingsPath) {
-      const settingsFile = path.join(projectRoot, d.manifest.settingsPath);
-      if (!fs.existsSync(settingsFile)) return false;
-      const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8')) as Record<string, unknown>;
-      const env = settings.env as Record<string, string> | undefined;
-      return !!env?.MYCO_VAULT_DIR;
+    const mcpTarget = d.manifest.registration?.mcpTarget;
+    if (!mcpTarget) return false;
+
+    const mcpFile = path.join(projectRoot, mcpTarget);
+    const raw = fs.readFileSync(mcpFile, 'utf-8');
+
+    // TOML: check for section header
+    if (mcpTarget.endsWith('.toml')) {
+      return raw.includes(`[mcp_servers.${MYCO_MCP_SERVER_NAME}]`);
     }
 
-    if (d.manifest.registration?.mcpTarget) {
-      const mcpFile = path.join(projectRoot, d.manifest.registration.mcpTarget);
-      if (!fs.existsSync(mcpFile)) return false;
-      const config = JSON.parse(fs.readFileSync(mcpFile, 'utf-8')) as Record<string, unknown>;
-      const servers = config.mcpServers as Record<string, { env?: Record<string, string> }> | undefined;
-      return !!servers?.[MYCO_MCP_SERVER_NAME]?.env?.[MYCO_VAULT_DIR_ENV];
-    }
+    // JSON: check for server entry
+    const config = JSON.parse(raw) as Record<string, unknown>;
+    const servers = config.mcpServers as Record<string, unknown> | undefined;
+    return !!servers?.[MYCO_MCP_SERVER_NAME];
   } catch { /* config missing or malformed */ }
   return false;
 }

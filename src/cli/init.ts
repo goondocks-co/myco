@@ -4,7 +4,6 @@ import { resolveVaultDir } from '../vault/resolve.js';
 import {
   parseStringFlag,
   VAULT_GITIGNORE,
-  collapseHomePath,
   registerSymbionts,
 } from './shared.js';
 import { detectSymbionts, loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
@@ -173,9 +172,8 @@ export async function run(args: string[]): Promise<void> {
     }
 
     if (selectedManifests.length > 0) {
-      const portableVaultDir = collapseHomePath(vaultDir);
       const pkgRoot = resolvePackageRoot();
-      registerSymbionts(selectedManifests, projectRoot, pkgRoot, portableVaultDir, 'Registered');
+      registerSymbionts(selectedManifests, projectRoot, pkgRoot, 'Registered');
     }
   }
 

@@ -9,7 +9,6 @@ const RegistrationSchema = z.object({
   mcpTarget: z.string().optional(),
   mcpFormat: z.enum(['json', 'toml']).default('json'),
   skillsTarget: z.string().optional(),
-  envTarget: z.enum(['settings', 'mcp-server']).optional(),
 });
 
 export const SymbiontManifestSchema = z.object({
