@@ -1,6 +1,6 @@
 import { resolveVaultDir } from '../vault/resolve.js';
 import { VAULT_GITIGNORE, collapseHomePath, registerSymbionts } from './shared.js';
-import { detectSymbionts, resolvePackageRoot } from '../symbionts/detect.js';
+import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -30,18 +30,23 @@ export async function run(args: string[]): Promise<void> {
     console.log('  \u2013 .gitignore is current');
   }
 
-  // --- Update symbiont registration ---
+  // --- Update symbiont registration (only agents already configured) ---
 
   const projectRoot = path.dirname(vaultDir);
-  const detected = detectSymbionts(projectRoot);
+  const allManifests = loadManifests();
   const pkgRoot = resolvePackageRoot();
   const portableVaultDir = collapseHomePath(vaultDir);
 
-  if (detected.length > 0) {
-    const registered = registerSymbionts(detected, projectRoot, pkgRoot, portableVaultDir, 'Updated');
+  // Only update agents whose config directory already exists in the project
+  const configured = allManifests.filter((m) =>
+    fs.existsSync(path.join(projectRoot, m.configDir)),
+  );
+
+  if (configured.length > 0) {
+    const registered = registerSymbionts(configured, projectRoot, pkgRoot, portableVaultDir, 'Updated');
     updatedCount += registered;
   } else {
-    console.log('  \u2013 No agents detected');
+    console.log('  \u2013 No configured agents found');
   }
 
   // --- Summary ---

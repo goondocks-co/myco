@@ -7,7 +7,7 @@ import {
   collapseHomePath,
   registerSymbionts,
 } from './shared.js';
-import { detectSymbionts, resolvePackageRoot } from '../symbionts/detect.js';
+import { detectSymbionts, loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { MycoConfigSchema } from '../config/schema.js';
 import { updateConfig, saveConfig } from '../config/loader.js';
 import { writeSecret } from '../config/secrets.js';
@@ -138,44 +138,45 @@ export async function run(args: string[]): Promise<void> {
     writeSecret(vaultDir, envVarName, wizardAnswers.embeddingApiKey);
   }
 
-  // --- Symbiont detection and registration ---
+  // --- Symbiont selection and registration ---
 
   const projectRoot = path.dirname(vaultDir);
+  const allManifests = loadManifests();
   const detected = detectSymbionts(projectRoot);
+  const detectedNames = new Set(detected.map((d) => d.manifest.name));
 
-  if (detected.length > 0) {
-    console.log('Detected agents:');
-    for (const d of detected) {
-      const signals = [
-        d.binaryFound ? 'binary found' : null,
-        d.configDirFound ? `${d.manifest.configDir}/ exists` : null,
-      ].filter(Boolean).join(', ');
-      console.log(`  \u2713 ${d.manifest.displayName} (${signals})`);
-    }
+  if (allManifests.length > 0) {
+    // Interactive: let user choose which agents to configure
+    let selectedManifests = allManifests.filter((m) => detectedNames.has(m.name));
 
-    // Interactive: let user choose which agents to register
-    let selected = detected;
-    if (isInteractive && detected.length > 0) {
+    if (isInteractive) {
       const { checkbox } = await import('@inquirer/prompts');
-      const choices = detected.map((d) => ({
-        value: d.manifest.name,
-        name: d.manifest.displayName,
-        checked: true,
-      }));
+      const choices = allManifests.map((m) => {
+        const det = detected.find((d) => d.manifest.name === m.name);
+        const hint = det
+          ? [det.binaryFound && 'detected', det.configDirFound && `${m.configDir}/ exists`].filter(Boolean).join(', ')
+          : '';
+        return {
+          value: m.name,
+          name: hint ? `${m.displayName} (${hint})` : m.displayName,
+          checked: detectedNames.has(m.name),
+        };
+      });
       const selectedNames = await checkbox({
-        message: 'Register plugins for',
+        message: 'Configure agents',
         choices,
       });
-      selected = detected.filter((d) => selectedNames.includes(d.manifest.name));
-      if (selected.length === 0) {
-        console.log('  Skipped plugin registration.');
+      selectedManifests = allManifests.filter((m) => selectedNames.includes(m.name));
+      if (selectedManifests.length === 0) {
+        console.log('  Skipped agent configuration.');
       }
     }
 
-    const portableVaultDir = collapseHomePath(vaultDir);
-    const pkgRoot = resolvePackageRoot();
-
-    registerSymbionts(selected, projectRoot, pkgRoot, portableVaultDir, 'Registered');
+    if (selectedManifests.length > 0) {
+      const portableVaultDir = collapseHomePath(vaultDir);
+      const pkgRoot = resolvePackageRoot();
+      registerSymbionts(selectedManifests, projectRoot, pkgRoot, portableVaultDir, 'Registered');
+    }
   }
 
   // --- Summary ---

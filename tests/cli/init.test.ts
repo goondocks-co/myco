@@ -21,9 +21,10 @@ vi.mock('@myco/db/schema.js', () => ({
   EMBEDDING_DIMENSIONS: 1024,
 }));
 
-// Prevent init from detecting real symbionts and running plugin install in tests
+// Prevent init from detecting real symbionts and running registration in tests
 vi.mock('@myco/symbionts/detect.js', () => ({
   detectSymbionts: vi.fn().mockReturnValue([]),
+  loadManifests: vi.fn().mockReturnValue([]),
   resolvePackageRoot: vi.fn().mockReturnValue('/tmp'),
 }));
 
