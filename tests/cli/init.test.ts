@@ -21,12 +21,6 @@ vi.mock('@myco/db/schema.js', () => ({
   EMBEDDING_DIMENSIONS: 1024,
 }));
 
-// Prevent tests from modifying .claude/settings.json when vault is outside project root
-vi.mock('@myco/cli/shared.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@myco/cli/shared.js')>();
-  return { ...actual, configureVaultEnv: vi.fn() };
-});
-
 // Prevent init from detecting real symbionts and running plugin install in tests
 vi.mock('@myco/symbionts/detect.js', () => ({
   detectSymbionts: vi.fn().mockReturnValue([]),

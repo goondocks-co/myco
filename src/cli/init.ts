@@ -6,8 +6,8 @@ import {
   VAULT_GITIGNORE,
   collapseHomePath,
 } from './shared.js';
-import { detectSymbionts } from '../symbionts/detect.js';
-import { SymbiontRegistry } from '../symbionts/registry.js';
+import { detectSymbionts, resolvePackageRoot } from '../symbionts/detect.js';
+import { SymbiontInstaller } from '../symbionts/installer.js';
 import { MycoConfigSchema } from '../config/schema.js';
 import { updateConfig, saveConfig } from '../config/loader.js';
 import { writeSecret } from '../config/secrets.js';
@@ -173,19 +173,27 @@ export async function run(args: string[]): Promise<void> {
     }
 
     const portableVaultDir = collapseHomePath(vaultDir);
-    const registry = new SymbiontRegistry();
+    const pkgRoot = resolvePackageRoot();
 
     for (const d of selected) {
       try {
-        // Registration will be handled by SymbiontInstaller (Task 5)
-        console.log(`  ${d.manifest.displayName}: plugin registration pending installer integration.`);
+        const installer = new SymbiontInstaller(d.manifest, projectRoot, pkgRoot);
+        const result = installer.install(portableVaultDir);
 
-        const adapter = registry.getAdapter(d.manifest.name);
-        if (adapter?.configureVaultEnv(projectRoot, portableVaultDir)) {
-          console.log(`  Set MYCO_VAULT_DIR for ${d.manifest.displayName}`);
+        const installed = [
+          result.hooks && 'hooks',
+          result.mcp && 'MCP server',
+          result.skills && 'skills',
+          result.env && 'env',
+        ].filter(Boolean);
+
+        if (installed.length > 0) {
+          console.log(`  \u2713 ${d.manifest.displayName}: ${installed.join(', ')}`);
+        } else {
+          console.log(`  \u2013 ${d.manifest.displayName}: no registration targets configured`);
         }
       } catch (err) {
-        console.error(`  Failed to register with ${d.manifest.displayName}: ${(err as Error).message}`);
+        console.error(`  \u2717 Failed to register ${d.manifest.displayName}: ${(err as Error).message}`);
       }
     }
   }
