@@ -58,8 +58,11 @@ export function generateUpdateScript(params: InstallParams): string {
     JSON.stringify({ error: `npm install failed for ${packageSpec}` }),
   );
 
+  // Use ${MYCO_CMD:-myco} so dev environments (myco-dev) survive the restart.
+  // Matches the myco-run pattern: exec "${MYCO_CMD:-myco}" "$@"
   return `#!/bin/sh
 set -e
+MYCO="\${MYCO_CMD:-myco}"
 
 # Wait for daemon to exit cleanly
 sleep ${UPDATE_SCRIPT_DELAY_SECONDS}
@@ -67,7 +70,7 @@ sleep ${UPDATE_SCRIPT_DELAY_SECONDS}
 # Attempt the update
 if npm install -g ${packageSpec} 2>&1; then
   # Sync project files (gitignore, symbiont registration)
-  myco update --project ${quotedProjectRoot} || true
+  "$MYCO" update --project ${quotedProjectRoot} || true
   # Clear any previous error
   rm -f ${quotedErrorPath}
 else
@@ -76,7 +79,7 @@ else
 fi
 
 # Restart daemon (works whether install succeeded or failed)
-myco daemon --vault ${quotedVaultDir} &
+"$MYCO" daemon --vault ${quotedVaultDir} &
 
 # Clean up this script
 rm -f "$0"

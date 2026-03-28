@@ -11,11 +11,16 @@ import {
   useUpdateApply,
   useUpdateChannel,
 } from '../../hooks/use-update-status';
-import { useRestart } from '../../hooks/use-restart';
 
 /* ---------- Constants ---------- */
 
 const CHANNELS = ['stable', 'beta'] as const;
+
+/** Interval for polling /health after update apply (ms). */
+const HEALTH_POLL_INTERVAL_MS = 500;
+
+/** Max time to wait for the new daemon after update apply (ms). */
+const HEALTH_POLL_TIMEOUT_MS = 60_000;
 
 /* ---------- Types ---------- */
 
@@ -36,7 +41,6 @@ export function UpdateCard() {
   const checkMutation = useUpdateCheck();
   const applyMutation = useUpdateApply();
   const channelMutation = useUpdateChannel();
-  const { restart } = useRestart();
 
   const [applyState, setApplyState] = useState<ApplyState>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -46,18 +50,36 @@ export function UpdateCard() {
     setErrorMessage(null);
     try {
       await applyMutation.mutateAsync();
+      // The daemon spawns a detached update script and SIGTERMs itself.
+      // Do NOT call restart() — that sends POST /restart which races with
+      // the update script and can restart the OLD version.
+      // Instead, poll /health directly until the new daemon is up.
       setApplyState('restarting');
-      try {
-        await restart(true);
-      } catch {
-        setApplyState('error');
-        setErrorMessage('Daemon did not restart within the expected time. Check the terminal.');
-      }
+      const deadline = Date.now() + HEALTH_POLL_TIMEOUT_MS;
+      await new Promise<void>((resolve, reject) => {
+        const check = async () => {
+          if (Date.now() > deadline) {
+            reject(new Error('timeout'));
+            return;
+          }
+          try {
+            const res = await fetch('/health');
+            if (res.ok) { resolve(); return; }
+          } catch { /* daemon still down — keep polling */ }
+          setTimeout(check, HEALTH_POLL_INTERVAL_MS);
+        };
+        // Wait a beat for the daemon to actually die before polling
+        setTimeout(check, HEALTH_POLL_INTERVAL_MS);
+      });
+      window.location.reload();
     } catch (err) {
       setApplyState('error');
-      setErrorMessage((err as Error).message);
+      const msg = (err as Error).message === 'timeout'
+        ? 'Daemon did not restart within the expected time. Check the terminal.'
+        : (err as Error).message;
+      setErrorMessage(msg);
     }
-  }, [applyMutation, restart]);
+  }, [applyMutation]);
 
   const handleCheck = useCallback(() => {
     checkMutation.mutate();
