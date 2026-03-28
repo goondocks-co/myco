@@ -15,7 +15,6 @@
     "commands/",
     "skills/",
     "hooks/",
-    ".claude-plugin/",
     "CONTRIBUTING.md"
   ],
   "scripts": {

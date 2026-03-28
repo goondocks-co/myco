@@ -4,13 +4,7 @@ Claude Code plugin that captures session knowledge (events, observations, summar
 
 ## Dogfooding
 
-We develop Myco using Myco. The plugin is loaded from the local working directory, not installed from the marketplace:
-
-```sh
-claude --plugin-dir .
-```
-
-This sets `${CLAUDE_PLUGIN_ROOT}` to the repo root. The vault lives at `~/.myco/vaults/myco/` (configured in `.env` and `.claude/settings.json`).
+We develop Myco using Myco. The vault lives at `~/.myco/vaults/myco/` (configured in `.env` and `.claude/settings.json`).
 
 **Implications for development:**
 
@@ -62,10 +56,8 @@ src/
 tests/           # Mirrors src/ structure: tests/<module>.test.ts
 hooks/           # Hook registration shell scripts (invoke dist/src/hooks/*.js)
 skills/          # Skill markdown files (subdirectory per skill)
-.claude-plugin/  # Claude Code plugin manifest + marketplace catalog
-.cursor-plugin/  # Cursor plugin manifest + marketplace catalog
 .github/         # VS Code Copilot agent plugin manifest (also CI workflows)
-.mcp.json        # MCP server config for VS Code (servers format)
+.mcp.json        # Project-level MCP config written by the SymbiontInstaller
 ui/              # React + Tailwind dashboard (Vite build → dist/ui/)
   src/
     components/  # UI components (ui/, topology/, config/, operations/)
@@ -90,7 +82,6 @@ The daemon serves a React SPA at `http://localhost:<port>/` for configuration ma
 
 - **Hooks MUST be thin.** Hook entry points in `src/hooks/` MUST delegate to the daemon via `DaemonClient`. Hooks MUST NOT contain business logic, LLM calls, or complex processing. If the daemon is unreachable, hooks spawn it via `client.ensureRunning()` and buffer events to disk for later processing.
 - **The daemon is the authority.** All event processing, session recording, spore extraction, and embedding happen in the daemon (`src/daemon/main.ts`). Hooks send events; the daemon decides what to do with them.
-- **MCP server config MUST be in `plugin.json`.** The `mcpServers` field in `.claude-plugin/plugin.json` is the only way to register MCP servers for plugins loaded via `--plugin-dir`. Do NOT use standalone `.mcp.json` for plugin MCP servers.
 - **Digest is a daemon task.** The digest engine runs inside the daemon process alongside batch processing and plan watching. It is NOT a hook or MCP server — it produces digest extracts that are served by hooks and MCP tools at query time.
 - **Agent phases execute in parallel waves.** The executor topologically sorts phases by their `dependsOn` fields into waves using Kahn's algorithm. Phases in the same wave run in parallel via `Promise.allSettled()`. Each phase gets isolated provider env via `buildPhaseEnv()`, passed to the SDK's `env` option — no `process.env` mutation.
 - **All periodic/polling work MUST use the PowerManager.** Do not use `setInterval` or `setTimeout` for recurring daemon jobs. Register jobs with `powerManager.register()` so they respect the activity-based power states (active → idle → sleep → deep_sleep). The PowerManager is the single authority for when background work executes.
@@ -228,7 +219,7 @@ make build
 1. Create entry point in `src/hooks/<hook-name>.ts` — keep it thin, export `main()`
 2. Create entry wrapper in `src/entries/<hook-name>.ts` that imports and calls `main()`
 3. Add hook name to the `HOOK_DISPATCH` map in `src/cli.ts`
-4. Add hook entry to `hooks/hooks.json` using `${CLAUDE_PLUGIN_ROOT}/bin/myco-run hook <hook-name>` command
+4. Add the hook command to the symbiont hook templates in `src/symbionts/templates/<agent>/hooks.json` so the SymbiontInstaller writes it to the project on `myco init`
 5. The hook SHOULD send events to the daemon via `DaemonClient`; only fall back to local processing if the daemon is unreachable
 
 ### Add a new daemon route
