@@ -38,6 +38,17 @@ export const MYCO_MCP_SERVER_NAME = 'myco';
 /** Marker text used to identify unmodified instruction stubs. */
 const INSTRUCTIONS_STUB_MARKER = 'Edit AGENTS.md, not this file';
 
+/** Start/end markers for the reference block prepended to existing instruction files. */
+const INSTRUCTIONS_REF_START = '<!-- myco:agents-ref:start -->';
+const INSTRUCTIONS_REF_END = '<!-- myco:agents-ref:end -->';
+
+/** Reference block prepended to existing instruction files. */
+const INSTRUCTIONS_REF_BLOCK = `${INSTRUCTIONS_REF_START}
+> **Project intelligence:** This project uses [Myco](https://myco.sh). The canonical project rules are in [\`AGENTS.md\`](AGENTS.md) — read and follow it alongside this file.
+${INSTRUCTIONS_REF_END}
+
+`;
+
 export interface InstallResult {
   hooks: boolean;
   mcp: boolean;
@@ -221,9 +232,10 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Write a thin instruction stub file that references AGENTS.md.
-   * Only writes if the file doesn't already exist — never overwrites
-   * user-maintained instruction files.
+   * Ensure the instruction file references AGENTS.md.
+   * - File doesn't exist: write the full stub template.
+   * - File exists without reference: prepend a reference block.
+   * - File already has reference: skip (idempotent).
    */
   installInstructions(): boolean {
     const reg = this.manifest.registration;
@@ -231,10 +243,21 @@ export class SymbiontInstaller {
 
     const targetPath = path.join(this.projectRoot, reg.instructionsFile);
 
-    // Never overwrite existing instruction files — they may have user content
-    try { fs.accessSync(targetPath); return false; } catch { /* doesn't exist — proceed */ }
+    // Check if file already exists
+    let existing: string | null = null;
+    try { existing = fs.readFileSync(targetPath, 'utf-8'); } catch { /* doesn't exist */ }
 
-    // Load the stub template from package
+    if (existing !== null) {
+      // File exists — check if it already has our reference
+      if (existing.includes(INSTRUCTIONS_REF_START) || existing.includes(INSTRUCTIONS_STUB_MARKER)) {
+        return false; // Already has reference — idempotent
+      }
+      // Prepend reference block to existing content
+      fs.writeFileSync(targetPath, INSTRUCTIONS_REF_BLOCK + existing, 'utf-8');
+      return true;
+    }
+
+    // File doesn't exist — write the full stub template
     const templateCandidates = [
       path.join(this.packageRoot, 'src/symbionts/templates/instructions-stub.md'),
       path.join(this.packageRoot, 'dist/src/symbionts/templates/instructions-stub.md'),
@@ -246,25 +269,44 @@ export class SymbiontInstaller {
     if (!stub) return false;
 
     stub = stub.replace('{agentDisplayName}', this.manifest.displayName);
-
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     fs.writeFileSync(targetPath, stub, 'utf-8');
     return true;
   }
 
-  /** Remove instruction stub if it's still the default template. */
+  /**
+   * Remove Myco's instruction file reference.
+   * - If file is the full stub (only Myco content): delete it.
+   * - If file has user content + prepended reference: remove just the reference block.
+   */
   uninstallInstructions(): boolean {
     const reg = this.manifest.registration;
     if (!reg?.instructionsFile) return false;
 
     const targetPath = path.join(this.projectRoot, reg.instructionsFile);
-    try {
-      const content = fs.readFileSync(targetPath, 'utf-8');
-      // Only remove if it's still the unmodified stub
-      if (!content.includes(INSTRUCTIONS_STUB_MARKER)) return false;
+    let content: string;
+    try { content = fs.readFileSync(targetPath, 'utf-8'); } catch { return false; }
+
+    // Case 1: Full stub — delete the file entirely
+    if (content.includes(INSTRUCTIONS_STUB_MARKER)) {
       fs.unlinkSync(targetPath);
       return true;
-    } catch { return false; }
+    }
+
+    // Case 2: Prepended reference block — remove just the block
+    if (content.includes(INSTRUCTIONS_REF_START)) {
+      const startIdx = content.indexOf(INSTRUCTIONS_REF_START);
+      const endIdx = content.indexOf(INSTRUCTIONS_REF_END);
+      if (endIdx > startIdx) {
+        // Remove from start marker through end marker + trailing whitespace
+        const afterEnd = endIdx + INSTRUCTIONS_REF_END.length;
+        const cleaned = (content.slice(0, startIdx) + content.slice(afterEnd)).replace(/^\n+/, '');
+        fs.writeFileSync(targetPath, cleaned, 'utf-8');
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /** List skill directory names from the package root. Returns empty array if not found. */

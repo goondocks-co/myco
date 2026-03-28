@@ -1181,12 +1181,29 @@ describe('installInstructions', () => {
     expect(content).toContain('Claude Code');
   });
 
-  it('does not overwrite existing instruction file', () => {
-    fs.writeFileSync(path.join(projectRoot, 'CLAUDE.md'), '# My custom rules\n');
+  it('prepends reference block to existing instruction file', () => {
+    fs.writeFileSync(path.join(projectRoot, 'CLAUDE.md'), '# My custom rules\n\nDo not use var.\n');
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     const result = installer.installInstructions();
+    expect(result).toBe(true);
+    const content = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf-8');
+    // Reference block prepended
+    expect(content).toContain('AGENTS.md');
+    expect(content).toContain('myco:agents-ref:start');
+    // Original content preserved
+    expect(content).toContain('# My custom rules');
+    expect(content).toContain('Do not use var.');
+  });
+
+  it('is idempotent — does not duplicate reference on existing file', () => {
+    fs.writeFileSync(path.join(projectRoot, 'CLAUDE.md'), '# My rules\n');
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installInstructions();
+    const result = installer.installInstructions(); // Second run
     expect(result).toBe(false);
-    expect(fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf-8')).toBe('# My custom rules\n');
+    const content = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf-8');
+    const matches = content.match(/myco:agents-ref:start/g);
+    expect(matches?.length).toBe(1);
   });
 
   it('creates .github/ directory for VS Code instructions', () => {
@@ -1246,8 +1263,22 @@ describe('uninstallInstructions', () => {
     expect(fs.existsSync(path.join(projectRoot, 'CLAUDE.md'))).toBe(false);
   });
 
-  it('preserves customized instruction file', () => {
+  it('removes prepended reference block, preserves user content', () => {
+    // Simulate: user had custom rules, then myco init prepended the reference
     fs.writeFileSync(path.join(projectRoot, 'CLAUDE.md'), '# My custom rules\n');
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installInstructions(); // Prepends reference
+
+    expect(installer.uninstallInstructions()).toBe(true);
+    const after = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf-8');
+    // Reference block removed
+    expect(after).not.toContain('myco:agents-ref:start');
+    // User content preserved
+    expect(after).toContain('# My custom rules');
+  });
+
+  it('preserves file with no Myco content', () => {
+    fs.writeFileSync(path.join(projectRoot, 'CLAUDE.md'), '# Pure user rules\n');
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     expect(installer.uninstallInstructions()).toBe(false);
     expect(fs.existsSync(path.join(projectRoot, 'CLAUDE.md'))).toBe(true);
