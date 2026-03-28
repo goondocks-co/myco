@@ -15,7 +15,7 @@ export async function run(args: string[]): Promise<void> {
   const projectRoot = path.dirname(vaultDir);
   const allManifests = loadManifests();
   const pkgRoot = resolvePackageRoot();
-  const keepVault = args.includes('--keep-vault');
+  const removeVault = args.includes('--remove-vault');
 
   console.log(`Removing Myco from ${projectRoot}\n`);
 
@@ -69,11 +69,11 @@ export async function run(args: string[]): Promise<void> {
 
   // --- Remove vault (unless --keep-vault) ---
 
-  if (!keepVault) {
+  if (removeVault) {
     fs.rmSync(vaultDir, { recursive: true, force: true });
     console.log(`  \u2713 Removed vault at ${vaultDir}`);
   } else {
-    console.log(`  \u2013 Vault preserved at ${vaultDir}`);
+    console.log(`  \u2013 Vault preserved at ${vaultDir} (use --remove-vault to delete)`);
   }
 
   console.log('\nMyco has been removed from this project.');
