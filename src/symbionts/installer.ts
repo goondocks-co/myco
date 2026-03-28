@@ -14,12 +14,14 @@ const MYCO_HOOK_COMMAND_PREFIX = 'myco-run';
  */
 function isMycoHookGroup(group: Record<string, unknown>): boolean {
   // Nested format: { hooks: [{ command: "myco-run ..." }] }
-  const nestedHooks = group.hooks as Array<{ command?: string }> | undefined;
-  if (nestedHooks?.some((h) => h.command?.startsWith(MYCO_HOOK_COMMAND_PREFIX))) return true;
+  if (Array.isArray(group.hooks) && group.hooks.some((h: { command?: string }) => h.command?.startsWith(MYCO_HOOK_COMMAND_PREFIX))) return true;
   // Flat format: { command: "myco-run ..." }
   if (typeof group.command === 'string' && group.command.startsWith(MYCO_HOOK_COMMAND_PREFIX)) return true;
   return false;
 }
+
+/** Comment header for Myco entries in .gitignore. */
+const GITIGNORE_SKILLS_COMMENT = '# Myco skill symlinks (machine-specific)';
 
 /** Subdirectory within the package where symbiont templates live. */
 const TEMPLATES_SUBDIR = 'src/symbionts/templates';
@@ -122,7 +124,7 @@ export class SymbiontInstaller {
     if (newEntries.length === 0) return;
 
     const separator = existing.endsWith('\n') || existing === '' ? '' : '\n';
-    const block = `${separator}\n# Myco skill symlinks (machine-specific)\n${newEntries.join('\n')}\n`;
+    const block = `${separator}\n${GITIGNORE_SKILLS_COMMENT}\n${newEntries.join('\n')}\n`;
     fs.writeFileSync(gitignorePath, existing + block, 'utf-8');
   }
 
@@ -343,11 +345,7 @@ export class SymbiontInstaller {
 
     if (!changed) return false;
 
-    if (Object.keys(settings).length === 0) {
-      try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
-    } else {
-      writeJsonFile(targetPath, settings);
-    }
+    writeOrDeleteJsonFile(targetPath, settings);
     return true;
   }
 
@@ -377,12 +375,7 @@ export class SymbiontInstaller {
       settings.hooks = cleaned;
     }
 
-    // Clean up empty settings file
-    if (Object.keys(settings).length === 0) {
-      try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
-    } else {
-      writeJsonFile(targetPath, settings);
-    }
+    writeOrDeleteJsonFile(targetPath, settings);
     return true;
   }
 
@@ -413,11 +406,7 @@ export class SymbiontInstaller {
       config.mcpServers = servers;
     }
 
-    if (Object.keys(config).length === 0) {
-      try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
-    } else {
-      writeJsonFile(targetPath, config);
-    }
+    writeOrDeleteJsonFile(targetPath, config);
     return true;
   }
 
@@ -428,22 +417,8 @@ export class SymbiontInstaller {
     const sectionHeader = `[mcp_servers.${MYCO_MCP_SERVER_NAME}]`;
     if (!raw.includes(sectionHeader)) return false;
 
-    // Remove the myco section (header + all lines until next non-subsection)
     const startIdx = raw.indexOf(sectionHeader);
-    const subsectionPrefix = `mcp_servers.${MYCO_MCP_SERVER_NAME}.`;
-    const searchStart = startIdx + sectionHeader.length;
-    const rawLines = raw.slice(searchStart).split('\n');
-    let offset = searchStart;
-    let afterIdx = -1;
-    for (const line of rawLines) {
-      offset += line.length + 1;
-      const m = line.match(TOML_SECTION_RE);
-      if (m && !m[1].startsWith(subsectionPrefix) && m[1] !== `mcp_servers.${MYCO_MCP_SERVER_NAME}`) {
-        afterIdx = offset - line.length - 1;
-        break;
-      }
-    }
-    const endIdx = afterIdx === -1 ? raw.length : afterIdx;
+    const endIdx = findTomlSectionEnd(raw, startIdx + sectionHeader.length, MYCO_MCP_SERVER_NAME);
     const before = raw.slice(0, startIdx).trimEnd();
     const after = raw.slice(endIdx).trimStart();
     const updated = (before + (before && after ? '\n\n' : '') + after).trimEnd();
@@ -502,7 +477,7 @@ export class SymbiontInstaller {
       : [];
     const lines = content.split('\n');
     const filtered = lines.filter((line) => {
-      if (line === '# Myco skill symlinks (machine-specific)') return false;
+      if (line === GITIGNORE_SKILLS_COMMENT) return false;
       if (line === `${CANONICAL_SKILLS_DIR}/`) return false;
       if (skillNames.some((name) => line === `${reg!.skillsTarget}/${name}`)) return false;
       return true;
@@ -522,6 +497,21 @@ export class SymbiontInstaller {
 
 /** TOML section header pattern. */
 const TOML_SECTION_RE = /^\[([^\]]+)\]/;
+
+/** Find where a [mcp_servers.<name>] section ends in a TOML string. */
+function findTomlSectionEnd(raw: string, searchStart: number, serverName: string): number {
+  const subsectionPrefix = `mcp_servers.${serverName}.`;
+  const rawLines = raw.slice(searchStart).split('\n');
+  let offset = searchStart;
+  for (const line of rawLines) {
+    offset += line.length + 1;
+    const m = line.match(TOML_SECTION_RE);
+    if (m && !m[1].startsWith(subsectionPrefix) && m[1] !== `mcp_servers.${serverName}`) {
+      return offset - line.length - 1;
+    }
+  }
+  return raw.length;
+}
 
 /**
  * Build/update a specific mcp_servers entry in a TOML string.
@@ -561,23 +551,8 @@ function buildTomlMcpSection(
 
   let updated: string;
   if (raw.includes(sectionHeader)) {
-    // Replace existing section (from header to next top-level section or EOF)
     const startIdx = raw.indexOf(sectionHeader);
-    const searchStart = startIdx + sectionHeader.length;
-    // Find the next section that is NOT a subsection of this server
-    const subsectionPrefix = `mcp_servers.${serverName}.`;
-    let afterIdx = -1;
-    const rawLines = raw.slice(searchStart).split('\n');
-    let offset = searchStart;
-    for (const line of rawLines) {
-      offset += line.length + 1; // +1 for newline
-      const m = line.match(TOML_SECTION_RE);
-      if (m && !m[1].startsWith(subsectionPrefix) && m[1] !== `mcp_servers.${serverName}`) {
-        afterIdx = offset - line.length - 1;
-        break;
-      }
-    }
-    const endIdx = afterIdx === -1 ? raw.length : afterIdx;
+    const endIdx = findTomlSectionEnd(raw, startIdx + sectionHeader.length, serverName);
     const before = raw.slice(0, startIdx).trimEnd();
     const after = raw.slice(endIdx);
     const separator = before ? '\n\n' : '';
@@ -632,6 +607,15 @@ function readJsonFile(filePath: string): Record<string, unknown> {
 function writeJsonFile(filePath: string, data: Record<string, unknown>): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+}
+
+/** Write a JSON file, or delete it if the object is empty. */
+function writeOrDeleteJsonFile(filePath: string, data: Record<string, unknown>): void {
+  if (Object.keys(data).length === 0) {
+    try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+  } else {
+    writeJsonFile(filePath, data);
+  }
 }
 
 function ensureSymlink(linkPath: string, target: string): void {

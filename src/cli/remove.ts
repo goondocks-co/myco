@@ -46,6 +46,7 @@ export async function run(args: string[]): Promise<void> {
         result.hooks && 'hooks',
         result.mcp && 'MCP server',
         result.skills && 'skills',
+        result.settings && 'settings',
       ].filter(Boolean);
 
       if (removed.length > 0) {
