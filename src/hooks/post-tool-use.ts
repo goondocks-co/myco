@@ -26,6 +26,7 @@ export async function main() {
       tool_input: input.toolInput,
       output_preview: typeof input.toolOutput === 'string' ? input.toolOutput.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) : undefined,
       session_id: sessionId,
+      agent: input.agent,
     });
 
     if (!result.ok) {

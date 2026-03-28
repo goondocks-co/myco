@@ -730,6 +730,7 @@ export async function main(): Promise<void> {
   // Route body schemas
   const RegisterBody = z.object({
     session_id: z.string(),
+    agent: z.string().optional(),
     branch: z.string().optional(),
     started_at: z.string().optional(),
   });
@@ -744,7 +745,7 @@ export async function main(): Promise<void> {
   // --- Session routes ---
 
   server.registerRoute('POST', '/sessions/register', async (req) => {
-    const { session_id, branch, started_at } = RegisterBody.parse(req.body);
+    const { session_id, agent, branch, started_at } = RegisterBody.parse(req.body);
     const resolvedStartedAt = started_at ?? new Date().toISOString();
     registry.register(session_id, { started_at: resolvedStartedAt, branch });
     server.updateDaemonJsonSessions(registry.sessions);
@@ -754,7 +755,7 @@ export async function main(): Promise<void> {
     const startedEpoch = Math.floor(new Date(resolvedStartedAt).getTime() / 1000);
     upsertSession({
       id: session_id,
-      agent: 'claude-code',
+      agent: agent ?? 'claude-code',
       user: null,
       project_root: process.cwd(),
       branch: branch ?? null,
@@ -809,7 +810,7 @@ export async function main(): Promise<void> {
       const startedEpoch = Math.floor(new Date(event.timestamp).getTime() / 1000);
       upsertSession({
         id: event.session_id,
-        agent: 'claude-code',
+        agent: (event as Record<string, unknown>).agent as string ?? 'claude-code',
         status: 'active',
         started_at: startedEpoch,
         created_at: now,

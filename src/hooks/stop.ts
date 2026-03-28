@@ -23,6 +23,7 @@ export async function main() {
     // scan directories or mine the transcript for the AI response.
     await client.post('/events/stop', {
       session_id: input.sessionId,
+      agent: input.agent,
       transcript_path: input.transcriptPath,
       last_assistant_message: input.lastResponse,
     });

@@ -23,6 +23,8 @@ const DEFAULT_HOOK_FIELDS = {
 
 /** Canonical hook input with normalized field names. */
 export interface NormalizedHookInput {
+  /** Detected agent name from manifest (e.g., 'claude-code', 'codex', 'windsurf'). */
+  agent: string;
   sessionId: string;
   transcriptPath?: string;
   lastResponse?: string;
@@ -33,6 +35,9 @@ export interface NormalizedHookInput {
   /** The full raw input for any fields not covered by the mapping. */
   raw: Record<string, unknown>;
 }
+
+/** Default agent name when no manifest is detected. */
+const DEFAULT_AGENT_NAME = 'claude-code';
 
 /** Cached manifest for the detected agent — resolved once per process. */
 let cachedManifest: SymbiontManifest | null | undefined;
@@ -95,6 +100,7 @@ export function normalizeHookInput(input: Record<string, unknown>): NormalizedHo
     ?? `s-${Date.now()}`;
 
   return {
+    agent: manifest?.name ?? DEFAULT_AGENT_NAME,
     sessionId,
     transcriptPath: resolveField(input, fields.transcriptPath) as string | undefined,
     lastResponse: resolveField(input, fields.lastResponse) as string | undefined,

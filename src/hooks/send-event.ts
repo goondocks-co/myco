@@ -36,7 +36,7 @@ export async function sendEvent(
     const event = buildEvent(input);
 
     const client = new DaemonClient(VAULT_DIR);
-    const result = await client.post('/events', { ...event, session_id: input.sessionId });
+    const result = await client.post('/events', { ...event, session_id: input.sessionId, agent: input.agent });
 
     if (!result.ok) {
       const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), input.sessionId);

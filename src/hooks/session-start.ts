@@ -20,7 +20,7 @@ export async function main() {
     const healthy = await client.ensureRunning();
 
     const rawInput = JSON.parse(await readStdin());
-    const { sessionId } = normalizeHookInput(rawInput);
+    const { sessionId, agent } = normalizeHookInput(rawInput);
 
     let branch: string | undefined;
     try {
@@ -30,6 +30,7 @@ export async function main() {
     if (healthy) {
       await client.post('/sessions/register', {
         session_id: sessionId,
+        agent,
         branch,
         started_at: new Date().toISOString(),
       });

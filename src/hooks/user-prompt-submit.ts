@@ -25,7 +25,7 @@ export async function main() {
 
     // Forward prompt as event for capture
     const eventResult = await client.post('/events', {
-      type: 'user_prompt', prompt, session_id: sessionId,
+      type: 'user_prompt', prompt, session_id: sessionId, agent: input.agent,
     });
 
     if (!eventResult.ok) {
