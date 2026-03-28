@@ -1,10 +1,6 @@
-# Myco — Claude Code Instructions
-
-> **Source of truth:** Read and follow [`AGENTS.md`](AGENTS.md) — it is the authoritative specification for this project's architecture, conventions, golden paths, and quality gates.
->
-> If anything in this file conflicts with `AGENTS.md`, **`AGENTS.md` wins**.
-
-This file contains only Claude Code-specific instructions that supplement `AGENTS.md`.
+<!-- myco:agents-ref:start -->
+> **Project intelligence:** This project uses [Myco](https://myco.sh). The canonical project rules are in [`AGENTS.md`](AGENTS.md) — read and follow it alongside this file.
+<!-- myco:agents-ref:end -->
 
 ## Agent Teams
 
