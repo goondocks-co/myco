@@ -40,27 +40,13 @@ cd myco
 npm install
 ```
 
-### 2. Run locally
-
-For **active development** (per-session, no install needed):
-
-```bash
-claude --plugin-dir /path/to/myco
-```
-
-For **persistent local dev** (survives across sessions):
-
-```bash
-claude plugin add /path/to/myco/.claude-plugin
-```
-
-### 3. Initialize the vault
+### 2. Initialize the vault
 
 ```bash
 myco init
 ```
 
-For dogfooding, the vault lives at `~/.myco/vaults/myco/` (configured via `MYCO_VAULT_DIR` in `.claude/settings.json`).
+For dogfooding, the vault lives at `~/.myco/vaults/myco/` (configured in `.claude/settings.json`).
 
 ### 4. Verify
 
@@ -92,8 +78,6 @@ make build && myco restart
 
 ```
 myco/
-├── .claude-plugin/        # Claude Code plugin manifest + marketplace catalog
-├── .cursor-plugin/        # Cursor plugin manifest + marketplace catalog
 ├── .github/               # CI workflows + VS Code Copilot agent manifest
 ├── hooks/                 # Hook registration shell scripts
 ├── skills/                # Skill markdown files (subdirectory per skill)
@@ -112,7 +96,7 @@ myco/
 │   ├── mcp/               # MCP server + tool handlers
 │   ├── prompts/           # LLM prompt templates (extraction, summary, title, classification)
 │   ├── services/          # Shared service logic (used by both CLI and API)
-│   ├── symbionts/         # Symbiont adapters (Claude Code, Cursor) — transcript discovery + parsing
+│   ├── symbionts/         # Symbiont adapters (Claude Code, Cursor, Codex) — transcript discovery, parsing, and project-local registration
 │   └── vault/             # Reader, writer, Zod schemas for database records
 ├── tests/                 # Mirrors src/ structure
 ├── ui/                    # React + Tailwind dashboard (Vite build → dist/ui/)

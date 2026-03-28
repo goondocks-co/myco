@@ -1,0 +1,7 @@
+{
+  "myco": {
+    "type": "stdio",
+    "command": "myco-run",
+    "args": ["mcp"]
+  }
+}

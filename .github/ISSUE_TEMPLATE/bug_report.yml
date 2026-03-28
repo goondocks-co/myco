@@ -14,7 +14,7 @@ body:
         - Vault (indexing, embeddings, SQLite)
         - CLI commands (init, stats, logs, rebuild)
         - Dashboard (configuration, operations, topology)
-        - Plugin installation / configuration
+        - Installation / configuration
         - Other
     validations:
       required: true

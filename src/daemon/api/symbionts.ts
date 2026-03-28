@@ -10,6 +10,7 @@ interface SymbiontInfo {
   name: string;
   displayName: string;
   binary: string;
+  resumeCommand?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -29,6 +30,7 @@ export async function handleListSymbionts(): Promise<RouteResponse> {
     name: m.name,
     displayName: m.displayName,
     binary: m.binary,
+    ...(m.resumeCommand ? { resumeCommand: m.resumeCommand } : {}),
   }));
 
   return { body: { symbionts } };

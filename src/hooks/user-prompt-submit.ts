@@ -1,5 +1,6 @@
 import { DaemonClient } from './client.js';
 import { readStdin } from './read-stdin.js';
+import { normalizeHookInput } from './normalize.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import fs from 'node:fs';
@@ -10,9 +11,10 @@ export async function main() {
   if (!fs.existsSync(path.join(VAULT_DIR, 'myco.yaml'))) return;
 
   try {
-    const input = JSON.parse(await readStdin());
+    const rawInput = JSON.parse(await readStdin());
+    const input = normalizeHookInput(rawInput);
     const prompt = input.prompt ?? '';
-    const sessionId = input.session_id ?? `s-${Date.now()}`;
+    const sessionId = input.sessionId;
 
     const client = new DaemonClient(VAULT_DIR);
     // Spawn daemon if needed but don't block on full health check backoff.
@@ -23,7 +25,7 @@ export async function main() {
 
     // Forward prompt as event for capture
     const eventResult = await client.post('/events', {
-      type: 'user_prompt', prompt, session_id: sessionId,
+      type: 'user_prompt', prompt, session_id: sessionId, agent: input.agent,
     });
 
     if (!eventResult.ok) {

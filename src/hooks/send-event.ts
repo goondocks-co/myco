@@ -8,6 +8,7 @@
 
 import { DaemonClient } from './client.js';
 import { readStdin } from './read-stdin.js';
+import { normalizeHookInput, type NormalizedHookInput } from './normalize.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import fs from 'node:fs';
@@ -17,28 +18,28 @@ import path from 'node:path';
  * Read hook stdin, POST event to daemon, buffer on failure.
  *
  * @param hookName — used for error logging (e.g., 'subagent-start')
- * @param buildEvent — maps the raw hook input to the event payload.
- *   Receives the parsed stdin JSON and the resolved session ID.
+ * @param buildEvent — maps the normalized hook input to the event payload.
+ *   Receives a NormalizedHookInput with canonical field names.
  *   Return the full event object (must include `type`).
  */
 export async function sendEvent(
   hookName: string,
-  buildEvent: (input: Record<string, unknown>, sessionId: string) => Record<string, unknown>,
+  buildEvent: (input: NormalizedHookInput) => Record<string, unknown>,
 ): Promise<void> {
   const VAULT_DIR = resolveVaultDir();
   if (!fs.existsSync(path.join(VAULT_DIR, 'myco.yaml'))) return;
 
   try {
-    const input = JSON.parse(await readStdin()) as Record<string, unknown>;
-    const sessionId = (input.session_id as string) ?? process.env.MYCO_SESSION_ID ?? `s-${Date.now()}`;
+    const rawInput = JSON.parse(await readStdin()) as Record<string, unknown>;
+    const input = normalizeHookInput(rawInput);
 
-    const event = buildEvent(input, sessionId);
+    const event = buildEvent(input);
 
     const client = new DaemonClient(VAULT_DIR);
-    const result = await client.post('/events', { ...event, session_id: sessionId });
+    const result = await client.post('/events', { ...event, session_id: input.sessionId, agent: input.agent });
 
     if (!result.ok) {
-      const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
+      const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), input.sessionId);
       // Strip session_id from buffer entry — it's in the filename
       const { session_id: _, ...bufferPayload } = event;
       buffer.append(bufferPayload);

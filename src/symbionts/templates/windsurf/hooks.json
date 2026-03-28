@@ -1,0 +1,22 @@
+{
+  "pre_user_prompt": [
+    {
+      "command": "myco-run hook user-prompt-submit"
+    }
+  ],
+  "post_run_command": [
+    {
+      "command": "myco-run hook post-tool-use"
+    }
+  ],
+  "post_write_code": [
+    {
+      "command": "myco-run hook post-tool-use"
+    }
+  ],
+  "post_cascade_response": [
+    {
+      "command": "myco-run hook stop"
+    }
+  ]
+}

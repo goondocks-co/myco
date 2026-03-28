@@ -36,12 +36,22 @@ export interface TranscriptTurn {
  * Each agent's hook system uses different field names for the same data.
  */
 export interface HookFieldNames {
+  /** Field name for the session ID (e.g., 'session_id', 'sessionId', 'trajectory_id') */
+  sessionId: string;
   /** Field name for the transcript file path (e.g., 'transcript_path') */
   transcriptPath: string;
   /** Field name for the last AI response text (e.g., 'last_assistant_message') */
   lastResponse: string;
-  /** Field name for the session ID (e.g., 'session_id') */
-  sessionId: string;
+  /** Field name for the user prompt (e.g., 'prompt') */
+  prompt: string;
+  /** Field name for the tool name (e.g., 'tool_name') */
+  toolName: string;
+  /** Field name for the tool input (e.g., 'tool_input'). Supports dot notation for nested objects. */
+  toolInput: string;
+  /** Field name for the tool output (e.g., 'tool_output'). Supports dot notation for nested objects. */
+  toolOutput: string;
+  /** Env var fallback for session ID (e.g., 'GEMINI_SESSION_ID'). */
+  sessionIdEnv?: string;
 }
 
 export interface SymbiontAdapter {
@@ -66,12 +76,6 @@ export interface SymbiontAdapter {
    */
   parseTurns(content: string): TranscriptTurn[];
 
-  /**
-   * Write MYCO_VAULT_DIR into this agent's project-level config file.
-   * Called during init when the vault is outside the project root.
-   * Returns true if the config was written, false if not applicable.
-   */
-  configureVaultEnv(projectRoot: string, vaultDir: string): boolean;
 }
 
 /**
@@ -105,10 +109,9 @@ export function createPerProjectAdapter(
     name: name ?? `custom:${path.basename(baseDir)}`,
     displayName: `Custom (${baseDir})`,
     pluginRootEnvVar: '',
-    hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
+    hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', prompt: 'prompt', toolName: 'tool_name', toolInput: 'tool_input', toolOutput: 'tool_output' },
     findTranscript: (sessionId) => findJsonlInSubdirs(baseDir, sessionId),
     parseTurns,
-    configureVaultEnv: () => false,
   };
 }
 

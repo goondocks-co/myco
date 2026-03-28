@@ -37,26 +37,58 @@ dev-link:
 	@mkdir -p $(HOME)/.local/bin
 	@ln -sf $(PWD)/dist/src/cli.js $(HOME)/.local/bin/myco-dev
 	@chmod +x $(HOME)/.local/bin/myco-dev
+	@ln -sf $(PWD)/bin/myco-run $(HOME)/.local/bin/myco-run
+	@chmod +x $(HOME)/.local/bin/myco-run
 	@node -e '\
-		const fs = require("fs"); \
-		const p = ".claude/settings.json"; \
-		let s = {}; \
-		try { s = JSON.parse(fs.readFileSync(p, "utf-8")); } catch {} \
-		s.env = s.env || {}; \
-		s.env.MYCO_CMD = "myco-dev"; \
-		fs.writeFileSync(p, JSON.stringify(s, null, 2) + "\n");'
+		const fs = require("fs"), path = require("path"); \
+		function setEnvJson(p, key, val) { \
+			let s = {}; \
+			try { s = JSON.parse(fs.readFileSync(p, "utf-8")); } catch {} \
+			s.env = s.env || {}; s.env[key] = val; \
+			fs.writeFileSync(p, JSON.stringify(s, null, 2) + "\n"); \
+		} \
+		function setEnvToml(p, key, val) { \
+			let raw = ""; \
+			try { raw = fs.readFileSync(p, "utf-8"); } catch { return; } \
+			const section = "[mcp_servers.myco.env]"; \
+			const entry = key + " = \"" + val + "\""; \
+			if (raw.includes(section)) { \
+				const lines = raw.split("\n"); \
+				const idx = lines.findIndex(l => l.trim() === section); \
+				const existing = lines.findIndex((l, i) => i > idx && l.startsWith(key + " =")); \
+				if (existing > -1) { lines[existing] = entry; } \
+				else { lines.splice(idx + 1, 0, entry); } \
+				fs.writeFileSync(p, lines.join("\n")); \
+			} \
+		} \
+		if (fs.existsSync(".claude/settings.json") || fs.existsSync(".claude")) setEnvJson(".claude/settings.json", "MYCO_CMD", "myco-dev"); \
+		if (fs.existsSync(".cursor/mcp.json")) setEnvJson(".cursor/mcp.json", "MYCO_CMD", "myco-dev"); \
+		if (fs.existsSync(".codex/config.toml")) setEnvToml(".codex/config.toml", "MYCO_CMD", "myco-dev");'
 	@echo "✓ myco-dev linked to local build"
-	@echo "✓ MYCO_CMD=myco-dev set in .claude/settings.json"
+	@echo "✓ myco-run linked for hook commands"
+	@echo "✓ MYCO_CMD=myco-dev set in all configured agent settings"
 
 dev-unlink:
 	@rm -f $(HOME)/.local/bin/myco-dev
+	@rm -f $(HOME)/.local/bin/myco-run
 	@node -e '\
 		const fs = require("fs"); \
-		const p = ".claude/settings.json"; \
-		try { \
-			const s = JSON.parse(fs.readFileSync(p, "utf-8")); \
-			if (s.env) { delete s.env.MYCO_CMD; } \
-			fs.writeFileSync(p, JSON.stringify(s, null, 2) + "\n"); \
-		} catch {}'
-	@echo "✓ myco-dev unlinked"
-	@echo "✓ MYCO_CMD removed from .claude/settings.json"
+		function clearEnvJson(p, key) { \
+			try { \
+				const s = JSON.parse(fs.readFileSync(p, "utf-8")); \
+				if (s.env) { delete s.env[key]; } \
+				fs.writeFileSync(p, JSON.stringify(s, null, 2) + "\n"); \
+			} catch {} \
+		} \
+		function clearEnvToml(p, key) { \
+			try { \
+				let raw = fs.readFileSync(p, "utf-8"); \
+				const lines = raw.split("\n").filter(l => !l.startsWith(key + " =")); \
+				fs.writeFileSync(p, lines.join("\n")); \
+			} catch {} \
+		} \
+		clearEnvJson(".claude/settings.json", "MYCO_CMD"); \
+		clearEnvJson(".cursor/mcp.json", "MYCO_CMD"); \
+		clearEnvToml(".codex/config.toml", "MYCO_CMD");'
+	@echo "✓ myco-dev and myco-run unlinked"
+	@echo "✓ MYCO_CMD removed from all agent settings"

@@ -12,6 +12,7 @@ export interface SymbiontInfo {
   name: string;
   displayName: string;
   binary: string;
+  resumeCommand?: string;
 }
 
 interface SymbiontsResponse {
@@ -32,7 +33,8 @@ export function useSymbionts() {
 
 /**
  * Build a resume command for the given agent and session ID.
- * Returns null if the agent is not in the symbiont list.
+ * Uses the manifest-declared resumeCommand template with {sessionId} placeholder.
+ * Returns null if the agent has no resume command (IDE-based agents).
  */
 export function buildResumeCommand(
   symbionts: SymbiontInfo[],
@@ -40,6 +42,6 @@ export function buildResumeCommand(
   sessionId: string,
 ): string | null {
   const symbiont = symbionts.find((s) => s.name === agent);
-  if (!symbiont) return null;
-  return `${symbiont.binary} --resume ${sessionId}`;
+  if (!symbiont?.resumeCommand) return null;
+  return symbiont.resumeCommand.replace('{sessionId}', sessionId);
 }

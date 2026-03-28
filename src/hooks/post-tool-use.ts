@@ -1,5 +1,6 @@
 import { DaemonClient } from './client.js';
 import { readStdin } from './read-stdin.js';
+import { normalizeHookInput } from './normalize.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { TOOL_OUTPUT_PREVIEW_CHARS } from '../constants.js';
@@ -11,8 +12,9 @@ export async function main() {
   if (!fs.existsSync(path.join(VAULT_DIR, 'myco.yaml'))) return;
 
   try {
-    const input = JSON.parse(await readStdin());
-    const sessionId = input.session_id ?? process.env.MYCO_SESSION_ID ?? `s-${Date.now()}`;
+    const rawInput = JSON.parse(await readStdin());
+    const input = normalizeHookInput(rawInput);
+    const sessionId = input.sessionId;
 
     const client = new DaemonClient(VAULT_DIR);
 
@@ -20,19 +22,20 @@ export async function main() {
     // If it's down, buffer to disk. The stop or prompt hook will respawn it.
     const result = await client.post('/events', {
       type: 'tool_use',
-      tool_name: input.tool_name,
-      tool_input: input.tool_input,
-      output_preview: typeof input.tool_output === 'string' ? input.tool_output.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) : undefined,
+      tool_name: input.toolName,
+      tool_input: input.toolInput,
+      output_preview: typeof input.toolOutput === 'string' ? input.toolOutput.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) : undefined,
       session_id: sessionId,
+      agent: input.agent,
     });
 
     if (!result.ok) {
       const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
       buffer.append({
         type: 'tool_use',
-        tool: input.tool_name,
-        input: input.tool_input,
-        output_preview: typeof input.tool_output === 'string' ? input.tool_output.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) : undefined,
+        tool: input.toolName,
+        input: input.toolInput,
+        output_preview: typeof input.toolOutput === 'string' ? input.toolOutput.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) : undefined,
       });
     }
   } catch (error) {

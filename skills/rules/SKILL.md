@@ -33,6 +33,26 @@ Rules files contain **project invariants** — things every agent must follow ev
 
 **The test:** If it's an invariant that applies to every session on every branch, it's a rule. If it depends on what you're working on, it's context — let Myco inject it.
 
+## Multi-Agent File Topology
+
+Myco supports 6 coding agents. Each has its own instruction file format, but **`AGENTS.md` is the canonical source of truth** for all project rules.
+
+### File hierarchy
+
+| File | Purpose | Who reads it |
+|------|---------|-------------|
+| `AGENTS.md` | **Canonical rules** — all architecture, conventions, golden paths | Codex, VS Code Copilot, Gemini CLI, Windsurf, Cursor |
+| `CLAUDE.md` | Thin stub pointing to `AGENTS.md` + Claude-specific overrides | Claude Code |
+| `GEMINI.md` | Thin stub pointing to `AGENTS.md` + Gemini-specific overrides | Gemini CLI |
+| `.github/copilot-instructions.md` | Thin stub pointing to `AGENTS.md` | VS Code Copilot |
+
+### Rules for placement
+
+- **All rules go in `AGENTS.md`** unless they are genuinely agent-specific (e.g., "Use Claude Code agent teams for X")
+- Agent-specific files MUST start with a reference to `AGENTS.md` as the source of truth
+- Never duplicate rules across files — if it applies to all agents, it belongs in `AGENTS.md`
+- If a project has `CLAUDE.md` with substantial rules but no `AGENTS.md`, suggest migrating the rules to `AGENTS.md` and replacing `CLAUDE.md` with a thin stub
+
 ## Rule Writing Principles
 
 These principles apply whether you're writing new rules or auditing existing ones.
@@ -93,11 +113,13 @@ Specific commands that must pass before work is done. Example: "Before committin
 
 ### Step 1: Discover existing rules files
 
-Scan the project root and subdirectories for:
-- `CLAUDE.md` (root and subdirectories)
-- `AGENTS.md` (root)
+Scan the project root for:
+- `AGENTS.md` (canonical — should exist in every Myco project)
+- `CLAUDE.md` (Claude Code stub/overrides)
+- `GEMINI.md` (Gemini CLI stub/overrides)
+- `.github/copilot-instructions.md` (VS Code Copilot stub)
 
-Report what exists and what doesn't. If neither exists, offer to create CLAUDE.md.
+Report what exists. If `AGENTS.md` doesn't exist, offer to create it. If `CLAUDE.md` has substantial rules but `AGENTS.md` doesn't exist, offer to migrate.
 
 ### Step 2: Run audit checks
 
@@ -144,11 +166,12 @@ Edit the rules file with approved changes. Never auto-commit — the developer r
 1. Developer describes the rule they want
 2. Craft the rule: specific, anchored, RFC 2119 language
 3. Determine placement:
-   - **CLAUDE.md** — Rules specific to Claude Code (tool patterns, commit conventions, test commands)
-   - **AGENTS.md** — Universal rules any agent should follow (architecture, golden paths, conventions)
-   - If only one file exists, put it there
-   - If neither exists, create CLAUDE.md
-   - If CLAUDE.md contains agent-agnostic rules (architecture, golden paths), suggest creating AGENTS.md and moving them there
+   - **`AGENTS.md`** — All rules that any agent should follow (architecture, golden paths, conventions, quality gates). This is the default.
+   - **`CLAUDE.md`** — Only Claude Code-specific rules (agent team patterns, Claude-specific tool conventions)
+   - **`GEMINI.md`** — Only Gemini CLI-specific rules
+   - **`.github/copilot-instructions.md`** — Only VS Code Copilot-specific rules
+   - If only `CLAUDE.md` exists with agent-agnostic rules, suggest creating `AGENTS.md` and migrating rules there
+   - If `AGENTS.md` doesn't exist, create it as the canonical file
 4. Find the correct section (invariant, golden path, quality gate, etc.)
 5. Insert the rule
 6. Developer reviews the diff

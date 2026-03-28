@@ -1,21 +1,15 @@
 # Myco — Collective Agent Intelligence
 
-Codex plugin that captures session knowledge (events, observations, summaries) into a SQLite-backed intelligence graph and serves it back via MCP tools.
+Captures session knowledge (events, observations, summaries) into a SQLite-backed intelligence graph and serves it back via MCP tools. Supports Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, and Windsurf.
 
 ## Dogfooding
 
-We develop Myco using Myco. The plugin is loaded from the local working directory, not installed from the marketplace:
-
-```sh
-Codex --plugin-dir .
-```
-
-This sets `${CLAUDE_PLUGIN_ROOT}` to the repo root. The vault lives at `~/.myco/vaults/myco/` (configured in `.env` and `.Codex/settings.json`).
+We develop Myco using Myco. The vault lives at `.myco/` in the project root.
 
 **Implications for development:**
 
 - After changing hook or daemon code, you MUST run `make build` and then `myco-dev restart` for the daemon. Hooks pick up new code on next invocation; the daemon does not.
-- The MCP server reloads on `/reload-plugins`, but a full session restart may be needed for connection changes.
+- The MCP server reloads on plugin reload, but a full session restart may be needed for connection changes.
 - Session data from your development sessions is real vault data. Be careful with destructive vault operations — you'll lose your own session history.
 
 **How end users install Myco (not how we run it):**
@@ -23,16 +17,16 @@ This sets `${CLAUDE_PLUGIN_ROOT}` to the repo root. The vault lives at `~/.myco/
 ```sh
 curl -fsSL https://myco.sh/install.sh | sh   # Installs Node package globally
 cd your-project
-myco init                                       # Interactive wizard: embedding provider, model, plugin registration
+myco init                                       # Interactive wizard: embedding provider, model, agent registration
 ```
 
-`myco init` runs an interactive wizard that guides users through embedding provider selection (Ollama, OpenRouter, OpenAI, or skip), model selection, vault creation, and symbiont plugin registration. Use `myco doctor` to verify setup health.
+`myco init` runs an interactive wizard that guides users through embedding provider selection (Ollama, OpenRouter, OpenAI, or skip), model selection, vault creation, and agent registration. Use `myco doctor` to verify setup health.
 
 **Dev binary setup:**
 
 ```sh
-make dev-link    # Creates myco-dev symlink, sets MYCO_CMD=myco-dev in settings.json
-make dev-unlink  # Removes myco-dev, clears MYCO_CMD
+make dev-link    # Creates myco-dev + myco-run symlinks, sets MYCO_CMD in all agent settings
+make dev-unlink  # Removes symlinks, clears MYCO_CMD
 ```
 
 After changing hook or daemon code, run `make build` — the wrapper script picks up the new build automatically.
@@ -47,24 +41,22 @@ After changing hook or daemon code, run `make build` — the wrapper script pick
 
 ```
 src/
-  symbionts/     # Symbiont adapters (Codex, Cursor) for transcript discovery, parsing, and plugin registration
+  agent/         # Intelligence pipeline: wave-based DAG executor, task definitions, orchestrator, provider abstraction
   capture/       # Event buffering (EventBuffer) and buffer-based turn fallback
   config/        # Vault config loading and Zod schema
   context/       # Context injection for UserPromptSubmit hook
   daemon/        # Long-lived HTTP daemon: batch processing, session lifecycle, plan watching, digest
-  hooks/         # Codex hook entry points (thin — delegate to daemon)
+  hooks/         # Hook entry points (thin — delegate to daemon)
   index/         # SQLite FTS5 + sqlite-vec vector search
   intelligence/  # LLM backend abstraction (Ollama, LM Studio, Anthropic)
   mcp/           # MCP server + tool handlers
   prompts/       # LLM prompt templates (extraction, summary, title, classification)
+  symbionts/     # Symbiont adapters and manifests for all supported agents
   vault/         # Reader, writer, Zod schemas for database records
 tests/           # Mirrors src/ structure: tests/<module>.test.ts
 hooks/           # Hook registration shell scripts (invoke dist/src/hooks/*.js)
 skills/          # Skill markdown files (subdirectory per skill)
-.Codex-plugin/  # Codex plugin manifest + marketplace catalog
-.cursor-plugin/  # Cursor plugin manifest + marketplace catalog
-.github/         # VS Code Copilot agent plugin manifest (also CI workflows)
-.mcp.json        # MCP server config for VS Code (servers format)
+.mcp.json        # Project-level MCP config written by the SymbiontInstaller
 ui/              # React + Tailwind dashboard (Vite build → dist/ui/)
   src/
     components/  # UI components (ui/, topology/, config/, operations/)
@@ -89,8 +81,9 @@ The daemon serves a React SPA at `http://localhost:<port>/` for configuration ma
 
 - **Hooks MUST be thin.** Hook entry points in `src/hooks/` MUST delegate to the daemon via `DaemonClient`. Hooks MUST NOT contain business logic, LLM calls, or complex processing. If the daemon is unreachable, hooks spawn it via `client.ensureRunning()` and buffer events to disk for later processing.
 - **The daemon is the authority.** All event processing, session recording, spore extraction, and embedding happen in the daemon (`src/daemon/main.ts`). Hooks send events; the daemon decides what to do with them.
-- **MCP server config MUST be in `plugin.json`.** The `mcpServers` field in `.Codex-plugin/plugin.json` is the only way to register MCP servers for plugins loaded via `--plugin-dir`. Do NOT use standalone `.mcp.json` for plugin MCP servers.
 - **Digest is a daemon task.** The digest engine runs inside the daemon process alongside batch processing and plan watching. It is NOT a hook or MCP server — it produces digest extracts that are served by hooks and MCP tools at query time.
+- **Agent phases execute in parallel waves.** The executor topologically sorts phases by their `dependsOn` fields into waves using Kahn's algorithm. Phases in the same wave run in parallel via `Promise.allSettled()`. Each phase gets isolated provider env via `buildPhaseEnv()`, passed to the SDK's `env` option — no `process.env` mutation.
+- **All periodic/polling work MUST use the PowerManager.** Do not use `setInterval` or `setTimeout` for recurring daemon jobs. Register jobs with `powerManager.register()` so they respect the activity-based power states (active → idle → sleep → deep_sleep). The PowerManager is the single authority for when background work executes.
 
 ## Data Preservation
 
@@ -98,7 +91,7 @@ The daemon serves a React SPA at `http://localhost:<port>/` for configuration ma
 
 This is Myco's core contract. Violations:
 
-- Session records are rebuilt from the agent's authoritative transcript on each stop event. The transcript file (e.g., the agent's `.jsonl`) is the source of truth — all turns are re-parsed and the conversation section is regenerated in full. Data preservation is guaranteed by the transcript being append-only, not by the session write logic.
+- Session records are rebuilt from the agent's authoritative transcript on each stop event. The transcript file (e.g., the agent's `.jsonl`) is the source of truth — all turns are re-parsed and the conversation section is regenerated in full. Data preservation is guaranteed by the transcript being append-only, not by the session record's write logic.
 - The degraded stop path (`src/hooks/stop.ts`) MUST NOT write a session file if one already exists. It returns early; the daemon handles it when it's back.
 - Buffer files (`buffer/<session-id>.jsonl`) MUST NOT be deleted on session unregister. Session reload (SessionEnd → SessionStart) reuses the same session ID. Buffers are cleaned up by age (>24h) on daemon startup only.
 - `observation_type` in spore frontmatter accepts any string (`z.string()`). The LLM prompt guides types; the schema MUST NOT reject unexpected values.
@@ -157,14 +150,14 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
 | **Lineage edge** | Automatic graph connection created by daemon on insert: FROM_SESSION, EXTRACTED_FROM, HAS_BATCH, DERIVED_FROM. No LLM needed. |
 | **Semantic edge** | Intelligence graph connection created by agent: RELATES_TO, SUPERSEDED_BY, REFERENCES, DEPENDS_ON, AFFECTS. LLM-driven. |
 | **Graph edge** | Stored in `graph_edges` table. Supports cross-type references between session, batch, spore, and entity nodes. |
-| **Symbiont** | External coding agent that Myco integrates with (Codex, Cursor). Named for the mycorrhizal symbiotic relationship. Declared via YAML manifests in `src/symbionts/manifests/`. |
+| **Symbiont** | External coding agent that Myco integrates with (Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf). Named for the mycorrhizal symbiotic relationship. Declared via YAML manifests in `src/symbionts/manifests/`. |
 | **Wave** | Group of phases whose dependencies are all satisfied, executing in parallel via `Promise.allSettled()`. The executor computes waves from the phase `dependsOn` DAG using topological sort. |
 | **Phase dependency** | DAG edge between phases declared via `dependsOn` in task YAML. Phases depend on named predecessors; the executor resolves these into execution waves. |
 
 ## Vault Structure
 
 ```
-~/.myco/vaults/<vault-name>/
+.myco/   # Project-local vault
   myco.yaml          # Vault configuration
   daemon.json        # Running daemon PID/port
   index.db           # SQLite FTS5 index
@@ -225,7 +218,7 @@ make build
 1. Create entry point in `src/hooks/<hook-name>.ts` — keep it thin, export `main()`
 2. Create entry wrapper in `src/entries/<hook-name>.ts` that imports and calls `main()`
 3. Add hook name to the `HOOK_DISPATCH` map in `src/cli.ts`
-4. Add hook entry to `hooks/hooks.json` using `${CLAUDE_PLUGIN_ROOT}/bin/myco-run hook <hook-name>` command
+4. Add the hook command to the symbiont hook templates in `src/symbionts/templates/<agent>/hooks.json` so the SymbiontInstaller writes it to the project on `myco init`
 5. The hook SHOULD send events to the daemon via `DaemonClient`; only fall back to local processing if the daemon is unreachable
 
 ### Add a new daemon route
@@ -241,6 +234,13 @@ make build
 3. Register route in `src/daemon/main.ts` (use `server.registerRoute()` with the new `RouteRequest`/`RouteResponse` types)
 4. Add tests in `tests/daemon/api/<name>.test.ts`
 5. Add the UI in `ui/src/pages/` or `ui/src/components/` as needed
+
+### Add a new symbiont
+
+1. Create manifest at `src/symbionts/manifests/<name>.yaml` with registration targets
+2. Create templates at `src/symbionts/templates/<name>/` (hooks.json, mcp.json, settings.json)
+3. Implement transcript adapter in `src/symbionts/<name>.ts`
+4. Register adapter in `src/symbionts/registry.ts`
 
 ### Test the vault and embeddings
 
@@ -259,6 +259,23 @@ Use the CLI: `myco <command>` (or `myco-dev` in dogfooding mode)
 3. Metabolism timing in `src/daemon/digest.ts` `Metabolism` class — change active/cooldown/dormancy intervals
 4. Config in `src/config/schema.ts` `DigestSchema` — change defaults or add new options
 
+### Configure a task to use a local model
+
+1. Add to `myco.yaml`:
+   ```yaml
+   agent:
+     tasks:
+       title-summary:
+         provider:
+           type: ollama
+           model: llama3.2
+           base_url: http://localhost:11434
+   ```
+2. Or use the dashboard: Configuration → Agent Tasks → select task → Provider Config
+3. Run `myco verify` to test provider connectivity
+
+Provider priority: phase YAML `provider` > `myco.yaml` `agent.tasks` > task execution `provider` > default Anthropic.
+
 ### Restart daemon after code changes
 
 The daemon persists across sessions. After modifying daemon code, you MUST restart it:
@@ -267,33 +284,4 @@ The daemon persists across sessions. After modifying daemon code, you MUST resta
 myco restart     # or myco-dev restart in dogfooding mode
 ```
 
-Or manually: kill the PID in `~/.myco/vaults/myco/daemon.json`, then let the next session-start hook spawn a fresh one.
-
-## Agent Teams
-
-Use Codex agent teams for parallelizable work where teammates need to communicate with each other. See [docs/agent-teams.md](docs/agent-teams.md) for the full reference.
-
-### When to use agent teams
-
-- **User explicitly requests it** — always honor a direct request to create an agent team.
-- **Cross-layer implementation** — changes spanning frontend, backend, and tests where each layer can be owned independently.
-- **Competing hypothesis debugging** — multiple theories to investigate in parallel, especially when adversarial debate would surface the root cause faster.
-- **Parallel review** — reviewing a PR or codebase from multiple lenses (security, performance, coverage) simultaneously.
-- **Independent module development** — building 3+ modules with no shared files, where parallel execution saves significant time.
-
-### When NOT to use agent teams
-
-- **Sequential or dependent work** — tasks that must happen in order. Use a single session.
-- **Same-file edits** — two teammates editing the same file causes overwrites. Use a single session or subagents.
-- **Simple focused tasks** — when only the result matters and no inter-worker discussion is needed. Use subagents.
-- **Token-constrained work** — each teammate is a separate Codex instance. Use subagents for lower cost.
-
-### Rules for agent team usage
-
-- **3-5 teammates** is the default. Scale up only when the work genuinely benefits.
-- **5-6 tasks per teammate** keeps everyone productive without excessive context switching.
-- **File ownership must be exclusive** — break work so each teammate owns a different set of files. Never assign two teammates to the same file.
-- **Spawn prompts must include full context** — teammates do NOT inherit the lead's conversation history. Include all task-specific details in the spawn prompt.
-- **Require plan approval for risky changes** — use plan mode for teammates touching critical paths (auth, data, config).
-- **The lead delegates, not implements** — if the lead starts doing work itself, tell it to wait for teammates.
-- **Only the lead cleans up** — teammates must not run cleanup. Shut down all teammates before the lead cleans up the team.
+Or manually: kill the PID in `.myco/daemon.json`, then let the next session-start hook spawn a fresh one.

@@ -1,0 +1,20 @@
+name: gemini
+displayName: Gemini CLI
+binary: gemini
+configDir: .gemini
+pluginRootEnvVar: GEMINI_PLUGIN_ROOT
+resumeCommand: "gemini --resume {sessionId}"
+hookFields:
+  sessionId: session_id
+  transcriptPath: transcript_path
+  lastResponse: last_assistant_message
+  sessionIdEnv: GEMINI_SESSION_ID
+capture:
+  planDirs:
+    - .gemini/plans/
+registration:
+  hooksTarget: .gemini/settings.json
+  mcpTarget: .gemini/settings.json
+  skillsTarget: .agents/skills
+  settingsTarget: .gemini/settings.json
+  instructionsFile: GEMINI.md
