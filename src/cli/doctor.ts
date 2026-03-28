@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { isProcessAlive } from './shared.js';
+import { MYCO_MCP_SERVER_NAME, MYCO_VAULT_DIR_ENV } from '../symbionts/installer.js';
 
 // --- Named constants (no magic literals) ---
 
@@ -176,7 +177,7 @@ function isSymbiontRegistered(
       if (!fs.existsSync(mcpFile)) return false;
       const config = JSON.parse(fs.readFileSync(mcpFile, 'utf-8')) as Record<string, unknown>;
       const servers = config.mcpServers as Record<string, { env?: Record<string, string> }> | undefined;
-      return !!servers?.myco?.env?.MYCO_VAULT_DIR;
+      return !!servers?.[MYCO_MCP_SERVER_NAME]?.env?.[MYCO_VAULT_DIR_ENV];
     }
   } catch { /* config missing or malformed */ }
   return false;

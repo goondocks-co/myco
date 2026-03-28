@@ -140,7 +140,7 @@ export async function run(args: string[]): Promise<void> {
 
   // --- Symbiont detection and registration ---
 
-  const projectRoot = path.dirname(resolveVaultDir());
+  const projectRoot = path.dirname(vaultDir);
   const detected = detectSymbionts(projectRoot);
 
   if (detected.length > 0) {

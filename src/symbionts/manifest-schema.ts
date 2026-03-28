@@ -8,6 +8,7 @@ const RegistrationSchema = z.object({
   hooksTarget: z.string().optional(),
   mcpTarget: z.string().optional(),
   skillsTarget: z.string().optional(),
+  envTarget: z.enum(['settings', 'mcp-server']).optional(),
 });
 
 export const SymbiontManifestSchema = z.object({

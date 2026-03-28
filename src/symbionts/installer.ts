@@ -14,6 +14,12 @@ const SKILLS_SUBDIR = 'skills';
 /** Canonical cross-agent skills directory. */
 const CANONICAL_SKILLS_DIR = '.agents/skills';
 
+/** MCP server name used by Myco in all symbiont configurations. */
+export const MYCO_MCP_SERVER_NAME = 'myco';
+
+/** Environment variable name for the vault directory. */
+export const MYCO_VAULT_DIR_ENV = 'MYCO_VAULT_DIR';
+
 export interface InstallResult {
   hooks: boolean;
   mcp: boolean;
@@ -196,21 +202,26 @@ export class SymbiontInstaller {
 
   /**
    * Write MYCO_VAULT_DIR to the symbiont's settings file.
-   * Claude Code: .claude/settings.json under env key.
-   * Cursor: .cursor/mcp.json as env on the myco server entry.
+   * Dispatch is manifest-driven via registration.envTarget:
+   *   'settings'    → top-level env key in settingsPath (Claude Code)
+   *   'mcp-server'  → env on the myco server entry in settingsPath (Cursor)
    */
   installEnv(vaultDir: string): boolean {
     const settingsPath = this.manifest.settingsPath;
     if (!settingsPath) return false;
 
     const targetPath = path.join(this.projectRoot, settingsPath);
+    const envTarget = this.manifest.registration?.envTarget;
 
-    if (this.manifest.name === 'cursor') {
-      // For Cursor, the myco server entry must already exist (written by installMcp)
+    if (envTarget === 'mcp-server') {
+      // Env goes on the MCP server entry (must already exist — written by installMcp)
       const config = readJsonFile(targetPath);
       const servers = (config.mcpServers ?? {}) as Record<string, Record<string, unknown>>;
-      if (servers.myco) {
-        servers.myco.env = { ...(servers.myco.env as Record<string, string> ?? {}), MYCO_VAULT_DIR: vaultDir };
+      if (servers[MYCO_MCP_SERVER_NAME]) {
+        servers[MYCO_MCP_SERVER_NAME].env = {
+          ...(servers[MYCO_MCP_SERVER_NAME].env as Record<string, string> ?? {}),
+          [MYCO_VAULT_DIR_ENV]: vaultDir,
+        };
         config.mcpServers = servers;
         writeJsonFile(targetPath, config);
         return true;
@@ -218,10 +229,10 @@ export class SymbiontInstaller {
       return false;
     }
 
-    // Default: env goes in settings.json under env key
+    // Default ('settings' or unset): env goes in settings.json under env key
     const settings = readJsonFile(targetPath);
     const env = (settings.env ?? {}) as Record<string, string>;
-    env.MYCO_VAULT_DIR = vaultDir;
+    env[MYCO_VAULT_DIR_ENV] = vaultDir;
     settings.env = env;
     writeJsonFile(targetPath, settings);
     return true;

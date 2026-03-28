@@ -15,3 +15,4 @@ registration:
   hooksTarget: .claude/settings.json
   mcpTarget: .mcp.json
   skillsTarget: .claude/skills
+  envTarget: settings

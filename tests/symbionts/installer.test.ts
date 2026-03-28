@@ -19,6 +19,7 @@ const CLAUDE_MANIFEST: SymbiontManifest = {
     hooksTarget: '.claude/settings.json',
     mcpTarget: '.mcp.json',
     skillsTarget: '.claude/skills',
+    envTarget: 'settings',
   },
 };
 
@@ -33,6 +34,7 @@ const CURSOR_MANIFEST: SymbiontManifest = {
   registration: {
     mcpTarget: '.cursor/mcp.json',
     skillsTarget: '.cursor/skills',
+    envTarget: 'mcp-server',
   },
 };
 
