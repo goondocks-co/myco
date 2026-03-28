@@ -288,11 +288,33 @@ function DensityControl({ density, setDensity }: { density: Density; setDensity:
 
 /* ---------- Sidebar content (shared between mobile and desktop) ---------- */
 
-/** Self-contained badge dot for the Operations nav item. */
-function UpdateBadge() {
+/** Self-contained Operations nav link — owns update polling, controls link target and badge. */
+function OperationsNavLink({ collapsed }: { collapsed: boolean }) {
   const { data } = useUpdateStatus();
-  if (!data || data.exempt || !data.update_available) return null;
-  return <span className="h-2 w-2 rounded-full bg-secondary shrink-0 ml-auto" />;
+  const hasUpdate = !!(data && !data.exempt && data.update_available);
+  const to = hasUpdate ? '/operations?tab=system' : '/operations';
+
+  return (
+    <NavLink
+      to={to}
+      title={collapsed ? 'Operations' : undefined}
+      className={({ isActive }) =>
+        cn(
+          'flex items-center rounded-md text-sm font-medium transition-colors',
+          collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
+          isActive
+            ? 'bg-primary/10 text-primary'
+            : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
+        )
+      }
+    >
+      <Wrench className="h-4 w-4 shrink-0" />
+      {!collapsed && 'Operations'}
+      {hasUpdate && (
+        <span className="h-2 w-2 rounded-full bg-secondary shrink-0 ml-auto" />
+      )}
+    </NavLink>
+  );
 }
 
 function SidebarContent({
@@ -361,27 +383,30 @@ function SidebarContent({
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 px-2 py-2" aria-label="Main navigation">
-        {NAV_ITEMS.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.to === '/'}
-            title={collapsed ? item.label : undefined}
-            className={({ isActive }) =>
-              cn(
-                'flex items-center rounded-md text-sm font-medium transition-colors',
-                collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
-                isActive
-                  ? 'bg-primary/10 text-primary'
-                  : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
-              )
-            }
-          >
-            <item.icon className="h-4 w-4 shrink-0" />
-            {!collapsed && item.label}
-            {item.to === '/operations' && <UpdateBadge />}
-          </NavLink>
-        ))}
+        {NAV_ITEMS.map((item) =>
+          item.to === '/operations' ? (
+            <OperationsNavLink key={item.to} collapsed={collapsed} />
+          ) : (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.to === '/'}
+              title={collapsed ? item.label : undefined}
+              className={({ isActive }) =>
+                cn(
+                  'flex items-center rounded-md text-sm font-medium transition-colors',
+                  collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
+                  isActive
+                    ? 'bg-primary/10 text-primary'
+                    : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
+                )
+              }
+            >
+              <item.icon className="h-4 w-4 shrink-0" />
+              {!collapsed && item.label}
+            </NavLink>
+          ),
+        )}
       </nav>
 
       {/* Footer */}
