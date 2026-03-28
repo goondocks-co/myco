@@ -22,7 +22,9 @@ function getResultPath(result: SearchResult): string {
     case 'spore':
       return `/mycelium?spore=${encodeURIComponent(result.id)}`;
     case 'plan':
-      return result.session_id ? `/sessions/${result.session_id}` : '/sessions';
+      return result.session_id
+        ? `/sessions/${result.session_id}?tab=plans&plan=${encodeURIComponent(result.id)}`
+        : '/sessions';
     case 'prompt_batch':
       return result.session_id ? `/sessions/${result.session_id}` : '/sessions';
     case 'activity':
