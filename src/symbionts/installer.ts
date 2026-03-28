@@ -37,9 +37,9 @@ export class SymbiontInstaller {
       path.join(this.packageRoot, 'dist', TEMPLATES_SUBDIR, this.manifest.name, `${name}.json`),
     ];
     for (const filePath of candidates) {
-      if (fs.existsSync(filePath)) {
+      try {
         return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      }
+      } catch { /* not found or malformed — try next */ }
     }
     return null;
   }
@@ -56,17 +56,21 @@ export class SymbiontInstaller {
     return result;
   }
 
+  /** List skill directory names from the package root. Returns empty array if not found. */
+  private listSkillDirs(): string[] {
+    try {
+      return fs.readdirSync(path.join(this.packageRoot, SKILLS_SUBDIR), { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name);
+    } catch { return []; }
+  }
+
   /** Add skill symlink paths to project .gitignore. */
   private updateGitignore(): void {
     const reg = this.manifest.registration;
     if (!reg?.skillsTarget) return;
 
-    const skillsSrc = path.join(this.packageRoot, SKILLS_SUBDIR);
-    if (!fs.existsSync(skillsSrc)) return;
-
-    const skillNames = fs.readdirSync(skillsSrc, { withFileTypes: true })
-      .filter((d) => d.isDirectory())
-      .map((d) => d.name);
+    const skillNames = this.listSkillDirs();
 
     const entries = [
       `${CANONICAL_SKILLS_DIR}/`,
@@ -77,9 +81,8 @@ export class SymbiontInstaller {
     ];
 
     const gitignorePath = path.join(this.projectRoot, '.gitignore');
-    const existing = fs.existsSync(gitignorePath)
-      ? fs.readFileSync(gitignorePath, 'utf-8')
-      : '';
+    let existing = '';
+    try { existing = fs.readFileSync(gitignorePath, 'utf-8'); } catch { /* doesn't exist yet */ }
 
     const newEntries = entries.filter((e) => !existing.includes(e));
     if (newEntries.length === 0) return;
@@ -160,14 +163,10 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     if (!reg?.skillsTarget) return false;
 
-    const skillsSrc = path.join(this.packageRoot, SKILLS_SUBDIR);
-    if (!fs.existsSync(skillsSrc)) return false;
-
-    const skillNames = fs.readdirSync(skillsSrc, { withFileTypes: true })
-      .filter((d) => d.isDirectory())
-      .map((d) => d.name);
-
+    const skillNames = this.listSkillDirs();
     if (skillNames.length === 0) return false;
+
+    const skillsSrc = path.join(this.packageRoot, SKILLS_SUBDIR);
 
     // Create canonical symlinks: .agents/skills/<name> -> package skills
     const canonicalDir = path.join(this.projectRoot, CANONICAL_SKILLS_DIR);
@@ -232,7 +231,6 @@ export class SymbiontInstaller {
 // --- Helpers ---
 
 function readJsonFile(filePath: string): Record<string, unknown> {
-  if (!fs.existsSync(filePath)) return {};
   try {
     return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
   } catch {

@@ -3,6 +3,7 @@ displayName: Cursor
 binary: cursor
 configDir: .cursor
 pluginRootEnvVar: CURSOR_PLUGIN_ROOT
+settingsPath: .cursor/mcp.json
 hookFields:
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
