@@ -200,10 +200,10 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
 
   const vaultSearchSemantic = tool(
     'vault_search_semantic',
-    'Semantic similarity search across embedded vault content (spores, sessions). Best for finding conceptually related content. Returns results ranked by similarity score.',
+    'Semantic similarity search across embedded vault content (spores, sessions, plans, artifacts). Best for finding conceptually related content. Returns results ranked by similarity score.',
     {
       query: z.string().describe('Search query text'),
-      namespace: z.string().optional().describe('Restrict to a content type: spores, sessions'),
+      namespace: z.string().optional().describe('Restrict to a content type: spores, sessions, plans, artifacts. Omit to search all.'),
       limit: z.number().optional().describe('Maximum results to return'),
     },
     async (args) => {

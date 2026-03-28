@@ -453,7 +453,6 @@ phases:
 
   - name: report
     dependsOn: [extract, summarize, consolidate, graph, digest-assess, digest-10000, digest-5000, digest-1500]
-    skipPriorContext: true
     prompt: |
       Summarize what was done across all phases.
 

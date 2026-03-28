@@ -61,7 +61,7 @@ Each phase runs with scoped tools, a turn budget, isolated provider config, and 
 
 **Provider flexibility** — every task and phase can use a different LLM provider. Run title generation on a fast local model via Ollama, extraction on Claude, and consolidation on a larger local model via LM Studio. Configure globally or per-task in `myco.yaml`, or use the [dashboard](#dashboard) to manage assignments visually.
 
-Seven built-in tasks cover the full lifecycle, from lightweight `title-summary` to the complete `full-intelligence` pipeline. See the [Lifecycle docs](docs/lifecycle.md) for the full architecture.
+Seven built-in tasks cover the full lifecycle, from lightweight `title-summary` to the complete `full-intelligence` pipeline. For the full breakdown — wave execution, phase dependencies, tool scoping, orchestrator planning, and provider config — see the [Agent System docs](docs/agent-system.md).
 
 ### Digest
 
