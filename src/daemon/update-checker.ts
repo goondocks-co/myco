@@ -230,9 +230,10 @@ function buildCheckResult(
   config: UpdateConfig,
   error: string | null,
 ): CheckResult {
-  const targetVersion = cache.channel === 'stable'
-    ? cache.latest_stable
-    : resolveHigherVersion(cache.latest_stable, cache.latest_beta);
+  const targetVersion = resolveTargetVersion(
+    { latest: cache.latest_stable, beta: cache.latest_beta ?? undefined },
+    cache.channel,
+  );
 
   const update_available =
     semver.valid(currentVersion) !== null &&
@@ -250,12 +251,6 @@ function buildCheckResult(
     last_check: cache.checked_at,
     error,
   };
-}
-
-/** Returns the higher of two semver strings. When beta is null, returns stable. */
-function resolveHigherVersion(stable: string, beta: string | null): string {
-  if (beta === null) return stable;
-  return semver.gt(beta, stable) ? beta : stable;
 }
 
 // ---------------------------------------------------------------------------
@@ -335,11 +330,18 @@ export async function checkForUpdate(currentVersion: string): Promise<CheckResul
 /**
  * Builds a CheckResult from cached data without hitting the registry.
  * Returns null when no cache exists.
+ *
+ * Accepts optional pre-read `cache` and `config` to avoid redundant file
+ * reads when the caller has already loaded them (e.g. for a staleness check).
  */
-export function statusFromCache(currentVersion: string): CheckResult | null {
-  const cache = readCachedCheck();
-  if (cache === null) return null;
+export function statusFromCache(
+  currentVersion: string,
+  cache?: CachedCheck | null,
+  config?: UpdateConfig,
+): CheckResult | null {
+  const resolvedCache = cache !== undefined ? cache : readCachedCheck();
+  if (resolvedCache === null) return null;
 
-  const config = readUpdateConfig();
-  return buildCheckResult(currentVersion, cache, config, null);
+  const resolvedConfig = config !== undefined ? config : readUpdateConfig();
+  return buildCheckResult(currentVersion, resolvedCache, resolvedConfig, null);
 }

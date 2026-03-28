@@ -80,7 +80,8 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       checkForUpdate(currentVersion).catch(() => {});
     }
 
-    return { body: { exempt: false, ...statusFromCache(currentVersion) } };
+    // Pass pre-read config and cache to avoid reading the files a second time.
+    return { body: { exempt: false, ...statusFromCache(currentVersion, cache, config) } };
   }
 
   /**

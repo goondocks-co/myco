@@ -13,6 +13,10 @@ import {
 } from '../../hooks/use-update-status';
 import { useRestart } from '../../hooks/use-restart';
 
+/* ---------- Constants ---------- */
+
+const CHANNELS = ['stable', 'beta'] as const;
+
 /* ---------- Types ---------- */
 
 type ApplyState = 'idle' | 'applying' | 'restarting' | 'error';
@@ -150,7 +154,7 @@ export function UpdateCard() {
       {/* Channel toggle row */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1">
-          {(['stable', 'beta'] as const).map((ch) => (
+          {CHANNELS.map((ch) => (
             <Button
               key={ch}
               variant={activeChannel === ch ? 'default' : 'ghost'}

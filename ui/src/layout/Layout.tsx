@@ -288,6 +288,13 @@ function DensityControl({ density, setDensity }: { density: Density; setDensity:
 
 /* ---------- Sidebar content (shared between mobile and desktop) ---------- */
 
+/** Self-contained badge dot for the Operations nav item. */
+function UpdateBadge() {
+  const { data } = useUpdateStatus();
+  if (!data || data.exempt || !data.update_available) return null;
+  return <span className="h-2 w-2 rounded-full bg-secondary shrink-0 ml-auto" />;
+}
+
 function SidebarContent({
   collapsed,
   vaultName,
@@ -296,7 +303,6 @@ function SidebarContent({
   onSearchOpen,
   onCollapseToggle,
   showCollapseToggle,
-  updateAvailable,
 }: {
   collapsed: boolean;
   vaultName: string | undefined;
@@ -305,7 +311,6 @@ function SidebarContent({
   onSearchOpen: () => void;
   onCollapseToggle?: () => void;
   showCollapseToggle: boolean;
-  updateAvailable: boolean;
 }) {
   return (
     <>
@@ -374,9 +379,7 @@ function SidebarContent({
           >
             <item.icon className="h-4 w-4 shrink-0" />
             {!collapsed && item.label}
-            {item.to === '/operations' && updateAvailable && (
-              <span className="h-2 w-2 rounded-full bg-secondary shrink-0 ml-auto" />
-            )}
+            {item.to === '/operations' && <UpdateBadge />}
           </NavLink>
         ))}
       </nav>
@@ -420,8 +423,6 @@ export default function Layout() {
   const vaultName = stats?.vault.name;
   const [searchOpen, setSearchOpen] = useState(false);
   const drawer = useMobileDrawer();
-  const { data: updateData } = useUpdateStatus();
-  const updateAvailable = !!(updateData && !updateData.exempt && updateData.update_available);
 
   // Register Cmd+K / Ctrl+K global shortcut
   useEffect(() => {
@@ -506,7 +507,6 @@ export default function Layout() {
             setDensity={setDensity}
             onSearchOpen={openSearch}
             showCollapseToggle={false}
-            updateAvailable={updateAvailable}
           />
         </aside>
       )}
@@ -527,7 +527,6 @@ export default function Layout() {
             onSearchOpen={openSearch}
             onCollapseToggle={toggle}
             showCollapseToggle={true}
-            updateAvailable={updateAvailable}
           />
         </aside>
       )}
