@@ -23,6 +23,7 @@ import type { RegisteredSession } from './lifecycle.js';
 import { handleGetConfig, handlePutConfig } from './api/config.js';
 import { handleLogSearch, handleLogStream, handleLogDetail } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
+import { createUpdateHandlers } from './api/update.js';
 import { getMachineId } from './machine-id.js';
 import { createBackupHandlers } from './api/backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
@@ -105,6 +106,7 @@ import {
   POWER_ACTIVE_INTERVAL_MS,
   POWER_SLEEP_INTERVAL_MS,
   SYNC_PROTOCOL_VERSION,
+  RESTART_RESPONSE_FLUSH_MS,
   epochSeconds,
   MS_PER_SECOND,
   MS_PER_DAY,
@@ -1346,6 +1348,25 @@ export async function main(): Promise<void> {
 
   server.registerRoute('GET', '/api/models', async (req) => handleGetModels(req));
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir, progressTracker }, req.body));
+
+  // --- Update routes ---
+  const updateProjectRoot = path.dirname(vaultDir);
+  const updateHandlers = createUpdateHandlers({
+    vaultDir,
+    projectRoot: updateProjectRoot,
+    currentVersion: server.version,
+    scheduleShutdown: () => {
+      setTimeout(() => {
+        process.kill(process.pid, 'SIGTERM');
+      }, RESTART_RESPONSE_FLUSH_MS);
+    },
+  });
+
+  server.registerRoute('GET', '/api/update/status', async (req) => updateHandlers.handleUpdateStatus(req));
+  server.registerRoute('POST', '/api/update/check', async (req) => updateHandlers.handleUpdateCheck(req));
+  server.registerRoute('POST', '/api/update/apply', async (req) => updateHandlers.handleUpdateApply(req));
+  server.registerRoute('PUT', '/api/update/channel', async (req) => updateHandlers.handleUpdateChannel(req));
+
   server.registerRoute('GET', '/api/progress/:token', async (req) => handleGetProgress(progressTracker, req.params.token));
 
   server.registerRoute('GET', '/api/sessions', handleListSessions);

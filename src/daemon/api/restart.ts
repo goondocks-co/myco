@@ -3,13 +3,11 @@ import { z } from 'zod';
 import { resolveCliEntryPath } from '../../hooks/client.js';
 import type { RouteResponse } from '../router.js';
 import type { ProgressTracker } from './progress.js';
+import { RESTART_RESPONSE_FLUSH_MS } from '../../constants.js';
 
 const RestartBodySchema = z.object({
   force: z.boolean().optional(),
 }).optional();
-
-/** Delay before initiating shutdown — allows the HTTP response to flush. */
-const RESTART_RESPONSE_FLUSH_MS = 500;
 /** Delay before the child process starts — allows the parent to fully release the port. */
 const RESTART_CHILD_DELAY_SECONDS = 3;
 

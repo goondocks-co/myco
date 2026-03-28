@@ -172,6 +172,7 @@ interface PlanRow {
   id: string;
   title: string | null;
   content: string | null;
+  session_id: string | null;
 }
 
 /** Row shape returned from artifacts table for hydration. */
@@ -212,7 +213,7 @@ export function hydrateSearchResults(
     `SELECT id, observation_type, content, session_id FROM spores WHERE id IN (SELECT value FROM json_each(?))`,
   );
   const planStmt = db.prepare(
-    `SELECT id, title, content FROM plans WHERE id IN (SELECT value FROM json_each(?))`,
+    `SELECT id, title, content, session_id FROM plans WHERE id IN (SELECT value FROM json_each(?))`,
   );
   const artifactStmt = db.prepare(
     `SELECT id, title, content FROM artifacts WHERE id IN (SELECT value FROM json_each(?))`,
@@ -275,6 +276,7 @@ export function hydrateSearchResults(
         title: row.title ?? `Plan ${row.id.slice(-6)}`,
         preview: (row.content ?? '').slice(0, SEARCH_PREVIEW_CHARS),
         score: vr.similarity,
+        ...(row.session_id != null ? { session_id: row.session_id } : {}),
       });
     }
   }
