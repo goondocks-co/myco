@@ -749,13 +749,15 @@ describe('install', () => {
 // =====================
 
 describe('gitignore management', () => {
-  it('adds .agents/skills/ to project .gitignore', () => {
+  it('adds per-skill canonical entries to project .gitignore', () => {
     fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.install();
 
     const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
-    expect(gitignore).toContain('.agents/skills/');
+    expect(gitignore).toContain('.agents/skills/myco');
+    // Should NOT blanket-ignore the directory (generated skills need to be committed)
+    expect(gitignore).not.toContain('.agents/skills/\n');
   });
 
   it('adds agent-specific skill symlinks to .gitignore', () => {
@@ -768,7 +770,6 @@ describe('gitignore management', () => {
   });
 
   it('does not duplicate existing entries', () => {
-    fs.writeFileSync(path.join(projectRoot, '.gitignore'), '.agents/skills/\n');
     fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
 
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
@@ -776,7 +777,7 @@ describe('gitignore management', () => {
     installer.install(); // Second run
 
     const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
-    const matches = gitignore.match(/\.agents\/skills\//g);
+    const matches = gitignore.match(/\.agents\/skills\/myco\b/g);
     expect(matches?.length).toBe(1);
   });
 
@@ -789,7 +790,7 @@ describe('gitignore management', () => {
 
     const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
     expect(gitignore).toContain('node_modules/');
-    expect(gitignore).toContain('.agents/skills/');
+    expect(gitignore).toContain('.agents/skills/myco');
   });
 });
 
