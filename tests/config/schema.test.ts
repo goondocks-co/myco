@@ -126,4 +126,26 @@ describe('MycoConfigSchema v3', () => {
     const config = MycoConfigSchema.parse({ version: 3 });
     expect(config.capture.plan_dirs).toEqual([]);
   });
+
+  it('parses skills config with defaults', () => {
+    const config = MycoConfigSchema.parse({ version: 3 });
+    expect(config.skills.auto_survey).toBe(false);
+    expect(config.skills.auto_evolve).toBe(false);
+    expect(config.skills.evolve_cadence).toBe('idle');
+    expect(config.skills.confidence_threshold).toBe(0.7);
+    expect(config.skills.usage_stale_days).toBe(30);
+  });
+
+  it('accepts custom skills config', () => {
+    const config = MycoConfigSchema.parse({
+      version: 3,
+      skills: {
+        auto_survey: true,
+        confidence_threshold: 0.8,
+      },
+    });
+    expect(config.skills.auto_survey).toBe(true);
+    expect(config.skills.confidence_threshold).toBe(0.8);
+    expect(config.skills.auto_evolve).toBe(false);
+  });
 });

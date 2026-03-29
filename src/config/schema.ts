@@ -84,6 +84,19 @@ const TeamSchema = z.object({
   interval_minutes: z.number().int().min(1).max(1440).default(15),
 });
 
+const SkillsSchema = z.object({
+  /** Whether the daemon automatically runs skill-survey on consolidation cadence. */
+  auto_survey: z.boolean().default(false),
+  /** Whether the daemon automatically runs skill-evolve on knowledge drift. */
+  auto_evolve: z.boolean().default(false),
+  /** PowerManager state at which skill-evolve runs. */
+  evolve_cadence: z.enum(['active', 'idle', 'sleep']).default('idle'),
+  /** Auto-generate candidates above this confidence score. */
+  confidence_threshold: z.number().min(0).max(1).default(0.7),
+  /** Flag unused skills after this many days. */
+  usage_stale_days: z.number().int().positive().default(30),
+});
+
 export const MycoConfigSchema = z.preprocess(
   (raw: unknown) => {
     if (raw && typeof raw === 'object' && 'curation' in raw && !('agent' in raw)) {
@@ -102,6 +115,7 @@ export const MycoConfigSchema = z.preprocess(
     context: ContextSchema.default(() => ContextSchema.parse({})),
     backup: BackupSchema.default(() => BackupSchema.parse({})),
     team: TeamSchema.default(() => TeamSchema.parse({})),
+    skills: SkillsSchema.default(() => SkillsSchema.parse({})),
   }),
 );
 
@@ -112,3 +126,4 @@ export type PhaseOverride = z.infer<typeof PhaseOverrideSchema>;
 export type ContextConfig = z.infer<typeof ContextSchema>;
 export type BackupConfig = z.infer<typeof BackupSchema>;
 export type TeamConfig = z.infer<typeof TeamSchema>;
+export type SkillsConfig = z.infer<typeof SkillsSchema>;
