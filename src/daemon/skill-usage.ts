@@ -23,6 +23,14 @@ export function detectSkillUsage(sessionId: string, transcriptContent: string): 
   // agent sessions generating/evolving skills, not developer sessions using them.
   if (transcriptContent.includes('vault_write_skill')) return;
 
+  // TODO: The current regex-based detection produces false positives when
+  // a skill name is merely *discussed* in a session (not actually loaded).
+  // Disable automatic detection until we can identify a reliable signal
+  // for actual skill activation in agent transcripts (e.g., a specific
+  // tag or marker that Claude Code emits when loading a skill).
+  // For now, usage tracking is manual / API-driven only.
+  return;
+
   const activeSkills = listSkillRecords({ status: 'active', limit: MAX_ACTIVE_SKILLS_CHECK });
   if (activeSkills.length === 0) return;
 
