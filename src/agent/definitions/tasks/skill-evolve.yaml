@@ -1,0 +1,81 @@
+name: skill-evolve
+displayName: Skill Evolution
+description: >-
+  Evaluate and evolve existing Myco-managed skills based on new
+  vault knowledge and usage patterns.
+agent: myco-agent
+prompt: >-
+  Assess all active Myco-managed skills for staleness, conflicts,
+  low usage, and oversized scope. Evolve skills that need it.
+isDefault: false
+maxTurns: 25
+timeoutSeconds: 600
+phases:
+  - name: assess
+    prompt: |
+      For each active Myco-managed skill (vault_skill_records action: list,
+      status: active):
+
+      1. Query vault for knowledge created AFTER the skill's updated_at.
+         Use vault_search_semantic with the skill's topic and vault_spores
+         with created_at filter.
+
+      2. Check if source spores have been superseded.
+
+      3. Check usage_count and last_used_at from the skill record.
+
+      Classify each skill:
+      - CURRENT: no significant new knowledge, still accurate
+      - STALE: new knowledge that should be incorporated
+      - CONFLICTED: new knowledge contradicts skill content
+      - UNUSED: zero usage in the configured stale period
+      - OVERSIZED: covers too many distinct procedures
+
+      Report classifications via vault_report. Store in vault_set_state
+      (key: skill-evolve-classifications).
+    tools:
+      - vault_skill_records
+      - vault_spores
+      - vault_sessions
+      - vault_search_fts
+      - vault_search_semantic
+      - vault_read_digest
+      - vault_state
+      - vault_set_state
+      - vault_edges
+      - vault_report
+    maxTurns: 10
+    required: true
+
+  - name: evolve
+    prompt: |
+      Read classifications from vault_state (key: skill-evolve-classifications).
+
+      For each skill needing action:
+
+      STALE or CONFLICTED: Update via vault_write_skill with new content.
+      Preserve accurate content, incorporate new knowledge.
+      Include rationale explaining what changed.
+
+      OVERSIZED: Write focused sub-skills via vault_write_skill.
+      Retire parent via vault_skill_records (status: retired).
+
+      UNUSED: Retire via vault_skill_records (status: retired).
+      Do NOT delete the SKILL.md file.
+
+      CURRENT: Skip.
+
+      Report summary of all actions taken.
+    tools:
+      - vault_write_skill
+      - vault_skill_records
+      - vault_skill_candidates
+      - vault_state
+      - vault_spores
+      - vault_search_fts
+      - vault_search_semantic
+      - vault_report
+    maxTurns: 12
+    required: true
+    dependsOn:
+      - assess

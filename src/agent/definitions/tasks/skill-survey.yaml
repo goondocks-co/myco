@@ -1,0 +1,68 @@
+name: skill-survey
+displayName: Skill Candidate Survey
+description: >-
+  Analyze vault knowledge for procedural skill candidates. Identifies
+  clusters of related sessions, spores, and plans that describe how
+  to accomplish tasks in this project.
+agent: myco-agent
+prompt: >-
+  Survey the vault knowledge graph for procedural skill candidates.
+isDefault: false
+maxTurns: 15
+timeoutSeconds: 300
+phases:
+  - name: inventory
+    prompt: |
+      Query the vault for recent knowledge that could inform procedural skills.
+      Focus on:
+      - Wisdom spores (synthesized patterns from multiple sessions)
+      - Session clusters (3+ sessions touching the same components/workflows)
+      - Plans and artifacts (design docs, implementation patterns)
+      - High-importance decisions and discoveries (importance >= 6)
+
+      Group findings by procedural topic. Use vault_skill_candidates (action: list)
+      and vault_skill_records (action: list) to check for existing candidates/skills.
+      Avoid duplicates.
+    tools:
+      - vault_spores
+      - vault_sessions
+      - vault_search_fts
+      - vault_search_semantic
+      - vault_entities
+      - vault_edges
+      - vault_state
+      - vault_read_digest
+      - vault_skill_candidates
+      - vault_skill_records
+    maxTurns: 6
+    required: true
+
+  - name: evaluate
+    prompt: |
+      For each cluster identified in the inventory phase, evaluate:
+
+      1. Is this a procedure (how to do something) or just a concept?
+         Only procedures become skills.
+
+      2. Is there enough cross-session evidence?
+         Minimum: knowledge from 2+ sessions, 3+ source items.
+
+      3. Does an existing skill or candidate already cover this topic?
+
+      4. Score confidence (0.0-1.0) based on knowledge density,
+         cross-session evidence, and presence of wisdom spores.
+
+      Use vault_skill_candidates (action: create) for new candidates.
+      Use vault_skill_candidates (action: update) to strengthen existing ones.
+      Dismiss superseded candidates (status: dismissed).
+
+      Report summary of candidates created, updated, and dismissed.
+    tools:
+      - vault_skill_candidates
+      - vault_skill_records
+      - vault_set_state
+      - vault_report
+    maxTurns: 6
+    required: true
+    dependsOn:
+      - inventory

@@ -1,0 +1,89 @@
+name: skill-generate
+displayName: Skill Generation
+description: >-
+  Synthesize a project skill from a vault knowledge candidate.
+  Writes SKILL.md to .agents/skills/ following Anthropic skill design principles.
+agent: myco-agent
+prompt: >-
+  Generate a project-specific skill from the identified candidate.
+isDefault: false
+maxTurns: 25
+timeoutSeconds: 600
+phases:
+  - name: gather
+    prompt: |
+      Read the candidate record using vault_skill_candidates (action: get)
+      and all its source material in full.
+
+      For each source (spore, session summary, plan, artifact):
+      - Extract the procedural knowledge (steps, gotchas, decisions)
+      - Note chronological order (what was learned first vs later)
+      - Identify contradictions (superseded advice)
+
+      Build a complete picture of what an agent needs to know
+      to perform this procedure successfully in this project.
+    tools:
+      - vault_skill_candidates
+      - vault_spores
+      - vault_sessions
+      - vault_search_fts
+      - vault_search_semantic
+      - vault_read_digest
+      - vault_entities
+      - vault_edges
+    maxTurns: 6
+    required: true
+
+  - name: draft
+    prompt: |
+      Write a SKILL.md following Anthropic's skill design principles:
+
+      FRONTMATTER (required fields):
+      - name: kebab-case identifier
+      - description: the PRIMARY triggering mechanism. Be explicit about
+        when this skill activates. Include concrete keywords. Be pushy.
+      - managed_by: myco
+      - skill_id: (set by vault_write_skill)
+      - generation: 1
+
+      CONTENT principles:
+      - Explain reasoning, not rigid rules
+      - Stay under 500 lines
+      - Progressive disclosure: description triggers, body teaches
+      - Teach HOW to do something, not definitions
+      - Include concrete steps, file paths, code patterns
+      - Reference gotchas inline, not in separate sections
+
+      Use vault_write_skill to write the skill file and create the record.
+      Include the candidate_id to link them.
+    tools:
+      - vault_write_skill
+      - vault_skill_records
+    maxTurns: 10
+    required: true
+    dependsOn:
+      - gather
+
+  - name: validate
+    prompt: |
+      Review the generated skill:
+
+      1. Does the description clearly signal when to activate?
+      2. Is the content procedural (how-to) not definitional?
+      3. Under 500 lines?
+      4. Does it conflict with existing skills?
+      5. Are source claims still accurate?
+
+      If issues found, use vault_write_skill to rewrite.
+      Report: skill name, path, generation, and any issues found.
+    tools:
+      - vault_write_skill
+      - vault_skill_records
+      - vault_skill_candidates
+      - vault_spores
+      - vault_search_fts
+      - vault_report
+    maxTurns: 6
+    required: true
+    dependsOn:
+      - draft
