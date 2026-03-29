@@ -71,7 +71,7 @@ phases:
 
       ```markdown
       ---
-      name: kebab-case-name
+      name: myco:kebab-case-name
       description: |
         One paragraph that serves as the PRIMARY triggering mechanism.
         Be explicit about when this skill activates. Include concrete
@@ -131,7 +131,9 @@ phases:
         changes, the procedure should still make sense.
 
       Use vault_write_skill to write the file. Pass:
-      - name: kebab-case directory name
+      - name: kebab-case directory name (NO colon — directory-safe name)
+        The myco: prefix goes ONLY in the SKILL.md frontmatter name field,
+        not in the directory name.
       - display_name: human-readable title
       - description: the frontmatter description text
       - content: the full SKILL.md including frontmatter
