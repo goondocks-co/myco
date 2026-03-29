@@ -4,19 +4,25 @@ import path from 'node:path';
 
 /** Prefix used to identify Myco-owned hooks in settings files. */
 const MYCO_HOOK_COMMAND_PREFIX = 'myco-run';
+const MYCO_HOOK_GUARD_PREFIX = 'node .agents/myco-hook.cjs';
+
+/** Check if a command string belongs to Myco (old or new guard format). */
+function isMycoHookCommand(command: string): boolean {
+  return command.startsWith(MYCO_HOOK_COMMAND_PREFIX) || command.startsWith(MYCO_HOOK_GUARD_PREFIX);
+}
 
 /**
  * Check if a hook group is Myco-owned.
  * Handles both nested format (Claude Code, Codex, etc.) and flat format (Windsurf).
  *
- * Nested: { hooks: [{ command: "myco-run ..." }] }
- * Flat:   { command: "myco-run ..." }
+ * Nested: { hooks: [{ command: "node .agents/myco-hook.cjs ..." }] }
+ * Flat:   { command: "node .agents/myco-hook.cjs ..." }
  */
 function isMycoHookGroup(group: Record<string, unknown>): boolean {
-  // Nested format: { hooks: [{ command: "myco-run ..." }] }
-  if (Array.isArray(group.hooks) && group.hooks.some((h: { command?: string }) => h.command?.startsWith(MYCO_HOOK_COMMAND_PREFIX))) return true;
-  // Flat format: { command: "myco-run ..." }
-  if (typeof group.command === 'string' && group.command.startsWith(MYCO_HOOK_COMMAND_PREFIX)) return true;
+  // Nested format: { hooks: [{ command: "..." }] }
+  if (Array.isArray(group.hooks) && group.hooks.some((h: { command?: string }) => h.command && isMycoHookCommand(h.command))) return true;
+  // Flat format: { command: "..." }
+  if (typeof group.command === 'string' && isMycoHookCommand(group.command)) return true;
   return false;
 }
 
@@ -25,6 +31,15 @@ const GITIGNORE_SKILLS_COMMENT = '# Myco skill symlinks (machine-specific)';
 
 /** Subdirectory within the package where symbiont templates live. */
 const TEMPLATES_SUBDIR = 'src/symbionts/templates';
+
+/** Filename of the hook guard template in the templates directory. */
+const HOOK_GUARD_TEMPLATE_FILENAME = 'hook-guard.cjs';
+
+/** Filename when installed into the project .agents/ directory. */
+const HOOK_GUARD_INSTALLED_FILENAME = 'myco-hook.cjs';
+
+/** Project-relative path where the hook guard is installed. */
+const HOOK_GUARD_PROJECT_PATH = `.agents/${HOOK_GUARD_INSTALLED_FILENAME}`;
 
 /** Subdirectory within the package where skills live. */
 const SKILLS_SUBDIR = 'skills';
@@ -64,6 +79,58 @@ export class SymbiontInstaller {
     private packageRoot: string,
   ) {}
 
+  /**
+   * Copy the hook-guard script into .agents/myco-hook.cjs.
+   * Returns true if the file was written (or updated); false if skipped or N/A.
+   */
+  installHookGuard(): boolean {
+    const reg = this.manifest.registration;
+    if (!reg?.hooksTarget) return false;
+
+    const guardTemplate = this.loadHookGuardTemplate();
+    if (!guardTemplate) return false;
+
+    const targetPath = path.join(this.projectRoot, HOOK_GUARD_PROJECT_PATH);
+
+    // Skip if already current
+    try {
+      if (fs.readFileSync(targetPath, 'utf-8') === guardTemplate) return false;
+    } catch { /* doesn't exist — proceed */ }
+
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, guardTemplate, 'utf-8');
+    return true;
+  }
+
+  /**
+   * Remove the hook-guard script from .agents/myco-hook.cjs.
+   * Returns true if the file was removed; false otherwise.
+   */
+  uninstallHookGuard(): boolean {
+    const reg = this.manifest.registration;
+    if (!reg?.hooksTarget) return false;
+
+    const targetPath = path.join(this.projectRoot, HOOK_GUARD_PROJECT_PATH);
+    try {
+      fs.unlinkSync(targetPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Load the hook-guard template from package root. */
+  private loadHookGuardTemplate(): string | null {
+    const candidates = [
+      path.join(this.packageRoot, TEMPLATES_SUBDIR, HOOK_GUARD_TEMPLATE_FILENAME),
+      path.join(this.packageRoot, 'dist', TEMPLATES_SUBDIR, HOOK_GUARD_TEMPLATE_FILENAME),
+    ];
+    for (const p of candidates) {
+      try { return fs.readFileSync(p, 'utf-8'); } catch { /* try next */ }
+    }
+    return null;
+  }
+
   /** Load a JSON template file for this symbiont. Returns null if not found. */
   loadTemplate(name: string): Record<string, unknown> | null {
     // Check both source layout and dist layout
@@ -83,6 +150,8 @@ export class SymbiontInstaller {
   /** Run all registration steps. */
   install(): InstallResult {
     const reg = this.manifest.registration;
+    // Install hook guard before hooks so the guard script is in place when hooks reference it
+    this.installHookGuard();
     const result = this.shouldBatchJsonTargets(reg)
       ? this.installBatchedJson(reg!)
       : {
@@ -175,6 +244,8 @@ export class SymbiontInstaller {
           settings: this.uninstallSettings(),
           instructions: this.uninstallInstructions(),
         };
+    // Remove hook guard after hooks/settings so the file is cleaned up last
+    this.uninstallHookGuard();
     this.cleanGitignore();
     return result;
   }

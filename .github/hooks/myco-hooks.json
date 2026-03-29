@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "myco-run hook session-start",
+            "command": "node .agents/myco-hook.cjs hook session-start",
             "timeout": 10
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "myco-run hook user-prompt-submit",
+            "command": "node .agents/myco-hook.cjs hook user-prompt-submit",
             "timeout": 5
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "myco-run hook post-tool-use",
+            "command": "node .agents/myco-hook.cjs hook post-tool-use",
             "timeout": 5
           }
         ]
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "myco-run hook pre-compact",
+            "command": "node .agents/myco-hook.cjs hook pre-compact",
             "timeout": 5
           }
         ]
@@ -49,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "myco-run hook subagent-start",
+            "command": "node .agents/myco-hook.cjs hook subagent-start",
             "timeout": 5
           }
         ]
@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "myco-run hook subagent-stop",
+            "command": "node .agents/myco-hook.cjs hook subagent-stop",
             "timeout": 10
           }
         ]
@@ -71,7 +71,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "myco-run hook stop",
+            "command": "node .agents/myco-hook.cjs hook stop",
             "timeout": 30
           }
         ]

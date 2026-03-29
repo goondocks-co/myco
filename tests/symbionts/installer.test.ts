@@ -108,14 +108,14 @@ const HOOKS_TEMPLATE = {
   SessionStart: [
     {
       hooks: [
-        { type: 'command', command: 'myco-run hook session-start', timeout: 10 },
+        { type: 'command', command: 'node .agents/myco-hook.cjs hook session-start', timeout: 10 },
       ],
     },
   ],
   Stop: [
     {
       hooks: [
-        { type: 'command', command: 'myco-run hook stop', timeout: 30 },
+        { type: 'command', command: 'node .agents/myco-hook.cjs hook stop', timeout: 30 },
       ],
     },
   ],
@@ -166,23 +166,23 @@ function setupPackageRoot(): void {
     'chat.tools.terminal.autoApprove': { 'myco-run': true, 'myco': true },
   });
   writeJson(path.join(codexTemplateDir, 'hooks.json'), {
-    SessionStart: [{ hooks: [{ type: 'command', command: 'myco-run hook session-start', timeout: 10 }] }],
-    Stop: [{ hooks: [{ type: 'command', command: 'myco-run hook stop', timeout: 30 }] }],
+    SessionStart: [{ hooks: [{ type: 'command', command: 'node .agents/myco-hook.cjs hook session-start', timeout: 10 }] }],
+    Stop: [{ hooks: [{ type: 'command', command: 'node .agents/myco-hook.cjs hook stop', timeout: 30 }] }],
   });
   writeJson(path.join(codexTemplateDir, 'mcp.json'), {
     myco: { command: 'myco-run', args: ['mcp'] },
   });
   writeJson(path.join(vscodeTemplateDir, 'hooks.json'), {
-    SessionStart: [{ hooks: [{ type: 'command', command: 'myco-run hook session-start', timeout: 10 }] }],
-    Stop: [{ hooks: [{ type: 'command', command: 'myco-run hook stop', timeout: 30 }] }],
+    SessionStart: [{ hooks: [{ type: 'command', command: 'node .agents/myco-hook.cjs hook session-start', timeout: 10 }] }],
+    Stop: [{ hooks: [{ type: 'command', command: 'node .agents/myco-hook.cjs hook stop', timeout: 30 }] }],
   });
   writeJson(path.join(vscodeTemplateDir, 'mcp.json'), MCP_TEMPLATE);
   writeJson(path.join(vscodeTemplateDir, 'settings.json'), {
     'chat.tools.terminal.autoApprove': { 'myco-run': true, 'myco': true },
   });
   writeJson(path.join(geminiTemplateDir, 'hooks.json'), {
-    SessionStart: [{ hooks: [{ name: 'myco-session-start', type: 'command', command: 'myco-run hook session-start', timeout: 10000 }] }],
-    AfterAgent: [{ hooks: [{ name: 'myco-stop', type: 'command', command: 'myco-run hook stop', timeout: 30000 }] }],
+    SessionStart: [{ hooks: [{ name: 'myco-session-start', type: 'command', command: 'node .agents/myco-hook.cjs hook session-start', timeout: 10000 }] }],
+    AfterAgent: [{ hooks: [{ name: 'myco-stop', type: 'command', command: 'node .agents/myco-hook.cjs hook stop', timeout: 30000 }] }],
   });
   writeJson(path.join(geminiTemplateDir, 'mcp.json'), {
     myco: { command: 'myco-run', args: ['mcp'] },
@@ -194,9 +194,15 @@ function setupPackageRoot(): void {
   const windsurfTemplateDir = path.join(packageRoot, 'src/symbionts/templates/windsurf');
   fs.mkdirSync(windsurfTemplateDir, { recursive: true });
   writeJson(path.join(windsurfTemplateDir, 'hooks.json'), {
-    pre_user_prompt: [{ command: 'myco-run hook user-prompt-submit' }],
-    post_cascade_response: [{ command: 'myco-run hook stop' }],
+    pre_user_prompt: [{ command: 'node .agents/myco-hook.cjs hook user-prompt-submit' }],
+    post_cascade_response: [{ command: 'node .agents/myco-hook.cjs hook stop' }],
   });
+
+  // Copy hook-guard template so installHookGuard can find it
+  fs.copyFileSync(
+    path.resolve('src/symbionts/templates/hook-guard.cjs'),
+    path.join(packageRoot, 'src/symbionts/templates/hook-guard.cjs'),
+  );
   writeJson(path.join(windsurfTemplateDir, 'settings.json'), {
     'windsurf.cascadeCommandsAllowList': ['myco-run', 'myco'],
   });
@@ -311,7 +317,7 @@ describe('installHooks', () => {
       (g: unknown) => ((g as { hooks: Array<{ command: string }> }).hooks ?? []).map(h => h.command),
     );
     expect(commands).toContain('my-other-tool start');
-    expect(commands).toContain('myco-run hook session-start');
+    expect(commands).toContain('node .agents/myco-hook.cjs hook session-start');
   });
 
   it('replaces stale Myco hooks on update', () => {
@@ -1039,7 +1045,7 @@ describe('Windsurf flat hook format', () => {
 
     const hooks = readJson(path.join(projectRoot, '.windsurf/hooks.json'));
     const groups = (hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>;
-    expect(groups[0].command).toBe('myco-run hook user-prompt-submit');
+    expect(groups[0].command).toBe('node .agents/myco-hook.cjs hook user-prompt-submit');
     // Should NOT have nested hooks array
     expect(groups[0].hooks).toBeUndefined();
   });
@@ -1060,7 +1066,7 @@ describe('Windsurf flat hook format', () => {
     const commands = ((hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>)
       .map((g) => g.command);
     expect(commands).toContain('other-tool check');
-    expect(commands).toContain('myco-run hook user-prompt-submit');
+    expect(commands).toContain('node .agents/myco-hook.cjs hook user-prompt-submit');
   });
 
   it('replaces stale Myco flat hooks', () => {
@@ -1079,7 +1085,7 @@ describe('Windsurf flat hook format', () => {
     const commands = ((hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>)
       .map((g) => g.command);
     expect(commands).not.toContain('myco-run hook old-event');
-    expect(commands).toContain('myco-run hook user-prompt-submit');
+    expect(commands).toContain('node .agents/myco-hook.cjs hook user-prompt-submit');
   });
 
   it('uninstalls flat Myco hooks', () => {
@@ -1292,6 +1298,176 @@ describe('uninstallInstructions', () => {
   it('returns false when file does not exist', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     expect(installer.uninstallInstructions()).toBe(false);
+  });
+});
+
+// =====================
+// installHookGuard
+// =====================
+
+describe('installHookGuard', () => {
+  it('writes .agents/myco-hook.cjs', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installHookGuard();
+
+    expect(result).toBe(true);
+    const guardPath = path.join(projectRoot, '.agents/myco-hook.cjs');
+    expect(fs.existsSync(guardPath)).toBe(true);
+    const content = fs.readFileSync(guardPath, 'utf-8');
+    expect(content).toContain('hook guard');
+  });
+
+  it('is idempotent — second install does not rewrite if content identical', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installHookGuard();
+
+    const guardPath = path.join(projectRoot, '.agents/myco-hook.cjs');
+    const stat1 = fs.statSync(guardPath);
+
+    // Second install should return false (no change)
+    const result = installer.installHookGuard();
+    expect(result).toBe(false);
+
+    // File should still exist with same content
+    expect(fs.existsSync(guardPath)).toBe(true);
+  });
+
+  it('skips guard for symbionts without hooksTarget (Cursor)', () => {
+    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installHookGuard();
+
+    expect(result).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-hook.cjs'))).toBe(false);
+  });
+
+  it('install() writes hook guard before hooks', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    // Hook guard should exist
+    const guardPath = path.join(projectRoot, '.agents/myco-hook.cjs');
+    expect(fs.existsSync(guardPath)).toBe(true);
+  });
+});
+
+// =====================
+// uninstallHookGuard
+// =====================
+
+describe('uninstallHookGuard', () => {
+  it('removes .agents/myco-hook.cjs', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installHookGuard();
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-hook.cjs'))).toBe(true);
+
+    const result = installer.uninstallHookGuard();
+    expect(result).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-hook.cjs'))).toBe(false);
+  });
+
+  it('does not fail if guard does not exist', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    const result = installer.uninstallHookGuard();
+    expect(result).toBe(false);
+  });
+
+  it('skips guard for symbionts without hooksTarget', () => {
+    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
+    const result = installer.uninstallHookGuard();
+    expect(result).toBe(false);
+  });
+
+  it('uninstall() removes hook guard', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-hook.cjs'))).toBe(true);
+
+    installer.uninstall();
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-hook.cjs'))).toBe(false);
+  });
+});
+
+// =====================
+// Old-format hook backward compatibility
+// =====================
+
+describe('old-format hook backward compatibility', () => {
+  it('replaces old myco-run format hooks with new guard format', () => {
+    // Pre-populate settings with old-format Myco hooks
+    const settingsPath = path.join(projectRoot, '.claude/settings.json');
+    writeJson(settingsPath, {
+      hooks: {
+        SessionStart: [
+          {
+            hooks: [
+              { type: 'command', command: 'myco-run hook session-start', timeout: 10 },
+            ],
+          },
+        ],
+      },
+    });
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+
+    const settings = readJson(settingsPath);
+    const hooks = settings.hooks as Record<string, unknown[]>;
+    // Old hooks replaced, not stacked
+    expect(hooks.SessionStart).toHaveLength(1);
+    const command = ((hooks.SessionStart[0] as { hooks: Array<{ command: string }> }).hooks[0]).command;
+    expect(command).toBe('node .agents/myco-hook.cjs hook session-start');
+  });
+
+  it('replaces old-format flat hooks in Windsurf', () => {
+    const hooksDir = path.join(projectRoot, '.windsurf');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    writeJson(path.join(hooksDir, 'hooks.json'), {
+      hooks: {
+        pre_user_prompt: [{ command: 'myco-run hook user-prompt-submit' }],
+      },
+    });
+
+    const installer = new SymbiontInstaller(WINDSURF_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+
+    const hooks = readJson(path.join(hooksDir, 'hooks.json'));
+    const commands = ((hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>)
+      .map((g) => g.command);
+    // Old format removed, new format added
+    expect(commands).not.toContain('myco-run hook user-prompt-submit');
+    expect(commands).toContain('node .agents/myco-hook.cjs hook user-prompt-submit');
+    // No duplication
+    expect(commands).toHaveLength(1);
+  });
+});
+
+// =====================
+// Hook template validation
+// =====================
+
+describe('hook template validation', () => {
+  it('all hook templates use the guard prefix', () => {
+    const templateDirs = ['claude-code', 'codex', 'gemini', 'vscode-copilot', 'windsurf'];
+    for (const dir of templateDirs) {
+      const filePath = path.resolve(`src/symbionts/templates/${dir}/hooks.json`);
+      const template = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      for (const [event, groups] of Object.entries(template)) {
+        for (const group of groups as Array<Record<string, unknown>>) {
+          // Nested format
+          if (Array.isArray(group.hooks)) {
+            for (const hook of group.hooks as Array<{ command?: string }>) {
+              if (hook.command) {
+                expect(hook.command).toMatch(/^node \.agents\/myco-hook\.cjs /);
+              }
+            }
+          }
+          // Flat format
+          if (typeof group.command === 'string') {
+            expect(group.command).toMatch(/^node \.agents\/myco-hook\.cjs /);
+          }
+        }
+      }
+    }
   });
 });
 
