@@ -38,7 +38,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(4);
+      expect(SCHEMA_VERSION).toBe(5);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -400,6 +400,96 @@ describe('Database schema', () => {
         expect(indexExists(db, 'idx_agent_reports_run_id')).toBe(true);
         expect(indexExists(db, 'idx_agent_turns_run_id')).toBe(true);
         expect(indexExists(db, 'idx_agent_tasks_agent_id')).toBe(true);
+      });
+    });
+
+    describe('skills layer tables', () => {
+      const skillsTables = [
+        'skill_candidates',
+        'skill_records',
+        'skill_lineage',
+        'skill_usage',
+      ];
+
+      it.each(skillsTables)('creates %s table', (table) => {
+        createSchema(db);
+        expect(tableExists(db, table)).toBe(true);
+      });
+
+      it('skill_candidates table has correct columns', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'skill_candidates');
+        expect(colNames).toContain('id');
+        expect(colNames).toContain('agent_id');
+        expect(colNames).toContain('machine_id');
+        expect(colNames).toContain('topic');
+        expect(colNames).toContain('rationale');
+        expect(colNames).toContain('confidence');
+        expect(colNames).toContain('status');
+        expect(colNames).toContain('source_ids');
+        expect(colNames).toContain('skill_id');
+        expect(colNames).toContain('created_at');
+        expect(colNames).toContain('updated_at');
+        expect(colNames).toContain('synced_at');
+      });
+
+      it('skill_records table has correct columns', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'skill_records');
+        expect(colNames).toContain('id');
+        expect(colNames).toContain('agent_id');
+        expect(colNames).toContain('machine_id');
+        expect(colNames).toContain('name');
+        expect(colNames).toContain('display_name');
+        expect(colNames).toContain('description');
+        expect(colNames).toContain('status');
+        expect(colNames).toContain('generation');
+        expect(colNames).toContain('candidate_id');
+        expect(colNames).toContain('source_ids');
+        expect(colNames).toContain('path');
+        expect(colNames).toContain('usage_count');
+        expect(colNames).toContain('last_used_at');
+        expect(colNames).toContain('created_at');
+        expect(colNames).toContain('updated_at');
+        expect(colNames).toContain('properties');
+        expect(colNames).toContain('synced_at');
+      });
+
+      it('skill_lineage table has correct columns', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'skill_lineage');
+        expect(colNames).toContain('id');
+        expect(colNames).toContain('skill_id');
+        expect(colNames).toContain('generation');
+        expect(colNames).toContain('action');
+        expect(colNames).toContain('rationale');
+        expect(colNames).toContain('source_ids_added');
+        expect(colNames).toContain('content_snapshot');
+        expect(colNames).toContain('created_at');
+      });
+
+      it('skill_usage table has correct columns', () => {
+        createSchema(db);
+        const colNames = getColumnNames(db, 'skill_usage');
+        expect(colNames).toContain('id');
+        expect(colNames).toContain('skill_id');
+        expect(colNames).toContain('session_id');
+        expect(colNames).toContain('machine_id');
+        expect(colNames).toContain('detected_at');
+      });
+
+      it('creates indexes on skills tables', () => {
+        createSchema(db);
+        expect(indexExists(db, 'idx_skill_candidates_agent_id')).toBe(true);
+        expect(indexExists(db, 'idx_skill_candidates_status')).toBe(true);
+        expect(indexExists(db, 'idx_skill_candidates_machine_id')).toBe(true);
+        expect(indexExists(db, 'idx_skill_records_agent_id')).toBe(true);
+        expect(indexExists(db, 'idx_skill_records_status')).toBe(true);
+        expect(indexExists(db, 'idx_skill_records_name')).toBe(true);
+        expect(indexExists(db, 'idx_skill_records_machine_id')).toBe(true);
+        expect(indexExists(db, 'idx_skill_lineage_skill_id')).toBe(true);
+        expect(indexExists(db, 'idx_skill_usage_skill_id')).toBe(true);
+        expect(indexExists(db, 'idx_skill_usage_session_id')).toBe(true);
       });
     });
 

@@ -17,7 +17,7 @@ import type { Database } from 'better-sqlite3';
 import { epochSeconds, DEFAULT_MACHINE_ID } from '@myco/constants.js';
 
 /** Current schema version -- fresh start for the SQLite era. */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 // Re-export for backwards compat (other modules import from schema.ts)
 export { DEFAULT_MACHINE_ID };
@@ -366,6 +366,66 @@ const LOG_ENTRIES_TABLE = `
     session_id  TEXT
   )`;
 
+// -- Skills Layer -----------------------------------------------------------
+
+const SKILL_CANDIDATES_TABLE = `
+  CREATE TABLE IF NOT EXISTS skill_candidates (
+    id              TEXT PRIMARY KEY,
+    agent_id        TEXT NOT NULL REFERENCES agents(id),
+    machine_id      TEXT NOT NULL DEFAULT 'local',
+    topic           TEXT NOT NULL,
+    rationale       TEXT NOT NULL,
+    confidence      REAL NOT NULL DEFAULT 0.0,
+    status          TEXT NOT NULL DEFAULT 'identified',
+    source_ids      TEXT NOT NULL DEFAULT '[]',
+    skill_id        TEXT,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    synced_at       INTEGER
+  )`;
+
+const SKILL_RECORDS_TABLE = `
+  CREATE TABLE IF NOT EXISTS skill_records (
+    id              TEXT PRIMARY KEY,
+    agent_id        TEXT NOT NULL REFERENCES agents(id),
+    machine_id      TEXT NOT NULL DEFAULT 'local',
+    name            TEXT NOT NULL UNIQUE,
+    display_name    TEXT NOT NULL,
+    description     TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'active',
+    generation      INTEGER NOT NULL DEFAULT 1,
+    candidate_id    TEXT REFERENCES skill_candidates(id),
+    source_ids      TEXT NOT NULL DEFAULT '[]',
+    path            TEXT NOT NULL,
+    usage_count     INTEGER NOT NULL DEFAULT 0,
+    last_used_at    INTEGER,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    properties      TEXT NOT NULL DEFAULT '{}',
+    synced_at       INTEGER
+  )`;
+
+const SKILL_LINEAGE_TABLE = `
+  CREATE TABLE IF NOT EXISTS skill_lineage (
+    id               TEXT PRIMARY KEY,
+    skill_id         TEXT NOT NULL REFERENCES skill_records(id),
+    generation       INTEGER NOT NULL,
+    action           TEXT NOT NULL,
+    rationale        TEXT NOT NULL,
+    source_ids_added TEXT NOT NULL DEFAULT '[]',
+    content_snapshot TEXT NOT NULL,
+    created_at       INTEGER NOT NULL
+  )`;
+
+const SKILL_USAGE_TABLE = `
+  CREATE TABLE IF NOT EXISTS skill_usage (
+    id          TEXT PRIMARY KEY,
+    skill_id    TEXT NOT NULL REFERENCES skill_records(id),
+    session_id  TEXT NOT NULL REFERENCES sessions(id),
+    machine_id  TEXT NOT NULL DEFAULT 'local',
+    detected_at INTEGER NOT NULL
+  )`;
+
 // -- FTS5 Virtual Tables ----------------------------------------------------
 
 const FTS_TABLES = [
@@ -469,6 +529,24 @@ const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_spores_machine_id ON spores (machine_id)',
   'CREATE INDEX IF NOT EXISTS idx_graph_edges_machine_id ON graph_edges (machine_id)',
 
+  // Skill candidates
+  'CREATE INDEX IF NOT EXISTS idx_skill_candidates_agent_id ON skill_candidates (agent_id)',
+  'CREATE INDEX IF NOT EXISTS idx_skill_candidates_status ON skill_candidates (status)',
+  'CREATE INDEX IF NOT EXISTS idx_skill_candidates_machine_id ON skill_candidates (machine_id)',
+
+  // Skill records
+  'CREATE INDEX IF NOT EXISTS idx_skill_records_agent_id ON skill_records (agent_id)',
+  'CREATE INDEX IF NOT EXISTS idx_skill_records_status ON skill_records (status)',
+  'CREATE INDEX IF NOT EXISTS idx_skill_records_name ON skill_records (name)',
+  'CREATE INDEX IF NOT EXISTS idx_skill_records_machine_id ON skill_records (machine_id)',
+
+  // Skill lineage
+  'CREATE INDEX IF NOT EXISTS idx_skill_lineage_skill_id ON skill_lineage (skill_id)',
+
+  // Skill usage
+  'CREATE INDEX IF NOT EXISTS idx_skill_usage_skill_id ON skill_usage (skill_id)',
+  'CREATE INDEX IF NOT EXISTS idx_skill_usage_session_id ON skill_usage (session_id)',
+
   // Log entries
   'CREATE INDEX IF NOT EXISTS idx_log_entries_timestamp ON log_entries (timestamp)',
   'CREATE INDEX IF NOT EXISTS idx_log_entries_level ON log_entries (level)',
@@ -503,6 +581,11 @@ const TABLE_DDLS = [
   AGENT_TURNS_TABLE,
   AGENT_TASKS_TABLE,
   AGENT_STATE_TABLE,
+  // Skills layer
+  SKILL_CANDIDATES_TABLE,
+  SKILL_RECORDS_TABLE,
+  SKILL_LINEAGE_TABLE,
+  SKILL_USAGE_TABLE,
   // Sync layer
   TEAM_OUTBOX_TABLE,
   // Logging layer
@@ -702,6 +785,56 @@ function migrateV3ToV4(db: Database, machineId: string): void {
   }
 }
 
+/**
+ * Migrate a version-4 database to version-5.
+ *
+ * Version 5 adds the Skills layer:
+ *   - skill_candidates table
+ *   - skill_records table
+ *   - skill_lineage table
+ *   - skill_usage table
+ *   - indexes for all new tables
+ *
+ * Uses `CREATE TABLE IF NOT EXISTS` throughout for idempotency.
+ */
+function migrateV4ToV5(db: Database): void {
+  db.exec('BEGIN');
+  try {
+    db.exec(SKILL_CANDIDATES_TABLE);
+    db.exec(SKILL_RECORDS_TABLE);
+    db.exec(SKILL_LINEAGE_TABLE);
+    db.exec(SKILL_USAGE_TABLE);
+
+    const newIndexes = [
+      'CREATE INDEX IF NOT EXISTS idx_skill_candidates_agent_id ON skill_candidates (agent_id)',
+      'CREATE INDEX IF NOT EXISTS idx_skill_candidates_status ON skill_candidates (status)',
+      'CREATE INDEX IF NOT EXISTS idx_skill_candidates_machine_id ON skill_candidates (machine_id)',
+      'CREATE INDEX IF NOT EXISTS idx_skill_records_agent_id ON skill_records (agent_id)',
+      'CREATE INDEX IF NOT EXISTS idx_skill_records_status ON skill_records (status)',
+      'CREATE INDEX IF NOT EXISTS idx_skill_records_name ON skill_records (name)',
+      'CREATE INDEX IF NOT EXISTS idx_skill_records_machine_id ON skill_records (machine_id)',
+      'CREATE INDEX IF NOT EXISTS idx_skill_lineage_skill_id ON skill_lineage (skill_id)',
+      'CREATE INDEX IF NOT EXISTS idx_skill_usage_skill_id ON skill_usage (skill_id)',
+      'CREATE INDEX IF NOT EXISTS idx_skill_usage_session_id ON skill_usage (session_id)',
+    ];
+
+    for (const idx of newIndexes) {
+      db.exec(idx);
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`
+    ).run(5, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -740,6 +873,13 @@ export function createSchema(db: Database, machineId: string = DEFAULT_MACHINE_I
     ).get() as { version: number } | undefined)?.version ?? 0;
     if (afterV2Migration < 4) {
       migrateV3ToV4(db, machineId);
+    }
+    // Migration path: version 4 → 5
+    const afterV3Migration = (db.prepare(
+      'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1'
+    ).get() as { version: number } | undefined)?.version ?? 0;
+    if (afterV3Migration < 5) {
+      migrateV4ToV5(db);
     }
     return;
   } catch {

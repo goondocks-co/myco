@@ -11,6 +11,10 @@ import { createSchema } from '@myco/db/schema.js';
 
 /** Tables to delete between tests (FK dependency order -- children first). */
 const DELETE_TABLES = [
+  'skill_lineage',
+  'skill_usage',
+  'skill_records',
+  'skill_candidates',
   'agent_turns',
   'agent_reports',
   'agent_state',
