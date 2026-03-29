@@ -69,7 +69,7 @@ const AgentSchema = z.object({
 });
 
 const BackupSchema = z.object({
-  /** Override directory for backup files (absolute path). When unset, defaults to {vaultDir}/backups. */
+  /** Override directory for backup files. Supports ~ for home directory. When unset, defaults to .myco/backups. */
   dir: z.string().optional(),
 });
 

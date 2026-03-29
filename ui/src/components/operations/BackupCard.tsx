@@ -81,14 +81,12 @@ export function BackupCard() {
 
   // Backup directory config
   const [dirOverride, setDirOverride] = useState('');
-  const [defaultDir, setDefaultDir] = useState('');
   const [dirSaving, setDirSaving] = useState(false);
 
   useEffect(() => {
-    fetchJson<{ dir: string | null; default_dir: string }>('/backup/config')
+    fetchJson<{ dir: string | null }>('/backup/config')
       .then((res) => {
         setDirOverride(res.dir ?? '');
-        setDefaultDir(res.default_dir);
       })
       .catch(() => {});
   }, []);
@@ -191,7 +189,7 @@ export function BackupCard() {
             type="text"
             value={dirOverride}
             onChange={(e) => setDirOverride(e.target.value)}
-            placeholder={defaultDir || 'Default vault directory'}
+            placeholder=".myco/backups"
             className="flex-1 bg-surface-container text-on-surface font-mono text-sm rounded px-3 py-1.5 outline-none border border-outline-variant/15 focus:border-primary/40 placeholder:text-on-surface-variant/50"
           />
           <Button variant="ghost" size="sm" onClick={handleSaveDir} disabled={dirSaving}>
@@ -199,8 +197,8 @@ export function BackupCard() {
           </Button>
         </div>
         <p className="font-sans text-xs text-on-surface-variant">
-          Override where backups are stored. Leave empty for default ({defaultDir || 'vault/backups'}).
-          Useful for network shares or git-tracked directories.
+          Override where backups are stored. Leave empty for default (.myco/backups).
+          Supports ~ for home directory. Useful for network shares or git-tracked directories.
         </p>
       </div>
 
