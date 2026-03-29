@@ -3,6 +3,7 @@ import { PageHeader } from '../components/ui/page-header';
 import type { Tab } from '../components/ui/tab-switcher';
 import { CandidateList } from '../components/skills/CandidateList';
 import { SkillList } from '../components/skills/SkillList';
+import { SkillDetail } from '../components/skills/SkillDetail';
 
 type SkillsTab = 'candidates' | 'skills';
 
@@ -81,11 +82,9 @@ export default function Skills() {
         <SkillList onSelectSkill={selectSkill} />
       )}
 
-      {/* Skill detail placeholder */}
+      {/* Skill detail */}
       {tab === 'skills' && selectedSkill && (
-        <div className="font-sans text-sm text-on-surface-variant">
-          Detail view for <span className="font-mono">{selectedSkill}</span> — coming soon
-        </div>
+        <SkillDetail skillName={selectedSkill} onBack={() => setSelectedSkill(undefined)} />
       )}
     </div>
   );
