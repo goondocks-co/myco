@@ -85,6 +85,7 @@ import {
   handleGetSkillRecord,
 } from './api/skills.js';
 import { detectSkillUsage } from './skill-usage.js';
+import { countSkillRecords } from '../db/queries/skill-records.js';
 import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
@@ -1990,6 +1991,64 @@ export async function main(): Promise<void> {
           });
         } catch (err) {
           logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Outbox flush failed', { error: (err as Error).message });
+        }
+      },
+    });
+  }
+
+  // -- Skill survey (discover candidates from vault knowledge) ---------------
+  if (config.skills.auto_survey) {
+    let agentRunning = false;
+    const agentIntervalMs = config.agent.interval_seconds * MS_PER_SECOND;
+    let lastAgentRun = 0;
+
+    powerManager.register({
+      name: 'skill-survey',
+      runIn: ['idle'],
+      fn: async () => {
+        if (agentRunning) return;
+        if (Date.now() - lastAgentRun < agentIntervalMs) return;
+
+        const { runAgent } = await import('../agent/executor.js');
+        try {
+          agentRunning = true;
+          await runAgent(vaultDir, {
+            task: 'skill-survey',
+            embeddingManager,
+          });
+          lastAgentRun = Date.now();
+        } finally {
+          agentRunning = false;
+        }
+      },
+    });
+  }
+
+  // -- Skill evolution (improve skills from new knowledge) -------------------
+  if (config.skills.auto_evolve) {
+    let agentRunning = false;
+    let lastAgentRun = 0;
+    const evolveStates = [config.skills.evolve_cadence];
+    powerManager.register({
+      name: 'skill-evolve',
+      runIn: evolveStates,
+      fn: async () => {
+        if (agentRunning) return;
+
+        // Only run if there are active skills to evaluate
+        const activeCount = countSkillRecords({ status: 'active' });
+        if (activeCount === 0) return;
+
+        const { runAgent } = await import('../agent/executor.js');
+        try {
+          agentRunning = true;
+          await runAgent(vaultDir, {
+            task: 'skill-evolve',
+            embeddingManager,
+          });
+          lastAgentRun = Date.now();
+        } finally {
+          agentRunning = false;
         }
       },
     });
