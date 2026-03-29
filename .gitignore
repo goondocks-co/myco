@@ -17,13 +17,15 @@ docs/specs/
 .superpowers/
 .worktrees
 
-# Myco skill symlinks (machine-specific)
-.agents/skills/
 .claude/skills/myco
 .claude/skills/myco-curate
 .claude/skills/rules
 
-# Myco skill symlinks (machine-specific)
 .cursor/skills/myco
 .cursor/skills/myco-curate
 .cursor/skills/rules
+
+# Myco skill symlinks (machine-specific)
+.agents/skills/myco
+.agents/skills/myco-curate
+.agents/skills/rules
