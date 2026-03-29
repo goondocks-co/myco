@@ -1,5 +1,5 @@
 import { defineConfig } from 'tsup';
-import { copyFileSync, mkdirSync, readdirSync, existsSync, readFileSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdirSync, readdirSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'));
@@ -101,6 +101,12 @@ export default defineConfig({
           copyFileSync(path.join(symbiontManifests, file), path.join(symbiontManifestsDest, file));
         }
       }
+    }
+
+    // Copy team worker source (standalone Cloudflare Worker project, deployed verbatim)
+    const workerSrc = 'src/worker';
+    if (existsSync(workerSrc)) {
+      cpSync(workerSrc, 'dist/src/worker', { recursive: true });
     }
 
     // Copy symbiont registration templates (JSON per agent + shared .md)
