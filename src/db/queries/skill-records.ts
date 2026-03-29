@@ -296,7 +296,7 @@ export function updateSkillRecord(
   for (const [key, column] of Object.entries(fieldMap)) {
     if (key in updates) {
       setClauses.push(`${column} = ?`);
-      params.push((updates as Record<string, unknown>)[key] ?? null);
+      params.push((updates as unknown as Record<string, unknown>)[key] ?? null);
     }
   }
 
