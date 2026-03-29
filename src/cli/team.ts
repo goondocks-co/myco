@@ -70,15 +70,15 @@ const TOML_DB_ID_REGEX = /database_id\s*=\s*"([^"]+)"/;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Generate a project hash from cwd for unique resource naming. */
-function projectHash(): string {
-  const hash = crypto.createHash('sha256').update(process.cwd()).digest('hex');
+/** Generate a project hash from vault dir for unique resource naming. */
+function projectHash(vaultDir: string): string {
+  const hash = crypto.createHash('sha256').update(vaultDir).digest('hex');
   return hash.slice(0, PROJECT_HASH_LENGTH);
 }
 
 /** Build the unique resource name for this project's team infrastructure. */
-function resourceName(): string {
-  return `${TEAM_RESOURCE_PREFIX}-${projectHash()}`;
+function resourceName(vaultDir: string): string {
+  return `${TEAM_RESOURCE_PREFIX}-${projectHash(vaultDir)}`;
 }
 
 /** Run a wrangler command and return stdout. Throws on failure. */
@@ -122,7 +122,7 @@ function prepareDeployDir(vaultDir: string, d1Id: string): string {
   // Patch wrangler.toml with actual IDs
   const tomlPath = path.join(deployDir, 'wrangler.toml');
   let toml = fs.readFileSync(tomlPath, 'utf-8');
-  const name = resourceName();
+  const name = resourceName(vaultDir);
   toml = toml.replace(TOML_NAME_REGEX, `name = "${name}"`);
   toml = toml.replace(TOML_D1_PLACEHOLDER_REGEX, d1Id);
   toml = toml.replace(TOML_DB_NAME_REGEX, `database_name = "${name}"`);
@@ -174,7 +174,7 @@ export async function teamInit(vaultDir: string): Promise<void> {
     process.exit(1);
   }
 
-  const name = resourceName();
+  const name = resourceName(vaultDir);
   console.log(`Resource name: ${name}\n`);
 
   // 3. Create D1 database (or reuse existing)
