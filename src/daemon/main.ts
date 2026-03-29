@@ -84,6 +84,7 @@ import {
   handleListSkillRecords,
   handleGetSkillRecord,
 } from './api/skills.js';
+import { detectSkillUsage } from './skill-usage.js';
 import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
@@ -1200,6 +1201,26 @@ export async function main(): Promise<void> {
     }
 
     updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
+
+    // Detect skill usage from transcript content (best-effort, non-blocking).
+    try {
+      let transcriptText: string | null = null;
+      if (hookTranscriptPath) {
+        try { transcriptText = fs.readFileSync(hookTranscriptPath, 'utf-8'); }
+        catch { /* file may not exist yet — fall through */ }
+      }
+      if (!transcriptText && allTurns.length > 0) {
+        // Fallback: join available turn text so skill name patterns can still match
+        transcriptText = allTurns
+          .map((t) => [t.prompt ?? '', t.aiResponse ?? ''].join(' '))
+          .join('\n');
+      }
+      if (transcriptText) {
+        detectSkillUsage(sessionId, transcriptText);
+      }
+    } catch {
+      // Best-effort — don't block reconciliation
+    }
 
     // Enhanced capture: populate response_summary on earlier batches from transcript.
     // Maps by batch insertion order (id ASC) to transcript turn position.
