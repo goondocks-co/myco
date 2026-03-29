@@ -5,24 +5,43 @@ description: >-
   Writes SKILL.md to .agents/skills/ following Anthropic skill design principles.
 agent: myco-agent
 prompt: >-
-  Generate a project-specific skill from the identified candidate.
+  Generate a project-specific skill from an approved candidate.
+  The candidate ID is provided in the instruction.
 isDefault: false
 model: claude-sonnet-4-6
-maxTurns: 25
-timeoutSeconds: 600
+maxTurns: 35
+timeoutSeconds: 900
 phases:
   - name: gather
     prompt: |
-      Read the candidate record using vault_skill_candidates (action: get)
-      and all its source material in full.
+      Your instruction contains a candidate ID. Use vault_skill_candidates
+      (action: get, id: <the candidate ID from instruction>) to read it.
 
-      For each source (spore, session summary, plan, artifact):
-      - Extract the procedural knowledge (steps, gotchas, decisions)
-      - Note chronological order (what was learned first vs later)
-      - Identify contradictions (superseded advice)
+      Then gather ALL source material for this candidate:
 
-      Build a complete picture of what an agent needs to know
-      to perform this procedure successfully in this project.
+      1. Read each source item referenced in the candidate's source_ids.
+         Use vault_spores to fetch spore IDs, vault_sessions to fetch
+         session IDs. These contain the detailed knowledge.
+
+      2. Search for additional context using vault_search_semantic with
+         the candidate's topic as the query. This may surface plans,
+         artifacts, and sessions not in the source_ids.
+
+      3. Search vault_search_fts for specific file paths, function names,
+         or config keys mentioned in the source material.
+
+      4. Check vault_entities for related entities — these often link
+         to additional spores via edges.
+
+      For each source, extract:
+      - Concrete steps (what to do, in what order)
+      - File paths and code patterns (specific to this project)
+      - Gotchas and pitfalls (things that went wrong)
+      - Decisions and rationale (why this approach, not another)
+      - Prerequisites (what must be true before starting)
+
+      Be thorough — the skill quality depends entirely on how much
+      concrete detail you gather here.
     tools:
       - vault_skill_candidates
       - vault_spores
@@ -32,31 +51,68 @@ phases:
       - vault_read_digest
       - vault_entities
       - vault_edges
-    maxTurns: 6
+    maxTurns: 10
     required: true
 
   - name: draft
     prompt: |
-      Write a SKILL.md following Anthropic's skill design principles:
+      Write a SKILL.md from the gathered material. The skill must be a
+      procedural how-to guide that teaches an agent how to accomplish
+      a specific task in THIS project.
 
-      FRONTMATTER (required fields):
-      - name: kebab-case identifier
-      - description: the PRIMARY triggering mechanism. Be explicit about
-        when this skill activates. Include concrete keywords. Be pushy.
-      - managed_by: myco
-      - skill_id: (set by vault_write_skill)
-      - generation: 1
+      ## SKILL.md Format
 
-      CONTENT principles:
-      - Explain reasoning, not rigid rules
-      - Stay under 500 lines
-      - Progressive disclosure: description triggers, body teaches
-      - Teach HOW to do something, not definitions
-      - Include concrete steps, file paths, code patterns
-      - Reference gotchas inline, not in separate sections
+      ```markdown
+      ---
+      name: kebab-case-name
+      description: |
+        One paragraph that serves as the PRIMARY triggering mechanism.
+        Be explicit about when this skill activates. Include concrete
+        keywords, file names, and scenarios. Be somewhat pushy to
+        counter undertriggering.
+      managed_by: myco
+      ---
 
-      Use vault_write_skill to write the skill file and create the record.
-      Include the candidate_id to link them.
+      # Skill Title
+
+      Brief context paragraph (2-3 sentences) explaining what this
+      procedure accomplishes and when you'd use it.
+
+      ## Prerequisites
+
+      What must be true before starting.
+
+      ## Steps
+
+      Numbered, concrete steps with file paths and code examples.
+      Each step should reference specific files in this project.
+
+      ## Common Pitfalls
+
+      Inline with the steps where possible, or as a short section
+      at the end for cross-cutting gotchas.
+      ```
+
+      ## Writing Principles
+
+      - **Explain reasoning, not rigid rules.** "Because X, do Y"
+        is better than "ALWAYS do Y."
+      - **Stay under 500 lines.** Be concise but complete.
+      - **Use concrete file paths** from this project, not generic examples.
+      - **Include code patterns** where they help (inline code blocks).
+      - **Reference gotchas inline** where the developer would encounter
+        them, not in a separate section.
+      - **The description is the trigger.** An agent reading just the
+        description should know whether this skill applies to their task.
+
+      Use vault_write_skill to write the file. Pass:
+      - name: kebab-case directory name
+      - display_name: human-readable title
+      - description: the frontmatter description text
+      - content: the full SKILL.md including frontmatter
+      - candidate_id: the candidate ID from the gather phase
+      - source_ids: JSON array of source item IDs used
+      - rationale: "Initial generation from candidate survey"
     tools:
       - vault_write_skill
       - vault_skill_records
@@ -67,16 +123,39 @@ phases:
 
   - name: validate
     prompt: |
-      Review the generated skill:
+      Review the skill you just generated. Read it back from
+      vault_skill_records (action: get) to see the stored record.
 
-      1. Does the description clearly signal when to activate?
-      2. Is the content procedural (how-to) not definitional?
-      3. Under 500 lines?
-      4. Does it conflict with existing skills?
-      5. Are source claims still accurate?
+      Check against these criteria:
 
-      If issues found, use vault_write_skill to rewrite.
-      Report: skill name, path, generation, and any issues found.
+      1. **Triggering clarity:** Would an agent reading only the
+         description know when to use this skill? Test: describe
+         a task that SHOULD trigger it and one that SHOULD NOT.
+
+      2. **Procedural content:** Does every section describe steps
+         to take? Remove any definitional content ("X is...").
+
+      3. **Concreteness:** Does it reference real file paths,
+         function names, and code patterns from this project?
+         Generic advice ("add a config file") is not enough.
+
+      4. **Length:** Under 500 lines?
+
+      5. **Conflicts:** Does it overlap with existing skills?
+         Use vault_skill_records (action: list) to check.
+
+      6. **Accuracy:** Spot-check 2-3 specific claims against the
+         vault. Use vault_search_fts to verify file paths and
+         function names mentioned in the skill.
+
+      If any criterion fails, rewrite using vault_write_skill.
+      This automatically bumps the generation.
+
+      Report results using vault_report with:
+      - Skill name and path
+      - Generation number
+      - Each criterion: pass/fail with brief note
+      - Any rewrites performed
     tools:
       - vault_write_skill
       - vault_skill_records
@@ -84,7 +163,7 @@ phases:
       - vault_spores
       - vault_search_fts
       - vault_report
-    maxTurns: 6
+    maxTurns: 8
     required: true
     dependsOn:
       - draft
