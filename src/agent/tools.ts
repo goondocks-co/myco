@@ -188,10 +188,10 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
 
   const vaultSearchFts = tool(
     'vault_search_fts',
-    'Full-text search across prompt batches and activities using FTS5. Best for finding specific text, keywords, or session content. Does NOT search spores or entities.',
+    'Full-text search across sessions, spores, prompt batches, and activities using FTS5. Best for finding exact keywords, file paths, function names, and specific text. Searches: session titles/summaries, spore content, user prompts, AI response summaries, tool calls.',
     {
       query: z.string().describe('Search query text'),
-      type: z.string().optional().describe('Restrict to a result type (prompt_batch, activity)'),
+      type: z.string().optional().describe('Restrict to a result type (session, spore, prompt_batch, activity)'),
       limit: z.number().optional().describe('Maximum number of results to return'),
     },
     async (args) => {

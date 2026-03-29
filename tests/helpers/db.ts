@@ -46,7 +46,7 @@ const FTS_DDL = [
   {
     name: 'prompt_batches_fts',
     ddl: `CREATE VIRTUAL TABLE IF NOT EXISTS prompt_batches_fts
-          USING fts5(user_prompt, content='prompt_batches', content_rowid='id')`,
+          USING fts5(user_prompt, response_summary, content='prompt_batches', content_rowid='id')`,
   },
   {
     name: 'activities_fts',
@@ -57,6 +57,16 @@ const FTS_DDL = [
     name: 'log_entries_fts',
     ddl: `CREATE VIRTUAL TABLE IF NOT EXISTS log_entries_fts
           USING fts5(message, content='log_entries', content_rowid='id')`,
+  },
+  {
+    name: 'spores_fts',
+    ddl: `CREATE VIRTUAL TABLE IF NOT EXISTS spores_fts
+          USING fts5(content, content='spores', content_rowid='rowid')`,
+  },
+  {
+    name: 'sessions_fts',
+    ddl: `CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts
+          USING fts5(title, summary, content='sessions', content_rowid='rowid')`,
   },
 ];
 

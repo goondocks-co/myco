@@ -17,7 +17,7 @@ import type { Database } from 'better-sqlite3';
 import { epochSeconds, DEFAULT_MACHINE_ID } from '@myco/constants.js';
 
 /** Current schema version -- fresh start for the SQLite era. */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 // Re-export for backwards compat (other modules import from schema.ts)
 export { DEFAULT_MACHINE_ID };
@@ -430,13 +430,19 @@ const SKILL_USAGE_TABLE = `
 
 const FTS_TABLES = [
   `CREATE VIRTUAL TABLE IF NOT EXISTS prompt_batches_fts
-     USING fts5(user_prompt, content='prompt_batches', content_rowid='id')`,
+     USING fts5(user_prompt, response_summary, content='prompt_batches', content_rowid='id')`,
 
   `CREATE VIRTUAL TABLE IF NOT EXISTS activities_fts
      USING fts5(tool_name, tool_input, file_path, content='activities', content_rowid='id')`,
 
   `CREATE VIRTUAL TABLE IF NOT EXISTS log_entries_fts
      USING fts5(message, content='log_entries', content_rowid='id')`,
+
+  `CREATE VIRTUAL TABLE IF NOT EXISTS spores_fts
+     USING fts5(content, content='spores', content_rowid='rowid')`,
+
+  `CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts
+     USING fts5(title, summary, content='sessions', content_rowid='rowid')`,
 
   // FTS5 sync triggers for log_entries (external-content table)
   `CREATE TRIGGER IF NOT EXISTS log_entries_ai AFTER INSERT ON log_entries BEGIN
@@ -445,6 +451,48 @@ const FTS_TABLES = [
 
   `CREATE TRIGGER IF NOT EXISTS log_entries_ad AFTER DELETE ON log_entries BEGIN
      INSERT INTO log_entries_fts(log_entries_fts, rowid, message) VALUES('delete', old.id, old.message);
+   END`,
+
+  // FTS5 sync triggers for prompt_batches
+  `CREATE TRIGGER IF NOT EXISTS prompt_batches_fts_ai AFTER INSERT ON prompt_batches BEGIN
+     INSERT INTO prompt_batches_fts(rowid, user_prompt, response_summary) VALUES (new.id, new.user_prompt, new.response_summary);
+   END`,
+
+  `CREATE TRIGGER IF NOT EXISTS prompt_batches_fts_au AFTER UPDATE OF user_prompt, response_summary ON prompt_batches BEGIN
+     INSERT INTO prompt_batches_fts(prompt_batches_fts, rowid, user_prompt, response_summary) VALUES('delete', old.id, old.user_prompt, old.response_summary);
+     INSERT INTO prompt_batches_fts(rowid, user_prompt, response_summary) VALUES (new.id, new.user_prompt, new.response_summary);
+   END`,
+
+  `CREATE TRIGGER IF NOT EXISTS prompt_batches_fts_ad AFTER DELETE ON prompt_batches BEGIN
+     INSERT INTO prompt_batches_fts(prompt_batches_fts, rowid, user_prompt, response_summary) VALUES('delete', old.id, old.user_prompt, old.response_summary);
+   END`,
+
+  // FTS5 sync triggers for spores
+  `CREATE TRIGGER IF NOT EXISTS spores_fts_ai AFTER INSERT ON spores BEGIN
+     INSERT INTO spores_fts(rowid, content) VALUES (new.rowid, new.content);
+   END`,
+
+  `CREATE TRIGGER IF NOT EXISTS spores_fts_au AFTER UPDATE OF content ON spores BEGIN
+     INSERT INTO spores_fts(spores_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+     INSERT INTO spores_fts(rowid, content) VALUES (new.rowid, new.content);
+   END`,
+
+  `CREATE TRIGGER IF NOT EXISTS spores_fts_ad AFTER DELETE ON spores BEGIN
+     INSERT INTO spores_fts(spores_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+   END`,
+
+  // FTS5 sync triggers for sessions
+  `CREATE TRIGGER IF NOT EXISTS sessions_fts_ai AFTER INSERT ON sessions BEGIN
+     INSERT INTO sessions_fts(rowid, title, summary) VALUES (new.rowid, new.title, new.summary);
+   END`,
+
+  `CREATE TRIGGER IF NOT EXISTS sessions_fts_au AFTER UPDATE OF title, summary ON sessions BEGIN
+     INSERT INTO sessions_fts(sessions_fts, rowid, title, summary) VALUES('delete', old.rowid, old.title, old.summary);
+     INSERT INTO sessions_fts(rowid, title, summary) VALUES (new.rowid, new.title, new.summary);
+   END`,
+
+  `CREATE TRIGGER IF NOT EXISTS sessions_fts_ad AFTER DELETE ON sessions BEGIN
+     INSERT INTO sessions_fts(sessions_fts, rowid, title, summary) VALUES('delete', old.rowid, old.title, old.summary);
    END`,
 ];
 
@@ -790,6 +838,123 @@ function migrateV3ToV4(db: Database, machineId: string): void {
 }
 
 /**
+ * Migrate a version-5 database to version-6.
+ *
+ * Version 6 expands FTS5 coverage:
+ *   - prompt_batches_fts gains response_summary column (drop + recreate)
+ *   - spores_fts new virtual table (content column, hidden rowid)
+ *   - sessions_fts new virtual table (title + summary, hidden rowid)
+ *   - sync triggers for all three tables (insert / update / delete)
+ *   - backfills FTS from existing data
+ *
+ * Uses `IF NOT EXISTS` throughout for idempotency where possible.
+ * The prompt_batches_fts table must be dropped first since its column
+ * definition changed.
+ */
+function migrateV5ToV6(db: Database): void {
+  db.exec('BEGIN');
+  try {
+    // Drop old prompt_batches_fts (column definition changed)
+    db.exec('DROP TABLE IF EXISTS prompt_batches_fts');
+
+    // Recreate with response_summary added
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS prompt_batches_fts
+         USING fts5(user_prompt, response_summary, content='prompt_batches', content_rowid='id')`,
+    );
+
+    // New FTS tables
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS spores_fts
+         USING fts5(content, content='spores', content_rowid='rowid')`,
+    );
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts
+         USING fts5(title, summary, content='sessions', content_rowid='rowid')`,
+    );
+
+    // Triggers for prompt_batches
+    db.exec(
+      `CREATE TRIGGER IF NOT EXISTS prompt_batches_fts_ai AFTER INSERT ON prompt_batches BEGIN
+         INSERT INTO prompt_batches_fts(rowid, user_prompt, response_summary) VALUES (new.id, new.user_prompt, new.response_summary);
+       END`,
+    );
+    db.exec(
+      `CREATE TRIGGER IF NOT EXISTS prompt_batches_fts_au AFTER UPDATE OF user_prompt, response_summary ON prompt_batches BEGIN
+         INSERT INTO prompt_batches_fts(prompt_batches_fts, rowid, user_prompt, response_summary) VALUES('delete', old.id, old.user_prompt, old.response_summary);
+         INSERT INTO prompt_batches_fts(rowid, user_prompt, response_summary) VALUES (new.id, new.user_prompt, new.response_summary);
+       END`,
+    );
+    db.exec(
+      `CREATE TRIGGER IF NOT EXISTS prompt_batches_fts_ad AFTER DELETE ON prompt_batches BEGIN
+         INSERT INTO prompt_batches_fts(prompt_batches_fts, rowid, user_prompt, response_summary) VALUES('delete', old.id, old.user_prompt, old.response_summary);
+       END`,
+    );
+
+    // Triggers for spores
+    db.exec(
+      `CREATE TRIGGER IF NOT EXISTS spores_fts_ai AFTER INSERT ON spores BEGIN
+         INSERT INTO spores_fts(rowid, content) VALUES (new.rowid, new.content);
+       END`,
+    );
+    db.exec(
+      `CREATE TRIGGER IF NOT EXISTS spores_fts_au AFTER UPDATE OF content ON spores BEGIN
+         INSERT INTO spores_fts(spores_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+         INSERT INTO spores_fts(rowid, content) VALUES (new.rowid, new.content);
+       END`,
+    );
+    db.exec(
+      `CREATE TRIGGER IF NOT EXISTS spores_fts_ad AFTER DELETE ON spores BEGIN
+         INSERT INTO spores_fts(spores_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+       END`,
+    );
+
+    // Triggers for sessions
+    db.exec(
+      `CREATE TRIGGER IF NOT EXISTS sessions_fts_ai AFTER INSERT ON sessions BEGIN
+         INSERT INTO sessions_fts(rowid, title, summary) VALUES (new.rowid, new.title, new.summary);
+       END`,
+    );
+    db.exec(
+      `CREATE TRIGGER IF NOT EXISTS sessions_fts_au AFTER UPDATE OF title, summary ON sessions BEGIN
+         INSERT INTO sessions_fts(sessions_fts, rowid, title, summary) VALUES('delete', old.rowid, old.title, old.summary);
+         INSERT INTO sessions_fts(rowid, title, summary) VALUES (new.rowid, new.title, new.summary);
+       END`,
+    );
+    db.exec(
+      `CREATE TRIGGER IF NOT EXISTS sessions_fts_ad AFTER DELETE ON sessions BEGIN
+         INSERT INTO sessions_fts(sessions_fts, rowid, title, summary) VALUES('delete', old.rowid, old.title, old.summary);
+       END`,
+    );
+
+    // Backfill FTS from existing data
+    db.exec(
+      `INSERT INTO prompt_batches_fts(rowid, user_prompt, response_summary)
+         SELECT rowid, user_prompt, response_summary FROM prompt_batches`,
+    );
+    db.exec(
+      `INSERT INTO spores_fts(rowid, content)
+         SELECT rowid, content FROM spores`,
+    );
+    db.exec(
+      `INSERT INTO sessions_fts(rowid, title, summary)
+         SELECT rowid, title, summary FROM sessions`,
+    );
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(6, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
  * Migrate a version-4 database to version-5.
  *
  * Version 5 adds the Skills layer:
@@ -888,6 +1053,13 @@ export function createSchema(db: Database, machineId: string = DEFAULT_MACHINE_I
     ).get() as { version: number } | undefined)?.version ?? 0;
     if (afterV3Migration < 5) {
       migrateV4ToV5(db);
+    }
+    // Migration path: version 5 → 6
+    const afterV4Migration = (db.prepare(
+      'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1'
+    ).get() as { version: number } | undefined)?.version ?? 0;
+    if (afterV4Migration < 6) {
+      migrateV5ToV6(db);
     }
     return;
   } catch {

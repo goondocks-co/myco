@@ -81,7 +81,7 @@ export function fullTextSearch(
   if (typeFilter === undefined || typeFilter === 'prompt_batch') {
     const batchRows = db.prepare(
       `SELECT pb.id, pb.prompt_number, pb.session_id,
-              substr(COALESCE(pb.user_prompt, ''), 1, ?) AS preview,
+              substr(COALESCE(pb.user_prompt, '') || ' ' || COALESCE(pb.response_summary, ''), 1, ?) AS preview,
               fts.rank
        FROM prompt_batches_fts fts
        JOIN prompt_batches pb ON pb.id = fts.rowid
@@ -138,6 +138,66 @@ export function fullTextSearch(
         preview,
         score: Math.abs(row.rank),
         ...(row.session_id != null ? { session_id: row.session_id } : {}),
+      });
+    }
+  }
+
+  // -- spores branch --------------------------------------------------------
+  if (typeFilter === undefined || typeFilter === 'spore') {
+    const sporeRows = db.prepare(
+      `SELECT s.id, s.observation_type, s.session_id,
+              substr(COALESCE(s.content, ''), 1, ?) AS preview,
+              fts.rank
+       FROM spores_fts fts
+       JOIN spores s ON s.rowid = fts.rowid
+       WHERE spores_fts MATCH ?
+       ORDER BY fts.rank
+       LIMIT ?`
+    ).all(SEARCH_PREVIEW_CHARS, query, limit) as Array<{
+      id: string;
+      observation_type: string;
+      session_id: string | null;
+      preview: string;
+      rank: number;
+    }>;
+
+    for (const row of sporeRows) {
+      results.push({
+        id: String(row.id),
+        type: 'spore',
+        title: row.observation_type,
+        preview: row.preview,
+        score: Math.abs(row.rank),
+        ...(row.session_id != null ? { session_id: row.session_id } : {}),
+      });
+    }
+  }
+
+  // -- sessions branch ------------------------------------------------------
+  if (typeFilter === undefined || typeFilter === 'session') {
+    const sessionRows = db.prepare(
+      `SELECT s.id, s.title,
+              substr(COALESCE(s.summary, s.title, ''), 1, ?) AS preview,
+              fts.rank
+       FROM sessions_fts fts
+       JOIN sessions s ON s.rowid = fts.rowid
+       WHERE sessions_fts MATCH ?
+       ORDER BY fts.rank
+       LIMIT ?`
+    ).all(SEARCH_PREVIEW_CHARS, query, limit) as Array<{
+      id: string;
+      title: string | null;
+      preview: string;
+      rank: number;
+    }>;
+
+    for (const row of sessionRows) {
+      results.push({
+        id: String(row.id),
+        type: 'session',
+        title: row.title ?? `Session ${row.id.slice(-6)}`,
+        preview: row.preview,
+        score: Math.abs(row.rank),
       });
     }
   }
