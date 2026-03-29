@@ -119,8 +119,8 @@ export default defineConfig({
               copyFileSync(path.join(srcDir, file), path.join(destDir, file));
             }
           }
-        } else if (entry.name.endsWith('.md') || entry.name.endsWith('.cjs')) {
-          // Shared templates (root-level .md and .cjs files like hook-guard.cjs)
+        } else if (entry.isFile()) {
+          // Shared templates (root-level files like hook-guard.cjs, instructions-stub.md)
           copyFileSync(path.join(symbiontTemplates, entry.name), path.join(destBase, entry.name));
         }
       }
