@@ -9,10 +9,9 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { loadConfig, updateTeamConfig } from '../config/loader.js';
 import { writeSecret } from '../config/secrets.js';
-import { findPackageRoot } from '../utils/find-package-root.js';
+import { resolvePackageRoot } from '../symbionts/detect.js';
 import { WRANGLER_COMMAND_TIMEOUT_MS, TEAM_API_KEY_SECRET } from '../constants.js';
 
 // ---------------------------------------------------------------------------
@@ -91,19 +90,13 @@ function wrangler(args: string[], options?: { cwd?: string }): string {
   });
 }
 
-/** Find the package root (where src/worker/ lives). */
-function locatePackageRoot(): string {
-  // Check CLAUDE_PLUGIN_ROOT first (dogfooding), then traverse up
-  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ?? process.env.CURSOR_PLUGIN_ROOT;
-  if (pluginRoot && fs.existsSync(path.join(pluginRoot, WORKER_SOURCE_DIR))) {
-    return pluginRoot;
-  }
-
-  // Walk up from this file's compiled location
-  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-  const root = findPackageRoot(scriptDir);
-  if (root && fs.existsSync(path.join(root, WORKER_SOURCE_DIR))) return root;
-
+/** Find the worker source directory. Checks dist layout first (installed), then source layout (dev). */
+function locateWorkerSource(): string {
+  const root = resolvePackageRoot();
+  const distPath = path.join(root, 'dist', WORKER_SOURCE_DIR);
+  if (fs.existsSync(distPath)) return distPath;
+  const srcPath = path.join(root, WORKER_SOURCE_DIR);
+  if (fs.existsSync(srcPath)) return srcPath;
   throw new Error(`Cannot find ${WORKER_SOURCE_DIR} — are you running from the myco package?`);
 }
 
@@ -112,8 +105,7 @@ function locatePackageRoot(): string {
  * with actual D1 database ID and resource names.
  */
 function prepareDeployDir(vaultDir: string, d1Id: string): string {
-  const pkgRoot = locatePackageRoot();
-  const srcDir = path.join(pkgRoot, WORKER_SOURCE_DIR);
+  const srcDir = locateWorkerSource();
   const deployDir = path.join(vaultDir, TEAM_WORKER_DIR);
 
   // Copy all worker source files
@@ -210,7 +202,7 @@ export async function teamInit(vaultDir: string): Promise<void> {
     console.log('Vectorize index created\n');
   } catch (err) {
     const errMsg = (err as Error).message;
-    if (errMsg.includes('already exists')) {
+    if (errMsg.includes('already exists') || errMsg.includes('duplicate_name')) {
       console.log('Vectorize index already exists, reusing\n');
     } else {
       console.error(`Failed to create Vectorize index: ${errMsg}`);

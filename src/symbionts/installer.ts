@@ -26,8 +26,14 @@ function isMycoHookGroup(group: Record<string, unknown>): boolean {
   return false;
 }
 
-/** Comment header for Myco entries in .gitignore. */
-const GITIGNORE_SKILLS_COMMENT = '# Myco skill symlinks (machine-specific)';
+/** Current comment header for Myco-managed .gitignore block. */
+const GITIGNORE_COMMENT = '# Myco managed (machine-specific)';
+
+/** Legacy comment header — recognized for cleanup during reconciliation. */
+const GITIGNORE_SKILLS_COMMENT_LEGACY = '# Myco skill symlinks (machine-specific)';
+
+/** Wrangler cache directory created by team sync operations. */
+const WRANGLER_CACHE_DIR = '.wrangler/';
 
 /** Subdirectory within the package where symbiont templates live. */
 const TEMPLATES_SUBDIR = 'src/symbionts/templates';
@@ -405,13 +411,14 @@ export class SymbiontInstaller {
 
     const skillNames = this.listSkillDirs();
 
-    // Desired state: per-skill entries for canonical + agent-specific paths
+    // Desired state: per-skill entries + infrastructure artifacts
     const desired = [
       ...skillNames.map((name) => `${CANONICAL_SKILLS_DIR}/${name}`),
       ...(reg.skillsTarget !== CANONICAL_SKILLS_DIR
         ? skillNames.map((name) => `${reg.skillsTarget}/${name}`)
         : []
       ),
+      WRANGLER_CACHE_DIR,
     ];
 
     const gitignorePath = path.join(this.projectRoot, '.gitignore');
@@ -423,7 +430,7 @@ export class SymbiontInstaller {
 
     // Build the new block
     const desiredBlock = desired.length > 0
-      ? `${GITIGNORE_SKILLS_COMMENT}\n${desired.join('\n')}\n`
+      ? `${GITIGNORE_COMMENT}\n${desired.join('\n')}\n`
       : '';
 
     // Check if anything changed
@@ -444,8 +451,10 @@ export class SymbiontInstaller {
   private stripMycoGitignoreBlock(content: string, skillNames: string[]): string {
     const reg = this.manifest.registration;
     const ownedLines = new Set<string>([
-      GITIGNORE_SKILLS_COMMENT,
+      GITIGNORE_COMMENT,
+      GITIGNORE_SKILLS_COMMENT_LEGACY,
       `${CANONICAL_SKILLS_DIR}/`, // legacy blanket entry
+      WRANGLER_CACHE_DIR,
     ]);
     for (const name of skillNames) {
       ownedLines.add(`${CANONICAL_SKILLS_DIR}/${name}`);

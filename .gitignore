@@ -25,7 +25,8 @@ docs/specs/
 .cursor/skills/myco-curate
 .cursor/skills/rules
 
-# Myco skill symlinks (machine-specific)
+# Myco managed (machine-specific)
 .agents/skills/myco
 .agents/skills/myco-curate
 .agents/skills/rules
+.wrangler/
