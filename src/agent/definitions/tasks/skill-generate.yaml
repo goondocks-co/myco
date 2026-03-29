@@ -79,6 +79,8 @@ phases:
         counter undertriggering — include "even if the user doesn't
         explicitly ask for [topic]" language when appropriate.
       managed_by: myco
+      user-invocable: true
+      allowed-tools: Read, Edit, Write, Bash, Grep, Glob
       ---
 
       # Skill Title
@@ -100,6 +102,15 @@ phases:
       Inline with the steps where possible, or as a short section
       at the end for cross-cutting gotchas.
       ```
+
+      ## Frontmatter Fields
+
+      - **user-invocable: true** — makes the skill available as a slash
+        command (e.g., `/add-symbiont`). Set this for all procedural skills.
+      - **allowed-tools** — comma-separated list of tools the skill needs.
+        Most procedural skills need: Read, Edit, Write, Bash, Grep, Glob.
+        Narrow this if the skill only needs read access (e.g., audit skills).
+        Omit the field entirely to allow all tools.
 
       ## Writing Principles
 

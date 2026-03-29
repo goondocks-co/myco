@@ -79,7 +79,22 @@ export function SkillDetail({ skillName, onBack }: SkillDetailProps) {
 
   const sourceCount = parseSourceCount(skill.source_ids);
   const rawContent = skill.lineage?.[0]?.content_snapshot ?? null;
-  // Strip YAML frontmatter — react-markdown doesn't handle it
+
+  // Parse and strip YAML frontmatter
+  const frontmatterMatch = rawContent?.match(/^---\n([\s\S]*?)\n---\n*/);
+  const frontmatter: Record<string, string> = {};
+  if (frontmatterMatch) {
+    for (const line of frontmatterMatch[1].split('\n')) {
+      const colonIdx = line.indexOf(':');
+      if (colonIdx > 0) {
+        const key = line.slice(0, colonIdx).trim();
+        const val = line.slice(colonIdx + 1).trim();
+        if (key && val && !['name', 'description', 'managed_by'].includes(key)) {
+          frontmatter[key] = val;
+        }
+      }
+    }
+  }
   const latestContent = rawContent?.replace(/^---\n[\s\S]*?\n---\n*/, '') ?? null;
 
   return (
@@ -102,6 +117,18 @@ export function SkillDetail({ skillName, onBack }: SkillDetailProps) {
             )}
             {skill.path && (
               <p className="font-mono text-[10px] text-on-surface-variant mt-1">{skill.path}</p>
+            )}
+            {Object.keys(frontmatter).length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {frontmatter['user-invocable'] === 'true' && (
+                  <Badge variant="secondary">user-invocable</Badge>
+                )}
+                {frontmatter['allowed-tools'] && (
+                  <Badge variant="outline">
+                    tools: {frontmatter['allowed-tools']}
+                  </Badge>
+                )}
+              </div>
             )}
           </div>
 
