@@ -90,7 +90,7 @@ import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
-import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSessionCascade, getSessionImpact } from '../db/queries/sessions.js';
+import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSessionCascade, getSessionImpact, incrementSessionToolCount } from '../db/queries/sessions.js';
 import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, findBatchByPromptPrefix, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary, listBatchesBySession } from '../db/queries/batches.js';
 import { insertActivityWithBatch } from '../db/queries/activities.js';
 import { insertAttachment, getAttachmentByFilePath } from '../db/queries/attachments.js';
@@ -238,7 +238,9 @@ export function handleToolUse(
   if (activity.prompt_batch_id !== null) {
     incrementActivityCount(activity.prompt_batch_id);
   }
-  // Session-level tool_count is updated at stop time from transcript data.
+
+  // Increment session-level tool_count atomically.
+  incrementSessionToolCount(sessionId);
 }
 
 /**
@@ -1193,11 +1195,18 @@ export async function main(): Promise<void> {
       }
     }
 
-    // Update session with transcript metadata (no LLM calls)
+    // Update session with transcript metadata (no LLM calls).
+    // Use MAX of current DB count vs transcript-derived count — the incremental
+    // count from handleUserPrompt is authoritative during active sessions; the
+    // transcript parse may see fewer turns if the file is incomplete.
+    const currentSession = getSession(sessionId);
+    const transcriptPromptCount = allTurns.length;
+    const transcriptToolCount = allTurns.reduce((sum, t) => sum + t.toolCount, 0);
+
     const updateFields: Record<string, unknown> = {
       transcript_path: hookTranscriptPath ?? null,
-      prompt_count: allTurns.length,
-      tool_count: allTurns.reduce((sum, t) => sum + t.toolCount, 0),
+      prompt_count: Math.max(transcriptPromptCount, currentSession?.prompt_count ?? 0),
+      tool_count: Math.max(transcriptToolCount, currentSession?.tool_count ?? 0),
     };
     if (user) updateFields.user = user;
     if (!hasTitle && sessionTitleCache.has(sessionId)) {

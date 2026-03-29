@@ -497,3 +497,14 @@ export function listBatchesBySession(
 
   return rows.map(toBatchRow);
 }
+
+/**
+ * Count prompt batches for a session — authoritative prompt count.
+ */
+export function countBatchesBySession(sessionId: string): number {
+  const db = getDatabase();
+  const row = db.prepare(
+    `SELECT COUNT(*) as count FROM prompt_batches WHERE session_id = ?`,
+  ).get(sessionId) as { count: number };
+  return row.count;
+}

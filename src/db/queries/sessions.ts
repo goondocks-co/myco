@@ -394,6 +394,18 @@ export function updateSession(
 }
 
 /**
+ * Atomically increment tool_count for a session.
+ *
+ * Uses SQL `tool_count + 1` to avoid read-modify-write races.
+ */
+export function incrementSessionToolCount(id: string): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE sessions SET tool_count = COALESCE(tool_count, 0) + 1 WHERE id = ?`,
+  ).run(id);
+}
+
+/**
  * Close a session — set status to 'completed' and record the end time.
  *
  * @returns the updated row, or null if the session does not exist.
