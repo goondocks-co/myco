@@ -9,66 +9,133 @@ prompt: >-
   Survey the vault knowledge graph for procedural skill candidates.
 isDefault: false
 model: claude-sonnet-4-6
-maxTurns: 15
-timeoutSeconds: 300
+maxTurns: 40
+timeoutSeconds: 600
 schedule:
   enabled: false
   intervalSeconds: 600
   runIn:
     - idle
 phases:
-  - name: inventory
+  - name: explore-spores
     prompt: |
-      Query the vault for recent knowledge that could inform procedural skills.
-      Focus on:
-      - Wisdom spores (synthesized patterns from multiple sessions)
-      - Session clusters (3+ sessions touching the same components/workflows)
-      - Plans and artifacts (design docs, implementation patterns)
-      - High-importance decisions and discoveries (importance >= 6)
+      Explore ALL spores in the vault to identify procedural patterns.
+      You are one of three parallel exploration phases — focus only on spores.
 
-      Group findings by procedural topic. Use vault_skill_candidates (action: list)
-      and vault_skill_records (action: list) to check for existing candidates/skills.
-      Avoid duplicates.
+      1. Query wisdom spores first (vault_spores, observation_type: wisdom).
+         These are the highest signal — synthesized from multiple sessions.
+
+      2. Query decisions, discoveries, and gotchas. Paginate through ALL
+         active spores (use offset parameter), not just the first page.
+
+      3. Use vault_entities to see what components and concepts exist.
+         High-mention-count entities often indicate areas that need skills.
+
+      4. Read the digest (vault_read_digest) for a high-level overview.
+
+      For each finding, note: what procedure does this relate to?
+      Group findings by procedural topic ("how to do X").
     tools:
       - vault_spores
-      - vault_sessions
-      - vault_search_fts
-      - vault_search_semantic
       - vault_entities
       - vault_edges
-      - vault_state
       - vault_read_digest
-      - vault_skill_candidates
-      - vault_skill_records
-    maxTurns: 6
+    maxTurns: 8
+    required: true
+
+  - name: explore-sessions
+    prompt: |
+      Explore ALL sessions in the vault to identify procedural workflows.
+      You are one of three parallel exploration phases — focus only on sessions.
+
+      1. List all sessions (vault_sessions). Paginate through them.
+         Session summaries describe workflows and multi-step implementations.
+
+      2. Look for recurring themes — "3+ sessions touched the same component"
+         is a strong skill candidate signal.
+
+      3. Use vault_search_fts to search session content for procedural
+         keywords: "how to", "step", "migration", "refactor", "debug",
+         "configure", "install", "deploy".
+
+      For each finding, note: what procedure does this relate to?
+      Group findings by procedural topic ("how to do X").
+    tools:
+      - vault_sessions
+      - vault_search_fts
+    maxTurns: 8
+    required: true
+
+  - name: explore-plans
+    prompt: |
+      Explore ALL plans and artifacts in the vault to identify procedures.
+      You are one of three parallel exploration phases — focus only on plans.
+
+      Plans contain explicit step-by-step procedures and design decisions.
+      They are often the most directly skill-ready content.
+
+      1. Use vault_search_semantic with broad queries to find plans:
+         - "implementation plan design architecture"
+         - "migration refactor setup configuration"
+         - "testing deployment workflow pipeline"
+         - "debugging troubleshooting fix"
+
+      2. Use vault_search_fts to search for specific procedural terms
+         across plans and artifacts.
+
+      For each finding, note: what procedure does this relate to?
+      Group findings by procedural topic ("how to do X").
+    tools:
+      - vault_search_semantic
+      - vault_search_fts
+    maxTurns: 8
     required: true
 
   - name: evaluate
     prompt: |
-      For each cluster identified in the inventory phase, evaluate:
+      Three parallel exploration phases have completed — one explored
+      spores and entities, one explored sessions, one explored plans.
+      Their findings are in the prior context.
 
-      1. Is this a procedure (how to do something) or just a concept?
-         Only procedures become skills.
+      For each procedural cluster identified across the exploration phases:
+
+      1. Is this a procedure (how to do something in this project)?
+         Only procedures become skills. "What is X" is not a skill.
+         "How to do X" is a skill.
 
       2. Is there enough cross-session evidence?
-         Minimum: knowledge from 2+ sessions, 3+ source items.
+         Minimum: knowledge from 2+ sessions, 3+ source items across
+         sessions, spores, and plans.
 
       3. Does an existing skill or candidate already cover this topic?
+         Use vault_skill_candidates (action: list) to check.
 
-      4. Score confidence (0.0-1.0) based on knowledge density,
-         cross-session evidence, and presence of wisdom spores.
+      4. Score confidence (0.0-1.0) based on:
+         - Knowledge density (more sources = higher)
+         - Cross-session evidence (wider = higher)
+         - Presence of wisdom spores (higher quality signal)
+         - Presence of plans with step-by-step procedures (higher)
 
-      Use vault_skill_candidates (action: create) for new candidates.
-      Use vault_skill_candidates (action: update) to strengthen existing ones.
-      Dismiss superseded candidates (status: dismissed).
+      For each valid candidate, use vault_skill_candidates (action: create)
+      with topic, rationale, confidence, and source_ids (JSON array of
+      {id, type} objects referencing the spores, sessions, and plans).
 
-      Report summary of candidates created, updated, and dismissed.
+      If an existing candidate has new evidence, use vault_skill_candidates
+      (action: update) to increase confidence and add source_ids.
+
+      Dismiss candidates whose underlying knowledge has been superseded
+      (action: update, status: dismissed).
+
+      Report a summary of candidates created, updated, and dismissed
+      using vault_report.
     tools:
       - vault_skill_candidates
       - vault_skill_records
       - vault_set_state
       - vault_report
-    maxTurns: 6
+    maxTurns: 8
     required: true
     dependsOn:
-      - inventory
+      - explore-spores
+      - explore-sessions
+      - explore-plans
