@@ -1,328 +1,196 @@
 import { Link } from 'react-router-dom';
-import { AlertCircle, Zap, XCircle, ListChecks } from 'lucide-react';
+import { AlertCircle, Check, XCircle, ListChecks, ExternalLink } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
-import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
-import { Pagination } from '../ui/pagination';
-import { useSkillCandidates, useUpdateCandidate, useTriggerAgentRun, type SkillCandidate } from '../../hooks/use-skills';
-import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
-import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
-import { formatEpochAgo, truncate } from '../../lib/format';
-import { cn } from '../../lib/cn';
-
-/* ---------- Constants ---------- */
-
-const SKELETON_ROW_COUNT = 5;
-
-const CANDIDATE_FILTERS: FilterDefinition[] = [
-  {
-    key: 'status',
-    label: 'Status',
-    options: [
-      { value: FILTER_ALL, label: 'All statuses' },
-      { value: 'identified', label: 'Identified' },
-      { value: 'approved', label: 'Approved' },
-      { value: 'generated', label: 'Generated' },
-      { value: 'dismissed', label: 'Dismissed' },
-    ],
-  },
-];
+import { Button } from '../ui/button';
+import { useSkillCandidates, useUpdateCandidate, type SkillCandidate } from '../../hooks/use-skills';
 
 /* ---------- Helpers ---------- */
 
-function confidenceBadgeVariant(confidence: number): 'default' | 'secondary' | 'outline' {
-  if (confidence >= 0.85) return 'default';
-  if (confidence >= 0.7) return 'secondary';
-  return 'outline';
+function confidenceLabel(confidence: number): { text: string; variant: 'default' | 'secondary' | 'outline' } {
+  const pct = `${(confidence * 100).toFixed(0)}%`;
+  if (confidence >= 0.85) return { text: pct, variant: 'default' };
+  if (confidence >= 0.7) return { text: pct, variant: 'secondary' };
+  return { text: pct, variant: 'outline' };
 }
 
-function parseSourceIds(raw: string): string[] {
-  try {
-    return JSON.parse(raw) ?? [];
-  } catch {
-    return [];
-  }
+function timeAgo(epoch: number): string {
+  const diff = Math.floor(Date.now() / 1000) - epoch;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
 }
 
-/* ---------- Sub-components ---------- */
+/* ---------- Candidate Card ---------- */
 
-function ColHeader({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <th className={cn('px-4 py-3 text-left font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant', className)}>
-      {children}
-    </th>
-  );
-}
-
-function SkeletonTableRow() {
-  return (
-    <tr className="border-b border-[var(--ghost-border)]">
-      <td className="px-4 py-3"><div className="h-3 w-40 rounded bg-surface-container-high animate-pulse" /></td>
-      <td className="px-4 py-3"><div className="h-3 w-16 rounded bg-surface-container-high animate-pulse" /></td>
-      <td className="px-4 py-3"><div className="h-3 w-16 rounded bg-surface-container-high animate-pulse" /></td>
-      <td className="px-4 py-3"><div className="h-3 w-10 rounded bg-surface-container-high animate-pulse" /></td>
-      <td className="px-4 py-3"><div className="h-3 w-20 rounded bg-surface-container-high animate-pulse" /></td>
-      <td className="px-4 py-3"><div className="h-3 w-24 rounded bg-surface-container-high animate-pulse" /></td>
-    </tr>
-  );
-}
-
-function CandidateTableRow({
+function CandidateCard({
   candidate,
   onApprove,
-  onGenerate,
   onDismiss,
   isApproving,
-  isGenerating,
   isDismissing,
 }: {
   candidate: SkillCandidate;
   onApprove: () => void;
-  onGenerate: () => void;
   onDismiss: () => void;
   isApproving: boolean;
-  isGenerating: boolean;
   isDismissing: boolean;
 }) {
-  const sources = parseSourceIds(candidate.source_ids);
-  const isIdentified = candidate.status === 'identified';
-  const isApproved = candidate.status === 'approved';
+  const conf = confidenceLabel(candidate.confidence);
 
   return (
-    <tr className="border-b border-[var(--ghost-border)] last:border-0 hover:bg-surface-container/60 transition-all duration-150">
-      {/* Topic + rationale */}
-      <td className="px-4 py-3">
-        <span className="font-sans text-sm font-medium text-on-surface block">
-          {candidate.topic}
-        </span>
-        <span className="font-sans text-xs text-on-surface-variant block mt-0.5">
-          {truncate(candidate.rationale, 80)}
-        </span>
-      </td>
-
-      {/* Confidence */}
-      <td className="px-4 py-3">
-        <Badge variant={confidenceBadgeVariant(candidate.confidence)}>
-          {(candidate.confidence * 100).toFixed(0)}%
-        </Badge>
-      </td>
-
-      {/* Status */}
-      <td className="px-4 py-3">
-        <Badge variant={candidate.status === 'dismissed' ? 'outline' : candidate.status === 'generated' ? 'secondary' : 'default'}>
-          {candidate.status}
-        </Badge>
-      </td>
-
-      {/* Sources count */}
-      <td className="px-4 py-3">
-        <span className="font-mono text-xs text-on-surface-variant">
-          {sources.length}
-        </span>
-      </td>
-
-      {/* Created date */}
-      <td className="px-4 py-3">
-        <span className="font-mono text-xs text-on-surface-variant">
-          {formatEpochAgo(candidate.created_at)}
-        </span>
-      </td>
-
-      {/* Actions — one decision at a time */}
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-2">
-          {isIdentified && (
-            <>
-              <button
-                onClick={onApprove}
-                disabled={isApproving}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded font-sans text-xs font-medium bg-primary/15 text-primary hover:bg-primary/25 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                title="Approve this candidate for skill generation"
-              >
-                <ListChecks className="h-3 w-3" />
-                {isApproving ? 'Approving…' : 'Approve'}
-              </button>
-              <button
-                onClick={onDismiss}
-                disabled={isDismissing}
-                className="inline-flex items-center gap-1 px-1.5 py-1 rounded font-sans text-xs text-on-surface-variant hover:bg-surface-container-high disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                title="Dismiss this candidate"
-              >
-                <XCircle className="h-3 w-3" />
-              </button>
-            </>
-          )}
-          {isApproved && (
-            <button
-              onClick={onGenerate}
-              disabled={isGenerating}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded font-sans text-xs font-medium bg-primary/15 text-primary hover:bg-primary/25 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              title="Generate skill from this approved candidate"
-            >
-              <Zap className="h-3 w-3" />
-              {isGenerating ? 'Generating…' : 'Generate Skill'}
-            </button>
-          )}
+    <Surface level="low" className="p-5 space-y-3">
+      {/* Header: topic + confidence + timestamp */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex-1 min-w-0">
+          <h3 className="font-serif text-lg text-on-surface leading-tight">
+            {candidate.topic}
+          </h3>
         </div>
-      </td>
-    </tr>
+        <div className="flex items-center gap-2 shrink-0">
+          <Badge variant={conf.variant}>{conf.text} confidence</Badge>
+          <span className="font-sans text-xs text-on-surface-variant">{timeAgo(candidate.created_at)}</span>
+        </div>
+      </div>
+
+      {/* Rationale — full text, no truncation */}
+      <p className="font-sans text-sm text-on-surface-variant leading-relaxed">
+        {candidate.rationale}
+      </p>
+
+      {/* Actions */}
+      <div className="flex items-center gap-2 pt-1">
+        <Button
+          size="sm"
+          variant="default"
+          onClick={onApprove}
+          disabled={isApproving}
+        >
+          <Check className="h-3.5 w-3.5 mr-1.5" />
+          {isApproving ? 'Approving…' : 'Approve'}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onDismiss}
+          disabled={isDismissing}
+          className="text-on-surface-variant"
+        >
+          <XCircle className="h-3.5 w-3.5 mr-1.5" />
+          {isDismissing ? 'Dismissing…' : 'Dismiss'}
+        </Button>
+      </div>
+    </Surface>
+  );
+}
+
+/* ---------- Skeleton ---------- */
+
+function SkeletonCard() {
+  return (
+    <Surface level="low" className="p-5 space-y-3">
+      <div className="flex items-start justify-between">
+        <div className="h-5 w-64 rounded bg-surface-container-high animate-pulse" />
+        <div className="h-5 w-20 rounded bg-surface-container-high animate-pulse" />
+      </div>
+      <div className="space-y-1.5">
+        <div className="h-3 w-full rounded bg-surface-container-high animate-pulse" />
+        <div className="h-3 w-3/4 rounded bg-surface-container-high animate-pulse" />
+      </div>
+      <div className="h-8 w-32 rounded bg-surface-container-high animate-pulse" />
+    </Surface>
   );
 }
 
 /* ---------- Component ---------- */
 
 export function CandidateList() {
-  const { searchInput, debouncedSearch, filterValues, offset, setOffset, handleSearchChange, handleFilterChange, activeFilter } =
-    useListFilters({ initialFilters: { status: FILTER_ALL } });
-
   const updateCandidate = useUpdateCandidate();
-  const triggerAgentRun = useTriggerAgentRun();
 
-  const activeStatus = activeFilter('status');
-
+  // Default to 'identified' — this is a review queue, not a data table
   const { data, isLoading, isError, error } = useSkillCandidates({
-    status: activeStatus,
-    limit: DEFAULT_PAGE_SIZE,
-    offset,
+    status: 'identified',
+    limit: 50,
   });
 
   const candidates = data?.candidates ?? [];
   const total = data?.total ?? 0;
 
-  // Client-side search filter (API may not support search param)
-  const filtered = debouncedSearch
-    ? candidates.filter(
-        (c) =>
-          c.topic.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
-          c.rationale.toLowerCase().includes(debouncedSearch.toLowerCase()),
-      )
-    : candidates;
-
   function handleApprove(candidate: SkillCandidate) {
     updateCandidate.mutate({ id: candidate.id, status: 'approved' });
-  }
-
-  function handleGenerate(candidate: SkillCandidate) {
-    triggerAgentRun.mutate({
-      task: 'skill-generate',
-      instruction: `Generate a skill for candidate id=${candidate.id} topic="${candidate.topic}"`,
-    });
   }
 
   function handleDismiss(candidate: SkillCandidate) {
     updateCandidate.mutate({ id: candidate.id, status: 'dismissed' });
   }
 
-  const toolbar = (
-    <ListToolbar
-      searchPlaceholder="Search candidates..."
-      searchValue={searchInput}
-      onSearchChange={handleSearchChange}
-      filters={CANDIDATE_FILTERS}
-      filterValues={filterValues}
-      onFilterChange={handleFilterChange}
-    />
-  );
-
-  const tableHead = (
-    <thead>
-      <tr className="border-b border-[var(--ghost-border)] bg-surface-container/50">
-        <ColHeader>Topic</ColHeader>
-        <ColHeader>Confidence</ColHeader>
-        <ColHeader>Status</ColHeader>
-        <ColHeader>Sources</ColHeader>
-        <ColHeader>Created</ColHeader>
-        <ColHeader>Actions</ColHeader>
-      </tr>
-    </thead>
-  );
-
   if (isError) {
     return (
-      <div>
-        {toolbar}
-        <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary mt-4">
-          <AlertCircle className="h-5 w-5" />
-          <span className="font-sans text-sm">Failed to load candidates</span>
-          <span className="font-sans text-xs text-on-surface-variant">
-            {error instanceof Error ? error.message : 'Unknown error'}
-          </span>
+      <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary">
+        <AlertCircle className="h-5 w-5" />
+        <span className="font-sans text-sm">Failed to load candidates</span>
+        <span className="font-sans text-xs text-on-surface-variant">
+          {error instanceof Error ? error.message : 'Unknown error'}
+        </span>
+      </div>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <SkeletonCard key={i} />
+        ))}
+      </div>
+    );
+  }
+
+  if (candidates.length === 0) {
+    return (
+      <div className="flex h-48 flex-col items-center justify-center gap-3 text-on-surface-variant">
+        <ListChecks className="h-10 w-10 opacity-20" />
+        <div className="text-center space-y-1">
+          <p className="font-sans text-sm">
+            {total === 0 ? 'No candidates awaiting review' : 'All candidates have been reviewed'}
+          </p>
+          <p className="font-sans text-xs">
+            <Link to="/agent?tab=tasks&task=skill-survey" className="inline-flex items-center gap-1 text-primary hover:underline">
+              <ExternalLink className="h-3 w-3" />
+              Run Skill Candidate Survey
+            </Link>
+            {' '}to discover new procedural patterns
+          </p>
         </div>
       </div>
     );
   }
 
   return (
-    <div>
-      {toolbar}
+    <div className="space-y-3">
+      <p className="font-sans text-xs text-on-surface-variant">
+        {total} candidate{total !== 1 ? 's' : ''} awaiting review
+      </p>
 
-      {isLoading ? (
-        <Surface level="low" className="rounded-md overflow-hidden mt-4">
-          <table className="w-full">
-            {tableHead}
-            <tbody>
-              {Array.from({ length: SKELETON_ROW_COUNT }).map((_, i) => (
-                <SkeletonTableRow key={i} />
-              ))}
-            </tbody>
-          </table>
-        </Surface>
-      ) : filtered.length === 0 ? (
-        <div className="flex h-40 flex-col items-center justify-center gap-2 text-on-surface-variant mt-4">
-          <ListChecks className="h-8 w-8 opacity-30" />
-          <span className="font-sans text-sm">
-            {total === 0 && !debouncedSearch && !activeStatus
-              ? 'No skill candidates yet'
-              : 'No matching candidates'}
-          </span>
-          {total === 0 && !debouncedSearch && !activeStatus && (
-            <span className="font-sans text-xs">
-              <Link to="/agent?tab=tasks&task=skill-survey" className="text-primary hover:underline">
-                Run Survey
-              </Link>
-              {' '}to discover skill candidates from your session history
-            </span>
-          )}
-        </div>
-      ) : (
-        <Surface level="low" className="rounded-md overflow-hidden mt-4">
-          <table className="w-full" aria-label="Skill candidates">
-            {tableHead}
-            <tbody>
-              {filtered.map((candidate) => (
-                <CandidateTableRow
-                  key={candidate.id}
-                  candidate={candidate}
-                  onApprove={() => handleApprove(candidate)}
-                  onGenerate={() => handleGenerate(candidate)}
-                  onDismiss={() => handleDismiss(candidate)}
-                  isApproving={
-                    updateCandidate.isPending &&
-                    updateCandidate.variables?.id === candidate.id &&
-                    updateCandidate.variables?.status === 'approved'
-                  }
-                  isGenerating={
-                    triggerAgentRun.isPending &&
-                    triggerAgentRun.variables?.instruction?.includes(candidate.id)
-                  }
-                  isDismissing={
-                    updateCandidate.isPending &&
-                    updateCandidate.variables?.id === candidate.id &&
-                    updateCandidate.variables?.status === 'dismissed'
-                  }
-                />
-              ))}
-            </tbody>
-          </table>
-        </Surface>
-      )}
-
-      <Pagination
-        total={total}
-        offset={offset}
-        limit={DEFAULT_PAGE_SIZE}
-        onPageChange={setOffset}
-      />
+      {candidates.map((candidate) => (
+        <CandidateCard
+          key={candidate.id}
+          candidate={candidate}
+          onApprove={() => handleApprove(candidate)}
+          onDismiss={() => handleDismiss(candidate)}
+          isApproving={
+            updateCandidate.isPending &&
+            updateCandidate.variables?.id === candidate.id &&
+            updateCandidate.variables?.status === 'approved'
+          }
+          isDismissing={
+            updateCandidate.isPending &&
+            updateCandidate.variables?.id === candidate.id &&
+            updateCandidate.variables?.status === 'dismissed'
+          }
+        />
+      ))}
     </div>
   );
 }
