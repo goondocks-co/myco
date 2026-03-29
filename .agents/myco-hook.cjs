@@ -11,8 +11,6 @@ const bin = process.env.MYCO_CMD || 'myco-run';
 try {
   execFileSync(bin, process.argv.slice(2), { stdio: 'inherit' });
 } catch (e) {
-  // Binary not found — Myco not installed, exit silently
   if (e.code === 'ENOENT') process.exit(0);
-  // Command ran but failed — surface the real error
   process.exit(e.status ?? 1);
 }
