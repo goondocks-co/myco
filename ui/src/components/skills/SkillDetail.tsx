@@ -135,13 +135,11 @@ export function SkillDetail({ skillName, onBack }: SkillDetailProps) {
         <EvolutionTimeline entries={skill.lineage ?? []} />
       </div>
 
-      {/* Current Content */}
+      {/* Current Content — rendered inline, no scroll container */}
       <div className="space-y-3">
         <SectionHeader>Current Content</SectionHeader>
         {latestContent ? (
-          <Surface level="lowest" className="p-4 overflow-auto max-h-[32rem]">
-            <MarkdownContent content={latestContent} />
-          </Surface>
+          <MarkdownContent content={latestContent} />
         ) : (
           <p className="font-sans text-sm text-on-surface-variant py-4">
             No content snapshot available.

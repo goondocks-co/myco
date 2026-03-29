@@ -19,6 +19,10 @@ const MAX_ACTIVE_SKILLS_CHECK = 1000;
  * Idempotent — skips skills already recorded for this session.
  */
 export function detectSkillUsage(sessionId: string, transcriptContent: string): void {
+  // Skip transcripts that contain vault_write_skill calls — these are
+  // agent sessions generating/evolving skills, not developer sessions using them.
+  if (transcriptContent.includes('vault_write_skill')) return;
+
   const activeSkills = listSkillRecords({ status: 'active', limit: MAX_ACTIVE_SKILLS_CHECK });
   if (activeSkills.length === 0) return;
 
