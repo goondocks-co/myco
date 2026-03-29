@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
-import { insertSkillRecord, getSkillRecord } from '@myco/db/queries/skill-records.js';
+import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { detectSkillUsage } from '@myco/daemon/skill-usage.js';
 import { countUsageForSkill } from '@myco/db/queries/skill-usage.js';
 
@@ -30,36 +30,23 @@ describe('skill usage detection', () => {
     });
   });
 
-  it('detects skill activation from SKILL.md path in transcript', () => {
+  // Detection is currently disabled (early return) due to false positives:
+  // regex matching catches mentions of skill names in conversation, not just
+  // actual skill activations. Re-enable tests when a reliable activation
+  // signal is identified in agent transcripts.
+
+  it('does not count usage when detection is disabled', () => {
     detectSkillUsage(sessionId, 'loaded skills/adding-a-symbiont/SKILL.md into context');
-    expect(countUsageForSkill(skillId)).toBe(1);
-    expect(getSkillRecord(skillId)!.usage_count).toBe(1);
-  });
-
-  it('detects skill activation from <skill> tag in transcript', () => {
-    detectSkillUsage(sessionId, '<skill name="adding-a-symbiont">content</skill>');
-    expect(countUsageForSkill(skillId)).toBe(1);
-  });
-
-  it('is idempotent for same session', () => {
-    detectSkillUsage(sessionId, 'skills/adding-a-symbiont/SKILL.md');
-    detectSkillUsage(sessionId, 'skills/adding-a-symbiont/SKILL.md');
-    expect(countUsageForSkill(skillId)).toBe(1);
-  });
-
-  it('ignores unrecognized skill names', () => {
-    detectSkillUsage(sessionId, 'skills/unknown-skill/SKILL.md');
     expect(countUsageForSkill(skillId)).toBe(0);
   });
 
-  it('skips when no active skills exist', async () => {
-    // Clean skill records
-    const { getDatabase } = await import('@myco/db/client.js');
-    const db = getDatabase();
-    db.prepare('DELETE FROM skill_records').run();
+  it('skips vault_write_skill transcripts', () => {
+    detectSkillUsage(sessionId, 'vault_write_skill skills/adding-a-symbiont/SKILL.md');
+    expect(countUsageForSkill(skillId)).toBe(0);
+  });
 
-    // Should not throw
-    detectSkillUsage(sessionId, 'skills/adding-a-symbiont/SKILL.md');
+  it('does not throw on empty transcript', () => {
+    detectSkillUsage(sessionId, '');
     expect(countUsageForSkill(skillId)).toBe(0);
   });
 });

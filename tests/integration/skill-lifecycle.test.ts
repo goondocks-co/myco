@@ -65,15 +65,16 @@ describe('skill lifecycle integration', () => {
       created_at: now,
     });
 
-    // 4. Simulate usage detection
+    // 4. Usage detection is currently disabled (false positive issue).
+    // Verify the function doesn't throw and doesn't count.
     const sessionId = 'sess-usage';
     upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
     detectSkillUsage(sessionId, 'loaded skills/adding-a-symbiont/SKILL.md into context');
-    expect(countUsageForSkill(record.id)).toBe(1);
+    expect(countUsageForSkill(record.id)).toBe(0);
 
     const refreshed = getSkillRecordByName('adding-a-symbiont');
-    expect(refreshed!.usage_count).toBe(1);
-    expect(refreshed!.last_used_at).toBe(now);
+    expect(refreshed!.usage_count).toBe(0); // Detection disabled
+    expect(refreshed!.last_used_at).toBeNull();
 
     // 5. Simulate evolution (add lineage entry)
     updateSkillRecord(record.id, {
