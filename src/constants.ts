@@ -142,6 +142,8 @@ export const EDGE_TYPE_HAS_BATCH = 'HAS_BATCH';
 // --- Query defaults ---
 /** Default row limit for query module list operations. */
 export const QUERY_DEFAULT_LIST_LIMIT = 100;
+/** Default LIMIT for paginated list queries. */
+export const DEFAULT_LIST_LIMIT = 50;
 /** Default confidence score for graph edges. */
 export const GRAPH_EDGE_DEFAULT_CONFIDENCE = 1.0;
 

@@ -533,12 +533,14 @@ const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_skill_candidates_agent_id ON skill_candidates (agent_id)',
   'CREATE INDEX IF NOT EXISTS idx_skill_candidates_status ON skill_candidates (status)',
   'CREATE INDEX IF NOT EXISTS idx_skill_candidates_machine_id ON skill_candidates (machine_id)',
+  'CREATE INDEX IF NOT EXISTS idx_skill_candidates_agent_status ON skill_candidates (agent_id, status)',
 
   // Skill records
   'CREATE INDEX IF NOT EXISTS idx_skill_records_agent_id ON skill_records (agent_id)',
   'CREATE INDEX IF NOT EXISTS idx_skill_records_status ON skill_records (status)',
   'CREATE INDEX IF NOT EXISTS idx_skill_records_name ON skill_records (name)',
   'CREATE INDEX IF NOT EXISTS idx_skill_records_machine_id ON skill_records (machine_id)',
+  'CREATE INDEX IF NOT EXISTS idx_skill_records_agent_status ON skill_records (agent_id, status)',
 
   // Skill lineage
   'CREATE INDEX IF NOT EXISTS idx_skill_lineage_skill_id ON skill_lineage (skill_id)',
@@ -810,10 +812,12 @@ function migrateV4ToV5(db: Database): void {
       'CREATE INDEX IF NOT EXISTS idx_skill_candidates_agent_id ON skill_candidates (agent_id)',
       'CREATE INDEX IF NOT EXISTS idx_skill_candidates_status ON skill_candidates (status)',
       'CREATE INDEX IF NOT EXISTS idx_skill_candidates_machine_id ON skill_candidates (machine_id)',
+      'CREATE INDEX IF NOT EXISTS idx_skill_candidates_agent_status ON skill_candidates (agent_id, status)',
       'CREATE INDEX IF NOT EXISTS idx_skill_records_agent_id ON skill_records (agent_id)',
       'CREATE INDEX IF NOT EXISTS idx_skill_records_status ON skill_records (status)',
       'CREATE INDEX IF NOT EXISTS idx_skill_records_name ON skill_records (name)',
       'CREATE INDEX IF NOT EXISTS idx_skill_records_machine_id ON skill_records (machine_id)',
+      'CREATE INDEX IF NOT EXISTS idx_skill_records_agent_status ON skill_records (agent_id, status)',
       'CREATE INDEX IF NOT EXISTS idx_skill_lineage_skill_id ON skill_lineage (skill_id)',
       'CREATE INDEX IF NOT EXISTS idx_skill_usage_skill_id ON skill_usage (skill_id)',
       'CREATE INDEX IF NOT EXISTS idx_skill_usage_session_id ON skill_usage (session_id)',

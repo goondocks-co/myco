@@ -9,15 +9,11 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { DEFAULT_MACHINE_ID, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Default number of usage rows returned by listUsageForSkill when no limit given. */
-export const DEFAULT_LIST_LIMIT = 50;
+// Re-export for callers that import DEFAULT_LIST_LIMIT from this module
+export { DEFAULT_LIST_LIMIT };
 
 // ---------------------------------------------------------------------------
 // Types

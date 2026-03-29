@@ -6,15 +6,11 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { DEFAULT_MACHINE_ID, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Default number of candidates returned by listCandidates when no limit given. */
-export const DEFAULT_LIST_LIMIT = 50;
+// Re-export for callers that import DEFAULT_LIST_LIMIT from this module
+export { DEFAULT_LIST_LIMIT };
 
 /** Default confidence score for new candidates. */
 const DEFAULT_CONFIDENCE = 0.0;
@@ -273,6 +269,20 @@ export function updateCandidate(
   if (updated) syncRow('skill_candidates', updated);
 
   return updated;
+}
+
+/**
+ * List candidates and return the total count in a single call.
+ *
+ * Runs listCandidates and countCandidates with the same filter options.
+ * Saves callers from issuing two separate function calls.
+ */
+export function listCandidatesWithCount(
+  options: ListCandidatesOptions = {},
+): { items: CandidateRow[]; total: number } {
+  const items = listCandidates(options);
+  const total = countCandidates(options);
+  return { items, total };
 }
 
 /**

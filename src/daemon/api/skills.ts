@@ -13,18 +13,16 @@
  */
 
 import type { RouteRequest, RouteResponse } from '../router.js';
-import { epochSeconds } from '@myco/constants.js';
+import { epochSeconds, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import {
-  listCandidates,
+  listCandidatesWithCount,
   getCandidate,
   updateCandidate,
-  countCandidates,
 } from '@myco/db/queries/skill-candidates.js';
 import {
-  listSkillRecords,
+  listSkillRecordsWithCount,
   getSkillRecord,
   getSkillRecordByName,
-  countSkillRecords,
 } from '@myco/db/queries/skill-records.js';
 import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { countUsageForSkill } from '@myco/db/queries/skill-usage.js';
@@ -33,7 +31,6 @@ import { countUsageForSkill } from '@myco/db/queries/skill-usage.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_LIST_LIMIT = 50;
 const DEFAULT_LIST_OFFSET = 0;
 
 // ---------------------------------------------------------------------------
@@ -50,8 +47,7 @@ export async function handleListCandidates(req: RouteRequest): Promise<RouteResp
   const limit = req.query.limit ? Number(req.query.limit) : DEFAULT_LIST_LIMIT;
   const offset = req.query.offset ? Number(req.query.offset) : DEFAULT_LIST_OFFSET;
 
-  const candidates = listCandidates({ status, limit, offset });
-  const total = countCandidates({ status });
+  const { items: candidates, total } = listCandidatesWithCount({ status, limit, offset });
 
   return { status: 200, body: { candidates, total } };
 }
@@ -76,22 +72,16 @@ export async function handleGetCandidate(req: RouteRequest): Promise<RouteRespon
  * Returns 400 if no body, 404 if candidate not found.
  */
 export async function handleUpdateCandidate(req: RouteRequest): Promise<RouteResponse> {
-  if (!req.body) {
-    return { status: 400, body: { error: 'Missing request body' } };
-  }
+  const id = req.params.id;
+  const body = req.body as Record<string, unknown> | undefined;
+  if (!body) return { status: 400, body: { error: 'Request body required' } };
 
-  const existing = getCandidate(req.params.id);
-  if (!existing) {
-    return { status: 404, body: { error: `Not found: ${req.params.id}` } };
-  }
-
-  const updates = {
-    ...(req.body as Record<string, unknown>),
+  const updated = updateCandidate(id, {
+    ...body,
     updated_at: epochSeconds(),
-  };
+  } as Parameters<typeof updateCandidate>[1]);
 
-  const updated = updateCandidate(req.params.id, updates as Parameters<typeof updateCandidate>[1]);
-
+  if (!updated) return { status: 404, body: { error: `Candidate not found: ${id}` } };
   return { status: 200, body: { candidate: updated } };
 }
 
@@ -105,8 +95,7 @@ export async function handleListSkillRecords(req: RouteRequest): Promise<RouteRe
   const limit = req.query.limit ? Number(req.query.limit) : DEFAULT_LIST_LIMIT;
   const offset = req.query.offset ? Number(req.query.offset) : DEFAULT_LIST_OFFSET;
 
-  const records = listSkillRecords({ status, limit, offset });
-  const total = countSkillRecords({ status });
+  const { items: records, total } = listSkillRecordsWithCount({ status, limit, offset });
 
   return { status: 200, body: { records, total } };
 }

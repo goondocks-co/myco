@@ -20,7 +20,7 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { z } from 'zod/v4';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
-import { epochSeconds, SEARCH_SIMILARITY_THRESHOLD, TEAM_SOURCE_PREFIX } from '@myco/constants.js';
+import { epochSeconds, SEARCH_SIMILARITY_THRESHOLD, TEAM_SOURCE_PREFIX, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { getPluginVersion } from '@myco/version.js';
 import { getUnprocessedBatches, markBatchProcessed } from '@myco/db/queries/batches.js';
 import { listSpores, insertSpore, updateSporeStatus, DEFAULT_IMPORTANCE } from '@myco/db/queries/spores.js';
@@ -617,12 +617,6 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
   // Skill lifecycle tools
   // -------------------------------------------------------------------------
 
-  /** Default limit for skill candidate listing. */
-  const DEFAULT_CANDIDATES_LIMIT = 50;
-
-  /** Default limit for skill record listing. */
-  const DEFAULT_RECORDS_LIMIT = 50;
-
   const vaultSkillCandidates = tool(
     'vault_skill_candidates',
     'Manage skill candidates (identified topics that may become skills). Supports list, get, create, and update actions.',
@@ -645,7 +639,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
           const candidates = listCandidates({
             agent_id: agentId,
             status: args.status,
-            limit: args.limit ?? DEFAULT_CANDIDATES_LIMIT,
+            limit: args.limit ?? DEFAULT_LIST_LIMIT,
           });
           return textResult(candidates);
         }
@@ -719,7 +713,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
           const records = listSkillRecords({
             agent_id: agentId,
             status: args.status,
-            limit: args.limit ?? DEFAULT_RECORDS_LIMIT,
+            limit: args.limit ?? DEFAULT_LIST_LIMIT,
           });
           return textResult(records);
         }

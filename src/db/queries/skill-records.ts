@@ -6,15 +6,11 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { DEFAULT_MACHINE_ID, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Default number of records returned by listSkillRecords when no limit given. */
-export const DEFAULT_LIST_LIMIT = 50;
+// Re-export for callers that import DEFAULT_LIST_LIMIT from this module
+export { DEFAULT_LIST_LIMIT };
 
 /** Default status for new skill records. */
 const DEFAULT_STATUS = 'active';
@@ -329,6 +325,20 @@ export function incrementSkillUsageCount(id: string, now: number): void {
     `UPDATE skill_records SET usage_count = usage_count + 1, last_used_at = ?, updated_at = ? WHERE id = ?`,
   ).run(now, now, id);
   // Note: syncRow omitted for atomic increment — synced via next full record read
+}
+
+/**
+ * List skill records and return the total count in a single call.
+ *
+ * Runs listSkillRecords and countSkillRecords with the same filter options.
+ * Saves callers from issuing two separate function calls.
+ */
+export function listSkillRecordsWithCount(
+  options: ListSkillRecordsOptions = {},
+): { items: SkillRecordRow[]; total: number } {
+  const items = listSkillRecords(options);
+  const total = countSkillRecords(options);
+  return { items, total };
 }
 
 /**
