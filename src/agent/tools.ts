@@ -16,6 +16,8 @@
  */
 
 import crypto from 'node:crypto';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { z } from 'zod/v4';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { epochSeconds, SEARCH_SIMILARITY_THRESHOLD, TEAM_SOURCE_PREFIX } from '@myco/constants.js';
@@ -33,6 +35,14 @@ import { insertGraphEdge, listGraphEdges } from '@myco/db/queries/graph-edges.js
 import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
+import {
+  insertCandidate, getCandidate, listCandidates, updateCandidate,
+} from '@myco/db/queries/skill-candidates.js';
+import {
+  insertSkillRecord, getSkillRecord, getSkillRecordByName,
+  listSkillRecords, updateSkillRecord,
+} from '@myco/db/queries/skill-records.js';
+import { insertLineage } from '@myco/db/queries/skill-lineage.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 
@@ -75,7 +85,7 @@ function textResult(data: unknown): { content: Array<{ type: 'text'; text: strin
 // ---------------------------------------------------------------------------
 
 /** Total number of vault tools defined. */
-export const VAULT_TOOL_COUNT = 18;
+export const VAULT_TOOL_COUNT = 21;
 
 /**
  * Create the 18 vault tool definitions for the agent.
@@ -86,7 +96,7 @@ export const VAULT_TOOL_COUNT = 18;
  * @param runId — the current agent run ID, injected into reports and turns.
  * @returns array of SdkMcpToolDefinition objects.
  */
-export function createVaultTools(agentId: string, runId: string, turnOffset = 0, embeddingManager?: EmbeddingManager, teamClient?: TeamSyncClient | null, machineId?: string) {
+export function createVaultTools(agentId: string, runId: string, turnOffset = 0, embeddingManager?: EmbeddingManager, teamClient?: TeamSyncClient | null, machineId?: string, projectRoot?: string) {
   /** Turn number counter — incremented per tool call (read and write) within a run. */
   let turnCounter = turnOffset;
 
@@ -603,6 +613,252 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
   );
 
   // -------------------------------------------------------------------------
+  // Skill lifecycle tools
+  // -------------------------------------------------------------------------
+
+  /** Default limit for skill candidate listing. */
+  const DEFAULT_CANDIDATES_LIMIT = 50;
+
+  /** Default limit for skill record listing. */
+  const DEFAULT_RECORDS_LIMIT = 50;
+
+  const vaultSkillCandidates = tool(
+    'vault_skill_candidates',
+    'Manage skill candidates (identified topics that may become skills). Supports list, get, create, and update actions.',
+    {
+      action: z.enum(['list', 'get', 'create', 'update']).describe('Action to perform'),
+      id: z.string().optional().describe('Candidate ID (required for get/update)'),
+      topic: z.string().optional().describe('Skill topic (required for create)'),
+      rationale: z.string().optional().describe('Why this should be a skill (required for create)'),
+      confidence: z.number().optional().describe('Confidence score 0-1'),
+      status: z.string().optional().describe('Candidate status (identified, validated, rejected, materialized)'),
+      source_ids: z.string().optional().describe('JSON array of source spore/entity IDs'),
+      skill_id: z.string().optional().describe('Associated skill record ID (after materialization)'),
+      limit: z.number().optional().describe('Maximum candidates to return (for list)'),
+    },
+    async (args) => {
+      recordTurn('vault_skill_candidates', args);
+
+      switch (args.action) {
+        case 'list': {
+          const candidates = listCandidates({
+            agent_id: agentId,
+            status: args.status,
+            limit: args.limit ?? DEFAULT_CANDIDATES_LIMIT,
+          });
+          return textResult(candidates);
+        }
+
+        case 'get': {
+          if (!args.id) return textResult({ error: 'id is required for get action' });
+          const candidate = getCandidate(args.id);
+          if (!candidate) return textResult({ error: `Candidate not found: ${args.id}` });
+          return textResult(candidate);
+        }
+
+        case 'create': {
+          if (!args.topic || !args.rationale) {
+            return textResult({ error: 'topic and rationale are required for create action' });
+          }
+          const now = epochSeconds();
+          const candidate = insertCandidate({
+            id: crypto.randomUUID(),
+            agent_id: agentId,
+            machine_id: machineId,
+            topic: args.topic,
+            rationale: args.rationale,
+            confidence: args.confidence,
+            status: args.status,
+            source_ids: args.source_ids,
+            created_at: now,
+            updated_at: now,
+          });
+          return textResult(candidate);
+        }
+
+        case 'update': {
+          if (!args.id) return textResult({ error: 'id is required for update action' });
+          const now = epochSeconds();
+          const updated = updateCandidate(args.id, {
+            ...(args.topic !== undefined ? { topic: args.topic } : {}),
+            ...(args.rationale !== undefined ? { rationale: args.rationale } : {}),
+            ...(args.confidence !== undefined ? { confidence: args.confidence } : {}),
+            ...(args.status !== undefined ? { status: args.status } : {}),
+            ...(args.source_ids !== undefined ? { source_ids: args.source_ids } : {}),
+            ...(args.skill_id !== undefined ? { skill_id: args.skill_id } : {}),
+            updated_at: now,
+          });
+          if (!updated) return textResult({ error: `Candidate not found: ${args.id}` });
+          return textResult(updated);
+        }
+
+        default:
+          return textResult({ error: `Unknown action: ${args.action}` });
+      }
+    },
+  );
+
+  const vaultSkillRecords = tool(
+    'vault_skill_records',
+    'Read and update skill records (materialized skills on disk). Supports list, get, and update actions.',
+    {
+      action: z.enum(['list', 'get', 'update']).describe('Action to perform'),
+      id: z.string().optional().describe('Skill record ID or name (required for get/update)'),
+      status: z.string().optional().describe('Filter by status (active, deprecated, archived)'),
+      generation: z.number().optional().describe('New generation number (for update)'),
+      source_ids: z.string().optional().describe('JSON array of source IDs (for update)'),
+      description: z.string().optional().describe('Updated description (for update)'),
+      limit: z.number().optional().describe('Maximum records to return (for list)'),
+    },
+    async (args) => {
+      recordTurn('vault_skill_records', args);
+
+      switch (args.action) {
+        case 'list': {
+          const records = listSkillRecords({
+            agent_id: agentId,
+            status: args.status,
+            limit: args.limit ?? DEFAULT_RECORDS_LIMIT,
+          });
+          return textResult(records);
+        }
+
+        case 'get': {
+          if (!args.id) return textResult({ error: 'id is required for get action' });
+          const record = getSkillRecord(args.id) ?? getSkillRecordByName(args.id);
+          if (!record) return textResult({ error: `Skill record not found: ${args.id}` });
+          return textResult(record);
+        }
+
+        case 'update': {
+          if (!args.id) return textResult({ error: 'id is required for update action' });
+          // Resolve by id or name
+          const existing = getSkillRecord(args.id) ?? getSkillRecordByName(args.id);
+          if (!existing) return textResult({ error: `Skill record not found: ${args.id}` });
+
+          const now = epochSeconds();
+          const updated = updateSkillRecord(existing.id, {
+            ...(args.status !== undefined ? { status: args.status } : {}),
+            ...(args.generation !== undefined ? { generation: args.generation } : {}),
+            ...(args.source_ids !== undefined ? { source_ids: args.source_ids } : {}),
+            ...(args.description !== undefined ? { description: args.description } : {}),
+            updated_at: now,
+          });
+          if (!updated) return textResult({ error: `Failed to update skill record: ${existing.id}` });
+          return textResult(updated);
+        }
+
+        default:
+          return textResult({ error: `Unknown action: ${args.action}` });
+      }
+    },
+  );
+
+  const vaultWriteSkill = tool(
+    'vault_write_skill',
+    'Write a SKILL.md file to disk and create or update the corresponding skill record and lineage entry.',
+    {
+      name: z.string().describe('Skill name (used as directory name under .agents/skills/)'),
+      display_name: z.string().describe('Human-readable display name'),
+      description: z.string().describe('Short description of what the skill does'),
+      content: z.string().describe('Full SKILL.md content in markdown'),
+      source_ids: z.string().optional().describe('JSON array of source spore/entity IDs'),
+      candidate_id: z.string().optional().describe('Candidate ID that prompted this skill creation'),
+      rationale: z.string().optional().describe('Why this skill was created or updated'),
+    },
+    async (args) => {
+      const root = projectRoot ?? process.cwd();
+      const skillDir = resolve(root, '.agents', 'skills', args.name);
+      const skillPath = resolve(skillDir, 'SKILL.md');
+
+      // Write file to disk
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(skillPath, args.content, 'utf-8');
+
+      const now = epochSeconds();
+      const relativePath = `.agents/skills/${args.name}/SKILL.md`;
+
+      // Check for existing record
+      const existing = getSkillRecordByName(args.name);
+
+      let recordId: string;
+      let generation: number;
+
+      if (existing) {
+        // Update existing record — bump generation
+        generation = existing.generation + 1;
+        recordId = existing.id;
+        updateSkillRecord(existing.id, {
+          display_name: args.display_name,
+          description: args.description,
+          generation,
+          ...(args.source_ids !== undefined ? { source_ids: args.source_ids } : {}),
+          path: relativePath,
+          updated_at: now,
+        });
+
+        // Record lineage
+        insertLineage({
+          id: crypto.randomUUID(),
+          skill_id: existing.id,
+          generation,
+          action: 'updated',
+          rationale: args.rationale ?? 'Skill content updated',
+          source_ids_added: args.source_ids,
+          content_snapshot: args.content,
+          created_at: now,
+        });
+      } else {
+        // Create new record
+        recordId = crypto.randomUUID();
+        generation = 1;
+        insertSkillRecord({
+          id: recordId,
+          agent_id: agentId,
+          machine_id: machineId,
+          name: args.name,
+          display_name: args.display_name,
+          description: args.description,
+          candidate_id: args.candidate_id ?? null,
+          source_ids: args.source_ids,
+          path: relativePath,
+          created_at: now,
+          updated_at: now,
+        });
+
+        // Record lineage
+        insertLineage({
+          id: crypto.randomUUID(),
+          skill_id: recordId,
+          generation,
+          action: 'created',
+          rationale: args.rationale ?? 'Initial skill creation',
+          source_ids_added: args.source_ids,
+          content_snapshot: args.content,
+          created_at: now,
+        });
+
+        // Update candidate if provided
+        if (args.candidate_id) {
+          updateCandidate(args.candidate_id, {
+            status: 'materialized',
+            skill_id: recordId,
+            updated_at: now,
+          });
+        }
+      }
+
+      recordTurn('vault_write_skill', args);
+      return textResult({
+        id: recordId,
+        name: args.name,
+        path: relativePath,
+        generation,
+      });
+    },
+  );
+
+  // -------------------------------------------------------------------------
   // Assemble and return
   // -------------------------------------------------------------------------
 
@@ -625,6 +881,9 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
     vaultWriteDigest,
     vaultMarkProcessed,
     vaultReport,
+    vaultSkillCandidates,
+    vaultSkillRecords,
+    vaultWriteSkill,
   ];
 }
 
@@ -669,8 +928,9 @@ export function createScopedVaultToolServer(
   toolNames: string[],
   turnOffset = 0,
   embeddingManager?: EmbeddingManager,
+  projectRoot?: string,
 ) {
-  const allTools = createVaultTools(agentId, runId, turnOffset, embeddingManager);
+  const allTools = createVaultTools(agentId, runId, turnOffset, embeddingManager, null, undefined, projectRoot);
   const nameSet = new Set(toolNames);
   const scopedTools = allTools.filter((t) => nameSet.has(t.name));
 
