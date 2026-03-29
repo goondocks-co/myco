@@ -106,6 +106,58 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 3,
+    name: 'schedule-to-task-level',
+    migrate(doc: Record<string, unknown>, _vaultDir: string): void {
+      const agent = (doc.agent ?? {}) as Record<string, unknown>;
+      const skills = (doc.skills ?? {}) as Record<string, unknown>;
+      const tasks = ((agent.tasks ?? {}) as Record<string, Record<string, unknown>>);
+
+      // Migrate agent.auto_run + interval_seconds → full-intelligence schedule
+      if ('auto_run' in agent || 'interval_seconds' in agent) {
+        const fiTask = tasks['full-intelligence'] ?? {};
+        fiTask.schedule = {
+          enabled: agent.auto_run ?? true,
+          intervalSeconds: agent.interval_seconds ?? 300,
+        };
+        tasks['full-intelligence'] = fiTask;
+        delete agent.auto_run;
+        delete agent.interval_seconds;
+      }
+
+      // Migrate skills.auto_survey → skill-survey schedule
+      if ('auto_survey' in skills) {
+        const ssTask = tasks['skill-survey'] ?? {};
+        ssTask.schedule = {
+          enabled: skills.auto_survey ?? false,
+        };
+        tasks['skill-survey'] = ssTask;
+        delete skills.auto_survey;
+      }
+
+      // Migrate skills.auto_evolve + evolve_cadence → skill-evolve schedule
+      if ('auto_evolve' in skills || 'evolve_cadence' in skills) {
+        const seTask = tasks['skill-evolve'] ?? {};
+        const schedule: Record<string, unknown> = {
+          enabled: skills.auto_evolve ?? false,
+        };
+        if ('evolve_cadence' in skills) {
+          schedule.runIn = [skills.evolve_cadence];
+        }
+        seTask.schedule = schedule;
+        tasks['skill-evolve'] = seTask;
+        delete skills.auto_evolve;
+        delete skills.evolve_cadence;
+      }
+
+      // Write back tasks if any were created
+      if (Object.keys(tasks).length > 0) {
+        agent.tasks = tasks;
+      }
+      doc.agent = agent;
+    },
+  },
 ];
 
 /** Current migration version — the highest version in MIGRATIONS. */
