@@ -21,6 +21,7 @@ const CANDIDATE_FILTERS: FilterDefinition[] = [
     options: [
       { value: FILTER_ALL, label: 'All statuses' },
       { value: 'identified', label: 'Identified' },
+      { value: 'approved', label: 'Approved' },
       { value: 'generated', label: 'Generated' },
       { value: 'dismissed', label: 'Dismissed' },
     ],
@@ -68,19 +69,24 @@ function SkeletonTableRow() {
 
 function CandidateTableRow({
   candidate,
+  onApprove,
   onGenerate,
   onDismiss,
+  isApproving,
   isGenerating,
   isDismissing,
 }: {
   candidate: SkillCandidate;
+  onApprove: () => void;
   onGenerate: () => void;
   onDismiss: () => void;
+  isApproving: boolean;
   isGenerating: boolean;
   isDismissing: boolean;
 }) {
   const sources = parseSourceIds(candidate.source_ids);
   const isIdentified = candidate.status === 'identified';
+  const isApproved = candidate.status === 'approved';
 
   return (
     <tr className="border-b border-[var(--ghost-border)] last:border-0 hover:bg-surface-container/60 transition-all duration-150">
@@ -122,30 +128,40 @@ function CandidateTableRow({
         </span>
       </td>
 
-      {/* Actions */}
+      {/* Actions — one decision at a time */}
       <td className="px-4 py-3">
         <div className="flex items-center gap-2">
           {isIdentified && (
             <>
               <button
-                onClick={onGenerate}
-                disabled={isGenerating}
+                onClick={onApprove}
+                disabled={isApproving}
                 className="inline-flex items-center gap-1 px-2 py-1 rounded font-sans text-xs font-medium bg-primary/15 text-primary hover:bg-primary/25 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                title="Generate skill from this candidate"
+                title="Approve this candidate for skill generation"
               >
-                <Zap className="h-3 w-3" />
-                {isGenerating ? 'Generating…' : 'Generate'}
+                <ListChecks className="h-3 w-3" />
+                {isApproving ? 'Approving…' : 'Approve'}
               </button>
               <button
                 onClick={onDismiss}
                 disabled={isDismissing}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded font-sans text-xs font-medium text-on-surface-variant hover:bg-surface-container-high disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="inline-flex items-center gap-1 px-1.5 py-1 rounded font-sans text-xs text-on-surface-variant hover:bg-surface-container-high disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 title="Dismiss this candidate"
               >
                 <XCircle className="h-3 w-3" />
-                {isDismissing ? 'Dismissing…' : 'Dismiss'}
               </button>
             </>
+          )}
+          {isApproved && (
+            <button
+              onClick={onGenerate}
+              disabled={isGenerating}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded font-sans text-xs font-medium bg-primary/15 text-primary hover:bg-primary/25 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Generate skill from this approved candidate"
+            >
+              <Zap className="h-3 w-3" />
+              {isGenerating ? 'Generating…' : 'Generate Skill'}
+            </button>
           )}
         </div>
       </td>
@@ -181,6 +197,10 @@ export function CandidateList() {
           c.rationale.toLowerCase().includes(debouncedSearch.toLowerCase()),
       )
     : candidates;
+
+  function handleApprove(candidate: SkillCandidate) {
+    updateCandidate.mutate({ id: candidate.id, status: 'approved' });
+  }
 
   function handleGenerate(candidate: SkillCandidate) {
     triggerAgentRun.mutate({
@@ -273,15 +293,22 @@ export function CandidateList() {
                 <CandidateTableRow
                   key={candidate.id}
                   candidate={candidate}
+                  onApprove={() => handleApprove(candidate)}
                   onGenerate={() => handleGenerate(candidate)}
                   onDismiss={() => handleDismiss(candidate)}
+                  isApproving={
+                    updateCandidate.isPending &&
+                    updateCandidate.variables?.id === candidate.id &&
+                    updateCandidate.variables?.status === 'approved'
+                  }
                   isGenerating={
                     triggerAgentRun.isPending &&
-                    triggerAgentRun.variables?.instruction.includes(candidate.id)
+                    triggerAgentRun.variables?.instruction?.includes(candidate.id)
                   }
                   isDismissing={
                     updateCandidate.isPending &&
-                    updateCandidate.variables?.id === candidate.id
+                    updateCandidate.variables?.id === candidate.id &&
+                    updateCandidate.variables?.status === 'dismissed'
                   }
                 />
               ))}
