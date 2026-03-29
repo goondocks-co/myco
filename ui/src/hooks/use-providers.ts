@@ -32,12 +32,19 @@ export interface PhaseOverride {
   maxTurns?: number;
 }
 
+export interface ScheduleOverride {
+  enabled?: boolean;
+  intervalSeconds?: number;
+  runIn?: ('active' | 'idle' | 'sleep')[];
+}
+
 export interface TaskConfigOverride {
   provider?: ProviderConfig;
   model?: string;
   maxTurns?: number;
   timeoutSeconds?: number;
   phases?: Record<string, PhaseOverride>;
+  schedule?: ScheduleOverride;
 }
 
 export interface TaskConfigResponse {
