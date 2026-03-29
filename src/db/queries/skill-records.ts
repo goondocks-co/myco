@@ -318,6 +318,20 @@ export function updateSkillRecord(
 }
 
 /**
+ * Atomically increment the usage_count for a skill record and update last_used_at.
+ *
+ * Uses a direct SQL increment (`usage_count + 1`) to avoid read-modify-write
+ * races when multiple detections could run concurrently.
+ */
+export function incrementSkillUsageCount(id: string, now: number): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE skill_records SET usage_count = usage_count + 1, last_used_at = ?, updated_at = ? WHERE id = ?`,
+  ).run(now, now, id);
+  // Note: syncRow omitted for atomic increment — synced via next full record read
+}
+
+/**
  * Count skill records matching optional filters (for pagination totals).
  */
 export function countSkillRecords(

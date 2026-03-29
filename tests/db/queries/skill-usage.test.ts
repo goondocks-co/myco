@@ -11,6 +11,7 @@ import {
   insertSkillUsage,
   listUsageForSkill,
   countUsageForSkill,
+  hasUsageForSkillAndSession,
 } from '@myco/db/queries/skill-usage.js';
 import type { SkillUsageInsert } from '@myco/db/queries/skill-usage.js';
 import type { SkillRecordInsert } from '@myco/db/queries/skill-records.js';
@@ -162,6 +163,50 @@ describe('skill usage query helpers', () => {
       const rows = listUsageForSkill(skill.id, { limit: 3 });
 
       expect(rows).toHaveLength(3);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // hasUsageForSkillAndSession
+  // ---------------------------------------------------------------------------
+
+  describe('hasUsageForSkillAndSession', () => {
+    it('returns false when no usage exists for the skill/session pair', () => {
+      const session = upsertSession(makeSession());
+      const skill = insertSkillRecord(makeSkillRecord());
+
+      expect(hasUsageForSkillAndSession(skill.id, session.id)).toBe(false);
+    });
+
+    it('returns true after a usage entry is inserted', () => {
+      const session = upsertSession(makeSession());
+      const skill = insertSkillRecord(makeSkillRecord());
+
+      insertSkillUsage(makeUsage(skill.id, session.id));
+
+      expect(hasUsageForSkillAndSession(skill.id, session.id)).toBe(true);
+    });
+
+    it('returns false for a different session even when usage exists for another', () => {
+      const sessionA = upsertSession(makeSession());
+      const sessionB = upsertSession(makeSession());
+      const skill = insertSkillRecord(makeSkillRecord());
+
+      insertSkillUsage(makeUsage(skill.id, sessionA.id));
+
+      expect(hasUsageForSkillAndSession(skill.id, sessionA.id)).toBe(true);
+      expect(hasUsageForSkillAndSession(skill.id, sessionB.id)).toBe(false);
+    });
+
+    it('returns false for a different skill even when usage exists for another', () => {
+      const session = upsertSession(makeSession());
+      const skillA = insertSkillRecord(makeSkillRecord());
+      const skillB = insertSkillRecord(makeSkillRecord());
+
+      insertSkillUsage(makeUsage(skillA.id, session.id));
+
+      expect(hasUsageForSkillAndSession(skillA.id, session.id)).toBe(true);
+      expect(hasUsageForSkillAndSession(skillB.id, session.id)).toBe(false);
     });
   });
 

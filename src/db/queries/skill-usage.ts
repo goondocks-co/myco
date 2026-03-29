@@ -132,6 +132,20 @@ export function listUsageForSkill(
 }
 
 /**
+ * Check whether a usage entry exists for a specific skill and session.
+ *
+ * Used for idempotency checks in detectSkillUsage — avoids loading all
+ * usage rows for a skill just to scan for one session match.
+ */
+export function hasUsageForSkillAndSession(skillId: string, sessionId: string): boolean {
+  const db = getDatabase();
+  const row = db.prepare(
+    `SELECT 1 FROM skill_usage WHERE skill_id = ? AND session_id = ? LIMIT 1`,
+  ).get(skillId, sessionId);
+  return row !== undefined;
+}
+
+/**
  * Count total usage events for a skill.
  */
 export function countUsageForSkill(skillId: string): number {

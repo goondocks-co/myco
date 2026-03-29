@@ -1,7 +1,7 @@
 /**
  * Vault MCP tool server for the agent.
  *
- * Creates 18 tools that expose SQLite query helpers to the agent
+ * Creates 21 tools that expose SQLite query helpers to the agent
  * via the Claude Agent SDK. Tools are grouped into:
  * - Read tools: vault_unprocessed, vault_spores, vault_sessions, vault_search_fts,
  *               vault_search_semantic, vault_state, vault_entities, vault_edges,
@@ -88,7 +88,8 @@ function textResult(data: unknown): { content: Array<{ type: 'text'; text: strin
 export const VAULT_TOOL_COUNT = 21;
 
 /**
- * Create the 18 vault tool definitions for the agent.
+ * Create the 21 vault tool definitions for the agent (includes 3 skill tools:
+ * vault_skill_candidates, vault_skill_records, vault_write_skill).
  *
  * Exposed for testing (call handler directly) and for the MCP server factory.
  *
@@ -771,9 +772,13 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
       const skillDir = resolve(root, '.agents', 'skills', args.name);
       const skillPath = resolve(skillDir, 'SKILL.md');
 
-      // Write file to disk
-      mkdirSync(skillDir, { recursive: true });
-      writeFileSync(skillPath, args.content, 'utf-8');
+      // Write file to disk — must succeed before any DB operations
+      try {
+        mkdirSync(skillDir, { recursive: true });
+        writeFileSync(skillPath, args.content, 'utf-8');
+      } catch (err) {
+        return textResult({ error: `Failed to write skill file: ${err instanceof Error ? err.message : String(err)}` });
+      }
 
       const now = epochSeconds();
       const relativePath = `.agents/skills/${args.name}/SKILL.md`;
