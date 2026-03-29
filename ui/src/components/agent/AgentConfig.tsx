@@ -267,9 +267,9 @@ export function AgentConfig() {
           </span>
         </SectionHeader>
 
-        {/* Summary batch interval */}
+        {/* Title & Summary batch interval */}
         <div className="space-y-1">
-          <label className="font-sans text-sm font-medium text-on-surface">Summary Batch Interval</label>
+          <label className="font-sans text-sm font-medium text-on-surface">Title &amp; Summary Batch Interval</label>
           <div className="flex items-center gap-3">
             <Input
               type="number"
@@ -282,7 +282,7 @@ export function AgentConfig() {
             <span className="font-sans text-xs text-on-surface-variant">batches</span>
           </div>
           <p className="font-sans text-xs text-on-surface-variant">
-            Trigger a session summary every N batches. Set to 0 to disable.
+            Run the Title &amp; Summary task every N batches to keep active sessions properly titled. Set to 0 to disable.
           </p>
         </div>
 
