@@ -6,6 +6,7 @@
  */
 
 import { z } from 'zod/v4';
+import { SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
 // Schema version
@@ -83,7 +84,7 @@ export const TaskScheduleSchema = z.object({
   /** Seconds between runs. */
   intervalSeconds: z.number().int().positive(),
   /** PowerManager states where this task runs. */
-  runIn: z.array(z.enum(['active', 'idle', 'sleep'])).min(1),
+  runIn: z.array(z.enum([...SCHEDULABLE_POWER_STATES])).min(1),
   /** Optional pre-condition check before running. */
   preCondition: PreConditionSchema.optional(),
 });

@@ -74,7 +74,8 @@ export function buildScheduledJobs(
         // Check pre-condition if defined
         if (effective.preCondition) {
           const check = context.preConditions[effective.preCondition];
-          if (check && !check()) return;
+          if (!check) return; // Unknown pre-condition — don't run
+          if (!check()) return;
         }
 
         try {

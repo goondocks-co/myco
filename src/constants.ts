@@ -318,6 +318,10 @@ export const CONSOLIDATION_VECTOR_FETCH_LIMIT = 20;
 export const CONSOLIDATION_MAX_TOKENS = 2048;
 
 // --- Power management ---
+/** PowerManager states valid for task scheduling (excludes deep_sleep which halts all ticks). */
+export const SCHEDULABLE_POWER_STATES = ['active', 'idle', 'sleep'] as const;
+export type SchedulablePowerState = typeof SCHEDULABLE_POWER_STATES[number];
+
 /** Time without activity before transitioning to idle (ms). */
 export const POWER_IDLE_THRESHOLD_MS = 5 * 60 * MS_PER_SECOND;
 /** Time without activity before transitioning to sleep (ms). */

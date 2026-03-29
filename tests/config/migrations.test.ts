@@ -35,9 +35,9 @@ describe('Migration v3: schedule-to-task-level', () => {
     expect(tasks['skill-survey'].schedule).toEqual({ enabled: true });
   });
 
-  it('migrates skills.auto_evolve + evolve_cadence to skill-evolve schedule', () => {
+  it('migrates skills.auto_evolve + evolve_cadence to skill-evolve schedule (valid cadence)', () => {
     const doc: Record<string, unknown> = {
-      skills: { auto_evolve: true, evolve_cadence: 'weekly' },
+      skills: { auto_evolve: true, evolve_cadence: 'idle' },
     };
     v3.migrate(doc, '/tmp');
 
@@ -49,7 +49,21 @@ describe('Migration v3: schedule-to-task-level', () => {
     const tasks = agent.tasks as Record<string, Record<string, unknown>>;
     expect(tasks['skill-evolve'].schedule).toEqual({
       enabled: true,
-      runIn: ['weekly'],
+      runIn: ['idle'],
+    });
+  });
+
+  it('falls back to idle runIn for invalid evolve_cadence values', () => {
+    const doc: Record<string, unknown> = {
+      skills: { auto_evolve: true, evolve_cadence: 'weekly' },
+    };
+    v3.migrate(doc, '/tmp');
+
+    const agent = doc.agent as Record<string, unknown>;
+    const tasks = agent.tasks as Record<string, Record<string, unknown>>;
+    expect(tasks['skill-evolve'].schedule).toEqual({
+      enabled: true,
+      runIn: ['idle'],
     });
   });
 

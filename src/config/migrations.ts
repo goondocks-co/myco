@@ -114,12 +114,17 @@ export const MIGRATIONS: Migration[] = [
       const skills = (doc.skills ?? {}) as Record<string, unknown>;
       const tasks = ((agent.tasks ?? {}) as Record<string, Record<string, unknown>>);
 
+      /** Default interval for full-intelligence task (5 minutes). */
+      const DEFAULT_INTELLIGENCE_INTERVAL_SECONDS = 300;
+
+      const VALID_SCHEDULE_STATES = ['active', 'idle', 'sleep'] as const;
+
       // Migrate agent.auto_run + interval_seconds → full-intelligence schedule
       if ('auto_run' in agent || 'interval_seconds' in agent) {
         const fiTask = tasks['full-intelligence'] ?? {};
         fiTask.schedule = {
           enabled: agent.auto_run ?? true,
-          intervalSeconds: agent.interval_seconds ?? 300,
+          intervalSeconds: agent.interval_seconds ?? DEFAULT_INTELLIGENCE_INTERVAL_SECONDS,
         };
         tasks['full-intelligence'] = fiTask;
         delete agent.auto_run;
@@ -143,7 +148,10 @@ export const MIGRATIONS: Migration[] = [
           enabled: skills.auto_evolve ?? false,
         };
         if ('evolve_cadence' in skills) {
-          schedule.runIn = [skills.evolve_cadence];
+          const cadence = String(skills.evolve_cadence);
+          schedule.runIn = VALID_SCHEDULE_STATES.includes(cadence as typeof VALID_SCHEDULE_STATES[number])
+            ? [cadence]
+            : ['idle']; // fallback to safe default
         }
         seTask.schedule = schedule;
         tasks['skill-evolve'] = seTask;
@@ -156,6 +164,7 @@ export const MIGRATIONS: Migration[] = [
         agent.tasks = tasks;
       }
       doc.agent = agent;
+      doc.skills = skills;
     },
   },
 ];

@@ -36,6 +36,7 @@ export interface ScheduleOverride {
   enabled?: boolean;
   intervalSeconds?: number;
   runIn?: ('active' | 'idle' | 'sleep')[];
+  preCondition?: 'has-unprocessed-batches' | 'has-active-skills';
 }
 
 export interface TaskConfigOverride {

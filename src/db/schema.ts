@@ -502,6 +502,7 @@ const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_agent_runs_agent_id ON agent_runs (agent_id)',
   'CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs (status)',
   'CREATE INDEX IF NOT EXISTS idx_agent_runs_agent_status ON agent_runs (agent_id, status)',
+  'CREATE INDEX IF NOT EXISTS idx_agent_runs_task_completed ON agent_runs (task, status, completed_at)',
 
   // Agent reports
   'CREATE INDEX IF NOT EXISTS idx_agent_reports_run_id ON agent_reports (run_id)',
@@ -822,6 +823,7 @@ function migrateV4ToV5(db: Database): void {
       'CREATE INDEX IF NOT EXISTS idx_skill_usage_skill_id ON skill_usage (skill_id)',
       'CREATE INDEX IF NOT EXISTS idx_skill_usage_session_id ON skill_usage (session_id)',
       'CREATE INDEX IF NOT EXISTS idx_skill_usage_skill_session ON skill_usage (skill_id, session_id)',
+      'CREATE INDEX IF NOT EXISTS idx_agent_runs_task_completed ON agent_runs (task, status, completed_at)',
     ];
 
     for (const idx of newIndexes) {

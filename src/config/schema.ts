@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
 
 const EmbeddingProviderSchema = z.object({
   provider: z.enum(['ollama', 'openai-compatible', 'openrouter', 'openai']).default('ollama'),
@@ -39,7 +40,8 @@ const PhaseOverrideSchema = z.object({
 const ScheduleOverrideSchema = z.object({
   enabled: z.boolean().optional(),
   intervalSeconds: z.number().int().positive().optional(),
-  runIn: z.array(z.enum(['active', 'idle', 'sleep'])).optional(),
+  runIn: z.array(z.enum([...SCHEDULABLE_POWER_STATES])).optional(),
+  preCondition: z.enum(['has-unprocessed-batches', 'has-active-skills']).optional(),
 }).optional();
 
 /** Per-task config override — stored in myco.yaml under agent.tasks. */
