@@ -16,7 +16,7 @@ import crypto from 'node:crypto';
 import { resolve } from 'node:path';
 import { epochSeconds, DEFAULT_AGENT_ID, MS_PER_SECOND, PHASE_SUMMARY_MAX_CHARS } from '@myco/constants.js';
 import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
-import { initDatabase, vaultDbPath } from '@myco/db/client.js';
+import { initDatabase, vaultDbPath, getDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { getAgent } from '@myco/db/queries/agents.js';
 import { getTask, getDefaultTask } from '@myco/db/queries/tasks.js';
@@ -635,14 +635,21 @@ export async function runAgent(
 
   const agentId = options?.agentId ?? DEFAULT_AGENT_ID;
 
-  // 2. Concurrency guard — check before expensive config loading
-  const running = getRunningRun(agentId);
-  if (running) {
-    return {
-      runId: running.id,
-      status: STATUS_SKIPPED,
-      reason: SKIP_REASON_ALREADY_RUNNING,
-    };
+  // 2. Concurrency guard — block duplicate runs of the SAME task, not all tasks.
+  // Different tasks (e.g., full-intelligence and skill-generate) can run concurrently.
+  const requestedTask = options?.task;
+  if (requestedTask) {
+    const db = getDatabase();
+    const sameTaskRunning = db.prepare(
+      `SELECT id FROM agent_runs WHERE agent_id = ? AND task = ? AND status = ? LIMIT 1`,
+    ).get(agentId, requestedTask, STATUS_RUNNING) as { id: string } | undefined;
+    if (sameTaskRunning) {
+      return {
+        runId: sameTaskRunning.id,
+        status: STATUS_SKIPPED,
+        reason: SKIP_REASON_ALREADY_RUNNING,
+      };
+    }
   }
 
   // 3. Resolve config
