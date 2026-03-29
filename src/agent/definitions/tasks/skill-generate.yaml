@@ -69,7 +69,8 @@ phases:
         One paragraph that serves as the PRIMARY triggering mechanism.
         Be explicit about when this skill activates. Include concrete
         keywords, file names, and scenarios. Be somewhat pushy to
-        counter undertriggering.
+        counter undertriggering — include "even if the user doesn't
+        explicitly ask for [topic]" language when appropriate.
       managed_by: myco
       ---
 
@@ -96,14 +97,20 @@ phases:
       ## Writing Principles
 
       - **Explain reasoning, not rigid rules.** "Because X, do Y"
-        is better than "ALWAYS do Y."
+        is better than "ALWAYS do Y." Use theory of mind — the agent
+        using this skill is smart enough to understand WHY.
       - **Stay under 500 lines.** Be concise but complete.
       - **Use concrete file paths** from this project, not generic examples.
       - **Include code patterns** where they help (inline code blocks).
+      - **Include examples** — show input/output or before/after where
+        it makes the procedure clearer.
       - **Reference gotchas inline** where the developer would encounter
         them, not in a separate section.
       - **The description is the trigger.** An agent reading just the
         description should know whether this skill applies to their task.
+      - **Be general enough to survive change.** The skill should teach
+        the pattern, not just document the current state. If a file path
+        changes, the procedure should still make sense.
 
       Use vault_write_skill to write the file. Pass:
       - name: kebab-case directory name
