@@ -35,6 +35,13 @@ const PhaseOverrideSchema = z.object({
   maxTurns: z.number().int().positive().optional(),
 });
 
+/** Per-task schedule override — partial, merges with YAML defaults. */
+const ScheduleOverrideSchema = z.object({
+  enabled: z.boolean().optional(),
+  intervalSeconds: z.number().int().positive().optional(),
+  runIn: z.array(z.enum(['active', 'idle', 'sleep'])).optional(),
+}).optional();
+
 /** Per-task config override — stored in myco.yaml under agent.tasks. */
 const TaskProviderOverrideSchema = z.object({
   provider: ProviderOverrideSchema.optional(),
@@ -42,6 +49,7 @@ const TaskProviderOverrideSchema = z.object({
   maxTurns: z.number().int().positive().optional(),
   timeoutSeconds: z.number().int().positive().optional(),
   phases: z.record(z.string(), PhaseOverrideSchema).optional(),
+  schedule: ScheduleOverrideSchema,
 });
 
 const ContextSchema = z.object({
@@ -123,6 +131,7 @@ export type MycoConfig = z.output<typeof MycoConfigSchema>;
 export type EmbeddingProviderConfig = z.infer<typeof EmbeddingProviderSchema>;
 export type TaskProviderOverride = z.infer<typeof TaskProviderOverrideSchema>;
 export type PhaseOverride = z.infer<typeof PhaseOverrideSchema>;
+export type ScheduleOverride = z.infer<typeof ScheduleOverrideSchema>;
 export type ContextConfig = z.infer<typeof ContextSchema>;
 export type BackupConfig = z.infer<typeof BackupSchema>;
 export type TeamConfig = z.infer<typeof TeamSchema>;

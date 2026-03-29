@@ -44,6 +44,7 @@ export interface TaskConfigUpdate {
   maxTurns?: number | null;
   timeoutSeconds?: number | null;
   phases?: Record<string, PhaseInput | null> | null;
+  schedule?: { enabled?: boolean; intervalSeconds?: number; runIn?: string[] } | null;
 }
 
 /**
@@ -80,6 +81,15 @@ export function withTaskConfig(
   if ('timeoutSeconds' in update) {
     if (update.timeoutSeconds === null) delete entry.timeoutSeconds;
     else if (update.timeoutSeconds !== undefined) entry.timeoutSeconds = update.timeoutSeconds;
+  }
+
+  // Handle schedule
+  if ('schedule' in update) {
+    if (update.schedule === null) {
+      delete entry.schedule;
+    } else if (update.schedule !== undefined) {
+      entry.schedule = { ...entry.schedule, ...update.schedule };
+    }
   }
 
   // Apply phase overrides

@@ -148,4 +148,22 @@ describe('MycoConfigSchema v3', () => {
     expect(config.skills.confidence_threshold).toBe(0.8);
     expect(config.skills.auto_evolve).toBe(false);
   });
+
+  it('accepts task schedule override in agent.tasks', () => {
+    const config = MycoConfigSchema.parse({
+      version: 3,
+      agent: {
+        tasks: {
+          'skill-survey': {
+            schedule: {
+              enabled: true,
+              intervalSeconds: 900,
+            },
+          },
+        },
+      },
+    });
+    expect(config.agent.tasks?.['skill-survey']?.schedule?.enabled).toBe(true);
+    expect(config.agent.tasks?.['skill-survey']?.schedule?.intervalSeconds).toBe(900);
+  });
 });
