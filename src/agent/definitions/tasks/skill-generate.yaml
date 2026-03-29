@@ -5,12 +5,19 @@ description: >-
   Writes SKILL.md to .agents/skills/ following Anthropic skill design principles.
 agent: myco-agent
 prompt: >-
-  Generate a project-specific skill from an approved candidate.
-  The candidate ID is provided in the instruction.
+  Generate project-specific skills from approved candidates.
+  Check for approved candidates with no linked skill and generate
+  one skill per candidate.
 isDefault: false
 model: claude-sonnet-4-6
 maxTurns: 35
 timeoutSeconds: 900
+schedule:
+  enabled: false
+  intervalSeconds: 600
+  runIn:
+    - idle
+  preCondition: has-approved-candidates
 phases:
   - name: gather
     prompt: |

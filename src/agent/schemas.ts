@@ -75,6 +75,7 @@ export const OrchestratorConfigSchema = z.object({
 const PreConditionSchema = z.enum([
   'has-unprocessed-batches',
   'has-active-skills',
+  'has-approved-candidates',
 ]);
 
 /** Schedule configuration for automatic task execution via PowerManager. */

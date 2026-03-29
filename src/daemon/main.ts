@@ -86,6 +86,7 @@ import {
 } from './api/skills.js';
 import { detectSkillUsage } from './skill-usage.js';
 import { countSkillRecords } from '../db/queries/skill-records.js';
+import { countCandidates } from '../db/queries/skill-candidates.js';
 import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
@@ -2004,6 +2005,9 @@ export async function main(): Promise<void> {
           },
           'has-active-skills': () => {
             return countSkillRecords({ status: 'active' }) > 0;
+          },
+          'has-approved-candidates': () => {
+            return countCandidates({ status: 'approved' }) > 0;
           },
         },
       };

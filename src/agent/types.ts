@@ -120,7 +120,7 @@ export interface TaskSchedule {
   enabled: boolean;
   intervalSeconds: number;
   runIn: ('active' | 'idle' | 'sleep')[];
-  preCondition?: 'has-unprocessed-batches' | 'has-active-skills';
+  preCondition?: 'has-unprocessed-batches' | 'has-active-skills' | 'has-approved-candidates';
 }
 
 /** Shape of each task YAML file (e.g., `tasks/full-intelligence.yaml`). */
