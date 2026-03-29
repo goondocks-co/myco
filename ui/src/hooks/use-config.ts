@@ -21,8 +21,6 @@ export interface MycoConfig {
     buffer_max_events: number;
   };
   agent: {
-    auto_run: boolean;
-    interval_seconds: number;
     summary_batch_interval: number;
     /** Fields below are set via Agent Tasks page, not Settings — preserve on save. */
     provider?: { type: string; base_url?: string; model?: string; context_length?: number };

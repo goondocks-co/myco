@@ -25,22 +25,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../ui/select';
-import { Switch } from '../ui/switch';
-
-import { DEFAULT_INTERVAL_SECONDS, DEFAULT_SUMMARY_BATCH_INTERVAL } from '../../lib/constants';
-
-/* ---------- Constants ---------- */
-
-/** Minimum allowed interval in seconds. */
-const MIN_INTERVAL_SECONDS = 30;
+import { DEFAULT_SUMMARY_BATCH_INTERVAL } from '../../lib/constants';
 
 type TestState = 'idle' | 'testing' | 'success' | 'error';
 
 /* ---------- Types ---------- */
 
 interface AgentFormState {
-  autoRun: boolean;
-  intervalSeconds: string;
   summaryBatchInterval: string;
   defaultTask: string;
 }
@@ -49,8 +40,6 @@ interface AgentFormState {
 
 function toAgentForm(config: MycoConfig, defaultTaskName?: string): AgentFormState {
   return {
-    autoRun: config.agent?.auto_run ?? true,
-    intervalSeconds: String(config.agent?.interval_seconds ?? DEFAULT_INTERVAL_SECONDS),
     summaryBatchInterval: String(config.agent?.summary_batch_interval ?? DEFAULT_SUMMARY_BATCH_INTERVAL),
     defaultTask: defaultTaskName ?? '',
   };
@@ -59,20 +48,9 @@ function toAgentForm(config: MycoConfig, defaultTaskName?: string): AgentFormSta
 function isAgentDirty(form: AgentFormState, config: MycoConfig, originalDefaultTask: string): boolean {
   const orig = toAgentForm(config, originalDefaultTask);
   return (
-    form.autoRun !== orig.autoRun ||
-    form.intervalSeconds !== orig.intervalSeconds ||
     form.summaryBatchInterval !== orig.summaryBatchInterval ||
     form.defaultTask !== orig.defaultTask
   );
-}
-
-function formatMinutes(seconds: string): string {
-  const n = Number(seconds);
-  if (isNaN(n) || n <= 0) return '';
-  const m = n / 60;
-  if (m < 1) return `${n}s`;
-  if (Number.isInteger(m)) return `${m} min`;
-  return `${m.toFixed(1)} min`;
 }
 
 /* ---------- Sub-components ---------- */
@@ -231,8 +209,6 @@ export function AgentConfig() {
         ...config,
         agent: {
           ...config.agent,
-          auto_run: form.autoRun,
-          interval_seconds: Math.max(MIN_INTERVAL_SECONDS, parseNumericField(form.intervalSeconds, DEFAULT_INTERVAL_SECONDS)),
           summary_batch_interval: parseNumericField(form.summaryBatchInterval, DEFAULT_SUMMARY_BATCH_INTERVAL),
         },
       };
@@ -291,41 +267,6 @@ export function AgentConfig() {
           </span>
         </SectionHeader>
 
-        {/* Auto-run toggle */}
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5">
-            <label className="font-sans text-sm font-medium text-on-surface">Auto Run</label>
-            <p className="font-sans text-xs text-on-surface-variant">
-              Automatically process unprocessed batches on a timer.
-            </p>
-          </div>
-          <Switch checked={form.autoRun} onCheckedChange={v => setField('autoRun', v)} />
-        </div>
-
-        {/* Run interval */}
-        <div className="space-y-1">
-          <label className="font-sans text-sm font-medium text-on-surface">Run Interval</label>
-          <div className="flex items-center gap-3">
-            <Input
-              type="number"
-              min={MIN_INTERVAL_SECONDS}
-              placeholder={String(DEFAULT_INTERVAL_SECONDS)}
-              value={form.intervalSeconds}
-              onChange={(e) => setField('intervalSeconds', e.target.value)}
-              className="w-32 font-mono"
-            />
-            <span className="font-sans text-xs text-on-surface-variant">
-              seconds
-              {form.intervalSeconds && (
-                <span className="ml-1 text-on-surface">({formatMinutes(form.intervalSeconds)})</span>
-              )}
-            </span>
-          </div>
-          <p className="font-sans text-xs text-on-surface-variant">
-            How often the agent checks for unprocessed work. Minimum {MIN_INTERVAL_SECONDS}s.
-          </p>
-        </div>
-
         {/* Summary batch interval */}
         <div className="space-y-1">
           <label className="font-sans text-sm font-medium text-on-surface">Summary Batch Interval</label>
@@ -371,7 +312,7 @@ export function AgentConfig() {
             </Select>
           )}
           <p className="font-sans text-xs text-on-surface-variant">
-            The task used when auto-run triggers or no task is specified.
+            The task used when Run Now is clicked or no task is specified.
           </p>
         </div>
 
