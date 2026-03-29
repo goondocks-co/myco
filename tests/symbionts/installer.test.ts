@@ -33,10 +33,26 @@ const CURSOR_MANIFEST: SymbiontManifest = {
   settingsPath: '.cursor/mcp.json',
   hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'conversation_id' },
   registration: {
+    hooksTarget: '.cursor/hooks.json',
     mcpTarget: '.cursor/mcp.json',
     mcpFormat: 'json',
     skillsTarget: '.cursor/skills',
     settingsTarget: '.cursor/settings.json',
+  },
+};
+
+/** Minimal manifest with no hooks — used to test skip-guard behavior. */
+const NO_HOOKS_MANIFEST: SymbiontManifest = {
+  name: 'no-hooks-agent',
+  displayName: 'No Hooks Agent',
+  binary: 'nohooks',
+  configDir: '.nohooks',
+  pluginRootEnvVar: 'NOHOOKS_PLUGIN_ROOT',
+  settingsPath: '.nohooks/settings.json',
+  hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
+  registration: {
+    mcpTarget: '.nohooks/mcp.json',
+    skillsTarget: '.nohooks/skills',
   },
 };
 
@@ -161,6 +177,10 @@ function setupPackageRoot(): void {
   writeJson(path.join(claudeTemplateDir, 'settings.json'), {
     permissions: { allow: ['Bash(myco-run *)', 'Bash(myco-run:*)', 'Bash(myco *)', 'Bash(myco:*)'] },
   });
+  writeJson(path.join(cursorTemplateDir, 'hooks.json'), {
+    sessionStart: [{ command: 'node .agents/myco-hook.cjs hook session-start', type: 'command', timeout: 10 }],
+    stop: [{ command: 'node .agents/myco-hook.cjs hook stop', type: 'command', timeout: 30 }],
+  });
   writeJson(path.join(cursorTemplateDir, 'mcp.json'), MCP_TEMPLATE);
   writeJson(path.join(cursorTemplateDir, 'settings.json'), {
     'chat.tools.terminal.autoApprove': { 'myco-run': true, 'myco': true },
@@ -249,10 +269,12 @@ describe('loadTemplate', () => {
     expect(template).toBeNull();
   });
 
-  it('returns null for hooks when symbiont has no hooks template (cursor)', () => {
+  it('loads hooks template for Cursor (flat format)', () => {
     const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
     const template = installer.loadTemplate('hooks');
-    expect(template).toBeNull();
+    expect(template).not.toBeNull();
+    expect(template).toHaveProperty('sessionStart');
+    expect(template).toHaveProperty('stop');
   });
 
   it('loads from dist layout as fallback', () => {
@@ -362,8 +384,8 @@ describe('installHooks', () => {
     expect(settings.hooks).toBeDefined();
   });
 
-  it('returns false when no hooksTarget in manifest (cursor)', () => {
-    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
+  it('returns false when no hooksTarget in manifest', () => {
+    const installer = new SymbiontInstaller(NO_HOOKS_MANIFEST, projectRoot, packageRoot);
     const result = installer.installHooks();
     expect(result).toBe(false);
   });
@@ -650,8 +672,8 @@ describe('install', () => {
     const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
     const result = installer.install();
 
-    // Cursor has no hooks and no instructionsFile
-    expect(result.hooks).toBe(false);
+    // Cursor has hooks but no instructionsFile
+    expect(result.hooks).toBe(true);
     expect(result.mcp).toBe(true);
     expect(result.skills).toBe(true);
     expect(result.settings).toBe(true);
@@ -1332,8 +1354,8 @@ describe('installHookGuard', () => {
     expect(fs.existsSync(guardPath)).toBe(true);
   });
 
-  it('skips guard for symbionts without hooksTarget (Cursor)', () => {
-    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
+  it('skips guard for symbionts without hooksTarget', () => {
+    const installer = new SymbiontInstaller(NO_HOOKS_MANIFEST, projectRoot, packageRoot);
     const result = installer.installHookGuard();
 
     expect(result).toBe(false);
@@ -1371,8 +1393,8 @@ describe('uninstallHookGuard', () => {
     expect(result).toBe(false);
   });
 
-  it('skips guard for symbionts without hooksTarget', () => {
-    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
+  it('skips uninstall guard for symbionts without hooksTarget', () => {
+    const installer = new SymbiontInstaller(NO_HOOKS_MANIFEST, projectRoot, packageRoot);
     const result = installer.uninstallHookGuard();
     expect(result).toBe(false);
   });
@@ -1447,7 +1469,7 @@ describe('old-format hook backward compatibility', () => {
 
 describe('hook template validation', () => {
   it('all hook templates use the guard prefix', () => {
-    const templateDirs = ['claude-code', 'codex', 'gemini', 'vscode-copilot', 'windsurf'];
+    const templateDirs = ['claude-code', 'codex', 'cursor', 'gemini', 'vscode-copilot', 'windsurf'];
     for (const dir of templateDirs) {
       const filePath = path.resolve(`src/symbionts/templates/${dir}/hooks.json`);
       const template = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
