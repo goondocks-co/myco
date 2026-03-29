@@ -215,6 +215,37 @@ describe('agent loader', () => {
       const tasks = loadAgentTasks('/nonexistent/path');
       expect(tasks).toEqual([]);
     });
+
+    it('loads schedule from full-intelligence task', () => {
+      const tasks = loadAgentTasks(DEFINITIONS_DIR);
+      const fi = tasks.find((t) => t.name === 'full-intelligence');
+      expect(fi?.schedule).toBeDefined();
+      expect(fi!.schedule!.enabled).toBe(true);
+      expect(fi!.schedule!.intervalSeconds).toBe(300);
+      expect(fi!.schedule!.runIn).toEqual(['active', 'idle']);
+      expect(fi!.schedule!.preCondition).toBe('has-unprocessed-batches');
+    });
+
+    it('loads schedule from skill-survey task', () => {
+      const tasks = loadAgentTasks(DEFINITIONS_DIR);
+      const ss = tasks.find((t) => t.name === 'skill-survey');
+      expect(ss?.schedule?.enabled).toBe(false);
+      expect(ss?.schedule?.intervalSeconds).toBe(600);
+      expect(ss?.schedule?.runIn).toEqual(['idle']);
+    });
+
+    it('loads schedule from skill-evolve task', () => {
+      const tasks = loadAgentTasks(DEFINITIONS_DIR);
+      const se = tasks.find((t) => t.name === 'skill-evolve');
+      expect(se?.schedule?.enabled).toBe(false);
+      expect(se?.schedule?.preCondition).toBe('has-active-skills');
+    });
+
+    it('does not add schedule to tasks without one', () => {
+      const tasks = loadAgentTasks(DEFINITIONS_DIR);
+      const ts = tasks.find((t) => t.name === 'title-summary');
+      expect(ts?.schedule).toBeUndefined();
+    });
   });
 
   // -------------------------------------------------------------------------

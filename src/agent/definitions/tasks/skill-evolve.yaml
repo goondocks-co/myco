@@ -10,6 +10,12 @@ prompt: >-
 isDefault: false
 maxTurns: 25
 timeoutSeconds: 600
+schedule:
+  enabled: false
+  intervalSeconds: 900
+  runIn:
+    - idle
+  preCondition: has-active-skills
 phases:
   - name: assess
     prompt: |

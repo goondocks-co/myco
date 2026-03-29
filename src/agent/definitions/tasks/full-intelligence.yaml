@@ -21,6 +21,14 @@ maxTurns: 130
 timeoutSeconds: 1800
 model: claude-sonnet-4-6
 
+schedule:
+  enabled: true
+  intervalSeconds: 300
+  runIn:
+    - active
+    - idle
+  preCondition: has-unprocessed-batches
+
 orchestrator:
   enabled: true
   model: claude-sonnet-4-6
