@@ -394,14 +394,19 @@ export class SymbiontInstaller {
     } catch { return []; }
   }
 
-  /** Add skill symlink paths to project .gitignore. */
+  /**
+   * Reconcile Myco-owned skill entries in project .gitignore.
+   * Computes the desired entry set, strips any existing Myco block
+   * (and legacy entries), then writes the current block if changed.
+   */
   private updateGitignore(): void {
     const reg = this.manifest.registration;
     if (!reg?.skillsTarget) return;
 
     const skillNames = this.listSkillDirs();
 
-    const entries = [
+    // Desired state: per-skill entries for canonical + agent-specific paths
+    const desired = [
       ...skillNames.map((name) => `${CANONICAL_SKILLS_DIR}/${name}`),
       ...(reg.skillsTarget !== CANONICAL_SKILLS_DIR
         ? skillNames.map((name) => `${reg.skillsTarget}/${name}`)
@@ -410,15 +415,48 @@ export class SymbiontInstaller {
     ];
 
     const gitignorePath = path.join(this.projectRoot, '.gitignore');
-    let existing = '';
-    try { existing = fs.readFileSync(gitignorePath, 'utf-8'); } catch { /* doesn't exist yet */ }
+    let content = '';
+    try { content = fs.readFileSync(gitignorePath, 'utf-8'); } catch { /* doesn't exist yet */ }
 
-    const newEntries = entries.filter((e) => !existing.includes(e));
-    if (newEntries.length === 0) return;
+    // Strip existing Myco block and any legacy entries
+    const stripped = this.stripMycoGitignoreBlock(content, skillNames);
 
-    const separator = existing.endsWith('\n') || existing === '' ? '' : '\n';
-    const block = `${separator}\n${GITIGNORE_SKILLS_COMMENT}\n${newEntries.join('\n')}\n`;
-    fs.writeFileSync(gitignorePath, existing + block, 'utf-8');
+    // Build the new block
+    const desiredBlock = desired.length > 0
+      ? `${GITIGNORE_SKILLS_COMMENT}\n${desired.join('\n')}\n`
+      : '';
+
+    // Check if anything changed
+    if (stripped === content && desiredBlock === '') return;
+    const separator = stripped.length > 0 && !stripped.endsWith('\n') ? '\n' : '';
+    const spacer = stripped.length > 0 && desiredBlock.length > 0 ? '\n' : '';
+    const result = stripped + separator + spacer + desiredBlock;
+    if (result === content) return;
+
+    fs.writeFileSync(gitignorePath, result, 'utf-8');
+  }
+
+  /**
+   * Remove all Myco-owned gitignore entries: the comment header, per-skill
+   * entries for both canonical and agent-specific paths, and legacy blanket
+   * directory entries. Returns the cleaned content.
+   */
+  private stripMycoGitignoreBlock(content: string, skillNames: string[]): string {
+    const reg = this.manifest.registration;
+    const ownedLines = new Set<string>([
+      GITIGNORE_SKILLS_COMMENT,
+      `${CANONICAL_SKILLS_DIR}/`, // legacy blanket entry
+    ]);
+    for (const name of skillNames) {
+      ownedLines.add(`${CANONICAL_SKILLS_DIR}/${name}`);
+      if (reg?.skillsTarget && reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
+        ownedLines.add(`${reg.skillsTarget}/${name}`);
+      }
+    }
+
+    const lines = content.split('\n');
+    const filtered = lines.filter((line) => !ownedLines.has(line));
+    return filtered.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + (filtered.length > 0 ? '\n' : '');
   }
 
   /**
@@ -710,22 +748,7 @@ export class SymbiontInstaller {
     let content = '';
     try { content = fs.readFileSync(gitignorePath, 'utf-8'); } catch { return; }
 
-    // Remove the Myco skill symlinks block and individual entries
-    const reg = this.manifest.registration;
-    const skillNames = this.listSkillDirs();
-    const lines = content.split('\n');
-    const filtered = lines.filter((line) => {
-      if (line === GITIGNORE_SKILLS_COMMENT) return false;
-      // Remove legacy blanket directory ignore and per-skill canonical entries
-      if (line === `${CANONICAL_SKILLS_DIR}/`) return false;
-      if (skillNames.some((name) => line === `${CANONICAL_SKILLS_DIR}/${name}`)) return false;
-      if (reg?.skillsTarget && reg.skillsTarget !== CANONICAL_SKILLS_DIR
-        && skillNames.some((name) => line === `${reg.skillsTarget}/${name}`)) return false;
-      return true;
-    });
-
-    // Clean up consecutive blank lines left by removal
-    const cleaned = filtered.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    const cleaned = this.stripMycoGitignoreBlock(content, this.listSkillDirs()).trim();
     if (cleaned) {
       fs.writeFileSync(gitignorePath, cleaned + '\n', 'utf-8');
     } else {
