@@ -77,6 +77,13 @@ import {
   handleUpdateTaskConfig,
 } from './api/agent-tasks.js';
 import { handleGetProviders, handleTestProvider } from './api/providers.js';
+import {
+  handleListCandidates,
+  handleGetCandidate,
+  handleUpdateCandidate,
+  handleListSkillRecords,
+  handleGetSkillRecord,
+} from './api/skills.js';
 import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
@@ -1399,6 +1406,13 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/batches/:id/activities', handleGetBatchActivities);
   server.registerRoute('GET', '/api/sessions/:id/attachments', handleGetSessionAttachments);
   server.registerRoute('GET', '/api/sessions/:id/plans', handleGetSessionPlans);
+
+  // --- Skill lifecycle API routes ---
+  server.registerRoute('GET', '/api/skill-candidates', handleListCandidates);
+  server.registerRoute('GET', '/api/skill-candidates/:id', handleGetCandidate);
+  server.registerRoute('PUT', '/api/skill-candidates/:id', handleUpdateCandidate);
+  server.registerRoute('GET', '/api/skill-records', handleListSkillRecords);
+  server.registerRoute('GET', '/api/skill-records/:id', handleGetSkillRecord);
 
   // --- Mycelium API routes ---
   server.registerRoute('GET', '/api/spores', handleListSpores);
