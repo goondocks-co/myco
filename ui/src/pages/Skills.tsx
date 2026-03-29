@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { PageHeader } from '../components/ui/page-header';
 import type { Tab } from '../components/ui/tab-switcher';
+import { CandidateList } from '../components/skills/CandidateList';
+import { SkillList } from '../components/skills/SkillList';
 
 type SkillsTab = 'candidates' | 'skills';
 
@@ -56,6 +58,11 @@ export default function Skills() {
     if (t !== 'skills') setSelectedSkill(undefined);
   }, []);
 
+  const selectSkill = useCallback((name: string) => {
+    setTab('skills');
+    setSelectedSkill(name);
+  }, []);
+
   return (
     <div className="p-6 space-y-4">
       <PageHeader
@@ -67,16 +74,17 @@ export default function Skills() {
       />
 
       {/* Candidates tab */}
-      {tab === 'candidates' && (
-        <div>
-          {/* CandidateList will go here */}
-        </div>
-      )}
+      {tab === 'candidates' && <CandidateList />}
 
       {/* Skills tab */}
-      {tab === 'skills' && (
-        <div>
-          {/* SkillList / SkillDetail will go here */}
+      {tab === 'skills' && !selectedSkill && (
+        <SkillList onSelectSkill={selectSkill} />
+      )}
+
+      {/* Skill detail placeholder */}
+      {tab === 'skills' && selectedSkill && (
+        <div className="font-sans text-sm text-on-surface-variant">
+          Detail view for <span className="font-mono">{selectedSkill}</span> — coming soon
         </div>
       )}
     </div>
