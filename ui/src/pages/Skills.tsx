@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { PageHeader } from '../components/ui/page-header';
 import type { Tab } from '../components/ui/tab-switcher';
+import { Badge } from '../components/ui/badge';
 import { CandidateList } from '../components/skills/CandidateList';
 import { SkillList } from '../components/skills/SkillList';
 import { SkillDetail } from '../components/skills/SkillDetail';
+import { useSkillCandidates, useSkillRecords } from '../hooks/use-skills';
 
 type SkillsTab = 'candidates' | 'skills';
 
@@ -48,6 +50,11 @@ export default function Skills() {
   const [tab, setTab] = useState<SkillsTab>(initial.tab);
   const [selectedSkill, setSelectedSkill] = useState<string | undefined>(initial.skill);
 
+  const { data: candidateData } = useSkillCandidates({ status: 'identified' });
+  const { data: skillData } = useSkillRecords({ status: 'active' });
+  const pendingCount = candidateData?.total ?? 0;
+  const activeCount = skillData?.total ?? 0;
+
   // Sync URL whenever state changes
   useEffect(() => {
     writeUrlState(tab, selectedSkill);
@@ -72,6 +79,12 @@ export default function Skills() {
         tabs={TABS}
         activeTab={tab}
         onTabChange={switchTab}
+        actions={
+          <div className="flex items-center gap-2">
+            {pendingCount > 0 && <Badge variant="secondary">{pendingCount} pending</Badge>}
+            {activeCount > 0 && <Badge variant="default">{activeCount} active</Badge>}
+          </div>
+        }
       />
 
       {/* Candidates tab */}
