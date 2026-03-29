@@ -44,7 +44,7 @@ export interface TaskConfigUpdate {
   maxTurns?: number | null;
   timeoutSeconds?: number | null;
   phases?: Record<string, PhaseInput | null> | null;
-  schedule?: { enabled?: boolean; intervalSeconds?: number; runIn?: string[] } | null;
+  schedule?: { enabled?: boolean; intervalSeconds?: number; runIn?: ('active' | 'idle' | 'sleep')[] } | null;
 }
 
 /**

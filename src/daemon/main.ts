@@ -121,6 +121,8 @@ import {
   MS_PER_DAY,
 } from '../constants.js';
 import { PowerManager } from './power.js';
+import { buildScheduledJobs } from './task-scheduler.js';
+import type { ScheduledJobContext } from './task-scheduler.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
@@ -499,9 +501,10 @@ export async function main(): Promise<void> {
   logger.info(LOG_KINDS.EMBEDDING_EMBED, 'EmbeddingManager initialized', { vectors_db: vectorsDbPath });
 
   // --- Register built-in agents and tasks ---
+  let definitionsDir: string | undefined;
   try {
     const { registerBuiltInAgentsAndTasks, resolveDefinitionsDir } = await import('../agent/loader.js');
-    const definitionsDir = resolveDefinitionsDir();
+    definitionsDir = resolveDefinitionsDir();
     await registerBuiltInAgentsAndTasks(definitionsDir, vaultDir);
     logger.info(LOG_KINDS.AGENT_TASK, 'Built-in agents and tasks registered');
   } catch (err) {
@@ -1877,54 +1880,6 @@ export async function main(): Promise<void> {
     }),
   });
 
-  // Agent auto-run: only when enabled, with its own interval guard.
-  // Runs on the PowerManager tick but skips unless enough time has elapsed
-  // since the last run (config.agent.interval_seconds).
-  if (config.agent.auto_run) {
-    let agentRunning = false;
-    const agentIntervalMs = config.agent.interval_seconds * MS_PER_SECOND;
-
-    // Seed lastAgentRun from the most recent completed/failed run so daemon
-    // restarts don't immediately re-trigger the agent.
-    const lastRunRow = getDatabase().prepare(
-      `SELECT started_at FROM agent_runs WHERE agent_id = ? AND status IN ('completed', 'failed') ORDER BY started_at DESC LIMIT 1`,
-    ).get(DEFAULT_AGENT_ID) as { started_at: number } | undefined;
-    let lastAgentRun = lastRunRow ? lastRunRow.started_at * MS_PER_SECOND : 0;
-
-    powerManager.register({
-      name: 'agent-auto-run',
-      runIn: ['active', 'idle'],
-      fn: async () => {
-        if (agentRunning) return;
-        if (Date.now() - lastAgentRun < agentIntervalMs) return;
-
-        // Pre-check: only spawn agent if there's unprocessed work
-        const agentDb = getDatabase();
-        const checkRow = agentDb.prepare('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0').get() as { count: number };
-        const count = Number(checkRow.count);
-        if (count === 0) {
-          logger.debug(LOG_KINDS.AGENT_AUTO_RUN, 'No unprocessed batches, skipping cycle');
-          return;
-        }
-
-        agentRunning = true;
-        lastAgentRun = Date.now();
-        try {
-          logger.info(LOG_KINDS.AGENT_AUTO_RUN, 'Unprocessed batches found, starting agent', { count });
-          const { runAgent } = await import('../agent/executor.js');
-          const runResult = await runAgent(vaultDir, { embeddingManager });
-          logger.info(LOG_KINDS.AGENT_RUN, 'Agent run completed', { status: runResult.status, runId: runResult.runId });
-        } catch (err) {
-          logger.error(LOG_KINDS.AGENT_ERROR, 'Agent auto-run failed', { error: (err as Error).message });
-        } finally {
-          agentRunning = false;
-        }
-      },
-    });
-  } else {
-    logger.info(LOG_KINDS.AGENT_AUTO_RUN, 'Auto-agent disabled (agent.auto_run = false)');
-  }
-
   powerManager.register({
     name: 'log-retention',
     runIn: ['idle', 'sleep'],
@@ -1996,62 +1951,69 @@ export async function main(): Promise<void> {
     });
   }
 
-  // -- Skill survey (discover candidates from vault knowledge) ---------------
-  if (config.skills.auto_survey) {
+  // -- Dynamic task scheduling (replaces hardcoded agent-auto-run, skill-survey, skill-evolve) --
+  {
     let agentRunning = false;
-    const agentIntervalMs = config.agent.interval_seconds * MS_PER_SECOND;
-    let lastAgentRun = 0;
 
-    powerManager.register({
-      name: 'skill-survey',
-      runIn: ['idle'],
-      fn: async () => {
-        if (agentRunning) return;
-        if (Date.now() - lastAgentRun < agentIntervalMs) return;
+    if (definitionsDir) {
+      const { loadAllTasks } = await import('../agent/registry.js');
+      const allTasks = Array.from(loadAllTasks(definitionsDir, vaultDir).values());
 
-        const { runAgent } = await import('../agent/executor.js');
-        try {
-          agentRunning = true;
-          await runAgent(vaultDir, {
-            task: 'skill-survey',
-            embeddingManager,
-          });
-          lastAgentRun = Date.now();
-        } finally {
-          agentRunning = false;
+      // Seed lastRun from DB: find the most recent completed/failed run per task
+      const initialLastRuns: Record<string, number> = {};
+      try {
+        const recentRuns = getDatabase().prepare(
+          `SELECT task, MAX(completed_at) as last_completed
+           FROM agent_runs
+           WHERE status IN ('completed', 'failed') AND completed_at IS NOT NULL
+           GROUP BY task`
+        ).all() as Array<{ task: string; last_completed: number }>;
+        for (const row of recentRuns) {
+          initialLastRuns[row.task] = row.last_completed * 1000; // epoch seconds → ms
         }
-      },
-    });
-  }
+      } catch {
+        // Best-effort seeding
+      }
 
-  // -- Skill evolution (improve skills from new knowledge) -------------------
-  if (config.skills.auto_evolve) {
-    let agentRunning = false;
-    let lastAgentRun = 0;
-    const evolveStates = [config.skills.evolve_cadence];
-    powerManager.register({
-      name: 'skill-evolve',
-      runIn: evolveStates,
-      fn: async () => {
-        if (agentRunning) return;
-
-        // Only run if there are active skills to evaluate
-        const activeCount = countSkillRecords({ status: 'active' });
-        if (activeCount === 0) return;
-
-        const { runAgent } = await import('../agent/executor.js');
-        try {
-          agentRunning = true;
-          await runAgent(vaultDir, {
-            task: 'skill-evolve',
-            embeddingManager,
+      const scheduledContext: ScheduledJobContext = {
+        isAgentRunning: () => agentRunning,
+        setAgentRunning: (v) => { agentRunning = v; },
+        runTask: async (taskName) => {
+          const { runAgent } = await import('../agent/executor.js');
+          const result = await runAgent(vaultDir, { task: taskName, embeddingManager });
+          logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} completed`, {
+            status: result.status,
+            runId: result.runId,
           });
-          lastAgentRun = Date.now();
-        } finally {
-          agentRunning = false;
-        }
-      },
-    });
+        },
+        preConditions: {
+          'has-unprocessed-batches': () => {
+            const row = getDatabase().prepare(
+              'SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0'
+            ).get() as { count: number };
+            return Number(row.count) > 0;
+          },
+          'has-active-skills': () => {
+            return countSkillRecords({ status: 'active' }) > 0;
+          },
+        },
+      };
+
+      const scheduledJobs = buildScheduledJobs(
+        allTasks,
+        config.agent.tasks ?? {},
+        scheduledContext,
+        initialLastRuns,
+      );
+      for (const job of scheduledJobs) {
+        powerManager.register(job);
+      }
+      logger.info(LOG_KINDS.DAEMON_START, `Registered ${scheduledJobs.length} scheduled task(s)`, {
+        tasks: scheduledJobs.map((j) => j.name),
+      });
+    } else {
+      logger.warn(LOG_KINDS.AGENT_ERROR, 'Skipping dynamic task scheduling — definitions directory unavailable');
+    }
   }
 
   powerManager.start();

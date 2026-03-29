@@ -6,7 +6,7 @@
  */
 
 import type { AgentTask, TaskSchedule } from '@myco/agent/types.js';
-import type { PowerJob, PowerState } from './power.js';
+import type { PowerJob } from './power.js';
 
 /** Resolve effective schedule: YAML defaults + myco.yaml overrides. */
 function resolveSchedule(
@@ -17,7 +17,7 @@ function resolveSchedule(
   return {
     enabled: configOverride.schedule.enabled ?? yamlSchedule.enabled,
     intervalSeconds: configOverride.schedule.intervalSeconds ?? yamlSchedule.intervalSeconds,
-    runIn: (configOverride.schedule.runIn ?? yamlSchedule.runIn) as PowerState[],
+    runIn: configOverride.schedule.runIn ?? yamlSchedule.runIn,
     preCondition: configOverride.schedule.preCondition ?? yamlSchedule.preCondition,
   };
 }
@@ -65,7 +65,7 @@ export function buildScheduledJobs(
 
     jobs.push({
       name: `scheduled:${task.name}`,
-      runIn: effective.runIn as PowerState[],
+      runIn: effective.runIn,
       fn: async () => {
         if (!context) return;
         if (context.isAgentRunning()) return;
