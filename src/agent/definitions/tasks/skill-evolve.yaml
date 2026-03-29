@@ -6,11 +6,11 @@ description: >-
 agent: myco-agent
 prompt: >-
   Assess all active Myco-managed skills for staleness, conflicts,
-  low usage, and oversized scope. Evolve skills that need it.
+  and oversized scope. Evolve skills that need it.
 isDefault: false
 model: claude-sonnet-4-6
-maxTurns: 25
-timeoutSeconds: 600
+maxTurns: 40
+timeoutSeconds: 900
 schedule:
   enabled: false
   intervalSeconds: 900
@@ -20,26 +20,66 @@ schedule:
 phases:
   - name: assess
     prompt: |
-      For each active Myco-managed skill (vault_skill_records action: list,
-      status: active):
+      Evaluate every active Myco-managed skill to determine if it
+      needs updating.
 
-      1. Query vault for knowledge created AFTER the skill's updated_at.
-         Use vault_search_semantic with the skill's topic and vault_spores
-         with created_at filter.
+      For EACH active skill (vault_skill_records action: list, status: active):
 
-      2. Check if source spores have been superseded.
+      1. READ THE CURRENT SKILL CONTENT.
+         Get the skill record (vault_skill_records action: get), then
+         read the latest lineage entry's content_snapshot to see what
+         the skill currently says. You MUST read the actual content
+         before you can assess accuracy.
 
-      3. Check usage_count and last_used_at from the skill record.
+      2. SEARCH FOR NEW KNOWLEDGE since the skill was last updated.
+         Use vault_search_semantic with the skill's topic/keywords.
+         Use vault_search_fts with specific file paths, function names,
+         and technical terms mentioned in the skill.
+         Use vault_spores to check for recent wisdom, decisions, and
+         gotchas related to the skill's domain.
+
+         Compare what you find to what the skill currently says.
+         Does the skill miss anything important? Does it say anything
+         that's now wrong or outdated?
+
+      3. CHECK SOURCE SPORE STATUS.
+         For each source spore ID in the skill's source_ids, check if
+         it's been superseded (vault_spores, status: superseded).
+         Superseded sources mean the skill may contain outdated advice.
+
+      4. ASSESS SKILL SCOPE.
+         Is the skill trying to cover too many distinct procedures?
+         A skill over 400 lines or covering 3+ independent workflows
+         is a candidate for splitting.
 
       Classify each skill:
-      - CURRENT: no significant new knowledge, still accurate
-      - STALE: new knowledge that should be incorporated
-      - CONFLICTED: new knowledge contradicts skill content
-      - UNUSED: zero usage in the configured stale period
-      - OVERSIZED: covers too many distinct procedures
+      - **CURRENT**: Content is still accurate, no significant new
+        knowledge changes what it should say.
+      - **STALE**: New knowledge exists that should be incorporated
+        (new gotchas, new steps, changed file paths, new patterns).
+        Note specifically WHAT is new/changed.
+      - **CONFLICTED**: New knowledge directly contradicts the skill's
+        current content (a decision was reversed, a pattern was
+        abandoned). Note the contradiction.
+      - **OVERSIZED**: Covers too many distinct procedures. Note
+        how it should be split.
 
-      Report classifications via vault_report. Store in vault_set_state
-      (key: skill-evolve-classifications).
+      NOTE: Skip usage-based retirement for now — usage tracking is
+      not yet active. Do not classify skills as UNUSED.
+
+      Store classifications using vault_set_state with key
+      'skill-evolve-classifications' and value as a JSON object:
+      ```json
+      {
+        "skill-name": {
+          "classification": "CURRENT|STALE|CONFLICTED|OVERSIZED",
+          "rationale": "what changed and why",
+          "new_knowledge": ["list of specific new findings"]
+        }
+      }
+      ```
+
+      Report classifications via vault_report.
     tools:
       - vault_skill_records
       - vault_spores
@@ -51,28 +91,53 @@ phases:
       - vault_set_state
       - vault_edges
       - vault_report
-    maxTurns: 10
+    maxTurns: 15
     required: true
 
   - name: evolve
     prompt: |
-      Read classifications from vault_state (key: skill-evolve-classifications).
+      Read classifications from vault_state
+      (key: skill-evolve-classifications). Parse the JSON.
 
-      For each skill needing action:
+      For each skill classified as STALE, CONFLICTED, or OVERSIZED:
 
-      STALE or CONFLICTED: Update via vault_write_skill with new content.
-      Preserve accurate content, incorporate new knowledge.
-      Include rationale explaining what changed.
+      ## STALE or CONFLICTED — Rewrite the skill
 
-      OVERSIZED: Write focused sub-skills via vault_write_skill.
-      Retire parent via vault_skill_records (status: retired).
+      1. Read the current skill content from vault_skill_records
+         (action: get) to see the current version.
 
-      UNUSED: Retire via vault_skill_records (status: retired).
-      Do NOT delete the SKILL.md file.
+      2. Gather the new knowledge: read the specific spores, sessions,
+         or search results identified in the assessment.
 
-      CURRENT: Skip.
+      3. Rewrite using vault_write_skill. The rewrite MUST:
+         - Preserve all content that is still accurate
+         - Incorporate the new knowledge identified in assessment
+         - Follow the same SKILL.md format:
+           - Frontmatter with name (myco: prefix), description,
+             managed_by: myco, user-invocable: true, allowed-tools
+           - Prerequisites, Steps, Common Pitfalls structure
+         - Stay under 500 lines
+         - Include a rationale parameter explaining WHAT changed:
+           e.g., "Updated: added hookFields normalization step from
+           session dd5bc83a, corrected Windsurf MCP path"
 
-      Report summary of all actions taken.
+         vault_write_skill automatically bumps the generation and
+         creates a lineage entry with the rationale.
+
+      ## OVERSIZED — Split into focused sub-skills
+
+      1. Identify distinct procedures within the skill.
+      2. Write each as a new skill via vault_write_skill.
+         Each sub-skill gets its own name, description, and content.
+      3. Retire the parent via vault_skill_records
+         (action: update, status: retired).
+
+      ## CURRENT — No action needed. Skip.
+
+      Report a summary of all actions taken via vault_report:
+      - Which skills were updated (with rationale)
+      - Which skills were split (into what)
+      - Which skills were left as CURRENT
     tools:
       - vault_write_skill
       - vault_skill_records
@@ -82,7 +147,7 @@ phases:
       - vault_search_fts
       - vault_search_semantic
       - vault_report
-    maxTurns: 12
+    maxTurns: 18
     required: true
     dependsOn:
       - assess
