@@ -33,11 +33,11 @@ describe('symbiont manifests', () => {
     expect(manifest.registration?.skillsTarget).toBe('.claude/skills');
   });
 
-  it('cursor manifest has registration with mcpTarget and skillsTarget', () => {
+  it('cursor manifest has registration with hooksTarget, mcpTarget, and skillsTarget', () => {
     const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'cursor.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
     expect(manifest.registration).toBeDefined();
-    expect(manifest.registration?.hooksTarget).toBeUndefined();
+    expect(manifest.registration?.hooksTarget).toBe('.cursor/hooks.json');
     expect(manifest.registration?.mcpTarget).toBe('.cursor/mcp.json');
     expect(manifest.registration?.skillsTarget).toBe('.cursor/skills');
   });

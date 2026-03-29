@@ -12,6 +12,7 @@ capture:
   planDirs:
     - .cursor/plans/
 registration:
+  hooksTarget: .cursor/hooks.json
   mcpTarget: .cursor/mcp.json
   skillsTarget: .cursor/skills
   settingsTarget: .cursor/settings.json
