@@ -8,6 +8,7 @@ agent: myco-agent
 prompt: >-
   Survey the vault knowledge graph for procedural skill candidates.
 isDefault: false
+model: claude-sonnet-4-6
 maxTurns: 15
 timeoutSeconds: 300
 schedule:

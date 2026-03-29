@@ -7,6 +7,7 @@ agent: myco-agent
 prompt: >-
   Generate a project-specific skill from the identified candidate.
 isDefault: false
+model: claude-sonnet-4-6
 maxTurns: 25
 timeoutSeconds: 600
 phases:

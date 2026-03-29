@@ -8,6 +8,7 @@ prompt: >-
   Assess all active Myco-managed skills for staleness, conflicts,
   low usage, and oversized scope. Evolve skills that need it.
 isDefault: false
+model: claude-sonnet-4-6
 maxTurns: 25
 timeoutSeconds: 600
 schedule:
