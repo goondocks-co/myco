@@ -402,7 +402,7 @@ export class SymbiontInstaller {
     const skillNames = this.listSkillDirs();
 
     const entries = [
-      `${CANONICAL_SKILLS_DIR}/`,
+      ...skillNames.map((name) => `${CANONICAL_SKILLS_DIR}/${name}`),
       ...(reg.skillsTarget !== CANONICAL_SKILLS_DIR
         ? skillNames.map((name) => `${reg.skillsTarget}/${name}`)
         : []
@@ -712,14 +712,15 @@ export class SymbiontInstaller {
 
     // Remove the Myco skill symlinks block and individual entries
     const reg = this.manifest.registration;
-    const skillNames = reg?.skillsTarget && reg.skillsTarget !== CANONICAL_SKILLS_DIR
-      ? this.listSkillDirs()
-      : [];
+    const skillNames = this.listSkillDirs();
     const lines = content.split('\n');
     const filtered = lines.filter((line) => {
       if (line === GITIGNORE_SKILLS_COMMENT) return false;
+      // Remove legacy blanket directory ignore and per-skill canonical entries
       if (line === `${CANONICAL_SKILLS_DIR}/`) return false;
-      if (skillNames.some((name) => line === `${reg!.skillsTarget}/${name}`)) return false;
+      if (skillNames.some((name) => line === `${CANONICAL_SKILLS_DIR}/${name}`)) return false;
+      if (reg?.skillsTarget && reg.skillsTarget !== CANONICAL_SKILLS_DIR
+        && skillNames.some((name) => line === `${reg.skillsTarget}/${name}`)) return false;
       return true;
     });
 
