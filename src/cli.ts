@@ -26,6 +26,7 @@ Commands:
   task <subcommand>        Manage agent task definitions
   team <init|upgrade>      Provision or upgrade team sync infrastructure
   doctor [--fix]          Check vault health and repair issues
+  open                     Open the dashboard in your browser
   restart                  Restart the daemon
   version                  Show plugin version
   mcp                     Start the MCP stdio server
@@ -106,6 +107,7 @@ async function main(): Promise<void> {
       process.exit(1);
       break;
     }
+    case 'open': return (await import('./cli/open.js')).run(args, vaultDir);
     case 'restart': return (await import('./cli/restart.js')).run(args, vaultDir);
     case 'logs': return (await import('./cli/logs.js')).run(args, vaultDir);
     default:
