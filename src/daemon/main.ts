@@ -119,6 +119,7 @@ import { loadSecrets } from '../config/secrets.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { z } from 'zod';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 // ---------------------------------------------------------------------------
@@ -1702,8 +1703,9 @@ export async function main(): Promise<void> {
   });
 
   // --- Backup routes ---
-  const backupDir = config.backup.dir
-    ? path.resolve(config.backup.dir)
+  const rawBackupDir = config.backup.dir;
+  const backupDir = rawBackupDir
+    ? path.resolve(rawBackupDir.startsWith('~/') ? path.join(os.homedir(), rawBackupDir.slice(2)) : rawBackupDir)
     : path.resolve(vaultDir, 'backups');
   const backupHandlers = createBackupHandlers({ db, backupDir, machineId });
   server.registerRoute('POST', '/api/backup', backupHandlers.handleCreateBackup);
