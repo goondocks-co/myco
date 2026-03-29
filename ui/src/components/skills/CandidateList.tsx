@@ -3,6 +3,7 @@ import { AlertCircle, Check, XCircle, ListChecks, ExternalLink } from 'lucide-re
 import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
 import { Button } from '../ui/button';
+import { MarkdownContent } from '../ui/markdown-content';
 import { useSkillCandidates, useUpdateCandidate, type SkillCandidate } from '../../hooks/use-skills';
 
 /* ---------- Helpers ---------- */
@@ -54,10 +55,11 @@ function CandidateCard({
         </div>
       </div>
 
-      {/* Rationale — full text, no truncation */}
-      <p className="font-sans text-sm text-on-surface-variant leading-relaxed">
-        {candidate.rationale}
-      </p>
+      {/* Rationale — rendered as markdown for structured content */}
+      <MarkdownContent
+        content={candidate.rationale}
+        className="text-sm text-on-surface-variant"
+      />
 
       {/* Actions */}
       <div className="flex items-center gap-2 pt-1">

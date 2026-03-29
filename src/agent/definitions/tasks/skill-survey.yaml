@@ -120,6 +120,14 @@ phases:
       with topic, rationale, confidence, and source_ids (JSON array of
       {id, type} objects referencing the spores, sessions, and plans).
 
+      IMPORTANT: Write the rationale field as markdown. Use:
+      - **Bold** for key terms and pass/fail verdicts
+      - Numbered lists for the procedure steps identified
+      - Inline `code` for file paths, function names, and config keys
+      - A brief summary sentence, then the evidence structure
+
+      The rationale is displayed directly to the user in the dashboard.
+
       If an existing candidate has new evidence, use vault_skill_candidates
       (action: update) to increase confidence and add source_ids.
 
