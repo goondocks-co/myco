@@ -115,6 +115,14 @@ export interface OrchestratorConfig {
   maxTurns?: number;
 }
 
+/** Schedule configuration for automatic task execution via PowerManager. */
+export interface TaskSchedule {
+  enabled: boolean;
+  intervalSeconds: number;
+  runIn: ('active' | 'idle' | 'sleep')[];
+  preCondition?: 'has-unprocessed-batches' | 'has-active-skills';
+}
+
 /** Shape of each task YAML file (e.g., `tasks/full-intelligence.yaml`). */
 export interface AgentTask {
   name: string;
@@ -134,6 +142,7 @@ export interface AgentTask {
   source?: string; // origin of the task (e.g., 'built-in', 'user')
   schemaVersion?: number; // schema version for the task config
   orchestrator?: OrchestratorConfig; // orchestrator configuration for phased tasks
+  schedule?: TaskSchedule; // schedule configuration for automatic execution
 }
 
 // ---------------------------------------------------------------------------

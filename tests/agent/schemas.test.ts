@@ -18,6 +18,7 @@ import {
   ProviderConfigSchema,
   ExecutionConfigSchema,
   ContextQuerySchema,
+  TaskScheduleSchema,
   CURRENT_TASK_SCHEMA_VERSION,
 } from '@myco/agent/schemas.js';
 
@@ -566,6 +567,176 @@ describe('PhaseDefinitionSchema — dependsOn and provider', () => {
       maxTurns: 5,
       required: true,
       provider: { type: 'invalid' },
+    })).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TaskScheduleSchema
+// ---------------------------------------------------------------------------
+
+describe('TaskScheduleSchema', () => {
+  it('parses schedule with all fields', () => {
+    const result = TaskScheduleSchema.parse({
+      enabled: true,
+      intervalSeconds: 300,
+      runIn: ['active', 'idle'],
+    });
+
+    expect(result.enabled).toBe(true);
+    expect(result.intervalSeconds).toBe(300);
+    expect(result.runIn).toEqual(['active', 'idle']);
+    expect(result.preCondition).toBeUndefined();
+  });
+
+  it('parses schedule including preCondition', () => {
+    const result = TaskScheduleSchema.parse({
+      enabled: true,
+      intervalSeconds: 600,
+      runIn: ['active'],
+      preCondition: 'has-unprocessed-batches',
+    });
+
+    expect(result.preCondition).toBe('has-unprocessed-batches');
+
+    const result2 = TaskScheduleSchema.parse({
+      enabled: false,
+      intervalSeconds: 60,
+      runIn: ['idle', 'sleep'],
+      preCondition: 'has-active-skills',
+    });
+
+    expect(result2.preCondition).toBe('has-active-skills');
+  });
+
+  it('defaults enabled to false when omitted', () => {
+    const result = TaskScheduleSchema.parse({
+      intervalSeconds: 120,
+      runIn: ['active'],
+    });
+
+    expect(result.enabled).toBe(false);
+  });
+
+  it('rejects schedule with invalid runIn value', () => {
+    expect(() => TaskScheduleSchema.parse({
+      enabled: true,
+      intervalSeconds: 300,
+      runIn: ['active', 'awake'], // 'awake' is not a valid state
+    })).toThrow();
+  });
+
+  it('rejects schedule with intervalSeconds <= 0', () => {
+    expect(() => TaskScheduleSchema.parse({
+      enabled: true,
+      intervalSeconds: 0,
+      runIn: ['active'],
+    })).toThrow();
+
+    expect(() => TaskScheduleSchema.parse({
+      enabled: true,
+      intervalSeconds: -60,
+      runIn: ['active'],
+    })).toThrow();
+  });
+
+  it('rejects schedule with empty runIn array', () => {
+    expect(() => TaskScheduleSchema.parse({
+      enabled: true,
+      intervalSeconds: 300,
+      runIn: [],
+    })).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AgentTaskSchema — with schedule field
+// ---------------------------------------------------------------------------
+
+describe('AgentTaskSchema — with schedule', () => {
+  it('parses task with schedule field (all fields)', () => {
+    const result = AgentTaskSchema.parse({
+      name: 'scheduled-task',
+      displayName: 'Scheduled Task',
+      description: 'Runs on a schedule.',
+      agent: 'myco-agent',
+      prompt: 'Run automatically.',
+      isDefault: false,
+      schedule: {
+        enabled: true,
+        intervalSeconds: 300,
+        runIn: ['active', 'idle'],
+      },
+    });
+
+    expect(result.schedule).toBeDefined();
+    expect(result.schedule!.enabled).toBe(true);
+    expect(result.schedule!.intervalSeconds).toBe(300);
+    expect(result.schedule!.runIn).toEqual(['active', 'idle']);
+    expect(result.schedule!.preCondition).toBeUndefined();
+  });
+
+  it('parses task with schedule including preCondition', () => {
+    const result = AgentTaskSchema.parse({
+      name: 'conditional-task',
+      displayName: 'Conditional Task',
+      description: 'Runs conditionally.',
+      agent: 'myco-agent',
+      prompt: 'Run if condition met.',
+      isDefault: false,
+      schedule: {
+        enabled: true,
+        intervalSeconds: 600,
+        runIn: ['active'],
+        preCondition: 'has-unprocessed-batches',
+      },
+    });
+
+    expect(result.schedule!.preCondition).toBe('has-unprocessed-batches');
+  });
+
+  it('accepts task without schedule (undefined)', () => {
+    const result = AgentTaskSchema.parse({
+      name: 'manual-task',
+      displayName: 'Manual Task',
+      description: 'Manual only.',
+      agent: 'myco-agent',
+      prompt: 'Run manually.',
+      isDefault: false,
+    });
+
+    expect(result.schedule).toBeUndefined();
+  });
+
+  it('rejects task with schedule having invalid runIn value', () => {
+    expect(() => AgentTaskSchema.parse({
+      name: 'bad-schedule',
+      displayName: 'Bad Schedule',
+      description: 'Invalid runIn.',
+      agent: 'myco-agent',
+      prompt: 'Run.',
+      isDefault: false,
+      schedule: {
+        enabled: true,
+        intervalSeconds: 300,
+        runIn: ['charging'], // invalid state
+      },
+    })).toThrow();
+  });
+
+  it('rejects task with schedule having intervalSeconds <= 0', () => {
+    expect(() => AgentTaskSchema.parse({
+      name: 'bad-interval',
+      displayName: 'Bad Interval',
+      description: 'Zero interval.',
+      agent: 'myco-agent',
+      prompt: 'Run.',
+      isDefault: false,
+      schedule: {
+        enabled: true,
+        intervalSeconds: 0,
+        runIn: ['active'],
+      },
     })).toThrow();
   });
 });
