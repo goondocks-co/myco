@@ -78,7 +78,9 @@ export function SkillDetail({ skillName, onBack }: SkillDetailProps) {
   }
 
   const sourceCount = parseSourceCount(skill.source_ids);
-  const latestContent = skill.lineage?.[0]?.content_snapshot ?? null;
+  const rawContent = skill.lineage?.[0]?.content_snapshot ?? null;
+  // Strip YAML frontmatter — react-markdown doesn't handle it
+  const latestContent = rawContent?.replace(/^---\n[\s\S]*?\n---\n*/, '') ?? null;
 
   return (
     <div className="space-y-6">
