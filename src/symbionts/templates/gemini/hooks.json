@@ -5,7 +5,7 @@
         {
           "name": "myco-session-start",
           "type": "command",
-          "command": "myco-run hook session-start",
+          "command": "node .agents/myco-hook.cjs hook session-start",
           "timeout": 10000
         }
       ]
@@ -17,7 +17,7 @@
         {
           "name": "myco-user-prompt-submit",
           "type": "command",
-          "command": "myco-run hook user-prompt-submit",
+          "command": "node .agents/myco-hook.cjs hook user-prompt-submit",
           "timeout": 5000
         }
       ]
@@ -29,7 +29,7 @@
         {
           "name": "myco-post-tool-use",
           "type": "command",
-          "command": "myco-run hook post-tool-use",
+          "command": "node .agents/myco-hook.cjs hook post-tool-use",
           "timeout": 5000
         }
       ]
@@ -41,7 +41,7 @@
         {
           "name": "myco-stop",
           "type": "command",
-          "command": "myco-run hook stop",
+          "command": "node .agents/myco-hook.cjs hook stop",
           "timeout": 30000
         }
       ]
@@ -53,7 +53,7 @@
         {
           "name": "myco-session-end",
           "type": "command",
-          "command": "myco-run hook session-end",
+          "command": "node .agents/myco-hook.cjs hook session-end",
           "timeout": 10000
         }
       ]
@@ -65,7 +65,7 @@
         {
           "name": "myco-pre-compact",
           "type": "command",
-          "command": "myco-run hook pre-compact",
+          "command": "node .agents/myco-hook.cjs hook pre-compact",
           "timeout": 5000
         }
       ]
