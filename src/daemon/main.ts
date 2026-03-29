@@ -1504,28 +1504,21 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/agent/run', async (req) => {
     const { task, instruction, agentId } = AgentRunBody.parse(req.body);
 
-    // Check if an agent is already running — reject rather than silently redirect
-    const effectiveAgentId = agentId ?? 'myco-agent';
-    const existingRun = getRunningRun(effectiveAgentId);
-    if (existingRun) {
-      return {
-        status: 409,
-        body: {
-          ok: false,
-          error: 'agent_busy',
-          message: `Agent is already running task "${existingRun.task}"`,
-          runId: existingRun.id,
-        },
-      };
-    }
-
     const { runAgent } = await import('../agent/executor.js');
     const resultPromise = runAgent(vaultDir, { task, instruction, agentId, embeddingManager });
 
-    // runAgent inserts the run synchronously before the first await,
-    // so by the time it yields, the run is already in the DB.
-    const latestRun = getRunningRun(effectiveAgentId);
-    const runId = latestRun?.id;
+    // runAgent inserts the run row synchronously before the first await.
+    // Query for the most recently created run matching this task to get
+    // the correct ID — not getRunningRun which may return a different task.
+    const effectiveAgentId = agentId ?? 'myco-agent';
+    const db = getDatabase();
+    const latestRow = db.prepare(
+      `SELECT id FROM agent_runs
+       WHERE agent_id = ? ${task ? 'AND task = ?' : ''}
+       ORDER BY started_at DESC
+       LIMIT 1`,
+    ).get(...(task ? [effectiveAgentId, task] : [effectiveAgentId])) as { id: string } | undefined;
+    const runId = latestRow?.id;
 
     resultPromise
       .then((result) => {
