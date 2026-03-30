@@ -31,6 +31,11 @@ const TEST_RUN_ID = 'run-skills-001';
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
 
+/** Build valid SKILL.md content with required frontmatter. */
+function validSkillContent(name: string, body = '# Skill\n\nContent here.') {
+  return `---\nname: myco:${name}\ndescription: Test skill\nmanaged_by: myco\n---\n\n${body}`;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -249,7 +254,7 @@ describe('vault skill tools', () => {
           name: 'error-handling',
           display_name: 'Error Handling',
           description: 'Best practices for error handling',
-          content: '# Error Handling\n\nAlways use try-catch blocks.',
+          content: validSkillContent('error-handling', '# Error Handling\n\nAlways use try-catch blocks.'),
           rationale: 'Observed in multiple sessions',
         },
         undefined,
@@ -269,7 +274,7 @@ describe('vault skill tools', () => {
       // Verify file was written to disk
       const filePath = path.join(tmpDir, '.agents', 'skills', 'error-handling', 'SKILL.md');
       expect(fs.existsSync(filePath)).toBe(true);
-      expect(fs.readFileSync(filePath, 'utf-8')).toBe('# Error Handling\n\nAlways use try-catch blocks.');
+      expect(fs.readFileSync(filePath, 'utf-8')).toContain('# Error Handling');
 
       // Verify skill record exists in DB
       const recordsTool = findTool(tools, 'vault_skill_records');
@@ -288,7 +293,7 @@ describe('vault skill tools', () => {
           name: 'versioned-skill',
           display_name: 'Versioned Skill',
           description: 'A skill that gets updated',
-          content: '# Version 1',
+          content: validSkillContent('versioned-skill', '# Version 1'),
         },
         undefined,
       );
@@ -299,7 +304,7 @@ describe('vault skill tools', () => {
           name: 'versioned-skill',
           display_name: 'Versioned Skill',
           description: 'Updated description',
-          content: '# Version 2',
+          content: validSkillContent('versioned-skill', '# Version 2'),
           rationale: 'New evidence found',
         },
         undefined,
@@ -310,7 +315,7 @@ describe('vault skill tools', () => {
 
       // Verify file content was updated
       const filePath = path.join(tmpDir, '.agents', 'skills', 'versioned-skill', 'SKILL.md');
-      expect(fs.readFileSync(filePath, 'utf-8')).toBe('# Version 2');
+      expect(fs.readFileSync(filePath, 'utf-8')).toContain('# Version 2');
     });
 
     it('updates candidate status when candidate_id provided', async () => {
@@ -329,7 +334,7 @@ describe('vault skill tools', () => {
           name: 'from-candidate',
           display_name: 'From Candidate',
           description: 'Materialized from a candidate',
-          content: '# From Candidate',
+          content: validSkillContent('from-candidate', '# From Candidate'),
           candidate_id: candidate.id,
         },
         undefined,

@@ -617,6 +617,57 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
   // Skill lifecycle tools
   // -------------------------------------------------------------------------
 
+  /** Maximum lines for a generated skill. */
+  const MAX_SKILL_LINES = 500;
+
+  /** Required frontmatter fields for Myco-managed skills. */
+  const REQUIRED_FRONTMATTER_FIELDS = ['name', 'description', 'managed_by'] as const;
+
+  /**
+   * Validate skill content before writing. Returns an array of issues
+   * (empty = valid). This is a deterministic quality gate — the agent
+   * must fix all issues before the skill is accepted.
+   */
+  function validateSkillContent(content: string, dirName: string): string[] {
+    const issues: string[] = [];
+
+    // Check for frontmatter delimiters
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) {
+      issues.push('Missing YAML frontmatter (must start with --- and end with ---)');
+      return issues; // Can't check fields without frontmatter
+    }
+
+    const frontmatter = fmMatch[1];
+
+    // Check required fields
+    for (const field of REQUIRED_FRONTMATTER_FIELDS) {
+      if (!frontmatter.includes(`${field}:`)) {
+        issues.push(`Missing required frontmatter field: ${field}`);
+      }
+    }
+
+    // Check myco: prefix on name
+    const nameMatch = frontmatter.match(/^name:\s*(.+)$/m);
+    if (nameMatch && !nameMatch[1].trim().startsWith('myco:')) {
+      issues.push(`Skill name must start with "myco:" prefix. Got: "${nameMatch[1].trim()}"`);
+    }
+
+    // Check managed_by: myco
+    const managedMatch = frontmatter.match(/^managed_by:\s*(.+)$/m);
+    if (managedMatch && managedMatch[1].trim() !== 'myco') {
+      issues.push(`managed_by must be "myco". Got: "${managedMatch[1].trim()}"`);
+    }
+
+    // Check line count
+    const lineCount = content.split('\n').length;
+    if (lineCount > MAX_SKILL_LINES) {
+      issues.push(`Skill is ${lineCount} lines (max ${MAX_SKILL_LINES})`);
+    }
+
+    return issues;
+  }
+
   const vaultSkillCandidates = tool(
     'vault_skill_candidates',
     'Manage skill candidates (identified topics that may become skills). Supports list, get, create, and update actions.',
@@ -762,6 +813,16 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
       rationale: z.string().optional().describe('Why this skill was created or updated'),
     },
     async (args) => {
+      // Validate skill content before writing — reject malformed skills
+      const validationErrors = validateSkillContent(args.content, args.name);
+      if (validationErrors.length > 0) {
+        recordTurn('vault_write_skill', args);
+        return textResult({
+          error: 'Skill validation failed. Fix these issues and try again.',
+          issues: validationErrors,
+        });
+      }
+
       const root = projectRoot ?? process.cwd();
       const skillDir = resolve(root, '.agents', 'skills', args.name);
       const skillPath = resolve(skillDir, 'SKILL.md');
