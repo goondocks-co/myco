@@ -1038,26 +1038,36 @@ function migrateV6ToV7(db: Database, machineId: string): void {
 
     for (const table of tables) {
       try {
-        // Fix machine_id and clear synced_at so records are eligible for re-sync
+        // Find rows that need fixing BEFORE updating
+        const staleRows = db.prepare(
+          `SELECT id FROM ${table} WHERE machine_id = 'local'`,
+        ).all() as Array<{ id: string }>;
+
+        if (staleRows.length === 0) continue;
+
+        // Fix machine_id and clear synced_at
         db.prepare(
           `UPDATE ${table} SET machine_id = ?, synced_at = NULL WHERE machine_id = 'local'`,
         ).run(machineId);
 
-        // Clear stale outbox entries for this table so backfill can re-enqueue
-        db.prepare(`DELETE FROM team_outbox WHERE table_name = ?`).run(table);
+        // Clear stale outbox entries for affected rows only
+        for (const row of staleRows) {
+          db.prepare(
+            `DELETE FROM team_outbox WHERE table_name = ? AND row_id = ?`,
+          ).run(table, String(row.id));
+        }
 
-        // Directly enqueue all records with full payload for team sync
-        const rows = db.prepare(
-          `SELECT * FROM ${table} WHERE machine_id = ?`,
-        ).all(machineId) as Array<Record<string, unknown>>;
-
+        // Re-enqueue only the fixed rows with full payload
         const enqueueStmt = db.prepare(
           `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
            VALUES (?, ?, 'upsert', ?, ?, ?)`,
         );
         const now = epochSeconds();
-        for (const row of rows) {
-          enqueueStmt.run(table, String(row.id), JSON.stringify(row), machineId, now);
+        for (const stale of staleRows) {
+          const fresh = db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(stale.id) as Record<string, unknown>;
+          if (fresh) {
+            enqueueStmt.run(table, String(stale.id), JSON.stringify(fresh), machineId, now);
+          }
         }
       } catch {
         // Table may not exist — skip
