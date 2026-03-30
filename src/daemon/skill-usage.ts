@@ -11,6 +11,9 @@ import { insertSkillUsage, hasUsageForSkillAndSession } from '@myco/db/queries/s
 import { epochSeconds } from '@myco/constants.js';
 import crypto from 'node:crypto';
 
+/** Set to true to enable automatic skill usage detection from transcripts. */
+const SKILL_USAGE_DETECTION_ENABLED = false;
+
 /** Maximum number of active skills to check in a single detection pass. */
 const MAX_ACTIVE_SKILLS_CHECK = 1000;
 
@@ -23,13 +26,11 @@ export function detectSkillUsage(sessionId: string, transcriptContent: string): 
   // agent sessions generating/evolving skills, not developer sessions using them.
   if (transcriptContent.includes('vault_write_skill')) return;
 
-  // TODO: The current regex-based detection produces false positives when
-  // a skill name is merely *discussed* in a session (not actually loaded).
-  // Disable automatic detection until we can identify a reliable signal
-  // for actual skill activation in agent transcripts (e.g., a specific
-  // tag or marker that Claude Code emits when loading a skill).
-  // For now, usage tracking is manual / API-driven only.
-  return;
+  // Automatic detection is gated: the regex-based approach produces false
+  // positives when a skill name is merely *discussed* in a session (not actually
+  // loaded). Re-enable once a reliable activation signal is available (e.g., a
+  // specific tag that Claude Code emits when loading a skill file).
+  if (!SKILL_USAGE_DETECTION_ENABLED) return;
 
   const activeSkills = listSkillRecords({ status: 'active', limit: MAX_ACTIVE_SKILLS_CHECK });
   if (activeSkills.length === 0) return;

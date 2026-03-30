@@ -47,6 +47,7 @@ export interface SkillLineageEntry {
 export interface SkillRecordDetail extends SkillRecord {
   lineage: SkillLineageEntry[];
   usage_total: number;
+  frontmatter?: Record<string, string>;
 }
 
 export interface CandidateListResponse {

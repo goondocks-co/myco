@@ -5,7 +5,7 @@ import type { MycoConfig, EmbeddingProviderConfig, ContextConfig, TaskProviderOv
  * Creates intermediate objects along the path as needed.
  */
 export function withValue(config: MycoConfig, dotPath: string, value: unknown): MycoConfig {
-  const clone = structuredClone(config) as Record<string, unknown>;
+  const clone = structuredClone(config) as MycoConfig & Record<string, unknown>;
   const segments = dotPath.split('.');
   let current: Record<string, unknown> = clone;
 
@@ -19,7 +19,7 @@ export function withValue(config: MycoConfig, dotPath: string, value: unknown): 
 
   current[segments[segments.length - 1]] = value;
 
-  return clone as unknown as MycoConfig;
+  return clone as MycoConfig;
 }
 
 /** Provider override shape used in task config updates. Null means delete. */

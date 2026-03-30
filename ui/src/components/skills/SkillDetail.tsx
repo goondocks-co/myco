@@ -84,21 +84,8 @@ export function SkillDetail({ skillName, onBack }: SkillDetailProps) {
   const sourceCount = parseSourceCount(skill.source_ids);
   const rawContent = skill.lineage?.[0]?.content_snapshot ?? null;
 
-  // Parse and strip YAML frontmatter
-  const frontmatterMatch = rawContent?.match(/^---\n([\s\S]*?)\n---\n*/);
-  const frontmatter: Record<string, string> = {};
-  if (frontmatterMatch) {
-    for (const line of frontmatterMatch[1].split('\n')) {
-      const colonIdx = line.indexOf(':');
-      if (colonIdx > 0) {
-        const key = line.slice(0, colonIdx).trim();
-        const val = line.slice(colonIdx + 1).trim();
-        if (key && val && !['name', 'description', 'managed_by'].includes(key)) {
-          frontmatter[key] = val;
-        }
-      }
-    }
-  }
+  // Use backend-parsed frontmatter; fall back to empty object
+  const frontmatter: Record<string, string> = skill.frontmatter ?? {};
   const latestContent = rawContent?.replace(/^---\n[\s\S]*?\n---\n*/, '') ?? null;
 
   return (

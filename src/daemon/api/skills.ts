@@ -27,6 +27,8 @@ import {
 import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { countUsageForSkill } from '@myco/db/queries/skill-usage.js';
 import { getDatabase } from '@myco/db/client.js';
+import { enqueueOutbox } from '@myco/db/queries/team-outbox.js';
+import { isTeamSyncEnabled, getTeamMachineId } from '@myco/daemon/team-context.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -119,7 +121,24 @@ export async function handleGetSkillRecord(req: RouteRequest): Promise<RouteResp
   const lineage = listLineageForSkill(record.id);
   const usage_total = countUsageForSkill(record.id);
 
-  return { status: 200, body: { ...record, lineage, usage_total } };
+  // Parse frontmatter from latest lineage snapshot so the UI avoids client-side regex
+  const latestSnapshot = lineage[0]?.content_snapshot;
+  const frontmatterFields: Record<string, string> = {};
+  if (latestSnapshot) {
+    const fmMatch = latestSnapshot.match(/^---\n([\s\S]*?)\n---/);
+    if (fmMatch) {
+      for (const line of fmMatch[1].split('\n')) {
+        const colonIdx = line.indexOf(':');
+        if (colonIdx > 0) {
+          const key = line.slice(0, colonIdx).trim();
+          const val = line.slice(colonIdx + 1).trim();
+          if (key && val) frontmatterFields[key] = val;
+        }
+      }
+    }
+  }
+
+  return { status: 200, body: { ...record, lineage, usage_total, frontmatter: frontmatterFields } };
 }
 
 /**
@@ -160,6 +179,20 @@ export async function handleDeleteSkillRecord(req: RouteRequest): Promise<RouteR
     ).run(epochSeconds(), record.id);
     db.prepare('DELETE FROM skill_records WHERE id = ?').run(record.id);
   })();
+
+  // Sync deletion to team outbox (best-effort)
+  if (isTeamSyncEnabled()) {
+    try {
+      enqueueOutbox({
+        table_name: 'skill_records',
+        row_id: record.id,
+        operation: 'delete',
+        payload: JSON.stringify({ id: record.id, name: record.name }),
+        machine_id: getTeamMachineId(),
+        created_at: epochSeconds(),
+      });
+    } catch { /* best-effort sync */ }
+  }
 
   return { status: 200, body: { deleted: true, id: record.id, name: record.name } };
 }
