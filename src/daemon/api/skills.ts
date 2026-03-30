@@ -26,6 +26,7 @@ import {
 } from '@myco/db/queries/skill-records.js';
 import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { countUsageForSkill } from '@myco/db/queries/skill-usage.js';
+import { getDatabase } from '@myco/db/client.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -119,4 +120,36 @@ export async function handleGetSkillRecord(req: RouteRequest): Promise<RouteResp
   const usage_total = countUsageForSkill(record.id);
 
   return { status: 200, body: { ...record, lineage, usage_total } };
+}
+
+/**
+ * Delete a skill candidate by id.
+ */
+export async function handleDeleteCandidate(req: RouteRequest): Promise<RouteResponse> {
+  const id = req.params.id;
+  const candidate = getCandidate(id);
+  if (!candidate) return { status: 404, body: { error: `Not found: ${id}` } };
+
+  const db = getDatabase();
+  db.prepare('DELETE FROM skill_candidates WHERE id = ?').run(id);
+
+  return { status: 200, body: { deleted: true, id } };
+}
+
+/**
+ * Delete a skill record by id or name, including lineage and usage data.
+ */
+export async function handleDeleteSkillRecord(req: RouteRequest): Promise<RouteResponse> {
+  const idOrName = req.params.id;
+  const record = getSkillRecord(idOrName) ?? getSkillRecordByName(idOrName);
+  if (!record) return { status: 404, body: { error: `Not found: ${idOrName}` } };
+
+  const db = getDatabase();
+  db.transaction(() => {
+    db.prepare('DELETE FROM skill_lineage WHERE skill_id = ?').run(record.id);
+    db.prepare('DELETE FROM skill_usage WHERE skill_id = ?').run(record.id);
+    db.prepare('DELETE FROM skill_records WHERE id = ?').run(record.id);
+  })();
+
+  return { status: 200, body: { deleted: true, id: record.id, name: record.name } };
 }

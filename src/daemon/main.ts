@@ -83,6 +83,8 @@ import {
   handleUpdateCandidate,
   handleListSkillRecords,
   handleGetSkillRecord,
+  handleDeleteCandidate,
+  handleDeleteSkillRecord,
 } from './api/skills.js';
 import { detectSkillUsage } from './skill-usage.js';
 import { countSkillRecords } from '../db/queries/skill-records.js';
@@ -1448,6 +1450,8 @@ export async function main(): Promise<void> {
   server.registerRoute('PUT', '/api/skill-candidates/:id', handleUpdateCandidate);
   server.registerRoute('GET', '/api/skill-records', handleListSkillRecords);
   server.registerRoute('GET', '/api/skill-records/:id', handleGetSkillRecord);
+  server.registerRoute('DELETE', '/api/skill-candidates/:id', handleDeleteCandidate);
+  server.registerRoute('DELETE', '/api/skill-records/:id', handleDeleteSkillRecord);
 
   // --- Mycelium API routes ---
   server.registerRoute('GET', '/api/spores', handleListSpores);
