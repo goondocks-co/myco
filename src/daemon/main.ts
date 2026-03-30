@@ -474,8 +474,8 @@ export async function main(): Promise<void> {
   const SYNCED_TABLES_WITH_MACHINE_ID = [
     'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
     'entity_mentions', 'resolution_events', 'plans', 'artifacts',
-    'digest_extracts', 'team_members',
-    'skill_candidates', 'skill_records', 'skill_usage',
+    'digest_extracts',
+    'skill_candidates', 'skill_records',
   ] as const;
   for (const table of SYNCED_TABLES_WITH_MACHINE_ID) {
     try {
