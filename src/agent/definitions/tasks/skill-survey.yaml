@@ -12,7 +12,7 @@ model: claude-sonnet-4-6
 maxTurns: 40
 timeoutSeconds: 600
 schedule:
-  enabled: false
+  enabled: true
   intervalSeconds: 600
   runIn:
     - idle

@@ -229,7 +229,7 @@ describe('agent loader', () => {
     it('loads schedule from skill-survey task', () => {
       const tasks = loadAgentTasks(DEFINITIONS_DIR);
       const ss = tasks.find((t) => t.name === 'skill-survey');
-      expect(ss?.schedule?.enabled).toBe(false);
+      expect(ss?.schedule?.enabled).toBe(true);
       expect(ss?.schedule?.intervalSeconds).toBe(600);
       expect(ss?.schedule?.runIn).toEqual(['idle']);
     });

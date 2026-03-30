@@ -200,20 +200,47 @@ export function SkillList({ onSelectSkill }: { onSelectSkill: (name: string) => 
           </table>
         </Surface>
       ) : filtered.length === 0 ? (
-        <div className="flex h-40 flex-col items-center justify-center gap-2 text-on-surface-variant mt-4">
-          <BookOpen className="h-8 w-8 opacity-30" />
-          <span className="font-sans text-sm">
-            {total === 0 && !debouncedSearch && !activeStatus
-              ? 'No skills yet'
-              : 'No matching skills'}
-          </span>
-          {total === 0 && !debouncedSearch && !activeStatus && (
-            <span className="font-sans text-xs">
-              <Link to="/agent?tab=tasks&task=skill-evolve" className="text-primary hover:underline">
-                Evolve Task
-              </Link>
-              {' '}to promote candidates into skills
-            </span>
+        <div className="flex h-48 flex-col items-center justify-center gap-3 text-on-surface-variant mt-4">
+          <BookOpen className="h-10 w-10 opacity-20" />
+          {total === 0 && !debouncedSearch && !activeStatus ? (
+            <div className="text-center space-y-2 max-w-md">
+              <p className="font-sans text-sm font-medium text-on-surface">
+                No skills generated yet
+              </p>
+              <p className="font-sans text-xs leading-relaxed">
+                Skills are project-specific procedural guides generated from your vault knowledge.
+                They teach agents how to accomplish tasks in this codebase.
+              </p>
+              <div className="font-sans text-xs space-y-1 pt-1">
+                <p>
+                  <span className="font-medium text-on-surface">Automatic:</span>{' '}
+                  The{' '}
+                  <Link to="/agent?tab=tasks&task=skill-survey" className="text-primary hover:underline">
+                    Skill Survey
+                  </Link>{' '}
+                  task runs automatically and discovers candidates from your vault.
+                  Approve candidates in the{' '}
+                  <Link to="/skills?tab=candidates" className="text-primary hover:underline">
+                    Candidates tab
+                  </Link>
+                  , then enable the{' '}
+                  <Link to="/agent?tab=tasks&task=skill-generate" className="text-primary hover:underline">
+                    Skill Generate
+                  </Link>{' '}
+                  task to produce skills automatically.
+                </p>
+                <p>
+                  <span className="font-medium text-on-surface">Manual:</span>{' '}
+                  Run{' '}
+                  <Link to="/agent?tab=tasks&task=skill-generate" className="text-primary hover:underline">
+                    Skill Generate
+                  </Link>{' '}
+                  from the Agent page to generate a skill on demand.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <span className="font-sans text-sm">No matching skills</span>
           )}
         </div>
       ) : (

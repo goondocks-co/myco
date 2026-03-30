@@ -229,22 +229,38 @@ export function CandidateList() {
       {filtered.length === 0 ? (
         <div className="flex h-48 flex-col items-center justify-center gap-3 text-on-surface-variant">
           <ListChecks className="h-10 w-10 opacity-20" />
-          <div className="text-center space-y-1">
-            <p className="font-sans text-sm">
-              {total === 0 && !activeStatus && !debouncedSearch
-                ? 'No candidates yet'
-                : 'No matching candidates'}
-            </p>
-            {total === 0 && !activeStatus && !debouncedSearch && (
-              <p className="font-sans text-xs">
-                <Link to="/agent?tab=tasks&task=skill-survey" className="inline-flex items-center gap-1 text-primary hover:underline">
-                  <ExternalLink className="h-3 w-3" />
-                  Run Skill Candidate Survey
-                </Link>
-                {' '}to discover new procedural patterns
+          {total === 0 && !activeStatus && !debouncedSearch ? (
+            <div className="text-center space-y-2 max-w-md">
+              <p className="font-sans text-sm font-medium text-on-surface">
+                No skill candidates discovered yet
               </p>
-            )}
-          </div>
+              <p className="font-sans text-xs leading-relaxed">
+                Candidates are procedural patterns discovered from your vault knowledge.
+                Review and approve them here, then Myco generates full skills from them.
+              </p>
+              <div className="font-sans text-xs space-y-1 pt-1">
+                <p>
+                  <span className="font-medium text-on-surface">Automatic:</span>{' '}
+                  The{' '}
+                  <Link to="/agent?tab=tasks&task=skill-survey" className="text-primary hover:underline">
+                    Skill Survey
+                  </Link>{' '}
+                  task runs automatically during idle periods and discovers candidates from session history, decisions, and gotchas.
+                </p>
+                <p>
+                  <span className="font-medium text-on-surface">Manual:</span>{' '}
+                  Run{' '}
+                  <Link to="/agent?tab=tasks&task=skill-survey" className="inline-flex items-center gap-1 text-primary hover:underline">
+                    <ExternalLink className="h-3 w-3" />
+                    Skill Survey
+                  </Link>{' '}
+                  from the Agent page to discover candidates on demand.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <span className="font-sans text-sm">No matching candidates</span>
+          )}
         </div>
       ) : (
         <>

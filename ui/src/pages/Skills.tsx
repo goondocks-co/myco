@@ -1,7 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
+import { HelpCircle, ExternalLink } from 'lucide-react';
 import { PageHeader } from '../components/ui/page-header';
 import type { Tab } from '../components/ui/tab-switcher';
 import { Badge } from '../components/ui/badge';
+import { Button } from '../components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogTrigger,
+} from '../components/ui/dialog';
 import { CandidateList } from '../components/skills/CandidateList';
 import { SkillList } from '../components/skills/SkillList';
 import { SkillDetail } from '../components/skills/SkillDetail';
@@ -43,6 +54,81 @@ const TABS: Tab[] = [
   { id: 'candidates', label: 'Candidates' },
 ];
 
+/* ---------- Help Dialog ---------- */
+
+function SkillsHelpDialog() {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="sm" className="text-on-surface-variant">
+          <HelpCircle className="h-4 w-4" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>How Skills Work</DialogTitle>
+          <DialogDescription>
+            Skills are project-specific procedural guides generated from your vault knowledge.
+            They teach agents how to accomplish tasks in your codebase.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 font-sans text-sm text-on-surface-variant">
+          <div className="space-y-1.5">
+            <h4 className="font-medium text-on-surface">The Pipeline</h4>
+            <ol className="list-decimal pl-5 space-y-1">
+              <li>
+                <span className="font-medium text-on-surface">Survey</span> &mdash; discovers
+                candidate skills from vault knowledge (sessions, decisions, gotchas)
+              </li>
+              <li>
+                <span className="font-medium text-on-surface">Approve</span> &mdash; you
+                review candidates and approve the ones worth generating
+              </li>
+              <li>
+                <span className="font-medium text-on-surface">Generate</span> &mdash; produces
+                a SKILL.md file from the approved candidate's source material
+              </li>
+              <li>
+                <span className="font-medium text-on-surface">Evolve</span> &mdash; updates
+                existing skills when new knowledge makes them stale
+              </li>
+            </ol>
+          </div>
+
+          <div className="space-y-1.5">
+            <h4 className="font-medium text-on-surface">Scheduling</h4>
+            <p>
+              <span className="font-medium text-on-surface">Skill Survey</span> runs
+              automatically during idle periods. Skill Generate and Skill Evolve are
+              off by default &mdash; enable them in the{' '}
+              <Link to="/agent?tab=tasks" className="text-primary hover:underline inline-flex items-center gap-0.5">
+                Agent Tasks
+                <ExternalLink className="h-3 w-3" />
+              </Link>{' '}
+              page for fully automatic operation, or trigger them manually with Run Now.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <h4 className="font-medium text-on-surface">Quick Start</h4>
+            <ol className="list-decimal pl-5 space-y-1">
+              <li>Wait for the survey to discover candidates (or run it manually)</li>
+              <li>Review candidates in the Candidates tab and approve the best ones</li>
+              <li>
+                Run{' '}
+                <Link to="/agent?tab=tasks&task=skill-generate" className="text-primary hover:underline">
+                  Skill Generate
+                </Link>{' '}
+                to produce skills from approved candidates
+              </li>
+            </ol>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /* ---------- Component ---------- */
 
 export default function Skills() {
@@ -83,6 +169,7 @@ export default function Skills() {
           <div className="flex items-center gap-2">
             {pendingCount > 0 && <Badge variant="secondary">{pendingCount} pending</Badge>}
             {activeCount > 0 && <Badge variant="default">{activeCount} active</Badge>}
+            <SkillsHelpDialog />
           </div>
         }
       />
