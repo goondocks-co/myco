@@ -1517,7 +1517,17 @@ export async function main(): Promise<void> {
   });
 
   server.registerRoute('POST', '/api/agent/run', async (req) => {
-    const { task, instruction, agentId } = AgentRunBody.parse(req.body);
+    const { task, instruction: rawInstruction, agentId } = AgentRunBody.parse(req.body);
+
+    // For skill-generate: inject candidate ID if not provided in the instruction.
+    // Same structural enforcement as the scheduler — one candidate per run.
+    let instruction = rawInstruction;
+    if (task === 'skill-generate' && !instruction) {
+      const candidates = listCandidates({ status: 'approved', limit: 1 });
+      if (candidates.length > 0) {
+        instruction = `Generate skill for candidate id=${candidates[0].id} topic="${candidates[0].topic}"`;
+      }
+    }
 
     const { runAgent } = await import('../agent/executor.js');
     const resultPromise = runAgent(vaultDir, { task, instruction, agentId, embeddingManager });
