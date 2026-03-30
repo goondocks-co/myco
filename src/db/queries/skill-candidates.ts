@@ -6,7 +6,8 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { DEFAULT_MACHINE_ID, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
+import { DEFAULT_LIST_LIMIT } from '@myco/constants.js';
+import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 // Re-export for callers that import DEFAULT_LIST_LIMIT from this module
@@ -102,7 +103,7 @@ function toCandidateRow(row: Record<string, unknown>): CandidateRow {
   return {
     id: row.id as string,
     agent_id: row.agent_id as string,
-    machine_id: (row.machine_id as string) ?? DEFAULT_MACHINE_ID,
+    machine_id: (row.machine_id as string) ?? getTeamMachineId(),
     topic: row.topic as string,
     rationale: row.rationale as string,
     confidence: row.confidence as number,
@@ -163,7 +164,7 @@ export function insertCandidate(data: CandidateInsert): CandidateRow {
   ).run(
     data.id,
     data.agent_id,
-    data.machine_id ?? DEFAULT_MACHINE_ID,
+    data.machine_id ?? getTeamMachineId(),
     data.topic,
     data.rationale,
     data.confidence ?? DEFAULT_CONFIDENCE,

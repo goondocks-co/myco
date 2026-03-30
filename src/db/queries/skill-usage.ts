@@ -9,7 +9,8 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { DEFAULT_MACHINE_ID, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
+import { DEFAULT_LIST_LIMIT } from '@myco/constants.js';
+import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 // Re-export for callers that import DEFAULT_LIST_LIMIT from this module
@@ -66,7 +67,7 @@ function toUsageRow(row: Record<string, unknown>): SkillUsageRow {
     id: row.id as string,
     skill_id: row.skill_id as string,
     session_id: row.session_id as string,
-    machine_id: (row.machine_id as string) ?? DEFAULT_MACHINE_ID,
+    machine_id: (row.machine_id as string) ?? getTeamMachineId(),
     detected_at: row.detected_at as number,
   };
 }
@@ -93,7 +94,7 @@ export function insertSkillUsage(data: SkillUsageInsert): SkillUsageRow {
     data.id,
     data.skill_id,
     data.session_id,
-    data.machine_id ?? DEFAULT_MACHINE_ID,
+    data.machine_id ?? getTeamMachineId(),
     data.detected_at,
   );
 
