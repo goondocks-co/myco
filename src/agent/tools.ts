@@ -837,13 +837,25 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
           created_at: now,
         });
 
-        // Update candidate if provided
+        // Update candidate if provided — try exact match, then prefix match
         if (args.candidate_id) {
-          updateCandidate(args.candidate_id, {
-            status: 'materialized',
+          let candidateUpdated = updateCandidate(args.candidate_id, {
+            status: 'generated',
             skill_id: recordId,
             updated_at: now,
           });
+          // Fallback: agent may have truncated the UUID — try prefix match
+          if (!candidateUpdated) {
+            const allCandidates = listCandidates({ status: 'approved' });
+            const match = allCandidates.find((c) => c.id.startsWith(args.candidate_id!));
+            if (match) {
+              updateCandidate(match.id, {
+                status: 'generated',
+                skill_id: recordId,
+                updated_at: now,
+              });
+            }
+          }
         }
       }
 
