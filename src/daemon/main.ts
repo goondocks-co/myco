@@ -1451,7 +1451,18 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/skill-records', handleListSkillRecords);
   server.registerRoute('GET', '/api/skill-records/:id', handleGetSkillRecord);
   server.registerRoute('DELETE', '/api/skill-candidates/:id', handleDeleteCandidate);
-  server.registerRoute('DELETE', '/api/skill-records/:id', handleDeleteSkillRecord);
+  server.registerRoute('DELETE', '/api/skill-records/:id', async (req) => {
+    const result = await handleDeleteSkillRecord(req);
+    // Delete skill file from disk if the DB delete succeeded
+    if ((result.body as Record<string, unknown>)?.deleted) {
+      const record = result.body as { name?: string };
+      if (record.name) {
+        const skillDir = path.resolve(vaultDir, '..', '.agents', 'skills', record.name);
+        try { fs.rmSync(skillDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      }
+    }
+    return result;
+  });
 
   // --- Mycelium API routes ---
   server.registerRoute('GET', '/api/spores', handleListSpores);
