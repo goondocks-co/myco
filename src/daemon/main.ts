@@ -467,6 +467,17 @@ export async function main(): Promise<void> {
   // --- SQLite initialization ---
   const db = initDatabase(vaultDbPath(vaultDir));
   createSchema(db, machineId);
+
+  // Backfill any records with stale 'local' machine_id to the resolved identity.
+  for (const table of ['skill_candidates', 'skill_records', 'skill_usage'] as const) {
+    try {
+      const info = db.prepare(`UPDATE ${table} SET machine_id = ? WHERE machine_id = 'local'`).run(machineId);
+      if (info.changes > 0) {
+        logger.info(LOG_KINDS.DAEMON_START, `Backfilled ${info.changes} ${table} records with machine_id`);
+      }
+    } catch { /* table may not exist yet */ }
+  }
+
   logger.info(LOG_KINDS.DAEMON_START, 'SQLite initialized', { vault: vaultDir });
 
   // --- Team context ---
