@@ -86,7 +86,7 @@ import {
 } from './api/skills.js';
 import { detectSkillUsage } from './skill-usage.js';
 import { countSkillRecords } from '../db/queries/skill-records.js';
-import { countCandidates } from '../db/queries/skill-candidates.js';
+import { countCandidates, listCandidates } from '../db/queries/skill-candidates.js';
 import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
@@ -1997,7 +1997,18 @@ export async function main(): Promise<void> {
         setAgentRunning: (v) => { agentRunning = v; },
         runTask: async (taskName) => {
           const { runAgent } = await import('../agent/executor.js');
-          const result = await runAgent(vaultDir, { task: taskName, embeddingManager });
+
+          // For skill-generate: inject the specific candidate ID so the agent
+          // processes exactly one skill per run (structural enforcement, not prompt-based).
+          let instruction: string | undefined;
+          if (taskName === 'skill-generate') {
+            const candidates = listCandidates({ status: 'approved', limit: 1 });
+            if (candidates.length > 0) {
+              instruction = `Generate skill for candidate id=${candidates[0].id} topic="${candidates[0].topic}"`;
+            }
+          }
+
+          const result = await runAgent(vaultDir, { task: taskName, instruction, embeddingManager });
           logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} completed`, {
             status: result.status,
             runId: result.runId,
