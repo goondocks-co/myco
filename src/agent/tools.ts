@@ -898,25 +898,37 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
           created_at: now,
         });
 
-        // Update candidate if provided — try exact match, then prefix match
-        if (args.candidate_id) {
-          let candidateUpdated = updateCandidate(args.candidate_id, {
-            status: 'generated',
-            skill_id: recordId,
-            updated_at: now,
+        // Auto-link candidate: find the approved candidate this skill was generated from.
+        // Strategy: exact candidate_id → prefix match → first approved candidate.
+        // Does NOT depend on the agent passing the correct ID.
+        const approvedCandidates = listCandidates({ status: 'approved' });
+        let linkedCandidate = false;
+
+        // 1. Try exact candidate_id if provided
+        if (args.candidate_id && !linkedCandidate) {
+          const exact = updateCandidate(args.candidate_id, {
+            status: 'generated', skill_id: recordId, updated_at: now,
           });
-          // Fallback: agent may have truncated the UUID — try prefix match
-          if (!candidateUpdated) {
-            const allCandidates = listCandidates({ status: 'approved' });
-            const match = allCandidates.find((c) => c.id.startsWith(args.candidate_id!));
-            if (match) {
-              updateCandidate(match.id, {
-                status: 'generated',
-                skill_id: recordId,
-                updated_at: now,
-              });
-            }
+          if (exact) linkedCandidate = true;
+        }
+
+        // 2. Try prefix match on candidate_id (agent truncates UUIDs)
+        if (args.candidate_id && !linkedCandidate) {
+          const prefixMatch = approvedCandidates.find((c) => c.id.startsWith(args.candidate_id!));
+          if (prefixMatch) {
+            updateCandidate(prefixMatch.id, {
+              status: 'generated', skill_id: recordId, updated_at: now,
+            });
+            linkedCandidate = true;
           }
+        }
+
+        // 3. Fallback: find the first approved candidate (the scheduled sweep
+        //    always picks one at a time, so this links correctly)
+        if (!linkedCandidate && approvedCandidates.length > 0) {
+          updateCandidate(approvedCandidates[0].id, {
+            status: 'generated', skill_id: recordId, updated_at: now,
+          });
         }
       }
 
