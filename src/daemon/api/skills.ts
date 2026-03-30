@@ -148,6 +148,16 @@ export async function handleDeleteSkillRecord(req: RouteRequest): Promise<RouteR
   db.transaction(() => {
     db.prepare('DELETE FROM skill_lineage WHERE skill_id = ?').run(record.id);
     db.prepare('DELETE FROM skill_usage WHERE skill_id = ?').run(record.id);
+    // Reset any linked candidate — dismiss it so it doesn't regenerate
+    if (record.candidate_id) {
+      db.prepare(
+        `UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ? WHERE id = ?`,
+      ).run(epochSeconds(), record.candidate_id);
+    }
+    // Also catch candidates linked via skill_id (may differ from candidate_id)
+    db.prepare(
+      `UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ? WHERE skill_id = ?`,
+    ).run(epochSeconds(), record.id);
     db.prepare('DELETE FROM skill_records WHERE id = ?').run(record.id);
   })();
 
