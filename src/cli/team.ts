@@ -296,7 +296,9 @@ export async function teamUpgrade(vaultDir: string): Promise<void> {
     process.exit(1);
   }
 
-  // Read existing D1 ID from current wrangler.toml
+  // Read ALL existing resource identifiers from current wrangler.toml.
+  // These are immutable after init — regenerating from projectHash would
+  // break if the hash changed (e.g., after the projectHash bug fix).
   const existingToml = fs.readFileSync(tomlPath, 'utf-8');
   const d1Match = existingToml.match(TOML_DB_ID_REGEX);
   if (!d1Match || d1Match[1] === '<YOUR_D1_DATABASE_ID>') {
@@ -305,9 +307,23 @@ export async function teamUpgrade(vaultDir: string): Promise<void> {
   }
   const d1Id = d1Match[1];
 
-  // Re-copy worker source and patch
+  const nameMatch = existingToml.match(/^name\s*=\s*"([^"]*)"/m);
+  const dbNameMatch = existingToml.match(/database_name\s*=\s*"([^"]*)"/);
+  const indexNameMatch = existingToml.match(/index_name\s*=\s*"([^"]*)"/);
+
+  // Re-copy worker source from package (updated code)
   console.log('Updating worker source...');
-  prepareDeployDir(vaultDir, d1Id);
+  const srcDir = locateWorkerSource();
+  fs.cpSync(srcDir, deployDir, { recursive: true });
+
+  // Patch wrangler.toml preserving existing resource names — NOT regenerating
+  let toml = fs.readFileSync(path.join(deployDir, 'wrangler.toml'), 'utf-8');
+  const workerName = nameMatch?.[1] ?? resourceName(vaultDir);
+  toml = toml.replace(TOML_NAME_REGEX, `name = "${workerName}"`);
+  toml = toml.replace(TOML_D1_PLACEHOLDER_REGEX, d1Id);
+  toml = toml.replace(TOML_DB_NAME_REGEX, `database_name = "${dbNameMatch?.[1] ?? workerName}"`);
+  toml = toml.replace(TOML_INDEX_NAME_REGEX, `index_name = "${indexNameMatch?.[1] ?? `${workerName}-vectors`}"`);
+  fs.writeFileSync(path.join(deployDir, 'wrangler.toml'), toml, 'utf-8');
 
   // Redeploy
   console.log('Deploying...');
