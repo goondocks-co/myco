@@ -16,8 +16,8 @@
  */
 
 import crypto from 'node:crypto';
-import { writeFileSync, mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { writeFileSync, mkdirSync, symlinkSync, existsSync } from 'node:fs';
+import { resolve, relative, dirname } from 'node:path';
 import { z } from 'zod/v4';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { epochSeconds, SEARCH_SIMILARITY_THRESHOLD, TEAM_SOURCE_PREFIX, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
@@ -837,6 +837,36 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
         writeFileSync(skillPath, args.content, 'utf-8');
       } catch (err) {
         return textResult({ error: `Failed to write skill file: ${err instanceof Error ? err.message : String(err)}` });
+      }
+
+      // Create symlinks in each symbiont's skillsTarget directory so agents
+      // discover the skill. Reads manifest YAMLs for the target paths.
+      try {
+        const manifestDir = resolve(
+          dirname(new URL(import.meta.url).pathname),
+          '..', 'symbionts', 'manifests',
+        );
+        if (existsSync(manifestDir)) {
+          const { readdirSync, readFileSync } = await import('node:fs');
+          const targets = new Set<string>();
+          for (const file of readdirSync(manifestDir).filter((f: string) => f.endsWith('.yaml'))) {
+            const content = readFileSync(resolve(manifestDir, file), 'utf-8');
+            const match = content.match(/skillsTarget:\s*(.+)/);
+            if (match) targets.add(match[1].trim());
+          }
+          for (const target of targets) {
+            if (target === '.agents/skills') continue; // canonical, already written
+            const targetDir = resolve(root, target);
+            const symlinkPath = resolve(targetDir, args.name);
+            if (!existsSync(symlinkPath)) {
+              mkdirSync(targetDir, { recursive: true });
+              const rel = relative(targetDir, skillDir);
+              symlinkSync(rel, symlinkPath);
+            }
+          }
+        }
+      } catch {
+        // Best-effort — skill file is written, symlinks are convenience
       }
 
       const now = epochSeconds();
