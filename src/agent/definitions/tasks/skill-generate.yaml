@@ -24,12 +24,12 @@ phases:
       Your instruction contains a candidate ID. Use vault_skill_candidates
       (action: get, id: <the candidate ID from instruction>) to read it.
 
-      FIRST: Check if a skill already exists for this candidate.
+      FIRST: Check if this specific candidate already has a skill.
       - If the candidate's skill_id is set, or status is 'generated',
         the skill already exists. Report "already generated" via
         vault_report and STOP — do not regenerate.
-      - Also check vault_skill_records (action: list) for a skill
-        with a matching topic. If found, STOP.
+      - Do NOT skip based on similar topics. The user approved this
+        candidate — that means they want it generated.
 
       If no skill exists, gather ALL source material for this candidate:
 
