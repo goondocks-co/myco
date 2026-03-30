@@ -17,10 +17,14 @@ docs/specs/
 .superpowers/
 .worktrees
 
-# Myco managed (machine-specific symlinks)
+# Myco managed (machine-specific — packaged skill symlinks use absolute paths)
 .agents/skills/myco
 .agents/skills/myco-curate
 .agents/skills/rules
-.claude/skills/
-.cursor/skills/
+.claude/skills/myco
+.claude/skills/myco-curate
+.claude/skills/rules
+.cursor/skills/myco
+.cursor/skills/myco-curate
+.cursor/skills/rules
 .wrangler/
