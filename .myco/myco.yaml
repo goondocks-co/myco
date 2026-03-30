@@ -40,6 +40,26 @@ agent:
       provider:
         type: cloud
         model: claude-sonnet-4-6
+    skill-survey:
+      provider:
+        type: cloud
+      schedule:
+        enabled: true
+        runIn:
+          - idle
+    skill-generate:
+      provider:
+        type: cloud
+      schedule:
+        enabled: true
+        runIn:
+          - idle
+    skill-evolve:
+      provider:
+        type: cloud
+      schedule:
+        enabled: true
+        intervalSeconds: 1800
 context:
   digest_tier: 5000
   prompt_search: true
@@ -48,7 +68,7 @@ backup:
   dir: ~/myco_backups/myco
 team:
   enabled: true
-  worker_url: https://myco-team-71861c57.goondocks.workers.dev
+  worker_url: https://myco-team-974bc350.goondocks.workers.dev
   interval_minutes: 15
 skills:
   confidence_threshold: 0.7
