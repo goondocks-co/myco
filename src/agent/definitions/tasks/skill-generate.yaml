@@ -5,9 +5,9 @@ description: >-
   Writes SKILL.md to .agents/skills/ following Anthropic skill design principles.
 agent: myco-agent
 prompt: >-
-  Generate project-specific skills from approved candidates.
-  Check for approved candidates with no linked skill and generate
-  one skill per candidate.
+  Generate ONE project-specific skill from the next approved candidate.
+  Process only the first approved candidate found — do not batch multiple
+  skills in a single run. The schedule will pick up the next one.
 isDefault: false
 model: claude-sonnet-4-6
 maxTurns: 35
@@ -21,15 +21,17 @@ schedule:
 phases:
   - name: gather
     prompt: |
-      Your instruction contains a candidate ID. Use vault_skill_candidates
-      (action: get, id: <the candidate ID from instruction>) to read it.
+      You are generating ONE skill. Find the first approved candidate
+      that doesn't have a skill yet.
 
-      FIRST: Check if this specific candidate already has a skill.
-      - If the candidate's skill_id is set, or status is 'generated',
-        the skill already exists. Report "already generated" via
-        vault_report and STOP — do not regenerate.
-      - Do NOT skip based on similar topics. The user approved this
-        candidate — that means they want it generated.
+      If an instruction provides a candidate ID, use that specific one.
+      Otherwise, use vault_skill_candidates (action: list, status: approved)
+      and pick the FIRST result. Process ONLY that one candidate —
+      do not attempt to generate multiple skills in this run.
+
+      Read the candidate. If its skill_id is set or status is 'generated',
+      it already has a skill — report "already generated" and STOP.
+      Do NOT skip based on similar topics. The user approved it.
 
       If no skill exists, gather ALL source material for this candidate:
 
