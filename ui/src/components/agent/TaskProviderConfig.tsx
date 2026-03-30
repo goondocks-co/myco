@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { Cloud, Server, Cpu, CheckCircle2, XCircle, Loader2, Zap, ChevronDown, ChevronRight } from 'lucide-react';
+import { Cloud, Server, Cpu, CheckCircle2, XCircle, Loader2, Zap, ChevronDown, ChevronRight, Clock } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Surface } from '../ui/surface';
 import { Badge } from '../ui/badge';
+import { Switch } from '../ui/switch';
 import {
   Select,
   SelectContent,
@@ -18,6 +19,7 @@ import {
   useUpdateTaskConfig,
   type ProviderConfig,
   type PhaseOverride,
+  type ScheduleOverride,
 } from '../../hooks/use-providers';
 import type { PhaseDefinition } from '../../hooks/use-agent';
 
@@ -37,10 +39,18 @@ const PROVIDER_ICONS: Record<string, typeof Cloud> = {
 
 /* ---------- Types ---------- */
 
+/** YAML-defined schedule defaults for a task (present only if the task defines a schedule). */
+interface ScheduleDefaults {
+  enabled: boolean;
+  intervalSeconds: number;
+  runIn: ('active' | 'idle' | 'sleep')[];
+}
+
 interface TaskProviderConfigProps {
   taskId: string;
   phases?: PhaseDefinition[];
   defaults?: { model?: string; maxTurns?: number; timeoutSeconds?: number };
+  schedule?: ScheduleDefaults;
 }
 
 /* ---------- Sub-components ---------- */
@@ -251,9 +261,20 @@ function PhaseConfigRow({
   );
 }
 
+/* ---------- Constants ---------- */
+
+const POWER_STATES = ['active', 'idle', 'sleep'] as const;
+type PowerState = (typeof POWER_STATES)[number];
+
+const POWER_STATE_LABELS: Record<PowerState, string> = {
+  active: 'Active',
+  idle: 'Idle',
+  sleep: 'Sleep',
+};
+
 /* ---------- Component ---------- */
 
-export function TaskProviderConfig({ taskId, phases, defaults }: TaskProviderConfigProps) {
+export function TaskProviderConfig({ taskId, phases, defaults, schedule }: TaskProviderConfigProps) {
   const { data: providersData, isPending: isLoadingProviders } = useProviders();
   const { data: taskConfigData } = useTaskConfig(taskId);
   const testMutation = useTestProvider();
@@ -268,6 +289,7 @@ export function TaskProviderConfig({ taskId, phases, defaults }: TaskProviderCon
   const [maxTurns, setMaxTurns] = useState<string>('');
   const [timeoutSeconds, setTimeoutSeconds] = useState<string>('');
   const [phaseOverrides, setPhaseOverrides] = useState<Record<string, PhaseOverride>>({});
+  const [scheduleOverride, setScheduleOverride] = useState<ScheduleOverride>({});
   const [dirty, setDirty] = useState(false);
 
   // Sync from myco.yaml config when it loads
@@ -280,9 +302,14 @@ export function TaskProviderConfig({ taskId, phases, defaults }: TaskProviderCon
       setMaxTurns(currentConfig.maxTurns != null ? String(currentConfig.maxTurns) : '');
       setTimeoutSeconds(currentConfig.timeoutSeconds != null ? String(currentConfig.timeoutSeconds) : '');
       setPhaseOverrides(currentConfig.phases ?? {});
+      setScheduleOverride(currentConfig.schedule ?? {});
       setDirty(false);
     }
   }, [currentConfig]);
+
+  // Effective schedule values: user override merged over YAML defaults
+  const effectiveScheduleEnabled = scheduleOverride.enabled ?? schedule?.enabled ?? false;
+  const effectiveRunIn = scheduleOverride.runIn ?? schedule?.runIn ?? [];
 
   const providers = providersData?.providers ?? [];
 
@@ -317,6 +344,11 @@ export function TaskProviderConfig({ taskId, phases, defaults }: TaskProviderCon
       ...(isLocal && contextLength ? { context_length: Number(contextLength) } : {}),
     };
 
+    // Build schedule payload: only include fields the user has overridden
+    const schedulePayload = schedule
+      ? (Object.keys(scheduleOverride).length > 0 ? { schedule: scheduleOverride } : { schedule: null as unknown as ScheduleOverride })
+      : {};
+
     updateMutation.mutate(
       {
         taskId,
@@ -325,6 +357,7 @@ export function TaskProviderConfig({ taskId, phases, defaults }: TaskProviderCon
           ...(maxTurns ? { maxTurns: Number(maxTurns) } : { maxTurns: null as unknown as number }),
           ...(timeoutSeconds ? { timeoutSeconds: Number(timeoutSeconds) } : { timeoutSeconds: null as unknown as number }),
           ...(Object.keys(phaseOverrides).length > 0 ? { phases: phaseOverrides } : { phases: null as unknown as Record<string, PhaseOverride> }),
+          ...schedulePayload,
         },
       },
       { onSuccess: () => setDirty(false) },
@@ -341,6 +374,7 @@ export function TaskProviderConfig({ taskId, phases, defaults }: TaskProviderCon
           maxTurns: null as unknown as number,
           timeoutSeconds: null as unknown as number,
           phases: null as unknown as Record<string, PhaseOverride>,
+          schedule: null as unknown as ScheduleOverride,
         },
       },
       {
@@ -352,6 +386,7 @@ export function TaskProviderConfig({ taskId, phases, defaults }: TaskProviderCon
           setMaxTurns('');
           setTimeoutSeconds('');
           setPhaseOverrides({});
+          setScheduleOverride({});
           setDirty(false);
         },
       },
@@ -462,6 +497,101 @@ export function TaskProviderConfig({ taskId, phases, defaults }: TaskProviderCon
           Save
         </Button>
       </div>
+
+      {/* Scheduling (only for tasks that define a schedule in YAML) */}
+      {schedule && (
+        <div className="space-y-3 pt-2 border-t border-[var(--ghost-border)]">
+          <div className="flex items-center gap-2">
+            <Clock className="h-3.5 w-3.5 text-on-surface-variant" />
+            <h3 className="font-sans text-xs font-medium text-on-surface-variant uppercase tracking-wide">
+              Scheduling
+            </h3>
+            <Badge
+              variant={effectiveScheduleEnabled ? 'secondary' : 'outline'}
+              className="text-[10px] px-1.5 py-0"
+            >
+              {effectiveScheduleEnabled ? 'active' : 'off'}
+            </Badge>
+          </div>
+
+          {/* Auto-run toggle */}
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <label className="font-sans text-xs text-on-surface">Auto-run</label>
+              <p className="font-sans text-[11px] text-on-surface-variant">
+                Automatically run this task on a schedule
+              </p>
+            </div>
+            <Switch
+              checked={effectiveScheduleEnabled}
+              onCheckedChange={(checked) => {
+                setScheduleOverride((prev) => ({ ...prev, enabled: checked }));
+                setDirty(true);
+              }}
+            />
+          </div>
+
+          {/* Interval + run-in states (visible only when enabled) */}
+          {effectiveScheduleEnabled && (
+            <div className="space-y-3 pl-0.5">
+              {/* Interval */}
+              <div className="space-y-1">
+                <label className="font-sans text-xs text-on-surface-variant">
+                  Run every (seconds)
+                </label>
+                <Input
+                  type="number"
+                  min={10}
+                  value={scheduleOverride.intervalSeconds ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setScheduleOverride((prev) => ({
+                      ...prev,
+                      intervalSeconds: val ? Number(val) : undefined,
+                    }));
+                    setDirty(true);
+                  }}
+                  placeholder={schedule.intervalSeconds != null ? String(schedule.intervalSeconds) : '300'}
+                />
+              </div>
+
+              {/* Run in states */}
+              <div className="space-y-1.5">
+                <label className="font-sans text-xs text-on-surface-variant">
+                  Run in states
+                </label>
+                <div className="flex gap-2">
+                  {POWER_STATES.map((state) => {
+                    const isActive = effectiveRunIn.includes(state);
+                    return (
+                      <button
+                        key={state}
+                        onClick={() => {
+                          const next = isActive
+                            ? effectiveRunIn.filter((s) => s !== state)
+                            : [...effectiveRunIn, state];
+                          // Only set override if different from YAML default
+                          setScheduleOverride((prev) => ({ ...prev, runIn: next.length > 0 ? next : undefined }));
+                          setDirty(true);
+                        }}
+                        className={`
+                          rounded-md border px-3 py-1.5 font-sans text-xs font-medium transition-colors
+                          ${isActive
+                            ? 'border-primary/40 bg-primary/5 text-on-surface'
+                            : 'border-[var(--ghost-border)] bg-surface-container-lowest text-on-surface-variant hover:border-primary/20'
+                          }
+                        `}
+                      >
+                        {POWER_STATE_LABELS[state]}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Per-phase overrides */}
       {phases && phases.length > 0 && (

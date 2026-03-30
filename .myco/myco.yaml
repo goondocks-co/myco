@@ -1,5 +1,5 @@
 version: 3
-config_version: 2
+config_version: 3
 embedding:
   provider: ollama
   model: bge-m3:latest
@@ -16,8 +16,6 @@ capture:
     - .md
   buffer_max_events: 500
 agent:
-  auto_run: true
-  interval_seconds: 1800
   summary_batch_interval: 5
   provider:
     type: cloud
@@ -26,10 +24,13 @@ agent:
       provider:
         type: cloud
         model: claude-sonnet-4-6
+      schedule:
+        enabled: true
+        intervalSeconds: 1800
     title-summary:
       provider:
         type: cloud
-        model: claude-sonnet-4-6
+        model: claude-haiku-4-5-20251001
     title-summary-custom:
       provider:
         type: ollama
@@ -39,6 +40,26 @@ agent:
       provider:
         type: cloud
         model: claude-sonnet-4-6
+    skill-survey:
+      provider:
+        type: cloud
+      schedule:
+        enabled: true
+        runIn:
+          - idle
+    skill-generate:
+      provider:
+        type: cloud
+      schedule:
+        enabled: true
+        runIn:
+          - idle
+    skill-evolve:
+      provider:
+        type: cloud
+      schedule:
+        enabled: true
+        intervalSeconds: 1800
 context:
   digest_tier: 5000
   prompt_search: true
@@ -47,5 +68,8 @@ backup:
   dir: ~/myco_backups/myco
 team:
   enabled: true
-  worker_url: https://myco-team-71861c57.goondocks.workers.dev
+  worker_url: https://myco-team-974bc350.goondocks.workers.dev
   interval_minutes: 15
+skills:
+  confidence_threshold: 0.7
+  usage_stale_days: 30

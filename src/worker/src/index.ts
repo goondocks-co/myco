@@ -41,6 +41,9 @@ const SYNCED_TABLES = [
   'plans',
   'artifacts',
   'digest_extracts',
+  'skill_candidates',
+  'skill_records',
+  'skill_usage',
 ] as const;
 
 type SyncedTable = (typeof SYNCED_TABLES)[number];

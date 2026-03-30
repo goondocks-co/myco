@@ -1,0 +1,210 @@
+name: skill-generate
+displayName: Skill Generation
+description: >-
+  Synthesize a project skill from a vault knowledge candidate.
+  Writes SKILL.md to .agents/skills/ following Anthropic skill design principles.
+agent: myco-agent
+prompt: >-
+  Generate ONE project-specific skill from the next approved candidate.
+  Process only the first approved candidate found — do not batch multiple
+  skills in a single run. The schedule will pick up the next one.
+isDefault: false
+model: claude-sonnet-4-6
+maxTurns: 35
+timeoutSeconds: 900
+schedule:
+  enabled: false
+  intervalSeconds: 600
+  runIn:
+    - idle
+  preCondition: has-approved-candidates
+phases:
+  - name: gather
+    prompt: |
+      You are generating ONE skill. Find the first approved candidate
+      that doesn't have a skill yet.
+
+      If an instruction provides a candidate ID, use that specific one.
+      Otherwise, use vault_skill_candidates (action: list, status: approved)
+      and pick the FIRST result. Process ONLY that one candidate —
+      do not attempt to generate multiple skills in this run.
+
+      Read the candidate. If its skill_id is set or status is 'generated',
+      it already has a skill — report "already generated" and STOP.
+      Do NOT skip based on similar topics. The user approved it.
+
+      If no skill exists, gather ALL source material for this candidate:
+
+      1. Read each source item referenced in the candidate's source_ids.
+         Use vault_spores to fetch spore IDs, vault_sessions to fetch
+         session IDs. These contain the detailed knowledge.
+
+      2. Search for additional context using vault_search_semantic with
+         the candidate's topic as the query. This may surface plans,
+         artifacts, and sessions not in the source_ids.
+
+      3. Search vault_search_fts for specific file paths, function names,
+         or config keys mentioned in the source material.
+
+      4. Check vault_entities for related entities — these often link
+         to additional spores via edges.
+
+      For each source, extract:
+      - Concrete steps (what to do, in what order)
+      - File paths and code patterns (specific to this project)
+      - Gotchas and pitfalls (things that went wrong)
+      - Decisions and rationale (why this approach, not another)
+      - Prerequisites (what must be true before starting)
+
+      Be thorough — the skill quality depends entirely on how much
+      concrete detail you gather here.
+    tools:
+      - vault_skill_candidates
+      - vault_spores
+      - vault_sessions
+      - vault_search_fts
+      - vault_search_semantic
+      - vault_read_digest
+      - vault_entities
+      - vault_edges
+    maxTurns: 10
+    required: true
+
+  - name: draft
+    prompt: |
+      Write a SKILL.md from the gathered material. The skill must be a
+      procedural how-to guide that teaches an agent how to accomplish
+      a specific task in THIS project.
+
+      ## SKILL.md Format
+
+      ```markdown
+      ---
+      name: myco:kebab-case-name
+      description: |
+        One paragraph that serves as the PRIMARY triggering mechanism.
+        Be explicit about when this skill activates. Include concrete
+        keywords, file names, and scenarios. Be somewhat pushy to
+        counter undertriggering — include "even if the user doesn't
+        explicitly ask for [topic]" language when appropriate.
+      managed_by: myco
+      user-invocable: true
+      allowed-tools: Read, Edit, Write, Bash, Grep, Glob
+      ---
+
+      # Skill Title
+
+      Brief context paragraph (2-3 sentences) explaining what this
+      procedure accomplishes and when you'd use it.
+
+      ## Prerequisites
+
+      What must be true before starting.
+
+      ## Steps
+
+      Numbered, concrete steps with file paths and code examples.
+      Each step should reference specific files in this project.
+
+      ## Common Pitfalls
+
+      Inline with the steps where possible, or as a short section
+      at the end for cross-cutting gotchas.
+      ```
+
+      ## Frontmatter Fields
+
+      - **user-invocable: true** — makes the skill available as a slash
+        command (e.g., `/add-symbiont`). Set this for all procedural skills.
+      - **allowed-tools** — comma-separated list of tools the skill needs.
+        Most procedural skills need: Read, Edit, Write, Bash, Grep, Glob.
+        Narrow this if the skill only needs read access (e.g., audit skills).
+        Omit the field entirely to allow all tools.
+
+      ## Writing Principles
+
+      - **Explain reasoning, not rigid rules.** "Because X, do Y"
+        is better than "ALWAYS do Y." Use theory of mind — the agent
+        using this skill is smart enough to understand WHY.
+      - **Stay under 500 lines.** Be concise but complete.
+      - **Use concrete file paths** from this project, not generic examples.
+      - **Include code patterns** where they help (inline code blocks).
+      - **Include examples** — show input/output or before/after where
+        it makes the procedure clearer.
+      - **Reference gotchas inline** where the developer would encounter
+        them, not in a separate section.
+      - **The description is the trigger.** An agent reading just the
+        description should know whether this skill applies to their task.
+      - **Be general enough to survive change.** The skill should teach
+        the pattern, not just document the current state. If a file path
+        changes, the procedure should still make sense.
+
+      Use vault_write_skill to write the file. Pass:
+      - name: kebab-case directory name (NO colon — directory-safe name)
+        The myco: prefix goes ONLY in the SKILL.md frontmatter name field,
+        not in the directory name.
+      - display_name: human-readable title
+      - description: the frontmatter description text
+      - content: the full SKILL.md including frontmatter
+      - candidate_id: the candidate ID from the gather phase
+      - source_ids: JSON array of source item IDs used
+      - rationale: "Initial generation from candidate survey"
+    tools:
+      - vault_write_skill
+      - vault_skill_records
+    maxTurns: 10
+    required: true
+    dependsOn:
+      - gather
+
+  - name: validate
+    prompt: |
+      Review the skill you just generated. Read it back from
+      vault_skill_records (action: get) to see the stored record.
+
+      Check against these criteria:
+
+      1. **Triggering clarity:** Would an agent reading only the
+         description know when to use this skill? Test: describe
+         a task that SHOULD trigger it and one that SHOULD NOT.
+
+      2. **Procedural content:** Does every section describe steps
+         to take? Remove any definitional content ("X is...").
+
+      3. **Concreteness:** Does it reference real file paths,
+         function names, and code patterns from this project?
+         Generic advice ("add a config file") is not enough.
+
+      4. **Length:** Under 500 lines?
+
+      5. **Conflicts:** Does it overlap with existing skills?
+         Use vault_skill_records (action: list) to check.
+
+      6. **Accuracy:** Spot-check 2-3 specific claims against the
+         vault. Use vault_search_fts to verify file paths and
+         function names mentioned in the skill.
+
+      If any criterion fails, rewrite using vault_write_skill.
+      This automatically bumps the generation.
+
+      **CRITICAL:** When rewriting, preserve ALL frontmatter fields from
+      the original — including user-invocable and allowed-tools. Read the
+      existing skill content first and carry every frontmatter field forward.
+      The quality gate will reject writes missing required fields.
+
+      Report results using vault_report with:
+      - Skill name and path
+      - Generation number
+      - Each criterion: pass/fail with brief note
+      - Any rewrites performed
+    tools:
+      - vault_write_skill
+      - vault_skill_records
+      - vault_skill_candidates
+      - vault_spores
+      - vault_search_fts
+      - vault_report
+    maxTurns: 8
+    required: true
+    dependsOn:
+      - draft

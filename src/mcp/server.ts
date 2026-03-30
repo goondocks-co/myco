@@ -17,6 +17,7 @@ import { handleMycoGraph } from './tools/graph.js';
 import { handleMycoSupersede } from './tools/supersede.js';
 import { handleMycoConsolidate } from './tools/consolidate.js';
 import { handleMycoContext } from './tools/context.js';
+import { handleMycoSkills, handleMycoSkillCandidates } from './tools/skills.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { DaemonClient } from '../hooks/client.js';
 import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
@@ -25,7 +26,7 @@ import {
   TOOL_DEFINITIONS,
   TOOL_SEARCH, TOOL_RECALL, TOOL_REMEMBER, TOOL_PLANS, TOOL_SESSIONS,
   TOOL_TEAM, TOOL_GRAPH, TOOL_SUPERSEDE, TOOL_CONSOLIDATE,
-  TOOL_CONTEXT,
+  TOOL_CONTEXT, TOOL_SKILLS, TOOL_SKILL_CANDIDATES,
 } from './tool-definitions.js';
 
 export interface MycoServer {
@@ -141,6 +142,18 @@ export function createMycoServer(vaultDir: string, client: DaemonClient): MycoSe
         const result = await handleMycoContext(contextInput, client);
         logActivity(TOOL_CONTEXT, { tier: contextInput.tier, duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: result.content }] };
+      }
+      case TOOL_SKILLS: {
+        const skillsInput = input as { id?: string; status?: string; limit?: number };
+        const result = await handleMycoSkills(skillsInput, client);
+        logActivity(TOOL_SKILLS, { id: skillsInput.id, status: skillsInput.status, duration_ms: Date.now() - start });
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+      case TOOL_SKILL_CANDIDATES: {
+        const candidatesInput = input as { id?: string; action?: 'list' | 'approve' | 'dismiss'; status?: string; limit?: number };
+        const result = await handleMycoSkillCandidates(candidatesInput, client);
+        logActivity(TOOL_SKILL_CANDIDATES, { id: candidatesInput.id, action: candidatesInput.action, duration_ms: Date.now() - start });
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       default:
         throw new Error(`Unknown tool: ${name}`);

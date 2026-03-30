@@ -145,6 +145,7 @@ export function taskFromParsed(parsed: AgentTask): AgentTask {
     ...(parsed.contextQueries ? { contextQueries: parsed.contextQueries } : {}),
     ...(parsed.execution ? { execution: parsed.execution } : {}),
     ...(parsed.schemaVersion ? { schemaVersion: parsed.schemaVersion } : {}),
+    ...(parsed.schedule ? { schedule: parsed.schedule } : {}),
   };
 }
 

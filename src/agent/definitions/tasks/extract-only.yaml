@@ -13,6 +13,7 @@ description: >
   quick pass that captures knowledge without full reasoning overhead.
 agent: myco-agent
 isDefault: false
+model: claude-sonnet-4-6
 maxTurns: 30
 timeoutSeconds: 300
 

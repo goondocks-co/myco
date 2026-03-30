@@ -126,4 +126,40 @@ describe('MycoConfigSchema v3', () => {
     const config = MycoConfigSchema.parse({ version: 3 });
     expect(config.capture.plan_dirs).toEqual([]);
   });
+
+  it('parses skills config with defaults', () => {
+    const config = MycoConfigSchema.parse({ version: 3 });
+    expect(config.skills.confidence_threshold).toBe(0.7);
+    expect(config.skills.usage_stale_days).toBe(30);
+  });
+
+  it('accepts custom skills config', () => {
+    const config = MycoConfigSchema.parse({
+      version: 3,
+      skills: {
+        confidence_threshold: 0.8,
+        usage_stale_days: 14,
+      },
+    });
+    expect(config.skills.confidence_threshold).toBe(0.8);
+    expect(config.skills.usage_stale_days).toBe(14);
+  });
+
+  it('accepts task schedule override in agent.tasks', () => {
+    const config = MycoConfigSchema.parse({
+      version: 3,
+      agent: {
+        tasks: {
+          'skill-survey': {
+            schedule: {
+              enabled: true,
+              intervalSeconds: 900,
+            },
+          },
+        },
+      },
+    });
+    expect(config.agent.tasks?.['skill-survey']?.schedule?.enabled).toBe(true);
+    expect(config.agent.tasks?.['skill-survey']?.schedule?.intervalSeconds).toBe(900);
+  });
 });

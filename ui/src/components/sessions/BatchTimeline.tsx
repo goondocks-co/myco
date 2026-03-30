@@ -249,7 +249,7 @@ export function BatchTimeline({ sessionId }: BatchTimelineProps) {
             key={batch.id}
             batch={batch}
             batchAttachments={resolved}
-            defaultOpen={idx === 0}
+            defaultOpen={idx === batchList.length - 1}
             promptIndex={idx}
             isLast={idx === batchList.length - 1}
           />

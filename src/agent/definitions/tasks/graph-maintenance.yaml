@@ -13,6 +13,7 @@ description: >
   new spores or regenerate digest.
 agent: myco-agent
 isDefault: false
+model: claude-sonnet-4-6
 maxTurns: 40
 timeoutSeconds: 480
 

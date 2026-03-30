@@ -174,6 +174,23 @@ describe('withTaskConfig', () => {
     expect(config.agent.tasks?.['task-a']?.model).toBe('model-a');
     expect(config.agent.tasks?.['task-b']?.model).toBe('model-b');
   });
+
+  it('withTaskConfig persists schedule override', () => {
+    const base = MycoConfigSchema.parse({ version: 3 });
+    const updated = withTaskConfig(base, 'skill-survey', {
+      schedule: { enabled: true, intervalSeconds: 600 },
+    });
+    expect(updated.agent.tasks?.['skill-survey']?.schedule?.enabled).toBe(true);
+  });
+
+  it('withTaskConfig clears schedule with null', () => {
+    const base = MycoConfigSchema.parse({
+      version: 3,
+      agent: { tasks: { 'skill-survey': { schedule: { enabled: true, intervalSeconds: 600 } } } },
+    });
+    const updated = withTaskConfig(base, 'skill-survey', { schedule: null });
+    expect(updated.agent.tasks?.['skill-survey']?.schedule).toBeUndefined();
+  });
 });
 
 describe('withContext', () => {

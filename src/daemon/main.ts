@@ -28,7 +28,7 @@ import { getMachineId } from './machine-id.js';
 import { createBackupHandlers } from './api/backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
 import { TeamSyncClient } from './team-sync.js';
-import { initTeamContext } from './team-context.js';
+import { initTeamContext, getTeamMachineId } from './team-context.js';
 import { createBackup } from './backup.js';
 import { listPending, markSent, pruneOld, backfillUnsynced } from '../db/queries/team-outbox.js';
 import { readSecrets } from '../config/secrets.js';
@@ -77,15 +77,27 @@ import {
   handleUpdateTaskConfig,
 } from './api/agent-tasks.js';
 import { handleGetProviders, handleTestProvider } from './api/providers.js';
+import {
+  handleListCandidates,
+  handleGetCandidate,
+  handleUpdateCandidate,
+  handleListSkillRecords,
+  handleGetSkillRecord,
+  handleDeleteCandidate,
+  handleDeleteSkillRecord,
+} from './api/skills.js';
+import { detectSkillUsage, SKILL_USAGE_DETECTION_ENABLED } from './skill-usage.js';
+import { countSkillRecords } from '../db/queries/skill-records.js';
+import { countCandidates, listCandidates } from '../db/queries/skill-candidates.js';
 import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
-import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSessionCascade, getSessionImpact } from '../db/queries/sessions.js';
+import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSessionCascade, getSessionImpact, incrementSessionToolCount } from '../db/queries/sessions.js';
 import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, findBatchByPromptPrefix, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary, listBatchesBySession } from '../db/queries/batches.js';
 import { insertActivityWithBatch } from '../db/queries/activities.js';
 import { insertAttachment, getAttachmentByFilePath } from '../db/queries/attachments.js';
-import { listRuns, countRuns, getRun, getRunningRun } from '../db/queries/runs.js';
+import { listRuns, countRuns, getRun, getLatestRunId } from '../db/queries/runs.js';
 import { listReports } from '../db/queries/reports.js';
 import { insertSpore, updateSporeStatus } from '../db/queries/spores.js';
 import { listPlans } from '../db/queries/plans.js';
@@ -112,6 +124,8 @@ import {
   MS_PER_DAY,
 } from '../constants.js';
 import { PowerManager } from './power.js';
+import { buildScheduledJobs } from './task-scheduler.js';
+import type { ScheduledJobContext } from './task-scheduler.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
@@ -181,6 +195,7 @@ export function handleUserPrompt(
     user_prompt: prompt ?? null,
     started_at: now,
     created_at: now,
+    machine_id: getTeamMachineId(),
   });
 
   // insertBatchStateless guarantees non-null prompt_number via COALESCE subquery
@@ -227,7 +242,9 @@ export function handleToolUse(
   if (activity.prompt_batch_id !== null) {
     incrementActivityCount(activity.prompt_batch_id);
   }
-  // Session-level tool_count is updated at stop time from transcript data.
+
+  // Increment session-level tool_count atomically.
+  incrementSessionToolCount(sessionId);
 }
 
 /**
@@ -451,6 +468,7 @@ export async function main(): Promise<void> {
   // --- SQLite initialization ---
   const db = initDatabase(vaultDbPath(vaultDir));
   createSchema(db, machineId);
+
   logger.info(LOG_KINDS.DAEMON_START, 'SQLite initialized', { vault: vaultDir });
 
   // --- Team context ---
@@ -490,9 +508,10 @@ export async function main(): Promise<void> {
   logger.info(LOG_KINDS.EMBEDDING_EMBED, 'EmbeddingManager initialized', { vectors_db: vectorsDbPath });
 
   // --- Register built-in agents and tasks ---
+  let definitionsDir: string | undefined;
   try {
     const { registerBuiltInAgentsAndTasks, resolveDefinitionsDir } = await import('../agent/loader.js');
-    const definitionsDir = resolveDefinitionsDir();
+    definitionsDir = resolveDefinitionsDir();
     await registerBuiltInAgentsAndTasks(definitionsDir, vaultDir);
     logger.info(LOG_KINDS.AGENT_TASK, 'Built-in agents and tasks registered');
   } catch (err) {
@@ -546,7 +565,10 @@ export async function main(): Promise<void> {
     vaultDir,
     logger,
     uiDir: uiDir ?? undefined,
-    onRequest: () => powerManager.recordActivity(),
+    // Don't record activity on every HTTP request — UI polling (every 3-10s)
+    // would prevent the PowerManager from ever reaching 'idle' state, blocking
+    // all idle-only scheduled tasks (skill-survey, skill-generate, skill-evolve).
+    // Activity is recorded on meaningful events below (session register, prompt capture, etc.).
   });
 
   // The daemon serves the dashboard UI and must stay running regardless of
@@ -576,8 +598,8 @@ export async function main(): Promise<void> {
    */
   async function triggerTitleSummary(sessionId: string): Promise<void> {
     if (config.agent.summary_batch_interval <= 0) return;
-    const running = getRunningRun(DEFAULT_AGENT_ID);
-    if (running) return;
+    // No caller-side concurrency guard — the executor's per-task guard
+    // handles blocking duplicate title-summary runs.
     try {
       const { runAgent } = await import('../agent/executor.js');
       runAgent(vaultDir, {
@@ -748,6 +770,7 @@ export async function main(): Promise<void> {
   // --- Session routes ---
 
   server.registerRoute('POST', '/sessions/register', async (req) => {
+    powerManager.recordActivity();
     const { session_id, agent, branch, started_at } = RegisterBody.parse(req.body);
     const resolvedStartedAt = started_at ?? new Date().toISOString();
     registry.register(session_id, { started_at: resolvedStartedAt, branch });
@@ -765,6 +788,7 @@ export async function main(): Promise<void> {
       started_at: startedEpoch,
       created_at: now,
       status: 'active',
+      machine_id: machineId,
     });
     // Clear ended_at if session was previously completed (reload scenario)
     updateSession(session_id, { ended_at: null, status: 'active' });
@@ -817,6 +841,7 @@ export async function main(): Promise<void> {
         status: 'active',
         started_at: startedEpoch,
         created_at: now,
+        machine_id: machineId,
       });
 
       // Reconcile buffer against DB — recover any prompts lost during downtime.
@@ -831,6 +856,7 @@ export async function main(): Promise<void> {
 
     // --- Prompt batch tracking ---
     if (event.type === 'user_prompt') {
+      powerManager.recordActivity();
       const promptText = String(event.prompt ?? '');
 
       // Skip system-injected messages (task notifications, system reminders) —
@@ -1181,11 +1207,18 @@ export async function main(): Promise<void> {
       }
     }
 
-    // Update session with transcript metadata (no LLM calls)
+    // Update session with transcript metadata (no LLM calls).
+    // Use MAX of current DB count vs transcript-derived count — the incremental
+    // count from handleUserPrompt is authoritative during active sessions; the
+    // transcript parse may see fewer turns if the file is incomplete.
+    const currentSession = getSession(sessionId);
+    const transcriptPromptCount = allTurns.length;
+    const transcriptToolCount = allTurns.reduce((sum, t) => sum + t.toolCount, 0);
+
     const updateFields: Record<string, unknown> = {
       transcript_path: hookTranscriptPath ?? null,
-      prompt_count: allTurns.length,
-      tool_count: allTurns.reduce((sum, t) => sum + t.toolCount, 0),
+      prompt_count: Math.max(transcriptPromptCount, currentSession?.prompt_count ?? 0),
+      tool_count: Math.max(transcriptToolCount, currentSession?.tool_count ?? 0),
     };
     if (user) updateFields.user = user;
     if (!hasTitle && sessionTitleCache.has(sessionId)) {
@@ -1193,6 +1226,28 @@ export async function main(): Promise<void> {
     }
 
     updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
+
+    // Detect skill usage from transcript content (best-effort, non-blocking).
+    // Skip transcript I/O entirely when detection is disabled.
+    if (SKILL_USAGE_DETECTION_ENABLED) {
+      try {
+        let transcriptText: string | null = null;
+        if (hookTranscriptPath) {
+          try { transcriptText = fs.readFileSync(hookTranscriptPath, 'utf-8'); }
+          catch { /* file may not exist yet — fall through */ }
+        }
+        if (!transcriptText && allTurns.length > 0) {
+          transcriptText = allTurns
+            .map((t) => [t.prompt ?? '', t.aiResponse ?? ''].join(' '))
+            .join('\n');
+        }
+        if (transcriptText) {
+          detectSkillUsage(sessionId, transcriptText);
+        }
+      } catch {
+        // Best-effort — don't block reconciliation
+      }
+    }
 
     // Enhanced capture: populate response_summary on earlier batches from transcript.
     // Maps by batch insertion order (id ASC) to transcript turn position.
@@ -1400,6 +1455,36 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/sessions/:id/attachments', handleGetSessionAttachments);
   server.registerRoute('GET', '/api/sessions/:id/plans', handleGetSessionPlans);
 
+  // --- Skill lifecycle API routes ---
+  server.registerRoute('GET', '/api/skill-candidates', handleListCandidates);
+  server.registerRoute('GET', '/api/skill-candidates/:id', handleGetCandidate);
+  server.registerRoute('PUT', '/api/skill-candidates/:id', handleUpdateCandidate);
+  server.registerRoute('GET', '/api/skill-records', handleListSkillRecords);
+  server.registerRoute('GET', '/api/skill-records/:id', handleGetSkillRecord);
+  server.registerRoute('DELETE', '/api/skill-candidates/:id', handleDeleteCandidate);
+  server.registerRoute('DELETE', '/api/skill-records/:id', async (req) => {
+    const result = await handleDeleteSkillRecord(req);
+    // Delete skill file and symlinks from disk if the DB delete succeeded
+    if ((result.body as Record<string, unknown>)?.deleted) {
+      const record = result.body as { name?: string };
+      if (record.name) {
+        const projectRoot = path.resolve(vaultDir, '..');
+        const skillDir = path.resolve(projectRoot, '.agents', 'skills', record.name);
+        try { fs.rmSync(skillDir, { recursive: true, force: true }); } catch (err) {
+          logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to remove skill directory', { name: record.name, error: String(err) });
+        }
+        // Remove agent-specific symlinks (e.g., .claude/skills/<name>)
+        try {
+          const { syncSkillSymlinks } = await import('../symbionts/installer.js');
+          syncSkillSymlinks(projectRoot, record.name, { remove: true });
+        } catch (err) {
+          logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to remove skill symlinks', { name: record.name, error: String(err) });
+        }
+      }
+    }
+    return result;
+  });
+
   // --- Mycelium API routes ---
   server.registerRoute('GET', '/api/spores', handleListSpores);
   server.registerRoute('GET', '/api/spores/:id', handleGetSpore);
@@ -1446,6 +1531,18 @@ export async function main(): Promise<void> {
 
   // --- Agent API routes ---
 
+  /**
+   * Build the instruction string for a skill-generate run.
+   * Shared by both the API route handler and the scheduler.
+   */
+  function buildSkillGenerateInstruction(): string | undefined {
+    const candidates = listCandidates({ status: 'approved', limit: 1 });
+    if (candidates.length > 0) {
+      return `Generate skill for candidate id=${candidates[0].id} topic="${candidates[0].topic}"`;
+    }
+    return undefined;
+  }
+
   const AgentRunBody = z.object({
     task: z.string().optional(),
     instruction: z.string().optional(),
@@ -1453,16 +1550,23 @@ export async function main(): Promise<void> {
   });
 
   server.registerRoute('POST', '/api/agent/run', async (req) => {
-    const { task, instruction, agentId } = AgentRunBody.parse(req.body);
+    const { task, instruction: rawInstruction, agentId } = AgentRunBody.parse(req.body);
+
+    // For skill-generate: inject candidate ID if not provided in the instruction.
+    // Same structural enforcement as the scheduler — one candidate per run.
+    let instruction = rawInstruction;
+    if (task === 'skill-generate' && !instruction) {
+      instruction = buildSkillGenerateInstruction();
+    }
 
     const { runAgent } = await import('../agent/executor.js');
     const resultPromise = runAgent(vaultDir, { task, instruction, agentId, embeddingManager });
 
-    // runAgent inserts the run synchronously before the first await,
-    // so by the time it yields, the run is already in the DB.
+    // runAgent inserts the run row synchronously before the first await.
+    // Query for the most recently created run matching this task to get
+    // the correct ID — not getRunningRun which may return a different task.
     const effectiveAgentId = agentId ?? 'myco-agent';
-    const latestRun = getRunningRun(effectiveAgentId);
-    const runId = latestRun?.id;
+    const runId = getLatestRunId(effectiveAgentId, task);
 
     resultPromise
       .then((result) => {
@@ -1568,6 +1672,7 @@ export async function main(): Promise<void> {
     const spore = insertSpore({
       id,
       agent_id: USER_AGENT_ID,
+      machine_id: machineId,
       observation_type: observationType,
       content,
       tags: tags ? tags.join(', ') : null,
@@ -1686,6 +1791,7 @@ export async function main(): Promise<void> {
     insertResolutionEvent({
       id: resolutionId,
       agent_id: USER_AGENT_ID,
+      machine_id: machineId,
       spore_id: old_spore_id,
       action: 'supersede',
       new_spore_id,
@@ -1841,54 +1947,6 @@ export async function main(): Promise<void> {
     }),
   });
 
-  // Agent auto-run: only when enabled, with its own interval guard.
-  // Runs on the PowerManager tick but skips unless enough time has elapsed
-  // since the last run (config.agent.interval_seconds).
-  if (config.agent.auto_run) {
-    let agentRunning = false;
-    const agentIntervalMs = config.agent.interval_seconds * MS_PER_SECOND;
-
-    // Seed lastAgentRun from the most recent completed/failed run so daemon
-    // restarts don't immediately re-trigger the agent.
-    const lastRunRow = getDatabase().prepare(
-      `SELECT started_at FROM agent_runs WHERE agent_id = ? AND status IN ('completed', 'failed') ORDER BY started_at DESC LIMIT 1`,
-    ).get(DEFAULT_AGENT_ID) as { started_at: number } | undefined;
-    let lastAgentRun = lastRunRow ? lastRunRow.started_at * MS_PER_SECOND : 0;
-
-    powerManager.register({
-      name: 'agent-auto-run',
-      runIn: ['active', 'idle'],
-      fn: async () => {
-        if (agentRunning) return;
-        if (Date.now() - lastAgentRun < agentIntervalMs) return;
-
-        // Pre-check: only spawn agent if there's unprocessed work
-        const agentDb = getDatabase();
-        const checkRow = agentDb.prepare('SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0').get() as { count: number };
-        const count = Number(checkRow.count);
-        if (count === 0) {
-          logger.debug(LOG_KINDS.AGENT_AUTO_RUN, 'No unprocessed batches, skipping cycle');
-          return;
-        }
-
-        agentRunning = true;
-        lastAgentRun = Date.now();
-        try {
-          logger.info(LOG_KINDS.AGENT_AUTO_RUN, 'Unprocessed batches found, starting agent', { count });
-          const { runAgent } = await import('../agent/executor.js');
-          const runResult = await runAgent(vaultDir, { embeddingManager });
-          logger.info(LOG_KINDS.AGENT_RUN, 'Agent run completed', { status: runResult.status, runId: runResult.runId });
-        } catch (err) {
-          logger.error(LOG_KINDS.AGENT_ERROR, 'Agent auto-run failed', { error: (err as Error).message });
-        } finally {
-          agentRunning = false;
-        }
-      },
-    });
-  } else {
-    logger.info(LOG_KINDS.AGENT_AUTO_RUN, 'Auto-agent disabled (agent.auto_run = false)');
-  }
-
   powerManager.register({
     name: 'log-retention',
     runIn: ['idle', 'sleep'],
@@ -1958,6 +2016,84 @@ export async function main(): Promise<void> {
         }
       },
     });
+  }
+
+  // -- Dynamic task scheduling (replaces hardcoded agent-auto-run, skill-survey, skill-evolve) --
+  {
+    const runningTasks = new Set<string>();
+
+    if (definitionsDir) {
+      const { loadAllTasks } = await import('../agent/registry.js');
+      const allTasks = Array.from(loadAllTasks(definitionsDir, vaultDir).values());
+
+      // Seed lastRun from DB: find the most recent completed/failed run per task
+      const initialLastRuns: Record<string, number> = {};
+      try {
+        const recentRuns = getDatabase().prepare(
+          `SELECT task, MAX(completed_at) as last_completed
+           FROM agent_runs
+           WHERE status IN ('completed', 'failed') AND completed_at IS NOT NULL
+           GROUP BY task`
+        ).all() as Array<{ task: string; last_completed: number }>;
+        for (const row of recentRuns) {
+          initialLastRuns[row.task] = row.last_completed * 1000; // epoch seconds → ms
+        }
+      } catch {
+        // Best-effort seeding
+      }
+
+      const scheduledContext: ScheduledJobContext = {
+        isTaskRunning: (name) => runningTasks.has(name),
+        setTaskRunning: (name, running) => {
+          if (running) runningTasks.add(name);
+          else runningTasks.delete(name);
+        },
+        runTask: async (taskName) => {
+          const { runAgent } = await import('../agent/executor.js');
+
+          // For skill-generate: inject the specific candidate ID so the agent
+          // processes exactly one skill per run (structural enforcement, not prompt-based).
+          const instruction = taskName === 'skill-generate'
+            ? buildSkillGenerateInstruction()
+            : undefined;
+
+          const result = await runAgent(vaultDir, { task: taskName, instruction, embeddingManager });
+          logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} completed`, {
+            status: result.status,
+            runId: result.runId,
+          });
+        },
+        preConditions: {
+          'has-unprocessed-batches': () => {
+            const row = getDatabase().prepare(
+              'SELECT 1 FROM prompt_batches WHERE processed = 0 LIMIT 1'
+            ).get();
+            return row !== undefined;
+          },
+          'has-active-skills': () => {
+            return countSkillRecords({ status: 'active' }) > 0;
+          },
+          'has-approved-candidates': () => {
+            return countCandidates({ status: 'approved' }) > 0;
+          },
+        },
+      };
+
+      const scheduledJobs = buildScheduledJobs(
+        allTasks,
+        config.agent.tasks ?? {},
+        scheduledContext,
+        initialLastRuns,
+      );
+      for (const job of scheduledJobs) {
+        powerManager.register(job);
+      }
+      logger.info(LOG_KINDS.DAEMON_START, `Registered ${scheduledJobs.length} scheduled task(s)`, {
+        tasks: scheduledJobs.map((j) => j.name),
+      });
+    } else {
+      logger.warn(LOG_KINDS.AGENT_ERROR, 'Skipping dynamic task scheduling — definitions directory unavailable');
+    }
   }
 
   powerManager.start();

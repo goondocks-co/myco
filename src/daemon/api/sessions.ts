@@ -1,6 +1,6 @@
 import { getSession, listSessions, countSessions } from '@myco/db/queries/sessions.js';
-import { listBatchesBySession } from '@myco/db/queries/batches.js';
-import { listActivitiesByBatch } from '@myco/db/queries/activities.js';
+import { listBatchesBySession, countBatchesBySession } from '@myco/db/queries/batches.js';
+import { listActivitiesByBatch, countActivities } from '@myco/db/queries/activities.js';
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
 import { listPlansBySession } from '@myco/db/queries/plans.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -36,7 +36,13 @@ export async function handleListSessions(req: RouteRequest): Promise<RouteRespon
 export async function handleGetSession(req: RouteRequest): Promise<RouteResponse> {
   const session = getSession(req.params.id);
   if (!session) return { status: 404, body: { error: 'not_found' } };
-  return { body: session };
+
+  // Derive counts from actual rows — the database is the authority,
+  // not the cached prompt_count/tool_count on the sessions row.
+  const promptCount = countBatchesBySession(session.id);
+  const toolCount = countActivities(session.id);
+
+  return { body: { ...session, prompt_count: promptCount, tool_count: toolCount } };
 }
 
 export async function handleGetSessionBatches(req: RouteRequest): Promise<RouteResponse> {

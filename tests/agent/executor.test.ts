@@ -269,7 +269,7 @@ vi.mock('@myco/config/loader.js', () => ({
     embedding: { provider: 'ollama', model: 'bge-m3' },
     daemon: { port: null, log_level: 'info' },
     capture: { transcript_paths: [], artifact_watch: [], artifact_extensions: [], buffer_max_events: 500 },
-    agent: { auto_run: true, interval_seconds: 300, summary_batch_interval: 5 },
+    agent: { summary_batch_interval: 5 },
   }),
 }));
 
@@ -475,11 +475,13 @@ describe('runAgent', () => {
     insertRun({
       id: existingRunId,
       agent_id: TEST_AGENT_ID,
+      task: 'full-intelligence',
       status: 'running',
       started_at: epochSeconds(),
     });
 
-    const result = await runAgent(TEST_VAULT_DIR);
+    // Same task running → skipped
+    const result = await runAgent(TEST_VAULT_DIR, { task: 'full-intelligence' });
 
     expect(result.status).toBe('skipped');
     expect(result.reason).toBe('already_running');

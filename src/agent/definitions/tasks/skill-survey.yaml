@@ -1,0 +1,149 @@
+name: skill-survey
+displayName: Skill Candidate Survey
+description: >-
+  Analyze vault knowledge for procedural skill candidates. Identifies
+  clusters of related sessions, spores, and plans that describe how
+  to accomplish tasks in this project.
+agent: myco-agent
+prompt: >-
+  Survey the vault knowledge graph for procedural skill candidates.
+isDefault: false
+model: claude-sonnet-4-6
+maxTurns: 40
+timeoutSeconds: 600
+schedule:
+  enabled: true
+  intervalSeconds: 600
+  runIn:
+    - idle
+phases:
+  - name: explore-spores
+    prompt: |
+      Explore ALL spores in the vault to identify procedural patterns.
+      You are one of three parallel exploration phases — focus only on spores.
+
+      1. Query wisdom spores first (vault_spores, observation_type: wisdom).
+         These are the highest signal — synthesized from multiple sessions.
+
+      2. Query decisions, discoveries, and gotchas. Paginate through ALL
+         active spores (use offset parameter), not just the first page.
+
+      3. Use vault_entities to see what components and concepts exist.
+         High-mention-count entities often indicate areas that need skills.
+
+      4. Read the digest (vault_read_digest) for a high-level overview.
+
+      For each finding, note: what procedure does this relate to?
+      Group findings by procedural topic ("how to do X").
+    tools:
+      - vault_spores
+      - vault_entities
+      - vault_edges
+      - vault_read_digest
+    maxTurns: 8
+    required: true
+
+  - name: explore-sessions
+    prompt: |
+      Explore ALL sessions in the vault to identify procedural workflows.
+      You are one of three parallel exploration phases — focus only on sessions.
+
+      1. List all sessions (vault_sessions). Paginate through them.
+         Session summaries describe workflows and multi-step implementations.
+
+      2. Look for recurring themes — "3+ sessions touched the same component"
+         is a strong skill candidate signal.
+
+      3. Use vault_search_fts to search session content for procedural
+         keywords: "how to", "step", "migration", "refactor", "debug",
+         "configure", "install", "deploy".
+
+      For each finding, note: what procedure does this relate to?
+      Group findings by procedural topic ("how to do X").
+    tools:
+      - vault_sessions
+      - vault_search_fts
+    maxTurns: 8
+    required: true
+
+  - name: explore-plans
+    prompt: |
+      Explore ALL plans and artifacts in the vault to identify procedures.
+      You are one of three parallel exploration phases — focus only on plans.
+
+      Plans contain explicit step-by-step procedures and design decisions.
+      They are often the most directly skill-ready content.
+
+      1. Use vault_search_semantic with broad queries to find plans:
+         - "implementation plan design architecture"
+         - "migration refactor setup configuration"
+         - "testing deployment workflow pipeline"
+         - "debugging troubleshooting fix"
+
+      2. Use vault_search_fts to search for specific procedural terms
+         across plans and artifacts.
+
+      For each finding, note: what procedure does this relate to?
+      Group findings by procedural topic ("how to do X").
+    tools:
+      - vault_search_semantic
+      - vault_search_fts
+    maxTurns: 8
+    required: true
+
+  - name: evaluate
+    prompt: |
+      Three parallel exploration phases have completed — one explored
+      spores and entities, one explored sessions, one explored plans.
+      Their findings are in the prior context.
+
+      For each procedural cluster identified across the exploration phases:
+
+      1. Is this a procedure (how to do something in this project)?
+         Only procedures become skills. "What is X" is not a skill.
+         "How to do X" is a skill.
+
+      2. Is there enough cross-session evidence?
+         Minimum: knowledge from 2+ sessions, 3+ source items across
+         sessions, spores, and plans.
+
+      3. Does an existing skill or candidate already cover this topic?
+         Use vault_skill_candidates (action: list) to check.
+
+      4. Score confidence (0.0-1.0) based on:
+         - Knowledge density (more sources = higher)
+         - Cross-session evidence (wider = higher)
+         - Presence of wisdom spores (higher quality signal)
+         - Presence of plans with step-by-step procedures (higher)
+
+      For each valid candidate, use vault_skill_candidates (action: create)
+      with topic, rationale, confidence, and source_ids (JSON array of
+      {id, type} objects referencing the spores, sessions, and plans).
+
+      IMPORTANT: Write the rationale field as markdown. Use:
+      - **Bold** for key terms and pass/fail verdicts
+      - Numbered lists for the procedure steps identified
+      - Inline `code` for file paths, function names, and config keys
+      - A brief summary sentence, then the evidence structure
+
+      The rationale is displayed directly to the user in the dashboard.
+
+      If an existing candidate has new evidence, use vault_skill_candidates
+      (action: update) to increase confidence and add source_ids.
+
+      Dismiss candidates whose underlying knowledge has been superseded
+      (action: update, status: dismissed).
+
+      Report a summary of candidates created, updated, and dismissed
+      using vault_report.
+    tools:
+      - vault_skill_candidates
+      - vault_skill_records
+      - vault_set_state
+      - vault_report
+    maxTurns: 8
+    required: true
+    dependsOn:
+      - explore-spores
+      - explore-sessions
+      - explore-plans

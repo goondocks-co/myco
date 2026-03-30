@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard';
 import Sessions from './pages/Sessions';
 import Mycelium from './pages/Mycelium';
 import Agent from './pages/Agent';
+import Skills from './pages/Skills';
 import Settings from './pages/Settings';
 import Operations from './pages/Operations';
 import Team from './pages/Team';
@@ -18,6 +19,7 @@ export default function App() {
         <Route path="/sessions/:id" element={<Sessions />} />
         <Route path="/mycelium" element={<Mycelium />} />
         <Route path="/agent" element={<Agent />} />
+        <Route path="/skills" element={<Skills />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/operations" element={<Operations />} />
         <Route path="/team" element={<Team />} />

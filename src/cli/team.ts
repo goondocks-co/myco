@@ -9,10 +9,9 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { loadConfig, updateTeamConfig } from '../config/loader.js';
-import { writeSecret } from '../config/secrets.js';
-import { findPackageRoot } from '../utils/find-package-root.js';
+import { writeSecret, readSecrets } from '../config/secrets.js';
+import { resolvePackageRoot } from '../symbionts/detect.js';
 import { WRANGLER_COMMAND_TIMEOUT_MS, TEAM_API_KEY_SECRET } from '../constants.js';
 
 // ---------------------------------------------------------------------------
@@ -91,19 +90,13 @@ function wrangler(args: string[], options?: { cwd?: string }): string {
   });
 }
 
-/** Find the package root (where src/worker/ lives). */
-function locatePackageRoot(): string {
-  // Check CLAUDE_PLUGIN_ROOT first (dogfooding), then traverse up
-  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ?? process.env.CURSOR_PLUGIN_ROOT;
-  if (pluginRoot && fs.existsSync(path.join(pluginRoot, WORKER_SOURCE_DIR))) {
-    return pluginRoot;
-  }
-
-  // Walk up from this file's compiled location
-  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-  const root = findPackageRoot(scriptDir);
-  if (root && fs.existsSync(path.join(root, WORKER_SOURCE_DIR))) return root;
-
+/** Find the worker source directory. Checks dist layout first (installed), then source layout (dev). */
+function locateWorkerSource(): string {
+  const root = resolvePackageRoot();
+  const distPath = path.join(root, 'dist', WORKER_SOURCE_DIR);
+  if (fs.existsSync(distPath)) return distPath;
+  const srcPath = path.join(root, WORKER_SOURCE_DIR);
+  if (fs.existsSync(srcPath)) return srcPath;
   throw new Error(`Cannot find ${WORKER_SOURCE_DIR} — are you running from the myco package?`);
 }
 
@@ -112,8 +105,7 @@ function locatePackageRoot(): string {
  * with actual D1 database ID and resource names.
  */
 function prepareDeployDir(vaultDir: string, d1Id: string): string {
-  const pkgRoot = locatePackageRoot();
-  const srcDir = path.join(pkgRoot, WORKER_SOURCE_DIR);
+  const srcDir = locateWorkerSource();
   const deployDir = path.join(vaultDir, TEAM_WORKER_DIR);
 
   // Copy all worker source files
@@ -210,7 +202,7 @@ export async function teamInit(vaultDir: string): Promise<void> {
     console.log('Vectorize index created\n');
   } catch (err) {
     const errMsg = (err as Error).message;
-    if (errMsg.includes('already exists')) {
+    if (errMsg.includes('already exists') || errMsg.includes('duplicate_name')) {
       console.log('Vectorize index already exists, reusing\n');
     } else {
       console.error(`Failed to create Vectorize index: ${errMsg}`);
@@ -304,7 +296,9 @@ export async function teamUpgrade(vaultDir: string): Promise<void> {
     process.exit(1);
   }
 
-  // Read existing D1 ID from current wrangler.toml
+  // Read ALL existing resource identifiers from current wrangler.toml.
+  // These are immutable after init — regenerating from projectHash would
+  // break if the hash changed (e.g., after the projectHash bug fix).
   const existingToml = fs.readFileSync(tomlPath, 'utf-8');
   const d1Match = existingToml.match(TOML_DB_ID_REGEX);
   if (!d1Match || d1Match[1] === '<YOUR_D1_DATABASE_ID>') {
@@ -313,9 +307,42 @@ export async function teamUpgrade(vaultDir: string): Promise<void> {
   }
   const d1Id = d1Match[1];
 
-  // Re-copy worker source and patch
+  const nameMatch = existingToml.match(/^name\s*=\s*"([^"]*)"/m);
+  const dbNameMatch = existingToml.match(/database_name\s*=\s*"([^"]*)"/);
+  const indexNameMatch = existingToml.match(/index_name\s*=\s*"([^"]*)"/);
+
+  // Re-copy worker source from package (updated code)
   console.log('Updating worker source...');
-  prepareDeployDir(vaultDir, d1Id);
+  const srcDir = locateWorkerSource();
+  fs.cpSync(srcDir, deployDir, { recursive: true });
+
+  // Patch wrangler.toml preserving existing resource names — NOT regenerating
+  let toml = fs.readFileSync(path.join(deployDir, 'wrangler.toml'), 'utf-8');
+  const workerName = nameMatch?.[1] ?? resourceName(vaultDir);
+  toml = toml.replace(TOML_NAME_REGEX, `name = "${workerName}"`);
+  toml = toml.replace(TOML_D1_PLACEHOLDER_REGEX, d1Id);
+  toml = toml.replace(TOML_DB_NAME_REGEX, `database_name = "${dbNameMatch?.[1] ?? workerName}"`);
+  toml = toml.replace(TOML_INDEX_NAME_REGEX, `index_name = "${indexNameMatch?.[1] ?? `${workerName}-vectors`}"`);
+  fs.writeFileSync(path.join(deployDir, 'wrangler.toml'), toml, 'utf-8');
+
+  // Re-set API key secret before deploy (deploy can wipe secrets)
+  console.log('Setting API key secret...');
+  const secrets = readSecrets(vaultDir);
+  const apiKey = secrets[TEAM_API_KEY_SECRET];
+  if (apiKey) {
+    try {
+      execFileSync('wrangler', ['secret', 'put', TEAM_API_KEY_SECRET, '--name', workerName], {
+        encoding: 'utf-8',
+        timeout: WRANGLER_COMMAND_TIMEOUT_MS,
+        input: apiKey,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: deployDir,
+      });
+      console.log('Secret set\n');
+    } catch (err) {
+      console.warn(`Warning: could not set API key secret: ${(err as Error).message}`);
+    }
+  }
 
   // Redeploy
   console.log('Deploying...');

@@ -55,6 +55,26 @@ export class DaemonClient {
     }
   }
 
+  async put(endpoint: string, body: unknown): Promise<ClientResult> {
+    try {
+      const info = this.readDaemonJson();
+      if (!info) return { ok: false };
+
+      const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
+      });
+
+      if (!res.ok) return { ok: false };
+      const data = await res.json();
+      return { ok: true, data };
+    } catch {
+      return { ok: false };
+    }
+  }
+
   async get(endpoint: string): Promise<ClientResult> {
     try {
       const info = this.readDaemonJson();
