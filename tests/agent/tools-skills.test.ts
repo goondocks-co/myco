@@ -341,7 +341,7 @@ describe('vault skill tools', () => {
         undefined,
       );
       const updatedCandidate = parseResult(getResult) as { status: string; skill_id: string };
-      expect(updatedCandidate.status).toBe('materialized');
+      expect(updatedCandidate.status).toBe('generated');
       expect(updatedCandidate.skill_id).toBeDefined();
     });
   });

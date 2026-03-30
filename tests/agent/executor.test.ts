@@ -475,11 +475,13 @@ describe('runAgent', () => {
     insertRun({
       id: existingRunId,
       agent_id: TEST_AGENT_ID,
+      task: 'full-intelligence',
       status: 'running',
       started_at: epochSeconds(),
     });
 
-    const result = await runAgent(TEST_VAULT_DIR);
+    // Same task running → skipped
+    const result = await runAgent(TEST_VAULT_DIR, { task: 'full-intelligence' });
 
     expect(result.status).toBe('skipped');
     expect(result.reason).toBe('already_running');
