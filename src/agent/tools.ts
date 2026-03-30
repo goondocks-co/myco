@@ -81,6 +81,61 @@ function textResult(data: unknown): { content: Array<{ type: 'text'; text: strin
 }
 
 // ---------------------------------------------------------------------------
+// Skill content validation (module-scope — avoids re-creation per server instantiation)
+// ---------------------------------------------------------------------------
+
+/** Maximum lines for a generated skill. */
+export const MAX_SKILL_LINES = 500;
+
+/** Required frontmatter fields for Myco-managed skills. */
+export const REQUIRED_FRONTMATTER_FIELDS = ['name', 'description', 'managed_by'] as const;
+
+/**
+ * Validate skill content before writing. Returns an array of issues
+ * (empty = valid). This is a deterministic quality gate — the agent
+ * must fix all issues before the skill is accepted.
+ */
+export function validateSkillContent(content: string, dirName: string): string[] {
+  const issues: string[] = [];
+
+  // Check for frontmatter delimiters
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) {
+    issues.push('Missing YAML frontmatter (must start with --- and end with ---)');
+    return issues; // Can't check fields without frontmatter
+  }
+
+  const frontmatter = fmMatch[1];
+
+  // Check required fields
+  for (const field of REQUIRED_FRONTMATTER_FIELDS) {
+    if (!frontmatter.includes(`${field}:`)) {
+      issues.push(`Missing required frontmatter field: ${field}`);
+    }
+  }
+
+  // Check myco: prefix on name
+  const nameMatch = frontmatter.match(/^name:\s*(.+)$/m);
+  if (nameMatch && !nameMatch[1].trim().startsWith('myco:')) {
+    issues.push(`Skill name must start with "myco:" prefix. Got: "${nameMatch[1].trim()}"`);
+  }
+
+  // Check managed_by: myco
+  const managedMatch = frontmatter.match(/^managed_by:\s*(.+)$/m);
+  if (managedMatch && managedMatch[1].trim() !== 'myco') {
+    issues.push(`managed_by must be "myco". Got: "${managedMatch[1].trim()}"`);
+  }
+
+  // Check line count
+  const lineCount = content.split('\n').length;
+  if (lineCount > MAX_SKILL_LINES) {
+    issues.push(`Skill is ${lineCount} lines (max ${MAX_SKILL_LINES})`);
+  }
+
+  return issues;
+}
+
+// ---------------------------------------------------------------------------
 // Tool definitions factory
 // ---------------------------------------------------------------------------
 
@@ -617,57 +672,6 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
   // Skill lifecycle tools
   // -------------------------------------------------------------------------
 
-  /** Maximum lines for a generated skill. */
-  const MAX_SKILL_LINES = 500;
-
-  /** Required frontmatter fields for Myco-managed skills. */
-  const REQUIRED_FRONTMATTER_FIELDS = ['name', 'description', 'managed_by'] as const;
-
-  /**
-   * Validate skill content before writing. Returns an array of issues
-   * (empty = valid). This is a deterministic quality gate — the agent
-   * must fix all issues before the skill is accepted.
-   */
-  function validateSkillContent(content: string, dirName: string): string[] {
-    const issues: string[] = [];
-
-    // Check for frontmatter delimiters
-    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-    if (!fmMatch) {
-      issues.push('Missing YAML frontmatter (must start with --- and end with ---)');
-      return issues; // Can't check fields without frontmatter
-    }
-
-    const frontmatter = fmMatch[1];
-
-    // Check required fields
-    for (const field of REQUIRED_FRONTMATTER_FIELDS) {
-      if (!frontmatter.includes(`${field}:`)) {
-        issues.push(`Missing required frontmatter field: ${field}`);
-      }
-    }
-
-    // Check myco: prefix on name
-    const nameMatch = frontmatter.match(/^name:\s*(.+)$/m);
-    if (nameMatch && !nameMatch[1].trim().startsWith('myco:')) {
-      issues.push(`Skill name must start with "myco:" prefix. Got: "${nameMatch[1].trim()}"`);
-    }
-
-    // Check managed_by: myco
-    const managedMatch = frontmatter.match(/^managed_by:\s*(.+)$/m);
-    if (managedMatch && managedMatch[1].trim() !== 'myco') {
-      issues.push(`managed_by must be "myco". Got: "${managedMatch[1].trim()}"`);
-    }
-
-    // Check line count
-    const lineCount = content.split('\n').length;
-    if (lineCount > MAX_SKILL_LINES) {
-      issues.push(`Skill is ${lineCount} lines (max ${MAX_SKILL_LINES})`);
-    }
-
-    return issues;
-  }
-
   const vaultSkillCandidates = tool(
     'vault_skill_candidates',
     'Manage skill candidates (identified topics that may become skills). Supports list, get, create, and update actions.',
@@ -804,7 +808,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
     'vault_write_skill',
     'Write a SKILL.md file to disk and create or update the corresponding skill record and lineage entry.',
     {
-      name: z.string().describe('Skill name (used as directory name under .agents/skills/)'),
+      name: z.string().describe('Skill directory name (kebab-case, NO colon). The myco: prefix goes in the SKILL.md frontmatter name field, not here.'),
       display_name: z.string().describe('Human-readable display name'),
       description: z.string().describe('Short description of what the skill does'),
       content: z.string().describe('Full SKILL.md content in markdown'),
@@ -901,7 +905,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
         // Auto-link candidate: find the approved candidate this skill was generated from.
         // Strategy: exact candidate_id → prefix match → first approved candidate.
         // Does NOT depend on the agent passing the correct ID.
-        const approvedCandidates = listCandidates({ status: 'approved' });
+        const approvedCandidates = listCandidates({ status: 'approved', limit: 10 });
         let linkedCandidate = false;
 
         // 1. Try exact candidate_id if provided

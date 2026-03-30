@@ -198,9 +198,9 @@ export function insertSkillRecord(data: SkillRecordInsert): SkillRecordRow {
     data.properties ?? '{}',
   );
 
-  const row = toSkillRecordRow(
-    db.prepare(`SELECT ${SELECT_COLUMNS} FROM skill_records WHERE id = ?`).get(data.id) as Record<string, unknown>,
-  );
+  const raw = db.prepare(`SELECT ${SELECT_COLUMNS} FROM skill_records WHERE id = ?`).get(data.id) as Record<string, unknown> | undefined;
+  if (!raw) throw new Error(`Failed to insert skill record: ${data.id}`);
+  const row = toSkillRecordRow(raw);
 
   syncRow('skill_records', row);
 

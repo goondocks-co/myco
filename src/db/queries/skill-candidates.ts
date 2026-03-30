@@ -174,9 +174,9 @@ export function insertCandidate(data: CandidateInsert): CandidateRow {
     data.updated_at,
   );
 
-  const row = toCandidateRow(
-    db.prepare(`SELECT ${SELECT_COLUMNS} FROM skill_candidates WHERE id = ?`).get(data.id) as Record<string, unknown>,
-  );
+  const raw = db.prepare(`SELECT ${SELECT_COLUMNS} FROM skill_candidates WHERE id = ?`).get(data.id) as Record<string, unknown> | undefined;
+  if (!raw) throw new Error(`Failed to insert skill candidate: ${data.id}`);
+  const row = toCandidateRow(raw);
 
   syncRow('skill_candidates', row);
 

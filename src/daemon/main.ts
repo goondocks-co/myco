@@ -2042,9 +2042,9 @@ export async function main(): Promise<void> {
         preConditions: {
           'has-unprocessed-batches': () => {
             const row = getDatabase().prepare(
-              'SELECT COUNT(*) as count FROM prompt_batches WHERE processed = 0'
-            ).get() as { count: number };
-            return Number(row.count) > 0;
+              'SELECT 1 FROM prompt_batches WHERE processed = 0 LIMIT 1'
+            ).get();
+            return row !== undefined;
           },
           'has-active-skills': () => {
             return countSkillRecords({ status: 'active' }) > 0;
