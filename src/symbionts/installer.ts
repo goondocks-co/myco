@@ -993,6 +993,9 @@ export function syncSkillSymlinks(
     } catch { /* skip unreadable manifests */ }
   }
 
+  // Collect gitignore entries for symlinked paths
+  const gitignoreEntries: string[] = [];
+
   for (const target of targets) {
     if (target === CANONICAL_SKILLS_DIR) continue; // canonical is the source, not a link target
 
@@ -1007,6 +1010,33 @@ export function syncSkillSymlinks(
       const canonicalDir = path.join(projectRoot, CANONICAL_SKILLS_DIR);
       const relTarget = path.join(path.relative(agentSkillsDir, canonicalDir), skillName);
       ensureSymlink(linkPath, relTarget);
+      gitignoreEntries.push(`${target}/${skillName}`);
     }
+  }
+
+  // Update .gitignore with symlink entries (machine-specific, shouldn't be committed)
+  if (gitignoreEntries.length > 0 || opts?.remove) {
+    const giPath = path.join(projectRoot, '.gitignore');
+    try {
+      let content = fs.existsSync(giPath) ? fs.readFileSync(giPath, 'utf-8') : '';
+
+      if (opts?.remove) {
+        // Remove entries for this skill
+        for (const target of targets) {
+          if (target === CANONICAL_SKILLS_DIR) continue;
+          const entry = `${target}/${skillName}`;
+          content = content.replace(new RegExp(`^${entry.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n?`, 'gm'), '');
+        }
+      } else {
+        // Add entries that aren't already present
+        for (const entry of gitignoreEntries) {
+          if (!content.includes(entry)) {
+            content = content.trimEnd() + '\n' + entry + '\n';
+          }
+        }
+      }
+
+      fs.writeFileSync(giPath, content, 'utf-8');
+    } catch { /* best-effort */ }
   }
 }
