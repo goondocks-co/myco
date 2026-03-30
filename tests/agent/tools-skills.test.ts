@@ -33,7 +33,7 @@ const epochNow = () => Math.floor(Date.now() / 1000);
 
 /** Build valid SKILL.md content with required frontmatter. */
 function validSkillContent(name: string, body = '# Skill\n\nContent here.') {
-  return `---\nname: myco:${name}\ndescription: Test skill\nmanaged_by: myco\n---\n\n${body}`;
+  return `---\nname: myco:${name}\ndescription: Test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: Read, Grep, Glob\n---\n\n${body}`;
 }
 
 // ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ function toSessionRow(row: Record<string, unknown>): SessionRow {
     content_hash: (row.content_hash as string) ?? null,
     embedded: (row.embedded as number) ?? 0,
     created_at: row.created_at as number,
-    machine_id: (row.machine_id as string) ?? DEFAULT_MACHINE_ID,
+    machine_id: (row.machine_id as string) ?? 'local',
     synced_at: (row.synced_at as number) ?? null,
   };
 }
@@ -239,7 +239,7 @@ export function upsertSession(data: SessionInsert): SessionRow {
     data.processed ?? DEFAULT_PROCESSED,
     data.content_hash ?? null,
     data.created_at,
-    data.machine_id ?? DEFAULT_MACHINE_ID,
+    data.machine_id ?? getTeamMachineId(),
     data.prompt_count !== undefined ? 1 : 0,
     data.tool_count !== undefined ? 1 : 0,
   );

@@ -13,8 +13,6 @@ import { DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 // skill_usage has no synced_at column — does not participate in team sync.
 
-// Re-export for callers that import DEFAULT_LIST_LIMIT from this module
-export { DEFAULT_LIST_LIMIT };
 
 // ---------------------------------------------------------------------------
 // Types

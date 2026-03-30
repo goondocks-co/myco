@@ -115,15 +115,16 @@ export function insertLineage(data: LineageInsert): LineageRow {
  * List all lineage entries for a skill, ordered by generation DESC
  * (newest generation first).
  */
-export function listLineageForSkill(skillId: string): LineageRow[] {
+export function listLineageForSkill(skillId: string, limit = 50): LineageRow[] {
   const db = getDatabase();
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM skill_lineage
      WHERE skill_id = ?
-     ORDER BY generation DESC`,
-  ).all(skillId) as Record<string, unknown>[];
+     ORDER BY generation DESC
+     LIMIT ?`,
+  ).all(skillId, limit) as Record<string, unknown>[];
 
   return rows.map(toLineageRow);
 }

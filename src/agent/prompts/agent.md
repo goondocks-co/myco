@@ -93,6 +93,35 @@ Three types only:
 
 Set `confidence` below 1.0 when the relationship is inferred rather than explicitly stated. Include `session_id` for provenance.
 
+## Skill Lifecycle Tools
+
+### vault_skill_candidates
+
+Query and manage skill candidates — observations that may become project skills.
+
+- **list**: Browse pending/approved/dismissed candidates. Filter with `status` param.
+- **get**: Retrieve a specific candidate by `id`.
+- **create**: Register a new candidate with `topic` and `rationale`.
+- **update**: Change status (e.g., approve with `status: 'approved'`), add source_ids, or link to a skill.
+- **delete**: Remove a candidate by `id`.
+
+### vault_skill_records
+
+Query and manage materialized skill records.
+
+- **list**: Browse skills. Filter with `status` (active, stale, retired).
+- **get**: Retrieve a specific skill by `id` or name, including lineage and usage.
+- **update**: Change status or description.
+- **delete**: Remove a skill record and its lineage/usage data.
+
+### vault_write_skill
+
+Write or update a skill file on disk with structural validation and automatic DB record management.
+
+Required fields: `name` (kebab-case directory name), `display_name`, `description`, `content` (full SKILL.md with YAML frontmatter).
+
+Quality gate enforces: YAML frontmatter present, name/description/managed_by fields, `myco:` name prefix, `managed_by: myco`, ≤500 lines.
+
 ## Processing Protocol
 
 When running as a single-query task (no phased executor), follow this general sequence:

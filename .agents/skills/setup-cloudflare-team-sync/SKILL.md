@@ -1,117 +1,153 @@
 ---
 name: myco:setup-cloudflare-team-sync
-description: |
-  Use this skill when setting up Myco's team sync feature using Cloudflare Workers, D1, and Vectorize — or when debugging issues with an existing sync deployment. Activates for tasks involving `myco team init`, the Team page in the daemon UI, Cloudflare Worker deployment, wrangler CLI setup, machine identity, or cross-machine vault sync. Also applies when diagnosing team sync failures even if the user doesn't explicitly frame it as a Cloudflare problem — symptoms like "pending count not draining," "sync not working," or "embeddings not appearing on another machine" all fall under this skill.
+description: Use this skill when setting up Myco's team sync via Cloudflare Workers, D1, and Vectorize — or debugging sync failures. Covers wrangler setup, machine identity, D1 schema, Vectorize bindings, silent failure modes, and the machine_id regression diagnosis pattern.
 managed_by: myco
 user-invocable: true
-allowed-tools: Read, Edit, Write, Bash, Grep, Glob
+allowed-tools:
+  - vault_state
+  - vault_set_state
+  - vault_search_fts
+  - vault_search_semantic
+  - vault_spores
+  - vault_report
 ---
 
 # Set Up and Debug Cloudflare Team Sync
 
-Myco's team sync replicates vault spores and embeddings across machines using a Cloudflare Worker as a lightweight relay. The Worker owns a D1 database (structured records) and a Vectorize index (embeddings). Each machine pushes its outbox to the Worker; teammates pull by querying the Worker. This skill covers initial provisioning, per-machine connection, and common failure patterns.
+Myco's team sync uses a Cloudflare Worker backed by D1 (relational) and Vectorize (embeddings) to synchronize vault data across machines. The sync pipeline runs locally via wrangler CLI and is managed through the Team page in the Daemon UI.
 
-## Architecture Overview
+## When to Activate
 
-```
-Machine A (.myco/db.sqlite)          Machine B
-  team_outbox table                    team_outbox table
-       │  push                              ▲ pull
-       ▼                                   │
-  Cloudflare Worker ── D1 (records) ── Vectorize (embeddings)
-```
-
-Key design decisions:
-- **Push-only outbox**: each machine appends to `team_outbox`; the agent drains it on each run. The Worker is the source of truth for cross-machine state.
-- **`machine_id` dedup**: records are keyed by `machine_id` (a stable UUID per installation in `.myco/machine.json`), not by DB row ID (which is local). Fan-out search always filters `machine_id != localMachineId` to avoid treating your own records as teammate records.
-- **Protocol versioned**: the Worker endpoint includes a version path (e.g., `/v1/push`). Breaking changes bump the version.
-- **Embeddings via Workers AI**: the Worker uses `@cf/baai/bge-m3` via Cloudflare's OpenAI-compatible endpoint — same dimensionality as the local Ollama default, so embeddings are cross-machine comparable.
+- Running `myco team init` for the first time
+- Deploying or redeploying the team-worker to Cloudflare
+- Diagnosing sync failures: "pending count not draining," "record count shortfall," "embeddings not appearing on another machine"
+- Investigating `machine_id='local'` appearing in D1 records
+- Any work in `.myco/.team-worker/` or `src/team/`
+- Debugging CWD-related wrangler failures
 
 ## Prerequisites
 
-1. A Cloudflare account (free tier is sufficient for most teams)
-2. `wrangler` CLI installed and authenticated: `wrangler login`
-3. Myco v0.12.10+ installed in the project with `.myco/` initialized
-4. Node.js ≥18 (wrangler dependency)
+- Cloudflare account with Workers, D1, and Vectorize access
+- `wrangler` CLI installed and authenticated (`wrangler login`)
+- Myco daemon configured with team sync enabled in `myco.yaml`
+- `CLOUDFLARE_API_TOKEN` and related secrets in `.myco/secrets.env` (not in `myco.yaml`)
 
-## Two-Phase Setup (Critical Distinction)
+## Initial Setup
 
-Team sync has **two completely separate operations** that are easy to confuse:
-
-| Operation | Who runs it | When | Where |
-|-----------|-------------|------|-------|
-| **Provision** | Workspace owner, once | First time only | `myco team init` (CLI) |
-| **Connect** | Each teammate | Per machine | Team page in daemon UI |
-
-`myco team init` deploys the Cloudflare Worker and creates the D1 + Vectorize resources. It only needs to run **once**. Every subsequent machine uses the Team page to connect with the Worker URL and shared secret — they do **not** run `myco team init` again.
-
-## Step 1: Provision the Worker (Owner Only)
+### 1. Create D1 and Vectorize resources
 
 ```bash
-# Authenticate with Cloudflare first
-wrangler login
-
-# From the project root
-myco team init
+wrangler d1 create myco-team-db
+wrangler vectorize create myco-embeddings --dimensions 1024 --metric cosine
 ```
 
-This command:
-1. Deploys `.myco/.team-worker/` to Cloudflare Workers
-2. Creates a D1 database and Vectorize index, binds them to the Worker
-3. Stores the Worker URL and credentials in `.myco/secrets.env` (never in `myco.yaml`)
+Record the IDs produced — you'll need them in `wrangler.toml`.
 
-**Gotcha — `.gitignore`:** `.myco/.team-worker/` must be in your vault's `.gitignore`. Projects initialized before v0.12.10 may be missing this entry. Check `.myco/.gitignore` and add it manually if absent:
+### 2. Configure `wrangler.toml`
 
+Set D1 and Vectorize bindings in `.myco/.team-worker/wrangler.toml`:
+
+```toml
+[[d1_databases]]
+binding = "DB"
+database_name = "myco-team-db"
+database_id = "<your-d1-id>"
+
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "myco-embeddings"
 ```
-.team-worker/
-```
 
-**Gotcha — wrangler ≥4.77 JSON output:** Older wrangler versions returned plain IDs for resource creation; wrangler ≥4.77 returns a JSON binding block. Myco v0.12.10+ handles this with JSON parsing + an idempotency fallback. If you see a parse error during `myco team init`, ensure you're on Myco v0.12.10+.
-
-**Gotcha — Vectorize index deletion:** If you need to tear down and re-provision, the Cloudflare dashboard does **not** expose Vectorize index deletion. You must use the CLI:
+### 3. Run schema migration
 
 ```bash
-wrangler vectorize delete <index-name>
+(cd .myco/.team-worker && wrangler d1 execute myco-team-db --file=schema.sql)
 ```
 
-## Step 2: Connect a Machine (Every Teammate)
+**Always use subshell syntax** `(cd ... && wrangler ...)` to avoid mutating the shell CWD (see Common Pitfalls).
 
-Each machine connects via the Team page in the daemon UI — not the CLI. The owner shares:
-- `MYCO_TEAM_WORKER_URL` (from `.myco/secrets.env`)
-- `MYCO_TEAM_SECRET`
-
-The connecting machine enters these in the Team page form. This writes values to `.myco/secrets.env` locally and does not touch `myco.yaml`.
-
-## Step 3: Verify Sync is Working
-
-After connecting, the daemon begins draining the outbox. The first sync from a machine with existing history may push ~1,000–1,500 records and takes several drain cycles (~200 records/cycle) to complete.
-
-**Where to check progress:**
-- **Team page** in the daemon UI → shows the pending outbox count. This is the authoritative progress indicator.
-- Daemon logs do **not** show per-record sync progress by design — if you're watching logs expecting verbose output, you won't see it there.
-
-A healthy sync: pending count starts high, drops by ~200 each agent run, reaches 0.
-
-## Debugging Common Failures
-
-### Pending count never decreases
-- Verify the daemon is running: `myco status`
-- Confirm `MYCO_TEAM_WORKER_URL` and `MYCO_TEAM_SECRET` are set in `.myco/secrets.env`
-- Test the Worker directly: `curl https://<your-worker>.workers.dev/v1/health`
-
-### projectHash collision — sync writing to wrong vault
-This was a v0.12.10 bug: `projectHash` was derived from `process.cwd()` instead of the vault directory path. If the daemon was started from different working directories, hashes collided and records from one project contaminated another. **Fix (already in v0.12.10):** hash is derived from the vault dir path. If you see cross-project contamination, upgrade Myco.
-
-### Vectorize error code 3002 not caught
-Earlier Worker versions caught Vectorize errors by matching message strings; error 3002 (index not ready) used a different format and fell through as an unhandled exception. **Fix (v0.12.10):** error detection now checks `error.code` numerically. If you see uncaught Vectorize errors in Worker logs, redeploy the Worker:
+### 4. Deploy the Worker
 
 ```bash
-# From .myco/.team-worker/
-wrangler deploy
+(cd .myco/.team-worker && wrangler deploy)
 ```
 
-### Worker fails to locate its source at startup
-`locateWorkerSource()` previously searched `src/worker` first, which only exists in the dev checkout. In installed environments the compiled output is at `dist/src/worker`. **Fix (v0.12.10):** loader tries `dist/src/worker` first via `resolvePackageRoot()`, then falls back. If you're running from source and the Worker fails to start, check `src/team/worker-locator.ts` for the path resolution logic.
+### 5. Verify from the Team page
 
-### Fan-out search returns your own records as "teammate" records
-The fan-out query must include `AND machine_id != ?` (bound to the local machine UUID from `.myco/machine.json`). If your own spores appear attributed to a teammate, this filter is missing or the wrong value is bound. The machine_id is a UUID — not a hostname or display name.
+Open the Team page in the Daemon UI. The sync status panel should show the worker URL, last sync time, and outbox depth. Trigger a manual sync to validate the pipeline end-to-end.
+
+## Machine Identity
+
+Every session and prompt batch is tagged with a `machine_id` that identifies the originating machine. Machine identity is resolved at daemon startup via `getMachineId(vaultDir)` and `initTeamContext()`.
+
+**The machine_id MUST propagate to all write call sites.** See the diagnosis section below for what happens when it doesn't.
+
+## Diagnosing Record Count Shortfalls
+
+If the record count on D1 is lower than the local vault count, work through this checklist:
+
+1. **Check `machine_id` values in D1:**
+   ```sql
+   SELECT machine_id, COUNT(*) FROM sessions GROUP BY machine_id;
+   ```
+   If you see `machine_id='local'`, the daemon was writing records with the default value instead of the resolved machine identity — proceed to the machine_id regression diagnosis below.
+
+2. **Check the outbox depth:** Pending records accumulate in the local `team-outbox` table. If the outbox is growing but not draining, verify the Worker is reachable and the sync task is running.
+
+3. **Check for deletion tombstone gaps:** Records deleted locally without creating a tombstone are never signaled for remote deletion. D1 retains them silently.
+
+4. **Check wrangler CWD:** If the sync commands ran with a mutated CWD (see below), some operations may have silently skipped.
+
+## machine_id='local' Regression Diagnosis
+
+### Root cause
+
+Three daemon INSERT call sites historically omitted `machine_id`:
+- `upsertSession` on session register (`main.ts:777`)
+- `upsertSession` on auto-register from events (`main.ts:833`)
+- `insertBatchStateless` on prompt capture (`main.ts:193`)
+
+The daemon resolves machine identity correctly at startup (`getMachineId(vaultDir)` / `initTeamContext()` at lines 464/474), but never threaded the value to these write functions. SQLite silently used `DEFAULT_MACHINE_ID = 'local'` for every INSERT — no error, no warning.
+
+### Why it's invisible
+
+Any field with a DB-level `DEFAULT` produces a silent wrong write when omitted, not an error. The bug is undetectable in logs unless the stored value is explicitly inspected.
+
+### Migration window trap
+
+Running the v7 schema migration while the daemon is live only fixes historical rows. The still-running daemon process continues executing old code that omits `machine_id` — every new session and batch created between migration start and daemon restart receives `'local'` again. After migration, you must restart the daemon before the fix takes effect for new rows.
+
+**If you hit this:** Run a manual backfill for any rows created in the migration window:
+```sql
+UPDATE sessions SET machine_id = '<correct-id>' WHERE machine_id = 'local' AND created_at > <migration_timestamp>;
+-- Repeat for prompt_batches, skills, outbox entries, etc.
+```
+Then re-enqueue the affected rows for D1 sync.
+
+### The fix
+
+`getTeamMachineId()` is now the default fallback in all INSERT paths across query modules. Even if a caller forgets to pass `machine_id`, the correct resolved identity is used. The `StatelessBatchInsert` interface was extended with a `machine_id` field. 26 targeted smoke tests verify the fix including `insertBatchStateless machine_id threading`.
+
+### Pattern to watch
+
+Any daemon startup value resolved once and stored in a closure must be audited across all write call sites that include that field. The same silent-default pattern can recur for any new field added to session or batch write paths. `getTeamMachineId()` as call-site default makes omission safe — but new fields with `DEFAULT` values require the same audit.
+
+## Common Pitfalls
+
+### Wrangler CWD drift stops hook execution
+
+Running `cd .myco/.team-worker && wrangler ...` in a non-subshell leaves the CWD in `.myco/.team-worker/`. Any subsequent hook or script that uses project-relative paths will silently fail or operate on the wrong directory. This was observed as empty `skill_candidates` on D1 and an 8-record shortfall in `skill_records` (32 local vs. 24 cloud).
+
+**Fix:** Always use subshell syntax: `(cd .myco/.team-worker && wrangler ...)`. The parentheses create a subshell — CWD is never mutated in the parent shell.
+
+### D1 and local records diverge after deletion
+
+Deletions must go through the outbox/tombstone pathway to propagate to D1. Records deleted locally without creating a tombstone are never signaled for remote deletion — D1 silently retains stale rows. Always use the Myco deletion API rather than raw SQL DELETE to ensure tombstones are created.
+
+### Sync appears to work but embeddings are missing on remote machines
+
+Vectorize embeddings are enqueued separately from D1 records. Check the embedding outbox depth and confirm the Vectorize binding is correctly configured in `wrangler.toml`. A misconfigured binding causes silent write failures on the Cloudflare side with no local error.
+
+### Secrets in `myco.yaml`
+
+API tokens and sync credentials must be in `.myco/secrets.env`, never in `myco.yaml`. The yaml file is version-controlled; secrets.env is gitignored. If team sync credentials end up in git history, rotate them immediately.

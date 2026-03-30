@@ -18,15 +18,16 @@ import {
   listCandidatesWithCount,
   getCandidate,
   updateCandidate,
+  deleteCandidate,
 } from '@myco/db/queries/skill-candidates.js';
 import {
   listSkillRecordsWithCount,
   getSkillRecord,
   getSkillRecordByName,
+  deleteSkillRecordCascade,
 } from '@myco/db/queries/skill-records.js';
 import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { countUsageForSkill } from '@myco/db/queries/skill-usage.js';
-import { getDatabase } from '@myco/db/client.js';
 import { enqueueOutbox } from '@myco/db/queries/team-outbox.js';
 import { isTeamSyncEnabled, getTeamMachineId } from '@myco/daemon/team-context.js';
 
@@ -79,10 +80,17 @@ export async function handleUpdateCandidate(req: RouteRequest): Promise<RouteRes
   const body = req.body as Record<string, unknown> | undefined;
   if (!body) return { status: 400, body: { error: 'Request body required' } };
 
+  // Pick only allowed mutable fields — reject arbitrary body fields
+  const { status, topic, rationale, confidence, source_ids, skill_id } = body as Record<string, unknown>;
   const updated = updateCandidate(id, {
-    ...body,
+    ...(status !== undefined ? { status: status as string } : {}),
+    ...(topic !== undefined ? { topic: topic as string } : {}),
+    ...(rationale !== undefined ? { rationale: rationale as string } : {}),
+    ...(confidence !== undefined ? { confidence: confidence as number } : {}),
+    ...(source_ids !== undefined ? { source_ids: source_ids as string } : {}),
+    ...(skill_id !== undefined ? { skill_id: skill_id as string | null } : {}),
     updated_at: epochSeconds(),
-  } as Parameters<typeof updateCandidate>[1]);
+  });
 
   if (!updated) return { status: 404, body: { error: `Candidate not found: ${id}` } };
   return { status: 200, body: { candidate: updated } };
@@ -146,11 +154,8 @@ export async function handleGetSkillRecord(req: RouteRequest): Promise<RouteResp
  */
 export async function handleDeleteCandidate(req: RouteRequest): Promise<RouteResponse> {
   const id = req.params.id;
-  const candidate = getCandidate(id);
-  if (!candidate) return { status: 404, body: { error: `Not found: ${id}` } };
-
-  const db = getDatabase();
-  db.prepare('DELETE FROM skill_candidates WHERE id = ?').run(id);
+  const deleted = deleteCandidate(id);
+  if (!deleted) return { status: 404, body: { error: `Not found: ${id}` } };
 
   return { status: 200, body: { deleted: true, id } };
 }
@@ -160,39 +165,25 @@ export async function handleDeleteCandidate(req: RouteRequest): Promise<RouteRes
  */
 export async function handleDeleteSkillRecord(req: RouteRequest): Promise<RouteResponse> {
   const idOrName = req.params.id;
-  const record = getSkillRecord(idOrName) ?? getSkillRecordByName(idOrName);
-  if (!record) return { status: 404, body: { error: `Not found: ${idOrName}` } };
-
-  const db = getDatabase();
-  db.transaction(() => {
-    db.prepare('DELETE FROM skill_lineage WHERE skill_id = ?').run(record.id);
-    db.prepare('DELETE FROM skill_usage WHERE skill_id = ?').run(record.id);
-    // Reset any linked candidate — dismiss it so it doesn't regenerate
-    if (record.candidate_id) {
-      db.prepare(
-        `UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ? WHERE id = ?`,
-      ).run(epochSeconds(), record.candidate_id);
-    }
-    // Also catch candidates linked via skill_id (may differ from candidate_id)
-    db.prepare(
-      `UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ? WHERE skill_id = ?`,
-    ).run(epochSeconds(), record.id);
-    db.prepare('DELETE FROM skill_records WHERE id = ?').run(record.id);
-  })();
+  const result = deleteSkillRecordCascade(idOrName);
+  if (!result) return { status: 404, body: { error: `Not found: ${idOrName}` } };
 
   // Sync deletion to team outbox (best-effort)
   if (isTeamSyncEnabled()) {
     try {
       enqueueOutbox({
         table_name: 'skill_records',
-        row_id: record.id,
+        row_id: result.id,
         operation: 'delete',
-        payload: JSON.stringify({ id: record.id, name: record.name }),
+        payload: JSON.stringify({ id: result.id, name: result.name }),
         machine_id: getTeamMachineId(),
         created_at: epochSeconds(),
       });
-    } catch { /* best-effort sync */ }
+    } catch (err) {
+      // Best-effort sync — log for diagnosability
+      console.warn('[team-sync] Failed to enqueue skill record deletion:', err instanceof Error ? err.message : err);
+    }
   }
 
-  return { status: 200, body: { deleted: true, id: record.id, name: record.name } };
+  return { status: 200, body: { deleted: true, id: result.id, name: result.name } };
 }

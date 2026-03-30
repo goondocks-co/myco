@@ -6,7 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
@@ -129,7 +129,7 @@ function toSporeRow(row: Record<string, unknown>): SporeRow {
     embedded: (row.embedded as number) ?? 0,
     created_at: row.created_at as number,
     updated_at: (row.updated_at as number) ?? null,
-    machine_id: (row.machine_id as string) ?? DEFAULT_MACHINE_ID,
+    machine_id: (row.machine_id as string) ?? 'local',
     synced_at: (row.synced_at as number) ?? null,
   };
 }
@@ -174,7 +174,7 @@ export function insertSpore(data: SporeInsert): SporeRow {
     data.properties ?? null,
     data.created_at,
     data.updated_at ?? null,
-    data.machine_id ?? DEFAULT_MACHINE_ID,
+    data.machine_id ?? getTeamMachineId(),
   );
 
   const row = toSporeRow(

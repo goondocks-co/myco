@@ -23,10 +23,10 @@ function resolveSchedule(
 }
 
 export interface ScheduledJobContext {
-  /** Called to check if any agent is currently running. */
-  isAgentRunning: () => boolean;
-  /** Called to mark agent as running/not running. */
-  setAgentRunning: (v: boolean) => void;
+  /** Check if a specific task is currently running. */
+  isTaskRunning: (taskName: string) => boolean;
+  /** Mark a task as running/not running. */
+  setTaskRunning: (taskName: string, running: boolean) => void;
   /** Called to run the task. */
   runTask: (taskName: string) => Promise<void>;
   /** Pre-condition checkers keyed by preCondition name. */
@@ -68,7 +68,7 @@ export function buildScheduledJobs(
       runIn: effective.runIn,
       fn: async () => {
         if (!context) return;
-        if (context.isAgentRunning()) return;
+        if (context.isTaskRunning(task.name)) return;
         if (Date.now() - lastRun < intervalMs) return;
 
         // Check pre-condition if defined
@@ -79,11 +79,11 @@ export function buildScheduledJobs(
         }
 
         try {
-          context.setAgentRunning(true);
+          context.setTaskRunning(task.name, true);
           await context.runTask(task.name);
-          lastRun = Date.now();
         } finally {
-          context.setAgentRunning(false);
+          lastRun = Date.now();
+          context.setTaskRunning(task.name, false);
         }
       },
     });

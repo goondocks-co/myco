@@ -1,13 +1,6 @@
 ---
 name: myco:add-vault-table
-description: >
-  Use this skill when adding a new feature table to the Myco vault SQLite
-  database. Activates whenever you need to persist a new data type —
-  skill candidates, custom entities, new event types, etc. — and wire it
-  up with MCP tools. Apply this skill even if the user doesn't explicitly
-  mention schema migration, MCP tools, or the db module — any time a new
-  table is needed, this full pattern applies: schema migration, query
-  module, constants, FTS5 index (if keyword-searchable), and tool surface.
+description: Full pattern for adding a new feature table to the Myco vault — migration with correct error handling, query module, constants, FTS5 index, MCP tool surface, and table exclusion tracking.
 managed_by: myco
 user-invocable: true
 allowed-tools:
@@ -15,202 +8,218 @@ allowed-tools:
   - Write
   - Edit
   - Bash
-  - MultiEdit
 ---
 
 # Add a New Table to the Myco Vault Schema
 
 ## Prerequisites
 
-- You know the table name (snake_case) and the columns it needs
-- You know whether rows in this table need **keyword searchability** (FTS5)
-  — if users or agents will search this table by text content, the answer
-  is yes
-- Existing schema is in `src/db/migrations/` — find the highest-numbered
-  file to understand current schema version
+- Existing migration files in `src/db/migrations/` to reference for numbering and pattern
+- Schema version constant in `src/config/constants.ts` (increment by 1)
+- Understanding of whether the new table needs FTS5 keyword search
 
 ## Steps
 
-### Step 1 — Write the migration file
+### 1. Write the Migration File
 
-Create `src/db/migrations/<N+1>_add_<table_name>.ts` where `N` is the
-current highest migration number.
+Create `src/db/migrations/v<N>_<table-name>.ts`. Migration files must:
+
+1. **Create the table** in a `try/catch` that only swallows "no such table" errors
+2. **Re-throw unexpected errors** — silent swallowing leaves the DB partially migrated with no indication
+3. **Check exclusion status** — some tables have special ALTER TABLE exclusion requirements
+
+**Correct migration catch pattern:**
 
 ```typescript
-import { Database } from 'better-sqlite3';
+export async function migrate(db: Database): Promise<void> {
+  // Create the new table
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS my_new_table (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    `);
+  } catch (err: any) {
+    // Only swallow "no such table" — expected on fresh installs
+    // Re-throw everything else: constraint violations, syntax errors, etc.
+    if (!err.message?.includes('no such table')) throw err;
+  }
 
-export function up(db: Database): void {
+  // Add indexes
   db.exec(`
-    CREATE TABLE IF NOT EXISTS <table_name> (
-      id          TEXT PRIMARY KEY,
-      agent_id    TEXT NOT NULL,
-      -- ... your columns ...
-      created_at  INTEGER NOT NULL,
-      updated_at  INTEGER NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_<table_name>_agent_id
-      ON <table_name>(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_my_new_table_agent
+    ON my_new_table(agent_id)
   `);
 }
+```
 
-export function down(db: Database): void {
-  db.exec(`DROP TABLE IF EXISTS <table_name>;`);
+> **Critical:** Do NOT write a bare `catch (err) { /* ignore */ }`. The v7 migration made this mistake — it silently swallowed all errors, leaving the DB in a partially-migrated state with no diagnostic output. Only catch errors you explicitly expect.
+
+**Why "no such table" appears:** On a fresh install with no prior vault, `ALTER TABLE` or `DROP TABLE` statements in migrations may reference tables that don't exist yet. That specific error is safe to swallow. All other errors indicate real problems.
+
+### 2. Check Table Exclusion Status
+
+Before writing any `ALTER TABLE` statements that touch existing tables, check whether those existing tables have special exclusion status.
+
+**Currently excluded tables** (must never be targeted by `ALTER TABLE` in new migrations):
+- `entity_mentions` — excluded from schema-wide ALTER operations
+- `team_outbox` — same exclusion pattern
+
+When you add a new table, decide upfront: **does this table need exclusion treatment?** If the table:
+- Is managed by a sync process that may not be present on all machines, OR
+- Has schema that diverges between local and remote installations
+
+...then document it in the exclusion list comment in `src/db/migrations/` and apply the same exclusion pattern as `entity_mentions`.
+
+**Pattern to detect exclusion need:**
+
+```typescript
+// At the top of migration files that do schema-wide ALTER TABLE:
+const EXCLUDED_TABLES = ['entity_mentions', 'team_outbox'];
+
+for (const tableName of allTables) {
+  if (EXCLUDED_TABLES.includes(tableName)) continue;
+  db.exec(`ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS ...`);
 }
 ```
 
-**Key rules:**
-- Always include `agent_id` — the vault is multi-agent
-- Always include `created_at` / `updated_at` as INTEGER (Unix ms)
-- Add targeted indexes for every column used in `WHERE` or `ORDER BY`
-- Use `CREATE INDEX IF NOT EXISTS` — migrations must be idempotent
+### 3. Register the Migration
 
-### Step 2 — Add FTS5 index (if the table is keyword-searchable)
-
-If rows in this table will be searched by text content, add the FTS5
-virtual table **in the same migration file as `CREATE TABLE`**. This is
-the schema v6 dual-coverage pattern: exact keyword search (FTS5) plus
-semantic similarity (embeddings) in tandem.
+In `src/db/index.ts` (or wherever migrations are registered), add the new migration in version order:
 
 ```typescript
-// Inside the same up() function, after CREATE TABLE:
-db.exec(`
-  CREATE VIRTUAL TABLE IF NOT EXISTS <table_name>_fts
-    USING fts5(
-      content='<table_name>',
-      content_rowid='rowid',
-      <col1>, <col2>   -- text columns to index
-    );
+import { migrate as v7 } from './migrations/v7_my_new_table';
 
-  -- Backfill existing rows (safe to run even if table is empty)
-  INSERT INTO <table_name>_fts(<table_name>_fts) VALUES('rebuild');
-`);
+const MIGRATIONS = [
+  // ... existing
+  { version: 7, run: v7 },
+];
 ```
 
-Add the corresponding `down()` cleanup:
+Bump `SCHEMA_VERSION` in `src/config/constants.ts` to match.
 
-```typescript
-db.exec(`
-  DROP TABLE IF EXISTS <table_name>_fts;
-  DROP TABLE IF EXISTS <table_name>;
-`);
-```
+### 4. Write the Query Module
 
-**Why same commit:** deferring FTS creation risks the table being deployed
-without search support, requiring a second migration later. There is no
-read-latency cost — FTS5 indexes are updated on write, not on read.
-
-**Naming convention:** `<table_name>_fts` — matches the pattern of
-`spores_fts`, `sessions_fts`, `prompt_batches_fts` from schema v6.
-
-### Step 3 — Create the query module
-
-Create `src/db/<table_name>.ts`. This file owns all SQL for the table.
+Create `src/db/<table-name>.ts`. Follow the existing module pattern:
 
 ```typescript
 import type { Database } from 'better-sqlite3';
-import type { <TableRow> } from '../types.js';
 
-export function insert<TableName>(db: Database, row: <TableRow>): void {
-  db.prepare(`
-    INSERT INTO <table_name> (id, agent_id, ..., created_at, updated_at)
-    VALUES (@id, @agent_id, ..., @created_at, @updated_at)
-  `).run(row);
+export interface MyNewRecord {
+  id: string;
+  agent_id: string;
+  content: string;
+  created_at: number;
 }
 
-export function list<TableName>(
+export function insertMyNewRecord(
   db: Database,
-  agentId: string,
-  opts: { limit?: number } = {}
-): <TableRow>[] {
-  return db.prepare(`
-    SELECT * FROM <table_name>
-    WHERE agent_id = ?
-    ORDER BY created_at DESC
-    LIMIT ?
-  `).all(agentId, opts.limit ?? 100) as <TableRow>[];
+  record: Omit<MyNewRecord, 'id'>
+): MyNewRecord {
+  const id = crypto.randomUUID();
+  const stmt = db.prepare(`
+    INSERT INTO my_new_table (id, agent_id, content, created_at)
+    VALUES (?, ?, ?, ?)
+  `);
+  stmt.run(id, record.agent_id, record.content, record.created_at);
+  return { id, ...record };
 }
 
-export function get<TableName>(
+export function listMyNewRecords(
   db: Database,
-  id: string
-): <TableRow> | undefined {
-  return db.prepare(
-    `SELECT * FROM <table_name> WHERE id = ?`
-  ).get(id) as <TableRow> | undefined;
+  agentId: string
+): MyNewRecord[] {
+  return db
+    .prepare(`SELECT * FROM my_new_table WHERE agent_id = ? ORDER BY created_at DESC`)
+    .all(agentId) as MyNewRecord[];
 }
 ```
 
-**Query patterns to follow** (from the vault's accumulated wisdom):
-- Combine list + count in a single query using `COUNT(*) OVER()` when
-  you need pagination metadata — avoids a second round-trip
-- Use composite indexes for multi-column WHERE clauses (e.g.,
-  `(agent_id, status)`) — SQLite will use only one index per scan
-- Write mutations as atomic SQL where possible (INSERT OR REPLACE,
-  UPDATE ... WHERE) rather than read-then-write in application code
+### 5. Add FTS5 Index (If Keyword-Searchable)
 
-### Step 4 — Update constants
-
-Add the new table name and any enum values to `src/config/constants.ts`:
+If the table's content should appear in `vault_search_fts` results, add an FTS5 virtual table to the migration:
 
 ```typescript
-export const TABLE_<TABLE_NAME> = '<table_name>' as const;
-// If the table has status/type enums:
-export const <TABLE_NAME>_STATUS = {
-  ACTIVE: 'active',
-  ARCHIVED: 'archived',
-} as const;
+db.exec(`
+  CREATE VIRTUAL TABLE IF NOT EXISTS my_new_table_fts
+  USING fts5(
+    id UNINDEXED,
+    content,
+    content='my_new_table',
+    content_rowid='rowid'
+  )
+`);
+
+// Triggers to keep FTS in sync
+db.exec(`
+  CREATE TRIGGER IF NOT EXISTS my_new_table_ai
+  AFTER INSERT ON my_new_table BEGIN
+    INSERT INTO my_new_table_fts(rowid, id, content)
+    VALUES (new.rowid, new.id, new.content);
+  END
+`);
 ```
 
-This prevents magic strings scattered across the codebase.
+Register the FTS table in `src/db/search.ts` so `vault_search_fts` includes it.
 
-### Step 5 — Wire MCP tools
+### 6. Add Constants
 
-Create `src/mcp/tools/<table_name>-tools.ts`. Define the tool shape:
+In `src/config/constants.ts`, add:
+
+```typescript
+export const MY_NEW_TABLE = 'my_new_table' as const;
+export const MY_NEW_TABLE_FTS = 'my_new_table_fts' as const;
+```
+
+Never inline table name strings in queries — always reference constants so renames are safe.
+
+### 7. Write the MCP Tool
+
+Create `src/mcp/tools/my-new-table.ts`:
 
 ```typescript
 import { z } from 'zod';
-import type { Database } from 'better-sqlite3';
-import { list<TableName>, insert<TableName> } from '../../db/<table_name>.js';
+import type { McpTool } from '../types';
 
-export const <tableName>Tools = (db: Database) => ({
-  vault_list_<table_name>: {
-    description: '...',
-    inputSchema: z.object({
-      agent_id: z.string().optional(),
-      limit: z.number().optional(),
-    }),
-    handler: async (input: ...) => { ... },
+export const myNewTableTool: McpTool = {
+  name: 'vault_my_new_table',
+  description: 'List or create records in my_new_table.',
+  inputSchema: z.object({
+    action: z.enum(['list', 'create']),
+    content: z.string().optional(),
+  }),
+  handler: async ({ action, content }, { db, agentId }) => {
+    if (action === 'list') {
+      const records = listMyNewRecords(db, agentId);
+      return { content: [{ type: 'text', text: JSON.stringify(records) }] };
+    }
+    // ... create path
   },
-  // ... additional CRUD tools as needed
-});
+};
 ```
 
-### Step 6 — Register in server.ts
+**MCP response format is non-negotiable:** always return `{ content: [{ type: 'text', text: string }] }`. Returning raw objects causes silent failures in the MCP layer.
 
-Open `src/mcp/server.ts` and:
+### 8. Register the Tool in server.ts
 
-1. Import your new tools: `import { <tableName>Tools } from './tools/<table_name>-tools.js';`
-2. Merge into the tool map: `...(<tableName>Tools(db))`
-3. Update `VAULT_TOOL_COUNT` to reflect the new total
+In `src/mcp/server.ts`, add the tool to the tool registry in two places:
+
+1. **Import** the tool handler
+2. **Register** it in the `tools` array passed to the MCP server constructor
+
+Both steps are required. Missing either causes the tool to be invisible to agents even though no error is thrown.
 
 ## Common Pitfalls
 
-- **Missing agent_id scoping** — Every query that reads rows should filter
-  by `agent_id`. Without this, one agent sees another's data.
-
-- **Deferring FTS5 to a follow-up migration** — This splits the feature
-  across two PRs/deploys and is easy to forget. Add it in the same
-  migration. If you're unsure whether FTS is needed, err on the side of
-  including it — no performance cost, and removing it later is harder.
-
-- **Enum values in code vs. DB** — If you define status enums as
-  TypeScript constants, make sure the string values exactly match what
-  gets persisted. A mismatch (e.g., `'in_progress'` vs `'inProgress'`)
-  causes silent query failures where rows exist but are never returned.
-
-- **Magic strings in queries** — Use the constants from Step 4. SQL that
-  hard-codes `'active'` in five places will eventually drift.
-
-- **Forgetting `VAULT_TOOL_COUNT`** — If the count is wrong, the MCP
-  server may fail startup validation or emit confusing warnings.
+| Pitfall | Symptom | Fix |
+|---------|---------|-----|
+| Silent catch in migration | DB partially migrated, no error, wrong behavior later | Catch only `'no such table'`, re-throw everything else |
+| Forgetting exclusion check | New migration breaks excluded tables | Check EXCLUDED_TABLES list before any schema-wide ALTER |
+| Inlined table name strings | Rename breaks queries in non-obvious places | Use constants from `src/config/constants.ts` |
+| Missing FTS triggers | Records inserted but never appear in search | Add AFTER INSERT / AFTER UPDATE / AFTER DELETE triggers |
+| Tool registered in tools array only | Tool works in testing but invisible to agent | Must also import and register in server.ts constructor |
+| Raw object returned from MCP handler | Silent failure — agent receives no content | Always wrap in `{ content: [{ type: 'text', text: ... }] }` |
+| SCHEMA_VERSION not bumped | Migration runs but version check fails or skips | Always increment `SCHEMA_VERSION` constant to match migration number |

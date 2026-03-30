@@ -28,7 +28,7 @@ import { getMachineId } from './machine-id.js';
 import { createBackupHandlers } from './api/backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
 import { TeamSyncClient } from './team-sync.js';
-import { initTeamContext } from './team-context.js';
+import { initTeamContext, getTeamMachineId } from './team-context.js';
 import { createBackup } from './backup.js';
 import { listPending, markSent, pruneOld, backfillUnsynced } from '../db/queries/team-outbox.js';
 import { readSecrets } from '../config/secrets.js';
@@ -86,7 +86,7 @@ import {
   handleDeleteCandidate,
   handleDeleteSkillRecord,
 } from './api/skills.js';
-import { detectSkillUsage } from './skill-usage.js';
+import { detectSkillUsage, SKILL_USAGE_DETECTION_ENABLED } from './skill-usage.js';
 import { countSkillRecords } from '../db/queries/skill-records.js';
 import { countCandidates, listCandidates } from '../db/queries/skill-candidates.js';
 import { listTurnsByRun } from '../db/queries/turns.js';
@@ -97,7 +97,7 @@ import { upsertSession, closeSession, updateSession, listSessions, getSession, d
 import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, findBatchByPromptPrefix, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary, listBatchesBySession } from '../db/queries/batches.js';
 import { insertActivityWithBatch } from '../db/queries/activities.js';
 import { insertAttachment, getAttachmentByFilePath } from '../db/queries/attachments.js';
-import { listRuns, countRuns, getRun, getRunningRun } from '../db/queries/runs.js';
+import { listRuns, countRuns, getRun, getLatestRunId } from '../db/queries/runs.js';
 import { listReports } from '../db/queries/reports.js';
 import { insertSpore, updateSporeStatus } from '../db/queries/spores.js';
 import { listPlans } from '../db/queries/plans.js';
@@ -195,6 +195,7 @@ export function handleUserPrompt(
     user_prompt: prompt ?? null,
     started_at: now,
     created_at: now,
+    machine_id: getTeamMachineId(),
   });
 
   // insertBatchStateless guarantees non-null prompt_number via COALESCE subquery
@@ -564,7 +565,10 @@ export async function main(): Promise<void> {
     vaultDir,
     logger,
     uiDir: uiDir ?? undefined,
-    onRequest: () => powerManager.recordActivity(),
+    // Don't record activity on every HTTP request — UI polling (every 3-10s)
+    // would prevent the PowerManager from ever reaching 'idle' state, blocking
+    // all idle-only scheduled tasks (skill-survey, skill-generate, skill-evolve).
+    // Activity is recorded on meaningful events below (session register, prompt capture, etc.).
   });
 
   // The daemon serves the dashboard UI and must stay running regardless of
@@ -594,8 +598,8 @@ export async function main(): Promise<void> {
    */
   async function triggerTitleSummary(sessionId: string): Promise<void> {
     if (config.agent.summary_batch_interval <= 0) return;
-    const running = getRunningRun(DEFAULT_AGENT_ID);
-    if (running) return;
+    // No caller-side concurrency guard — the executor's per-task guard
+    // handles blocking duplicate title-summary runs.
     try {
       const { runAgent } = await import('../agent/executor.js');
       runAgent(vaultDir, {
@@ -766,6 +770,7 @@ export async function main(): Promise<void> {
   // --- Session routes ---
 
   server.registerRoute('POST', '/sessions/register', async (req) => {
+    powerManager.recordActivity();
     const { session_id, agent, branch, started_at } = RegisterBody.parse(req.body);
     const resolvedStartedAt = started_at ?? new Date().toISOString();
     registry.register(session_id, { started_at: resolvedStartedAt, branch });
@@ -783,6 +788,7 @@ export async function main(): Promise<void> {
       started_at: startedEpoch,
       created_at: now,
       status: 'active',
+      machine_id: machineId,
     });
     // Clear ended_at if session was previously completed (reload scenario)
     updateSession(session_id, { ended_at: null, status: 'active' });
@@ -835,6 +841,7 @@ export async function main(): Promise<void> {
         status: 'active',
         started_at: startedEpoch,
         created_at: now,
+        machine_id: machineId,
       });
 
       // Reconcile buffer against DB — recover any prompts lost during downtime.
@@ -849,6 +856,7 @@ export async function main(): Promise<void> {
 
     // --- Prompt batch tracking ---
     if (event.type === 'user_prompt') {
+      powerManager.recordActivity();
       const promptText = String(event.prompt ?? '');
 
       // Skip system-injected messages (task notifications, system reminders) —
@@ -1220,23 +1228,25 @@ export async function main(): Promise<void> {
     updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
 
     // Detect skill usage from transcript content (best-effort, non-blocking).
-    try {
-      let transcriptText: string | null = null;
-      if (hookTranscriptPath) {
-        try { transcriptText = fs.readFileSync(hookTranscriptPath, 'utf-8'); }
-        catch { /* file may not exist yet — fall through */ }
+    // Skip transcript I/O entirely when detection is disabled.
+    if (SKILL_USAGE_DETECTION_ENABLED) {
+      try {
+        let transcriptText: string | null = null;
+        if (hookTranscriptPath) {
+          try { transcriptText = fs.readFileSync(hookTranscriptPath, 'utf-8'); }
+          catch { /* file may not exist yet — fall through */ }
+        }
+        if (!transcriptText && allTurns.length > 0) {
+          transcriptText = allTurns
+            .map((t) => [t.prompt ?? '', t.aiResponse ?? ''].join(' '))
+            .join('\n');
+        }
+        if (transcriptText) {
+          detectSkillUsage(sessionId, transcriptText);
+        }
+      } catch {
+        // Best-effort — don't block reconciliation
       }
-      if (!transcriptText && allTurns.length > 0) {
-        // Fallback: join available turn text so skill name patterns can still match
-        transcriptText = allTurns
-          .map((t) => [t.prompt ?? '', t.aiResponse ?? ''].join(' '))
-          .join('\n');
-      }
-      if (transcriptText) {
-        detectSkillUsage(sessionId, transcriptText);
-      }
-    } catch {
-      // Best-effort — don't block reconciliation
     }
 
     // Enhanced capture: populate response_summary on earlier batches from transcript.
@@ -1460,12 +1470,16 @@ export async function main(): Promise<void> {
       if (record.name) {
         const projectRoot = path.resolve(vaultDir, '..');
         const skillDir = path.resolve(projectRoot, '.agents', 'skills', record.name);
-        try { fs.rmSync(skillDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+        try { fs.rmSync(skillDir, { recursive: true, force: true }); } catch (err) {
+          logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to remove skill directory', { name: record.name, error: String(err) });
+        }
         // Remove agent-specific symlinks (e.g., .claude/skills/<name>)
         try {
           const { syncSkillSymlinks } = await import('../symbionts/installer.js');
           syncSkillSymlinks(projectRoot, record.name, { remove: true });
-        } catch { /* best-effort */ }
+        } catch (err) {
+          logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to remove skill symlinks', { name: record.name, error: String(err) });
+        }
       }
     }
     return result;
@@ -1517,6 +1531,18 @@ export async function main(): Promise<void> {
 
   // --- Agent API routes ---
 
+  /**
+   * Build the instruction string for a skill-generate run.
+   * Shared by both the API route handler and the scheduler.
+   */
+  function buildSkillGenerateInstruction(): string | undefined {
+    const candidates = listCandidates({ status: 'approved', limit: 1 });
+    if (candidates.length > 0) {
+      return `Generate skill for candidate id=${candidates[0].id} topic="${candidates[0].topic}"`;
+    }
+    return undefined;
+  }
+
   const AgentRunBody = z.object({
     task: z.string().optional(),
     instruction: z.string().optional(),
@@ -1530,10 +1556,7 @@ export async function main(): Promise<void> {
     // Same structural enforcement as the scheduler — one candidate per run.
     let instruction = rawInstruction;
     if (task === 'skill-generate' && !instruction) {
-      const candidates = listCandidates({ status: 'approved', limit: 1 });
-      if (candidates.length > 0) {
-        instruction = `Generate skill for candidate id=${candidates[0].id} topic="${candidates[0].topic}"`;
-      }
+      instruction = buildSkillGenerateInstruction();
     }
 
     const { runAgent } = await import('../agent/executor.js');
@@ -1543,14 +1566,7 @@ export async function main(): Promise<void> {
     // Query for the most recently created run matching this task to get
     // the correct ID — not getRunningRun which may return a different task.
     const effectiveAgentId = agentId ?? 'myco-agent';
-    const db = getDatabase();
-    const latestRow = db.prepare(
-      `SELECT id FROM agent_runs
-       WHERE agent_id = ? ${task ? 'AND task = ?' : ''}
-       ORDER BY started_at DESC
-       LIMIT 1`,
-    ).get(...(task ? [effectiveAgentId, task] : [effectiveAgentId])) as { id: string } | undefined;
-    const runId = latestRow?.id;
+    const runId = getLatestRunId(effectiveAgentId, task);
 
     resultPromise
       .then((result) => {
@@ -1656,6 +1672,7 @@ export async function main(): Promise<void> {
     const spore = insertSpore({
       id,
       agent_id: USER_AGENT_ID,
+      machine_id: machineId,
       observation_type: observationType,
       content,
       tags: tags ? tags.join(', ') : null,
@@ -1774,6 +1791,7 @@ export async function main(): Promise<void> {
     insertResolutionEvent({
       id: resolutionId,
       agent_id: USER_AGENT_ID,
+      machine_id: machineId,
       spore_id: old_spore_id,
       action: 'supersede',
       new_spore_id,
@@ -2002,7 +2020,7 @@ export async function main(): Promise<void> {
 
   // -- Dynamic task scheduling (replaces hardcoded agent-auto-run, skill-survey, skill-evolve) --
   {
-    let agentRunning = false;
+    const runningTasks = new Set<string>();
 
     if (definitionsDir) {
       const { loadAllTasks } = await import('../agent/registry.js');
@@ -2025,20 +2043,19 @@ export async function main(): Promise<void> {
       }
 
       const scheduledContext: ScheduledJobContext = {
-        isAgentRunning: () => agentRunning,
-        setAgentRunning: (v) => { agentRunning = v; },
+        isTaskRunning: (name) => runningTasks.has(name),
+        setTaskRunning: (name, running) => {
+          if (running) runningTasks.add(name);
+          else runningTasks.delete(name);
+        },
         runTask: async (taskName) => {
           const { runAgent } = await import('../agent/executor.js');
 
           // For skill-generate: inject the specific candidate ID so the agent
           // processes exactly one skill per run (structural enforcement, not prompt-based).
-          let instruction: string | undefined;
-          if (taskName === 'skill-generate') {
-            const candidates = listCandidates({ status: 'approved', limit: 1 });
-            if (candidates.length > 0) {
-              instruction = `Generate skill for candidate id=${candidates[0].id} topic="${candidates[0].topic}"`;
-            }
-          }
+          const instruction = taskName === 'skill-generate'
+            ? buildSkillGenerateInstruction()
+            : undefined;
 
           const result = await runAgent(vaultDir, { task: taskName, instruction, embeddingManager });
           logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} completed`, {

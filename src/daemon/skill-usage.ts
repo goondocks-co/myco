@@ -12,7 +12,7 @@ import { epochSeconds } from '@myco/constants.js';
 import crypto from 'node:crypto';
 
 /** Set to true to enable automatic skill usage detection from transcripts. */
-const SKILL_USAGE_DETECTION_ENABLED = false;
+export const SKILL_USAGE_DETECTION_ENABLED = false;
 
 /** Maximum number of active skills to check in a single detection pass. */
 const MAX_ACTIVE_SKILLS_CHECK = 1000;

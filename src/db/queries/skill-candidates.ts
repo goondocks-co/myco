@@ -10,8 +10,6 @@ import { DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
-// Re-export for callers that import DEFAULT_LIST_LIMIT from this module
-export { DEFAULT_LIST_LIMIT };
 
 /** Default confidence score for new candidates. */
 const DEFAULT_CONFIDENCE = 0.0;
@@ -300,4 +298,15 @@ export function countCandidates(
   ).get(...params) as { count: number };
 
   return row.count;
+}
+
+/**
+ * Delete a skill candidate by id.
+ *
+ * @returns true if a row was deleted, false if not found.
+ */
+export function deleteCandidate(id: string): boolean {
+  const db = getDatabase();
+  const info = db.prepare('DELETE FROM skill_candidates WHERE id = ?').run(id);
+  return info.changes > 0;
 }

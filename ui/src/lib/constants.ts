@@ -23,9 +23,6 @@ export const TASK_SOURCE_USER = 'user';
 /** Default page size for paginated list views. */
 export const DEFAULT_PAGE_SIZE = 50;
 
-/** Default agent run interval in seconds. */
-export const DEFAULT_INTERVAL_SECONDS = 300;
-
 /** Default summary batch interval (0 = disabled). */
 export const DEFAULT_SUMMARY_BATCH_INTERVAL = 5;
 

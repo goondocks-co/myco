@@ -6,7 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
@@ -88,7 +88,7 @@ function toResolutionEventRow(row: Record<string, unknown>): ResolutionEventRow 
     reason: (row.reason as string) ?? null,
     session_id: (row.session_id as string) ?? null,
     created_at: row.created_at as number,
-    machine_id: (row.machine_id as string) ?? DEFAULT_MACHINE_ID,
+    machine_id: (row.machine_id as string) ?? 'local',
     synced_at: (row.synced_at as number) ?? null,
   };
 }
@@ -118,7 +118,7 @@ export function insertResolutionEvent(
     data.reason ?? null,
     data.session_id ?? null,
     data.created_at,
-    data.machine_id ?? DEFAULT_MACHINE_ID,
+    data.machine_id ?? getTeamMachineId(),
   );
 
   const row = toResolutionEventRow(

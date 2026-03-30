@@ -17,8 +17,8 @@ function makeTask(name: string, schedule: AgentTask['schedule']): AgentTask {
 
 function makeContext(overrides: Partial<ScheduledJobContext> = {}): ScheduledJobContext {
   return {
-    isAgentRunning: () => false,
-    setAgentRunning: vi.fn(),
+    isTaskRunning: () => false,
+    setTaskRunning: vi.fn(),
     runTask: vi.fn().mockResolvedValue(undefined),
     preConditions: {},
     ...overrides,
@@ -113,11 +113,11 @@ describe('buildScheduledJobs', () => {
     expect(ctx.runTask).toHaveBeenCalledWith('fi');
   });
 
-  it('skips when agent is already running', async () => {
+  it('skips when same task is already running', async () => {
     const tasks = [
       makeTask('task-a', { enabled: true, intervalSeconds: 1, runIn: ['active'] }),
     ];
-    const ctx = makeContext({ isAgentRunning: () => true });
+    const ctx = makeContext({ isTaskRunning: (name) => name === 'task-a' });
 
     const jobs = buildScheduledJobs(tasks, {}, ctx);
     await jobs[0].fn();
@@ -138,17 +138,17 @@ describe('buildScheduledJobs', () => {
     expect(ctx.runTask).not.toHaveBeenCalled();
   });
 
-  it('sets agentRunning during execution', async () => {
+  it('sets task running state during execution', async () => {
     const tasks = [
       makeTask('task-a', { enabled: true, intervalSeconds: 1, runIn: ['active'] }),
     ];
     const setRunning = vi.fn();
-    const ctx = makeContext({ setAgentRunning: setRunning });
+    const ctx = makeContext({ setTaskRunning: setRunning });
 
     const jobs = buildScheduledJobs(tasks, {}, ctx);
     await jobs[0].fn();
 
-    expect(setRunning).toHaveBeenCalledWith(true);
-    expect(setRunning).toHaveBeenCalledWith(false);
+    expect(setRunning).toHaveBeenCalledWith('task-a', true);
+    expect(setRunning).toHaveBeenCalledWith('task-a', false);
   });
 });

@@ -10,8 +10,6 @@ import { DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
-// Re-export for callers that import DEFAULT_LIST_LIMIT from this module
-export { DEFAULT_LIST_LIMIT };
 
 /** Default status for new skill records. */
 const DEFAULT_STATUS = 'active';
@@ -356,4 +354,34 @@ export function countSkillRecords(
   ).get(...params) as { count: number };
 
   return row.count;
+}
+
+/**
+ * Delete a skill record and cascade to lineage, usage, and linked candidates.
+ * Runs in a transaction. Does NOT handle disk/symlink cleanup — callers must
+ * handle filesystem operations separately.
+ *
+ * @returns the deleted record's name (for disk cleanup) or null if not found.
+ */
+export function deleteSkillRecordCascade(idOrName: string): { id: string; name: string } | null {
+  const db = getDatabase();
+  const record = getSkillRecord(idOrName) ?? getSkillRecordByName(idOrName);
+  if (!record) return null;
+
+  db.transaction(() => {
+    db.prepare('DELETE FROM skill_lineage WHERE skill_id = ?').run(record.id);
+    db.prepare('DELETE FROM skill_usage WHERE skill_id = ?').run(record.id);
+    // Dismiss linked candidates so they don't regenerate
+    if (record.candidate_id) {
+      db.prepare(
+        `UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ? WHERE id = ?`,
+      ).run(Math.floor(Date.now() / 1000), record.candidate_id);
+    }
+    db.prepare(
+      `UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ? WHERE skill_id = ?`,
+    ).run(Math.floor(Date.now() / 1000), record.id);
+    db.prepare('DELETE FROM skill_records WHERE id = ?').run(record.id);
+  })();
+
+  return { id: record.id, name: record.name };
 }

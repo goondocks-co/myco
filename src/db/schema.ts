@@ -1017,7 +1017,8 @@ function migrateV4ToV5(db: Database): void {
  *
  * Fully idempotent -- safe to call on every startup. Uses `IF NOT EXISTS`
  * for all DDL and `ON CONFLICT DO NOTHING` for the version row.
- *
+ */
+
 /**
  * Migrate v6 → v7: fix stale 'local' machine_id on ALL synced tables.
  *
@@ -1030,9 +1031,10 @@ function migrateV6ToV7(db: Database, machineId: string): void {
 
   db.exec('BEGIN');
   try {
+    // entity_mentions excluded — no `id` column (composite key: entity_id, note_id, note_type)
     const tables = [
       'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
-      'entity_mentions', 'resolution_events', 'plans', 'artifacts',
+      'resolution_events', 'plans', 'artifacts',
       'digest_extracts', 'skill_candidates', 'skill_records',
     ];
 
@@ -1069,8 +1071,10 @@ function migrateV6ToV7(db: Database, machineId: string): void {
             enqueueStmt.run(table, String(stale.id), JSON.stringify(fresh), machineId, now);
           }
         }
-      } catch {
-        // Table may not exist — skip
+      } catch (tableErr) {
+        // Skip if table doesn't exist; re-throw for other errors (I/O, constraint)
+        const msg = tableErr instanceof Error ? tableErr.message : String(tableErr);
+        if (!msg.includes('no such table')) throw tableErr;
       }
     }
 

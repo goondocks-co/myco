@@ -6,7 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
@@ -127,7 +127,7 @@ function toBatchRow(row: Record<string, unknown>): BatchRow {
     processed: row.processed as number,
     content_hash: (row.content_hash as string) ?? null,
     created_at: row.created_at as number,
-    machine_id: (row.machine_id as string) ?? DEFAULT_MACHINE_ID,
+    machine_id: (row.machine_id as string) ?? 'local',
     synced_at: (row.synced_at as number) ?? null,
   };
 }
@@ -168,7 +168,7 @@ export function insertBatch(data: BatchInsert): BatchRow {
     data.processed ?? DEFAULT_PROCESSED,
     data.content_hash ?? null,
     data.created_at,
-    data.machine_id ?? DEFAULT_MACHINE_ID,
+    data.machine_id ?? getTeamMachineId(),
   );
 
   const batchId = Number(info.lastInsertRowid);
@@ -363,6 +363,7 @@ export interface StatelessBatchInsert {
   user_prompt?: string | null;
   started_at?: number | null;
   status?: string;
+  machine_id?: string;
 }
 
 /**
@@ -398,7 +399,7 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
     DEFAULT_ACTIVITY_COUNT,
     DEFAULT_PROCESSED,
     data.created_at,
-    DEFAULT_MACHINE_ID,
+    data.machine_id ?? getTeamMachineId(),
   );
 
   const batchId = Number(info.lastInsertRowid);

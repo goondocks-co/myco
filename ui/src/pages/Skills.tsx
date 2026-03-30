@@ -29,7 +29,7 @@ function readUrlState(): { tab: SkillsTab; skill?: string } {
 
 function writeUrlState(tab: SkillsTab, skill?: string): void {
   const params = new URLSearchParams();
-  if (tab !== 'candidates') params.set(PARAM_TAB, tab);
+  if (tab !== 'skills') params.set(PARAM_TAB, tab);
   if (skill) params.set(PARAM_SKILL, skill);
   const search = params.toString();
   const url = search ? `${window.location.pathname}?${search}` : window.location.pathname;

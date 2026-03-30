@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchJson, putJson, postJson } from '../lib/api';
+import { fetchJson, putJson, postJson, deleteJson } from '../lib/api';
 
 /* ---------- Types ---------- */
 
@@ -133,13 +133,8 @@ export function useTriggerAgentRun() {
 export function useDeleteSkillRecord() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (idOrName: string) => {
-      const res = await fetch(`/api/skill-records/${encodeURIComponent(idOrName)}`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) throw new Error('Failed to delete skill');
-      return res.json();
-    },
+    mutationFn: (idOrName: string) =>
+      deleteJson<{ deleted: boolean; id: string; name: string }>(`/skill-records/${encodeURIComponent(idOrName)}`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['skill-records'] });
       qc.invalidateQueries({ queryKey: ['skill-record'] });

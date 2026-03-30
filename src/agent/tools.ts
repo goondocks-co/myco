@@ -16,12 +16,13 @@
  */
 
 import crypto from 'node:crypto';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { z } from 'zod/v4';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { epochSeconds, SEARCH_SIMILARITY_THRESHOLD, TEAM_SOURCE_PREFIX, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { getPluginVersion } from '@myco/version.js';
+import { getDatabase } from '@myco/db/client.js';
 import { getUnprocessedBatches, markBatchProcessed } from '@myco/db/queries/batches.js';
 import { listSpores, insertSpore, updateSporeStatus, DEFAULT_IMPORTANCE } from '@myco/db/queries/spores.js';
 import { listSessions, updateSession } from '@myco/db/queries/sessions.js';
@@ -43,6 +44,8 @@ import {
   listSkillRecords, updateSkillRecord,
 } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
+import { deleteCandidate } from '@myco/db/queries/skill-candidates.js';
+import { deleteSkillRecordCascade } from '@myco/db/queries/skill-records.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 
@@ -88,7 +91,7 @@ function textResult(data: unknown): { content: Array<{ type: 'text'; text: strin
 export const MAX_SKILL_LINES = 500;
 
 /** Required frontmatter fields for Myco-managed skills. */
-export const REQUIRED_FRONTMATTER_FIELDS = ['name', 'description', 'managed_by'] as const;
+export const REQUIRED_FRONTMATTER_FIELDS = ['name', 'description', 'managed_by', 'user-invocable', 'allowed-tools'] as const;
 
 /**
  * Validate skill content before writing. Returns an array of issues
@@ -402,6 +405,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
       const spore = insertSpore({
         id,
         agent_id: agentId,
+        machine_id: machineId,
         observation_type: args.observation_type,
         content: args.content,
         session_id: args.session_id ?? null,
@@ -444,6 +448,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
       const entity = insertEntity({
         id,
         agent_id: agentId,
+        machine_id: machineId,
         type: args.type,
         name: args.name,
         properties: props,
@@ -475,6 +480,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
 
       const edge = insertGraphEdge({
         agent_id: agentId,
+        machine_id: machineId,
         source_id: args.source_id,
         source_type: args.source_type,
         target_id: args.target_id,
@@ -520,6 +526,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
       insertResolutionEvent({
         id: eventId,
         agent_id: agentId,
+        machine_id: machineId,
         spore_id: args.spore_id,
         action: args.action,
         new_spore_id: args.new_spore_id ?? null,
@@ -676,7 +683,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
     'vault_skill_candidates',
     'Manage skill candidates (identified topics that may become skills). Supports list, get, create, and update actions.',
     {
-      action: z.enum(['list', 'get', 'create', 'update']).describe('Action to perform'),
+      action: z.enum(['list', 'get', 'create', 'update', 'delete']).describe('Action to perform'),
       id: z.string().optional().describe('Candidate ID (required for get/update)'),
       topic: z.string().optional().describe('Skill topic (required for create)'),
       rationale: z.string().optional().describe('Why this should be a skill (required for create)'),
@@ -742,6 +749,13 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
           return textResult(updated);
         }
 
+        case 'delete': {
+          if (!args.id) return textResult({ error: 'id is required for delete action' });
+          const deleted = deleteCandidate(args.id);
+          if (!deleted) return textResult({ error: `Candidate not found: ${args.id}` });
+          return textResult({ deleted: true, id: args.id });
+        }
+
         default:
           return textResult({ error: `Unknown action: ${args.action}` });
       }
@@ -750,11 +764,11 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
 
   const vaultSkillRecords = tool(
     'vault_skill_records',
-    'Read and update skill records (materialized skills on disk). Supports list, get, and update actions.',
+    'Read, update, and delete skill records (materialized skills on disk). Supports list, get, update, and delete actions.',
     {
-      action: z.enum(['list', 'get', 'update']).describe('Action to perform'),
-      id: z.string().optional().describe('Skill record ID or name (required for get/update)'),
-      status: z.string().optional().describe('Filter by status (active, deprecated, archived)'),
+      action: z.enum(['list', 'get', 'update', 'delete']).describe('Action to perform'),
+      id: z.string().optional().describe('Skill record ID or name (required for get/update/delete)'),
+      status: z.enum(['active', 'stale', 'retired']).optional().describe('Filter by status'),
       generation: z.number().optional().describe('New generation number (for update)'),
       source_ids: z.string().optional().describe('JSON array of source IDs (for update)'),
       description: z.string().optional().describe('Updated description (for update)'),
@@ -798,6 +812,27 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
           return textResult(updated);
         }
 
+        case 'delete': {
+          if (!args.id) return textResult({ error: 'id is required for delete action' });
+          const result = deleteSkillRecordCascade(args.id);
+          if (!result) return textResult({ error: `Skill record not found: ${args.id}` });
+          // Disk + symlink cleanup (best-effort)
+          const root = projectRoot ?? process.cwd();
+          if (!/[/\\]|\.\./.test(result.name)) {
+            const skillDir = resolve(root, '.agents', 'skills', result.name);
+            try { rmSync(skillDir, { recursive: true, force: true }); } catch (err) {
+              console.warn('[vault_skill_records] Failed to remove skill directory:', err instanceof Error ? err.message : err);
+            }
+            try {
+              const { syncSkillSymlinks } = await import('../symbionts/installer.js');
+              syncSkillSymlinks(root, result.name, { remove: true });
+            } catch (err) {
+              console.warn('[vault_skill_records] Failed to remove symlinks:', err instanceof Error ? err.message : err);
+            }
+          }
+          return textResult({ deleted: true, id: result.id, name: result.name });
+        }
+
         default:
           return textResult({ error: `Unknown action: ${args.action}` });
       }
@@ -827,6 +862,14 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
         });
       }
 
+      // Path traversal guard — reject names containing path separators or dot-dot sequences
+      if (!args.name || /[/\\]|\.\./.test(args.name)) {
+        recordTurn('vault_write_skill', args);
+        return textResult({
+          error: 'Invalid skill name: must be a simple directory name without path separators or ".."',
+        });
+      }
+
       const root = projectRoot ?? process.cwd();
       const skillDir = resolve(root, '.agents', 'skills', args.name);
       const skillPath = resolve(skillDir, 'SKILL.md');
@@ -844,8 +887,9 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
       try {
         const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
         syncSkillSymlinks(root, args.name);
-      } catch {
+      } catch (err) {
         // Best-effort — skill file is written, symlinks are convenience
+        console.warn('[vault_write_skill] syncSkillSymlinks failed:', err instanceof Error ? err.message : err);
       }
 
       const now = epochSeconds();
@@ -854,96 +898,98 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
       // Check for existing record
       const existing = getSkillRecordByName(args.name);
 
-      let recordId: string;
-      let generation: number;
+      let recordId = '';
+      let generation = 0;
 
-      if (existing) {
-        // Update existing record — bump generation
-        generation = existing.generation + 1;
-        recordId = existing.id;
-        updateSkillRecord(existing.id, {
-          display_name: args.display_name,
-          description: args.description,
-          generation,
-          ...(args.source_ids !== undefined ? { source_ids: args.source_ids } : {}),
-          path: relativePath,
-          updated_at: now,
-        });
-
-        // Record lineage
-        insertLineage({
-          id: crypto.randomUUID(),
-          skill_id: existing.id,
-          generation,
-          action: 'updated',
-          rationale: args.rationale ?? 'Skill content updated',
-          source_ids_added: args.source_ids,
-          content_snapshot: args.content,
-          created_at: now,
-        });
-      } else {
-        // Create new record
-        recordId = crypto.randomUUID();
-        generation = 1;
-        insertSkillRecord({
-          id: recordId,
-          agent_id: agentId,
-          machine_id: machineId,
-          name: args.name,
-          display_name: args.display_name,
-          description: args.description,
-          candidate_id: args.candidate_id ?? null,
-          source_ids: args.source_ids,
-          path: relativePath,
-          created_at: now,
-          updated_at: now,
-        });
-
-        // Record lineage
-        insertLineage({
-          id: crypto.randomUUID(),
-          skill_id: recordId,
-          generation,
-          action: 'created',
-          rationale: args.rationale ?? 'Initial skill creation',
-          source_ids_added: args.source_ids,
-          content_snapshot: args.content,
-          created_at: now,
-        });
-
-        // Auto-link candidate: find the approved candidate this skill was generated from.
-        // Strategy: exact candidate_id → prefix match → first approved candidate.
-        // Does NOT depend on the agent passing the correct ID.
-        const approvedCandidates = listCandidates({ status: 'approved', limit: 10 });
-        let linkedCandidate = false;
-
-        // 1. Try exact candidate_id if provided
-        if (args.candidate_id && !linkedCandidate) {
-          const exact = updateCandidate(args.candidate_id, {
-            status: 'generated', skill_id: recordId, updated_at: now,
+      // All DB mutations wrapped in a transaction for atomicity.
+      // File write (above) is the source of truth; DB is derived.
+      const txDb = getDatabase();
+      txDb.transaction(() => {
+        if (existing) {
+          // Update existing record — bump generation
+          generation = existing.generation + 1;
+          recordId = existing.id;
+          updateSkillRecord(existing.id, {
+            display_name: args.display_name,
+            description: args.description,
+            generation,
+            ...(args.source_ids !== undefined ? { source_ids: args.source_ids } : {}),
+            path: relativePath,
+            updated_at: now,
           });
-          if (exact) linkedCandidate = true;
-        }
 
-        // 2. Try prefix match on candidate_id (agent truncates UUIDs)
-        if (args.candidate_id && !linkedCandidate) {
-          const prefixMatch = approvedCandidates.find((c) => c.id.startsWith(args.candidate_id!));
-          if (prefixMatch) {
-            updateCandidate(prefixMatch.id, {
+          // Record lineage
+          insertLineage({
+            id: crypto.randomUUID(),
+            skill_id: existing.id,
+            generation,
+            action: 'updated',
+            rationale: args.rationale ?? 'Skill content updated',
+            source_ids_added: args.source_ids,
+            content_snapshot: args.content,
+            created_at: now,
+          });
+        } else {
+          // Create new record
+          recordId = crypto.randomUUID();
+          generation = 1;
+          insertSkillRecord({
+            id: recordId,
+            agent_id: agentId,
+            machine_id: machineId,
+            name: args.name,
+            display_name: args.display_name,
+            description: args.description,
+            candidate_id: args.candidate_id ?? null,
+            source_ids: args.source_ids,
+            path: relativePath,
+            created_at: now,
+            updated_at: now,
+          });
+
+          // Record lineage
+          insertLineage({
+            id: crypto.randomUUID(),
+            skill_id: recordId,
+            generation,
+            action: 'created',
+            rationale: args.rationale ?? 'Initial skill creation',
+            source_ids_added: args.source_ids,
+            content_snapshot: args.content,
+            created_at: now,
+          });
+
+          // Auto-link candidate: find the approved candidate this skill was generated from.
+          // Strategy: exact candidate_id → prefix match.
+          // Does NOT depend on the agent passing the correct ID.
+          const approvedCandidates = listCandidates({ status: 'approved', limit: 10 });
+          let linkedCandidate = false;
+
+          // 1. Try exact candidate_id if provided
+          if (args.candidate_id && !linkedCandidate) {
+            const exact = updateCandidate(args.candidate_id, {
               status: 'generated', skill_id: recordId, updated_at: now,
             });
-            linkedCandidate = true;
+            if (exact) linkedCandidate = true;
           }
-        }
 
-        // 3. Fallback: find the first approved candidate (the scheduled sweep
-        //    always picks one at a time, so this links correctly)
-        if (!linkedCandidate && approvedCandidates.length > 0) {
-          updateCandidate(approvedCandidates[0].id, {
-            status: 'generated', skill_id: recordId, updated_at: now,
-          });
+          // 2. Try prefix match on candidate_id (agent truncates UUIDs)
+          if (args.candidate_id && !linkedCandidate) {
+            const prefixMatch = approvedCandidates.find((c) => c.id.startsWith(args.candidate_id!));
+            if (prefixMatch) {
+              updateCandidate(prefixMatch.id, {
+                status: 'generated', skill_id: recordId, updated_at: now,
+              });
+              linkedCandidate = true;
+            }
+          }
+
+          // No blind fallback — if neither exact nor prefix match found the candidate,
+          // skip linking. The candidate stays 'approved' for the next generate cycle.
+          // The daemon injection (Layer 2) ensures candidate_id is always provided in
+          // scheduled runs, making this fallback-skip path rare.
         }
-      }
+      })();
 
       recordTurn('vault_write_skill', args);
       return textResult({
@@ -989,7 +1035,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
 // ---------------------------------------------------------------------------
 
 /**
- * Create a vault MCP tool server with 18 tools for the agent.
+ * Create a vault MCP tool server with 21 tools for the agent.
  *
  * Wraps `createVaultTools()` with `createSdkMcpServer()` from the
  * Claude Agent SDK.

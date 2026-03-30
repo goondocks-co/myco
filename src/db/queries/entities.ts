@@ -6,7 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { getGraphForNode, type GraphEdgeRow } from '@myco/db/queries/graph-edges.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
@@ -104,7 +104,7 @@ function toEntityRow(row: Record<string, unknown>): EntityRow {
     first_seen: row.first_seen as number,
     last_seen: row.last_seen as number,
     status: (row.status as string) ?? 'active',
-    machine_id: (row.machine_id as string) ?? DEFAULT_MACHINE_ID,
+    machine_id: (row.machine_id as string) ?? 'local',
     synced_at: (row.synced_at as number) ?? null,
   };
 }
@@ -135,7 +135,7 @@ export function insertEntity(data: EntityInsert): EntityRow {
     data.properties ?? null,
     data.first_seen,
     data.last_seen,
-    data.machine_id ?? DEFAULT_MACHINE_ID,
+    data.machine_id ?? getTeamMachineId(),
   );
 
   // On conflict, the passed-in id may not be the actual row id. Look up by unique key.

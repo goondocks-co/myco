@@ -22,6 +22,8 @@ tools:
   - vault_state
   - vault_entities
   - vault_edges
+  - vault_skill_candidates
+  - vault_skill_records
   # Write tools
   - vault_create_spore
   - vault_create_entity

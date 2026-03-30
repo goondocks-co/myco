@@ -187,6 +187,11 @@ phases:
       If any criterion fails, rewrite using vault_write_skill.
       This automatically bumps the generation.
 
+      **CRITICAL:** When rewriting, preserve ALL frontmatter fields from
+      the original — including user-invocable and allowed-tools. Read the
+      existing skill content first and carry every frontmatter field forward.
+      The quality gate will reject writes missing required fields.
+
       Report results using vault_report with:
       - Skill name and path
       - Generation number

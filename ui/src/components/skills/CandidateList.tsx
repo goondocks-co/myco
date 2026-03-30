@@ -1,10 +1,31 @@
+import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { AlertCircle, Check, XCircle, ListChecks, ExternalLink } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
 import { Button } from '../ui/button';
 import { MarkdownContent } from '../ui/markdown-content';
+import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
+import { Pagination } from '../ui/pagination';
 import { useSkillCandidates, useUpdateCandidate, type SkillCandidate } from '../../hooks/use-skills';
+import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
+import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
+
+/* ---------- Constants ---------- */
+
+const CANDIDATE_FILTERS: FilterDefinition[] = [
+  {
+    key: 'status',
+    label: 'Status',
+    options: [
+      { value: FILTER_ALL, label: 'All statuses' },
+      { value: 'identified', label: 'Identified' },
+      { value: 'approved', label: 'Approved' },
+      { value: 'generated', label: 'Generated' },
+      { value: 'dismissed', label: 'Dismissed' },
+    ],
+  },
+];
 
 /* ---------- Helpers ---------- */
 
@@ -23,6 +44,16 @@ function timeAgo(epoch: number): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
+function statusBadge(status: string) {
+  switch (status) {
+    case 'identified': return <Badge variant="outline">Identified</Badge>;
+    case 'approved': return <Badge variant="secondary">Approved</Badge>;
+    case 'generated': return <Badge variant="default">Generated</Badge>;
+    case 'dismissed': return <Badge variant="outline" className="opacity-50">Dismissed</Badge>;
+    default: return <Badge variant="outline">{status}</Badge>;
+  }
+}
+
 /* ---------- Candidate Card ---------- */
 
 function CandidateCard({
@@ -39,10 +70,11 @@ function CandidateCard({
   isDismissing: boolean;
 }) {
   const conf = confidenceLabel(candidate.confidence);
+  const showActions = candidate.status === 'identified' || candidate.status === 'approved';
 
   return (
     <Surface level="low" className="p-5 space-y-3">
-      {/* Header: topic + confidence + timestamp */}
+      {/* Header: topic + status + confidence + timestamp */}
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
           <h3 className="font-serif text-lg text-on-surface leading-tight">
@@ -50,39 +82,51 @@ function CandidateCard({
           </h3>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <Badge variant={conf.variant}>{conf.text} confidence</Badge>
+          {statusBadge(candidate.status)}
+          <Badge variant={conf.variant}>{conf.text}</Badge>
           <span className="font-sans text-xs text-on-surface-variant">{timeAgo(candidate.created_at)}</span>
         </div>
       </div>
 
-      {/* Rationale — rendered as markdown for structured content */}
+      {/* Rationale */}
       <MarkdownContent
         content={candidate.rationale}
         className="text-sm text-on-surface-variant"
       />
 
-      {/* Actions */}
-      <div className="flex items-center gap-2 pt-1">
-        <Button
-          size="sm"
-          variant="default"
-          onClick={onApprove}
-          disabled={isApproving}
-        >
-          <Check className="h-3.5 w-3.5 mr-1.5" />
-          {isApproving ? 'Approving…' : 'Approve'}
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={onDismiss}
-          disabled={isDismissing}
-          className="text-on-surface-variant"
-        >
-          <XCircle className="h-3.5 w-3.5 mr-1.5" />
-          {isDismissing ? 'Dismissing…' : 'Dismiss'}
-        </Button>
-      </div>
+      {/* Actions — only for identified/approved candidates */}
+      {showActions && (
+        <div className="flex items-center gap-2 pt-1">
+          {candidate.status === 'identified' && (
+            <>
+              <Button
+                size="sm"
+                variant="default"
+                onClick={onApprove}
+                disabled={isApproving}
+              >
+                <Check className="h-3.5 w-3.5 mr-1.5" />
+                {isApproving ? 'Approving...' : 'Approve'}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={onDismiss}
+                disabled={isDismissing}
+                className="text-on-surface-variant"
+              >
+                <XCircle className="h-3.5 w-3.5 mr-1.5" />
+                {isDismissing ? 'Dismissing...' : 'Dismiss'}
+              </Button>
+            </>
+          )}
+          {candidate.status === 'approved' && (
+            <span className="font-sans text-xs text-on-surface-variant">
+              Awaiting generation
+            </span>
+          )}
+        </div>
+      )}
     </Surface>
   );
 }
@@ -109,15 +153,29 @@ function SkeletonCard() {
 
 export function CandidateList() {
   const updateCandidate = useUpdateCandidate();
+  const { searchInput, debouncedSearch, filterValues, offset, setOffset, handleSearchChange, handleFilterChange, activeFilter } = useListFilters({
+    initialFilters: { status: FILTER_ALL },
+  });
 
-  // Default to 'identified' — this is a review queue, not a data table
+  const activeStatus = activeFilter('status');
+
   const { data, isLoading, isError, error } = useSkillCandidates({
-    status: 'identified',
-    limit: 50,
+    status: activeStatus,
+    limit: DEFAULT_PAGE_SIZE,
+    offset,
   });
 
   const candidates = data?.candidates ?? [];
   const total = data?.total ?? 0;
+
+  // Client-side search filtering (API doesn't support search for candidates)
+  const filtered = useMemo(() => {
+    if (!debouncedSearch) return candidates;
+    const q = debouncedSearch.toLowerCase();
+    return candidates.filter(
+      (c) => c.topic.toLowerCase().includes(q) || c.rationale.toLowerCase().includes(q),
+    );
+  }, [candidates, debouncedSearch]);
 
   function handleApprove(candidate: SkillCandidate) {
     updateCandidate.mutate({ id: candidate.id, status: 'approved' });
@@ -127,14 +185,28 @@ export function CandidateList() {
     updateCandidate.mutate({ id: candidate.id, status: 'dismissed' });
   }
 
+  const toolbar = (
+    <ListToolbar
+      searchPlaceholder="Search candidates..."
+      searchValue={searchInput}
+      onSearchChange={handleSearchChange}
+      filters={CANDIDATE_FILTERS}
+      filterValues={filterValues}
+      onFilterChange={handleFilterChange}
+    />
+  );
+
   if (isError) {
     return (
-      <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary">
-        <AlertCircle className="h-5 w-5" />
-        <span className="font-sans text-sm">Failed to load candidates</span>
-        <span className="font-sans text-xs text-on-surface-variant">
-          {error instanceof Error ? error.message : 'Unknown error'}
-        </span>
+      <div className="space-y-3">
+        {toolbar}
+        <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary">
+          <AlertCircle className="h-5 w-5" />
+          <span className="font-sans text-sm">Failed to load candidates</span>
+          <span className="font-sans text-xs text-on-surface-variant">
+            {error instanceof Error ? error.message : 'Unknown error'}
+          </span>
+        </div>
       </div>
     );
   }
@@ -142,6 +214,7 @@ export function CandidateList() {
   if (isLoading) {
     return (
       <div className="space-y-3">
+        {toolbar}
         {Array.from({ length: 3 }).map((_, i) => (
           <SkeletonCard key={i} />
         ))}
@@ -149,50 +222,65 @@ export function CandidateList() {
     );
   }
 
-  if (candidates.length === 0) {
-    return (
-      <div className="flex h-48 flex-col items-center justify-center gap-3 text-on-surface-variant">
-        <ListChecks className="h-10 w-10 opacity-20" />
-        <div className="text-center space-y-1">
-          <p className="font-sans text-sm">
-            {total === 0 ? 'No candidates awaiting review' : 'All candidates have been reviewed'}
-          </p>
-          <p className="font-sans text-xs">
-            <Link to="/agent?tab=tasks&task=skill-survey" className="inline-flex items-center gap-1 text-primary hover:underline">
-              <ExternalLink className="h-3 w-3" />
-              Run Skill Candidate Survey
-            </Link>
-            {' '}to discover new procedural patterns
-          </p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-3">
-      <p className="font-sans text-xs text-on-surface-variant">
-        {total} candidate{total !== 1 ? 's' : ''} awaiting review
-      </p>
+      {toolbar}
 
-      {candidates.map((candidate) => (
-        <CandidateCard
-          key={candidate.id}
-          candidate={candidate}
-          onApprove={() => handleApprove(candidate)}
-          onDismiss={() => handleDismiss(candidate)}
-          isApproving={
-            updateCandidate.isPending &&
-            updateCandidate.variables?.id === candidate.id &&
-            updateCandidate.variables?.status === 'approved'
-          }
-          isDismissing={
-            updateCandidate.isPending &&
-            updateCandidate.variables?.id === candidate.id &&
-            updateCandidate.variables?.status === 'dismissed'
-          }
-        />
-      ))}
+      {filtered.length === 0 ? (
+        <div className="flex h-48 flex-col items-center justify-center gap-3 text-on-surface-variant">
+          <ListChecks className="h-10 w-10 opacity-20" />
+          <div className="text-center space-y-1">
+            <p className="font-sans text-sm">
+              {total === 0 && !activeStatus && !debouncedSearch
+                ? 'No candidates yet'
+                : 'No matching candidates'}
+            </p>
+            {total === 0 && !activeStatus && !debouncedSearch && (
+              <p className="font-sans text-xs">
+                <Link to="/agent?tab=tasks&task=skill-survey" className="inline-flex items-center gap-1 text-primary hover:underline">
+                  <ExternalLink className="h-3 w-3" />
+                  Run Skill Candidate Survey
+                </Link>
+                {' '}to discover new procedural patterns
+              </p>
+            )}
+          </div>
+        </div>
+      ) : (
+        <>
+          <p className="font-sans text-xs text-on-surface-variant">
+            {debouncedSearch
+              ? `${filtered.length} of ${total} candidate${total !== 1 ? 's' : ''}`
+              : `${total} candidate${total !== 1 ? 's' : ''}`}
+          </p>
+
+          {filtered.map((candidate) => (
+            <CandidateCard
+              key={candidate.id}
+              candidate={candidate}
+              onApprove={() => handleApprove(candidate)}
+              onDismiss={() => handleDismiss(candidate)}
+              isApproving={
+                updateCandidate.isPending &&
+                updateCandidate.variables?.id === candidate.id &&
+                updateCandidate.variables?.status === 'approved'
+              }
+              isDismissing={
+                updateCandidate.isPending &&
+                updateCandidate.variables?.id === candidate.id &&
+                updateCandidate.variables?.status === 'dismissed'
+              }
+            />
+          ))}
+        </>
+      )}
+
+      <Pagination
+        total={debouncedSearch ? filtered.length : total}
+        offset={offset}
+        limit={DEFAULT_PAGE_SIZE}
+        onPageChange={setOffset}
+      />
     </div>
   );
 }

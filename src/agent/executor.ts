@@ -23,7 +23,7 @@ import { getTask, getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
   insertRun,
   updateRunStatus,
-  getRunningRun,
+  getRunningRunForTask,
   STATUS_RUNNING,
   STATUS_COMPLETED,
   STATUS_FAILED,
@@ -637,18 +637,20 @@ export async function runAgent(
 
   // 2. Concurrency guard — block duplicate runs of the SAME task, not all tasks.
   // Different tasks (e.g., full-intelligence and skill-generate) can run concurrently.
+  // When no task is specified, resolve the effective task name first so the guard applies.
   const requestedTask = options?.task;
-  if (requestedTask) {
-    const db = getDatabase();
-    const sameTaskRunning = db.prepare(
-      `SELECT id FROM agent_runs WHERE agent_id = ? AND task = ? AND status = ? LIMIT 1`,
-    ).get(agentId, requestedTask, STATUS_RUNNING) as { id: string } | undefined;
-    if (sameTaskRunning) {
-      return {
-        runId: sameTaskRunning.id,
-        status: STATUS_SKIPPED,
-        reason: SKIP_REASON_ALREADY_RUNNING,
-      };
+  {
+    const effectiveTask = requestedTask
+      ?? getDefaultTask(agentId)?.id;
+    if (effectiveTask) {
+      const runningId = getRunningRunForTask(agentId, effectiveTask);
+      if (runningId) {
+        return {
+          runId: runningId,
+          status: STATUS_SKIPPED,
+          reason: SKIP_REASON_ALREADY_RUNNING,
+        };
+      }
     }
   }
 
