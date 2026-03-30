@@ -1,12 +1,14 @@
-import { ArrowLeft, AlertCircle } from 'lucide-react';
+import { useState } from 'react';
+import { ArrowLeft, AlertCircle, Trash2 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
 import { StatCard } from '../ui/stat-card';
 import { SectionHeader } from '../ui/section-header';
 import { MarkdownContent } from '../ui/markdown-content';
+import { ConfirmDialog } from '../ui/confirm-dialog';
 import { EvolutionTimeline } from './EvolutionTimeline';
-import { useSkillRecord } from '../../hooks/use-skills';
+import { useSkillRecord, useDeleteSkillRecord } from '../../hooks/use-skills';
 
 /* ---------- Types ---------- */
 
@@ -57,6 +59,8 @@ function SkeletonDetail() {
 
 export function SkillDetail({ skillName, onBack }: SkillDetailProps) {
   const { data: skill, isPending, isError } = useSkillRecord(skillName);
+  const deleteSkillRecord = useDeleteSkillRecord();
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (isPending) {
     return <SkeletonDetail />;
@@ -100,10 +104,21 @@ export function SkillDetail({ skillName, onBack }: SkillDetailProps) {
   return (
     <div className="space-y-6">
       {/* Back nav */}
-      <Button variant="ghost" size="sm" onClick={onBack} className="gap-2 text-on-surface-variant">
-        <ArrowLeft className="h-4 w-4" />
-        Skills
-      </Button>
+      <div className="flex items-center justify-between">
+        <Button variant="ghost" size="sm" onClick={onBack} className="gap-2 text-on-surface-variant">
+          <ArrowLeft className="h-4 w-4" />
+          Skills
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="gap-2 text-tertiary hover:text-tertiary hover:bg-tertiary/10"
+          onClick={() => setDeleteOpen(true)}
+        >
+          <Trash2 className="h-4 w-4" />
+          Delete
+        </Button>
+      </div>
 
       {/* Header card */}
       <Surface level="low" className="p-4 space-y-3">
@@ -175,6 +190,29 @@ export function SkillDetail({ skillName, onBack }: SkillDetailProps) {
           </p>
         )}
       </div>
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title="Delete Skill"
+        description="This will permanently delete the skill record, evolution history, and the SKILL.md file from disk."
+        icon={<Trash2 className="h-4 w-4 text-tertiary" />}
+        meta={skill ? [
+          { label: 'Name', value: skill.name },
+          { label: 'Title', value: skill.display_name },
+        ] : []}
+        confirmLabel="Delete Skill"
+        variant="destructive"
+        onConfirm={() => {
+          deleteSkillRecord.mutate(skill!.name, {
+            onSuccess: () => {
+              setDeleteOpen(false);
+              onBack();
+            },
+          });
+        }}
+        isPending={deleteSkillRecord.isPending}
+      />
     </div>
   );
 }

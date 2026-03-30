@@ -128,3 +128,20 @@ export function useTriggerAgentRun() {
     },
   });
 }
+
+export function useDeleteSkillRecord() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (idOrName: string) => {
+      const res = await fetch(`/api/skill-records/${encodeURIComponent(idOrName)}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error('Failed to delete skill');
+      return res.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['skill-records'] });
+      qc.invalidateQueries({ queryKey: ['skill-record'] });
+    },
+  });
+}
