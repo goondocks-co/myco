@@ -42,13 +42,14 @@ const VALID_TABS = new Set<ActiveTab>(['graph', 'spores', 'digest']);
 function readUrlState(): { tab: ActiveTab; sporeId?: string } {
   const params = new URLSearchParams(window.location.search);
   const rawTab = params.get(PARAM_TAB);
-  const tab: ActiveTab = rawTab && VALID_TABS.has(rawTab as ActiveTab)
-    ? (rawTab as ActiveTab)
-    : 'graph';
-  return {
-    tab,
-    sporeId: params.get(PARAM_SPORE) ?? undefined,
-  };
+  const sporeId = params.get(PARAM_SPORE) ?? undefined;
+  // If a spore ID is present, force the spores tab so the detail view renders
+  const tab: ActiveTab = sporeId
+    ? 'spores'
+    : rawTab && VALID_TABS.has(rawTab as ActiveTab)
+      ? (rawTab as ActiveTab)
+      : 'graph';
+  return { tab, sporeId };
 }
 
 /** Write navigation state to URL search params (replaceState, no history entry). */

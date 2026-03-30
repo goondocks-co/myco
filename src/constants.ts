@@ -142,6 +142,8 @@ export const EDGE_TYPE_HAS_BATCH = 'HAS_BATCH';
 // --- Query defaults ---
 /** Default row limit for query module list operations. */
 export const QUERY_DEFAULT_LIST_LIMIT = 100;
+/** Default LIMIT for paginated list queries. */
+export const DEFAULT_LIST_LIMIT = 50;
 /** Default confidence score for graph edges. */
 export const GRAPH_EDGE_DEFAULT_CONFIDENCE = 1.0;
 
@@ -185,6 +187,8 @@ export const MCP_SEARCH_DEFAULT_LIMIT = 10;
 export const MCP_SESSIONS_DEFAULT_LIMIT = 20;
 /** Default result limit for myco_logs. */
 export const MCP_LOGS_DEFAULT_LIMIT = 50;
+/** Default result limit for myco_skills and myco_skill_candidates. */
+export const MCP_SKILLS_DEFAULT_LIMIT = 50;
 
 // --- Feed ---
 /** Default number of entries returned by the activity feed. */
@@ -316,6 +320,10 @@ export const CONSOLIDATION_VECTOR_FETCH_LIMIT = 20;
 export const CONSOLIDATION_MAX_TOKENS = 2048;
 
 // --- Power management ---
+/** PowerManager states valid for task scheduling (excludes deep_sleep which halts all ticks). */
+export const SCHEDULABLE_POWER_STATES = ['active', 'idle', 'sleep'] as const;
+export type SchedulablePowerState = typeof SCHEDULABLE_POWER_STATES[number];
+
 /** Time without activity before transitioning to idle (ms). */
 export const POWER_IDLE_THRESHOLD_MS = 5 * 60 * MS_PER_SECOND;
 /** Time without activity before transitioning to sleep (ms). */

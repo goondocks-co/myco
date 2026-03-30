@@ -183,6 +183,55 @@ const DIGEST_EXTRACTS_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
+const SKILL_CANDIDATES_TABLE = `
+  CREATE TABLE IF NOT EXISTS skill_candidates (
+    id              TEXT NOT NULL,
+    machine_id      TEXT NOT NULL,
+    agent_id        TEXT NOT NULL,
+    topic           TEXT NOT NULL,
+    rationale       TEXT NOT NULL,
+    confidence      REAL NOT NULL DEFAULT 0.0,
+    status          TEXT NOT NULL DEFAULT 'identified',
+    source_ids      TEXT NOT NULL DEFAULT '[]',
+    skill_id        TEXT,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    synced_at       INTEGER,
+    PRIMARY KEY (id, machine_id)
+  )`;
+
+const SKILL_RECORDS_TABLE = `
+  CREATE TABLE IF NOT EXISTS skill_records (
+    id              TEXT NOT NULL,
+    machine_id      TEXT NOT NULL,
+    agent_id        TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    display_name    TEXT NOT NULL,
+    description     TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'active',
+    generation      INTEGER NOT NULL DEFAULT 1,
+    candidate_id    TEXT,
+    source_ids      TEXT NOT NULL DEFAULT '[]',
+    path            TEXT NOT NULL,
+    usage_count     INTEGER NOT NULL DEFAULT 0,
+    last_used_at    INTEGER,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    properties      TEXT NOT NULL DEFAULT '{}',
+    synced_at       INTEGER,
+    PRIMARY KEY (id, machine_id)
+  )`;
+
+const SKILL_USAGE_TABLE = `
+  CREATE TABLE IF NOT EXISTS skill_usage (
+    id              TEXT NOT NULL,
+    machine_id      TEXT NOT NULL,
+    skill_id        TEXT NOT NULL,
+    session_id      TEXT NOT NULL,
+    detected_at     INTEGER NOT NULL,
+    PRIMARY KEY (id, machine_id)
+  )`;
+
 const NODES_TABLE = `
   CREATE TABLE IF NOT EXISTS nodes (
     machine_id              TEXT PRIMARY KEY,
@@ -209,6 +258,10 @@ const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_graph_edges_source ON graph_edges (source_id, source_type)',
   'CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON graph_edges (target_id, target_type)',
   'CREATE INDEX IF NOT EXISTS idx_entities_type ON entities (type)',
+  'CREATE INDEX IF NOT EXISTS idx_skill_candidates_status ON skill_candidates (status)',
+  'CREATE INDEX IF NOT EXISTS idx_skill_records_status ON skill_records (status)',
+  'CREATE INDEX IF NOT EXISTS idx_skill_records_name ON skill_records (name, machine_id)',
+  'CREATE INDEX IF NOT EXISTS idx_skill_usage_skill_id ON skill_usage (skill_id)',
 ];
 
 const ALL_DDLS = [
@@ -222,6 +275,9 @@ const ALL_DDLS = [
   PLANS_TABLE,
   ARTIFACTS_TABLE,
   DIGEST_EXTRACTS_TABLE,
+  SKILL_CANDIDATES_TABLE,
+  SKILL_RECORDS_TABLE,
+  SKILL_USAGE_TABLE,
   NODES_TABLE,
   TEAM_CONFIG_TABLE,
 ];

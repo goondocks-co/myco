@@ -20,7 +20,7 @@ function getResultPath(result: SearchResult): string {
     case 'session':
       return `/sessions/${result.id}`;
     case 'spore':
-      return `/mycelium?spore=${encodeURIComponent(result.id)}`;
+      return `/mycelium?tab=spores&spore=${encodeURIComponent(result.id)}`;
     case 'plan':
       return result.session_id
         ? `/sessions/${result.session_id}?tab=plans&plan=${encodeURIComponent(result.id)}`

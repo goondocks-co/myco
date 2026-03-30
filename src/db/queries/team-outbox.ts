@@ -240,8 +240,11 @@ const BACKFILL_TABLES = [
   'plans',
   'artifacts',
   'digest_extracts',
+  'skill_candidates',
+  'skill_records',
 ] as const;
 // entity_mentions excluded — no `id` column (composite key entity_id+note_id+note_type)
+// skill_usage excluded — no `synced_at` column (syncs via syncRow on insert)
 
 /**
  * Enqueue all unsynced records across all synced tables into the outbox.

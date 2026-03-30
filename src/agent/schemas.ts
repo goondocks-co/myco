@@ -6,6 +6,7 @@
  */
 
 import { z } from 'zod/v4';
+import { SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
 // Schema version
@@ -70,6 +71,25 @@ export const OrchestratorConfigSchema = z.object({
   maxTurns: z.number().optional(),
 });
 
+/** Pre-condition identifiers for scheduled task auto-runs. */
+const PreConditionSchema = z.enum([
+  'has-unprocessed-batches',
+  'has-active-skills',
+  'has-approved-candidates',
+]);
+
+/** Schedule configuration for automatic task execution via PowerManager. */
+export const TaskScheduleSchema = z.object({
+  /** Whether auto-run is enabled for this task. */
+  enabled: z.boolean().default(false),
+  /** Seconds between runs. */
+  intervalSeconds: z.number().int().positive(),
+  /** PowerManager states where this task runs. */
+  runIn: z.array(z.enum([...SCHEDULABLE_POWER_STATES])).min(1),
+  /** Optional pre-condition check before running. */
+  preCondition: PreConditionSchema.optional(),
+});
+
 /** Schema for a single phase within a phased task pipeline. */
 export const PhaseDefinitionSchema = z.object({
   name: z.string(),
@@ -100,4 +120,5 @@ export const AgentTaskSchema = z.object({
   contextQueries: z.record(z.string(), z.array(ContextQuerySchema)).optional(),
   schemaVersion: z.number().optional(),
   orchestrator: OrchestratorConfigSchema.optional(),
+  schedule: TaskScheduleSchema.optional(),
 });

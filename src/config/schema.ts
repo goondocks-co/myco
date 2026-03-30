@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
 
 const EmbeddingProviderSchema = z.object({
   provider: z.enum(['ollama', 'openai-compatible', 'openrouter', 'openai']).default('ollama'),
@@ -35,6 +36,14 @@ const PhaseOverrideSchema = z.object({
   maxTurns: z.number().int().positive().optional(),
 });
 
+/** Per-task schedule override — partial, merges with YAML defaults. */
+const ScheduleOverrideSchema = z.object({
+  enabled: z.boolean().optional(),
+  intervalSeconds: z.number().int().positive().optional(),
+  runIn: z.array(z.enum([...SCHEDULABLE_POWER_STATES])).optional(),
+  preCondition: z.enum(['has-unprocessed-batches', 'has-active-skills', 'has-approved-candidates']).optional(),
+}).optional();
+
 /** Per-task config override — stored in myco.yaml under agent.tasks. */
 const TaskProviderOverrideSchema = z.object({
   provider: ProviderOverrideSchema.optional(),
@@ -42,6 +51,7 @@ const TaskProviderOverrideSchema = z.object({
   maxTurns: z.number().int().positive().optional(),
   timeoutSeconds: z.number().int().positive().optional(),
   phases: z.record(z.string(), PhaseOverrideSchema).optional(),
+  schedule: ScheduleOverrideSchema,
 });
 
 const ContextSchema = z.object({
@@ -54,10 +64,6 @@ const ContextSchema = z.object({
 });
 
 const AgentSchema = z.object({
-  /** Whether the daemon automatically runs the agent on unprocessed batches. */
-  auto_run: z.boolean().default(true),
-  /** Seconds between agent timer checks. */
-  interval_seconds: z.number().int().positive().default(300),
   /** Number of batches between event-driven summary triggers (0 to disable). */
   summary_batch_interval: z.number().int().min(0).default(5),
   /** Global default provider — applies to all tasks unless overridden per-task. */
@@ -84,6 +90,13 @@ const TeamSchema = z.object({
   interval_minutes: z.number().int().min(1).max(1440).default(15),
 });
 
+const SkillsSchema = z.object({
+  /** Auto-generate candidates above this confidence score. */
+  confidence_threshold: z.number().min(0).max(1).default(0.7),
+  /** Flag unused skills after this many days. */
+  usage_stale_days: z.number().int().positive().default(30),
+});
+
 export const MycoConfigSchema = z.preprocess(
   (raw: unknown) => {
     if (raw && typeof raw === 'object' && 'curation' in raw && !('agent' in raw)) {
@@ -102,6 +115,7 @@ export const MycoConfigSchema = z.preprocess(
     context: ContextSchema.default(() => ContextSchema.parse({})),
     backup: BackupSchema.default(() => BackupSchema.parse({})),
     team: TeamSchema.default(() => TeamSchema.parse({})),
+    skills: SkillsSchema.default(() => SkillsSchema.parse({})),
   }),
 );
 
@@ -109,6 +123,8 @@ export type MycoConfig = z.output<typeof MycoConfigSchema>;
 export type EmbeddingProviderConfig = z.infer<typeof EmbeddingProviderSchema>;
 export type TaskProviderOverride = z.infer<typeof TaskProviderOverrideSchema>;
 export type PhaseOverride = z.infer<typeof PhaseOverrideSchema>;
+export type ScheduleOverride = z.infer<typeof ScheduleOverrideSchema>;
 export type ContextConfig = z.infer<typeof ContextSchema>;
 export type BackupConfig = z.infer<typeof BackupSchema>;
 export type TeamConfig = z.infer<typeof TeamSchema>;
+export type SkillsConfig = z.infer<typeof SkillsSchema>;

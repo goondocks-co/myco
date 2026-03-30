@@ -10,7 +10,8 @@
 
 import crypto from 'node:crypto';
 import { getDatabase } from '@myco/db/client.js';
-import { QUERY_DEFAULT_LIST_LIMIT, GRAPH_EDGE_DEFAULT_CONFIDENCE, DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { QUERY_DEFAULT_LIST_LIMIT, GRAPH_EDGE_DEFAULT_CONFIDENCE } from '@myco/constants.js';
+import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
@@ -120,7 +121,7 @@ function toGraphEdgeRow(row: Record<string, unknown>): GraphEdgeRow {
     confidence: row.confidence as number,
     properties: (row.properties as string) ?? null,
     created_at: row.created_at as number,
-    machine_id: (row.machine_id as string) ?? DEFAULT_MACHINE_ID,
+    machine_id: (row.machine_id as string) ?? getTeamMachineId(),
     synced_at: (row.synced_at as number) ?? null,
   };
 }
@@ -155,7 +156,7 @@ export function insertGraphEdge(data: GraphEdgeInsert): GraphEdgeRow {
     data.confidence ?? GRAPH_EDGE_DEFAULT_CONFIDENCE,
     data.properties ?? null,
     data.created_at,
-    data.machine_id ?? DEFAULT_MACHINE_ID,
+    data.machine_id ?? getTeamMachineId(),
   );
 
   const row = toGraphEdgeRow(

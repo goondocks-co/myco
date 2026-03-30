@@ -13,16 +13,17 @@
  */
 
 import crypto from 'node:crypto';
+import { resolve } from 'node:path';
 import { epochSeconds, DEFAULT_AGENT_ID, MS_PER_SECOND, PHASE_SUMMARY_MAX_CHARS } from '@myco/constants.js';
 import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
-import { initDatabase, vaultDbPath } from '@myco/db/client.js';
+import { initDatabase, vaultDbPath, getDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { getAgent } from '@myco/db/queries/agents.js';
 import { getTask, getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
   insertRun,
   updateRunStatus,
-  getRunningRun,
+  getRunningRunForTask,
   STATUS_RUNNING,
   STATUS_COMPLETED,
   STATUS_FAILED,
@@ -460,6 +461,7 @@ async function executePhasedQuery(
   instruction?: string,
   embeddingManager?: RunOptions['embeddingManager'],
   abortController?: AbortController,
+  projectRoot?: string,
 ): Promise<{ tokensUsed: number; costUsd: number; phases: PhaseResult[] }> {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
 
@@ -544,6 +546,7 @@ async function executePhasedQuery(
         phase.tools,
         runningTurnCount + (indexInWave * effectiveMaxTurns),
         embeddingManager,
+        projectRoot,
       );
 
       // Provider priority: phase YAML → myco.yaml phase → myco.yaml task → task YAML execution → default
@@ -632,14 +635,23 @@ export async function runAgent(
 
   const agentId = options?.agentId ?? DEFAULT_AGENT_ID;
 
-  // 2. Concurrency guard — check before expensive config loading
-  const running = getRunningRun(agentId);
-  if (running) {
-    return {
-      runId: running.id,
-      status: STATUS_SKIPPED,
-      reason: SKIP_REASON_ALREADY_RUNNING,
-    };
+  // 2. Concurrency guard — block duplicate runs of the SAME task, not all tasks.
+  // Different tasks (e.g., full-intelligence and skill-generate) can run concurrently.
+  // When no task is specified, resolve the effective task name first so the guard applies.
+  const requestedTask = options?.task;
+  {
+    const effectiveTask = requestedTask
+      ?? getDefaultTask(agentId)?.id;
+    if (effectiveTask) {
+      const runningId = getRunningRunForTask(agentId, effectiveTask);
+      if (runningId) {
+        return {
+          runId: runningId,
+          status: STATUS_SKIPPED,
+          reason: SKIP_REASON_ALREADY_RUNNING,
+        };
+      }
+    }
   }
 
   // 3. Resolve config
@@ -773,6 +785,7 @@ export async function runAgent(
 
     if (config.phases && config.phases.length > 0) {
       // Phased execution: wave-based parallel query() per phase with scoped tools
+      const projectRoot = resolve(vaultDir, '..');
       const result = await executePhasedQuery(
         config,
         systemPrompt,
@@ -784,6 +797,7 @@ export async function runAgent(
         options?.instruction,
         options?.embeddingManager,
         taskAbortController,
+        projectRoot,
       );
       tokensUsed = result.tokensUsed;
       costUsd = result.costUsd;

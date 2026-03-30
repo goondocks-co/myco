@@ -1,7 +1,7 @@
 /**
  * Vault MCP tool server for the agent.
  *
- * Creates 18 tools that expose SQLite query helpers to the agent
+ * Creates 21 tools that expose SQLite query helpers to the agent
  * via the Claude Agent SDK. Tools are grouped into:
  * - Read tools: vault_unprocessed, vault_spores, vault_sessions, vault_search_fts,
  *               vault_search_semantic, vault_state, vault_entities, vault_edges,
@@ -16,10 +16,13 @@
  */
 
 import crypto from 'node:crypto';
+import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { z } from 'zod/v4';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
-import { epochSeconds, SEARCH_SIMILARITY_THRESHOLD, TEAM_SOURCE_PREFIX } from '@myco/constants.js';
+import { epochSeconds, SEARCH_SIMILARITY_THRESHOLD, TEAM_SOURCE_PREFIX, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { getPluginVersion } from '@myco/version.js';
+import { getDatabase } from '@myco/db/client.js';
 import { getUnprocessedBatches, markBatchProcessed } from '@myco/db/queries/batches.js';
 import { listSpores, insertSpore, updateSporeStatus, DEFAULT_IMPORTANCE } from '@myco/db/queries/spores.js';
 import { listSessions, updateSession } from '@myco/db/queries/sessions.js';
@@ -33,6 +36,16 @@ import { insertGraphEdge, listGraphEdges } from '@myco/db/queries/graph-edges.js
 import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
+import {
+  insertCandidate, getCandidate, listCandidates, updateCandidate,
+} from '@myco/db/queries/skill-candidates.js';
+import {
+  insertSkillRecord, getSkillRecord, getSkillRecordByName,
+  listSkillRecords, updateSkillRecord,
+} from '@myco/db/queries/skill-records.js';
+import { insertLineage } from '@myco/db/queries/skill-lineage.js';
+import { deleteCandidate } from '@myco/db/queries/skill-candidates.js';
+import { deleteSkillRecordCascade } from '@myco/db/queries/skill-records.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 
@@ -71,14 +84,70 @@ function textResult(data: unknown): { content: Array<{ type: 'text'; text: strin
 }
 
 // ---------------------------------------------------------------------------
+// Skill content validation (module-scope — avoids re-creation per server instantiation)
+// ---------------------------------------------------------------------------
+
+/** Maximum lines for a generated skill. */
+export const MAX_SKILL_LINES = 500;
+
+/** Required frontmatter fields for Myco-managed skills. */
+export const REQUIRED_FRONTMATTER_FIELDS = ['name', 'description', 'managed_by', 'user-invocable', 'allowed-tools'] as const;
+
+/**
+ * Validate skill content before writing. Returns an array of issues
+ * (empty = valid). This is a deterministic quality gate — the agent
+ * must fix all issues before the skill is accepted.
+ */
+export function validateSkillContent(content: string, dirName: string): string[] {
+  const issues: string[] = [];
+
+  // Check for frontmatter delimiters
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) {
+    issues.push('Missing YAML frontmatter (must start with --- and end with ---)');
+    return issues; // Can't check fields without frontmatter
+  }
+
+  const frontmatter = fmMatch[1];
+
+  // Check required fields
+  for (const field of REQUIRED_FRONTMATTER_FIELDS) {
+    if (!frontmatter.includes(`${field}:`)) {
+      issues.push(`Missing required frontmatter field: ${field}`);
+    }
+  }
+
+  // Check myco: prefix on name
+  const nameMatch = frontmatter.match(/^name:\s*(.+)$/m);
+  if (nameMatch && !nameMatch[1].trim().startsWith('myco:')) {
+    issues.push(`Skill name must start with "myco:" prefix. Got: "${nameMatch[1].trim()}"`);
+  }
+
+  // Check managed_by: myco
+  const managedMatch = frontmatter.match(/^managed_by:\s*(.+)$/m);
+  if (managedMatch && managedMatch[1].trim() !== 'myco') {
+    issues.push(`managed_by must be "myco". Got: "${managedMatch[1].trim()}"`);
+  }
+
+  // Check line count
+  const lineCount = content.split('\n').length;
+  if (lineCount > MAX_SKILL_LINES) {
+    issues.push(`Skill is ${lineCount} lines (max ${MAX_SKILL_LINES})`);
+  }
+
+  return issues;
+}
+
+// ---------------------------------------------------------------------------
 // Tool definitions factory
 // ---------------------------------------------------------------------------
 
 /** Total number of vault tools defined. */
-export const VAULT_TOOL_COUNT = 18;
+export const VAULT_TOOL_COUNT = 21;
 
 /**
- * Create the 18 vault tool definitions for the agent.
+ * Create the 21 vault tool definitions for the agent (includes 3 skill tools:
+ * vault_skill_candidates, vault_skill_records, vault_write_skill).
  *
  * Exposed for testing (call handler directly) and for the MCP server factory.
  *
@@ -86,7 +155,7 @@ export const VAULT_TOOL_COUNT = 18;
  * @param runId — the current agent run ID, injected into reports and turns.
  * @returns array of SdkMcpToolDefinition objects.
  */
-export function createVaultTools(agentId: string, runId: string, turnOffset = 0, embeddingManager?: EmbeddingManager, teamClient?: TeamSyncClient | null, machineId?: string) {
+export function createVaultTools(agentId: string, runId: string, turnOffset = 0, embeddingManager?: EmbeddingManager, teamClient?: TeamSyncClient | null, machineId?: string, projectRoot?: string) {
   /** Turn number counter — incremented per tool call (read and write) within a run. */
   let turnCounter = turnOffset;
 
@@ -177,10 +246,10 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
 
   const vaultSearchFts = tool(
     'vault_search_fts',
-    'Full-text search across prompt batches and activities using FTS5. Best for finding specific text, keywords, or session content. Does NOT search spores or entities.',
+    'Full-text search across sessions, spores, prompt batches, and activities using FTS5. Best for finding exact keywords, file paths, function names, and specific text. Searches: session titles/summaries, spore content, user prompts, AI response summaries, tool calls.',
     {
       query: z.string().describe('Search query text'),
-      type: z.string().optional().describe('Restrict to a result type (prompt_batch, activity)'),
+      type: z.string().optional().describe('Restrict to a result type (session, spore, prompt_batch, activity)'),
       limit: z.number().optional().describe('Maximum number of results to return'),
     },
     async (args) => {
@@ -336,6 +405,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
       const spore = insertSpore({
         id,
         agent_id: agentId,
+        machine_id: machineId,
         observation_type: args.observation_type,
         content: args.content,
         session_id: args.session_id ?? null,
@@ -378,6 +448,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
       const entity = insertEntity({
         id,
         agent_id: agentId,
+        machine_id: machineId,
         type: args.type,
         name: args.name,
         properties: props,
@@ -409,6 +480,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
 
       const edge = insertGraphEdge({
         agent_id: agentId,
+        machine_id: machineId,
         source_id: args.source_id,
         source_type: args.source_type,
         target_id: args.target_id,
@@ -454,6 +526,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
       insertResolutionEvent({
         id: eventId,
         agent_id: agentId,
+        machine_id: machineId,
         spore_id: args.spore_id,
         action: args.action,
         new_spore_id: args.new_spore_id ?? null,
@@ -603,6 +676,332 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
   );
 
   // -------------------------------------------------------------------------
+  // Skill lifecycle tools
+  // -------------------------------------------------------------------------
+
+  const vaultSkillCandidates = tool(
+    'vault_skill_candidates',
+    'Manage skill candidates (identified topics that may become skills). Supports list, get, create, and update actions.',
+    {
+      action: z.enum(['list', 'get', 'create', 'update', 'delete']).describe('Action to perform'),
+      id: z.string().optional().describe('Candidate ID (required for get/update)'),
+      topic: z.string().optional().describe('Skill topic (required for create)'),
+      rationale: z.string().optional().describe('Why this should be a skill (required for create)'),
+      confidence: z.number().optional().describe('Confidence score 0-1'),
+      status: z.enum(['identified', 'approved', 'generated', 'dismissed']).optional().describe('Candidate status. Only these values are valid.'),
+      source_ids: z.string().optional().describe('JSON array of source spore/entity IDs'),
+      skill_id: z.string().optional().describe('Associated skill record ID (after materialization)'),
+      limit: z.number().optional().describe('Maximum candidates to return (for list)'),
+    },
+    async (args) => {
+      recordTurn('vault_skill_candidates', args);
+
+      switch (args.action) {
+        case 'list': {
+          const candidates = listCandidates({
+            agent_id: agentId,
+            status: args.status,
+            limit: args.limit ?? DEFAULT_LIST_LIMIT,
+          });
+          return textResult(candidates);
+        }
+
+        case 'get': {
+          if (!args.id) return textResult({ error: 'id is required for get action' });
+          const candidate = getCandidate(args.id);
+          if (!candidate) return textResult({ error: `Candidate not found: ${args.id}` });
+          return textResult(candidate);
+        }
+
+        case 'create': {
+          if (!args.topic || !args.rationale) {
+            return textResult({ error: 'topic and rationale are required for create action' });
+          }
+          const now = epochSeconds();
+          const candidate = insertCandidate({
+            id: crypto.randomUUID(),
+            agent_id: agentId,
+            machine_id: machineId,
+            topic: args.topic,
+            rationale: args.rationale,
+            confidence: args.confidence,
+            status: args.status,
+            source_ids: args.source_ids,
+            created_at: now,
+            updated_at: now,
+          });
+          return textResult(candidate);
+        }
+
+        case 'update': {
+          if (!args.id) return textResult({ error: 'id is required for update action' });
+          const now = epochSeconds();
+          const updated = updateCandidate(args.id, {
+            ...(args.topic !== undefined ? { topic: args.topic } : {}),
+            ...(args.rationale !== undefined ? { rationale: args.rationale } : {}),
+            ...(args.confidence !== undefined ? { confidence: args.confidence } : {}),
+            ...(args.status !== undefined ? { status: args.status } : {}),
+            ...(args.source_ids !== undefined ? { source_ids: args.source_ids } : {}),
+            ...(args.skill_id !== undefined ? { skill_id: args.skill_id } : {}),
+            updated_at: now,
+          });
+          if (!updated) return textResult({ error: `Candidate not found: ${args.id}` });
+          return textResult(updated);
+        }
+
+        case 'delete': {
+          if (!args.id) return textResult({ error: 'id is required for delete action' });
+          const deleted = deleteCandidate(args.id);
+          if (!deleted) return textResult({ error: `Candidate not found: ${args.id}` });
+          return textResult({ deleted: true, id: args.id });
+        }
+
+        default:
+          return textResult({ error: `Unknown action: ${args.action}` });
+      }
+    },
+  );
+
+  const vaultSkillRecords = tool(
+    'vault_skill_records',
+    'Read, update, and delete skill records (materialized skills on disk). Supports list, get, update, and delete actions.',
+    {
+      action: z.enum(['list', 'get', 'update', 'delete']).describe('Action to perform'),
+      id: z.string().optional().describe('Skill record ID or name (required for get/update/delete)'),
+      status: z.enum(['active', 'stale', 'retired']).optional().describe('Filter by status'),
+      generation: z.number().optional().describe('New generation number (for update)'),
+      source_ids: z.string().optional().describe('JSON array of source IDs (for update)'),
+      description: z.string().optional().describe('Updated description (for update)'),
+      limit: z.number().optional().describe('Maximum records to return (for list)'),
+    },
+    async (args) => {
+      recordTurn('vault_skill_records', args);
+
+      switch (args.action) {
+        case 'list': {
+          const records = listSkillRecords({
+            agent_id: agentId,
+            status: args.status,
+            limit: args.limit ?? DEFAULT_LIST_LIMIT,
+          });
+          return textResult(records);
+        }
+
+        case 'get': {
+          if (!args.id) return textResult({ error: 'id is required for get action' });
+          const record = getSkillRecord(args.id) ?? getSkillRecordByName(args.id);
+          if (!record) return textResult({ error: `Skill record not found: ${args.id}` });
+          return textResult(record);
+        }
+
+        case 'update': {
+          if (!args.id) return textResult({ error: 'id is required for update action' });
+          // Resolve by id or name
+          const existing = getSkillRecord(args.id) ?? getSkillRecordByName(args.id);
+          if (!existing) return textResult({ error: `Skill record not found: ${args.id}` });
+
+          const now = epochSeconds();
+          const updated = updateSkillRecord(existing.id, {
+            ...(args.status !== undefined ? { status: args.status } : {}),
+            ...(args.generation !== undefined ? { generation: args.generation } : {}),
+            ...(args.source_ids !== undefined ? { source_ids: args.source_ids } : {}),
+            ...(args.description !== undefined ? { description: args.description } : {}),
+            updated_at: now,
+          });
+          if (!updated) return textResult({ error: `Failed to update skill record: ${existing.id}` });
+          return textResult(updated);
+        }
+
+        case 'delete': {
+          if (!args.id) return textResult({ error: 'id is required for delete action' });
+          const result = deleteSkillRecordCascade(args.id);
+          if (!result) return textResult({ error: `Skill record not found: ${args.id}` });
+          // Disk + symlink cleanup (best-effort)
+          const root = projectRoot ?? process.cwd();
+          if (!/[/\\]|\.\./.test(result.name)) {
+            const skillDir = resolve(root, '.agents', 'skills', result.name);
+            try { rmSync(skillDir, { recursive: true, force: true }); } catch (err) {
+              console.warn('[vault_skill_records] Failed to remove skill directory:', err instanceof Error ? err.message : err);
+            }
+            try {
+              const { syncSkillSymlinks } = await import('../symbionts/installer.js');
+              syncSkillSymlinks(root, result.name, { remove: true });
+            } catch (err) {
+              console.warn('[vault_skill_records] Failed to remove symlinks:', err instanceof Error ? err.message : err);
+            }
+          }
+          return textResult({ deleted: true, id: result.id, name: result.name });
+        }
+
+        default:
+          return textResult({ error: `Unknown action: ${args.action}` });
+      }
+    },
+  );
+
+  const vaultWriteSkill = tool(
+    'vault_write_skill',
+    'Write a SKILL.md file to disk and create or update the corresponding skill record and lineage entry.',
+    {
+      name: z.string().describe('Skill directory name (kebab-case, NO colon). The myco: prefix goes in the SKILL.md frontmatter name field, not here.'),
+      display_name: z.string().describe('Human-readable display name'),
+      description: z.string().describe('Short description of what the skill does'),
+      content: z.string().describe('Full SKILL.md content in markdown'),
+      source_ids: z.string().optional().describe('JSON array of source spore/entity IDs'),
+      candidate_id: z.string().optional().describe('Candidate ID that prompted this skill creation'),
+      rationale: z.string().optional().describe('Why this skill was created or updated'),
+    },
+    async (args) => {
+      // Validate skill content before writing — reject malformed skills
+      const validationErrors = validateSkillContent(args.content, args.name);
+      if (validationErrors.length > 0) {
+        recordTurn('vault_write_skill', args);
+        return textResult({
+          error: 'Skill validation failed. Fix these issues and try again.',
+          issues: validationErrors,
+        });
+      }
+
+      // Path traversal guard — reject names containing path separators or dot-dot sequences
+      if (!args.name || /[/\\]|\.\./.test(args.name)) {
+        recordTurn('vault_write_skill', args);
+        return textResult({
+          error: 'Invalid skill name: must be a simple directory name without path separators or ".."',
+        });
+      }
+
+      const root = projectRoot ?? process.cwd();
+      const skillDir = resolve(root, '.agents', 'skills', args.name);
+      const skillPath = resolve(skillDir, 'SKILL.md');
+
+      // Write file to disk — must succeed before any DB operations
+      try {
+        mkdirSync(skillDir, { recursive: true });
+        writeFileSync(skillPath, args.content, 'utf-8');
+      } catch (err) {
+        return textResult({ error: `Failed to write skill file: ${err instanceof Error ? err.message : String(err)}` });
+      }
+
+      // Create agent-specific symlinks so each symbiont discovers the skill.
+      // Uses the shared syncSkillSymlinks which reads manifest skillsTarget paths.
+      try {
+        const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
+        syncSkillSymlinks(root, args.name);
+      } catch (err) {
+        // Best-effort — skill file is written, symlinks are convenience
+        console.warn('[vault_write_skill] syncSkillSymlinks failed:', err instanceof Error ? err.message : err);
+      }
+
+      const now = epochSeconds();
+      const relativePath = `.agents/skills/${args.name}/SKILL.md`;
+
+      // Check for existing record
+      const existing = getSkillRecordByName(args.name);
+
+      let recordId = '';
+      let generation = 0;
+
+      // All DB mutations wrapped in a transaction for atomicity.
+      // File write (above) is the source of truth; DB is derived.
+      const txDb = getDatabase();
+      txDb.transaction(() => {
+        if (existing) {
+          // Update existing record — bump generation
+          generation = existing.generation + 1;
+          recordId = existing.id;
+          updateSkillRecord(existing.id, {
+            display_name: args.display_name,
+            description: args.description,
+            generation,
+            ...(args.source_ids !== undefined ? { source_ids: args.source_ids } : {}),
+            path: relativePath,
+            updated_at: now,
+          });
+
+          // Record lineage
+          insertLineage({
+            id: crypto.randomUUID(),
+            skill_id: existing.id,
+            generation,
+            action: 'updated',
+            rationale: args.rationale ?? 'Skill content updated',
+            source_ids_added: args.source_ids,
+            content_snapshot: args.content,
+            created_at: now,
+          });
+        } else {
+          // Create new record
+          recordId = crypto.randomUUID();
+          generation = 1;
+          insertSkillRecord({
+            id: recordId,
+            agent_id: agentId,
+            machine_id: machineId,
+            name: args.name,
+            display_name: args.display_name,
+            description: args.description,
+            candidate_id: args.candidate_id ?? null,
+            source_ids: args.source_ids,
+            path: relativePath,
+            created_at: now,
+            updated_at: now,
+          });
+
+          // Record lineage
+          insertLineage({
+            id: crypto.randomUUID(),
+            skill_id: recordId,
+            generation,
+            action: 'created',
+            rationale: args.rationale ?? 'Initial skill creation',
+            source_ids_added: args.source_ids,
+            content_snapshot: args.content,
+            created_at: now,
+          });
+
+          // Auto-link candidate: find the approved candidate this skill was generated from.
+          // Strategy: exact candidate_id → prefix match.
+          // Does NOT depend on the agent passing the correct ID.
+          const approvedCandidates = listCandidates({ status: 'approved', limit: 10 });
+          let linkedCandidate = false;
+
+          // 1. Try exact candidate_id if provided
+          if (args.candidate_id && !linkedCandidate) {
+            const exact = updateCandidate(args.candidate_id, {
+              status: 'generated', skill_id: recordId, updated_at: now,
+            });
+            if (exact) linkedCandidate = true;
+          }
+
+          // 2. Try prefix match on candidate_id (agent truncates UUIDs)
+          if (args.candidate_id && !linkedCandidate) {
+            const prefixMatch = approvedCandidates.find((c) => c.id.startsWith(args.candidate_id!));
+            if (prefixMatch) {
+              updateCandidate(prefixMatch.id, {
+                status: 'generated', skill_id: recordId, updated_at: now,
+              });
+              linkedCandidate = true;
+            }
+          }
+
+          // No blind fallback — if neither exact nor prefix match found the candidate,
+          // skip linking. The candidate stays 'approved' for the next generate cycle.
+          // The daemon injection (Layer 2) ensures candidate_id is always provided in
+          // scheduled runs, making this fallback-skip path rare.
+        }
+      })();
+
+      recordTurn('vault_write_skill', args);
+      return textResult({
+        id: recordId,
+        name: args.name,
+        path: relativePath,
+        generation,
+      });
+    },
+  );
+
+  // -------------------------------------------------------------------------
   // Assemble and return
   // -------------------------------------------------------------------------
 
@@ -625,6 +1024,9 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
     vaultWriteDigest,
     vaultMarkProcessed,
     vaultReport,
+    vaultSkillCandidates,
+    vaultSkillRecords,
+    vaultWriteSkill,
   ];
 }
 
@@ -633,7 +1035,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
 // ---------------------------------------------------------------------------
 
 /**
- * Create a vault MCP tool server with 18 tools for the agent.
+ * Create a vault MCP tool server with 21 tools for the agent.
  *
  * Wraps `createVaultTools()` with `createSdkMcpServer()` from the
  * Claude Agent SDK.
@@ -669,8 +1071,9 @@ export function createScopedVaultToolServer(
   toolNames: string[],
   turnOffset = 0,
   embeddingManager?: EmbeddingManager,
+  projectRoot?: string,
 ) {
-  const allTools = createVaultTools(agentId, runId, turnOffset, embeddingManager);
+  const allTools = createVaultTools(agentId, runId, turnOffset, embeddingManager, null, undefined, projectRoot);
   const nameSet = new Set(toolNames);
   const scopedTools = allTools.filter((t) => nameSet.has(t.name));
 

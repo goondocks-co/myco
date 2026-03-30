@@ -320,3 +320,53 @@ export function getRunningRun(
   if (!row) return null;
   return toRunRow(row);
 }
+
+/**
+ * Check if a specific task is already running for an agent.
+ *
+ * @returns the run ID if running, or null.
+ */
+export function getRunningRunForTask(
+  agentId: string,
+  taskName: string,
+): string | null {
+  const db = getDatabase();
+
+  const row = db.prepare(
+    `SELECT id FROM agent_runs
+     WHERE agent_id = ? AND task = ? AND status = ?
+     LIMIT 1`,
+  ).get(agentId, taskName, STATUS_RUNNING) as { id: string } | undefined;
+
+  return row?.id ?? null;
+}
+
+/**
+ * Get the most recently started run for an agent, optionally filtered by task.
+ *
+ * @returns the run ID if found, or null.
+ */
+export function getLatestRunId(
+  agentId: string,
+  taskName?: string,
+): string | null {
+  const db = getDatabase();
+
+  if (taskName) {
+    const row = db.prepare(
+      `SELECT id FROM agent_runs
+       WHERE agent_id = ? AND task = ?
+       ORDER BY started_at DESC
+       LIMIT 1`,
+    ).get(agentId, taskName) as { id: string } | undefined;
+    return row?.id ?? null;
+  }
+
+  const row = db.prepare(
+    `SELECT id FROM agent_runs
+     WHERE agent_id = ?
+     ORDER BY started_at DESC
+     LIMIT 1`,
+  ).get(agentId) as { id: string } | undefined;
+  return row?.id ?? null;
+}

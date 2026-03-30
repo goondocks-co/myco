@@ -21,6 +21,7 @@ import {
   Search,
   Menu,
   X,
+  Sparkles,
 } from 'lucide-react';
 import { useTheme } from '../providers/theme';
 import { useUpdateStatus } from '../hooks/use-update-status';
@@ -37,6 +38,7 @@ const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/sessions', label: 'Sessions', icon: MessageSquare },
   { to: '/mycelium', label: 'Mycelium', icon: Network },
+  { to: '/skills', label: 'Skills', icon: Sparkles },
   { to: '/agent', label: 'Agent', icon: Bot },
   { to: '/settings', label: 'Settings', icon: Settings },
   { to: '/operations', label: 'Operations', icon: Wrench },
