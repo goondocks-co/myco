@@ -1453,12 +1453,18 @@ export async function main(): Promise<void> {
   server.registerRoute('DELETE', '/api/skill-candidates/:id', handleDeleteCandidate);
   server.registerRoute('DELETE', '/api/skill-records/:id', async (req) => {
     const result = await handleDeleteSkillRecord(req);
-    // Delete skill file from disk if the DB delete succeeded
+    // Delete skill file and symlinks from disk if the DB delete succeeded
     if ((result.body as Record<string, unknown>)?.deleted) {
       const record = result.body as { name?: string };
       if (record.name) {
-        const skillDir = path.resolve(vaultDir, '..', '.agents', 'skills', record.name);
+        const projectRoot = path.resolve(vaultDir, '..');
+        const skillDir = path.resolve(projectRoot, '.agents', 'skills', record.name);
         try { fs.rmSync(skillDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+        // Remove agent-specific symlinks (e.g., .claude/skills/<name>)
+        try {
+          const { syncSkillSymlinks } = await import('../symbionts/installer.js');
+          syncSkillSymlinks(projectRoot, record.name, { remove: true });
+        } catch { /* best-effort */ }
       }
     }
     return result;

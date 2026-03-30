@@ -965,3 +965,48 @@ function ensureSymlink(linkPath: string, target: string): void {
   try { fs.rmSync(linkPath, { recursive: true, force: true }); } catch { /* ignore */ }
   fs.symlinkSync(target, linkPath);
 }
+
+/**
+ * Create agent-specific symlinks for a skill in `.agents/skills/<name>`.
+ *
+ * Reads all symbiont manifests to find skillsTarget paths that differ
+ * from the canonical `.agents/skills/` directory, then creates relative
+ * symlinks from each target to the canonical location.
+ *
+ * Called by vault_write_skill after writing a generated skill to disk.
+ * Also handles removal: when `remove` is true, deletes the symlinks.
+ */
+export function syncSkillSymlinks(
+  projectRoot: string,
+  skillName: string,
+  opts?: { remove?: boolean },
+): void {
+  const manifestDir = path.join(path.dirname(new URL(import.meta.url).pathname), 'manifests');
+  if (!fs.existsSync(manifestDir)) return;
+
+  const targets = new Set<string>();
+  for (const file of fs.readdirSync(manifestDir).filter((f) => f.endsWith('.yaml'))) {
+    try {
+      const content = fs.readFileSync(path.join(manifestDir, file), 'utf-8');
+      const match = content.match(/skillsTarget:\s*(.+)/);
+      if (match) targets.add(match[1].trim());
+    } catch { /* skip unreadable manifests */ }
+  }
+
+  for (const target of targets) {
+    if (target === CANONICAL_SKILLS_DIR) continue; // canonical is the source, not a link target
+
+    const agentSkillsDir = path.join(projectRoot, target);
+    const linkPath = path.join(agentSkillsDir, skillName);
+
+    if (opts?.remove) {
+      try { fs.unlinkSync(linkPath); } catch { /* doesn't exist */ }
+      try { fs.rmdirSync(agentSkillsDir); } catch { /* not empty or missing */ }
+    } else {
+      fs.mkdirSync(agentSkillsDir, { recursive: true });
+      const canonicalDir = path.join(projectRoot, CANONICAL_SKILLS_DIR);
+      const relTarget = path.join(path.relative(agentSkillsDir, canonicalDir), skillName);
+      ensureSymlink(linkPath, relTarget);
+    }
+  }
+}
