@@ -10,7 +10,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, updateTeamConfig } from '../config/loader.js';
-import { writeSecret } from '../config/secrets.js';
+import { writeSecret, readSecrets } from '../config/secrets.js';
 import { resolvePackageRoot } from '../symbionts/detect.js';
 import { WRANGLER_COMMAND_TIMEOUT_MS, TEAM_API_KEY_SECRET } from '../constants.js';
 
@@ -324,6 +324,25 @@ export async function teamUpgrade(vaultDir: string): Promise<void> {
   toml = toml.replace(TOML_DB_NAME_REGEX, `database_name = "${dbNameMatch?.[1] ?? workerName}"`);
   toml = toml.replace(TOML_INDEX_NAME_REGEX, `index_name = "${indexNameMatch?.[1] ?? `${workerName}-vectors`}"`);
   fs.writeFileSync(path.join(deployDir, 'wrangler.toml'), toml, 'utf-8');
+
+  // Re-set API key secret before deploy (deploy can wipe secrets)
+  console.log('Setting API key secret...');
+  const secrets = readSecrets(vaultDir);
+  const apiKey = secrets[TEAM_API_KEY_SECRET];
+  if (apiKey) {
+    try {
+      execFileSync('wrangler', ['secret', 'put', TEAM_API_KEY_SECRET, '--name', workerName], {
+        encoding: 'utf-8',
+        timeout: WRANGLER_COMMAND_TIMEOUT_MS,
+        input: apiKey,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: deployDir,
+      });
+      console.log('Secret set\n');
+    } catch (err) {
+      console.warn(`Warning: could not set API key secret: ${(err as Error).message}`);
+    }
+  }
 
   // Redeploy
   console.log('Deploying...');
