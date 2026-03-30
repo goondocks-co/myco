@@ -11,7 +11,7 @@
 import { getDatabase } from '@myco/db/client.js';
 import { DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
-import { syncRow } from '@myco/db/queries/team-outbox.js';
+// skill_usage has no synced_at column — does not participate in team sync.
 
 // Re-export for callers that import DEFAULT_LIST_LIMIT from this module
 export { DEFAULT_LIST_LIMIT };
@@ -102,7 +102,8 @@ export function insertSkillUsage(data: SkillUsageInsert): SkillUsageRow {
     db.prepare(`SELECT ${SELECT_COLUMNS} FROM skill_usage WHERE id = ?`).get(data.id) as Record<string, unknown>,
   );
 
-  syncRow('skill_usage', row);
+  // Note: skill_usage has no synced_at column, so skip syncRow for now.
+  // Usage data is derived/local — does not need team sync.
 
   return row;
 }
