@@ -240,6 +240,9 @@ const BACKFILL_TABLES = [
   'plans',
   'artifacts',
   'digest_extracts',
+  'skill_candidates',
+  'skill_records',
+  'skill_usage',
 ] as const;
 // entity_mentions excluded — no `id` column (composite key entity_id+note_id+note_type)
 

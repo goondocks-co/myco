@@ -479,7 +479,9 @@ export async function main(): Promise<void> {
   ] as const;
   for (const table of SYNCED_TABLES_WITH_MACHINE_ID) {
     try {
-      const info = db.prepare(`UPDATE ${table} SET machine_id = ? WHERE machine_id = 'local'`).run(machineId);
+      const info = db.prepare(
+        `UPDATE ${table} SET machine_id = ?, synced_at = NULL WHERE machine_id = 'local'`,
+      ).run(machineId);
       if (info.changes > 0) {
         logger.info(LOG_KINDS.DAEMON_START, `Backfilled ${info.changes} ${table} records with machine_id`);
       }
