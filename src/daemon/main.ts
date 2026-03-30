@@ -469,7 +469,15 @@ export async function main(): Promise<void> {
   createSchema(db, machineId);
 
   // Backfill any records with stale 'local' machine_id to the resolved identity.
-  for (const table of ['skill_candidates', 'skill_records', 'skill_usage'] as const) {
+  // Covers ALL synced tables — the agent tools historically used DEFAULT_MACHINE_ID
+  // instead of the resolved machine identity.
+  const SYNCED_TABLES_WITH_MACHINE_ID = [
+    'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
+    'entity_mentions', 'resolution_events', 'plans', 'artifacts',
+    'digest_extracts', 'team_members',
+    'skill_candidates', 'skill_records', 'skill_usage',
+  ] as const;
+  for (const table of SYNCED_TABLES_WITH_MACHINE_ID) {
     try {
       const info = db.prepare(`UPDATE ${table} SET machine_id = ? WHERE machine_id = 'local'`).run(machineId);
       if (info.changes > 0) {
