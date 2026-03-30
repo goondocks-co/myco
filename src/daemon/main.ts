@@ -468,30 +468,6 @@ export async function main(): Promise<void> {
   const db = initDatabase(vaultDbPath(vaultDir));
   createSchema(db, machineId);
 
-  // Backfill any records with stale 'local' machine_id to the resolved identity.
-  // Covers ALL synced tables — the agent tools historically used DEFAULT_MACHINE_ID
-  // instead of the resolved machine identity.
-  const SYNCED_TABLES_WITH_MACHINE_ID = [
-    'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
-    'entity_mentions', 'resolution_events', 'plans', 'artifacts',
-    'digest_extracts',
-    'skill_candidates', 'skill_records',
-  ] as const;
-  for (const table of SYNCED_TABLES_WITH_MACHINE_ID) {
-    try {
-      const info = db.prepare(
-        `UPDATE ${table} SET machine_id = ?, synced_at = NULL WHERE machine_id = 'local'`,
-      ).run(machineId);
-      if (info.changes > 0) {
-        // Also clear stale outbox entries so the backfill can re-enqueue
-        db.prepare(
-          `DELETE FROM team_outbox WHERE table_name = ?`,
-        ).run(table);
-        logger.info(LOG_KINDS.DAEMON_START, `Backfilled ${info.changes} ${table} records with machine_id`);
-      }
-    } catch { /* table may not exist yet */ }
-  }
-
   logger.info(LOG_KINDS.DAEMON_START, 'SQLite initialized', { vault: vaultDir });
 
   // --- Team context ---

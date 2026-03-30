@@ -17,7 +17,7 @@ import type { Database } from 'better-sqlite3';
 import { epochSeconds, DEFAULT_MACHINE_ID } from '@myco/constants.js';
 
 /** Current schema version -- fresh start for the SQLite era. */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 // Re-export for backwards compat (other modules import from schema.ts)
 export { DEFAULT_MACHINE_ID };
@@ -1018,9 +1018,69 @@ function migrateV4ToV5(db: Database): void {
  * Fully idempotent -- safe to call on every startup. Uses `IF NOT EXISTS`
  * for all DDL and `ON CONFLICT DO NOTHING` for the version row.
  *
+/**
+ * Migrate v6 → v7: fix stale 'local' machine_id on ALL synced tables.
+ *
+ * The agent vault tools historically used DEFAULT_MACHINE_ID ('local')
+ * instead of the resolved machine identity. This one-time data migration
+ * fixes all affected records and re-queues them for team sync.
+ */
+function migrateV6ToV7(db: Database, machineId: string): void {
+  if (machineId === 'local' || machineId === DEFAULT_MACHINE_ID) return; // Nothing to fix
+
+  db.exec('BEGIN');
+  try {
+    const tables = [
+      'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
+      'entity_mentions', 'resolution_events', 'plans', 'artifacts',
+      'digest_extracts', 'skill_candidates', 'skill_records',
+    ];
+
+    for (const table of tables) {
+      try {
+        // Fix machine_id and clear synced_at so records are eligible for re-sync
+        db.prepare(
+          `UPDATE ${table} SET machine_id = ?, synced_at = NULL WHERE machine_id = 'local'`,
+        ).run(machineId);
+
+        // Clear stale outbox entries for this table so backfill can re-enqueue
+        db.prepare(`DELETE FROM team_outbox WHERE table_name = ?`).run(table);
+
+        // Directly enqueue all records with full payload for team sync
+        const rows = db.prepare(
+          `SELECT * FROM ${table} WHERE machine_id = ?`,
+        ).all(machineId) as Array<Record<string, unknown>>;
+
+        const enqueueStmt = db.prepare(
+          `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
+           VALUES (?, ?, 'upsert', ?, ?, ?)`,
+        );
+        const now = epochSeconds();
+        for (const row of rows) {
+          enqueueStmt.run(table, String(row.id), JSON.stringify(row), machineId, now);
+        }
+      } catch {
+        // Table may not exist — skip
+      }
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(7, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
  * @param db — better-sqlite3 Database instance.
  * @param machineId — machine identifier for backfilling existing rows during
- *   v3→v4 migration. Defaults to `'local'` (tests, init).
+ *   v3→v4 and v6→v7 migrations. Defaults to `'local'` (tests, init).
  */
 export function createSchema(db: Database, machineId: string = DEFAULT_MACHINE_ID): void {
   // Fast-path: skip if already at current version
@@ -1060,6 +1120,13 @@ export function createSchema(db: Database, machineId: string = DEFAULT_MACHINE_I
     ).get() as { version: number } | undefined)?.version ?? 0;
     if (afterV4Migration < 6) {
       migrateV5ToV6(db);
+    }
+    // Migration path: version 6 → 7
+    const afterV5Migration = (db.prepare(
+      'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1'
+    ).get() as { version: number } | undefined)?.version ?? 0;
+    if (afterV5Migration < 7) {
+      migrateV6ToV7(db, machineId);
     }
     return;
   } catch {
