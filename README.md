@@ -129,6 +129,12 @@ Local databases remain the source of truth. The cloud store is a queryable mirro
 
 Runs on the Cloudflare free tier. See the [Team Sync docs](docs/team-sync.md) for the full guide.
 
+### Skills
+
+Myco auto-generates project-specific skills from accumulated vault knowledge. As the intelligence pipeline processes sessions, it identifies recurring procedures — debugging the build, adding API routes, configuring providers — and surfaces them as candidates. You approve candidates from the Skills dashboard, and Myco writes SKILL.md files that teach your agents how to work in your codebase. Skills are deployed to `.agents/skills/` and symlinked to each agent's native skills directory, so every agent gets the same procedural knowledge.
+
+Skills evolve over time. When the project's understanding changes — a pattern is abandoned, a new gotcha is discovered, a workflow shifts — the evolve task detects the drift and rewrites affected skills, preserving what's still accurate and incorporating new knowledge. Each update is recorded with full lineage: generation number, rationale, and a content snapshot. See the [Skills docs](docs/skills.md) for the full lifecycle.
+
 ### Backup & restore
 
 Local SQL dump backups run automatically during daemon idle periods. Configure a custom backup directory (network share, git repo) from the Operations page. Restore with content-hash deduplication — never overwrites existing records.
