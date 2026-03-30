@@ -483,6 +483,10 @@ export async function main(): Promise<void> {
         `UPDATE ${table} SET machine_id = ?, synced_at = NULL WHERE machine_id = 'local'`,
       ).run(machineId);
       if (info.changes > 0) {
+        // Also clear stale outbox entries so the backfill can re-enqueue
+        db.prepare(
+          `DELETE FROM team_outbox WHERE table_name = ?`,
+        ).run(table);
         logger.info(LOG_KINDS.DAEMON_START, `Backfilled ${info.changes} ${table} records with machine_id`);
       }
     } catch { /* table may not exist yet */ }
