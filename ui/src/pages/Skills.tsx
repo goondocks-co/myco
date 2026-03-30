@@ -20,7 +20,7 @@ function readUrlState(): { tab: SkillsTab; skill?: string } {
   const params = new URLSearchParams(window.location.search);
   const rawTab = params.get(PARAM_TAB);
   const tab: SkillsTab =
-    rawTab && VALID_TABS.has(rawTab as SkillsTab) ? (rawTab as SkillsTab) : 'candidates';
+    rawTab && VALID_TABS.has(rawTab as SkillsTab) ? (rawTab as SkillsTab) : 'skills';
   return {
     tab,
     skill: params.get(PARAM_SKILL) ?? undefined,
@@ -39,8 +39,8 @@ function writeUrlState(tab: SkillsTab, skill?: string): void {
 /* ---------- Tab definitions ---------- */
 
 const TABS: Tab[] = [
-  { id: 'candidates', label: 'Candidates' },
   { id: 'skills', label: 'Skills' },
+  { id: 'candidates', label: 'Candidates' },
 ];
 
 /* ---------- Component ---------- */
