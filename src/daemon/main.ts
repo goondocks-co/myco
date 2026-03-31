@@ -64,6 +64,16 @@ import {
   handleEmbeddingReembedStale,
 } from './api/embedding.js';
 import { EmbeddingManager, SqliteVecVectorStore, EmbeddingProviderAdapter, SqliteRecordSource } from './embedding/index.js';
+import { registerBuiltinDomains } from '../notifications/domains.js';
+import {
+  handleListNotifications,
+  handleCreateNotification,
+  handleUpdateNotification,
+  handleDismissAll,
+  handleMarkAllRead,
+  handleGetRegistry,
+  handleUnreadCount,
+} from './api/notifications.js';
 import { createEmbeddingProvider } from '../intelligence/llm.js';
 import {
   handleListTasks,
@@ -468,6 +478,7 @@ export async function main(): Promise<void> {
   // --- SQLite initialization ---
   const db = initDatabase(vaultDbPath(vaultDir));
   createSchema(db, machineId);
+  registerBuiltinDomains();
 
   logger.info(LOG_KINDS.DAEMON_START, 'SQLite initialized', { vault: vaultDir });
 
@@ -1895,6 +1906,15 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/embedding/reconcile', async () => handleEmbeddingReconcile(embeddingManager));
   server.registerRoute('POST', '/api/embedding/clean-orphans', async () => handleEmbeddingCleanOrphans(embeddingManager));
   server.registerRoute('POST', '/api/embedding/reembed-stale', async () => handleEmbeddingReembedStale(embeddingManager));
+
+  // --- Notification API routes ---
+  server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(vaultDir, req.query));
+  server.registerRoute('POST', '/api/notifications', async (req) => handleCreateNotification(vaultDir, req.body));
+  server.registerRoute('PATCH', '/api/notifications/:id', async (req) => handleUpdateNotification(vaultDir, req.params.id, req.body));
+  server.registerRoute('POST', '/api/notifications/dismiss-all', async (req) => handleDismissAll(vaultDir, req.body));
+  server.registerRoute('POST', '/api/notifications/mark-all-read', async (req) => handleMarkAllRead(vaultDir, req.body));
+  server.registerRoute('GET', '/api/notifications/registry', async () => handleGetRegistry());
+  server.registerRoute('GET', '/api/notifications/unread-count', async () => handleUnreadCount());
 
   // --- Start server ---
 

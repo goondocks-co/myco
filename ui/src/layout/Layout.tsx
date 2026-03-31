@@ -22,6 +22,7 @@ import {
   Menu,
   X,
   Sparkles,
+  Bell,
 } from 'lucide-react';
 import { useTheme } from '../providers/theme';
 import { useUpdateStatus } from '../hooks/use-update-status';
@@ -30,6 +31,10 @@ import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
 import { Button } from '../components/ui/button';
 import { GlobalSearch } from '../components/search/GlobalSearch';
+import { NotificationBanner } from '../components/notifications/NotificationBanner';
+import { NotificationPanel } from '../components/notifications/NotificationPanel';
+import { SystemNotifications } from '../components/notifications/SystemNotifications';
+import { useUnreadCount } from '../hooks/use-notifications';
 import { cn } from '../lib/cn';
 
 /* ---------- Constants ---------- */
@@ -325,6 +330,8 @@ function SidebarContent({
   density,
   setDensity,
   onSearchOpen,
+  onNotificationsOpen,
+  unreadCount,
   onCollapseToggle,
   showCollapseToggle,
 }: {
@@ -333,6 +340,8 @@ function SidebarContent({
   density: Density;
   setDensity: (d: Density) => void;
   onSearchOpen: () => void;
+  onNotificationsOpen: () => void;
+  unreadCount: number;
   onCollapseToggle?: () => void;
   showCollapseToggle: boolean;
 }) {
@@ -362,8 +371,8 @@ function SidebarContent({
         )}
       </div>
 
-      {/* Search trigger */}
-      <div className="px-2 pt-2 pb-1">
+      {/* Search + Notifications triggers */}
+      <div className="px-2 pt-2 pb-1 space-y-0.5">
         <button
           type="button"
           onClick={onSearchOpen}
@@ -379,6 +388,24 @@ function SidebarContent({
           )}
           {!collapsed && (
             <kbd className="text-xs text-on-surface-variant/60 font-mono">{'\u2318'}K</kbd>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={onNotificationsOpen}
+          title={collapsed ? 'Notifications' : undefined}
+          className={cn(
+            'flex w-full items-center rounded-md text-sm text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface',
+            collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
+          )}
+        >
+          <Bell className="h-4 w-4 shrink-0" />
+          {!collapsed && <span className="flex-1 text-left">Notifications</span>}
+          {unreadCount > 0 && (
+            <span className={cn(
+              'h-2 w-2 rounded-full bg-primary shrink-0',
+              !collapsed && 'ml-auto',
+            )} />
           )}
         </button>
       </div>
@@ -449,6 +476,9 @@ export default function Layout() {
   const { data: stats } = useDaemon();
   const vaultName = stats?.vault.name;
   const [searchOpen, setSearchOpen] = useState(false);
+  const [notifPanelOpen, setNotifPanelOpen] = useState(false);
+  const { data: unreadData } = useUnreadCount();
+  const unreadCount = unreadData?.count ?? 0;
   const drawer = useMobileDrawer();
 
   // Register Cmd+K / Ctrl+K global shortcut
@@ -478,9 +508,15 @@ export default function Layout() {
 
   const openSearch = useCallback(() => setSearchOpen(true), []);
 
+  const openNotifPanel = useCallback(() => setNotifPanelOpen(true), []);
+  const closeNotifPanel = useCallback(() => setNotifPanelOpen(false), []);
+
   return (
     <div className="flex h-screen bg-background">
       <GlobalSearch open={searchOpen} onOpenChange={setSearchOpen} />
+      <NotificationBanner />
+      <NotificationPanel open={notifPanelOpen} onClose={closeNotifPanel} />
+      <SystemNotifications />
 
       {/* Mobile top bar — visible below md breakpoint */}
       {drawer.isMobile && (
@@ -499,14 +535,27 @@ export default function Layout() {
               {vaultName}
             </span>
           )}
-          <button
-            type="button"
-            onClick={openSearch}
-            className="ml-auto rounded-md p-1.5 text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface"
-            aria-label="Search"
-          >
-            <Search className="h-4 w-4" />
-          </button>
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              type="button"
+              onClick={openNotifPanel}
+              className="relative rounded-md p-1.5 text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface"
+              aria-label="Notifications"
+            >
+              <Bell className="h-4 w-4" />
+              {unreadCount > 0 && (
+                <span className="absolute top-0.5 right-0.5 h-2 w-2 rounded-full bg-primary" />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={openSearch}
+              className="rounded-md p-1.5 text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface"
+              aria-label="Search"
+            >
+              <Search className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       )}
 
@@ -533,6 +582,8 @@ export default function Layout() {
             density={density}
             setDensity={setDensity}
             onSearchOpen={openSearch}
+            onNotificationsOpen={openNotifPanel}
+            unreadCount={unreadCount}
             showCollapseToggle={false}
           />
         </aside>
@@ -552,6 +603,8 @@ export default function Layout() {
             density={density}
             setDensity={setDensity}
             onSearchOpen={openSearch}
+            onNotificationsOpen={openNotifPanel}
+            unreadCount={unreadCount}
             onCollapseToggle={toggle}
             showCollapseToggle={true}
           />

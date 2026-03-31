@@ -18,6 +18,7 @@ function mergeConfigSections(current: MycoConfig, incoming: MycoConfig): MycoCon
     context: { ...current.context, ...incoming.context },
     backup: { ...current.backup, ...incoming.backup },
     team: { ...current.team, ...incoming.team },
+    notifications: { ...current.notifications, ...incoming.notifications },
   };
 }
 

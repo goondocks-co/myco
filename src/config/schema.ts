@@ -97,6 +97,19 @@ const SkillsSchema = z.object({
   usage_stale_days: z.number().int().positive().default(30),
 });
 
+const NotificationsSchema = z.object({
+  /** Master switch — disables all notifications when false. */
+  enabled: z.boolean().default(true),
+  /** Allow browser system notifications (Notification API). */
+  system_notifications: z.boolean().default(false),
+  /** Default display mode for new notification types. */
+  default_mode: z.enum(['banner', 'summary']).default('banner'),
+  /** Per-domain on/off toggles. Keys are domain names from the registry. */
+  domains: z.record(z.string(), z.object({
+    enabled: z.boolean().default(true),
+  })).default({}),
+});
+
 export const MycoConfigSchema = z.preprocess(
   (raw: unknown) => {
     if (raw && typeof raw === 'object' && 'curation' in raw && !('agent' in raw)) {
@@ -116,6 +129,7 @@ export const MycoConfigSchema = z.preprocess(
     backup: BackupSchema.default(() => BackupSchema.parse({})),
     team: TeamSchema.default(() => TeamSchema.parse({})),
     skills: SkillsSchema.default(() => SkillsSchema.parse({})),
+    notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
   }),
 );
 
@@ -128,3 +142,4 @@ export type ContextConfig = z.infer<typeof ContextSchema>;
 export type BackupConfig = z.infer<typeof BackupSchema>;
 export type TeamConfig = z.infer<typeof TeamSchema>;
 export type SkillsConfig = z.infer<typeof SkillsSchema>;
+export type NotificationsConfig = z.infer<typeof NotificationsSchema>;
