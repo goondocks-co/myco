@@ -30,7 +30,7 @@ import { createTeamHandlers } from './api/team-connect.js';
 import { TeamSyncClient } from './team-sync.js';
 import { initTeamContext, getTeamMachineId } from './team-context.js';
 import { createBackup } from './backup.js';
-import { listPending, markSent, pruneOld, backfillUnsynced } from '../db/queries/team-outbox.js';
+import { listPending, markSent, markSourceRowsSynced, pruneOld, backfillUnsynced } from '../db/queries/team-outbox.js';
 import { readSecrets } from '../config/secrets.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
@@ -2015,9 +2015,12 @@ export async function main(): Promise<void> {
           if (result.synced > 0 || result.skipped > 0) {
             // Identify which records failed so we only mark the successes
             const failedIds = new Set(result.errors.map((e) => e.id));
-            const sentIds = pending.filter((r) => !failedIds.has(String(r.row_id))).map((r) => r.id);
+            const sentRecords = pending.filter((r) => !failedIds.has(String(r.row_id)));
+            const sentIds = sentRecords.map((r) => r.id);
             if (sentIds.length > 0) {
-              markSent(sentIds, epochSeconds());
+              const now = epochSeconds();
+              markSent(sentIds, now);
+              markSourceRowsSynced(sentRecords, now);
             }
           }
 
