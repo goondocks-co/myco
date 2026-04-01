@@ -136,3 +136,25 @@ export function listTurns(runId: string): TurnRow[] {
 export function listTurnsByRun(runId: string): TurnRow[] {
   return listTurns(runId);
 }
+
+/** Count tool calls by name for a specific run. */
+export function countToolCallsByRun(
+  runId: string,
+  toolNames: string[],
+): Record<string, number> {
+  if (toolNames.length === 0) return {};
+  const db = getDatabase();
+  const placeholders = toolNames.map(() => '?').join(', ');
+  const rows = db.prepare(
+    `SELECT tool_name, COUNT(*) as count
+     FROM agent_turns
+     WHERE run_id = ? AND tool_name IN (${placeholders})
+     GROUP BY tool_name`,
+  ).all(runId, ...toolNames) as Array<{ tool_name: string; count: number }>;
+
+  const result: Record<string, number> = {};
+  for (const row of rows) {
+    result[row.tool_name] = row.count;
+  }
+  return result;
+}

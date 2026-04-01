@@ -1,0 +1,70 @@
+/**
+ * Internal notification emitter.
+ *
+ * Domain systems call `notify()` to emit notifications. It checks
+ * global + domain config, resolves mode/level from registry defaults,
+ * and inserts directly into the DB (no HTTP round-trip).
+ */
+
+import crypto from 'node:crypto';
+import { loadConfig } from '@myco/config/loader.js';
+import { insertNotification } from '@myco/db/queries/notifications.js';
+import { getType } from './registry.js';
+import type { MycoConfig } from '@myco/config/schema.js';
+import type { NotificationMode, NotificationLevel, CreateNotificationPayload } from './types.js';
+
+/**
+ * Emit a notification. Returns the notification ID if inserted,
+ * or null if suppressed by config or undefined vaultDir.
+ *
+ * Best-effort — catches and logs errors so callers don't need to handle failures.
+ *
+ * @param vaultDir — vault directory; pass undefined to no-op (avoids if-guards at call sites).
+ * @param payload — notification content.
+ * @param config — pre-loaded config to avoid redundant loadConfig() disk reads.
+ */
+export function notify(
+  vaultDir: string | undefined,
+  payload: CreateNotificationPayload,
+  config?: MycoConfig,
+): string | null {
+  if (!vaultDir) return null;
+
+  try {
+    const cfg = config ?? loadConfig(vaultDir);
+
+    if (!cfg.notifications.enabled) return null;
+
+    const domainConfig = cfg.notifications.domains[payload.domain];
+    if (domainConfig && !domainConfig.enabled) return null;
+
+    // Resolve mode: payload > domain config > type registry default > global default
+    const registeredType = getType(payload.type);
+    const mode: NotificationMode = payload.mode
+      ?? domainConfig?.mode
+      ?? registeredType?.type.defaultMode
+      ?? cfg.notifications.default_mode;
+    const level: NotificationLevel = payload.level
+      ?? registeredType?.type.defaultLevel
+      ?? 'info';
+
+    const id = crypto.randomUUID();
+
+    insertNotification({
+      id,
+      domain: payload.domain,
+      type: payload.type,
+      level,
+      title: payload.title,
+      message: payload.message ?? null,
+      mode,
+      link: payload.link ?? null,
+      metadata: payload.metadata ? JSON.stringify(payload.metadata) : null,
+    });
+
+    return id;
+  } catch (err) {
+    console.warn('[notify] Failed to emit notification:', err instanceof Error ? err.message : err);
+    return null;
+  }
+}

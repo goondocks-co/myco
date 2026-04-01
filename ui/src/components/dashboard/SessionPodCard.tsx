@@ -79,7 +79,7 @@ export function SessionPodCard({ event }: { event: ActivityEvent }) {
       : event.type === 'agent_run'
         ? '/agent'
         : event.type === 'spore'
-          ? '/mycelium'
+          ? `/mycelium?tab=spores&spore=${event.id}`
           : null;
 
   return (
