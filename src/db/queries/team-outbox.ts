@@ -226,10 +226,10 @@ export function countPending(): number {
 }
 
 // ---------------------------------------------------------------------------
-// Backfill
+// Source-row sync bookkeeping
 // ---------------------------------------------------------------------------
 
-/** Tables to backfill (must have id, machine_id, synced_at columns). */
+/** Tables eligible for backfill/sync (must have id, machine_id, synced_at columns). */
 const BACKFILL_TABLES = [
   'sessions',
   'prompt_batches',
@@ -245,6 +245,40 @@ const BACKFILL_TABLES = [
 ] as const;
 // entity_mentions excluded — no `id` column (composite key entity_id+note_id+note_type)
 // skill_usage excluded — no `synced_at` column (syncs via syncRow on insert)
+
+const BACKFILL_TABLE_SET = new Set<string>(BACKFILL_TABLES);
+
+/**
+ * Mark source rows as synced after successful outbox flush.
+ *
+ * Groups outbox records by table_name, then sets `synced_at` on the
+ * corresponding source rows. This closes the re-enqueue loop: once
+ * synced_at is non-NULL, `backfillUnsynced` skips the row even after
+ * the outbox entry is pruned.
+ */
+export function markSourceRowsSynced(records: OutboxRow[], syncedAt: number): void {
+  const db = getDatabase();
+
+  // Group row_ids by table
+  const byTable = new Map<string, string[]>();
+  for (const rec of records) {
+    if (!BACKFILL_TABLE_SET.has(rec.table_name)) continue;
+    const ids = byTable.get(rec.table_name) ?? [];
+    ids.push(rec.row_id);
+    byTable.set(rec.table_name, ids);
+  }
+
+  for (const [table, ids] of byTable) {
+    const placeholders = ids.map(() => '?').join(', ');
+    db.prepare(
+      `UPDATE ${table} SET synced_at = ? WHERE id IN (${placeholders}) AND synced_at IS NULL`,
+    ).run(syncedAt, ...ids);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Backfill
+// ---------------------------------------------------------------------------
 
 /**
  * Enqueue all unsynced records across all synced tables into the outbox.

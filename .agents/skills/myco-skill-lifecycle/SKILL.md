@@ -1,118 +1,131 @@
 ---
 name: myco:myco-skill-lifecycle
-description: Use this skill when you need to run the Myco skill lifecycle end-to-end — identifying skill candidates from vault knowledge, curating them through the approval workflow, generating SKILL.md files on disk, and evolving existing skills as the vault grows. Activate even if the user only asks about one phase — understanding the full chain prevents common sequencing mistakes.
+description: Use this skill when you need to run the Myco skill lifecycle end-to-end: identifying skill candidates from vault knowledge, curating them through the approval workflow, generating SKILL.md files on disk, and evolving existing skills as the vault grows. Activate even if the user only asks about one phase — understanding the full chain prevents common sequencing mistakes. Applies to tasks named skill-survey, skill-generate, skill-evolve, and to any work on the Skills dashboard in the Daemon UI. Also relevant when candidates appear but no skills materialize, when the survey returns zero results, or when a generated skill needs to be refreshed.
 managed_by: myco
 user-invocable: true
 allowed-tools:
   - vault_skill_candidates
   - vault_skill_records
   - vault_write_skill
-  - vault_search_semantic
-  - vault_search_fts
   - vault_spores
-  - vault_state
-  - vault_set_state
-  - vault_report
+  - vault_search_semantic
 ---
 
 # Myco Skill Lifecycle: Survey → Approve → Generate → Evolve
 
-Myco converts vault knowledge into reusable SKILL.md files through a four-phase pipeline: **skill-survey** clusters spores into candidates, the **Skills dashboard** curates them, **skill-generate** writes the files, and **skill-evolve** keeps them current as the vault grows.
+## Overview
 
-## When to Activate
+Myco's skill lifecycle is a four-phase pipeline that converts accumulated vault knowledge into reusable SKILL.md files on disk. Each phase is a separate agent task with **asymmetric scheduling defaults** reflecting its risk profile.
 
-- Any work touching `src/agent/tasks/skill-survey.yaml`, `skill-generate.yaml`, or `skill-evolve.yaml`
-- Any work on the Skills dashboard in the Daemon UI (`/skills`)
-- Candidates appear in the dashboard but no SKILL.md files ever materialize
-- Survey task returns zero candidates despite an active vault
-- A generated skill is missing fields or appears structurally degraded
-- You need to refresh an existing skill that is out of date
+```
+Vault spores
+    ↓
+[skill-survey]   ← enabled: true (auto-runs during idle)
+    ↓
+Candidates (identified)
+    ↓
+[User approval]  ← manual curation in Skills dashboard
+    ↓
+Candidates (approved)
+    ↓
+[skill-generate] ← enabled: false (opt-in required)
+    ↓
+SKILL.md files
+    ↓
+[skill-evolve]   ← enabled: false (opt-in required)
+    ↓
+Updated SKILL.md files (versioned with lineage)
+```
+
+### Scheduling Defaults
+
+| Task | Default | Why |
+|---|---|---|
+| `skill-survey` | `enabled: true` | Passive discovery; read-only; auto-runs during idle |
+| `skill-generate` | `enabled: false` | Writes new files; opt-in until output quality is verified |
+| `skill-evolve` | `enabled: false` | Mutates existing skills; opt-in until output quality is verified |
+
+**This asymmetry is intentional.** Candidate evidence builds passively; generative and mutative steps require deliberate enablement. The two most common "pipeline not working" symptoms trace directly to this design:
+- **"Candidates exist but no skills appear"** → `skill-generate` is disabled (default). Enable it via Agent Tasks.
+- **"Survey returns zero results"** → vault may be sparse; the survey needs more accumulated sessions.
 
 ## Prerequisites
 
-- Vault is populated (at least one session processed with active spores)
-- Agent pipeline is configured and running in the daemon
-- Daemon UI accessible with Skills dashboard visible at `/skills`
+- Myco daemon running
+- Vault has processed sessions with spores (check Daemon UI → Sessions)
+- Access to Daemon UI → Skills and Daemon UI → Agent Tasks
 
-## Phase 1: Skill Survey (`skill-survey`)
+## Phase 1: Survey (Automatic)
 
-The survey task reads active spores, clusters them by topic using semantic similarity, and registers new candidates via `vault_skill_candidates` (action: create).
+`skill-survey` scans active spores for clusters of related knowledge and creates `identified` candidates. Runs automatically during idle; no user action required beyond verifying it is enabled.
 
-**Trigger:** Runs on schedule. Does nothing if no spore clusters exceed the minimum density threshold.
+**When zero candidates appear:**
+1. Check that `skill-survey` is enabled (Agent Tasks → find `skill-survey`)
+2. Verify vault spores exist (Daemon UI → Sessions → check spore count per session)
+3. Survey uses a cluster threshold — a sparse vault returns zero legitimately; keep accumulating sessions
 
-**If survey returns zero candidates:**
-1. Confirm the agent has run and extracted spores: `vault_spores` should return active entries
-2. Check that spores have topics with sufficient overlap — the survey requires at least 3 related spores to propose a candidate
-3. Verify the task is enabled and the schedule is firing in the daemon
+**Output:** Candidates with status `identified` in the Skills dashboard
 
-## Phase 2: Candidate Curation (Skills Dashboard)
+## Phase 2: Approval (Manual)
 
-New candidates land in `identified` status. A human must advance them to `approved` before generation begins — this gate is intentional.
+Review candidates in **Daemon UI → Skills → Skill Candidates**:
 
-1. Open `/skills` in the Daemon UI
-2. Review candidates in the **Pending** column; read the rationale to evaluate each
-3. **Approve** to advance to `status: approved`, or **Dismiss** to remove
-4. Approved candidates queue for `skill-generate` on its next scheduled run
+- **Approve** → moves to `approved`, queued for generation
+- **Dismiss** → moves to `dismissed`, excluded from generation
 
-**Tip:** If skills are not generating, check the candidate queue first — the most common cause is candidates stuck in `identified` status.
+Approval criteria:
+- Represents a reusable procedure, not a one-off task
+- Specific and actionable (not a vague category)
+- Distinct from existing skills
 
-## Phase 3: Skill Generation (`skill-generate`)
+**Output:** Candidates with status `approved`
 
-Processes `approved` candidates and writes SKILL.md files to `.agents/skills/<name>/SKILL.md` via `vault_write_skill`.
+## Phase 3: Generate (Opt-In)
 
-**Required YAML frontmatter fields** (the quality gate mechanically enforces all of these):
-- `name:` — must be prefixed `myco:` (e.g., `myco:my-skill-name`)
-- `description:` — single-line summary
-- `managed_by: myco`
-- `user-invocable:` — `true` or `false`
-- `allowed-tools:` — list of vault tool names the skill needs
+`skill-generate` picks up approved candidates and writes SKILL.md files to `.agents/skills/<name>/SKILL.md`.
 
-Missing any required field causes `vault_write_skill` to reject the write before the file is created or any DB record is modified.
+**Enable it:**
+1. Daemon UI → Agent Tasks → `skill-generate`
+2. Toggle to `enabled: true`
+3. Run on next sweep or click **Run Now**
 
-**Content structure:** Overview → Prerequisites → Steps → Common Pitfalls.
+**Quality gate:** `vault_write_skill` enforces five required frontmatter fields: `name`, `description`, `managed_by`, `user-invocable`, `allowed-tools`. Missing any field fails the write at the tool level — before the file is written or any DB record is created.
 
-## Phase 4: Skill Evolution (`skill-evolve`)
+**Output:** Active SKILL.md files visible in Daemon UI → Skills → Active Skills
 
-The evolve task runs a two-phase pipeline (assess → evolve) to keep existing skills current.
+## Phase 4: Evolve (Opt-In)
 
-**Current calibrated budget values:**
+`skill-evolve` assesses existing skills against new vault knowledge and rewrites stale, conflicted, or oversized skills.
 
-| Parameter | Value | Rationale |
-|---|---|---|
-| task `maxTurns` | 60 | Sum of phase budgets (20 + 35) + 5 overhead |
-| task `timeoutSeconds` | 1800 | 3 rewrites × ~5 min + assess time |
-| assess phase `maxTurns` | 20 | ~1.5 turns per skill for up to 9 skills + report |
-| evolve phase `maxTurns` | 35 | ~10 turns per rewrite × up to 3 STALE skills |
+**Enable it:**
+1. Daemon UI → Agent Tasks → `skill-evolve`
+2. Toggle to `enabled: true`
 
-**Assess phase:** Classifies each active skill as CURRENT, STALE, CONFLICTED, or OVERSIZED. Stores classifications in vault state under `skill-evolve-classifications`.
+**Two-phase structure:**
+- **assess** — classifies each skill: CURRENT / STALE / CONFLICTED / OVERSIZED
+- **evolve** — rewrites only the non-CURRENT skills
 
-**Evolve phase:** For each STALE/CONFLICTED skill — reads current content, gathers new spores, rewrites via `vault_write_skill` with a `rationale` parameter. Generation counter bumps automatically; lineage entry is created.
+**Budget sizing is critical:** Multi-STALE runs are multiplicative. Each skill rewrite costs ~10 turns. Task `maxTurns` must equal the sum of all phase budgets plus overhead (≥ 20 assess + 35 evolve + 5 buffer = 60 minimum for up to 3 STALE skills). `timeoutSeconds` must cover N rewrites × ~5 minutes. Silent timeout failure (task ends "normally" but incomplete) occurs when either budget is too low.
+
+**Output:** Updated skill generations, each with a lineage entry recording what changed and why
+
+## Skills Dashboard Navigation
+
+The Daemon UI → Skills page has two-layer onboarding designed for both first-time users and returning users:
+
+1. **HelpCircle button** (page header, always visible): opens a dialog explaining the full pipeline, scheduling defaults, and quick-start steps. Use as a reference anytime.
+2. **Empty states** in Skill List and Candidate List: contextual guidance that appears when there's nothing to show, with links to Agent Tasks for enablement.
 
 ## Common Pitfalls
 
-### Evolve phase times out silently with multiple STALE skills
+**Candidates pile up but skills never materialize**
+`skill-generate` is disabled by default. This is intentional — the system gates generative steps until you opt in. Enable via Agent Tasks.
 
-The evolve phase `maxTurns` must be sized for the worst-case STALE count, not a single rewrite. Each skill rewrite costs ~8–10 turns (read current content, 2–3 knowledge searches, write). With 3 STALE skills: ~24–30 turns needed against a previously-misconfigured 18-turn ceiling.
+**Survey returns zero candidates**
+Vault is likely sparse. Check spore count per session. Keep accumulating data; the survey will surface candidates once cluster thresholds are met.
 
-**The failure mode is non-obvious:** the run appears to complete normally but stops mid-rewrite with no error pointing to the budget constraint. The skill being rewritten when the budget ran out is left in its pre-update state with no indication that evolution was incomplete.
+**skill-evolve silently stops mid-rewrite**
+Turn budget exhausted. Sizing math: N STALE skills × ~10 turns/rewrite = turns needed for evolve phase. Add 20 turns for assess. Add 5 overhead. That is your task `maxTurns` floor. Increase `timeoutSeconds` proportionally (3 rewrites = ~15 min minimum).
 
-**Sizing formula:** evolve phase `maxTurns` = N × 10 where N is the maximum expected STALE skill count per run. Current production value (35 turns) supports up to 3 STALE skills with headroom.
-
-### Skill-generate rewrites silently drop `user-invocable` and `allowed-tools`
-
-When `skill-generate` makes a second-pass correction to an existing skill mid-session, it regenerates YAML frontmatter from scratch rather than carrying forward the prior version. The fields `user-invocable` and `allowed-tools` were historically omitted in this regenerated frontmatter — the skill wrote successfully but was structurally degraded (can no longer be invoked, tool constraints lost). The failure is invisible in logs.
-
-**Status of fix:** Both fields are now in `REQUIRED_FRONTMATTER_FIELDS` in `vault_write_skill`'s quality gate. The tool mechanically rejects any skill write missing these fields before the file is written.
-
-**Division of responsibility:** Tool gate handles field presence; prompt handles content quality. Prompt-level expectations degrade under context pressure; tool gates do not. Any frontmatter field critical for runtime behavior (invokability, tool scope, agent routing) must be enforced at the tool level — not left to prompt compliance.
-
-### Generation doesn't fire despite approved candidates
-
-After the P1 scheduler concurrency fixes (global `agentRunning` boolean replaced with per-task `Set<string>`, taskless run guard, `lastRun` in `finally` block), skill lifecycle tasks run independently. If `skill-generate` still isn't firing:
-1. Verify at least one candidate has `status: approved` — a missing approved candidate is the most common cause
-2. Check the daemon log for `[task-scheduler]` entries showing why the task was skipped
-3. Confirm the task is `enabled: true` in the config
-
-### Reading current skill content before rewriting
-
-`vault_skill_records` (action: get) returns metadata (description, generation, source_ids, status) but NOT the full SKILL.md content — content lives on disk. Always carry all frontmatter fields forward when rewriting. Never regenerate frontmatter from scratch during a correction pass.
+**Generated skill missing user-invocable or allowed-tools**
+These fields are enforced by `vault_write_skill`'s quality gate. If the task fails with a frontmatter error, all five required fields must be explicitly present in the YAML block.

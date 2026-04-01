@@ -87,7 +87,7 @@ export class DaemonServer {
     if (match) {
       this.onRequest?.();
       try {
-        const body = (req.method === 'POST' || req.method === 'PUT') ? await readBody(req) : undefined;
+        const body = (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') ? await readBody(req) : undefined;
         const result = await match.handler({
           body,
           query: match.query,

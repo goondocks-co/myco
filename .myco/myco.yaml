@@ -73,3 +73,11 @@ team:
 skills:
   confidence_threshold: 0.7
   usage_stale_days: 30
+notifications:
+  enabled: true
+  system_notifications: true
+  default_mode: summary
+  domains:
+    skills:
+      enabled: true
+      mode: banner

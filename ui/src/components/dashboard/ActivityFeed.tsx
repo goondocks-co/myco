@@ -35,7 +35,7 @@ function badgeVariant(eventType: string): 'default' | 'warning' | 'destructive' 
 function routeForEvent(event: ActivityEvent): string | null {
   if (event.type === 'session') return `/sessions/${event.id}`;
   if (event.type === 'agent_run') return '/agent';
-  if (event.type === 'spore') return '/mycelium';
+  if (event.type === 'spore') return `/mycelium?tab=spores&spore=${event.id}`;
   return null;
 }
 

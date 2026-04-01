@@ -34,6 +34,12 @@ export interface MycoConfig {
     /** Extensible — preserve unknown fields on save. */
     [key: string]: unknown;
   };
+  notifications: {
+    enabled: boolean;
+    system_notifications: boolean;
+    default_mode: 'banner' | 'summary';
+    domains: Record<string, { enabled: boolean; mode?: 'banner' | 'summary' }>;
+  };
 }
 
 export function useConfig() {

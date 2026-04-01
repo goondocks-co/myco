@@ -30,7 +30,7 @@ import { createTeamHandlers } from './api/team-connect.js';
 import { TeamSyncClient } from './team-sync.js';
 import { initTeamContext, getTeamMachineId } from './team-context.js';
 import { createBackup } from './backup.js';
-import { listPending, markSent, pruneOld, backfillUnsynced } from '../db/queries/team-outbox.js';
+import { listPending, markSent, markSourceRowsSynced, pruneOld, backfillUnsynced } from '../db/queries/team-outbox.js';
 import { readSecrets } from '../config/secrets.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
@@ -64,6 +64,17 @@ import {
   handleEmbeddingReembedStale,
 } from './api/embedding.js';
 import { EmbeddingManager, SqliteVecVectorStore, EmbeddingProviderAdapter, SqliteRecordSource } from './embedding/index.js';
+import { registerBuiltinDomains } from '../notifications/domains.js';
+import { notify } from '../notifications/notify.js';
+import {
+  handleListNotifications,
+  handleCreateNotification,
+  handleUpdateNotification,
+  handleDismissAll,
+  handleMarkAllRead,
+  handleGetRegistry,
+  handleUnreadCount,
+} from './api/notifications.js';
 import { createEmbeddingProvider } from '../intelligence/llm.js';
 import {
   handleListTasks,
@@ -468,6 +479,7 @@ export async function main(): Promise<void> {
   // --- SQLite initialization ---
   const db = initDatabase(vaultDbPath(vaultDir));
   createSchema(db, machineId);
+  registerBuiltinDomains();
 
   logger.info(LOG_KINDS.DAEMON_START, 'SQLite initialized', { vault: vaultDir });
 
@@ -797,6 +809,16 @@ export async function main(): Promise<void> {
     reconcileSession(session_id);
 
     logger.info(LOG_KINDS.LIFECYCLE_REGISTER, 'Session registered', { session_id, branch, started_at: started_at ?? null });
+
+    notify(vaultDir, {
+      domain: 'sessions',
+      type: 'session.started',
+      title: 'Session started',
+      message: branch ? `Branch: ${branch}` : undefined,
+      link: `/sessions/${session_id}`,
+      metadata: { sessionId: session_id, agent: agent ?? 'claude-code', branch },
+    }, config);
+
     return { body: { ok: true, sessions: registry.sessions } };
   });
 
@@ -816,6 +838,15 @@ export async function main(): Promise<void> {
     reconciledSessions.delete(session_id);
     server.updateDaemonJsonSessions(registry.sessions);
     logger.info(LOG_KINDS.LIFECYCLE_UNREGISTER, 'Session unregistered', { session_id });
+
+    notify(vaultDir, {
+      domain: 'sessions',
+      type: 'session.ended',
+      title: 'Session ended',
+      link: `/sessions/${session_id}`,
+      metadata: { sessionId: session_id },
+    }, config);
+
     return { body: { ok: true, sessions: registry.sessions } };
   });
 
@@ -1896,6 +1927,15 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/embedding/clean-orphans', async () => handleEmbeddingCleanOrphans(embeddingManager));
   server.registerRoute('POST', '/api/embedding/reembed-stale', async () => handleEmbeddingReembedStale(embeddingManager));
 
+  // --- Notification API routes ---
+  server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(vaultDir, req.query));
+  server.registerRoute('POST', '/api/notifications', async (req) => handleCreateNotification(vaultDir, req.body));
+  server.registerRoute('PATCH', '/api/notifications/:id', async (req) => handleUpdateNotification(vaultDir, req.params.id, req.body));
+  server.registerRoute('POST', '/api/notifications/dismiss-all', async (req) => handleDismissAll(vaultDir, req.body));
+  server.registerRoute('POST', '/api/notifications/mark-all-read', async (req) => handleMarkAllRead(vaultDir, req.body));
+  server.registerRoute('GET', '/api/notifications/registry', async () => handleGetRegistry());
+  server.registerRoute('GET', '/api/notifications/unread-count', async () => handleUnreadCount());
+
   // --- Start server ---
 
   await server.evictExistingDaemon();
@@ -1995,9 +2035,12 @@ export async function main(): Promise<void> {
           if (result.synced > 0 || result.skipped > 0) {
             // Identify which records failed so we only mark the successes
             const failedIds = new Set(result.errors.map((e) => e.id));
-            const sentIds = pending.filter((r) => !failedIds.has(String(r.row_id))).map((r) => r.id);
+            const sentRecords = pending.filter((r) => !failedIds.has(String(r.row_id)));
+            const sentIds = sentRecords.map((r) => r.id);
             if (sentIds.length > 0) {
-              markSent(sentIds, epochSeconds());
+              const now = epochSeconds();
+              markSent(sentIds, now);
+              markSourceRowsSynced(sentRecords, now);
             }
           }
 
@@ -2062,6 +2105,51 @@ export async function main(): Promise<void> {
             status: result.status,
             runId: result.runId,
           });
+
+          if (result.status === 'failed') {
+            notify(vaultDir, {
+              domain: 'agents',
+              type: 'agent.task.failure',
+              title: `Task failed: ${taskName}`,
+              message: result.error ?? 'Unknown error',
+              link: `/agent?run=${result.runId}`,
+              metadata: { taskName, runId: result.runId },
+            }, config);
+          } else if (result.status === 'completed') {
+            notify(vaultDir, {
+              domain: 'agents',
+              type: 'agent.task.success',
+              title: `Task completed: ${taskName}`,
+              link: `/agent?run=${result.runId}`,
+              metadata: { taskName, runId: result.runId },
+            }, config);
+
+            // Batched mycelium notifications — emit summaries instead of per-tool-call
+            const { countToolCallsByRun } = await import('../db/queries/turns.js');
+            const counts = countToolCallsByRun(result.runId, ['vault_create_spore', 'vault_write_digest']);
+            const sporeCount = counts['vault_create_spore'] ?? 0;
+            const digestCount = counts['vault_write_digest'] ?? 0;
+
+            if (sporeCount > 0) {
+              notify(vaultDir, {
+                domain: 'mycelium',
+                type: 'mycelium.spore.created',
+                title: sporeCount === 1 ? 'Extracted 1 observation' : `Extracted ${sporeCount} observations`,
+                message: `From ${taskName} run`,
+                link: '/mycelium?tab=spores',
+                metadata: { count: sporeCount, taskName, runId: result.runId },
+              }, config);
+            }
+            if (digestCount > 0) {
+              notify(vaultDir, {
+                domain: 'mycelium',
+                type: 'mycelium.digest.completed',
+                title: `Digest updated (${digestCount} ${digestCount === 1 ? 'tier' : 'tiers'})`,
+                link: '/mycelium?tab=digest',
+                metadata: { tierCount: digestCount, taskName, runId: result.runId },
+              }, config);
+            }
+          }
         },
         preConditions: {
           'has-unprocessed-batches': () => {

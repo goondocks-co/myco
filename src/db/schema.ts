@@ -17,7 +17,7 @@ import type { Database } from 'better-sqlite3';
 import { epochSeconds, DEFAULT_MACHINE_ID } from '@myco/constants.js';
 
 /** Current schema version -- fresh start for the SQLite era. */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 // Re-export for backwards compat (other modules import from schema.ts)
 export { DEFAULT_MACHINE_ID };
@@ -426,6 +426,23 @@ const SKILL_USAGE_TABLE = `
     detected_at INTEGER NOT NULL
   )`;
 
+// -- Notifications Layer ----------------------------------------------------
+
+const NOTIFICATIONS_TABLE = `
+  CREATE TABLE IF NOT EXISTS notifications (
+    id          TEXT PRIMARY KEY,
+    domain      TEXT NOT NULL,
+    type        TEXT NOT NULL,
+    level       TEXT NOT NULL DEFAULT 'info',
+    title       TEXT NOT NULL,
+    message     TEXT,
+    mode        TEXT NOT NULL DEFAULT 'banner',
+    status      TEXT NOT NULL DEFAULT 'unread',
+    link        TEXT,
+    metadata    TEXT,
+    created_at  INTEGER NOT NULL
+  )`;
+
 // -- FTS5 Virtual Tables ----------------------------------------------------
 
 const FTS_TABLES = [
@@ -605,6 +622,12 @@ const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_log_entries_component ON log_entries (component)',
   'CREATE INDEX IF NOT EXISTS idx_log_entries_kind ON log_entries (kind)',
   'CREATE INDEX IF NOT EXISTS idx_log_entries_session_id ON log_entries (session_id)',
+
+  // Notifications
+  'CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications (status)',
+  'CREATE INDEX IF NOT EXISTS idx_notifications_domain ON notifications (domain)',
+  'CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications (created_at)',
+  'CREATE INDEX IF NOT EXISTS idx_notifications_status_created ON notifications (status, created_at)',
 ];
 
 // -- Ordered table creation -------------------------------------------------
@@ -642,6 +665,8 @@ const TABLE_DDLS = [
   TEAM_OUTBOX_TABLE,
   // Logging layer
   LOG_ENTRIES_TABLE,
+  // Notifications layer
+  NOTIFICATIONS_TABLE,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1092,6 +1117,40 @@ function migrateV6ToV7(db: Database, machineId: string): void {
 }
 
 /**
+ * Migrate v7 → v8: add notifications table.
+ *
+ * Uses `CREATE TABLE IF NOT EXISTS` for idempotency.
+ */
+function migrateV7ToV8(db: Database): void {
+  db.exec('BEGIN');
+  try {
+    db.exec(NOTIFICATIONS_TABLE);
+
+    const newIndexes = [
+      'CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications (status)',
+      'CREATE INDEX IF NOT EXISTS idx_notifications_domain ON notifications (domain)',
+      'CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications (created_at)',
+      'CREATE INDEX IF NOT EXISTS idx_notifications_status_created ON notifications (status, created_at)',
+    ];
+
+    for (const idx of newIndexes) {
+      db.exec(idx);
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(8, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
  * @param db — better-sqlite3 Database instance.
  * @param machineId — machine identifier for backfilling existing rows during
  *   v3→v4 and v6→v7 migrations. Defaults to `'local'` (tests, init).
@@ -1141,6 +1200,13 @@ export function createSchema(db: Database, machineId: string = DEFAULT_MACHINE_I
     ).get() as { version: number } | undefined)?.version ?? 0;
     if (afterV5Migration < 7) {
       migrateV6ToV7(db, machineId);
+    }
+    // Migration path: version 7 → 8
+    const afterV6Migration = (db.prepare(
+      'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1'
+    ).get() as { version: number } | undefined)?.version ?? 0;
+    if (afterV6Migration < 8) {
+      migrateV7ToV8(db);
     }
     return;
   } catch {

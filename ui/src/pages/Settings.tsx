@@ -20,6 +20,7 @@ import {
 } from '../components/ui/select';
 import { Switch } from '../components/ui/switch';
 import { PlanCaptureCard } from '../components/config/PlanCaptureCard';
+import { NotificationSettings } from '../components/notifications/NotificationSettings';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 type Provider = 'ollama' | 'openai-compatible';
@@ -402,6 +403,9 @@ export default function Settings() {
             </div>
           </div>
         </Surface>
+
+        {/* ---- Notifications section ---- */}
+        <NotificationSettings />
 
         {/* ---- Plan Capture section ---- */}
         <PlanCaptureCard />
