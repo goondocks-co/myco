@@ -6,7 +6,7 @@ import {
   AlertTriangle,
   AlertCircle,
   Info,
-  CheckCheck,
+  MailCheck,
   Trash2,
 } from 'lucide-react';
 import { cn } from '../../lib/cn';
@@ -96,7 +96,7 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
     [updateNotification],
   );
 
-  const items = data?.items ?? [];
+  const items = (data?.items ?? []).filter(n => n.status !== 'dismissed');
   const unreadCount = data?.unread_count ?? 0;
 
   return (
@@ -134,9 +134,10 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
                 size="sm"
                 onClick={() => markAllRead.mutate(undefined)}
                 title="Mark all as read"
-                className="h-7 px-2"
+                className="h-7 px-2 gap-1 text-xs text-on-surface-variant"
               >
-                <CheckCheck className="h-3.5 w-3.5" />
+                <MailCheck className="h-3.5 w-3.5" />
+                Read all
               </Button>
             )}
             {items.length > 0 && (
@@ -144,10 +145,11 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
                 variant="ghost"
                 size="sm"
                 onClick={() => dismissAll.mutate(undefined)}
-                title="Dismiss all"
-                className="h-7 px-2"
+                title="Clear all notifications"
+                className="h-7 px-2 gap-1 text-xs text-on-surface-variant"
               >
                 <Trash2 className="h-3.5 w-3.5" />
+                Clear
               </Button>
             )}
             <Button variant="ghost" size="sm" onClick={onClose} className="h-7 px-2">

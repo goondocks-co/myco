@@ -397,9 +397,10 @@ async function executeSingleQuery(
   provider?: ProviderConfig,
   embeddingManager?: RunOptions['embeddingManager'],
   abortController?: AbortController,
+  vaultDir?: string,
 ): Promise<{ tokensUsed: number; costUsd: number }> {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
-  const toolServer = createVaultToolServer(agentId, runId, embeddingManager);
+  const toolServer = createVaultToolServer(agentId, runId, { embeddingManager, vaultDir });
   const env = buildPhaseEnv(provider);
   // Model priority: provider model override → task YAML model
   const effectiveModel = provider?.model ?? config.model;
@@ -462,6 +463,7 @@ async function executePhasedQuery(
   embeddingManager?: RunOptions['embeddingManager'],
   abortController?: AbortController,
   projectRoot?: string,
+  vaultDir?: string,
 ): Promise<{ tokensUsed: number; costUsd: number; phases: PhaseResult[] }> {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
 
@@ -544,9 +546,12 @@ async function executePhasedQuery(
         agentId,
         runId,
         phase.tools,
-        runningTurnCount + (indexInWave * effectiveMaxTurns),
-        embeddingManager,
-        projectRoot,
+        {
+          turnOffset: runningTurnCount + (indexInWave * effectiveMaxTurns),
+          embeddingManager,
+          projectRoot,
+          vaultDir,
+        },
       );
 
       // Provider priority: phase YAML → myco.yaml phase → myco.yaml task → task YAML execution → default
@@ -798,6 +803,7 @@ export async function runAgent(
         options?.embeddingManager,
         taskAbortController,
         projectRoot,
+        vaultDir,
       );
       tokensUsed = result.tokensUsed;
       costUsd = result.costUsd;
@@ -823,6 +829,7 @@ export async function runAgent(
         singleProvider,
         options?.embeddingManager,
         taskAbortController,
+        vaultDir,
       );
       tokensUsed = result.tokensUsed;
       costUsd = result.costUsd;

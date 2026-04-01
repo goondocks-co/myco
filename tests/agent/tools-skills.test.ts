@@ -98,7 +98,7 @@ describe('vault skill tools', () => {
     createRun(TEST_RUN_ID, TEST_AGENT_ID);
 
     // Create tools for this test with projectRoot set to tmpDir
-    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, 0, undefined, null, undefined, tmpDir);
+    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { projectRoot: tmpDir });
   });
 
   // -------------------------------------------------------------------------

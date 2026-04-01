@@ -48,6 +48,7 @@ import { deleteCandidate } from '@myco/db/queries/skill-candidates.js';
 import { deleteSkillRecordCascade } from '@myco/db/queries/skill-records.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
+import { notify } from '@myco/notifications/notify.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -145,17 +146,24 @@ export function validateSkillContent(content: string, dirName: string): string[]
 /** Total number of vault tools defined. */
 export const VAULT_TOOL_COUNT = 21;
 
+/** Options for createVaultTools beyond the required agentId and runId. */
+export interface VaultToolOptions {
+  turnOffset?: number;
+  embeddingManager?: EmbeddingManager;
+  teamClient?: TeamSyncClient | null;
+  machineId?: string;
+  projectRoot?: string;
+  vaultDir?: string;
+}
+
 /**
  * Create the 21 vault tool definitions for the agent (includes 3 skill tools:
  * vault_skill_candidates, vault_skill_records, vault_write_skill).
  *
  * Exposed for testing (call handler directly) and for the MCP server factory.
- *
- * @param agentId — the agent identity, injected into all write operations.
- * @param runId — the current agent run ID, injected into reports and turns.
- * @returns array of SdkMcpToolDefinition objects.
  */
-export function createVaultTools(agentId: string, runId: string, turnOffset = 0, embeddingManager?: EmbeddingManager, teamClient?: TeamSyncClient | null, machineId?: string, projectRoot?: string) {
+export function createVaultTools(agentId: string, runId: string, options?: VaultToolOptions) {
+  const { turnOffset = 0, embeddingManager, teamClient, machineId, projectRoot, vaultDir } = options ?? {};
   /** Turn number counter — incremented per tool call (read and write) within a run. */
   let turnCounter = turnOffset;
 
@@ -427,6 +435,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
         session_id: args.session_id,
       }).catch(() => {});
 
+      // Spore notifications are batched post-run (daemon emits summary after agent completes)
       recordTurn('vault_create_spore', args);
       return textResult(spore);
     },
@@ -627,6 +636,7 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
         generated_at: now,
       });
 
+      // Digest notifications are batched post-run (daemon emits summary after agent completes)
       recordTurn('vault_write_digest', args);
       return textResult(extract);
     },
@@ -729,6 +739,14 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
             source_ids: args.source_ids,
             created_at: now,
             updated_at: now,
+          });
+          notify(vaultDir, {
+            domain: 'skills',
+            type: 'skill.surveyed',
+            title: `Skill candidate: ${args.topic}`,
+            message: args.rationale.slice(0, 120),
+            link: '/skills?tab=candidates',
+            metadata: { candidateId: candidate.id, topic: args.topic },
           });
           return textResult(candidate);
         }
@@ -991,6 +1009,16 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
         }
       })();
 
+      const isNew = generation === 1;
+      notify(vaultDir, {
+        domain: 'skills',
+        type: isNew ? 'skill.created' : 'skill.evolved',
+        title: isNew ? `Skill created: ${args.display_name}` : `Skill evolved: ${args.display_name}`,
+        message: args.description.slice(0, 120),
+        link: `/skills?skill=${encodeURIComponent(args.name)}`,
+        metadata: { skillId: recordId, name: args.name, generation },
+      });
+
       recordTurn('vault_write_skill', args);
       return textResult({
         id: recordId,
@@ -1044,8 +1072,8 @@ export function createVaultTools(agentId: string, runId: string, turnOffset = 0,
  * @param runId — the current agent run ID, injected into reports and turns.
  * @returns an MCP server config with instance, suitable for the SDK.
  */
-export function createVaultToolServer(agentId: string, runId: string, embeddingManager?: EmbeddingManager) {
-  const tools = createVaultTools(agentId, runId, 0, embeddingManager);
+export function createVaultToolServer(agentId: string, runId: string, options?: Pick<VaultToolOptions, 'embeddingManager' | 'vaultDir'>) {
+  const tools = createVaultTools(agentId, runId, options);
 
   return createSdkMcpServer({
     name: 'myco-vault',
@@ -1069,11 +1097,9 @@ export function createScopedVaultToolServer(
   agentId: string,
   runId: string,
   toolNames: string[],
-  turnOffset = 0,
-  embeddingManager?: EmbeddingManager,
-  projectRoot?: string,
+  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir'>,
 ) {
-  const allTools = createVaultTools(agentId, runId, turnOffset, embeddingManager, null, undefined, projectRoot);
+  const allTools = createVaultTools(agentId, runId, options);
   const nameSet = new Set(toolNames);
   const scopedTools = allTools.filter((t) => nameSet.has(t.name));
 

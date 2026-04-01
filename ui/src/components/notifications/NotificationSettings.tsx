@@ -18,7 +18,7 @@ interface NotifFormState {
   enabled: boolean;
   system_notifications: boolean;
   default_mode: 'banner' | 'summary';
-  domains: Record<string, { enabled: boolean }>;
+  domains: Record<string, { enabled: boolean; mode?: 'banner' | 'summary' }>;
 }
 
 function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: string }) {
@@ -59,12 +59,13 @@ export function NotificationSettings() {
     setSaveMessage(null);
   }, []);
 
-  const setDomainEnabled = useCallback((domain: string, enabled: boolean) => {
+  const updateDomain = useCallback((domain: string, update: Partial<NotifFormState['domains'][string]>) => {
     setForm(prev => {
       if (!prev) return prev;
+      const current = prev.domains[domain] ?? { enabled: true };
       return {
         ...prev,
-        domains: { ...prev.domains, [domain]: { enabled } },
+        domains: { ...prev.domains, [domain]: { ...current, ...update } },
       };
     });
     setSaveMessage(null);
@@ -144,22 +145,39 @@ export function NotificationSettings() {
         {domains.length > 0 && (
           <div className="space-y-3 pt-2">
             <FieldLabel>Domain Notifications</FieldLabel>
-            <div className="space-y-2">
+            <div className="space-y-3">
               {domains.map(d => {
-                const domainEnabled = form.domains[d.domain]?.enabled ?? true;
+                const domainConfig = form.domains[d.domain] ?? { enabled: true };
+                const domainEnabled = domainConfig.enabled;
                 return (
-                  <div key={d.domain} className="flex items-center justify-between py-1">
-                    <div className="space-y-0.5">
+                  <div key={d.domain} className="flex items-center justify-between gap-3 py-1">
+                    <div className="space-y-0.5 flex-1 min-w-0">
                       <span className="text-sm text-on-surface">{d.label}</span>
                       <p className="text-[11px] text-on-surface-variant">
                         {d.types.map(t => t.label).join(', ')}
                       </p>
                     </div>
-                    <Switch
-                      checked={domainEnabled}
-                      onCheckedChange={v => setDomainEnabled(d.domain, v)}
-                      disabled={!form.enabled}
-                    />
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Select
+                        value={domainConfig.mode ?? 'default'}
+                        onValueChange={v => updateDomain(d.domain, { mode: v === 'default' ? undefined : (v as 'banner' | 'summary') })}
+                        disabled={!form.enabled || !domainEnabled}
+                      >
+                        <SelectTrigger className="w-[110px] h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="default">Default</SelectItem>
+                          <SelectItem value="banner">Banner</SelectItem>
+                          <SelectItem value="summary">Summary</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Switch
+                        checked={domainEnabled}
+                        onCheckedChange={v => updateDomain(d.domain, { enabled: v })}
+                        disabled={!form.enabled}
+                      />
+                    </div>
                   </div>
                 );
               })}

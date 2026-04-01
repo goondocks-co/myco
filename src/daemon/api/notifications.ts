@@ -5,10 +5,8 @@
  */
 
 import { z } from 'zod';
-import crypto from 'node:crypto';
 import type { RouteResponse } from '../router.js';
 import {
-  insertNotification,
   listNotifications,
   countNotifications,
   getNotification,
@@ -16,9 +14,10 @@ import {
   dismissAllNotifications,
   markAllRead,
 } from '../../db/queries/notifications.js';
-import { getAllDomains, getType } from '../../notifications/registry.js';
+import { getAllDomains } from '../../notifications/registry.js';
+import { notify } from '../../notifications/notify.js';
 import { loadConfig } from '../../config/loader.js';
-import type { NotificationMode, NotificationLevel } from '../../notifications/types.js';
+import type { NotificationMode } from '../../notifications/types.js';
 
 // ---------------------------------------------------------------------------
 // Validation schemas
@@ -77,39 +76,26 @@ export async function handleCreateNotification(
 
   const { domain, type, title, message, link, metadata } = parsed.data;
 
-  // Check global + domain enabled
+  // Check config for structured HTTP responses before delegating
   const config = loadConfig(vaultDir);
   if (!config.notifications.enabled) {
     return { body: { ok: true, suppressed: true, reason: 'notifications_disabled' } };
   }
-
   const domainConfig = config.notifications.domains[domain];
   if (domainConfig && !domainConfig.enabled) {
     return { body: { ok: true, suppressed: true, reason: 'domain_disabled' } };
   }
 
-  // Resolve mode and level from registry defaults or request overrides
-  const registeredType = getType(type);
-  const mode: NotificationMode = parsed.data.mode
-    ?? registeredType?.type.defaultMode
-    ?? config.notifications.default_mode;
-  const level: NotificationLevel = parsed.data.level
-    ?? registeredType?.type.defaultLevel
-    ?? 'info';
+  // Delegate resolution + insertion to notify() — pass config to avoid re-reading
+  const id = notify(vaultDir, {
+    domain, type, title, message, link, metadata,
+    level: parsed.data.level,
+    mode: parsed.data.mode,
+  }, config);
 
-  const id = crypto.randomUUID();
-
-  insertNotification({
-    id,
-    domain,
-    type,
-    level,
-    title,
-    message: message ?? null,
-    mode,
-    link: link ?? null,
-    metadata: metadata ? JSON.stringify(metadata) : null,
-  });
+  if (!id) {
+    return { body: { ok: true, suppressed: true, reason: 'unknown' } };
+  }
 
   return {
     body: {

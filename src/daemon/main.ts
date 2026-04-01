@@ -65,6 +65,7 @@ import {
 } from './api/embedding.js';
 import { EmbeddingManager, SqliteVecVectorStore, EmbeddingProviderAdapter, SqliteRecordSource } from './embedding/index.js';
 import { registerBuiltinDomains } from '../notifications/domains.js';
+import { notify } from '../notifications/notify.js';
 import {
   handleListNotifications,
   handleCreateNotification,
@@ -808,6 +809,16 @@ export async function main(): Promise<void> {
     reconcileSession(session_id);
 
     logger.info(LOG_KINDS.LIFECYCLE_REGISTER, 'Session registered', { session_id, branch, started_at: started_at ?? null });
+
+    notify(vaultDir, {
+      domain: 'sessions',
+      type: 'session.started',
+      title: 'Session started',
+      message: branch ? `Branch: ${branch}` : undefined,
+      link: `/sessions/${session_id}`,
+      metadata: { sessionId: session_id, agent: agent ?? 'claude-code', branch },
+    }, config);
+
     return { body: { ok: true, sessions: registry.sessions } };
   });
 
@@ -827,6 +838,15 @@ export async function main(): Promise<void> {
     reconciledSessions.delete(session_id);
     server.updateDaemonJsonSessions(registry.sessions);
     logger.info(LOG_KINDS.LIFECYCLE_UNREGISTER, 'Session unregistered', { session_id });
+
+    notify(vaultDir, {
+      domain: 'sessions',
+      type: 'session.ended',
+      title: 'Session ended',
+      link: `/sessions/${session_id}`,
+      metadata: { sessionId: session_id },
+    }, config);
+
     return { body: { ok: true, sessions: registry.sessions } };
   });
 
@@ -2085,6 +2105,51 @@ export async function main(): Promise<void> {
             status: result.status,
             runId: result.runId,
           });
+
+          if (result.status === 'failed') {
+            notify(vaultDir, {
+              domain: 'agents',
+              type: 'agent.task.failure',
+              title: `Task failed: ${taskName}`,
+              message: result.error ?? 'Unknown error',
+              link: `/agent?run=${result.runId}`,
+              metadata: { taskName, runId: result.runId },
+            }, config);
+          } else if (result.status === 'completed') {
+            notify(vaultDir, {
+              domain: 'agents',
+              type: 'agent.task.success',
+              title: `Task completed: ${taskName}`,
+              link: `/agent?run=${result.runId}`,
+              metadata: { taskName, runId: result.runId },
+            }, config);
+
+            // Batched mycelium notifications — emit summaries instead of per-tool-call
+            const { countToolCallsByRun } = await import('../db/queries/turns.js');
+            const counts = countToolCallsByRun(result.runId, ['vault_create_spore', 'vault_write_digest']);
+            const sporeCount = counts['vault_create_spore'] ?? 0;
+            const digestCount = counts['vault_write_digest'] ?? 0;
+
+            if (sporeCount > 0) {
+              notify(vaultDir, {
+                domain: 'mycelium',
+                type: 'mycelium.spore.created',
+                title: sporeCount === 1 ? 'Extracted 1 observation' : `Extracted ${sporeCount} observations`,
+                message: `From ${taskName} run`,
+                link: '/mycelium?tab=spores',
+                metadata: { count: sporeCount, taskName, runId: result.runId },
+              }, config);
+            }
+            if (digestCount > 0) {
+              notify(vaultDir, {
+                domain: 'mycelium',
+                type: 'mycelium.digest.completed',
+                title: `Digest updated (${digestCount} ${digestCount === 1 ? 'tier' : 'tiers'})`,
+                link: '/mycelium?tab=digest',
+                metadata: { tierCount: digestCount, taskName, runId: result.runId },
+              }, config);
+            }
+          }
         },
         preConditions: {
           'has-unprocessed-batches': () => {

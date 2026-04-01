@@ -104,9 +104,11 @@ const NotificationsSchema = z.object({
   system_notifications: z.boolean().default(false),
   /** Default display mode for new notification types. */
   default_mode: z.enum(['banner', 'summary']).default('banner'),
-  /** Per-domain on/off toggles. Keys are domain names from the registry. */
+  /** Per-domain settings. Keys are domain names from the registry. */
   domains: z.record(z.string(), z.object({
     enabled: z.boolean().default(true),
+    /** Override display mode for this domain. Omit to use global default_mode. */
+    mode: z.enum(['banner', 'summary']).optional(),
   })).default({}),
 });
 
