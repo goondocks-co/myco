@@ -401,7 +401,8 @@ async function executeSingleQuery(
 ): Promise<{ tokensUsed: number; costUsd: number }> {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
   const toolServer = createVaultToolServer(agentId, runId, { embeddingManager, vaultDir });
-  const env = buildPhaseEnv(provider);
+  const baseEnv = buildPhaseEnv(provider);
+  const env = { ...(baseEnv ?? process.env), MYCO_AGENT_SESSION: '1' };
   // Model priority: provider model override → task YAML model
   const effectiveModel = provider?.model ?? config.model;
 
@@ -556,7 +557,8 @@ async function executePhasedQuery(
 
       // Provider priority: phase YAML → myco.yaml phase → myco.yaml task → task YAML execution → default
       const phaseProvider = phase.provider ?? phaseOverride?.provider ?? taskProviderOverride ?? config.execution?.provider;
-      const env = buildPhaseEnv(phaseProvider);
+      const baseEnv = buildPhaseEnv(phaseProvider);
+      const env = { ...(baseEnv ?? process.env), MYCO_AGENT_SESSION: '1' };
       const sessionId = phaseSessionId(runId, phase.name);
 
       // Pass effective maxTurns to executePhase via a modified phase object
