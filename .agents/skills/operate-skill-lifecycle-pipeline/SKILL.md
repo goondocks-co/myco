@@ -3,175 +3,197 @@ name: myco:operate-skill-lifecycle-pipeline
 description: Use this skill when working with Myco's skill lifecycle system — whether generating a new skill from an approved candidate, reviewing the candidate queue, updating a stale skill, retiring an outdated one, or debugging why a skill wasn't triggered. Activates whenever you touch vault_skill_candidates, vault_skill_records, or vault_write_skill — or whenever the user asks about skills, the Skills dashboard, skill generation tasks, or the .agents/skills/ directory. Apply this skill even if the user doesn't explicitly say "skill lifecycle" — any time a task involves producing or updating a SKILL.md file, evaluating candidates, or managing skill status, this procedure applies.
 managed_by: myco
 user-invocable: true
-allowed-tools: Read, Edit, Write, Bash, Grep, Glob
+allowed-tools:
+  - Read
+  - Edit
+  - Write
+  - Bash
+  - Grep
+  - Glob
 ---
 
 # Operating the Myco Skill Lifecycle Pipeline
 
-## Overview
+Hands-on reference for managing skill candidates, skill records, and SKILL.md files using Myco's agent tools and Skills dashboard.
 
-The skill lifecycle pipeline converts vault knowledge into reusable SKILL.md files. Three agent tasks drive the pipeline: `skill-survey` (discovery), `skill-generate` (creation), and `skill-evolve` (maintenance). Understanding scheduling defaults is essential before any pipeline operation.
+## Tool Reference
 
-**Scheduling defaults — know these first:**
-- `skill-survey`: `enabled: true` — auto-runs during idle; passively discovers candidates
-- `skill-generate`: `enabled: false` — **opt-in required**; writes SKILL.md files to disk
-- `skill-evolve`: `enabled: false` — **opt-in required**; rewrites stale skills
-
-## Prerequisites
-
-- Myco daemon running
-- Vault has processed spores (Daemon UI → Sessions → verify spore count)
-- Access to Daemon UI → Skills and Daemon UI → Agent Tasks
-
----
-
-## Generating a Skill from an Approved Candidate
-
-### Step 1: Verify Candidate Status
+### vault_skill_candidates
+Manages skill candidates — knowledge clusters identified as potential skills.
 
 ```
-vault_skill_candidates(action: "list", status: "approved")
+// List by status
+vault_skill_candidates(action: "list", status: "identified"|"approved"|"dismissed"|"generated")
+
+// Get single candidate
+vault_skill_candidates(action: "get", id: "<uuid>")
+
+// Approve a candidate
+vault_skill_candidates(action: "update", id: "<uuid>", status: "approved", rationale: "...")
+
+// Create a candidate manually
+vault_skill_candidates(action: "create", topic: "...", rationale: "...")
 ```
 
-Confirm the target candidate is in `approved` status. If it's still `identified`, approve it in the Skills dashboard first.
+Status lifecycle: `identified` → `approved` → `generated`. Dismiss with `status: "dismissed"`.
 
-### Step 2: Enable skill-generate (if not already enabled)
-
-1. Daemon UI → Agent Tasks → find `skill-generate`
-2. Toggle to `enabled: true`
-3. Wait for next sweep or click **Run Now**
-
-### Step 3: Verify the Output
+### vault_skill_records
+Manages materialized skill records (the DB representation of files on disk).
 
 ```
-vault_skill_records(action: "list", status: "active")
-```
+// List active/stale/retired skills
+vault_skill_records(action: "list", status: "active"|"stale"|"retired")
 
-Confirm the new skill appears. Check the generated file at `.agents/skills/<name>/SKILL.md`.
-
-**Quality gate:** `vault_write_skill` enforces five required frontmatter fields: `name`, `description`, `managed_by`, `user-invocable`, `allowed-tools`. A write missing any field is rejected at the tool level before the file is created.
-
----
-
-## Managing Candidates
-
-**List pending candidates:**
-```
-vault_skill_candidates(action: "list", status: "identified")
-```
-
-**Approve a candidate:**
-```
-vault_skill_candidates(action: "update", id: "<id>", status: "approved")
-```
-
-**Dismiss a candidate:**
-```
-vault_skill_candidates(action: "update", id: "<id>", status: "dismissed")
-```
-
-**Recover a dismissed candidate:**
-```
-vault_skill_candidates(action: "list", status: "dismissed")
-vault_skill_candidates(action: "update", id: "<id>", status: "identified")
-```
-
----
-
-## Updating a Stale Skill
-
-### Step 1: Read the current skill record
-
-```
+// Get a specific skill (by name or UUID)
 vault_skill_records(action: "get", id: "<name-or-uuid>")
+
+// Retire a skill
+vault_skill_records(action: "update", id: "<uuid>", status: "retired")
 ```
 
-Note the `path`, `generation`, and `source_ids`. You will carry all frontmatter fields forward in the rewrite.
-
-### Step 2: Gather new knowledge
-
-```
-vault_search_semantic(query: "<skill topic keywords>")
-vault_search_fts(query: "<specific terms>")
-```
-
-Find spores created after the skill's `updated_at` timestamp that are relevant to the skill's domain.
-
-### Step 3: Rewrite via vault_write_skill
-
-Preserve ALL existing frontmatter fields. Incorporate new knowledge. Stay under 500 lines.
+### vault_write_skill
+Writes a SKILL.md file to disk and creates/updates the skill record.
 
 ```
 vault_write_skill(
-  name: "<kebab-name>",
-  display_name: "...",
-  description: "...",
-  content: "---\nname: myco:<name>\n...\n---\n\n# ...",
-  rationale: "Updated: added <what changed> from spore <id>"
+  name: "kebab-case-name",           // directory name — no myco: prefix here
+  display_name: "Title",
+  description: "triggering description",
+  content: "<full SKILL.md with frontmatter>",
+  source_ids: "id1,id2",             // optional: comma-separated spore IDs
+  rationale: "what changed"          // optional: written into lineage
 )
 ```
 
-`vault_write_skill` automatically bumps the generation and creates a lineage entry with the rationale.
+**Quality gate enforces at write time:**
+- YAML frontmatter with all required fields
+- `name: myco:<name>` prefix
+- `managed_by: myco`
+- `user-invocable` field present
+- `allowed-tools` containing **Claude Code tool names only** — vault_* names are rejected
+- ≤500 lines total
 
-### Step 4: Retire an outdated skill
+## Producing a SKILL.md File
+
+### From an approved candidate
+
+1. Get the candidate: `vault_skill_candidates(action: "get", id: "<uuid>")`
+2. Search for related spores: `vault_search_semantic(query: "<topic>", limit: 10)`
+3. Write the skill with correct frontmatter — see Frontmatter Requirements below
+4. Pass `candidate_id` and `source_ids` to vault_write_skill for lineage
+
+### Updating an existing skill
+
+1. Get current record: `vault_skill_records(action: "get", id: "<name>")`
+2. Read the file at the `path` field to see current content
+3. Identify what changed — update only the affected sections
+4. Write with `rationale` describing what was updated
+
+**Critical when updating:** Check `allowed-tools` in the existing frontmatter **before** carrying it forward. If it contains vault_* names (vault_create_spore, vault_search_semantic, vault_write_skill, etc.), replace them with Claude Code tools. The gate will reject the write otherwise. See Contamination section below.
+
+### Splitting an oversized skill
+
+1. Identify distinct procedures in the current skill
+2. Write each as a new focused skill with its own name and description
+3. Retire the parent: `vault_skill_records(action: "update", status: "retired")`
+
+### Retiring a skill
 
 ```
-vault_skill_records(action: "update", id: "<id>", status: "retired")
+vault_skill_records(action: "update", id: "<uuid>", status: "retired")
 ```
 
----
+Retiring preserves the record and lineage but removes the skill from the active pool. Use when a skill has been superseded by focused replacements or the procedure is no longer applicable.
 
-## Debugging: Why Wasn't a Skill Triggered?
+## Frontmatter Requirements
 
-Work through this checklist in order:
+Every SKILL.md must contain all six required fields in its YAML frontmatter:
 
-### 1. Is skill-generate enabled? ← Start here
+| Field | Requirement |
+|---|---|
+| `name` | `myco:<kebab-case-name>` — must match directory name |
+| `description` | Triggering description — primary matching signal for Claude Code |
+| `managed_by` | Always `myco` |
+| `user-invocable` | Always `true` for developer-facing skills |
+| `allowed-tools` | Claude Code tools only: `Read`, `Edit`, `Write`, `Bash`, `Grep`, `Glob` |
 
-**`skill-generate` is `disabled` by default.** This is the most common reason skills never materialize despite a healthy candidate queue. Check Daemon UI → Agent Tasks → `skill-generate` → verify `enabled: true`. If it was disabled, enable it and run.
+**Omitting any of these fields causes a vault_write_skill rejection**, even if the field was present in a prior version. Mid-session rewrites that regenerate frontmatter from scratch are a common source of silent omissions.
 
-### 2. Are there approved candidates?
+## Diagnosing vault_write_skill Rejections
+
+The tool returns a descriptive error identifying the failing constraint:
+
+| Error | Fix |
+|---|---|
+| `allowed-tools contains vault_* names` | Replace with Claude Code tools: `Read, Edit, Write, Bash, Grep, Glob` |
+| `missing managed_by: myco` | Add `managed_by: myco` to frontmatter |
+| `missing user-invocable` | Add `user-invocable: true` to frontmatter |
+| `missing name with myco: prefix` | Ensure `name: myco:<skill-name>` in frontmatter |
+| `name contains path traversal` | Remove `/`, `\`, or `..` from the name parameter |
+| `exceeds 500 lines` | Trim content or split into sub-skills |
+
+### allowed-tools Contamination
+
+The vault_write_skill gate was added specifically because of a silent propagation bug: `skill-evolve.yaml`'s "preserve ALL existing frontmatter fields" instruction faithfully copies vault_* names from a contaminated skill into every subsequent evolution. The preservation rule is not a validator.
+
+**Contamination propagation path:**
+1. A skill has vault_* names in `allowed-tools` (e.g., generated when the spec was wrong)
+2. skill-evolve is run; the LLM preserves all frontmatter fields as instructed
+3. The evolved version carries the bad values forward
+4. vault_write_skill now rejects at write time — the error surfaces the bug
+
+**How to fix a contaminated skill:** Read the current `allowed-tools` in the file, replace any vault_* names with `Read, Edit, Write, Bash, Grep, Glob`, and rewrite via vault_write_skill.
+
+## Debugging Why a Skill Wasn't Triggered
+
+Skills are loaded by Claude Code when the frontmatter `description` matches the current session context. Diagnosis checklist:
+
+1. **File present?** Check `.agents/skills/<name>/SKILL.md` exists on disk
+2. **`user-invocable: true`?** Open the file and verify this field is present and true
+3. **Description broad enough?** The description is the only matching signal. Too narrow = fewer matches. Compare it to the actual task context.
+4. **Description degraded?** Check if the skill was recently evolved — the rewrite may have shortened the description (see Over-Evolution section below). Compare with the previous generation.
+5. **allowed-tools correct?** Confirm `allowed-tools` lists Claude Code tools only
+
+## Diagnosing skill-evolve Over-Evolution
+
+**Symptom:** A skill was classified STALE and rewritten, but the result is worse — shorter description, missing sections, generic phrasing — with no new factual content added.
+
+**Root cause:** skill-evolve classified STALE on cosmetic phrasing differences rather than a substantive factual change. Without an explicit bias-toward-CURRENT directive, LLM rewrites interpret any new context as justification to refactor. This creates a regression loop:
+- Descriptions get shorter → triggering coverage silently degrades
+- Detailed sections get consolidated → diagnostic value lost (e.g., machine_id regression steps, budget sizing math)
+- Phrasing becomes generic → precision lost
+
+The rewritten skill passes all validation checks but is structurally degraded.
+
+**Fix steps:**
+1. Check skill-evolve.yaml — it must have an explicit "bias toward CURRENT unless there is a substantive factual change" instruction and a "do NOT restructure sections that are still correct" directive
+2. Identify the previous generation via vault_skill_records lineage
+3. Compare the description — if shortened, triggering coverage is degraded
+4. Rewrite to restore description coverage plus any actual new knowledge
+
+**The standard for STALE:** A new behavior, a fixed bug, a changed API, or a discovered gotcha that the current skill gets factually wrong. Cosmetic phrasing differences are not sufficient.
+
+## Budget Sizing for skill-evolve Runs
+
+skill-evolve runs are multiplicative in agent turn cost. Each STALE skill rewrite costs ~8–10 turns (read + knowledge searches + write). Size the budget for worst-case STALE count:
 
 ```
-vault_skill_candidates(action: "list", status: "approved")
+Assess phase: ~1.5 turns/skill × (number of active skills)
+Evolve phase: ~10 turns/rewrite × (number of STALE skills)
+Task maxTurns: sum of phase budgets + ~5 turns overhead
 ```
 
-If empty: candidates may be `identified` (awaiting approval). Check the Skills dashboard and approve them first.
+**Recommended configuration for up to 3 STALE skills:**
+```yaml
+# task level
+maxTurns: 60
+timeoutSeconds: 1800
 
-### 3. Did the task run recently?
+# assess phase
+maxTurns: 20
 
-Check Daemon UI → Agent Tasks → `skill-generate` for last run timestamp and status. If it errored, read the run log for the specific failure.
+# evolve phase
+maxTurns: 35
+```
 
-### 4. Did the quality gate reject the write?
-
-`vault_write_skill` rejects writes missing required frontmatter. If the task ran but no file appeared, check run output for a quality gate error. All five fields must be present: `name`, `description`, `managed_by`, `user-invocable`, `allowed-tools`.
-
-### 5. Did a turn budget or timeout exhaust occur? (skill-evolve)
-
-For `skill-evolve` specifically: if the evolve phase hits `maxTurns` before finishing all STALE skills, it stops silently with no error. The run ends "normally" but incomplete. Diagnose by checking whether expected skills were actually updated. Fix: increase `maxTurns` (N STALE × ~10 turns + 20 assess + 5 overhead) and `timeoutSeconds` (N × ~5 min).
-
----
-
-## Skills Dashboard Navigation
-
-The Daemon UI → Skills page has two-layer onboarding:
-
-1. **HelpCircle button** (page header, always visible): opens a dialog explaining the full Survey→Approve→Generate→Evolve pipeline, scheduling defaults, and quick-start steps. Always available as a reference.
-2. **Empty states** in Skill List and Candidate List: contextual first-time guidance that links to Agent Tasks for enablement. Disappears once content exists.
-
-Use the HelpCircle dialog when onboarding a new team member or returning to the pipeline after a long absence.
-
----
-
-## Common Pitfalls
-
-**Approved candidates but no SKILL.md files appear**
-`skill-generate` is disabled by default. Enable it via Agent Tasks. This is the primary diagnostic step.
-
-**skill-evolve silently stops mid-rewrite**
-Turn budget exhausted. Multi-STALE runs are multiplicative: each skill rewrite costs ~10 turns. Recalibrate `maxTurns` to cover all phases: task `maxTurns` ≈ sum of all phase `maxTurns` + 5 overhead. Increase `timeoutSeconds` for runs with 3+ STALE skills (minimum 30 minutes).
-
-**Frontmatter field missing on vault_write_skill**
-All five fields required at the tool-gate level: `name`, `description`, `managed_by`, `user-invocable`, `allowed-tools`. Fix the content and retry — the gate rejects before writing the file.
-
-**skill-evolve won't run despite stale skills**
-`skill-evolve` is disabled by default. Enable it explicitly via Agent Tasks before the assess/evolve phases will execute.
+**Silent failure mode:** If `maxTurns` is too low, the run ends "normally" but stops mid-rewrite with no error message. Always verify that the expected STALE skills were actually updated — check their generation number and `updated_at` after the run.
