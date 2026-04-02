@@ -365,6 +365,18 @@ describe('validateSkillContent quality gate', () => {
     const issues = validateSkillContent(content, 'test');
     expect(issues).toHaveLength(0);
   });
+
+  it('rejects vault agent tool names in allowed-tools (comma format)', () => {
+    const content = '---\nname: myco:test-skill\ndescription: A test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: vault_search_fts, vault_spores\n---\n\nBody';
+    const issues = validateSkillContent(content, 'test');
+    expect(issues.some(i => i.includes('vault agent tool names'))).toBe(true);
+  });
+
+  it('rejects vault agent tool names in allowed-tools (YAML list format)', () => {
+    const content = '---\nname: myco:test-skill\ndescription: A test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools:\n  - vault_search_fts\n  - vault_spores\n---\n\nBody';
+    const issues = validateSkillContent(content, 'test');
+    expect(issues.some(i => i.includes('vault agent tool names'))).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

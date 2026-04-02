@@ -3,9 +3,7 @@ name: myco:run-skill-survey
 description: Use this skill when you need to run the Myco skill-survey agent task to surface new skill candidates from accumulated vault knowledge — or when you need to review, approve, or dismiss candidates that the survey has already produced. Activate even if the user doesn't explicitly say "skill-survey" — any time they ask "what skills should we add," "why aren't there more skills," "the Skills dashboard is empty," or "how do I get the agent to generate skills," this procedure applies. Also relevant when the survey has run but produced zero candidates, when candidates have piled up awaiting review, or when a previously dismissed candidate should be reconsidered.
 managed_by: myco
 user-invocable: true
-allowed-tools:
-  - vault_skill_candidates
-  - vault_skill_records
+allowed-tools: Read, Bash, Grep, Glob
 ---
 
 # Running the Skill Survey to Identify and Review Candidates

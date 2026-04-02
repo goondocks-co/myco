@@ -130,6 +130,30 @@ export function validateSkillContent(content: string, dirName: string): string[]
     issues.push(`managed_by must be "myco". Got: "${managedMatch[1].trim()}"`);
   }
 
+  // Check allowed-tools values — must be Claude Code tool names, not vault agent tools.
+  // These skills run in developer Claude Code sessions, not the agent pipeline.
+  const allowedToolsMatch = frontmatter.match(/^allowed-tools:\s*(.+)$/m);
+  if (allowedToolsMatch) {
+    const toolsValue = allowedToolsMatch[1].trim();
+    // Reject vault_* tool names — common LLM mistake of copying its own tool context
+    if (toolsValue.includes('vault_')) {
+      issues.push(
+        'allowed-tools contains vault agent tool names (vault_*). ' +
+        'Skills run in Claude Code sessions — use Claude Code tool names instead: ' +
+        'Read, Edit, Write, Bash, Grep, Glob'
+      );
+    }
+  }
+  // Also check YAML list format (- vault_search_fts etc.)
+  const listToolLines = frontmatter.match(/^\s+-\s+vault_\w+/gm);
+  if (listToolLines) {
+    issues.push(
+      'allowed-tools contains vault agent tool names (vault_*). ' +
+      'Skills run in Claude Code sessions — use Claude Code tool names instead: ' +
+      'Read, Edit, Write, Bash, Grep, Glob'
+    );
+  }
+
   // Check line count
   const lineCount = content.split('\n').length;
   if (lineCount > MAX_SKILL_LINES) {

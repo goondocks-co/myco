@@ -3,13 +3,7 @@ name: myco:setup-cloudflare-team-sync
 description: Use this skill when setting up Myco's team sync via Cloudflare Workers, D1, and Vectorize — or debugging sync failures. Covers wrangler setup, machine identity, D1 schema, Vectorize bindings, silent failure modes, and the machine_id regression diagnosis pattern.
 managed_by: myco
 user-invocable: true
-allowed-tools:
-  - vault_state
-  - vault_set_state
-  - vault_search_fts
-  - vault_search_semantic
-  - vault_spores
-  - vault_report
+allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 
 # Set Up and Debug Cloudflare Team Sync
