@@ -3,11 +3,7 @@ name: myco:author-and-debug-agent-pipeline-tasks
 description: How to author, configure, and debug Myco agent pipeline tasks — covering task YAML anatomy (phases, schedule, dependsOn, preCondition), sweep scheduling design, parameter injection patterns, the taskOverrides scalar-drop gotcha, the skipPriorContext hallucination trap, timeout wiring, concurrency guard behavior and correctness, concurrent run audit log interleaving, LLM data-fidelity failure patterns, turn budget exhaustion, skill lifecycle task scheduling specifics, and fault-tolerance patterns. Use this skill when creating a new task YAML, adding schedule blocks, debugging a task that silently aborts or returns wrong data, or wiring phase dependencies. Apply it even if the user doesn't explicitly ask about task authoring — if they're modifying anything in src/agent/tasks/, src/agent/executor.ts, or src/daemon/task-scheduler.ts, this skill applies.
 managed_by: myco
 user-invocable: true
-allowed-tools:
-  - vault_state
-  - vault_search_fts
-  - vault_search_semantic
-  - vault_spores
+allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 
 # Authoring and Debugging Myco Agent Pipeline Tasks

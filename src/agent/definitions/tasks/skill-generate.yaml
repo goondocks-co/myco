@@ -116,10 +116,15 @@ phases:
 
       - **user-invocable: true** — makes the skill available as a slash
         command (e.g., `/add-symbiont`). Set this for all procedural skills.
-      - **allowed-tools** — comma-separated list of tools the skill needs.
+      - **allowed-tools** — comma-separated list of **Claude Code tool
+        names** that the skill needs. These skills run in developer
+        Claude Code sessions, NOT in the agent pipeline. NEVER use
+        vault_* tool names (vault_search_fts, vault_spores, etc.) —
+        those are internal agent tools, not available in Claude Code.
+        Valid tool names: Read, Edit, Write, Bash, Grep, Glob.
         Most procedural skills need: Read, Edit, Write, Bash, Grep, Glob.
-        Narrow this if the skill only needs read access (e.g., audit skills).
-        Omit the field entirely to allow all tools.
+        Narrow this if the skill only needs read access (e.g., audit
+        skills: Read, Bash, Grep, Glob).
 
       ## Writing Principles
 

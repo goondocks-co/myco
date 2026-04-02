@@ -3,13 +3,7 @@ name: myco:operate-skill-lifecycle-pipeline
 description: Use this skill when working with Myco's skill lifecycle system — whether generating a new skill from an approved candidate, reviewing the candidate queue, updating a stale skill, retiring an outdated one, or debugging why a skill wasn't triggered. Activates whenever you touch vault_skill_candidates, vault_skill_records, or vault_write_skill — or whenever the user asks about skills, the Skills dashboard, skill generation tasks, or the .agents/skills/ directory. Apply this skill even if the user doesn't explicitly say "skill lifecycle" — any time a task involves producing or updating a SKILL.md file, evaluating candidates, or managing skill status, this procedure applies.
 managed_by: myco
 user-invocable: true
-allowed-tools:
-  - vault_skill_candidates
-  - vault_skill_records
-  - vault_write_skill
-  - vault_spores
-  - vault_search_semantic
-  - vault_search_fts
+allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 
 # Operating the Myco Skill Lifecycle Pipeline

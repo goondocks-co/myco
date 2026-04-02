@@ -52,17 +52,29 @@ phases:
          A skill over 400 lines or covering 3+ independent workflows
          is a candidate for splitting.
 
-      Classify each skill:
-      - **CURRENT**: Content is still accurate, no significant new
-        knowledge changes what it should say.
-      - **STALE**: New knowledge exists that should be incorporated
-        (new gotchas, new steps, changed file paths, new patterns).
-        Note specifically WHAT is new/changed.
+      Classify each skill — bias toward CURRENT. A rewrite has
+      real cost (can lose valuable detail, regress triggering quality).
+      Only classify as STALE/CONFLICTED when the delta is substantive:
+
+      - **CURRENT**: Content is still accurate. Minor phrasing
+        differences between the skill and new knowledge do NOT make
+        it stale. If the skill already covers the topic correctly
+        — even if newer spores phrase it differently — it is CURRENT.
+      - **STALE**: New *factual* knowledge exists that the skill
+        genuinely misses — a new concrete step, a changed file path,
+        a new gotcha that would cause real failure, a new pattern
+        that replaces one the skill teaches. The new knowledge must
+        be specific and actionable, not a rephrasing of existing
+        content. Note specifically WHAT is new/changed.
       - **CONFLICTED**: New knowledge directly contradicts the skill's
         current content (a decision was reversed, a pattern was
-        abandoned). Note the contradiction.
+        abandoned, a file was deleted). Note the contradiction.
       - **OVERSIZED**: Covers too many distinct procedures. Note
         how it should be split.
+
+      When in doubt, classify as CURRENT. A skill that is 90%
+      accurate and well-structured is better left alone than
+      rewritten with the risk of losing detail.
 
       NOTE: Skip usage-based retirement for now — usage tracking is
       not yet active. Do not classify skills as UNUSED.
@@ -114,7 +126,27 @@ phases:
            content first and carry every field forward (name, description,
            managed_by, user-invocable, allowed-tools). The quality gate
            rejects writes missing any required frontmatter field.
-         - Preserve all content that is still accurate
+
+         - **DO NOT shorten the description.** The description is the
+           PRIMARY triggering mechanism — Claude Code reads it to decide
+           whether to load the skill. A shorter description means fewer
+           matches and worse triggering. Only change the description if
+           it contains factually wrong information. Never condense it
+           for brevity.
+
+         - **allowed-tools must list Claude Code tool names**, NOT vault
+           agent tools. These skills run in developer Claude Code sessions,
+           not in the agent pipeline. Valid values are:
+           Read, Edit, Write, Bash, Grep, Glob
+           If the existing allowed-tools lists vault_* tools (like
+           vault_search_fts, vault_spores, vault_state, etc.), that is
+           WRONG — replace with the appropriate Claude Code tools.
+           Most procedural skills need: Read, Edit, Write, Bash, Grep, Glob
+           Read-only informational skills need: Read, Bash, Grep, Glob
+
+         - Preserve all content that is still accurate — do NOT
+           restructure or rephrase sections that are correct. Only
+           modify the specific sections affected by the new knowledge.
          - Incorporate the new knowledge identified in assessment
          - Follow the same SKILL.md format:
            - Prerequisites, Steps, Common Pitfalls structure
