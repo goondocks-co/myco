@@ -1,178 +1,129 @@
 ---
 name: myco:write-myco-skill
-description: |
-  Use this skill whenever you need to create or update a Myco-managed SKILL.md file for
-  this project. This covers the full procedure: choosing a name, drafting procedural content,
-  calling vault_write_skill to atomically write and register the skill, and verifying it
-  appears in Claude Code as a slash command. Activate even if the user says only "create a
-  skill" or "write a skill" — this skill handles naming conventions, required frontmatter
-  fields, the quality gate, and candidate auto-linkage, even if the user doesn't ask about
-  those details explicitly.
+description: Create and validate a Myco-managed SKILL.md file using vault_write_skill. Use when authoring a new skill from scratch, updating an existing skill, or fixing a skill that failed the quality gate. Applies whenever you need to produce a valid .agents/skills/<name>/SKILL.md file that passes structural validation. Also load when vault_write_skill returns a rejection error — the error message identifies the failing constraint, but this skill explains the full field contract and the known contamination pitfalls.
 managed_by: myco
-version: 1
 user-invocable: true
-allowed-tools: Read, Edit, Write, Bash, Grep, Glob
+allowed-tools:
+  - Read
+  - Edit
+  - Write
+  - Bash
+  - Grep
+  - Glob
 ---
 
 # Writing a Myco-Managed Skill
 
-Skills in this project are procedural how-to guides that teach agents how to accomplish
-specific tasks. They live in `.agents/skills/<name>/SKILL.md`, are validated and registered
-by `vault_write_skill`, and become slash commands (e.g., `/myco:write-myco-skill`) in Claude
-Code. Use this procedure any time you are creating a new skill or updating an existing one.
+A Myco-managed skill is a SKILL.md file with YAML frontmatter that Claude Code reads to decide whether to load procedural context. The `vault_write_skill` agent tool writes the file to disk, creates or updates the skill record in the vault database, and bumps the generation counter.
 
 ## Prerequisites
 
-- The `vault_write_skill` MCP tool is available (provided by the Myco MCP server)
-- You have a clear, specific topic for the skill — a procedural task, not a concept
-- If generating from a candidate: have the `candidate_id` from `vault_skill_candidates`
-- Relevant source material gathered: search `vault_search_semantic` or `vault_search_fts`
-  for related spores before drafting so the skill reflects real project knowledge
+- An approved skill candidate (from `vault_skill_candidates`) or a specific skill to update
+- A clear scope: one procedure, one context — not a broad reference document
+- The skill name in kebab-case (e.g., `register-mcp-tool`, `add-vault-table`)
 
-## Steps
+## Frontmatter Structure
 
-### 1. Choose a name and check for an existing skill
+Every SKILL.md must open with a YAML frontmatter block containing all six required fields:
 
-Pick a kebab-case name that describes the procedure (e.g., `add-symbiont`, `run-agent-task`).
-Check whether one already exists before creating:
-
-```bash
-ls .agents/skills/
-```
-
-The directory name must be kebab-case with no slashes, backslashes, or `..` — the write gate
-enforces path-traversal safety and will reject names containing those characters.
-
-### 2. Draft the SKILL.md content
-
-Skills must be **procedural how-to guides** ("how to X") — not definitions, gotcha catalogs,
-or taxonomy documents. A skill that reads as a list of facts rather than a sequence of steps
-won't trigger correctly in Claude Code.
-
-**Required frontmatter fields** — the gate enforces all five; missing any returns a specific
-validation error:
-
-| Field | Required value |
-|---|---|
-| `name` | `myco:<name>` — the `myco:` namespace prefix is mandatory |
-| `description` | Non-empty string; this is the primary trigger mechanism |
-| `managed_by` | `myco` |
-| `user-invocable` | `true` |
-| `allowed-tools` | Comma-separated list, e.g., `Read, Edit, Write, Bash, Grep, Glob` |
-
-Skeleton to start from:
-
-```markdown
+```yaml
 ---
-name: myco:<name>
-description: |
-  Triggering paragraph. Be explicit about when this activates. Name concrete keywords,
-  file names, and scenarios. Include "even if the user doesn't explicitly ask..." language
-  to counter undertriggering.
+name: myco:<kebab-case-name>
+description: <triggering description>
 managed_by: myco
-version: 1
 user-invocable: true
-allowed-tools: Read, Edit, Write, Bash, Grep, Glob
+allowed-tools:
+  - Read
+  - Edit
+  - Write
+  - Bash
+  - Grep
+  - Glob
 ---
-
-# Skill Title
-
-Context paragraph (2–3 sentences).
-
-## Prerequisites
-
-## Steps
-
-## Common Pitfalls
 ```
 
-**`allowed-tools` guidance:** most procedural skills need `Read, Edit, Write, Bash, Grep, Glob`.
-Narrow to `Read, Grep, Glob` for read-only audit skills. The field is still required even
-when narrowed.
+### Field Reference
 
-**Hard limit: ≤500 lines total** (frontmatter + body). The gate rejects files over this limit.
-Be concise — one numbered step per action, prose only where reasoning matters.
+**`name`** — Must use the `myco:` prefix (e.g., `myco:add-vault-table`). The kebab-case portion must match the directory name under `.agents/skills/`. Do not use `/`, `\`, or `..` in the name — the path security gate rejects these before any filesystem operation.
 
-**The description is the trigger.** Write it so that an agent reading only the description
-knows whether this skill applies. Include specific nouns: file names, tool names, scenarios.
+**`description`** — The primary triggering mechanism. Claude Code reads this to decide whether to load the skill. Write it to be specific and pattern-rich:
+- Name the exact conditions that should trigger the skill
+- Include related component names, file paths, and tool names
+- Cover edge cases and indirect triggers
+- **Never shorten for brevity.** A shorter description means fewer matches. Only change the description if the trigger condition is factually wrong.
 
-### 3. Call `vault_write_skill`
+**`managed_by`** — Always `myco`. Required. Do not change.
 
-```json
-{
-  "name": "my-skill-name",
-  "display_name": "Human-Readable Title",
-  "description": "One-sentence summary matching the frontmatter description intent",
-  "content": "<full SKILL.md text including frontmatter>",
-  "candidate_id": "<uuid — only when generating from an approved candidate>",
-  "source_ids": "[\"spore-id-1\", \"spore-id-2\"]",
-  "rationale": "Initial generation from candidate survey"
-}
+**`user-invocable`** — Always `true` for developer-facing skills. The quality gate enforces field presence — omitting it causes a rejection even if it was present in a prior version.
+
+**`allowed-tools`** — **Must list Claude Code tool names only.**
+
+Valid values:
+- `Read` — reading files
+- `Edit` — editing existing files
+- `Write` — writing new files
+- `Bash` — running shell commands
+- `Grep` — searching file content
+- `Glob` — listing files by pattern
+
+**Do NOT include `vault_*` tool names** (vault_create_spore, vault_search_semantic, vault_write_skill, vault_spores, vault_state, etc.). The `vault_write_skill` quality gate rejects any skill whose `allowed-tools` field contains vault_* names — in both comma-separated string and YAML list formats. This rejection happens at write time with a clear error message; the file is never touched.
+
+- Most procedural skills need all six Claude Code tools
+- Read-only or informational skills need: `Read, Bash, Grep, Glob`
+
+## Content Structure
+
+After the frontmatter, write the skill body:
+
+1. **Opening summary** — 1–2 sentences describing the skill's scope
+2. **Prerequisites** — what the developer needs before starting
+3. **Steps** — numbered, concrete procedural steps with specific examples
+4. **Common Pitfalls** — gotchas, silent failures, and surprising behaviors
+
+Stay under 500 lines total. If the scope is too broad, split into focused sub-skills — one clear procedure per file.
+
+## Calling vault_write_skill
+
+```
+vault_write_skill(
+  name: "kebab-case-name",           // directory name — no myco: prefix here
+  display_name: "Human-Readable Title",
+  description: "triggering description",  // same text as frontmatter description
+  content: "<full SKILL.md including frontmatter>",
+  candidate_id: "uuid",              // optional: links to originating candidate
+  source_ids: "id1,id2,id3",         // optional: comma-separated spore IDs
+  rationale: "What changed and why"  // optional: written into skill lineage
+)
 ```
 
-Pass `name` as the bare kebab-case directory name — **no `myco:` prefix here**. The prefix
-belongs only in the frontmatter `name` field inside `content`. Passing `myco:my-skill-name`
-as the `name` parameter will fail the path-safety gate.
+The tool automatically:
+- Writes the file to `.agents/skills/<name>/SKILL.md`
+- Creates or updates the skill record in the vault database
+- Bumps the generation counter
+- Creates a lineage entry with the rationale
 
-The tool executes atomically in order: validate frontmatter → write file to disk → insert or
-update DB record. Disk is written first; the DB row is only created after a confirmed disk
-success — no orphaned DB records are possible. If validation fails, the tool returns a
-specific list of errors to fix before retrying. The whole operation is safe to retry.
+## Security Constraints
 
-### 4. Verify the slash command in Claude Code
+`vault_write_skill` enforces these structural gates before writing:
 
-Claude Code reads skills from `.claude/skills/`, not `.agents/skills/`. A symlink between
-the two is created by `SymbiontInstaller` during `myco init` / `myco update`. If the slash
-command `/myco:<name>` doesn't appear in Claude Code after writing the skill:
-
-```bash
-myco update
-```
-
-Other agents (Cursor, Windsurf) read `.agents/skills/` directly — the symlink is only
-needed for Claude Code.
-
-### 5. Confirm candidate auto-linkage
-
-When you pass `candidate_id`, `vault_write_skill` auto-searches for an `approved` candidate
-whose topic matches the skill and transitions it to `generated`. Verify it worked:
-
-```json
-vault_skill_candidates({ "action": "get", "id": "<candidate-id>" })
-```
-
-`skill_id` should be set and `status` should be `"generated"`. If the topic string didn't
-match closely enough for auto-detection, update the candidate manually:
-
-```json
-vault_skill_candidates({
-  "action": "update",
-  "id": "<candidate-id>",
-  "status": "generated",
-  "skill_id": "<uuid returned by vault_write_skill>"
-})
-```
+| Constraint | Details |
+|---|---|
+| Path traversal guard | Rejects names with `/`, `\`, or `..` before `path.resolve()` is called |
+| Transaction atomicity | All DB mutations are wrapped in a single transaction — partial writes are impossible |
+| Required fields | Rejects writes missing `name` (myco: prefix), `description`, `managed_by: myco`, `user-invocable`, or `allowed-tools` |
+| allowed-tools values | Rejects vault_* names in `allowed-tools` (both string and YAML list formats) |
+| 500-line limit | Rejects content over 500 lines |
 
 ## Common Pitfalls
 
-**`myco:` prefix goes in frontmatter, not in the `name` parameter.** The `name` passed to
-`vault_write_skill` is the directory name. The `myco:` prefix appears only in the SKILL.md
-frontmatter field `name: myco:<name>`. This is the most common cause of a path-safety
-rejection.
+### allowed-tools contamination from preserved frontmatter
+When updating a skill by carrying forward its frontmatter (especially via "preserve all frontmatter" instructions), the `allowed-tools` field propagates whatever values are already there — including vault_* names if the source skill was contaminated. The preservation rule is not a validator: it faithfully copies errors. Always inspect `allowed-tools` before writing and replace any vault_* names with Claude Code tools.
 
-**Don't attempt to split disk and DB writes yourself.** `vault_write_skill` ensures disk
-is written before the DB record is created. Replicating this manually (e.g., writing the
-file via Bash then creating a DB row) bypasses the transaction guard and can leave the
-vault in an inconsistent state.
+### Missing required fields in rewrites
+Mid-session rewrites often regenerate frontmatter from scratch and silently drop fields that were in the prior version. Always carry all six required fields forward explicitly, even if they appear unchanged. The quality gate enforces field presence but not value correctness — verify `allowed-tools` values manually.
 
-**Updating an existing skill uses the same call.** Pass the same `name` — the tool detects
-the existing file, overwrites it atomically, and increments the DB generation counter. No
-delete-then-recreate is needed.
+### Shortened descriptions causing triggering failure
+A rewrite that condenses the description for readability degrades future skill invocation. The description is a triggering signal, not prose for human readers — shorter means fewer matches. Only change the description if the trigger condition is factually incorrect.
 
-**Content type matters for triggering.** The gate doesn't enforce procedural style, but
-skills written as reference docs ("X is a Y that does Z") won't activate reliably. Write
-"how to" steps: "Run X, then Y, because Z" — not "X is the tool used for Z."
-
-**Frontmatter uses hyphens, not underscores.** The gate checks `user-invocable` and
-`allowed-tools` (hyphenated). Using `user_invokable` or `allowed_tools` will produce a
-validation error even if the values are correct.
+### Path traversal in name
+Skill names are used to construct file paths. Names containing `/`, `\`, or `..` are rejected before any filesystem operation. Use only alphanumeric characters and hyphens.
