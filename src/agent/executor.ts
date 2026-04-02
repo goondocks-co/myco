@@ -497,6 +497,7 @@ async function executePhasedQuery(
     const orchestratorMaxTurns = config.orchestrator.maxTurns ?? DEFAULT_ORCHESTRATOR_MAX_TURNS;
 
     // 3. Call orchestrator (no tools — planning only)
+    const orchestratorEnv = { ...(buildPhaseEnv(taskProviderOverride) ?? process.env), MYCO_AGENT_SESSION: '1' };
     let planResponse = '';
     for await (const message of query({
       prompt: orchestratorPrompt,
@@ -506,6 +507,8 @@ async function executePhasedQuery(
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         persistSession: PERSIST_SESSION,
+        strictMcpConfig: true,
+        env: orchestratorEnv,
         tools: [],
       },
     })) {
