@@ -18,7 +18,7 @@ import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findPackageRoot } from '../utils/find-package-root.js';
 import { EventBuffer, cleanStaleBuffers } from '../capture/buffer.js';
 import { loadManifests } from '../symbionts/detect.js';
-import { isPlanWriteEvent, capturePlan, type PlanWatchConfig } from './plan-capture.js';
+import type { PlanWatchConfig } from './plan-capture.js';
 import { handleGetConfig, handlePutConfig } from './api/config.js';
 import { handleLogSearch, handleLogStream, handleLogDetail } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
@@ -103,7 +103,6 @@ import { gatherStats } from '../services/stats.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
 import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSessionCascade, getSessionImpact } from '../db/queries/sessions.js';
-import { getBatchIdByPromptNumber, getLatestBatch } from '../db/queries/batches.js';
 import { getAttachmentByFilePath } from '../db/queries/attachments.js';
 import { listRuns, countRuns, getRun, getLatestRunId } from '../db/queries/runs.js';
 import { listReports } from '../db/queries/reports.js';
@@ -115,7 +114,6 @@ import { reconcileLogBuffer } from './log-reconcile.js';
 import {
   DEFAULT_AGENT_ID,
   STALE_BUFFER_MAX_AGE_MS,
-  LOG_PROMPT_PREVIEW_CHARS,
   USER_AGENT_ID,
   USER_AGENT_NAME,
   EMBEDDING_BATCH_SIZE,
@@ -137,13 +135,13 @@ import type { ScheduledJobContext } from './task-scheduler.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import {
-  isSystemMessage,
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
   handleSubagentStart, handleSubagentStop, handleStopFailure,
   handleTaskCompleted, handleCompact,
 } from './event-handlers.js';
 import { createReconciler } from './reconciliation.js';
 import { createStopProcessor } from './stop-processing.js';
+import { createEventDispatcher } from './event-dispatch.js';
 export {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
   handleSubagentStart, handleSubagentStop, handleStopFailure,
@@ -381,7 +379,6 @@ export async function main(): Promise<void> {
     started_at: z.string().optional(),
   });
   const UnregisterBody = z.object({ session_id: z.string() });
-  const EventBody = z.object({ type: z.string(), session_id: z.string() }).passthrough();
   // --- Session routes ---
 
   server.registerRoute('POST', '/sessions/register', async (req) => {
@@ -455,237 +452,19 @@ export async function main(): Promise<void> {
 
   // --- Event routes ---
 
-  server.registerRoute('POST', '/events', async (req) => {
-    const validated = EventBody.parse(req.body);
-    const event = { ...validated, timestamp: validated.timestamp ?? new Date().toISOString() } as Record<string, unknown> & { type: string; session_id: string; timestamp: string };
-    logger.debug(LOG_KINDS.HOOKS_EVENT, 'Event received', { type: event.type, session_id: event.session_id });
-
-    // Ensure session is registered (idempotent — handles daemon restarts mid-session)
-    if (!registry.getSession(event.session_id)) {
-      registry.register(event.session_id, { started_at: event.timestamp });
-      logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from event', { session_id: event.session_id });
-
-      // Ensure SQLite session exists — explicitly set status='active' so
-      // resumed sessions (previously 'completed') get reopened.
-      const now = epochSeconds();
-      const startedEpoch = Math.floor(new Date(event.timestamp).getTime() / 1000);
-      upsertSession({
-        id: event.session_id,
-        agent: (event as Record<string, unknown>).agent as string ?? 'claude-code',
-        status: 'active',
-        started_at: startedEpoch,
-        created_at: now,
-        machine_id: machineId,
-      });
-
-      // Reconcile buffer against DB — recover any prompts lost during downtime.
-      reconciler.reconcileSession(event.session_id);
-    }
-
-    // Persist to disk so events survive daemon restarts
-    if (!sessionBuffers.has(event.session_id)) {
-      sessionBuffers.set(event.session_id, new EventBuffer(bufferDir, event.session_id));
-    }
-    sessionBuffers.get(event.session_id)!.append(event);
-
-    // --- Prompt batch tracking ---
-    if (event.type === 'user_prompt') {
-      powerManager.recordActivity();
-      const promptText = String(event.prompt ?? '');
-
-      // Skip system-injected messages (task notifications, system reminders) —
-      // they trigger UserPromptSubmit but are not real user prompts.
-      if (isSystemMessage(promptText)) {
-        logger.debug(LOG_KINDS.HOOKS_PROMPT, 'Skipped system-injected message', {
-          session_id: event.session_id,
-          prefix: promptText.trimStart().slice(0, LOG_PROMPT_PREVIEW_CHARS),
-        });
-      } else {
-        logger.info(LOG_KINDS.HOOKS_PROMPT, 'User prompt received', {
-          session_id: event.session_id,
-          prompt_preview: promptText.slice(0, LOG_PROMPT_PREVIEW_CHARS),
-          prompt_length: promptText.length,
-        });
-        try {
-          const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined);
-          logger.debug(LOG_KINDS.CAPTURE_BATCH, 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });
-
-          // Batch-threshold summary trigger
-          const batchCount = promptNumber;
-          const summaryInterval = config.agent.summary_batch_interval;
-          if (summaryInterval > 0 && batchCount > 0 && batchCount % summaryInterval === 0) {
-            stopProcessor.triggerTitleSummary(event.session_id);
-          }
-        } catch (err) {
-          logger.warn(LOG_KINDS.CAPTURE_BATCH, 'Failed to open batch', { session_id: event.session_id, error: (err as Error).message });
-        }
-      }
-    }
-
-    if (event.type === 'tool_use') {
-      const toolName = String(event.tool_name ?? '');
-      logger.debug(LOG_KINDS.HOOKS_TOOL, 'Tool use event', {
-        session_id: event.session_id,
-        tool_name: toolName,
-      });
-      // Plan capture — detect writes to watched directories (async, non-blocking)
-      const planFilePath = isPlanWriteEvent(
-        toolName,
-        event.tool_input as Record<string, unknown> | undefined,
-        planWatchConfig,
-      );
-      if (planFilePath) {
-        const captureSessionId = event.session_id;
-        fs.promises.readFile(planFilePath, 'utf-8').then((planContent) => {
-          const latestBatch = getLatestBatch(captureSessionId);
-          capturePlan({
-            sourcePath: path.relative(projectRoot, planFilePath),
-            content: planContent,
-            sessionId: captureSessionId,
-            promptBatchId: latestBatch?.id ?? null,
-          });
-          logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan captured', {
-            session_id: captureSessionId,
-            source_path: planFilePath,
-          });
-        }).catch((err) => {
-          logger.warn(LOG_KINDS.CAPTURE_PLAN, 'Failed to capture plan', {
-            error: (err as Error).message,
-            path: planFilePath,
-          });
-        });
-      }
-      try {
-        handleToolUse(
-          event.session_id,
-          toolName,
-          event.tool_input,
-          typeof event.output_preview === 'string' ? event.output_preview : undefined,
-        );
-      } catch (err) {
-        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });
-      }
-    }
-
-    if (event.type === 'tool_failure') {
-      const toolName = String(event.tool_name ?? '');
-      logger.info(LOG_KINDS.HOOKS_TOOL, 'Tool failure event', {
-        session_id: event.session_id,
-        tool_name: toolName,
-        is_interrupt: !!event.is_interrupt,
-      });
-      try {
-        handleToolFailure(
-          event.session_id,
-          toolName,
-          event.tool_input,
-          typeof event.error === 'string' ? event.error : undefined,
-          !!event.is_interrupt,
-        );
-      } catch (err) {
-        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record tool failure', { session_id: event.session_id, error: (err as Error).message });
-      }
-    }
-
-    if (event.type === 'subagent_start') {
-      logger.info(LOG_KINDS.HOOKS_SUBAGENT, 'Subagent start event', {
-        session_id: event.session_id,
-        agent_id: event.agent_id,
-        agent_type: event.agent_type,
-      });
-      try {
-        handleSubagentStart(
-          event.session_id,
-          typeof event.agent_id === 'string' ? event.agent_id : undefined,
-          typeof event.agent_type === 'string' ? event.agent_type : undefined,
-        );
-      } catch (err) {
-        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record subagent start', { session_id: event.session_id, error: (err as Error).message });
-      }
-    }
-
-    if (event.type === 'subagent_stop') {
-      logger.info(LOG_KINDS.HOOKS_SUBAGENT, 'Subagent stop event', {
-        session_id: event.session_id,
-        agent_id: event.agent_id,
-        agent_type: event.agent_type,
-      });
-      try {
-        handleSubagentStop(
-          event.session_id,
-          typeof event.agent_id === 'string' ? event.agent_id : undefined,
-          typeof event.agent_type === 'string' ? event.agent_type : undefined,
-          typeof event.last_assistant_message === 'string' ? event.last_assistant_message : undefined,
-        );
-      } catch (err) {
-        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record subagent stop', { session_id: event.session_id, error: (err as Error).message });
-      }
-    }
-
-    if (event.type === 'stop_failure') {
-      logger.warn(LOG_KINDS.HOOKS_STOP, 'Stop failure event', {
-        session_id: event.session_id,
-        error: event.error,
-      });
-      try {
-        handleStopFailure(
-          event.session_id,
-          typeof event.error === 'string' ? event.error : undefined,
-          typeof event.error_details === 'string' ? event.error_details : undefined,
-        );
-      } catch (err) {
-        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record stop failure', { session_id: event.session_id, error: (err as Error).message });
-      }
-    }
-
-    if (event.type === 'task_completed') {
-      logger.info(LOG_KINDS.HOOKS_EVENT, 'Task completed event', {
-        session_id: event.session_id,
-        task_id: event.task_id,
-        task_subject: event.task_subject,
-      });
-      try {
-        handleTaskCompleted(
-          event.session_id,
-          typeof event.task_id === 'string' ? event.task_id : undefined,
-          typeof event.task_subject === 'string' ? event.task_subject : undefined,
-          typeof event.task_description === 'string' ? event.task_description : undefined,
-        );
-      } catch (err) {
-        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record task completion', { session_id: event.session_id, error: (err as Error).message });
-      }
-    }
-
-    if (event.type === 'pre_compact') {
-      logger.info(LOG_KINDS.HOOKS_EVENT, 'Pre-compact event', { session_id: event.session_id });
-      try {
-        handleCompact(
-          event.session_id,
-          'pre',
-          typeof event.trigger === 'string' ? event.trigger : undefined,
-          undefined,
-        );
-      } catch (err) {
-        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record pre-compact', { session_id: event.session_id, error: (err as Error).message });
-      }
-    }
-
-    if (event.type === 'post_compact') {
-      logger.info(LOG_KINDS.HOOKS_EVENT, 'Post-compact event', { session_id: event.session_id });
-      try {
-        handleCompact(
-          event.session_id,
-          'post',
-          typeof event.trigger === 'string' ? event.trigger : undefined,
-          typeof event.compact_summary === 'string' ? event.compact_summary : undefined,
-        );
-      } catch (err) {
-        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record post-compact', { session_id: event.session_id, error: (err as Error).message });
-      }
-    }
-
-    return { body: { ok: true } };
+  const eventDispatcher = createEventDispatcher({
+    registry,
+    sessionBuffers,
+    powerManager,
+    logger,
+    machineId,
+    config,
+    vaultDir,
+    reconcileSession: reconciler.reconcileSession,
+    planWatchConfig,
+    triggerTitleSummary: stopProcessor.triggerTitleSummary,
   });
+  server.registerRoute('POST', '/events', eventDispatcher);
 
   // --- Stop route ---
 
