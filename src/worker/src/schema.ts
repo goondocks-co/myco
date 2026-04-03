@@ -229,6 +229,7 @@ const SKILL_USAGE_TABLE = `
     skill_id        TEXT NOT NULL,
     session_id      TEXT NOT NULL,
     detected_at     INTEGER NOT NULL,
+    synced_at       INTEGER,
     PRIMARY KEY (id, machine_id)
   )`;
 
@@ -284,9 +285,22 @@ const ALL_DDLS = [
 
 /**
  * Create all D1 tables and indexes. Fully idempotent via IF NOT EXISTS.
+ * Includes ALTER TABLE migrations for columns added after initial deployment.
  */
 export async function initD1Schema(db: D1Database): Promise<void> {
   const statements = [...ALL_DDLS, ...SECONDARY_INDEXES];
   const batch = statements.map((sql) => db.prepare(sql));
   await db.batch(batch);
+
+  // Migrations for existing tables (safe to re-run — silently ignored if column exists)
+  const migrations = [
+    'ALTER TABLE skill_usage ADD COLUMN synced_at INTEGER',
+  ];
+  for (const sql of migrations) {
+    try {
+      await db.prepare(sql).run();
+    } catch {
+      // Column already exists — expected after first run
+    }
+  }
 }

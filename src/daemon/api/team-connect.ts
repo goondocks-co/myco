@@ -7,7 +7,7 @@
 
 import { updateTeamConfig, loadConfig } from '@myco/config/loader.js';
 import { writeSecret, readSecrets } from '@myco/config/secrets.js';
-import { countPending } from '@myco/db/queries/team-outbox.js';
+import { countPending, countDeadLettered } from '@myco/db/queries/team-outbox.js';
 import { TeamSyncClient } from '../team-sync.js';
 import { SYNC_PROTOCOL_VERSION, TEAM_API_KEY_SECRET } from '@myco/constants.js';
 import { getPluginVersion } from '@myco/version.js';
@@ -133,8 +133,10 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     }
 
     let pendingCount = 0;
+    let deadLetterCount = 0;
     try {
       pendingCount = countPending();
+      deadLetterCount = countDeadLettered();
     } catch {
       // DB may not have the table yet
     }
@@ -148,8 +150,13 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         healthy,
         health_error: healthError,
         pending_sync_count: pendingCount,
+        dead_letter_count: deadLetterCount,
         machine_id: machineId,
         package_version: getPluginVersion(),
+        deployed_worker_version: config.team.deployed_worker_version ?? null,
+        worker_update_available: config.team.enabled
+          ? config.team.deployed_worker_version !== getPluginVersion()
+          : false,
         schema_version: SCHEMA_VERSION,
         sync_protocol_version: SYNC_PROTOCOL_VERSION,
       },

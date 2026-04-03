@@ -88,6 +88,8 @@ const TeamSchema = z.object({
   team_id: z.string().optional(),
   /** Sync interval in minutes. */
   interval_minutes: z.number().int().min(1).max(1440).default(15),
+  /** Package version of the last deployed worker. Used to detect when an upgrade is needed. */
+  deployed_worker_version: z.string().optional(),
 });
 
 const SkillsSchema = z.object({

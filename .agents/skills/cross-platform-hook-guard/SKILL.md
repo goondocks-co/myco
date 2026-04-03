@@ -1,126 +1,222 @@
 ---
 name: myco:cross-platform-hook-guard
-description: Use this skill when adding, updating, or debugging the cross-platform hook guard (`.agents/myco-hook.cjs`) in this project. Activates whenever you need to ensure Myco's agent hooks work safely across all contributor environments — including Windows (PowerShell, cmd.exe, Git Bash), macOS, and Linux — without breaking contributors who don't have Myco installed. Apply this skill even if the user doesn't explicitly mention cross-platform concerns; any time you're touching symbiont hook templates, `SymbiontInstaller`, or the `.agents/myco-hook.cjs` file itself, this skill applies. Also relevant when onboarding a new symbiont agent that needs hook integration.
+description: >
+  Use this skill when adding, updating, or debugging the cross-platform hook guard
+  (`.agents/myco-hook.cjs`) in this project. Activates whenever you need to ensure
+  Myco's agent hooks work safely across all contributor environments — including
+  Windows (PowerShell, cmd.exe, Git Bash), macOS, and Linux — without breaking
+  contributors who don't have Myco installed. Apply this skill even if the user
+  doesn't explicitly mention cross-platform concerns; any time you're touching
+  symbiont hook templates, `SymbiontInstaller`, or the `.agents/myco-hook.cjs`
+  file itself, this skill applies. Also relevant when onboarding a new symbiont
+  agent that needs hook integration.
 managed_by: myco
-user-invocable: false
-allowed-tools:
-  - Read
-  - Edit
-  - Write
-  - Bash
-  - Grep
-  - Glob
+user-invocable: true
+allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 
 # Implementing the Cross-Platform Hook Guard for OSS Safety
 
-## Why This Exists
-
-Each AI agent symbiont uses a different shell on Windows:
-- **Claude Code** always uses Git Bash (POSIX works)
-- **Gemini CLI** uses PowerShell (`command -v` fails, needs `Get-Command`)
-- **Codex CLI** disables hooks on Windows entirely
-
-A single POSIX guard (`command -v myco-run ...`) in committed hook config silently fails for Gemini users on Windows.
-
-Install-time platform detection doesn't solve this either. Detecting `process.platform` during `myco init` generates a guard correct for the *installer's* machine, but hook configs (`.claude/settings.json`, `.cursor/hooks.json`, etc.) are committed to the repo. A Mac developer commits a POSIX guard; a Windows contributor clones and runs Gemini — the guard fails silently on their machine.
-
 ## Prerequisites
 
-- `.agents/myco-hook.cjs` exists in the project root `.agents/` directory
-- All symbiont hook configs invoke it as: `node .agents/myco-hook.cjs hook <event-name>`
-- `MYCO_AGENT_SESSION` is set in the environment for all executor `query()` calls (see Step 2)
+- Node.js available in the project (guaranteed by all AI agent symbionts)
+- Access to `.agents/myco-hook.cjs` and symbiont manifest files
+- Familiarity with the `.agents/` directory conventions
+
+---
+
+## Background: Why This Architecture
+
+### The shell matrix problem
+
+Each symbiont uses a different shell on Windows:
+- **Claude Code** — always uses Git Bash (POSIX works)
+- **Gemini CLI** — uses PowerShell (`command -v` fails; needs `Get-Command`)
+- **Codex CLI** — disables hooks on Windows entirely
+
+A single POSIX guard in committed hook config silently fails for Gemini users on Windows.
+
+### Why install-time detection fails for OSS
+
+Detecting `process.platform` during `myco init` generates a guard correct for the
+*installer's* machine, but hook config files (`.claude/settings.json`, etc.) are
+committed to the repo. A Mac developer installs and commits a POSIX guard; a Windows
+contributor clones and runs Gemini CLI — the committed guard fails in their PowerShell
+environment. Install-time conflates the installer's machine with every contributor's machine.
+
+### The solution: `.agents/myco-hook.cjs`
+
+A Node.js script committed to the repo, invoked as:
+```
+node .agents/myco-hook.cjs hook session-start
+```
+
+It wraps `myco-run`, silently exits (code 0) on ENOENT or exit 127 (not installed),
+and surfaces real errors. Works in bash, PowerShell, cmd.exe, and Git Bash — anywhere
+Node.js runs. Node is guaranteed available because all AI agent symbionts already
+require it.
+
+The `.cjs` extension is **required**: Myco's `package.json` uses `"type": "module"`
+(ESM default), so `.js` files default to ESM. The hook guard uses `require()` and
+synchronous `fs` calls (CommonJS). Using `.js` causes Node to throw
+`require is not defined in ES module scope`. The `.cjs` extension explicitly overrides
+the ESM default.
+
+The file is managed by `myco update` to stay current and mirrors the existing
+`.agents/skills/` convention.
+
+---
 
 ## Steps
 
-### 1. The Guard Script Structure
+### 1. Create `.agents/myco-hook.cjs`
 
-`.agents/myco-hook.cjs` must be:
-- **CommonJS (`.cjs` extension)** — The project `package.json` uses `"type": "module"`, making `.js` files default to ESM. The hook guard uses `require()` and synchronous `fs` calls (no top-level `await`). Using `.js` causes Node to throw `require is not defined in ES module scope`. The `.cjs` extension explicitly overrides the ESM default.
-- **A committed file, not a symlink** — A symlink into Myco's install directory breaks in the exact scenario the guard protects against (Myco not installed). The file must run standalone with zero Myco dependency for the not-installed path.
-- **Managed by `myco update`** — Never edit it directly in consumer repos; `myco update` keeps it current.
+The guard has four implementation decisions:
 
-### 2. Agent Session Filtering (Re-Entrancy Guard)
+**Error taxonomy — what to surface vs. silence:**
+- `ENOENT` / exit 127 ("not on PATH") → silent `exit 0`
+- Any other error → surface to user
 
-**Critical — platform behavioral change:** Claude Code changed behavior so hooks and marketplace plugins now fire for *all* SDK sessions, including those using `permissionMode: 'bypassPermissions'`. Previously, bypassPermissions sessions bypassed hook and plugin execution entirely.
+Do NOT use `2>/dev/null || true` — that silently swallows five categories of real
+errors: stale `myco-run` wrapper after uninstall, permission errors, Node.js version
+mismatch (requires Node 22+), vault not initialized, and daemon connection failures.
+All five occur when Myco is *partially installed* and need to reach the user.
 
-Myco's agent executor sessions always use `bypassPermissions`. Without an explicit guard, hooks fire re-entrantly during every agent pipeline `query()` call, loading plugins and calling back into the hook guard in a loop.
+**Distribution — committed `.cjs` file, not a symlink:**
+A symlink into Myco's install directory produces a broken-link error in the exact
+scenario the guard protects against (Myco not installed). The file must run standalone
+with zero Myco dependency for the not-installed path.
 
-The guard script must check for `MYCO_AGENT_SESSION` at the very top, before invoking `myco-run`:
+**Scope — hooks only, not MCP:**
+MCP errors surface once at session start. Hook errors fire on every prompt and every
+tool call — a broken hook floods the user with errors throughout the entire session.
+MCP also requires Myco to be installed; the not-installed silent-skip logic is
+irrelevant for MCP.
 
-```javascript
-// Re-entrancy guard: skip hooks inside agent executor sessions
-if (process.env.MYCO_AGENT_SESSION) {
-  process.exit(0);
+**Deployment:**
+Single `.agents/myco-hook.cjs` installed once; all hook configurations reference it
+via relative paths — no duplication across hook entries. Validate end-to-end by running
+`myco update` against the project itself rather than manually editing hooks.
+
+### 2. Update `SymbiontInstaller` detection
+
+`isMycoHookGroup` detection must match **both** prefixes:
+- New: `node .agents/myco-hook.cjs`
+- Legacy: `myco-run` (for `myco update` transitions from older installs)
+
+Both must be recognized so that `myco update` correctly identifies existing hook groups
+during reinstall.
+
+### 3. Wire Cursor symbiont hooks (format reference)
+
+Cursor hooks live at `.cursor/hooks.json` (standalone file, not embedded in settings)
+with 9 lifecycle events in flat camelCase format — **identical structure to Windsurf**:
+
+```json
+{
+  "version": 1,
+  "sessionStart": [...],
+  "beforeSubmitPrompt": [...],
+  "postToolUse": [...],
+  "postToolUseFailure": [...],
+  "stop": [...],
+  "sessionEnd": [...],
+  "subagentStart": [...],
+  "subagentStop": [...],
+  "preCompact": [...]
 }
 ```
 
-`executor.ts` sets `MYCO_AGENT_SESSION=1` in the environment for every `query()` call. Any hook invocation that sees this variable is an agent pipeline run — exit silently with code 0.
+Top-level `version: 1` field is required. Because the format matches Windsurf, the
+existing flat-hook installer path handles Cursor without modification — only a new
+template and `hooksTarget: .cursor/hooks.json` in the manifest are needed.
 
-### 3. Error Taxonomy: What to Surface vs Silence
+### 4. Protect internal SDK calls from re-entrancy
 
-**Silent exit (code 0):**
-- `ENOENT` — `myco-run` not found on PATH (Myco not installed)
-- Exit code 127 — command not found (shell form of ENOENT)
+Claude Code changed `bypassPermissions` mode so that hooks and marketplace plugins now
+fire for **all** SDK sessions — including agent-executor sessions that previously
+bypassed them entirely. This triggers re-entrant behavior: internal runs are captured
+as user sessions and unwanted browser launches occur.
 
-**Surface to user (non-zero exit):**
-1. Stale `myco-run` wrapper after uninstall — binary on PATH but Myco removed
-2. Permission errors — `myco-run` exists but not executable (corrupted install, missing `chmod +x`)
-3. Node.js version mismatch — Myco requires Node 22+; older versions crash on optional chaining/top-level await
-4. Vault not initialized — `myco init` never ran; binary and daemon present but vault missing
-5. Daemon connection failures — socket stale or daemon crashed
+**Two SDK controls are required on every internal `query()` call:**
 
-The pattern: `ENOENT`/exit 127 means "not installed" → silent. Anything else means "installed but broken" → surface to the user.
-
-### 4. Scope: Hooks Only, Not MCP
-
-The guard applies to hook commands only. MCP errors surface once at session start (or are silently retried by the client). Hook errors fire on *every prompt and every tool call* — a broken hook floods the user throughout the entire session. MCP also requires Myco to be installed to function, making the not-installed silent-skip logic irrelevant for MCP commands.
-
-### 5. SymbiontInstaller Detection
-
-`isMycoHookGroup()` in `SymbiontInstaller` must recognize both the current and legacy hook command prefixes for backward compatibility during `myco update` transitions:
-- Current: `node .agents/myco-hook.cjs`
-- Legacy: `myco-run` (pre-hook-guard era)
-
-### 6. Cursor Hooks Format
-
-Cursor's hooks system lives at `.cursor/hooks.json` (standalone file, not embedded in settings), with 9 lifecycle events in flat camelCase format — identical structure to Windsurf:
-
-```
-sessionStart, beforeSubmitPrompt, postToolUse, postToolUseFailure,
-stop, sessionEnd, subagentStart, subagentStop, preCompact
+```typescript
+await query({
+  prompt,
+  model,
+  // Re-entrancy isolation — BOTH required:
+  env: { MYCO_AGENT_SESSION: '1' },  // enables hook-guard filtering
+  strictMcpConfig: true,             // disables plugin loading
+  // ...other options
+});
 ```
 
-Top-level `version: 1` field is required. The manifest needs `hooksTarget: .cursor/hooks.json`.
+`bypassPermissions` is **no longer a reliable escape hatch** for suppressing
+hook/plugin execution — it controls permission scope only.
 
-### 7. Testing
+**Call-site completeness is critical.** There are four call sites in the executor
+pipeline that require both options:
+1. Task runner `query()` call
+2. Phase executor `query()` call
+3. Sub-agent `query()` call
+4. **`executor.ts` orchestrator `query()` call** — this was the final gap; its
+   omission caused intermittent session leaks even after the first three were patched
 
-Run `myco update` against the project itself rather than manually editing hook configs. This exercises the real install code path and validates the guard end-to-end. A single `.agents/myco-hook.cjs` is installed once; all hook configurations reference it via relative paths — no duplication across hook entries.
+Missing even one call site causes intermittent re-entrancy that is hard to diagnose
+because it only fires when that specific code path executes.
+
+**Forward-looking rule:** Every new internal `query()` call added to the executor
+pipeline must include both `env: { MYCO_AGENT_SESSION: '1' }` and
+`strictMcpConfig: true` from the start, without exception.
+
+**Audit pattern when adding a new `query()` call:**
+```bash
+grep -r "await query(" src/agent/ --include="*.ts"
+# Verify every result has both MYCO_AGENT_SESSION and strictMcpConfig
+```
+
+### 5. Verify before deploying hook-system changes
+
+For any change to the hook mechanism — guard script content, SDK re-entrancy isolation,
+hook registration — **pre-release smoke testing is non-negotiable**.
+
+An incorrect fix to the hook system breaks all subsequent session captures, not just the
+session under test. The failure mode is silent: sessions stop being recorded, and the
+root cause (broken hook) is invisible to the developer.
+
+Verification protocol before releasing a hook-related hotfix:
+1. Start a fresh Claude Code session in the project
+2. Confirm the session appears in `myco sessions` (capture working)
+3. Confirm no duplicate/re-entrant sessions are created (isolation working)
+4. Only then publish and run `myco update`
+
+---
 
 ## Common Pitfalls
 
-### `bypassPermissions` no longer suppresses hook execution
+**`.js` vs `.cjs` extension**
+Myco uses `"type": "module"` in `package.json`. Using `.js` causes
+`require is not defined in ES module scope`. Always use `.cjs` for the hook guard.
 
-**Platform change (2026-04):** Claude Code hooks and marketplace plugins now fire for *all* SDK sessions, including those using `permissionMode: 'bypassPermissions'`. Previously, bypassPermissions bypassed hook execution entirely.
+**`execFile` vs `exec` for Windows shell builtins**
+`execFile('start', [url])` silently fails on Windows because `start` is a cmd.exe
+shell builtin, not a standalone executable. Use `exec('start ' + url)` or
+`exec('cmd /c start ' + url)` to go through the shell and resolve builtins. Applies
+to the `myco open` CLI Windows branch; the macOS (`open`) and Linux (`xdg-open`)
+branches use standalone executables and work with `execFile`.
 
-Without the `MYCO_AGENT_SESSION` guard (Step 2), Myco's agent executor sessions re-entrantly trigger hooks on every `query()` call, loading marketplace plugins and calling back into the guard. Always check this env var at the very top of the guard script — before any other logic.
+**Incomplete `isMycoHookGroup` detection**
+If you add a new hook prefix or rename the guard script, update `isMycoHookGroup` in
+`SymbiontInstaller` immediately. Missing a prefix means `myco update` fails to
+recognize existing hook groups during reinstall and creates duplicates.
 
-**SDK escape hatches** for consumers who need additional control over hook/plugin execution:
-- `--strict-mcp-config` CLI flag — suppresses hook and plugin loading for the process
-- `plugins` option on `query()` — per-call override to control plugin execution
+**Incomplete call-site audit for MYCO_AGENT_SESSION**
+When patching re-entrancy isolation, grep for ALL `await query(` calls in
+`src/agent/` before declaring the fix complete. The executor.ts orchestrator query was
+missed in the first round, causing persistent intermittent leaks. Three patches is not
+the same as four.
 
-### Using `.js` instead of `.cjs`
-
-The project's `"type": "module"` in `package.json` makes all `.js` files ESM by default. The hook guard's CommonJS `require()` calls throw `require is not defined in ES module scope`. Always use the `.cjs` extension.
-
-### Installing as a symlink
-
-Symlinking into Myco's install directory breaks when Myco is uninstalled — the exact scenario the guard is designed to handle. The file must be committed directly to the repo.
-
-### `execFile('start', [url])` silently fails on Windows
-
-`start` is a cmd.exe shell builtin, not a standalone executable. `execFile` expects a real binary. Use `exec('start ' + url)` or `exec('cmd /c start ' + url)` instead to route through the shell.
-
-### Install-time platform detection for committed hook configs
-
-Generating a platform-specific guard during `myco init` produces a guard correct for the installer's machine only. Hook configs are committed to the repo — every contributor runs them on their own machine. A POSIX guard committed by a Mac developer silently fails for Gemini CLI users on Windows.
+**Assuming `bypassPermissions` suppresses hooks**
+It does not, as of the Claude Code update that changed this behavior.
+`bypassPermissions` controls permission scope only. Re-entrancy isolation requires
+explicit `MYCO_AGENT_SESSION` + `strictMcpConfig` on every internal SDK call.

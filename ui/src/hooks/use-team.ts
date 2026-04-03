@@ -10,6 +10,9 @@ export interface TeamStatusResponse {
   healthy: boolean;
   health_error?: string;
   pending_sync_count: number;
+  dead_letter_count: number;
+  deployed_worker_version: string | null;
+  worker_update_available: boolean;
   machine_id: string;
   package_version: string;
   schema_version: number;

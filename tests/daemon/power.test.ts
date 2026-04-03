@@ -114,6 +114,39 @@ describe('PowerManager', () => {
     );
   });
 
+  it('preventsDeepSleep holds state at sleep when predicate returns true', () => {
+    const holdFn = vi.fn().mockReturnValue(true);
+    pm.register({
+      name: 'blocker',
+      runIn: ['active', 'idle', 'sleep'],
+      fn: vi.fn().mockResolvedValue(undefined),
+      preventsDeepSleep: holdFn,
+    });
+
+    pm.start();
+    vi.advanceTimersByTime(91_000);
+    expect(pm.getState()).toBe('sleep');
+    expect(holdFn).toHaveBeenCalled();
+  });
+
+  it('transitions to deep_sleep once preventsDeepSleep returns false', () => {
+    let pending = true;
+    pm.register({
+      name: 'blocker',
+      runIn: ['active', 'idle', 'sleep'],
+      fn: vi.fn().mockResolvedValue(undefined),
+      preventsDeepSleep: () => pending,
+    });
+
+    pm.start();
+    vi.advanceTimersByTime(91_000);
+    expect(pm.getState()).toBe('sleep');
+
+    pending = false;
+    vi.advanceTimersByTime(5_100);
+    expect(pm.getState()).toBe('deep_sleep');
+  });
+
   it('stops timer on deep_sleep and restarts on activity', async () => {
     const jobFn = vi.fn().mockResolvedValue(undefined);
     pm.register({ name: 'test', runIn: ['active'], fn: jobFn });

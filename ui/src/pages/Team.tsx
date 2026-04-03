@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { Users, Wifi, WifiOff, RefreshCw, Copy, Check, Eye, EyeOff } from 'lucide-react';
+import { Wifi, WifiOff, RefreshCw, Copy, Check, Eye, EyeOff, ArrowUpCircle } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTeamStatus, type TeamStatusResponse } from '../hooks/use-team';
 import { postJson } from '../lib/api';
@@ -160,6 +160,10 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
   const [disconnecting, setDisconnecting] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [upgrading, setUpgrading] = useState(false);
+  const [upgradeMessage, setUpgradeMessage] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const [retryMessage, setRetryMessage] = useState<string | null>(null);
 
   const handleDisconnect = async () => {
     setDisconnecting(true);
@@ -189,8 +193,79 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
     }
   }, [queryClient]);
 
+  const handleUpgradeWorker = useCallback(async () => {
+    setUpgrading(true);
+    setUpgradeMessage(null);
+    try {
+      const res = await postJson<{ success: boolean; worker_url?: string; version?: string; error?: string }>('/team/upgrade-worker');
+      if (res.success) {
+        setUpgradeMessage(`Worker updated to v${res.version}`);
+        queryClient.invalidateQueries({ queryKey: ['team-status'] });
+      } else {
+        setUpgradeMessage(res.error ?? 'Upgrade failed');
+      }
+    } catch (err) {
+      setUpgradeMessage(err instanceof Error ? err.message : 'Upgrade failed');
+    } finally {
+      setUpgrading(false);
+    }
+  }, [queryClient]);
+
+  const handleRetryFailed = useCallback(async () => {
+    setRetrying(true);
+    setRetryMessage(null);
+    try {
+      const res = await postJson<{ retried: number }>('/team/retry-failed');
+      setRetryMessage(
+        res.retried > 0
+          ? `Re-queued ${res.retried} record${res.retried > 1 ? 's' : ''} for sync.`
+          : 'No failed records to retry.',
+      );
+      queryClient.invalidateQueries({ queryKey: ['team-status'] });
+    } catch {
+      setRetryMessage('Retry failed.');
+    } finally {
+      setRetrying(false);
+    }
+  }, [queryClient]);
+
   return (
     <div className="space-y-4">
+      {/* Worker update banner */}
+      {status.worker_update_available && (
+        <Surface level="low" ghostBorder className="p-4 border-l-2 border-l-ochre">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <ArrowUpCircle className="h-5 w-5 text-ochre flex-shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-on-surface">Worker update available</p>
+                <p className="text-xs text-on-surface-variant">
+                  Deployed: v{status.deployed_worker_version ?? '?'} — Local: v{status.package_version}
+                </p>
+              </div>
+            </div>
+            <Button
+              variant="default"
+              size="sm"
+              onClick={handleUpgradeWorker}
+              disabled={upgrading}
+            >
+              {upgrading ? (
+                <>
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1.5" />
+                  Deploying...
+                </>
+              ) : (
+                'Update Worker'
+              )}
+            </Button>
+          </div>
+          {upgradeMessage && (
+            <p className="text-xs text-on-surface-variant mt-2">{upgradeMessage}</p>
+          )}
+        </Surface>
+      )}
+
       {/* Status overview */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard
@@ -200,7 +275,10 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
         />
         <StatCard
           label="Pending sync"
-          value={status.pending_sync_count}
+          value={String(status.pending_sync_count)}
+          accent={status.dead_letter_count > 0 ? 'terracotta' : 'outline'}
+          sublabel={status.dead_letter_count > 0 ? `${status.dead_letter_count} failed` : undefined}
+          href="/logs?component=team-sync"
         />
         <StatCard
           label="Protocol"
@@ -275,6 +353,25 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
         </p>
         {syncMessage && (
           <p className="text-sm text-primary">{syncMessage}</p>
+        )}
+        {status.dead_letter_count > 0 && (
+          <div className="flex items-center justify-between pt-2 border-t border-outline-variant/10">
+            <p className="text-xs text-on-surface-variant">
+              <span className="text-tertiary font-medium">{status.dead_letter_count} failed</span> record{status.dead_letter_count > 1 ? 's' : ''} — exceeded max retries.{' '}
+              <a href="/logs?component=team-sync&level=error" className="underline hover:text-on-surface">View logs</a>
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRetryFailed}
+              disabled={retrying}
+            >
+              {retrying ? 'Retrying...' : 'Retry Failed'}
+            </Button>
+          </div>
+        )}
+        {retryMessage && (
+          <p className="text-xs text-primary">{retryMessage}</p>
         )}
       </Surface>
 

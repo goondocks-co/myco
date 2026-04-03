@@ -70,6 +70,7 @@ team:
   enabled: true
   worker_url: https://myco-team-974bc350.goondocks.workers.dev
   interval_minutes: 15
+  deployed_worker_version: 0.14.4
 skills:
   confidence_threshold: 0.7
   usage_stale_days: 30
@@ -81,3 +82,7 @@ notifications:
     skills:
       enabled: true
       mode: banner
+    sessions:
+      enabled: false
+    mycelium:
+      enabled: false

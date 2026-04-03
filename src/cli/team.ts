@@ -12,6 +12,7 @@ import path from 'node:path';
 import { loadConfig, updateTeamConfig } from '../config/loader.js';
 import { writeSecret, readSecrets } from '../config/secrets.js';
 import { resolvePackageRoot } from '../symbionts/detect.js';
+import { getPluginVersion } from '../version.js';
 import { WRANGLER_COMMAND_TIMEOUT_MS, TEAM_API_KEY_SECRET } from '../constants.js';
 
 // ---------------------------------------------------------------------------
@@ -270,6 +271,7 @@ export async function teamInit(vaultDir: string): Promise<void> {
   updateTeamConfig(vaultDir, {
     enabled: true,
     worker_url: workerUrl,
+    deployed_worker_version: getPluginVersion(),
   });
   writeSecret(vaultDir, TEAM_API_KEY_SECRET, apiKey);
 
@@ -279,31 +281,39 @@ export async function teamInit(vaultDir: string): Promise<void> {
   console.log('\nShare the URL and API key with teammates so they can connect.');
 }
 
-export async function teamUpgrade(vaultDir: string): Promise<void> {
-  console.log('Upgrading team sync worker...\n');
+// ---------------------------------------------------------------------------
+// Shared upgrade logic (used by CLI and daemon API)
+// ---------------------------------------------------------------------------
 
+export interface UpgradeResult {
+  success: boolean;
+  worker_url?: string;
+  version?: string;
+  error?: string;
+}
+
+/**
+ * Upgrade the team sync worker: re-copy source, patch config, redeploy.
+ * Returns a result instead of calling process.exit — safe for both CLI and daemon.
+ */
+export function upgradeWorker(vaultDir: string): UpgradeResult {
   const config = loadConfig(vaultDir);
   if (!config.team.worker_url) {
-    console.error('No team sync configured. Run: myco team init');
-    process.exit(1);
+    return { success: false, error: 'No team sync configured. Run: myco team init' };
   }
 
   const deployDir = path.join(vaultDir, TEAM_WORKER_DIR);
   const tomlPath = path.join(deployDir, 'wrangler.toml');
 
   if (!fs.existsSync(tomlPath)) {
-    console.error('No deployment directory found. Run: myco team init');
-    process.exit(1);
+    return { success: false, error: 'No deployment directory found. Run: myco team init' };
   }
 
   // Read ALL existing resource identifiers from current wrangler.toml.
-  // These are immutable after init — regenerating from projectHash would
-  // break if the hash changed (e.g., after the projectHash bug fix).
   const existingToml = fs.readFileSync(tomlPath, 'utf-8');
   const d1Match = existingToml.match(TOML_DB_ID_REGEX);
   if (!d1Match || d1Match[1] === '<YOUR_D1_DATABASE_ID>') {
-    console.error('Cannot determine D1 database ID from existing deployment. Run: myco team init');
-    process.exit(1);
+    return { success: false, error: 'Cannot determine D1 database ID from existing deployment. Run: myco team init' };
   }
   const d1Id = d1Match[1];
 
@@ -312,11 +322,10 @@ export async function teamUpgrade(vaultDir: string): Promise<void> {
   const indexNameMatch = existingToml.match(/index_name\s*=\s*"([^"]*)"/);
 
   // Re-copy worker source from package (updated code)
-  console.log('Updating worker source...');
   const srcDir = locateWorkerSource();
   fs.cpSync(srcDir, deployDir, { recursive: true });
 
-  // Patch wrangler.toml preserving existing resource names — NOT regenerating
+  // Patch wrangler.toml preserving existing resource names
   let toml = fs.readFileSync(path.join(deployDir, 'wrangler.toml'), 'utf-8');
   const workerName = nameMatch?.[1] ?? resourceName(vaultDir);
   toml = toml.replace(TOML_NAME_REGEX, `name = "${workerName}"`);
@@ -326,7 +335,6 @@ export async function teamUpgrade(vaultDir: string): Promise<void> {
   fs.writeFileSync(path.join(deployDir, 'wrangler.toml'), toml, 'utf-8');
 
   // Re-set API key secret before deploy (deploy can wipe secrets)
-  console.log('Setting API key secret...');
   const secrets = readSecrets(vaultDir);
   const apiKey = secrets[TEAM_API_KEY_SECRET];
   if (apiKey) {
@@ -338,25 +346,40 @@ export async function teamUpgrade(vaultDir: string): Promise<void> {
         stdio: ['pipe', 'pipe', 'pipe'],
         cwd: deployDir,
       });
-      console.log('Secret set\n');
-    } catch (err) {
-      console.warn(`Warning: could not set API key secret: ${(err as Error).message}`);
+    } catch {
+      // Non-fatal — secret may already be set
     }
   }
 
   // Redeploy
-  console.log('Deploying...');
   try {
     const deployOutput = wrangler(['deploy'], { cwd: deployDir });
     const workerUrl = parseWorkerUrl(deployOutput);
-    console.log(`Worker deployed: ${workerUrl}\n`);
+    const version = getPluginVersion();
 
-    // Update URL in config in case it changed
-    updateTeamConfig(vaultDir, { worker_url: workerUrl });
+    updateTeamConfig(vaultDir, {
+      worker_url: workerUrl,
+      deployed_worker_version: version,
+    });
+
+    return { success: true, worker_url: workerUrl, version };
   } catch (err) {
-    console.error(`Failed to deploy worker: ${(err as Error).message}`);
+    return { success: false, error: `Failed to deploy worker: ${(err as Error).message}` };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CLI wrapper
+// ---------------------------------------------------------------------------
+
+export async function teamUpgrade(vaultDir: string): Promise<void> {
+  console.log('Upgrading team sync worker...\n');
+  const result = upgradeWorker(vaultDir);
+  if (!result.success) {
+    console.error(result.error);
     process.exit(1);
   }
-
-  console.log('Upgrade complete.');
+  console.log(`Worker deployed: ${result.worker_url}`);
+  console.log(`Version: ${result.version}`);
+  console.log('\nUpgrade complete.');
 }
