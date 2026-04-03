@@ -21,6 +21,9 @@ const BURST_BATCH_SIZE = 200;
 /** Age in seconds after which sent records are pruned (24 hours). */
 const SENT_PRUNE_AGE_SECONDS = 86_400;
 
+/** Max retry attempts before a record is dead-lettered. */
+export const MAX_OUTBOX_RETRIES = 10;
+
 /** Milliseconds-per-second multiplier for epoch math. */
 const MS_PER_SECOND = 1000;
 
@@ -48,6 +51,8 @@ export interface OutboxRow {
   machine_id: string;
   created_at: number;
   sent_at: number | null;
+  retry_count: number;
+  last_attempt_at: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +68,8 @@ const OUTBOX_COLUMNS = [
   'machine_id',
   'created_at',
   'sent_at',
+  'retry_count',
+  'last_attempt_at',
 ] as const;
 
 const SELECT_COLUMNS = OUTBOX_COLUMNS.join(', ');
@@ -82,6 +89,8 @@ function toOutboxRow(row: Record<string, unknown>): OutboxRow {
     machine_id: row.machine_id as string,
     created_at: row.created_at as number,
     sent_at: (row.sent_at as number) ?? null,
+    retry_count: (row.retry_count as number) ?? 0,
+    last_attempt_at: (row.last_attempt_at as number) ?? null,
   };
 }
 
@@ -151,10 +160,10 @@ export function listPending(limit?: number): OutboxRow[] {
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM team_outbox
-     WHERE sent_at IS NULL
+     WHERE sent_at IS NULL AND retry_count < ?
      ORDER BY created_at ASC
      LIMIT ?`,
-  ).all(limit ?? BURST_BATCH_SIZE) as Record<string, unknown>[];
+  ).all(MAX_OUTBOX_RETRIES, limit ?? BURST_BATCH_SIZE) as Record<string, unknown>[];
 
   return rows.map(toOutboxRow);
 }
@@ -194,6 +203,62 @@ export function markForRetry(ids: number[]): void {
 }
 
 /**
+ * Increment retry_count and set last_attempt_at for failed outbox records.
+ *
+ * @returns IDs of records that have now reached MAX_OUTBOX_RETRIES (newly dead-lettered).
+ */
+export function incrementRetryCount(ids: number[], attemptAt: number): number[] {
+  if (ids.length === 0) return [];
+
+  const db = getDatabase();
+  const placeholders = ids.map(() => '?').join(', ');
+
+  db.prepare(
+    `UPDATE team_outbox
+     SET retry_count = retry_count + 1, last_attempt_at = ?
+     WHERE id IN (${placeholders})`,
+  ).run(attemptAt, ...ids);
+
+  // Return IDs that just hit the threshold
+  const deadLettered = db.prepare(
+    `SELECT id FROM team_outbox
+     WHERE id IN (${placeholders}) AND retry_count >= ?`,
+  ).all(...ids, MAX_OUTBOX_RETRIES) as Array<{ id: number }>;
+
+  return deadLettered.map((r) => r.id);
+}
+
+/**
+ * Reset all dead-lettered records back to pending for retry.
+ *
+ * @returns the number of records reset.
+ */
+export function retryDeadLettered(): number {
+  const db = getDatabase();
+
+  const info = db.prepare(
+    `UPDATE team_outbox
+     SET retry_count = 0, last_attempt_at = NULL
+     WHERE sent_at IS NULL AND retry_count >= ?`,
+  ).run(MAX_OUTBOX_RETRIES);
+
+  return info.changes;
+}
+
+/**
+ * Count dead-lettered outbox records (exceeded max retries, never sent).
+ */
+export function countDeadLettered(): number {
+  const db = getDatabase();
+
+  const row = db.prepare(
+    `SELECT COUNT(*) as count FROM team_outbox WHERE sent_at IS NULL AND retry_count >= ?`,
+  ).get(MAX_OUTBOX_RETRIES) as { count: number };
+
+  return row.count;
+}
+
+/**
  * Prune old outbox records.
  *
  * Removes sent records older than 24 hours.
@@ -219,8 +284,8 @@ export function countPending(): number {
   const db = getDatabase();
 
   const row = db.prepare(
-    `SELECT COUNT(*) as count FROM team_outbox WHERE sent_at IS NULL`,
-  ).get() as { count: number };
+    `SELECT COUNT(*) as count FROM team_outbox WHERE sent_at IS NULL AND retry_count < ?`,
+  ).get(MAX_OUTBOX_RETRIES) as { count: number };
 
   return row.count;
 }

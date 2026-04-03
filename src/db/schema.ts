@@ -17,7 +17,7 @@ import type { Database } from 'better-sqlite3';
 import { epochSeconds, DEFAULT_MACHINE_ID } from '@myco/constants.js';
 
 /** Current schema version -- fresh start for the SQLite era. */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 // Re-export for backwards compat (other modules import from schema.ts)
 export { DEFAULT_MACHINE_ID };
@@ -349,7 +349,9 @@ const TEAM_OUTBOX_TABLE = `
     payload     TEXT NOT NULL,
     machine_id  TEXT NOT NULL,
     created_at  INTEGER NOT NULL,
-    sent_at     INTEGER
+    sent_at     INTEGER,
+    retry_count    INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at INTEGER
   )`;
 
 // -- Logging Layer ----------------------------------------------------------
@@ -1151,6 +1153,33 @@ function migrateV7ToV8(db: Database): void {
 }
 
 /**
+ * Version 9 adds retry tracking to the team outbox:
+ *   - retry_count INTEGER NOT NULL DEFAULT 0
+ *   - last_attempt_at INTEGER
+ *
+ * Records exceeding the max retry count are dead-lettered (excluded from
+ * pending queries) so they don't block the sync flush or deep sleep.
+ */
+function migrateV8ToV9(db: Database): void {
+  db.exec('BEGIN');
+  try {
+    db.exec('ALTER TABLE team_outbox ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0');
+    db.exec('ALTER TABLE team_outbox ADD COLUMN last_attempt_at INTEGER');
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(9, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
  * @param db — better-sqlite3 Database instance.
  * @param machineId — machine identifier for backfilling existing rows during
  *   v3→v4 and v6→v7 migrations. Defaults to `'local'` (tests, init).
@@ -1207,6 +1236,13 @@ export function createSchema(db: Database, machineId: string = DEFAULT_MACHINE_I
     ).get() as { version: number } | undefined)?.version ?? 0;
     if (afterV6Migration < 8) {
       migrateV7ToV8(db);
+    }
+    // Migration path: version 8 → 9
+    const afterV7Migration = (db.prepare(
+      'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1'
+    ).get() as { version: number } | undefined)?.version ?? 0;
+    if (afterV7Migration < 9) {
+      migrateV8ToV9(db);
     }
     return;
   } catch {

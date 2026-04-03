@@ -97,6 +97,8 @@ export const LOG_KINDS = {
   TEAM_SYNC_START: 'team-sync.start',
   TEAM_SYNC_COMPLETE: 'team-sync.complete',
   TEAM_SYNC_ERROR: 'team-sync.error',
+  TEAM_SYNC_RETRY: 'team-sync.retry',
+  TEAM_SYNC_DEAD_LETTER: 'team-sync.dead-letter',
 } as const;
 
 export type LogKind = (typeof LOG_KINDS)[keyof typeof LOG_KINDS];

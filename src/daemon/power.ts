@@ -7,6 +7,8 @@ export interface PowerJob {
   name: string;
   runIn: PowerState[];
   fn: () => Promise<void>;
+  /** When true, prevents transition from sleep → deep_sleep. */
+  preventsDeepSleep?: () => boolean;
 }
 
 export interface PowerManagerConfig {
@@ -26,6 +28,7 @@ export class PowerManager {
   private running = false;
   private config: PowerManagerConfig;
   private logger: DaemonLogger;
+  private deepSleepHeld = false;
 
   constructor(config: PowerManagerConfig) {
     this.config = config;
@@ -38,6 +41,7 @@ export class PowerManager {
 
   recordActivity(): void {
     this.lastActivity = Date.now();
+    this.deepSleepHeld = false;
 
     if (this.state === 'deep_sleep') {
       this.logger.info(LOG_KINDS.POWER_STATE, 'Waking from deep sleep');
@@ -75,7 +79,17 @@ export class PowerManager {
     let target: PowerState;
 
     if (idleMs >= this.config.deepSleepThresholdMs) {
-      target = 'deep_sleep';
+      const blocker = this.jobs.find((j) => j.preventsDeepSleep?.());
+      if (blocker) {
+        target = 'sleep';
+        if (!this.deepSleepHeld) {
+          this.deepSleepHeld = true;
+          this.logger.info(LOG_KINDS.POWER_STATE, 'Deep sleep held', { by: blocker.name });
+        }
+      } else {
+        target = 'deep_sleep';
+        this.deepSleepHeld = false;
+      }
     } else if (idleMs >= this.config.sleepThresholdMs) {
       target = 'sleep';
     } else if (idleMs >= this.config.idleThresholdMs) {
