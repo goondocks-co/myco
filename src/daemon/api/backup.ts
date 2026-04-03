@@ -14,6 +14,8 @@ import {
   restorePreview,
   restoreBackup,
 } from '../backup.js';
+import { loadConfig, updateBackupConfig } from '../../config/loader.js';
+import path from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -103,4 +105,34 @@ export function createBackupHandlers(deps: BackupDeps) {
     handleRestorePreview,
     handleRestore,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Backup config handlers — factory
+// ---------------------------------------------------------------------------
+
+export interface BackupConfigDeps {
+  vaultDir: string;
+}
+
+/**
+ * Create handlers for GET/PUT /api/backup/config.
+ */
+export function createBackupConfigHandlers(deps: BackupConfigDeps) {
+  const { vaultDir } = deps;
+
+  /** GET /api/backup/config — read the configured backup directory. */
+  async function handleGetBackupConfig(): Promise<RouteResponse> {
+    const cfg = loadConfig(vaultDir);
+    return { body: { dir: cfg.backup.dir ?? null, default_dir: path.resolve(vaultDir, 'backups') } };
+  }
+
+  /** PUT /api/backup/config — update the backup directory setting. */
+  async function handlePutBackupConfig(req: RouteRequest): Promise<RouteResponse> {
+    const { dir } = req.body as { dir?: string | null };
+    updateBackupConfig(vaultDir, { dir: dir || undefined });
+    return { body: { dir: dir || null } };
+  }
+
+  return { handleGetBackupConfig, handlePutBackupConfig };
 }

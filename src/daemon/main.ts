@@ -10,13 +10,13 @@
 import { DaemonServer } from './server.js';
 import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger } from './logger.js';
-import { loadConfig, updateConfig, updateBackupConfig } from '../config/loader.js';
+import { loadConfig, updateConfig } from '../config/loader.js';
 import { resolvePort } from './port.js';
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findPackageRoot } from '../utils/find-package-root.js';
-import { EventBuffer, cleanStaleBuffers } from '../capture/buffer.js';
+import { EventBuffer } from '../capture/buffer.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import { handleGetConfig, handlePutConfig, createPlanDirHandlers } from './api/config.js';
@@ -24,13 +24,20 @@ import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHa
 import { handleRestart } from './api/restart.js';
 import { createUpdateHandlers } from './api/update.js';
 import { getMachineId } from './machine-id.js';
-import { createBackupHandlers } from './api/backup.js';
+import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
-import { TeamSyncClient } from './team-sync.js';
+import { createSessionLifecycleHandlers } from './api/session-lifecycle.js';
+import {
+  handleListCandidates,
+  handleGetCandidate,
+  handleUpdateCandidate,
+  handleListSkillRecords,
+  handleGetSkillRecord,
+  handleDeleteCandidate,
+  createSkillRecordDeleteHandler,
+} from './api/skills.js';
 import { initTeamContext } from './team-context.js';
 import { initTeamSync } from './team-sync-init.js';
-import { backfillUnsynced, retryDeadLettered } from '../db/queries/team-outbox.js';
-import { readSecrets } from '../config/secrets.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
 import { computeConfigHash, createLiveStatsHandler } from './api/stats.js';
@@ -65,7 +72,6 @@ import {
 } from './api/embedding.js';
 import { EmbeddingManager, SqliteVecVectorStore, EmbeddingProviderAdapter, SqliteRecordSource } from './embedding/index.js';
 import { registerBuiltinDomains } from '../notifications/domains.js';
-import { notify } from '../notifications/notify.js';
 import {
   handleListNotifications,
   handleCreateNotification,
@@ -88,33 +94,20 @@ import {
   handleUpdateTaskConfig,
 } from './api/agent-tasks.js';
 import { handleGetProviders, handleTestProvider } from './api/providers.js';
-import {
-  handleListCandidates,
-  handleGetCandidate,
-  handleUpdateCandidate,
-  handleListSkillRecords,
-  handleGetSkillRecord,
-  handleDeleteCandidate,
-  handleDeleteSkillRecord,
-} from './api/skills.js';
 import { registerScheduledTasks } from './task-scheduling.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
-import { upsertSession, closeSession, updateSession } from '../db/queries/sessions.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
 import { createMcpProxyHandlers } from './api/mcp-proxy.js';
 import { createAgentRunHandlers } from './api/agent-runs.js';
 import { createAttachmentHandler } from './api/attachments.js';
 import { reconcileLogBuffer } from './log-reconcile.js';
 import {
-  STALE_BUFFER_MAX_AGE_MS,
   POWER_IDLE_THRESHOLD_MS,
   POWER_SLEEP_THRESHOLD_MS,
   POWER_DEEP_SLEEP_THRESHOLD_MS,
   POWER_ACTIVE_INTERVAL_MS,
   POWER_SLEEP_INTERVAL_MS,
-  SYNC_PROTOCOL_VERSION,
-  TEAM_API_KEY_SECRET,
   RESTART_RESPONSE_FLUSH_MS,
   epochSeconds,
 } from '../constants.js';
@@ -135,7 +128,6 @@ export {
 } from './event-handlers.js';
 import { loadSecrets } from '../config/secrets.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
-import { z } from 'zod';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -350,84 +342,13 @@ export async function main(): Promise<void> {
     vaultDir,
   });
 
-  // Route body schemas
-  const RegisterBody = z.object({
-    session_id: z.string(),
-    agent: z.string().optional(),
-    branch: z.string().optional(),
-    started_at: z.string().optional(),
-  });
-  const UnregisterBody = z.object({ session_id: z.string() });
   // --- Session routes ---
-
-  server.registerRoute('POST', '/sessions/register', async (req) => {
-    powerManager.recordActivity();
-    const { session_id, agent, branch, started_at } = RegisterBody.parse(req.body);
-    const resolvedStartedAt = started_at ?? new Date().toISOString();
-    registry.register(session_id, { started_at: resolvedStartedAt, branch });
-    server.updateDaemonJsonSessions(registry.sessions);
-
-    // Upsert session in SQLite — always reset to active on register
-    const now = epochSeconds();
-    const startedEpoch = Math.floor(new Date(resolvedStartedAt).getTime() / 1000);
-    upsertSession({
-      id: session_id,
-      agent: agent ?? 'claude-code',
-      user: null,
-      project_root: process.cwd(),
-      branch: branch ?? null,
-      started_at: startedEpoch,
-      created_at: now,
-      status: 'active',
-      machine_id: machineId,
-    });
-    // Clear ended_at if session was previously completed (reload scenario)
-    updateSession(session_id, { ended_at: null, status: 'active' });
-
-    // Reconcile buffer against DB — recover prompts lost if daemon was down mid-session.
-    reconciler.reconcileSession(session_id);
-
-    logger.info(LOG_KINDS.LIFECYCLE_REGISTER, 'Session registered', { session_id, branch, started_at: started_at ?? null });
-
-    notify(vaultDir, {
-      domain: 'sessions',
-      type: 'session.started',
-      title: 'Session started',
-      message: branch ? `Branch: ${branch}` : undefined,
-      link: `/sessions/${session_id}`,
-      metadata: { sessionId: session_id, agent: agent ?? 'claude-code', branch },
-    }, config);
-
-    return { body: { ok: true, sessions: registry.sessions } };
+  const sessionLifecycle = createSessionLifecycleHandlers({
+    registry, sessionBuffers, reconciler, stopProcessor,
+    server, powerManager, machineId, logger, config, vaultDir,
   });
-
-  server.registerRoute('POST', '/sessions/unregister', async (req) => {
-    const { session_id } = UnregisterBody.parse(req.body);
-    registry.unregister(session_id);
-    // Opportunistically clean stale buffers for OTHER sessions (>24h).
-    // We do NOT delete THIS session's buffer — session reload reuses the same ID.
-    cleanStaleBuffers(bufferDir, STALE_BUFFER_MAX_AGE_MS, session_id);
-    // Close the session in SQLite — this is the authoritative end-of-session.
-    // The Stop hook fires per-turn and does NOT close the session.
-    closeSession(session_id, epochSeconds());
-
-    // Prune in-memory state
-    sessionBuffers.delete(session_id);
-    stopProcessor.clearSession(session_id);
-    reconciler.clearSession(session_id);
-    server.updateDaemonJsonSessions(registry.sessions);
-    logger.info(LOG_KINDS.LIFECYCLE_UNREGISTER, 'Session unregistered', { session_id });
-
-    notify(vaultDir, {
-      domain: 'sessions',
-      type: 'session.ended',
-      title: 'Session ended',
-      link: `/sessions/${session_id}`,
-      metadata: { sessionId: session_id },
-    }, config);
-
-    return { body: { ok: true, sessions: registry.sessions } };
-  });
+  server.registerRoute('POST', '/sessions/register', sessionLifecycle.handleRegister);
+  server.registerRoute('POST', '/sessions/unregister', sessionLifecycle.handleUnregister);
 
   // --- Event routes ---
 
@@ -542,28 +463,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/skill-records', handleListSkillRecords);
   server.registerRoute('GET', '/api/skill-records/:id', handleGetSkillRecord);
   server.registerRoute('DELETE', '/api/skill-candidates/:id', handleDeleteCandidate);
-  server.registerRoute('DELETE', '/api/skill-records/:id', async (req) => {
-    const result = await handleDeleteSkillRecord(req);
-    // Delete skill file and symlinks from disk if the DB delete succeeded
-    if ((result.body as Record<string, unknown>)?.deleted) {
-      const record = result.body as { name?: string };
-      if (record.name) {
-        const projectRoot = path.resolve(vaultDir, '..');
-        const skillDir = path.resolve(projectRoot, '.agents', 'skills', record.name);
-        try { fs.rmSync(skillDir, { recursive: true, force: true }); } catch (err) {
-          logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to remove skill directory', { name: record.name, error: String(err) });
-        }
-        // Remove agent-specific symlinks (e.g., .claude/skills/<name>)
-        try {
-          const { syncSkillSymlinks } = await import('../symbionts/installer.js');
-          syncSkillSymlinks(projectRoot, record.name, { remove: true });
-        } catch (err) {
-          logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to remove skill symlinks', { name: record.name, error: String(err) });
-        }
-      }
-    }
-    return result;
-  });
+  server.registerRoute('DELETE', '/api/skill-records/:id', createSkillRecordDeleteHandler({ vaultDir, logger }));
 
   // --- Mycelium API routes ---
   server.registerRoute('GET', '/api/spores', handleListSpores);
@@ -619,16 +519,9 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/restore/preview', backupHandlers.handleRestorePreview);
   server.registerRoute('POST', '/api/restore', backupHandlers.handleRestore);
 
-  server.registerRoute('GET', '/api/backup/config', async () => {
-    const cfg = loadConfig(vaultDir);
-    return { body: { dir: cfg.backup.dir ?? null, default_dir: path.resolve(vaultDir, 'backups') } };
-  });
-
-  server.registerRoute('PUT', '/api/backup/config', async (req) => {
-    const { dir } = req.body as { dir?: string | null };
-    updateBackupConfig(vaultDir, { dir: dir || undefined });
-    return { body: { dir: dir || null } };
-  });
+  const backupConfigHandlers = createBackupConfigHandlers({ vaultDir });
+  server.registerRoute('GET', '/api/backup/config', backupConfigHandlers.handleGetBackupConfig);
+  server.registerRoute('PUT', '/api/backup/config', backupConfigHandlers.handlePutBackupConfig);
 
   // --- Team sync ---
   const teamSync = initTeamSync({ config, machineId, logger, vaultDir, serverVersion: server.version });
@@ -642,37 +535,9 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/team/connect', teamHandlers.handleConnect);
   server.registerRoute('POST', '/api/team/disconnect', teamHandlers.handleDisconnect);
   server.registerRoute('GET', '/api/team/status', teamHandlers.handleStatus);
-
-  server.registerRoute('POST', '/api/team/backfill', async () => {
-    const count = backfillUnsynced(machineId);
-    return { body: { enqueued: count } };
-  });
-
-  server.registerRoute('POST', '/api/team/retry-failed', async () => {
-    const count = retryDeadLettered();
-    return { body: { retried: count } };
-  });
-
-  server.registerRoute('POST', '/api/team/upgrade-worker', async () => {
-    const { upgradeWorker } = await import('../cli/team.js');
-    const result = upgradeWorker(vaultDir);
-    if (!result.success) {
-      return { status: 500, body: { error: result.error } };
-    }
-    // Reinitialize team client with potentially new URL
-    if (result.worker_url && teamSync.getTeamClient()) {
-      const apiKey = readSecrets(vaultDir)[TEAM_API_KEY_SECRET];
-      if (apiKey) {
-        teamSync.setTeamClient(new TeamSyncClient({
-          workerUrl: result.worker_url,
-          apiKey,
-          machineId,
-          syncProtocolVersion: SYNC_PROTOCOL_VERSION,
-        }));
-      }
-    }
-    return { body: result };
-  });
+  server.registerRoute('POST', '/api/team/backfill', teamHandlers.handleBackfill);
+  server.registerRoute('POST', '/api/team/retry-failed', teamHandlers.handleRetryFailed);
+  server.registerRoute('POST', '/api/team/upgrade-worker', teamHandlers.handleUpgradeWorker);
 
   // --- Search, activity feed, and embedding status ---
 
