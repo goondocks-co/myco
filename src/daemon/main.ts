@@ -28,7 +28,8 @@ import { createBackupHandlers } from './api/backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
 import { TeamSyncClient } from './team-sync.js';
 import { initTeamContext } from './team-context.js';
-import { listPending, markSent, markSourceRowsSynced, pruneOld, backfillUnsynced, incrementRetryCount, countPending, retryDeadLettered } from '../db/queries/team-outbox.js';
+import { initTeamSync } from './team-sync-init.js';
+import { backfillUnsynced, retryDeadLettered } from '../db/queries/team-outbox.js';
 import { readSecrets } from '../config/secrets.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
@@ -632,51 +633,14 @@ export async function main(): Promise<void> {
     return { body: { dir: dir || null } };
   });
 
-  // --- Team sync routes ---
-  let teamClient: TeamSyncClient | null = null;
-
-  // Initialize team client from saved config if team sync is enabled
-  if (config.team.enabled && config.team.worker_url) {
-    const secrets = readSecrets(vaultDir);
-    const teamApiKey = secrets[TEAM_API_KEY_SECRET];
-    if (teamApiKey) {
-      teamClient = new TeamSyncClient({
-        workerUrl: config.team.worker_url,
-        apiKey: teamApiKey,
-        machineId,
-        syncProtocolVersion: SYNC_PROTOCOL_VERSION,
-      });
-      logger.info(LOG_KINDS.TEAM_SYNC_START, 'Team sync client initialized', { worker_url: config.team.worker_url });
-
-      // Register this node with the team worker (fire-and-forget)
-      teamClient.connect({
-        machine_id: machineId,
-        version: server.version,
-      }).then(() => {
-        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Node registered with team worker');
-      }).catch((err) => {
-        logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Node registration failed (will retry on next flush)', { error: (err as Error).message });
-      });
-
-      // Backfill unsynced records into outbox (fire-and-forget — can be large)
-      setTimeout(() => {
-        try {
-          const backfilled = backfillUnsynced(machineId);
-          if (backfilled > 0) {
-            logger.info(LOG_KINDS.TEAM_SYNC_START, `Backfilled ${backfilled} unsynced records into outbox`);
-          }
-        } catch (err) {
-          logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Backfill failed', { error: (err as Error).message });
-        }
-      }, 0);
-    }
-  }
+  // --- Team sync ---
+  const teamSync = initTeamSync({ config, machineId, logger, vaultDir, serverVersion: server.version });
 
   const teamHandlers = createTeamHandlers({
     vaultDir,
     machineId,
-    getTeamClient: () => teamClient,
-    setTeamClient: (c) => { teamClient = c; },
+    getTeamClient: teamSync.getTeamClient,
+    setTeamClient: teamSync.setTeamClient,
   });
   server.registerRoute('POST', '/api/team/connect', teamHandlers.handleConnect);
   server.registerRoute('POST', '/api/team/disconnect', teamHandlers.handleDisconnect);
@@ -699,15 +663,15 @@ export async function main(): Promise<void> {
       return { status: 500, body: { error: result.error } };
     }
     // Reinitialize team client with potentially new URL
-    if (result.worker_url && teamClient) {
+    if (result.worker_url && teamSync.getTeamClient()) {
       const apiKey = readSecrets(vaultDir)[TEAM_API_KEY_SECRET];
       if (apiKey) {
-        teamClient = new TeamSyncClient({
+        teamSync.setTeamClient(new TeamSyncClient({
           workerUrl: result.worker_url,
           apiKey,
           machineId,
           syncProtocolVersion: SYNC_PROTOCOL_VERSION,
-        });
+        }));
       }
     }
     return { body: result };
@@ -715,7 +679,7 @@ export async function main(): Promise<void> {
 
   // --- Search, activity feed, and embedding status ---
 
-  server.registerRoute('GET', '/api/search', createSearchHandler({ embeddingManager, getTeamClient: () => teamClient, machineId }));
+  server.registerRoute('GET', '/api/search', createSearchHandler({ embeddingManager, getTeamClient: teamSync.getTeamClient, machineId }));
   server.registerRoute('GET', '/api/activity', handleGetFeed);
   server.registerRoute('GET', '/api/embedding/status', async () => handleGetEmbeddingStatus(vaultDir));
   server.registerRoute('GET', '/api/embedding/details', async () => handleEmbeddingDetails(embeddingManager));
@@ -758,76 +722,7 @@ export async function main(): Promise<void> {
 
   // --- Register power-managed jobs ---
   registerPowerJobs(powerManager, { embeddingManager, registry, logger, config, db, backupDir, machineId, vaultDir });
-
-  // Team outbox flush: push pending records to the team worker
-  if (config.team.enabled) {
-    const logDeadLettered = (ids: number[]) => {
-      if (ids.length > 0) {
-        logger.error(LOG_KINDS.TEAM_SYNC_DEAD_LETTER, `Dead-lettered ${ids.length} records after max retries`, { ids });
-      }
-    };
-
-    powerManager.register({
-      name: 'team-sync-flush',
-      runIn: ['active', 'idle', 'sleep'],
-      preventsDeepSleep: () => countPending() > 0,
-      fn: async () => {
-        const client = teamClient;
-        if (!client) return;
-
-        const pending = listPending();
-        if (pending.length === 0) return;
-
-        try {
-          logger.info(LOG_KINDS.TEAM_SYNC_START, 'Flushing outbox', { count: pending.length });
-          const result = await client.pushBatch(pending);
-          const now = epochSeconds();
-
-          // Mark successfully synced records as sent
-          const failedIds = new Set(result.errors.map((e) => e.id));
-          const sentRecords = pending.filter((r) => !failedIds.has(String(r.row_id)));
-          const sentIds = sentRecords.map((r) => r.id);
-          if (sentIds.length > 0) {
-            markSent(sentIds, now);
-            markSourceRowsSynced(sentRecords, now);
-          }
-
-          // Increment retry count on per-record failures
-          if (result.errors.length > 0) {
-            const failedOutboxIds = pending
-              .filter((r) => failedIds.has(String(r.row_id)))
-              .map((r) => r.id);
-            const deadLettered = incrementRetryCount(failedOutboxIds, now);
-
-            logger.warn(LOG_KINDS.TEAM_SYNC_RETRY, `Retrying ${failedOutboxIds.length} records`, {
-              errors: result.errors.slice(0, 5),
-            });
-
-            logDeadLettered(deadLettered);
-          }
-
-          pruneOld();
-          logger.info(LOG_KINDS.TEAM_SYNC_COMPLETE, 'Outbox flush complete', {
-            synced: result.synced, skipped: result.skipped, errors: result.errors.length, total: pending.length,
-          });
-        } catch (err) {
-          // Batch-level failure: increment retry count on all records
-          try {
-            const now = epochSeconds();
-            const allIds = pending.map((r) => r.id);
-            const deadLettered = incrementRetryCount(allIds, now);
-
-            logger.warn(LOG_KINDS.TEAM_SYNC_RETRY, `Batch failed, retrying ${allIds.length} records`, {
-              error: (err as Error).message,
-            });
-
-            logDeadLettered(deadLettered);
-          } catch { /* best-effort retry tracking */ }
-          logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Outbox flush failed', { error: (err as Error).message });
-        }
-      },
-    });
-  }
+  teamSync.registerFlushJob(powerManager);
 
   // -- Dynamic task scheduling (replaces hardcoded agent-auto-run, skill-survey, skill-evolve) --
   {
