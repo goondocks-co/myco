@@ -19,21 +19,21 @@ import { findPackageRoot } from '../utils/find-package-root.js';
 import { EventBuffer, cleanStaleBuffers } from '../capture/buffer.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
-import { handleGetConfig, handlePutConfig } from './api/config.js';
-import { handleLogSearch, handleLogStream, handleLogDetail } from './api/log-explorer.js';
+import { handleGetConfig, handlePutConfig, createPlanDirHandlers } from './api/config.js';
+import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
 import { createUpdateHandlers } from './api/update.js';
 import { getMachineId } from './machine-id.js';
 import { createBackupHandlers } from './api/backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
 import { TeamSyncClient } from './team-sync.js';
-import { initTeamContext, getTeamMachineId } from './team-context.js';
+import { initTeamContext } from './team-context.js';
 import { createBackup } from './backup.js';
 import { listPending, markSent, markSourceRowsSynced, pruneOld, backfillUnsynced, incrementRetryCount, countPending, retryDeadLettered } from '../db/queries/team-outbox.js';
 import { readSecrets } from '../config/secrets.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
-import { computeConfigHash } from './api/stats.js';
+import { computeConfigHash, createLiveStatsHandler } from './api/stats.js';
 import {
   handleListSessions,
   handleGetSession,
@@ -41,6 +41,7 @@ import {
   handleGetBatchActivities,
   handleGetSessionAttachments,
   handleGetSessionPlans,
+  createSessionMutationHandlers,
 } from './api/sessions.js';
 import {
   handleListSpores,
@@ -97,25 +98,17 @@ import {
   handleDeleteSkillRecord,
 } from './api/skills.js';
 import { countSkillRecords } from '../db/queries/skill-records.js';
-import { countCandidates, listCandidates } from '../db/queries/skill-candidates.js';
-import { listTurnsByRun } from '../db/queries/turns.js';
-import { gatherStats } from '../services/stats.js';
+import { countCandidates } from '../db/queries/skill-candidates.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
-import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSessionCascade, getSessionImpact } from '../db/queries/sessions.js';
-import { getAttachmentByFilePath } from '../db/queries/attachments.js';
-import { listRuns, countRuns, getRun, getLatestRunId } from '../db/queries/runs.js';
-import { listReports } from '../db/queries/reports.js';
-import { insertSpore, updateSporeStatus } from '../db/queries/spores.js';
-import { listPlans } from '../db/queries/plans.js';
-import { registerAgent } from '../db/queries/agents.js';
+import { upsertSession, closeSession, updateSession } from '../db/queries/sessions.js';
 import { insertLogEntry, deleteOldLogs, getMaxTimestamp } from '../db/queries/logs.js';
+import { createMcpProxyHandlers } from './api/mcp-proxy.js';
+import { createAgentRunHandlers, buildSkillGenerateInstruction } from './api/agent-runs.js';
+import { createAttachmentHandler } from './api/attachments.js';
 import { reconcileLogBuffer } from './log-reconcile.js';
 import {
-  DEFAULT_AGENT_ID,
   STALE_BUFFER_MAX_AGE_MS,
-  USER_AGENT_ID,
-  USER_AGENT_NAME,
   EMBEDDING_BATCH_SIZE,
   POWER_IDLE_THRESHOLD_MS,
   POWER_SLEEP_THRESHOLD_MS,
@@ -126,14 +119,12 @@ import {
   TEAM_API_KEY_SECRET,
   RESTART_RESPONSE_FLUSH_MS,
   epochSeconds,
-  MS_PER_SECOND,
   MS_PER_DAY,
 } from '../constants.js';
 import { PowerManager } from './power.js';
 import { buildScheduledJobs } from './task-scheduler.js';
 import type { ScheduledJobContext } from './task-scheduler.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
-import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
   handleSubagentStart, handleSubagentStop, handleStopFailure,
@@ -153,13 +144,6 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Default limit for listing agent runs in the API. */
-const AGENT_RUNS_DEFAULT_LIMIT = 50;
 
 // ---------------------------------------------------------------------------
 // Stale daemon cleanup
@@ -496,52 +480,31 @@ export async function main(): Promise<void> {
     if (dirs.length > 0) symbiontPlanDirsByAgent[m.displayName] = dirs;
   }
 
-  server.registerRoute('GET', '/api/config/plan-dirs', async () => {
-    return { body: { symbiont: symbiontPlanDirsByAgent, custom: planWatchConfig.watchDirs.filter((d) => !symbiontPlanDirs.includes(d)) } };
+  const planDirHandlers = createPlanDirHandlers({
+    vaultDir,
+    symbiontPlanDirsByAgent,
+    symbiontPlanDirs,
+    planWatchConfig,
+    setPlanWatchConfig: (cfg) => { planWatchConfig = cfg; },
   });
-
-  server.registerRoute('POST', '/api/config/plan-dirs', async (req) => {
-    const body = req.body as { plan_dirs: string[] };
-    if (!Array.isArray(body.plan_dirs)) {
-      return { status: 400, body: { error: 'plan_dirs must be an array' } };
-    }
-    const updated = updateConfig(vaultDir, (cfg) => ({
-      ...cfg,
-      capture: { ...cfg.capture, plan_dirs: body.plan_dirs },
-    }));
-    // Refresh in-memory config so plan capture picks up new dirs immediately
-    planWatchConfig = { ...planWatchConfig, watchDirs: [...new Set([...symbiontPlanDirs, ...body.plan_dirs])] };
-    return { body: { custom: updated.capture.plan_dirs } };
-  });
+  server.registerRoute('GET', '/api/config/plan-dirs', planDirHandlers.handleGetPlanDirs);
+  server.registerRoute('POST', '/api/config/plan-dirs', planDirHandlers.handleUpdatePlanDirs);
 
   // V2 stats — vault counts, embedding coverage, agent status, digest freshness
-  server.registerRoute('GET', '/api/stats', async () => {
-    const stats = gatherStats(vaultDir, { active_sessions: registry.sessions });
-    // Overlay live daemon fields from the running process (more accurate than daemon.json)
-    stats.daemon.pid = process.pid;
-    stats.daemon.port = server.port;
-    stats.daemon.version = server.version;
-    stats.daemon.uptime_seconds = Math.floor(process.uptime());
-    return { body: { ...stats, config_hash: configHash } };
-  });
+  const configHashRef = { get: () => configHash };
+  server.registerRoute('GET', '/api/stats', createLiveStatsHandler({
+    vaultDir,
+    registry,
+    server,
+    configHash: configHashRef,
+  }));
 
   server.registerRoute('GET', '/api/logs/search', handleLogSearch);
   server.registerRoute('GET', '/api/logs/stream', handleLogStream);
   server.registerRoute('GET', '/api/logs/:id', handleLogDetail);
 
   // External log ingestion: allows MCP server (separate process) to write through the daemon logger
-  const ExternalLogBody = z.object({
-    level: z.enum(['debug', 'info', 'warn', 'error']),
-    component: z.string(),
-    message: z.string(),
-    data: z.record(z.string(), z.unknown()).optional(),
-  });
-
-  server.registerRoute('POST', '/api/log', async (req) => {
-    const { level, component, message, data } = ExternalLogBody.parse(req.body);
-    logger.log(level, LOG_KINDS.MCP_EVENT, message, { ...data, mcp_component: component });
-    return { body: { ok: true } };
-  });
+  server.registerRoute('POST', '/api/log', createLogIngestionHandler(logger));
 
   server.registerRoute('GET', '/api/models', async (req) => handleGetModels(req));
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir, progressTracker }, req.body));
@@ -569,28 +532,9 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/sessions', handleListSessions);
 
   server.registerRoute('GET', '/api/sessions/:id', handleGetSession);
-  server.registerRoute('GET', '/api/sessions/:id/impact', async (req) => {
-    const sessionId = req.params.id;
-    const session = getSession(sessionId);
-    if (!session) return { status: 404, body: { error: 'Session not found' } };
-    const impact = getSessionImpact(sessionId);
-    return { body: impact };
-  });
-
-  server.registerRoute('DELETE', '/api/sessions/:id', async (req) => {
-    const sessionId = req.params.id;
-    const result = deleteSessionCascade(sessionId);
-    if (!result.deleted) return { status: 404, body: { error: 'Session not found' } };
-
-    // Post-transaction cleanup (fire-and-forget)
-    cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir).catch(() => {});
-
-    logger.info(LOG_KINDS.API_SESSION_DELETE, 'Session cascade deleted', {
-      session_id: sessionId,
-      counts: result.counts,
-    });
-    return { body: { ok: true, counts: result.counts } };
-  });
+  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir, logger });
+  server.registerRoute('GET', '/api/sessions/:id/impact', sessionMutations.handleGetSessionImpact);
+  server.registerRoute('DELETE', '/api/sessions/:id', sessionMutations.handleDeleteSession);
   server.registerRoute('GET', '/api/sessions/:id/batches', handleGetSessionBatches);
   server.registerRoute('GET', '/api/batches/:id/activities', handleGetBatchActivities);
   server.registerRoute('GET', '/api/sessions/:id/attachments', handleGetSessionAttachments);
@@ -634,139 +578,16 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/graph/:id', handleGetGraph);
   server.registerRoute('GET', '/api/digest', handleGetDigest);
 
-  /** Media type lookup for attachment file serving. */
-  const ATTACHMENT_MEDIA_TYPES: Record<string, string> = {
-    png: 'image/png',
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    gif: 'image/gif',
-    webp: 'image/webp',
-  };
-
-  server.registerRoute('GET', '/api/attachments/:filename', async (req) => {
-    const filename = req.params.filename;
-    // Prevent path traversal
-    if (filename.includes('..') || filename.includes('/')) {
-      return { status: 400, body: { error: 'invalid_filename' } };
-    }
-
-    // Try DB first (new path)
-    const att = getAttachmentByFilePath(filename);
-    if (att?.data) {
-      const contentType = att.media_type ?? 'application/octet-stream';
-      return { status: 200, headers: { 'Content-Type': contentType }, body: att.data };
-    }
-
-    // Fallback to disk for pre-migration attachments
-    const filePath = path.join(vaultDir, 'attachments', filename);
-    let diskData: Buffer;
-    try {
-      diskData = fs.readFileSync(filePath);
-    } catch {
-      return { status: 404, body: { error: 'not_found' } };
-    }
-    const ext = path.extname(filename).slice(1).toLowerCase();
-    const contentType = ATTACHMENT_MEDIA_TYPES[ext] ?? 'application/octet-stream';
-    return { status: 200, headers: { 'Content-Type': contentType }, body: diskData };
-  });
+  const attachments = createAttachmentHandler({ vaultDir });
+  server.registerRoute('GET', '/api/attachments/:filename', attachments.handleGetAttachment);
 
   // --- Agent API routes ---
-
-  /**
-   * Build the instruction string for a skill-generate run.
-   * Shared by both the API route handler and the scheduler.
-   */
-  function buildSkillGenerateInstruction(): string | undefined {
-    const candidates = listCandidates({ status: 'approved', limit: 1 });
-    if (candidates.length > 0) {
-      return `Generate skill for candidate id=${candidates[0].id} topic="${candidates[0].topic}"`;
-    }
-    return undefined;
-  }
-
-  const AgentRunBody = z.object({
-    task: z.string().optional(),
-    instruction: z.string().optional(),
-    agentId: z.string().optional(),
-  });
-
-  server.registerRoute('POST', '/api/agent/run', async (req) => {
-    const { task, instruction: rawInstruction, agentId } = AgentRunBody.parse(req.body);
-
-    // For skill-generate: inject candidate ID if not provided in the instruction.
-    // Same structural enforcement as the scheduler — one candidate per run.
-    let instruction = rawInstruction;
-    if (task === 'skill-generate' && !instruction) {
-      instruction = buildSkillGenerateInstruction();
-    }
-
-    const { runAgent } = await import('../agent/executor.js');
-    const resultPromise = runAgent(vaultDir, { task, instruction, agentId, embeddingManager });
-
-    // runAgent inserts the run row synchronously before the first await.
-    // Query for the most recently created run matching this task to get
-    // the correct ID — not getRunningRun which may return a different task.
-    const effectiveAgentId = agentId ?? 'myco-agent';
-    const runId = getLatestRunId(effectiveAgentId, task);
-
-    resultPromise
-      .then((result) => {
-        if (result.status === 'failed') {
-          logger.error(LOG_KINDS.AGENT_ERROR, 'Agent run failed', {
-            runId: result.runId,
-            error: result.error ?? 'No error message',
-            phases: result.phases?.map(p => `${p.name}:${p.status}`) ?? [],
-          });
-        } else {
-          logger.info(LOG_KINDS.AGENT_RUN, 'Agent run completed', {
-            runId: result.runId,
-            status: result.status,
-            phases: result.phases?.map(p => `${p.name}:${p.status}`) ?? [],
-          });
-        }
-      })
-      .catch((err) => {
-        logger.error(LOG_KINDS.AGENT_ERROR, 'Agent run threw unhandled error', {
-          error: (err as Error).message ?? String(err),
-          stack: (err as Error).stack?.split('\n').slice(0, 3).join(' | '),
-        });
-      });
-
-    return { body: { ok: true, message: 'Agent started', runId } };
-  });
-
-  server.registerRoute('GET', '/api/agent/runs', async (req) => {
-    const limit = req.query.limit ? Number(req.query.limit) : AGENT_RUNS_DEFAULT_LIMIT;
-    const offset = req.query.offset ? Number(req.query.offset) : 0;
-    const agentId = req.query.agentId || undefined;
-    const status = req.query.status || undefined;
-    const task = req.query.task || undefined;
-    const search = req.query.search || undefined;
-
-    const filterOpts = { agent_id: agentId, status, task, search };
-    const runs = listRuns({ ...filterOpts, limit, offset });
-    const total = countRuns(filterOpts);
-
-    return { body: { runs, total, offset, limit } };
-  });
-
-  server.registerRoute('GET', '/api/agent/runs/:id', async (req) => {
-    const run = getRun(req.params.id);
-    if (!run) {
-      return { status: 404, body: { error: 'Run not found' } };
-    }
-    return { body: { run } };
-  });
-
-  server.registerRoute('GET', '/api/agent/runs/:id/reports', async (req) => {
-    const reports = listReports(req.params.id);
-    return { body: { reports } };
-  });
-
-  server.registerRoute('GET', '/api/agent/runs/:id/turns', async (req) => {
-    const turns = listTurnsByRun(req.params.id);
-    return { body: turns };
-  });
+  const agentRunHandlers = createAgentRunHandlers({ vaultDir, embeddingManager, logger });
+  server.registerRoute('POST', '/api/agent/run', agentRunHandlers.handleRun);
+  server.registerRoute('GET', '/api/agent/runs', agentRunHandlers.handleListRuns);
+  server.registerRoute('GET', '/api/agent/runs/:id', agentRunHandlers.handleGetRun);
+  server.registerRoute('GET', '/api/agent/runs/:id/reports', agentRunHandlers.handleGetRunReports);
+  server.registerRoute('GET', '/api/agent/runs/:id/turns', agentRunHandlers.handleGetRunTurns);
 
   server.registerRoute('GET', '/api/agent/tasks', async (req) => handleListTasks(req, vaultDir));
   server.registerRoute('GET', '/api/agent/tasks/:id', async (req) => handleGetTask(req, vaultDir));
@@ -785,169 +606,12 @@ export async function main(): Promise<void> {
   // --- MCP proxy routes ---
   // These routes exist so the MCP server can proxy tool calls through the
   // daemon instead of opening its own SQLite connection.
-
-  const SPORE_ID_RANDOM_BYTES = 4;
-  const RESOLUTION_ID_RANDOM_BYTES = 8;
-
-  const RememberBody = z.object({
-    content: z.string(),
-    type: z.string().optional(),
-    tags: z.array(z.string()).optional(),
-  });
-
-  server.registerRoute('POST', '/api/mcp/remember', async (req) => {
-    const { content, type, tags } = RememberBody.parse(req.body);
-    const { randomBytes } = await import('node:crypto');
-
-    const observationType = type ?? 'discovery';
-    const id = `${observationType}-${randomBytes(SPORE_ID_RANDOM_BYTES).toString('hex')}`;
-    const now = epochSeconds();
-
-    // Ensure the user agent exists (idempotent upsert)
-    registerAgent({
-      id: USER_AGENT_ID,
-      name: USER_AGENT_NAME,
-      created_at: now,
-    });
-
-    const spore = insertSpore({
-      id,
-      agent_id: USER_AGENT_ID,
-      machine_id: machineId,
-      observation_type: observationType,
-      content,
-      tags: tags ? tags.join(', ') : null,
-      created_at: now,
-    });
-
-    embeddingManager.onContentWritten('spores', spore.id, content, {
-      status: 'active',
-      observation_type: observationType,
-    }).catch(() => {});
-
-    return {
-      body: {
-        id: spore.id,
-        observation_type: spore.observation_type,
-        status: spore.status,
-        created_at: spore.created_at,
-      },
-    };
-  });
-
-  server.registerRoute('GET', '/api/mcp/plans', async (req) => {
-    const statusFilter = req.query.status === 'all' ? undefined : req.query.status;
-    const limit = req.query.limit ? Number(req.query.limit) : undefined;
-
-    const rows = listPlans({ status: statusFilter, limit });
-
-    const plans = rows.map((row) => {
-      const content = row.content ?? '';
-      const checked = (content.match(/- \[x\]/gi) ?? []).length;
-      const unchecked = (content.match(/- \[ \]/g) ?? []).length;
-      const total = checked + unchecked;
-      const progress = total === 0 ? 'N/A' : `${checked}/${total}`;
-
-      return {
-        id: row.id,
-        title: row.title,
-        status: row.status,
-        progress,
-        tags: row.tags ? row.tags.split(',').map((t) => t.trim()) : [],
-        created_at: row.created_at,
-      };
-    });
-
-    return { body: { plans } };
-  });
-
-  server.registerRoute('GET', '/api/mcp/sessions', async (req) => {
-    const limit = req.query.limit ? Number(req.query.limit) : 20;
-    const status = req.query.status;
-
-    const rows = listSessions({ limit, status });
-    const sessions = rows.map((row) => ({
-      id: row.id,
-      agent: row.agent,
-      user: row.user,
-      branch: row.branch,
-      started_at: row.started_at,
-      ended_at: row.ended_at,
-      status: row.status,
-      title: row.title,
-      summary: (row.summary ?? '').slice(0, 300),
-      prompt_count: row.prompt_count,
-      tool_count: row.tool_count,
-      parent_session_id: row.parent_session_id,
-    }));
-
-    return { body: { sessions } };
-  });
-
-  server.registerRoute('GET', '/api/mcp/team', async () => {
-    const teamDb = getDatabase();
-    const rows = teamDb.prepare(
-      `SELECT id, "user", role, joined, tags
-       FROM team_members
-       ORDER BY id ASC`,
-    ).all() as Array<Record<string, unknown>>;
-
-    const members = rows.map((row) => ({
-      id: row.id as string,
-      user: row.user as string,
-      role: (row.role as string) ?? null,
-      joined: (row.joined as string) ?? null,
-      tags: row.tags ? (row.tags as string).split(',').map((t) => t.trim()) : [],
-    }));
-
-    return { body: { members } };
-  });
-
-  const SupersedeBody = z.object({
-    old_spore_id: z.string(),
-    new_spore_id: z.string(),
-    reason: z.string().optional(),
-  });
-
-  server.registerRoute('POST', '/api/mcp/supersede', async (req) => {
-    const { old_spore_id, new_spore_id, reason } = SupersedeBody.parse(req.body);
-    const { randomBytes } = await import('node:crypto');
-    const now = epochSeconds();
-
-    // Update status to superseded
-    updateSporeStatus(old_spore_id, 'superseded', now);
-    try { embeddingManager.onStatusChanged('spores', old_spore_id, 'superseded'); } catch { /* best-effort */ }
-
-    // Ensure user agent exists (idempotent)
-    registerAgent({
-      id: USER_AGENT_ID,
-      name: USER_AGENT_NAME,
-      created_at: now,
-    });
-
-    // Record resolution event for audit trail
-    const { insertResolutionEvent } = await import('../db/queries/resolution-events.js');
-    const resolutionId = `res-${randomBytes(RESOLUTION_ID_RANDOM_BYTES).toString('hex')}`;
-
-    insertResolutionEvent({
-      id: resolutionId,
-      agent_id: USER_AGENT_ID,
-      machine_id: machineId,
-      spore_id: old_spore_id,
-      action: 'supersede',
-      new_spore_id,
-      reason: reason ?? null,
-      created_at: now,
-    });
-
-    return {
-      body: {
-        old_spore: old_spore_id,
-        new_spore: new_spore_id,
-        status: 'superseded' as const,
-      },
-    };
-  });
+  const mcpProxy = createMcpProxyHandlers({ machineId, embeddingManager });
+  server.registerRoute('POST', '/api/mcp/remember', mcpProxy.handleRemember);
+  server.registerRoute('POST', '/api/mcp/supersede', mcpProxy.handleSupersede);
+  server.registerRoute('GET', '/api/mcp/plans', mcpProxy.handlePlans);
+  server.registerRoute('GET', '/api/mcp/sessions', mcpProxy.handleSessions);
+  server.registerRoute('GET', '/api/mcp/team', mcpProxy.handleTeam);
 
   // --- Backup routes ---
   const rawBackupDir = config.backup.dir;
