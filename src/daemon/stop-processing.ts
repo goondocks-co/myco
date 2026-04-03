@@ -8,9 +8,9 @@
 
 import { z } from 'zod';
 import fs from 'node:fs';
-import { TranscriptMiner, extractTurnsFromBuffer } from '../capture/transcript-miner.js';
-import type { TranscriptTurn } from '../symbionts/adapter.js';
-import { extensionForMimeType } from '../symbionts/adapter.js';
+import { TranscriptMiner, extractTurnsFromBuffer } from '@myco/capture/transcript-miner.js';
+import type { TranscriptTurn } from '@myco/symbionts/adapter.js';
+import { extensionForMimeType } from '@myco/symbionts/adapter.js';
 import {
   getLatestBatch,
   setResponseSummary,
@@ -18,18 +18,18 @@ import {
   closeOpenBatches,
   listBatchesBySession,
   findBatchByPromptPrefix,
-} from '../db/queries/batches.js';
-import { getSession, updateSession } from '../db/queries/sessions.js';
-import { insertAttachment } from '../db/queries/attachments.js';
+} from '@myco/db/queries/batches.js';
+import { getSession, updateSession } from '@myco/db/queries/sessions.js';
+import { insertAttachment } from '@myco/db/queries/attachments.js';
 import { detectSkillUsage, SKILL_USAGE_DETECTION_ENABLED } from './skill-usage.js';
-import { epochSeconds, LOG_MESSAGE_PREVIEW_CHARS } from '../constants.js';
+import { epochSeconds, LOG_MESSAGE_PREVIEW_CHARS } from '@myco/constants.js';
 import { TITLE_PREVIEW_CHARS } from './event-handlers.js';
 import { SessionRegistry } from './lifecycle.js';
-import { EventBuffer } from '../capture/buffer.js';
+import { EventBuffer } from '@myco/capture/buffer.js';
 import { DaemonLogger } from './logger.js';
-import type { MycoConfig } from '../config/schema.js';
+import type { MycoConfig } from '@myco/config/schema.js';
 import { EmbeddingManager } from './embedding/index.js';
-import { LOG_KINDS } from '../constants/log-kinds.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { RouteHandler } from './router.js';
 import type { RegisteredSession } from './lifecycle.js';
 

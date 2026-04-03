@@ -12,7 +12,7 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertSpore, updateSporeStatus } from '@myco/db/queries/spores.js';
 import { listPlans } from '@myco/db/queries/plans.js';
 import { listSessions } from '@myco/db/queries/sessions.js';
-import { getDatabase } from '@myco/db/client.js';
+import { listTeamMembers } from '@myco/db/queries/team-members.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 
@@ -190,19 +190,13 @@ export function createMcpProxyHandlers(deps: McpProxyDeps) {
 
   /** GET /api/mcp/team — list team members from DB. */
   async function handleTeam(_req: RouteRequest): Promise<RouteResponse> {
-    const teamDb = getDatabase();
-    const rows = teamDb.prepare(
-      `SELECT id, "user", role, joined, tags
-       FROM team_members
-       ORDER BY id ASC`,
-    ).all() as Array<Record<string, unknown>>;
-
+    const rows = listTeamMembers();
     const members = rows.map((row) => ({
-      id: row.id as string,
-      user: row.user as string,
-      role: (row.role as string) ?? null,
-      joined: (row.joined as string) ?? null,
-      tags: row.tags ? (row.tags as string).split(',').map((t) => t.trim()) : [],
+      id: row.id,
+      user: row.user,
+      role: row.role,
+      joined: row.joined,
+      tags: row.tags ? row.tags.split(',').map((t) => t.trim()) : [],
     }));
 
     return { body: { members } };

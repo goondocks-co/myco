@@ -8,11 +8,11 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { listBufferSessionIds, cleanStaleBuffers } from '../capture/buffer.js';
-import { listBatchesBySession } from '../db/queries/batches.js';
-import { getSession } from '../db/queries/sessions.js';
-import { STALE_BUFFER_MAX_AGE_MS } from '../constants.js';
-import { LOG_KINDS } from '../constants/log-kinds.js';
+import { listBufferSessionIds, cleanStaleBuffers } from '@myco/capture/buffer.js';
+import { listBatchesBySession } from '@myco/db/queries/batches.js';
+import { getSession } from '@myco/db/queries/sessions.js';
+import { STALE_BUFFER_MAX_AGE_MS } from '@myco/constants.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { DaemonLogger } from './logger.js';
 import { isSystemMessage, handleUserPrompt, handleToolUse, handleToolFailure } from './event-handlers.js';
 

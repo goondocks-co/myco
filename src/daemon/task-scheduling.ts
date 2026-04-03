@@ -13,7 +13,7 @@ import type { PowerManager } from './power.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { ScheduledJobContext } from './task-scheduler.js';
 import { buildScheduledJobs } from './task-scheduler.js';
-import { buildSkillGenerateInstruction } from './api/agent-runs.js';
+import { buildSkillGenerateInstruction, SKILL_GENERATE_TASK } from './api/agent-runs.js';
 import { countSkillRecords } from '@myco/db/queries/skill-records.js';
 import { countCandidates } from '@myco/db/queries/skill-candidates.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -78,7 +78,7 @@ export async function registerScheduledTasks(
 
       // For skill-generate: inject the specific candidate ID so the agent
       // processes exactly one skill per run (structural enforcement, not prompt-based).
-      const instruction = taskName === 'skill-generate'
+      const instruction = taskName === SKILL_GENERATE_TASK
         ? buildSkillGenerateInstruction()
         : undefined;
 

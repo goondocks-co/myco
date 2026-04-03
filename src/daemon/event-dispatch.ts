@@ -11,10 +11,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { RouteHandler } from './router.js';
 import { SessionRegistry } from './lifecycle.js';
-import { EventBuffer } from '../capture/buffer.js';
+import { EventBuffer } from '@myco/capture/buffer.js';
 import { PowerManager } from './power.js';
 import { DaemonLogger } from './logger.js';
-import type { MycoConfig } from '../config/schema.js';
+import type { MycoConfig } from '@myco/config/schema.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import { isPlanWriteEvent, capturePlan } from './plan-capture.js';
 import {
@@ -28,10 +28,10 @@ import {
   handleTaskCompleted,
   handleCompact,
 } from './event-handlers.js';
-import { getLatestBatch } from '../db/queries/batches.js';
-import { upsertSession } from '../db/queries/sessions.js';
-import { epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '../constants.js';
-import { LOG_KINDS } from '../constants/log-kinds.js';
+import { getLatestBatch } from '@myco/db/queries/batches.js';
+import { upsertSession } from '@myco/db/queries/sessions.js';
+import { epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 
 // ---------------------------------------------------------------------------
 // Schema

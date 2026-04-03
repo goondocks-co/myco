@@ -36,6 +36,9 @@ const AgentRunBody = z.object({
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+/** Task name that gets special candidate-injection handling. */
+export const SKILL_GENERATE_TASK = 'skill-generate';
+
 /**
  * Build the instruction string for a skill-generate run.
  * Shared by both the API route handler and the scheduler.
@@ -72,7 +75,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     // For skill-generate: inject candidate ID if not provided in the instruction.
     // Same structural enforcement as the scheduler — one candidate per run.
     let instruction = rawInstruction;
-    if (task === 'skill-generate' && !instruction) {
+    if (task === SKILL_GENERATE_TASK && !instruction) {
       instruction = buildSkillGenerateInstruction();
     }
 

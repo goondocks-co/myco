@@ -5,12 +5,12 @@
  * main() and are extracted here for testability and modularity.
  */
 
-import { epochSeconds, DEFAULT_AGENT_ID } from '../constants.js';
+import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getTeamMachineId } from './team-context.js';
-import { closeOpenBatches, insertBatchStateless, incrementActivityCount } from '../db/queries/batches.js';
-import { insertActivityWithBatch } from '../db/queries/activities.js';
-import { updateSession, incrementSessionToolCount } from '../db/queries/sessions.js';
-import { createBatchLineage } from '../db/queries/lineage.js';
+import { closeOpenBatches, insertBatchStateless, incrementActivityCount } from '@myco/db/queries/batches.js';
+import { insertActivityWithBatch } from '@myco/db/queries/activities.js';
+import { updateSession, incrementSessionToolCount } from '@myco/db/queries/sessions.js';
+import { createBatchLineage } from '@myco/db/queries/lineage.js';
 
 // ---------------------------------------------------------------------------
 // Constants
