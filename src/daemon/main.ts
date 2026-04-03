@@ -28,7 +28,6 @@ import { createBackupHandlers } from './api/backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
 import { TeamSyncClient } from './team-sync.js';
 import { initTeamContext } from './team-context.js';
-import { createBackup } from './backup.js';
 import { listPending, markSent, markSourceRowsSynced, pruneOld, backfillUnsynced, incrementRetryCount, countPending, retryDeadLettered } from '../db/queries/team-outbox.js';
 import { readSecrets } from '../config/secrets.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
@@ -102,14 +101,13 @@ import { countCandidates } from '../db/queries/skill-candidates.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
 import { upsertSession, closeSession, updateSession } from '../db/queries/sessions.js';
-import { insertLogEntry, deleteOldLogs, getMaxTimestamp } from '../db/queries/logs.js';
+import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
 import { createMcpProxyHandlers } from './api/mcp-proxy.js';
 import { createAgentRunHandlers, buildSkillGenerateInstruction } from './api/agent-runs.js';
 import { createAttachmentHandler } from './api/attachments.js';
 import { reconcileLogBuffer } from './log-reconcile.js';
 import {
   STALE_BUFFER_MAX_AGE_MS,
-  EMBEDDING_BATCH_SIZE,
   POWER_IDLE_THRESHOLD_MS,
   POWER_SLEEP_THRESHOLD_MS,
   POWER_DEEP_SLEEP_THRESHOLD_MS,
@@ -119,12 +117,11 @@ import {
   TEAM_API_KEY_SECRET,
   RESTART_RESPONSE_FLUSH_MS,
   epochSeconds,
-  MS_PER_DAY,
 } from '../constants.js';
 import { PowerManager } from './power.js';
 import { buildScheduledJobs } from './task-scheduler.js';
 import type { ScheduledJobContext } from './task-scheduler.js';
-import { runSessionMaintenance } from './jobs/session-maintenance.js';
+import { registerPowerJobs } from './power-jobs.js';
 import {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
   handleSubagentStart, handleSubagentStop, handleStopFailure,
@@ -760,60 +757,7 @@ export async function main(): Promise<void> {
   }
 
   // --- Register power-managed jobs ---
-
-  let reconcileRunning = false;
-  powerManager.register({
-    name: 'embedding-reconcile',
-    runIn: ['active', 'idle'],
-    fn: async () => {
-      if (reconcileRunning) return;
-      reconcileRunning = true;
-      try {
-        await embeddingManager.reconcile(EMBEDDING_BATCH_SIZE);
-      } finally {
-        reconcileRunning = false;
-      }
-    },
-  });
-
-  powerManager.register({
-    name: 'session-maintenance',
-    runIn: ['active', 'idle', 'sleep'],
-    fn: () => runSessionMaintenance({
-      logger,
-      registeredSessionIds: () => registry.sessions,
-      embeddingManager,
-      vaultDir,
-    }),
-  });
-
-  powerManager.register({
-    name: 'log-retention',
-    runIn: ['idle', 'sleep'],
-    fn: async () => {
-      const retentionDays = config.daemon.log_retention_days;
-      const cutoff = new Date(Date.now() - retentionDays * MS_PER_DAY).toISOString();
-      const deleted = deleteOldLogs(cutoff);
-      if (deleted > 0) {
-        logger.info(LOG_KINDS.LOG_RETENTION, `Deleted ${deleted} log entries older than ${retentionDays} days`, { deleted, retention_days: retentionDays });
-      }
-    },
-  });
-
-  // Auto-backup: create a local SQL dump during idle/sleep cycles
-  powerManager.register({
-    name: 'auto-backup',
-    runIn: ['idle', 'sleep'],
-    fn: async () => {
-      try {
-        logger.info(LOG_KINDS.BACKUP_START, 'Auto-backup starting');
-        const filePath = createBackup(db, backupDir, machineId);
-        logger.info(LOG_KINDS.BACKUP_COMPLETE, 'Auto-backup complete', { file_path: filePath });
-      } catch (err) {
-        logger.error(LOG_KINDS.BACKUP_ERROR, 'Auto-backup failed', { error: (err as Error).message });
-      }
-    },
-  });
+  registerPowerJobs(powerManager, { embeddingManager, registry, logger, config, db, backupDir, machineId, vaultDir });
 
   // Team outbox flush: push pending records to the team worker
   if (config.team.enabled) {
