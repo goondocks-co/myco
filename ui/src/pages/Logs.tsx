@@ -27,11 +27,22 @@ function timeRangeToFrom(range: string): string {
 // ---------------------------------------------------------------------------
 
 export default function Logs() {
-  const [mode, setMode] = useState<LogMode>('live');
-  const [searchValue, setSearchValue] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [activeLevel, setActiveLevel] = useState<LogLevel>('debug');
-  const [activeComponents, setActiveComponents] = useState<Set<string>>(new Set());
+  // Hydrate initial state from URL query params (deep-link support)
+  const initialParams = useMemo(() => {
+    const sp = new URLSearchParams(window.location.search);
+    const components = sp.get('component')?.split(',').filter(Boolean) ?? [];
+    const level = sp.get('level') as LogLevel | null;
+    const q = sp.get('q') ?? '';
+    // If any filter param is present, start in search mode
+    const hasFilters = components.length > 0 || !!level || !!q;
+    return { components, level, q, hasFilters };
+  }, []);
+
+  const [mode, setMode] = useState<LogMode>(initialParams.hasFilters ? 'search' : 'live');
+  const [searchValue, setSearchValue] = useState(initialParams.q);
+  const [searchQuery, setSearchQuery] = useState(initialParams.q);
+  const [activeLevel, setActiveLevel] = useState<LogLevel>(initialParams.level ?? 'debug');
+  const [activeComponents, setActiveComponents] = useState<Set<string>>(new Set(initialParams.components));
   const [timeRange, setTimeRange] = useState('24h');
   const [page, setPage] = useState(1);
   const [selectedEntry, setSelectedEntry] = useState<LogEntry | null>(null);
@@ -55,7 +66,7 @@ export default function Logs() {
   const { data: detailData } = useLogDetail(selectedEntry?.id ?? null);
 
   // Discover components from entries
-  const [knownComponents, setKnownComponents] = useState<string[]>([]);
+  const [knownComponents, setKnownComponents] = useState<string[]>(initialParams.components);
   useEffect(() => {
     const source = mode === 'live' ? liveEntries : (searchData?.entries ?? []);
     setKnownComponents((prev) => {
