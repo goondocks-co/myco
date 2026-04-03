@@ -104,9 +104,8 @@ import { listTurnsByRun } from '../db/queries/turns.js';
 import { gatherStats } from '../services/stats.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
-import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSessionCascade, getSessionImpact, incrementSessionToolCount } from '../db/queries/sessions.js';
-import { incrementActivityCount, populateBatchResponses, getBatchIdByPromptNumber, findBatchByPromptPrefix, closeOpenBatches, insertBatchStateless, getLatestBatch, setResponseSummary, listBatchesBySession } from '../db/queries/batches.js';
-import { insertActivityWithBatch } from '../db/queries/activities.js';
+import { upsertSession, closeSession, updateSession, listSessions, getSession, deleteSessionCascade, getSessionImpact } from '../db/queries/sessions.js';
+import { populateBatchResponses, getBatchIdByPromptNumber, findBatchByPromptPrefix, closeOpenBatches, getLatestBatch, setResponseSummary, listBatchesBySession } from '../db/queries/batches.js';
 import { insertAttachment, getAttachmentByFilePath } from '../db/queries/attachments.js';
 import { listRuns, countRuns, getRun, getLatestRunId } from '../db/queries/runs.js';
 import { listReports } from '../db/queries/reports.js';
@@ -140,7 +139,17 @@ import { buildScheduledJobs } from './task-scheduler.js';
 import type { ScheduledJobContext } from './task-scheduler.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
-import { createBatchLineage } from '../db/queries/lineage.js';
+import {
+  isSystemMessage, TITLE_PREVIEW_CHARS,
+  handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
+  handleSubagentStart, handleSubagentStop, handleStopFailure,
+  handleTaskCompleted, handleCompact,
+} from './event-handlers.js';
+export {
+  handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
+  handleSubagentStart, handleSubagentStop, handleStopFailure,
+  handleTaskCompleted, handleCompact,
+} from './event-handlers.js';
 import { loadSecrets } from '../config/secrets.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { z } from 'zod';
@@ -152,257 +161,11 @@ import path from 'node:path';
 // Constants
 // ---------------------------------------------------------------------------
 
-
 /** Default limit for listing agent runs in the API. */
 const AGENT_RUNS_DEFAULT_LIMIT = 50;
 
-/** Max chars of tool input stored in the activity row. */
-const TOOL_INPUT_STORE_LIMIT = 4000;
-
-/** Max chars of tool output summary stored in the activity row. */
-const TOOL_OUTPUT_STORE_LIMIT = 2000;
-
-/** Max chars for deriving a title from the first user prompt. */
-const TITLE_PREVIEW_CHARS = 80;
-
-/** Prefixes that identify system-injected messages (not real user prompts). */
-const SYSTEM_MESSAGE_PREFIXES = [
-  '<task-notification>',
-  '<system-reminder>',
-] as const;
-
-/** Returns true if the prompt is a system-injected message, not a real user prompt. */
-function isSystemMessage(prompt: string): boolean {
-  const trimmed = prompt.trimStart();
-  return SYSTEM_MESSAGE_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
-}
-
 /** Event types replayed during buffer reconciliation. */
 const REPLAYABLE_EVENT_TYPES: ReadonlySet<string> = new Set(['user_prompt', 'tool_use', 'tool_failure']);
-
-// ---------------------------------------------------------------------------
-// Event handling helpers (exported for testing)
-// ---------------------------------------------------------------------------
-
-/**
- * Handle a UserPromptSubmit event: close previous batch, open new one.
- *
- * Fully stateless — prompt_number is derived from an inline DB subquery,
- * and open batches are closed with a blind UPDATE (no prior SELECT).
- *
- * @returns the new batch ID and prompt number
- */
-export function handleUserPrompt(
-  sessionId: string,
-  prompt: string | undefined,
-): { batchId: number; promptNumber: number } {
-  const now = epochSeconds();
-
-  // Close any open batches for this session — blind UPDATE, no prior read
-  closeOpenBatches(sessionId, now);
-
-  // Insert new batch with prompt_number derived from DB
-  const batch = insertBatchStateless({
-    session_id: sessionId,
-    user_prompt: prompt ?? null,
-    started_at: now,
-    created_at: now,
-    machine_id: getTeamMachineId(),
-  });
-
-  // insertBatchStateless guarantees non-null prompt_number via COALESCE subquery
-  const promptNumber = batch.prompt_number!;
-
-  // Create HAS_BATCH lineage edge (best-effort)
-  try { createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now); } catch { /* lineage best-effort */ }
-
-  // Update session prompt count
-  updateSession(sessionId, { prompt_count: promptNumber });
-
-  return { batchId: batch.id, promptNumber };
-}
-
-/**
- * Handle a PostToolUse event: insert activity with inline batch linkage.
- *
- * Fully stateless — the batch ID is resolved via an inline subquery in
- * `insertActivityWithBatch`, so no in-memory state is needed.
- */
-export function handleToolUse(
-  sessionId: string,
-  toolName: string,
-  toolInput: unknown,
-  toolOutput: string | undefined,
-): void {
-  const now = epochSeconds();
-
-  // Extract file_path from tool input if present
-  const inputObj = toolInput as Record<string, unknown> | undefined;
-  const filePath = typeof inputObj?.file_path === 'string' ? inputObj.file_path : null;
-
-  const activity = insertActivityWithBatch({
-    session_id: sessionId,
-    tool_name: toolName,
-    tool_input: toolInput ? JSON.stringify(toolInput).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
-    tool_output_summary: toolOutput?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
-    file_path: filePath,
-    timestamp: now,
-    created_at: now,
-  });
-
-  // Increment batch activity count if linked to a batch
-  if (activity.prompt_batch_id !== null) {
-    incrementActivityCount(activity.prompt_batch_id);
-  }
-
-  // Increment session-level tool_count atomically.
-  incrementSessionToolCount(sessionId);
-}
-
-/**
- * Handle stop event: close all open batches for this session.
- *
- * Does NOT close the session — the Stop hook fires after every assistant
- * turn, not just session end. Session closure happens in /sessions/unregister
- * (SessionEnd hook).
- *
- * Fully stateless — uses `closeOpenBatches` (blind UPDATE) instead of
- * reading from an in-memory map.
- */
-export function handleStopBatches(
-  sessionId: string,
-): void {
-  closeOpenBatches(sessionId, epochSeconds());
-}
-
-/**
- * Handle a tool failure event: insert activity with success=0.
- */
-export function handleToolFailure(
-  sessionId: string,
-  toolName: string,
-  toolInput: unknown,
-  error: string | undefined,
-  isInterrupt: boolean | undefined,
-): void {
-  const now = epochSeconds();
-  const inputObj = toolInput as Record<string, unknown> | undefined;
-  const filePath = typeof inputObj?.file_path === 'string' ? inputObj.file_path : null;
-
-  const activity = insertActivityWithBatch({
-    session_id: sessionId,
-    tool_name: toolName,
-    tool_input: toolInput ? JSON.stringify(toolInput).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
-    tool_output_summary: error?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
-    file_path: filePath,
-    success: 0,
-    error_message: error?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? (isInterrupt ? 'interrupted' : null),
-    timestamp: now,
-    created_at: now,
-  });
-
-  if (activity.prompt_batch_id !== null) {
-    incrementActivityCount(activity.prompt_batch_id);
-  }
-}
-
-/**
- * Handle a subagent start event: record that a subagent was spawned.
- */
-export function handleSubagentStart(
-  sessionId: string,
-  agentId: string | undefined,
-  agentType: string | undefined,
-): void {
-  const now = epochSeconds();
-  insertActivityWithBatch({
-    session_id: sessionId,
-    tool_name: 'subagent_start',
-    tool_input: JSON.stringify({ agent_id: agentId, agent_type: agentType }).slice(0, TOOL_INPUT_STORE_LIMIT),
-    timestamp: now,
-    created_at: now,
-  });
-}
-
-/**
- * Handle a subagent stop event: record that a subagent completed.
- */
-export function handleSubagentStop(
-  sessionId: string,
-  agentId: string | undefined,
-  agentType: string | undefined,
-  lastAssistantMessage: string | undefined,
-): void {
-  const now = epochSeconds();
-  insertActivityWithBatch({
-    session_id: sessionId,
-    tool_name: 'subagent_stop',
-    tool_input: JSON.stringify({ agent_id: agentId, agent_type: agentType }).slice(0, TOOL_INPUT_STORE_LIMIT),
-    tool_output_summary: lastAssistantMessage?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
-    timestamp: now,
-    created_at: now,
-  });
-}
-
-/**
- * Handle a stop failure event: record that the stop hook encountered an error.
- */
-export function handleStopFailure(
-  sessionId: string,
-  error: string | undefined,
-  errorDetails: string | undefined,
-): void {
-  const now = epochSeconds();
-  insertActivityWithBatch({
-    session_id: sessionId,
-    tool_name: 'stop_failure',
-    tool_output_summary: errorDetails?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
-    success: 0,
-    error_message: error?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
-    timestamp: now,
-    created_at: now,
-  });
-}
-
-/**
- * Handle a task completed event: record task completion as an activity.
- */
-export function handleTaskCompleted(
-  sessionId: string,
-  taskId: string | undefined,
-  taskSubject: string | undefined,
-  taskDescription: string | undefined,
-): void {
-  const now = epochSeconds();
-  insertActivityWithBatch({
-    session_id: sessionId,
-    tool_name: 'task_completed',
-    tool_input: JSON.stringify({ task_id: taskId, task_subject: taskSubject, task_description: taskDescription }).slice(0, TOOL_INPUT_STORE_LIMIT),
-    tool_output_summary: taskSubject?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
-    timestamp: now,
-    created_at: now,
-  });
-}
-
-/**
- * Handle a compact event (pre or post): record compaction in the activity stream.
- */
-export function handleCompact(
-  sessionId: string,
-  phase: 'pre' | 'post',
-  trigger: string | undefined,
-  compactSummary: string | undefined,
-): void {
-  const now = epochSeconds();
-  insertActivityWithBatch({
-    session_id: sessionId,
-    tool_name: `${phase}_compact`,
-    tool_input: trigger ? JSON.stringify({ trigger }).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
-    tool_output_summary: compactSummary?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
-    timestamp: now,
-    created_at: now,
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Stale daemon cleanup
