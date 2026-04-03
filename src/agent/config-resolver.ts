@@ -12,7 +12,6 @@
  * overrides applied in a single call.
  */
 
-import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getAgent } from '@myco/db/queries/agents.js';
 import { getTask, getDefaultTask } from '@myco/db/queries/tasks.js';
 import {

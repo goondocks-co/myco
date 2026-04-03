@@ -68,7 +68,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     logger,
     machineId,
     config,
-    vaultDir: _vaultDir,
+    vaultDir: vaultDir,
     reconcileSession,
     planWatchConfig,
     triggerTitleSummary,
@@ -109,7 +109,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
 
     // Persist to disk so events survive daemon restarts
     if (!sessionBuffers.has(event.session_id)) {
-      const bufferDir = path.join(_vaultDir, 'buffer');
+      const bufferDir = path.join(vaultDir, 'buffer');
       sessionBuffers.set(event.session_id, new EventBuffer(bufferDir, event.session_id));
     }
     sessionBuffers.get(event.session_id)!.append(event);

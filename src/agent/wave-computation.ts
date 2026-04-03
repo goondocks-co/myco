@@ -11,10 +11,6 @@
 import crypto from 'node:crypto';
 import type { PhaseDefinition } from './types.js';
 
-// ---------------------------------------------------------------------------
-// Wave computation (Kahn's algorithm)
-// ---------------------------------------------------------------------------
-
 /**
  * Compute execution waves from phase dependency graph.
  *

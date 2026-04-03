@@ -113,8 +113,12 @@ export function createReconciler({ bufferDir, logger }: ReconcilerDeps): Reconci
     // Read buffer file directly — avoid EventBuffer constructor which reads
     // the file to compute a count we don't need.
     const bufferPath = path.join(bufferDir, `${sessionId}.jsonl`);
-    if (!fs.existsSync(bufferPath)) return;
-    const content = fs.readFileSync(bufferPath, 'utf-8').trim();
+    let content: string;
+    try {
+      content = fs.readFileSync(bufferPath, 'utf-8').trim();
+    } catch {
+      return; // Buffer file doesn't exist or is unreadable
+    }
     if (!content) return;
 
     // Buffer files outlive session rows — sessions may have been manually

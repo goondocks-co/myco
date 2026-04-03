@@ -1,11 +1,11 @@
 /**
  * Ollama model context window management.
- *
- * Creates Ollama model variants with a specific context length by generating
- * a Modelfile and running `ollama create`. The Anthropic-compatible endpoint
- * (/v1/messages) always loads models at default context — this is the only
- * reliable way to override it.
  */
+
+import { execFileSync } from 'node:child_process';
+import { writeFileSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /** Timeout for Ollama model pre-load request (ms). */
 const OLLAMA_PRELOAD_TIMEOUT_MS = 30_000;
@@ -17,17 +17,11 @@ const OLLAMA_PRELOAD_TIMEOUT_MS = 30_000;
  * default context — it ignores /api/chat preloads and API-created params.
  * The only reliable way is `ollama create` with a Modelfile containing
  * `PARAMETER num_ctx`. Creates a variant named `{model}-ctx{contextLength}`.
- *
- * Returns the variant model name to use.
  */
 export async function ensureOllamaContextVariant(
   model: string,
   contextLength: number,
 ): Promise<string> {
-  const { execFileSync } = await import('node:child_process');
-  const { writeFileSync, unlinkSync } = await import('node:fs');
-  const { tmpdir } = await import('node:os');
-  const { join } = await import('node:path');
 
   const baseName = model.replace(/:latest$/, '');
   const variantName = `${baseName}-ctx${contextLength}`;
