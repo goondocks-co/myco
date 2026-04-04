@@ -380,7 +380,7 @@ export async function main(): Promise<void> {
   let configHash = computeConfigHash(vaultDir);
 
   server.registerRoute('GET', '/api/config', async () => handleGetConfig(vaultDir));
-  server.registerRoute('GET', '/api/symbionts', handleListSymbionts);
+  server.registerRoute('GET', '/api/symbionts', async () => handleListSymbionts(vaultDir));
   server.registerRoute('PUT', '/api/config', async (req) => {
     const result = await handlePutConfig(vaultDir, req.body);
     if (!result.status || result.status < 400) {
