@@ -115,6 +115,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
    */
   async function triggerTitleSummary(sessionId: string): Promise<void> {
     if (config.agent.summary_batch_interval <= 0) return;
+    if (config.agent.event_tasks_enabled === false) return;
     // No caller-side concurrency guard — the executor's per-task guard
     // handles blocking duplicate title-summary runs.
     try {
