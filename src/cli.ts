@@ -11,7 +11,8 @@ const USAGE = `Usage: myco <command> [args]
 Commands:
   init [options]           Initialize a new vault
   update                   Update vault files and agent registration
-  remove [--remove-vault]  Remove Myco from this project (vault preserved by default)
+  remove [--remove-vault]    Remove Myco from this project (vault preserved by default)
+  remove --symbiont <name>   Unregister a single agent and remove from config
   config <get|set> [args]  Get or set vault config values
   detect-providers         Detect available LLM/embedding providers (JSON)
   verify                   Test LLM and embedding connectivity

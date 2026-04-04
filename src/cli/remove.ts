@@ -1,7 +1,8 @@
 import { resolveVaultDir } from '../vault/resolve.js';
-import { isProcessAlive } from './shared.js';
+import { isProcessAlive, parseStringFlag } from './shared.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller } from '../symbionts/installer.js';
+import { loadConfig, updateConfig } from '../config/loader.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -12,14 +13,57 @@ export async function run(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  const symbiontName = parseStringFlag(args, '--symbiont');
+
+  // --- Per-symbiont removal ---
+  if (symbiontName) {
+    const allManifests = loadManifests();
+    const manifest = allManifests.find((m) => m.name === symbiontName);
+    if (!manifest) {
+      console.error(`Unknown symbiont: ${symbiontName}. Available: ${allManifests.map((m) => m.name).join(', ')}`);
+      process.exit(1);
+    }
+
+    const projectRoot = path.dirname(vaultDir);
+    const pkgRoot = resolvePackageRoot();
+    const installer = new SymbiontInstaller(manifest, projectRoot, pkgRoot);
+    const result = installer.uninstall();
+
+    const removed = [
+      result.hooks && 'hooks',
+      result.mcp && 'MCP server',
+      result.skills && 'skills',
+      result.settings && 'settings',
+      result.instructions && 'instructions',
+    ].filter(Boolean);
+
+    if (removed.length > 0) {
+      console.log(`  \u2713 Removed ${manifest.displayName}: ${removed.join(', ')}`);
+    } else {
+      console.log(`  \u2013 ${manifest.displayName}: nothing to remove`);
+    }
+
+    // Remove from config
+    const config = loadConfig(vaultDir);
+    if (config.symbionts?.[symbiontName]) {
+      updateConfig(vaultDir, (c) => {
+        const { [symbiontName]: _, ...rest } = c.symbionts ?? {};
+        return { ...c, symbionts: Object.keys(rest).length > 0 ? rest : undefined };
+      });
+      console.log(`  \u2713 Removed ${symbiontName} from myco.yaml`);
+    }
+
+    return;
+  }
+
+  // --- Full removal (existing behavior, unchanged) ---
+
   const projectRoot = path.dirname(vaultDir);
   const allManifests = loadManifests();
   const pkgRoot = resolvePackageRoot();
   const removeVault = args.includes('--remove-vault');
 
   console.log(`Removing Myco from ${projectRoot}\n`);
-
-  // --- Stop daemon ---
 
   const daemonPath = path.join(vaultDir, 'daemon.json');
   try {
@@ -31,8 +75,6 @@ export async function run(args: string[]): Promise<void> {
     fs.unlinkSync(daemonPath);
   } catch { /* no daemon running */ }
 
-  // --- Unregister from all configured agents ---
-
   const configured = allManifests.filter((m) =>
     fs.existsSync(path.join(projectRoot, m.configDir)),
   );
@@ -41,7 +83,6 @@ export async function run(args: string[]): Promise<void> {
     try {
       const installer = new SymbiontInstaller(manifest, projectRoot, pkgRoot);
       const result = installer.uninstall();
-
       const removed = [
         result.hooks && 'hooks',
         result.mcp && 'MCP server',
@@ -49,7 +90,6 @@ export async function run(args: string[]): Promise<void> {
         result.settings && 'settings',
         result.instructions && 'instructions',
       ].filter(Boolean);
-
       if (removed.length > 0) {
         console.log(`  \u2713 Removed from ${manifest.displayName}: ${removed.join(', ')}`);
       }
@@ -57,8 +97,6 @@ export async function run(args: string[]): Promise<void> {
       console.error(`  \u2717 Failed to clean ${manifest.displayName}: ${(err as Error).message}`);
     }
   }
-
-  // --- Remove .mcp.json if it's now empty ---
 
   const mcpJsonPath = path.join(projectRoot, '.mcp.json');
   try {
@@ -68,8 +106,6 @@ export async function run(args: string[]): Promise<void> {
       console.log('  \u2713 Removed empty .mcp.json');
     }
   } catch { /* doesn't exist or already clean */ }
-
-  // --- Remove vault (unless --keep-vault) ---
 
   if (removeVault) {
     fs.rmSync(vaultDir, { recursive: true, force: true });
