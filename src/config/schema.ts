@@ -114,6 +114,10 @@ const NotificationsSchema = z.object({
   })).default({}),
 });
 
+const SymbiontEntrySchema = z.object({
+  enabled: z.boolean().default(true),
+});
+
 export const MycoConfigSchema = z.preprocess(
   (raw: unknown) => {
     if (raw && typeof raw === 'object' && 'curation' in raw && !('agent' in raw)) {
@@ -134,6 +138,7 @@ export const MycoConfigSchema = z.preprocess(
     team: TeamSchema.default(() => TeamSchema.parse({})),
     skills: SkillsSchema.default(() => SkillsSchema.parse({})),
     notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
+    symbionts: z.record(z.string(), SymbiontEntrySchema).optional(),
   }),
 );
 
@@ -147,3 +152,4 @@ export type BackupConfig = z.infer<typeof BackupSchema>;
 export type TeamConfig = z.infer<typeof TeamSchema>;
 export type SkillsConfig = z.infer<typeof SkillsSchema>;
 export type NotificationsConfig = z.infer<typeof NotificationsSchema>;
+export type SymbiontEntry = z.infer<typeof SymbiontEntrySchema>;
