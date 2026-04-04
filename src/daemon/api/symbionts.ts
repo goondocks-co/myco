@@ -1,5 +1,5 @@
 import { loadManifests } from '@myco/symbionts/detect.js';
-import { loadConfig } from '../../config/loader.js';
+import { loadConfig, getEnabledSymbiontNames } from '../../config/loader.js';
 import type { RouteResponse } from '../router.js';
 
 // ---------------------------------------------------------------------------
@@ -32,14 +32,7 @@ export async function handleListSymbionts(vaultDir: string): Promise<RouteRespon
 
   let enabledNames: Set<string> | null = null;
   try {
-    const config = loadConfig(vaultDir);
-    if (config.symbionts) {
-      enabledNames = new Set(
-        Object.entries(config.symbionts)
-          .filter(([, entry]) => entry.enabled)
-          .map(([name]) => name),
-      );
-    }
+    enabledNames = getEnabledSymbiontNames(loadConfig(vaultDir));
   } catch { /* config not loadable */ }
 
   const symbionts: SymbiontInfo[] = manifests.map((m) => ({

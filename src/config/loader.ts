@@ -121,6 +121,20 @@ export function updateBackupConfig(
   }));
 }
 
+/**
+ * Extract the set of enabled symbiont names from config.
+ * Returns null when the `symbionts` section is absent (pre-existing installs),
+ * signalling callers to fall back to their own heuristic.
+ */
+export function getEnabledSymbiontNames(config: MycoConfig): Set<string> | null {
+  if (!config.symbionts) return null;
+  return new Set(
+    Object.entries(config.symbionts)
+      .filter(([, entry]) => entry.enabled)
+      .map(([name]) => name),
+  );
+}
+
 export function updateTeamConfig(
   vaultDir: string,
   team: Partial<TeamConfig>,

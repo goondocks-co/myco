@@ -1,7 +1,7 @@
 import { resolveVaultDir } from '../vault/resolve.js';
 import { VAULT_GITIGNORE, registerSymbionts } from './shared.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
-import { loadConfig } from '../config/loader.js';
+import { loadConfig, getEnabledSymbiontNames } from '../config/loader.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -48,13 +48,10 @@ export async function run(args: string[]): Promise<void> {
   const config = loadConfig(vaultDir);
   let configured: typeof allManifests;
 
-  if (config.symbionts) {
+  const enabledNames = getEnabledSymbiontNames(config);
+
+  if (enabledNames) {
     // Explicit mode: only update enabled symbionts
-    const enabledNames = new Set(
-      Object.entries(config.symbionts)
-        .filter(([, entry]) => entry.enabled)
-        .map(([name]) => name),
-    );
     configured = allManifests.filter((m) => enabledNames.has(m.name));
 
     // Warn about registered-but-not-enabled symbionts

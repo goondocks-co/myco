@@ -122,25 +122,14 @@ async function checkEmbeddings(config: import('../config/schema.js').MycoConfig)
 }
 
 /** Check symbiont detection and registration status. */
-async function checkAgents(vaultDir: string): Promise<DoctorCheck[]> {
+async function checkAgents(vaultDir: string, config: import('../config/schema.js').MycoConfig | null): Promise<DoctorCheck[]> {
   try {
     const { detectSymbionts } = await import('../symbionts/detect.js');
-    const { loadConfig } = await import('../config/loader.js');
+    const { getEnabledSymbiontNames } = await import('../config/loader.js');
     const projectRoot = path.dirname(vaultDir);
     const detected = detectSymbionts(projectRoot);
 
-    // Load config to check enabled list
-    let enabledNames: Set<string> | null = null;
-    try {
-      const config = loadConfig(vaultDir);
-      if (config.symbionts) {
-        enabledNames = new Set(
-          Object.entries(config.symbionts)
-            .filter(([, entry]) => entry.enabled)
-            .map(([name]) => name),
-        );
-      }
-    } catch { /* config not loadable — skip enabled check */ }
+    const enabledNames = config ? getEnabledSymbiontNames(config) : null;
 
     if (detected.length === 0 && !enabledNames) {
       return [{ name: 'Agents', status: 'warn', detail: 'No symbionts detected', fixable: false }];
@@ -260,7 +249,7 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   checks.push(await checkDatabase(vaultDir));
   checks.push(await checkIntelligence(config));
   checks.push(await checkEmbeddings(config));
-  checks.push(...await checkAgents(vaultDir));
+  checks.push(...await checkAgents(vaultDir, config));
   checks.push(await checkDaemon(vaultDir));
 
   return checks;
