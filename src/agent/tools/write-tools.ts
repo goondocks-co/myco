@@ -75,6 +75,7 @@ export function createWriteTools(deps: VaultToolDeps) {
       recordTurn('vault_create_spore', args);
       return textResult(spore);
     },
+    { annotations: { openWorldHint: true } },
   );
 
   const vaultCreateEntity = tool(
@@ -104,6 +105,7 @@ export function createWriteTools(deps: VaultToolDeps) {
       recordTurn('vault_create_entity', args);
       return textResult(entity);
     },
+    { annotations: { idempotentHint: true } },
   );
 
   const vaultCreateEdge = tool(
@@ -140,6 +142,7 @@ export function createWriteTools(deps: VaultToolDeps) {
       recordTurn('vault_create_edge', args);
       return textResult(edge);
     },
+    { annotations: { idempotentHint: true } },
   );
 
   const vaultResolveSpore = tool(
@@ -187,6 +190,7 @@ export function createWriteTools(deps: VaultToolDeps) {
       recordTurn('vault_resolve_spore', args);
       return textResult({ spore: updatedSpore, resolution_event_id: eventId });
     },
+    { annotations: { destructiveHint: true } },
   );
 
   const vaultUpdateSession = tool(
@@ -211,6 +215,7 @@ export function createWriteTools(deps: VaultToolDeps) {
       recordTurn('vault_update_session', args);
       return textResult(session);
     },
+    { annotations: { idempotentHint: true } },
   );
 
   const vaultSetState = tool(
@@ -227,6 +232,7 @@ export function createWriteTools(deps: VaultToolDeps) {
       recordTurn('vault_set_state', args);
       return textResult(state);
     },
+    { annotations: { idempotentHint: true } },
   );
 
   const vaultReadDigest = tool(
@@ -276,6 +282,7 @@ export function createWriteTools(deps: VaultToolDeps) {
       recordTurn('vault_write_digest', args);
       return textResult(extract);
     },
+    { annotations: { idempotentHint: true } },
   );
 
   const vaultMarkProcessed = tool(
@@ -290,6 +297,7 @@ export function createWriteTools(deps: VaultToolDeps) {
       recordTurn('vault_mark_processed', args);
       return textResult(batch);
     },
+    { annotations: { destructiveHint: true } },
   );
 
   return [
