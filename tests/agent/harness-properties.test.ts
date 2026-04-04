@@ -31,13 +31,21 @@ describe('harness properties', () => {
   const tasksDir = resolve(defsDir, 'tasks');
   const yamlFiles = readdirSync(tasksDir).filter(f => f.endsWith('.yaml'));
 
+  // Parse all YAML files once — reused across all describe blocks
+  const parsedTasks = new Map(
+    yamlFiles.map(file => [file, parseYaml(readFileSync(resolve(tasksDir, file), 'utf-8'))] as const),
+  );
+
+  // Create tools once — reused across annotation and YAML validation tests
+  const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID);
+  const toolNameSet = new Set(tools.map(t => t.name));
+
   // ---------------------------------------------------------------------------
   // Area 1: Tool Annotations
   // ---------------------------------------------------------------------------
 
   describe('tool annotations', () => {
     it('every tool has an annotations object', () => {
-      const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID);
       expect(tools).toHaveLength(VAULT_TOOL_COUNT);
       for (const t of tools) {
         expect(
@@ -48,7 +56,6 @@ describe('harness properties', () => {
     });
 
     it('read tools are annotated readOnlyHint: true', () => {
-      const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID);
       const readToolNames = [
         'vault_unprocessed', 'vault_spores', 'vault_sessions',
         'vault_search_fts', 'vault_search_semantic', 'vault_state',
@@ -65,7 +72,6 @@ describe('harness properties', () => {
     });
 
     it('destructive tools are annotated destructiveHint: true', () => {
-      const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID);
       const destructiveToolNames = ['vault_resolve_spore', 'vault_mark_processed'];
       for (const name of destructiveToolNames) {
         const t = tools.find(tool => tool.name === name);
@@ -89,8 +95,7 @@ describe('harness properties', () => {
 
     for (const file of yamlFiles) {
       describe(file, () => {
-        const raw = readFileSync(resolve(tasksDir, file), 'utf-8');
-        const parsed = parseYaml(raw);
+        const parsed = parsedTasks.get(file)!;
 
         it('parses against AgentTaskSchema', () => {
           const result = AgentTaskSchema.safeParse(parsed);
@@ -103,12 +108,10 @@ describe('harness properties', () => {
 
         if (parsed.phases) {
           it('every phase tool name exists in the tool registry', () => {
-            const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID);
-            const toolNames = new Set(tools.map(t => t.name));
             for (const phase of parsed.phases) {
               for (const toolName of phase.tools ?? []) {
                 expect(
-                  toolNames.has(toolName),
+                  toolNameSet.has(toolName),
                   `Phase "${phase.name}" in ${file} references unknown tool "${toolName}"`,
                 ).toBe(true);
               }
@@ -164,8 +167,7 @@ describe('harness properties', () => {
     const UNCONDITIONAL_ALLOWLIST = ['full-intelligence', 'skill-survey'];
 
     for (const file of yamlFiles) {
-      const raw = readFileSync(resolve(tasksDir, file), 'utf-8');
-      const parsed = parseYaml(raw);
+      const parsed = parsedTasks.get(file)!;
       if (parsed.schedule?.enabled) {
         it(`${file}: scheduled task has preCondition or is in allowlist`, () => {
           const isAllowlisted = UNCONDITIONAL_ALLOWLIST.includes(parsed.name);
@@ -184,46 +186,40 @@ describe('harness properties', () => {
   // ---------------------------------------------------------------------------
 
   describe('read-only phase safety', () => {
-    const READ_ONLY_PHASES: Record<string, string[]> = {
-      'skill-survey': ['explore-spores', 'explore-sessions', 'explore-plans'],
-      'full-intelligence': ['read-state'],
-      'skill-generate': ['gather'],
-      'skill-evolve': ['assess'],
-    };
-
-    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID);
+    // Derive read-only phases from YAML readOnly: true — no hardcoded map.
+    // New phases with readOnly: true are automatically covered.
     const destructiveToolNames = new Set(
       tools.filter(t => t.annotations?.destructiveHint).map(t => t.name),
     );
 
     for (const file of yamlFiles) {
-      const raw = readFileSync(resolve(tasksDir, file), 'utf-8');
-      const parsed = parseYaml(raw);
+      const parsed = parsedTasks.get(file)!;
       const taskName = parsed.name as string;
-      const roPhases = READ_ONLY_PHASES[taskName];
 
-      if (roPhases && parsed.phases) {
-        for (const phaseName of roPhases) {
-          const phase = (parsed.phases as Array<{ name: string; tools: string[]; readOnly?: boolean }>)
-            .find(p => p.name === phaseName);
-          if (phase) {
-            it(`${taskName}/${phaseName} has no destructive tools`, () => {
-              const badTools = phase.tools.filter(t => destructiveToolNames.has(t));
-              expect(
-                badTools,
-                `Read-only phase "${phaseName}" in ${taskName} has destructive tools: ${badTools.join(', ')}`,
-              ).toHaveLength(0);
-            });
+      if (parsed.phases) {
+        const roPhases = (parsed.phases as Array<{ name: string; tools: string[]; readOnly?: boolean }>)
+          .filter(p => p.readOnly);
 
-            it(`${taskName}/${phaseName} has readOnly: true in YAML`, () => {
-              expect(
-                phase.readOnly,
-                `Phase "${phaseName}" in ${taskName} should have readOnly: true`,
-              ).toBe(true);
-            });
-          }
+        for (const phase of roPhases) {
+          it(`${taskName}/${phase.name} has no destructive tools`, () => {
+            const badTools = phase.tools.filter(t => destructiveToolNames.has(t));
+            expect(
+              badTools,
+              `Read-only phase "${phase.name}" in ${taskName} has destructive tools: ${badTools.join(', ')}`,
+            ).toHaveLength(0);
+          });
         }
       }
     }
+
+    it('at least one phase across all tasks is marked readOnly', () => {
+      let readOnlyCount = 0;
+      for (const parsed of parsedTasks.values()) {
+        if (parsed.phases) {
+          readOnlyCount += (parsed.phases as Array<{ readOnly?: boolean }>).filter(p => p.readOnly).length;
+        }
+      }
+      expect(readOnlyCount, 'No readOnly phases found — was the flag removed?').toBeGreaterThan(0);
+    });
   });
 });
