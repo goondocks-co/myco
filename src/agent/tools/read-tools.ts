@@ -183,7 +183,7 @@ export function createReadTools(deps: VaultToolDeps) {
         return textResult({ results: [], message: 'Semantic search unavailable' });
       }
     },
-    { annotations: { readOnlyHint: true } },
+    { annotations: { readOnlyHint: true, openWorldHint: true } },
   );
 
   const vaultState = tool(

@@ -40,6 +40,7 @@ export function createObservabilityTools(deps: VaultToolDeps) {
 
       return textResult(report);
     },
+    { annotations: {} },
   );
 
   return [vaultReport];
