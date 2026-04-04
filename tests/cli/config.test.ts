@@ -148,6 +148,28 @@ describe('myco config', () => {
     });
   });
 
+  describe('agent schema toggles', () => {
+    const minimalConfig = { version: 3, embedding: { provider: 'ollama', model: 'bge-m3' } };
+
+    it('scheduled_tasks_enabled defaults to true when not specified', () => {
+      const config = MycoConfigSchema.parse(minimalConfig);
+      expect(config.agent.scheduled_tasks_enabled).toBe(true);
+    });
+
+    it('event_tasks_enabled defaults to true when not specified', () => {
+      const config = MycoConfigSchema.parse(minimalConfig);
+      expect(config.agent.event_tasks_enabled).toBe(true);
+    });
+
+    it('scheduled_tasks_enabled can be set to false', () => {
+      const config = MycoConfigSchema.parse({
+        ...minimalConfig,
+        agent: { scheduled_tasks_enabled: false },
+      });
+      expect(config.agent.scheduled_tasks_enabled).toBe(false);
+    });
+  });
+
   describe('symbionts schema', () => {
     it('parses symbionts map from config', () => {
       const config = MycoConfigSchema.parse({

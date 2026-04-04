@@ -66,6 +66,10 @@ const ContextSchema = z.object({
 const AgentSchema = z.object({
   /** Number of batches between event-driven summary triggers (0 to disable). */
   summary_batch_interval: z.number().int().min(0).default(5),
+  /** Global toggle for PowerManager-scheduled agent tasks. */
+  scheduled_tasks_enabled: z.boolean().default(true),
+  /** Global toggle for event-driven agent tasks (title-summary). */
+  event_tasks_enabled: z.boolean().default(true),
   /** Global default provider — applies to all tasks unless overridden per-task. */
   provider: ProviderOverrideSchema.optional(),
   /** Global default model — applies to all tasks unless overridden per-task. */
