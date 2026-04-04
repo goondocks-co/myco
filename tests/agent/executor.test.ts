@@ -57,6 +57,13 @@ let mockResultTexts: string[] = [];
 /** Default result text for successful queries. */
 const DEFAULT_RESULT_TEXT = 'Agent run complete.';
 
+/**
+ * Number of `assistant` type messages yielded before the final `result`
+ * message. Controls turn metric behavior: the executor counts these instead
+ * of using num_turns from the SDK result.
+ */
+let mockAssistantCount = 0;
+
 vi.mock('@anthropic-ai/claude-agent-sdk', () => {
   return {
     query: (args: { prompt: string; options?: Record<string, unknown> }) => {
@@ -78,6 +85,14 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
           }
 
           if (behavior === 'success') {
+            for (let i = 0; i < mockAssistantCount; i++) {
+              yield {
+                type: 'assistant' as const,
+                message: { role: 'assistant' as const, content: 'test response' },
+                uuid: `assistant-${i}`,
+                session_id: 'test-session',
+              };
+            }
             yield {
               type: 'result' as const,
               subtype: 'success' as const,
@@ -313,6 +328,7 @@ function resetMockState(): void {
   mockYamlPhases = undefined;
   mockExecution = undefined;
   mockOrchestratorConfig = undefined;
+  mockAssistantCount = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -588,6 +604,18 @@ describe('runAgent', () => {
 
     const opts = capturedQueryArgs!.options as Record<string, unknown>;
     expect(opts.maxTurns).toBe(42);
+  });
+
+  it('passes abort controller to SDK for timeout enforcement', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    await runAgent(TEST_VAULT_DIR);
+
+    expect(capturedQueryArgs).not.toBeNull();
+    const opts = capturedQueryArgs!.options as Record<string, unknown>;
+    // The executor creates an AbortController and passes it to the SDK
+    expect(opts.abortController).toBeDefined();
+    expect(opts.abortController).toBeInstanceOf(AbortController);
   });
 });
 
@@ -930,6 +958,24 @@ describe('runAgent — phased execution', () => {
 
     // Phase calls start at index 1 (index 0 is orchestrator)
     expect((allQueryCalls[2].options as Record<string, unknown>).maxTurns).toBe(7);
+  });
+
+  it('turnsUsed counts assistant messages, not SDK num_turns', async () => {
+    // The mock result message always has num_turns: 3. We yield 2 assistant
+    // messages before it. The executor prefers agenticTurns (assistant message
+    // count) over num_turns, so turnsUsed should be 2, not 3.
+    mockAssistantCount = 2;
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const result = await runAgent(TEST_VAULT_DIR);
+
+    expect(result.phases).toBeDefined();
+    expect(result.phases!.length).toBe(3);
+    for (const phase of result.phases!) {
+      // turnsUsed = agenticTurns (2 assistant messages), NOT num_turns (3)
+      expect(phase.turnsUsed).toBe(2);
+    }
   });
 });
 
