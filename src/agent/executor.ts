@@ -429,6 +429,7 @@ async function executePhasedQuery(
           embeddingManager,
           projectRoot,
           vaultDir,
+          readOnly: phase.readOnly,
         },
       );
 

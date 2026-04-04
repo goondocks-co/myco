@@ -43,6 +43,8 @@ export interface PhaseDefinition {
   provider?: ProviderConfig;
   /** If true, prior phase summaries are omitted from the composed prompt (avoids context bloat for terminal phases). */
   skipPriorContext?: boolean;
+  /** If true, the scoped tool server only includes read-only tools (readOnlyHint === true). */
+  readOnly?: boolean;
 }
 
 /** Result of a single phase execution within a phased run. */

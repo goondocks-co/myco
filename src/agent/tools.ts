@@ -142,11 +142,15 @@ export function createScopedVaultToolServer(
   agentId: string,
   runId: string,
   toolNames: string[],
-  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir'>,
+  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir'> & { readOnly?: boolean },
 ) {
   const allTools = createVaultTools(agentId, runId, options);
   const nameSet = new Set(toolNames);
-  const scopedTools = allTools.filter((t) => nameSet.has(t.name));
+  let scopedTools = allTools.filter((t) => nameSet.has(t.name));
+
+  if (options?.readOnly) {
+    scopedTools = scopedTools.filter((t) => t.annotations?.readOnlyHint === true);
+  }
 
   return createSdkMcpServer({
     name: 'myco-vault',

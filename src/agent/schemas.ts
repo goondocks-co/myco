@@ -101,6 +101,7 @@ export const PhaseDefinitionSchema = z.object({
   dependsOn: z.array(z.string()).optional(),
   provider: ProviderConfigSchema.optional(),
   skipPriorContext: z.boolean().optional(),
+  readOnly: z.boolean().optional(),
 });
 
 /** Schema for task YAML files in tasks/. */

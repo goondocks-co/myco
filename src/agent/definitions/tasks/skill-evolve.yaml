@@ -105,6 +105,7 @@ phases:
       - vault_report
     maxTurns: 20
     required: true
+    readOnly: true
 
   - name: evolve
     prompt: |

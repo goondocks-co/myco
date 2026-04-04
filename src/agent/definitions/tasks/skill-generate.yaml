@@ -69,6 +69,7 @@ phases:
       - vault_edges
     maxTurns: 10
     required: true
+    readOnly: true
 
   - name: draft
     prompt: |

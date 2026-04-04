@@ -243,7 +243,7 @@ vi.mock('@myco/agent/context.js', () => ({
 // ---------------------------------------------------------------------------
 
 /** Captured calls to createScopedVaultToolServer. */
-let scopedToolCalls: Array<{ agentId: string; runId: string; toolNames: string[] }> = [];
+let scopedToolCalls: Array<{ agentId: string; runId: string; toolNames: string[]; options?: Record<string, unknown> }> = [];
 
 vi.mock('@myco/agent/tools.js', () => ({
   createVaultToolServer: (_agentId: string, _runId: string) => ({
@@ -251,8 +251,8 @@ vi.mock('@myco/agent/tools.js', () => ({
     name: 'myco-vault',
     instance: {},
   }),
-  createScopedVaultToolServer: (agentId: string, runId: string, toolNames: string[]) => {
-    scopedToolCalls.push({ agentId, runId, toolNames });
+  createScopedVaultToolServer: (agentId: string, runId: string, toolNames: string[], options?: Record<string, unknown>) => {
+    scopedToolCalls.push({ agentId, runId, toolNames, options });
     return {
       type: 'sdk' as const,
       name: 'myco-vault',
@@ -976,6 +976,22 @@ describe('runAgent — phased execution', () => {
       // turnsUsed = agenticTurns (2 assistant messages), NOT num_turns (3)
       expect(phase.turnsUsed).toBe(2);
     }
+  });
+
+  it('passes readOnly flag to scoped tool server for read-only phases', async () => {
+    mockYamlPhases = [
+      { name: 'explore', prompt: 'Explore.', tools: ['vault_spores'], maxTurns: 5, required: true, readOnly: true },
+      { name: 'evaluate', prompt: 'Evaluate.', tools: ['vault_skill_candidates'], maxTurns: 5, required: true, dependsOn: ['explore'] },
+    ];
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+    await runAgent(TEST_VAULT_DIR);
+
+    expect(scopedToolCalls.length).toBe(2);
+    // explore phase should have readOnly: true
+    expect(scopedToolCalls[0].options?.readOnly).toBe(true);
+    // evaluate phase should NOT have readOnly
+    expect(scopedToolCalls[1].options?.readOnly).toBeUndefined();
   });
 });
 

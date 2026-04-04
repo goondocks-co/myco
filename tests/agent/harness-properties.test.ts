@@ -188,6 +188,7 @@ describe('harness properties', () => {
       'skill-survey': ['explore-spores', 'explore-sessions', 'explore-plans'],
       'full-intelligence': ['read-state'],
       'skill-generate': ['gather'],
+      'skill-evolve': ['assess'],
     };
 
     const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID);
@@ -203,7 +204,7 @@ describe('harness properties', () => {
 
       if (roPhases && parsed.phases) {
         for (const phaseName of roPhases) {
-          const phase = (parsed.phases as Array<{ name: string; tools: string[] }>)
+          const phase = (parsed.phases as Array<{ name: string; tools: string[]; readOnly?: boolean }>)
             .find(p => p.name === phaseName);
           if (phase) {
             it(`${taskName}/${phaseName} has no destructive tools`, () => {
@@ -212,6 +213,13 @@ describe('harness properties', () => {
                 badTools,
                 `Read-only phase "${phaseName}" in ${taskName} has destructive tools: ${badTools.join(', ')}`,
               ).toHaveLength(0);
+            });
+
+            it(`${taskName}/${phaseName} has readOnly: true in YAML`, () => {
+              expect(
+                phase.readOnly,
+                `Phase "${phaseName}" in ${taskName} should have readOnly: true`,
+              ).toBe(true);
             });
           }
         }
