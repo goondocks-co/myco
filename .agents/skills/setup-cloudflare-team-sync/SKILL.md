@@ -2,182 +2,149 @@
 name: myco:setup-cloudflare-team-sync
 description: Use this skill when setting up Myco's team sync feature using Cloudflare Workers, D1, and Vectorize — or when debugging issues with an existing sync deployment. Activates for tasks involving myco team init, the Team page in the daemon UI, Cloudflare Worker deployment, wrangler CLI setup, machine identity, or cross-machine vault sync. Also applies when diagnosing team sync failures even if the user doesn't explicitly frame it as a Cloudflare problem — symptoms like pending count not draining, sync not working, record count shortfall, or embeddings not appearing on another machine all fall under this skill.
 managed_by: myco
-user-invocable: false
-allowed-tools:
-  - Read
-  - Edit
-  - Write
-  - Bash
-  - Grep
-  - Glob
+user-invocable: true
+allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 
 # Set Up and Debug Cloudflare Team Sync
 
-Myco's team sync replicates vault data (sessions, spores, entities, embeddings) across machines using Cloudflare Workers, D1 (SQL), and Vectorize (embeddings). Each machine writes to a local SQLite `team_outbox` table; the `team-sync-flush` power-manager job drains these records to the Cloudflare Worker on a schedule.
-
 ## Prerequisites
 
-- Cloudflare account with D1 and Vectorize enabled
-- `wrangler` CLI installed and authenticated (`npx wrangler whoami`)
-- Myco daemon installed and running
-- `myco team init` command available (via the daemon UI or CLI)
+- Cloudflare account (free tier covers typical Myco volumes)
+- wrangler CLI installed: `npm install -g wrangler`
+- Authenticated with Cloudflare: `wrangler login`
+- Myco installed and daemon running (`myco start`)
+- Node.js ≥18
 
-## Setup Steps
+## Overview
 
-### 1. Initialize Team Sync Config
+Myco's team sync layer uses three Cloudflare services:
+
+- **D1** — SQLite-compatible database for structured vault records
+- **Vectorize** — Vector index for semantic embeddings
+- **Workers** — Edge function that receives outbox pushes from all machines
+
+The local `.myco/` vault is always the source of truth. The Cloudflare layer is a queryable mirror.
+
+## Steps
+
+### 1. Initialize team sync infrastructure
 
 ```bash
 myco team init
 ```
 
-This writes the `team` block to `myco.yaml` and creates the local `team_outbox` table in the SQLite vault.
+This provisions:
+- A D1 database (via `wrangler d1 create`)
+- A Vectorize index (via `wrangler vectorize create`)
 
-### 2. Create Cloudflare Resources
+Credentials are saved automatically to `.myco/secrets.env`. The command is **idempotent**: if the D1 database already exists, it detects it via `wrangler d1 list --json` rather than failing on a duplicate create.
 
-Create a D1 database:
-```bash
-npx wrangler d1 create myco-sync
-```
-
-Create a Vectorize index (dimensions must match your embedding model — 1024 for `bge-m3`):
-```bash
-npx wrangler vectorize create myco-embeddings --dimensions=1024 --metric=cosine
-```
-
-Copy the resource IDs from each command's output into `myco.yaml` under the `team` block.
-
-### 3. Set a Unique Machine Identity
-
-Each machine must have a unique `machine_id`. Set it in `myco.yaml`:
-
-```yaml
-team:
-  machine_id: "my-machine-name"
-```
-
-> **Important:** The default `machine_id` is `"local"`. If left as `"local"`, records from different machines will collide during deduplication. Always set a descriptive, unique value before your first sync.
-
-### 4. Configure wrangler.toml
-
-Create `src/worker/wrangler.toml` with your D1 and Vectorize bindings:
-
-```toml
-[[d1_databases]]
-binding = "DB"
-database_name = "myco-sync"
-database_id = "<your-d1-id>"
-
-[[vectorize]]
-binding = "VECTORIZE"
-index_name = "myco-embeddings"
-```
-
-### 5. Deploy the Worker
-
-**Always deploy from the `src/worker/` subdirectory**, not the project root:
+### 2. Deploy the Cloudflare Worker
 
 ```bash
-cd src/worker
-npx wrangler deploy
+wrangler deploy
 ```
 
-> **Critical — D1 lazy migration:** `initD1Schema()` runs on the **first incoming request** after deployment, not at build time or dry-run time. Running `wrangler deploy --dry-run` or building locally does **not** migrate D1. You must run a real `npx wrangler deploy` from `src/worker/` for schema changes to apply, and they only take effect when the first request hits the worker.
+Run this from the Worker directory in your Myco installation. Verify the worker is live by checking the Cloudflare dashboard or calling its URL directly.
 
-### 6. Verify Deployment
+### 3. Verify secrets
 
-After deploying, trigger a test flush from the daemon UI (Team page → Sync Now) or wait for the next scheduled flush. Watch the worker logs:
+After `myco team init`, `.myco/secrets.env` will contain:
+
+```
+CLOUDFLARE_ACCOUNT_ID=<your-account-id>
+CLOUDFLARE_API_TOKEN=<your-token>
+D1_DATABASE_ID=<database-uuid>
+VECTORIZE_INDEX_NAME=<index-name>
+```
+
+These are read automatically by the daemon. Do **not** copy these into `myco.yaml` — secrets stay in `secrets.env`, never in YAML config.
+
+### 4. Verify machine identity
+
+Each machine has a unique `machine_id` auto-generated and stored in `.myco/config`. This is the key that distinguishes records from different machines in the shared D1 store.
 
 ```bash
-npx wrangler tail
+myco status
 ```
 
-Confirm you see a schema-init log on the first request, then successful record inserts.
+Look for `machine_id` in the output. If two machines share the same ID (e.g., after copying a `.myco/` directory), delete `.myco/config` on the new machine to regenerate it.
+
+### 5. Verify sync is working
+
+Open the Team page in the Myco daemon UI. You should see:
+- Your machine listed with a sync status
+- Pending count draining to 0 after the outbox flush interval
+- Record counts accumulating across machines
 
 ## Debugging
 
-### Pending Count Not Draining
+### Pending count not draining
 
-If `team_outbox` records accumulate but the pending count never drops, work through these checks in order:
+The outbox flushes on a timed interval. If the count stays elevated:
 
----
+1. Check the Worker is deployed and accessible (test its URL directly)
+2. Check `.myco/secrets.env` has valid, non-expired credentials
+3. Check daemon logs for outbox drain errors
+4. Note: the outbox does **not** drain during `sleep` or `deep_sleep` daemon states — records accumulate and drain on next wake
 
-**Check 1 — `runIn` configuration (most common cause)**
+### Sync not visible on another machine
 
-The `team-sync-flush` power-manager job must be scheduled in **both** `runIn: ['active', 'sleep']`. If `'sleep'` is absent, the flush job won't run when the machine transitions into sleep or deep_sleep states — the queue stalls until the machine returns to active.
+1. Confirm both machines share the same `D1_DATABASE_ID` and `VECTORIZE_INDEX_NAME` in `secrets.env`
+2. Confirm both machines use the same Cloudflare account
+3. Verify the Worker deployment is current
 
-Correct PowerJob definition:
-```typescript
-{
-  id: 'team-sync-flush',
-  runIn: ['active', 'sleep'],     // ← 'sleep' is required
-  preventsDeepSleep: () => {
-    return listPending().length > 0;  // excludes dead-lettered records
-  },
-  // ...
-}
-```
+### Record count shortfall
 
-The `preventsDeepSleep` predicate keeps the machine in sleep (rather than dropping to deep_sleep) until the queue empties. It calls `listPending()`, which excludes dead-lettered records (see Check 2).
-
----
-
-**Check 2 — Dead-lettered records**
-
-As of schema v9, `team_outbox` tracks retry history:
-- `retry_count INTEGER DEFAULT 0` — incremented on each failed flush attempt
-- `last_attempt_at INTEGER` — Unix timestamp of most recent attempt
-
-After **10 consecutive failures**, a record is **dead-lettered**: it is permanently excluded from `listPending()` to prevent the system from holding in sleep indefinitely over unrecoverable records.
-
-Symptoms: pending count drops to zero, but records are still stuck and never reached the remote.
-
-Check for dead-letter records:
-```sql
-SELECT id, retry_count, last_attempt_at FROM team_outbox WHERE retry_count >= 10;
-```
-
-If you see rows here, investigate the root cause of the sync failures (network, auth, worker error) before manually clearing or retrying. The **Team page** in the daemon UI shows a terracotta **"Pending sync"** card with a count when `dead_letter_count > 0`; this card deep-links to the log viewer for diagnosis.
-
----
-
-**Check 3 — Worker authentication**
-
-Use `npx wrangler tail` to confirm the worker is receiving requests and returning 2xx. Auth failures will show as 401/403 responses.
-
----
-
-**Check 4 — Machine ID is not `"local"`**
-
-Records written with `machine_id="local"` may dedup incorrectly on the remote. Confirm `myco.yaml` has a unique, non-default `machine_id`.
-
----
-
-### Sync Working But Records Missing on Another Machine
-
-**Vectorize propagation delay** — Vectorize index updates can take 5–30 seconds to propagate globally. Wait and retry before assuming a bug.
-
-**Record count shortfall** — Compare local outbox flush count vs. remote record count. A gap suggests dead-letter records (see Check 2 above).
-
-**Schema mismatch after redeploy** — If the worker was recently redeployed with schema changes, the new schema only applied on the first post-deploy request. Make a test request if you haven't yet, then re-examine.
-
-### Embeddings Not Appearing on Another Machine
-
-1. Check Vectorize index stats: `npx wrangler vectorize get myco-embeddings`
-2. Confirm the `VECTORIZE` binding in `wrangler.toml` matches the index name
-3. Verify the index dimensions match the embedding model (1024 for `bge-m3`)
-4. Wait 30 seconds — Vectorize is eventually consistent
+If fewer records appear on Machine B than were pushed from Machine A:
+- D1 batch writes may be partially failing — check Worker logs in the Cloudflare dashboard
+- Vectorize insert errors are non-fatal by design; they appear in Worker logs, not daemon logs
 
 ## Common Pitfalls
 
-1. **D1 lazy migration** — `initD1Schema()` runs on the first request after `wrangler deploy`, not at build/dry-run time. Schema changes don't apply until a real deploy is followed by a real request. Always deploy from `src/worker/`.
+### wrangler ≥4.77: `d1 create` output format changed (breaks `myco team init`)
 
-2. **`runIn` missing `'sleep'`** — `team-sync-flush` must include `'sleep'` in its `runIn` array. Without it the flush job is skipped during sleep and deep_sleep, stalling the outbox.
+**Symptom:** `myco team init` fails with `Could not parse D1 database ID from wrangler output`.
 
-3. **Dead-letter ceiling at 10 retries** — Records that fail 10 times are permanently excluded from `listPending()`. The pending count drops to zero but the records are unsynced. Watch for the terracotta "Pending sync" card on the Team page.
+**Cause:** wrangler ≥4.77 changed `wrangler d1 create` output from a plain string:
 
-4. **`machine_id` defaults to `"local"`** — Set a unique machine identity before first sync. The default value breaks cross-machine deduplication.
+```
+Created database with id: <uuid>
+```
 
-5. **Wrong deploy directory** — `wrangler deploy` must be run from `src/worker/`. Running from the project root targets the wrong config and may deploy an incomplete bundle.
+to a JSON binding block:
 
-6. **Vectorize eventual consistency** — Allow 5–30 seconds after a successful flush before checking whether embeddings appear on another machine.
+```json
+{
+  "d1_databases": [
+    { "binding": "DB", "database_name": "myco-vault", "database_id": "<uuid>" }
+  ]
+}
+```
+
+The original Myco parser expected the plain-string format and cannot parse the JSON block.
+
+**Fix:** Update Myco to the latest version (`myco update`). The updated parser handles both output formats and falls back to `wrangler d1 list --json` to detect already-created databases, making `myco team init` fully idempotent.
+
+**Manual workaround (if you cannot update):** Run `wrangler d1 list --json`, find your database entry, and manually set `D1_DATABASE_ID=<uuid>` in `.myco/secrets.env`.
+
+### D1 schema migration runs lazily, not at deploy
+
+**Cause:** `initD1Schema` in the Worker is guarded by a per-instance `schemaInitialized` flag. It runs on the **first request** the Worker handles, not at deploy time.
+
+**Impact:** If an automated health check or probe hits the Worker before any real sync push, it may arrive before the D1 tables exist, causing a schema error on that first call.
+
+**Fix:** This is expected behavior. The first real sync push after deploy triggers schema creation; a retry immediately succeeds. To force initialization: make one manual sync push right after deploying the Worker.
+
+### Secrets in myco.yaml instead of secrets.env
+
+Cloudflare credentials (`CLOUDFLARE_API_TOKEN`, `D1_DATABASE_ID`, etc.) must live in `.myco/secrets.env`. Placing them in `myco.yaml` risks accidental git commits and puts them in a location the daemon does not read for secrets.
+
+### Machine identity collision
+
+If two machines share the same `machine_id` (copied `.myco/config`), their sync records will collide in D1. Delete `.myco/config` on the duplicate machine — a new unique ID is generated on next daemon start.
+
+### wrangler.toml bindings must match secrets.env names
+
+The Worker's `wrangler.toml` declares D1 and Vectorize bindings by name. If `database_name` or `index_name` in `wrangler.toml` differs from what's in `secrets.env`, the Worker will bind to a different resource than the daemon is pushing to, producing a silent data split.
