@@ -51,14 +51,43 @@ export interface VaultToolOptions {
 // Tool definitions factory
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Tool group membership — used to skip factory calls for unneeded groups
+// ---------------------------------------------------------------------------
+
+const READ_TOOL_NAMES = new Set([
+  'vault_unprocessed', 'vault_spores', 'vault_sessions', 'vault_search_fts',
+  'vault_search_semantic', 'vault_state', 'vault_entities', 'vault_edges',
+]);
+
+const WRITE_TOOL_NAMES = new Set([
+  'vault_create_spore', 'vault_create_entity', 'vault_create_edge',
+  'vault_resolve_spore', 'vault_update_session', 'vault_set_state',
+  'vault_read_digest', 'vault_write_digest', 'vault_mark_processed',
+]);
+
+const OBSERVABILITY_TOOL_NAMES = new Set(['vault_report']);
+
+const SKILL_TOOL_NAMES = new Set([
+  'vault_skill_candidates', 'vault_skill_records', 'vault_write_skill',
+]);
+
+function setsOverlap(a: Set<string>, b: Set<string>): boolean {
+  for (const item of a) { if (b.has(item)) return true; }
+  return false;
+}
+
 /**
- * Create the 21 vault tool definitions for the agent (includes 3 skill tools:
- * vault_skill_candidates, vault_skill_records, vault_write_skill).
+ * Create vault tool definitions for the agent.
+ *
+ * When `onlyNames` is provided, only tool groups that contain at least one
+ * requested name are instantiated — avoids building all 21 closures when
+ * a phase only needs 2-3 tools.
  *
  * Exposed for testing (call handler directly) and for the MCP server factory.
  */
-export function createVaultTools(agentId: string, runId: string, options?: VaultToolOptions) {
-  const { turnOffset = 0, embeddingManager, teamClient, machineId, projectRoot, vaultDir } = options ?? {};
+export function createVaultTools(agentId: string, runId: string, options?: VaultToolOptions & { onlyNames?: Set<string> }) {
+  const { turnOffset = 0, embeddingManager, teamClient, machineId, projectRoot, vaultDir, onlyNames } = options ?? {};
 
   /** Turn number counter — incremented per tool call (read and write) within a run. */
   let turnCounter = turnOffset;
@@ -95,11 +124,13 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     recordTurn,
   };
 
+  // When onlyNames is provided, skip factory calls for groups with no overlap
+  const needsAll = !onlyNames;
   return [
-    ...createReadTools(deps),
-    ...createWriteTools(deps),
-    ...createObservabilityTools(deps),
-    ...createSkillTools(deps),
+    ...(needsAll || setsOverlap(onlyNames!, READ_TOOL_NAMES) ? createReadTools(deps) : []),
+    ...(needsAll || setsOverlap(onlyNames!, WRITE_TOOL_NAMES) ? createWriteTools(deps) : []),
+    ...(needsAll || setsOverlap(onlyNames!, OBSERVABILITY_TOOL_NAMES) ? createObservabilityTools(deps) : []),
+    ...(needsAll || setsOverlap(onlyNames!, SKILL_TOOL_NAMES) ? createSkillTools(deps) : []),
   ];
 }
 
@@ -144,13 +175,13 @@ export function createScopedVaultToolServer(
   toolNames: string[],
   options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir'> & { readOnly?: boolean },
 ) {
-  const allTools = createVaultTools(agentId, runId, options);
+  const nameSet = new Set(toolNames);
+  const allTools = createVaultTools(agentId, runId, { ...options, onlyNames: nameSet });
   // readOnly gate first — structural enforcement before name scoping,
   // so a write tool in the name list can never pass the readOnly filter.
   const eligible = options?.readOnly
     ? allTools.filter((t) => t.annotations?.readOnlyHint === true)
     : allTools;
-  const nameSet = new Set(toolNames);
   const scopedTools = eligible.filter((t) => nameSet.has(t.name));
 
   return createSdkMcpServer({
