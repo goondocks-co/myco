@@ -136,6 +136,7 @@ export function createSkillTools(deps: VaultToolDeps) {
           return textResult({ error: `Unknown action: ${args.action}` });
       }
     },
+    { annotations: {} },
   );
 
   const vaultSkillRecords = tool(
@@ -213,6 +214,7 @@ export function createSkillTools(deps: VaultToolDeps) {
           return textResult({ error: `Unknown action: ${args.action}` });
       }
     },
+    { annotations: {} },
   );
 
   const vaultWriteSkill = tool(
@@ -385,6 +387,7 @@ export function createSkillTools(deps: VaultToolDeps) {
         generation,
       });
     },
+    { annotations: {} },
   );
 
   return [
