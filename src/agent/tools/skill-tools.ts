@@ -387,7 +387,7 @@ export function createSkillTools(deps: VaultToolDeps) {
         generation,
       });
     },
-    { annotations: {} },
+    { annotations: { openWorldHint: true } },
   );
 
   return [

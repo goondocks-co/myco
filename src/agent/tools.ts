@@ -145,12 +145,13 @@ export function createScopedVaultToolServer(
   options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir'> & { readOnly?: boolean },
 ) {
   const allTools = createVaultTools(agentId, runId, options);
+  // readOnly gate first — structural enforcement before name scoping,
+  // so a write tool in the name list can never pass the readOnly filter.
+  const eligible = options?.readOnly
+    ? allTools.filter((t) => t.annotations?.readOnlyHint === true)
+    : allTools;
   const nameSet = new Set(toolNames);
-  let scopedTools = allTools.filter((t) => nameSet.has(t.name));
-
-  if (options?.readOnly) {
-    scopedTools = scopedTools.filter((t) => t.annotations?.readOnlyHint === true);
-  }
+  const scopedTools = eligible.filter((t) => nameSet.has(t.name));
 
   return createSdkMcpServer({
     name: 'myco-vault',

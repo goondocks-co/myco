@@ -26,8 +26,6 @@ const TEST_TASK_NAME = 'full-intelligence';
 const TEST_TASK_PROMPT = 'Run full intelligence pipeline.';
 const TEST_SYSTEM_PROMPT = 'You are a vault agent.';
 
-/** Epoch seconds helper. */
-const epochNow = () => Math.floor(Date.now() / 1000);
 
 // ---------------------------------------------------------------------------
 // Mock: Agent SDK query
@@ -293,7 +291,7 @@ vi.mock('@myco/config/loader.js', () => ({
 // ---------------------------------------------------------------------------
 
 async function createTestAgent(id: string): Promise<void> {
-  const now = epochNow();
+  const now = epochSeconds();
   registerAgent({
     id,
     name: `agent-${id}`,
@@ -303,7 +301,7 @@ async function createTestAgent(id: string): Promise<void> {
 }
 
 async function createTestTask(): Promise<void> {
-  const now = epochNow();
+  const now = epochSeconds();
   upsertTask({
     id: TEST_TASK_NAME,
     agent_id: TEST_AGENT_ID,
