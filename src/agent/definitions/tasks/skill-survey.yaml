@@ -97,20 +97,45 @@ phases:
       spores and entities, one explored sessions, one explored plans.
       Their findings are in the prior context.
 
-      For each procedural cluster identified across the exploration phases:
+      BEFORE creating any candidates, you MUST load the dedup context:
+      1. vault_skill_records (action: list) — all active skills on disk
+      2. vault_skill_candidates (action: list) — all existing candidates
+      Keep both lists for reference throughout this phase.
 
-      1. Is this a procedure (how to do something in this project)?
-         Only procedures become skills. "What is X" is not a skill.
-         "How to do X" is a skill.
+      For each procedural cluster identified, evaluate ALL of these
+      criteria. A candidate must pass EVERY one:
 
-      2. Is there enough cross-session evidence?
-         Minimum: knowledge from 2+ sessions, 3+ source items across
-         sessions, spores, and plans.
+      1. PROCEDURE TEST: Is this "how to do X in this project"?
+         "What is X" or "X exists" is knowledge, not a skill. Skip it.
 
-      3. Does an existing skill or candidate already cover this topic?
-         Use vault_skill_candidates (action: list) to check.
+      2. REPEATABILITY TEST: Will someone need to do this again?
+         Skills are repeatable how-to's for recurring tasks — things
+         a developer will do more than once as the project grows.
+         One-time fixes, bug patches, version-specific workarounds,
+         and already-applied migration steps are NOT skills. They are
+         vault knowledge (spores/wisdom) that should stay as spores.
+         Ask: "if a new contributor joined tomorrow, would they ever
+         need to follow this procedure?" If the answer is "no, it was
+         done once and the result is permanent," it is not a skill.
+         Examples of SKILLS: adding a new symbiont, creating a DB
+         migration, registering an MCP tool, authoring an agent task.
+         NOT skills: fixing a specific bug, applying a one-off schema
+         change, adapting to a framework update, addressing a one-off
+         behavioral change in a dependency.
 
-      4. Score confidence (0.0-1.0) based on:
+      3. CROSS-SESSION EVIDENCE: Knowledge from 2+ sessions, 3+ source
+         items across sessions, spores, and plans.
+
+      4. DEDUPLICATION (mandatory — failures here create real problems):
+         Check BOTH lists from step 0 above.
+         - If an active skill record's name or description covers the
+           same procedure, do NOT create a duplicate. Skip it entirely.
+         - If a non-dismissed candidate covers the same topic, UPDATE
+           that candidate with new evidence instead of creating a new one.
+         - If a generated/dismissed candidate covered this, it was
+           already handled. Do not re-create it.
+
+      5. CONFIDENCE SCORE (0.0-1.0):
          - Knowledge density (more sources = higher)
          - Cross-session evidence (wider = higher)
          - Presence of wisdom spores (higher quality signal)
@@ -120,13 +145,16 @@ phases:
       with topic, rationale, confidence, and source_ids (JSON array of
       {id, type} objects referencing the spores, sessions, and plans).
 
-      IMPORTANT: Write the rationale field as markdown. Use:
-      - **Bold** for key terms and pass/fail verdicts
-      - Numbered lists for the procedure steps identified
-      - Inline `code` for file paths, function names, and config keys
-      - A brief summary sentence, then the evidence structure
-
-      The rationale is displayed directly to the user in the dashboard.
+      IMPORTANT: Write the rationale field as markdown. Include these
+      sections in every rationale:
+      - **Procedure verdict**: PASS/FAIL
+      - **Repeatability verdict**: PASS/FAIL with justification
+      - **Cross-session evidence**: session IDs and source count
+      - **Existing coverage**: list the skills/candidates you checked
+        and why this is genuinely new (not "NONE" — name what you checked)
+      Use **bold** for verdicts, numbered lists for steps, `code` for
+      file paths and function names. The rationale is displayed directly
+      to the user in the dashboard.
 
       If an existing candidate has new evidence, use vault_skill_candidates
       (action: update) to increase confidence and add source_ids.

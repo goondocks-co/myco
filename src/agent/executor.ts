@@ -183,6 +183,7 @@ async function executePhase(
   let phaseCost = 0;
   let phaseTokens = 0;
   let phaseTurns = 0;
+  let agenticTurns = 0;
   let phaseSummary = '';
 
   try {
@@ -203,6 +204,12 @@ async function executePhase(
         ...(abortController ? { abortController } : {}),
       },
     })) {
+      // Count assistant messages to track actual agentic turns (LLM response cycles).
+      // The SDK's num_turns counts user messages (including tool results), which inflates
+      // the number relative to maxTurns (which limits LLM response cycles).
+      if (message.type === 'assistant') {
+        agenticTurns++;
+      }
       if (message.type === 'result') {
         phaseCost = message.total_cost_usd ?? 0;
         phaseTokens =
@@ -214,14 +221,21 @@ async function executePhase(
       }
     }
 
-    if (phase.required && phaseTurns === 0) {
+    // Log turn metrics for observability — agenticTurns should match maxTurns semantics
+    if (agenticTurns > 0 && phase.maxTurns) {
+      console.log(
+        `[agent] Phase "${phase.name}": ${agenticTurns} agentic turns (budget: ${phase.maxTurns}), ${phaseTurns} SDK messages`,
+      );
+    }
+
+    if (phase.required && agenticTurns === 0 && phaseTurns === 0) {
       console.warn(`[agent] Required phase "${phase.name}" produced 0 turns`);
     }
 
     return {
       name: phase.name,
       status: 'completed',
-      turnsUsed: phaseTurns,
+      turnsUsed: agenticTurns > 0 ? agenticTurns : phaseTurns,
       tokensUsed: phaseTokens,
       costUsd: phaseCost,
       summary: phaseSummary,

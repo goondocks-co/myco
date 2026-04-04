@@ -68,6 +68,23 @@ export function createSkillTools(deps: VaultToolDeps) {
           if (!args.topic || !args.rationale) {
             return textResult({ error: 'topic and rationale are required for create action' });
           }
+
+          // Guard: reject if an active skill already covers this topic.
+          // Checks whether all significant words from a skill name appear in the topic.
+          const activeSkills = listSkillRecords({ agent_id: agentId, status: 'active', limit: 100 });
+          const topicLower = args.topic.toLowerCase();
+          const overlapping = activeSkills.filter((s) => {
+            const nameWords = s.name.split('-').filter((w: string) => w.length > 2);
+            if (nameWords.length < 2) return false;
+            return nameWords.every((w: string) => topicLower.includes(w));
+          });
+          if (overlapping.length > 0) {
+            return textResult({
+              error: 'Candidate rejected: active skill(s) already cover this topic. Update the existing skill via vault_skill_records instead.',
+              overlapping_skills: overlapping.map((s) => ({ name: s.name, display_name: s.display_name, description: s.description })),
+            });
+          }
+
           const now = epochSeconds();
           const candidate = insertCandidate({
             id: crypto.randomUUID(),

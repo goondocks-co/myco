@@ -391,13 +391,11 @@ export class SymbiontInstaller {
 
     const skillNames = this.listSkillDirs();
 
-    // Desired state: per-skill entries + infrastructure artifacts
+    // Desired state: canonical per-skill entries + infrastructure artifacts.
+    // Agent-specific targets (e.g. .claude/skills/) use local .gitignore files
+    // instead of polluting the project-level .gitignore.
     const desired = [
       ...skillNames.map((name) => `${CANONICAL_SKILLS_DIR}/${name}`),
-      ...(reg.skillsTarget !== CANONICAL_SKILLS_DIR
-        ? skillNames.map((name) => `${reg.skillsTarget}/${name}`)
-        : []
-      ),
       WRANGLER_CACHE_DIR,
     ];
 
@@ -569,6 +567,7 @@ export class SymbiontInstaller {
         const relTarget = path.join(canonicalRel, name);
         ensureSymlink(agentLink, relTarget);
       }
+      ensureLocalSkillsGitignore(agentSkillsDir);
     }
 
     return true;
@@ -761,8 +760,15 @@ export function syncSkillSymlinks(
   skillName: string,
   opts?: { remove?: boolean },
 ): void {
-  const manifestDir = path.join(path.dirname(new URL(import.meta.url).pathname), 'manifests');
-  if (!fs.existsSync(manifestDir)) return;
+  // Resolve manifests dir — try sibling (source layout) then dist layout
+  // (tsup bundles into dist/chunk-*.js, but manifests are at dist/src/symbionts/manifests/)
+  const selfDir = path.dirname(new URL(import.meta.url).pathname);
+  const candidates = [
+    path.join(selfDir, 'manifests'),
+    path.join(selfDir, 'src', 'symbionts', 'manifests'),
+  ];
+  const manifestDir = candidates.find((d) => fs.existsSync(d));
+  if (!manifestDir) return;
 
   const targets = new Set<string>();
   for (const file of fs.readdirSync(manifestDir).filter((f) => f.endsWith('.yaml'))) {
@@ -787,9 +793,31 @@ export function syncSkillSymlinks(
       const canonicalDir = path.join(projectRoot, CANONICAL_SKILLS_DIR);
       const relTarget = path.join(path.relative(agentSkillsDir, canonicalDir), skillName);
       ensureSymlink(linkPath, relTarget);
+      // Ensure a local .gitignore ignores all symlinks in this directory.
+      // Localized to the agent's skills dir — doesn't pollute the project .gitignore.
+      ensureLocalSkillsGitignore(agentSkillsDir);
     }
   }
-  // Gitignore: the project should use directory-level wildcards
-  // (e.g., .claude/skills/, .cursor/skills/) rather than per-skill entries.
-  // The SymbiontInstaller's updateGitignore handles this during myco init.
+}
+
+/** Content for the local .gitignore that ignores Myco-created symlinks. */
+const LOCAL_SKILLS_GITIGNORE = `# Myco-managed symlinks — generated skills are symlinked here automatically.
+# The canonical location for all skills is .agents/skills/.
+#
+# To add your own skill to this directory, un-ignore it:
+#   !my-skill
+*
+!.gitignore
+`;
+
+/**
+ * Write a .gitignore inside an agent's skills directory that ignores all
+ * symlinks Myco creates there. Idempotent — skips if already present.
+ */
+function ensureLocalSkillsGitignore(agentSkillsDir: string): void {
+  const gitignorePath = path.join(agentSkillsDir, '.gitignore');
+  try {
+    if (fs.readFileSync(gitignorePath, 'utf-8') === LOCAL_SKILLS_GITIGNORE) return;
+  } catch { /* doesn't exist — proceed */ }
+  fs.writeFileSync(gitignorePath, LOCAL_SKILLS_GITIGNORE, 'utf-8');
 }
