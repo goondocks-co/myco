@@ -48,6 +48,12 @@ export async function registerScheduledTasks(
     return;
   }
 
+  // Global agent toggle — skip all scheduled task registration when disabled
+  if (config.agent.scheduled_tasks_enabled === false) {
+    logger.info(LOG_KINDS.AGENT_RUN, 'Scheduled agent tasks disabled globally (agent.scheduled_tasks_enabled: false)');
+    return;
+  }
+
   const { loadAllTasks } = await import('@myco/agent/registry.js');
   const allTasks = Array.from(loadAllTasks(definitionsDir, vaultDir).values());
 
