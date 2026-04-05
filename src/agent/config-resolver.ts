@@ -39,6 +39,8 @@ export interface ResolvedRunConfig {
   phaseProviderOverrides: Record<string, { provider?: ProviderConfig; maxTurns?: number }>;
   /** Effective task name (from DB or options). */
   taskName?: string;
+  /** Resolved task params — YAML defaults merged with myco.yaml overrides. */
+  taskParams?: Record<string, string | number | boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +133,7 @@ export function resolveRunConfig(
   // Load myco.yaml for provider overrides (global, per-task, per-phase)
   let taskProviderOverride: ProviderConfig | undefined;
   let phaseProviderOverrides: Record<string, { provider?: ProviderConfig; maxTurns?: number }> = {};
+  let taskParams: Record<string, string | number | boolean> | undefined;
   try {
     const mycoConfig = loadConfig(vaultDir);
 
@@ -153,6 +156,13 @@ export function resolveRunConfig(
         };
       }
     }
+
+    // Resolve task params: YAML defaults merged with myco.yaml overrides
+    const yamlParams = yamlTask?.params;
+    const configParams = taskConfig?.params;
+    if (yamlParams || configParams) {
+      taskParams = { ...yamlParams, ...configParams };
+    }
   } catch {
     // Config load failure is non-fatal — proceed without overrides
   }
@@ -163,5 +173,6 @@ export function resolveRunConfig(
     taskProviderOverride,
     phaseProviderOverrides,
     taskName,
+    taskParams,
   };
 }
