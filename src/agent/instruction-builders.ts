@@ -82,6 +82,11 @@ export function buildSkillGenerateInstruction(): string | undefined {
 // skill-evolve
 // ---------------------------------------------------------------------------
 
+export const SKILL_EVOLVE_DEFAULT_ASSESS_INTERVAL_HOURS = 24;
+export const SKILL_EVOLVE_DEFAULT_MAX_SKILLS_PER_RUN = 5;
+
+const SECONDS_PER_HOUR = 3600;
+
 /** A skill that needs assessment — assembled by the instruction builder. */
 interface SkillAssessmentEntry {
   id: string;
@@ -108,8 +113,8 @@ interface SkillAssessmentEntry {
 export function buildSkillEvolveInstruction(
   params?: Record<string, string | number | boolean>,
 ): string {
-  const assessIntervalHours = Number(params?.assess_interval_hours ?? 24);
-  const maxSkillsPerRun = Number(params?.max_skills_per_run ?? 5);
+  const assessIntervalHours = Number(params?.assess_interval_hours ?? SKILL_EVOLVE_DEFAULT_ASSESS_INTERVAL_HOURS);
+  const maxSkillsPerRun = Number(params?.max_skills_per_run ?? SKILL_EVOLVE_DEFAULT_MAX_SKILLS_PER_RUN);
 
   const now = epochSeconds();
   const intervalSeconds = assessIntervalHours * 3600;
@@ -174,4 +179,30 @@ export function buildSkillEvolveInstruction(
   }
 
   return parts.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Unified dispatch
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the pre-assembled instruction for a task that needs one.
+ *
+ * Returns undefined if the task doesn't need a custom instruction or
+ * if no work is available (e.g., no approved candidates for skill-generate).
+ *
+ * Single dispatch point used by both the scheduler and the API handler.
+ */
+export function buildTaskInstruction(
+  taskName: string,
+  taskParams?: Record<string, string | number | boolean>,
+): string | undefined {
+  switch (taskName) {
+    case SKILL_GENERATE_TASK:
+      return buildSkillGenerateInstruction();
+    case SKILL_EVOLVE_TASK:
+      return buildSkillEvolveInstruction(taskParams);
+    default:
+      return undefined;
+  }
 }

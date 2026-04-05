@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { listRuns, countRuns, getRun, getLatestRunId } from '@myco/db/queries/runs.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
-import { buildSkillGenerateInstruction, SKILL_GENERATE_TASK, buildSkillEvolveInstruction, SKILL_EVOLVE_TASK } from '@myco/agent/instruction-builders.js';
+import { buildTaskInstruction } from '@myco/agent/instruction-builders.js';
 import { loadConfig } from '@myco/config/loader.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -33,8 +33,8 @@ const AgentRunBody = z.object({
   agentId: z.string().optional(),
 });
 
-// Re-export for backward compatibility with existing import paths
-export { buildSkillGenerateInstruction, SKILL_GENERATE_TASK, buildSkillEvolveInstruction, SKILL_EVOLVE_TASK } from '@myco/agent/instruction-builders.js';
+// Re-export for backward compatibility
+export { buildTaskInstruction, SKILL_GENERATE_TASK, SKILL_EVOLVE_TASK } from '@myco/agent/instruction-builders.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,18 +57,14 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
   async function handleRun(req: RouteRequest): Promise<RouteResponse> {
     const { task, instruction: rawInstruction, agentId } = AgentRunBody.parse(req.body);
 
-    // Instruction builders for tasks that need pre-assembled context.
-    // Same structural enforcement as the scheduler.
     let instruction = rawInstruction;
-    if (task === SKILL_GENERATE_TASK && !instruction) {
-      instruction = buildSkillGenerateInstruction();
-    } else if (task === SKILL_EVOLVE_TASK && !instruction) {
+    if (task && !instruction) {
       try {
         const mycoConfig = loadConfig(vaultDir);
-        const taskConfig = mycoConfig.agent.tasks?.[task];
-        instruction = buildSkillEvolveInstruction(taskConfig?.params);
+        const taskParams = mycoConfig.agent.tasks?.[task]?.params;
+        instruction = buildTaskInstruction(task, taskParams);
       } catch {
-        instruction = buildSkillEvolveInstruction();
+        instruction = buildTaskInstruction(task);
       }
     }
 
