@@ -13,7 +13,10 @@ import type { PowerManager } from './power.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { ScheduledJobContext } from './task-scheduler.js';
 import { buildScheduledJobs } from './task-scheduler.js';
-import { buildSkillGenerateInstruction, SKILL_GENERATE_TASK } from '@myco/agent/instruction-builders.js';
+import {
+  buildSkillGenerateInstruction, SKILL_GENERATE_TASK,
+  buildSkillEvolveInstruction, SKILL_EVOLVE_TASK,
+} from '@myco/agent/instruction-builders.js';
 import { countSkillRecords } from '@myco/db/queries/skill-records.js';
 import { countCandidates } from '@myco/db/queries/skill-candidates.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -82,11 +85,14 @@ export async function registerScheduledTasks(
     runTask: async (taskName) => {
       const { runAgent } = await import('@myco/agent/executor.js');
 
-      // For skill-generate: inject the specific candidate ID so the agent
-      // processes exactly one skill per run (structural enforcement, not prompt-based).
-      const instruction = taskName === SKILL_GENERATE_TASK
-        ? buildSkillGenerateInstruction()
-        : undefined;
+      // Instruction builders for tasks that need pre-assembled context
+      let instruction: string | undefined;
+      if (taskName === SKILL_GENERATE_TASK) {
+        instruction = buildSkillGenerateInstruction();
+      } else if (taskName === SKILL_EVOLVE_TASK) {
+        const taskConfig = config.agent.tasks?.[taskName];
+        instruction = buildSkillEvolveInstruction(taskConfig?.params);
+      }
 
       const result = await runAgent(vaultDir, { task: taskName, instruction, embeddingManager });
       logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} completed`, {
