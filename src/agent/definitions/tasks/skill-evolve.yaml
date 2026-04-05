@@ -122,35 +122,34 @@ phases:
       2. Gather the new knowledge: read the specific spores, sessions,
          or search results identified in the assessment.
 
-      3. Rewrite using vault_write_skill. The rewrite MUST:
-         - Preserve ALL existing frontmatter fields — read the current
-           content first and carry every field forward (name, description,
-           managed_by, user-invocable, allowed-tools). The quality gate
-           rejects writes missing any required frontmatter field.
+      3. Update using vault_write_skill. The update technique:
 
-         - **DO NOT shorten the description.** The description is the
-           PRIMARY triggering mechanism — Claude Code reads it to decide
-           whether to load the skill. A shorter description means fewer
-           matches and worse triggering. Only change the description if
-           it contains factually wrong information. Never condense it
-           for brevity.
+         START from the existing skill content as-is. Copy it verbatim.
+         Then make ONLY the specific changes needed — insert new
+         sections, update incorrect facts, add missing steps. Do NOT
+         rephrase, restructure, or reformat content that is accurate.
 
-         - **allowed-tools must list Claude Code tool names**, NOT vault
-           agent tools. These skills run in developer Claude Code sessions,
-           not in the agent pipeline. Valid values are:
-           Read, Edit, Write, Bash, Grep, Glob
-           If the existing allowed-tools lists vault_* tools (like
-           vault_search_fts, vault_spores, vault_state, etc.), that is
-           WRONG — replace with the appropriate Claude Code tools.
-           Most procedural skills need: Read, Edit, Write, Bash, Grep, Glob
-           Read-only informational skills need: Read, Bash, Grep, Glob
+         The diff between old and new should be MINIMAL. If you find
+         yourself rewriting more than 20% of the skill, STOP — you are
+         over-evolving. Only the sections affected by new knowledge
+         should differ.
 
-         - Preserve all content that is still accurate — do NOT
-           restructure or rephrase sections that are correct. Only
-           modify the specific sections affected by the new knowledge.
+         Protected frontmatter rules (vault_write_skill enforces these
+         and will REJECT writes that violate them):
+
+         - **user-invocable** — copy the EXACT value from the existing
+           skill. Do not change it. The tool rejects value changes.
+         - **allowed-tools** — copy the EXACT value from the existing
+           skill. Do not change it. The tool rejects value changes.
+         - **description** — copy the EXACT value from the existing
+           skill. The description is the primary triggering mechanism.
+           Only change it if it contains factually wrong information.
+           Use the same YAML format (block scalar `|` or quoted string)
+           as the original.
+         - **name, managed_by** — copy exactly from the existing skill.
+
+         Content rules:
          - Incorporate the new knowledge identified in assessment
-         - Follow the same SKILL.md format:
-           - Prerequisites, Steps, Common Pitfalls structure
          - Stay under 500 lines
          - Include a rationale parameter explaining WHAT changed:
            e.g., "Updated: added hookFields normalization step from
