@@ -21,41 +21,31 @@ schedule:
 phases:
   - name: gather
     prompt: |
-      You are generating ONE skill. Find the first approved candidate
-      that doesn't have a skill yet.
+      YOUR FIRST TOOL CALL must be vault_skill_candidates.
 
-      If an instruction provides a candidate ID, use that specific one.
-      Otherwise, use vault_skill_candidates (action: list, status: approved)
-      and pick the FIRST result. Process ONLY that one candidate —
-      do not attempt to generate multiple skills in this run.
+      If the instruction contains a candidate ID, call:
+        vault_skill_candidates(action: get, id: <candidate_id>)
 
-      Read the candidate. If its skill_id is set or status is 'generated',
-      it already has a skill — report "already generated" and STOP.
-      Do NOT skip based on similar topics. The user approved it.
+      If no instruction, call:
+        vault_skill_candidates(action: list, status: approved)
+      and use the FIRST result. Process ONLY one candidate per run.
 
-      If no skill exists, gather source material for this candidate.
-      The candidate's source_ids field contains curated references —
-      these are your PRIMARY material. Do not search broadly until
-      you have read every source item.
+      If the candidate's skill_id is set or status is 'generated',
+      report "already generated" and STOP.
 
-      STEP 1 (mandatory, do this FIRST): Read the candidate via
-      vault_skill_candidates (action: get). Parse its source_ids JSON.
-      Then fetch EACH source item:
-      - Spore IDs → vault_spores (filter by ID or search for the ID)
-      - Session IDs → vault_sessions (then read session summary)
-      This step alone should give you 80%+ of what the skill needs.
+      Otherwise, gather source material from the candidate's source_ids:
 
-      STEP 2 (only if sources are thin): If the source items don't
-      contain enough concrete steps or file paths, do ONE targeted
-      semantic search (vault_search_semantic) with the candidate topic.
-      Limit to 5-10 results. Do NOT do exhaustive searching.
+      1. Parse the candidate's source_ids JSON array.
+      2. Fetch EACH source: spore IDs via vault_spores, session IDs
+         via vault_sessions. These curated references contain 80%+
+         of what the skill needs.
+      3. Only if sources are thin: ONE vault_search_semantic query
+         with the candidate topic (limit 5-10).
+      4. Only if you need specific file paths: ONE vault_search_fts query.
 
-      STEP 3 (only if needed): If you need specific file paths or
-      function names, do ONE targeted FTS search (vault_search_fts).
-
-      STOP gathering when you have: concrete steps, file paths,
-      gotchas, and prerequisites. More searching does not improve
-      skill quality — the source_ids were curated for this purpose.
+      Do NOT search broadly. The source_ids were curated by the
+      survey — they are the primary material. Stop gathering when
+      you have concrete steps, file paths, gotchas, and prerequisites.
     tools:
       - vault_skill_candidates
       - vault_spores
