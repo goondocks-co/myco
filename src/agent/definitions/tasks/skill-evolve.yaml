@@ -98,15 +98,12 @@ phases:
     tools:
       - vault_skill_records
       - vault_spores
-      - vault_sessions
       - vault_search_fts
       - vault_search_semantic
-      - vault_read_digest
       - vault_state
       - vault_set_state
-      - vault_edges
       - vault_report
-    maxTurns: 25
+    maxTurns: 22
     required: true
     readOnly: true
 
@@ -194,9 +191,8 @@ phases:
       - vault_state
       - vault_spores
       - vault_search_fts
-      - vault_search_semantic
       - vault_report
-    maxTurns: 35
+    maxTurns: 30
     required: true
     dependsOn:
       - assess
