@@ -28,6 +28,10 @@ export function extractFrontmatterField(content: string, field: string): string 
 /**
  * Compare protected frontmatter fields between existing and new content.
  * Returns an array of violation descriptions (empty = all preserved).
+ *
+ * Also guards against description shortening — the description is the
+ * primary triggering mechanism for skills, so losing content degrades
+ * skill activation quality.
  */
 export function checkFrontmatterPreservation(existing: string, incoming: string): string[] {
   const violations: string[] = [];
@@ -38,6 +42,18 @@ export function checkFrontmatterPreservation(existing: string, incoming: string)
       violations.push(`${field}: was "${oldValue}", changed to "${newValue}"`);
     }
   }
+
+  // Guard against description shortening — descriptions drive skill triggering.
+  // Lengthening is allowed (adding context), shortening is not (losing trigger keywords).
+  const oldDesc = extractFrontmatterField(existing, 'description');
+  const newDesc = extractFrontmatterField(incoming, 'description');
+  if (oldDesc && newDesc && newDesc.length < oldDesc.length * 0.9) {
+    violations.push(
+      `description shortened from ${oldDesc.length} to ${newDesc.length} chars (${Math.round((1 - newDesc.length / oldDesc.length) * 100)}% reduction). ` +
+      'Descriptions are the primary triggering mechanism — do not shorten them.',
+    );
+  }
+
   return violations;
 }
 

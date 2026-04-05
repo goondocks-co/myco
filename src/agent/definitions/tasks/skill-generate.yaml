@@ -33,31 +33,29 @@ phases:
       it already has a skill — report "already generated" and STOP.
       Do NOT skip based on similar topics. The user approved it.
 
-      If no skill exists, gather ALL source material for this candidate:
+      If no skill exists, gather source material for this candidate.
+      The candidate's source_ids field contains curated references —
+      these are your PRIMARY material. Do not search broadly until
+      you have read every source item.
 
-      1. Read each source item referenced in the candidate's source_ids.
-         Use vault_spores to fetch spore IDs, vault_sessions to fetch
-         session IDs. These contain the detailed knowledge.
+      STEP 1 (mandatory, do this FIRST): Read the candidate via
+      vault_skill_candidates (action: get). Parse its source_ids JSON.
+      Then fetch EACH source item:
+      - Spore IDs → vault_spores (filter by ID or search for the ID)
+      - Session IDs → vault_sessions (then read session summary)
+      This step alone should give you 80%+ of what the skill needs.
 
-      2. Search for additional context using vault_search_semantic with
-         the candidate's topic as the query. This may surface plans,
-         artifacts, and sessions not in the source_ids.
+      STEP 2 (only if sources are thin): If the source items don't
+      contain enough concrete steps or file paths, do ONE targeted
+      semantic search (vault_search_semantic) with the candidate topic.
+      Limit to 5-10 results. Do NOT do exhaustive searching.
 
-      3. Search vault_search_fts for specific file paths, function names,
-         or config keys mentioned in the source material.
+      STEP 3 (only if needed): If you need specific file paths or
+      function names, do ONE targeted FTS search (vault_search_fts).
 
-      4. Check vault_entities for related entities — these often link
-         to additional spores via edges.
-
-      For each source, extract:
-      - Concrete steps (what to do, in what order)
-      - File paths and code patterns (specific to this project)
-      - Gotchas and pitfalls (things that went wrong)
-      - Decisions and rationale (why this approach, not another)
-      - Prerequisites (what must be true before starting)
-
-      Be thorough — the skill quality depends entirely on how much
-      concrete detail you gather here.
+      STOP gathering when you have: concrete steps, file paths,
+      gotchas, and prerequisites. More searching does not improve
+      skill quality — the source_ids were curated for this purpose.
     tools:
       - vault_skill_candidates
       - vault_spores
