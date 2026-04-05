@@ -11,6 +11,36 @@ export const MAX_SKILL_LINES = 500;
 /** Required frontmatter fields for Myco-managed skills. */
 export const REQUIRED_FRONTMATTER_FIELDS = ['name', 'description', 'managed_by', 'user-invocable', 'allowed-tools'] as const;
 
+/** Frontmatter fields that must not change when updating an existing skill. */
+export const PROTECTED_FRONTMATTER_FIELDS = ['user-invocable', 'allowed-tools'] as const;
+
+/**
+ * Extract a frontmatter field value from SKILL.md content.
+ * Returns the raw value string, or undefined if not found.
+ */
+export function extractFrontmatterField(content: string, field: string): string | undefined {
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) return undefined;
+  const match = fmMatch[1].match(new RegExp(`^${field}:\\s*(.+)$`, 'm'));
+  return match?.[1].trim();
+}
+
+/**
+ * Compare protected frontmatter fields between existing and new content.
+ * Returns an array of violation descriptions (empty = all preserved).
+ */
+export function checkFrontmatterPreservation(existing: string, incoming: string): string[] {
+  const violations: string[] = [];
+  for (const field of PROTECTED_FRONTMATTER_FIELDS) {
+    const oldValue = extractFrontmatterField(existing, field);
+    const newValue = extractFrontmatterField(incoming, field);
+    if (oldValue !== undefined && newValue !== undefined && oldValue !== newValue) {
+      violations.push(`${field}: was "${oldValue}", changed to "${newValue}"`);
+    }
+  }
+  return violations;
+}
+
 /**
  * Validate skill content before writing. Returns an array of issues
  * (empty = valid). This is a deterministic quality gate -- the agent

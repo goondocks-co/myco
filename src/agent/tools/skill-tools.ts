@@ -20,42 +20,8 @@ import {
 } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
 import { notify } from '@myco/notifications/notify.js';
-import { validateSkillContent } from './skill-validator.js';
+import { validateSkillContent, checkFrontmatterPreservation } from './skill-validator.js';
 import { textResult, type VaultToolDeps } from './types.js';
-
-// ---------------------------------------------------------------------------
-// Frontmatter preservation
-// ---------------------------------------------------------------------------
-
-/** Fields that must not change when updating an existing skill. */
-const PROTECTED_FRONTMATTER_FIELDS = ['user-invocable', 'allowed-tools'] as const;
-
-/**
- * Extract a frontmatter field value from SKILL.md content.
- * Returns the raw value string, or undefined if not found.
- */
-function extractFrontmatterField(content: string, field: string): string | undefined {
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!fmMatch) return undefined;
-  const match = fmMatch[1].match(new RegExp(`^${field}:\\s*(.+)$`, 'm'));
-  return match?.[1].trim();
-}
-
-/**
- * Compare protected frontmatter fields between existing and new content.
- * Returns an array of violation descriptions (empty = all preserved).
- */
-function checkFrontmatterPreservation(existing: string, incoming: string): string[] {
-  const violations: string[] = [];
-  for (const field of PROTECTED_FRONTMATTER_FIELDS) {
-    const oldValue = extractFrontmatterField(existing, field);
-    const newValue = extractFrontmatterField(incoming, field);
-    if (oldValue !== undefined && newValue !== undefined && oldValue !== newValue) {
-      violations.push(`${field}: was "${oldValue}", changed to "${newValue}"`);
-    }
-  }
-  return violations;
-}
 
 // ---------------------------------------------------------------------------
 // Factory

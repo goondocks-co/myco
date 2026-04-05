@@ -71,20 +71,23 @@ phases:
         abandoned, a file was deleted). Note the contradiction.
       - **OVERSIZED**: Covers too many distinct procedures. Note
         how it should be split.
+      - **DEPRECATED**: The procedure the skill describes is no longer
+        relevant — the feature was removed, the pattern was replaced,
+        or the codebase changed so fundamentally that the skill would
+        mislead rather than help. This is different from STALE (which
+        means the skill needs updating). DEPRECATED means the skill
+        should be retired entirely. Note what changed and why.
 
       When in doubt, classify as CURRENT. A skill that is 90%
       accurate and well-structured is better left alone than
       rewritten with the risk of losing detail.
-
-      NOTE: Skip usage-based retirement for now — usage tracking is
-      not yet active. Do not classify skills as UNUSED.
 
       Store classifications using vault_set_state with key
       'skill-evolve-classifications' and value as a JSON object:
       ```json
       {
         "skill-name": {
-          "classification": "CURRENT|STALE|CONFLICTED|OVERSIZED",
+          "classification": "CURRENT|STALE|CONFLICTED|OVERSIZED|DEPRECATED",
           "rationale": "what changed and why",
           "new_knowledge": ["list of specific new findings"]
         }
@@ -112,7 +115,8 @@ phases:
       Read classifications from vault_state
       (key: skill-evolve-classifications). Parse the JSON.
 
-      For each skill classified as STALE, CONFLICTED, or OVERSIZED:
+      For each skill classified as STALE, CONFLICTED, OVERSIZED,
+      or DEPRECATED:
 
       ## STALE or CONFLICTED — Rewrite the skill
 
@@ -165,6 +169,17 @@ phases:
          Each sub-skill gets its own name, description, and content.
       3. Retire the parent via vault_skill_records
          (action: update, status: retired).
+
+      ## DEPRECATED — Retire the skill
+
+      1. Update the skill record status to retired:
+         vault_skill_records (action: update, status: retired).
+      2. Delete the skill from disk and symlinks:
+         vault_skill_records (action: delete).
+
+      This removes the skill file so it is no longer injected into
+      any agent's session. The skill record remains in the database
+      with status 'retired' for audit purposes.
 
       ## CURRENT — No action needed. Skip.
 
