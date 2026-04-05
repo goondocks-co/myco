@@ -204,9 +204,6 @@ async function executePhase(
         ...(abortController ? { abortController } : {}),
       },
     })) {
-      // Count assistant messages to track actual agentic turns (LLM response cycles).
-      // The SDK's num_turns counts user messages (including tool results), which inflates
-      // the number relative to maxTurns (which limits LLM response cycles).
       if (message.type === 'assistant') {
         agenticTurns++;
       }
@@ -221,21 +218,23 @@ async function executePhase(
       }
     }
 
-    // Log turn metrics for observability — agenticTurns should match maxTurns semantics
-    if (agenticTurns > 0 && phase.maxTurns) {
+    if (phase.maxTurns) {
       console.log(
-        `[agent] Phase "${phase.name}": ${agenticTurns} agentic turns (budget: ${phase.maxTurns}), ${phaseTurns} SDK messages`,
+        `[agent] Phase "${phase.name}": num_turns=${phaseTurns}, assistant_msgs=${agenticTurns}, budget=${phase.maxTurns}`,
       );
     }
 
-    if (phase.required && agenticTurns === 0 && phaseTurns === 0) {
+    if (phase.required && phaseTurns === 0) {
       console.warn(`[agent] Required phase "${phase.name}" produced 0 turns`);
     }
 
+    // Use SDK's num_turns — it's what the SDK enforces against.
+    // agenticTurns (assistant message count) is logged for diagnostics
+    // but not reliable as the primary metric.
     return {
       name: phase.name,
       status: 'completed',
-      turnsUsed: agenticTurns > 0 ? agenticTurns : phaseTurns,
+      turnsUsed: phaseTurns,
       tokensUsed: phaseTokens,
       costUsd: phaseCost,
       summary: phaseSummary,

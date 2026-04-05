@@ -106,7 +106,7 @@ phases:
       - vault_set_state
       - vault_edges
       - vault_report
-    maxTurns: 20
+    maxTurns: 25
     required: true
     readOnly: true
 

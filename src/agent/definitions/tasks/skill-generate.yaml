@@ -10,7 +10,7 @@ prompt: >-
   skills in a single run. The schedule will pick up the next one.
 isDefault: false
 model: claude-sonnet-4-6
-maxTurns: 45
+maxTurns: 50
 timeoutSeconds: 900
 schedule:
   enabled: false
@@ -67,7 +67,7 @@ phases:
       - vault_read_digest
       - vault_entities
       - vault_edges
-    maxTurns: 15
+    maxTurns: 18
     required: true
     readOnly: true
 
@@ -158,7 +158,7 @@ phases:
     tools:
       - vault_write_skill
       - vault_skill_records
-    maxTurns: 10
+    maxTurns: 12
     required: true
     dependsOn:
       - gather
@@ -210,7 +210,7 @@ phases:
       - vault_spores
       - vault_search_fts
       - vault_report
-    maxTurns: 12
+    maxTurns: 15
     required: true
     dependsOn:
       - draft

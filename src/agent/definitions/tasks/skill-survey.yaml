@@ -9,7 +9,7 @@ prompt: >-
   Survey the vault knowledge graph for procedural skill candidates.
 isDefault: false
 model: claude-sonnet-4-6
-maxTurns: 40
+maxTurns: 65
 timeoutSeconds: 600
 schedule:
   enabled: true
@@ -40,7 +40,7 @@ phases:
       - vault_entities
       - vault_edges
       - vault_read_digest
-    maxTurns: 8
+    maxTurns: 15
     required: true
     readOnly: true
 
@@ -64,7 +64,7 @@ phases:
     tools:
       - vault_sessions
       - vault_search_fts
-    maxTurns: 8
+    maxTurns: 10
     required: true
     readOnly: true
 
@@ -90,7 +90,7 @@ phases:
     tools:
       - vault_search_semantic
       - vault_search_fts
-    maxTurns: 8
+    maxTurns: 22
     required: true
     readOnly: true
 
@@ -172,7 +172,7 @@ phases:
       - vault_skill_records
       - vault_set_state
       - vault_report
-    maxTurns: 8
+    maxTurns: 12
     required: true
     dependsOn:
       - explore-spores

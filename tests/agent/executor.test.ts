@@ -958,10 +958,9 @@ describe('runAgent — phased execution', () => {
     expect((allQueryCalls[2].options as Record<string, unknown>).maxTurns).toBe(7);
   });
 
-  it('turnsUsed counts assistant messages, not SDK num_turns', async () => {
-    // The mock result message always has num_turns: 3. We yield 2 assistant
-    // messages before it. The executor prefers agenticTurns (assistant message
-    // count) over num_turns, so turnsUsed should be 2, not 3.
+  it('turnsUsed reports SDK num_turns', async () => {
+    // The mock result has num_turns: 3. turnsUsed should use this value
+    // since it's what the SDK enforces maxTurns against.
     mockAssistantCount = 2;
 
     const { runAgent } = await import('@myco/agent/executor.js');
@@ -971,8 +970,7 @@ describe('runAgent — phased execution', () => {
     expect(result.phases).toBeDefined();
     expect(result.phases!.length).toBe(3);
     for (const phase of result.phases!) {
-      // turnsUsed = agenticTurns (2 assistant messages), NOT num_turns (3)
-      expect(phase.turnsUsed).toBe(2);
+      expect(phase.turnsUsed).toBe(3); // num_turns from SDK result
     }
   });
 
