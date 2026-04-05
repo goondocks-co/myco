@@ -145,6 +145,7 @@ export interface AgentTask {
   schemaVersion?: number; // schema version for the task config
   orchestrator?: OrchestratorConfig; // orchestrator configuration for phased tasks
   schedule?: TaskSchedule; // schedule configuration for automatic execution
+  params?: Record<string, string | number | boolean>; // task-specific params with defaults
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +172,8 @@ export interface EffectiveConfig {
   orchestrator?: OrchestratorConfig;
   contextQueries?: Record<string, ContextQuery[]>;
   execution?: ExecutionConfig;
+  /** Resolved task params — YAML defaults merged with myco.yaml overrides. */
+  taskParams?: Record<string, string | number | boolean>;
 }
 
 /** Options passed to an agent run. */

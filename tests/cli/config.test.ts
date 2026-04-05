@@ -170,6 +170,26 @@ describe('myco config', () => {
     });
   });
 
+  describe('agent task params', () => {
+    it('agent.tasks supports params override', () => {
+      const config = MycoConfigSchema.parse({
+        version: 3,
+        embedding: { provider: 'ollama', model: 'bge-m3' },
+        agent: {
+          tasks: {
+            'skill-evolve': {
+              params: { assess_interval_hours: 12, max_skills_per_run: 3 },
+            },
+          },
+        },
+      });
+      expect(config.agent.tasks!['skill-evolve'].params).toEqual({
+        assess_interval_hours: 12,
+        max_skills_per_run: 3,
+      });
+    });
+  });
+
   describe('symbionts schema', () => {
     it('parses symbionts map from config', () => {
       const config = MycoConfigSchema.parse({

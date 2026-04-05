@@ -52,6 +52,8 @@ const TaskProviderOverrideSchema = z.object({
   timeoutSeconds: z.number().int().positive().optional(),
   phases: z.record(z.string(), PhaseOverrideSchema).optional(),
   schedule: ScheduleOverrideSchema,
+  /** Task-specific params — keys and types vary per task. */
+  params: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
 });
 
 const ContextSchema = z.object({

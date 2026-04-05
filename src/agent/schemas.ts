@@ -122,4 +122,6 @@ export const AgentTaskSchema = z.object({
   schemaVersion: z.number().optional(),
   orchestrator: OrchestratorConfigSchema.optional(),
   schedule: TaskScheduleSchema.optional(),
+  /** Task-specific params with defaults. */
+  params: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
 });
