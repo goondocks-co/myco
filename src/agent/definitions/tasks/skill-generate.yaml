@@ -6,11 +6,11 @@ description: >-
 agent: myco-agent
 prompt: >-
   Generate ONE project-specific skill from the next approved candidate.
-  Process only the first approved candidate found — do not batch multiple
-  skills in a single run. The schedule will pick up the next one.
+  The instruction contains the candidate metadata and pre-assembled
+  source material. Write the skill, then validate it.
 isDefault: false
 model: claude-sonnet-4-6
-maxTurns: 40
+maxTurns: 30
 timeoutSeconds: 900
 schedule:
   enabled: false
@@ -19,44 +19,12 @@ schedule:
     - idle
   preCondition: has-approved-candidates
 phases:
-  - name: gather
-    prompt: |
-      Generate ONE skill from an approved candidate.
-
-      The instruction contains the candidate ID, topic, and source_ids.
-      Parse the source_ids JSON array from the instruction — these are
-      the curated references you need.
-
-      1. Fetch EACH source item from source_ids:
-         - Spore IDs → vault_spores
-         - Session IDs → vault_sessions
-         These contain the concrete knowledge for the skill.
-
-      2. Only if sources lack specific file paths or function names:
-         ONE vault_search_fts query to look up the detail.
-
-      If no instruction is provided, call vault_skill_candidates
-      (action: list, status: approved) and use the FIRST result.
-
-      If the candidate already has a skill (skill_id is set or
-      status is 'generated'), report "already generated" and STOP.
-
-      Stop gathering when you have concrete steps, file paths,
-      gotchas, and prerequisites.
-    tools:
-      - vault_skill_candidates
-      - vault_spores
-      - vault_sessions
-      - vault_search_fts
-    maxTurns: 12
-    required: true
-    readOnly: true
-
   - name: draft
     prompt: |
-      Write a SKILL.md from the gathered material. The skill must be a
-      procedural how-to guide that teaches an agent how to accomplish
-      a specific task in THIS project.
+      Write a SKILL.md from the source material in the instruction.
+      The instruction contains the candidate ID, topic, rationale,
+      and the full text of each source spore and session. Do NOT
+      call any search or read tools — the material is already here.
 
       ## SKILL.md Format
 
@@ -133,16 +101,14 @@ phases:
       - display_name: human-readable title
       - description: the frontmatter description text
       - content: the full SKILL.md including frontmatter
-      - candidate_id: the candidate ID from the gather phase
-      - source_ids: JSON array of source item IDs used
+      - candidate_id: the candidate ID from the instruction
+      - source_ids: JSON array of source item IDs from the instruction
       - rationale: "Initial generation from candidate survey"
     tools:
       - vault_write_skill
       - vault_skill_records
-    maxTurns: 12
+    maxTurns: 10
     required: true
-    dependsOn:
-      - gather
 
   - name: validate
     prompt: |

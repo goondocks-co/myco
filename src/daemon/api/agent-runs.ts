@@ -10,6 +10,8 @@ import { listRuns, countRuns, getRun, getLatestRunId } from '@myco/db/queries/ru
 import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
 import { listCandidates } from '@myco/db/queries/skill-candidates.js';
+import { getSpore } from '@myco/db/queries/spores.js';
+import { getSession } from '@myco/db/queries/sessions.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
@@ -47,14 +49,42 @@ export function buildSkillGenerateInstruction(): string | undefined {
   const candidates = listCandidates({ status: 'approved', limit: 1 });
   if (candidates.length === 0) return undefined;
   const c = candidates[0];
-  // Inject source_ids directly so the gather phase has them without
-  // needing to call vault_skill_candidates. The LLM was ignoring the
-  // instruction to fetch the candidate and searching broadly instead.
-  return [
-    `Generate skill for candidate id=${c.id} topic="${c.topic}"`,
-    `source_ids: ${c.source_ids}`,
+
+  // Assemble source material directly — the gather phase is a data
+  // assembly step, not an intelligence task. The executor pre-fetches
+  // all source content so the LLM doesn't need to discover anything.
+  const parts = [
+    `candidate_id: ${c.id}`,
+    `topic: ${c.topic}`,
     `confidence: ${c.confidence}`,
-  ].join('\n');
+    `rationale: ${c.rationale}`,
+    '',
+    '## Source Material',
+  ];
+
+  let sourceIds: Array<{ id: string; type: string }> = [];
+  try { sourceIds = JSON.parse(c.source_ids || '[]'); } catch { /* malformed */ }
+
+  for (const src of sourceIds) {
+    if (src.type === 'spore') {
+      const spore = getSpore(src.id);
+      if (spore) {
+        parts.push(`\n### Spore: ${src.id} (${spore.observation_type}, importance ${spore.importance})`);
+        parts.push(spore.content);
+        if (spore.context) parts.push(`Context: ${spore.context}`);
+        if (spore.tags) parts.push(`Tags: ${spore.tags}`);
+      }
+    } else if (src.type === 'session') {
+      const session = getSession(src.id);
+      if (session) {
+        parts.push(`\n### Session: ${src.id}`);
+        if (session.title) parts.push(`Title: ${session.title}`);
+        if (session.summary) parts.push(session.summary);
+      }
+    }
+  }
+
+  return parts.join('\n');
 }
 
 // ---------------------------------------------------------------------------
