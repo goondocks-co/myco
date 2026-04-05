@@ -10,7 +10,7 @@ prompt: >-
   skills in a single run. The schedule will pick up the next one.
 isDefault: false
 model: claude-sonnet-4-6
-maxTurns: 50
+maxTurns: 40
 timeoutSeconds: 900
 schedule:
   enabled: false
@@ -37,25 +37,18 @@ phases:
 
       1. Parse the candidate's source_ids JSON array.
       2. Fetch EACH source: spore IDs via vault_spores, session IDs
-         via vault_sessions. These curated references contain 80%+
-         of what the skill needs.
-      3. Only if sources are thin: ONE vault_search_semantic query
-         with the candidate topic (limit 5-10).
-      4. Only if you need specific file paths: ONE vault_search_fts query.
+         via vault_sessions. These curated references are the material.
+      3. Only if you need to look up a specific file path or function
+         name mentioned in a source: ONE vault_search_fts query.
 
-      Do NOT search broadly. The source_ids were curated by the
-      survey — they are the primary material. Stop gathering when
+      The source_ids were curated by the survey. Stop gathering when
       you have concrete steps, file paths, gotchas, and prerequisites.
     tools:
       - vault_skill_candidates
       - vault_spores
       - vault_sessions
       - vault_search_fts
-      - vault_search_semantic
-      - vault_read_digest
-      - vault_entities
-      - vault_edges
-    maxTurns: 18
+    maxTurns: 12
     required: true
     readOnly: true
 
