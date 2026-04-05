@@ -19,22 +19,24 @@ schedule:
 phases:
   - name: explore-spores
     prompt: |
-      Explore ALL spores in the vault to identify procedural patterns.
+      Identify procedural patterns from spores and entities.
       You are one of three parallel exploration phases — focus only on spores.
+      Budget is tight — be efficient, not exhaustive.
 
-      1. Query wisdom spores first (vault_spores, observation_type: wisdom).
-         These are the highest signal — synthesized from multiple sessions.
+      1. Read the digest (vault_read_digest) for a high-level overview.
+         This gives you the landscape in one call.
 
-      2. Query decisions, discoveries, and gotchas. Paginate through ALL
-         active spores (use offset parameter), not just the first page.
+      2. Query wisdom spores (vault_spores, observation_type: wisdom).
+         These are highest signal — synthesized from multiple sessions.
 
-      3. Use vault_entities to see what components and concepts exist.
-         High-mention-count entities often indicate areas that need skills.
+      3. Query decisions and gotchas (vault_spores, limit 30 each).
+         One page per type is sufficient — don't paginate exhaustively.
 
-      4. Read the digest (vault_read_digest) for a high-level overview.
+      4. Check vault_entities for high-mention components.
 
-      For each finding, note: what procedure does this relate to?
       Group findings by procedural topic ("how to do X").
+      Stop when you have a clear picture — diminishing returns
+      from additional queries waste turns.
     tools:
       - vault_spores
       - vault_entities
@@ -46,21 +48,21 @@ phases:
 
   - name: explore-sessions
     prompt: |
-      Explore ALL sessions in the vault to identify procedural workflows.
+      Identify procedural workflows from session history.
       You are one of three parallel exploration phases — focus only on sessions.
+      Budget is tight — be efficient, not exhaustive.
 
-      1. List all sessions (vault_sessions). Paginate through them.
-         Session summaries describe workflows and multi-step implementations.
+      1. List recent sessions (vault_sessions, limit 20). Read summaries
+         to identify multi-step workflows and recurring implementation patterns.
 
-      2. Look for recurring themes — "3+ sessions touched the same component"
-         is a strong skill candidate signal.
+      2. Do 2-3 targeted FTS searches for procedural keywords:
+         vault_search_fts with queries like "migration step", "configure install",
+         "refactor debug". Combine related terms in ONE query rather than
+         searching each keyword separately.
 
-      3. Use vault_search_fts to search session content for procedural
-         keywords: "how to", "step", "migration", "refactor", "debug",
-         "configure", "install", "deploy".
-
-      For each finding, note: what procedure does this relate to?
       Group findings by procedural topic ("how to do X").
+      Stop when you have a clear picture — you don't need to search
+      every possible keyword.
     tools:
       - vault_sessions
       - vault_search_fts
@@ -70,23 +72,24 @@ phases:
 
   - name: explore-plans
     prompt: |
-      Explore ALL plans and artifacts in the vault to identify procedures.
+      Identify procedures from plans and artifacts.
       You are one of three parallel exploration phases — focus only on plans.
+      Budget is tight — be efficient, not exhaustive.
 
       Plans contain explicit step-by-step procedures and design decisions.
       They are often the most directly skill-ready content.
 
-      1. Use vault_search_semantic with broad queries to find plans:
+      1. Use vault_search_semantic with 2-3 broad queries to find plans:
          - "implementation plan design architecture"
-         - "migration refactor setup configuration"
-         - "testing deployment workflow pipeline"
-         - "debugging troubleshooting fix"
+         - "migration setup configuration deployment"
+         Combine related concepts in each query. Do NOT search each
+         keyword separately.
 
-      2. Use vault_search_fts to search for specific procedural terms
-         across plans and artifacts.
+      2. If semantic search returns thin results, do ONE targeted FTS
+         search for a specific procedural term.
 
-      For each finding, note: what procedure does this relate to?
       Group findings by procedural topic ("how to do X").
+      Stop when you have coverage — more queries have diminishing returns.
     tools:
       - vault_search_semantic
       - vault_search_fts
