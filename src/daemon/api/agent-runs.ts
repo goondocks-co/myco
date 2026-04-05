@@ -9,9 +9,7 @@ import { z } from 'zod';
 import { listRuns, countRuns, getRun, getLatestRunId } from '@myco/db/queries/runs.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
-import { listCandidates } from '@myco/db/queries/skill-candidates.js';
-import { getSpore } from '@myco/db/queries/spores.js';
-import { getSession } from '@myco/db/queries/sessions.js';
+import { buildSkillGenerateInstruction, SKILL_GENERATE_TASK } from '@myco/agent/instruction-builders.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
@@ -34,58 +32,8 @@ const AgentRunBody = z.object({
   agentId: z.string().optional(),
 });
 
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-/** Task name that gets special candidate-injection handling. */
-export const SKILL_GENERATE_TASK = 'skill-generate';
-
-/**
- * Build the instruction string for a skill-generate run.
- * Shared by both the API route handler and the scheduler.
- */
-export function buildSkillGenerateInstruction(): string | undefined {
-  const candidates = listCandidates({ status: 'approved', limit: 1 });
-  if (candidates.length === 0) return undefined;
-  const c = candidates[0];
-
-  // Assemble source material directly — the gather phase is a data
-  // assembly step, not an intelligence task. The executor pre-fetches
-  // all source content so the LLM doesn't need to discover anything.
-  const parts = [
-    `candidate_id: ${c.id}`,
-    `topic: ${c.topic}`,
-    `confidence: ${c.confidence}`,
-    `rationale: ${c.rationale}`,
-    '',
-    '## Source Material',
-  ];
-
-  let sourceIds: Array<{ id: string; type: string }> = [];
-  try { sourceIds = JSON.parse(c.source_ids || '[]'); } catch { /* malformed */ }
-
-  for (const src of sourceIds) {
-    if (src.type === 'spore') {
-      const spore = getSpore(src.id);
-      if (spore) {
-        parts.push(`\n### Spore: ${src.id} (${spore.observation_type}, importance ${spore.importance})`);
-        parts.push(spore.content);
-        if (spore.context) parts.push(`Context: ${spore.context}`);
-        if (spore.tags) parts.push(`Tags: ${spore.tags}`);
-      }
-    } else if (src.type === 'session') {
-      const session = getSession(src.id);
-      if (session) {
-        parts.push(`\n### Session: ${src.id}`);
-        if (session.title) parts.push(`Title: ${session.title}`);
-        if (session.summary) parts.push(session.summary);
-      }
-    }
-  }
-
-  return parts.join('\n');
-}
+// Re-export for backward compatibility with existing import paths
+export { buildSkillGenerateInstruction, SKILL_GENERATE_TASK } from '@myco/agent/instruction-builders.js';
 
 // ---------------------------------------------------------------------------
 // Types

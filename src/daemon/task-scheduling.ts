@@ -13,7 +13,7 @@ import type { PowerManager } from './power.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { ScheduledJobContext } from './task-scheduler.js';
 import { buildScheduledJobs } from './task-scheduler.js';
-import { buildSkillGenerateInstruction, SKILL_GENERATE_TASK } from './api/agent-runs.js';
+import { buildSkillGenerateInstruction, SKILL_GENERATE_TASK } from '@myco/agent/instruction-builders.js';
 import { countSkillRecords } from '@myco/db/queries/skill-records.js';
 import { countCandidates } from '@myco/db/queries/skill-candidates.js';
 import { getDatabase } from '@myco/db/client.js';
