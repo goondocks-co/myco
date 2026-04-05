@@ -10,7 +10,7 @@
  */
 
 import { listCandidates } from '@myco/db/queries/skill-candidates.js';
-import { getSpore, countSporesSince, listSporeIdsSince } from '@myco/db/queries/spores.js';
+import { getSpore, listSporeIdsSince } from '@myco/db/queries/spores.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import { listSkillRecords } from '@myco/db/queries/skill-records.js';
 import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
@@ -82,6 +82,16 @@ export function buildSkillGenerateInstruction(): string | undefined {
 // skill-evolve
 // ---------------------------------------------------------------------------
 
+/** A skill that needs assessment — assembled by the instruction builder. */
+interface SkillAssessmentEntry {
+  id: string;
+  name: string;
+  generation: number;
+  description: string;
+  contentSnapshot: string;
+  newSporeIds: string[];
+}
+
 /**
  * Build the instruction for a skill-evolve run.
  *
@@ -105,20 +115,9 @@ export function buildSkillEvolveInstruction(
   const intervalSeconds = assessIntervalHours * 3600;
 
   const allSkills = listSkillRecords({ status: 'active', limit: 100 });
-
-  interface NeedsAssessment {
-    id: string;
-    name: string;
-    generation: number;
-    description: string;
-    contentSnapshot: string;
-    newSporeIds: string[];
-  }
-
-  const needsAssessment: NeedsAssessment[] = [];
+  const needsAssessment: SkillAssessmentEntry[] = [];
 
   for (const skill of allSkills) {
-    // Parse properties, defaulting to {} on failure
     let props: Record<string, unknown> = {};
     try {
       props = JSON.parse(skill.properties || '{}');
@@ -129,24 +128,13 @@ export function buildSkillEvolveInstruction(
     const lastAssessedAt = typeof props.last_assessed_at === 'number' ? props.last_assessed_at : 0;
     const knowledgeWatermark = typeof props.knowledge_watermark === 'number' ? props.knowledge_watermark : 0;
 
-    // Skip if assessed recently
-    if (lastAssessedAt > 0 && (now - lastAssessedAt) < intervalSeconds) {
-      continue;
-    }
-
-    // Skip if no new spores since watermark
-    const newSporeCount = countSporesSince(knowledgeWatermark);
-    if (newSporeCount === 0) {
-      continue;
-    }
-
-    // Get latest lineage entry for skill content
-    const lineage = listLineageForSkill(skill.id, 1);
-    if (lineage.length === 0) {
-      continue;
-    }
+    if (lastAssessedAt > 0 && (now - lastAssessedAt) < intervalSeconds) continue;
 
     const newSporeIds = listSporeIdsSince(knowledgeWatermark, 10);
+    if (newSporeIds.length === 0) continue;
+
+    const lineage = listLineageForSkill(skill.id, 1);
+    if (lineage.length === 0) continue;
 
     needsAssessment.push({
       id: skill.id,
