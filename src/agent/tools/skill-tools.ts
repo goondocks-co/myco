@@ -5,7 +5,7 @@
  */
 
 import crypto from 'node:crypto';
-import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
@@ -22,6 +22,40 @@ import { insertLineage } from '@myco/db/queries/skill-lineage.js';
 import { notify } from '@myco/notifications/notify.js';
 import { validateSkillContent } from './skill-validator.js';
 import { textResult, type VaultToolDeps } from './types.js';
+
+// ---------------------------------------------------------------------------
+// Frontmatter preservation
+// ---------------------------------------------------------------------------
+
+/** Fields that must not change when updating an existing skill. */
+const PROTECTED_FRONTMATTER_FIELDS = ['user-invocable', 'allowed-tools'] as const;
+
+/**
+ * Extract a frontmatter field value from SKILL.md content.
+ * Returns the raw value string, or undefined if not found.
+ */
+function extractFrontmatterField(content: string, field: string): string | undefined {
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) return undefined;
+  const match = fmMatch[1].match(new RegExp(`^${field}:\\s*(.+)$`, 'm'));
+  return match?.[1].trim();
+}
+
+/**
+ * Compare protected frontmatter fields between existing and new content.
+ * Returns an array of violation descriptions (empty = all preserved).
+ */
+function checkFrontmatterPreservation(existing: string, incoming: string): string[] {
+  const violations: string[] = [];
+  for (const field of PROTECTED_FRONTMATTER_FIELDS) {
+    const oldValue = extractFrontmatterField(existing, field);
+    const newValue = extractFrontmatterField(incoming, field);
+    if (oldValue !== undefined && newValue !== undefined && oldValue !== newValue) {
+      violations.push(`${field}: was "${oldValue}", changed to "${newValue}"`);
+    }
+  }
+  return violations;
+}
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -251,6 +285,21 @@ export function createSkillTools(deps: VaultToolDeps) {
       const root = projectRoot ?? process.cwd();
       const skillDir = resolve(root, '.agents', 'skills', args.name);
       const skillPath = resolve(skillDir, 'SKILL.md');
+
+      // Frontmatter preservation guard — when updating an existing skill,
+      // reject writes that change protected fields (user-invocable, allowed-tools).
+      // These fields are set by the skill author, not the evolve pipeline.
+      if (existsSync(skillPath)) {
+        const existingContent = readFileSync(skillPath, 'utf-8');
+        const violations = checkFrontmatterPreservation(existingContent, args.content);
+        if (violations.length > 0) {
+          recordTurn('vault_write_skill', args);
+          return textResult({
+            error: 'Skill update rejected: protected frontmatter fields were changed. Read the existing skill and preserve these values exactly.',
+            violations,
+          });
+        }
+      }
 
       // Write file to disk -- must succeed before any DB operations
       try {
