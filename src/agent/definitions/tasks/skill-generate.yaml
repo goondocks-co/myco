@@ -21,28 +21,28 @@ schedule:
 phases:
   - name: gather
     prompt: |
-      YOUR FIRST TOOL CALL must be vault_skill_candidates.
+      Generate ONE skill from an approved candidate.
 
-      If the instruction contains a candidate ID, call:
-        vault_skill_candidates(action: get, id: <candidate_id>)
+      The instruction contains the candidate ID, topic, and source_ids.
+      Parse the source_ids JSON array from the instruction — these are
+      the curated references you need.
 
-      If no instruction, call:
-        vault_skill_candidates(action: list, status: approved)
-      and use the FIRST result. Process ONLY one candidate per run.
+      1. Fetch EACH source item from source_ids:
+         - Spore IDs → vault_spores
+         - Session IDs → vault_sessions
+         These contain the concrete knowledge for the skill.
 
-      If the candidate's skill_id is set or status is 'generated',
-      report "already generated" and STOP.
+      2. Only if sources lack specific file paths or function names:
+         ONE vault_search_fts query to look up the detail.
 
-      Otherwise, gather source material from the candidate's source_ids:
+      If no instruction is provided, call vault_skill_candidates
+      (action: list, status: approved) and use the FIRST result.
 
-      1. Parse the candidate's source_ids JSON array.
-      2. Fetch EACH source: spore IDs via vault_spores, session IDs
-         via vault_sessions. These curated references are the material.
-      3. Only if you need to look up a specific file path or function
-         name mentioned in a source: ONE vault_search_fts query.
+      If the candidate already has a skill (skill_id is set or
+      status is 'generated'), report "already generated" and STOP.
 
-      The source_ids were curated by the survey. Stop gathering when
-      you have concrete steps, file paths, gotchas, and prerequisites.
+      Stop gathering when you have concrete steps, file paths,
+      gotchas, and prerequisites.
     tools:
       - vault_skill_candidates
       - vault_spores

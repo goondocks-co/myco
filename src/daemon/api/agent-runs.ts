@@ -45,10 +45,16 @@ export const SKILL_GENERATE_TASK = 'skill-generate';
  */
 export function buildSkillGenerateInstruction(): string | undefined {
   const candidates = listCandidates({ status: 'approved', limit: 1 });
-  if (candidates.length > 0) {
-    return `Generate skill for candidate id=${candidates[0].id} topic="${candidates[0].topic}"`;
-  }
-  return undefined;
+  if (candidates.length === 0) return undefined;
+  const c = candidates[0];
+  // Inject source_ids directly so the gather phase has them without
+  // needing to call vault_skill_candidates. The LLM was ignoring the
+  // instruction to fetch the candidate and searching broadly instead.
+  return [
+    `Generate skill for candidate id=${c.id} topic="${c.topic}"`,
+    `source_ids: ${c.source_ids}`,
+    `confidence: ${c.confidence}`,
+  ].join('\n');
 }
 
 // ---------------------------------------------------------------------------
