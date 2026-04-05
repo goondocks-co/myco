@@ -34,7 +34,7 @@ function extractTemplateVars(prompt: string): string[] {
   const matches = prompt.matchAll(/\{\{(\w+)\}\}/g);
   const vars = new Set<string>();
   for (const m of matches) {
-    const name = m[1];
+    const name = m[1]!;
     if (!AUTO_RESOLVED_VARS.has(name)) {
       vars.add(name);
     }

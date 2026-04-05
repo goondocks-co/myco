@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { Wifi, WifiOff, RefreshCw, Copy, Check, Eye, EyeOff, ArrowUpCircle } from 'lucide-react';
+import { WifiOff, RefreshCw, Copy, Check, Eye, EyeOff, ArrowUpCircle } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTeamStatus, type TeamStatusResponse } from '../hooks/use-team';
 import { postJson } from '../lib/api';
@@ -271,7 +271,7 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
         <StatCard
           label="Status"
           value={status.healthy ? 'Connected' : 'Unhealthy'}
-          icon={status.healthy ? Wifi : WifiOff}
+          accent={status.healthy ? 'sage' : 'terracotta'}
         />
         <StatCard
           label="Pending sync"
@@ -283,10 +283,12 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
         <StatCard
           label="Protocol"
           value={`v${status.sync_protocol_version}`}
+          accent="outline"
         />
         <StatCard
           label="Schema"
           value={`v${status.schema_version}`}
+          accent="outline"
         />
       </div>
 
@@ -396,7 +398,7 @@ export default function Team() {
   const { data: status, isLoading } = useTeamStatus();
   const queryClient = useQueryClient();
 
-  if (isLoading) return <PageLoading />;
+  if (isLoading) return <PageLoading isLoading={true} error={null}><span /></PageLoading>;
 
   const isConnected = status?.enabled && status?.worker_url;
 

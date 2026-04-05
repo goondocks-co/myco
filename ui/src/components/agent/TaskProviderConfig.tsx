@@ -93,6 +93,7 @@ function ProviderModelSelector({
           const Icon = PROVIDER_ICONS[type];
           const info = providers.find((p) => p.type === type);
           const isSelected = providerType === type;
+          if (!Icon) return null;
           return (
             <button
               key={type}

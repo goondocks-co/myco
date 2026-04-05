@@ -19,7 +19,7 @@ function timeRangeToFrom(range: string): string {
     '7d': 7 * 24 * 60 * 60_000,
     '30d': 30 * 24 * 60 * 60_000,
   };
-  return new Date(now - (ms[range] ?? ms['24h'])).toISOString();
+  return new Date(now - (ms[range] ?? 24 * 60 * 60_000)).toISOString();
 }
 
 // ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ export default function Logs() {
     const minLevel = LEVEL_ORDER[activeLevel] ?? 0;
     const search = searchValue.trim().toLowerCase();
     return liveEntries.filter((e) => {
-      if ((LEVEL_ORDER[e.level] ?? 0) < minLevel) return false;
+      if ((LEVEL_ORDER[e.level as LogLevel] ?? 0) < minLevel) return false;
       if (activeComponents.size > 0 && !activeComponents.has(e.component)) return false;
       if (search && !e.message.toLowerCase().includes(search)) return false;
       return true;

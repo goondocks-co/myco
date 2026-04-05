@@ -154,7 +154,7 @@ function SkeletonCard() {
 export function CandidateList() {
   const updateCandidate = useUpdateCandidate();
   const { searchInput, debouncedSearch, filterValues, offset, setOffset, handleSearchChange, handleFilterChange, activeFilter } = useListFilters({
-    initialFilters: { status: FILTER_ALL },
+    initialFilters: { status: 'identified' },
   });
 
   const activeStatus = activeFilter('status');
