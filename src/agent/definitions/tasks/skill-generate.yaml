@@ -6,11 +6,11 @@ description: >-
 agent: myco-agent
 prompt: >-
   Generate ONE project-specific skill from the next approved candidate.
-  Process only the first approved candidate found — do not batch multiple
-  skills in a single run. The schedule will pick up the next one.
+  The instruction contains the candidate metadata and pre-assembled
+  source material. Write the skill, then validate it.
 isDefault: false
 model: claude-sonnet-4-6
-maxTurns: 35
+maxTurns: 30
 timeoutSeconds: 900
 schedule:
   enabled: false
@@ -19,62 +19,12 @@ schedule:
     - idle
   preCondition: has-approved-candidates
 phases:
-  - name: gather
-    prompt: |
-      You are generating ONE skill. Find the first approved candidate
-      that doesn't have a skill yet.
-
-      If an instruction provides a candidate ID, use that specific one.
-      Otherwise, use vault_skill_candidates (action: list, status: approved)
-      and pick the FIRST result. Process ONLY that one candidate —
-      do not attempt to generate multiple skills in this run.
-
-      Read the candidate. If its skill_id is set or status is 'generated',
-      it already has a skill — report "already generated" and STOP.
-      Do NOT skip based on similar topics. The user approved it.
-
-      If no skill exists, gather ALL source material for this candidate:
-
-      1. Read each source item referenced in the candidate's source_ids.
-         Use vault_spores to fetch spore IDs, vault_sessions to fetch
-         session IDs. These contain the detailed knowledge.
-
-      2. Search for additional context using vault_search_semantic with
-         the candidate's topic as the query. This may surface plans,
-         artifacts, and sessions not in the source_ids.
-
-      3. Search vault_search_fts for specific file paths, function names,
-         or config keys mentioned in the source material.
-
-      4. Check vault_entities for related entities — these often link
-         to additional spores via edges.
-
-      For each source, extract:
-      - Concrete steps (what to do, in what order)
-      - File paths and code patterns (specific to this project)
-      - Gotchas and pitfalls (things that went wrong)
-      - Decisions and rationale (why this approach, not another)
-      - Prerequisites (what must be true before starting)
-
-      Be thorough — the skill quality depends entirely on how much
-      concrete detail you gather here.
-    tools:
-      - vault_skill_candidates
-      - vault_spores
-      - vault_sessions
-      - vault_search_fts
-      - vault_search_semantic
-      - vault_read_digest
-      - vault_entities
-      - vault_edges
-    maxTurns: 10
-    required: true
-
   - name: draft
     prompt: |
-      Write a SKILL.md from the gathered material. The skill must be a
-      procedural how-to guide that teaches an agent how to accomplish
-      a specific task in THIS project.
+      Write a SKILL.md from the source material in the instruction.
+      The instruction contains the candidate ID, topic, rationale,
+      and the full text of each source spore and session. Do NOT
+      call any search or read tools — the material is already here.
 
       ## SKILL.md Format
 
@@ -151,16 +101,14 @@ phases:
       - display_name: human-readable title
       - description: the frontmatter description text
       - content: the full SKILL.md including frontmatter
-      - candidate_id: the candidate ID from the gather phase
-      - source_ids: JSON array of source item IDs used
+      - candidate_id: the candidate ID from the instruction
+      - source_ids: JSON array of source item IDs from the instruction
       - rationale: "Initial generation from candidate survey"
     tools:
       - vault_write_skill
       - vault_skill_records
     maxTurns: 10
     required: true
-    dependsOn:
-      - gather
 
   - name: validate
     prompt: |
@@ -209,7 +157,7 @@ phases:
       - vault_spores
       - vault_search_fts
       - vault_report
-    maxTurns: 8
+    maxTurns: 15
     required: true
     dependsOn:
       - draft

@@ -122,36 +122,60 @@ async function checkEmbeddings(config: import('../config/schema.js').MycoConfig)
 }
 
 /** Check symbiont detection and registration status. */
-async function checkAgents(vaultDir: string): Promise<DoctorCheck[]> {
+async function checkAgents(vaultDir: string, config: import('../config/schema.js').MycoConfig | null): Promise<DoctorCheck[]> {
   try {
     const { detectSymbionts } = await import('../symbionts/detect.js');
-    const { resolveVaultDir } = await import('../vault/resolve.js');
-    const projectRoot = path.dirname(resolveVaultDir());
+    const { getEnabledSymbiontNames } = await import('../config/loader.js');
+    const projectRoot = path.dirname(vaultDir);
     const detected = detectSymbionts(projectRoot);
 
-    if (detected.length === 0) {
+    const enabledNames = config ? getEnabledSymbiontNames(config) : null;
+
+    if (detected.length === 0 && !enabledNames) {
       return [{ name: 'Agents', status: 'warn', detail: 'No symbionts detected', fixable: false }];
     }
 
     const checks: DoctorCheck[] = [];
     for (const d of detected) {
       const registered = isSymbiontRegistered(d, projectRoot);
-      if (registered) {
+      const enabled = enabledNames ? enabledNames.has(d.manifest.name) : registered;
+
+      if (enabled && registered) {
         checks.push({
           name: checks.length === 0 ? 'Agents' : '',
           status: 'ok',
-          detail: `${d.manifest.displayName} (registered)`,
+          detail: `${d.manifest.displayName} (enabled, registered)`,
           fixable: false,
         });
-      } else {
+      } else if (enabled && !registered) {
         checks.push({
           name: checks.length === 0 ? 'Agents' : '',
           status: 'warn',
-          detail: `${d.manifest.displayName} (detected but not registered — run \`myco init\`)`,
+          detail: `${d.manifest.displayName} (enabled but not registered — run \`myco update\`)`,
+          fixable: false,
+        });
+      } else if (!enabled && registered) {
+        checks.push({
+          name: checks.length === 0 ? 'Agents' : '',
+          status: 'warn',
+          detail: `${d.manifest.displayName} (registered but not enabled — run \`myco remove --symbiont ${d.manifest.name}\`)`,
+          fixable: false,
+        });
+      } else {
+        // Detected but neither enabled nor registered
+        checks.push({
+          name: checks.length === 0 ? 'Agents' : '',
+          status: 'ok',
+          detail: `${d.manifest.displayName} (detected, not enabled)`,
           fixable: false,
         });
       }
     }
+
+    if (checks.length === 0) {
+      return [{ name: 'Agents', status: 'warn', detail: 'No symbionts detected or enabled', fixable: false }];
+    }
+
     return checks;
   } catch (err) {
     return [{ name: 'Agents', status: 'fail', detail: `Agent check failed: ${(err as Error).message}`, fixable: false }];
@@ -225,7 +249,7 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   checks.push(await checkDatabase(vaultDir));
   checks.push(await checkIntelligence(config));
   checks.push(await checkEmbeddings(config));
-  checks.push(...await checkAgents(vaultDir));
+  checks.push(...await checkAgents(vaultDir, config));
   checks.push(await checkDaemon(vaultDir));
 
   return checks;

@@ -1,11 +1,11 @@
 import { resolveVaultDir } from '../vault/resolve.js';
 import { VAULT_GITIGNORE, registerSymbionts } from './shared.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
+import { loadConfig, getEnabledSymbiontNames } from '../config/loader.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
 export async function run(args: string[]): Promise<void> {
-  // Support --project <path> for detached update scripts
   let projectRoot: string | undefined;
   const projectIdx = args.indexOf('--project');
   if (projectIdx !== -1 && args[projectIdx + 1]) {
@@ -39,15 +39,33 @@ export async function run(args: string[]): Promise<void> {
     console.log('  \u2013 .gitignore is current');
   }
 
-  // --- Update symbiont registration (only agents already configured) ---
+  // --- Update symbiont registration ---
 
   const resolvedProjectRoot = projectRoot ?? path.dirname(vaultDir);
   const allManifests = loadManifests();
   const pkgRoot = resolvePackageRoot();
-  // Only update agents whose config directory already exists in the project
-  const configured = allManifests.filter((m) =>
-    fs.existsSync(path.join(resolvedProjectRoot, m.configDir)),
-  );
+
+  const config = loadConfig(vaultDir);
+  let configured: typeof allManifests;
+
+  const enabledNames = getEnabledSymbiontNames(config);
+
+  if (enabledNames) {
+    // Explicit mode: only update enabled symbionts
+    configured = allManifests.filter((m) => enabledNames.has(m.name));
+
+    // Warn about registered-but-not-enabled symbionts
+    for (const m of allManifests) {
+      if (!enabledNames.has(m.name) && fs.existsSync(path.join(resolvedProjectRoot, m.configDir))) {
+        console.log(`  !! ${m.displayName} is registered but not enabled. Run 'myco remove --symbiont ${m.name}' to clean up.`);
+      }
+    }
+  } else {
+    // Fallback: configDir-exists heuristic (pre-existing installs without symbionts config)
+    configured = allManifests.filter((m) =>
+      fs.existsSync(path.join(resolvedProjectRoot, m.configDir)),
+    );
+  }
 
   if (configured.length > 0) {
     const registered = registerSymbionts(configured, resolvedProjectRoot, pkgRoot, 'Updated');

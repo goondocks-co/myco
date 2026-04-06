@@ -13,7 +13,11 @@
  */
 
 import type { RouteRequest, RouteResponse } from '../router.js';
+import type { DaemonLogger } from '../logger.js';
 import { epochSeconds, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   listCandidatesWithCount,
   getCandidate,
@@ -186,4 +190,44 @@ export async function handleDeleteSkillRecord(req: RouteRequest): Promise<RouteR
   }
 
   return { status: 200, body: { deleted: true, id: result.id, name: result.name } };
+}
+
+// ---------------------------------------------------------------------------
+// Skill record delete with disk cleanup — factory
+// ---------------------------------------------------------------------------
+
+export interface SkillDeleteDeps {
+  vaultDir: string;
+  logger: DaemonLogger;
+}
+
+/**
+ * Creates a DELETE /api/skill-records/:id handler that wraps
+ * `handleDeleteSkillRecord` with post-deletion file/symlink cleanup.
+ */
+export function createSkillRecordDeleteHandler(deps: SkillDeleteDeps) {
+  const { vaultDir, logger } = deps;
+
+  return async function handleDeleteSkillRecordWithCleanup(req: RouteRequest): Promise<RouteResponse> {
+    const result = await handleDeleteSkillRecord(req);
+    // Delete skill file and symlinks from disk if the DB delete succeeded
+    if ((result.body as Record<string, unknown>)?.deleted) {
+      const record = result.body as { name?: string };
+      if (record.name) {
+        const projectRoot = path.resolve(vaultDir, '..');
+        const skillDir = path.resolve(projectRoot, '.agents', 'skills', record.name);
+        try { fs.rmSync(skillDir, { recursive: true, force: true }); } catch (err) {
+          logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to remove skill directory', { name: record.name, error: String(err) });
+        }
+        // Remove agent-specific symlinks (e.g., .claude/skills/<name>)
+        try {
+          const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
+          syncSkillSymlinks(projectRoot, record.name, { remove: true });
+        } catch (err) {
+          logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to remove skill symlinks', { name: record.name, error: String(err) });
+        }
+      }
+    }
+    return result;
+  };
 }

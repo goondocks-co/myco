@@ -52,6 +52,8 @@ const TaskProviderOverrideSchema = z.object({
   timeoutSeconds: z.number().int().positive().optional(),
   phases: z.record(z.string(), PhaseOverrideSchema).optional(),
   schedule: ScheduleOverrideSchema,
+  /** Task-specific params — keys and types vary per task. */
+  params: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
 });
 
 const ContextSchema = z.object({
@@ -66,6 +68,10 @@ const ContextSchema = z.object({
 const AgentSchema = z.object({
   /** Number of batches between event-driven summary triggers (0 to disable). */
   summary_batch_interval: z.number().int().min(0).default(5),
+  /** Global toggle for PowerManager-scheduled agent tasks. */
+  scheduled_tasks_enabled: z.boolean().default(true),
+  /** Global toggle for event-driven agent tasks (title-summary). */
+  event_tasks_enabled: z.boolean().default(true),
   /** Global default provider — applies to all tasks unless overridden per-task. */
   provider: ProviderOverrideSchema.optional(),
   /** Global default model — applies to all tasks unless overridden per-task. */
@@ -114,6 +120,10 @@ const NotificationsSchema = z.object({
   })).default({}),
 });
 
+const SymbiontEntrySchema = z.object({
+  enabled: z.boolean().default(true),
+});
+
 export const MycoConfigSchema = z.preprocess(
   (raw: unknown) => {
     if (raw && typeof raw === 'object' && 'curation' in raw && !('agent' in raw)) {
@@ -134,6 +144,7 @@ export const MycoConfigSchema = z.preprocess(
     team: TeamSchema.default(() => TeamSchema.parse({})),
     skills: SkillsSchema.default(() => SkillsSchema.parse({})),
     notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
+    symbionts: z.record(z.string(), SymbiontEntrySchema).optional(),
   }),
 );
 
@@ -147,3 +158,4 @@ export type BackupConfig = z.infer<typeof BackupSchema>;
 export type TeamConfig = z.infer<typeof TeamSchema>;
 export type SkillsConfig = z.infer<typeof SkillsSchema>;
 export type NotificationsConfig = z.infer<typeof NotificationsSchema>;
+export type SymbiontEntry = z.infer<typeof SymbiontEntrySchema>;

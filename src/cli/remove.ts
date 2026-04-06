@@ -1,9 +1,22 @@
 import { resolveVaultDir } from '../vault/resolve.js';
-import { isProcessAlive } from './shared.js';
+import { isProcessAlive, parseStringFlag } from './shared.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller } from '../symbionts/installer.js';
+import { updateConfig } from '../config/loader.js';
+import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
+
+/** Map uninstall result to human-readable component labels. */
+function uninstallLabels(result: ReturnType<SymbiontInstaller['uninstall']>): string[] {
+  return [
+    result.hooks && 'hooks',
+    result.mcp && 'MCP server',
+    result.skills && 'skills',
+    result.settings && 'settings',
+    result.instructions && 'instructions',
+  ].filter(Boolean) as string[];
+}
 
 export async function run(args: string[]): Promise<void> {
   const vaultDir = resolveVaultDir();
@@ -11,6 +24,41 @@ export async function run(args: string[]): Promise<void> {
     console.error(`No myco.yaml found in ${vaultDir}. Nothing to remove.`);
     process.exit(1);
   }
+
+  const symbiontName = parseStringFlag(args, '--symbiont');
+
+  // --- Per-symbiont removal ---
+  if (symbiontName) {
+    const allManifests = loadManifests();
+    const manifest = allManifests.find((m) => m.name === symbiontName);
+    if (!manifest) {
+      console.error(`Unknown symbiont: ${symbiontName}. Available: ${allManifests.map((m) => m.name).join(', ')}`);
+      process.exit(1);
+    }
+
+    const projectRoot = path.dirname(vaultDir);
+    const pkgRoot = resolvePackageRoot();
+    const installer = new SymbiontInstaller(manifest, projectRoot, pkgRoot);
+    const removed = uninstallLabels(installer.uninstall());
+
+    if (removed.length > 0) {
+      console.log(`  \u2713 Removed ${manifest.displayName}: ${removed.join(', ')}`);
+    } else {
+      console.log(`  \u2013 ${manifest.displayName}: nothing to remove`);
+    }
+
+    // Remove from config (updateConfig reads internally, no need for separate loadConfig)
+    updateConfig(vaultDir, (c) => {
+      if (!c.symbionts?.[symbiontName]) return c;
+      const { [symbiontName]: _, ...rest } = c.symbionts;
+      return { ...c, symbionts: Object.keys(rest).length > 0 ? rest : undefined };
+    });
+    console.log(`  \u2713 Removed ${symbiontName} from myco.yaml`);
+
+    return;
+  }
+
+  // --- Full removal ---
 
   const projectRoot = path.dirname(vaultDir);
   const allManifests = loadManifests();
@@ -40,15 +88,7 @@ export async function run(args: string[]): Promise<void> {
   for (const manifest of configured) {
     try {
       const installer = new SymbiontInstaller(manifest, projectRoot, pkgRoot);
-      const result = installer.uninstall();
-
-      const removed = [
-        result.hooks && 'hooks',
-        result.mcp && 'MCP server',
-        result.skills && 'skills',
-        result.settings && 'settings',
-        result.instructions && 'instructions',
-      ].filter(Boolean);
+      const removed = uninstallLabels(installer.uninstall());
 
       if (removed.length > 0) {
         console.log(`  \u2713 Removed from ${manifest.displayName}: ${removed.join(', ')}`);
@@ -69,7 +109,7 @@ export async function run(args: string[]): Promise<void> {
     }
   } catch { /* doesn't exist or already clean */ }
 
-  // --- Remove vault (unless --keep-vault) ---
+  // --- Remove vault ---
 
   if (removeVault) {
     fs.rmSync(vaultDir, { recursive: true, force: true });

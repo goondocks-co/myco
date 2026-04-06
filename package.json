@@ -34,7 +34,7 @@
     "url": "https://github.com/goondocks-co/myco.git"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.87",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.92",
     "@anthropic-ai/sdk": "^0.80.0",
     "@inquirer/prompts": "^8.3.2",
     "@modelcontextprotocol/sdk": "^1.28.0",

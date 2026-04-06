@@ -82,7 +82,7 @@ export function LogDetail({ entry, resolved, onClose }: LogDetailProps) {
             </div>
             <div className="flex items-center gap-2 text-xs">
               {renderField('session_id', entry.session_id)}
-              {resolved?.session_title && (
+              {!!resolved?.session_title && (
                 <span className="text-on-surface-variant/70">
                   {String(resolved.session_title)}
                 </span>

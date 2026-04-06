@@ -26,8 +26,6 @@ const TEST_TASK_NAME = 'full-intelligence';
 const TEST_TASK_PROMPT = 'Run full intelligence pipeline.';
 const TEST_SYSTEM_PROMPT = 'You are a vault agent.';
 
-/** Epoch seconds helper. */
-const epochNow = () => Math.floor(Date.now() / 1000);
 
 // ---------------------------------------------------------------------------
 // Mock: Agent SDK query
@@ -57,6 +55,13 @@ let mockResultTexts: string[] = [];
 /** Default result text for successful queries. */
 const DEFAULT_RESULT_TEXT = 'Agent run complete.';
 
+/**
+ * Number of `assistant` type messages yielded before the final `result`
+ * message. Controls turn metric behavior: the executor counts these instead
+ * of using num_turns from the SDK result.
+ */
+let mockAssistantCount = 0;
+
 vi.mock('@anthropic-ai/claude-agent-sdk', () => {
   return {
     query: (args: { prompt: string; options?: Record<string, unknown> }) => {
@@ -78,6 +83,14 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
           }
 
           if (behavior === 'success') {
+            for (let i = 0; i < mockAssistantCount; i++) {
+              yield {
+                type: 'assistant' as const,
+                message: { role: 'assistant' as const, content: 'test response' },
+                uuid: `assistant-${i}`,
+                session_id: 'test-session',
+              };
+            }
             yield {
               type: 'result' as const,
               subtype: 'success' as const,
@@ -228,7 +241,7 @@ vi.mock('@myco/agent/context.js', () => ({
 // ---------------------------------------------------------------------------
 
 /** Captured calls to createScopedVaultToolServer. */
-let scopedToolCalls: Array<{ agentId: string; runId: string; toolNames: string[] }> = [];
+let scopedToolCalls: Array<{ agentId: string; runId: string; toolNames: string[]; options?: Record<string, unknown> }> = [];
 
 vi.mock('@myco/agent/tools.js', () => ({
   createVaultToolServer: (_agentId: string, _runId: string) => ({
@@ -236,8 +249,8 @@ vi.mock('@myco/agent/tools.js', () => ({
     name: 'myco-vault',
     instance: {},
   }),
-  createScopedVaultToolServer: (agentId: string, runId: string, toolNames: string[]) => {
-    scopedToolCalls.push({ agentId, runId, toolNames });
+  createScopedVaultToolServer: (agentId: string, runId: string, toolNames: string[], options?: Record<string, unknown>) => {
+    scopedToolCalls.push({ agentId, runId, toolNames, options });
     return {
       type: 'sdk' as const,
       name: 'myco-vault',
@@ -278,7 +291,7 @@ vi.mock('@myco/config/loader.js', () => ({
 // ---------------------------------------------------------------------------
 
 async function createTestAgent(id: string): Promise<void> {
-  const now = epochNow();
+  const now = epochSeconds();
   registerAgent({
     id,
     name: `agent-${id}`,
@@ -288,7 +301,7 @@ async function createTestAgent(id: string): Promise<void> {
 }
 
 async function createTestTask(): Promise<void> {
-  const now = epochNow();
+  const now = epochSeconds();
   upsertTask({
     id: TEST_TASK_NAME,
     agent_id: TEST_AGENT_ID,
@@ -313,6 +326,7 @@ function resetMockState(): void {
   mockYamlPhases = undefined;
   mockExecution = undefined;
   mockOrchestratorConfig = undefined;
+  mockAssistantCount = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -588,6 +602,18 @@ describe('runAgent', () => {
 
     const opts = capturedQueryArgs!.options as Record<string, unknown>;
     expect(opts.maxTurns).toBe(42);
+  });
+
+  it('passes abort controller to SDK for timeout enforcement', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    await runAgent(TEST_VAULT_DIR);
+
+    expect(capturedQueryArgs).not.toBeNull();
+    const opts = capturedQueryArgs!.options as Record<string, unknown>;
+    // The executor creates an AbortController and passes it to the SDK
+    expect(opts.abortController).toBeDefined();
+    expect(opts.abortController).toBeInstanceOf(AbortController);
   });
 });
 
@@ -930,6 +956,38 @@ describe('runAgent — phased execution', () => {
 
     // Phase calls start at index 1 (index 0 is orchestrator)
     expect((allQueryCalls[2].options as Record<string, unknown>).maxTurns).toBe(7);
+  });
+
+  it('turnsUsed reports SDK num_turns', async () => {
+    // The mock result has num_turns: 3. turnsUsed should use this value
+    // since it's what the SDK enforces maxTurns against.
+    mockAssistantCount = 2;
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const result = await runAgent(TEST_VAULT_DIR);
+
+    expect(result.phases).toBeDefined();
+    expect(result.phases!.length).toBe(3);
+    for (const phase of result.phases!) {
+      expect(phase.turnsUsed).toBe(3); // num_turns from SDK result
+    }
+  });
+
+  it('passes readOnly flag to scoped tool server for read-only phases', async () => {
+    mockYamlPhases = [
+      { name: 'explore', prompt: 'Explore.', tools: ['vault_spores'], maxTurns: 5, required: true, readOnly: true },
+      { name: 'evaluate', prompt: 'Evaluate.', tools: ['vault_skill_candidates'], maxTurns: 5, required: true, dependsOn: ['explore'] },
+    ];
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+    await runAgent(TEST_VAULT_DIR);
+
+    expect(scopedToolCalls.length).toBe(2);
+    // explore phase should have readOnly: true
+    expect(scopedToolCalls[0].options?.readOnly).toBe(true);
+    // evaluate phase should NOT have readOnly
+    expect(scopedToolCalls[1].options?.readOnly).toBeUndefined();
   });
 });
 

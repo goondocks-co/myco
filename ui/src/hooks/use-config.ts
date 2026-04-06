@@ -22,6 +22,8 @@ export interface MycoConfig {
   };
   agent: {
     summary_batch_interval: number;
+    scheduled_tasks_enabled?: boolean;
+    event_tasks_enabled?: boolean;
     /** Fields below are set via Agent Tasks page, not Settings — preserve on save. */
     provider?: { type: string; base_url?: string; model?: string; context_length?: number };
     model?: string;

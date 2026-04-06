@@ -1,4 +1,5 @@
 import { loadManifests } from '@myco/symbionts/detect.js';
+import { loadConfig, getEnabledSymbiontNames } from '../../config/loader.js';
 import type { RouteResponse } from '../router.js';
 
 // ---------------------------------------------------------------------------
@@ -10,6 +11,7 @@ interface SymbiontInfo {
   name: string;
   displayName: string;
   binary: string;
+  enabled: boolean;
   resumeCommand?: string;
 }
 
@@ -18,18 +20,26 @@ interface SymbiontInfo {
 // ---------------------------------------------------------------------------
 
 /**
- * List all registered symbiont manifests.
+ * List all registered symbiont manifests with their enabled state.
  *
  * Returns the public-facing subset of each manifest — enough for the UI
- * to build resume commands, display agent names, etc.
+ * to build resume commands, display agent names, and show enabled state.
+ * When the config lacks a `symbionts` section (pre-existing installs),
+ * all manifests default to `enabled: true`.
  */
-export async function handleListSymbionts(): Promise<RouteResponse> {
+export async function handleListSymbionts(vaultDir: string): Promise<RouteResponse> {
   const manifests = loadManifests();
+
+  let enabledNames: Set<string> | null = null;
+  try {
+    enabledNames = getEnabledSymbiontNames(loadConfig(vaultDir));
+  } catch { /* config not loadable */ }
 
   const symbionts: SymbiontInfo[] = manifests.map((m) => ({
     name: m.name,
     displayName: m.displayName,
     binary: m.binary,
+    enabled: enabledNames ? enabledNames.has(m.name) : true,
     ...(m.resumeCommand ? { resumeCommand: m.resumeCommand } : {}),
   }));
 

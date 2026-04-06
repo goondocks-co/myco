@@ -51,6 +51,7 @@ interface TaskProviderConfigProps {
   phases?: PhaseDefinition[];
   defaults?: { model?: string; maxTurns?: number; timeoutSeconds?: number };
   schedule?: ScheduleDefaults;
+  params?: Record<string, string | number | boolean>;
 }
 
 /* ---------- Sub-components ---------- */
@@ -93,6 +94,7 @@ function ProviderModelSelector({
           const Icon = PROVIDER_ICONS[type];
           const info = providers.find((p) => p.type === type);
           const isSelected = providerType === type;
+          if (!Icon) return null;
           return (
             <button
               key={type}
@@ -274,7 +276,7 @@ const POWER_STATE_LABELS: Record<PowerState, string> = {
 
 /* ---------- Component ---------- */
 
-export function TaskProviderConfig({ taskId, phases, defaults, schedule }: TaskProviderConfigProps) {
+export function TaskProviderConfig({ taskId, phases, defaults, schedule, params }: TaskProviderConfigProps) {
   const { data: providersData, isPending: isLoadingProviders } = useProviders();
   const { data: taskConfigData } = useTaskConfig(taskId);
   const testMutation = useTestProvider();
@@ -290,6 +292,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule }: TaskP
   const [timeoutSeconds, setTimeoutSeconds] = useState<string>('');
   const [phaseOverrides, setPhaseOverrides] = useState<Record<string, PhaseOverride>>({});
   const [scheduleOverride, setScheduleOverride] = useState<ScheduleOverride>({});
+  const [paramsOverride, setParamsOverride] = useState<Record<string, string | number | boolean>>({});
   const [dirty, setDirty] = useState(false);
 
   // Sync from myco.yaml config when it loads
@@ -303,6 +306,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule }: TaskP
       setTimeoutSeconds(currentConfig.timeoutSeconds != null ? String(currentConfig.timeoutSeconds) : '');
       setPhaseOverrides(currentConfig.phases ?? {});
       setScheduleOverride(currentConfig.schedule ?? {});
+      setParamsOverride(currentConfig.params ?? {});
       setDirty(false);
     }
   }, [currentConfig]);
@@ -349,6 +353,11 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule }: TaskP
       ? (Object.keys(scheduleOverride).length > 0 ? { schedule: scheduleOverride } : { schedule: null as unknown as ScheduleOverride })
       : {};
 
+    // Build params payload: only include if task declares params
+    const paramsPayload = params && Object.keys(paramsOverride).length > 0
+      ? { params: paramsOverride }
+      : {};
+
     updateMutation.mutate(
       {
         taskId,
@@ -358,6 +367,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule }: TaskP
           ...(timeoutSeconds ? { timeoutSeconds: Number(timeoutSeconds) } : { timeoutSeconds: null as unknown as number }),
           ...(Object.keys(phaseOverrides).length > 0 ? { phases: phaseOverrides } : { phases: null as unknown as Record<string, PhaseOverride> }),
           ...schedulePayload,
+          ...paramsPayload,
         },
       },
       { onSuccess: () => setDirty(false) },
@@ -375,6 +385,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule }: TaskP
           timeoutSeconds: null as unknown as number,
           phases: null as unknown as Record<string, PhaseOverride>,
           schedule: null as unknown as ScheduleOverride,
+          params: null as unknown as Record<string, string | number | boolean>,
         },
       },
       {
@@ -387,6 +398,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule }: TaskP
           setTimeoutSeconds('');
           setPhaseOverrides({});
           setScheduleOverride({});
+          setParamsOverride({});
           setDirty(false);
         },
       },
@@ -590,6 +602,65 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule }: TaskP
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Task-specific params */}
+      {params && Object.keys(params).length > 0 && (
+        <div className="space-y-3 pt-2 border-t border-[var(--ghost-border)]">
+          <h3 className="font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide">Parameters</h3>
+          {Object.entries(params).map(([key, defaultValue]) => {
+            const overrideValue = paramsOverride[key];
+            const effectiveValue = overrideValue ?? defaultValue;
+            const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+            if (typeof defaultValue === 'boolean') {
+              return (
+                <div key={key} className="flex items-center justify-between">
+                  <label className="font-sans text-sm text-on-surface">{label}</label>
+                  <Switch
+                    checked={effectiveValue as boolean}
+                    onCheckedChange={(v) => {
+                      setParamsOverride(prev => ({ ...prev, [key]: v }));
+                      setDirty(true);
+                    }}
+                  />
+                </div>
+              );
+            }
+
+            return (
+              <div key={key} className="space-y-1">
+                <label className="font-sans text-sm text-on-surface">{label}</label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type={typeof defaultValue === 'number' ? 'number' : 'text'}
+                    value={overrideValue != null ? String(overrideValue) : ''}
+                    placeholder={String(defaultValue)}
+                    onChange={(e) => {
+                      const val = typeof defaultValue === 'number'
+                        ? (e.target.value === '' ? undefined : Number(e.target.value))
+                        : e.target.value;
+                      if (val === undefined) {
+                        setParamsOverride(prev => {
+                          const next = { ...prev };
+                          delete next[key];
+                          return next;
+                        });
+                      } else {
+                        setParamsOverride(prev => ({ ...prev, [key]: val }));
+                      }
+                      setDirty(true);
+                    }}
+                    className="w-40 font-mono"
+                  />
+                  <span className="font-sans text-xs text-on-surface-variant">
+                    default: {String(defaultValue)}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
