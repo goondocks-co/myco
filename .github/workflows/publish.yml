@@ -176,8 +176,11 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      - name: Update npm for OIDC trusted publishing support
-        run: npm install -g npm@10
+      - name: Debug npm auth
+        run: |
+          npm --version
+          cat "$NPM_CONFIG_USERCONFIG"
+          npm whoami --registry https://registry.npmjs.org || echo "npm whoami failed — token not valid"
 
       - name: Set version in package.json from tag
         env:
