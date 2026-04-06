@@ -176,12 +176,6 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      - name: Debug npm auth
-        run: |
-          npm --version
-          cat "$NPM_CONFIG_USERCONFIG"
-          npm whoami --registry https://registry.npmjs.org || echo "npm whoami failed — token not valid"
-
       - name: Set version in package.json from tag
         env:
           VERSION: ${{ needs.validate-tag.outputs.version }}
@@ -194,7 +188,7 @@ jobs:
       - name: Publish package
         env:
           NPM_TAG: ${{ needs.validate-tag.outputs.npm_tag }}
-        run: npm publish --tag "$NPM_TAG" --provenance --access public
+        run: npx npm@latest publish --tag "$NPM_TAG" --provenance --access public
 
       - name: Publish summary
         env:
