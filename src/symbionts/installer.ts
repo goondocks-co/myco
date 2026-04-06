@@ -1,30 +1,10 @@
 import type { SymbiontManifest } from './manifest-schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-
-/** Prefix used to identify Myco-owned hooks in settings files. */
-const MYCO_HOOK_COMMAND_PREFIX = 'myco-run';
-const MYCO_HOOK_GUARD_PREFIX = 'node .agents/myco-hook.cjs';
-
-/** Check if a command string belongs to Myco (old or new guard format). */
-function isMycoHookCommand(command: string): boolean {
-  return command.startsWith(MYCO_HOOK_COMMAND_PREFIX) || command.startsWith(MYCO_HOOK_GUARD_PREFIX);
-}
-
-/**
- * Check if a hook group is Myco-owned.
- * Handles both nested format (Claude Code, Codex, etc.) and flat format (Windsurf).
- *
- * Nested: { hooks: [{ command: "node .agents/myco-hook.cjs ..." }] }
- * Flat:   { command: "node .agents/myco-hook.cjs ..." }
- */
-function isMycoHookGroup(group: Record<string, unknown>): boolean {
-  // Nested format: { hooks: [{ command: "..." }] }
-  if (Array.isArray(group.hooks) && group.hooks.some((h: { command?: string }) => h.command && isMycoHookCommand(h.command))) return true;
-  // Flat format: { command: "..." }
-  if (typeof group.command === 'string' && isMycoHookCommand(group.command)) return true;
-  return false;
-}
+import { findTomlSectionEnd, buildTomlMcpSection } from './toml-helpers.js';
+import { deepMergeSettings, deepRemoveSettings } from './settings-merge.js';
+import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
+import { ensureAgentsMd, ensureSymlink, isMycoHookGroup } from './install-helpers.js';
 
 /** Current comment header for Myco-managed .gitignore block. */
 const GITIGNORE_COMMENT = '# Myco managed (machine-specific)';
@@ -411,13 +391,11 @@ export class SymbiontInstaller {
 
     const skillNames = this.listSkillDirs();
 
-    // Desired state: per-skill entries + infrastructure artifacts
+    // Desired state: canonical per-skill entries + infrastructure artifacts.
+    // Agent-specific targets (e.g. .claude/skills/) use local .gitignore files
+    // instead of polluting the project-level .gitignore.
     const desired = [
       ...skillNames.map((name) => `${CANONICAL_SKILLS_DIR}/${name}`),
-      ...(reg.skillsTarget !== CANONICAL_SKILLS_DIR
-        ? skillNames.map((name) => `${reg.skillsTarget}/${name}`)
-        : []
-      ),
       WRANGLER_CACHE_DIR,
     ];
 
@@ -589,6 +567,7 @@ export class SymbiontInstaller {
         const relTarget = path.join(canonicalRel, name);
         ensureSymlink(agentLink, relTarget);
       }
+      ensureLocalSkillsGitignore(agentSkillsDir);
     }
 
     return true;
@@ -766,206 +745,6 @@ export class SymbiontInstaller {
   }
 }
 
-// --- TOML helpers ---
-
-/** TOML section header pattern. */
-const TOML_SECTION_RE = /^\[([^\]]+)\]/;
-
-/** Find where a [mcp_servers.<name>] section ends in a TOML string. */
-function findTomlSectionEnd(raw: string, searchStart: number, serverName: string): number {
-  const subsectionPrefix = `mcp_servers.${serverName}.`;
-  const rawLines = raw.slice(searchStart).split('\n');
-  let offset = searchStart;
-  for (const line of rawLines) {
-    offset += line.length + 1;
-    const m = line.match(TOML_SECTION_RE);
-    if (m && !m[1].startsWith(subsectionPrefix) && m[1] !== `mcp_servers.${serverName}`) {
-      return offset - line.length - 1;
-    }
-  }
-  return raw.length;
-}
-
-/**
- * Build/update a specific mcp_servers entry in a TOML string.
- * Pure transformation — returns updated content without writing to disk.
- */
-function buildTomlMcpSection(
-  raw: string,
-  serverName: string,
-  server: Record<string, unknown>,
-): string {
-  const sectionHeader = `[mcp_servers.${serverName}]`;
-
-  // Build the TOML block for this server
-  const lines: string[] = [sectionHeader];
-  for (const [key, val] of Object.entries(server)) {
-    if (key === 'env' && typeof val === 'object' && val !== null) continue; // Handle env as subtable
-    if (typeof val === 'string') {
-      lines.push(`${key} = "${val}"`);
-    } else if (Array.isArray(val)) {
-      lines.push(`${key} = [${val.map((v: unknown) => `"${v}"`).join(', ')}]`);
-    } else if (typeof val === 'boolean') {
-      lines.push(`${key} = ${val}`);
-    }
-  }
-
-  // Add env subtable if present
-  const env = server.env as Record<string, string> | undefined;
-  if (env && Object.keys(env).length > 0) {
-    lines.push('');
-    lines.push(`[mcp_servers.${serverName}.env]`);
-    for (const [key, val] of Object.entries(env)) {
-      lines.push(`${key} = "${val}"`);
-    }
-  }
-
-  const block = lines.join('\n');
-
-  let updated: string;
-  if (raw.includes(sectionHeader)) {
-    const startIdx = raw.indexOf(sectionHeader);
-    const endIdx = findTomlSectionEnd(raw, startIdx + sectionHeader.length, serverName);
-    const before = raw.slice(0, startIdx).trimEnd();
-    const after = raw.slice(endIdx);
-    const separator = before ? '\n\n' : '';
-    updated = (before + separator + block + after).trimEnd() + '\n';
-  } else {
-    // Append new section
-    const separator = raw.trim() ? '\n\n' : '';
-    updated = (raw.trimEnd() + separator + block).trimEnd() + '\n';
-  }
-
-  return updated;
-}
-
-// --- Settings merge helpers ---
-
-/** Deep merge two settings objects. Arrays are appended + deduplicated; objects recurse. */
-function deepMergeSettings(
-  target: Record<string, unknown>,
-  source: Record<string, unknown>,
-): Record<string, unknown> {
-  const result = { ...target };
-  for (const [key, sourceVal] of Object.entries(source)) {
-    const targetVal = result[key];
-    if (Array.isArray(sourceVal) && Array.isArray(targetVal)) {
-      result[key] = [...new Set([...targetVal, ...sourceVal])];
-    } else if (isPlainObject(sourceVal) && isPlainObject(targetVal)) {
-      result[key] = deepMergeSettings(
-        targetVal as Record<string, unknown>,
-        sourceVal as Record<string, unknown>,
-      );
-    } else {
-      result[key] = sourceVal;
-    }
-  }
-  return result;
-}
-
-function isPlainObject(val: unknown): val is Record<string, unknown> {
-  return typeof val === 'object' && val !== null && !Array.isArray(val);
-}
-
-/**
- * Remove values from target that match the template structure.
- * Arrays: filter out values present in the template array.
- * Objects: delete keys present in the template object, recurse into nested objects.
- * Returns true if anything was removed.
- */
-function deepRemoveSettings(
-  target: Record<string, unknown>,
-  template: Record<string, unknown>,
-): boolean {
-  let changed = false;
-  for (const [key, templateVal] of Object.entries(template)) {
-    const targetVal = target[key];
-    if (targetVal === undefined) continue;
-
-    if (Array.isArray(templateVal) && Array.isArray(targetVal)) {
-      // Filter out values that appear in the template array
-      const templateSet = new Set(templateVal.map(String));
-      const filtered = targetVal.filter((v) => !templateSet.has(String(v)));
-      if (filtered.length !== targetVal.length) {
-        if (filtered.length > 0) {
-          target[key] = filtered;
-        } else {
-          delete target[key];
-        }
-        changed = true;
-      }
-    } else if (isPlainObject(templateVal) && isPlainObject(targetVal)) {
-      // Recurse into nested objects, then prune if empty
-      if (deepRemoveSettings(targetVal, templateVal)) {
-        if (Object.keys(targetVal).length === 0) {
-          delete target[key];
-        }
-        changed = true;
-      }
-    } else {
-      // Scalar: delete if value matches
-      if (String(targetVal) === String(templateVal)) {
-        delete target[key];
-        changed = true;
-      }
-    }
-  }
-  return changed;
-}
-
-// --- JSON helpers ---
-
-function readJsonFile(filePath: string): Record<string, unknown> {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-  } catch {
-    return {};
-  }
-}
-
-function writeJsonFile(filePath: string, data: Record<string, unknown>): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
-}
-
-/** Write a JSON file, or delete it if the object is empty. */
-function writeOrDeleteJsonFile(filePath: string, data: Record<string, unknown>): void {
-  if (Object.keys(data).length === 0) {
-    try { fs.unlinkSync(filePath); } catch { /* ignore */ }
-  } else {
-    writeJsonFile(filePath, data);
-  }
-}
-
-/**
- * Create a starter AGENTS.md if the project doesn't have one.
- * Idempotent — skips if AGENTS.md already exists.
- */
-function ensureAgentsMd(projectRoot: string, packageRoot: string): void {
-  const agentsMdPath = path.join(projectRoot, 'AGENTS.md');
-  if (fs.existsSync(agentsMdPath)) return;
-
-  const candidates = [
-    path.join(packageRoot, 'src/symbionts/templates/agents-starter.md'),
-    path.join(packageRoot, 'dist/src/symbionts/templates/agents-starter.md'),
-  ];
-  for (const p of candidates) {
-    try {
-      const content = fs.readFileSync(p, 'utf-8');
-      fs.writeFileSync(agentsMdPath, content, 'utf-8');
-      return;
-    } catch { /* try next */ }
-  }
-}
-
-function ensureSymlink(linkPath: string, target: string): void {
-  try {
-    if (fs.readlinkSync(linkPath) === target) return;
-  } catch { /* does not exist or is not a symlink — proceed */ }
-  try { fs.rmSync(linkPath, { recursive: true, force: true }); } catch { /* ignore */ }
-  fs.symlinkSync(target, linkPath);
-}
-
 /**
  * Create agent-specific symlinks for a skill in `.agents/skills/<name>`.
  *
@@ -981,8 +760,15 @@ export function syncSkillSymlinks(
   skillName: string,
   opts?: { remove?: boolean },
 ): void {
-  const manifestDir = path.join(path.dirname(new URL(import.meta.url).pathname), 'manifests');
-  if (!fs.existsSync(manifestDir)) return;
+  // Resolve manifests dir — try sibling (source layout) then dist layout
+  // (tsup bundles into dist/chunk-*.js, but manifests are at dist/src/symbionts/manifests/)
+  const selfDir = path.dirname(new URL(import.meta.url).pathname);
+  const candidates = [
+    path.join(selfDir, 'manifests'),
+    path.join(selfDir, 'src', 'symbionts', 'manifests'),
+  ];
+  const manifestDir = candidates.find((d) => fs.existsSync(d));
+  if (!manifestDir) return;
 
   const targets = new Set<string>();
   for (const file of fs.readdirSync(manifestDir).filter((f) => f.endsWith('.yaml'))) {
@@ -1007,9 +793,31 @@ export function syncSkillSymlinks(
       const canonicalDir = path.join(projectRoot, CANONICAL_SKILLS_DIR);
       const relTarget = path.join(path.relative(agentSkillsDir, canonicalDir), skillName);
       ensureSymlink(linkPath, relTarget);
+      // Ensure a local .gitignore ignores all symlinks in this directory.
+      // Localized to the agent's skills dir — doesn't pollute the project .gitignore.
+      ensureLocalSkillsGitignore(agentSkillsDir);
     }
   }
-  // Gitignore: the project should use directory-level wildcards
-  // (e.g., .claude/skills/, .cursor/skills/) rather than per-skill entries.
-  // The SymbiontInstaller's updateGitignore handles this during myco init.
+}
+
+/** Content for the local .gitignore that ignores Myco-created symlinks. */
+const LOCAL_SKILLS_GITIGNORE = `# Myco-managed symlinks — generated skills are symlinked here automatically.
+# The canonical location for all skills is .agents/skills/.
+#
+# To add your own skill to this directory, un-ignore it:
+#   !my-skill
+*
+!.gitignore
+`;
+
+/**
+ * Write a .gitignore inside an agent's skills directory that ignores all
+ * symlinks Myco creates there. Idempotent — skips if already present.
+ */
+function ensureLocalSkillsGitignore(agentSkillsDir: string): void {
+  const gitignorePath = path.join(agentSkillsDir, '.gitignore');
+  try {
+    if (fs.readFileSync(gitignorePath, 'utf-8') === LOCAL_SKILLS_GITIGNORE) return;
+  } catch { /* doesn't exist — proceed */ }
+  fs.writeFileSync(gitignorePath, LOCAL_SKILLS_GITIGNORE, 'utf-8');
 }

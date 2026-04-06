@@ -46,6 +46,7 @@ export interface TaskConfigOverride {
   timeoutSeconds?: number;
   phases?: Record<string, PhaseOverride>;
   schedule?: ScheduleOverride;
+  params?: Record<string, string | number | boolean>;
 }
 
 export interface TaskConfigResponse {

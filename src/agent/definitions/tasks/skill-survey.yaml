@@ -9,7 +9,7 @@ prompt: >-
   Survey the vault knowledge graph for procedural skill candidates.
 isDefault: false
 model: claude-sonnet-4-6
-maxTurns: 40
+maxTurns: 65
 timeoutSeconds: 600
 schedule:
   enabled: true
@@ -19,77 +19,83 @@ schedule:
 phases:
   - name: explore-spores
     prompt: |
-      Explore ALL spores in the vault to identify procedural patterns.
+      Identify procedural patterns from spores and entities.
       You are one of three parallel exploration phases — focus only on spores.
+      Budget is tight — be efficient, not exhaustive.
 
-      1. Query wisdom spores first (vault_spores, observation_type: wisdom).
-         These are the highest signal — synthesized from multiple sessions.
+      1. Read the digest (vault_read_digest) for a high-level overview.
+         This gives you the landscape in one call.
 
-      2. Query decisions, discoveries, and gotchas. Paginate through ALL
-         active spores (use offset parameter), not just the first page.
+      2. Query wisdom spores (vault_spores, observation_type: wisdom).
+         These are highest signal — synthesized from multiple sessions.
 
-      3. Use vault_entities to see what components and concepts exist.
-         High-mention-count entities often indicate areas that need skills.
+      3. Query decisions and gotchas (vault_spores, limit 30 each).
+         One page per type is sufficient — don't paginate exhaustively.
 
-      4. Read the digest (vault_read_digest) for a high-level overview.
+      4. Check vault_entities for high-mention components.
 
-      For each finding, note: what procedure does this relate to?
       Group findings by procedural topic ("how to do X").
+      Stop when you have a clear picture — diminishing returns
+      from additional queries waste turns.
     tools:
       - vault_spores
       - vault_entities
       - vault_edges
       - vault_read_digest
-    maxTurns: 8
+    maxTurns: 15
     required: true
+    readOnly: true
 
   - name: explore-sessions
     prompt: |
-      Explore ALL sessions in the vault to identify procedural workflows.
+      Identify procedural workflows from session history.
       You are one of three parallel exploration phases — focus only on sessions.
+      Budget is tight — be efficient, not exhaustive.
 
-      1. List all sessions (vault_sessions). Paginate through them.
-         Session summaries describe workflows and multi-step implementations.
+      1. List recent sessions (vault_sessions, limit 20). Read summaries
+         to identify multi-step workflows and recurring implementation patterns.
 
-      2. Look for recurring themes — "3+ sessions touched the same component"
-         is a strong skill candidate signal.
+      2. Do 2-3 targeted FTS searches for procedural keywords:
+         vault_search_fts with queries like "migration step", "configure install",
+         "refactor debug". Combine related terms in ONE query rather than
+         searching each keyword separately.
 
-      3. Use vault_search_fts to search session content for procedural
-         keywords: "how to", "step", "migration", "refactor", "debug",
-         "configure", "install", "deploy".
-
-      For each finding, note: what procedure does this relate to?
       Group findings by procedural topic ("how to do X").
+      Stop when you have a clear picture — you don't need to search
+      every possible keyword.
     tools:
       - vault_sessions
       - vault_search_fts
-    maxTurns: 8
+    maxTurns: 10
     required: true
+    readOnly: true
 
   - name: explore-plans
     prompt: |
-      Explore ALL plans and artifacts in the vault to identify procedures.
+      Identify procedures from plans and artifacts.
       You are one of three parallel exploration phases — focus only on plans.
+      Budget is tight — be efficient, not exhaustive.
 
       Plans contain explicit step-by-step procedures and design decisions.
       They are often the most directly skill-ready content.
 
-      1. Use vault_search_semantic with broad queries to find plans:
+      1. Use vault_search_semantic with 2-3 broad queries to find plans:
          - "implementation plan design architecture"
-         - "migration refactor setup configuration"
-         - "testing deployment workflow pipeline"
-         - "debugging troubleshooting fix"
+         - "migration setup configuration deployment"
+         Combine related concepts in each query. Do NOT search each
+         keyword separately.
 
-      2. Use vault_search_fts to search for specific procedural terms
-         across plans and artifacts.
+      2. If semantic search returns thin results, do ONE targeted FTS
+         search for a specific procedural term.
 
-      For each finding, note: what procedure does this relate to?
       Group findings by procedural topic ("how to do X").
+      Stop when you have coverage — more queries have diminishing returns.
     tools:
       - vault_search_semantic
       - vault_search_fts
-    maxTurns: 8
+    maxTurns: 22
     required: true
+    readOnly: true
 
   - name: evaluate
     prompt: |
@@ -97,20 +103,45 @@ phases:
       spores and entities, one explored sessions, one explored plans.
       Their findings are in the prior context.
 
-      For each procedural cluster identified across the exploration phases:
+      BEFORE creating any candidates, you MUST load the dedup context:
+      1. vault_skill_records (action: list) — all active skills on disk
+      2. vault_skill_candidates (action: list) — all existing candidates
+      Keep both lists for reference throughout this phase.
 
-      1. Is this a procedure (how to do something in this project)?
-         Only procedures become skills. "What is X" is not a skill.
-         "How to do X" is a skill.
+      For each procedural cluster identified, evaluate ALL of these
+      criteria. A candidate must pass EVERY one:
 
-      2. Is there enough cross-session evidence?
-         Minimum: knowledge from 2+ sessions, 3+ source items across
-         sessions, spores, and plans.
+      1. PROCEDURE TEST: Is this "how to do X in this project"?
+         "What is X" or "X exists" is knowledge, not a skill. Skip it.
 
-      3. Does an existing skill or candidate already cover this topic?
-         Use vault_skill_candidates (action: list) to check.
+      2. REPEATABILITY TEST: Will someone need to do this again?
+         Skills are repeatable how-to's for recurring tasks — things
+         a developer will do more than once as the project grows.
+         One-time fixes, bug patches, version-specific workarounds,
+         and already-applied migration steps are NOT skills. They are
+         vault knowledge (spores/wisdom) that should stay as spores.
+         Ask: "if a new contributor joined tomorrow, would they ever
+         need to follow this procedure?" If the answer is "no, it was
+         done once and the result is permanent," it is not a skill.
+         Examples of SKILLS: adding a new symbiont, creating a DB
+         migration, registering an MCP tool, authoring an agent task.
+         NOT skills: fixing a specific bug, applying a one-off schema
+         change, adapting to a framework update, addressing a one-off
+         behavioral change in a dependency.
 
-      4. Score confidence (0.0-1.0) based on:
+      3. CROSS-SESSION EVIDENCE: Knowledge from 2+ sessions, 3+ source
+         items across sessions, spores, and plans.
+
+      4. DEDUPLICATION (mandatory — failures here create real problems):
+         Check BOTH lists from step 0 above.
+         - If an active skill record's name or description covers the
+           same procedure, do NOT create a duplicate. Skip it entirely.
+         - If a non-dismissed candidate covers the same topic, UPDATE
+           that candidate with new evidence instead of creating a new one.
+         - If a generated/dismissed candidate covered this, it was
+           already handled. Do not re-create it.
+
+      5. CONFIDENCE SCORE (0.0-1.0):
          - Knowledge density (more sources = higher)
          - Cross-session evidence (wider = higher)
          - Presence of wisdom spores (higher quality signal)
@@ -120,13 +151,16 @@ phases:
       with topic, rationale, confidence, and source_ids (JSON array of
       {id, type} objects referencing the spores, sessions, and plans).
 
-      IMPORTANT: Write the rationale field as markdown. Use:
-      - **Bold** for key terms and pass/fail verdicts
-      - Numbered lists for the procedure steps identified
-      - Inline `code` for file paths, function names, and config keys
-      - A brief summary sentence, then the evidence structure
-
-      The rationale is displayed directly to the user in the dashboard.
+      IMPORTANT: Write the rationale field as markdown. Include these
+      sections in every rationale:
+      - **Procedure verdict**: PASS/FAIL
+      - **Repeatability verdict**: PASS/FAIL with justification
+      - **Cross-session evidence**: session IDs and source count
+      - **Existing coverage**: list the skills/candidates you checked
+        and why this is genuinely new (not "NONE" — name what you checked)
+      Use **bold** for verdicts, numbered lists for steps, `code` for
+      file paths and function names. The rationale is displayed directly
+      to the user in the dashboard.
 
       If an existing candidate has new evidence, use vault_skill_candidates
       (action: update) to increase confidence and add source_ids.
@@ -141,7 +175,7 @@ phases:
       - vault_skill_records
       - vault_set_state
       - vault_report
-    maxTurns: 8
+    maxTurns: 12
     required: true
     dependsOn:
       - explore-spores

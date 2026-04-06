@@ -25,6 +25,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../ui/select';
+import { Switch } from '../ui/switch';
 import { DEFAULT_SUMMARY_BATCH_INTERVAL } from '../../lib/constants';
 
 type TestState = 'idle' | 'testing' | 'success' | 'error';
@@ -34,6 +35,8 @@ type TestState = 'idle' | 'testing' | 'success' | 'error';
 interface AgentFormState {
   summaryBatchInterval: string;
   defaultTask: string;
+  scheduledTasksEnabled: boolean;
+  eventTasksEnabled: boolean;
 }
 
 /* ---------- Helpers ---------- */
@@ -42,6 +45,8 @@ function toAgentForm(config: MycoConfig, defaultTaskName?: string): AgentFormSta
   return {
     summaryBatchInterval: String(config.agent?.summary_batch_interval ?? DEFAULT_SUMMARY_BATCH_INTERVAL),
     defaultTask: defaultTaskName ?? '',
+    scheduledTasksEnabled: config.agent?.scheduled_tasks_enabled ?? true,
+    eventTasksEnabled: config.agent?.event_tasks_enabled ?? true,
   };
 }
 
@@ -49,7 +54,9 @@ function isAgentDirty(form: AgentFormState, config: MycoConfig, originalDefaultT
   const orig = toAgentForm(config, originalDefaultTask);
   return (
     form.summaryBatchInterval !== orig.summaryBatchInterval ||
-    form.defaultTask !== orig.defaultTask
+    form.defaultTask !== orig.defaultTask ||
+    form.scheduledTasksEnabled !== orig.scheduledTasksEnabled ||
+    form.eventTasksEnabled !== orig.eventTasksEnabled
   );
 }
 
@@ -210,6 +217,8 @@ export function AgentConfig() {
         agent: {
           ...config.agent,
           summary_batch_interval: parseNumericField(form.summaryBatchInterval, DEFAULT_SUMMARY_BATCH_INTERVAL),
+          scheduled_tasks_enabled: form.scheduledTasksEnabled,
+          event_tasks_enabled: form.eventTasksEnabled,
         },
       };
       await saveConfig(updated);
@@ -266,6 +275,36 @@ export function AgentConfig() {
             Agent Operations
           </span>
         </SectionHeader>
+
+        {/* Global agent toggles */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <label className="font-sans text-sm font-medium text-on-surface">Scheduled Tasks</label>
+              <p className="font-sans text-xs text-on-surface-variant">
+                Intelligence, skill survey, and skill evolution run automatically on a schedule
+              </p>
+            </div>
+            <Switch
+              checked={form.scheduledTasksEnabled}
+              onCheckedChange={(v) => setField('scheduledTasksEnabled', v)}
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <label className="font-sans text-sm font-medium text-on-surface">Event-Driven Tasks</label>
+              <p className="font-sans text-xs text-on-surface-variant">
+                Titles and summaries generated automatically after coding sessions
+              </p>
+            </div>
+            <Switch
+              checked={form.eventTasksEnabled}
+              onCheckedChange={(v) => setField('eventTasksEnabled', v)}
+            />
+          </div>
+        </div>
+
+        <div className="border-t border-outline-variant/20" />
 
         {/* Title & Summary batch interval */}
         <div className="space-y-1">

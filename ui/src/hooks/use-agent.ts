@@ -101,6 +101,7 @@ export interface TaskRow {
   contextQueries?: Record<string, unknown[]>;
   orchestrator?: { enabled: boolean; model?: string; maxTurns?: number };
   schedule?: { enabled: boolean; intervalSeconds: number; runIn: ('active' | 'idle' | 'sleep')[]; preCondition?: string };
+  params?: Record<string, string | number | boolean>;
   schemaVersion?: number;
 }
 

@@ -146,6 +146,7 @@ export function taskFromParsed(parsed: AgentTask): AgentTask {
     ...(parsed.execution ? { execution: parsed.execution } : {}),
     ...(parsed.schemaVersion ? { schemaVersion: parsed.schemaVersion } : {}),
     ...(parsed.schedule ? { schedule: parsed.schedule } : {}),
+    ...(parsed.params ? { params: parsed.params } : {}),
   };
 }
 

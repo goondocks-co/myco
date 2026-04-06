@@ -1,9 +1,13 @@
-import { getSession, listSessions, countSessions } from '@myco/db/queries/sessions.js';
+import { getSession, listSessions, countSessions, deleteSessionCascade, getSessionImpact } from '@myco/db/queries/sessions.js';
 import { listBatchesBySession, countBatchesBySession } from '@myco/db/queries/batches.js';
 import { listActivitiesByBatch, countActivities } from '@myco/db/queries/activities.js';
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
 import { listPlansBySession } from '@myco/db/queries/plans.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import { cleanupAfterSessionCascade } from '../jobs/session-cleanup.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
+import type { EmbeddingManager } from '../embedding/manager.js';
+import type { DaemonLogger } from '../logger.js';
 
 const DEFAULT_LIST_LIMIT = 50;
 const DEFAULT_LIST_OFFSET = 0;
@@ -65,4 +69,45 @@ export async function handleGetSessionAttachments(req: RouteRequest): Promise<Ro
 export async function handleGetSessionPlans(req: RouteRequest): Promise<RouteResponse> {
   const plans = listPlansBySession(req.params.id);
   return { body: plans };
+}
+
+// ---------------------------------------------------------------------------
+// Session mutation factory (requires injected deps)
+// ---------------------------------------------------------------------------
+
+export interface SessionMutationDeps {
+  embeddingManager: EmbeddingManager;
+  vaultDir: string;
+  logger: DaemonLogger;
+}
+
+export function createSessionMutationHandlers(deps: SessionMutationDeps) {
+  const { embeddingManager, vaultDir, logger } = deps;
+
+  /** DELETE /api/sessions/:id — cascade delete with post-transaction cleanup. */
+  async function handleDeleteSession(req: RouteRequest): Promise<RouteResponse> {
+    const sessionId = req.params.id;
+    const result = deleteSessionCascade(sessionId);
+    if (!result.deleted) return { status: 404, body: { error: 'Session not found' } };
+
+    // Post-transaction cleanup (fire-and-forget)
+    cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir).catch(() => {});
+
+    logger.info(LOG_KINDS.API_SESSION_DELETE, 'Session cascade deleted', {
+      session_id: sessionId,
+      counts: result.counts,
+    });
+    return { body: { ok: true, counts: result.counts } };
+  }
+
+  /** GET /api/sessions/:id/impact — get session impact data. */
+  async function handleGetSessionImpact(req: RouteRequest): Promise<RouteResponse> {
+    const sessionId = req.params.id;
+    const session = getSession(sessionId);
+    if (!session) return { status: 404, body: { error: 'Session not found' } };
+    const impact = getSessionImpact(sessionId);
+    return { body: impact };
+  }
+
+  return { handleDeleteSession, handleGetSessionImpact };
 }

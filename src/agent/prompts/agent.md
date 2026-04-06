@@ -142,6 +142,7 @@ For phased tasks, follow only your assigned phase instructions. The executor con
 - One observation per spore, specific not vague
 - Report via `vault_report` after each significant action
 - If no work to do, report "skip" with reason and finish
+- Be efficient with tool calls — batch related queries, stop searching when you have enough data. Each turn has a cost. Prefer one broad query over five narrow ones.
 
 ## Exit Behavior
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { GraphCanvas } from '../components/mycelium/GraphCanvas';
 import { EntityFilter } from '../components/mycelium/EntityFilter';
 import { Inspector } from '../components/mycelium/Inspector';
@@ -6,7 +6,7 @@ import { SporeList } from '../components/mycelium/SporeList';
 import { SporeDetail } from '../components/mycelium/SporeDetail';
 import { DigestView } from '../components/mycelium/DigestView';
 import { PageHeader } from '../components/ui/page-header';
-import { useEntities, useFullGraph } from '../hooks/use-spores';
+import { useFullGraph } from '../hooks/use-spores';
 import type { GraphNode } from '../hooks/use-graph-canvas';
 import type { SporeSummary } from '../hooks/use-spores';
 import type { Tab } from '../components/ui/tab-switcher';
@@ -14,9 +14,6 @@ import type { Tab } from '../components/ui/tab-switcher';
 /* ---------- Constants ---------- */
 
 const ALL_NODE_TYPES = new Set(['concept', 'component', 'bug', 'tool', 'file', 'spore', 'session', 'other']);
-
-/** Default graph traversal depth for full-graph mode. */
-const DEFAULT_GRAPH_DEPTH = 2;
 
 /* ---------- Types ---------- */
 
@@ -52,19 +49,19 @@ function readUrlState(): { tab: ActiveTab; sporeId?: string } {
   return { tab, sporeId };
 }
 
-/** Write navigation state to URL search params (replaceState, no history entry). */
+/** Write navigation state to URL search params. */
 function writeUrlState(tab: ActiveTab, sporeId?: string): void {
   const params = new URLSearchParams();
   if (tab !== 'graph') params.set(PARAM_TAB, tab);
   if (sporeId) params.set(PARAM_SPORE, sporeId);
   const search = params.toString();
   const url = search ? `${window.location.pathname}?${search}` : window.location.pathname;
-  window.history.replaceState(null, '', url);
+  window.history.pushState(null, '', url);
 }
 
 /* ---------- Graph Tab ---------- */
 
-function GraphTab() {
+function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => void }) {
   const [enabledTypes, setEnabledTypes] = useState<Set<string>>(new Set(ALL_NODE_TYPES));
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
@@ -143,6 +140,7 @@ function GraphTab() {
         nodes={filteredNodes}
         onClose={() => setSelectedNode(null)}
         onNodeSelect={(n) => setSelectedNode(n)}
+        onNavigateToSpore={onNavigateToSpore}
       />
     </div>
   );
@@ -156,11 +154,27 @@ export default function Mycelium() {
   const [selectedSpore, setSelectedSpore] = useState<SporeSummary | null>(
     initial.sporeId ? { id: initial.sporeId } as SporeSummary : null,
   );
+  const hasMounted = useRef(false);
+  const skipNextPush = useRef(false);
 
-  // Sync URL whenever state changes
+  // Push URL whenever state changes (skip on mount and popstate)
   useEffect(() => {
+    if (!hasMounted.current) { hasMounted.current = true; return; }
+    if (skipNextPush.current) { skipNextPush.current = false; return; }
     writeUrlState(activeTab, selectedSpore?.id);
   }, [activeTab, selectedSpore?.id]);
+
+  // Restore state from URL on browser back/forward
+  useEffect(() => {
+    function handlePopState() {
+      skipNextPush.current = true;
+      const state = readUrlState();
+      setActiveTab(state.tab);
+      setSelectedSpore(state.sporeId ? { id: state.sporeId } as SporeSummary : null);
+    }
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   function handleSelectSpore(spore: SporeSummary) {
     setSelectedSpore(spore);
@@ -190,7 +204,10 @@ export default function Mycelium() {
       />
 
       {/* Tab content */}
-      {activeTab === 'graph' && <GraphTab />}
+      {activeTab === 'graph' && <GraphTab onNavigateToSpore={(id) => {
+        setActiveTab('spores');
+        setSelectedSpore({ id } as SporeSummary);
+      }} />}
 
       {activeTab === 'spores' && (
         selectedSpore ? (

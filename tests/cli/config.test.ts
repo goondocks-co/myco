@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
 import { run } from '@myco/cli/config';
+import { MycoConfigSchema } from '@myco/config/schema';
 
 const VALID_CONFIG = {
   version: 3,
@@ -144,6 +145,69 @@ describe('myco config', () => {
       writeConfig(tmpDir);
       await run(['set', 'embedding.model', 'nomic-embed-text'], tmpDir);
       expect(logged.every((l) => !l.includes('restart the daemon'))).toBe(true);
+    });
+  });
+
+  describe('agent schema toggles', () => {
+    const minimalConfig = { version: 3, embedding: { provider: 'ollama', model: 'bge-m3' } };
+
+    it('scheduled_tasks_enabled defaults to true when not specified', () => {
+      const config = MycoConfigSchema.parse(minimalConfig);
+      expect(config.agent.scheduled_tasks_enabled).toBe(true);
+    });
+
+    it('event_tasks_enabled defaults to true when not specified', () => {
+      const config = MycoConfigSchema.parse(minimalConfig);
+      expect(config.agent.event_tasks_enabled).toBe(true);
+    });
+
+    it('scheduled_tasks_enabled can be set to false', () => {
+      const config = MycoConfigSchema.parse({
+        ...minimalConfig,
+        agent: { scheduled_tasks_enabled: false },
+      });
+      expect(config.agent.scheduled_tasks_enabled).toBe(false);
+    });
+  });
+
+  describe('agent task params', () => {
+    it('agent.tasks supports params override', () => {
+      const config = MycoConfigSchema.parse({
+        version: 3,
+        embedding: { provider: 'ollama', model: 'bge-m3' },
+        agent: {
+          tasks: {
+            'skill-evolve': {
+              params: { assess_interval_hours: 12, max_skills_per_run: 3 },
+            },
+          },
+        },
+      });
+      expect(config.agent.tasks!['skill-evolve'].params).toEqual({
+        assess_interval_hours: 12,
+        max_skills_per_run: 3,
+      });
+    });
+  });
+
+  describe('symbionts schema', () => {
+    it('parses symbionts map from config', () => {
+      const config = MycoConfigSchema.parse({
+        version: 3,
+        symbionts: {
+          'claude-code': { enabled: true },
+          'cursor': { enabled: false },
+        },
+      });
+      expect(config.symbionts).toEqual({
+        'claude-code': { enabled: true },
+        'cursor': { enabled: false },
+      });
+    });
+
+    it('defaults symbionts to undefined when absent', () => {
+      const config = MycoConfigSchema.parse({ version: 3 });
+      expect(config.symbionts).toBeUndefined();
     });
   });
 

@@ -7,7 +7,7 @@
 
 import { updateTeamConfig, loadConfig } from '@myco/config/loader.js';
 import { writeSecret, readSecrets } from '@myco/config/secrets.js';
-import { countPending, countDeadLettered } from '@myco/db/queries/team-outbox.js';
+import { countPending, countDeadLettered, backfillUnsynced, retryDeadLettered } from '@myco/db/queries/team-outbox.js';
 import { TeamSyncClient } from '../team-sync.js';
 import { SYNC_PROTOCOL_VERSION, TEAM_API_KEY_SECRET } from '@myco/constants.js';
 import { getPluginVersion } from '@myco/version.js';
@@ -163,5 +163,40 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     };
   }
 
-  return { handleConnect, handleDisconnect, handleStatus };
+  /** POST /api/team/backfill — enqueue all unsynced rows to the outbox. */
+  async function handleBackfill(_req: RouteRequest): Promise<RouteResponse> {
+    const count = backfillUnsynced(machineId);
+    return { body: { enqueued: count } };
+  }
+
+  /** POST /api/team/retry-failed — move dead-lettered outbox rows back to pending. */
+  async function handleRetryFailed(_req: RouteRequest): Promise<RouteResponse> {
+    const count = retryDeadLettered();
+    return { body: { retried: count } };
+  }
+
+  /** POST /api/team/upgrade-worker — deploy latest worker and reinitialize client. */
+  async function handleUpgradeWorker(_req: RouteRequest): Promise<RouteResponse> {
+    const { upgradeWorker } = await import('@myco/cli/team.js');
+    const result = upgradeWorker(vaultDir);
+    if (!result.success) {
+      return { status: 500, body: { error: result.error } };
+    }
+    // Reinitialize team client with potentially new URL
+    if (result.worker_url && deps.getTeamClient()) {
+      const secrets = readSecrets(vaultDir);
+      const apiKey = secrets[TEAM_API_KEY_SECRET];
+      if (apiKey) {
+        deps.setTeamClient(new TeamSyncClient({
+          workerUrl: result.worker_url,
+          apiKey,
+          machineId,
+          syncProtocolVersion: SYNC_PROTOCOL_VERSION,
+        }));
+      }
+    }
+    return { body: result };
+  }
+
+  return { handleConnect, handleDisconnect, handleStatus, handleBackfill, handleRetryFailed, handleUpgradeWorker };
 }

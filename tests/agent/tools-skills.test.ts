@@ -349,5 +349,100 @@ describe('vault skill tools', () => {
       expect(updatedCandidate.status).toBe('generated');
       expect(updatedCandidate.skill_id).toBeDefined();
     });
+
+    it('rejects update that changes user-invocable value', async () => {
+      const t = findTool(tools, 'vault_write_skill');
+
+      // First write: user-invocable: true
+      await t.handler(
+        {
+          name: 'protected-test',
+          display_name: 'Protected Test',
+          description: 'Test frontmatter preservation',
+          content: validSkillContent('protected-test'),
+        },
+        undefined,
+      );
+
+      // Second write: change user-invocable to false — should be rejected
+      const badContent = validSkillContent('protected-test').replace(
+        'user-invocable: true',
+        'user-invocable: false',
+      );
+      const result = await t.handler(
+        {
+          name: 'protected-test',
+          display_name: 'Protected Test',
+          description: 'Test frontmatter preservation',
+          content: badContent,
+        },
+        undefined,
+      );
+      const parsed = parseResult(result) as { error?: string; violations?: string[] };
+      expect(parsed.error).toContain('protected frontmatter fields were changed');
+      expect(parsed.violations).toBeDefined();
+      expect(parsed.violations!.some(v => v.includes('user-invocable'))).toBe(true);
+    });
+
+    it('rejects update that changes allowed-tools value', async () => {
+      const t = findTool(tools, 'vault_write_skill');
+
+      // First write
+      await t.handler(
+        {
+          name: 'tools-test',
+          display_name: 'Tools Test',
+          description: 'Test allowed-tools preservation',
+          content: validSkillContent('tools-test'),
+        },
+        undefined,
+      );
+
+      // Second write: change allowed-tools — should be rejected
+      const badContent = validSkillContent('tools-test').replace(
+        'allowed-tools: Read, Grep, Glob',
+        'allowed-tools: Read, Edit, Write, Bash, Grep, Glob',
+      );
+      const result = await t.handler(
+        {
+          name: 'tools-test',
+          display_name: 'Tools Test',
+          description: 'Test allowed-tools preservation',
+          content: badContent,
+        },
+        undefined,
+      );
+      const parsed = parseResult(result) as { error?: string; violations?: string[] };
+      expect(parsed.error).toContain('protected frontmatter fields were changed');
+      expect(parsed.violations!.some(v => v.includes('allowed-tools'))).toBe(true);
+    });
+
+    it('allows update that preserves protected fields', async () => {
+      const t = findTool(tools, 'vault_write_skill');
+
+      // First write
+      await t.handler(
+        {
+          name: 'preserve-test',
+          display_name: 'Preserve Test',
+          description: 'Test preservation allows valid updates',
+          content: validSkillContent('preserve-test', '# Version 1'),
+        },
+        undefined,
+      );
+
+      // Second write: different body but same frontmatter — should succeed
+      const result = await t.handler(
+        {
+          name: 'preserve-test',
+          display_name: 'Preserve Test',
+          description: 'Updated description',
+          content: validSkillContent('preserve-test', '# Version 2\n\nNew content.'),
+        },
+        undefined,
+      );
+      const parsed = parseResult(result) as { generation?: number };
+      expect(parsed.generation).toBe(2);
+    });
   });
 });

@@ -760,13 +760,17 @@ describe('gitignore management', () => {
     expect(gitignore).not.toContain('.agents/skills/\n');
   });
 
-  it('adds agent-specific skill symlinks to .gitignore', () => {
+  it('creates local .gitignore in agent-specific skills directory', () => {
     fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.install();
 
-    const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
-    expect(gitignore).toContain('.claude/skills/myco');
+    const localGitignore = fs.readFileSync(path.join(projectRoot, '.claude/skills/.gitignore'), 'utf-8');
+    expect(localGitignore).toContain('*');
+    expect(localGitignore).toContain('!.gitignore');
+    // Project-level .gitignore should NOT contain agent-specific skill entries
+    const projectGitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
+    expect(projectGitignore).not.toContain('.claude/skills/');
   });
 
   it('does not duplicate existing entries', () => {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Play } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { PageHeader } from '../components/ui/page-header';
@@ -36,7 +36,7 @@ function readUrlState(): { tab: AgentTab; runId?: string; taskId?: string } {
   };
 }
 
-/** Write navigation state to URL search params (replaceState, no history entry). */
+/** Write navigation state to URL search params. */
 function writeUrlState(tab: AgentTab, runId?: string, taskId?: string): void {
   const params = new URLSearchParams();
   if (tab !== 'runs') params.set(PARAM_TAB, tab);
@@ -44,7 +44,7 @@ function writeUrlState(tab: AgentTab, runId?: string, taskId?: string): void {
   if (taskId) params.set(PARAM_TASK, taskId);
   const search = params.toString();
   const url = search ? `${window.location.pathname}?${search}` : window.location.pathname;
-  window.history.replaceState(null, '', url);
+  window.history.pushState(null, '', url);
 }
 
 /* ---------- Tab definitions ---------- */
@@ -63,11 +63,28 @@ export default function Agent() {
   const [selectedRunId, setSelectedRunId] = useState<string | undefined>(initial.runId);
   const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>(initial.taskId);
   const [triggerOpen, setTriggerOpen] = useState(false);
+  const hasMounted = useRef(false);
+  const skipNextPush = useRef(false);
 
-  // Sync URL whenever state changes
+  // Push URL whenever state changes (skip on mount and popstate)
   useEffect(() => {
+    if (!hasMounted.current) { hasMounted.current = true; return; }
+    if (skipNextPush.current) { skipNextPush.current = false; return; }
     writeUrlState(tab, selectedRunId, selectedTaskId);
   }, [tab, selectedRunId, selectedTaskId]);
+
+  // Restore state from URL on browser back/forward
+  useEffect(() => {
+    function handlePopState() {
+      skipNextPush.current = true;
+      const state = readUrlState();
+      setTab(state.tab);
+      setSelectedRunId(state.runId);
+      setSelectedTaskId(state.taskId);
+    }
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   const switchTab = useCallback((id: string) => {
     const t = id as AgentTab;

@@ -52,6 +52,7 @@ interface InspectorProps {
   connectedSpores?: Array<{ id: string; name: string; type: string }>;
   onClose?: () => void;
   onNodeSelect?: (node: GraphNode) => void;
+  onNavigateToSpore?: (id: string) => void;
 }
 
 /* ---------- Sub-components ---------- */
@@ -74,7 +75,7 @@ function getNodeRoute(node: GraphNode): string | null {
   return null;
 }
 
-export function Inspector({ node, edges, nodes, metadata, markdownPreview, connectedSpores, onClose, onNodeSelect }: InspectorProps) {
+export function Inspector({ node, edges, nodes, metadata, markdownPreview, connectedSpores, onClose, onNodeSelect, onNavigateToSpore }: InspectorProps) {
   const navigate = useNavigate();
   if (!node) return null;
 
@@ -126,7 +127,13 @@ export function Inspector({ node, edges, nodes, metadata, markdownPreview, conne
             </h2>
             {getNodeRoute(node) && (
               <button
-                onClick={() => navigate(getNodeRoute(node)!)}
+                onClick={() => {
+                  if (node.type === 'spore' && onNavigateToSpore) {
+                    onNavigateToSpore(node.id);
+                  } else {
+                    navigate(getNodeRoute(node)!);
+                  }
+                }}
                 className="inline-flex items-center gap-1 mt-1.5 font-sans text-xs text-on-surface-variant hover:text-primary transition-colors group cursor-pointer"
               >
                 <span>View {node.type}</span>

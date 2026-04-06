@@ -144,6 +144,16 @@ export async function run(args: string[]): Promise<void> {
   const detected = detectSymbionts(projectRoot);
   const detectedNames = new Set(detected.map((d) => d.manifest.name));
 
+  // Load existing symbiont config for pre-checking on re-init (interactive only)
+  let existingSymbionts: Record<string, { enabled: boolean }> | undefined;
+  if (alreadyInitialized && isInteractive) {
+    try {
+      const { loadConfig } = await import('../config/loader.js');
+      const existing = loadConfig(vaultDir);
+      existingSymbionts = existing.symbionts;
+    } catch { /* config not loadable — skip pre-check */ }
+  }
+
   if (allManifests.length > 0) {
     // Interactive: let user choose which agents to configure
     let selectedManifests = allManifests.filter((m) => detectedNames.has(m.name));
@@ -155,10 +165,12 @@ export async function run(args: string[]): Promise<void> {
         const hint = det
           ? [det.binaryFound && 'detected', det.configDirFound && `${m.configDir}/ exists`].filter(Boolean).join(', ')
           : '';
+        // Pre-check from config on re-init; nothing pre-checked on first init
+        const checked = !!existingSymbionts?.[m.name]?.enabled;
         return {
           value: m.name,
           name: hint ? `${m.displayName} (${hint})` : m.displayName,
-          checked: detectedNames.has(m.name),
+          checked,
         };
       });
       const selectedNames = await checkbox({
@@ -172,6 +184,15 @@ export async function run(args: string[]): Promise<void> {
     }
 
     if (selectedManifests.length > 0) {
+      const symbiontsConfig: Record<string, { enabled: boolean }> = {};
+      for (const m of selectedManifests) {
+        symbiontsConfig[m.name] = { enabled: true };
+      }
+      updateConfig(vaultDir, (config) => ({
+        ...config,
+        symbionts: symbiontsConfig,
+      }));
+
       const pkgRoot = resolvePackageRoot();
       registerSymbionts(selectedManifests, projectRoot, pkgRoot, 'Registered');
     }

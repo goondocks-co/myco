@@ -2,106 +2,66 @@ name: skill-evolve
 displayName: Skill Evolution
 description: >-
   Evaluate and evolve existing Myco-managed skills based on new
-  vault knowledge and usage patterns.
+  vault knowledge. Only assesses skills with new knowledge since
+  their last assessment, throttled to once per assess_interval_hours.
 agent: myco-agent
 prompt: >-
-  Assess all active Myco-managed skills for staleness, conflicts,
-  and oversized scope. Evolve skills that need it.
+  Assess and update skills that have new knowledge since their last
+  assessment. The instruction contains pre-filtered skills with their
+  current content and new spore IDs.
 isDefault: false
 model: claude-sonnet-4-6
-maxTurns: 60
-timeoutSeconds: 1800
+maxTurns: 40
+timeoutSeconds: 1200
 schedule:
   enabled: false
   intervalSeconds: 900
   runIn:
     - idle
   preCondition: has-active-skills
+params:
+  assess_interval_hours: 24
+  max_skills_per_run: 5
 phases:
   - name: assess
     prompt: |
-      Evaluate every active Myco-managed skill to determine if it
-      needs updating.
+      The instruction contains skills that have new knowledge since
+      their last assessment. For each skill listed:
 
-      For EACH active skill (vault_skill_records action: list, status: active):
+      1. Read the new spores: fetch each ID from new_spore_ids via
+         vault_spores. Understand what changed.
 
-      1. READ THE CURRENT SKILL CONTENT.
-         Get the skill record (vault_skill_records action: get), then
-         read the latest lineage entry's content_snapshot to see what
-         the skill currently says. You MUST read the actual content
-         before you can assess accuracy.
+      2. Verify code references: use vault_search_fts to check 3-5
+         key file paths and function names from the skill content.
+         Are they still valid? This is bounded — check specific
+         claims, do not search broadly.
 
-      2. SEARCH FOR NEW KNOWLEDGE since the skill was last updated.
-         Use vault_search_semantic with the skill's topic/keywords.
-         Use vault_search_fts with specific file paths, function names,
-         and technical terms mentioned in the skill.
-         Use vault_spores to check for recent wisdom, decisions, and
-         gotchas related to the skill's domain.
+      3. Classify:
+         - CURRENT — new knowledge doesn't affect this skill's procedures
+         - STALE — new knowledge changes a specific step, path, or gotcha.
+           Note exactly WHAT is new.
+         - DEPRECATED — key code references are gone or the procedure
+           is no longer relevant. Note what's missing.
 
-         Compare what you find to what the skill currently says.
-         Does the skill miss anything important? Does it say anything
-         that's now wrong or outdated?
+      Bias toward CURRENT. A skill that is 90% accurate is better
+      left alone than rewritten with the risk of losing detail.
 
-      3. CHECK SOURCE SPORE STATUS.
-         For each source spore ID in the skill's source_ids, check if
-         it's been superseded (vault_spores, status: superseded).
-         Superseded sources mean the skill may contain outdated advice.
+      4. Update the skill's properties with the new watermark:
+         vault_skill_records (action: update, id: <skill_id>,
+         properties: '{"last_assessed_at": <now>, "knowledge_watermark": <now>, "last_classification": "<classification>"}')
 
-      4. ASSESS SKILL SCOPE.
-         Is the skill trying to cover too many distinct procedures?
-         A skill over 400 lines or covering 3+ independent workflows
-         is a candidate for splitting.
+      5. Store classifications via vault_set_state
+         (key: skill-evolve-classifications) as JSON.
 
-      Classify each skill — bias toward CURRENT. A rewrite has
-      real cost (can lose valuable detail, regress triggering quality).
-      Only classify as STALE/CONFLICTED when the delta is substantive:
+      Report via vault_report.
 
-      - **CURRENT**: Content is still accurate. Minor phrasing
-        differences between the skill and new knowledge do NOT make
-        it stale. If the skill already covers the topic correctly
-        — even if newer spores phrase it differently — it is CURRENT.
-      - **STALE**: New *factual* knowledge exists that the skill
-        genuinely misses — a new concrete step, a changed file path,
-        a new gotcha that would cause real failure, a new pattern
-        that replaces one the skill teaches. The new knowledge must
-        be specific and actionable, not a rephrasing of existing
-        content. Note specifically WHAT is new/changed.
-      - **CONFLICTED**: New knowledge directly contradicts the skill's
-        current content (a decision was reversed, a pattern was
-        abandoned, a file was deleted). Note the contradiction.
-      - **OVERSIZED**: Covers too many distinct procedures. Note
-        how it should be split.
-
-      When in doubt, classify as CURRENT. A skill that is 90%
-      accurate and well-structured is better left alone than
-      rewritten with the risk of losing detail.
-
-      NOTE: Skip usage-based retirement for now — usage tracking is
-      not yet active. Do not classify skills as UNUSED.
-
-      Store classifications using vault_set_state with key
-      'skill-evolve-classifications' and value as a JSON object:
-      ```json
-      {
-        "skill-name": {
-          "classification": "CURRENT|STALE|CONFLICTED|OVERSIZED",
-          "rationale": "what changed and why",
-          "new_knowledge": ["list of specific new findings"]
-        }
-      }
-      ```
-
-      Report classifications via vault_report.
+      If the instruction says "No skills need assessment", report
+      skip via vault_report and finish immediately.
     tools:
-      - vault_skill_records
       - vault_spores
-      - vault_sessions
       - vault_search_fts
-      - vault_search_semantic
-      - vault_read_digest
-      - vault_state
+      - vault_skill_records
       - vault_set_state
-      - vault_edges
       - vault_report
     maxTurns: 20
     required: true
@@ -111,77 +71,44 @@ phases:
       Read classifications from vault_state
       (key: skill-evolve-classifications). Parse the JSON.
 
-      For each skill classified as STALE, CONFLICTED, or OVERSIZED:
+      For each skill classified as STALE or DEPRECATED:
 
-      ## STALE or CONFLICTED — Rewrite the skill
+      ## STALE — Targeted update
 
       1. Read the current skill content from vault_skill_records
-         (action: get) to see the current version.
+         (action: get).
 
-      2. Gather the new knowledge: read the specific spores, sessions,
-         or search results identified in the assessment.
+      2. START from the existing content as-is. Copy it verbatim.
+         Then make ONLY the specific changes needed — insert new
+         sections, update incorrect facts, add missing steps.
 
-      3. Rewrite using vault_write_skill. The rewrite MUST:
-         - Preserve ALL existing frontmatter fields — read the current
-           content first and carry every field forward (name, description,
-           managed_by, user-invocable, allowed-tools). The quality gate
-           rejects writes missing any required frontmatter field.
+         The diff between old and new should be MINIMAL.
 
-         - **DO NOT shorten the description.** The description is the
-           PRIMARY triggering mechanism — Claude Code reads it to decide
-           whether to load the skill. A shorter description means fewer
-           matches and worse triggering. Only change the description if
-           it contains factually wrong information. Never condense it
-           for brevity.
+         Protected frontmatter rules (vault_write_skill enforces
+         these and will REJECT writes that violate them):
+         - user-invocable: copy EXACT value from existing skill
+         - allowed-tools: copy EXACT value from existing skill
+         - description: do not shorten (>10% reduction is rejected)
 
-         - **allowed-tools must list Claude Code tool names**, NOT vault
-           agent tools. These skills run in developer Claude Code sessions,
-           not in the agent pipeline. Valid values are:
-           Read, Edit, Write, Bash, Grep, Glob
-           If the existing allowed-tools lists vault_* tools (like
-           vault_search_fts, vault_spores, vault_state, etc.), that is
-           WRONG — replace with the appropriate Claude Code tools.
-           Most procedural skills need: Read, Edit, Write, Bash, Grep, Glob
-           Read-only informational skills need: Read, Bash, Grep, Glob
+      3. Write via vault_write_skill with a rationale explaining
+         what specifically changed.
 
-         - Preserve all content that is still accurate — do NOT
-           restructure or rephrase sections that are correct. Only
-           modify the specific sections affected by the new knowledge.
-         - Incorporate the new knowledge identified in assessment
-         - Follow the same SKILL.md format:
-           - Prerequisites, Steps, Common Pitfalls structure
-         - Stay under 500 lines
-         - Include a rationale parameter explaining WHAT changed:
-           e.g., "Updated: added hookFields normalization step from
-           session dd5bc83a, corrected Windsurf MCP path"
+      ## DEPRECATED — Retire the skill
 
-         vault_write_skill automatically bumps the generation and
-         creates a lineage entry with the rationale.
+      1. vault_skill_records (action: update, status: retired)
+      2. vault_skill_records (action: delete)
 
-      ## OVERSIZED — Split into focused sub-skills
+      ## CURRENT — No action. Skip.
 
-      1. Identify distinct procedures within the skill.
-      2. Write each as a new skill via vault_write_skill.
-         Each sub-skill gets its own name, description, and content.
-      3. Retire the parent via vault_skill_records
-         (action: update, status: retired).
-
-      ## CURRENT — No action needed. Skip.
-
-      Report a summary of all actions taken via vault_report:
-      - Which skills were updated (with rationale)
-      - Which skills were split (into what)
-      - Which skills were left as CURRENT
+      Report all actions via vault_report.
     tools:
       - vault_write_skill
       - vault_skill_records
       - vault_skill_candidates
       - vault_state
-      - vault_spores
       - vault_search_fts
-      - vault_search_semantic
       - vault_report
-    maxTurns: 35
+    maxTurns: 20
     required: true
     dependsOn:
       - assess

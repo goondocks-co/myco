@@ -18,8 +18,7 @@ import { epochSeconds, DEFAULT_AGENT_ID, MS_PER_SECOND, PHASE_SUMMARY_MAX_CHARS 
 import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
 import { initDatabase, vaultDbPath, getDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
-import { getAgent } from '@myco/db/queries/agents.js';
-import { getTask, getDefaultTask } from '@myco/db/queries/tasks.js';
+import { getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
   insertRun,
   updateRunStatus,
@@ -28,19 +27,15 @@ import {
   STATUS_COMPLETED,
   STATUS_FAILED,
 } from '@myco/db/queries/runs.js';
-import {
-  resolveDefinitionsDir,
-  loadAgentDefinition,
-  loadSystemPrompt,
-  resolveEffectiveConfig,
-} from './loader.js';
-import { loadAllTasks } from './registry.js';
+import { loadSystemPrompt } from './loader.js';
 import { createVaultToolServer, createScopedVaultToolServer } from './tools.js';
 import { buildVaultContext } from './context.js';
 import { composeOrchestratorPrompt, parseOrchestratorPlan, applyDirectives, DEFAULT_ORCHESTRATOR_MAX_TURNS } from './orchestrator.js';
 import { executeContextQueries } from './context-queries.js';
 import { buildPhaseEnv } from './provider.js';
-import { loadConfig } from '@myco/config/loader.js';
+import { resolveRunConfig } from './config-resolver.js';
+import { ensureOllamaContextVariant } from './ollama-context.js';
+import { computeWaves, phaseSessionId } from './wave-computation.js';
 import type { ContextQueryResult } from './context-queries.js';
 import type { ProviderConfig } from './types.js';
 import type {
@@ -50,6 +45,9 @@ import type {
   PhaseDefinition,
   PhaseResult,
 } from './types.js';
+
+// Re-export computeWaves for backward compatibility (tests import from executor)
+export { computeWaves } from './wave-computation.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -162,146 +160,6 @@ export function composePhasePrompt(
 }
 
 // ---------------------------------------------------------------------------
-// Ollama model pre-loading
-// ---------------------------------------------------------------------------
-
-/** Timeout for Ollama model pre-load request (ms). */
-const OLLAMA_PRELOAD_TIMEOUT_MS = 30_000;
-
-/**
- * Ensure an Ollama model variant exists with the desired context length.
- *
- * The Anthropic-compatible endpoint (/v1/messages) always loads models at
- * default context — it ignores /api/chat preloads and API-created params.
- * The only reliable way is `ollama create` with a Modelfile containing
- * `PARAMETER num_ctx`. Creates a variant named `{model}-ctx{contextLength}`.
- *
- * Returns the variant model name to use.
- */
-async function ensureOllamaContextVariant(
-  model: string,
-  contextLength: number,
-): Promise<string> {
-  const { execFileSync } = await import('node:child_process');
-  const { writeFileSync, unlinkSync } = await import('node:fs');
-  const { tmpdir } = await import('node:os');
-  const { join } = await import('node:path');
-
-  const baseName = model.replace(/:latest$/, '');
-  const variantName = `${baseName}-ctx${contextLength}`;
-
-  try {
-    // Check if variant already exists
-    execFileSync('ollama', ['show', variantName], { stdio: 'ignore' });
-    return variantName;
-  } catch {
-    // Doesn't exist — create it
-  }
-
-  try {
-    const modelfilePath = join(tmpdir(), `myco-modelfile-${Date.now()}`);
-    writeFileSync(modelfilePath, `FROM ${model}\nPARAMETER num_ctx ${contextLength}\n`);
-    execFileSync('ollama', ['create', variantName, '-f', modelfilePath], {
-      stdio: 'ignore',
-      timeout: OLLAMA_PRELOAD_TIMEOUT_MS,
-    });
-    try { unlinkSync(modelfilePath); } catch { /* cleanup best-effort */ }
-    return variantName;
-  } catch {
-    return model; // Fall back to original
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Wave computation (Kahn's algorithm)
-// ---------------------------------------------------------------------------
-
-/**
- * Compute execution waves from phase dependency graph.
- *
- * Uses Kahn's algorithm to topologically sort phases into waves.
- * Phases in the same wave have no dependencies on each other and
- * can execute in parallel via Promise.allSettled().
- *
- * @throws Error if circular dependencies are detected.
- */
-export function computeWaves(phases: PhaseDefinition[]): PhaseDefinition[][] {
-  const nameToPhase = new Map(phases.map(p => [p.name, p]));
-  const inDegree = new Map<string, number>();
-  const dependents = new Map<string, string[]>(); // dependency → phases that depend on it
-
-  // Initialize
-  for (const phase of phases) {
-    inDegree.set(phase.name, 0);
-    dependents.set(phase.name, []);
-  }
-
-  // Build adjacency — skip dependencies on phases not in the set
-  // (they may have been removed by orchestrator directives)
-  for (const phase of phases) {
-    const deps = phase.dependsOn ?? [];
-    for (const dep of deps) {
-      if (!nameToPhase.has(dep)) continue; // skipped/removed phase — treat as satisfied
-      inDegree.set(phase.name, (inDegree.get(phase.name) ?? 0) + 1);
-      dependents.get(dep)!.push(phase.name);
-    }
-  }
-
-  // Collect waves
-  const waves: PhaseDefinition[][] = [];
-  const completed = new Set<string>();
-
-  while (completed.size < phases.length) {
-    // Find all phases with zero unsatisfied deps
-    const wave: PhaseDefinition[] = [];
-    for (const phase of phases) {
-      if (completed.has(phase.name)) continue;
-      if ((inDegree.get(phase.name) ?? 0) === 0) {
-        wave.push(phase);
-      }
-    }
-
-    if (wave.length === 0) {
-      const remaining = phases.filter(p => !completed.has(p.name)).map(p => p.name);
-      throw new Error(`Circular dependency detected among phases: ${remaining.join(', ')}`);
-    }
-
-    waves.push(wave);
-
-    // Mark wave as completed and decrement dependents' in-degrees
-    for (const phase of wave) {
-      completed.add(phase.name);
-      for (const dependent of (dependents.get(phase.name) ?? [])) {
-        inDegree.set(dependent, (inDegree.get(dependent) ?? 0) - 1);
-      }
-    }
-  }
-
-  return waves;
-}
-
-// ---------------------------------------------------------------------------
-// Session ID generation
-// ---------------------------------------------------------------------------
-
-/**
- * Generate a deterministic session ID (UUID format) for a phase.
- * Derived from run ID + phase name so the same run always produces
- * the same session IDs.
- */
-function phaseSessionId(runId: string, phaseName: string): string {
-  const hash = crypto.createHash('sha256').update(`${runId}-${phaseName}`).digest('hex');
-  // Format as UUID: 8-4-4-4-12
-  return [
-    hash.slice(0, 8),
-    hash.slice(8, 12),
-    hash.slice(12, 16),
-    hash.slice(16, 20),
-    hash.slice(20, 32),
-  ].join('-');
-}
-
-// ---------------------------------------------------------------------------
 // Single-phase execution helper
 // ---------------------------------------------------------------------------
 
@@ -325,6 +183,7 @@ async function executePhase(
   let phaseCost = 0;
   let phaseTokens = 0;
   let phaseTurns = 0;
+  let agenticTurns = 0;
   let phaseSummary = '';
 
   try {
@@ -345,6 +204,9 @@ async function executePhase(
         ...(abortController ? { abortController } : {}),
       },
     })) {
+      if (message.type === 'assistant') {
+        agenticTurns++;
+      }
       if (message.type === 'result') {
         phaseCost = message.total_cost_usd ?? 0;
         phaseTokens =
@@ -356,10 +218,19 @@ async function executePhase(
       }
     }
 
+    if (phase.maxTurns) {
+      console.log(
+        `[agent] Phase "${phase.name}": num_turns=${phaseTurns}, assistant_msgs=${agenticTurns}, budget=${phase.maxTurns}`,
+      );
+    }
+
     if (phase.required && phaseTurns === 0) {
       console.warn(`[agent] Required phase "${phase.name}" produced 0 turns`);
     }
 
+    // Use SDK's num_turns — it's what the SDK enforces against.
+    // agenticTurns (assistant message count) is logged for diagnostics
+    // but not reliable as the primary metric.
     return {
       name: phase.name,
       status: 'completed',
@@ -557,6 +428,7 @@ async function executePhasedQuery(
           embeddingManager,
           projectRoot,
           vaultDir,
+          readOnly: phase.readOnly,
         },
       );
 
@@ -666,81 +538,16 @@ export async function runAgent(
     }
   }
 
-  // 3. Resolve config
-  const definitionsDir = resolveDefinitionsDir();
-  const definition = loadAgentDefinition(definitionsDir);
+  // 3. Resolve config from all sources
+  const {
+    config,
+    definitionsDir,
+    taskProviderOverride: resolvedTaskProvider,
+    phaseProviderOverrides,
+  } = resolveRunConfig(agentId, requestedTask, vaultDir);
 
-  // Load agent and task — both are sync DB lookups
-  const agentRow = getAgent(agentId);
-  const taskRow = options?.task
-    ? getTask(options.task)
-    : getDefaultTask(agentId);
-
-  // Structural fields (phases, execution, contextQueries) come from the registry
-  // (built-in YAML merged with user vault tasks) rather than the DB flat columns.
-  const allTasks = loadAllTasks(definitionsDir, vaultDir);
-  const taskName = taskRow?.id ?? options?.task;
-  const yamlTask = taskName ? allTasks.get(taskName) : undefined;
-
-  const taskOverrides = taskRow
-    ? {
-        name: taskRow.id,
-        displayName: taskRow.display_name ?? taskRow.id,
-        description: taskRow.description ?? '',
-        agent: taskRow.agent_id,
-        prompt: taskRow.prompt,
-        isDefault: taskRow.is_default === 1,
-        ...(taskRow.tool_overrides
-          ? { toolOverrides: JSON.parse(taskRow.tool_overrides) as string[] }
-          : {}),
-        // Scalar config from YAML (model, turns, timeout) — DB doesn't store these
-        ...(yamlTask?.model ? { model: yamlTask.model } : {}),
-        ...(yamlTask?.maxTurns ? { maxTurns: yamlTask.maxTurns } : {}),
-        ...(yamlTask?.timeoutSeconds ? { timeoutSeconds: yamlTask.timeoutSeconds } : {}),
-        // Structural config from YAML
-        ...(yamlTask?.phases ? { phases: yamlTask.phases } : {}),
-        ...(yamlTask?.execution ? { execution: yamlTask.execution } : {}),
-        ...(yamlTask?.contextQueries ? { contextQueries: yamlTask.contextQueries } : {}),
-        ...(yamlTask?.orchestrator ? { orchestrator: yamlTask.orchestrator } : {}),
-      }
-    : undefined;
-
-  const config = resolveEffectiveConfig(definition, agentRow, taskOverrides);
-
-  // Load myco.yaml for provider overrides (global, per-task, per-phase)
-  let taskProviderOverride: ProviderConfig | undefined;
-  let phaseProviderOverrides: Record<string, { provider?: ProviderConfig; maxTurns?: number }> = {};
-  try {
-    const mycoConfig = loadConfig(vaultDir);
-
-    // Helper to convert myco.yaml snake_case provider to runtime camelCase
-    // API keys are NOT stored in myco.yaml — they flow via env vars (settings.json → hooks → daemon)
-    const toProviderConfig = (p: { type: 'cloud' | 'ollama' | 'lmstudio'; base_url?: string; model?: string; context_length?: number }): ProviderConfig => ({
-      type: p.type, baseUrl: p.base_url, model: p.model, contextLength: p.context_length,
-    });
-
-    // Per-task override takes priority over global
-    const taskConfig = taskName ? mycoConfig.agent.tasks?.[taskName] : undefined;
-    const globalProvider = mycoConfig.agent.provider;
-
-    if (taskConfig?.provider) {
-      taskProviderOverride = toProviderConfig(taskConfig.provider);
-    } else if (globalProvider) {
-      taskProviderOverride = toProviderConfig(globalProvider);
-    }
-
-    // Per-phase overrides from myco.yaml
-    if (taskConfig?.phases) {
-      for (const [phaseName, phaseConfig] of Object.entries(taskConfig.phases)) {
-        phaseProviderOverrides[phaseName] = {
-          ...(phaseConfig.provider ? { provider: toProviderConfig(phaseConfig.provider) } : {}),
-          ...(phaseConfig.maxTurns != null ? { maxTurns: phaseConfig.maxTurns } : {}),
-        };
-      }
-    }
-  } catch {
-    // Config load failure is non-fatal — proceed without overrides
-  }
+  // Allow mutation for Ollama context variant
+  let taskProviderOverride = resolvedTaskProvider;
 
   // 4. Create run record
   const runId = options?.resumeRunId ?? crypto.randomUUID();

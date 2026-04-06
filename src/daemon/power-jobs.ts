@@ -1,0 +1,96 @@
+/**
+ * Power-managed job registrations.
+ *
+ * Extracted from main.ts — registers the 4 core housekeeping jobs
+ * with the PowerManager: embedding reconciliation, session maintenance,
+ * log retention, and auto-backup.
+ */
+
+import type { Database } from 'better-sqlite3';
+import type { DaemonLogger } from './logger.js';
+import type { PowerManager } from './power.js';
+import type { EmbeddingManager } from './embedding/manager.js';
+import type { SessionRegistry } from './lifecycle.js';
+import type { MycoConfig } from '@myco/config/schema.js';
+import { runSessionMaintenance } from './jobs/session-maintenance.js';
+import { createBackup } from './backup.js';
+import { deleteOldLogs } from '@myco/db/queries/logs.js';
+import { EMBEDDING_BATCH_SIZE, MS_PER_DAY } from '@myco/constants.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface PowerJobDeps {
+  embeddingManager: EmbeddingManager;
+  registry: SessionRegistry;
+  logger: DaemonLogger;
+  config: MycoConfig;
+  db: Database;
+  backupDir: string;
+  machineId: string;
+  vaultDir: string;
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
+export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps): void {
+  const { embeddingManager, registry, logger, config, db, backupDir, machineId, vaultDir } = deps;
+
+  let reconcileRunning = false;
+  powerManager.register({
+    name: 'embedding-reconcile',
+    runIn: ['active', 'idle'],
+    fn: async () => {
+      if (reconcileRunning) return;
+      reconcileRunning = true;
+      try {
+        await embeddingManager.reconcile(EMBEDDING_BATCH_SIZE);
+      } finally {
+        reconcileRunning = false;
+      }
+    },
+  });
+
+  powerManager.register({
+    name: 'session-maintenance',
+    runIn: ['active', 'idle', 'sleep'],
+    fn: () => runSessionMaintenance({
+      logger,
+      registeredSessionIds: () => registry.sessions,
+      embeddingManager,
+      vaultDir,
+    }),
+  });
+
+  powerManager.register({
+    name: 'log-retention',
+    runIn: ['idle', 'sleep'],
+    fn: async () => {
+      const retentionDays = config.daemon.log_retention_days;
+      const cutoff = new Date(Date.now() - retentionDays * MS_PER_DAY).toISOString();
+      const deleted = deleteOldLogs(cutoff);
+      if (deleted > 0) {
+        logger.info(LOG_KINDS.LOG_RETENTION, `Deleted ${deleted} log entries older than ${retentionDays} days`, { deleted, retention_days: retentionDays });
+      }
+    },
+  });
+
+  // Auto-backup: create a local SQL dump during idle/sleep cycles
+  powerManager.register({
+    name: 'auto-backup',
+    runIn: ['idle', 'sleep'],
+    fn: async () => {
+      try {
+        logger.info(LOG_KINDS.BACKUP_START, 'Auto-backup starting');
+        const filePath = createBackup(db, backupDir, machineId);
+        logger.info(LOG_KINDS.BACKUP_COMPLETE, 'Auto-backup complete', { file_path: filePath });
+      } catch (err) {
+        logger.error(LOG_KINDS.BACKUP_ERROR, 'Auto-backup failed', { error: (err as Error).message });
+      }
+    },
+  });
+}

@@ -17,7 +17,7 @@ description: >
   regenerates digest extracts.
 agent: myco-agent
 isDefault: true
-maxTurns: 130
+maxTurns: 150
 timeoutSeconds: 1800
 model: claude-sonnet-4-6
 
@@ -77,6 +77,7 @@ phases:
       - vault_report
     maxTurns: 6
     required: true
+    readOnly: true
 
   - name: extract
     dependsOn: [read-state]
@@ -235,7 +236,7 @@ phases:
       - vault_create_spore
       - vault_resolve_spore
       - vault_report
-    maxTurns: 22
+    maxTurns: 25
     required: false
 
   - name: graph
@@ -293,7 +294,7 @@ phases:
       - vault_create_entity
       - vault_create_edge
       - vault_report
-    maxTurns: 25
+    maxTurns: 35
     required: false
 
   # ---- Digest: assess + 3 parallel tier writes ----
@@ -362,7 +363,7 @@ phases:
       - vault_search_semantic
       - vault_read_digest
       - vault_report
-    maxTurns: 8
+    maxTurns: 10
     required: true
 
   - name: digest-10000
@@ -394,7 +395,7 @@ phases:
       - vault_read_digest
       - vault_write_digest
       - vault_report
-    maxTurns: 7
+    maxTurns: 9
     required: false
 
   - name: digest-5000
@@ -425,7 +426,7 @@ phases:
       - vault_read_digest
       - vault_write_digest
       - vault_report
-    maxTurns: 5
+    maxTurns: 7
     required: false
 
   - name: digest-1500
@@ -456,7 +457,7 @@ phases:
       - vault_read_digest
       - vault_write_digest
       - vault_report
-    maxTurns: 3
+    maxTurns: 5
     required: false
 
   - name: report

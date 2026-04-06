@@ -43,6 +43,8 @@ export interface PhaseDefinition {
   provider?: ProviderConfig;
   /** If true, prior phase summaries are omitted from the composed prompt (avoids context bloat for terminal phases). */
   skipPriorContext?: boolean;
+  /** If true, the scoped tool server only includes read-only tools (readOnlyHint === true). */
+  readOnly?: boolean;
 }
 
 /** Result of a single phase execution within a phased run. */
@@ -143,6 +145,7 @@ export interface AgentTask {
   schemaVersion?: number; // schema version for the task config
   orchestrator?: OrchestratorConfig; // orchestrator configuration for phased tasks
   schedule?: TaskSchedule; // schedule configuration for automatic execution
+  params?: Record<string, string | number | boolean>; // task-specific params with defaults
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +172,8 @@ export interface EffectiveConfig {
   orchestrator?: OrchestratorConfig;
   contextQueries?: Record<string, ContextQuery[]>;
   execution?: ExecutionConfig;
+  /** Resolved task params — YAML defaults merged with myco.yaml overrides. */
+  taskParams?: Record<string, string | number | boolean>;
 }
 
 /** Options passed to an agent run. */

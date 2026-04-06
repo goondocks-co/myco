@@ -1,11 +1,14 @@
 /**
- * Log explorer API handlers — search, stream (polling), and detail.
+ * Log explorer API handlers — search, stream (polling), detail, and external ingestion.
  */
 
+import { z } from 'zod';
 import { searchLogs, getLogsSince, getLogEntry } from '@myco/db/queries/logs.js';
 import type { LogEntryRow } from '@myco/db/queries/logs.js';
 import { getSession } from '@myco/db/queries/sessions.js';
-import type { RouteRequest, RouteResponse } from '../router.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import type { RouteRequest, RouteResponse, RouteHandler } from '../router.js';
+import type { DaemonLogger } from '../logger.js';
 
 // ---------------------------------------------------------------------------
 // Search (historical mode)
@@ -86,6 +89,29 @@ export async function handleLogDetail(req: RouteRequest): Promise<RouteResponse>
       data: parsed,
       resolved,
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// External log ingestion
+// ---------------------------------------------------------------------------
+
+const ExternalLogBody = z.object({
+  level: z.enum(['debug', 'info', 'warn', 'error']),
+  component: z.string(),
+  message: z.string(),
+  data: z.record(z.string(), z.unknown()).optional(),
+});
+
+/**
+ * POST /api/log — parse ExternalLogBody and write through the daemon logger.
+ * Allows the MCP server (separate process) to log through the daemon.
+ */
+export function createLogIngestionHandler(logger: DaemonLogger): RouteHandler {
+  return async (req: RouteRequest): Promise<RouteResponse> => {
+    const { level, component, message, data } = ExternalLogBody.parse(req.body);
+    logger.log(level, LOG_KINDS.MCP_EVENT, message, { ...data, mcp_component: component });
+    return { body: { ok: true } };
   };
 }
 

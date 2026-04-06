@@ -138,4 +138,23 @@ describe('myco init', () => {
     const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
     expect(config.capture.plan_dirs).toEqual([]);
   });
+
+  it('persists symbiont selection to config when manifests provided', async () => {
+    const { loadManifests, detectSymbionts } = await import('@myco/symbionts/detect.js');
+    vi.mocked(loadManifests).mockReturnValue([
+      { name: 'claude-code', displayName: 'Claude Code', binary: 'claude', configDir: '.claude',
+        pluginRootEnvVar: 'CLAUDE_PLUGIN_ROOT',
+        hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last_response', prompt: 'prompt', toolName: 'tool_name', toolInput: 'tool_input', toolOutput: 'tool_output' } },
+    ]);
+    vi.mocked(detectSymbionts).mockReturnValue([
+      { manifest: vi.mocked(loadManifests)()[0], binaryFound: true, configDirFound: false },
+    ]);
+
+    const vault = path.join(testDir, 'vault');
+    await run(['--vault', vault, '--embedding-model', 'bge-m3']);
+
+    const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
+    expect(config.symbionts).toBeDefined();
+    expect(config.symbionts['claude-code']).toEqual({ enabled: true });
+  });
 });

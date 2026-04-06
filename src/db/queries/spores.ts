@@ -280,6 +280,29 @@ export function countSpores(
 }
 
 /**
+ * Count active spores created after a given timestamp.
+ * Used by skill-evolve to detect new knowledge since last assessment.
+ */
+export function countSporesSince(sinceEpoch: number): number {
+  const db = getDatabase();
+  const row = db.prepare(
+    `SELECT COUNT(*) as count FROM spores WHERE created_at > ? AND status = 'active'`,
+  ).get(sinceEpoch) as { count: number };
+  return row.count;
+}
+
+/**
+ * List active spore IDs created after a given timestamp, ordered newest first.
+ */
+export function listSporeIdsSince(sinceEpoch: number, limit = 20): string[] {
+  const db = getDatabase();
+  const rows = db.prepare(
+    `SELECT id FROM spores WHERE created_at > ? AND status = 'active' ORDER BY created_at DESC LIMIT ?`,
+  ).all(sinceEpoch, limit) as Array<{ id: string }>;
+  return rows.map(r => r.id);
+}
+
+/**
  * Update the status and updated_at timestamp of a spore.
  *
  * @returns the updated row, or null if the spore does not exist.

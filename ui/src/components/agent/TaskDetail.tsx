@@ -160,6 +160,7 @@ export function TaskDetail({ taskId, onBack, onNavigate, onRunTriggered }: TaskD
         phases={phases}
         defaults={{ model: execution.model, maxTurns: execution.maxTurns, timeoutSeconds: execution.timeoutSeconds }}
         schedule={task.schedule}
+        params={task.params}
       />
 
       {/* Execution config */}
