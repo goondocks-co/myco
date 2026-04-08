@@ -12,6 +12,11 @@ import { insertSkillRecord, deleteSkillRecordCascade, getSkillRecord } from '@my
 import { insertLineage, listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { insertSkillUsage, countUsageForSkill } from '@myco/db/queries/skill-usage.js';
 import { validateSkillContent, VAULT_TOOL_COUNT } from '@myco/agent/tools.js';
+import {
+  parseAllowedTools,
+  descriptionSimilarity,
+  DESCRIPTION_DUPLICATE_THRESHOLD,
+} from '@myco/agent/tools/skill-validator.js';
 import { buildScheduledJobs, type ScheduledJobContext } from '@myco/daemon/task-scheduler.js';
 import { loadConfig } from '@myco/config/loader.js';
 import type { AgentTask } from '@myco/agent/types.js';
@@ -376,6 +381,105 @@ describe('validateSkillContent quality gate', () => {
     const content = '---\nname: myco:test-skill\ndescription: A test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools:\n  - vault_search_fts\n  - vault_spores\n---\n\nBody';
     const issues = validateSkillContent(content, 'test');
     expect(issues.some(i => i.includes('vault agent tool names'))).toBe(true);
+  });
+
+  it('rejects allowed-tools: [None] — the model confabulation that prompted this gate', () => {
+    const content = '---\nname: myco:test-skill\ndescription: A test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: [None]\n---\n\nBody';
+    const issues = validateSkillContent(content, 'test');
+    expect(issues.some(i => i.includes('malformed'))).toBe(true);
+  });
+
+  it('rejects allowed-tools: None (bare sentinel)', () => {
+    const content = '---\nname: myco:test-skill\ndescription: A test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: None\n---\n\nBody';
+    const issues = validateSkillContent(content, 'test');
+    expect(issues.some(i => i.includes('malformed'))).toBe(true);
+  });
+
+  it('rejects unknown tool names in allowed-tools', () => {
+    const content = '---\nname: myco:test-skill\ndescription: A test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: Read, ReadFile, Shell\n---\n\nBody';
+    const issues = validateSkillContent(content, 'test');
+    expect(issues.some(i => i.includes('unknown tool name'))).toBe(true);
+  });
+
+  it('accepts inline YAML list format with valid tools', () => {
+    const content = '---\nname: myco:test-skill\ndescription: A test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: [Read, Edit, Write]\n---\n\nBody';
+    const issues = validateSkillContent(content, 'test');
+    expect(issues).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseAllowedTools helper
+// ---------------------------------------------------------------------------
+describe('parseAllowedTools', () => {
+  it('parses comma-separated values', () => {
+    expect(parseAllowedTools('Read, Edit, Write')).toEqual(['Read', 'Edit', 'Write']);
+  });
+
+  it('parses inline YAML list format', () => {
+    expect(parseAllowedTools('[Read, Edit, Write]')).toEqual(['Read', 'Edit', 'Write']);
+  });
+
+  it('strips surrounding quotes', () => {
+    expect(parseAllowedTools('"Read", "Edit"')).toEqual(['Read', 'Edit']);
+  });
+
+  it('returns null for bare None sentinel', () => {
+    expect(parseAllowedTools('None')).toBeNull();
+  });
+
+  it('returns null for [None]', () => {
+    expect(parseAllowedTools('[None]')).toBeNull();
+  });
+
+  it('returns null for empty input', () => {
+    expect(parseAllowedTools('')).toBeNull();
+    expect(parseAllowedTools('   ')).toBeNull();
+    expect(parseAllowedTools(undefined)).toBeNull();
+  });
+
+  it('returns null when any element is a null-sentinel', () => {
+    expect(parseAllowedTools('Read, None')).toBeNull();
+    expect(parseAllowedTools('Read, null')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// descriptionSimilarity helper — the deterministic dedup signal
+// ---------------------------------------------------------------------------
+describe('descriptionSimilarity', () => {
+  it('returns 1.0 for identical strings', () => {
+    const a = 'Use the coerced validated_data, not the original params';
+    expect(descriptionSimilarity(a, a)).toBe(1);
+  });
+
+  it('returns near-zero for clearly distinct topics', () => {
+    const a = 'Structured error logging patterns for async handlers';
+    const b = 'Safe schema migration procedures for SQLite production';
+    expect(descriptionSimilarity(a, b)).toBeLessThan(0.2);
+  });
+
+  it('scores near-duplicates above DESCRIPTION_DUPLICATE_THRESHOLD', () => {
+    // The real pair that prompted this helper — run fcb66275's new skill
+    // vs the pre-existing one it failed to notice.
+    const a =
+      'Use when implementing or modifying tools that use UniFiValidatorRegistry.validate(). ' +
+      'Ensures you use the coerced normalized validated_data returned by the registry ' +
+      'rather than the original params, preventing silent failures in the controller.';
+    const b =
+      'Use when implementing or modifying any tool in unifi-mcp that uses ' +
+      'UniFiValidatorRegistry.validate(). Prevents the silent bypass bug by ensuring ' +
+      'the coerced normalized validated_data is used instead of the original params dict.';
+    const score = descriptionSimilarity(a, b);
+    expect(score).toBeGreaterThanOrEqual(DESCRIPTION_DUPLICATE_THRESHOLD);
+  });
+
+  it('ignores stopwords and short tokens so boilerplate does not inflate scores', () => {
+    const a = 'the quick brown fox jumps over the lazy dog today';
+    const b = 'the cat sat on the mat today and yesterday';
+    // Both contain lots of stopwords, but only "today" is a shared content word
+    // — should score low, not high.
+    expect(descriptionSimilarity(a, b)).toBeLessThan(0.3);
   });
 });
 

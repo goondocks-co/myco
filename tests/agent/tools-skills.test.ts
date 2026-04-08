@@ -444,5 +444,191 @@ describe('vault skill tools', () => {
       const parsed = parseResult(result) as { generation?: number };
       expect(parsed.generation).toBe(2);
     });
+
+    // -----------------------------------------------------------------------
+    // Dedup gates — prevent sibling skills for the same topic.
+    // -----------------------------------------------------------------------
+
+    it('rejects writes whose candidate_id is already fulfilled by a different skill', async () => {
+      // Seed a candidate and fulfill it by writing a first skill.
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidateResult = await candidateTool.handler(
+        { action: 'create', topic: 'Validator coercion', rationale: 'Seen twice in contributor PRs' },
+        undefined,
+      );
+      const candidate = parseResult(candidateResult) as { id: string };
+
+      const t = findTool(tools, 'vault_write_skill');
+      await t.handler(
+        {
+          name: 'validator-coercion-pattern',
+          display_name: 'Validator Coercion Pattern',
+          description: 'Use the coerced validated_data, not the original params',
+          content: validSkillContent('validator-coercion-pattern', '# Step 1'),
+          candidate_id: candidate.id,
+        },
+        undefined,
+      );
+
+      // Second write for the same candidate under a different name — should be rejected
+      const result = await t.handler(
+        {
+          name: 'validator-registry-coercion',
+          display_name: 'Validator Registry Coercion',
+          description: 'A different write targeting the same candidate',
+          content: validSkillContent('validator-registry-coercion', '# Step 1'),
+          candidate_id: candidate.id,
+        },
+        undefined,
+      );
+
+      const parsed = parseResult(result) as {
+        error?: string;
+        existing_skill?: { name: string };
+      };
+      expect(parsed.error).toContain('already fulfilled');
+      expect(parsed.existing_skill?.name).toBe('validator-coercion-pattern');
+
+      // The second skill's directory must NOT exist on disk — rejection is early.
+      const rejectedPath = path.join(
+        tmpDir, '.agents', 'skills', 'validator-registry-coercion', 'SKILL.md',
+      );
+      expect(fs.existsSync(rejectedPath)).toBe(false);
+    });
+
+    it('allows writes to the same name when candidate is already linked (evolve path)', async () => {
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidateResult = await candidateTool.handler(
+        { action: 'create', topic: 'Evolution test', rationale: 'Needs to allow bumping generation' },
+        undefined,
+      );
+      const candidate = parseResult(candidateResult) as { id: string };
+
+      const t = findTool(tools, 'vault_write_skill');
+      await t.handler(
+        {
+          name: 'evolution-test',
+          display_name: 'Evolution Test',
+          description: 'Initial version',
+          content: validSkillContent('evolution-test', '# Version 1'),
+          candidate_id: candidate.id,
+        },
+        undefined,
+      );
+
+      // Same name — should bump generation, not trip the dedup gate.
+      const result = await t.handler(
+        {
+          name: 'evolution-test',
+          display_name: 'Evolution Test',
+          description: 'Initial version',
+          content: validSkillContent('evolution-test', '# Version 2'),
+          candidate_id: candidate.id,
+        },
+        undefined,
+      );
+      const parsed = parseResult(result) as { generation?: number; error?: string };
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.generation).toBe(2);
+    });
+
+    it('rejects writes whose description overlaps an existing active skill', async () => {
+      const t = findTool(tools, 'vault_write_skill');
+
+      // Seed an active skill with a distinctive description.
+      await t.handler(
+        {
+          name: 'validator-coercion-first',
+          display_name: 'First Skill',
+          description:
+            'Use when implementing or modifying tools that use UniFiValidatorRegistry.validate(). ' +
+            'Ensures you use the coerced normalized validated_data returned by the registry ' +
+            'rather than the original params, preventing silent failures in the controller.',
+          content: validSkillContent('validator-coercion-first', '# Content'),
+        },
+        undefined,
+      );
+
+      // New skill with a near-duplicate description — should be rejected.
+      const result = await t.handler(
+        {
+          name: 'validator-coercion-second',
+          display_name: 'Second Skill',
+          description:
+            'Use when implementing or modifying any tool in unifi-mcp that uses ' +
+            'UniFiValidatorRegistry.validate(). Prevents the silent bypass bug by ensuring ' +
+            'the coerced normalized validated_data is used instead of the original params dict.',
+          content: validSkillContent('validator-coercion-second', '# Content'),
+        },
+        undefined,
+      );
+
+      const parsed = parseResult(result) as {
+        error?: string;
+        overlapping_skill?: { name: string };
+        similarity?: number;
+      };
+      expect(parsed.error).toContain('overlaps with existing active skill');
+      expect(parsed.overlapping_skill?.name).toBe('validator-coercion-first');
+      expect(parsed.similarity).toBeGreaterThanOrEqual(0.4);
+    });
+
+    it('allows writes whose description is distinct from existing skills', async () => {
+      const t = findTool(tools, 'vault_write_skill');
+
+      await t.handler(
+        {
+          name: 'error-logging',
+          display_name: 'Error Logging',
+          description: 'Structured error logging patterns for async handlers',
+          content: validSkillContent('error-logging', '# Logging'),
+        },
+        undefined,
+      );
+
+      // Completely unrelated topic — should be allowed.
+      const result = await t.handler(
+        {
+          name: 'database-migrations',
+          display_name: 'Database Migrations',
+          description: 'Safe schema migration procedures for production SQLite',
+          content: validSkillContent('database-migrations', '# Migrations'),
+        },
+        undefined,
+      );
+      const parsed = parseResult(result) as { generation?: number; error?: string };
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.generation).toBe(1);
+    });
+
+    it('allows updating an existing skill that overlaps its own description', async () => {
+      const t = findTool(tools, 'vault_write_skill');
+
+      // Seed
+      await t.handler(
+        {
+          name: 'self-overlap',
+          display_name: 'Self Overlap',
+          description: 'Structured error logging patterns for async background handlers',
+          content: validSkillContent('self-overlap', '# V1'),
+        },
+        undefined,
+      );
+
+      // Update with a description that obviously overlaps its own prior description —
+      // should NOT trip the dedup gate because existingSameName is found first.
+      const result = await t.handler(
+        {
+          name: 'self-overlap',
+          display_name: 'Self Overlap',
+          description: 'Structured error logging patterns for async background handlers, refined',
+          content: validSkillContent('self-overlap', '# V2'),
+        },
+        undefined,
+      );
+      const parsed = parseResult(result) as { generation?: number; error?: string };
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.generation).toBe(2);
+    });
   });
 });
