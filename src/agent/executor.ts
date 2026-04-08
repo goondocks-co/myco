@@ -34,7 +34,7 @@ import { composeOrchestratorPrompt, parseOrchestratorPlan, applyDirectives, DEFA
 import { executeContextQueries } from './context-queries.js';
 import { buildPhaseEnv } from './provider.js';
 import { resolveRunConfig } from './config-resolver.js';
-import { ensureOllamaContextVariant } from './ollama-context.js';
+import { resolveOllamaContextVariants } from './ollama-context.js';
 import { computeWaves, phaseSessionId } from './wave-computation.js';
 import type { ContextQueryResult } from './context-queries.js';
 import type { ProviderConfig } from './types.js';
@@ -613,11 +613,13 @@ export async function runAgent(
     config,
     definitionsDir,
     taskProviderOverride: resolvedTaskProvider,
-    phaseProviderOverrides,
+    phaseProviderOverrides: resolvedPhaseOverrides,
   } = resolveRunConfig(agentId, requestedTask, vaultDir);
 
-  // Allow mutation for Ollama context variant
+  // Both are mutated by the Ollama variant resolver below — it rewrites
+  // provider.model to the variant name and may reconcile context conflicts.
   let taskProviderOverride = resolvedTaskProvider;
+  let phaseProviderOverrides = resolvedPhaseOverrides;
 
   // 4. Create run record
   const runId = options?.resumeRunId ?? crypto.randomUUID();
@@ -647,14 +649,26 @@ export async function runAgent(
     ...(effectiveProvider?.baseUrl ? { baseUrl: effectiveProvider.baseUrl } : {}),
   };
 
-  // 7. Ensure Ollama model has correct context length (creates variant if needed)
-  if (effectiveProvider?.type === 'ollama' && effectiveProvider.contextLength && effectiveProvider.model) {
-    const variantModel = await ensureOllamaContextVariant(
-      effectiveProvider.model,
-      effectiveProvider.contextLength,
+  // 7. Resolve Ollama context variants across task + phase scopes.
+  //    Applies DEFAULT_OLLAMA_CONTEXT_LENGTH when no value is set, and
+  //    reconciles same-model-different-context conflicts to one variant
+  //    per model (max wins) so Ollama loads each model at most once.
+  //    Non-ollama providers are passed through unchanged.
+  {
+    const resolved = await resolveOllamaContextVariants(
+      taskProviderOverride,
+      phaseProviderOverrides,
     );
-    // Override the model name so the SDK uses the context-aware variant
-    taskProviderOverride = { ...taskProviderOverride!, model: variantModel };
+    taskProviderOverride = resolved.taskProvider;
+    phaseProviderOverrides = resolved.phaseOverrides;
+    for (const conflict of resolved.conflicts) {
+      console.warn(
+        `[agent] Ollama model "${conflict.model}" referenced with conflicting ` +
+        `context_length values [${conflict.values.join(', ')}] — reconciled to ` +
+        `${conflict.resolved} to avoid loading multiple variants. Configure one ` +
+        `value per model to silence this warning.`,
+      );
+    }
   }
 
   // 8. Execute — phased or single query
