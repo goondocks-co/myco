@@ -81,6 +81,72 @@ const PROMPT_SECTION_PRIOR_PHASES = '## Prior Phase Results';
 const PROMPT_SECTION_CURRENT_PHASE = '## Current Phase: ';
 
 // ---------------------------------------------------------------------------
+// Per-turn tool-call debug logging
+// ---------------------------------------------------------------------------
+//
+// When MYCO_AGENT_DEBUG=1, every tool_use and tool_result inside a phase is
+// logged to stdout with a short input/output preview. This is intended for
+// diagnosing turn-budget exhaustion: it surfaces rejection loops, malformed
+// tool-call retries, and unexpected exploration that the per-phase
+// `num_turns` summary alone cannot explain.
+//
+// The daemon sets this env var automatically when log_level is "debug"
+// (see src/daemon/main.ts). It can also be set manually for ad-hoc runs.
+
+const DEBUG_TOOL_CALLS = process.env.MYCO_AGENT_DEBUG === '1';
+
+/** Max chars to print from tool input/output payloads. */
+const TOOL_DEBUG_PREVIEW_CHARS = 240;
+
+interface SdkContentBlock {
+  type: string;
+  name?: string;
+  input?: unknown;
+  tool_use_id?: string;
+  content?: unknown;
+  is_error?: boolean;
+}
+
+interface SdkMessageWithContent {
+  message?: { content?: SdkContentBlock[] };
+}
+
+function previewPayload(value: unknown): string {
+  const str = typeof value === 'string' ? value : JSON.stringify(value);
+  if (str === undefined) return '';
+  return str.length > TOOL_DEBUG_PREVIEW_CHARS
+    ? `${str.slice(0, TOOL_DEBUG_PREVIEW_CHARS)}…(${str.length - TOOL_DEBUG_PREVIEW_CHARS} more chars)`
+    : str;
+}
+
+function logToolUseBlocks(phaseName: string, message: unknown): void {
+  if (!DEBUG_TOOL_CALLS) return;
+  const blocks = (message as SdkMessageWithContent).message?.content;
+  if (!Array.isArray(blocks)) return;
+  for (const block of blocks) {
+    if (block.type === 'tool_use') {
+      console.log(
+        `[agent:debug] ${phaseName} tool_use: ${block.name ?? 'unknown'} input=${previewPayload(block.input)}`,
+      );
+    }
+  }
+}
+
+function logToolResultBlocks(phaseName: string, message: unknown): void {
+  if (!DEBUG_TOOL_CALLS) return;
+  const blocks = (message as SdkMessageWithContent).message?.content;
+  if (!Array.isArray(blocks)) return;
+  for (const block of blocks) {
+    if (block.type === 'tool_result') {
+      const flag = block.is_error ? ' [ERROR]' : '';
+      console.log(
+        `[agent:debug] ${phaseName} tool_result${flag}: ${previewPayload(block.content)}`,
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Prompt composition
 // ---------------------------------------------------------------------------
 
@@ -206,6 +272,10 @@ async function executePhase(
     })) {
       if (message.type === 'assistant') {
         agenticTurns++;
+        logToolUseBlocks(phase.name, message);
+      }
+      if (message.type === 'user') {
+        logToolResultBlocks(phase.name, message);
       }
       if (message.type === 'result') {
         phaseCost = message.total_cost_usd ?? 0;
