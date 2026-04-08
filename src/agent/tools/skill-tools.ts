@@ -20,7 +20,12 @@ import {
 } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
 import { notify } from '@myco/notifications/notify.js';
-import { validateSkillContent, checkFrontmatterPreservation } from './skill-validator.js';
+import {
+  validateSkillContent,
+  checkFrontmatterPreservation,
+  descriptionSimilarity,
+  DESCRIPTION_DUPLICATE_THRESHOLD,
+} from './skill-validator.js';
 import { textResult, type VaultToolDeps } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -248,6 +253,77 @@ export function createSkillTools(deps: VaultToolDeps) {
         });
       }
 
+      // Dedup gate -- prevents the skill lifecycle from creating sibling
+      // skills that cover the same topic under different names. Two
+      // deterministic checks, both skipped when the write is updating an
+      // existing skill under the same name (the normal evolve path).
+      //
+      // The reason this lives in the tool and not in the validate phase's
+      // prompt: self-graded conflict checks are unreliable, especially for
+      // weaker local models. Observed failure: run fcb66275 passed its own
+      // "no overlap" self-check while an obvious duplicate sat on disk.
+      // See feedback_structural_enforcement — enforce in tools, not prompts.
+      const existingSameName = getSkillRecordByName(args.name);
+      if (!existingSameName) {
+        // (1) Candidate-already-fulfilled check. If the caller passed a
+        //     candidate_id that is already linked to an active skill with a
+        //     different name, refuse the write and point the agent at the
+        //     existing skill.
+        if (args.candidate_id) {
+          const candidate = getCandidate(args.candidate_id);
+          if (candidate?.skill_id) {
+            const linkedSkill = getSkillRecord(candidate.skill_id);
+            if (linkedSkill && linkedSkill.name !== args.name) {
+              recordTurn('vault_write_skill', args);
+              return textResult({
+                error:
+                  `Candidate ${args.candidate_id} is already fulfilled by skill "${linkedSkill.name}". ` +
+                  'Do not create a sibling skill. If the existing skill needs changes, ' +
+                  'write to the same name to evolve it (this bumps its generation), or ' +
+                  'mark it stale via vault_skill_records before replacing.',
+                existing_skill: {
+                  id: linkedSkill.id,
+                  name: linkedSkill.name,
+                  description: linkedSkill.description,
+                  path: linkedSkill.path,
+                },
+              });
+            }
+          }
+        }
+
+        // (2) Description similarity check. Jaccard on significant-word
+        //     tokens — deterministic and cheap. Compares against all active
+        //     skills for this agent; rejects on the highest-scoring match
+        //     above DESCRIPTION_DUPLICATE_THRESHOLD.
+        const activeSkills = listSkillRecords({ agent_id: agentId, status: 'active', limit: 200 });
+        let bestMatch: { skill: typeof activeSkills[number]; score: number } | null = null;
+        for (const skill of activeSkills) {
+          const score = descriptionSimilarity(args.description, skill.description);
+          if (score >= DESCRIPTION_DUPLICATE_THRESHOLD && (!bestMatch || score > bestMatch.score)) {
+            bestMatch = { skill, score };
+          }
+        }
+        if (bestMatch) {
+          recordTurn('vault_write_skill', args);
+          return textResult({
+            error:
+              `Description overlaps with existing active skill "${bestMatch.skill.name}" ` +
+              `(Jaccard ${bestMatch.score.toFixed(2)}, threshold ${DESCRIPTION_DUPLICATE_THRESHOLD}). ` +
+              'Do not create a duplicate. Either evolve the existing skill by writing to ' +
+              `its name ("${bestMatch.skill.name}"), or reframe this skill so its description ` +
+              'describes a distinct procedure.',
+            overlapping_skill: {
+              id: bestMatch.skill.id,
+              name: bestMatch.skill.name,
+              description: bestMatch.skill.description,
+              path: bestMatch.skill.path,
+            },
+            similarity: bestMatch.score,
+          });
+        }
+      }
+
       const root = projectRoot ?? process.cwd();
       const skillDir = resolve(root, '.agents', 'skills', args.name);
       const skillPath = resolve(skillDir, 'SKILL.md');
@@ -264,6 +340,20 @@ export function createSkillTools(deps: VaultToolDeps) {
             error: 'Skill update rejected: protected frontmatter fields were changed. Read the existing skill and preserve these values exactly.',
             violations,
           });
+        }
+      }
+
+      // Snapshot the on-disk state BEFORE writing so we can roll back
+      // accurately if the DB transaction fails. Two cases:
+      //   - Skill directory didn't exist: full cleanup on failure
+      //   - Skill directory already existed (update path): restore prior
+      //     SKILL.md content rather than deleting the whole directory
+      const skillDirPreexisted = existsSync(skillDir);
+      let priorSkillContent: string | null = null;
+      if (existsSync(skillPath)) {
+        try { priorSkillContent = readFileSync(skillPath, 'utf-8'); } catch {
+          // If we can't read it, we can't restore it — treat as "no prior"
+          priorSkillContent = null;
         }
       }
 
@@ -296,7 +386,12 @@ export function createSkillTools(deps: VaultToolDeps) {
 
       // All DB mutations wrapped in a transaction for atomicity.
       // File write (above) is the source of truth; DB is derived.
+      //
+      // Rollback policy: if the transaction throws, reverse the on-disk
+      // mutation so a partial write cannot leave an orphaned skill file
+      // that the next generate cycle would then "find" and duplicate.
       const txDb = getDatabase();
+      try {
       txDb.transaction(() => {
         if (existing) {
           // Update existing record -- bump generation
@@ -383,6 +478,30 @@ export function createSkillTools(deps: VaultToolDeps) {
           // scheduled runs, making this fallback-skip path rare.
         }
       })();
+      } catch (err) {
+        // DB transaction failed after the file was written. Reverse the
+        // on-disk mutation so we don't leave an orphan SKILL.md that will
+        // confuse the next generate cycle. Best-effort — failures here are
+        // logged but not propagated, since we're already in an error path.
+        try {
+          if (priorSkillContent !== null) {
+            writeFileSync(skillPath, priorSkillContent, 'utf-8');
+          } else if (!skillDirPreexisted) {
+            rmSync(skillDir, { recursive: true, force: true });
+          } else {
+            rmSync(skillPath, { force: true });
+          }
+        } catch (rollbackErr) {
+          console.warn(
+            '[vault_write_skill] file rollback after DB failure also failed:',
+            rollbackErr instanceof Error ? rollbackErr.message : rollbackErr,
+          );
+        }
+        recordTurn('vault_write_skill', args);
+        return textResult({
+          error: `Skill write aborted: database transaction failed and on-disk state was rolled back. ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
 
       const isNew = generation === 1;
       notify(vaultDir, {

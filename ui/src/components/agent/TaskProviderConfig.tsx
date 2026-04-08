@@ -142,8 +142,13 @@ function ProviderModelSelector({
             type="number"
             value={contextLength}
             onChange={(e) => onContextLengthChange(e.target.value)}
-            placeholder="32768"
+            placeholder="32768 (default)"
           />
+          <p className="font-sans text-[11px] text-on-surface-variant/70">
+            Leave blank to use the 32K default. Myco creates a Modelfile
+            variant at this size so the model loads at the size you asked
+            for, not its (much larger) native default.
+          </p>
         </div>
       )}
 

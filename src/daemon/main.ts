@@ -192,6 +192,14 @@ export async function main(): Promise<void> {
     level: config.daemon.log_level,
   });
 
+  // When debug logging is on, surface per-turn tool_use / tool_result detail
+  // from the agent executor. The executor reads this env var directly because
+  // it has no logger handle. Used to diagnose turn-budget exhaustion (e.g.
+  // local-model rejection loops in skill-generate).
+  if (config.daemon.log_level === 'debug') {
+    process.env.MYCO_AGENT_DEBUG = '1';
+  }
+
   // Kill any stale daemon for this vault before starting
   killStaleDaemon(vaultDir, logger);
 
