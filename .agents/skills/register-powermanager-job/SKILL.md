@@ -65,14 +65,14 @@ fn: () => {
   // Stamp lastRun and mark running synchronously, THEN dispatch without await:
   task.lastRun = Date.now();
   void context.runTask(task.name).catch((err) => {
-    logger.error(`Task ${task.name} failed`, err);
+    context.onTaskError(task.name, err);   // routes to AGENT_ERROR log sink
   }).finally(() => {
     context.markTaskDone(task.name);
   });
 }
 ```
 
-The `full-intelligence` task (18–23 min) hit this bug — every job scheduled after it in the same tick was silently delayed by the full task duration. The fix was removing the `await` and dispatching fire-and-forget. Short-lived tasks (< 1 min) may `await` safely, but fire-and-forget is the safer default for all tasks.
+**No built-in starvation warning:** If a task's `fn` blocks the tick loop (dispatches with `await`), the PowerManager has no built-in diagnostic or warning — the loop simply stops advancing for all subsequent jobs until the blocking call returns. This deferred feature means tick starvation is undetectable without external monitoring. Fire-and-forget dispatch is the only guard. The `full-intelligence` task (18–23 min) hit this bug — every job scheduled after it in the same tick was silently delayed by the full task duration.
 
 **User overrides:** Users can override `enabled` and `intervalSeconds` in `myco.yaml`:
 
@@ -135,7 +135,7 @@ The old top-level keys `agent.auto_run` and `agent.interval_seconds` were migrat
 - [ ] No raw `setInterval` or `setTimeout` anywhere in `src/daemon/`
 - [ ] `runIn` includes all states where the job should actually fire — double-check Sleep
 - [ ] `model` is explicitly set in any new task YAML
-- [ ] Tasks expected to run > ~1 minute use fire-and-forget dispatch (no `await` in the tick loop `fn`)
+- [ ] Tasks expected to run > ~1 minute use fire-and-forget dispatch (no `await` in the tick loop `fn`) — there is NO built-in starvation warning if a blocking task stalls the loop
 - [ ] If `preventsDeepSleep` is used, a dead-letter ceiling (≤ 10 retries) is in place
 - [ ] If a scheduled task is not firing, check `agent.scheduled_tasks_enabled` in `myco.yaml` first (global kill-switch, default `true`) before inspecting the task YAML
 - [ ] Daemon restarted after any YAML or `myco.yaml` schedule changes
