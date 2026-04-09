@@ -19,8 +19,15 @@ import type { PlanRow } from '@myco/db/queries/plans.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Tool names that constitute a file write operation. */
-const FILE_WRITE_TOOLS = new Set(['Write', 'Edit', 'Create']);
+/**
+ * Tool names that constitute a file write operation.
+ * Includes both PascalCase (Claude Code, Cursor, Codex, Windsurf, Gemini) and
+ * lowercase (opencode) variants. `patch` is opencode's unified-diff tool.
+ */
+const FILE_WRITE_TOOLS = new Set([
+  'Write', 'Edit', 'Create',
+  'write', 'edit', 'patch', 'create',
+]);
 
 /** Regex matching a top-level markdown heading (# Title). */
 const HEADING_REGEX = /^#\s+(.+)$/m;
@@ -75,7 +82,9 @@ export function isPlanWriteEvent(
   config: PlanWatchConfig,
 ): string | null {
   if (!FILE_WRITE_TOOLS.has(toolName)) return null;
-  const filePath = toolInput?.file_path ?? toolInput?.path;
+  // `filePath` (camelCase) is opencode's convention — the plugin template ships
+  // `input.args` through as `tool_input`, and opencode tools use camelCase args.
+  const filePath = toolInput?.file_path ?? toolInput?.path ?? toolInput?.filePath;
   if (typeof filePath !== 'string') return null;
   if (!isInPlanDirectory(filePath, config.watchDirs, config.projectRoot)) return null;
   if (config.extensions?.length) {

@@ -6,8 +6,28 @@ const CaptureManifestSchema = z.object({
 
 const RegistrationSchema = z.object({
   hooksTarget: z.string().optional(),
+  /**
+   * Format of the hooks target.
+   * - 'json' (default): hooks template is merged into a JSON settings file.
+   * - 'plugin-file': the hooks template is a verbatim file (e.g., an opencode TS plugin)
+   *   copied to hooksTarget without JSON parsing. Used for agents with plugin-based hook
+   *   systems rather than JSON hook entries.
+   */
+  hooksFormat: z.enum(['json', 'plugin-file']).default('json'),
+  /**
+   * Optional file path for a plugin deps package.json. When set, the installer writes
+   * a package.json declaring the plugin SDK dependency so the agent's package manager
+   * (e.g., opencode's Bun) can install it at startup. Preserved on uninstall so
+   * contributors can keep their own deps.
+   */
+  pluginPackageTarget: z.string().optional(),
   mcpTarget: z.string().optional(),
   mcpFormat: z.enum(['json', 'toml']).default('json'),
+  /**
+   * JSON key under which MCP server entries are stored in the MCP config file.
+   * Defaults to 'mcpServers' (used by Claude Code, Cursor, etc.). opencode uses 'mcp'.
+   */
+  mcpServersKey: z.string().default('mcpServers'),
   skillsTarget: z.string().optional(),
   settingsTarget: z.string().optional(),
   /** Format of the settings file. TOML-format agents (e.g., Codex) emit top-level template keys as TOML sections. */

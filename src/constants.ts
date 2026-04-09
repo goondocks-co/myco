@@ -336,8 +336,18 @@ export const POWER_SLEEP_INTERVAL_MS = 5 * 60 * MS_PER_SECOND;
 // --- Session maintenance ---
 /** Time without new prompts before an active session is auto-completed (ms). */
 export const STALE_SESSION_THRESHOLD_MS = 60 * 60 * MS_PER_SECOND;
-/** Max prompt count for a session to be considered dead and auto-deleted. */
-export const DEAD_SESSION_MAX_PROMPTS = 1;
+/**
+ * Max prompt count for a session to be considered dead and auto-deleted.
+ *
+ * Set to 0: only sessions that were registered but never received a prompt
+ * are eligible for dead-session cleanup. A session with even ONE real user
+ * prompt has produced captured state worth preserving — the user did work,
+ * the agent likely responded, tool calls may have happened, code may have
+ * changed. Deleting such a session was a real data-loss failure mode seen
+ * during opencode testing where a 1-prompt session that made an actual
+ * committed code change was auto-deleted within a minute of TUI exit.
+ */
+export const DEAD_SESSION_MAX_PROMPTS = 0;
 
 // --- Init wizard ---
 /** Minimum Node.js major version required by Myco. */

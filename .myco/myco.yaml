@@ -101,11 +101,13 @@ notifications:
 symbionts:
   claude-code:
     enabled: true
-  cursor:
-    enabled: true
   codex:
     enabled: true
+  cursor:
+    enabled: true
   gemini:
+    enabled: true
+  opencode:
     enabled: true
   vscode-copilot:
     enabled: true

@@ -11,6 +11,10 @@ hookFields:
   lastResponse: last_assistant_message
 capture:
   planDirs:
+    # Claude Code's plan mode writes to ~/.claude/plans/ (global), not the project-local
+    # .claude/plans/. We watch both: home for plan-mode output, project-local for any
+    # user-committed plans in the repo.
+    - ~/.claude/plans/
     - .claude/plans/
 registration:
   hooksTarget: .claude/settings.json

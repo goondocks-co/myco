@@ -14,7 +14,7 @@ Myco is a project-local intelligence layer that captures developer sessions and 
 ## Prerequisites
 
 - Node.js 22+ installed
-- At least one supported coding agent present in the project (Claude Code, Cursor, Codex CLI, Gemini CLI, VS Code Copilot, or Windsurf)
+- At least one supported coding agent present in the project (Claude Code, Cursor, Codex CLI, Gemini CLI, VS Code Copilot, Windsurf, or OpenCode)
 - An Anthropic API key (or compatible key) for the intelligence pipeline
 - You are standing at your project root — Myco installs into `.myco/` relative to your working directory
 
@@ -55,6 +55,7 @@ The interactive wizard does five things:
    - `.gemini/` → Gemini CLI
    - `.vscode/` → VS Code Copilot
    - `.codeium/windsurf/` → Windsurf
+   - `.opencode/` → OpenCode
 
    Agents whose config dir exists are pre-checked as defaults. Detection is informational — you can select or deselect any agent freely.
 
