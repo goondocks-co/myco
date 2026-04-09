@@ -30,25 +30,34 @@ import { join } from "node:path";
 // Constants
 // ---------------------------------------------------------------------------
 
-const TOOL_OUTPUT_PREVIEW_CHARS = 500;
-
-/** Preferred context tier (matches Myco's default in src/mcp/tools/context.ts). */
-const MYCO_CONTEXT_TIER = 5000;
+/**
+ * Keep in sync with `TOOL_OUTPUT_PREVIEW_CHARS` in src/constants.ts (currently 200).
+ * The plugin file is standalone and cannot import from Myco — this value is copied
+ * so every symbiont records tool_output previews at the same length.
+ */
+const TOOL_OUTPUT_PREVIEW_CHARS = 200;
 
 /** Timeout for daemon HTTP calls — must be short so we never block opencode. */
 const MYCO_FETCH_TIMEOUT_MS = 3000;
 
-/** Heading prefixes for injected context so the model can recognize the source. */
-const DIGEST_HEADING = "## Myco — Project Context\n\n";
+/** Heading prefix for compaction context — makes Myco's contribution recognizable in the compacted summary. */
 const COMPACTION_HEADING = "## Myco — Project Context (preserved across compaction)\n\n";
 
 // ---------------------------------------------------------------------------
 // Daemon HTTP transport — all communication with the local Myco daemon.
-// Every function is best-effort: failures are logged to stderr and swallowed.
+// Every function is best-effort: failures are swallowed so the plugin cannot
+// interfere with opencode when Myco is absent or the daemon is unreachable.
 // ---------------------------------------------------------------------------
 
+/**
+ * Port cache for `.myco/daemon.json`. Read once on first access; refreshed on
+ * the next call that follows a failed HTTP request (handles daemon restarts
+ * mid-session). `undefined` = never loaded, `null` = loaded but absent.
+ */
+let cachedDaemonPort: number | null | undefined = undefined;
+
 /** Read the Myco daemon port from .myco/daemon.json in the project directory. */
-function readDaemonPort(directory: string): number | null {
+function readDaemonPortFromDisk(directory: string): number | null {
   try {
     const raw = readFileSync(join(directory, ".myco", "daemon.json"), "utf-8");
     const info = JSON.parse(raw) as { port?: number };
@@ -56,6 +65,18 @@ function readDaemonPort(directory: string): number | null {
   } catch {
     return null;
   }
+}
+
+/** Get the cached daemon port, loading from disk on first access. */
+function getDaemonPort(directory: string): number | null {
+  if (cachedDaemonPort === undefined) cachedDaemonPort = readDaemonPortFromDisk(directory);
+  return cachedDaemonPort;
+}
+
+/** Force-refresh the daemon port from disk — used after a fetch failure in case the daemon restarted. */
+function refreshDaemonPort(directory: string): number | null {
+  cachedDaemonPort = readDaemonPortFromDisk(directory);
+  return cachedDaemonPort;
 }
 
 /** Fetch with a short timeout. Returns the Response on success, null on failure. */
@@ -72,10 +93,26 @@ async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Respon
   }
 }
 
-/** Build a daemon URL using the port read from .myco/daemon.json. Returns null if unreachable. */
-function daemonUrl(directory: string, path: string): string | null {
-  const port = readDaemonPort(directory);
-  return port ? `http://localhost:${port}${path}` : null;
+/**
+ * Fetch from a daemon endpoint with a single retry after refreshing the port.
+ * The retry handles the case where the daemon restarted on a different port
+ * mid-session; the cache hot-path avoids a sync disk read on every HTTP call.
+ */
+async function fetchFromDaemon(
+  directory: string,
+  path: string,
+  init?: RequestInit,
+): Promise<Response | null> {
+  const port = getDaemonPort(directory);
+  if (!port) return null;
+
+  const first = await fetchWithTimeout(`http://localhost:${port}${path}`, init);
+  if (first) return first;
+
+  // Retry once with a refreshed port — the daemon may have restarted.
+  const freshPort = refreshDaemonPort(directory);
+  if (!freshPort || freshPort === port) return null;
+  return fetchWithTimeout(`http://localhost:${freshPort}${path}`, init);
 }
 
 /** POST JSON to a daemon endpoint. Returns the parsed response body or null. */
@@ -84,9 +121,7 @@ async function postJson(
   path: string,
   body: Record<string, unknown>,
 ): Promise<unknown> {
-  const url = daemonUrl(directory, path);
-  if (!url) return null;
-  const res = await fetchWithTimeout(url, {
+  const res = await fetchFromDaemon(directory, path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -163,25 +198,29 @@ async function mycoPostStop(
   });
 }
 
-/** Fetch the project digest at the preferred tier. Returns the text or null. */
-async function fetchMycoDigest(directory: string): Promise<string | null> {
-  const url = daemonUrl(directory, "/api/digest");
-  if (!url) return null;
-  const res = await fetchWithTimeout(url);
+/**
+ * Fetch the session-start context for a new opencode session. Hits the daemon's
+ * config-aware `POST /context` endpoint, which selects the digest tier the user
+ * has configured (`config.context.digest_tier`, default 5000) and returns the
+ * full session context (digest + branch + session ID lines).
+ *
+ * This is the same endpoint Claude Code's session-start hook uses, so opencode
+ * sessions receive the same context the user has configured for every other agent.
+ */
+async function fetchMycoSessionContext(
+  directory: string,
+  sessionId: string,
+): Promise<string | null> {
+  const res = await fetchFromDaemon(directory, "/context", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId }),
+  });
   if (!res) return null;
-
   try {
-    const data = (await res.json()) as { tiers?: Array<{ tier: number; content: string }> };
-    if (!data.tiers?.length) return null;
-
-    const exact = data.tiers.find((t) => t.tier === MYCO_CONTEXT_TIER);
-    if (exact?.content) return exact.content;
-
-    // Fall back to nearest available tier
-    const sorted = [...data.tiers].sort(
-      (a, b) => Math.abs(a.tier - MYCO_CONTEXT_TIER) - Math.abs(b.tier - MYCO_CONTEXT_TIER),
-    );
-    return sorted[0]?.content ?? null;
+    const data = (await res.json()) as { text?: string };
+    const text = data.text?.trim() ?? "";
+    return text.length > 0 ? text : null;
   } catch {
     return null;
   }
@@ -279,20 +318,21 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
         const sessionId: string | undefined = info.id;
         if (!sessionId) return;
 
-        // 1) Capture: register the session with the Myco daemon.
-        await mycoRegisterSession(directory, sessionId, info.parentID || undefined);
-
-        // 2) Inject: push the project digest into the new session as a synthetic turn
-        //    before the user types anything. Skip on resume — the parent session
-        //    already has whatever context was relevant.
+        // Run the capture (register session with Myco daemon) and context fetch
+        // concurrently — they don't depend on each other, and parallelizing saves
+        // one round-trip of latency before the user's first turn lands. Context
+        // is fetched only for fresh sessions; resume sessions inherit the parent's
+        // history and don't need another injection.
         //
         // Re-entrancy: the synthetic text part carries `synthetic: true`; if opencode
         // fires chat.message for it, our handler's synthetic-flag check skips it.
-        if (!info.parentID) {
-          const digest = await fetchMycoDigest(directory);
-          if (digest) {
-            await injectSyntheticContext(client, sessionId, DIGEST_HEADING + digest);
-          }
+        const [, sessionContext] = await Promise.all([
+          mycoRegisterSession(directory, sessionId, info.parentID || undefined),
+          info.parentID ? Promise.resolve(null) : fetchMycoSessionContext(directory, sessionId),
+        ]);
+
+        if (sessionContext) {
+          await injectSyntheticContext(client, sessionId, sessionContext);
         }
         return;
       }
@@ -308,6 +348,11 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
         if (!sessionId) return;
 
         // Fetch the last assistant message for a response summary.
+        // Narrow local types for walking the messages response — avoids scattered
+        // `any` casts inside the loop while keeping the SDK boundary cast isolated.
+        type MessagePart = { type?: string; text?: string };
+        type SessionMessage = { info?: { role?: string }; parts?: MessagePart[] };
+
         let responseSummary = "";
         try {
           const result = await client.session.messages({
@@ -315,15 +360,13 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
             query: { directory },
           });
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const messages = ((result as any)?.data ?? []) as any[];
+          const messages = ((result as any)?.data ?? []) as SessionMessage[];
           for (let i = messages.length - 1; i >= 0; i--) {
             const msg = messages[i];
             if (msg?.info?.role === "assistant") {
               const textParts = (msg.parts ?? [])
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                .filter((p: any) => p.type === "text" && p.text)
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                .map((p: any) => p.text);
+                .filter((p) => p.type === "text" && p.text)
+                .map((p) => p.text as string);
               responseSummary = textParts.join("\n");
               break;
             }
@@ -407,18 +450,22 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
 
     /**
      * Compaction hook: fires BEFORE opencode generates a continuation summary
-     * during session compaction. Pushing the digest into output.context ensures
-     * Myco's project knowledge survives compaction rather than being dropped.
+     * during session compaction. Pushing the session context into output.context
+     * ensures Myco's project knowledge survives compaction rather than being
+     * dropped. The fetched context respects the user's configured digest tier.
      *
      * See https://opencode.ai/docs/plugins/#compaction-hooks
      */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    "experimental.session.compacting": async (_input: any, output: any) => {
-      const digest = await fetchMycoDigest(directory);
-      if (!digest) return;
+    "experimental.session.compacting": async (input: any, output: any) => {
+      const sessionId = input?.sessionID;
+      if (!sessionId) return;
+
+      const sessionContext = await fetchMycoSessionContext(directory, sessionId);
+      if (!sessionContext) return;
 
       if (Array.isArray(output?.context)) {
-        output.context.push(COMPACTION_HEADING + digest);
+        output.context.push(COMPACTION_HEADING + sessionContext);
       }
     },
   };
