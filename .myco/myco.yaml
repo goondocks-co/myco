@@ -35,7 +35,8 @@ agent:
     title-summary:
       provider:
         type: cloud
-        model: claude-haiku-4-5-20251001
+        model: claude-sonnet-4-6
+      timeoutSeconds: 180
     title-summary-custom:
       provider:
         type: ollama
@@ -74,11 +75,14 @@ context:
   prompt_max_spores: 3
 backup:
   dir: ~/myco_backups/myco
+maintenance:
+  auto_optimize: true
+  auto_optimize_interval_hours: 24
 team:
   enabled: true
   worker_url: https://myco-team-974bc350.goondocks.workers.dev
   interval_minutes: 15
-  deployed_worker_version: 0.15.0
+  deployed_worker_version: 0.15.1
 skills:
   confidence_threshold: 0.7
   usage_stale_days: 30

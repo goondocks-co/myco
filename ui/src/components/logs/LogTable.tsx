@@ -2,7 +2,7 @@ import { useRef, useEffect, memo } from 'react';
 import { Badge } from '../ui/badge';
 import { cn } from '../../lib/cn';
 import { levelDotColor, levelBadgeVariant } from '../../lib/constants';
-import { formatTimeAgo } from '../../lib/format';
+import { formatTimeAgo, truncate, basename, shortSession } from '../../lib/format';
 import type { LogEntry } from '../../hooks/use-logs';
 
 // ---------------------------------------------------------------------------
@@ -40,6 +40,51 @@ function formatTimestamp(iso: string, relative: boolean): string {
   const mm = String(d.getMinutes()).padStart(2, '0');
   const ss = String(d.getSeconds()).padStart(2, '0');
   return `${hh}:${mm}:${ss}`;
+}
+
+// ---------------------------------------------------------------------------
+// Data hint: pick the single most informative field out of a log entry's
+// `data` blob to render inline next to the message. Turns "8 identical-looking
+// rows" into "8 visually-distinct rows" without forcing the user to open the
+// detail panel.
+// ---------------------------------------------------------------------------
+
+/** Max chars for a task subject preview — keeps the list row compact. */
+const TASK_SUBJECT_HINT_MAX = 40;
+/** Max chars for an error preview — long enough to identify, short enough to fit. */
+const ERROR_HINT_MAX = 60;
+
+/** Non-empty string or null — used by pick functions to skip absent fields. */
+function nonEmpty(v: unknown): string | null {
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/**
+ * Priority-ordered rules. The first rule whose `pick` returns a non-empty
+ * value wins; `format` (optional) post-processes it for display. New rules are
+ * a one-liner — no branching, no reordering.
+ */
+const HINT_RULES: Array<{
+  pick: (d: Record<string, unknown>) => string | null;
+  format?: (v: string) => string;
+}> = [
+  { pick: (d) => nonEmpty(d.tool_name) },
+  { pick: (d) => nonEmpty(d.type) },
+  { pick: (d) => nonEmpty(d.agent_type) },
+  { pick: (d) => nonEmpty(d.task_subject), format: (s) => truncate(s, TASK_SUBJECT_HINT_MAX) },
+  { pick: (d) => nonEmpty(d.filename) },
+  { pick: (d) => nonEmpty(d.source_path) ?? nonEmpty(d.path), format: basename },
+  { pick: (d) => nonEmpty(d.error), format: (s) => truncate(s, ERROR_HINT_MAX) },
+  { pick: (d) => (typeof d.pid === 'number' ? `pid ${d.pid}` : null) },
+];
+
+function dataHint(data: Record<string, unknown> | null): string {
+  if (!data) return '';
+  for (const { pick, format } of HINT_RULES) {
+    const v = pick(data);
+    if (v) return format ? format(v) : v;
+  }
+  return '';
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +162,8 @@ const LogRow = memo(function LogRow({
   compact: boolean;
 }) {
   const py = compact ? 'py-0.5' : 'py-1.5';
+  const session = shortSession(entry.session_id);
+  const hint = dataHint(entry.data);
 
   return (
     <tr
@@ -146,8 +193,17 @@ const LogRow = memo(function LogRow({
       <td className={cn('whitespace-nowrap pr-2 align-top w-[90px] truncate max-w-[90px]', py, COMPONENT_COLOR[entry.component] ?? 'text-on-surface-variant/60')}>
         {entry.component}
       </td>
+      <td
+        className={cn('whitespace-nowrap pr-2 align-top w-[72px] tabular-nums text-on-surface-variant/40', py)}
+        title={entry.session_id ?? ''}
+      >
+        {session}
+      </td>
       <td className={cn('pr-3 text-on-surface align-top break-words', py)}>
-        {entry.message}
+        <span>{entry.message}</span>
+        {hint && (
+          <span className="ml-2 text-on-surface-variant/50">· {hint}</span>
+        )}
       </td>
     </tr>
   );

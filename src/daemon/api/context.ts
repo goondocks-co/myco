@@ -11,7 +11,6 @@ import { hydrateSearchResults } from '@myco/db/queries/search.js';
 import {
   DEFAULT_AGENT_ID,
   EXCLUDED_SPORE_STATUSES,
-  LOG_CONTEXT_PREVIEW_CHARS,
   PROMPT_CONTEXT_MIN_LENGTH,
   PROMPT_CONTEXT_MIN_SIMILARITY,
   PROMPT_CONTEXT_MAX_TOKENS,
@@ -97,19 +96,19 @@ export function createSessionContextHandler(deps: ContextDeps) {
       const contextText = parts.join('\n\n');
 
       const estimatedTokens = estimateTokens(contextText);
-      const preview = contextText.slice(0, LOG_CONTEXT_PREVIEW_CHARS);
-      logger.info(LOG_KINDS.CONTEXT_SESSION, 'Session context injected', {
-        session_id,
-        source,
-        tier: extract ? tier : undefined,
-        text_length: contextText.length,
-        estimated_tokens: estimatedTokens,
-        generated_at: extract?.generated_at,
-        preview,
-      });
-      logger.debug(LOG_KINDS.CONTEXT_SESSION, `Session context: "${preview}…" (${estimatedTokens} est. tokens, source=${source}${extract ? `, tier=${tier}, generated=${extract.generated_at}` : ''})`, {
-        session_id,
-      });
+      logger.info(
+        LOG_KINDS.CONTEXT_SESSION,
+        `Session context: ${estimatedTokens} est. tokens, source=${source}${extract ? `, tier=${tier}` : ''}`,
+        {
+          session_id,
+          source,
+          tier: extract ? tier : undefined,
+          text_length: contextText.length,
+          estimated_tokens: estimatedTokens,
+          generated_at: extract?.generated_at,
+          injected_text: contextText,
+        },
+      );
 
       return {
         body: {
@@ -211,17 +210,17 @@ export function createPromptContextHandler(deps: ContextDeps) {
 
     const promptTokens = estimateTokens(text);
     const titles = spores.map((s) => s.title);
-    logger.info(LOG_KINDS.CONTEXT_PROMPT, 'Prompt context injected', {
+    // Single log line: summary in the message, full injected text in the data
+    // blob so the log detail panel shows exactly what the model received.
+    // No separate debug line — debug mode shouldn't hide information, and
+    // splitting summary vs. detail across two rows just doubles clicks.
+    logger.info(LOG_KINDS.CONTEXT_PROMPT, `Prompt context: ${spores.length} spores [${titles.join(', ')}] (~${promptTokens} tokens)`, {
       session_id,
       spore_count: spores.length,
-      scores: spores.map((s) => s.score.toFixed(3)),
       spore_titles: titles,
-      estimated_tokens: promptTokens,
-      preview: text.slice(0, LOG_CONTEXT_PREVIEW_CHARS),
-    });
-    logger.debug(LOG_KINDS.CONTEXT_PROMPT, `Prompt context: ${spores.length} spores [${titles.join(', ')}] (~${promptTokens} tokens)`, {
-      session_id,
       scores: spores.map((s) => s.score.toFixed(3)),
+      estimated_tokens: promptTokens,
+      injected_text: text,
     });
 
     return { body: { text } };

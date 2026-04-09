@@ -45,6 +45,19 @@ export function truncate(text: string | null, max: number): string {
   return text.length > max ? text.slice(0, max) + '\u2026' : text;
 }
 
+/** Number of leading characters to show when rendering a session id compactly. */
+export const SESSION_ID_PREVIEW_LENGTH = 8;
+
+/** Return the first N characters of a session id, or empty string if null. */
+export function shortSession(id: string | null | undefined): string {
+  return id ? id.slice(0, SESSION_ID_PREVIEW_LENGTH) : '';
+}
+
+/** Return the final segment of a slash-separated path, or the input unchanged. */
+export function basename(path: string): string {
+  return path.split('/').pop() || path;
+}
+
 /** Capitalize the first letter of a string. */
 export function capitalize(str: string): string {
   return str.charAt(0).toUpperCase() + str.slice(1);

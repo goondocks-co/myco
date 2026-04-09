@@ -148,7 +148,73 @@ describe('buildScheduledJobs', () => {
     const jobs = buildScheduledJobs(tasks, {}, ctx);
     await jobs[0].fn();
 
+    // `true` fires synchronously before dispatch.
     expect(setRunning).toHaveBeenCalledWith('task-a', true);
+
+    // `false` fires in the detached finally — flush microtasks to observe it.
+    await new Promise((r) => setImmediate(r));
     expect(setRunning).toHaveBeenCalledWith('task-a', false);
+  });
+
+  it('returns immediately without awaiting the task (fire-and-forget)', async () => {
+    const tasks = [
+      makeTask('long-task', { enabled: true, intervalSeconds: 1, runIn: ['active'] }),
+    ];
+    let resolveTask: () => void = () => {};
+    const taskPromise = new Promise<void>((resolve) => {
+      resolveTask = resolve;
+    });
+    const ctx = makeContext({
+      runTask: vi.fn().mockReturnValue(taskPromise),
+    });
+
+    const jobs = buildScheduledJobs(tasks, {}, ctx);
+
+    // Job fn must resolve even while runTask is still pending —
+    // otherwise a multi-minute agent task would block the PowerManager
+    // tick loop and starve other jobs like team-sync-flush.
+    await jobs[0].fn();
+
+    expect(ctx.runTask).toHaveBeenCalledWith('long-task');
+    // Task is still in flight; resolve it to let the finally clean up.
+    resolveTask();
+    await new Promise((r) => setImmediate(r));
+  });
+
+  it('routes detached task errors to onTaskError', async () => {
+    const tasks = [
+      makeTask('failing', { enabled: true, intervalSeconds: 1, runIn: ['active'] }),
+    ];
+    const onTaskError = vi.fn();
+    const boom = new Error('task exploded');
+    const ctx = makeContext({
+      runTask: vi.fn().mockRejectedValue(boom),
+      onTaskError,
+    });
+
+    const jobs = buildScheduledJobs(tasks, {}, ctx);
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+
+    expect(onTaskError).toHaveBeenCalledWith('failing', boom);
+  });
+
+  it('clears running flag even when task throws', async () => {
+    const tasks = [
+      makeTask('failing', { enabled: true, intervalSeconds: 1, runIn: ['active'] }),
+    ];
+    const setRunning = vi.fn();
+    const ctx = makeContext({
+      runTask: vi.fn().mockRejectedValue(new Error('boom')),
+      setTaskRunning: setRunning,
+      onTaskError: () => {},
+    });
+
+    const jobs = buildScheduledJobs(tasks, {}, ctx);
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+
+    expect(setRunning).toHaveBeenCalledWith('failing', true);
+    expect(setRunning).toHaveBeenCalledWith('failing', false);
   });
 });

@@ -185,6 +185,17 @@ export interface RunOptions {
   resumeRunId?: string;
   /** Embedding manager for immediate vector operations during agent tool calls. */
   embeddingManager?: import('@myco/daemon/embedding/manager.js').EmbeddingManager;
+  /**
+   * Structured metadata about the run. Populated by the dispatcher (e.g.
+   * instruction-builders.ts) alongside the free-form `instruction` string
+   * so the executor and tools can react without re-parsing prose.
+   *
+   * `candidate_id` is used by the skill-generate task-failure cleanup
+   * hook to find and remove the staged SKILL.md for a failed run.
+   */
+  runContext?: {
+    candidate_id?: string;
+  };
 }
 
 /** Result of a single agent run. */

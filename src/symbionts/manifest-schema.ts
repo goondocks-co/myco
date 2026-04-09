@@ -10,6 +10,8 @@ const RegistrationSchema = z.object({
   mcpFormat: z.enum(['json', 'toml']).default('json'),
   skillsTarget: z.string().optional(),
   settingsTarget: z.string().optional(),
+  /** Format of the settings file. TOML-format agents (e.g., Codex) emit top-level template keys as TOML sections. */
+  settingsFormat: z.enum(['json', 'toml']).default('json'),
   /** Instruction file that stubs out to AGENTS.md. Only for agents that don't read AGENTS.md natively. */
   instructionsFile: z.string().optional(),
 });

@@ -1,4 +1,4 @@
-import { Search, Radio, Clock } from 'lucide-react';
+import { Search, Radio, Clock, Pause, Play } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { cn } from '../../lib/cn';
@@ -26,6 +26,9 @@ interface LogToolbarProps {
   timeRange: string;
   onTimeRangeChange: (range: string) => void;
   totalResults?: number;
+  /** Live-mode pause state — only meaningful when `mode === 'live'`. */
+  paused?: boolean;
+  onPausedToggle?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +63,8 @@ export function LogToolbar({
   timeRange,
   onTimeRangeChange,
   totalResults,
+  paused = false,
+  onPausedToggle,
 }: LogToolbarProps) {
   return (
     <Surface level="default" className="rounded-md p-3 space-y-2">
@@ -86,6 +91,21 @@ export function LogToolbar({
             Search
           </Button>
         </div>
+
+        {/* Pause/resume (live mode only) */}
+        {mode === 'live' && onPausedToggle && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1.5 px-2.5 text-xs"
+            onClick={onPausedToggle}
+            aria-label={paused ? 'Resume log stream' : 'Pause log stream'}
+            title={paused ? 'Resume' : 'Pause'}
+          >
+            {paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+            {paused ? 'Resume' : 'Pause'}
+          </Button>
+        )}
 
         {/* Time range (search mode only) */}
         {mode === 'search' && (

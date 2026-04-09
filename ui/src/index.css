@@ -370,3 +370,93 @@
 .prose-myco *:last-child {
   margin-bottom: 0;
 }
+
+/* ---------- Markdown prose — compact (list row previews) ---------- */
+
+/*
+ * Compact variant: used inside list-row previews where content must fit in a
+ * `line-clamp-2/3` container. Headings and paragraphs are flattened to inline
+ * body text so the whole blob flows as a single clippable run; emphasis and
+ * inline code still render.
+ */
+.prose-myco-compact {
+  font-family: var(--font-ui, 'Inter', system-ui, sans-serif);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--on-surface-variant);
+}
+
+.prose-myco-compact h1,
+.prose-myco-compact h2,
+.prose-myco-compact h3,
+.prose-myco-compact h4,
+.prose-myco-compact h5,
+.prose-myco-compact h6,
+.prose-myco-compact p {
+  display: inline;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  color: inherit;
+  margin: 0;
+}
+
+/* Separate consecutive blocks with a space rather than a line break. */
+.prose-myco-compact h1 + *::before,
+.prose-myco-compact h2 + *::before,
+.prose-myco-compact h3 + *::before,
+.prose-myco-compact h4 + *::before,
+.prose-myco-compact p + *::before {
+  content: ' ';
+}
+
+.prose-myco-compact strong {
+  color: var(--on-surface);
+  font-weight: 600;
+}
+
+.prose-myco-compact em {
+  font-style: italic;
+}
+
+.prose-myco-compact code {
+  font-family: var(--font-data, 'JetBrains Mono', monospace);
+  font-size: 0.85em;
+  padding: 0 0.25em;
+  border-radius: 0.2rem;
+  background: var(--surface-container);
+  color: var(--primary);
+}
+
+.prose-myco-compact ul,
+.prose-myco-compact ol {
+  display: inline;
+  padding: 0;
+  margin: 0;
+}
+
+.prose-myco-compact li {
+  display: inline;
+  margin: 0;
+}
+
+.prose-myco-compact li::before {
+  content: '• ';
+}
+
+.prose-myco-compact li + li::before {
+  content: ' • ';
+}
+
+.prose-myco-compact a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Hide block elements that can't be meaningfully flattened. */
+.prose-myco-compact pre,
+.prose-myco-compact blockquote,
+.prose-myco-compact hr,
+.prose-myco-compact table {
+  display: none;
+}

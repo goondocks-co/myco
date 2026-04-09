@@ -8,6 +8,7 @@
 
 import type { Database } from 'better-sqlite3';
 import { epochSeconds, DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 import {
   LOG_ENTRIES_TABLE,
   TEAM_OUTBOX_TABLE,
@@ -36,6 +37,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 7, migrate: migrateV6ToV7 },
   { version: 8, migrate: (db) => migrateV7ToV8(db) },
   { version: 9, migrate: (db) => migrateV8ToV9(db) },
+  { version: 10, migrate: (db) => migrateV9ToV10(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -527,6 +529,55 @@ function migrateV8ToV9(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(9, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
+ * Version 10 adds an audit trail for skill candidate approvals.
+ *
+ *   - skill_candidates.approved_at INTEGER (nullable) — timestamp of the
+ *     first transition into status='approved'. Auto-managed by
+ *     updateCandidate going forward.
+ *
+ * Backfill: rows currently in status 'approved' or 'generated' get
+ * approved_at set to the migration timestamp. This is a one-time,
+ * deliberately-imprecise assumption — the true approval time is lost
+ * for existing rows, so we record "as of the migration, these were
+ * considered approved" rather than inventing timestamps.
+ *
+ * Rows in 'identified' or 'dismissed' state keep approved_at = NULL.
+ *
+ * Idempotent: the ALTER is wrapped in try/catch so re-runs tolerate the
+ * existing column; the backfill uses `WHERE approved_at IS NULL` so it
+ * never overwrites a previously-recorded timestamp.
+ */
+function migrateV9ToV10(db: Database): void {
+  db.exec('BEGIN');
+  try {
+    try {
+      db.exec('ALTER TABLE skill_candidates ADD COLUMN approved_at INTEGER');
+    } catch {
+      // Column already exists -- safe to ignore on re-run
+    }
+
+    const now = epochSeconds();
+    db.prepare(
+      `UPDATE skill_candidates
+         SET approved_at = ?
+       WHERE approved_at IS NULL
+         AND status IN (?, ?)`,
+    ).run(now, CANDIDATE_STATUS.APPROVED, CANDIDATE_STATUS.GENERATED);
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(10, epochSeconds());
 
     db.exec('COMMIT');
   } catch (err) {

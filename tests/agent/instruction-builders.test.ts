@@ -16,8 +16,17 @@ import { getDatabase } from '@myco/db/client.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
 import { insertSpore } from '@myco/db/queries/spores.js';
+import { insertCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
 import { epochSeconds } from '@myco/constants.js';
-import { buildSkillEvolveInstruction } from '@myco/agent/instruction-builders.js';
+import {
+  buildSkillEvolveInstruction,
+  buildSkillGenerateInstruction,
+  buildTaskInstruction,
+  isInstructionRequiredTask,
+  SKILL_GENERATE_TASK,
+  SKILL_EVOLVE_TASK,
+} from '@myco/agent/instruction-builders.js';
+import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -187,5 +196,134 @@ describe('buildSkillEvolveInstruction', () => {
 
     const result = buildSkillEvolveInstruction();
     expect(result).toContain(sporeId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildSkillGenerateInstruction — returns undefined when no candidates are
+// in the 'approved' state, which is the signal to the dispatcher that the
+// run should be skipped rather than executed against the wrong candidate.
+// ---------------------------------------------------------------------------
+
+describe('buildSkillGenerateInstruction', () => {
+  beforeAll(() => {
+    setupTestDb();
+  });
+
+  afterAll(() => {
+    teardownTestDb();
+  });
+
+  beforeEach(() => {
+    cleanTestDb();
+    createAgent(TEST_AGENT_ID);
+  });
+
+  function seedCandidate(id: string, status: string): void {
+    const now = epochSeconds();
+    insertCandidate({
+      id,
+      agent_id: TEST_AGENT_ID,
+      topic: `Topic for ${id}`,
+      rationale: `Rationale for ${id}`,
+      created_at: now,
+      updated_at: now,
+    });
+    if (status !== CANDIDATE_STATUS.IDENTIFIED) {
+      updateCandidate(id, { status, updated_at: now });
+    }
+  }
+
+  it('returns undefined when no candidates exist', () => {
+    expect(buildSkillGenerateInstruction()).toBeUndefined();
+  });
+
+  it('returns undefined when all candidates are in identified state', () => {
+    seedCandidate('c-1', CANDIDATE_STATUS.IDENTIFIED);
+    seedCandidate('c-2', CANDIDATE_STATUS.IDENTIFIED);
+    expect(buildSkillGenerateInstruction()).toBeUndefined();
+  });
+
+  it('returns undefined when all candidates are in dismissed state', () => {
+    seedCandidate('c-d', CANDIDATE_STATUS.DISMISSED);
+    expect(buildSkillGenerateInstruction()).toBeUndefined();
+  });
+
+  it('returns undefined when all candidates are in generated state', () => {
+    seedCandidate('c-g', CANDIDATE_STATUS.GENERATED);
+    expect(buildSkillGenerateInstruction()).toBeUndefined();
+  });
+
+  it('returns instruction with context when an approved candidate exists', () => {
+    seedCandidate('c-a', CANDIDATE_STATUS.APPROVED);
+    const result = buildSkillGenerateInstruction();
+    expect(result).toBeDefined();
+    expect(result!.instruction).toContain('candidate_id: c-a');
+    expect(result!.context).toEqual({ candidate_id: 'c-a' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isInstructionRequiredTask — the dispatcher contract for "no work → skip".
+// ---------------------------------------------------------------------------
+
+describe('isInstructionRequiredTask', () => {
+  it('returns true for skill-generate', () => {
+    expect(isInstructionRequiredTask(SKILL_GENERATE_TASK)).toBe(true);
+  });
+
+  it('returns true for skill-evolve', () => {
+    expect(isInstructionRequiredTask(SKILL_EVOLVE_TASK)).toBe(true);
+  });
+
+  it('returns false for generic tasks like full-intelligence', () => {
+    expect(isInstructionRequiredTask('full-intelligence')).toBe(false);
+    expect(isInstructionRequiredTask('skill-survey')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildTaskInstruction dispatch contract
+// ---------------------------------------------------------------------------
+
+describe('buildTaskInstruction', () => {
+  beforeAll(() => {
+    setupTestDb();
+  });
+
+  afterAll(() => {
+    teardownTestDb();
+  });
+
+  beforeEach(() => {
+    cleanTestDb();
+    createAgent(TEST_AGENT_ID);
+  });
+
+  it('returns undefined for tasks that do not use pre-assembled instructions', () => {
+    expect(buildTaskInstruction('full-intelligence')).toBeUndefined();
+    expect(buildTaskInstruction('skill-survey')).toBeUndefined();
+  });
+
+  it('returns undefined for skill-generate when no approved candidates exist', () => {
+    expect(buildTaskInstruction(SKILL_GENERATE_TASK)).toBeUndefined();
+  });
+
+  it('returns bundle for skill-generate when an approved candidate exists', () => {
+    const now = epochSeconds();
+    insertCandidate({
+      id: 'ready-to-generate',
+      agent_id: TEST_AGENT_ID,
+      topic: 'Ready topic',
+      rationale: 'Ready rationale',
+      created_at: now,
+      updated_at: now,
+    });
+    updateCandidate('ready-to-generate', { status: CANDIDATE_STATUS.APPROVED, updated_at: now });
+
+    const result = buildTaskInstruction(SKILL_GENERATE_TASK);
+    expect(result).toBeDefined();
+    expect(result!.instruction).toContain('Ready topic');
+    expect(result!.context?.candidate_id).toBe('ready-to-generate');
   });
 });

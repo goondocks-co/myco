@@ -156,18 +156,62 @@ describe('handleGetCandidate', () => {
 // handleUpdateCandidate
 // ---------------------------------------------------------------------------
 
+describe('handleListCandidates multi-status filter', () => {
+  it('returns candidates matching any of the comma-separated statuses', async () => {
+    insertCandidate(makeCandidate({ id: 'ml-id', status: 'identified' }));
+    insertCandidate(makeCandidate({ id: 'ml-ap', status: 'approved' }));
+    insertCandidate(makeCandidate({ id: 'ml-gn', status: 'generated' }));
+    insertCandidate(makeCandidate({ id: 'ml-dm', status: 'dismissed' }));
+
+    const result = await handleListCandidates(
+      makeReq({ query: { status: 'approved,generated' } }),
+    );
+
+    expect(result.status).toBe(200);
+    const body = result.body as {
+      candidates: Array<{ id: string; status: string }>;
+      total: number;
+    };
+    const ids = body.candidates.map((c) => c.id).sort();
+    expect(ids).toEqual(['ml-ap', 'ml-gn']);
+    expect(body.total).toBe(2);
+  });
+
+  it('trims whitespace between values', async () => {
+    insertCandidate(makeCandidate({ id: 'ws-ap', status: 'approved' }));
+    insertCandidate(makeCandidate({ id: 'ws-gn', status: 'generated' }));
+
+    const result = await handleListCandidates(
+      makeReq({ query: { status: ' approved , generated ' } }),
+    );
+    const body = result.body as { total: number };
+    expect(body.total).toBe(2);
+  });
+
+  it('still supports single-status filter (no comma)', async () => {
+    insertCandidate(makeCandidate({ id: 'sg-ap', status: 'approved' }));
+    insertCandidate(makeCandidate({ id: 'sg-dm', status: 'dismissed' }));
+
+    const result = await handleListCandidates(
+      makeReq({ query: { status: 'approved' } }),
+    );
+    const body = result.body as { total: number };
+    expect(body.total).toBe(1);
+  });
+});
+
 describe('handleUpdateCandidate', () => {
   it('updates the candidate status and returns updated row', async () => {
     insertCandidate(makeCandidate({ id: 'cand-update', status: 'identified' }));
 
     const result = await handleUpdateCandidate(
-      makeReq({ params: { id: 'cand-update' }, body: { status: 'promoted' } }),
+      makeReq({ params: { id: 'cand-update' }, body: { status: 'approved' } }),
     );
 
     expect(result.status).toBe(200);
     const body = result.body as { candidate: { id: string; status: string } };
     expect(body.candidate.id).toBe('cand-update');
-    expect(body.candidate.status).toBe('promoted');
+    expect(body.candidate.status).toBe('approved');
   });
 
   it('returns 400 when body is missing', async () => {
@@ -182,11 +226,58 @@ describe('handleUpdateCandidate', () => {
 
   it('returns 404 for unknown candidate', async () => {
     const result = await handleUpdateCandidate(
-      makeReq({ params: { id: 'ghost' }, body: { status: 'promoted' } }),
+      makeReq({ params: { id: 'ghost' }, body: { status: 'approved' } }),
     );
 
     expect(result.status).toBe(404);
     expect((result.body as { error: string }).error).toMatch('ghost');
+  });
+
+  // Privilege separation: REST is the human-driven surface (UI + MCP). It
+  // accepts 'identified', 'approved', and 'dismissed' but rejects
+  // 'generated' — the only legitimate writer of that status is the internal
+  // vault_finalize_skill tool which calls updateCandidate directly.
+  describe('status value guard', () => {
+    it('rejects status=generated with 400', async () => {
+      insertCandidate(makeCandidate({ id: 'cand-gen-guard', status: 'approved' }));
+
+      const result = await handleUpdateCandidate(
+        makeReq({ params: { id: 'cand-gen-guard' }, body: { status: 'generated' } }),
+      );
+
+      expect(result.status).toBe(400);
+      expect((result.body as { error: string }).error).toMatch(/generated/i);
+    });
+
+    it('rejects an arbitrary unknown status value with 400', async () => {
+      insertCandidate(makeCandidate({ id: 'cand-unknown-guard' }));
+
+      const result = await handleUpdateCandidate(
+        makeReq({ params: { id: 'cand-unknown-guard' }, body: { status: 'promoted' } }),
+      );
+
+      expect(result.status).toBe(400);
+    });
+
+    it('accepts status=identified', async () => {
+      insertCandidate(makeCandidate({ id: 'cand-ident', status: 'approved' }));
+
+      const result = await handleUpdateCandidate(
+        makeReq({ params: { id: 'cand-ident' }, body: { status: 'identified' } }),
+      );
+
+      expect(result.status).toBe(200);
+    });
+
+    it('accepts status=dismissed', async () => {
+      insertCandidate(makeCandidate({ id: 'cand-dism', status: 'identified' }));
+
+      const result = await handleUpdateCandidate(
+        makeReq({ params: { id: 'cand-dism' }, body: { status: 'dismissed' } }),
+      );
+
+      expect(result.status).toBe(200);
+    });
   });
 });
 

@@ -17,3 +17,4 @@ registration:
   mcpFormat: toml
   skillsTarget: .agents/skills
   settingsTarget: .codex/config.toml
+  settingsFormat: toml

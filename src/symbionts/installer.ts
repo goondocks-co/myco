@@ -1,7 +1,7 @@
 import type { SymbiontManifest } from './manifest-schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { findTomlSectionEnd, buildTomlMcpSection } from './toml-helpers.js';
+import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, removeTomlSectionKeys } from './toml-helpers.js';
 import { deepMergeSettings, deepRemoveSettings } from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup } from './install-helpers.js';
@@ -575,7 +575,8 @@ export class SymbiontInstaller {
 
   /**
    * Merge settings template into the target settings file.
-   * Deep merges objects and deduplicates arrays.
+   * JSON targets: deep-merges objects and deduplicates arrays.
+   * TOML targets: emits each top-level template key as a [section] with scalar children.
    */
   installSettings(): boolean {
     const reg = this.manifest.registration;
@@ -585,6 +586,12 @@ export class SymbiontInstaller {
     if (!template) return false;
 
     const targetPath = path.join(this.projectRoot, reg.settingsTarget);
+    const settingsFormat = reg.settingsFormat ?? 'json';
+
+    if (settingsFormat === 'toml') {
+      return this.installSettingsToml(targetPath, template);
+    }
+
     const existing = readJsonFile(targetPath);
     const merged = deepMergeSettings(existing, template);
     writeJsonFile(targetPath, merged);
@@ -592,10 +599,31 @@ export class SymbiontInstaller {
   }
 
   /**
+   * Merge a settings template into a TOML config file.
+   * Each top-level key in the template becomes a [section] header, with its
+   * children written as scalar key = value lines. Existing sections and keys
+   * outside the template (including unrelated sections like [mcp_servers.*])
+   * are preserved.
+   */
+  private installSettingsToml(targetPath: string, template: Record<string, unknown>): boolean {
+    let raw = '';
+    try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch { /* doesn't exist */ }
+
+    for (const [sectionName, values] of Object.entries(template)) {
+      if (!values || typeof values !== 'object' || Array.isArray(values)) continue;
+      raw = upsertTomlSection(raw, sectionName, values as Record<string, unknown>);
+    }
+
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, raw, 'utf-8');
+    return true;
+  }
+
+  /**
    * Remove Myco entries from the target settings file.
    * Template-driven: loads the settings template and removes matching values.
-   * Arrays: filter out values present in the template.
-   * Objects: delete keys present in the template.
+   * JSON: arrays filtered by template values, object keys deleted by name.
+   * TOML: removes each template key from its section; empty sections are dropped.
    */
   uninstallSettings(): boolean {
     const reg = this.manifest.registration;
@@ -605,6 +633,12 @@ export class SymbiontInstaller {
     if (!template) return false;
 
     const targetPath = path.join(this.projectRoot, reg.settingsTarget);
+    const settingsFormat = reg.settingsFormat ?? 'json';
+
+    if (settingsFormat === 'toml') {
+      return this.uninstallSettingsToml(targetPath, template);
+    }
+
     const settings = readJsonFile(targetPath);
     if (Object.keys(settings).length === 0) return false;
 
@@ -612,6 +646,38 @@ export class SymbiontInstaller {
     if (!changed) return false;
 
     writeOrDeleteJsonFile(targetPath, settings);
+    return true;
+  }
+
+  /**
+   * Remove template-defined keys from TOML settings file.
+   * For each section in the template, deletes only the keys the template owns;
+   * other keys and unrelated sections stay intact. Empty sections are stripped.
+   * Deletes the file entirely if no TOML content remains.
+   */
+  private uninstallSettingsToml(targetPath: string, template: Record<string, unknown>): boolean {
+    let raw = '';
+    try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch { return false; }
+    if (!raw.trim()) return false;
+
+    let changed = false;
+    for (const [sectionName, values] of Object.entries(template)) {
+      if (!values || typeof values !== 'object' || Array.isArray(values)) continue;
+      const keys = Object.keys(values as Record<string, unknown>);
+      const next = removeTomlSectionKeys(raw, sectionName, keys);
+      if (next !== raw) {
+        raw = next;
+        changed = true;
+      }
+    }
+
+    if (!changed) return false;
+
+    if (!raw.trim()) {
+      try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
+    } else {
+      fs.writeFileSync(targetPath, raw, 'utf-8');
+    }
     return true;
   }
 
@@ -684,7 +750,7 @@ export class SymbiontInstaller {
     if (!raw.includes(sectionHeader)) return false;
 
     const startIdx = raw.indexOf(sectionHeader);
-    const endIdx = findTomlSectionEnd(raw, startIdx + sectionHeader.length, MYCO_MCP_SERVER_NAME);
+    const endIdx = findTomlSectionEnd(raw, startIdx + sectionHeader.length, `mcp_servers.${MYCO_MCP_SERVER_NAME}`);
     const before = raw.slice(0, startIdx).trimEnd();
     const after = raw.slice(endIdx).trimStart();
     const updated = (before + (before && after ? '\n\n' : '') + after).trimEnd();

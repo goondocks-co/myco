@@ -5,20 +5,22 @@
  * tool handlers directly against an in-memory database.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { z } from 'zod/v4';
 
 // Mock embedding before imports
 vi.mock('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => null }));
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { getDatabase } from '@myco/db/client.js';
-import { insertCandidate } from '@myco/db/queries/skill-candidates.js';
+import { insertCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { createVaultTools } from '@myco/agent/tools.js';
+import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 
 // ---------------------------------------------------------------------------
@@ -39,6 +41,17 @@ function validSkillContent(name: string, body = '# Skill\n\nContent here.') {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Flip a candidate to 'approved' so downstream tools (vault_stage_skill,
+ * vault_write_skill create path, vault_finalize_skill) accept it. The
+ * structural gate rejects non-approved candidates, matching the real
+ * skill-generate workflow where only human-approved candidates reach
+ * these tools.
+ */
+function approveCandidate(id: string): void {
+  updateCandidate(id, { status: CANDIDATE_STATUS.APPROVED, updated_at: epochNow() });
+}
 
 /** Insert an agent directly into the agents table. */
 function createAgent(id: string): void {
@@ -79,26 +92,37 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
 describe('vault skill tools', () => {
   let tools: ReturnType<typeof createVaultTools>;
   let tmpDir: string;
+  let vaultDir: string;
 
   beforeAll(() => {
     setupTestDb();
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-skills-test-'));
   });
 
   afterAll(() => {
     teardownTestDb();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   beforeEach(() => {
     cleanTestDb();
 
-    // Seed required parent rows
+    // Per-test mkdtemp so tests never share staging or .agents/skills/
+    // state. Eliminates cross-test coupling by construction — no manual
+    // rm -rf needed between tests.
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-skills-test-'));
+    vaultDir = path.join(tmpDir, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+
     createAgent(TEST_AGENT_ID);
     createRun(TEST_RUN_ID, TEST_AGENT_ID);
 
-    // Create tools for this test with projectRoot set to tmpDir
-    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { projectRoot: tmpDir });
+    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+      projectRoot: tmpDir,
+      vaultDir,
+    });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   // -------------------------------------------------------------------------
@@ -175,17 +199,181 @@ describe('vault skill tools', () => {
     it('list returns created candidates', async () => {
       const t = findTool(tools, 'vault_skill_candidates');
       await t.handler(
-        { action: 'create', topic: 'Topic A', rationale: 'Rationale A' },
+        { action: 'create', topic: 'Author agent pipeline tasks', rationale: 'Rationale A' },
         undefined,
       );
       await t.handler(
-        { action: 'create', topic: 'Topic B', rationale: 'Rationale B' },
+        { action: 'create', topic: 'Configure cross-platform hook guard', rationale: 'Rationale B' },
         undefined,
       );
 
       const listResult = await t.handler({ action: 'list' }, undefined);
       const data = parseResult(listResult) as unknown[];
       expect(data).toHaveLength(2);
+    });
+
+    // Cross-status dedup — skill-survey must not re-identify topics
+    // that were already dismissed, generated, approved, or left as
+    // open identified candidates. The existing active-skill check is
+    // not enough; the full candidate table must be consulted. This is
+    // the structural fix for the 2026-04-08 "dismissed candidates keep
+    // coming back" workflow bug.
+    describe('create: cross-status candidate dedup', () => {
+      function makeTool() {
+        return findTool(tools, 'vault_skill_candidates');
+      }
+
+      async function seedCandidate(
+        topic: string,
+        targetStatus: string,
+      ): Promise<string> {
+        const t = makeTool();
+        const created = parseResult(
+          await t.handler({ action: 'create', topic, rationale: 'seed' }, undefined),
+        ) as { id: string };
+        if (targetStatus !== 'identified') {
+          updateCandidate(created.id, { status: targetStatus, updated_at: epochNow() });
+        }
+        return created.id;
+      }
+
+      it('rejects a new candidate whose topic overlaps a dismissed candidate', async () => {
+        await seedCandidate('How to add a new MCP tool to the Myco vault daemon', 'dismissed');
+
+        const t = makeTool();
+        const result = parseResult(
+          await t.handler(
+            {
+              action: 'create',
+              topic: 'Add a new MCP tool to the Myco vault daemon',
+              rationale: 'Re-identified from a later survey run',
+            },
+            undefined,
+          ),
+        ) as { error?: string; existing_candidate?: { status: string } };
+
+        expect(result.error).toBeDefined();
+        expect(result.error).toMatch(/dismissed/);
+        expect(result.existing_candidate?.status).toBe('dismissed');
+      });
+
+      it('rejects a new candidate whose topic overlaps a generated candidate', async () => {
+        await seedCandidate('Register a recurring PowerManager job', 'generated');
+
+        const t = makeTool();
+        const result = parseResult(
+          await t.handler(
+            {
+              action: 'create',
+              topic: 'Register a new PowerManager job',
+              rationale: 'Duplicate of already-generated skill',
+            },
+            undefined,
+          ),
+        ) as { error?: string; existing_candidate?: { status: string } };
+
+        expect(result.error).toBeDefined();
+        expect(result.error).toMatch(/already fulfilled|generated/);
+        expect(result.existing_candidate?.status).toBe('generated');
+      });
+
+      it('rejects a new candidate whose topic overlaps an approved candidate', async () => {
+        await seedCandidate('Configure Cloudflare team sync for Myco', 'approved');
+
+        const t = makeTool();
+        const result = parseResult(
+          await t.handler(
+            {
+              action: 'create',
+              topic: 'Configure Cloudflare team sync',
+              rationale: 'Duplicate of an already-queued candidate',
+            },
+            undefined,
+          ),
+        ) as { error?: string; existing_candidate?: { status: string } };
+
+        expect(result.error).toBeDefined();
+        expect(result.error).toMatch(/already queued|approved/);
+        expect(result.existing_candidate?.status).toBe('approved');
+      });
+
+      it('rejects a new candidate whose topic overlaps an identified candidate', async () => {
+        await seedCandidate('Install and initialize Myco in a new project', 'identified');
+
+        const t = makeTool();
+        const result = parseResult(
+          await t.handler(
+            {
+              action: 'create',
+              topic: 'Install and initialize Myco',
+              rationale: 'Duplicate of a pending identified candidate',
+            },
+            undefined,
+          ),
+        ) as { error?: string; existing_candidate?: { status: string } };
+
+        expect(result.error).toBeDefined();
+        expect(result.error).toMatch(/review queue|update existing|identified/);
+        expect(result.existing_candidate?.status).toBe('identified');
+      });
+
+      it('allows a genuinely distinct topic alongside a dismissed one', async () => {
+        await seedCandidate('How to author an agent pipeline task', 'dismissed');
+
+        const t = makeTool();
+        const result = parseResult(
+          await t.handler(
+            {
+              action: 'create',
+              topic: 'How to render a notification banner in the UI',
+              rationale: 'Unrelated topic',
+            },
+            undefined,
+          ),
+        ) as { error?: string; id?: string };
+
+        expect(result.error).toBeUndefined();
+        expect(result.id).toBeDefined();
+      });
+    });
+
+    // Privilege separation — humans approve, agents cannot. The MCP boundary
+    // parses args against the tool's inputSchema before invoking the handler.
+    // These tests exercise the schema directly (the test harness calls handler
+    // without schema validation) to prove the Zod enum refuses values the
+    // agent is not allowed to set.
+    describe('status enum narrowing (privilege separation)', () => {
+      it('inputSchema.status rejects "approved"', () => {
+        const t = findTool(tools, 'vault_skill_candidates');
+        const parsed = z.object(t.inputSchema).safeParse({
+          action: 'update',
+          id: 'some-id',
+          status: 'approved',
+        });
+        expect(parsed.success).toBe(false);
+      });
+
+      it('inputSchema.status rejects "generated"', () => {
+        const t = findTool(tools, 'vault_skill_candidates');
+        const parsed = z.object(t.inputSchema).safeParse({
+          action: 'update',
+          id: 'some-id',
+          status: 'generated',
+        });
+        expect(parsed.success).toBe(false);
+      });
+
+      it('inputSchema.status accepts "identified" and "dismissed"', () => {
+        const t = findTool(tools, 'vault_skill_candidates');
+        for (const allowed of ['identified', 'dismissed'] as const) {
+          const parsed = z.object(t.inputSchema).safeParse({
+            action: 'update',
+            id: 'some-id',
+            status: allowed,
+          });
+          expect(parsed.success, `expected ${allowed} to be accepted`).toBe(true);
+        }
+      });
     });
   });
 
@@ -319,13 +507,15 @@ describe('vault skill tools', () => {
     });
 
     it('updates candidate status when candidate_id provided', async () => {
-      // Create a candidate first
+      // Create a candidate first, then flip to approved so the
+      // skill-write tools' structural gate accepts it.
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidateResult = await candidateTool.handler(
         { action: 'create', topic: 'My topic', rationale: 'My rationale' },
         undefined,
       );
       const candidate = parseResult(candidateResult) as { id: string };
+      approveCandidate(candidate.id);
 
       // Write skill with candidate_id
       const t = findTool(tools, 'vault_write_skill');
@@ -457,6 +647,7 @@ describe('vault skill tools', () => {
         undefined,
       );
       const candidate = parseResult(candidateResult) as { id: string };
+      approveCandidate(candidate.id);
 
       const t = findTool(tools, 'vault_write_skill');
       await t.handler(
@@ -503,6 +694,7 @@ describe('vault skill tools', () => {
         undefined,
       );
       const candidate = parseResult(candidateResult) as { id: string };
+      approveCandidate(candidate.id);
 
       const t = findTool(tools, 'vault_write_skill');
       await t.handler(
@@ -629,6 +821,588 @@ describe('vault skill tools', () => {
       const parsed = parseResult(result) as { generation?: number; error?: string };
       expect(parsed.error).toBeUndefined();
       expect(parsed.generation).toBe(2);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // vault_stage_skill — provisional writes used by skill-generate's draft
+  // phase. Writes SKILL.md + manifest.json to .myco/staging/skills/<cand>/
+  // but does NOT touch the live DB or .agents/skills/ directory.
+  // -------------------------------------------------------------------------
+
+  describe('vault_stage_skill', () => {
+    it('stages a SKILL.md + manifest without creating a skill_records row', async () => {
+      // Seed a candidate
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidateResult = await candidateTool.handler(
+        { action: 'create', topic: 'Staging topic', rationale: 'Test rationale' },
+        undefined,
+      );
+      const candidate = parseResult(candidateResult) as { id: string };
+      approveCandidate(candidate.id);
+
+      // Stage a skill
+      const stageTool = findTool(tools, 'vault_stage_skill');
+      const result = await stageTool.handler(
+        {
+          candidate_id: candidate.id,
+          name: 'staged-skill',
+          display_name: 'Staged Skill',
+          description: 'A skill written to staging',
+          content: validSkillContent('staged-skill', '# Staged'),
+          rationale: 'Initial stage',
+        },
+        undefined,
+      );
+      const data = parseResult(result) as {
+        candidate_id: string;
+        staging_path: string;
+        status: string;
+      };
+
+      // Assert staging metadata returned
+      expect(data.candidate_id).toBe(candidate.id);
+      expect(data.status).toBe('staged');
+      expect(data.staging_path).toContain(candidate.id);
+      expect(fs.existsSync(data.staging_path)).toBe(true);
+
+      // Assert NO skill record was created
+      const recordsTool = findTool(tools, 'vault_skill_records');
+      const recordsResult = await recordsTool.handler({ action: 'list' }, undefined);
+      expect(parseResult(recordsResult)).toEqual([]);
+
+      // Assert the live .agents/skills/ directory does NOT contain the skill
+      const liveFile = path.join(tmpDir, '.agents', 'skills', 'staged-skill', 'SKILL.md');
+      expect(fs.existsSync(liveFile)).toBe(false);
+
+      // Candidate stays in 'approved' state — staging does not advance
+      // the lifecycle to 'generated' (that's finalize's job).
+      const getResult = await candidateTool.handler(
+        { action: 'get', id: candidate.id },
+        undefined,
+      );
+      const updated = parseResult(getResult) as { status: string; skill_id: string | null };
+      expect(updated.status).toBe('approved');
+      expect(updated.skill_id).toBeNull();
+    });
+
+    it('overwrites a prior staged version for the same candidate (iterative drafts)', async () => {
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Iteration test', rationale: 'r' },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+
+      const stageTool = findTool(tools, 'vault_stage_skill');
+      await stageTool.handler(
+        {
+          candidate_id: candidate.id,
+          name: 'iter-skill',
+          display_name: 'Iter Skill',
+          description: 'First draft',
+          content: validSkillContent('iter-skill', '# Version 1'),
+          rationale: 'first pass',
+        },
+        undefined,
+      );
+
+      const secondResult = await stageTool.handler(
+        {
+          candidate_id: candidate.id,
+          name: 'iter-skill',
+          display_name: 'Iter Skill',
+          description: 'Second draft',
+          content: validSkillContent('iter-skill', '# Version 2'),
+          rationale: 'revision',
+        },
+        undefined,
+      );
+      const parsed = parseResult(secondResult) as { staging_path: string; status: string };
+      expect(parsed.status).toBe('staged');
+
+      // Read back via staging helper and confirm it reflects v2
+      expect(fs.readFileSync(parsed.staging_path, 'utf-8')).toContain('# Version 2');
+    });
+
+    it('rejects staging when validation fails on the content', async () => {
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Invalid staging', rationale: 'r' },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+
+      const stageTool = findTool(tools, 'vault_stage_skill');
+      const result = await stageTool.handler(
+        {
+          candidate_id: candidate.id,
+          name: 'broken-skill',
+          display_name: 'Broken',
+          description: 'Bad content',
+          content: 'no frontmatter here — should fail validation',
+          rationale: 'test',
+        },
+        undefined,
+      );
+      const parsed = parseResult(result) as { error?: string };
+      expect(parsed.error).toBeDefined();
+      expect(parsed.error).toMatch(/validation failed/i);
+    });
+
+    it('rejects staging when description overlaps an existing active skill', async () => {
+      // Seed an active skill via vault_write_skill
+      const writeTool = findTool(tools, 'vault_write_skill');
+      await writeTool.handler(
+        {
+          name: 'existing-live',
+          display_name: 'Existing Live',
+          description: 'Structured error logging patterns for async background handlers',
+          content: validSkillContent('existing-live', '# Live'),
+        },
+        undefined,
+      );
+
+      // Try to stage a new skill with a near-duplicate description
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Overlap test', rationale: 'r' },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+
+      const stageTool = findTool(tools, 'vault_stage_skill');
+      const result = await stageTool.handler(
+        {
+          candidate_id: candidate.id,
+          name: 'overlap-stage',
+          display_name: 'Overlap Stage',
+          description: 'Structured error logging patterns for async background handlers, retried',
+          content: validSkillContent('overlap-stage', '# Stage'),
+          rationale: 'test',
+        },
+        undefined,
+      );
+      const parsed = parseResult(result) as { error?: string };
+      expect(parsed.error).toContain('overlaps with existing active skill');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Approved-status gate — skill-write tools must refuse to operate on
+  // candidates that are not in 'approved' state. This is the structural
+  // enforcement that prevents skill-generate from writing skills for
+  // candidates a human never signed off on.
+  // -------------------------------------------------------------------------
+
+  describe('approved-status gate', () => {
+    async function stage(candidateId: string, name: string) {
+      const stageTool = findTool(tools, 'vault_stage_skill');
+      return parseResult(
+        await stageTool.handler(
+          {
+            candidate_id: candidateId,
+            name,
+            display_name: name,
+            description: `Gate test for ${name}`,
+            content: validSkillContent(name),
+            rationale: 'gate test',
+          },
+          undefined,
+        ),
+      ) as { error?: string; status?: string };
+    }
+
+    it('vault_stage_skill rejects a candidate in identified state', async () => {
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Gate identified', rationale: 'r' },
+          undefined,
+        ),
+      ) as { id: string; status: string };
+      expect(candidate.status).toBe('identified');
+
+      const result = await stage(candidate.id, 'gate-identified');
+      expect(result.error).toBeDefined();
+      expect(result.error).toMatch(/identified/);
+      expect(result.error).toMatch(/approved/);
+    });
+
+    it('vault_stage_skill rejects a candidate in dismissed state', async () => {
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Gate dismissed', rationale: 'r' },
+          undefined,
+        ),
+      ) as { id: string };
+      updateCandidate(candidate.id, { status: 'dismissed', updated_at: epochNow() });
+
+      const result = await stage(candidate.id, 'gate-dismissed');
+      expect(result.error).toBeDefined();
+      expect(result.error).toMatch(/dismissed|not approved/i);
+    });
+
+    it('vault_stage_skill rejects a candidate in generated state', async () => {
+      // A generated candidate is already fulfilled — re-staging would
+      // create a duplicate under a different name.
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Gate generated', rationale: 'r' },
+          undefined,
+        ),
+      ) as { id: string };
+      updateCandidate(candidate.id, { status: 'generated', updated_at: epochNow() });
+
+      const result = await stage(candidate.id, 'gate-generated');
+      expect(result.error).toBeDefined();
+      expect(result.error).toMatch(/generated|already fulfilled|not approved/i);
+    });
+
+    it('vault_stage_skill rejects when candidate_id does not exist', async () => {
+      const result = await stage('cand-does-not-exist', 'gate-missing');
+      expect(result.error).toBeDefined();
+      expect(result.error).toMatch(/not found|missing/i);
+    });
+
+    it('vault_stage_skill accepts a candidate in approved state', async () => {
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Gate approved', rationale: 'r' },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+
+      const result = await stage(candidate.id, 'gate-approved');
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe('staged');
+    });
+
+    it('vault_write_skill rejects create path when candidate is not approved', async () => {
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Gate write identified', rationale: 'r' },
+          undefined,
+        ),
+      ) as { id: string };
+      // Leave candidate in 'identified' state.
+
+      const writeTool = findTool(tools, 'vault_write_skill');
+      const result = parseResult(
+        await writeTool.handler(
+          {
+            name: 'gate-write-identified',
+            display_name: 'Gate Write',
+            description: 'Test write gate against identified candidate',
+            content: validSkillContent('gate-write-identified'),
+            candidate_id: candidate.id,
+          },
+          undefined,
+        ),
+      ) as { error?: string };
+      expect(result.error).toBeDefined();
+      expect(result.error).toMatch(/identified/);
+      expect(result.error).toMatch(/approved/);
+    });
+
+    it('vault_write_skill allows evolve path regardless of candidate_id status', async () => {
+      // Seed a live skill first (no candidate linkage).
+      const writeTool = findTool(tools, 'vault_write_skill');
+      await writeTool.handler(
+        {
+          name: 'evolve-no-candidate',
+          display_name: 'Evolve Gate Test',
+          description: 'Seed for evolve-path gate test',
+          content: validSkillContent('evolve-no-candidate', '# V1'),
+        },
+        undefined,
+      );
+
+      // Evolve path is triggered by same-name write. Candidate status is
+      // irrelevant here — the caller is updating an existing skill, not
+      // creating a new one. No structural gate should fire.
+      const result = parseResult(
+        await writeTool.handler(
+          {
+            name: 'evolve-no-candidate',
+            display_name: 'Evolve Gate Test',
+            description: 'Updated during evolve path',
+            content: validSkillContent('evolve-no-candidate', '# V2'),
+          },
+          undefined,
+        ),
+      ) as { generation?: number; error?: string };
+      expect(result.error).toBeUndefined();
+      expect(result.generation).toBe(2);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // vault_finalize_skill — promotes a staged skill to live. Reads the
+  // manifest.json + SKILL.md written by vault_stage_skill, re-runs the
+  // dedup + validation gates as defense in depth, then atomically creates
+  // the skill_records row, lineage entry, candidate transition to
+  // 'generated', disk file, and symbiont symlinks. Cleans up staging on
+  // success.
+  // -------------------------------------------------------------------------
+
+  describe('vault_finalize_skill', () => {
+    async function stageForFinalize(candidateId: string, name: string) {
+      const stageTool = findTool(tools, 'vault_stage_skill');
+      return parseResult(
+        await stageTool.handler(
+          {
+            candidate_id: candidateId,
+            name,
+            display_name: name,
+            description: `Description for ${name}`,
+            content: validSkillContent(name, `# ${name}`),
+            rationale: 'Initial draft',
+          },
+          undefined,
+        ),
+      );
+    }
+
+    it('promotes a staged skill to .agents/skills and creates DB rows', async () => {
+      // Seed candidate + stage content
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Finalize topic', rationale: 'r' },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+      await stageForFinalize(candidate.id, 'finalize-me');
+
+      // Finalize
+      const finalizeTool = findTool(tools, 'vault_finalize_skill');
+      const result = await finalizeTool.handler(
+        { candidate_id: candidate.id },
+        undefined,
+      );
+      const data = parseResult(result) as {
+        id: string;
+        name: string;
+        path: string;
+        generation: number;
+      };
+
+      expect(data.name).toBe('finalize-me');
+      expect(data.generation).toBe(1);
+      expect(data.path).toBe('.agents/skills/finalize-me/SKILL.md');
+
+      // Disk file
+      const liveFile = path.join(tmpDir, '.agents', 'skills', 'finalize-me', 'SKILL.md');
+      expect(fs.existsSync(liveFile)).toBe(true);
+
+      // DB row
+      const recordsTool = findTool(tools, 'vault_skill_records');
+      const record = parseResult(
+        await recordsTool.handler({ action: 'get', id: 'finalize-me' }, undefined),
+      ) as { name: string };
+      expect(record.name).toBe('finalize-me');
+
+      // Candidate flipped to generated
+      const updated = parseResult(
+        await candidateTool.handler({ action: 'get', id: candidate.id }, undefined),
+      ) as { status: string; skill_id: string };
+      expect(updated.status).toBe('generated');
+      expect(updated.skill_id).toBe(data.id);
+
+      // Staging cleaned up
+      const stagingFile = path.join(
+        vaultDir,
+        'staging',
+        'skills',
+        candidate.id,
+        'SKILL.md',
+      );
+      expect(fs.existsSync(stagingFile)).toBe(false);
+    });
+
+    it('errors when no staged content exists for the candidate', async () => {
+      const finalizeTool = findTool(tools, 'vault_finalize_skill');
+      const result = await finalizeTool.handler(
+        { candidate_id: 'cand-never-staged' },
+        undefined,
+      );
+      const parsed = parseResult(result) as { error?: string };
+      expect(parsed.error).toBeDefined();
+      expect(parsed.error).toMatch(/no staged/i);
+    });
+
+    it('re-runs dedup gate on the staged content before promoting', async () => {
+      // Seed a live skill with a distinctive description
+      const writeTool = findTool(tools, 'vault_write_skill');
+      await writeTool.handler(
+        {
+          name: 'live-defense',
+          display_name: 'Live Defense',
+          description: 'Very specific error retry patterns for async worker queues and jobs',
+          content: validSkillContent('live-defense', '# Live'),
+        },
+        undefined,
+      );
+
+      // Stage a skill with a fresh candidate whose description does NOT overlap
+      // (to bypass stage-time gate), then mutate the staged content to overlap
+      // before finalize.
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Defense test', rationale: 'r' },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+
+      const stageTool = findTool(tools, 'vault_stage_skill');
+      await stageTool.handler(
+        {
+          candidate_id: candidate.id,
+          name: 'defense-stage',
+          display_name: 'Defense Stage',
+          description: 'Completely unrelated topic about caching',
+          content: validSkillContent('defense-stage', '# Defense'),
+          rationale: 'Defense test',
+        },
+        undefined,
+      );
+
+      // Tamper the manifest to overlap with the live skill's description.
+      const manifestPath = path.join(
+        vaultDir,
+        'staging',
+        'skills',
+        candidate.id,
+        'manifest.json',
+      );
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      manifest.description =
+        'Very specific error retry patterns for async worker queues and jobs, tuned';
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+      // Finalize should reject
+      const finalizeTool = findTool(tools, 'vault_finalize_skill');
+      const result = await finalizeTool.handler(
+        { candidate_id: candidate.id },
+        undefined,
+      );
+      const parsed = parseResult(result) as { error?: string };
+      expect(parsed.error).toContain('overlaps with existing active skill');
+
+      // Assert no skill record created and no live file
+      const liveFile = path.join(tmpDir, '.agents', 'skills', 'defense-stage', 'SKILL.md');
+      expect(fs.existsSync(liveFile)).toBe(false);
+      const recordsTool = findTool(tools, 'vault_skill_records');
+      const records = parseResult(
+        await recordsTool.handler({ action: 'list' }, undefined),
+      ) as Array<{ name: string }>;
+      expect(records.find((r) => r.name === 'defense-stage')).toBeUndefined();
+    });
+
+    it('removes symbiont symlinks when finalize rolls back after creating them', async () => {
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Rollback cleanup topic', rationale: 'r' },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+      await stageForFinalize(candidate.id, 'rollback-symlink-cleanup');
+
+      // Tamper the staged manifest so the DB transaction fails on the
+      // inserted skill_records.candidate_id FK after the live file and
+      // symbiont symlinks have already been created.
+      const manifestPath = path.join(
+        vaultDir,
+        'staging',
+        'skills',
+        candidate.id,
+        'manifest.json',
+      );
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      manifest.candidate_id = 'cand-missing-after-stage';
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const finalizeTool = findTool(tools, 'vault_finalize_skill');
+      const result = parseResult(
+        await finalizeTool.handler({ candidate_id: candidate.id }, undefined),
+      ) as { error?: string };
+
+      expect(result.error).toContain('database transaction failed');
+
+      const liveFile = path.join(
+        tmpDir,
+        '.agents',
+        'skills',
+        'rollback-symlink-cleanup',
+        'SKILL.md',
+      );
+      const claudeSymlink = path.join(
+        tmpDir,
+        '.claude',
+        'skills',
+        'rollback-symlink-cleanup',
+      );
+      const cursorSymlink = path.join(
+        tmpDir,
+        '.cursor',
+        'skills',
+        'rollback-symlink-cleanup',
+      );
+
+      expect(fs.existsSync(liveFile)).toBe(false);
+      expect(fs.existsSync(claudeSymlink)).toBe(false);
+      expect(fs.existsSync(cursorSymlink)).toBe(false);
+    });
+
+    it('preserves approved_at on the candidate after transition to generated', async () => {
+      // Seed an already-approved candidate with a known approved_at
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidateRaw = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Approved audit', rationale: 'r' },
+          undefined,
+        ),
+      ) as { id: string };
+
+      // Flip to approved via the REST handler path (simulates UI click).
+      // The agent tool has been locked down in Task 2, so we use the
+      // query helper directly to simulate the human approval.
+      const { updateCandidate } = await import('@myco/db/queries/skill-candidates.js');
+      const approvedAt = epochNow();
+      updateCandidate(candidateRaw.id, {
+        status: 'approved',
+        updated_at: approvedAt,
+      });
+
+      await stageForFinalize(candidateRaw.id, 'audit-preserve');
+      const finalizeTool = findTool(tools, 'vault_finalize_skill');
+      await finalizeTool.handler(
+        { candidate_id: candidateRaw.id },
+        undefined,
+      );
+
+      const final = parseResult(
+        await candidateTool.handler({ action: 'get', id: candidateRaw.id }, undefined),
+      ) as { status: string; approved_at: number | null };
+      expect(final.status).toBe('generated');
+      expect(final.approved_at).toBe(approvedAt);
     });
   });
 });

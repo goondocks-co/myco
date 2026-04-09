@@ -113,6 +113,55 @@ Concrete requirements:
 
 If an operation cannot be made idempotent, it MUST be guarded by an explicit check (e.g., "skip if already migrated") and that guard MUST be documented in the code.
 
+## Dispatch Tables Over If-Ladders
+
+When the same shape of decision is repeated — "try these options in priority order", "map this kind to that handler", "pick the first non-null field" — encode the rules as **data**, not as a chain of `if`/`else if` statements. Iterate the table; don't branch through it.
+
+**Why:** an if-ladder buries the rule in control flow. Adding a rule means editing logic, and re-ordering priority means moving blocks around. A table puts the rules in one place, ordered top-to-bottom, with each rule self-contained. Adding a new rule is a one-line append. Re-ordering priority is moving a line. Reviewers see the whole decision at a glance.
+
+<Bad>
+```ts
+function dataHint(data: Record<string, unknown> | null): string {
+  if (!data) return '';
+  const toolName = pick('tool_name');
+  if (toolName) return toolName;
+  const type = pick('type');
+  if (type) return type;
+  const agentType = pick('agent_type');
+  if (agentType) return agentType;
+  // ...7 more identical branches
+}
+```
+</Bad>
+
+<Good>
+```ts
+const HINT_RULES: Array<{
+  pick: (d: Record<string, unknown>) => string | null;
+  format?: (v: string) => string;
+}> = [
+  { pick: (d) => str(d.tool_name) },
+  { pick: (d) => str(d.type) },
+  { pick: (d) => str(d.agent_type) },
+  { pick: (d) => str(d.task_subject), format: (s) => truncate(s, 40) },
+  { pick: (d) => str(d.source_path) ?? str(d.path), format: basename },
+];
+
+function dataHint(data: Record<string, unknown> | null): string {
+  if (!data) return '';
+  for (const { pick, format } of HINT_RULES) {
+    const v = pick(data);
+    if (v) return format ? format(v) : v;
+  }
+  return '';
+}
+```
+</Good>
+
+**Applies to:** priority-first-match lookups, kind-to-handler dispatch, field extraction, format routing, validation rule chains, any other place where a repeated branching shape starts to appear.
+
+**Does NOT apply to:** genuinely unique branches (two or three unrelated conditionals are clearer as `if`/`else`), guard clauses at the top of a function, or conditions that share no common shape. Only refactor to a table when the rules are structurally uniform.
+
 ## No Magic Literals
 
 Numeric and string constants MUST NOT appear inline in logic. Extract them as named constants at module scope or in a shared constants file.

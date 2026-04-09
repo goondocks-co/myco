@@ -13,7 +13,7 @@ import type { PowerManager } from './power.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { ScheduledJobContext } from './task-scheduler.js';
 import { buildScheduledJobs } from './task-scheduler.js';
-import { buildTaskInstruction } from '@myco/agent/instruction-builders.js';
+import { buildTaskInstruction, isInstructionRequiredTask } from '@myco/agent/instruction-builders.js';
 import { countSkillRecords } from '@myco/db/queries/skill-records.js';
 import { countCandidates } from '@myco/db/queries/skill-candidates.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -83,9 +83,27 @@ export async function registerScheduledTasks(
       const { runAgent } = await import('@myco/agent/executor.js');
 
       const taskConfig = config.agent.tasks?.[taskName];
-      const instruction = buildTaskInstruction(taskName, taskConfig?.params);
+      const built = buildTaskInstruction(taskName, taskConfig?.params);
 
-      const result = await runAgent(vaultDir, { task: taskName, instruction, embeddingManager });
+      // Short-circuit: instruction-required tasks must not dispatch
+      // the agent when there's no work. For skill-generate this means
+      // no approved candidates — without the guard the agent falls
+      // back to its default prompt and picks whatever it finds.
+      if (isInstructionRequiredTask(taskName) && !built) {
+        logger.info(
+          LOG_KINDS.AGENT_RUN,
+          `Scheduled task ${taskName} skipped — no work to do`,
+          { task: taskName, reason: 'no-work' },
+        );
+        return;
+      }
+
+      const result = await runAgent(vaultDir, {
+        task: taskName,
+        instruction: built?.instruction,
+        runContext: built?.context,
+        embeddingManager,
+      });
       logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} completed`, {
         status: result.status,
         runId: result.runId,
@@ -149,6 +167,11 @@ export async function registerScheduledTasks(
       'has-approved-candidates': () => {
         return countCandidates({ status: 'approved' }) > 0;
       },
+    },
+    onTaskError: (taskName, err) => {
+      logger.error(LOG_KINDS.AGENT_ERROR, `Detached task "${taskName}" threw`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
     },
   };
 

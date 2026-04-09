@@ -254,6 +254,44 @@ describe('skill candidate query helpers', () => {
       expect(row!.confidence).toBe(0.5);
       expect(row!.status).toBe('rejected');
     });
+
+    it('auto-sets approved_at on first transition to approved', () => {
+      const data = makeCandidate();
+      const inserted = insertCandidate(data);
+      expect(inserted.approved_at).toBeNull();
+
+      const t1 = epochNow() + 100;
+      const row = updateCandidate(data.id, { status: 'approved', updated_at: t1 });
+      expect(row).not.toBeNull();
+      expect(row!.status).toBe('approved');
+      expect(row!.approved_at).toBe(t1);
+    });
+
+    it('does not overwrite approved_at on subsequent updates', () => {
+      const data = makeCandidate();
+      insertCandidate(data);
+
+      const t1 = epochNow() + 100;
+      updateCandidate(data.id, { status: 'approved', updated_at: t1 });
+
+      // Unrelated update — should not touch approved_at
+      const t2 = t1 + 50;
+      updateCandidate(data.id, { topic: 'Renamed', updated_at: t2 });
+      expect(getCandidate(data.id)!.approved_at).toBe(t1);
+
+      // Re-setting status to approved (no-op in practice) — must not overwrite
+      const t3 = t1 + 100;
+      updateCandidate(data.id, { status: 'approved', updated_at: t3 });
+      expect(getCandidate(data.id)!.approved_at).toBe(t1);
+    });
+
+    it('leaves approved_at null for candidates never approved', () => {
+      const data = makeCandidate();
+      insertCandidate(data);
+
+      updateCandidate(data.id, { status: 'dismissed', updated_at: epochNow() + 10 });
+      expect(getCandidate(data.id)!.approved_at).toBeNull();
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -279,6 +317,29 @@ describe('skill candidate query helpers', () => {
       expect(countCandidates({ status: 'identified' })).toBe(2);
       expect(countCandidates({ status: 'promoted' })).toBe(1);
       expect(countCandidates({ status: 'rejected' })).toBe(0);
+    });
+
+    it('counts candidates matching a multi-status filter', () => {
+      const now = epochNow();
+      insertCandidate(makeCandidate({ status: 'identified', created_at: now }));
+      insertCandidate(makeCandidate({ status: 'approved', created_at: now + 1 }));
+      insertCandidate(makeCandidate({ status: 'generated', created_at: now + 2 }));
+      insertCandidate(makeCandidate({ status: 'dismissed', created_at: now + 3 }));
+
+      expect(countCandidates({ statuses: ['approved', 'generated'] })).toBe(2);
+      expect(countCandidates({ statuses: ['identified', 'dismissed'] })).toBe(2);
+      expect(countCandidates({ statuses: ['approved'] })).toBe(1);
+      expect(countCandidates({ statuses: [] })).toBe(4); // empty list = no filter
+    });
+
+    it('lists candidates matching a multi-status filter', () => {
+      const now = epochNow();
+      insertCandidate(makeCandidate({ id: 'cand-q-id', status: 'identified', created_at: now }));
+      insertCandidate(makeCandidate({ id: 'cand-q-ap', status: 'approved', created_at: now + 1 }));
+      insertCandidate(makeCandidate({ id: 'cand-q-gn', status: 'generated', created_at: now + 2 }));
+
+      const rows = listCandidates({ statuses: ['approved', 'generated'] });
+      expect(rows.map((r) => r.id).sort()).toEqual(['cand-q-ap', 'cand-q-gn']);
     });
 
     it('counts candidates matching an agent_id filter', () => {

@@ -16,8 +16,19 @@ import type { DatabaseMaintenanceManager } from './database/manager.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import { createBackup } from './backup.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
+import {
+  listStaleStagingDirs,
+  cleanupStagedSkill,
+} from '@myco/agent/tools/skill-staging.js';
 import { EMBEDDING_BATCH_SIZE, MS_PER_DAY, MS_PER_HOUR } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+
+/**
+ * Maximum age for a staging directory before the sweep reclaims it.
+ * 24 hours is well beyond any legitimate skill-generate run — a task
+ * that failed to clean up via the executor hook has long since gone.
+ */
+const STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -112,6 +123,28 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
           error: (err as Error).message,
         });
       }
+    },
+  });
+
+  // Staging GC: belt-and-suspenders cleanup for skill-generate staging
+  // dirs that escaped the executor's per-run failure hook — e.g., a
+  // daemon crash between draft stage and the failure handler. Running
+  // on every idle tick is cheap because the happy path has zero stale
+  // entries and the check is a single readdir on a typically-empty
+  // directory.
+  powerManager.register({
+    name: 'staging-gc',
+    runIn: ['idle', 'sleep'],
+    fn: async () => {
+      const stale = listStaleStagingDirs(vaultDir, STAGING_MAX_AGE_MS);
+      if (stale.length === 0) return;
+      for (const candidateId of stale) {
+        cleanupStagedSkill(vaultDir, candidateId);
+      }
+      logger.info(LOG_KINDS.MAINTENANCE_STAGING_GC, 'Staging GC swept stale skill drafts', {
+        count: stale.length,
+        candidate_ids: stale,
+      });
     },
   });
 }

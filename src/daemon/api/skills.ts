@@ -34,6 +34,8 @@ import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { countUsageForSkill } from '@myco/db/queries/skill-usage.js';
 import { enqueueOutbox } from '@myco/db/queries/team-outbox.js';
 import { isTeamSyncEnabled, getTeamMachineId } from '@myco/daemon/team-context.js';
+import { REST_SETTABLE_STATUSES } from '@myco/constants/skill-candidate-status.js';
+import { parseCsvList } from '@myco/utils/parse-csv-list.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -48,14 +50,20 @@ const DEFAULT_LIST_OFFSET = 0;
 /**
  * List skill candidates with optional status filter and pagination.
  *
- * Query params: status, limit, offset
+ * Query params:
+ *   - status: exact match, or a comma-separated list for multi-status
+ *     filtering (e.g. `status=approved,generated`)
+ *   - limit, offset: standard pagination
  */
 export async function handleListCandidates(req: RouteRequest): Promise<RouteResponse> {
-  const status = req.query.status || undefined;
   const limit = req.query.limit ? Number(req.query.limit) : DEFAULT_LIST_LIMIT;
   const offset = req.query.offset ? Number(req.query.offset) : DEFAULT_LIST_OFFSET;
 
-  const { items: candidates, total } = listCandidatesWithCount({ status, limit, offset });
+  const { items: candidates, total } = listCandidatesWithCount({
+    statuses: parseCsvList(req.query.status),
+    limit,
+    offset,
+  });
 
   return { status: 200, body: { candidates, total } };
 }
@@ -74,10 +82,18 @@ export async function handleGetCandidate(req: RouteRequest): Promise<RouteRespon
 }
 
 /**
+ * Status values REST callers (UI + MCP) are allowed to set.
+ * 'generated' is internal — only vault_finalize_skill sets it, and that
+ * path calls updateCandidate directly rather than going through REST.
+ */
+const ALLOWED_REST_STATUSES = new Set<string>(REST_SETTABLE_STATUSES);
+
+/**
  * Update a skill candidate's fields (typically used to advance its status).
  *
  * Automatically sets updated_at to the current epoch seconds.
- * Returns 400 if no body, 404 if candidate not found.
+ * Returns 400 if no body or if the status value is not in ALLOWED_REST_STATUSES,
+ * 404 if candidate not found.
  */
 export async function handleUpdateCandidate(req: RouteRequest): Promise<RouteResponse> {
   const id = req.params.id;
@@ -86,6 +102,25 @@ export async function handleUpdateCandidate(req: RouteRequest): Promise<RouteRes
 
   // Pick only allowed mutable fields — reject arbitrary body fields
   const { status, topic, rationale, confidence, source_ids, skill_id } = body as Record<string, unknown>;
+
+  // Status whitelist guard — defense in depth against a compromised or
+  // misconfigured MCP client reaching this endpoint with an internal
+  // status. The agent-facing vault_skill_candidates tool also narrows
+  // its Zod enum to the same set.
+  if (status !== undefined) {
+    if (typeof status !== 'string' || !ALLOWED_REST_STATUSES.has(status)) {
+      return {
+        status: 400,
+        body: {
+          error:
+            `Invalid status '${String(status)}'. REST callers may only set: ` +
+            `${[...ALLOWED_REST_STATUSES].join(', ')}. The 'generated' status ` +
+            "is set internally by vault_finalize_skill after validation.",
+        },
+      };
+    }
+  }
+
   const updated = updateCandidate(id, {
     ...(status !== undefined ? { status: status as string } : {}),
     ...(topic !== undefined ? { topic: topic as string } : {}),

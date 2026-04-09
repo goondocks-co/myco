@@ -12,6 +12,13 @@ export interface SkillCandidate {
   status: string;
   source_ids: string; // JSON-encoded string
   skill_id: string | null;
+  /**
+   * Epoch seconds of the first transition into status='approved'.
+   * Null for candidates that have never been approved. Auto-set by
+   * the backend and never overwritten. Drives the "Approved Xd ago"
+   * card badge and the combined "pending + generated" filter view.
+   */
+  approved_at: number | null;
   created_at: number;
   updated_at: number;
 }

@@ -31,6 +31,13 @@ export interface ScheduledJobContext {
   runTask: (taskName: string) => Promise<void>;
   /** Pre-condition checkers keyed by preCondition name. */
   preConditions: Record<string, () => boolean>;
+  /**
+   * Optional error sink for detached task runs. Because scheduled tasks are
+   * kicked off without awaiting (so the PowerManager tick loop stays
+   * responsive), unhandled rejections from `runTask` land here instead of
+   * propagating through the tick.
+   */
+  onTaskError?: (taskName: string, err: unknown) => void;
 }
 
 /**
@@ -78,13 +85,24 @@ export function buildScheduledJobs(
           if (!check()) return;
         }
 
-        try {
-          context.setTaskRunning(task.name, true);
-          await context.runTask(task.name);
-        } finally {
-          lastRun = Date.now();
-          context.setTaskRunning(task.name, false);
-        }
+        // Kick off the task detached from the PowerManager tick loop.
+        // Scheduled agent runs can take 20+ minutes; awaiting them inside
+        // the tick would starve every other power job (team-sync-flush,
+        // embedding-reconcile, session-maintenance) for the duration.
+        // Re-entry is prevented by the isTaskRunning check above, and
+        // lastRun is stamped before dispatch so interval throttling stays
+        // correct even if the task is still in flight on the next tick.
+        const ctx = context;
+        ctx.setTaskRunning(task.name, true);
+        lastRun = Date.now();
+
+        void ctx.runTask(task.name)
+          .catch((err) => {
+            ctx.onTaskError?.(task.name, err);
+          })
+          .finally(() => {
+            ctx.setTaskRunning(task.name, false);
+          });
       },
     });
   }
