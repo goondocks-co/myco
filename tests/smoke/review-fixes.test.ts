@@ -15,7 +15,9 @@ import { validateSkillContent, VAULT_TOOL_COUNT } from '@myco/agent/tools.js';
 import {
   parseAllowedTools,
   descriptionSimilarity,
+  topicOverlapSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
+  TOPIC_OVERLAP_THRESHOLD,
 } from '@myco/agent/tools/skill-validator.js';
 import { buildScheduledJobs, type ScheduledJobContext } from '@myco/daemon/task-scheduler.js';
 import { loadConfig } from '@myco/config/loader.js';
@@ -480,6 +482,93 @@ describe('descriptionSimilarity', () => {
     // Both contain lots of stopwords, but only "today" is a shared content word
     // — should score low, not high.
     expect(descriptionSimilarity(a, b)).toBeLessThan(0.3);
+  });
+
+  it('collapses plural/gerund variants via stemming', () => {
+    // Without stemming these score 0; with stemming they share every
+    // content word. Regression guard for the candidate dedup false
+    // negatives that let dismissed candidates re-appear.
+    const a = 'configure local model phase';
+    const b = 'configuring local models phases';
+    expect(descriptionSimilarity(a, b)).toBeGreaterThan(0.9);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// topicOverlapSimilarity — the second dedup path for asymmetric topics
+// ---------------------------------------------------------------------------
+describe('topicOverlapSimilarity', () => {
+  it('catches asymmetric kebab-vs-sentence topic duplicates', () => {
+    // Every one of these pairs was live in the skill_candidates table as a
+    // "new identified" candidate that duplicated an already-dismissed entry.
+    // The previous Jaccard-only gate scored all four below 0.4 because the
+    // kebab-case topic has 4-5 tokens while the dismissed topic has 6-7,
+    // inflating the union. Overlap coefficient is robust to that asymmetry.
+    const pairs: Array<[string, string]> = [
+      [
+        'add-idle-skip-watermark-to-agent-task',
+        'Implementing DB Watermark Prefilters for Incremental Agent Tasks',
+      ],
+      [
+        'run-agent-team-parallel-implementation',
+        'Orchestrating a Myco Agent Team for Cross-Layer Implementation',
+      ],
+      [
+        'configure-local-model-phases',
+        'Configuring Ollama Local Models for Myco Agent Pipeline Tasks',
+      ],
+      [
+        'apply-structural-enforcement-gate',
+        'Implementing Structural Enforcement Gates in Agent-Facing MCP Tools',
+      ],
+      [
+        'publish-npm-package-with-oidc-in-ci',
+        'npm OIDC Trusted Publishing in GitHub Actions',
+      ],
+    ];
+    for (const [a, b] of pairs) {
+      const score = topicOverlapSimilarity(a, b);
+      expect(
+        score,
+        `${a} vs ${b} should trip the overlap gate`,
+      ).toBeGreaterThanOrEqual(TOPIC_OVERLAP_THRESHOLD);
+    }
+  });
+
+  it('does not flag genuinely-new candidates', () => {
+    // The one candidate in the user's recent list that IS new — must not
+    // be flagged against any of the dismissed topics.
+    const newTopic = 'implement-spa-sub-navigation-with-browser-history';
+    const dismissed = [
+      'Implementing DB Watermark Prefilters for Incremental Agent Tasks',
+      'Adding a New Operations Tab to the Myco Daemon UI',
+      'Orchestrating a Myco Agent Team for Cross-Layer Implementation',
+      'Configuring Ollama Local Models for Myco Agent Pipeline Tasks',
+      'Implementing Structural Enforcement Gates in Agent-Facing MCP Tools',
+    ];
+    for (const b of dismissed) {
+      expect(
+        topicOverlapSimilarity(newTopic, b),
+        `${newTopic} vs ${b} must not trip`,
+      ).toBeLessThan(TOPIC_OVERLAP_THRESHOLD);
+    }
+  });
+
+  it('returns 0 for very short topics to avoid single-word false positives', () => {
+    // Two distinct 2-token topics sharing one word would score 0.5 under
+    // naive overlap coefficient. The 4-token minimum guard forces them
+    // back through Jaccard, which correctly scores them below threshold.
+    expect(topicOverlapSimilarity('daemon task', 'daemon symbiont')).toBe(0);
+    expect(topicOverlapSimilarity('sync vault', 'sync graph')).toBe(0);
+  });
+
+  it('returns 0 for clearly unrelated topics', () => {
+    expect(
+      topicOverlapSimilarity(
+        'structured error logging patterns for async handlers',
+        'safe schema migration procedures for sqlite production',
+      ),
+    ).toBe(0);
   });
 });
 
