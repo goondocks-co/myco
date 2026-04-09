@@ -102,35 +102,56 @@ describe('findDeadSessionIds', () => {
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => { cleanTestDb(); });
 
-  it('returns sessions with 0 prompts', () => {
-    seedSession('dead-0', { promptCount: 0 });
+  it('returns completed sessions with 0 prompts', () => {
+    seedSession('dead-0', { promptCount: 0, status: 'completed' });
 
     const ids = findDeadSessionIds([]);
 
     expect(ids).toContain('dead-0');
   });
 
-  it('returns sessions with 1 prompt', () => {
-    seedSession('dead-1', { promptCount: 1 });
+  it('does NOT return sessions with 1 prompt (1-prompt sessions have captured work)', () => {
+    seedSession('alive-1prompt', { promptCount: 1, status: 'completed' });
 
     const ids = findDeadSessionIds([]);
 
-    expect(ids).toContain('dead-1');
+    expect(ids).not.toContain('alive-1prompt');
   });
 
-  it('skips sessions with 2+ prompts', () => {
-    seedSession('alive-1', { promptCount: 2 });
+  it('does NOT return sessions with 2+ prompts', () => {
+    seedSession('alive-2prompts', { promptCount: 2, status: 'completed' });
 
     const ids = findDeadSessionIds([]);
 
-    expect(ids).not.toContain('alive-1');
+    expect(ids).not.toContain('alive-2prompts');
+  });
+
+  it('does NOT return active sessions even if they have 0 prompts (race protection)', () => {
+    seedSession('fresh-session', { promptCount: 0, status: 'active' });
+
+    const ids = findDeadSessionIds([]);
+
+    expect(ids).not.toContain('fresh-session');
   });
 
   it('skips registered sessions', () => {
-    seedSession('reg-dead', { promptCount: 0 });
+    seedSession('reg-dead', { promptCount: 0, status: 'completed' });
 
     const ids = findDeadSessionIds(['reg-dead']);
 
     expect(ids).not.toContain('reg-dead');
+  });
+
+  it('regression: 1-prompt session that made real changes survives cleanup (opencode test case)', () => {
+    // During live opencode testing, a session that had exactly 1 user prompt
+    // produced a real code change (LogTable.tsx sticky header, committed).
+    // The session was auto-deleted within ~45s of TUI exit because the old
+    // DEAD_SESSION_MAX_PROMPTS = 1 policy considered it "dead". This test
+    // pins the protection so that regression can't recur.
+    seedSession('ses_opencode_realwork', { promptCount: 1, status: 'completed' });
+
+    const ids = findDeadSessionIds([]);
+
+    expect(ids).not.toContain('ses_opencode_realwork');
   });
 });

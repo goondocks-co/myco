@@ -58,9 +58,17 @@ export function completeStaleActiveSessions(registeredSessionIds: string[]): num
 }
 
 /**
- * Find session IDs with prompt_count <= DEAD_SESSION_MAX_PROMPTS.
+ * Find session IDs eligible for dead-session cleanup.
  *
- * Excludes currently registered sessions.
+ * A session is "dead" only if BOTH:
+ *   1. Its status is NOT 'active' (prevents racing with a session that's
+ *      currently running — active sessions get swept by the stale-session
+ *      step first when truly idle).
+ *   2. Its prompt_count is at most DEAD_SESSION_MAX_PROMPTS (default 0,
+ *      meaning only empty "registered but never used" sessions qualify).
+ *
+ * Also excludes currently-registered in-memory sessions as a defense-in-depth
+ * guard against TOCTOU between the status check and the delete.
  */
 export function findDeadSessionIds(registeredSessionIds: string[]): string[] {
   const db = getDatabase();
@@ -74,6 +82,7 @@ export function findDeadSessionIds(registeredSessionIds: string[]): string[] {
   const rows = db.prepare(
     `SELECT id FROM sessions
      WHERE prompt_count <= ?
+       AND status != 'active'
        ${excludePlaceholders}`,
   ).all(...params) as { id: string }[];
 
