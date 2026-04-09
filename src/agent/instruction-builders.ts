@@ -240,15 +240,14 @@ export function buildTaskInstruction(
 
 /**
  * True when the task cannot run meaningfully without a pre-assembled
- * instruction — skill-generate needs an approved candidate, skill-evolve
- * needs at least one skill due for assessment. When buildTaskInstruction
- * returns undefined for one of these tasks, the dispatcher should skip
- * the run entirely rather than dispatching the agent with the bare task
- * prompt (which used to let skill-generate fall back to "pick any
- * candidate you can find" — the 2026-04-08 unapproved-skill bug).
+ * instruction — skill-generate needs an approved candidate,
+ * skill-evolve needs at least one skill due for assessment. When
+ * buildTaskInstruction returns undefined for one of these, the
+ * dispatcher must skip the run rather than falling through to the
+ * bare default prompt.
  *
- * Generic tasks like full-intelligence run with their default prompt
- * and never call buildTaskInstruction, so this returns false for them.
+ * Generic tasks like full-intelligence never call buildTaskInstruction,
+ * so this returns false for them.
  */
 export function isInstructionRequiredTask(taskName: string): boolean {
   return taskName === SKILL_GENERATE_TASK || taskName === SKILL_EVOLVE_TASK;

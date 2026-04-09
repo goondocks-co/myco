@@ -62,59 +62,22 @@ export function createSkillTools(deps: VaultToolDeps) {
   const { agentId, machineId, projectRoot, vaultDir, recordTurn } = deps;
 
   /**
-   * Tokenize a topic string into a set of significant words. Matches
-   * the tokenization descriptionSimilarity uses internally so the
-   * similarity comparison below is consistent with the skill-level
-   * dedup gate.
-   */
-  function topicTokens(topic: string): Set<string> {
-    return new Set(
-      topic
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, ' ')
-        .split(/\s+/)
-        .filter((w) => w.length > 3),
-    );
-  }
-
-  /**
-   * Compute Jaccard similarity between two topic strings using the
-   * tokenization above. Returns a value in [0, 1].
-   */
-  function topicSimilarity(a: string, b: string): number {
-    const setA = topicTokens(a);
-    const setB = topicTokens(b);
-    if (setA.size === 0 || setB.size === 0) return 0;
-    let intersection = 0;
-    for (const token of setA) {
-      if (setB.has(token)) intersection++;
-    }
-    const union = setA.size + setB.size - intersection;
-    return intersection / union;
-  }
-
-  /**
-   * Threshold for rejecting a new candidate whose topic overlaps an
-   * existing one. Tuned empirically — "Add MCP tool" vs "Add a new
-   * MCP tool to the Myco vault daemon" scores ~0.5; truly distinct
-   * topics like "Install Myco" vs "Render notification" score near 0.
-   */
-  const TOPIC_OVERLAP_THRESHOLD = 0.4;
-
-  /**
    * Find the best-matching existing candidate (if any) whose topic
-   * overlaps the proposed new topic above the threshold. Returns the
-   * candidate with the similarity score attached, or null.
+   * overlaps the proposed new topic above the dedup threshold. Reuses
+   * descriptionSimilarity (Jaccard on significant-word tokens with
+   * stopword filtering) — the same metric the skill-level dedup gate
+   * uses — so topic overlap and description overlap are evaluated on
+   * identical terms.
    */
   function findOverlappingCandidate(
     newTopic: string,
     existing: ReturnType<typeof listCandidates>,
-  ): (ReturnType<typeof listCandidates>[number] & { _score: number }) | null {
-    let best: (ReturnType<typeof listCandidates>[number] & { _score: number }) | null = null;
+  ): { candidate: typeof existing[number]; score: number } | null {
+    let best: { candidate: typeof existing[number]; score: number } | null = null;
     for (const candidate of existing) {
-      const score = topicSimilarity(newTopic, candidate.topic);
-      if (score >= TOPIC_OVERLAP_THRESHOLD && (!best || score > best._score)) {
-        best = { ...candidate, _score: score };
+      const score = descriptionSimilarity(newTopic, candidate.topic);
+      if (score >= DESCRIPTION_DUPLICATE_THRESHOLD && (!best || score > best.score)) {
+        best = { candidate, score };
       }
     }
     return best;
@@ -145,16 +108,8 @@ export function createSkillTools(deps: VaultToolDeps) {
   /**
    * Structural gate enforcing the skill lifecycle invariant: ONLY
    * candidates in 'approved' state can be materialized into skills.
-   *
-   * Used by vault_stage_skill, vault_finalize_skill, and the
-   * vault_write_skill create path. Returns `null` when the candidate
-   * is ready to proceed, or an error payload ready for textResult()
-   * when the caller should be refused.
-   *
-   * This is the defense that closes the 2026-04-08 workflow bug where
-   * skill-generate was writing skills for candidates nobody approved.
-   * The scheduler short-circuits when there are no approved candidates
-   * (belt); this helper rejects any attempt to bypass that (suspenders).
+   * Used by vault_stage_skill, vault_finalize_skill, and
+   * vault_write_skill's create path.
    */
   function requireApprovedCandidate(
     candidateId: string,
@@ -481,19 +436,18 @@ export function createSkillTools(deps: VaultToolDeps) {
           // Guard 2: reject if an existing candidate (any status) has an
           // overlapping topic. The skill-survey prompt tells the agent to
           // check dismissed/generated candidates before re-identifying,
-          // but self-grading is unreliable — this structural check is
-          // the enforcement layer. See feedback_tool_gates_over_self_checks.
+          // but self-grading is unreliable so the check is enforced here.
           const allExisting = listCandidates({ agent_id: agentId, limit: 500 });
-          const existingMatch = findOverlappingCandidate(args.topic, allExisting);
-          if (existingMatch) {
+          const match = findOverlappingCandidate(args.topic, allExisting);
+          if (match) {
             return textResult({
-              error: candidateOverlapError(existingMatch),
+              error: candidateOverlapError(match.candidate),
               existing_candidate: {
-                id: existingMatch.id,
-                status: existingMatch.status,
-                topic: existingMatch.topic,
+                id: match.candidate.id,
+                status: match.candidate.status,
+                topic: match.candidate.topic,
               },
-              similarity: existingMatch._score,
+              similarity: match.score,
             });
           }
 
