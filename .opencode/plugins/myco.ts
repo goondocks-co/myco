@@ -23,7 +23,7 @@
 // becomes invisible rather than throwing. Do NOT add runtime imports from
 // @opencode-ai/plugin or any other package — that would break this guarantee.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -142,22 +142,82 @@ async function fetchFromDaemon(
   return fetchWithTimeout(`http://localhost:${freshPort}${path}`, init);
 }
 
-/** POST JSON to a daemon endpoint. Returns the parsed response body or null. */
+/**
+ * POST JSON to a daemon endpoint.
+ * Returns `{ ok, data }` — `ok` is true when the HTTP call succeeded, `data`
+ * is the parsed response body (may be absent if the body was empty or not JSON).
+ */
 async function postJson(
   directory: string,
   path: string,
   body: Record<string, unknown>,
-): Promise<unknown> {
+): Promise<{ ok: boolean; data?: unknown }> {
   const res = await fetchFromDaemon(directory, path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res) return null;
+  if (!res) return { ok: false };
   try {
-    return await res.json();
+    return { ok: true, data: await res.json() };
   } catch {
-    return null;
+    return { ok: true };
+  }
+}
+
+/**
+ * Append an event to the local buffer at .myco/buffer/<session-id>.jsonl.
+ *
+ * Used as a fallback when the daemon HTTP POST fails (daemon down, network
+ * error, timeout). The daemon replays buffered events via reconcileBufferBatches
+ * at startup, so events captured here are NOT lost — they land in the vault
+ * the next time the daemon comes back up. Mirrors the fallback pattern in
+ * src/hooks/send-event.ts + src/capture/buffer.ts that every other symbiont
+ * uses (claude-code, cursor, codex, etc.) via the hook CLI path.
+ *
+ * Without this fallback, opencode would have a significant parity gap — all
+ * other symbionts preserve events across daemon downtime, but opencode events
+ * would be silently dropped the moment the daemon was unreachable.
+ *
+ * The entry shape matches EventBuffer.append(): event payload with session_id
+ * stripped (it's in the filename) and an auto-injected ISO timestamp.
+ */
+function bufferEvent(
+  directory: string,
+  sessionId: string,
+  event: Record<string, unknown>,
+): void {
+  try {
+    const bufferDir = join(directory, ".myco", "buffer");
+    mkdirSync(bufferDir, { recursive: true });
+    const filePath = join(bufferDir, `${sessionId}.jsonl`);
+    // Strip session_id from the entry — it's encoded in the filename
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { session_id: _sid, ...payload } = event;
+    const line = JSON.stringify({
+      ...payload,
+      timestamp: payload.timestamp ?? new Date().toISOString(),
+    });
+    appendFileSync(filePath, line + "\n");
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[myco] Failed to buffer event:", err);
+  }
+}
+
+/**
+ * POST a capture event to the daemon with buffer fallback on failure.
+ * Used for user_prompt and tool_use events — both are replayed from the
+ * buffer by reconcileBufferBatches when the daemon restarts.
+ */
+async function postEventWithBuffer(
+  directory: string,
+  sessionId: string,
+  event: Record<string, unknown>,
+): Promise<void> {
+  const result = await postJson(directory, "/events", event);
+  if (!result.ok) {
+    bufferEvent(directory, sessionId, event);
   }
 }
 
@@ -187,6 +247,10 @@ async function mycoUnregisterSession(directory: string, sessionId: string): Prom
  * Opencode has no on-disk transcript for Myco to mine, so images attached by
  * the user in the TUI must travel with the prompt event itself. Other symbionts
  * (claude-code, cursor) extract images from their JSONL transcripts at stop time.
+ *
+ * Falls back to the local buffer if the daemon is unreachable so events are
+ * replayed on daemon restart (same resilience the other symbionts get via
+ * src/hooks/send-event.ts).
  */
 async function mycoPostUserPrompt(
   directory: string,
@@ -194,7 +258,7 @@ async function mycoPostUserPrompt(
   prompt: string,
   images: Array<{ data: string; mediaType: string }>,
 ): Promise<void> {
-  await postJson(directory, "/events", {
+  await postEventWithBuffer(directory, sessionId, {
     type: "user_prompt",
     session_id: sessionId,
     agent: "opencode",
@@ -203,7 +267,7 @@ async function mycoPostUserPrompt(
   });
 }
 
-/** Post a tool use event. */
+/** Post a tool use event. Falls back to the local buffer on failure. */
 async function mycoPostToolUse(
   directory: string,
   sessionId: string,
@@ -211,7 +275,7 @@ async function mycoPostToolUse(
   toolInput: unknown,
   toolOutput: string,
 ): Promise<void> {
-  await postJson(directory, "/events", {
+  await postEventWithBuffer(directory, sessionId, {
     type: "tool_use",
     session_id: sessionId,
     agent: "opencode",
@@ -247,19 +311,11 @@ async function fetchMycoSessionContext(
   directory: string,
   sessionId: string,
 ): Promise<string | null> {
-  const res = await fetchFromDaemon(directory, "/context", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId }),
-  });
-  if (!res) return null;
-  try {
-    const data = (await res.json()) as { text?: string };
-    const text = data.text?.trim() ?? "";
-    return text.length > 0 ? text : null;
-  } catch {
-    return null;
-  }
+  const result = await postJson(directory, "/context", { session_id: sessionId });
+  if (!result.ok) return null;
+  const data = result.data as { text?: string } | undefined;
+  const text = data?.text?.trim() ?? "";
+  return text.length > 0 ? text : null;
 }
 
 // ---------------------------------------------------------------------------
