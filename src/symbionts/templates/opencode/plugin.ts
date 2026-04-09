@@ -7,12 +7,19 @@
 // Myco daemon over HTTP — no subprocess spawns, no hook CLI, no stdin piping.
 //
 //   Capture: POST /sessions/register, /sessions/unregister, /events, /events/stop
-//   Context: GET  /api/digest, POST /context/prompt
+//   Context: GET  /api/digest
 //   Inject:  client.session.prompt({ noReply: true, parts: [{ synthetic: true }] })
 //
 // See https://opencode.ai/docs/plugins/
+//
+// Contributor safety: this plugin has NO external runtime imports — only node:fs
+// and node:path (Node builtins). An OSS contributor who clones the repo without
+// having Myco installed will still have opencode load this plugin successfully.
+// Every path that would contact Myco gracefully no-ops when `.myco/daemon.json`
+// is absent or the daemon is unreachable, so the plugin becomes invisible rather
+// than throwing. Do NOT add runtime imports from @opencode-ai/plugin or any other
+// package — that would break the no-op guarantee.
 
-import type { Plugin } from "@opencode-ai/plugin";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -233,13 +240,29 @@ function summarizeToolOutput(output: unknown): string {
 // Plugin entry
 // ---------------------------------------------------------------------------
 
-export const MycoPlugin: Plugin = async ({ client, directory, worktree }) => {
-  await client.app.log({
-    service: "myco",
-    level: "info",
-    message: "Myco plugin initialized",
-    extra: { directory, worktree },
-  });
+/**
+ * Opencode plugin entry. The function signature matches opencode's Plugin type
+ * via duck typing — we deliberately do NOT import the Plugin type from
+ * @opencode-ai/plugin so the plugin file has zero external runtime dependencies
+ * and contributors without Myco installed experience a silent no-op.
+ *
+ * @param {{ client: any, directory: string, worktree: string }} ctx
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const MycoPlugin = async ({ client, directory, worktree }: { client: any; directory: string; worktree: string }) => {
+  // Best-effort init log. Wrapped in try-catch so a future SDK shape change in
+  // opencode (e.g. client.app.log moving) cannot prevent the plugin from
+  // registering its handlers.
+  try {
+    await client.app.log({
+      service: "myco",
+      level: "info",
+      message: "Myco plugin initialized",
+      extra: { directory, worktree },
+    });
+  } catch {
+    // Swallow — init log is diagnostic only.
+  }
 
   return {
     /**
