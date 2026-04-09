@@ -161,6 +161,51 @@ describe('isPlanWriteEvent', () => {
     expect(isPlanWriteEvent('Write', { file_path: '/home/user/myproject/docs/plans/c.ts' }, cfg))
       .toBeNull();
   });
+
+  // opencode tool conventions: lowercase tool names, camelCase filePath
+  // Without these, opencode Plan mode writes to .opencode/plans/*.md are silently dropped.
+
+  it('matches opencode lowercase write tool', () => {
+    expect(isPlanWriteEvent('write', { file_path: 'docs/plans/sprint.md' }, base))
+      .toBe('docs/plans/sprint.md');
+  });
+
+  it('matches opencode lowercase edit tool', () => {
+    expect(isPlanWriteEvent('edit', { file_path: 'docs/plans/sprint.md' }, base))
+      .toBe('docs/plans/sprint.md');
+  });
+
+  it('matches opencode patch tool (unified-diff applier)', () => {
+    expect(isPlanWriteEvent('patch', { file_path: 'docs/plans/sprint.md' }, base))
+      .toBe('docs/plans/sprint.md');
+  });
+
+  it('matches opencode lowercase create tool', () => {
+    expect(isPlanWriteEvent('create', { file_path: 'docs/plans/new.md' }, base))
+      .toBe('docs/plans/new.md');
+  });
+
+  it('extracts path from camelCase filePath field (opencode convention)', () => {
+    expect(isPlanWriteEvent('write', { filePath: 'docs/plans/sprint.md' }, base))
+      .toBe('docs/plans/sprint.md');
+  });
+
+  it('combined: opencode lowercase tool + camelCase filePath field', () => {
+    expect(isPlanWriteEvent('edit', { filePath: 'docs/plans/feature.md' }, base))
+      .toBe('docs/plans/feature.md');
+  });
+
+  it('still prefers snake_case file_path over camelCase filePath when both present', () => {
+    expect(isPlanWriteEvent('write', {
+      file_path: 'docs/plans/a.md',
+      filePath: 'docs/plans/b.md',
+    }, base)).toBe('docs/plans/a.md');
+  });
+
+  it('regression: Claude Code PascalCase Write still works alongside lowercase addition', () => {
+    expect(isPlanWriteEvent('Write', { file_path: '/home/user/myproject/docs/plans/sprint.md' }, base))
+      .toBe('/home/user/myproject/docs/plans/sprint.md');
+  });
 });
 
 // ---------------------------------------------------------------------------

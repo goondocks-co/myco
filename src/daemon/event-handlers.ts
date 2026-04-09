@@ -37,6 +37,20 @@ export function isSystemMessage(prompt: string): boolean {
   return SYSTEM_MESSAGE_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
 }
 
+/** Extract a file path from tool input across snake_case and camelCase conventions. */
+function extractToolFilePath(toolInput: unknown): string | null {
+  const inputObj = toolInput as Record<string, unknown> | undefined;
+  if (!inputObj) return null;
+
+  const filePath = inputObj.file_path;
+  if (typeof filePath === 'string') return filePath;
+
+  const camelFilePath = inputObj.filePath;
+  if (typeof camelFilePath === 'string') return camelFilePath;
+
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Event handling helpers (exported for testing)
 // ---------------------------------------------------------------------------
@@ -93,9 +107,7 @@ export function handleToolUse(
 ): void {
   const now = epochSeconds();
 
-  // Extract file_path from tool input if present
-  const inputObj = toolInput as Record<string, unknown> | undefined;
-  const filePath = typeof inputObj?.file_path === 'string' ? inputObj.file_path : null;
+  const filePath = extractToolFilePath(toolInput);
 
   const activity = insertActivityWithBatch({
     session_id: sessionId,
@@ -143,8 +155,7 @@ export function handleToolFailure(
   isInterrupt: boolean | undefined,
 ): void {
   const now = epochSeconds();
-  const inputObj = toolInput as Record<string, unknown> | undefined;
-  const filePath = typeof inputObj?.file_path === 'string' ? inputObj.file_path : null;
+  const filePath = extractToolFilePath(toolInput);
 
   const activity = insertActivityWithBatch({
     session_id: sessionId,

@@ -41,7 +41,7 @@ Myco supports 6 coding agents. Each has its own instruction file format, but **`
 
 | File | Purpose | Who reads it |
 |------|---------|-------------|
-| `AGENTS.md` | **Canonical rules** — all architecture, conventions, golden paths | Codex, VS Code Copilot, Gemini CLI, Windsurf, Cursor |
+| `AGENTS.md` | **Canonical rules** — all architecture, conventions, golden paths | Codex, VS Code Copilot, Gemini CLI, Windsurf, Cursor, OpenCode |
 | `CLAUDE.md` | Thin stub pointing to `AGENTS.md` + Claude-specific overrides | Claude Code |
 | `GEMINI.md` | Thin stub pointing to `AGENTS.md` + Gemini-specific overrides | Gemini CLI |
 | `.github/copilot-instructions.md` | Thin stub pointing to `AGENTS.md` | VS Code Copilot |

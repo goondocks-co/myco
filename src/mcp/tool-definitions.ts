@@ -148,7 +148,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: TOOL_CONTEXT,
-    description: "Retrieve Myco's synthesized understanding of this project. Returns a pre-computed context extract at the requested token tier. Available tiers: 1500 (executive briefing), 5000 (deep onboarding), 10000 (institutional knowledge). This is a rich, always-current synthesis of project history, decisions, patterns, and active work — not a search result.",
+    description: "Retrieve Myco's pre-computed project digest — a rich, always-current synthesis of project history, decisions, patterns, active work, and institutional knowledge. Call this at the start of a new task or session to orient yourself on the project before taking action; call it again after long interruptions or when switching contexts. This is NOT a search — it's the project's accumulated understanding, served instantly. Available tiers: 1500 (executive briefing, one-screen overview), 5000 (deep onboarding, default), 10000 (comprehensive institutional knowledge). Prefer this over myco_search when you need broad project orientation; use myco_search when you need to find specific prior decisions or bug fixes.",
     inputSchema: {
       type: 'object' as const,
       properties: {

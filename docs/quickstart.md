@@ -44,7 +44,7 @@ This guides you through:
 1. **Intelligence provider** — Cloud (Claude), Ollama, or LM Studio for agent tasks
 2. **Embedding provider** — Ollama (local), OpenRouter, OpenAI, or skip
 3. **Model selection** — picks from available models with recommended defaults
-4. **Agent detection** — finds Claude Code, Cursor, and registers the plugin
+4. **Agent detection** — finds any installed agents (Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode) and registers Myco per project
 
 ### Pull Ollama Models (if using local embeddings)
 

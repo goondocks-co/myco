@@ -1,6 +1,6 @@
 # Contributing to Myco
 
-Myco is a collective intelligence plugin for coding projects, supporting Claude Code and Cursor. This guide covers development setup and project conventions. For architecture details, see [Lifecycle docs](docs/lifecycle.md).
+Myco is a collective intelligence plugin for coding projects, supporting Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, and OpenCode. This guide covers development setup and project conventions. For architecture details, see [Lifecycle docs](docs/lifecycle.md).
 
 ## Installing Myco (End Users)
 
@@ -20,7 +20,7 @@ This sets up the vault, configures your LLM backend, and starts capturing sessio
 ### Requirements
 
 - Node.js 22+
-- Claude Code or Cursor
+- One or more supported coding agents (Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, or OpenCode)
 - **Embedding provider** (one of): [Ollama](https://ollama.com) with `bge-m3` (local, free), [OpenRouter](https://openrouter.ai), or [OpenAI](https://platform.openai.com)
 - **Intelligence provider** (one of): Cloud (Claude), [Ollama](https://ollama.com), or [LM Studio](https://lmstudio.ai)
 
@@ -95,7 +95,7 @@ myco/
 │   ├── mcp/               # MCP server + tool handlers
 │   ├── prompts/           # LLM prompt templates (extraction, summary, title, classification)
 │   ├── services/          # Shared service logic (used by both CLI and API)
-│   ├── symbionts/         # Symbiont adapters (Claude Code, Cursor, Codex) — transcript discovery, parsing, and project-local registration
+│   ├── symbionts/         # Symbiont adapters and manifests (Claude Code, Cursor, Codex, VS Code, Gemini, Windsurf, OpenCode) — transcript discovery, parsing, and project-local registration
 │   └── vault/             # Reader, writer, Zod schemas for database records
 ├── tests/                 # Mirrors src/ structure
 ├── ui/                    # React + Tailwind dashboard (Vite build → dist/ui/)

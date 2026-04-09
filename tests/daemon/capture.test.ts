@@ -148,6 +148,24 @@ describe('daemon capture flow', () => {
     expect(activities[0].tool_name).toBe('Read');
   });
 
+  it('extracts file_path from camelCase filePath tool input', async () => {
+    const sessionId = 'test-session-opencode-filepath';
+    const now = epochNow();
+
+    upsertSession({
+      id: sessionId,
+      agent: 'opencode',
+      started_at: now,
+      created_at: now,
+    });
+
+    handleToolUse(sessionId, 'edit', { filePath: '/tmp/opencode.ts' }, 'updated');
+
+    const activities = listActivities({ session_id: sessionId });
+    expect(activities.length).toBe(1);
+    expect(activities[0].file_path).toBe('/tmp/opencode.ts');
+  });
+
   it('handles stop with no open batch — session stays active', async () => {
     const sessionId = 'test-session-empty';
     const now = epochNow();
@@ -686,6 +704,18 @@ describe('new event type handlers', () => {
 
       const activities = listActivities({ session_id: sessionId });
       expect(activities[0].file_path).toBe('/tmp/readonly.ts');
+    });
+
+    it('extracts camelCase filePath from failed opencode tool input', async () => {
+      const sessionId = 'test-tool-failure-004';
+      const now = epochNow();
+
+      upsertSession({ id: sessionId, agent: 'opencode', started_at: now, created_at: now });
+
+      handleToolFailure(sessionId, 'edit', { filePath: '/tmp/opencode-readonly.ts' }, 'EACCES', false);
+
+      const activities = listActivities({ session_id: sessionId });
+      expect(activities[0].file_path).toBe('/tmp/opencode-readonly.ts');
     });
   });
 

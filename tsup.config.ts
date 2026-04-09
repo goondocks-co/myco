@@ -109,22 +109,18 @@ export default defineConfig({
       cpSync(workerSrc, 'dist/src/worker', { recursive: true });
     }
 
-    // Copy symbiont registration templates (JSON per agent + shared .md)
+    // Copy symbiont registration templates (per-agent dirs + shared root files)
     const symbiontTemplates = 'src/symbionts/templates';
     if (existsSync(symbiontTemplates)) {
       const destBase = 'dist/src/symbionts/templates';
       mkdirSync(destBase, { recursive: true });
       for (const entry of readdirSync(symbiontTemplates, { withFileTypes: true })) {
         if (entry.isDirectory()) {
-          // Per-agent template directories (JSON files)
+          // Per-agent template directories — copy everything (JSON, plugin source, package.json, etc.)
+          // so plugin-file agents like opencode ship their verbatim plugin file alongside JSON templates.
           const srcDir = path.join(symbiontTemplates, entry.name);
           const destDir = path.join(destBase, entry.name);
-          mkdirSync(destDir, { recursive: true });
-          for (const file of readdirSync(srcDir)) {
-            if (file.endsWith('.json')) {
-              copyFileSync(path.join(srcDir, file), path.join(destDir, file));
-            }
-          }
+          cpSync(srcDir, destDir, { recursive: true });
         } else if (entry.isFile()) {
           // Shared templates (root-level files like hook-guard.cjs, instructions-stub.md)
           copyFileSync(path.join(symbiontTemplates, entry.name), path.join(destBase, entry.name));

@@ -30,6 +30,7 @@ import {
 } from './event-handlers.js';
 import { getLatestBatch } from '@myco/db/queries/batches.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
+import { captureBatchImages, type CapturedImage } from './capture-images.js';
 import { epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 
@@ -135,6 +136,22 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         try {
           const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined);
           logger.debug(LOG_KINDS.CAPTURE_BATCH, 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });
+
+          // Plugin-based symbionts (opencode) ship image attachments in the
+          // user_prompt event payload rather than in an on-disk transcript.
+          // The stop-event transcript-mining path handles claude-code/cursor;
+          // the persistence logic is shared between both paths via
+          // captureBatchImages.
+          const eventImages = event.images as CapturedImage[] | undefined;
+          if (Array.isArray(eventImages) && eventImages.length > 0) {
+            captureBatchImages({
+              sessionId: event.session_id,
+              promptBatchId: batchId,
+              promptNumber,
+              images: eventImages,
+              logger,
+            });
+          }
 
           // Batch-threshold summary trigger
           const batchCount = promptNumber;

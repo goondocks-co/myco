@@ -110,6 +110,7 @@ export function registerSymbionts(
         result.skills && 'skills',
         result.settings && 'settings',
         result.instructions && 'instructions',
+        result.pluginPackage && 'plugin deps',
       ].filter(Boolean);
 
       if (installed.length > 0) {

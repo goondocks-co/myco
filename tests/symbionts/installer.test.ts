@@ -120,6 +120,39 @@ const WINDSURF_MANIFEST: SymbiontManifest = {
   },
 };
 
+const OPENCODE_MANIFEST: SymbiontManifest = {
+  name: 'opencode',
+  displayName: 'OpenCode',
+  binary: 'opencode',
+  configDir: '.opencode',
+  pluginRootEnvVar: 'OPENCODE_PLUGIN_ROOT',
+  hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
+  registration: {
+    hooksTarget: '.opencode/plugins/myco.ts',
+    hooksFormat: 'plugin-file',
+    pluginPackageTarget: '.opencode/package.json',
+    mcpTarget: 'opencode.json',
+    mcpServersKey: 'mcp',
+    settingsTarget: 'opencode.json',
+    skillsTarget: '.agents/skills',
+  },
+};
+
+/** Fixture content written as the opencode plugin.ts template in tests. */
+const OPENCODE_PLUGIN_TEMPLATE_CONTENT = `// Managed by Myco. Regenerated on \`myco update\`.
+// myco:plugin-marker:opencode
+import type { Plugin } from "@opencode-ai/plugin";
+export const MycoPlugin: Plugin = async () => ({});
+export default MycoPlugin;
+`;
+
+const OPENCODE_PACKAGE_TEMPLATE_CONTENT = `{
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.1.59"
+  }
+}
+`;
+
 // --- Minimal hooks template for tests ---
 
 const HOOKS_TEMPLATE = {
@@ -221,6 +254,18 @@ function setupPackageRoot(): void {
   writeJson(path.join(windsurfTemplateDir, 'hooks.json'), {
     pre_user_prompt: [{ command: 'node .agents/myco-hook.cjs hook user-prompt-submit' }],
     post_cascade_response: [{ command: 'node .agents/myco-hook.cjs hook stop' }],
+  });
+
+  // opencode uses plugin-file hooks + non-standard MCP key + a package.json for plugin deps
+  const opencodeTemplateDir = path.join(packageRoot, 'src/symbionts/templates/opencode');
+  fs.mkdirSync(opencodeTemplateDir, { recursive: true });
+  fs.writeFileSync(path.join(opencodeTemplateDir, 'plugin.ts'), OPENCODE_PLUGIN_TEMPLATE_CONTENT, 'utf-8');
+  fs.writeFileSync(path.join(opencodeTemplateDir, 'package.json'), OPENCODE_PACKAGE_TEMPLATE_CONTENT, 'utf-8');
+  writeJson(path.join(opencodeTemplateDir, 'mcp.json'), {
+    myco: { type: 'local', command: ['myco-run', 'mcp'] },
+  });
+  writeJson(path.join(opencodeTemplateDir, 'settings.json'), {
+    permission: { bash: { 'myco-run *': 'allow', 'node .agents/myco-hook.cjs *': 'allow' } },
   });
 
   // Copy hook-guard template so installHookGuard can find it
@@ -1662,6 +1707,158 @@ describe('hook template validation', () => {
         }
       }
     }
+  });
+});
+
+// =====================
+// opencode — plugin-file hooks + non-standard MCP key
+// =====================
+
+describe('opencode (plugin-file hooks)', () => {
+  it('install writes the plugin file verbatim with marker', () => {
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    const result = installer.install();
+
+    expect(result.hooks).toBe(true);
+    const pluginPath = path.join(projectRoot, '.opencode/plugins/myco.ts');
+    const written = fs.readFileSync(pluginPath, 'utf-8');
+    expect(written).toBe(OPENCODE_PLUGIN_TEMPLATE_CONTENT);
+    expect(written).toContain('myco:plugin-marker:opencode');
+  });
+
+  it('installPluginHookFile is content-diff gated (idempotent)', () => {
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    // Second install: hooks should be skipped because the file is already current.
+    // We can only observe this via the returned boolean (false = no-op).
+    const second = installer.install();
+    expect(second.hooks).toBe(false);
+  });
+
+  it('install writes plugin deps package.json', () => {
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    const result = installer.install();
+
+    expect(result.pluginPackage).toBe(true);
+    const pkgPath = path.join(projectRoot, '.opencode/package.json');
+    const written = fs.readFileSync(pkgPath, 'utf-8');
+    expect(written).toBe(OPENCODE_PACKAGE_TEMPLATE_CONTENT);
+    expect(JSON.parse(written)).toHaveProperty('dependencies.@opencode-ai/plugin');
+  });
+
+  it('installPluginPackage is content-diff gated', () => {
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+    const second = installer.install();
+    expect(second.pluginPackage).toBe(false);
+  });
+
+  it('uninstall deletes plugin file when marker present', () => {
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+    const pluginPath = path.join(projectRoot, '.opencode/plugins/myco.ts');
+    expect(fs.existsSync(pluginPath)).toBe(true);
+
+    const result = installer.uninstall();
+    expect(result.hooks).toBe(true);
+    expect(fs.existsSync(pluginPath)).toBe(false);
+  });
+
+  it('uninstall preserves hand-edited plugin file without marker', () => {
+    const pluginDir = path.join(projectRoot, '.opencode/plugins');
+    fs.mkdirSync(pluginDir, { recursive: true });
+    const pluginPath = path.join(pluginDir, 'myco.ts');
+    const handEdited = '// I am not a Myco-managed file\nexport default async () => ({});\n';
+    fs.writeFileSync(pluginPath, handEdited, 'utf-8');
+
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    const result = installer.uninstall();
+    expect(result.hooks).toBe(false);
+    expect(fs.readFileSync(pluginPath, 'utf-8')).toBe(handEdited);
+  });
+
+  it('uninstall preserves plugin deps package.json for contributor-added deps', () => {
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+    const pkgPath = path.join(projectRoot, '.opencode/package.json');
+    expect(fs.existsSync(pkgPath)).toBe(true);
+
+    installer.uninstall();
+    // Plan: package.json is intentionally left in place — contributors may add their own deps.
+    expect(fs.existsSync(pkgPath)).toBe(true);
+  });
+
+  it('MCP entries are written under the custom mcpServersKey', () => {
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    const openCodeJson = readJson(path.join(projectRoot, 'opencode.json'));
+    // opencode uses 'mcp' not 'mcpServers'
+    expect(openCodeJson).toHaveProperty('mcp');
+    expect(openCodeJson).not.toHaveProperty('mcpServers');
+    const mcp = openCodeJson.mcp as Record<string, unknown>;
+    expect(mcp).toHaveProperty('myco');
+  });
+
+  it('array-form MCP command entries round-trip verbatim', () => {
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    const openCodeJson = readJson(path.join(projectRoot, 'opencode.json'));
+    const myco = (openCodeJson.mcp as Record<string, unknown>).myco as Record<string, unknown>;
+    // opencode's MCP entry shape: { type: "local", command: ["myco-run", "mcp"] }
+    expect(myco.type).toBe('local');
+    expect(myco.command).toEqual(['myco-run', 'mcp']);
+  });
+
+  it('uninstall removes only the myco MCP entry and leaves other servers intact', () => {
+    // Seed opencode.json with an unrelated MCP server
+    const openCodeJsonPath = path.join(projectRoot, 'opencode.json');
+    writeJson(openCodeJsonPath, {
+      mcp: {
+        otherSdk: { type: 'local', command: ['other', 'mcp'] },
+      },
+    });
+
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+    installer.uninstall();
+
+    const after = readJson(openCodeJsonPath);
+    const mcp = after.mcp as Record<string, unknown> | undefined;
+    expect(mcp).toBeDefined();
+    expect(mcp).toHaveProperty('otherSdk');
+    expect(mcp).not.toHaveProperty('myco');
+  });
+
+  it('permission settings are merged under opencode.json permission key', () => {
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    const openCodeJson = readJson(path.join(projectRoot, 'opencode.json'));
+    const permission = openCodeJson.permission as Record<string, Record<string, string>>;
+    expect(permission.bash['myco-run *']).toBe('allow');
+    expect(permission.bash['node .agents/myco-hook.cjs *']).toBe('allow');
+  });
+
+  it('opencode does not trigger batched JSON install (hooks target is .ts)', () => {
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    // If the batched path incorrectly tried to JSON.parse the plugin .ts file,
+    // the install would throw. Success means the non-batched path ran.
+    expect(() => installer.install()).not.toThrow();
+
+    // Plugin file is the verbatim TS, NOT JSON
+    const plugin = fs.readFileSync(path.join(projectRoot, '.opencode/plugins/myco.ts'), 'utf-8');
+    expect(() => JSON.parse(plugin)).toThrow();
+  });
+
+  it('hook guard is installed for opencode', () => {
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    const guardPath = path.join(projectRoot, '.agents/myco-hook.cjs');
+    expect(fs.existsSync(guardPath)).toBe(true);
   });
 });
 

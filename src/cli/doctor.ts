@@ -199,9 +199,12 @@ function isSymbiontRegistered(
       return raw.includes(`[mcp_servers.${MYCO_MCP_SERVER_NAME}]`);
     }
 
-    // JSON: check for server entry
+    // JSON: check for server entry under the configured key (defaults to 'mcpServers').
+    // opencode uses 'mcp' — without the manifest lookup, doctor reports opencode as
+    // unregistered even after a successful install.
     const config = JSON.parse(raw) as Record<string, unknown>;
-    const servers = config.mcpServers as Record<string, unknown> | undefined;
+    const serversKey = d.manifest.registration?.mcpServersKey ?? 'mcpServers';
+    const servers = config[serversKey] as Record<string, unknown> | undefined;
     return !!servers?.[MYCO_MCP_SERVER_NAME];
   } catch { /* config missing or malformed */ }
   return false;

@@ -14,6 +14,17 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 - Know the agent's config directory name (e.g., `.claude/`, `.cursor/`, `.gemini/`)
 - Determined whether the agent reads `AGENTS.md` natively or needs a thin instruction stub
 
+## Integration Classes
+
+Not all agents can be wired via the same procedure. Before starting, identify which class applies:
+
+| Class | Description | Example agents |
+|-------|-------------|----------------|
+| **Class 1 — Config-File** | Agent is configured via JSON or TOML files in a project directory. Hooks, MCP entries, and instructions are written by `SymbiontInstaller` as file I/O. | Claude Code, Cursor, Windsurf, Codex, Gemini CLI, VS Code Copilot |
+| **Class 2 — Plugin-API** | Agent exposes a plugin registration API; it cannot be configured by writing files into a config directory. Requires a dedicated, agent-specific installation path in `SymbiontInstaller` — the standard Steps 1–8 below do NOT apply. | opencode (v0.15.0+, 7th symbiont, implemented) |
+
+**If you are adding a Class 2 agent:** the steps below describe the Class 1 path only. Class 2 integration requires a separate SymbiontInstaller code path for plugin registration — consult the opencode implementation as the reference. Do not attempt to adapt the file-based manifest/hook steps for a plugin-API agent.
+
 ## Steps
 
 ### 1. Create the Symbiont Manifest
@@ -46,7 +57,7 @@ registration:
 
 **`defaultEnabled` is required.** `SymbiontInstaller` reads this field during `myco init` to populate the project's `symbionts` list in `myco.yaml`. A manifest without `defaultEnabled` means the symbiont won't be included in the init-time activation list, even if installed on the machine. The field must be explicit — there is no fallback default.
 
-**`settingsFormat`** controls how the installer reads and writes the agent's config file. Default is `'json'`. Set `settingsFormat: toml` for agents whose settings file is TOML-based (e.g., Codex uses `config.toml`). The installer dispatches on this field when writing MCP entries and hook registrations — an incorrect or missing value will write JSON syntax into a TOML file and break the agent's config.
+**`settingsFormat`** controls how the installer reads and writes the agent's config file. Default is `'json'`. Set `settingsFormat: toml` for agents whose settings file is TOML-based (e.g., Codex uses `config.toml`). The installer dispatches on this field when writing MCP entries and hook registrations — an incorrect or missing value will write JSON syntax into a TOML file and break the agent's config. TOML read/write operations use `src/symbionts/toml-helpers.ts` (`upsertTomlSection` / `removeTomlSectionKeys`) — reference that module rather than hand-rolling TOML string manipulation.
 
 ### 2. Register in SymbiontInstaller
 
@@ -181,6 +192,16 @@ codex_hooks = true
 ```
 
 Without this block, hooks defined in the symbiont manifest are silently ignored by Codex regardless of how they are registered.
+
+**Class 2 agents cannot use this procedure.** Plugin-API agents (e.g., opencode) do not expose a config directory for file-based hook/MCP injection. Attempting to wire them via manifest + template steps will produce a silently incomplete integration. These agents require a dedicated installation code path in `SymbiontInstaller`. Do not adapt the Class 1 steps for a plugin-API agent.
+
+**Class 2 (opencode): `client.app.log` is silently swallowed.** Output via `client.app.log()` is swallowed by the TUI and does not appear anywhere observable. Use `console.error()` for debug output during Class 2 plugin development — it appears in opencode's stderr stream.
+
+**Class 2 (opencode): `chat.message({ synthetic: true })` causes infinite crash loops.** Injecting synthetic messages via `chat.message()` triggers the model to respond, which re-enters the plugin callback, which injects another message — a hard crash loop with no escape. Use `session.prompt({ noReply: true })` with `TextPartInput.synthetic: true` to inject content without triggering a model response.
+
+**Class 2 (opencode): OSS safety pattern differs from hook guard.** Unlike Class 1 symbiont hooks (which source `.agents/myco-hook.cjs`), Class 2 plugins check for `.myco/daemon.json` at startup using a filesystem check. If the file is absent (Myco not installed), the plugin exits silently as a no-op. Do not use shell guard sourcing — the plugin runs in the opencode process context.
+
+**Class 2 (opencode): Use `server.instance.disposed` for cleanup.** This event fires reliably on TUI exit (Ctrl+C or `q`). It is the correct hook for cleanup operations (closing connections, flushing state). Do not rely on process exit signals directly.
 
 **Using `getEnabledSymbiontNames()` is the canonical read path.** Don't filter `myco.yaml.symbionts` inline in new code. Always call `getEnabledSymbiontNames(config)` from `src/config/loader.ts`. This was previously copy-pasted in 3 places before being canonicalized.
 

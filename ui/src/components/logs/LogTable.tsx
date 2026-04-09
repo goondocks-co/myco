@@ -126,6 +126,16 @@ export function LogTable({
         </div>
       ) : (
         <table className="w-full border-collapse" aria-label="Log entries">
+          <thead className="sticky top-0 z-10 bg-surface-container-lowest/95 backdrop-blur supports-[backdrop-filter]:bg-surface-container-lowest/80">
+            <tr className="border-b border-outline-variant/10 text-[10px] uppercase tracking-[0.16em] text-on-surface-variant/50">
+              <th className="w-[68px] px-3 py-2 text-left font-medium">Time</th>
+              <th className="w-[12px] px-0 py-2" aria-hidden="true" />
+              <th className="w-[48px] px-0 py-2 text-left font-medium">Level</th>
+              <th className="w-[90px] px-0 py-2 text-left font-medium">Area</th>
+              <th className="w-[72px] px-0 py-2 text-left font-medium">Session</th>
+              <th className="px-3 py-2 text-left font-medium">Message</th>
+            </tr>
+          </thead>
           <tbody>
             {entries.map((entry) => (
               <LogRow
