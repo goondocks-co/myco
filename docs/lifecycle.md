@@ -111,6 +111,10 @@ myco.yaml per-phase (agent.tasks.<name>.phases.<phase>.provider)
 
 ### Built-in Tasks
 
+Ten tasks cover intelligence processing and the skill lifecycle.
+
+**Intelligence tasks:**
+
 | Task | Phases | Description |
 |------|--------|-------------|
 | `full-intelligence` | read-state → extract + summarize → consolidate + graph → digest → report | Complete pipeline |
@@ -120,6 +124,16 @@ myco.yaml per-phase (agent.tasks.<name>.phases.<phase>.provider)
 | `supersession-sweep` | Single phase | Find and supersede stale spores |
 | `digest-only` | Single phase | Regenerate digest extracts |
 | `graph-maintenance` | Single phase | Entity and edge maintenance |
+
+**Skill lifecycle tasks:**
+
+| Task | Phases | Description |
+|------|--------|-------------|
+| `skill-survey` | explore-spores + explore-sessions + explore-plans → evaluate | Discover procedural skill candidates from vault knowledge |
+| `skill-generate` | draft → validate → finalize | Generate one approved candidate into a validated SKILL.md |
+| `skill-evolve` | assess → evolve | Monitor active skills for drift, rewrite stale content, split oversized skills |
+
+Skill tasks are gated by pre-conditions — `skill-generate` only runs when approved candidates exist, `skill-evolve` only when active skills exist. See the [Skills docs](skills.md).
 
 ### Consolidation
 
@@ -378,18 +392,25 @@ capture:
   artifact_extensions: [.md]
   buffer_max_events: 500
 agent:
-  auto_run: true                # daemon auto-triggers on unprocessed batches
-  interval_seconds: 300         # seconds between auto-run checks
-  summary_batch_interval: 5     # batches between title/summary triggers (0 = disable)
-  provider:                     # global default provider
-    type: cloud                 # cloud | ollama | lmstudio
-    model: claude-sonnet-4-6    # optional model override
-    context_length: 8192        # optional, for local models
-  tasks:                        # per-task overrides
+  scheduled_tasks_enabled: true   # master switch for all PowerManager-scheduled tasks
+  event_tasks_enabled: true       # master switch for event-driven tasks (title-summary)
+  summary_batch_interval: 5       # batches between title/summary triggers (0 = disable)
+  provider:                       # global default provider
+    type: cloud                   # cloud | ollama | lmstudio | openrouter | openai-compatible
+    model: claude-sonnet-4-6      # optional model override
+    context_length: 8192          # optional, for local models
+  tasks:                          # per-task overrides (provider and schedule)
     title-summary:
       provider:
         type: ollama
         model: granite4:small-h
+    skill-survey:
+      schedule:
+        enabled: true
+        intervalSeconds: 600      # 10 minutes
+skills:
+  confidence_threshold: 0.7       # minimum score for auto-created candidates
+  usage_stale_days: 30            # flag unused skills after N days
 ```
 
 ## Monitoring

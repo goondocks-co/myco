@@ -1,10 +1,10 @@
 # Skills
 
-Myco automatically generates project-specific skills from accumulated vault knowledge. Skills are [SKILL.md files](https://docs.anthropic.com/en/docs/claude-code/skills) that teach developer agents how to accomplish tasks in your project — deployed procedures, not reference documentation.
+**Memory is table stakes. Myco goes further.** It turns everything your team learns into [SKILL.md files](https://docs.anthropic.com/en/docs/claude-code/skills) — repeatable, evolving workflows that every agent follows. Not reference documentation, not hand-waved guidance: deployed procedures that drive consistency, quality, and excellence across every session.
 
 Hand-written skills work well for teams with clear conventions they want to codify. Auto-generated skills work differently: they emerge from what the team has actually done. When Myco's vault accumulates enough cross-session evidence about a procedure — debugging the build, adding a new API route, configuring a symbiont — the agent identifies it as a candidate, a human approves it, and a skill is generated from the source knowledge. Over time, skills evolve as the project's understanding changes.
 
-The result is a set of procedures that reflect how work is actually done, not how someone imagined it would be done. Skills stay current because the same intelligence pipeline that created them monitors for knowledge drift.
+The payoff: new teammates ship correctly on day one. Agents stop repeating the same mistakes. Your project's hard-won knowledge becomes the default path, enforced by tooling rather than buried in a wiki. Skills reflect how work is actually done, not how someone imagined it would be done — and they stay current because the same intelligence pipeline that created them monitors for drift.
 
 ## How it works
 
@@ -46,9 +46,9 @@ The `skill-generate` task processes one approved candidate per run. It operates 
 
 **Gather** — Reads all source material referenced by the candidate (spores, sessions, plans), searches for additional context via semantic and keyword search, and extracts concrete steps, file paths, gotchas, and rationale.
 
-**Draft** — Writes a SKILL.md file from the gathered material. The skill follows a strict format (see [Skill format](#skill-format) below) and is written to `.agents/skills/` via the `vault_write_skill` tool, which also creates a database record and lineage entry.
+**Draft** — Writes a SKILL.md file from the gathered material. The skill follows a strict format (see [Skill format](#skill-format) below) and is written to a staging area (`.myco/staging/skills/`) via the `vault_stage_skill` tool. At this point the skill is not yet visible to any agent — staging isolates it while quality gates run.
 
-**Validate** — Reviews the generated skill against quality criteria:
+**Validate** — Reviews the staged skill against quality criteria:
 
 1. Triggering clarity (would an agent know when to use it?)
 2. Procedural content (steps to take, not definitions)
@@ -57,7 +57,7 @@ The `skill-generate` task processes one approved candidate per run. It operates 
 5. Conflicts with existing skills
 6. Accuracy (spot-checks claims against the vault)
 
-If validation fails, the skill is rewritten. The validate phase can rewrite multiple times until criteria pass.
+If validation fails, the skill is rewritten. The validate phase can rewrite multiple times until criteria pass. Once validation succeeds, `vault_finalize_skill` atomically promotes the staged content to `.agents/skills/`, creates the database record, and records a lineage entry. A failed promotion rolls back the staging artifact — there are no half-finished skills left on disk.
 
 ### 4. Evolve
 
@@ -185,7 +185,7 @@ skills:
 | `confidence_threshold` | `0.7` | Candidates below this score are still created but may warrant closer review |
 | `usage_stale_days` | `30` | Days of inactivity before a skill is flagged for review by the evolve task |
 
-Per-task scheduling is configured under `agent.tasks.<task-name>.schedule` as shown above. Provider overrides work the same as any other agent task — see the [Agent System docs](agent-system.md#provider-configuration) for the full precedence hierarchy.
+Per-task scheduling is configured under `agent.tasks.<task-name>.schedule` as shown above. Provider overrides work the same as any other agent task — see the [Agent Harness docs](agent-harness.md#provider-configuration) for the full precedence hierarchy.
 
 ## Lineage
 

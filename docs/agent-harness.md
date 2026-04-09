@@ -1,10 +1,10 @@
-# Agent System
+# Agent Harness
 
-Myco's intelligence agent is a multi-phase reasoning pipeline that runs in the background, processing captured session data into institutional knowledge. It extracts observations, builds a knowledge graph, consolidates patterns into wisdom, and synthesizes digest context — all automatically.
+Myco's agent harness is the execution environment that runs every background task — from intelligence extraction to skill curation. It's a multi-phase reasoning pipeline with scoped tool servers, per-phase provider isolation, dependency-based wave execution, and structural enforcement of read-only phases. This document covers the harness architecture, the tasks that run on it, the tool surface, and how to configure scheduling and providers.
 
 ## Architecture
 
-The agent system has three layers: **trigger**, **executor**, and **tools**.
+The harness has three layers: **trigger**, **executor**, and **tools**.
 
 ```mermaid
 flowchart TD
@@ -204,7 +204,9 @@ Produces a final summary: batches processed, spores created (by type), sessions 
 
 ## Built-in Tasks
 
-Seven tasks cover the full lifecycle, from lightweight title generation to the complete intelligence pipeline.
+Ten tasks cover the full lifecycle, from lightweight title generation through the complete intelligence pipeline and the skill lifecycle engine.
+
+### Intelligence tasks
 
 | Task | Type | Turns | Timeout | Purpose |
 |------|------|-------|---------|---------|
@@ -216,21 +218,36 @@ Seven tasks cover the full lifecycle, from lightweight title generation to the c
 | **digest-only** | Single query | 28 | 30 min | Regenerate all digest tiers from current vault state |
 | **supersession-sweep** | Single query | 30 | 5 min | Find and resolve duplicate/contradictory spores |
 
+### Skill lifecycle tasks
+
+| Task | Type | Turns | Timeout | Purpose |
+|------|------|-------|---------|---------|
+| **skill-survey** | Phased (3 parallel explore + evaluate) | 65 | 10 min | Discover procedural skill candidates from vault knowledge |
+| **skill-generate** | Phased (draft → validate → finalize) | 30 | 15 min | Generate one approved candidate into a validated SKILL.md |
+| **skill-evolve** | Phased (assess + rewrite) | 80 | 20 min | Monitor active skills for drift, rewrite stale content, split oversized skills |
+
+Skill tasks are gated by pre-conditions so they never run wastefully — `skill-generate` only runs when at least one approved candidate exists, and `skill-evolve` only runs when at least one active Myco-managed skill exists. See the [Skills docs](skills.md) for the full lifecycle.
+
 **Phased tasks** use the wave executor with parallel execution, scoped tools, and dependency-based ordering. **Single query tasks** run as one SDK `query()` call with the full tool set.
 
 ### When each task runs
 
 ```mermaid
 flowchart TD
-    SessionStop["Session turn completes"] --> TS["title-summary<br/>(fire-and-forget)"]
-    Interval["PowerManager interval<br/>(unprocessed batches exist)"] --> FI["full-intelligence<br/>(default auto-run task)"]
+    SessionStop["Session turn completes"] --> TS["title-summary<br/>(event-driven)"]
+    Scheduled["PowerManager<br/>(per-task schedule)"] --> FI["full-intelligence<br/>(default, on unprocessed batches)"]
+    Scheduled --> SS["skill-survey<br/>(idle, periodic)"]
+    Scheduled --> SG["skill-generate<br/>(has approved candidates)"]
+    Scheduled --> SE["skill-evolve<br/>(has active skills)"]
     Dashboard["Dashboard manual trigger"] --> Any["Any task<br/>(user selects)"]
     Targeted["Session context menu"] --> RS["review-session<br/>(specific session_id)"]
 ```
 
+Each task declares its own `schedule` block in its YAML definition: `enabled`, `intervalSeconds`, allowed power states (`runIn`), and optional `preCondition`. Two global toggles in `myco.yaml` master-gate the entire system: `agent.scheduled_tasks_enabled` (periodic tasks) and `agent.event_tasks_enabled` (event-driven tasks like `title-summary`).
+
 ## Tool System
 
-The agent operates through 18 MCP tools, grouped by function.
+The agent operates through 23 `vault_*` tools exposed over a scoped MCP server, grouped by function. Each tool carries MCP annotations (including a `readOnly` flag) so the executor can enforce which phases are allowed to mutate state.
 
 ### Read tools
 
@@ -245,6 +262,8 @@ The agent operates through 18 MCP tools, grouped by function.
 | `vault_entities` | List knowledge graph entities with type/name filters |
 | `vault_edges` | List graph edges with source/target/type filters |
 | `vault_read_digest` | Read digest metadata or a specific tier's content |
+| `vault_skill_candidates` | List skill candidates with status filter (pending, approved, dismissed, generated) |
+| `vault_skill_records` | List or read active Myco-managed skills and their full lineage |
 
 ### Write tools
 
@@ -258,6 +277,9 @@ The agent operates through 18 MCP tools, grouped by function.
 | `vault_mark_processed` | Mark a batch as processed (removes from `vault_unprocessed`) |
 | `vault_set_state` | Store a key-value pair (cursor, preferences) |
 | `vault_write_digest` | Write a digest extract at a given token tier |
+| `vault_stage_skill` | Write a draft SKILL.md to `.myco/staging/skills/` (not yet visible to agents) |
+| `vault_finalize_skill` | Promote a validated staged skill to `.agents/skills/` and record lineage |
+| `vault_write_skill` | Direct write path for skill evolve and retire actions, with dedup + rollback |
 
 ### Observability
 
@@ -268,6 +290,10 @@ The agent operates through 18 MCP tools, grouped by function.
 ### Scoped tool servers
 
 For phased tasks, the executor creates a **scoped MCP server** per phase that filters the full tool set down to only the tools listed in `phase.tools[]`. This prevents a phase from accidentally (or intentionally) calling tools outside its responsibility — extract phases can't write digests, digest phases can't create spores.
+
+### Read-only phase enforcement
+
+Phases can declare `readOnly: true` in their YAML definition. When set, the executor filters out any tools that would mutate vault state, even if they're listed in `phase.tools[]`. This provides a structural guarantee — not just a prompt suggestion — that exploration phases cannot accidentally write data. All three exploration phases of `skill-survey` use `readOnly: true`, as does the assess phase of `skill-evolve`.
 
 ## Spore Lifecycle
 
@@ -417,8 +443,7 @@ Higher in the diagram = lower priority. The per-phase config in `myco.yaml` wins
 
 ```yaml
 agent:
-  auto_run: true
-  interval_seconds: 300
+  scheduled_tasks_enabled: true      # Master toggle for scheduled tasks
   provider:                          # Global default
     type: cloud
     model: claude-sonnet-4-6
@@ -429,6 +454,9 @@ agent:
         model: granite4:small-h
         context_length: 32768
     full-intelligence:
+      schedule:
+        enabled: true
+        intervalSeconds: 300         # Check for unprocessed batches every 5 min
       phases:
         extract:
           provider:                  # Cloud for extraction quality
@@ -481,24 +509,51 @@ The three tiers serve different use cases:
 
 The assess phase acts as a gatekeeper — if changes are minor (< 3 new spores, 0 entity changes), it skips all tier updates. Each tier integrates new material into its existing content rather than rewriting from scratch.
 
-## Auto-Run Behavior
+## Scheduling & Auto-Run Behavior
 
-The agent runs automatically via the daemon's PowerManager when conditions are met:
+Scheduling is **per-task**. Each task YAML declares its own schedule block:
+
+```yaml
+schedule:
+  enabled: true
+  intervalSeconds: 600
+  runIn:
+    - idle
+  preCondition: has-approved-candidates   # Optional gate
+```
+
+The daemon's PowerManager ticks periodically and, for each scheduled task, checks: is scheduling enabled, has the interval elapsed, is the current power state in `runIn`, and does the pre-condition pass? Only when all four answer yes does the task run.
 
 ```mermaid
 flowchart TD
-    Tick["PowerManager tick<br/>(active or idle state)"] --> Check1{"auto_run<br/>enabled?"}
-    Check1 -->|No| Skip["Skip"]
+    Tick["PowerManager tick"] --> Global{"agent.scheduled_tasks_enabled?"}
+    Global -->|No| Skip["Skip all scheduled tasks"]
+    Global -->|Yes| PerTask["For each task:"]
+    PerTask --> Check1{"task.schedule<br/>enabled?"}
+    Check1 -->|No| Skip
     Check1 -->|Yes| Check2{"Interval<br/>elapsed?"}
     Check2 -->|No| Skip
-    Check2 -->|Yes| Check3{"Unprocessed<br/>batches?"}
+    Check2 -->|Yes| Check3{"Power state<br/>in runIn?"}
     Check3 -->|No| Skip
-    Check3 -->|Yes| Check4{"Agent already<br/>running?"}
-    Check4 -->|Yes| Skip
-    Check4 -->|No| Run["Run full-intelligence<br/>task"]
+    Check3 -->|Yes| Check4{"PreCondition<br/>passes?"}
+    Check4 -->|No| Skip
+    Check4 -->|Yes| Check5{"Task already<br/>running?"}
+    Check5 -->|Yes| Skip
+    Check5 -->|No| Run["Run task"]
 ```
 
-The agent only runs in `active` and `idle` power states — never during `sleep` or `deep_sleep`. This prevents background intelligence work from running when the developer has stepped away.
+Most tasks only run in `active` and `idle` power states — never during `sleep` or `deep_sleep`. This prevents background work from running when the developer has stepped away.
+
+### Global agent toggles
+
+Two master switches in `myco.yaml` gate the whole system regardless of per-task schedules:
+
+| Toggle | Controls |
+|--------|----------|
+| `agent.scheduled_tasks_enabled` | All PowerManager-scheduled tasks (default: `true`) |
+| `agent.event_tasks_enabled` | Event-driven tasks like `title-summary` (default: `true`) |
+
+Flip either to `false` to silence the agent without editing each task definition.
 
 ## Configuration Reference
 
@@ -506,29 +561,34 @@ All agent configuration lives under the `agent:` key in `myco.yaml`:
 
 ```yaml
 agent:
-  # Auto-run settings
-  auto_run: true                    # Enable automatic intelligence runs
-  interval_seconds: 300             # Minimum seconds between auto-runs
-  summary_batch_interval: 5         # Batches between title-summary triggers (0 = disable)
+  # Global toggles (master switches)
+  scheduled_tasks_enabled: true      # Enable scheduled tasks (overrides all per-task schedules)
+  event_tasks_enabled: true          # Enable event-driven tasks (title-summary)
+  summary_batch_interval: 5          # Batches between title-summary triggers (0 = disable)
 
   # Default provider for all tasks
   provider:
-    type: cloud                     # cloud | ollama | lmstudio | openrouter | openai-compatible
-    model: claude-sonnet-4-6        # Model name
-    base_url: http://...            # For local/custom endpoints
-    context_length: 8192            # For local models
+    type: cloud                      # cloud | ollama | lmstudio | openrouter | openai-compatible
+    model: claude-sonnet-4-6         # Model name
+    base_url: http://...             # For local/custom endpoints
+    context_length: 8192             # For local models
 
-  # Per-task overrides
+  # Per-task overrides (all fields optional)
   tasks:
     <task-name>:
-      provider: { ... }            # Override provider for this task
-      maxTurns: N                  # Override turn budget
-      timeoutSeconds: N            # Override timeout
+      provider: { ... }             # Override provider for this task
+      maxTurns: N                   # Override turn budget
+      timeoutSeconds: N             # Override timeout
+      schedule:
+        enabled: true               # Enable this task's schedule
+        intervalSeconds: 600        # Minimum seconds between runs
       phases:
         <phase-name>:
-          provider: { ... }        # Override provider for this phase
-          maxTurns: N              # Override turn budget for this phase
+          provider: { ... }         # Override provider for this phase
+          maxTurns: N               # Override turn budget for this phase
 ```
+
+Scheduling defaults ship baked into each task YAML under `src/agent/definitions/tasks/`. Overrides in `myco.yaml` always win, letting users enable, disable, or retime any task without touching code.
 
 ### Task definitions
 

@@ -4,11 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Myco — The intelligence layer for your projects and team</title>
-  <meta name="description" content="Capture coding sessions, extract observations as spores, and build a living knowledge graph that makes every agent smarter over time.">
+  <meta name="description" content="Myco turns everything your team learns into self-curating skills — repeatable workflows that keep every agent consistent, correct, and up-to-date as your code evolves.">
 
   <!-- Open Graph -->
   <meta property="og:title" content="Myco — The intelligence layer for your projects and team">
-  <meta property="og:description" content="Capture coding sessions, extract observations as spores, and build a living knowledge graph that makes every agent smarter over time.">
+  <meta property="og:description" content="Myco turns everything your team learns into self-curating skills — repeatable workflows that keep every agent consistent, correct, and up-to-date as your code evolves.">
   <meta property="og:image" content="https://myco.sh/assets/hero@2x.png">
   <meta property="og:url" content="https://myco.sh">
   <meta name="twitter:card" content="summary_large_image">
@@ -306,6 +306,101 @@
       line-height: 1.6;
     }
 
+    /* Skills showcase */
+    .skills-showcase {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 40px 24px 80px;
+    }
+
+    .skills-showcase h2 {
+      text-align: center;
+      font-family: var(--font-heading);
+      font-size: 32px;
+      font-weight: 500;
+      margin-bottom: 8px;
+    }
+
+    .skills-showcase .section-subtitle {
+      text-align: center;
+      color: var(--on-surface-variant);
+      font-size: 15px;
+      max-width: 640px;
+      margin: 0 auto 40px;
+      line-height: 1.6;
+    }
+
+    .lifecycle {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      position: relative;
+    }
+
+    .lifecycle-step {
+      background: var(--surface-container-low);
+      border: 1px solid var(--outline-variant);
+      border-radius: 12px;
+      padding: 24px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      position: relative;
+      border-top: 2px solid var(--outline-variant);
+    }
+
+    .lifecycle-step:nth-child(1) { border-top-color: var(--sage); }
+    .lifecycle-step:nth-child(2) { border-top-color: var(--ochre); }
+    .lifecycle-step:nth-child(3) { border-top-color: var(--sage); }
+    .lifecycle-step:nth-child(4) { border-top-color: var(--terracotta); }
+
+    .lifecycle-step .step-label {
+      font-family: var(--font-data);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--outline);
+    }
+
+    .lifecycle-step h3 {
+      font-family: var(--font-heading);
+      font-size: 20px;
+      font-weight: 500;
+      color: var(--on-surface);
+    }
+
+    .lifecycle-step .actor {
+      font-family: var(--font-data);
+      font-size: 11px;
+      color: var(--sage);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .lifecycle-step:nth-child(2) .actor { color: var(--ochre); }
+    .lifecycle-step:nth-child(4) .actor { color: var(--terracotta); }
+
+    .lifecycle-step p {
+      color: var(--on-surface-variant);
+      font-size: 13px;
+      line-height: 1.55;
+      margin-top: 4px;
+    }
+
+    .skills-footnote {
+      text-align: center;
+      color: var(--on-surface-variant);
+      font-size: 14px;
+      margin-top: 32px;
+      max-width: 640px;
+      margin-left: auto;
+      margin-right: auto;
+      line-height: 1.6;
+    }
+
+    .skills-footnote a { color: var(--ochre); text-decoration: none; transition: color 0.2s; }
+    .skills-footnote a:hover { color: var(--ochre-dim); }
+
     /* Footer */
     .footer {
       text-align: center;
@@ -402,6 +497,7 @@
 
       .features { grid-template-columns: 1fr; }
       .agents-grid { grid-template-columns: repeat(2, 1fr); }
+      .lifecycle { grid-template-columns: 1fr; }
 
       .code-block { font-size: 13px; }
     }
@@ -427,7 +523,8 @@
     <div class="nav-links">
       <a href="#install" class="quick-start-link">Quick Start</a>
       <a href="#agents">Agents</a>
-      <a href="https://github.com/goondocks-co/myco/blob/main/docs/agent-system.md" target="_blank" rel="noopener">Agent System</a>
+      <a href="#skills">Skills</a>
+      <a href="https://github.com/goondocks-co/myco/blob/main/docs/agent-harness.md" target="_blank" rel="noopener">Agent Harness</a>
       <a href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener">GitHub</a>
     </div>
   </nav>
@@ -450,6 +547,7 @@
     </svg>
     <h1>myco</h1>
     <p class="tagline">The intelligence layer for your projects and team</p>
+    <p class="tagline" style="font-size: 15px; max-width: 620px; margin: 10px auto 0; color: var(--outline); font-style: italic;">Capture what your team learns. Turn it into skills your agents follow. Evolve them as your code does.</p>
     <div class="hero-ctas">
       <a href="#install" class="btn btn-primary">Get Started</a>
       <a href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener" class="btn btn-outline">View on GitHub</a>
@@ -538,12 +636,52 @@ myco init</code></div>
     </div>
   </section>
 
+  <!-- Skills Showcase -->
+  <section class="skills-showcase" id="skills">
+    <h2>Automated skill curation</h2>
+    <p class="section-subtitle">
+      Memory is table stakes. Myco goes further — it turns everything your team learns into <strong style="color: var(--on-surface);">repeatable workflows</strong> that every agent follows. New teammates ship correctly on day one. Agents stop making the same mistakes. Your project's standard of excellence gets enforced, not just documented.
+    </p>
+
+    <div class="lifecycle">
+      <div class="lifecycle-step">
+        <span class="step-label">Step 1</span>
+        <h3>Identify</h3>
+        <span class="actor">Agent</span>
+        <p>Three parallel explorers scan spores, sessions, and plans for procedural patterns with cross-session evidence — surfacing the workflows worth codifying.</p>
+      </div>
+      <div class="lifecycle-step">
+        <span class="step-label">Step 2</span>
+        <h3>Approve</h3>
+        <span class="actor">Human</span>
+        <p>Candidates land in the Skills dashboard with rationale and confidence scores. You stay in the loop on what becomes canon for your project.</p>
+      </div>
+      <div class="lifecycle-step">
+        <span class="step-label">Step 3</span>
+        <h3>Generate</h3>
+        <span class="actor">Agent</span>
+        <p>A SKILL.md is drafted from the source material, staged, and passed through quality gates before it's promoted to <code style="font-family: var(--font-data); font-size: 12px; color: var(--sage);">.agents/skills/</code>.</p>
+      </div>
+      <div class="lifecycle-step">
+        <span class="step-label">Step 4</span>
+        <h3>Evolve</h3>
+        <span class="actor">Agent</span>
+        <p>As your code evolves, so do your skills. Drift is detected, stale content is rewritten, oversized skills split — every change records full lineage.</p>
+      </div>
+    </div>
+
+    <p class="skills-footnote">
+      Skills install once to the emerging <code style="font-family: var(--font-data); font-size: 13px; color: var(--sage);">.agents/skills/</code> standard and symlink into each agent's native skills directory — so every agent, on every machine, on every contributor's laptop, works the way your best session did. <a href="https://github.com/goondocks-co/myco/blob/main/docs/skills.md" target="_blank" rel="noopener">Read the full lifecycle →</a>
+    </p>
+  </section>
+
   <!-- Footer -->
   <footer class="footer">
     <div class="footer-links">
       <a href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener">GitHub</a>
       <a href="https://github.com/goondocks-co/myco/blob/main/docs/quickstart.md" target="_blank" rel="noopener">Quick Start</a>
-      <a href="https://github.com/goondocks-co/myco/blob/main/docs/agent-system.md" target="_blank" rel="noopener">Agent System</a>
+      <a href="https://github.com/goondocks-co/myco/blob/main/docs/agent-harness.md" target="_blank" rel="noopener">Agent Harness</a>
+      <a href="https://github.com/goondocks-co/myco/blob/main/docs/skills.md" target="_blank" rel="noopener">Skills</a>
       <a href="https://github.com/goondocks-co/myco/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
     </div>
     <p class="origin">Named after mycorrhizal networks — the underground systems that connect trees in a forest.</p>

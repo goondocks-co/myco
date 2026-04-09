@@ -90,23 +90,38 @@ All settings are saved to `myco.yaml` and take effect after a daemon restart (th
 
 ## MCP Tools
 
-Myco exposes these tools to your coding agent via MCP:
+Myco exposes 12 tools to your coding agent via MCP:
 
 | Tool | What it does |
 |------|-------------|
-| `myco_recall` | Retrieve relevant spores for the current context |
-| `myco_remember` | Capture a new observation or decision |
-| `myco_search` | Search by keyword or semantic similarity |
-| `myco_sessions` | List recent sessions with summaries |
-| `myco_graph` | Traverse connections in the knowledge graph |
-| `myco_plans` | List and read plan documents |
+| `myco_search` | Semantic + keyword search across spores, sessions, and plans |
+| `myco_recall` | Retrieve relevant spores for the current git branch and files |
+| `myco_context` | Fetch a digest extract at a specific token tier |
+| `myco_remember` | Capture a new observation (gotcha, decision, discovery, trade-off, bug-fix) |
+| `myco_supersede` | Mark a spore as replaced by a newer one |
+| `myco_consolidate` | Merge related spores into a wisdom note |
+| `myco_sessions` | Browse session history with filters |
+| `myco_plans` | List and read active plans |
+| `myco_graph` | Traverse knowledge graph connections |
 | `myco_team` | View team member activity |
+| `myco_skills` | List and inspect auto-generated skills and their lineage |
+| `myco_skill_candidates` | Browse the skill candidate approval queue |
+
+See [Agent Tools](agent-tools.md) for the full reference.
 
 ## Skills
 
+Myco **auto-generates project-specific skills** from accumulated vault knowledge — repeatable workflows that teach every agent how to work in your codebase. As the intelligence pipeline processes sessions, it identifies procedural patterns with cross-session evidence and surfaces them as candidates. You approve what becomes canon in the Skills dashboard, and Myco writes validated SKILL.md files to `.agents/skills/`. Skills evolve automatically as your code does.
+
+Myco also ships three slash-command skills out of the box:
+
 | Command | What it does |
 |---------|-------------|
-| `/myco-rules` | Audit or improve project rules files |
+| `/myco` | Guidance on using Myco during ongoing work — design decisions, debugging, vault hygiene |
+| `/myco-curate` | Manually trigger the intelligence agent to process unprocessed sessions |
+| `/myco-rules` | Audit or improve project rules files (CLAUDE.md, AGENTS.md) |
+
+See the [Skills docs](skills.md) for the full auto-curation lifecycle.
 
 ## Troubleshooting
 

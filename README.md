@@ -61,7 +61,7 @@ Each phase runs with scoped tools, a turn budget, isolated provider config, and 
 
 **Provider flexibility** — every task and phase can use a different LLM provider. Run title generation on a fast local model via Ollama, extraction on Claude, and consolidation on a larger local model via LM Studio. Configure globally or per-task in `myco.yaml`, or use the [dashboard](#dashboard) to manage assignments visually.
 
-Seven built-in tasks cover the full lifecycle, from lightweight `title-summary` to the complete `full-intelligence` pipeline. For the full breakdown — wave execution, phase dependencies, tool scoping, orchestrator planning, and provider config — see the [Agent System docs](docs/agent-system.md).
+Ten built-in tasks cover the full lifecycle — seven for intelligence processing (from lightweight `title-summary` to the complete `full-intelligence` pipeline) and three for the skill lifecycle engine (`skill-survey`, `skill-generate`, `skill-evolve`). For the full breakdown — wave execution, phase dependencies, tool scoping, read-only enforcement, orchestrator planning, and provider config — see the [Agent Harness docs](docs/agent-harness.md).
 
 ### Digest
 
@@ -129,11 +129,13 @@ Local databases remain the source of truth. The cloud store is a queryable mirro
 
 Runs on the Cloudflare free tier. See the [Team Sync docs](docs/team-sync.md) for the full guide.
 
-### Skills
+### Skills — automated curation, not just memory
 
-Myco auto-generates project-specific skills from accumulated vault knowledge. As the intelligence pipeline processes sessions, it identifies recurring procedures — debugging the build, adding API routes, configuring providers — and surfaces them as candidates. You approve candidates from the Skills dashboard, and Myco writes SKILL.md files that teach your agents how to work in your codebase. Skills are deployed to `.agents/skills/` and symlinked to each agent's native skills directory, so every agent gets the same procedural knowledge.
+Memory is table stakes. Myco goes further: it turns everything your team learns into **repeatable workflows** that every agent follows. The intelligence pipeline identifies procedural patterns across sessions — debugging the build, adding API routes, configuring providers, resolving common gotchas — and surfaces them as candidates. You approve what becomes canon, and Myco generates validated SKILL.md files under `.agents/skills/`, symlinked into every agent's native skills directory.
 
-Skills evolve over time. When the project's understanding changes — a pattern is abandoned, a new gotcha is discovered, a workflow shifts — the evolve task detects the drift and rewrites affected skills, preserving what's still accurate and incorporating new knowledge. Each update is recorded with full lineage: generation number, rationale, and a content snapshot. See the [Skills docs](docs/skills.md) for the full lifecycle.
+The result is consistency, quality, and excellence enforced by tooling. New teammates ship correctly on day one. Agents stop repeating the same mistakes. Your project's hard-won knowledge becomes the default path, not an optional footnote.
+
+Skills evolve as your code does. When a pattern is abandoned, a new gotcha is discovered, or a workflow shifts, the evolve task detects the drift and rewrites affected skills — preserving what's still accurate, incorporating what's new, and splitting skills that have grown too broad. Every change records full lineage: generation number, rationale, and a content snapshot. See the [Skills docs](docs/skills.md) for the full lifecycle.
 
 ### Backup & restore
 
