@@ -1,6 +1,6 @@
 ---
 name: myco:wire-notification-emission
-description: Use this skill whenever you are adding live notification output to a Myco domain — digest, skill lifecycle, sync, embedding, or any other subsystem — even if the user only says "hook up notifications for X" or "make X emit a banner." The full notification infrastructure (registry, API, UI hooks) already exists but zero domains are wired as emitters. This skill walks through the exact four steps needed to go from silent infrastructure to a working emitter: registering the type, emitting at the event point, verifying three-tier display resolution, and confirming React hook wiring on the UI side. Apply this skill even if the user doesn't explicitly ask for the full procedure — partial wiring (emit without register, or UI wiring without emission) is a common failure mode that this skill prevents.
+description: "Use this skill whenever you are adding live notification output to a Myco domain — digest, skill lifecycle, sync, embedding, or any other subsystem — even if the user only says \"hook up notifications for X\" or \"make X emit a banner.\" The full notification infrastructure (registry, API, UI hooks) already exists; the skills domain (vault_finalize_skill) is wired as a reference emitter. This skill walks through the exact four steps needed to wire additional emitters: registering the type, emitting at the event point, verifying three-tier display resolution, and confirming React hook wiring on the UI side. Apply this skill even if the user doesn't explicitly ask for the full procedure — partial wiring (emit without register, or UI wiring without emission) is a common failure mode that this skill prevents."
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -10,7 +10,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 ## When to Use
 
-Apply this skill whenever you're wiring a new domain into Myco's notification system — even if the request is as simple as "make the digest task emit a notification when it's done." Zero domains currently emit notifications. The infrastructure is complete; nothing is wired. You are starting from scratch, not extending a working example.
+Apply this skill whenever you're wiring a new domain into Myco's notification system — even if the request is as simple as "make the digest task emit a notification when it's done." The skills domain (`vault_finalize_skill`) is the first domain with a wired emit point and serves as the reference implementation. Remaining domains (digest, sync, embedding) still have no emit points — follow this procedure to add them.
 
 **Triggers:** "hook up notifications for X", "make X emit a notification/banner", "add notification when X completes", "wire up notification for [domain]"
 
@@ -115,7 +115,7 @@ For a new domain, verify:
 
 ## Common Pitfalls
 
-**No working example exists.** Don't search the codebase for an existing domain that calls `emit()` — you won't find one. All 4 domains have registered types via `register()` but none have wired an emit point. You are implementing the first emitter.
+**Reference implementation available.** The skills domain (`vault_finalize_skill`) is the first wired emitter — search the codebase for `vault_finalize_skill` to see a working `notificationService.emit()` call. Remaining domains (digest, sync, embedding) still have no emit points and follow this procedure from scratch.
 
 **`register()` is not lazy.** The registry lookup on `emit()` throws if the type was never registered. Do not call `register()` inside the `emit()` path as a lazy fallback — declare all types at daemon startup.
 

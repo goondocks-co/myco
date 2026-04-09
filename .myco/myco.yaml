@@ -26,6 +26,9 @@ agent:
       provider:
         type: cloud
         model: claude-sonnet-4-6
+      phases:
+        read-state:
+          maxTurns: 20
       schedule:
         enabled: true
         intervalSeconds: 1800
@@ -59,6 +62,9 @@ agent:
     skill-evolve:
       provider:
         type: cloud
+      phases:
+        assess:
+          maxTurns: 30
       schedule:
         enabled: true
         intervalSeconds: 1800
