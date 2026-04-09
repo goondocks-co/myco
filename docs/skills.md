@@ -127,7 +127,7 @@ Skills are written to `.agents/skills/<name>/SKILL.md` — the emerging cross-ag
 .cursor/skills/deploy-worker/SKILL.md           (Cursor)
 ```
 
-Agents that use `.agents/skills/` natively (Codex, VS Code Copilot, Gemini CLI, Windsurf) need no symlinks. Run `myco init` or `myco update` to refresh symlinks after new skills are generated.
+Agents that use `.agents/skills/` natively (Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode) need no symlinks. Run `myco init` or `myco update` to refresh symlinks after new skills are generated.
 
 ## Dashboard
 

@@ -103,6 +103,37 @@ Hooks use a flat format with snake_case event names. MCP is user-level only (not
 | Plans | `~/.windsurf/plans/` (global) |
 | Transcripts | JSONL via `post_cascade_response_with_transcript` hook |
 
+### OpenCode
+
+The first plugin-based symbiont. OpenCode has no JSON hook file — hooks are delivered as a verbatim TypeScript plugin (`.opencode/plugins/myco.ts`) that opencode's Bun runtime loads at startup. The plugin communicates directly with the Myco daemon over HTTP; no subprocess spawns and no hook CLI.
+
+| Component | Location |
+|-----------|----------|
+| Hooks | `.opencode/plugins/myco.ts` (plugin file, 6 event hooks) |
+| Plugin deps | `.opencode/package.json` (declares `@opencode-ai/plugin`) |
+| MCP | `opencode.json` under the non-standard `mcp` key (not `mcpServers`) |
+| Skills | `.agents/skills/` (native) |
+| Auto-approve | `permission.bash` in `opencode.json` |
+| Plans | `.opencode/plans/` |
+| Transcripts | — (fetched via SDK at stop time; no on-disk transcript adapter) |
+
+**Handler coverage:**
+- `event: session.created` → session register + digest injection via `client.session.prompt({ noReply: true, parts: [{ synthetic: true }] })`
+- `event: session.deleted` → session unregister
+- `event: session.idle` → stop event with response summary
+- `chat.message` → user prompt capture
+- `tool.execute.after` → tool use capture (forwards `input.args` so `filePath` reaches plan-capture)
+- `experimental.session.compacting` → pushes digest into `output.context` so project knowledge survives compaction
+
+**Two new manifest fields** were introduced to fit OpenCode cleanly alongside the JSON-hook symbionts without special-casing:
+- `hooksFormat: plugin-file` — selects verbatim template copy instead of JSON merge
+- `pluginPackageTarget: .opencode/package.json` — writes a Bun-installable deps manifest
+- `mcpServersKey: mcp` — opencode's non-standard MCP top-level key
+
+**Plan mode UX note:** OpenCode's Plan mode disables the `write` tool entirely and only allows `edit` on existing files under `.opencode/plans/*.md`. To author a new plan in Plan mode, the plan file must already exist on disk — create it first in Build mode (`touch .opencode/plans/my-plan.md`) before switching to Plan mode.
+
+**Context injection** is session-start only (digest at `session.created`). Per-turn spore injection via `chat.message` is intentionally deferred pending more research on OpenCode's re-entrancy semantics; in the meantime, agents can fetch targeted context on demand via the `myco_context` and `myco_search` MCP tools.
+
 ## Skills Architecture
 
 Skills are installed once to `.agents/skills/` — the canonical cross-agent location — and symlinked to each agent's native skills directory:
@@ -117,15 +148,18 @@ Skills are installed once to `.agents/skills/` — the canonical cross-agent loc
   myco          → ../../.agents/skills/myco          (symlink to canonical)
 ```
 
-Agents that read `.agents/skills/` natively (Codex, VS Code, Gemini, Windsurf) don't need agent-specific symlinks.
+Agents that read `.agents/skills/` natively (Codex, VS Code, Gemini, Windsurf, OpenCode) don't need agent-specific symlinks.
 
 ## Adding a New Agent
 
-1. Create a manifest at `src/symbionts/manifests/<name>.yaml` declaring capabilities
-2. Create templates at `src/symbionts/templates/<name>/` (hooks.json, mcp.json, settings.json)
-3. Optionally implement a transcript adapter in `src/symbionts/<name>.ts`
+1. Create a manifest at `src/symbionts/manifests/<name>.yaml` declaring capabilities — `loadManifests()` auto-discovers it.
+2. Create templates at `src/symbionts/templates/<name>/`:
+   - **JSON-hook agents** (Claude Code, Cursor, Codex, Gemini, VS Code, Windsurf): `hooks.json`, `mcp.json`, `settings.json`.
+   - **Plugin-based agents** (OpenCode): `plugin.ts`, `package.json`, `mcp.json`, `settings.json`. Declare `hooksFormat: plugin-file` and `pluginPackageTarget` in the manifest.
+3. For agents with non-standard MCP config keys (e.g., OpenCode uses `"mcp"` instead of `"mcpServers"`), set `mcpServersKey` in the manifest.
+4. Optionally implement a transcript adapter in `src/symbionts/<name>.ts` — skip for agents that don't expose on-disk transcripts (OpenCode relies on SDK-fetched messages and buffer reconstruction).
 
-The installer is generic — it reads the manifest and templates without agent-specific code paths.
+The installer is generic — it reads the manifest and templates without agent-specific code paths. See the [`add-symbiont` skill](../.agents/skills/add-symbiont/SKILL.md) for a step-by-step walkthrough.
 
 ## Removing Myco
 

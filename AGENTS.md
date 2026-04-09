@@ -198,7 +198,7 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
 | **Lineage edge** | Automatic graph connection created by daemon on insert: FROM_SESSION, EXTRACTED_FROM, HAS_BATCH, DERIVED_FROM. No LLM needed. |
 | **Semantic edge** | Intelligence graph connection created by agent: RELATES_TO, SUPERSEDED_BY, REFERENCES, DEPENDS_ON, AFFECTS. LLM-driven. |
 | **Graph edge** | Stored in `graph_edges` table. Supports cross-type references between session, batch, spore, and entity nodes. |
-| **Symbiont** | External coding agent that Myco integrates with (Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf). Named for the mycorrhizal symbiotic relationship. Declared via YAML manifests in `src/symbionts/manifests/`. |
+| **Symbiont** | External coding agent that Myco integrates with (Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode). Named for the mycorrhizal symbiotic relationship. Declared via YAML manifests in `src/symbionts/manifests/`. |
 | **Wave** | Group of phases whose dependencies are all satisfied, executing in parallel via `Promise.allSettled()`. The executor computes waves from the phase `dependsOn` DAG using topological sort. |
 | **Phase dependency** | DAG edge between phases declared via `dependsOn` in task YAML. Phases depend on named predecessors; the executor resolves these into execution waves. |
 
