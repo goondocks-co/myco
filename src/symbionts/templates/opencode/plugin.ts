@@ -43,6 +43,21 @@ const MYCO_FETCH_TIMEOUT_MS = 3000;
 /** Heading prefix for compaction context — makes Myco's contribution recognizable in the compacted summary. */
 const COMPACTION_HEADING = "## Myco — Project Context (preserved across compaction)\n\n";
 
+/**
+ * Marker set on the `metadata` field of every synthetic TextPartInput this
+ * plugin injects via `client.session.prompt({ noReply: true, ... })`. The
+ * `chat.message` handler checks for this marker and skips matching messages
+ * so the injection doesn't re-enter as if it were a new user prompt.
+ *
+ * Why not the `synthetic` flag? opencode's own prompt.ts uses `synthetic: true`
+ * for ~20 distinct internal purposes (plan-mode prompts, build-switch
+ * transitions, subagent task summaries, shell-impl wrappers). Filtering on
+ * the synthetic flag rejects legitimate user messages whenever opencode has
+ * appended one of its own synthetic parts — which caused real user prompts
+ * to silently drop in live testing.
+ */
+const MYCO_METADATA_MARKER = "myco";
+
 // ---------------------------------------------------------------------------
 // Daemon HTTP transport — all communication with the local Myco daemon.
 // Every function is best-effort: failures are swallowed so the plugin cannot
@@ -253,8 +268,11 @@ async function fetchMycoSessionContext(
 
 /**
  * Inject text into an opencode session as a synthetic (plugin-authored) user turn
- * without triggering an AI response. Used for session-start and per-prompt context
- * injection. Errors are swallowed — injection is best-effort.
+ * without triggering an AI response. The text part carries:
+ *   - `synthetic: true` so opencode's TUI hides it from the chat log
+ *   - `metadata.myco: true` so our own `chat.message` handler can distinguish
+ *     this re-entry from a real user message (see MYCO_METADATA_MARKER)
+ * Errors are swallowed — injection is best-effort.
  */
 async function injectSyntheticContext(
   client: unknown,
@@ -267,7 +285,14 @@ async function injectSyntheticContext(
     await c.session.prompt({
       path: { id: sessionId },
       body: {
-        parts: [{ type: "text", text, synthetic: true }],
+        parts: [
+          {
+            type: "text",
+            text,
+            synthetic: true,
+            metadata: { [MYCO_METADATA_MARKER]: true },
+          },
+        ],
         noReply: true,
       },
     });
@@ -445,7 +470,7 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
     },
 
     /**
-     * Chat message: capture the user prompt.
+     * Chat message: capture the user prompt + any image attachments.
      *
      * Per-turn spore injection is intentionally not done here. A previous iteration
      * injected spores via session.prompt({ noReply: true }) inside this handler, but
@@ -453,8 +478,13 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
      * message landed during the re-entrancy window. Agents can fetch context on
      * demand via the myco_context and myco_search MCP tools.
      *
-     * The `synthetic` flag check is kept as a cheap guard against re-entry from
-     * the session-start digest injection.
+     * Re-entrancy guard: we check for `metadata.myco === true` on any part to
+     * detect our session-start digest injection coming back around. Opencode
+     * itself sets `synthetic: true` for many internal purposes (plan-mode
+     * prompts, build-switch transitions, subagent task summaries), so the
+     * `synthetic` flag alone is NOT reliable as a re-entrancy signal — it
+     * would silently drop any user prompt that opencode touched for one of
+     * those internal reasons.
      */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     "chat.message": async (input: any, output: any) => {
@@ -470,10 +500,11 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
         text?: string;
         mime?: string;
         url?: string;
-        synthetic?: boolean;
+        metadata?: { [key: string]: unknown };
       }>;
-      // Skip our own injected synthetic turns — they're not real user prompts.
-      if (allParts.some((p) => p.synthetic === true)) return;
+      // Skip if any part carries the Myco metadata marker — that means
+      // chat.message is firing for our own injectSyntheticContext call.
+      if (allParts.some((p) => p.metadata?.[MYCO_METADATA_MARKER] === true)) return;
 
       const textParts = allParts
         .filter((p) => p.type === "text" && p.text)
