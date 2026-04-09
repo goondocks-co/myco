@@ -69,6 +69,8 @@ const CODEX_MANIFEST: SymbiontManifest = {
     mcpTarget: '.codex/config.toml',
     mcpFormat: 'toml',
     skillsTarget: '.agents/skills',
+    settingsTarget: '.codex/config.toml',
+    settingsFormat: 'toml',
   },
 };
 
@@ -191,6 +193,9 @@ function setupPackageRoot(): void {
   });
   writeJson(path.join(codexTemplateDir, 'mcp.json'), {
     myco: { command: 'myco-run', args: ['mcp'] },
+  });
+  writeJson(path.join(codexTemplateDir, 'settings.json'), {
+    features: { codex_hooks: true },
   });
   writeJson(path.join(vscodeTemplateDir, 'hooks.json'), {
     SessionStart: [{ hooks: [{ type: 'command', command: 'node .agents/myco-hook.cjs hook session-start', timeout: 10 }] }],
@@ -840,6 +845,168 @@ describe('installMcp (TOML)', () => {
     const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
     expect(content).toContain('command = "myco-run"');
     expect(content).not.toContain('old-command');
+  });
+});
+
+// =====================
+// installSettings (TOML)
+// =====================
+
+describe('installSettings (TOML)', () => {
+  it('writes [features] section to Codex config.toml', () => {
+    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installSettings();
+
+    expect(result).toBe(true);
+    const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
+    expect(content).toContain('[features]');
+    expect(content).toContain('codex_hooks = true');
+  });
+
+  it('preserves unrelated sections when adding [features]', () => {
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(codexDir, 'config.toml'),
+      '[shell_environment_policy]\ninherit = "core"\n\n[shell_environment_policy.set]\nMYCO_CMD = "myco-dev"\n\n[mcp_servers.myco]\ncommand = "myco-run"\nargs = ["mcp"]\n',
+    );
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+
+    const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
+    expect(content).toContain('[shell_environment_policy]');
+    expect(content).toContain('inherit = "core"');
+    expect(content).toContain('[shell_environment_policy.set]');
+    expect(content).toContain('MYCO_CMD = "myco-dev"');
+    expect(content).toContain('[mcp_servers.myco]');
+    expect(content).toContain('command = "myco-run"');
+    expect(content).toContain('[features]');
+    expect(content).toContain('codex_hooks = true');
+  });
+
+  it('is idempotent on repeated install', () => {
+    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+    const first = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
+    installer.installSettings();
+    const second = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
+    expect(second).toBe(first);
+    // And only one [features] header exists
+    expect(first.match(/\[features\]/g)?.length).toBe(1);
+  });
+
+  it('replaces stale value on update', () => {
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(path.join(codexDir, 'config.toml'), '[features]\ncodex_hooks = false\n');
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+
+    const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
+    expect(content).toContain('codex_hooks = true');
+    expect(content).not.toContain('codex_hooks = false');
+  });
+
+  it('install() composes MCP + settings into one TOML file', () => {
+    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    const result = installer.install();
+
+    expect(result.mcp).toBe(true);
+    expect(result.settings).toBe(true);
+
+    const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
+    expect(content).toContain('[mcp_servers.myco]');
+    expect(content).toContain('command = "myco-run"');
+    expect(content).toContain('[features]');
+    expect(content).toContain('codex_hooks = true');
+  });
+});
+
+// =====================
+// uninstallSettings (TOML)
+// =====================
+
+describe('uninstallSettings (TOML)', () => {
+  it('removes codex_hooks key and drops empty [features] section', () => {
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(codexDir, 'config.toml'),
+      '[mcp_servers.myco]\ncommand = "myco-run"\nargs = ["mcp"]\n\n[features]\ncodex_hooks = true\n',
+    );
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    const result = installer.uninstallSettings();
+
+    expect(result).toBe(true);
+    const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
+    expect(content).not.toContain('[features]');
+    expect(content).not.toContain('codex_hooks');
+    expect(content).toContain('[mcp_servers.myco]');
+  });
+
+  it('preserves sibling feature flags in [features]', () => {
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(codexDir, 'config.toml'),
+      '[features]\nsome_other_flag = true\ncodex_hooks = true\n',
+    );
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.uninstallSettings();
+
+    const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
+    expect(content).toContain('[features]');
+    expect(content).toContain('some_other_flag = true');
+    expect(content).not.toContain('codex_hooks');
+  });
+
+  it('deletes file when no TOML content remains', () => {
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(path.join(codexDir, 'config.toml'), '[features]\ncodex_hooks = true\n');
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.uninstallSettings();
+
+    expect(fs.existsSync(path.join(codexDir, 'config.toml'))).toBe(false);
+  });
+
+  it('returns false when template key is already absent', () => {
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(path.join(codexDir, 'config.toml'), '[mcp_servers.other]\ncommand = "other"\n');
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    const result = installer.uninstallSettings();
+    expect(result).toBe(false);
+  });
+
+  it('full install then uninstall restores original content', () => {
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    const original = '[shell_environment_policy]\ninherit = "core"\n\n[shell_environment_policy.set]\nMYCO_CMD = "myco-dev"\n';
+    fs.writeFileSync(path.join(codexDir, 'config.toml'), original);
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installMcp();
+    installer.installSettings();
+
+    installer.uninstallSettings();
+    installer.uninstallMcp();
+
+    const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
+    expect(content).toContain('[shell_environment_policy]');
+    expect(content).toContain('inherit = "core"');
+    expect(content).toContain('MYCO_CMD = "myco-dev"');
+    expect(content).not.toContain('[features]');
+    expect(content).not.toContain('[mcp_servers.myco]');
   });
 });
 
