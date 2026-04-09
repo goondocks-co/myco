@@ -10,7 +10,7 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import { TranscriptMiner, extractTurnsFromBuffer } from '@myco/capture/transcript-miner.js';
 import type { TranscriptTurn } from '@myco/symbionts/adapter.js';
-import { extensionForMimeType } from '@myco/symbionts/adapter.js';
+import { captureBatchImages } from './capture-images.js';
 import {
   getLatestBatch,
   setResponseSummary,
@@ -20,7 +20,6 @@ import {
   findBatchByPromptPrefix,
 } from '@myco/db/queries/batches.js';
 import { getSession, updateSession } from '@myco/db/queries/sessions.js';
-import { insertAttachment } from '@myco/db/queries/attachments.js';
 import { detectSkillUsage, SKILL_USAGE_DETECTION_ENABLED } from './skill-usage.js';
 import { epochSeconds, LOG_MESSAGE_PREVIEW_CHARS } from '@myco/constants.js';
 import { TITLE_PREVIEW_CHARS } from './event-handlers.js';
@@ -284,7 +283,6 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // After context compaction, transcript turn indices no longer match batch prompt_numbers.
     // Instead, match each turn to its batch by prompt text (content-based, not position-based).
     // Binary data is stored in the DB BLOB column; DB uses ON CONFLICT DO NOTHING → idempotent.
-    const sessionShort = sessionId.slice(-6);
     for (let i = 0; i < allTurns.length; i++) {
       const turn = allTurns[i];
       if (!turn.images?.length) continue;
@@ -310,32 +308,13 @@ export function createStopProcessor(deps: StopProcessorDeps): {
         } catch { /* fallback to index-based */ }
       }
 
-      for (let j = 0; j < turn.images.length; j++) {
-        const img = turn.images[j];
-        const ext = extensionForMimeType(img.mediaType);
-        const filename = `${sessionShort}-t${resolvedPromptNumber}-${j + 1}.${ext}`;
-        const imageBuffer = Buffer.from(img.data, 'base64');
-        try {
-          const inserted = insertAttachment({
-            id: `${sessionShort}-b${resolvedPromptNumber}-${j + 1}`,
-            session_id: sessionId,
-            prompt_batch_id: resolvedBatchId ?? undefined,
-            file_path: filename,
-            media_type: img.mediaType,
-            data: imageBuffer,
-            created_at: epochSeconds(),
-          });
-          // insertAttachment returns undefined on ON CONFLICT DO NOTHING — only
-          // log when a row was actually inserted, otherwise stop-event replays
-          // produce phantom "Image stored in DB" lines for attachments that
-          // were already persisted on a previous run.
-          if (inserted) {
-            logger.debug(LOG_KINDS.CAPTURE_ATTACHMENT, 'Image stored in DB', { filename, batch: resolvedPromptNumber });
-          }
-        } catch (err) {
-          logger.warn(LOG_KINDS.CAPTURE_ATTACHMENT, 'Failed to record attachment', { error: String(err) });
-        }
-      }
+      captureBatchImages({
+        sessionId,
+        promptBatchId: resolvedBatchId,
+        promptNumber: resolvedPromptNumber,
+        images: turn.images,
+        logger,
+      });
     }
 
     logger.info(LOG_KINDS.PROCESSOR_SESSION, 'Session captured', {

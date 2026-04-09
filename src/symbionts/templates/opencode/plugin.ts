@@ -165,17 +165,26 @@ async function mycoUnregisterSession(directory: string, sessionId: string): Prom
   await postJson(directory, "/sessions/unregister", { session_id: sessionId });
 }
 
-/** Post a user prompt event. */
+/** Post a user prompt event. Images, if any, are shipped as an array of
+ * `{ data: base64, mediaType }` objects — the daemon's event dispatcher persists
+ * them as attachments keyed to the newly-opened prompt batch.
+ *
+ * Opencode has no on-disk transcript for Myco to mine, so images attached by
+ * the user in the TUI must travel with the prompt event itself. Other symbionts
+ * (claude-code, cursor) extract images from their JSONL transcripts at stop time.
+ */
 async function mycoPostUserPrompt(
   directory: string,
   sessionId: string,
   prompt: string,
+  images: Array<{ data: string; mediaType: string }>,
 ): Promise<void> {
   await postJson(directory, "/events", {
     type: "user_prompt",
     session_id: sessionId,
     agent: "opencode",
     prompt,
+    ...(images.length > 0 ? { images } : {}),
   });
 }
 
@@ -452,9 +461,15 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
       const sessionId = input?.sessionID;
       if (!sessionId) return;
 
+      // Part shapes we care about: text (for the prompt string) and file
+      // (for image attachments encoded as data URLs — FilePart.url is
+      // `data:<mime>;base64,<data>` per
+      // packages/app/src/components/prompt-input/attachments.ts in opencode).
       const allParts = (output?.parts ?? []) as Array<{
         type?: string;
         text?: string;
+        mime?: string;
+        url?: string;
         synthetic?: boolean;
       }>;
       // Skip our own injected synthetic turns — they're not real user prompts.
@@ -466,7 +481,26 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
       const prompt = textParts.join("\n");
       if (!prompt) return;
 
-      await mycoPostUserPrompt(directory, sessionId, prompt);
+      // Extract any image attachments from FilePart data URLs. Non-image file
+      // parts (code snippets, documents) are ignored here — only images travel
+      // to Myco as binary attachments via the existing attachment pipeline.
+      const images: Array<{ data: string; mediaType: string }> = [];
+      for (const part of allParts) {
+        if (
+          part.type !== "file" ||
+          !part.mime?.startsWith("image/") ||
+          typeof part.url !== "string" ||
+          !part.url.startsWith("data:")
+        ) {
+          continue;
+        }
+        const commaIdx = part.url.indexOf(",");
+        if (commaIdx <= 0) continue;
+        const base64 = part.url.slice(commaIdx + 1);
+        if (base64) images.push({ data: base64, mediaType: part.mime });
+      }
+
+      await mycoPostUserPrompt(directory, sessionId, prompt, images);
     },
 
     /**
