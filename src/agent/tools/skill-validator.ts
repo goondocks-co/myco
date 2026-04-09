@@ -77,8 +77,31 @@ export function parseAllowedTools(rawValue: string | undefined): string[] | null
 }
 
 /**
+ * Light English stemmer applied to every significant token before set
+ * comparison. Collapses common suffix variants so that `task`/`tasks`,
+ * `gate`/`gates`, `model`/`models`, `configure`/`configuring`, and
+ * `implement`/`implemented` all share a stem.
+ *
+ * The order matters: strip -ing / -ed before trailing -s so "parking"
+ * doesn't become "parkin" then "parki"; strip trailing -e last so
+ * "validate" and "validating" both land on "validat".
+ *
+ * Length guards prevent degenerate stems on short words (e.g. "ring"
+ * must not become empty, "cod" must not become "c").
+ */
+function stemToken(word: string): string {
+  let w = word;
+  if (w.length > 5 && w.endsWith('ing')) w = w.slice(0, -3);
+  else if (w.length > 5 && w.endsWith('ed')) w = w.slice(0, -2);
+  if (w.length > 4 && w.endsWith('s')) w = w.slice(0, -1);
+  if (w.length > 4 && w.endsWith('e')) w = w.slice(0, -1);
+  return w;
+}
+
+/**
  * Lowercase-word token set from a string, excluding stopwords and
- * short/noise tokens. Used for Jaccard description similarity.
+ * short/noise tokens, with light stemming applied. Used for all
+ * similarity metrics in this file.
  */
 function tokenSet(text: string): Set<string> {
   const stopwords = new Set([
@@ -95,8 +118,18 @@ function tokenSet(text: string): Set<string> {
       .toLowerCase()
       .replace(/[^a-z0-9_\s]/g, ' ')
       .split(/\s+/)
-      .filter((w) => w.length >= 4 && !stopwords.has(w)),
+      .filter((w) => w.length >= 4 && !stopwords.has(w))
+      .map(stemToken),
   );
+}
+
+/** Internal helper: count shared stems between two token sets. */
+function intersectionSize(a: Set<string>, b: Set<string>): number {
+  let count = 0;
+  for (const token of a) {
+    if (b.has(token)) count++;
+  }
+  return count;
 }
 
 /**
@@ -113,12 +146,45 @@ export function descriptionSimilarity(a: string, b: string): number {
   const bTokens = tokenSet(b);
   if (aTokens.size === 0 || bTokens.size === 0) return 0;
 
-  let intersection = 0;
-  for (const token of aTokens) {
-    if (bTokens.has(token)) intersection++;
-  }
+  const intersection = intersectionSize(aTokens, bTokens);
   const union = aTokens.size + bTokens.size - intersection;
   return union === 0 ? 0 : intersection / union;
+}
+
+/**
+ * Overlap coefficient (Szymkiewicz–Simpson) between two topic strings:
+ * `|A ∩ B| / min(|A|, |B|)`. Returns 0 when either side has fewer than
+ * `minTokens` significant tokens — 1-2 token topics are dominated by
+ * single-token collisions under this metric and must fall back to
+ * Jaccard for duplicate detection.
+ *
+ * Why this exists alongside `descriptionSimilarity`: candidate topics are
+ * often short kebab-case labels like `add-idle-skip-watermark-to-agent-task`
+ * (5 tokens) paired against longer natural-language topics like
+ * `Implementing DB Watermark Prefilters for Incremental Agent Tasks`
+ * (6 tokens). The asymmetric token-count inflates Jaccard's union and
+ * pushes real duplicates below the 0.4 threshold. Overlap coefficient is
+ * robust to that asymmetry because the denominator is the smaller set.
+ *
+ * The 3-token minimum is calibrated to catch cases like
+ * `publish-npm-package-with-oidc-in-ci` (3 significant tokens) against
+ * `npm OIDC Trusted Publishing in GitHub Actions` (5 tokens) while
+ * leaving 2-token topic pairs to the Jaccard path. Two-token topics
+ * with a single shared word would score 0.5 under naive overlap —
+ * noisy — so they are deliberately excluded.
+ */
+export function topicOverlapSimilarity(
+  a: string,
+  b: string,
+  minTokens: number = 3,
+): number {
+  const aTokens = tokenSet(a);
+  const bTokens = tokenSet(b);
+  if (aTokens.size < minTokens || bTokens.size < minTokens) return 0;
+
+  const intersection = intersectionSize(aTokens, bTokens);
+  const smaller = Math.min(aTokens.size, bTokens.size);
+  return smaller === 0 ? 0 : intersection / smaller;
 }
 
 /**
@@ -137,6 +203,17 @@ export function descriptionSimilarity(a: string, b: string): number {
  * "sibling skill on disk for the same topic" (high). Lean aggressive.
  */
 export const DESCRIPTION_DUPLICATE_THRESHOLD = 0.4;
+
+/**
+ * Threshold for the overlap-coefficient topic dedup path. At 0.6 and
+ * with a 4-token minimum, this catches recent false negatives where
+ * short kebab-case topics were re-identifying dismissed natural-language
+ * candidates (watermark/agent/task overlap, structural/enforcement/gate
+ * overlap, configure/local/model overlap) while leaving genuinely-new
+ * candidates like `implement-spa-sub-navigation-with-browser-history`
+ * unaffected.
+ */
+export const TOPIC_OVERLAP_THRESHOLD = 0.6;
 
 /**
  * Compare protected frontmatter fields between existing and new content.

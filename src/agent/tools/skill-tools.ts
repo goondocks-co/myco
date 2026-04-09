@@ -42,7 +42,9 @@ import {
   validateSkillContent,
   checkFrontmatterPreservation,
   descriptionSimilarity,
+  topicOverlapSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
+  TOPIC_OVERLAP_THRESHOLD,
 } from './skill-validator.js';
 import {
   writeStagedSkill,
@@ -63,11 +65,19 @@ export function createSkillTools(deps: VaultToolDeps) {
 
   /**
    * Find the best-matching existing candidate (if any) whose topic
-   * overlaps the proposed new topic above the dedup threshold. Reuses
-   * descriptionSimilarity (Jaccard on significant-word tokens with
-   * stopword filtering) — the same metric the skill-level dedup gate
-   * uses — so topic overlap and description overlap are evaluated on
-   * identical terms.
+   * overlaps the proposed new topic. Uses a two-path check:
+   *
+   * 1. Jaccard (`descriptionSimilarity` >= DESCRIPTION_DUPLICATE_THRESHOLD)
+   *    — catches classic near-duplicates with similar token counts.
+   * 2. Overlap coefficient (`topicOverlapSimilarity` >= TOPIC_OVERLAP_THRESHOLD)
+   *    — catches asymmetric kebab-case vs. natural-language duplicates
+   *    where a short topic's significant tokens are mostly a subset of
+   *    the longer one. Jaccard misses these because the inflated union
+   *    pushes the score below 0.4 even when the overlap is strong.
+   *
+   * Returns the candidate with the highest matching score under either
+   * metric. Reported `score` is the max of the two so the rejection
+   * message surfaces the stronger signal.
    */
   function findOverlappingCandidate(
     newTopic: string,
@@ -75,8 +85,13 @@ export function createSkillTools(deps: VaultToolDeps) {
   ): { candidate: typeof existing[number]; score: number } | null {
     let best: { candidate: typeof existing[number]; score: number } | null = null;
     for (const candidate of existing) {
-      const score = descriptionSimilarity(newTopic, candidate.topic);
-      if (score >= DESCRIPTION_DUPLICATE_THRESHOLD && (!best || score > best.score)) {
+      const jaccard = descriptionSimilarity(newTopic, candidate.topic);
+      const overlap = topicOverlapSimilarity(newTopic, candidate.topic);
+      const hitsJaccard = jaccard >= DESCRIPTION_DUPLICATE_THRESHOLD;
+      const hitsOverlap = overlap >= TOPIC_OVERLAP_THRESHOLD;
+      if (!hitsJaccard && !hitsOverlap) continue;
+      const score = Math.max(jaccard, overlap);
+      if (!best || score > best.score) {
         best = { candidate, score };
       }
     }
