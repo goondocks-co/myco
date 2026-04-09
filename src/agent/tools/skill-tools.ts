@@ -278,6 +278,31 @@ export function createSkillTools(deps: VaultToolDeps) {
     // clobbering anything else that may share the dir.
     const skillDirPreexisted = existsSync(skillDir);
 
+    async function cleanupCreatedSkillArtifactsOnRollback(): Promise<void> {
+      try {
+        if (!skillDirPreexisted) {
+          rmSync(skillDir, { recursive: true, force: true });
+        } else {
+          rmSync(skillPath, { force: true });
+        }
+      } catch (rollbackErr) {
+        console.warn(
+          `[${params.label}] file rollback after DB failure also failed:`,
+          rollbackErr instanceof Error ? rollbackErr.message : rollbackErr,
+        );
+      }
+
+      try {
+        const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
+        syncSkillSymlinks(root, params.name, { remove: true });
+      } catch (rollbackErr) {
+        console.warn(
+          `[${params.label}] symlink rollback after DB failure also failed:`,
+          rollbackErr instanceof Error ? rollbackErr.message : rollbackErr,
+        );
+      }
+    }
+
     try {
       mkdirSync(skillDir, { recursive: true });
       writeFileSync(skillPath, params.content, 'utf-8');
@@ -333,18 +358,7 @@ export function createSkillTools(deps: VaultToolDeps) {
         params.linkCandidate?.(recordId, now);
       })();
     } catch (err) {
-      try {
-        if (!skillDirPreexisted) {
-          rmSync(skillDir, { recursive: true, force: true });
-        } else {
-          rmSync(skillPath, { force: true });
-        }
-      } catch (rollbackErr) {
-        console.warn(
-          `[${params.label}] file rollback after DB failure also failed:`,
-          rollbackErr instanceof Error ? rollbackErr.message : rollbackErr,
-        );
-      }
+      await cleanupCreatedSkillArtifactsOnRollback();
       return {
         error: `Skill write aborted: database transaction failed and on-disk state was rolled back. ${err instanceof Error ? err.message : String(err)}`,
       };

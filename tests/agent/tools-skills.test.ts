@@ -1314,6 +1314,63 @@ describe('vault skill tools', () => {
       expect(records.find((r) => r.name === 'defense-stage')).toBeUndefined();
     });
 
+    it('removes symbiont symlinks when finalize rolls back after creating them', async () => {
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Rollback cleanup topic', rationale: 'r' },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+      await stageForFinalize(candidate.id, 'rollback-symlink-cleanup');
+
+      // Tamper the staged manifest so the DB transaction fails on the
+      // inserted skill_records.candidate_id FK after the live file and
+      // symbiont symlinks have already been created.
+      const manifestPath = path.join(
+        vaultDir,
+        'staging',
+        'skills',
+        candidate.id,
+        'manifest.json',
+      );
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      manifest.candidate_id = 'cand-missing-after-stage';
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const finalizeTool = findTool(tools, 'vault_finalize_skill');
+      const result = parseResult(
+        await finalizeTool.handler({ candidate_id: candidate.id }, undefined),
+      ) as { error?: string };
+
+      expect(result.error).toContain('database transaction failed');
+
+      const liveFile = path.join(
+        tmpDir,
+        '.agents',
+        'skills',
+        'rollback-symlink-cleanup',
+        'SKILL.md',
+      );
+      const claudeSymlink = path.join(
+        tmpDir,
+        '.claude',
+        'skills',
+        'rollback-symlink-cleanup',
+      );
+      const cursorSymlink = path.join(
+        tmpDir,
+        '.cursor',
+        'skills',
+        'rollback-symlink-cleanup',
+      );
+
+      expect(fs.existsSync(liveFile)).toBe(false);
+      expect(fs.existsSync(claudeSymlink)).toBe(false);
+      expect(fs.existsSync(cursorSymlink)).toBe(false);
+    });
+
     it('preserves approved_at on the candidate after transition to generated', async () => {
       // Seed an already-approved candidate with a known approved_at
       const candidateTool = findTool(tools, 'vault_skill_candidates');

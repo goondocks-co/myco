@@ -8,6 +8,8 @@
  * Fully idempotent — safe to call on every request.
  */
 
+import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
+
 const SESSIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS sessions (
     id                     TEXT NOT NULL,
@@ -305,4 +307,16 @@ export async function initD1Schema(db: D1Database): Promise<void> {
       // Column already exists — expected after first run
     }
   }
+
+  // Backfill approved_at for already-synced historical rows so remote D1
+  // mirrors the local SQLite v10 migration semantics. Idempotent via the
+  // approved_at IS NULL guard.
+  await db.prepare(
+    `UPDATE skill_candidates
+       SET approved_at = strftime('%s', 'now')
+     WHERE approved_at IS NULL
+       AND status IN (?, ?)`,
+  )
+    .bind(CANDIDATE_STATUS.APPROVED, CANDIDATE_STATUS.GENERATED)
+    .run();
 }

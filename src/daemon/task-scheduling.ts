@@ -168,6 +168,11 @@ export async function registerScheduledTasks(
         return countCandidates({ status: 'approved' }) > 0;
       },
     },
+    onTaskError: (taskName, err) => {
+      logger.error(LOG_KINDS.AGENT_ERROR, `Detached task "${taskName}" threw`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    },
   };
 
   const scheduledJobs = buildScheduledJobs(
