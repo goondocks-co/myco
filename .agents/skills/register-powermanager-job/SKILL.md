@@ -55,6 +55,25 @@ schedule:
 
 **3. Confirm `task-scheduler.ts` will pick it up** — no code change is needed if the YAML is in `src/agent/tasks/`. At daemon startup, `task-scheduler.ts` reads all task YAMLs and calls `powerManager.register()` for each entry with `schedule.enabled: true`.
 
+**Fire-and-forget dispatch for long-running tasks:** The PowerManager tick loop calls each job's `fn` synchronously in a `for` loop. If a task's `fn` `await`s the full task execution, the tick loop is blocked until that task completes — starving every subsequent job in the same tick. Any task expected to run longer than ~1 minute **must** dispatch as fire-and-forget:
+
+```typescript
+// In task-scheduler.ts — the registered job fn for each task:
+fn: () => {
+  if (!context) return;
+  if (context.isTaskRunning(task.name)) return;
+  // Stamp lastRun and mark running synchronously, THEN dispatch without await:
+  task.lastRun = Date.now();
+  void context.runTask(task.name).catch((err) => {
+    logger.error(`Task ${task.name} failed`, err);
+  }).finally(() => {
+    context.markTaskDone(task.name);
+  });
+}
+```
+
+The `full-intelligence` task (18–23 min) hit this bug — every job scheduled after it in the same tick was silently delayed by the full task duration. The fix was removing the `await` and dispatching fire-and-forget. Short-lived tasks (< 1 min) may `await` safely, but fire-and-forget is the safer default for all tasks.
+
 **User overrides:** Users can override `enabled` and `intervalSeconds` in `myco.yaml`:
 
 ```yaml
@@ -116,6 +135,7 @@ The old top-level keys `agent.auto_run` and `agent.interval_seconds` were migrat
 - [ ] No raw `setInterval` or `setTimeout` anywhere in `src/daemon/`
 - [ ] `runIn` includes all states where the job should actually fire — double-check Sleep
 - [ ] `model` is explicitly set in any new task YAML
+- [ ] Tasks expected to run > ~1 minute use fire-and-forget dispatch (no `await` in the tick loop `fn`)
 - [ ] If `preventsDeepSleep` is used, a dead-letter ceiling (≤ 10 retries) is in place
 - [ ] If a scheduled task is not firing, check `agent.scheduled_tasks_enabled` in `myco.yaml` first (global kill-switch, default `true`) before inspecting the task YAML
 - [ ] Daemon restarted after any YAML or `myco.yaml` schedule changes
