@@ -2,23 +2,21 @@ import { AlertCircle, Sprout } from 'lucide-react';
 import { Surface } from '../ui/surface';
 import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
 import { Pagination } from '../ui/pagination';
+import { MarkdownContent } from '../ui/markdown-content';
 import { useSpores, type SporeSummary } from '../../hooks/use-spores';
 import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
-import { truncate } from '../../lib/format';
+import { truncate, shortSession } from '../../lib/format';
 import { cn } from '../../lib/cn';
 import { observationTypeClass, statusClass, formatLabel } from './helpers';
 
 /* ---------- Constants ---------- */
 
-/** Maximum content preview length. */
+/** Maximum content preview length (in characters, used for aria-label only). */
 const CONTENT_PREVIEW_CHARS = 120;
 
 /** Milliseconds per second for epoch conversion. */
 const MS_PER_SECOND = 1_000;
-
-/** Session ID preview length. */
-const SESSION_ID_PREVIEW = 8;
 
 const OBSERVATION_TYPES = [FILTER_ALL, 'gotcha', 'decision', 'discovery', 'trade_off', 'bug_fix'] as const;
 const STATUS_OPTIONS = [FILTER_ALL, 'active', 'superseded', 'consolidated'] as const;
@@ -104,14 +102,16 @@ function SporeRow({
               </span>
             )}
           </div>
-          <p className="font-sans text-sm text-on-surface">
-            {truncate(spore.content, CONTENT_PREVIEW_CHARS)}
-          </p>
+          <MarkdownContent
+            content={spore.content}
+            compact
+            className="text-on-surface line-clamp-2"
+          />
         </div>
         <div className="shrink-0 text-right space-y-1">
           {spore.session_id && (
             <div className="font-mono text-xs text-on-surface-variant">
-              {spore.session_id.slice(0, SESSION_ID_PREVIEW)}
+              {shortSession(spore.session_id)}
             </div>
           )}
           <div className="font-sans text-xs text-on-surface-variant">

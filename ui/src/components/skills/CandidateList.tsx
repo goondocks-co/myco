@@ -10,6 +10,7 @@ import { Pagination } from '../ui/pagination';
 import { useSkillCandidates, useUpdateCandidate, type SkillCandidate } from '../../hooks/use-skills';
 import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
+import { CANDIDATE_STATUS, PIPELINE_FILTER_VALUE } from '../../lib/skill-candidate-status';
 
 /* ---------- Constants ---------- */
 
@@ -19,10 +20,11 @@ const CANDIDATE_FILTERS: FilterDefinition[] = [
     label: 'Status',
     options: [
       { value: FILTER_ALL, label: 'All statuses' },
-      { value: 'identified', label: 'Identified' },
-      { value: 'approved', label: 'Approved' },
-      { value: 'generated', label: 'Generated' },
-      { value: 'dismissed', label: 'Dismissed' },
+      { value: CANDIDATE_STATUS.IDENTIFIED, label: 'Identified' },
+      { value: PIPELINE_FILTER_VALUE, label: 'Approved & generated' },
+      { value: CANDIDATE_STATUS.APPROVED, label: 'Awaiting generation' },
+      { value: CANDIDATE_STATUS.GENERATED, label: 'Generated' },
+      { value: CANDIDATE_STATUS.DISMISSED, label: 'Dismissed' },
     ],
   },
 ];
@@ -46,10 +48,10 @@ function timeAgo(epoch: number): string {
 
 function statusBadge(status: string) {
   switch (status) {
-    case 'identified': return <Badge variant="outline">Identified</Badge>;
-    case 'approved': return <Badge variant="secondary">Approved</Badge>;
-    case 'generated': return <Badge variant="default">Generated</Badge>;
-    case 'dismissed': return <Badge variant="outline" className="opacity-50">Dismissed</Badge>;
+    case CANDIDATE_STATUS.IDENTIFIED: return <Badge variant="outline">Identified</Badge>;
+    case CANDIDATE_STATUS.APPROVED: return <Badge variant="secondary">Awaiting generation</Badge>;
+    case CANDIDATE_STATUS.GENERATED: return <Badge variant="default">Generated</Badge>;
+    case CANDIDATE_STATUS.DISMISSED: return <Badge variant="outline" className="opacity-50">Dismissed</Badge>;
     default: return <Badge variant="outline">{status}</Badge>;
   }
 }
@@ -70,7 +72,9 @@ function CandidateCard({
   isDismissing: boolean;
 }) {
   const conf = confidenceLabel(candidate.confidence);
-  const showActions = candidate.status === 'identified' || candidate.status === 'approved';
+  const showActions =
+    candidate.status === CANDIDATE_STATUS.IDENTIFIED ||
+    candidate.status === CANDIDATE_STATUS.APPROVED;
 
   return (
     <Surface level="low" className="p-5 space-y-3">
@@ -80,6 +84,15 @@ function CandidateCard({
           <h3 className="font-serif text-lg text-on-surface leading-tight">
             {candidate.topic}
           </h3>
+          {/* Approval audit line — renders whenever approved_at is set,
+              so the user can trace "I approved this Xd ago" even after
+              the candidate has advanced to generated. */}
+          {candidate.approved_at !== null && (
+            <p className="font-sans text-xs text-on-surface-variant mt-1">
+              Approved {timeAgo(candidate.approved_at)}
+              {candidate.status === CANDIDATE_STATUS.GENERATED && ' · generated'}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {statusBadge(candidate.status)}
@@ -97,7 +110,7 @@ function CandidateCard({
       {/* Actions — only for identified/approved candidates */}
       {showActions && (
         <div className="flex items-center gap-2 pt-1">
-          {candidate.status === 'identified' && (
+          {candidate.status === CANDIDATE_STATUS.IDENTIFIED && (
             <>
               <Button
                 size="sm"
@@ -120,7 +133,7 @@ function CandidateCard({
               </Button>
             </>
           )}
-          {candidate.status === 'approved' && (
+          {candidate.status === CANDIDATE_STATUS.APPROVED && (
             <span className="font-sans text-xs text-on-surface-variant">
               Awaiting generation
             </span>
@@ -154,7 +167,7 @@ function SkeletonCard() {
 export function CandidateList() {
   const updateCandidate = useUpdateCandidate();
   const { searchInput, debouncedSearch, filterValues, offset, setOffset, handleSearchChange, handleFilterChange, activeFilter } = useListFilters({
-    initialFilters: { status: 'identified' },
+    initialFilters: { status: CANDIDATE_STATUS.IDENTIFIED },
   });
 
   const activeStatus = activeFilter('status');
@@ -178,11 +191,11 @@ export function CandidateList() {
   }, [candidates, debouncedSearch]);
 
   function handleApprove(candidate: SkillCandidate) {
-    updateCandidate.mutate({ id: candidate.id, status: 'approved' });
+    updateCandidate.mutate({ id: candidate.id, status: CANDIDATE_STATUS.APPROVED });
   }
 
   function handleDismiss(candidate: SkillCandidate) {
-    updateCandidate.mutate({ id: candidate.id, status: 'dismissed' });
+    updateCandidate.mutate({ id: candidate.id, status: CANDIDATE_STATUS.DISMISSED });
   }
 
   const toolbar = (
@@ -279,12 +292,12 @@ export function CandidateList() {
               isApproving={
                 updateCandidate.isPending &&
                 updateCandidate.variables?.id === candidate.id &&
-                updateCandidate.variables?.status === 'approved'
+                updateCandidate.variables?.status === CANDIDATE_STATUS.APPROVED
               }
               isDismissing={
                 updateCandidate.isPending &&
                 updateCandidate.variables?.id === candidate.id &&
-                updateCandidate.variables?.status === 'dismissed'
+                updateCandidate.variables?.status === CANDIDATE_STATUS.DISMISSED
               }
             />
           ))}

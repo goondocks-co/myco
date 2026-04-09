@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { Button } from '../ui/button';
+import { MarkdownContent } from '../ui/markdown-content';
 import {
   useNotifications,
   useUpdateNotification,
@@ -193,7 +194,11 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
                         </span>
                       </div>
                       {n.message && (
-                        <p className="text-xs text-on-surface-variant mt-0.5 line-clamp-2">{n.message}</p>
+                        <MarkdownContent
+                          content={n.message}
+                          compact
+                          className="text-xs mt-0.5 line-clamp-2"
+                        />
                       )}
                       <span className="text-[10px] text-on-surface-variant/40 uppercase tracking-wider mt-1 inline-block">
                         {n.domain}

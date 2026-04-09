@@ -337,8 +337,8 @@ describe('MCP tools: myco_skills and myco_skill_candidates', () => {
 // VAULT_TOOL_COUNT consistency
 // ---------------------------------------------------------------------------
 describe('VAULT_TOOL_COUNT', () => {
-  it('matches expected count (21)', () => {
-    expect(VAULT_TOOL_COUNT).toBe(21);
+  it('matches expected count (23)', () => {
+    expect(VAULT_TOOL_COUNT).toBe(23);
   });
 });
 

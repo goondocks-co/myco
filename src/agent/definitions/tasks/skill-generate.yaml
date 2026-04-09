@@ -2,12 +2,13 @@ name: skill-generate
 displayName: Skill Generation
 description: >-
   Synthesize a project skill from a vault knowledge candidate.
-  Writes SKILL.md to .agents/skills/ following Anthropic skill design principles.
+  Stages SKILL.md under .myco/staging/skills/, validates it, then
+  promotes it to .agents/skills/ via vault_finalize_skill.
 agent: myco-agent
 prompt: >-
   Generate ONE project-specific skill from the next approved candidate.
   The instruction contains the candidate metadata and pre-assembled
-  source material. Write the skill, then validate it.
+  source material. Stage the skill, validate it, then finalize it.
 isDefault: false
 model: claude-sonnet-4-6
 maxTurns: 30
@@ -94,26 +95,40 @@ phases:
         the pattern, not just document the current state. If a file path
         changes, the procedure should still make sense.
 
-      Use vault_write_skill to write the file. Pass:
-      - name: kebab-case directory name (NO colon — directory-safe name)
-        The myco: prefix goes ONLY in the SKILL.md frontmatter name field,
-        not in the directory name.
+      ## Tool Call
+
+      Call `vault_stage_skill` — NOT `vault_write_skill`. Pass:
+
+      - candidate_id: the candidate ID from the instruction (required)
+      - name: kebab-case directory name (NO colon — directory-safe name).
+        The myco: prefix goes ONLY in the SKILL.md frontmatter name field.
       - display_name: human-readable title
       - description: the frontmatter description text
       - content: the full SKILL.md including frontmatter
-      - candidate_id: the candidate ID from the instruction
       - source_ids: JSON array of source item IDs from the instruction
       - rationale: "Initial generation from candidate survey"
+
+      **Important:** the skill is NOT live after vault_stage_skill.
+      The file is written to .myco/staging/skills/<candidate_id>/SKILL.md
+      and a manifest.json is written alongside. The validate phase will
+      read the staged content, run quality checks, and promote to the
+      live .agents/skills/ directory via vault_finalize_skill. Until
+      that happens, nothing user-visible has changed.
+
+      If vault_stage_skill returns an error (validation, dedup), address
+      the issue and re-call vault_stage_skill with corrected content.
+      The staging file will be overwritten.
     tools:
-      - vault_write_skill
-      - vault_skill_records
+      - vault_stage_skill
     maxTurns: 10
     required: true
 
   - name: validate
     prompt: |
-      Review the skill you just generated. Read it back from
-      vault_skill_records (action: get) to see the stored record.
+      Review the skill you just staged. The staged content is at
+      .myco/staging/skills/<candidate_id>/SKILL.md — read it back
+      directly from disk via the Read tool, or look it up by
+      candidate_id.
 
       Check against these criteria:
 
@@ -131,27 +146,46 @@ phases:
       4. **Length:** Under 500 lines?
 
       5. **Conflicts:** Does it overlap with existing skills?
-         Use vault_skill_records (action: list) to check.
+         Use vault_skill_records (action: list) to check. The
+         staging path's dedup gate already ran on your description;
+         this is a sanity check on the procedural content itself.
 
       6. **Accuracy:** Spot-check 2-3 specific claims against the
          vault. Use vault_search_fts to verify file paths and
          function names mentioned in the skill.
 
-      If any criterion fails, rewrite using vault_write_skill.
-      This automatically bumps the generation.
+      ## If criteria fail
 
-      **CRITICAL:** When rewriting, preserve ALL frontmatter fields from
-      the original — including user-invocable and allowed-tools. Read the
-      existing skill content first and carry every frontmatter field forward.
-      The quality gate will reject writes missing required fields.
+      Call `vault_stage_skill` again with the candidate_id and
+      corrected content. This overwrites the staging file — the
+      dedup gate runs again. Do NOT call vault_finalize_skill until
+      all criteria pass.
+
+      ## If all criteria pass
+
+      Call `vault_finalize_skill` with the candidate_id. This
+      atomically promotes the staged skill to `.agents/skills/<name>/`,
+      inserts the skill_records row + lineage, transitions the
+      candidate to 'generated', creates the symbiont symlinks, and
+      cleans up the staging directory. The preserved approved_at on
+      the candidate is carried through unchanged.
+
+      The skill is ONLY considered complete after vault_finalize_skill
+      returns success. If this phase fails (criterion failure or turn
+      budget exhausted), the task executor cleans up the staging
+      directory so the candidate stays in 'approved' state for the
+      next generate cycle.
+
+      ## Report
 
       Report results using vault_report with:
       - Skill name and path
-      - Generation number
+      - Whether finalize was called
       - Each criterion: pass/fail with brief note
-      - Any rewrites performed
+      - Any re-stages performed
     tools:
-      - vault_write_skill
+      - vault_stage_skill
+      - vault_finalize_skill
       - vault_skill_records
       - vault_skill_candidates
       - vault_spores

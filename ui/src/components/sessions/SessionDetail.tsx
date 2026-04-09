@@ -13,13 +13,8 @@ import { useTriggerRun } from '../../hooks/use-agent';
 import { BatchTimeline } from './BatchTimeline';
 import { SessionPlans } from './SessionPlans';
 import { StatusBadge } from './status-helpers';
-import { formatTimeAgo, formatDuration as formatDurationSec } from '../../lib/format';
+import { formatTimeAgo, formatDuration as formatDurationSec, shortSession } from '../../lib/format';
 import { cn } from '../../lib/cn';
-
-/* ---------- Constants ---------- */
-
-/** Characters shown from session ID in compact view. */
-const SESSION_ID_PREVIEW_LENGTH = 8;
 
 /* ---------- Helpers ---------- */
 
@@ -179,7 +174,7 @@ export function SessionDetail({ id }: SessionDetailProps) {
       <div className="space-y-2">
         <div className="flex items-center gap-3 flex-wrap">
           <h1 className="font-serif text-2xl font-normal text-on-surface tracking-wide">
-            {session.title ?? session.id.slice(0, SESSION_ID_PREVIEW_LENGTH)}
+            {session.title ?? shortSession(session.id)}
           </h1>
           <StatusBadge status={session.status} />
           {session.agent && (
@@ -287,8 +282,8 @@ export function SessionDetail({ id }: SessionDetailProps) {
         description="This will permanently remove this session and all related data. This action cannot be undone."
         icon={<Trash2 className="h-4 w-4 text-tertiary" />}
         meta={session ? [
-          { label: 'ID', value: session.id.slice(0, SESSION_ID_PREVIEW_LENGTH) },
-          { label: 'Title', value: session.title || session.id.slice(0, SESSION_ID_PREVIEW_LENGTH) },
+          { label: 'ID', value: shortSession(session.id) },
+          { label: 'Title', value: session.title || shortSession(session.id) },
         ] : []}
         impact={impact ? [
           { label: 'Prompts', value: impact.promptCount },

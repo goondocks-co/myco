@@ -86,6 +86,7 @@ export const LOG_KINDS = {
   // Session maintenance job
   MAINTENANCE_SESSION: 'maintenance.session',
   MAINTENANCE_EMBEDDING: 'maintenance.embedding',
+  MAINTENANCE_STAGING_GC: 'maintenance.staging-gc',
 
   // API operations
   API_SESSION_DELETE: 'api.session-delete',

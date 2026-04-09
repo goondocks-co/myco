@@ -7,6 +7,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { LEVEL_ORDER, type LogLevel } from '@myco/daemon/logger.js';
+import { parseCsvList } from '@myco/utils/parse-csv-list.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -172,7 +173,7 @@ export function searchLogs(params: LogSearchParams): LogSearchResult {
 
   // Component filter — comma-separated list
   if (params.component !== undefined && params.component.length > 0) {
-    const components = params.component.split(',').map((c) => c.trim()).filter(Boolean);
+    const components = parseCsvList(params.component);
     if (components.length > 0) {
       conditions.push(`le.component IN (SELECT value FROM json_each(?))`);
       queryParams.push(JSON.stringify(components));
@@ -245,6 +246,31 @@ export function getLogsSince(sinceId: number, limit?: number): LogStreamResult {
 
   const entries = rows.map(toLogEntryRow);
   const cursor = entries.length > 0 ? entries[entries.length - 1].id : sinceId;
+
+  return { entries, cursor };
+}
+
+/**
+ * Return the most recent N log entries, sorted ASC (oldest of the tail first).
+ *
+ * Used to prime a live-tail stream on initial load — callers then follow the
+ * stream forward with `getLogsSince(cursor)`. Cursor is the max id returned,
+ * or 0 when the table is empty.
+ */
+export function getLogTail(limit?: number): LogStreamResult {
+  const db = getDatabase();
+  const effectiveLimit = limit ?? DEFAULT_STREAM_LIMIT;
+
+  // Select newest first, then reverse — this uses the id index efficiently.
+  const rows = db.prepare(
+    `SELECT id, timestamp, level, kind, component, message, data, session_id
+     FROM log_entries
+     ORDER BY id DESC
+     LIMIT ?`,
+  ).all(effectiveLimit) as Record<string, unknown>[];
+
+  const entries = rows.map(toLogEntryRow).reverse();
+  const cursor = entries.length > 0 ? entries[entries.length - 1].id : 0;
 
   return { entries, cursor };
 }

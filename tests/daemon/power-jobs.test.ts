@@ -2,12 +2,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+
 import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client';
 import { createSchema } from '@myco/db/schema';
 import { insertLogEntry } from '@myco/db/queries/logs';
-import { DatabaseMaintenanceManager } from '../../src/daemon/database/manager';
-import { DaemonLogger } from '../../src/daemon/logger';
-import { registerPowerJobs } from '../../src/daemon/power-jobs';
+import { DatabaseMaintenanceManager } from '@myco/daemon/database/manager.js';
+import { DaemonLogger } from '@myco/daemon/logger.js';
+import { registerPowerJobs, type PowerJobDeps } from '@myco/daemon/power-jobs.js';
+import { writeStagedSkill, stagingRoot } from '@myco/agent/tools/skill-staging.js';
 
 class FakePowerManager {
   jobs: Array<{ name: string; runIn: string[]; fn: () => Promise<void>; preventsDeepSleep?: () => boolean }> = [];
@@ -21,6 +23,10 @@ class FakePowerManager {
   }
 }
 
+// ---------------------------------------------------------------------------
+// database-optimize job (covers the auto-optimize scheduling toggle added in
+// main's database-maintenance-tab feature)
+// ---------------------------------------------------------------------------
 describe('database-optimize power job', () => {
   let tmpDir: string;
   let dbPath: string;
@@ -115,8 +121,104 @@ describe('database-optimize power job', () => {
     await pm.find('database-optimize').fn();
     expect(optimizeSpy).toHaveBeenCalledTimes(1);
     expect(errorSpy).toHaveBeenCalled();
-    // Verify the error log used the right kind
     const call = errorSpy.mock.calls.find((c) => c[0] === 'database.error' || c[0]?.includes?.('database.error'));
     expect(call).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// staging-gc job (covers the skill-generate staging sweep added for the
+// 2026-04-08 skill lifecycle audit)
+// ---------------------------------------------------------------------------
+
+function createMockLogger() {
+  return {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  };
+}
+
+function buildStagingDeps(vaultDir: string): PowerJobDeps {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return {
+    embeddingManager: { reconcile: async () => 0 } as any,
+    registry: { sessions: new Set<string>() } as any,
+    logger: createMockLogger() as any,
+    config: {
+      daemon: { log_retention_days: 30 },
+      maintenance: { auto_optimize: false, auto_optimize_interval_hours: 24 },
+    } as any,
+    db: {} as any,
+    backupDir: path.join(vaultDir, 'backups'),
+    machineId: 'test-machine',
+    vaultDir,
+    databaseManager: {
+      getLastOptimizeAt: async () => null,
+      optimize: async () => undefined,
+    } as any,
+  };
+}
+
+describe('registerPowerJobs — staging-gc', () => {
+  let tmpDir: string;
+  let vaultDir: string;
+  let pm: FakePowerManager;
+
+  beforeEach(() => {
+    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-power-gc-')));
+    vaultDir = path.join(tmpDir, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    pm = new FakePowerManager();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('registers a staging-gc job that runs in idle and sleep states', () => {
+    registerPowerJobs(pm as never, buildStagingDeps(vaultDir));
+    const gc = pm.find('staging-gc');
+    expect(gc.runIn).toContain('idle');
+    expect(gc.runIn).toContain('sleep');
+  });
+
+  it('removes stale staging entries when the job runs', async () => {
+    registerPowerJobs(pm as never, buildStagingDeps(vaultDir));
+    const gc = pm.find('staging-gc');
+
+    // Fresh entry (should survive)
+    writeStagedSkill(vaultDir, 'cand-fresh', 'fresh content');
+
+    // Stale entry (should be swept)
+    writeStagedSkill(vaultDir, 'cand-stale', 'old content');
+    const stalePath = path.resolve(stagingRoot(vaultDir), 'cand-stale');
+    const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    fs.utimesSync(stalePath, twoDaysAgo, twoDaysAgo);
+
+    await gc.fn();
+
+    expect(fs.existsSync(path.resolve(stagingRoot(vaultDir), 'cand-fresh'))).toBe(true);
+    expect(fs.existsSync(stalePath)).toBe(false);
+  });
+
+  it('is a no-op when the staging root does not exist', async () => {
+    registerPowerJobs(pm as never, buildStagingDeps(vaultDir));
+    const gc = pm.find('staging-gc');
+    await expect(gc.fn()).resolves.toBeUndefined();
+  });
+
+  it('is a no-op when all entries are fresh', async () => {
+    registerPowerJobs(pm as never, buildStagingDeps(vaultDir));
+    const gc = pm.find('staging-gc');
+
+    writeStagedSkill(vaultDir, 'cand-a', 'a');
+    writeStagedSkill(vaultDir, 'cand-b', 'b');
+
+    await gc.fn();
+
+    expect(fs.existsSync(path.resolve(stagingRoot(vaultDir), 'cand-a'))).toBe(true);
+    expect(fs.existsSync(path.resolve(stagingRoot(vaultDir), 'cand-b'))).toBe(true);
   });
 });

@@ -8,6 +8,8 @@
  * Fully idempotent — safe to call on every request.
  */
 
+import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
+
 const SESSIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS sessions (
     id                     TEXT NOT NULL,
@@ -194,6 +196,7 @@ const SKILL_CANDIDATES_TABLE = `
     status          TEXT NOT NULL DEFAULT 'identified',
     source_ids      TEXT NOT NULL DEFAULT '[]',
     skill_id        TEXT,
+    approved_at     INTEGER,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
     synced_at       INTEGER,
@@ -295,6 +298,7 @@ export async function initD1Schema(db: D1Database): Promise<void> {
   // Migrations for existing tables (safe to re-run — silently ignored if column exists)
   const migrations = [
     'ALTER TABLE skill_usage ADD COLUMN synced_at INTEGER',
+    'ALTER TABLE skill_candidates ADD COLUMN approved_at INTEGER',
   ];
   for (const sql of migrations) {
     try {
@@ -303,4 +307,16 @@ export async function initD1Schema(db: D1Database): Promise<void> {
       // Column already exists — expected after first run
     }
   }
+
+  // Backfill approved_at for already-synced historical rows so remote D1
+  // mirrors the local SQLite v10 migration semantics. Idempotent via the
+  // approved_at IS NULL guard.
+  await db.prepare(
+    `UPDATE skill_candidates
+       SET approved_at = strftime('%s', 'now')
+     WHERE approved_at IS NULL
+       AND status IN (?, ?)`,
+  )
+    .bind(CANDIDATE_STATUS.APPROVED, CANDIDATE_STATUS.GENERATED)
+    .run();
 }

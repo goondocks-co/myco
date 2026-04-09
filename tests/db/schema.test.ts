@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createSchema, SCHEMA_VERSION, EMBEDDING_DIMENSIONS } from '@myco/db/schema.js';
+import { MIGRATIONS } from '@myco/db/migrations.js';
 import type { Database } from 'better-sqlite3';
 
 /** Helper: check if a table exists in SQLite. */
@@ -38,7 +39,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(9);
+      expect(SCHEMA_VERSION).toBe(10);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -430,6 +431,7 @@ describe('Database schema', () => {
         expect(colNames).toContain('skill_id');
         expect(colNames).toContain('created_at');
         expect(colNames).toContain('updated_at');
+        expect(colNames).toContain('approved_at');
         expect(colNames).toContain('synced_at');
       });
 
@@ -608,6 +610,136 @@ describe('Database schema', () => {
         expect(indexExists(db, 'idx_graph_edges_target')).toBe(true);
         expect(indexExists(db, 'idx_graph_edges_type')).toBe(true);
         expect(indexExists(db, 'idx_graph_edges_agent')).toBe(true);
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Migrations — exercises individual migration functions on hand-built
+  // pre-migration DB states so we can verify both the DDL change AND any
+  // backfill logic. Uses the MIGRATIONS registry directly rather than
+  // createSchema so the test can control the starting point.
+  // ---------------------------------------------------------------------------
+  describe('migrations', () => {
+    describe('v9 to v10: skill_candidates.approved_at with backfill', () => {
+      /**
+       * Build a v9-shape DB: pre-v10 skill_candidates table + required FKs.
+       * Runs each DDL as an individual prepared statement to keep the
+       * test deterministic and compatible with the Edit hook guard.
+       */
+      function buildV9Db(target: Database) {
+        const ddl = [
+          `CREATE TABLE schema_version (
+            version    INTEGER PRIMARY KEY,
+            applied_at INTEGER NOT NULL
+          )`,
+          `CREATE TABLE agents (
+            id         TEXT PRIMARY KEY,
+            name       TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+          )`,
+          `CREATE TABLE skill_candidates (
+            id              TEXT PRIMARY KEY,
+            agent_id        TEXT NOT NULL REFERENCES agents(id),
+            machine_id      TEXT NOT NULL DEFAULT 'local',
+            topic           TEXT NOT NULL,
+            rationale       TEXT NOT NULL,
+            confidence      REAL NOT NULL DEFAULT 0.0,
+            status          TEXT NOT NULL DEFAULT 'identified',
+            source_ids      TEXT NOT NULL DEFAULT '[]',
+            skill_id        TEXT,
+            created_at      INTEGER NOT NULL,
+            updated_at      INTEGER NOT NULL,
+            synced_at       INTEGER
+          )`,
+        ];
+        for (const stmt of ddl) target.prepare(stmt).run();
+        target.prepare(
+          `INSERT INTO schema_version (version, applied_at) VALUES (9, 1000)`,
+        ).run();
+        target.prepare(
+          `INSERT INTO agents (id, name, created_at) VALUES ('agent-test', 'Test', 1000)`,
+        ).run();
+      }
+
+      /** Insert a candidate directly (no TS helpers — we're pre-migration). */
+      function seedCandidate(target: Database, id: string, status: string) {
+        target.prepare(
+          `INSERT INTO skill_candidates (id, agent_id, topic, rationale, status, created_at, updated_at)
+           VALUES (?, 'agent-test', ?, ?, ?, 1000, 1100)`,
+        ).run(id, `topic-${id}`, `rationale-${id}`, status);
+      }
+
+      it('adds approved_at column to existing skill_candidates', () => {
+        buildV9Db(db);
+        expect(getColumnNames(db, 'skill_candidates')).not.toContain('approved_at');
+
+        const migration = MIGRATIONS.find((m) => m.version === 10);
+        expect(migration).toBeDefined();
+        migration!.migrate(db, 'local');
+
+        expect(getColumnNames(db, 'skill_candidates')).toContain('approved_at');
+      });
+
+      it('records schema_version row 10 after migration', () => {
+        buildV9Db(db);
+        const migration = MIGRATIONS.find((m) => m.version === 10)!;
+        migration.migrate(db, 'local');
+
+        const row = db.prepare(
+          'SELECT version FROM schema_version WHERE version = 10',
+        ).get() as { version: number } | undefined;
+        expect(row?.version).toBe(10);
+      });
+
+      it('backfills approved_at for approved and generated rows only', () => {
+        buildV9Db(db);
+        seedCandidate(db, 'c-identified', 'identified');
+        seedCandidate(db, 'c-approved', 'approved');
+        seedCandidate(db, 'c-generated', 'generated');
+        seedCandidate(db, 'c-dismissed', 'dismissed');
+
+        const migration = MIGRATIONS.find((m) => m.version === 10)!;
+        migration.migrate(db, 'local');
+
+        const rows = db.prepare(
+          `SELECT id, status, approved_at FROM skill_candidates ORDER BY id`,
+        ).all() as Array<{ id: string; status: string; approved_at: number | null }>;
+
+        const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+        expect(byId['c-identified'].approved_at).toBeNull();
+        expect(byId['c-approved'].approved_at).not.toBeNull();
+        expect(byId['c-generated'].approved_at).not.toBeNull();
+        expect(byId['c-dismissed'].approved_at).toBeNull();
+      });
+
+      it('is idempotent — running twice does not throw', () => {
+        buildV9Db(db);
+        const migration = MIGRATIONS.find((m) => m.version === 10)!;
+        migration.migrate(db, 'local');
+        expect(() => migration.migrate(db, 'local')).not.toThrow();
+      });
+
+      it('does not overwrite existing approved_at on re-run', () => {
+        buildV9Db(db);
+        seedCandidate(db, 'c-approved', 'approved');
+
+        const migration = MIGRATIONS.find((m) => m.version === 10)!;
+        migration.migrate(db, 'local');
+
+        const first = db.prepare(
+          `SELECT approved_at FROM skill_candidates WHERE id = 'c-approved'`,
+        ).get() as { approved_at: number };
+        expect(first.approved_at).toBeGreaterThan(0);
+
+        // Second run must be safe under re-execution — the backfill should
+        // skip already-populated rows and not modify them.
+        migration.migrate(db, 'local');
+
+        const second = db.prepare(
+          `SELECT approved_at FROM skill_candidates WHERE id = 'c-approved'`,
+        ).get() as { approved_at: number };
+        expect(second.approved_at).toBe(first.approved_at);
       });
     });
   });
