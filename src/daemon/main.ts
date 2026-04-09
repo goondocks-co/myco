@@ -70,7 +70,15 @@ import {
   handleEmbeddingCleanOrphans,
   handleEmbeddingReembedStale,
 } from './api/embedding.js';
+import {
+  handleDatabaseDetails,
+  handleDatabaseOptimize,
+  handleDatabaseVacuum,
+  handleDatabaseReindex,
+  handleDatabaseIntegrityCheck,
+} from './api/database.js';
 import { EmbeddingManager, SqliteVecVectorStore, EmbeddingProviderAdapter, SqliteRecordSource } from './embedding/index.js';
+import { DatabaseMaintenanceManager } from './database/manager.js';
 import { registerBuiltinDomains } from '../notifications/domains.js';
 import {
   handleListNotifications,
@@ -255,6 +263,7 @@ export async function main(): Promise<void> {
   const recordSource = new SqliteRecordSource();
   const embeddingManager = new EmbeddingManager(vectorStore, embeddingProvider, recordSource, logger);
   logger.info(LOG_KINDS.EMBEDDING_EMBED, 'EmbeddingManager initialized', { vectors_db: vectorsDbPath });
+  const databaseManager = new DatabaseMaintenanceManager(db, vaultDbPath(vaultDir), vaultDir, logger);
 
   // --- Register built-in agents and tasks ---
   let definitionsDir: string | undefined;
@@ -423,6 +432,7 @@ export async function main(): Promise<void> {
     configHash: configHashRef,
   }));
 
+  server.registerRoute('GET', '/api/logs', handleLogStream);
   server.registerRoute('GET', '/api/logs/search', handleLogSearch);
   server.registerRoute('GET', '/api/logs/stream', handleLogStream);
   server.registerRoute('GET', '/api/logs/:id', handleLogDetail);
@@ -557,6 +567,11 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/embedding/reconcile', async () => handleEmbeddingReconcile(embeddingManager));
   server.registerRoute('POST', '/api/embedding/clean-orphans', async () => handleEmbeddingCleanOrphans(embeddingManager));
   server.registerRoute('POST', '/api/embedding/reembed-stale', async () => handleEmbeddingReembedStale(embeddingManager));
+  server.registerRoute('GET', '/api/database/details', async () => handleDatabaseDetails(databaseManager));
+  server.registerRoute('POST', '/api/database/optimize', async () => handleDatabaseOptimize(databaseManager));
+  server.registerRoute('POST', '/api/database/vacuum', async () => handleDatabaseVacuum(databaseManager));
+  server.registerRoute('POST', '/api/database/reindex', async () => handleDatabaseReindex(databaseManager));
+  server.registerRoute('POST', '/api/database/integrity-check', async () => handleDatabaseIntegrityCheck(databaseManager));
 
   // --- Notification API routes ---
   server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(vaultDir, req.query));
@@ -591,7 +606,7 @@ export async function main(): Promise<void> {
   }
 
   // --- Register power-managed jobs ---
-  registerPowerJobs(powerManager, { embeddingManager, registry, logger, config, db, backupDir, machineId, vaultDir });
+  registerPowerJobs(powerManager, { embeddingManager, registry, logger, config, db, backupDir, machineId, vaultDir, databaseManager });
   teamSync.registerFlushJob(powerManager);
 
   // -- Dynamic task scheduling --

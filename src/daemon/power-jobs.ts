@@ -12,6 +12,7 @@ import type { PowerManager } from './power.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { SessionRegistry } from './lifecycle.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import type { DatabaseMaintenanceManager } from './database/manager.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import { createBackup } from './backup.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
@@ -31,6 +32,7 @@ export interface PowerJobDeps {
   backupDir: string;
   machineId: string;
   vaultDir: string;
+  databaseManager: DatabaseMaintenanceManager;
 }
 
 // ---------------------------------------------------------------------------
@@ -38,7 +40,7 @@ export interface PowerJobDeps {
 // ---------------------------------------------------------------------------
 
 export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps): void {
-  const { embeddingManager, registry, logger, config, db, backupDir, machineId, vaultDir } = deps;
+  const { embeddingManager, registry, logger, config, db, backupDir, machineId, vaultDir, databaseManager } = deps;
 
   let reconcileRunning = false;
   powerManager.register({
@@ -90,6 +92,25 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
         logger.info(LOG_KINDS.BACKUP_COMPLETE, 'Auto-backup complete', { file_path: filePath });
       } catch (err) {
         logger.error(LOG_KINDS.BACKUP_ERROR, 'Auto-backup failed', { error: (err as Error).message });
+      }
+    },
+  });
+
+  // Database optimize: run VACUUM + WAL checkpoint + ANALYZE during idle/sleep cycles
+  powerManager.register({
+    name: 'database-optimize',
+    runIn: ['idle', 'sleep'],
+    fn: async () => {
+      if (!config.maintenance?.auto_optimize) return;
+      const intervalMs = (config.maintenance.auto_optimize_interval_hours ?? 24) * 3_600_000;
+      const lastRun = await databaseManager.getLastOptimizeAt();
+      if (lastRun !== null && Date.now() - lastRun < intervalMs) return;
+      try {
+        await databaseManager.optimize();
+      } catch (err) {
+        logger.error(LOG_KINDS.DATABASE_ERROR, 'Auto-optimize failed', {
+          error: (err as Error).message,
+        });
       }
     },
   });

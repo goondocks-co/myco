@@ -163,3 +163,38 @@ describe('MycoConfigSchema v3', () => {
     expect(config.agent.tasks?.['skill-survey']?.schedule?.intervalSeconds).toBe(900);
   });
 });
+
+describe('MaintenanceSchema', () => {
+  it('defaults auto_optimize to true and interval to 24 hours', () => {
+    const config = MycoConfigSchema.parse({ version: 3 });
+    expect(config.maintenance.auto_optimize).toBe(true);
+    expect(config.maintenance.auto_optimize_interval_hours).toBe(24);
+  });
+
+  it('accepts explicit overrides', () => {
+    const config = MycoConfigSchema.parse({
+      version: 3,
+      maintenance: { auto_optimize: false, auto_optimize_interval_hours: 168 },
+    });
+    expect(config.maintenance.auto_optimize).toBe(false);
+    expect(config.maintenance.auto_optimize_interval_hours).toBe(168);
+  });
+
+  it('rejects interval below 1 hour', () => {
+    expect(() =>
+      MycoConfigSchema.parse({
+        version: 3,
+        maintenance: { auto_optimize: true, auto_optimize_interval_hours: 0 },
+      }),
+    ).toThrow();
+  });
+
+  it('rejects interval above 720 hours', () => {
+    expect(() =>
+      MycoConfigSchema.parse({
+        version: 3,
+        maintenance: { auto_optimize: true, auto_optimize_interval_hours: 721 },
+      }),
+    ).toThrow();
+  });
+});

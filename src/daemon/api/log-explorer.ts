@@ -46,14 +46,19 @@ export async function handleLogSearch(req: RouteRequest): Promise<RouteResponse>
 export async function handleLogStream(req: RouteRequest): Promise<RouteResponse> {
   const sinceStr = req.query.since;
   const limitStr = req.query.limit;
+  const categoryFilter = req.query.category || undefined;
   const sinceId = sinceStr ? parseInt(sinceStr, 10) : 0;
   const limit = limitStr ? parseInt(limitStr, 10) : undefined;
 
   const result = getLogsSince(sinceId, limit);
+  const entries = result.entries.map(formatEntry);
+  const filtered = categoryFilter
+    ? entries.filter((e) => e.category === categoryFilter)
+    : entries;
 
   return {
     body: {
-      entries: result.entries.map(formatEntry),
+      entries: filtered,
       cursor: result.cursor,
     },
   };
@@ -120,8 +125,11 @@ export function createLogIngestionHandler(logger: DaemonLogger): RouteHandler {
 // ---------------------------------------------------------------------------
 
 function formatEntry(entry: LogEntryRow) {
+  const dot = entry.kind.indexOf('.');
+  const category = dot > 0 ? entry.kind.slice(0, dot) : entry.kind;
   return {
     ...entry,
+    category,
     data: entry.data ? JSON.parse(entry.data) : null,
   };
 }

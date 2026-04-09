@@ -56,6 +56,14 @@ export const LOG_KINDS = {
   EMBEDDING_CLEANUP: 'embedding.cleanup',
   EMBEDDING_PROVIDER: 'embedding.provider',
 
+  // Database maintenance
+  DATABASE_OPTIMIZE: 'database.optimize',
+  DATABASE_VACUUM: 'database.vacuum',
+  DATABASE_REINDEX: 'database.reindex',
+  DATABASE_INTEGRITY_CHECK: 'database.integrity-check',
+  DATABASE_INTEGRITY_ISSUES: 'database.integrity-issues',
+  DATABASE_ERROR: 'database.error',
+
   // Power management
   POWER_TICK: 'power.tick',
   POWER_STATE: 'power.state',
