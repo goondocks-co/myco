@@ -1,5 +1,5 @@
 import type { DatabaseMaintenanceManager } from '../database/manager.js';
-import { VacuumPrecheckError } from '../database/types.js';
+import { VacuumPrecheckError, VACUUM_ERROR_CODE } from '../database/types.js';
 import type { RouteResponse } from '../router.js';
 
 export async function handleDatabaseDetails(
@@ -27,7 +27,7 @@ export async function handleDatabaseVacuum(
       return {
         status: 409,
         body: {
-          error: 'insufficient_disk_space',
+          error: VACUUM_ERROR_CODE,
           required_bytes: err.required_bytes,
           free_bytes: err.free_bytes,
         },

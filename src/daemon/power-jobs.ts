@@ -16,7 +16,7 @@ import type { DatabaseMaintenanceManager } from './database/manager.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import { createBackup } from './backup.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
-import { EMBEDDING_BATCH_SIZE, MS_PER_DAY } from '@myco/constants.js';
+import { EMBEDDING_BATCH_SIZE, MS_PER_DAY, MS_PER_HOUR } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 
 // ---------------------------------------------------------------------------
@@ -102,7 +102,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     runIn: ['idle', 'sleep'],
     fn: async () => {
       if (!config.maintenance?.auto_optimize) return;
-      const intervalMs = (config.maintenance.auto_optimize_interval_hours ?? 24) * 3_600_000;
+      const intervalMs = (config.maintenance.auto_optimize_interval_hours ?? 24) * MS_PER_HOUR;
       const lastRun = await databaseManager.getLastOptimizeAt();
       if (lastRun !== null && Date.now() - lastRun < intervalMs) return;
       try {

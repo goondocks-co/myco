@@ -27,7 +27,7 @@ describe('database API handlers', () => {
     dbPath = path.join(tmpDir, 'myco.db');
     const db = initDatabase(dbPath);
     createSchema(db);
-    manager = new DatabaseMaintenanceManager(getDatabase(), dbPath, tmpDir, makeLogger());
+    manager = new DatabaseMaintenanceManager(dbPath, tmpDir, makeLogger());
   });
 
   afterEach(() => {

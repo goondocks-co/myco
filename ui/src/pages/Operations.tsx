@@ -1,14 +1,13 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Cpu, Database, Play, Trash2, RefreshCw, RotateCcw, ArrowDown, Pause } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEmbeddingDetails, type EmbeddingDetails } from '../hooks/use-embedding-details';
 import { useDatabaseDetails, type DatabaseDetails } from '../hooks/use-database-details';
 import { useConfig } from '../hooks/use-config';
+import { useLogFeed } from '../hooks/use-log-feed';
 import { Badge } from '../components/ui/badge';
-import { usePowerQuery } from '../hooks/use-power-query';
-import { fetchJson, postJson, ApiError } from '../lib/api';
-import { formatTimeAgo, SECONDS_PER_HOUR } from '../lib/format';
-import { POLL_INTERVALS, LEVEL_ORDER, type LogLevel } from '../lib/constants';
+import { postJson, ApiError } from '../lib/api';
+import { formatBytes, formatTimeAgo, SECONDS_PER_HOUR } from '../lib/format';
 import { PageLoading } from '../components/ui/page-loading';
 import { PageHeader } from '../components/ui/page-header';
 import { Surface } from '../components/ui/surface';
@@ -26,9 +25,12 @@ import type { Tab } from '../components/ui/tab-switcher';
 const EMBEDDABLE_NAMESPACES = ['sessions', 'spores', 'plans', 'artifacts'] as const;
 const EMBEDDING_LOG_CATEGORY = 'embedding';
 const DATABASE_LOG_CATEGORY = 'database';
-const DEFAULT_LOG_LIMIT = 100;
-const MAX_LOG_ENTRIES = 2000;
-const SCROLL_BOTTOM_THRESHOLD_PX = 40;
+
+/** Fragmentation percentage at or above which the stat card uses a warning accent. */
+const FRAGMENTATION_WARN_PCT = 15;
+
+/** Error-code discriminant returned by /api/database/vacuum on 409. */
+const VACUUM_INSUFFICIENT_DISK = 'insufficient_disk_space';
 
 /** Number of recent data points to show in stat card sparklines. */
 const SPARKLINE_HISTORY_LENGTH = 20;
@@ -60,22 +62,6 @@ function writeTabToUrl(tab: ActiveTab): void {
   window.history.replaceState(null, '', url);
 }
 
-/* ---------- Types ---------- */
-
-interface LogEntry {
-  timestamp: string;
-  level: LogLevel;
-  category: string;
-  message: string;
-  [key: string]: unknown;
-}
-
-interface LogsResponse {
-  entries: LogEntry[];
-  cursor: string;
-  cursor_reset?: boolean;
-}
-
 /* ---------- Helpers ---------- */
 
 function statusLabel(data: EmbeddingDetails): string {
@@ -88,27 +74,6 @@ function statusDotColor(data: EmbeddingDetails): string {
   if (!data.provider.available) return 'bg-tertiary';
   const hasPending = Object.values(data.pending).some((n) => n > 0);
   return hasPending ? 'bg-secondary' : 'bg-primary';
-}
-
-function isAtBottom(el: HTMLElement): boolean {
-  return el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return bytes + ' B';
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let value = bytes / 1024;
-  let unitIdx = 0;
-  while (value >= 1024 && unitIdx < units.length - 1) {
-    value /= 1024;
-    unitIdx++;
-  }
-  return value.toFixed(value >= 100 ? 0 : 1) + ' ' + units[unitIdx];
-}
-
-function formatRelative(iso: string | null): string {
-  if (!iso) return 'never';
-  return formatTimeAgo(iso);
 }
 
 function formatCountdown(ms: number): string {
@@ -358,7 +323,7 @@ function ScheduledMaintenanceCard({
         </select>
       </div>
       <p className="font-sans text-sm text-on-surface-variant">
-        Last run: {formatRelative(details.last_optimize_at)}
+        Last run: {details.last_optimize_at ? formatTimeAgo(details.last_optimize_at) : 'never'}
         {enabled && lastRunMs !== null && <> · Next: {formatCountdown(nextRunMs)}</>}
       </p>
       <Button variant="secondary" size="sm" onClick={handleRunNow} disabled={running}>
@@ -420,7 +385,7 @@ function DatabaseActions({
     } catch (err) {
       if (err instanceof ApiError) {
         const body = err.body as { error?: string; required_bytes?: number; free_bytes?: number };
-        if (body?.error === 'insufficient_disk_space') {
+        if (body?.error === VACUUM_INSUFFICIENT_DISK) {
           onActionResult({
             type: 'error',
             text: 'Insufficient disk: need ' + formatBytes(body.required_bytes ?? 0) + ', have ' + formatBytes(body.free_bytes ?? 0),
@@ -487,91 +452,16 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
     });
   }, [data]);
 
-  // --- Embedding log feed ---
-  const [entries, setEntries] = useState<LogEntry[]>([]);
-  const [cursor, setCursor] = useState<string | undefined>(undefined);
-  const [autoScroll, setAutoScroll] = useState(true);
-  const [hasNewEntries, setHasNewEntries] = useState(false);
-
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const autoScrollRef = useRef(autoScroll);
-  autoScrollRef.current = autoScroll;
-  const cursorRef = useRef(cursor);
-  cursorRef.current = cursor;
-
-  const { data: logsData } = usePowerQuery<LogsResponse>({
-    queryKey: ['embedding-logs'],
-    queryFn: ({ signal }) => {
-      const params = new URLSearchParams({
-        limit: String(DEFAULT_LOG_LIMIT),
-        category: EMBEDDING_LOG_CATEGORY,
-      });
-      if (cursorRef.current) params.set('since', cursorRef.current);
-      return fetchJson<LogsResponse>(`/logs?${params.toString()}`, { signal });
-    },
-    refetchInterval: POLL_INTERVALS.LOGS,
-    pollCategory: 'standard',
-  });
-
-  useEffect(() => {
-    if (!logsData?.entries.length) return;
-
-    setEntries((prev) => {
-      let combined: LogEntry[];
-      if (logsData.cursor_reset) {
-        const existingKeys = new Set(prev.map((e) => `${e.timestamp}|${e.message}`));
-        const fresh = logsData.entries.filter(
-          (e) => !existingKeys.has(`${e.timestamp}|${e.message}`),
-        );
-        combined = fresh.length ? [...prev, ...fresh] : prev;
-      } else {
-        combined = [...prev, ...logsData.entries];
-      }
-      return combined.length > MAX_LOG_ENTRIES
-        ? combined.slice(-MAX_LOG_ENTRIES)
-        : combined;
-    });
-
-    setCursor(logsData.cursor);
-
-    if (!autoScrollRef.current) {
-      setHasNewEntries(true);
-    }
-  }, [logsData]);
-
-  useEffect(() => {
-    if (!autoScroll || !scrollRef.current) return;
-    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    setHasNewEntries(false);
-  }, [entries, autoScroll]);
-
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (isAtBottom(el)) {
-      setAutoScroll(true);
-      setHasNewEntries(false);
-    } else {
-      setAutoScroll(false);
-    }
-  }, []);
-
-  const scrollToBottom = useCallback(() => {
-    if (!scrollRef.current) return;
-    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    setAutoScroll(true);
-    setHasNewEntries(false);
-  }, []);
-
-  // Client-side filter to embedding category
-  const filteredEntries = useMemo(() => {
-    const levelFloor = LEVEL_ORDER['debug'];
-    return entries.filter((e) => {
-      if (LEVEL_ORDER[e.level] < levelFloor) return false;
-      if (e.category !== EMBEDDING_LOG_CATEGORY) return false;
-      return true;
-    });
-  }, [entries]);
+  // Log feed (shared hook)
+  const {
+    filteredEntries,
+    scrollRef,
+    autoScroll,
+    setAutoScroll,
+    hasNewEntries,
+    handleScroll,
+    scrollToBottom,
+  } = useLogFeed(EMBEDDING_LOG_CATEGORY);
 
   // --- Action handlers ---
 
@@ -789,90 +679,23 @@ function DatabaseTab() {
     });
   }, [data]);
 
-  // --- Database log feed ---
-  const [entries, setEntries] = useState<LogEntry[]>([]);
-  const [cursor, setCursor] = useState<string | undefined>(undefined);
-  const [autoScroll, setAutoScroll] = useState(true);
-  const [hasNewEntries, setHasNewEntries] = useState(false);
-
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const autoScrollRef = useRef(autoScroll);
-  autoScrollRef.current = autoScroll;
-  const cursorRef = useRef(cursor);
-  cursorRef.current = cursor;
-
-  const { data: logsData } = usePowerQuery<LogsResponse>({
-    queryKey: ['database-logs'],
-    queryFn: ({ signal }) => {
-      const params = new URLSearchParams({
-        limit: String(DEFAULT_LOG_LIMIT),
-        category: DATABASE_LOG_CATEGORY,
-      });
-      if (cursorRef.current) params.set('since', cursorRef.current);
-      return fetchJson<LogsResponse>('/logs?' + params.toString(), { signal });
-    },
-    refetchInterval: POLL_INTERVALS.LOGS,
-    pollCategory: 'standard',
-  });
-
-  useEffect(() => {
-    if (!logsData?.entries.length) return;
-    setEntries((prev) => {
-      let combined: LogEntry[];
-      if (logsData.cursor_reset) {
-        const existingKeys = new Set(prev.map((e) => e.timestamp + '|' + e.message));
-        const fresh = logsData.entries.filter(
-          (e) => !existingKeys.has(e.timestamp + '|' + e.message),
-        );
-        combined = fresh.length ? [...prev, ...fresh] : prev;
-      } else {
-        combined = [...prev, ...logsData.entries];
-      }
-      return combined.length > MAX_LOG_ENTRIES ? combined.slice(-MAX_LOG_ENTRIES) : combined;
-    });
-    setCursor(logsData.cursor);
-    if (!autoScrollRef.current) setHasNewEntries(true);
-  }, [logsData]);
-
-  useEffect(() => {
-    if (!autoScroll || !scrollRef.current) return;
-    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    setHasNewEntries(false);
-  }, [entries, autoScroll]);
-
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (isAtBottom(el)) {
-      setAutoScroll(true);
-      setHasNewEntries(false);
-    } else {
-      setAutoScroll(false);
-    }
-  }, []);
-
-  const scrollToBottom = useCallback(() => {
-    if (!scrollRef.current) return;
-    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    setAutoScroll(true);
-    setHasNewEntries(false);
-  }, []);
-
-  const filteredEntries = useMemo(() => {
-    const levelFloor = LEVEL_ORDER['debug'];
-    return entries.filter((e) => {
-      if (LEVEL_ORDER[e.level] < levelFloor) return false;
-      if (e.category !== DATABASE_LOG_CATEGORY) return false;
-      return true;
-    });
-  }, [entries]);
+  // Log feed (shared hook)
+  const {
+    filteredEntries,
+    scrollRef,
+    autoScroll,
+    setAutoScroll,
+    hasNewEntries,
+    handleScroll,
+    scrollToBottom,
+  } = useLogFeed(DATABASE_LOG_CATEGORY);
 
   if (isLoading) return <div className="text-on-surface-variant">Loading database details...</div>;
   if (isError) return <div className="text-tertiary">Error: {(error as Error).message}</div>;
   if (!data) return null;
 
   const fragmentationDisplay = data.file.fragmentation_pct.toFixed(1) + '%';
-  const fragmentationAccent = data.file.fragmentation_pct > 15 ? 'ochre' : 'outline';
+  const fragmentationAccent = data.file.fragmentation_pct > FRAGMENTATION_WARN_PCT ? 'ochre' : 'outline';
 
   return (
     <div className="space-y-6">

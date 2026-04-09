@@ -47,7 +47,7 @@ describe('database-optimize power job', () => {
         session_id: null,
       });
     });
-    databaseManager = new DatabaseMaintenanceManager(getDatabase(), dbPath, tmpDir, logger);
+    databaseManager = new DatabaseMaintenanceManager(dbPath, tmpDir, logger);
     pm = new FakePowerManager();
   });
 

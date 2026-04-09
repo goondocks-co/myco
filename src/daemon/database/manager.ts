@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import type { Database } from 'better-sqlite3';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import {
   getDatabaseFileStats,
@@ -7,6 +6,7 @@ import {
   getIndexesList,
   getSchemaInfo,
   getLastDatabaseLogTimestamp,
+  getLastDatabaseLogTimestamps,
   runVacuum,
   runAnalyze,
   runReindex,
@@ -17,6 +17,7 @@ import {
   runFtsOptimize,
   listFtsTableNames,
 } from '@myco/db/queries/database.js';
+import type { Logger } from '../logger.js';
 import {
   type DatabaseDetails,
   type OptimizeAction,
@@ -27,18 +28,10 @@ import {
   VacuumPrecheckError,
 } from './types.js';
 
-interface Logger {
-  debug(cat: string, msg: string, data?: Record<string, unknown>): void;
-  info(cat: string, msg: string, data?: Record<string, unknown>): void;
-  warn(cat: string, msg: string, data?: Record<string, unknown>): void;
-  error(cat: string, msg: string, data?: Record<string, unknown>): void;
-}
-
 const VACUUM_FREE_SPACE_MULTIPLIER = 2;
 
 export class DatabaseMaintenanceManager {
   constructor(
-    private db: Database,
     private dbPath: string,
     private vaultDir: string,
     private logger: Logger,
@@ -50,10 +43,17 @@ export class DatabaseMaintenanceManager {
     const tables = getTablesBreakdown();
     const indexes = getIndexesList();
 
-    const optimizeMs = getLastDatabaseLogTimestamp(LOG_KINDS.DATABASE_OPTIMIZE);
-    const vacuumMs = getLastDatabaseLogTimestamp(LOG_KINDS.DATABASE_VACUUM);
-    const integrityOkMs = getLastDatabaseLogTimestamp(LOG_KINDS.DATABASE_INTEGRITY_CHECK);
-    const integrityIssuesMs = getLastDatabaseLogTimestamp(LOG_KINDS.DATABASE_INTEGRITY_ISSUES);
+    // Batch the four last-run lookups into a single log_entries query.
+    const lastRuns = getLastDatabaseLogTimestamps([
+      LOG_KINDS.DATABASE_OPTIMIZE,
+      LOG_KINDS.DATABASE_VACUUM,
+      LOG_KINDS.DATABASE_INTEGRITY_CHECK,
+      LOG_KINDS.DATABASE_INTEGRITY_ISSUES,
+    ]);
+    const optimizeMs = lastRuns.get(LOG_KINDS.DATABASE_OPTIMIZE) ?? null;
+    const vacuumMs = lastRuns.get(LOG_KINDS.DATABASE_VACUUM) ?? null;
+    const integrityOkMs = lastRuns.get(LOG_KINDS.DATABASE_INTEGRITY_CHECK) ?? null;
+    const integrityIssuesMs = lastRuns.get(LOG_KINDS.DATABASE_INTEGRITY_ISSUES) ?? null;
 
     let last_integrity_check: { at: string; status: 'ok' | 'issues' } | null = null;
     if (integrityOkMs !== null || integrityIssuesMs !== null) {

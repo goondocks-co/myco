@@ -53,6 +53,9 @@ export interface IntegrityResult {
   duration_ms: number;
 }
 
+/** Error-code discriminant returned by the vacuum HTTP handler on 409. */
+export const VACUUM_ERROR_CODE = 'insufficient_disk_space' as const;
+
 export class VacuumPrecheckError extends Error {
   constructor(public required_bytes: number, public free_bytes: number) {
     super('VACUUM requires at least ' + required_bytes + ' bytes free; only ' + free_bytes + ' available');

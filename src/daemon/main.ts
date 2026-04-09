@@ -263,7 +263,7 @@ export async function main(): Promise<void> {
   const recordSource = new SqliteRecordSource();
   const embeddingManager = new EmbeddingManager(vectorStore, embeddingProvider, recordSource, logger);
   logger.info(LOG_KINDS.EMBEDDING_EMBED, 'EmbeddingManager initialized', { vectors_db: vectorsDbPath });
-  const databaseManager = new DatabaseMaintenanceManager(db, vaultDbPath(vaultDir), vaultDir, logger);
+  const databaseManager = new DatabaseMaintenanceManager(vaultDbPath(vaultDir), vaultDir, logger);
 
   // --- Register built-in agents and tasks ---
   let definitionsDir: string | undefined;

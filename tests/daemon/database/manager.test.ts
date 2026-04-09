@@ -42,7 +42,7 @@ describe('DatabaseMaintenanceManager', () => {
     });
     vi.spyOn(logger, 'info');
 
-    manager = new DatabaseMaintenanceManager(getDatabase(), dbPath, tmpDir, logger);
+    manager = new DatabaseMaintenanceManager(dbPath, tmpDir, logger);
   });
 
   afterEach(() => {

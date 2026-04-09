@@ -15,6 +15,18 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export type LogPersistFn = (entry: LogEntry) => void;
 
+/**
+ * Structural logger interface consumed by manager classes.
+ * `DaemonLogger` is the concrete implementation, but managers accept any
+ * object matching this shape so tests can substitute mocks.
+ */
+export interface Logger {
+  debug(cat: string, msg: string, data?: Record<string, unknown>): void;
+  info(cat: string, msg: string, data?: Record<string, unknown>): void;
+  warn(cat: string, msg: string, data?: Record<string, unknown>): void;
+  error(cat: string, msg: string, data?: Record<string, unknown>): void;
+}
+
 export const LEVEL_ORDER: Record<LogLevel, number> = {
   debug: 0, info: 1, warn: 2, error: 3,
 };

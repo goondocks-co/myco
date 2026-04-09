@@ -85,6 +85,16 @@ export function getDatabaseFileStats(dbPath: string): DatabaseFileStats {
   };
 }
 
+/**
+ * Double-quote-escape a SQL identifier (table/column name). SQLite accepts
+ * `""` as an escaped double-quote inside a quoted identifier. Names that
+ * come from `sqlite_master` never contain double quotes in practice, but
+ * escape defensively so the helper is safe for any caller.
+ */
+function quoteIdent(name: string): string {
+  return '"' + name.replace(/"/g, '""') + '"';
+}
+
 export function getTablesBreakdown(): TableBreakdownRow[] {
   const db = getDatabase();
 
@@ -99,32 +109,48 @@ export function getTablesBreakdown(): TableBreakdownRow[] {
   // quotes, so filter by that marker to hide them from the UI breakdown.
   const userTableRows = tableRows.filter((row) => !(row.sql ?? '').startsWith("CREATE TABLE '"));
 
-  // Index counts grouped by table
+  // Index counts grouped by table (single query covering all tables).
   const indexCountRows = db.prepare(
     "SELECT tbl_name, COUNT(*) AS cnt FROM sqlite_master WHERE type='index' GROUP BY tbl_name",
   ).all() as Array<{ tbl_name: string; cnt: number }>;
   const indexCountByTable = new Map(indexCountRows.map((r) => [r.tbl_name, Number(r.cnt)]));
 
-  return userTableRows.map((row) => {
-    const is_fts = (row.sql ?? '').toLowerCase().includes('fts5');
-    let rows = 0;
+  // Batch all per-table COUNT(*) into one UNION ALL query instead of N round-trips.
+  // SAFE: table names come from sqlite_master, not user input. Names are
+  // double-quoted for the FROM clause and positional parameters are used for
+  // the table-name output column so the query can be read back by index.
+  const countsByTable = new Map<string, number>();
+  if (userTableRows.length > 0) {
+    const unionSql = userTableRows
+      .map((_, i) => `SELECT ? AS t, COUNT(*) AS c FROM ${quoteIdent(userTableRows[i].name)}`)
+      .join(' UNION ALL ');
+    const params = userTableRows.map((row) => row.name);
     try {
-      // SAFE: name comes from sqlite_master, not user input
-      const countSql = 'SELECT COUNT(*) AS cnt FROM "' + row.name + '"';
-      const countRow = db.prepare(countSql).get() as { cnt: number };
-      rows = Number(countRow.cnt ?? 0);
+      const rows = db.prepare(unionSql).all(...params) as Array<{ t: string; c: number }>;
+      for (const r of rows) {
+        countsByTable.set(r.t, Number(r.c ?? 0));
+      }
     } catch {
-      // Defensive guard for any unforeseen COUNT(*) failure — treat as 0 rather
-      // than crash the whole breakdown.
-      rows = 0;
+      // Fallback: if the batched query fails for any reason (e.g. one of the
+      // tables was dropped mid-query), fall back to per-table counts so the
+      // breakdown still reports something reasonable. Rare in practice.
+      for (const row of userTableRows) {
+        try {
+          const r = db.prepare(`SELECT COUNT(*) AS c FROM ${quoteIdent(row.name)}`).get() as { c: number };
+          countsByTable.set(row.name, Number(r.c ?? 0));
+        } catch {
+          countsByTable.set(row.name, 0);
+        }
+      }
     }
-    return {
-      name: row.name,
-      rows,
-      index_count: indexCountByTable.get(row.name) ?? 0,
-      is_fts,
-    };
-  });
+  }
+
+  return userTableRows.map((row) => ({
+    name: row.name,
+    rows: countsByTable.get(row.name) ?? 0,
+    index_count: indexCountByTable.get(row.name) ?? 0,
+    is_fts: (row.sql ?? '').toLowerCase().includes('fts5'),
+  }));
 }
 
 export function getIndexesList(): IndexInfo[] {
@@ -163,6 +189,31 @@ export function getLastDatabaseLogTimestamp(kind: string): number | null {
   if (!row) return null;
   const t = new Date(row.timestamp).getTime();
   return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * Batched variant: look up the most recent `timestamp` for each of the given
+ * kinds in a single query. Missing kinds map to `null`. Used by
+ * `DatabaseMaintenanceManager.getDetails()` to fetch optimize/vacuum/integrity
+ * timestamps in one round-trip instead of N.
+ */
+export function getLastDatabaseLogTimestamps(kinds: string[]): Map<string, number | null> {
+  const result = new Map<string, number | null>();
+  for (const k of kinds) result.set(k, null);
+  if (kinds.length === 0) return result;
+
+  const db = getDatabase();
+  const placeholders = kinds.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT kind, MAX(timestamp) AS latest FROM log_entries WHERE kind IN (${placeholders}) GROUP BY kind`,
+  ).all(...kinds) as Array<{ kind: string; latest: string | null }>;
+
+  for (const row of rows) {
+    if (!row.latest) continue;
+    const t = new Date(row.latest).getTime();
+    result.set(row.kind, Number.isFinite(t) ? t : null);
+  }
+  return result;
 }
 
 // -----------------------------------------------------------------------------
