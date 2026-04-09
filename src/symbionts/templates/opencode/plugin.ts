@@ -12,13 +12,16 @@
 //
 // See https://opencode.ai/docs/plugins/
 //
-// Contributor safety: this plugin has NO external runtime imports — only node:fs
-// and node:path (Node builtins). An OSS contributor who clones the repo without
-// having Myco installed will still have opencode load this plugin successfully.
-// Every path that would contact Myco gracefully no-ops when `.myco/daemon.json`
-// is absent or the daemon is unreachable, so the plugin becomes invisible rather
-// than throwing. Do NOT add runtime imports from @opencode-ai/plugin or any other
-// package — that would break the no-op guarantee.
+// Degraded-mode safety: this plugin ships committed inside any project that has
+// run `myco init` — the file lives at .opencode/plugins/myco.ts in that project's
+// repo. When a teammate clones such a project WITHOUT having Myco installed
+// locally, opencode will still load this plugin (the file is right there in the
+// cloned repo). To stay invisible in that case, the plugin has NO external
+// runtime imports — only node:fs and node:path, which are always available in
+// Bun's runtime. Every path that would contact the Myco daemon gracefully no-ops
+// when `.myco/daemon.json` is absent or the daemon is unreachable, so the plugin
+// becomes invisible rather than throwing. Do NOT add runtime imports from
+// @opencode-ai/plugin or any other package — that would break this guarantee.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -243,8 +246,9 @@ function summarizeToolOutput(output: unknown): string {
 /**
  * Opencode plugin entry. The function signature matches opencode's Plugin type
  * via duck typing — we deliberately do NOT import the Plugin type from
- * @opencode-ai/plugin so the plugin file has zero external runtime dependencies
- * and contributors without Myco installed experience a silent no-op.
+ * @opencode-ai/plugin so this file has zero external runtime dependencies.
+ * That guarantee lets teammates who clone a project that uses Myco still run
+ * opencode cleanly even when they don't have Myco installed locally.
  *
  * @param {{ client: any, directory: string, worktree: string }} ctx
  */
