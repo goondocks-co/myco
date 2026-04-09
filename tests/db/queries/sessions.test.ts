@@ -377,14 +377,65 @@ describe('session query helpers', () => {
     return info.lastInsertRowid as number;
   }
 
-  /** Insert a spore row directly and return its id. */
-  function createSpore(agentId: string, sessionId: string, sporeId: string): string {
+  /**
+   * Insert a spore row directly and return its id.
+   *
+   * Optionally link the spore to a prompt_batch via `promptBatchId` — this
+   * matches how agent-generated spores are created in production and
+   * exercises the `spores.prompt_batch_id → prompt_batches(id)` foreign key
+   * that caused the cascade delete ordering bug.
+   */
+  function createSpore(
+    agentId: string,
+    sessionId: string,
+    sporeId: string,
+    promptBatchId?: number,
+  ): string {
     const db = getDatabase();
     const now = epochNow();
     db.prepare(
-      `INSERT INTO spores (id, agent_id, session_id, observation_type, content, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(sporeId, agentId, sessionId, 'gotcha', 'test content', now);
+      `INSERT INTO spores (id, agent_id, session_id, prompt_batch_id, observation_type, content, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(sporeId, agentId, sessionId, promptBatchId ?? null, 'gotcha', 'test content', now);
     return sporeId;
+  }
+
+  /** Insert a plan row directly — exercises plans.session_id / prompt_batch_id FKs. */
+  function createPlan(sessionId: string, planId: string, promptBatchId?: number): void {
+    const db = getDatabase();
+    const now = epochNow();
+    db.prepare(
+      `INSERT INTO plans (id, session_id, prompt_batch_id, title, content, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(planId, sessionId, promptBatchId ?? null, 'test plan', 'plan content', now);
+  }
+
+  /** Insert a skill_record + skill_usage row — exercises skill_usage.session_id FK. */
+  function createSkillUsage(agentId: string, sessionId: string, skillId: string): void {
+    const db = getDatabase();
+    const now = epochNow();
+    db.prepare(
+      `INSERT INTO skill_records (id, agent_id, name, display_name, description, path, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(skillId, agentId, `skill-${skillId}`, `Skill ${skillId}`, 'test skill', `.agents/skills/${skillId}`, now, now);
+    db.prepare(
+      `INSERT INTO skill_usage (id, skill_id, session_id, detected_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(`usage-${skillId}`, skillId, sessionId, now);
+  }
+
+  /** Insert a resolution_event row — exercises resolution_events.spore_id FK. */
+  function createResolutionEvent(
+    agentId: string,
+    sporeId: string,
+    sessionId: string | null,
+  ): void {
+    const db = getDatabase();
+    const now = epochNow();
+    db.prepare(
+      `INSERT INTO resolution_events (id, agent_id, spore_id, action, session_id, created_at)
+       VALUES (?, ?, ?, 'supersede', ?, ?)`,
+    ).run(`res-${Math.random().toString(36).slice(2, 8)}`, agentId, sporeId, sessionId, now);
   }
 
   /** Insert an attachment row directly. */
@@ -467,10 +518,13 @@ describe('session query helpers', () => {
       upsertSession(session);
       const agentId = createAgent('agent-cascade');
 
+      const batch1 = createBatch(session.id);
       createBatch(session.id);
-      createBatch(session.id);
-      createSpore(agentId, session.id, 'spore-cas-1');
-      createSpore(agentId, session.id, 'spore-cas-2');
+      // Link spores to a prompt_batch — this is what agent-generated spores
+      // do in production, and it exercises the spores.prompt_batch_id FK
+      // that made the cascade ordering bug invisible to prior tests.
+      createSpore(agentId, session.id, 'spore-cas-1', batch1);
+      createSpore(agentId, session.id, 'spore-cas-2', batch1);
       createAttachment(session.id, '/path/file1.png');
       createAttachment(session.id, '/path/file2.png');
       createGraphEdge(agentId, session.id);
@@ -492,6 +546,55 @@ describe('session query helpers', () => {
 
       // Session should no longer exist
       expect(getSession(session.id)).toBeNull();
+    });
+
+    it('deletes plans, skill_usage, and batch-linked spores without FK errors', () => {
+      // Regression test for the session-maintenance FK failure:
+      // spores with prompt_batch_id set must be deleted before prompt_batches,
+      // and plans/skill_usage must be part of the cascade.
+      const session = makeSession({ id: 'sess-fk-regression' });
+      upsertSession(session);
+      const agentId = createAgent('agent-fk-regression');
+
+      const batchId = createBatch(session.id);
+      createSpore(agentId, session.id, 'spore-linked', batchId);
+      createPlan(session.id, 'plan-linked', batchId);
+      createSkillUsage(agentId, session.id, 'skill-linked');
+
+      const result = deleteSessionCascade(session.id);
+      expect(result.deleted).toBe(true);
+
+      const db = getDatabase();
+      const remaining = db.prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM spores WHERE session_id = ?) AS spores,
+           (SELECT COUNT(*) FROM plans WHERE session_id = ?) AS plans,
+           (SELECT COUNT(*) FROM skill_usage WHERE session_id = ?) AS skill_usage,
+           (SELECT COUNT(*) FROM prompt_batches WHERE session_id = ?) AS batches`,
+      ).get(session.id, session.id, session.id, session.id) as Record<string, number>;
+      expect(remaining.spores).toBe(0);
+      expect(remaining.plans).toBe(0);
+      expect(remaining.skill_usage).toBe(0);
+      expect(remaining.batches).toBe(0);
+    });
+
+    it('deletes resolution_events that reference this session\'s spores from other sessions', () => {
+      // A spore from session A can be superseded by session B, leaving a
+      // resolution_event with spore_id=A's spore and session_id=B.
+      // Deleting session A must still remove that event, or the spore
+      // delete fails on the resolution_events.spore_id FK.
+      const sessA = makeSession({ id: 'sess-res-a' });
+      const sessB = makeSession({ id: 'sess-res-b' });
+      upsertSession(sessA);
+      upsertSession(sessB);
+      const agentId = createAgent('agent-res');
+
+      createSpore(agentId, sessA.id, 'spore-res-a');
+      createResolutionEvent(agentId, 'spore-res-a', sessB.id);
+
+      const result = deleteSessionCascade(sessA.id);
+      expect(result.deleted).toBe(true);
+      expect(result.counts.resolutionEvents).toBe(1);
     });
 
     it('returns deleted: false for non-existent session', () => {
