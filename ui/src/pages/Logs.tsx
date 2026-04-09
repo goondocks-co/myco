@@ -46,9 +46,10 @@ export default function Logs() {
   const [timeRange, setTimeRange] = useState('24h');
   const [page, setPage] = useState(1);
   const [selectedEntry, setSelectedEntry] = useState<LogEntry | null>(null);
+  const [paused, setPaused] = useState(false);
 
   // Live mode
-  const { entries: liveEntries } = useLogStream();
+  const { entries: liveEntries, clear: clearLive } = useLogStream(paused);
 
   // Search mode
   const searchParams = useMemo(() => ({
@@ -97,7 +98,13 @@ export default function Logs() {
   const handleModeChange = useCallback((newMode: LogMode) => {
     setMode(newMode);
     setSelectedEntry(null);
-  }, []);
+    // Reset the live buffer on mode toggle so re-entering live mode starts
+    // from a fresh tail instead of replaying stale entries.
+    if (newMode === 'live') {
+      clearLive();
+      setPaused(false);
+    }
+  }, [clearLive]);
 
   const handleSearchSubmit = useCallback(() => {
     setSearchQuery(searchValue);
@@ -147,6 +154,8 @@ export default function Logs() {
           timeRange={timeRange}
           onTimeRangeChange={(r) => { setTimeRange(r); setPage(1); }}
           totalResults={mode === 'search' ? searchData?.total : undefined}
+          paused={paused}
+          onPausedToggle={() => setPaused((p) => !p)}
         />
       </div>
 
@@ -158,7 +167,7 @@ export default function Logs() {
             entries={displayEntries}
             selectedId={selectedEntry?.id ?? null}
             onSelect={handleSelect}
-            autoScroll={mode === 'live'}
+            autoScroll={mode === 'live' && !paused}
             relativeTime={mode === 'live'}
             compact
           />

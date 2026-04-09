@@ -134,11 +134,52 @@ describe('log explorer API handlers', () => {
   // ---------------------------------------------------------------------------
 
   describe('handleLogStream', () => {
-    it('returns all entries when no cursor provided (since=0)', async () => {
+    it('tail mode: returns the most recent N entries when no since param given', async () => {
+      // Insert 10 entries with distinct messages so we can tell which ones came back
+      for (let i = 1; i <= 10; i++) {
+        insertLogEntry(makeEntry({ message: `entry-${i}` }));
+      }
+
+      // No since param, limit=3 → should return the 3 NEWEST entries, sorted ASC
+      const req = makeRequest({ query: { limit: '3' } });
+      const res = await handleLogStream(req);
+
+      const body = res.body as Record<string, unknown>;
+      const entries = body.entries as Array<Record<string, unknown>>;
+      expect(entries.length).toBe(3);
+      expect(entries.map((e) => e.message)).toEqual(['entry-8', 'entry-9', 'entry-10']);
+      // Cursor = max id returned (the last, newest entry)
+      expect(body.cursor).toBe((entries[2] as Record<string, unknown>).id);
+    });
+
+    it('tail mode: cursor equals max id in table when entries exist but fewer than limit', async () => {
       insertLogEntry(makeEntry({ message: 'first' }));
       insertLogEntry(makeEntry({ message: 'second' }));
 
       const req = makeRequest({ query: {} });
+      const res = await handleLogStream(req);
+
+      const body = res.body as Record<string, unknown>;
+      const entries = body.entries as Array<Record<string, unknown>>;
+      expect(entries.length).toBe(2);
+      expect(entries[0].message).toBe('first');
+      expect(entries[1].message).toBe('second');
+    });
+
+    it('tail mode: empty table returns no entries and cursor=0', async () => {
+      const req = makeRequest({ query: {} });
+      const res = await handleLogStream(req);
+
+      const body = res.body as Record<string, unknown>;
+      expect((body.entries as unknown[]).length).toBe(0);
+      expect(body.cursor).toBe(0);
+    });
+
+    it('forward scan: explicit since=0 still returns all entries from the beginning', async () => {
+      insertLogEntry(makeEntry({ message: 'first' }));
+      insertLogEntry(makeEntry({ message: 'second' }));
+
+      const req = makeRequest({ query: { since: '0' } });
       const res = await handleLogStream(req);
 
       const body = res.body as Record<string, unknown>;
@@ -169,18 +210,6 @@ describe('log explorer API handlers', () => {
       const body = res.body as Record<string, unknown>;
       expect((body.entries as unknown[]).length).toBe(0);
       expect(body.cursor).toBe(id);
-    });
-
-    it('returns latest when no since param given', async () => {
-      insertLogEntry(makeEntry());
-      insertLogEntry(makeEntry());
-
-      const req = makeRequest({ query: {} });
-      const res = await handleLogStream(req);
-
-      const body = res.body as Record<string, unknown>;
-      expect((body.entries as unknown[]).length).toBe(2);
-      expect(typeof body.cursor).toBe('number');
     });
 
     it('respects limit parameter', async () => {

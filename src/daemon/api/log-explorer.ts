@@ -3,7 +3,7 @@
  */
 
 import { z } from 'zod';
-import { searchLogs, getLogsSince, getLogEntry } from '@myco/db/queries/logs.js';
+import { searchLogs, getLogsSince, getLogTail, getLogEntry } from '@myco/db/queries/logs.js';
 import type { LogEntryRow } from '@myco/db/queries/logs.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -47,10 +47,14 @@ export async function handleLogStream(req: RouteRequest): Promise<RouteResponse>
   const sinceStr = req.query.since;
   const limitStr = req.query.limit;
   const categoryFilter = req.query.category || undefined;
-  const sinceId = sinceStr ? parseInt(sinceStr, 10) : 0;
   const limit = limitStr ? parseInt(limitStr, 10) : undefined;
 
-  const result = getLogsSince(sinceId, limit);
+  // No `since` param → tail mode: return the latest N entries so the UI can
+  // show "now" on initial load. Explicit `since=<id>` (including `since=0`)
+  // keeps the forward-scan behavior for the follow path.
+  const result = sinceStr === undefined
+    ? getLogTail(limit)
+    : getLogsSince(parseInt(sinceStr, 10), limit);
   const entries = result.entries.map(formatEntry);
   const filtered = categoryFilter
     ? entries.filter((e) => e.category === categoryFilter)

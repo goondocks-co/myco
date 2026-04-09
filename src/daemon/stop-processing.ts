@@ -316,7 +316,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
         const filename = `${sessionShort}-t${resolvedPromptNumber}-${j + 1}.${ext}`;
         const imageBuffer = Buffer.from(img.data, 'base64');
         try {
-          insertAttachment({
+          const inserted = insertAttachment({
             id: `${sessionShort}-b${resolvedPromptNumber}-${j + 1}`,
             session_id: sessionId,
             prompt_batch_id: resolvedBatchId ?? undefined,
@@ -325,7 +325,13 @@ export function createStopProcessor(deps: StopProcessorDeps): {
             data: imageBuffer,
             created_at: epochSeconds(),
           });
-          logger.debug(LOG_KINDS.CAPTURE_ATTACHMENT, 'Image stored in DB', { filename, batch: resolvedPromptNumber });
+          // insertAttachment returns undefined on ON CONFLICT DO NOTHING — only
+          // log when a row was actually inserted, otherwise stop-event replays
+          // produce phantom "Image stored in DB" lines for attachments that
+          // were already persisted on a previous run.
+          if (inserted) {
+            logger.debug(LOG_KINDS.CAPTURE_ATTACHMENT, 'Image stored in DB', { filename, batch: resolvedPromptNumber });
+          }
         } catch (err) {
           logger.warn(LOG_KINDS.CAPTURE_ATTACHMENT, 'Failed to record attachment', { error: String(err) });
         }

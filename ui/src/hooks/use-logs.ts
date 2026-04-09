@@ -52,22 +52,50 @@ export interface LogDetailEntry extends LogEntry {
 
 const MAX_LIVE_ENTRIES = 5000;
 
-export function useLogStream() {
+/**
+ * Tail the daemon log stream.
+ *
+ * First fetch omits `since`, which the backend treats as tail mode and returns
+ * the most recent N entries. Subsequent polls pass `since=<cursor>` so only
+ * new entries are returned. Pass `paused=true` to halt polling without clearing
+ * the buffer; resuming triggers an immediate refetch so the user doesn't wait
+ * out the remainder of the current 3s interval.
+ *
+ * Returned `clear()` resets both the buffer AND the cursor — callers can use
+ * it to re-prime the stream from a fresh tail (e.g., when toggling modes).
+ */
+export function useLogStream(paused: boolean = false) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
-  const cursorRef = useRef<number>(0);
+  // null = tail mode (first fetch); number = follow mode from this cursor
+  const cursorRef = useRef<number | null>(null);
 
-  const { data } = useQuery({
+  const { data, refetch } = useQuery({
     queryKey: ['logs-stream'],
-    queryFn: ({ signal }) =>
-      fetchJson<LogStreamResponse>(
-        `/logs/stream?since=${cursorRef.current}`,
-        { signal },
-      ),
-    refetchInterval: POLL_INTERVALS.LOGS,
+    queryFn: ({ signal }) => {
+      const path = cursorRef.current === null
+        ? '/logs/stream'
+        : `/logs/stream?since=${cursorRef.current}`;
+      return fetchJson<LogStreamResponse>(path, { signal });
+    },
+    refetchInterval: paused ? false : POLL_INTERVALS.LOGS,
   });
 
+  // Immediate refetch on resume so the UI catches up without waiting for the
+  // next 3s tick. Harmless while paused — the effect is a no-op until paused
+  // transitions back to false.
+  const wasPausedRef = useRef(paused);
   useEffect(() => {
-    if (!data?.entries.length) return;
+    if (wasPausedRef.current && !paused) refetch();
+    wasPausedRef.current = paused;
+  }, [paused, refetch]);
+
+  useEffect(() => {
+    if (!data?.entries.length) {
+      // Even with no entries, seed the cursor from the first response so the
+      // follow path starts from "now" rather than refetching tail forever.
+      if (data && cursorRef.current === null) cursorRef.current = data.cursor;
+      return;
+    }
     cursorRef.current = data.cursor;
     setEntries((prev) => {
       const combined = [...prev, ...data.entries];
@@ -77,6 +105,7 @@ export function useLogStream() {
 
   const clear = useCallback(() => {
     setEntries([]);
+    cursorRef.current = null;
   }, []);
 
   return { entries, clear };

@@ -9,6 +9,7 @@ import { Pagination } from '../ui/pagination';
 import { useSessions, useDeleteSession, useSessionImpact, type SessionSummary } from '../../hooks/use-sessions';
 import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
+import { shortSession } from '../../lib/format';
 import { StatusBadge } from './status-helpers';
 import { cn } from '../../lib/cn';
 import { useState } from 'react';
@@ -17,9 +18,6 @@ import { useState } from 'react';
 
 /** Number of skeleton rows to show during loading. */
 const SKELETON_ROW_COUNT = 5;
-
-/** Characters shown from session ID in compact view. */
-const SESSION_ID_PREVIEW_LENGTH = 8;
 
 /** Characters shown from session ID in table column. */
 const SESSION_ID_COLUMN_LENGTH = 12;
@@ -56,7 +54,7 @@ function SessionTableRow({
   onClick: () => void;
   onDelete: () => void;
 }) {
-  const sessionLabel = session.title || session.id.slice(0, SESSION_ID_PREVIEW_LENGTH);
+  const sessionLabel = session.title || shortSession(session.id);
 
   return (
     <tr
@@ -291,8 +289,8 @@ export function SessionList() {
         description="This will permanently remove this session and all related data. This action cannot be undone."
         icon={<Trash2 className="h-4 w-4 text-tertiary" />}
         meta={deleteTarget ? [
-          { label: 'ID', value: deleteTarget.id.slice(0, SESSION_ID_PREVIEW_LENGTH) },
-          { label: 'Title', value: deleteTarget.title || deleteTarget.id.slice(0, SESSION_ID_PREVIEW_LENGTH) },
+          { label: 'ID', value: shortSession(deleteTarget.id) },
+          { label: 'Title', value: deleteTarget.title || shortSession(deleteTarget.id) },
         ] : []}
         impact={impact ? [
           { label: 'Prompts', value: impact.promptCount },
