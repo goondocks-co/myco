@@ -500,14 +500,22 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
         text?: string;
         mime?: string;
         url?: string;
+        synthetic?: boolean;
         metadata?: { [key: string]: unknown };
       }>;
       // Skip if any part carries the Myco metadata marker — that means
       // chat.message is firing for our own injectSyntheticContext call.
       if (allParts.some((p) => p.metadata?.[MYCO_METADATA_MARKER] === true)) return;
 
+      // Prompt text = user's real text only. opencode emits `synthetic: true`
+      // text parts for internal scaffolding when the message contains file
+      // mentions, plan-mode switches, subagent tasks, and similar — see
+      // packages/opencode/src/session/prompt.ts. Those parts include full
+      // file contents, tool-call scaffolding, plan instructions, etc. Joining
+      // them into prompt_text would bloat every captured user prompt with
+      // system-level content that the user never typed.
       const textParts = allParts
-        .filter((p) => p.type === "text" && p.text)
+        .filter((p) => p.type === "text" && p.text && p.synthetic !== true)
         .map((p) => p.text as string);
       const prompt = textParts.join("\n");
       if (!prompt) return;
