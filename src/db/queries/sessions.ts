@@ -520,14 +520,31 @@ export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
     `SELECT file_path FROM attachments WHERE session_id = ?`,
   ).all(sessionId) as { file_path: string }[]).map((r) => r.file_path);
 
-  // Run all deletes in a single transaction
+  // Run all deletes in a single transaction.
+  //
+  // Order matters — foreign_keys = ON is set in client.ts, so every DELETE
+  // is checked immediately. Child rows must be removed before their parents:
+  //   - spores.prompt_batch_id     → prompt_batches(id)   [spores BEFORE prompt_batches]
+  //   - plans.prompt_batch_id      → prompt_batches(id)   [plans BEFORE prompt_batches]
+  //   - resolution_events.spore_id → spores(id)           [resolution_events BEFORE spores]
+  //   - skill_usage.session_id     → sessions(id) NOT NULL
+  //   - plans.session_id           → sessions(id)
+  // resolution_events can reference spores across sessions (e.g. a later
+  // session supersedes an earlier session's spore), so we match by either
+  // session_id OR spore_id-in-this-session to catch cross-session references.
   const result = db.transaction(() => {
     db.prepare(`DELETE FROM activities WHERE session_id = ?`).run(sessionId);
     const attachments = db.prepare(`DELETE FROM attachments WHERE session_id = ?`).run(sessionId);
-    const prompts = db.prepare(`DELETE FROM prompt_batches WHERE session_id = ?`).run(sessionId);
-    const resEvents = db.prepare(`DELETE FROM resolution_events WHERE session_id = ?`).run(sessionId);
+    db.prepare(`DELETE FROM plans WHERE session_id = ?`).run(sessionId);
+    db.prepare(`DELETE FROM skill_usage WHERE session_id = ?`).run(sessionId);
+    const resEvents = db.prepare(
+      `DELETE FROM resolution_events
+       WHERE session_id = ?
+          OR spore_id IN (SELECT id FROM spores WHERE session_id = ?)`,
+    ).run(sessionId, sessionId);
     const edges = db.prepare(`DELETE FROM graph_edges WHERE session_id = ?`).run(sessionId);
     const spores = db.prepare(`DELETE FROM spores WHERE session_id = ?`).run(sessionId);
+    const prompts = db.prepare(`DELETE FROM prompt_batches WHERE session_id = ?`).run(sessionId);
     const session = db.prepare(`DELETE FROM sessions WHERE id = ?`).run(sessionId);
 
     return {
