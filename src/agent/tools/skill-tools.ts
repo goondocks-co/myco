@@ -1,7 +1,21 @@
 /**
  * Skill lifecycle vault tools.
  *
- * 3 tools: vault_skill_candidates, vault_skill_records, vault_write_skill
+ * 5 tools:
+ *   - vault_skill_candidates: CRUD over skill candidate rows. The agent
+ *     can only set 'identified' or 'dismissed' on updates; human-only
+ *     'approved' transitions go through the UI / MCP approve action, and
+ *     'generated' is set internally by vault_finalize_skill.
+ *   - vault_skill_records: read/update/delete live skill records.
+ *   - vault_write_skill: one-shot create-or-evolve write path used by
+ *     skill-evolve and any non-staged skill authoring.
+ *   - vault_stage_skill: provisional write used by skill-generate's draft
+ *     phase. Stages SKILL.md + manifest.json under .myco/staging/skills/
+ *     without touching the live DB or .agents/skills/ directory.
+ *   - vault_finalize_skill: promotes a staged skill. Only commit point;
+ *     re-runs dedup + validation as defense in depth, then atomically
+ *     inserts the skill_records row, lineage, candidate transition to
+ *     'generated', disk file, and symlinks. Cleans up staging on success.
  */
 
 import crypto from 'node:crypto';
@@ -21,11 +35,23 @@ import {
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
 import { notify } from '@myco/notifications/notify.js';
 import {
+  CANDIDATE_STATUS,
+  AGENT_SETTABLE_STATUSES,
+} from '@myco/constants/skill-candidate-status.js';
+import {
   validateSkillContent,
   checkFrontmatterPreservation,
   descriptionSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
 } from './skill-validator.js';
+import {
+  writeStagedSkill,
+  readStagedSkill,
+  writeStagedManifest,
+  readStagedManifest,
+  cleanupStagedSkill,
+  type StagedManifest,
+} from './skill-staging.js';
 import { textResult, type VaultToolDeps } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -34,6 +60,363 @@ import { textResult, type VaultToolDeps } from './types.js';
 
 export function createSkillTools(deps: VaultToolDeps) {
   const { agentId, machineId, projectRoot, vaultDir, recordTurn } = deps;
+
+  /**
+   * Tokenize a topic string into a set of significant words. Matches
+   * the tokenization descriptionSimilarity uses internally so the
+   * similarity comparison below is consistent with the skill-level
+   * dedup gate.
+   */
+  function topicTokens(topic: string): Set<string> {
+    return new Set(
+      topic
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length > 3),
+    );
+  }
+
+  /**
+   * Compute Jaccard similarity between two topic strings using the
+   * tokenization above. Returns a value in [0, 1].
+   */
+  function topicSimilarity(a: string, b: string): number {
+    const setA = topicTokens(a);
+    const setB = topicTokens(b);
+    if (setA.size === 0 || setB.size === 0) return 0;
+    let intersection = 0;
+    for (const token of setA) {
+      if (setB.has(token)) intersection++;
+    }
+    const union = setA.size + setB.size - intersection;
+    return intersection / union;
+  }
+
+  /**
+   * Threshold for rejecting a new candidate whose topic overlaps an
+   * existing one. Tuned empirically — "Add MCP tool" vs "Add a new
+   * MCP tool to the Myco vault daemon" scores ~0.5; truly distinct
+   * topics like "Install Myco" vs "Render notification" score near 0.
+   */
+  const TOPIC_OVERLAP_THRESHOLD = 0.4;
+
+  /**
+   * Find the best-matching existing candidate (if any) whose topic
+   * overlaps the proposed new topic above the threshold. Returns the
+   * candidate with the similarity score attached, or null.
+   */
+  function findOverlappingCandidate(
+    newTopic: string,
+    existing: ReturnType<typeof listCandidates>,
+  ): (ReturnType<typeof listCandidates>[number] & { _score: number }) | null {
+    let best: (ReturnType<typeof listCandidates>[number] & { _score: number }) | null = null;
+    for (const candidate of existing) {
+      const score = topicSimilarity(newTopic, candidate.topic);
+      if (score >= TOPIC_OVERLAP_THRESHOLD && (!best || score > best._score)) {
+        best = { ...candidate, _score: score };
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Build a status-aware rejection message. Each status gets guidance
+   * that matches the lifecycle: dismissed → stay away; generated →
+   * already fulfilled; approved → already queued; identified → update
+   * the existing entry instead of duplicating.
+   */
+  function candidateOverlapError(match: { status: string; topic: string }): string {
+    const common = `already has an existing candidate with a similar topic: "${match.topic}"`;
+    switch (match.status) {
+      case CANDIDATE_STATUS.DISMISSED:
+        return `Candidate rejected: the vault ${common} that was previously dismissed. Do not re-identify dismissed topics.`;
+      case CANDIDATE_STATUS.GENERATED:
+        return `Candidate rejected: the vault ${common} that was already fulfilled by a generated skill. Do not re-identify.`;
+      case CANDIDATE_STATUS.APPROVED:
+        return `Candidate rejected: the vault ${common} that is already queued in approved state. Wait for the generate task to process it.`;
+      case CANDIDATE_STATUS.IDENTIFIED:
+        return `Candidate rejected: the vault ${common} already in the review queue. Update the existing candidate with new evidence (action: update) instead of creating a duplicate.`;
+      default:
+        return `Candidate rejected: the vault ${common} in status '${match.status}'.`;
+    }
+  }
+
+  /**
+   * Structural gate enforcing the skill lifecycle invariant: ONLY
+   * candidates in 'approved' state can be materialized into skills.
+   *
+   * Used by vault_stage_skill, vault_finalize_skill, and the
+   * vault_write_skill create path. Returns `null` when the candidate
+   * is ready to proceed, or an error payload ready for textResult()
+   * when the caller should be refused.
+   *
+   * This is the defense that closes the 2026-04-08 workflow bug where
+   * skill-generate was writing skills for candidates nobody approved.
+   * The scheduler short-circuits when there are no approved candidates
+   * (belt); this helper rejects any attempt to bypass that (suspenders).
+   */
+  function requireApprovedCandidate(
+    candidateId: string,
+  ): Record<string, unknown> | null {
+    const candidate = getCandidate(candidateId);
+    if (!candidate) {
+      return {
+        error:
+          `Candidate ${candidateId} not found. Skill writes require a ` +
+          'candidate in the approved state.',
+      };
+    }
+    if (candidate.status !== CANDIDATE_STATUS.APPROVED) {
+      return {
+        error:
+          `Candidate ${candidateId} is in '${candidate.status}' state. ` +
+          "Skills can only be generated from candidates in 'approved' " +
+          'state — the human review step. If a candidate in an earlier ' +
+          'state needs to become a skill, route it through the normal ' +
+          'approval flow first.',
+        candidate_status: candidate.status,
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Self-contained dedup gate for skill create paths. Returns `null`
+   * when the write is allowed, or an error payload object ready for
+   * textResult() when it should be rejected.
+   *
+   * The gate is a no-op on the evolve path (same name as an existing
+   * active skill) — the caller does not need to guard the call.
+   *
+   * Three checks, in order:
+   *   (1) Same-name exists: delegate to the evolve path. Return null
+   *       so vault_write_skill's existing-record branch can handle it;
+   *       callers that only want create (vault_stage_skill,
+   *       vault_finalize_skill) opt in via `rejectSameName: true`.
+   *   (2) Candidate-already-fulfilled: if the candidate is already
+   *       linked to a different-named active skill.
+   *   (3) Description similarity: Jaccard on significant-word tokens
+   *       against all active skills for this agent.
+   */
+  function checkDedupGates(args: {
+    candidate_id?: string;
+    name: string;
+    description: string;
+    /**
+     * When true, treat an existing skill with the same name as a
+     * rejection (create-only callers). When false, same-name passes
+     * through silently so the caller can dispatch the evolve path.
+     */
+    rejectSameName?: boolean;
+  }): Record<string, unknown> | null {
+    // (1) Same-name check
+    const existingSameName = getSkillRecordByName(args.name);
+    if (existingSameName) {
+      if (args.rejectSameName) {
+        return {
+          error:
+            `Skill "${args.name}" already exists. This path is create-only. ` +
+            'Use vault_write_skill to evolve the existing skill (it bumps the generation), ' +
+            'or mark the current record stale via vault_skill_records first.',
+          existing_skill: {
+            id: existingSameName.id,
+            name: existingSameName.name,
+            path: existingSameName.path,
+          },
+        };
+      }
+      return null;
+    }
+
+    // (2) Candidate-already-fulfilled check
+    if (args.candidate_id) {
+      const candidate = getCandidate(args.candidate_id);
+      if (candidate?.skill_id) {
+        const linkedSkill = getSkillRecord(candidate.skill_id);
+        if (linkedSkill && linkedSkill.name !== args.name) {
+          return {
+            error:
+              `Candidate ${args.candidate_id} is already fulfilled by skill "${linkedSkill.name}". ` +
+              'Do not create a sibling skill. If the existing skill needs changes, ' +
+              'write to the same name to evolve it (this bumps its generation), or ' +
+              'mark it stale via vault_skill_records before replacing.',
+            existing_skill: {
+              id: linkedSkill.id,
+              name: linkedSkill.name,
+              description: linkedSkill.description,
+              path: linkedSkill.path,
+            },
+          };
+        }
+      }
+    }
+
+    // (3) Description similarity check
+    const activeSkills = listSkillRecords({ agent_id: agentId, status: 'active', limit: 200 });
+    let bestMatch: { skill: typeof activeSkills[number]; score: number } | null = null;
+    for (const skill of activeSkills) {
+      const score = descriptionSimilarity(args.description, skill.description);
+      if (score >= DESCRIPTION_DUPLICATE_THRESHOLD && (!bestMatch || score > bestMatch.score)) {
+        bestMatch = { skill, score };
+      }
+    }
+    if (bestMatch) {
+      return {
+        error:
+          `Description overlaps with existing active skill "${bestMatch.skill.name}" ` +
+          `(Jaccard ${bestMatch.score.toFixed(2)}, threshold ${DESCRIPTION_DUPLICATE_THRESHOLD}). ` +
+          'Do not create a duplicate. Either evolve the existing skill by writing to ' +
+          `its name ("${bestMatch.skill.name}"), or reframe this skill so its description ` +
+          'describes a distinct procedure.',
+        overlapping_skill: {
+          id: bestMatch.skill.id,
+          name: bestMatch.skill.name,
+          description: bestMatch.skill.description,
+          path: bestMatch.skill.path,
+        },
+        similarity: bestMatch.score,
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * Shared create-path promotion: write SKILL.md to the live
+   * .agents/skills/<name>/ directory, create symbiont symlinks, then
+   * insert the skill_records row + lineage entry in one DB transaction.
+   * If the transaction throws, the disk write is reversed so no orphan
+   * file survives.
+   *
+   * Used by both vault_write_skill's create branch and
+   * vault_finalize_skill. Evolve (generation > 1) stays inline in
+   * vault_write_skill because its rollback semantics differ — it
+   * restores prior content rather than deleting the whole directory.
+   *
+   * `linkCandidate` runs inside the same transaction after the record
+   * is inserted. Callers use it for their own candidate-linking policy:
+   * vault_write_skill does an exact/prefix search over approved
+   * candidates; vault_finalize_skill sets the candidate directly from
+   * the staged manifest.
+   */
+  async function promoteNewSkill(params: {
+    name: string;
+    display_name: string;
+    description: string;
+    content: string;
+    source_ids?: string;
+    candidate_id?: string | null;
+    rationale?: string;
+    linkCandidate?: (recordId: string, now: number) => void;
+    label: string;
+  }): Promise<
+    | { id: string; name: string; path: string; generation: number }
+    | { error: string }
+  > {
+    const root = projectRoot ?? process.cwd();
+    const skillDir = resolve(root, '.agents', 'skills', params.name);
+    const skillPath = resolve(skillDir, 'SKILL.md');
+    // If the directory already exists for a create, it's an orphan
+    // from a prior failed run — we overwrite the file and only remove
+    // the file itself on rollback (not the whole directory) to avoid
+    // clobbering anything else that may share the dir.
+    const skillDirPreexisted = existsSync(skillDir);
+
+    try {
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(skillPath, params.content, 'utf-8');
+    } catch (err) {
+      return {
+        error: `Failed to write skill file: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    try {
+      const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
+      syncSkillSymlinks(root, params.name);
+    } catch (err) {
+      console.warn(
+        `[${params.label}] syncSkillSymlinks failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+
+    const now = epochSeconds();
+    const relativePath = `.agents/skills/${params.name}/SKILL.md`;
+    const recordId = crypto.randomUUID();
+    const generation = 1;
+
+    const txDb = getDatabase();
+    try {
+      txDb.transaction(() => {
+        insertSkillRecord({
+          id: recordId,
+          agent_id: agentId,
+          machine_id: machineId,
+          name: params.name,
+          display_name: params.display_name,
+          description: params.description,
+          candidate_id: params.candidate_id ?? null,
+          source_ids: params.source_ids,
+          path: relativePath,
+          created_at: now,
+          updated_at: now,
+        });
+
+        insertLineage({
+          id: crypto.randomUUID(),
+          skill_id: recordId,
+          generation,
+          action: 'created',
+          rationale: params.rationale ?? 'Initial skill creation',
+          source_ids_added: params.source_ids,
+          content_snapshot: params.content,
+          created_at: now,
+        });
+
+        params.linkCandidate?.(recordId, now);
+      })();
+    } catch (err) {
+      try {
+        if (!skillDirPreexisted) {
+          rmSync(skillDir, { recursive: true, force: true });
+        } else {
+          rmSync(skillPath, { force: true });
+        }
+      } catch (rollbackErr) {
+        console.warn(
+          `[${params.label}] file rollback after DB failure also failed:`,
+          rollbackErr instanceof Error ? rollbackErr.message : rollbackErr,
+        );
+      }
+      return {
+        error: `Skill write aborted: database transaction failed and on-disk state was rolled back. ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    return {
+      id: recordId,
+      name: params.name,
+      path: relativePath,
+      generation,
+    };
+  }
+
+  /** Emit the standard notification after a successful create or evolve. */
+  function emitSkillNotification(
+    kind: 'created' | 'evolved',
+    opts: { name: string; display_name: string; description: string; recordId: string; generation: number },
+  ) {
+    notify(vaultDir, {
+      domain: 'skills',
+      type: kind === 'created' ? 'skill.created' : 'skill.evolved',
+      title: `Skill ${kind}: ${opts.display_name}`,
+      message: opts.description.slice(0, 120),
+      link: `/skills?skill=${encodeURIComponent(opts.name)}`,
+      metadata: { skillId: opts.recordId, name: opts.name, generation: opts.generation },
+    });
+  }
 
   const vaultSkillCandidates = tool(
     'vault_skill_candidates',
@@ -44,7 +427,12 @@ export function createSkillTools(deps: VaultToolDeps) {
       topic: z.string().optional().describe('Skill topic (required for create)'),
       rationale: z.string().optional().describe('Why this should be a skill (required for create)'),
       confidence: z.number().optional().describe('Confidence score 0-1'),
-      status: z.enum(['identified', 'approved', 'generated', 'dismissed']).optional().describe('Candidate status. Only these values are valid.'),
+      status: z.enum(AGENT_SETTABLE_STATUSES as readonly [string, ...string[]]).optional().describe(
+        "Candidate status — agent-settable values only. 'identified' is " +
+        "the initial state; 'dismissed' retires a candidate. 'approved' " +
+        "and 'generated' are lifecycle transitions owned by the human UI " +
+        'and vault_finalize_skill respectively.',
+      ),
       source_ids: z.string().optional().describe('JSON array of source spore/entity IDs'),
       skill_id: z.string().optional().describe('Associated skill record ID (after materialization)'),
       limit: z.number().optional().describe('Maximum candidates to return (for list)'),
@@ -74,7 +462,7 @@ export function createSkillTools(deps: VaultToolDeps) {
             return textResult({ error: 'topic and rationale are required for create action' });
           }
 
-          // Guard: reject if an active skill already covers this topic.
+          // Guard 1: reject if an active skill already covers this topic.
           // Checks whether all significant words from a skill name appear in the topic.
           const activeSkills = listSkillRecords({ agent_id: agentId, status: 'active', limit: 100 });
           const topicLower = args.topic.toLowerCase();
@@ -87,6 +475,25 @@ export function createSkillTools(deps: VaultToolDeps) {
             return textResult({
               error: 'Candidate rejected: active skill(s) already cover this topic. Update the existing skill via vault_skill_records instead.',
               overlapping_skills: overlapping.map((s) => ({ name: s.name, display_name: s.display_name, description: s.description })),
+            });
+          }
+
+          // Guard 2: reject if an existing candidate (any status) has an
+          // overlapping topic. The skill-survey prompt tells the agent to
+          // check dismissed/generated candidates before re-identifying,
+          // but self-grading is unreliable — this structural check is
+          // the enforcement layer. See feedback_tool_gates_over_self_checks.
+          const allExisting = listCandidates({ agent_id: agentId, limit: 500 });
+          const existingMatch = findOverlappingCandidate(args.topic, allExisting);
+          if (existingMatch) {
+            return textResult({
+              error: candidateOverlapError(existingMatch),
+              existing_candidate: {
+                id: existingMatch.id,
+                status: existingMatch.status,
+                topic: existingMatch.topic,
+              },
+              similarity: existingMatch._score,
             });
           }
 
@@ -206,7 +613,7 @@ export function createSkillTools(deps: VaultToolDeps) {
               console.warn('[vault_skill_records] Failed to remove skill directory:', err instanceof Error ? err.message : err);
             }
             try {
-              const { syncSkillSymlinks } = await import('../../symbionts/installer.js');
+              const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
               syncSkillSymlinks(root, result.name, { remove: true });
             } catch (err) {
               console.warn('[vault_skill_records] Failed to remove symlinks:', err instanceof Error ? err.message : err);
@@ -253,84 +660,24 @@ export function createSkillTools(deps: VaultToolDeps) {
         });
       }
 
-      // Dedup gate -- prevents the skill lifecycle from creating sibling
-      // skills that cover the same topic under different names. Two
-      // deterministic checks, both skipped when the write is updating an
-      // existing skill under the same name (the normal evolve path).
-      //
-      // The reason this lives in the tool and not in the validate phase's
-      // prompt: self-graded conflict checks are unreliable, especially for
-      // weaker local models. Observed failure: run fcb66275 passed its own
-      // "no overlap" self-check while an obvious duplicate sat on disk.
-      // See feedback_structural_enforcement — enforce in tools, not prompts.
-      const existingSameName = getSkillRecordByName(args.name);
-      if (!existingSameName) {
-        // (1) Candidate-already-fulfilled check. If the caller passed a
-        //     candidate_id that is already linked to an active skill with a
-        //     different name, refuse the write and point the agent at the
-        //     existing skill.
-        if (args.candidate_id) {
-          const candidate = getCandidate(args.candidate_id);
-          if (candidate?.skill_id) {
-            const linkedSkill = getSkillRecord(candidate.skill_id);
-            if (linkedSkill && linkedSkill.name !== args.name) {
-              recordTurn('vault_write_skill', args);
-              return textResult({
-                error:
-                  `Candidate ${args.candidate_id} is already fulfilled by skill "${linkedSkill.name}". ` +
-                  'Do not create a sibling skill. If the existing skill needs changes, ' +
-                  'write to the same name to evolve it (this bumps its generation), or ' +
-                  'mark it stale via vault_skill_records before replacing.',
-                existing_skill: {
-                  id: linkedSkill.id,
-                  name: linkedSkill.name,
-                  description: linkedSkill.description,
-                  path: linkedSkill.path,
-                },
-              });
-            }
-          }
-        }
-
-        // (2) Description similarity check. Jaccard on significant-word
-        //     tokens — deterministic and cheap. Compares against all active
-        //     skills for this agent; rejects on the highest-scoring match
-        //     above DESCRIPTION_DUPLICATE_THRESHOLD.
-        const activeSkills = listSkillRecords({ agent_id: agentId, status: 'active', limit: 200 });
-        let bestMatch: { skill: typeof activeSkills[number]; score: number } | null = null;
-        for (const skill of activeSkills) {
-          const score = descriptionSimilarity(args.description, skill.description);
-          if (score >= DESCRIPTION_DUPLICATE_THRESHOLD && (!bestMatch || score > bestMatch.score)) {
-            bestMatch = { skill, score };
-          }
-        }
-        if (bestMatch) {
-          recordTurn('vault_write_skill', args);
-          return textResult({
-            error:
-              `Description overlaps with existing active skill "${bestMatch.skill.name}" ` +
-              `(Jaccard ${bestMatch.score.toFixed(2)}, threshold ${DESCRIPTION_DUPLICATE_THRESHOLD}). ` +
-              'Do not create a duplicate. Either evolve the existing skill by writing to ' +
-              `its name ("${bestMatch.skill.name}"), or reframe this skill so its description ` +
-              'describes a distinct procedure.',
-            overlapping_skill: {
-              id: bestMatch.skill.id,
-              name: bestMatch.skill.name,
-              description: bestMatch.skill.description,
-              path: bestMatch.skill.path,
-            },
-            similarity: bestMatch.score,
-          });
-        }
+      // Dedup gate is self-gating: returns null when same-name exists
+      // (the evolve path) so the caller falls through.
+      const dedupError = checkDedupGates({
+        candidate_id: args.candidate_id,
+        name: args.name,
+        description: args.description,
+      });
+      if (dedupError) {
+        recordTurn('vault_write_skill', args);
+        return textResult(dedupError);
       }
+      const existing = getSkillRecordByName(args.name);
 
       const root = projectRoot ?? process.cwd();
-      const skillDir = resolve(root, '.agents', 'skills', args.name);
-      const skillPath = resolve(skillDir, 'SKILL.md');
+      const skillPath = resolve(root, '.agents', 'skills', args.name, 'SKILL.md');
 
       // Frontmatter preservation guard — when updating an existing skill,
       // reject writes that change protected fields (user-invocable, allowed-tools).
-      // These fields are set by the skill author, not the evolve pipeline.
       if (existsSync(skillPath)) {
         const existingContent = readFileSync(skillPath, 'utf-8');
         const violations = checkFrontmatterPreservation(existingContent, args.content);
@@ -343,60 +690,87 @@ export function createSkillTools(deps: VaultToolDeps) {
         }
       }
 
-      // Snapshot the on-disk state BEFORE writing so we can roll back
-      // accurately if the DB transaction fails. Two cases:
-      //   - Skill directory didn't exist: full cleanup on failure
-      //   - Skill directory already existed (update path): restore prior
-      //     SKILL.md content rather than deleting the whole directory
-      const skillDirPreexisted = existsSync(skillDir);
-      let priorSkillContent: string | null = null;
-      if (existsSync(skillPath)) {
-        try { priorSkillContent = readFileSync(skillPath, 'utf-8'); } catch {
-          // If we can't read it, we can't restore it — treat as "no prior"
-          priorSkillContent = null;
+      // Create path: delegate to the shared promoteNewSkill helper.
+      // Candidate linking uses exact-then-prefix matching since the
+      // agent may pass a truncated UUID in the instruction.
+      if (!existing) {
+        // Structural gate: if the caller passed a candidate_id, the
+        // candidate must be in 'approved' state. Evolve path (above)
+        // skips this because the caller is updating an existing skill,
+        // not materializing a fresh candidate.
+        if (args.candidate_id) {
+          const candidateError = requireApprovedCandidate(args.candidate_id);
+          if (candidateError) {
+            recordTurn('vault_write_skill', args);
+            return textResult(candidateError);
+          }
         }
+
+        const linkCandidate = (recordId: string, now: number) => {
+          if (!args.candidate_id) return;
+          const exact = updateCandidate(args.candidate_id, {
+            status: CANDIDATE_STATUS.GENERATED, skill_id: recordId, updated_at: now,
+          });
+          if (exact) return;
+          const approvedCandidates = listCandidates({ status: CANDIDATE_STATUS.APPROVED, limit: 10 });
+          const prefixMatch = approvedCandidates.find((c) => c.id.startsWith(args.candidate_id!));
+          if (prefixMatch) {
+            updateCandidate(prefixMatch.id, {
+              status: CANDIDATE_STATUS.GENERATED, skill_id: recordId, updated_at: now,
+            });
+          }
+        };
+
+        const result = await promoteNewSkill({
+          name: args.name,
+          display_name: args.display_name,
+          description: args.description,
+          content: args.content,
+          source_ids: args.source_ids,
+          candidate_id: args.candidate_id,
+          rationale: args.rationale,
+          linkCandidate,
+          label: 'vault_write_skill',
+        });
+        recordTurn('vault_write_skill', args);
+        if ('error' in result) return textResult(result);
+        emitSkillNotification('created', {
+          name: result.name,
+          display_name: args.display_name,
+          description: args.description,
+          recordId: result.id,
+          generation: result.generation,
+        });
+        return textResult(result);
       }
 
-      // Write file to disk -- must succeed before any DB operations
+      // Evolve path: update existing record, bump generation, preserve
+      // prior SKILL.md content on rollback. This branch stays inline
+      // because its rollback semantics (restore prior content) differ
+      // from the create helper.
+      const priorSkillContent = readFileSync(skillPath, 'utf-8');
+
       try {
-        mkdirSync(skillDir, { recursive: true });
         writeFileSync(skillPath, args.content, 'utf-8');
       } catch (err) {
         return textResult({ error: `Failed to write skill file: ${err instanceof Error ? err.message : String(err)}` });
       }
 
-      // Create agent-specific symlinks so each symbiont discovers the skill.
-      // Uses the shared syncSkillSymlinks which reads manifest skillsTarget paths.
       try {
         const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
         syncSkillSymlinks(root, args.name);
       } catch (err) {
-        // Best-effort -- skill file is written, symlinks are convenience
         console.warn('[vault_write_skill] syncSkillSymlinks failed:', err instanceof Error ? err.message : err);
       }
 
       const now = epochSeconds();
       const relativePath = `.agents/skills/${args.name}/SKILL.md`;
+      const generation = existing.generation + 1;
+      const recordId = existing.id;
 
-      // Check for existing record
-      const existing = getSkillRecordByName(args.name);
-
-      let recordId = '';
-      let generation = 0;
-
-      // All DB mutations wrapped in a transaction for atomicity.
-      // File write (above) is the source of truth; DB is derived.
-      //
-      // Rollback policy: if the transaction throws, reverse the on-disk
-      // mutation so a partial write cannot leave an orphaned skill file
-      // that the next generate cycle would then "find" and duplicate.
       const txDb = getDatabase();
       try {
-      txDb.transaction(() => {
-        if (existing) {
-          // Update existing record -- bump generation
-          generation = existing.generation + 1;
-          recordId = existing.id;
+        txDb.transaction(() => {
           updateSkillRecord(existing.id, {
             display_name: args.display_name,
             description: args.description,
@@ -406,7 +780,6 @@ export function createSkillTools(deps: VaultToolDeps) {
             updated_at: now,
           });
 
-          // Record lineage
           insertLineage({
             id: crypto.randomUUID(),
             skill_id: existing.id,
@@ -417,80 +790,10 @@ export function createSkillTools(deps: VaultToolDeps) {
             content_snapshot: args.content,
             created_at: now,
           });
-        } else {
-          // Create new record
-          recordId = crypto.randomUUID();
-          generation = 1;
-          insertSkillRecord({
-            id: recordId,
-            agent_id: agentId,
-            machine_id: machineId,
-            name: args.name,
-            display_name: args.display_name,
-            description: args.description,
-            candidate_id: args.candidate_id ?? null,
-            source_ids: args.source_ids,
-            path: relativePath,
-            created_at: now,
-            updated_at: now,
-          });
-
-          // Record lineage
-          insertLineage({
-            id: crypto.randomUUID(),
-            skill_id: recordId,
-            generation,
-            action: 'created',
-            rationale: args.rationale ?? 'Initial skill creation',
-            source_ids_added: args.source_ids,
-            content_snapshot: args.content,
-            created_at: now,
-          });
-
-          // Auto-link candidate: find the approved candidate this skill was generated from.
-          // Strategy: exact candidate_id -> prefix match.
-          // Does NOT depend on the agent passing the correct ID.
-          const approvedCandidates = listCandidates({ status: 'approved', limit: 10 });
-          let linkedCandidate = false;
-
-          // 1. Try exact candidate_id if provided
-          if (args.candidate_id && !linkedCandidate) {
-            const exact = updateCandidate(args.candidate_id, {
-              status: 'generated', skill_id: recordId, updated_at: now,
-            });
-            if (exact) linkedCandidate = true;
-          }
-
-          // 2. Try prefix match on candidate_id (agent truncates UUIDs)
-          if (args.candidate_id && !linkedCandidate) {
-            const prefixMatch = approvedCandidates.find((c) => c.id.startsWith(args.candidate_id!));
-            if (prefixMatch) {
-              updateCandidate(prefixMatch.id, {
-                status: 'generated', skill_id: recordId, updated_at: now,
-              });
-              linkedCandidate = true;
-            }
-          }
-
-          // No blind fallback -- if neither exact nor prefix match found the candidate,
-          // skip linking. The candidate stays 'approved' for the next generate cycle.
-          // The daemon injection (Layer 2) ensures candidate_id is always provided in
-          // scheduled runs, making this fallback-skip path rare.
-        }
-      })();
+        })();
       } catch (err) {
-        // DB transaction failed after the file was written. Reverse the
-        // on-disk mutation so we don't leave an orphan SKILL.md that will
-        // confuse the next generate cycle. Best-effort — failures here are
-        // logged but not propagated, since we're already in an error path.
         try {
-          if (priorSkillContent !== null) {
-            writeFileSync(skillPath, priorSkillContent, 'utf-8');
-          } else if (!skillDirPreexisted) {
-            rmSync(skillDir, { recursive: true, force: true });
-          } else {
-            rmSync(skillPath, { force: true });
-          }
+          writeFileSync(skillPath, priorSkillContent, 'utf-8');
         } catch (rollbackErr) {
           console.warn(
             '[vault_write_skill] file rollback after DB failure also failed:',
@@ -503,14 +806,12 @@ export function createSkillTools(deps: VaultToolDeps) {
         });
       }
 
-      const isNew = generation === 1;
-      notify(vaultDir, {
-        domain: 'skills',
-        type: isNew ? 'skill.created' : 'skill.evolved',
-        title: isNew ? `Skill created: ${args.display_name}` : `Skill evolved: ${args.display_name}`,
-        message: args.description.slice(0, 120),
-        link: `/skills?skill=${encodeURIComponent(args.name)}`,
-        metadata: { skillId: recordId, name: args.name, generation },
+      emitSkillNotification('evolved', {
+        name: args.name,
+        display_name: args.display_name,
+        description: args.description,
+        recordId,
+        generation,
       });
 
       recordTurn('vault_write_skill', args);
@@ -524,9 +825,189 @@ export function createSkillTools(deps: VaultToolDeps) {
     { annotations: { openWorldHint: true } },
   );
 
+  const vaultStageSkill = tool(
+    'vault_stage_skill',
+    "Stage a provisional SKILL.md under .myco/staging/skills/<candidate_id>/ for later promotion by vault_finalize_skill. Use this from the skill-generate draft phase. The write is NOT live — the skill does not appear under .agents/skills/ and no DB rows are created until vault_finalize_skill is called with the same candidate_id.",
+    {
+      candidate_id: z.string().describe(
+        'Candidate ID from the instruction. Required — staging is keyed by candidate so the validate phase (and on-failure cleanup) can find the staged content.',
+      ),
+      name: z.string().describe('Final skill directory name (kebab-case, no colon). Stored in the manifest for finalize.'),
+      display_name: z.string().describe('Human-readable display name'),
+      description: z.string().describe('Short description — used for the dedup gate and the final skill record'),
+      content: z.string().describe('Full SKILL.md content in markdown including frontmatter'),
+      source_ids: z.string().optional().describe('JSON array of source spore/entity IDs'),
+      rationale: z.string().optional().describe('Why this skill is being created — stored in lineage after finalize'),
+    },
+    async (args) => {
+      recordTurn('vault_stage_skill', args);
+
+      if (!vaultDir) {
+        return textResult({
+          error: 'vault_stage_skill requires vaultDir on the tool deps — staging has no location otherwise',
+        });
+      }
+
+      // Static validation — same rules as vault_write_skill
+      const validationErrors = validateSkillContent(args.content, args.name);
+      if (validationErrors.length > 0) {
+        return textResult({
+          error: 'Skill validation failed. Fix these issues and re-stage.',
+          issues: validationErrors,
+        });
+      }
+
+      // Path traversal guard for the skill name (which becomes a directory)
+      if (!args.name || /[/\\]|\.\./.test(args.name)) {
+        return textResult({
+          error: 'Invalid skill name: must be a simple directory name without path separators or ".."',
+        });
+      }
+
+      // Structural gate: candidate must exist and be in 'approved' state.
+      const candidateError = requireApprovedCandidate(args.candidate_id);
+      if (candidateError) return textResult(candidateError);
+
+      // Dedup gate — create-only, so rejectSameName surfaces the
+      // evolve path as an explicit error. Finalize re-runs the same
+      // gate as defense in depth.
+      const dedupError = checkDedupGates({
+        candidate_id: args.candidate_id,
+        name: args.name,
+        description: args.description,
+        rejectSameName: true,
+      });
+      if (dedupError) return textResult(dedupError);
+
+      // Write staging content + manifest
+      let stagingFilePath: string;
+      try {
+        stagingFilePath = writeStagedSkill(vaultDir, args.candidate_id, args.content);
+        const manifest: StagedManifest = {
+          candidate_id: args.candidate_id,
+          name: args.name,
+          display_name: args.display_name,
+          description: args.description,
+          source_ids: args.source_ids ?? '[]',
+          rationale: args.rationale ?? 'Initial draft',
+        };
+        writeStagedManifest(vaultDir, args.candidate_id, manifest);
+      } catch (err) {
+        return textResult({
+          error: `Failed to write staged skill: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+
+      return textResult({
+        candidate_id: args.candidate_id,
+        staging_path: stagingFilePath,
+        status: 'staged',
+      });
+    },
+    { annotations: { openWorldHint: true } },
+  );
+
+  const vaultFinalizeSkill = tool(
+    'vault_finalize_skill',
+    'Promote a staged skill to live at .agents/skills/<name>/ and insert the skill_records / lineage rows. Call this from skill-generate validate phase after your quality checks pass. Requires vault_stage_skill to have been called earlier with the same candidate_id; reads the staged SKILL.md + manifest rather than taking duplicate metadata.',
+    {
+      candidate_id: z.string().describe('Candidate ID whose staged skill should be promoted. Must match a previous vault_stage_skill call.'),
+    },
+    async (args) => {
+      recordTurn('vault_finalize_skill', args);
+
+      if (!vaultDir) {
+        return textResult({
+          error: 'vault_finalize_skill requires vaultDir on the tool deps',
+        });
+      }
+
+      // Read staged content + manifest
+      const stagedContent = readStagedSkill(vaultDir, args.candidate_id);
+      const manifest = readStagedManifest(vaultDir, args.candidate_id);
+      if (!stagedContent || !manifest) {
+        return textResult({
+          error:
+            `No staged skill found for candidate ${args.candidate_id}. ` +
+            'Call vault_stage_skill first.',
+        });
+      }
+
+      // Defense-in-depth: candidate must still be 'approved' at
+      // finalize time. If a human (or another tool) dismissed the
+      // candidate between stage and finalize, the finalize should
+      // refuse rather than promote the now-rescinded skill.
+      const candidateError = requireApprovedCandidate(args.candidate_id);
+      if (candidateError) return textResult(candidateError);
+
+      // Defense-in-depth: re-run validation against the staged content.
+      // The staging write already validated once, but the file on disk
+      // could have been mutated (tests do this explicitly to check the
+      // guard; a crash between stage and finalize could too).
+      const validationErrors = validateSkillContent(stagedContent, manifest.name);
+      if (validationErrors.length > 0) {
+        return textResult({
+          error: 'Staged skill failed validation on finalize. Re-stage with valid content.',
+          issues: validationErrors,
+        });
+      }
+
+      // Defense-in-depth: re-run dedup against the manifest-declared
+      // description. Catches the "agent staged a fresh description,
+      // then tampered the manifest to collide with a live skill" case,
+      // and also trips if a concurrent evolve landed a same-named skill
+      // between stage and finalize.
+      const dedupError = checkDedupGates({
+        candidate_id: args.candidate_id,
+        name: manifest.name,
+        description: manifest.description,
+        rejectSameName: true,
+      });
+      if (dedupError) return textResult(dedupError);
+
+      // Promote via the shared helper. Candidate link is direct — the
+      // staged manifest guarantees candidate_id exists, so no search.
+      // updateCandidate moves the candidate OUT of 'approved' so its
+      // approved_at audit timestamp is preserved by construction.
+      const result = await promoteNewSkill({
+        name: manifest.name,
+        display_name: manifest.display_name,
+        description: manifest.description,
+        content: stagedContent,
+        source_ids: manifest.source_ids,
+        candidate_id: manifest.candidate_id,
+        rationale: manifest.rationale,
+        linkCandidate: (recordId, now) => {
+          updateCandidate(manifest.candidate_id, {
+            status: CANDIDATE_STATUS.GENERATED,
+            skill_id: recordId,
+            updated_at: now,
+          });
+        },
+        label: 'vault_finalize_skill',
+      });
+      if ('error' in result) return textResult(result);
+
+      // Success — clean up staging and notify.
+      cleanupStagedSkill(vaultDir, args.candidate_id);
+      emitSkillNotification('created', {
+        name: manifest.name,
+        display_name: manifest.display_name,
+        description: manifest.description,
+        recordId: result.id,
+        generation: result.generation,
+      });
+
+      return textResult(result);
+    },
+    { annotations: { openWorldHint: true } },
+  );
+
   return [
     vaultSkillCandidates,
     vaultSkillRecords,
     vaultWriteSkill,
+    vaultStageSkill,
+    vaultFinalizeSkill,
   ];
 }

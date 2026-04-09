@@ -23,6 +23,26 @@ import { epochSeconds } from '@myco/constants.js';
 /** Task name that gets special candidate-injection handling. */
 export const SKILL_GENERATE_TASK = 'skill-generate';
 
+/**
+ * Structured run context dispatchers emit alongside the instruction
+ * string. Lets the executor and tools react to task metadata without
+ * re-parsing the prose instruction.
+ */
+export interface TaskRunContext {
+  candidate_id?: string;
+}
+
+/**
+ * Instruction + structured context bundle returned from the task
+ * dispatcher. The string portion is what the LLM sees; the context
+ * portion flows to the executor for hooks like skill-generate's
+ * staging cleanup.
+ */
+export interface BuiltTaskInstruction {
+  instruction: string;
+  context?: TaskRunContext;
+}
+
 /** Task name for the skill-evolve pipeline step. */
 export const SKILL_EVOLVE_TASK = 'skill-evolve';
 
@@ -37,9 +57,11 @@ export const SKILL_EVOLVE_TASK = 'skill-evolve';
  * material (spore content, session summaries) into the instruction text.
  * The draft phase receives this as context — no gathering tool calls needed.
  *
- * Used by both the API route handler and the scheduler.
+ * Returns both the prose instruction and a structured context bundle
+ * so the executor can read `candidate_id` without regex-parsing the
+ * instruction string.
  */
-export function buildSkillGenerateInstruction(): string | undefined {
+export function buildSkillGenerateInstruction(): BuiltTaskInstruction | undefined {
   const candidates = listCandidates({ status: 'approved', limit: 1 });
   if (candidates.length === 0) return undefined;
   const c = candidates[0];
@@ -75,7 +97,10 @@ export function buildSkillGenerateInstruction(): string | undefined {
     }
   }
 
-  return parts.join('\n');
+  return {
+    instruction: parts.join('\n'),
+    context: { candidate_id: c.id },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -188,21 +213,43 @@ export function buildSkillEvolveInstruction(
 /**
  * Build the pre-assembled instruction for a task that needs one.
  *
- * Returns undefined if the task doesn't need a custom instruction or
- * if no work is available (e.g., no approved candidates for skill-generate).
+ * Returns undefined if the task doesn't need a custom instruction
+ * (generic tasks use their default prompt) OR if no work is available
+ * (e.g., no approved candidates for skill-generate, no skills due for
+ * assessment for skill-evolve). Dispatchers should combine this with
+ * `isInstructionRequiredTask` to distinguish the two cases — see the
+ * scheduler's short-circuit for the "no work to do" path.
  *
  * Single dispatch point used by both the scheduler and the API handler.
  */
 export function buildTaskInstruction(
   taskName: string,
   taskParams?: Record<string, string | number | boolean>,
-): string | undefined {
+): BuiltTaskInstruction | undefined {
   switch (taskName) {
     case SKILL_GENERATE_TASK:
       return buildSkillGenerateInstruction();
-    case SKILL_EVOLVE_TASK:
-      return buildSkillEvolveInstruction(taskParams);
+    case SKILL_EVOLVE_TASK: {
+      const instruction = buildSkillEvolveInstruction(taskParams);
+      return instruction ? { instruction } : undefined;
+    }
     default:
       return undefined;
   }
+}
+
+/**
+ * True when the task cannot run meaningfully without a pre-assembled
+ * instruction — skill-generate needs an approved candidate, skill-evolve
+ * needs at least one skill due for assessment. When buildTaskInstruction
+ * returns undefined for one of these tasks, the dispatcher should skip
+ * the run entirely rather than dispatching the agent with the bare task
+ * prompt (which used to let skill-generate fall back to "pick any
+ * candidate you can find" — the 2026-04-08 unapproved-skill bug).
+ *
+ * Generic tasks like full-intelligence run with their default prompt
+ * and never call buildTaskInstruction, so this returns false for them.
+ */
+export function isInstructionRequiredTask(taskName: string): boolean {
+  return taskName === SKILL_GENERATE_TASK || taskName === SKILL_EVOLVE_TASK;
 }

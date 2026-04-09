@@ -36,6 +36,7 @@ import { buildPhaseEnv } from './provider.js';
 import { resolveRunConfig } from './config-resolver.js';
 import { resolveOllamaContextVariants } from './ollama-context.js';
 import { computeWaves, phaseSessionId } from './wave-computation.js';
+import { SKILL_GENERATE_TASK } from './instruction-builders.js';
 import type { ContextQueryResult } from './context-queries.js';
 import type { ProviderConfig } from './types.js';
 import type {
@@ -795,11 +796,53 @@ export async function runAgent(
       console.error(`[agent] Failed to save error to DB:`, dbErr);
     }
 
+    await cleanupOnTaskFailure({
+      taskName: config.taskName,
+      vaultDir,
+      runContext: options?.runContext,
+    });
+
     return {
       runId,
       status: STATUS_FAILED,
       error: errorMessage,
       ...(phaseResults ? { phases: phaseResults } : {}),
     };
+  }
+}
+
+/**
+ * Task-specific cleanup fired when a run ends in failure. Exported
+ * for direct unit testing — the real executor call site lives in
+ * runAgent's catch block.
+ *
+ * skill-generate: the draft phase stages SKILL.md + manifest to
+ * .myco/staging/skills/<candidate_id>/ via vault_stage_skill. If the
+ * validate phase (or any later required phase) fails, the staged
+ * content must be removed so the next generate cycle doesn't find an
+ * orphan draft. The daemon periodic sweep is the belt-and-suspenders
+ * backup for anything this hook misses.
+ */
+export async function cleanupOnTaskFailure(args: {
+  taskName: string | undefined;
+  vaultDir: string | undefined;
+  runContext: RunOptions['runContext'];
+}): Promise<void> {
+  if (args.taskName !== SKILL_GENERATE_TASK) return;
+  if (!args.vaultDir) return;
+  const candidateId = args.runContext?.candidate_id;
+  if (!candidateId) return;
+
+  try {
+    const { cleanupStagedSkill } = await import('./tools/skill-staging.js');
+    cleanupStagedSkill(args.vaultDir, candidateId);
+    console.warn(
+      `[agent] skill-generate failed — cleaned up staging for candidate ${candidateId}`,
+    );
+  } catch (cleanupErr) {
+    console.warn(
+      `[agent] Failed to clean staging for candidate ${candidateId}:`,
+      cleanupErr instanceof Error ? cleanupErr.message : cleanupErr,
+    );
   }
 }

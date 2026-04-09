@@ -34,9 +34,6 @@ export { validateSkillContent, MAX_SKILL_LINES, REQUIRED_FRONTMATTER_FIELDS } fr
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Total number of vault tools defined. */
-export const VAULT_TOOL_COUNT = 21;
-
 /** Options for createVaultTools beyond the required agentId and runId. */
 export interface VaultToolOptions {
   turnOffset?: number;
@@ -70,7 +67,20 @@ const OBSERVABILITY_TOOL_NAMES = new Set(['vault_report']);
 
 const SKILL_TOOL_NAMES = new Set([
   'vault_skill_candidates', 'vault_skill_records', 'vault_write_skill',
+  'vault_stage_skill', 'vault_finalize_skill',
 ]);
+
+/**
+ * Total number of vault tools defined. Derived from the union of the
+ * four tool-group sets above so this constant can never drift from the
+ * actual factory output — adding a tool to a group bumps the count
+ * automatically. Each set is disjoint so the straight sum is correct.
+ */
+export const VAULT_TOOL_COUNT =
+  READ_TOOL_NAMES.size +
+  WRITE_TOOL_NAMES.size +
+  OBSERVABILITY_TOOL_NAMES.size +
+  SKILL_TOOL_NAMES.size;
 
 function setsOverlap(a: Set<string>, b: Set<string>): boolean {
   for (const item of a) { if (b.has(item)) return true; }

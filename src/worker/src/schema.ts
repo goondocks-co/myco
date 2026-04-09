@@ -194,6 +194,7 @@ const SKILL_CANDIDATES_TABLE = `
     status          TEXT NOT NULL DEFAULT 'identified',
     source_ids      TEXT NOT NULL DEFAULT '[]',
     skill_id        TEXT,
+    approved_at     INTEGER,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
     synced_at       INTEGER,
@@ -295,6 +296,7 @@ export async function initD1Schema(db: D1Database): Promise<void> {
   // Migrations for existing tables (safe to re-run — silently ignored if column exists)
   const migrations = [
     'ALTER TABLE skill_usage ADD COLUMN synced_at INTEGER',
+    'ALTER TABLE skill_candidates ADD COLUMN approved_at INTEGER',
   ];
   for (const sql of migrations) {
     try {

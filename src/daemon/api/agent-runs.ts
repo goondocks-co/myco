@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { listRuns, countRuns, getRun, getLatestRunId } from '@myco/db/queries/runs.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
-import { buildTaskInstruction } from '@myco/agent/instruction-builders.js';
+import { buildTaskInstruction, isInstructionRequiredTask } from '@myco/agent/instruction-builders.js';
 import { loadConfig } from '@myco/config/loader.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -58,18 +58,44 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     const { task, instruction: rawInstruction, agentId } = AgentRunBody.parse(req.body);
 
     let instruction = rawInstruction;
+    let runContext: { candidate_id?: string } | undefined;
     if (task && !instruction) {
+      let built;
       try {
         const mycoConfig = loadConfig(vaultDir);
         const taskParams = mycoConfig.agent.tasks?.[task]?.params;
-        instruction = buildTaskInstruction(task, taskParams);
+        built = buildTaskInstruction(task, taskParams);
       } catch {
-        instruction = buildTaskInstruction(task);
+        built = buildTaskInstruction(task);
+      }
+      instruction = built?.instruction;
+      runContext = built?.context;
+
+      // Short-circuit: instruction-required tasks (skill-generate,
+      // skill-evolve) must not run when there's no work to do. For a
+      // manual trigger via the API, surface this as a 200 with a
+      // skipped status rather than a failed run row — the caller
+      // should see "nothing to do" as a valid outcome.
+      if (task && isInstructionRequiredTask(task) && !built) {
+        return {
+          body: {
+            ok: true,
+            message: `Task ${task} skipped — no work to do`,
+            status: 'skipped',
+            reason: 'no-work',
+          },
+        };
       }
     }
 
     const { runAgent } = await import('@myco/agent/executor.js');
-    const resultPromise = runAgent(vaultDir, { task, instruction, agentId, embeddingManager });
+    const resultPromise = runAgent(vaultDir, {
+      task,
+      instruction,
+      agentId,
+      embeddingManager,
+      runContext,
+    });
 
     // runAgent inserts the run row synchronously before the first await.
     // Query for the most recently created run matching this task to get

@@ -7,6 +7,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { LEVEL_ORDER, type LogLevel } from '@myco/daemon/logger.js';
+import { parseCsvList } from '@myco/utils/parse-csv-list.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -172,7 +173,7 @@ export function searchLogs(params: LogSearchParams): LogSearchResult {
 
   // Component filter — comma-separated list
   if (params.component !== undefined && params.component.length > 0) {
-    const components = params.component.split(',').map((c) => c.trim()).filter(Boolean);
+    const components = parseCsvList(params.component);
     if (components.length > 0) {
       conditions.push(`le.component IN (SELECT value FROM json_each(?))`);
       queryParams.push(JSON.stringify(components));
