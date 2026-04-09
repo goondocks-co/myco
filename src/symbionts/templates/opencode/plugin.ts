@@ -388,9 +388,17 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
 
         let responseSummary = "";
         try {
+          // `limit` is a tail-limit in opencode's server (returns the last N
+          // messages in chronological order — verified empirically against
+          // opencode v1.4.1 via `opencode serve`). A small bound is safe
+          // because session.idle fires at end-of-turn, so the last assistant
+          // message is always within the tail window. Using 5 (not 1) gives
+          // headroom for multi-message turns where the model produces
+          // reasoning → tool_use → final text across several assistant
+          // messages; we still find the last text part via the backward scan.
           const result = await client.session.messages({
             path: { id: sessionId },
-            query: { directory },
+            query: { directory, limit: 5 },
           });
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const messages = ((result as any)?.data ?? []) as SessionMessage[];
