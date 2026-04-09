@@ -1,0 +1,6 @@
+{
+  "myco": {
+    "type": "local",
+    "command": ["myco-run", "mcp"]
+  }
+}

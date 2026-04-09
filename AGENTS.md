@@ -1,6 +1,6 @@
 # Myco — Collective Agent Intelligence
 
-Captures session knowledge (events, observations, summaries) into a SQLite-backed intelligence graph and serves it back via MCP tools. Supports Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, and Windsurf.
+Captures session knowledge (events, observations, summaries) into a SQLite-backed intelligence graph and serves it back via MCP tools. Supports Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, and OpenCode.
 
 ## Dogfooding
 
@@ -285,10 +285,13 @@ make build
 
 ### Add a new symbiont
 
-1. Create manifest at `src/symbionts/manifests/<name>.yaml` with registration targets
-2. Create templates at `src/symbionts/templates/<name>/` (hooks.json, mcp.json, settings.json)
-3. Implement transcript adapter in `src/symbionts/<name>.ts`
-4. Register adapter in `src/symbionts/registry.ts`
+1. Create manifest at `src/symbionts/manifests/<name>.yaml` with registration targets. `loadManifests()` auto-discovers any YAML in this directory — no code change needed to register the manifest itself.
+2. Create templates at `src/symbionts/templates/<name>/`:
+   - **JSON hooks (default):** `hooks.json`, `mcp.json`, `settings.json` — merged into the agent's config files.
+   - **Plugin-file hooks (opencode):** `plugin.ts` + `package.json` + `mcp.json` + `settings.json`. Declare `hooksFormat: plugin-file` in the manifest and point `hooksTarget` at the plugin file path (e.g., `.opencode/plugins/myco.ts`). Also set `pluginPackageTarget` to write the plugin's deps manifest.
+   - **Non-standard MCP keys:** if the agent stores MCP servers under a key other than `mcpServers` (opencode uses `mcp`), set `mcpServersKey` in the manifest. Any downstream code that reads MCP state must resolve the key via the manifest, not hardcode `mcpServers`.
+3. **Optional** — implement a transcript adapter in `src/symbionts/<name>.ts` (NOT `src/symbionts/adapters/<name>.ts` — that subdirectory does not exist). Skip this step for agents that don't expose on-disk transcript files; Myco will reconstruct turns from the buffered hook events.
+4. If you implemented an adapter, register it in `src/symbionts/registry.ts` `ALL_ADAPTERS`.
 
 ### Test the vault and embeddings
 

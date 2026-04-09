@@ -1,6 +1,6 @@
 ---
 name: myco:add-symbiont
-description: "Use this skill when adding a new symbiont (agent integration) to Myco's SymbiontInstaller — the component that manages agent lifecycle operations (init, update, remove, doctor) for all registered agents. Activates whenever you need to onboard a new AI agent (Claude Code, Cursor, Windsurf, a custom agent, etc.) so that `myco init`, `myco update`, and `myco doctor` manage its installation. Apply this skill even if the user doesn't explicitly mention SymbiontInstaller — any time you're adding a new agent type, creating a symbiont manifest, wiring new hook templates, or extending the supported agents list, this skill applies. Also relevant when a new symbiont needs the cross-platform hook guard or environment variable injection."
+description: "Use this skill when adding a new symbiont (agent integration) to Myco's SymbiontInstaller — the component that manages agent lifecycle operations (init, update, remove, doctor) for all registered agents. Activates whenever you need to onboard a new AI agent (Claude Code, Cursor, opencode, a custom agent, etc.) so that `myco init`, `myco update`, and `myco doctor` manage its installation. Apply this skill even if the user doesn't explicitly mention SymbiontInstaller — any time you're adding a new agent type, creating a symbiont manifest, wiring new hook templates, or extending the supported agents list, this skill applies. Also relevant when a new symbiont needs the cross-platform hook guard or environment variable injection."
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -10,9 +10,25 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 ## Prerequisites
 
-- Understand the new agent's hook format and config file locations
-- Know the agent's config directory name (e.g., `.claude/`, `.cursor/`, `.gemini/`)
-- Determined whether the agent reads `AGENTS.md` natively or needs a thin instruction stub
+- Understand the new agent's hook format: JSON config file entries, TOML sections, or a TypeScript/JavaScript plugin module.
+- Know the agent's config directory (e.g., `.claude/`, `.cursor/`, `.opencode/`) and its primary config file.
+- Determine whether the agent reads `AGENTS.md` natively or needs a thin instruction stub.
+- Know whether the agent's MCP config lives under the standard `mcpServers` key or a different one (opencode uses `mcp`).
+
+## How manifests are discovered
+
+Manifests in `src/symbionts/manifests/*.yaml` are **auto-discovered** by `loadManifests()` in `src/symbionts/detect.ts`. Drop a new YAML file in that directory and it is picked up at runtime — **no imports, no registry edit, no code change** is needed to make a new manifest visible. The previous `SYMBIONT_MANIFESTS` array no longer exists.
+
+## Hook delivery modes
+
+The installer supports two ways of delivering hooks to an agent:
+
+| Mode | When | Template file | How installed |
+|------|------|---------------|---------------|
+| **`json` (default)** | Agent reads hooks from a JSON (or TOML) settings file — the common case. | `templates/<agent>/hooks.json` | Merged into `registration.hooksTarget`, preserving non-Myco hook groups. |
+| **`plugin-file`** | Agent reads hooks via a plugin module auto-loaded at startup (e.g., opencode). | `templates/<agent>/plugin.ts` | Copied verbatim to `registration.hooksTarget` (a `.ts` file path). |
+
+Set `registration.hooksFormat: plugin-file` when adding the second class. See the "Plugin-file hook variant" section near the bottom.
 
 ## Steps
 
@@ -23,171 +39,180 @@ Manifests live in `src/symbionts/manifests/`. Create `<agent-name>.yaml`:
 ```yaml
 name: my-agent
 displayName: My Agent
-configDir: .myagent          # project-local config directory this agent uses
-
-# Required: controls per-project activation default at myco init
-defaultEnabled: true         # or false — SymbiontInstaller reads this at init time
-
-# Optional: declare 'toml' if the agent uses TOML config files (e.g., Codex)
-# settingsFormat: json       # default; omit for JSON-based config agents
-# settingsFormat: toml       # required for agents like Codex that use config.toml
-
+binary: my-agent                    # used by myco detect (is the CLI on PATH?)
+configDir: .myagent                 # project-local config directory this agent uses
+pluginRootEnvVar: MYAGENT_PLUGIN_ROOT  # env var Myco checks to detect the active agent at hook time
+resumeCommand: "my-agent resume {sessionId}"  # optional, {sessionId} placeholder
+hookFields:                         # canonical name → agent-specific payload field name
+  sessionId: session_id             # most agents; Windsurf uses trajectory_id, VS Code uses sessionId
+  transcriptPath: transcript_path
+  lastResponse: last_assistant_message
+  # sessionIdEnv: MYAGENT_SESSION_ID  # optional fallback when session_id is not in stdin
+capture:
+  planDirs:
+    - .myagent/plans/               # directories Myco watches for plan files (Write/Edit events captured as plan records)
 registration:
-  hooksTarget: .myagent/hooks.json   # where to write hook registrations
-  mcpTarget: .myagent/mcp.json       # where to write MCP server config
-  skillsTarget: .myagent/skills/     # where to symlink skills
-  hookFields:                         # payload field normalization (if needed)
-    session_id: sessionId             # agent-specific field name → canonical name
-  resumeCommand: my-agent resume      # optional: how to resume a session
-
-# Optional: for agents needing their own instruction file
-# instructionsFile: MY-AGENT.md       # omit if agent reads AGENTS.md natively
+  hooksTarget: .myagent/settings.json   # file where hooks are written (JSON) OR the plugin file path (plugin-file)
+  # hooksFormat: plugin-file            # set when hooks target is a verbatim file, not a JSON merge
+  mcpTarget: .myagent/settings.json     # where MCP server entries are written
+  # mcpServersKey: mcp                  # default 'mcpServers'; set to 'mcp' for opencode-style agents
+  # mcpFormat: toml                     # default 'json'; set to 'toml' for Codex-style agents
+  skillsTarget: .agents/skills          # canonical shared skills directory (see SymbiontInstaller.installSkills())
+  settingsTarget: .myagent/settings.json   # where permission/auto-approval settings are merged
+  # settingsFormat: toml                # default 'json'; set to 'toml' for Codex
+  # pluginPackageTarget: .myagent/package.json   # only for plugin-file agents — declares SDK deps
+  # instructionsFile: MY-AGENT.md       # only for agents that do NOT read AGENTS.md natively
 ```
 
-**`defaultEnabled` is required.** `SymbiontInstaller` reads this field during `myco init` to populate the project's `symbionts` list in `myco.yaml`. A manifest without `defaultEnabled` means the symbiont won't be included in the init-time activation list, even if installed on the machine. The field must be explicit — there is no fallback default.
+**Which targets to set:** only the ones that apply. Omit any target the agent doesn't support — the installer silently skips missing targets.
 
-**`settingsFormat`** controls how the installer reads and writes the agent's config file. Default is `'json'`. Set `settingsFormat: toml` for agents whose settings file is TOML-based (e.g., Codex uses `config.toml`). The installer dispatches on this field when writing MCP entries and hook registrations — an incorrect or missing value will write JSON syntax into a TOML file and break the agent's config.
+**`hookFields`** is mandatory and maps Myco's canonical field names to the names the agent uses in hook stdin payloads. At runtime, `normalizeHookInput()` in `src/hooks/normalize.ts` detects the active agent via `pluginRootEnvVar` (or `sessionIdEnv` as a fallback) and applies the mapping before any hook logic runs.
 
-### 2. Register in SymbiontInstaller
+**TOML agents:** Codex uses `config.toml`, so its manifest declares `mcpFormat: toml` and `settingsFormat: toml`. TOML read/write operations go through `src/symbionts/toml-helpers.ts` (`upsertTomlSection` / `removeTomlSectionKeys`). Codex also requires a `[features] codex_hooks = true` block in its settings template — without it, Codex silently ignores all hook registrations.
 
-Open `src/symbionts/installer.ts` and add the new symbiont to the registry:
+### 2. Create Template Files
 
-```typescript
-import myAgentManifest from './manifests/my-agent.yaml';
+Templates for each agent live under `src/symbionts/templates/<agent-name>/`.
 
-export const SYMBIONT_MANIFESTS = [
-  claudeCodeManifest,
-  cursorManifest,
-  // ... existing ...
-  myAgentManifest,  // add here
-];
-```
-
-The order in `SYMBIONT_MANIFESTS` determines display order in `myco init` interactive prompts and `myco doctor` output.
-
-### 3. Create Hook Templates
-
-Hook templates define the hook scripts written to the agent's config directory during `myco init`.
-
-Create template files in `src/symbionts/templates/<agent-name>/`:
+**For JSON-hook agents** (Claude Code, Cursor, Codex, Gemini, VS Code Copilot, Windsurf):
 
 ```
 src/symbionts/templates/my-agent/
-  session-start.sh
-  user-prompt-submit.sh
-  post-tool-use.sh
-  stop.sh
+  hooks.json       # merged under the "hooks" key in hooksTarget
+  mcp.json         # merged under mcpServersKey (default "mcpServers") in mcpTarget
+  settings.json    # deep-merged into settingsTarget
 ```
 
-Each hook script must:
-1. Include the cross-platform hook guard at the top (see below)
-2. Call `myco-run hook <event>` with the correct payload
-3. Forward `MYCO_AGENT_SESSION` to prevent re-entrancy
+Every hook command MUST use the shared cross-platform guard:
 
-**Template example:**
-```bash
-#!/bin/bash
-# Cross-platform hook guard — prevents execution if myco is not installed
-source "$(dirname "$0")/../myco-hook.cjs" 2>/dev/null || exit 0
-
-export MYCO_AGENT_SESSION=1
-myco-run hook session-start \
-  --session-id "$SESSION_ID" \
-  --agent my-agent
-```
-
-### 4. Wire the Cross-Platform Hook Guard
-
-The hook guard `.agents/myco-hook.cjs` prevents hooks from failing for OSS contributors who don't have Myco installed. It is a CJS module that:
-- Checks if `myco-run` is available on PATH
-- Exits cleanly if Myco is not installed (no error, no noise)
-- Is sourced at the top of every hook script before any Myco commands
-
-New symbiont hooks must source this guard. Do not inline the guard logic — reference the shared file to keep updates centralized.
-
-### 5. Handle Hook Payload Normalization
-
-If the new agent's hook payloads use different field names than the canonical format, declare the mapping in the manifest's `hookFields` section:
-
-```yaml
-hookFields:
-  session_id: trajectory_id          # agent uses trajectory_id, Myco expects session_id
-  tool_name: tool_info.command_line  # dot-path for nested fields
-  # session_id: $env:AGENT_SESSION   # env-var source (prefix with $env:)
-```
-
-`normalizeHookInput()` reads the active manifest at hook runtime and applies the mapping before any processing logic runs. Each hook invocation is a fresh process, so per-invocation manifest detection is correct.
-
-### 6. Wire Instruction File (If Needed)
-
-If the new agent does **not** read `AGENTS.md` natively, declare `instructionsFile` in the manifest:
-
-```yaml
-registration:
-  instructionsFile: MY-AGENT.md
-```
-
-`SymbiontInstaller.installInstructions()` will write a thin stub that defers to `AGENTS.md`. If the file already exists, a reference block is prepended (idempotently) rather than overwriting user content.
-
-Agents that read `AGENTS.md` natively (Cursor, Codex, Windsurf) should omit `instructionsFile` entirely — the installer skips instruction file management for them.
-
-### 7. Implement the Transcript Adapter
-
-The intelligence pipeline needs a transcript parser for each agent's session format:
-
-Create `src/symbionts/adapters/<agent-name>.ts`:
-
-```typescript
-export function parseMyAgentTranscript(content: string): Turn[] {
-  // Parse the agent's transcript format into canonical Turn objects
-  // Each Turn has: role ('user' | 'assistant'), content, and optional toolCalls
+```json
+{
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "node .agents/myco-hook.cjs hook session-start",
+          "timeout": 10
+        }
+      ]
+    }
+  ]
 }
 ```
 
-Register the adapter in `src/symbionts/adapters/index.ts`.
+The hook guard script at `.agents/myco-hook.cjs` is installed automatically by `installHookGuard()` — you do NOT wire it by hand. It exits cleanly if `myco-run` is missing on the contributor's machine.
+
+**For plugin-file agents** (opencode):
+
+```
+src/symbionts/templates/opencode/
+  plugin.ts        # verbatim TypeScript plugin source — copied to .opencode/plugins/myco.ts
+  package.json     # declares the plugin SDK dep for Bun to install — copied to .opencode/package.json
+  mcp.json         # same as JSON-hook agents (written to opencode.json under the "mcp" key)
+  settings.json    # written to opencode.json under the "permission" key
+```
+
+The plugin file must include two markers near the top:
+```ts
+// Managed by Myco. Regenerated on `myco update`. Edit src/symbionts/templates/opencode/plugin.ts in the Myco repo instead.
+// myco:plugin-marker:opencode
+```
+The second line is the uninstall safety marker — `uninstallPluginHookFile()` only deletes files whose content contains `myco:plugin-marker`, so hand-edited files are preserved.
+
+### 3. The Hook Guard (automatic)
+
+`.agents/myco-hook.cjs` is the shared cross-platform guard. It's installed by `SymbiontInstaller.installHookGuard()` whenever any agent with `hooksTarget` is installed. You reference it from hook commands (`node .agents/myco-hook.cjs hook <event>`) but you never edit it from agent templates — the canonical source is `src/symbionts/templates/hook-guard.cjs`.
+
+### 4. Hook Payload Normalization
+
+If the agent's hook payloads use different field names than Claude Code's defaults, declare the mapping in `hookFields`:
+
+```yaml
+hookFields:
+  sessionId: trajectory_id          # Windsurf uses trajectory_id
+  transcriptPath: transcript_path
+  lastResponse: last_assistant_message
+  toolName: tool_info.command_line  # dot-path for nested fields is supported
+  sessionIdEnv: MYAGENT_SESSION_ID  # fallback env var when session_id not in stdin
+```
+
+`normalizeHookInput()` applies this mapping at the start of every hook invocation.
+
+### 5. Instruction File (only if needed)
+
+If the agent does **not** read `AGENTS.md` natively, declare `instructionsFile: MY-AGENT.md` in the manifest. `installInstructions()` writes a thin stub deferring to `AGENTS.md`, or prepends a reference block if the file already exists (idempotent).
+
+Agents that read `AGENTS.md` natively — **Cursor, Codex, Windsurf, opencode** — must NOT declare `instructionsFile`, or they'll get an unnecessary stub written at init time.
+
+### 6. Transcript Adapter — OPTIONAL
+
+Myco's intelligence pipeline can reconstruct conversation turns either from an on-disk transcript file (when the agent provides one) or from the buffered hook events (fallback). Implementing a transcript adapter lets session notes include accurate conversation text.
+
+**Skip this step** if the agent does not expose its transcript as a file on disk — opencode is the reference example: its messages are served programmatically via the SDK, and Myco reconstructs turns from the buffer instead.
+
+**If you do implement one:** create `src/symbionts/<name>.ts` (NOT `src/symbionts/adapters/<name>.ts` — that subdirectory does not exist). Export a `SymbiontAdapter` with `findTranscript(sessionId)` and `parseTurns(content)`. Reuse `parseJsonlTurns` from `src/symbionts/adapter.ts` if the agent uses a JSONL format similar to Claude Code or Cursor. Register the adapter in `src/symbionts/registry.ts` `ALL_ADAPTERS`.
 
 **Common format pitfalls:**
-- Some agents use JSONL (one JSON object per line) — parse line by line
-- Some use a single JSON file with a `messages` array — do NOT parse line by line
-- Some use delta JSONL (state-replay format) — must replay deltas in sequence
+- JSONL (one JSON object per line) — parse line by line.
+- Single JSON file with a `messages` array — parse the whole file as JSON.
+- Delta JSONL (state-replay format) — must replay deltas in sequence.
 
-### 8. Test the Integration
+### 7. Test the Integration
 
-After wiring everything:
+```sh
+make check               # lint + vitest run — MUST be clean before proceeding
+make build               # compiles and copies templates to dist/
 
-```bash
-myco init     # should include new symbiont in symbionts list if defaultEnabled: true
-myco doctor   # should check new symbiont's registration state
-myco update   # should refresh hooks and MCP for new symbiont
-make build    # must pass all 1,600+ tests with 0 TypeScript errors
+# Manual lifecycle test in a throwaway directory
+mkdir -p /tmp/myagent-test/.myagent && cd /tmp/myagent-test
+myco-dev init --non-interactive
+myco-dev doctor          # should list the new symbiont as registered
+myco-dev update          # should report "Everything is up to date" on a no-op run
+myco-dev remove --symbiont my-agent   # should clean up all registered files
 ```
 
-Verify `myco init` includes the new symbiont in the generated `myco.yaml`:
+Verify `myco.yaml` in the test project lists the new symbiont under `symbionts:` after init, and that the hook guard `.agents/myco-hook.cjs` exists.
+
+## Plugin-file hook variant (opencode)
+
+Agents with plugin-based hook systems (no JSON hook entries) use a different install path. All of the following fields are additive — JSON-hook agents ignore them.
+
 ```yaml
-symbionts:
-  - claude-code
-  - my-agent      # should appear if defaultEnabled: true
+registration:
+  hooksTarget: .opencode/plugins/myco.ts     # verbatim file path, NOT a JSON file
+  hooksFormat: plugin-file                    # selects installPluginHookFile() over the JSON merge path
+  pluginPackageTarget: .opencode/package.json # writes the plugin SDK deps manifest
+  mcpTarget: opencode.json
+  mcpServersKey: mcp                          # opencode puts MCP servers under "mcp", not "mcpServers"
+  settingsTarget: opencode.json
+  skillsTarget: .agents/skills
 ```
+
+**The plugin template file** (`templates/opencode/plugin.ts`) is copied verbatim — no substitutions, no templating. It must:
+1. Start with the two marker comments (`// Managed by Myco...` and `// myco:plugin-marker:<agent>`).
+2. Set `process.env.OPENCODE_PLUGIN_ROOT = directory` at plugin init so Myco's hook CLI detects the active agent via the standard `pluginRootEnvVar` mechanism (no new detection code needed).
+3. Spawn hooks with `node .agents/myco-hook.cjs hook <name>` piped JSON payload. The `2>/dev/null || true` guard makes missing-Myco a no-op.
+4. Forward `input.args` (not `output.metadata`) as `tool_input` for `tool.execute.after` events — `args` is where file paths live for write/edit/patch tools, which plan-capture needs.
+
+**The plugin package.json** declares the plugin SDK as a dep so the agent's package manager (opencode uses Bun) installs it at startup. It is **preserved on uninstall** — contributors may have added their own deps.
+
+**The `mcpServersKey` field** tells the installer which top-level JSON key holds MCP server entries. Downstream code that inspects MCP state (e.g., `src/cli/doctor.ts`) must also resolve this key via the manifest, not hardcode `mcpServers`.
 
 ## Common Pitfalls
 
-**Missing `defaultEnabled` in manifest.** This is the most impactful omission: `SymbiontInstaller` reads this field at `myco init` to seed the project's `symbionts` list. Without it, the symbiont will never be in the default activation list for new projects. Developers must add it manually after init. The field must be a boolean (`true` or `false`) — there is no implicit default.
+**Missing `hookFields` for camelCase or nested fields.** Many agents use non-snake-case names (VS Code uses `sessionId` not `session_id`; Windsurf uses `trajectory_id`). Declare the mapping in `hookFields` — do NOT special-case this in hook scripts or `normalizeHookInput`.
 
-**Missing or wrong `settingsFormat` for TOML-based agents.** Codex uses `config.toml`, not `settings.json`. Its manifest must declare `settingsFormat: toml`. Without this, the installer writes JSON syntax into a TOML file and silently corrupts the agent's config. Additionally, Codex hooks are experimental and require an explicit feature flag in `config.toml`:
+**Missing or wrong `settingsFormat` / `mcpFormat` for TOML agents.** Codex uses `config.toml`. Without `settingsFormat: toml` + `mcpFormat: toml`, the installer writes JSON syntax into a TOML file and silently corrupts the agent's config. Codex hooks additionally require `[features] codex_hooks = true` in the settings template — without it, Codex ignores hook registrations silently.
 
-```toml
-[features]
-codex_hooks = true
-```
+**Wrong `mcpServersKey`.** opencode stores MCP entries under `mcp`, not `mcpServers`. If you add a new agent with a non-standard key and forget to set `mcpServersKey`, the installer writes the entries under the wrong key and the agent never sees them.
 
-Without this block, hooks defined in the symbiont manifest are silently ignored by Codex regardless of how they are registered.
+**Hardcoded `mcpServers` in downstream consumers.** When adding code that inspects MCP state (doctor checks, config validators), always resolve the key via `reg.mcpServersKey ?? 'mcpServers'` — never hardcode the string. `src/cli/doctor.ts` is the canonical example of how to do this right.
 
-**Using `getEnabledSymbiontNames()` is the canonical read path.** Don't filter `myco.yaml.symbionts` inline in new code. Always call `getEnabledSymbiontNames(config)` from `src/config/loader.ts`. This was previously copy-pasted in 3 places before being canonicalized.
+**Forgetting the `myco:plugin-marker` header in plugin-file templates.** Without the marker, `uninstallPluginHookFile()` refuses to delete the file on the assumption that it was hand-edited. The template MUST include the marker or uninstall becomes a no-op.
 
-**Forgetting the hook guard.** Hooks without the cross-platform guard will fail loudly for contributors without Myco installed. Always source `.agents/myco-hook.cjs` at the top of every hook script.
+**`instructionsFile` for AGENTS.md-native agents.** Cursor, Codex, Windsurf, and opencode all read `AGENTS.md` natively. Declaring `instructionsFile` for them writes an unnecessary stub on every init.
 
-**hookFields for camelCase or nested fields.** Many agents use non-snake-case field names (e.g., VS Code uses `sessionId` not `session_id`). Declare the mapping in `hookFields` rather than special-casing it in hook scripts or normalizeHookInput logic.
+**Forgetting to add plan directories to `capture.planDirs`.** Plans written by the agent to a project-local directory (e.g., `.opencode/plans/`, `.claude/plans/`) are captured by Myco only if that directory is listed in the manifest's `capture.planDirs`. Without it, plan-mode workflows produce no plan records.
 
-**Hardcoding agent detection.** The installer uses config directory presence (`.myagent/` exists) as the signal for "agent is used in this project" — NOT binary-on-PATH presence. Binary detection was removed from the init flow. Don't add it back.
-
-**`instructionsFile` for AGENTS.md-native agents.** Cursor, Codex, and Windsurf read `AGENTS.md` natively — their manifests must NOT declare `instructionsFile`, or they'll get an unnecessary stub written at init time.
+**opencode tool naming: `plan-capture.ts` is case-sensitive.** opencode uses lowercase tool names (`write`, `edit`, `patch`) and camelCase argument fields (`filePath`), unlike Claude Code's PascalCase (`Write`) and snake_case (`file_path`). `src/daemon/plan-capture.ts` handles both sets — if you add another agent with a different naming convention, extend `FILE_WRITE_TOOLS` and the `filePath` field fallback in `isPlanWriteEvent()`.

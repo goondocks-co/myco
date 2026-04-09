@@ -1,0 +1,26 @@
+name: opencode
+displayName: OpenCode
+binary: opencode
+configDir: .opencode
+pluginRootEnvVar: OPENCODE_PLUGIN_ROOT
+resumeCommand: "opencode --session {sessionId}"
+hookFields:
+  sessionId: session_id
+  transcriptPath: transcript_path
+  lastResponse: last_assistant_message
+capture:
+  planDirs:
+    # opencode Plan mode permits edits only to .opencode/plans/*.md — captured by plan-capture.ts
+    - .opencode/plans/
+registration:
+  # Hooks are delivered as a verbatim TS plugin file, not a JSON merge
+  hooksTarget: .opencode/plugins/myco.ts
+  hooksFormat: plugin-file
+  # .opencode/package.json declares the plugin SDK dep so opencode's Bun installs it at startup
+  pluginPackageTarget: .opencode/package.json
+  # opencode.json hosts MCP + permissions under non-standard keys
+  mcpTarget: opencode.json
+  mcpServersKey: mcp
+  settingsTarget: opencode.json
+  skillsTarget: .agents/skills
+  # No instructionsFile — opencode reads AGENTS.md natively

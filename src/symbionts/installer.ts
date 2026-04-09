@@ -36,6 +36,13 @@ const CANONICAL_SKILLS_DIR = '.agents/skills';
 /** MCP server name used by Myco in all symbiont configurations. */
 export const MYCO_MCP_SERVER_NAME = 'myco';
 
+/**
+ * Marker substring written into plugin-file hook templates (e.g., opencode's plugin.ts).
+ * Uninstall only deletes plugin files whose content contains this marker, so
+ * contributors who hand-edit a plugin file without removing the marker are protected.
+ */
+const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
+
 /** Marker text used to identify unmodified instruction stubs. */
 const INSTRUCTIONS_STUB_MARKER = 'Edit AGENTS.md, not this file';
 
@@ -56,6 +63,11 @@ export interface InstallResult {
   skills: boolean;
   settings: boolean;
   instructions: boolean;
+  /**
+   * Plugin deps package.json (e.g., .opencode/package.json). Only present for agents
+   * with `registration.pluginPackageTarget` set. False otherwise.
+   */
+  pluginPackage: boolean;
 }
 
 export class SymbiontInstaller {
@@ -133,6 +145,24 @@ export class SymbiontInstaller {
     return null;
   }
 
+  /**
+   * Load a template file verbatim (no JSON parsing).
+   * Used for plugin-file hook templates (e.g., opencode's plugin.ts) and any
+   * other template that is copied to the project without structural merging.
+   */
+  loadTemplateRaw(filename: string): string | null {
+    const candidates = [
+      path.join(this.packageRoot, TEMPLATES_SUBDIR, this.manifest.name, filename),
+      path.join(this.packageRoot, 'dist', TEMPLATES_SUBDIR, this.manifest.name, filename),
+    ];
+    for (const filePath of candidates) {
+      try {
+        return fs.readFileSync(filePath, 'utf-8');
+      } catch { /* not found — try next */ }
+    }
+    return null;
+  }
+
   /** Run all registration steps. */
   install(): InstallResult {
     const reg = this.manifest.registration;
@@ -146,7 +176,10 @@ export class SymbiontInstaller {
           skills: this.installSkills(),
           settings: this.installSettings(),
           instructions: this.installInstructions(),
+          pluginPackage: false,
         };
+    // Plugin deps package.json (plugin-file agents only)
+    result.pluginPackage = this.installPluginPackage();
     this.updateGitignore();
     return result;
   }
@@ -155,6 +188,9 @@ export class SymbiontInstaller {
    * Check if ALL non-null JSON targets share the same file (e.g., Gemini).
    * Only batches when every target resolves to one path — partial overlaps
    * (e.g., Claude Code: hooks+settings share but MCP is separate) use normal path.
+   *
+   * Plugin-file hooks (e.g., opencode) naturally fall out of batching because their
+   * hooksTarget is a distinct .ts file path, yielding a Set size ≥ 2.
    */
   private shouldBatchJsonTargets(reg: typeof this.manifest.registration): boolean {
     if (!reg) return false;
@@ -192,11 +228,12 @@ export class SymbiontInstaller {
     // Apply MCP transform
     const mcpTemplate = reg.mcpTarget ? this.loadTemplate('mcp') : null;
     if (mcpTemplate) {
-      const servers = (data.mcpServers ?? {}) as Record<string, unknown>;
+      const serversKey = reg.mcpServersKey ?? 'mcpServers';
+      const servers = (data[serversKey] ?? {}) as Record<string, unknown>;
       for (const [name, def] of Object.entries(mcpTemplate)) {
         servers[name] = def;
       }
-      data.mcpServers = servers;
+      data[serversKey] = servers;
       mcp = true;
     }
 
@@ -215,6 +252,9 @@ export class SymbiontInstaller {
       skills: this.installSkills(),
       settings,
       instructions: this.installInstructions(),
+      // Batched agents (Gemini) don't have plugin-file hooks, but install() sets this
+      // correctly after the dispatch returns.
+      pluginPackage: false,
     };
   }
 
@@ -229,6 +269,7 @@ export class SymbiontInstaller {
           skills: this.uninstallSkills(),
           settings: this.uninstallSettings(),
           instructions: this.uninstallInstructions(),
+          pluginPackage: false,
         };
     // Remove hook guard after hooks/settings so the file is cleaned up last
     this.uninstallHookGuard();
@@ -243,7 +284,14 @@ export class SymbiontInstaller {
     const targetPath = path.join(this.projectRoot, reg.hooksTarget ?? reg.mcpTarget ?? reg.settingsTarget!);
     const data = readJsonFile(targetPath);
     if (Object.keys(data).length === 0) {
-      return { hooks: false, mcp: false, skills: this.uninstallSkills(), settings: false, instructions: this.uninstallInstructions() };
+      return {
+        hooks: false,
+        mcp: false,
+        skills: this.uninstallSkills(),
+        settings: false,
+        instructions: this.uninstallInstructions(),
+        pluginPackage: false,
+      };
     }
 
     let hooks = false, mcp = false, settings = false;
@@ -268,11 +316,12 @@ export class SymbiontInstaller {
 
     // Remove MCP
     if (reg.mcpTarget) {
-      const servers = (data.mcpServers ?? {}) as Record<string, unknown>;
+      const serversKey = reg.mcpServersKey ?? 'mcpServers';
+      const servers = (data[serversKey] ?? {}) as Record<string, unknown>;
       if (servers[MYCO_MCP_SERVER_NAME]) {
         delete servers[MYCO_MCP_SERVER_NAME];
-        if (Object.keys(servers).length === 0) delete data.mcpServers;
-        else data.mcpServers = servers;
+        if (Object.keys(servers).length === 0) delete data[serversKey];
+        else data[serversKey] = servers;
         mcp = true;
       }
     }
@@ -285,7 +334,14 @@ export class SymbiontInstaller {
 
     writeOrDeleteJsonFile(targetPath, data);
 
-    return { hooks, mcp, skills: this.uninstallSkills(), settings, instructions: this.uninstallInstructions() };
+    return {
+      hooks,
+      mcp,
+      skills: this.uninstallSkills(),
+      settings,
+      instructions: this.uninstallInstructions(),
+      pluginPackage: false,
+    };
   }
 
   /**
@@ -449,10 +505,15 @@ export class SymbiontInstaller {
   /**
    * Merge hooks template into the target settings file.
    * Replaces all Myco-owned hook groups; preserves non-Myco hooks.
+   *
+   * For plugin-file agents (e.g., opencode) this dispatches to `installPluginHookFile()`
+   * which writes a verbatim .ts plugin source to hooksTarget instead of merging JSON.
    */
   installHooks(): boolean {
     const reg = this.manifest.registration;
     if (!reg?.hooksTarget) return false;
+
+    if (reg.hooksFormat === 'plugin-file') return this.installPluginHookFile();
 
     const template = this.loadTemplate('hooks');
     if (!template) return false;
@@ -485,6 +546,81 @@ export class SymbiontInstaller {
   }
 
   /**
+   * Install a plugin-file hook target by copying a verbatim template.
+   * Used for agents whose hook system is plugin-based rather than JSON entry-based
+   * (e.g., opencode's TypeScript plugin system).
+   *
+   * Content-diff gated: skips the write if the target already matches the template,
+   * so `myco update` is quiet when nothing changes.
+   */
+  private installPluginHookFile(): boolean {
+    const reg = this.manifest.registration;
+    if (!reg?.hooksTarget) return false;
+
+    const templateContent = this.loadTemplateRaw('plugin.ts');
+    if (templateContent === null) return false;
+
+    const targetPath = path.join(this.projectRoot, reg.hooksTarget);
+
+    // Content-diff gate: skip if already current
+    try {
+      if (fs.readFileSync(targetPath, 'utf-8') === templateContent) return false;
+    } catch { /* doesn't exist — proceed */ }
+
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, templateContent, 'utf-8');
+    return true;
+  }
+
+  /**
+   * Remove a plugin-file hook target.
+   * Only deletes files whose content contains the Myco plugin marker — contributors
+   * who hand-edit the plugin file without removing the marker are protected.
+   */
+  private uninstallPluginHookFile(): boolean {
+    const reg = this.manifest.registration;
+    if (!reg?.hooksTarget) return false;
+
+    const targetPath = path.join(this.projectRoot, reg.hooksTarget);
+    let content: string;
+    try { content = fs.readFileSync(targetPath, 'utf-8'); } catch { return false; }
+
+    if (!content.includes(MYCO_PLUGIN_FILE_MARKER)) return false;
+
+    try {
+      fs.unlinkSync(targetPath);
+      // Remove parent plugins dir if now empty
+      try { fs.rmdirSync(path.dirname(targetPath)); } catch { /* not empty or missing */ }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Install a plugin deps package.json for plugin-file agents (e.g., opencode).
+   * Writes the template verbatim so the agent's package manager can install the SDK.
+   * Content-diff gated to keep `myco update` quiet.
+   */
+  private installPluginPackage(): boolean {
+    const reg = this.manifest.registration;
+    if (!reg?.pluginPackageTarget) return false;
+
+    const templateContent = this.loadTemplateRaw('package.json');
+    if (templateContent === null) return false;
+
+    const targetPath = path.join(this.projectRoot, reg.pluginPackageTarget);
+
+    try {
+      if (fs.readFileSync(targetPath, 'utf-8') === templateContent) return false;
+    } catch { /* doesn't exist — proceed */ }
+
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, templateContent, 'utf-8');
+    return true;
+  }
+
+  /**
    * Merge MCP server template into the target config file.
    * Replaces the `myco` server entry; preserves other servers.
    */
@@ -501,19 +637,27 @@ export class SymbiontInstaller {
     if (mcpFormat === 'toml') {
       return this.installMcpToml(targetPath, template);
     }
-    return this.installMcpJson(targetPath, template);
+    const serversKey = reg.mcpServersKey ?? 'mcpServers';
+    return this.installMcpJson(targetPath, template, serversKey);
   }
 
-  /** Write MCP servers to a JSON config file. */
-  private installMcpJson(targetPath: string, template: Record<string, unknown>): boolean {
+  /**
+   * Write MCP servers to a JSON config file under the configured key.
+   * Most agents use the canonical `mcpServers` key, but opencode uses `mcp`.
+   */
+  private installMcpJson(
+    targetPath: string,
+    template: Record<string, unknown>,
+    serversKey: string,
+  ): boolean {
     const config = readJsonFile(targetPath);
-    const servers = (config.mcpServers ?? {}) as Record<string, unknown>;
+    const servers = (config[serversKey] ?? {}) as Record<string, unknown>;
 
     for (const [name, def] of Object.entries(template)) {
       servers[name] = def;
     }
 
-    config.mcpServers = servers;
+    config[serversKey] = servers;
     writeJsonFile(targetPath, config);
     return true;
   }
@@ -681,10 +825,17 @@ export class SymbiontInstaller {
     return true;
   }
 
-  /** Remove Myco hook groups from the target settings file. */
+  /**
+   * Remove Myco hook groups from the target settings file.
+   *
+   * For plugin-file agents (e.g., opencode) this dispatches to `uninstallPluginHookFile()`
+   * which deletes the verbatim plugin file (guarded by the Myco plugin marker).
+   */
   uninstallHooks(): boolean {
     const reg = this.manifest.registration;
     if (!reg?.hooksTarget) return false;
+
+    if (reg.hooksFormat === 'plugin-file') return this.uninstallPluginHookFile();
 
     const targetPath = path.join(this.projectRoot, reg.hooksTarget);
     const settings = readJsonFile(targetPath);
@@ -722,20 +873,21 @@ export class SymbiontInstaller {
     if (mcpFormat === 'toml') {
       return this.uninstallMcpToml(targetPath);
     }
-    return this.uninstallMcpJson(targetPath);
+    const serversKey = reg.mcpServersKey ?? 'mcpServers';
+    return this.uninstallMcpJson(targetPath, serversKey);
   }
 
-  private uninstallMcpJson(targetPath: string): boolean {
+  private uninstallMcpJson(targetPath: string, serversKey: string): boolean {
     const config = readJsonFile(targetPath);
-    const servers = (config.mcpServers ?? {}) as Record<string, unknown>;
+    const servers = (config[serversKey] ?? {}) as Record<string, unknown>;
     if (!servers[MYCO_MCP_SERVER_NAME]) return false;
 
     delete servers[MYCO_MCP_SERVER_NAME];
 
     if (Object.keys(servers).length === 0) {
-      delete config.mcpServers;
+      delete config[serversKey];
     } else {
-      config.mcpServers = servers;
+      config[serversKey] = servers;
     }
 
     writeOrDeleteJsonFile(targetPath, config);
