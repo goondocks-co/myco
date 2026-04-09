@@ -40,6 +40,9 @@ const TOOL_OUTPUT_PREVIEW_CHARS = 200;
 /** Timeout for daemon HTTP calls — must be short so we never block opencode. */
 const MYCO_FETCH_TIMEOUT_MS = 3000;
 
+/** Tail window read from opencode when building the end-of-turn assistant summary. */
+const SESSION_IDLE_TAIL_LIMIT = 12;
+
 /** Heading prefix for compaction context — makes Myco's contribution recognizable in the compacted summary. */
 const COMPACTION_HEADING = "## Myco — Project Context (preserved across compaction)\n\n";
 
@@ -57,6 +60,70 @@ const COMPACTION_HEADING = "## Myco — Project Context (preserved across compac
  * to silently drop in live testing.
  */
 const MYCO_METADATA_MARKER = "myco";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+type MessagePart = { type?: string; text?: string };
+type SessionMessage = { info?: { role?: string }; parts?: MessagePart[] };
+
+// ---------------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------------
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function pickString(
+  record: Record<string, unknown>,
+  keys: readonly string[],
+): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return undefined;
+}
+
+export function normalizeToolInput(toolInput: unknown): unknown {
+  if (!isRecord(toolInput)) return toolInput;
+
+  const filePath = pickString(toolInput, ["file_path", "filePath", "path"]);
+  const workdir = pickString(toolInput, ["workdir", "cwd"]);
+  const command = pickString(toolInput, ["command", "cmd"]);
+
+  return {
+    ...toolInput,
+    ...(filePath ? { file_path: filePath } : {}),
+    ...(workdir ? { workdir } : {}),
+    ...(command ? { command } : {}),
+  };
+}
+
+export function collectAssistantSummaryFromMessages(messages: SessionMessage[]): string {
+  const summaryParts: string[] = [];
+  let foundAssistantBlock = false;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.info?.role !== "assistant") {
+      if (foundAssistantBlock) break;
+      continue;
+    }
+
+    foundAssistantBlock = true;
+    const text = (message.parts ?? [])
+      .filter((part) => part.type === "text" && part.text)
+      .map((part) => part.text as string)
+      .join("\n")
+      .trim();
+    if (text) summaryParts.unshift(text);
+  }
+
+  return summaryParts.join("\n").trim();
+}
 
 // ---------------------------------------------------------------------------
 // Daemon HTTP transport — all communication with the local Myco daemon.
@@ -358,10 +425,6 @@ async function injectSyntheticContext(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Small helpers
-// ---------------------------------------------------------------------------
-
 /** Flatten todo items into a newline-separated summary. */
 function formatTodos(
   todos: Array<{ id?: string; content?: string; status?: string }>,
@@ -471,37 +534,20 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
         if (!sessionId) return;
 
         // Fetch the last assistant message for a response summary.
-        // Narrow local types for walking the messages response — avoids scattered
-        // `any` casts inside the loop while keeping the SDK boundary cast isolated.
-        type MessagePart = { type?: string; text?: string };
-        type SessionMessage = { info?: { role?: string }; parts?: MessagePart[] };
-
         let responseSummary = "";
         try {
           // `limit` is a tail-limit in opencode's server (returns the last N
           // messages in chronological order — verified empirically against
-          // opencode v1.4.1 via `opencode serve`). A small bound is safe
-          // because session.idle fires at end-of-turn, so the last assistant
-          // message is always within the tail window. Using 5 (not 1) gives
-          // headroom for multi-message turns where the model produces
-          // reasoning → tool_use → final text across several assistant
-          // messages; we still find the last text part via the backward scan.
+          // opencode v1.4.1 via `opencode serve`). The tail window is large
+          // enough to capture a multi-message assistant block at end-of-turn
+          // without reading the full session history on every idle event.
           const result = await client.session.messages({
             path: { id: sessionId },
-            query: { directory, limit: 5 },
+            query: { directory, limit: SESSION_IDLE_TAIL_LIMIT },
           });
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const messages = ((result as any)?.data ?? []) as SessionMessage[];
-          for (let i = messages.length - 1; i >= 0; i--) {
-            const msg = messages[i];
-            if (msg?.info?.role === "assistant") {
-              const textParts = (msg.parts ?? [])
-                .filter((p) => p.type === "text" && p.text)
-                .map((p) => p.text as string);
-              responseSummary = textParts.join("\n");
-              break;
-            }
-          }
+          responseSummary = collectAssistantSummaryFromMessages(messages);
         } catch (err) {
           // eslint-disable-next-line no-console
           console.error("[myco] Failed to fetch messages for summary:", err);
@@ -612,7 +658,7 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
       if (!sessionId) return;
 
       const toolName = input?.tool ?? "unknown";
-      const toolInput = input?.args ?? output?.metadata ?? {};
+      const toolInput = normalizeToolInput(input?.args ?? output?.metadata ?? {});
       const toolOutput = summarizeToolOutput(output?.output);
 
       await mycoPostToolUse(directory, sessionId, toolName, toolInput, toolOutput);
