@@ -17,6 +17,8 @@ capture:
   buffer_max_events: 500
 agent:
   summary_batch_interval: 5
+  scheduled_tasks_enabled: true
+  event_tasks_enabled: true
   provider:
     type: cloud
   tasks:
@@ -24,6 +26,9 @@ agent:
       provider:
         type: cloud
         model: claude-sonnet-4-6
+      phases:
+        read-state:
+          maxTurns: 20
       schedule:
         enabled: true
         intervalSeconds: 1800
@@ -57,6 +62,9 @@ agent:
     skill-evolve:
       provider:
         type: cloud
+      phases:
+        assess:
+          maxTurns: 30
       schedule:
         enabled: true
         intervalSeconds: 1800
@@ -70,7 +78,7 @@ team:
   enabled: true
   worker_url: https://myco-team-974bc350.goondocks.workers.dev
   interval_minutes: 15
-  deployed_worker_version: 0.14.4
+  deployed_worker_version: 0.15.0
 skills:
   confidence_threshold: 0.7
   usage_stale_days: 30

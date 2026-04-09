@@ -16,6 +16,7 @@
 import { createHash } from 'node:crypto';
 import { CONTENT_HASH_ALGORITHM, epochSeconds } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import type { Logger } from '../logger.js';
 import {
   EMBEDDABLE_NAMESPACES,
   type EmbeddableNamespace,
@@ -34,17 +35,6 @@ import {
 
 /** Spore status that qualifies for embedding. */
 const ACTIVE_STATUS = 'active';
-
-// ---------------------------------------------------------------------------
-// Logger interface (matches DaemonLogger method signatures)
-// ---------------------------------------------------------------------------
-
-interface Logger {
-  debug(cat: string, msg: string, data?: Record<string, unknown>): void;
-  info(cat: string, msg: string, data?: Record<string, unknown>): void;
-  warn(cat: string, msg: string, data?: Record<string, unknown>): void;
-  error(cat: string, msg: string, data?: Record<string, unknown>): void;
-}
 
 // ---------------------------------------------------------------------------
 // EmbeddingManager

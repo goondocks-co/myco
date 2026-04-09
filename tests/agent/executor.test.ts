@@ -747,7 +747,7 @@ describe('runAgent — phased execution', () => {
     expect(allQueryCalls[2].prompt).toContain('Extracted 3 spores from 5 batches.');
   });
 
-  it('stops pipeline when a required phase fails', async () => {
+  it('marks the run as failed when a required phase fails', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
     // Phase 1 succeeds, phase 2 (extract, required) fails
@@ -756,13 +756,23 @@ describe('runAgent — phased execution', () => {
 
     const result = await runAgent(TEST_VAULT_DIR);
 
-    expect(result.status).toBe('completed'); // run-level status still completed
+    // Run-level status must reflect the required phase failure — not "completed".
+    // A required phase failing is a failed run, even though the pipeline stopped
+    // cleanly instead of throwing through the normal error path.
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('extract');
+    expect(result.error).toContain('Model unavailable');
     expect(result.phases!.length).toBe(2); // stopped after phase 2 failed
     expect(result.phases![0].status).toBe('completed');
     expect(result.phases![1].status).toBe('failed');
     expect(result.phases![1].summary).toContain('Model unavailable');
     // Phase 3 (report) should NOT have run
     expect(allQueryCalls.length).toBe(2);
+
+    // The DB row must also reflect the failure — the UI reads from here.
+    const run = getRun(result.runId);
+    expect(run!.status).toBe('failed');
+    expect(run!.error).toContain('extract');
   });
 
   it('continues pipeline when an optional phase fails', async () => {

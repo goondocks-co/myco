@@ -92,3 +92,25 @@ export function parseNumericField(value: string, fallback: number): number {
 export function formatEpochRelative(epoch: number | null): string {
   return epoch !== null ? formatEpochAgo(epoch) : '\u2014';
 }
+
+/* ---------- Byte formatting ---------- */
+
+const BYTES_PER_UNIT = 1024;
+const BYTE_UNITS = ['KB', 'MB', 'GB', 'TB'] as const;
+
+/**
+ * Format a byte count as a human-readable string (e.g. "4.2 MB", "234 MB").
+ * Values below 1024 are shown as bytes. Values at or above 100 in the chosen
+ * unit lose the decimal for brevity (matches macOS Finder conventions).
+ */
+export function formatBytes(bytes: number): string {
+  if (bytes < BYTES_PER_UNIT) return `${bytes} B`;
+  let value = bytes / BYTES_PER_UNIT;
+  let unitIdx = 0;
+  while (value >= BYTES_PER_UNIT && unitIdx < BYTE_UNITS.length - 1) {
+    value /= BYTES_PER_UNIT;
+    unitIdx++;
+  }
+  const digits = value >= 100 ? 0 : 1;
+  return `${value.toFixed(digits)} ${BYTE_UNITS[unitIdx]}`;
+}

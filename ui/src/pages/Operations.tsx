@@ -1,43 +1,51 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Cpu, Play, Trash2, RefreshCw, RotateCcw, ArrowDown, Pause } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { Cpu, Database, Play, Trash2, RefreshCw, RotateCcw, ArrowDown, Pause } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEmbeddingDetails, type EmbeddingDetails } from '../hooks/use-embedding-details';
-import { usePowerQuery } from '../hooks/use-power-query';
-import { fetchJson, postJson } from '../lib/api';
-import { POLL_INTERVALS, LEVEL_ORDER, type LogLevel, levelBadgeVariant, levelDotColor } from '../lib/constants';
+import { useDatabaseDetails, type DatabaseDetails } from '../hooks/use-database-details';
+import { useConfig } from '../hooks/use-config';
+import { useLogFeed } from '../hooks/use-log-feed';
+import { Badge } from '../components/ui/badge';
+import { postJson, ApiError } from '../lib/api';
+import { formatBytes, formatTimeAgo, SECONDS_PER_HOUR } from '../lib/format';
 import { PageLoading } from '../components/ui/page-loading';
 import { PageHeader } from '../components/ui/page-header';
 import { Surface } from '../components/ui/surface';
 import { StatCard } from '../components/ui/stat-card';
 import { SectionHeader } from '../components/ui/section-header';
 import { Button } from '../components/ui/button';
-import { Badge } from '../components/ui/badge';
 import { cn } from '../lib/cn';
 import { BackupCard } from '../components/operations/BackupCard';
 import { UpdateCard } from '../components/operations/UpdateCard';
+import { LogRow } from '../components/operations/LogRow';
 import type { Tab } from '../components/ui/tab-switcher';
 
 /* ---------- Constants ---------- */
 
 const EMBEDDABLE_NAMESPACES = ['sessions', 'spores', 'plans', 'artifacts'] as const;
 const EMBEDDING_LOG_CATEGORY = 'embedding';
-const DEFAULT_LOG_LIMIT = 100;
-const MAX_LOG_ENTRIES = 2000;
-const SCROLL_BOTTOM_THRESHOLD_PX = 40;
+const DATABASE_LOG_CATEGORY = 'database';
+
+/** Fragmentation percentage at or above which the stat card uses a warning accent. */
+const FRAGMENTATION_WARN_PCT = 15;
+
+/** Error-code discriminant returned by /api/database/vacuum on 409. */
+const VACUUM_INSUFFICIENT_DISK = 'insufficient_disk_space';
 
 /** Number of recent data points to show in stat card sparklines. */
 const SPARKLINE_HISTORY_LENGTH = 20;
 
 /* ---------- Tabs ---------- */
 
-type ActiveTab = 'embedding' | 'system';
+type ActiveTab = 'embedding' | 'database' | 'system';
 
 const OPERATIONS_TABS: Tab[] = [
   { id: 'embedding', label: 'Embedding' },
+  { id: 'database', label: 'Database' },
   { id: 'system', label: 'System' },
 ];
 
-const VALID_TABS = new Set<ActiveTab>(['embedding', 'system']);
+const VALID_TABS = new Set<ActiveTab>(['embedding', 'database', 'system']);
 const PARAM_TAB = 'tab';
 
 function readTabFromUrl(): ActiveTab {
@@ -54,22 +62,6 @@ function writeTabToUrl(tab: ActiveTab): void {
   window.history.replaceState(null, '', url);
 }
 
-/* ---------- Types ---------- */
-
-interface LogEntry {
-  timestamp: string;
-  level: LogLevel;
-  category: string;
-  message: string;
-  [key: string]: unknown;
-}
-
-interface LogsResponse {
-  entries: LogEntry[];
-  cursor: string;
-  cursor_reset?: boolean;
-}
-
 /* ---------- Helpers ---------- */
 
 function statusLabel(data: EmbeddingDetails): string {
@@ -84,16 +76,14 @@ function statusDotColor(data: EmbeddingDetails): string {
   return hasPending ? 'bg-secondary' : 'bg-primary';
 }
 
-function formatTimestamp(iso: string): string {
-  const d = new Date(iso);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  const ss = String(d.getSeconds()).padStart(2, '0');
-  return `${hh}:${mm}:${ss}`;
-}
-
-function isAtBottom(el: HTMLElement): boolean {
-  return el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX;
+function formatCountdown(ms: number): string {
+  if (ms <= 0) return 'now';
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return sec + 's';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return min + 'm';
+  const hr = Math.floor(min / 60);
+  return hr + 'h';
 }
 
 /* ---------- Sub-components ---------- */
@@ -152,24 +142,295 @@ function NamespaceTable({ data }: { data: EmbeddingDetails }) {
   );
 }
 
-function EmbeddingLogRow({ entry }: { entry: LogEntry }) {
+function TablesTable({ tables }: { tables: DatabaseDetails['tables'] }) {
+  const sorted = [...tables].sort((a, b) => b.rows - a.rows);
   return (
-    <tr className="hover:bg-surface-container-high/30 transition-colors">
-      <td className="whitespace-nowrap py-1.5 pl-4 pr-3 text-on-surface-variant/60 align-top w-[68px]">
-        {formatTimestamp(entry.timestamp)}
-      </td>
-      <td className="whitespace-nowrap py-1.5 pr-3 align-top w-[20px]">
-        <div className={cn('h-2 w-2 rounded-full mt-1', levelDotColor(entry.level))} />
-      </td>
-      <td className="whitespace-nowrap py-1.5 pr-3 align-top w-[54px]">
-        <Badge variant={levelBadgeVariant(entry.level)} className="px-1.5 py-0 text-[10px] uppercase">
-          {entry.level}
-        </Badge>
-      </td>
-      <td className="py-1.5 pr-4 text-on-surface align-top break-words">
-        {entry.message}
-      </td>
-    </tr>
+    <div className="overflow-x-auto">
+      <table className="w-full font-mono text-sm" aria-label="Database table breakdown">
+        <thead>
+          <tr className="text-left text-on-surface-variant">
+            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest" scope="col">Table</th>
+            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest text-right" scope="col">Rows</th>
+            <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest text-right" scope="col">Indexes</th>
+            <th className="pb-2 font-sans font-medium text-xs uppercase tracking-widest" scope="col">Type</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((t, idx) => (
+            <tr
+              key={t.name}
+              className={cn(
+                'transition-colors hover:bg-surface-container-high/50',
+                idx % 2 === 1 ? 'bg-surface-container-low/30' : '',
+              )}
+            >
+              <td className="py-2.5 pr-4">{t.name}</td>
+              <td className="py-2.5 pr-4 text-right">{t.rows.toLocaleString()}</td>
+              <td className="py-2.5 pr-4 text-right">{t.index_count}</td>
+              <td className="py-2.5">
+                {t.is_fts ? (
+                  <Badge variant="outline" className="px-1.5 py-0 text-[10px] uppercase">FTS5</Badge>
+                ) : (
+                  <span className="text-on-surface-variant/60">btree</span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function IndexesPanel({ indexes }: { indexes: DatabaseDetails['indexes'] }) {
+  const [expanded, setExpanded] = useState(false);
+  const btreeCount = indexes.filter((i) => i.type === 'btree').length;
+  const autoCount = indexes.filter((i) => i.type === 'auto').length;
+
+  return (
+    <Surface level="low" className="p-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <SectionHeader>Indexes</SectionHeader>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="font-sans text-xs text-on-surface-variant hover:text-on-surface transition-colors"
+        >
+          {expanded ? 'Hide' : 'Show all ' + indexes.length}
+        </button>
+      </div>
+      <p className="font-sans text-sm text-on-surface-variant">
+        {btreeCount} btree {btreeCount === 1 ? 'index' : 'indexes'}
+        {autoCount > 0 && <> · {autoCount} auto-{autoCount === 1 ? 'index' : 'indexes'}</>}
+      </p>
+      {expanded && (
+        <div className="overflow-x-auto">
+          <table className="w-full font-mono text-xs" aria-label="All database indexes">
+            <thead>
+              <tr className="text-left text-on-surface-variant">
+                <th className="pb-2 pr-4 font-sans font-medium text-[10px] uppercase tracking-widest" scope="col">Name</th>
+                <th className="pb-2 pr-4 font-sans font-medium text-[10px] uppercase tracking-widest" scope="col">Table</th>
+                <th className="pb-2 pr-4 font-sans font-medium text-[10px] uppercase tracking-widest" scope="col">Type</th>
+                <th className="pb-2 font-sans font-medium text-[10px] uppercase tracking-widest" scope="col">SQL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {indexes.map((idx, i) => (
+                <tr
+                  key={idx.name}
+                  className={cn(
+                    'transition-colors hover:bg-surface-container-high/50',
+                    i % 2 === 1 ? 'bg-surface-container-low/30' : '',
+                  )}
+                >
+                  <td className="py-1.5 pr-4">{idx.name}</td>
+                  <td className="py-1.5 pr-4 text-on-surface-variant">{idx.table}</td>
+                  <td className="py-1.5 pr-4 text-on-surface-variant uppercase">{idx.type}</td>
+                  <td className="py-1.5 text-on-surface-variant/70 truncate max-w-[300px]" title={idx.sql ?? ''}>
+                    {idx.sql ?? '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Surface>
+  );
+}
+
+function ScheduledMaintenanceCard({
+  details,
+  onActionResult,
+}: {
+  details: DatabaseDetails;
+  onActionResult: (r: { type: 'success' | 'error'; text: string }) => void;
+}) {
+  const { config, saveConfig, isSaving } = useConfig();
+  const queryClient = useQueryClient();
+  const [running, setRunning] = useState(false);
+
+  if (!config) return null;
+
+  const enabled = config.maintenance.auto_optimize;
+  const intervalHours = config.maintenance.auto_optimize_interval_hours;
+
+  const lastRunMs = details.last_optimize_at ? new Date(details.last_optimize_at).getTime() : null;
+  const nextRunMs = lastRunMs !== null ? lastRunMs + intervalHours * SECONDS_PER_HOUR * 1000 - Date.now() : 0;
+
+  async function persist(next: { auto_optimize?: boolean; auto_optimize_interval_hours?: number }) {
+    try {
+      await saveConfig({
+        ...config!,
+        maintenance: {
+          ...config!.maintenance,
+          ...next,
+        },
+      });
+    } catch (err) {
+      onActionResult({ type: 'error', text: 'Config save failed: ' + (err as Error).message });
+    }
+  }
+
+  async function handleRunNow() {
+    setRunning(true);
+    try {
+      const result = await postJson<{
+        actions_completed: Array<{ name: string }>;
+        actions_failed: Array<{ name: string; error?: string }>;
+        duration_ms: number;
+      }>('/database/optimize');
+      const failed = result.actions_failed.length;
+      onActionResult({
+        type: failed > 0 ? 'error' : 'success',
+        text: 'Optimize complete: ' + result.actions_completed.length + ' steps, ' + failed + ' failed (' + result.duration_ms + 'ms)',
+      });
+      queryClient.invalidateQueries({ queryKey: ['database-details'] });
+    } catch (err) {
+      onActionResult({ type: 'error', text: 'Error: ' + (err as Error).message });
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <Surface level="low" className="p-6 space-y-4">
+      <SectionHeader>Scheduled Maintenance</SectionHeader>
+      <div className="flex flex-wrap items-center gap-3 font-sans text-sm">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={isSaving}
+            onChange={(e) => persist({ auto_optimize: e.target.checked })}
+            className="h-4 w-4 accent-primary"
+          />
+          <span className="text-on-surface">Auto-optimize</span>
+        </label>
+        <span className="text-on-surface-variant">every</span>
+        <select
+          value={intervalHours}
+          disabled={!enabled || isSaving}
+          onChange={(e) => persist({ auto_optimize_interval_hours: Number(e.target.value) })}
+          className="rounded-md border border-outline bg-surface-container px-2 py-1 text-on-surface text-sm"
+        >
+          <option value={6}>6 hours</option>
+          <option value={12}>12 hours</option>
+          <option value={24}>24 hours</option>
+          <option value={72}>3 days</option>
+          <option value={168}>7 days</option>
+          <option value={720}>30 days</option>
+        </select>
+      </div>
+      <p className="font-sans text-sm text-on-surface-variant">
+        Last run: {details.last_optimize_at ? formatTimeAgo(details.last_optimize_at) : 'never'}
+        {enabled && lastRunMs !== null && <> · Next: {formatCountdown(nextRunMs)}</>}
+      </p>
+      <Button variant="secondary" size="sm" onClick={handleRunNow} disabled={running}>
+        <Play className="mr-2 h-4 w-4" />
+        {running ? 'Running...' : 'Run now'}
+      </Button>
+    </Surface>
+  );
+}
+
+function DatabaseActions({
+  onActionResult,
+}: {
+  onActionResult: (r: { type: 'success' | 'error'; text: string }) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+
+  async function handleIntegrityCheck() {
+    setBusy(true);
+    try {
+      const result = await postJson<{
+        status: string;
+        issues: string[];
+        fk_violations: number;
+        duration_ms: number;
+      }>('/database/integrity-check');
+      if (result.status === 'ok') {
+        onActionResult({ type: 'success', text: 'Integrity check OK (' + result.duration_ms + 'ms)' });
+      } else {
+        onActionResult({
+          type: 'error',
+          text: 'Integrity issues: ' + result.issues.length + ' problems, ' + result.fk_violations + ' FK violations',
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ['database-details'] });
+    } catch (err) {
+      onActionResult({ type: 'error', text: 'Error: ' + (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleVacuum() {
+    if (!confirm('VACUUM rebuilds the entire DB file and may take a while. Continue?')) return;
+    setBusy(true);
+    try {
+      const result = await postJson<{
+        size_before: number;
+        size_after: number;
+        freed_bytes: number;
+        duration_ms: number;
+      }>('/database/vacuum');
+      onActionResult({
+        type: 'success',
+        text: 'Vacuum complete: freed ' + formatBytes(result.freed_bytes) + ' in ' + result.duration_ms + 'ms',
+      });
+      queryClient.invalidateQueries({ queryKey: ['database-details'] });
+    } catch (err) {
+      if (err instanceof ApiError) {
+        const body = err.body as { error?: string; required_bytes?: number; free_bytes?: number };
+        if (body?.error === VACUUM_INSUFFICIENT_DISK) {
+          onActionResult({
+            type: 'error',
+            text: 'Insufficient disk: need ' + formatBytes(body.required_bytes ?? 0) + ', have ' + formatBytes(body.free_bytes ?? 0),
+          });
+          return;
+        }
+      }
+      onActionResult({ type: 'error', text: 'Error: ' + (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleReindex() {
+    if (!confirm('REINDEX rebuilds all indexes. Continue?')) return;
+    setBusy(true);
+    try {
+      const result = await postJson<{ duration_ms: number }>('/database/reindex');
+      onActionResult({ type: 'success', text: 'Reindex complete (' + result.duration_ms + 'ms)' });
+      queryClient.invalidateQueries({ queryKey: ['database-details'] });
+    } catch (err) {
+      onActionResult({ type: 'error', text: 'Error: ' + (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Surface level="low" className="p-6 space-y-3">
+      <SectionHeader>Actions</SectionHeader>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="ghost" size="sm" onClick={handleIntegrityCheck} disabled={busy}>
+          <RefreshCw className="mr-2 h-4 w-4" />
+          Integrity check
+        </Button>
+        <Button variant="destructive" size="sm" onClick={handleVacuum} disabled={busy}>
+          <Trash2 className="mr-2 h-4 w-4" />
+          Vacuum
+        </Button>
+        <Button variant="ghost" size="sm" onClick={handleReindex} disabled={busy}>
+          <RotateCcw className="mr-2 h-4 w-4" />
+          Reindex
+        </Button>
+      </div>
+    </Surface>
   );
 }
 
@@ -191,91 +452,16 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
     });
   }, [data]);
 
-  // --- Embedding log feed ---
-  const [entries, setEntries] = useState<LogEntry[]>([]);
-  const [cursor, setCursor] = useState<string | undefined>(undefined);
-  const [autoScroll, setAutoScroll] = useState(true);
-  const [hasNewEntries, setHasNewEntries] = useState(false);
-
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const autoScrollRef = useRef(autoScroll);
-  autoScrollRef.current = autoScroll;
-  const cursorRef = useRef(cursor);
-  cursorRef.current = cursor;
-
-  const { data: logsData } = usePowerQuery<LogsResponse>({
-    queryKey: ['embedding-logs'],
-    queryFn: ({ signal }) => {
-      const params = new URLSearchParams({
-        limit: String(DEFAULT_LOG_LIMIT),
-        category: EMBEDDING_LOG_CATEGORY,
-      });
-      if (cursorRef.current) params.set('since', cursorRef.current);
-      return fetchJson<LogsResponse>(`/logs?${params.toString()}`, { signal });
-    },
-    refetchInterval: POLL_INTERVALS.LOGS,
-    pollCategory: 'standard',
-  });
-
-  useEffect(() => {
-    if (!logsData?.entries.length) return;
-
-    setEntries((prev) => {
-      let combined: LogEntry[];
-      if (logsData.cursor_reset) {
-        const existingKeys = new Set(prev.map((e) => `${e.timestamp}|${e.message}`));
-        const fresh = logsData.entries.filter(
-          (e) => !existingKeys.has(`${e.timestamp}|${e.message}`),
-        );
-        combined = fresh.length ? [...prev, ...fresh] : prev;
-      } else {
-        combined = [...prev, ...logsData.entries];
-      }
-      return combined.length > MAX_LOG_ENTRIES
-        ? combined.slice(-MAX_LOG_ENTRIES)
-        : combined;
-    });
-
-    setCursor(logsData.cursor);
-
-    if (!autoScrollRef.current) {
-      setHasNewEntries(true);
-    }
-  }, [logsData]);
-
-  useEffect(() => {
-    if (!autoScroll || !scrollRef.current) return;
-    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    setHasNewEntries(false);
-  }, [entries, autoScroll]);
-
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (isAtBottom(el)) {
-      setAutoScroll(true);
-      setHasNewEntries(false);
-    } else {
-      setAutoScroll(false);
-    }
-  }, []);
-
-  const scrollToBottom = useCallback(() => {
-    if (!scrollRef.current) return;
-    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    setAutoScroll(true);
-    setHasNewEntries(false);
-  }, []);
-
-  // Client-side filter to embedding category
-  const filteredEntries = useMemo(() => {
-    const levelFloor = LEVEL_ORDER['debug'];
-    return entries.filter((e) => {
-      if (LEVEL_ORDER[e.level] < levelFloor) return false;
-      if (e.category !== EMBEDDING_LOG_CATEGORY) return false;
-      return true;
-    });
-  }, [entries]);
+  // Log feed (shared hook)
+  const {
+    filteredEntries,
+    scrollRef,
+    autoScroll,
+    setAutoScroll,
+    hasNewEntries,
+    handleScroll,
+    scrollToBottom,
+  } = useLogFeed(EMBEDDING_LOG_CATEGORY);
 
   // --- Action handlers ---
 
@@ -437,7 +623,7 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
               <table className="w-full border-collapse" aria-label="Embedding activity log">
                 <tbody>
                   {filteredEntries.map((entry, idx) => (
-                    <EmbeddingLogRow key={`${entry.timestamp}-${idx}`} entry={entry} />
+                    <LogRow key={`${entry.timestamp}-${idx}`} entry={entry} />
                   ))}
                 </tbody>
               </table>
@@ -477,10 +663,174 @@ function SystemTab() {
   );
 }
 
+/* ---------- Database Tab ---------- */
+
+function DatabaseTab() {
+  const { data, isLoading, isError, error } = useDatabaseDetails();
+
+  // Sparkline history for DB size
+  const [sizeHistory, setSizeHistory] = useState<number[]>([]);
+  const [actionResult, setActionResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  useEffect(() => {
+    if (!data) return;
+    setSizeHistory((prev) => {
+      const next = [...prev, data.file.size_bytes];
+      return next.length > SPARKLINE_HISTORY_LENGTH ? next.slice(-SPARKLINE_HISTORY_LENGTH) : next;
+    });
+  }, [data]);
+
+  // Log feed (shared hook)
+  const {
+    filteredEntries,
+    scrollRef,
+    autoScroll,
+    setAutoScroll,
+    hasNewEntries,
+    handleScroll,
+    scrollToBottom,
+  } = useLogFeed(DATABASE_LOG_CATEGORY);
+
+  if (isLoading) return <div className="text-on-surface-variant">Loading database details...</div>;
+  if (isError) return <div className="text-tertiary">Error: {(error as Error).message}</div>;
+  if (!data) return null;
+
+  const fragmentationDisplay = data.file.fragmentation_pct.toFixed(1) + '%';
+  const fragmentationAccent = data.file.fragmentation_pct > FRAGMENTATION_WARN_PCT ? 'ochre' : 'outline';
+
+  return (
+    <div className="space-y-6">
+      {/* Status bar */}
+      <div className="flex flex-wrap items-center gap-4 font-sans text-sm">
+        <div className="flex items-center gap-2">
+          <Database className="h-4 w-4 text-primary" />
+          <span className="text-on-surface-variant">Database</span>
+          <span className="font-mono text-on-surface">myco.db</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-on-surface-variant">Schema</span>
+          <span className="font-mono text-on-surface">v{data.schema.version}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-on-surface-variant">Journal</span>
+          <span className="font-mono text-on-surface uppercase">{data.schema.journal_mode}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="h-2 w-2 rounded-full bg-primary" />
+          <span className="text-on-surface-variant">healthy</span>
+        </div>
+      </div>
+
+      {/* Stat cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <StatCard
+          label="Database Size"
+          value={formatBytes(data.file.size_bytes)}
+          sparklineData={sizeHistory}
+          accent="sage"
+        />
+        <StatCard
+          label="Fragmentation"
+          value={fragmentationDisplay}
+          accent={fragmentationAccent}
+        />
+        <StatCard
+          label="WAL Size"
+          value={formatBytes(data.file.wal_size_bytes)}
+          accent="outline"
+        />
+      </div>
+
+      {/* Schema breakdown */}
+      <Surface level="low" className="p-6 space-y-4">
+        <SectionHeader>Schema Breakdown</SectionHeader>
+        <TablesTable tables={data.tables} />
+      </Surface>
+
+      <IndexesPanel indexes={data.indexes} />
+
+      <ScheduledMaintenanceCard details={data} onActionResult={setActionResult} />
+
+      <DatabaseActions onActionResult={setActionResult} />
+
+      {actionResult && (
+        <p
+          className={cn(
+            'font-sans text-sm',
+            actionResult.type === 'success' ? 'text-primary' : 'text-tertiary',
+          )}
+        >
+          {actionResult.text}
+        </p>
+      )}
+
+      {/* Activity log — recessed terminal feel */}
+      <Surface level="low" className="flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4">
+          <SectionHeader>Activity Log</SectionHeader>
+          <Button
+            size="sm"
+            variant={autoScroll ? 'default' : 'ghost'}
+            className="h-7 gap-1.5 px-2 text-xs"
+            onClick={() => {
+              if (autoScroll) {
+                setAutoScroll(false);
+              } else {
+                scrollToBottom();
+              }
+            }}
+            title={autoScroll ? 'Pause auto-scroll' : 'Resume auto-scroll'}
+          >
+            {autoScroll ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+            {autoScroll ? 'Pause' : 'Resume'}
+          </Button>
+        </div>
+        <div className="relative flex-1 p-0">
+          <div
+            ref={scrollRef}
+            onScroll={handleScroll}
+            className="h-64 overflow-y-auto font-mono text-xs bg-surface-container-lowest"
+          >
+            {filteredEntries.length === 0 ? (
+              <div className="flex h-32 items-center justify-center font-sans text-on-surface-variant">
+                No database log entries
+              </div>
+            ) : (
+              <table className="w-full border-collapse" aria-label="Database activity log">
+                <tbody>
+                  {filteredEntries.map((entry, idx) => (
+                    <LogRow key={entry.timestamp + '-' + idx} entry={entry} />
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {hasNewEntries && !autoScroll && (
+            <button
+              type="button"
+              onClick={scrollToBottom}
+              className={cn(
+                'absolute bottom-4 left-1/2 -translate-x-1/2',
+                'flex items-center gap-1.5 rounded-full',
+                'bg-surface-container-high px-3 py-1.5 text-xs font-medium shadow-ambient',
+                'text-on-surface-variant transition-colors hover:text-on-surface',
+              )}
+            >
+              <ArrowDown className="h-3 w-3" />
+              New entries below
+            </button>
+          )}
+        </div>
+      </Surface>
+    </div>
+  );
+}
+
 /* ---------- Operations Page ---------- */
 
 const TAB_SUBTITLES: Record<ActiveTab, string> = {
   embedding: 'Embedding health, maintenance actions, and activity log',
+  database: 'Schema inspection, maintenance actions, and scheduled optimization',
   system: 'Software updates and backup management',
 };
 
@@ -516,6 +866,7 @@ export default function Operations() {
           <div className="flex-1 overflow-auto">
             <div className="px-6 pb-6">
               {activeTab === 'embedding' && <EmbeddingTab data={data} />}
+              {activeTab === 'database' && <DatabaseTab />}
               {activeTab === 'system' && <SystemTab />}
             </div>
           </div>
