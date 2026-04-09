@@ -56,6 +56,18 @@ const COMPACTION_HEADING = "## Myco — Project Context (preserved across compac
  */
 let cachedDaemonPort: number | null | undefined = undefined;
 
+/**
+ * Active opencode sessions tracked by this plugin instance. Populated on
+ * `session.created` and drained on `session.deleted` / `server.instance.disposed`.
+ *
+ * Opencode has no `session.end` event — when the TUI exits normally (Ctrl+C,
+ * close terminal), the session stays "active" from the daemon's perspective
+ * until the session-maintenance job sweeps it (1-hour threshold). To close
+ * sessions cleanly on TUI exit, we track them locally and call unregister
+ * for each one when `server.instance.disposed` fires.
+ */
+const activeOpencodeSessions = new Set<string>();
+
 /** Read the Myco daemon port from .myco/daemon.json in the project directory. */
 function readDaemonPortFromDisk(directory: string): number | null {
   try {
@@ -318,6 +330,8 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
         const sessionId: string | undefined = info.id;
         if (!sessionId) return;
 
+        activeOpencodeSessions.add(sessionId);
+
         // Run the capture (register session with Myco daemon) and context fetch
         // concurrently — they don't depend on each other, and parallelizing saves
         // one round-trip of latency before the user's first turn lands. Context
@@ -339,7 +353,26 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
 
       if (event.type === "session.deleted") {
         const info = event.properties?.info ?? {};
-        if (info.id) await mycoUnregisterSession(directory, info.id);
+        if (info.id) {
+          activeOpencodeSessions.delete(info.id);
+          await mycoUnregisterSession(directory, info.id);
+        }
+        return;
+      }
+
+      if (event.type === "server.instance.disposed") {
+        // Opencode TUI is shutting down. Flush all tracked sessions so the
+        // daemon can mark them completed immediately rather than waiting for
+        // the stale-session maintenance sweep (1-hour threshold).
+        //
+        // Fire-and-forget-parallel: the Bun process is about to exit, so we
+        // can't rely on awaited fetches completing. Promise.all gives the
+        // unregister calls their best shot at landing before teardown; any
+        // that don't make it fall back to the session-maintenance job.
+        if (activeOpencodeSessions.size === 0) return;
+        const toClose = Array.from(activeOpencodeSessions);
+        activeOpencodeSessions.clear();
+        await Promise.all(toClose.map((id) => mycoUnregisterSession(directory, id)));
         return;
       }
 
