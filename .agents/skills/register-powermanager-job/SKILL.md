@@ -66,6 +66,8 @@ agent:
         intervalSeconds: 600  # or adjust cadence
 ```
 
+**Global task toggle:** `agent.scheduled_tasks_enabled: false` in `myco.yaml` suppresses ALL scheduled-task registration globally — `registerScheduledTasks()` skips every task with `schedule.enabled: true` when this flag is off. When debugging a task that never fires, check this flag first before inspecting the task YAML or the per-task `enabled` field. Default is `true`; the flag is independent of per-task `schedule.enabled` (spore `3575f686`).
+
 **After any YAML or config change, restart the daemon.** Schedule configuration is read once at startup; there is no hot-reload. Writing `enabled: true` via the Settings UI has no immediate effect until the daemon restarts.
 
 ## Path B — Direct Registration (Non-Task Jobs)
@@ -115,4 +117,5 @@ The old top-level keys `agent.auto_run` and `agent.interval_seconds` were migrat
 - [ ] `runIn` includes all states where the job should actually fire — double-check Sleep
 - [ ] `model` is explicitly set in any new task YAML
 - [ ] If `preventsDeepSleep` is used, a dead-letter ceiling (≤ 10 retries) is in place
+- [ ] If a scheduled task is not firing, check `agent.scheduled_tasks_enabled` in `myco.yaml` first (global kill-switch, default `true`) before inspecting the task YAML
 - [ ] Daemon restarted after any YAML or `myco.yaml` schedule changes

@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { HardDrive, Download, Upload, RefreshCw, FolderOpen } from 'lucide-react';
 import { postJson, fetchJson, putJson } from '../../lib/api';
+import { formatBytes } from '../../lib/format';
 import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
 import { Button } from '../ui/button';
@@ -46,19 +47,7 @@ interface RestoreResponse {
   total_skipped: number;
 }
 
-/* ---------- Constants ---------- */
-
-const BYTES_PER_KB = 1024;
-
 /* ---------- Helpers ---------- */
-
-function formatBytes(bytes: number): string {
-  if (bytes < BYTES_PER_KB) return `${bytes} B`;
-  const kb = bytes / BYTES_PER_KB;
-  if (kb < BYTES_PER_KB) return `${kb.toFixed(1)} KB`;
-  const mb = kb / BYTES_PER_KB;
-  return `${mb.toFixed(1)} MB`;
-}
 
 function formatDate(iso: string): string {
   const d = new Date(iso);

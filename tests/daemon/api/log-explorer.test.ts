@@ -194,6 +194,45 @@ describe('log explorer API handlers', () => {
       const body = res.body as Record<string, unknown>;
       expect((body.entries as unknown[]).length).toBe(3);
     });
+
+    it('includes a category field derived from the kind prefix', async () => {
+      insertLogEntry(makeEntry({ kind: 'database.optimize', component: 'database' }));
+      insertLogEntry(makeEntry({ kind: 'embedding.embed', component: 'embedding' }));
+
+      const req = makeRequest({ query: {} });
+      const res = await handleLogStream(req);
+
+      const body = res.body as Record<string, unknown>;
+      const entries = body.entries as Array<Record<string, unknown>>;
+      const categories = entries.map((e) => e.category);
+      expect(categories).toContain('database');
+      expect(categories).toContain('embedding');
+    });
+
+    it('filters entries by category query param', async () => {
+      insertLogEntry(makeEntry({ kind: 'database.optimize', component: 'database', message: 'db op' }));
+      insertLogEntry(makeEntry({ kind: 'embedding.embed', component: 'embedding', message: 'embed op' }));
+      insertLogEntry(makeEntry({ kind: 'database.vacuum', component: 'database', message: 'vacuum' }));
+
+      const req = makeRequest({ query: { category: 'database' } });
+      const res = await handleLogStream(req);
+
+      const body = res.body as Record<string, unknown>;
+      const entries = body.entries as Array<Record<string, unknown>>;
+      expect(entries.length).toBe(2);
+      expect(entries.every((e) => e.category === 'database')).toBe(true);
+    });
+
+    it('returns all entries when category param is not provided', async () => {
+      insertLogEntry(makeEntry({ kind: 'database.optimize', component: 'database' }));
+      insertLogEntry(makeEntry({ kind: 'embedding.embed', component: 'embedding' }));
+
+      const req = makeRequest({ query: {} });
+      const res = await handleLogStream(req);
+
+      const body = res.body as Record<string, unknown>;
+      expect((body.entries as unknown[]).length).toBe(2);
+    });
   });
 
   // ---------------------------------------------------------------------------

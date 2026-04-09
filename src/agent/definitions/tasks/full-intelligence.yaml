@@ -75,7 +75,7 @@ phases:
       - vault_unprocessed
       - vault_spores
       - vault_report
-    maxTurns: 6
+    maxTurns: 20
     required: true
     readOnly: true
 

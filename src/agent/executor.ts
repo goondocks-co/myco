@@ -706,6 +706,22 @@ export async function runAgent(
       tokensUsed = result.tokensUsed;
       costUsd = result.costUsd;
       phaseResults = result.phases;
+
+      // A required-phase failure stops the pipeline (executePhasedQuery breaks
+      // the wave loop) but returns normally. Surface it as a run-level failure
+      // by throwing — the catch block writes STATUS_FAILED while preserving
+      // the accumulated phase results in the DB row.
+      const requiredPhaseNames = new Set(
+        config.phases!.filter((p) => p.required).map((p) => p.name),
+      );
+      const failedRequired = phaseResults.find(
+        (p) => p.status === 'failed' && requiredPhaseNames.has(p.name),
+      );
+      if (failedRequired) {
+        throw new Error(
+          `Required phase "${failedRequired.name}" failed: ${failedRequired.summary}`,
+        );
+      }
     } else {
       // Single-query execution (backward compatible)
       const taskPrompt = composeTaskPrompt(

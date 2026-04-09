@@ -85,6 +85,13 @@ const BackupSchema = z.object({
   dir: z.string().optional(),
 });
 
+const MaintenanceSchema = z.object({
+  /** Automatically run PRAGMA optimize on a schedule. */
+  auto_optimize: z.boolean().default(true),
+  /** How often to run auto-optimize, in hours (1–720). */
+  auto_optimize_interval_hours: z.number().int().min(1).max(720).default(24),
+});
+
 const TeamSchema = z.object({
   /** Whether team sync is enabled. */
   enabled: z.boolean().default(false),
@@ -141,6 +148,7 @@ export const MycoConfigSchema = z.preprocess(
     agent: AgentSchema.default(() => AgentSchema.parse({})),
     context: ContextSchema.default(() => ContextSchema.parse({})),
     backup: BackupSchema.default(() => BackupSchema.parse({})),
+    maintenance: MaintenanceSchema.default(() => MaintenanceSchema.parse({})),
     team: TeamSchema.default(() => TeamSchema.parse({})),
     skills: SkillsSchema.default(() => SkillsSchema.parse({})),
     notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
