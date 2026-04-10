@@ -54,7 +54,7 @@ export interface ResolvedRunConfig {
  * (settings.json -> hooks -> daemon).
  */
 function toProviderConfig(p: {
-  type: 'cloud' | 'ollama' | 'lmstudio';
+  type: 'anthropic' | 'ollama' | 'lmstudio';
   base_url?: string;
   model?: string;
   context_length?: number;

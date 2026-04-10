@@ -24,7 +24,7 @@ export function withValue(config: MycoConfig, dotPath: string, value: unknown): 
 
 /** Provider override shape used in task config updates. Null means delete. */
 interface ProviderInput {
-  type: 'cloud' | 'ollama' | 'lmstudio';
+  type: 'anthropic' | 'ollama' | 'lmstudio';
   model?: string;
   base_url?: string;
   context_length?: number;

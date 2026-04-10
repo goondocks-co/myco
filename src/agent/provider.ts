@@ -25,7 +25,7 @@ const LMSTUDIO_AUTH_TOKEN = 'lmstudio';
  * avoiding unnecessary copies of the full process.env.
  */
 export function buildPhaseEnv(provider?: ProviderConfig): Record<string, string | undefined> | undefined {
-  if (!provider || provider.type === 'cloud') return undefined;
+  if (!provider || provider.type === 'anthropic') return undefined;
   return { ...process.env, ...getProviderEnvVars(provider) };
 }
 
@@ -34,7 +34,7 @@ export function buildPhaseEnv(provider?: ProviderConfig): Record<string, string 
  */
 export function getProviderEnvVars(provider: ProviderConfig): Record<string, string> {
   switch (provider.type) {
-    case 'cloud':
+    case 'anthropic':
       return {};
     case 'ollama':
       return {

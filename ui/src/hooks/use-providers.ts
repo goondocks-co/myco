@@ -9,7 +9,7 @@ const PROVIDERS_STALE_TIME = 30_000;
 /* ---------- Types ---------- */
 
 export interface ProviderInfo {
-  type: 'cloud' | 'ollama' | 'lmstudio';
+  type: 'anthropic' | 'ollama' | 'lmstudio';
   available: boolean;
   baseUrl?: string;
   models: string[];
@@ -20,7 +20,7 @@ export interface ProvidersResponse {
 }
 
 export interface ProviderConfig {
-  type: 'cloud' | 'ollama' | 'lmstudio';
+  type: 'anthropic' | 'ollama' | 'lmstudio';
   model?: string;
   base_url?: string;
   context_length?: number;
@@ -82,6 +82,25 @@ export function useProviders() {
   return useQuery<ProvidersResponse>({
     queryKey: ['providers'],
     queryFn: ({ signal }) => fetchJson<ProvidersResponse>('/providers', { signal }),
+    staleTime: PROVIDERS_STALE_TIME,
+  });
+}
+
+/**
+ * Fetch embedding models for a given provider.
+ *
+ * Uses the same `/models` endpoint that the test-connection button hits,
+ * with `type=embedding` filtering to exclude LLM-only models.
+ */
+export function useEmbeddingModels(provider: string | undefined, baseUrl: string | undefined) {
+  return useQuery<{ provider: string; models: string[] }>({
+    queryKey: ['embedding-models', provider, baseUrl],
+    queryFn: ({ signal }) => {
+      const params = new URLSearchParams({ provider: provider!, type: 'embedding' });
+      if (baseUrl) params.set('base_url', baseUrl);
+      return fetchJson<{ provider: string; models: string[] }>(`/models?${params.toString()}`, { signal });
+    },
+    enabled: !!provider,
     staleTime: PROVIDERS_STALE_TIME,
   });
 }

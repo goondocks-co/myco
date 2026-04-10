@@ -9,13 +9,24 @@ import {
 import { detectSymbionts, loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { MycoConfigSchema } from '../config/schema.js';
 import { updateConfig, saveConfig } from '../config/loader.js';
-import { writeSecret } from '../config/secrets.js';
+import { DEFAULT_OLLAMA_EMBEDDING_MODEL } from '../constants.js';
+import { getPluginVersion } from '../version.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
 /** Directories that must exist inside a vault for correct operation. */
 const VAULT_REQUIRED_DIRS = ['buffer', 'attachments', 'logs'] as const;
+
+/** Print the welcome banner with the current package version. */
+function printBanner(): void {
+  const version = getPluginVersion();
+  console.log('');
+  console.log('  🍄 Myco');
+  console.log(`  v${version} — Collective Agent Intelligence`);
+  console.log('  ─────────────────────────────────────────────');
+  console.log('');
+}
 
 export async function run(args: string[]): Promise<void> {
   const vaultPath = parseStringFlag(args, '--vault');
@@ -24,7 +35,6 @@ export async function run(args: string[]): Promise<void> {
 
   // Show banner in interactive mode
   if (isInteractive) {
-    const { printBanner } = await import('./init-wizard.js');
     printBanner();
   }
 
@@ -35,46 +45,35 @@ export async function run(args: string[]): Promise<void> {
 
   const alreadyInitialized = fs.existsSync(path.join(vaultDir, 'myco.yaml'));
 
-  // --- Wizard: runs for both new and existing vaults ---
-
+  // CLI flags for non-interactive/scripted installs
   const embeddingProvider = parseStringFlag(args, '--embedding-provider');
   const embeddingModel = parseStringFlag(args, '--embedding-model');
   const embeddingUrl = parseStringFlag(args, '--embedding-url');
   const hasEmbeddingFlags = !!(embeddingProvider || embeddingModel || embeddingUrl);
 
-  let wizardOverrides: Record<string, unknown> = {};
-  let agentOverrides: Record<string, unknown> | null = null;
-  let wizardAnswers: Awaited<ReturnType<typeof import('./init-wizard.js').runWizard>> | null = null;
-
-  // Determine if the wizard should run
-  let shouldRunWizard = false;
-  if (isInteractive && !hasEmbeddingFlags) {
-    if (alreadyInitialized) {
-      const { loadConfig } = await import('../config/loader.js');
-      const config = loadConfig(vaultDir);
-      const agentProvider = config.agent.provider;
-      const embConfig = config.embedding;
-
-      console.log(`  Vault: ${vaultDir}`);
-      console.log(`  Intelligence: ${agentProvider?.type ?? 'not configured'}${agentProvider?.model ? ` / ${agentProvider.model}` : ''}`);
-      console.log(`  Embeddings: ${embConfig.provider} / ${embConfig.model}`);
-      console.log('');
-
-      const { confirm } = await import('@inquirer/prompts');
-      shouldRunWizard = await confirm({ message: 'Reconfigure providers?', default: false });
-    } else {
-      shouldRunWizard = true;
-    }
+  // Flag-based embedding config for new vaults via non-interactive / scripted installs.
+  // Existing vaults are configured through the dashboard, not CLI flags.
+  // The agent provider is not flag-configurable -- it must be set via the dashboard.
+  let embeddingFromFlags: Record<string, unknown> = {};
+  if (hasEmbeddingFlags && !alreadyInitialized) {
+    embeddingFromFlags = {
+      provider: embeddingProvider ?? 'ollama',
+      model: embeddingModel ?? DEFAULT_OLLAMA_EMBEDDING_MODEL,
+      ...(embeddingUrl ? { base_url: embeddingUrl } : {}),
+    };
   }
 
-  if (shouldRunWizard) {
-    const { runWizard, buildEmbeddingConfig, buildAgentConfig } = await import('./init-wizard.js');
-    const answers = await runWizard();
-    wizardAnswers = answers;
-    if (answers.embeddingProvider !== 'skip') {
-      wizardOverrides = { ...buildEmbeddingConfig(answers) };
-    }
-    agentOverrides = buildAgentConfig(answers);
+  // Show existing config summary on re-init
+  if (alreadyInitialized && isInteractive) {
+    const { loadConfig } = await import('../config/loader.js');
+    const config = loadConfig(vaultDir);
+    const agentProvider = config.agent.provider;
+    const embConfig = config.embedding;
+
+    console.log(`  Vault: ${vaultDir}`);
+    console.log(`  Intelligence: ${agentProvider?.type ?? 'not configured'}${agentProvider?.model ? ` / ${agentProvider.model}` : ''}`);
+    console.log(`  Embeddings: ${embConfig.provider} / ${embConfig.model}`);
+    console.log('');
   }
 
   // --- Vault creation (new vaults only) ---
@@ -86,16 +85,14 @@ export async function run(args: string[]): Promise<void> {
       fs.mkdirSync(path.join(vaultDir, dir), { recursive: true });
     }
 
-    // Build embedding config from flags (flags take precedence over wizard)
-    const embeddingOverrides: Record<string, unknown> = { ...wizardOverrides };
-    if (embeddingProvider) embeddingOverrides.provider = embeddingProvider;
-    if (embeddingModel) embeddingOverrides.model = embeddingModel;
-    if (embeddingUrl) embeddingOverrides.base_url = embeddingUrl;
-
+    // Agent disabled by default -- user enables via dashboard after configuring a provider
     const config = MycoConfigSchema.parse({
       version: 3,
-      ...(Object.keys(embeddingOverrides).length > 0 ? { embedding: embeddingOverrides } : {}),
-      ...(agentOverrides ? { agent: agentOverrides } : {}),
+      ...(Object.keys(embeddingFromFlags).length > 0 ? { embedding: embeddingFromFlags } : {}),
+      agent: {
+        scheduled_tasks_enabled: false,
+        event_tasks_enabled: false,
+      },
     });
 
     saveConfig(vaultDir, config);
@@ -104,37 +101,6 @@ export async function run(args: string[]): Promise<void> {
     const db = initDatabase(vaultDbPath(vaultDir));
     createSchema(db);
     closeDatabase();
-  }
-
-  // --- Update existing vault config if wizard ran ---
-
-  if (alreadyInitialized && (Object.keys(wizardOverrides).length > 0 || agentOverrides)) {
-    updateConfig(vaultDir, (config) => {
-      let updated = config;
-      if (Object.keys(wizardOverrides).length > 0) {
-        // Full replacement — avoids stale fields (e.g., old base_url) leaking when switching providers
-        updated = { ...updated, embedding: wizardOverrides as typeof updated.embedding };
-      }
-      if (agentOverrides) {
-        updated = {
-          ...updated,
-          agent: { ...updated.agent, ...agentOverrides },
-        };
-      }
-      return updated;
-    });
-    console.log('  Updated myco.yaml');
-  }
-
-  // --- Store embedding API key in secrets.env ---
-
-  if (wizardAnswers?.embeddingApiKey) {
-    const { OPENROUTER_API_KEY_ENV } = await import('./providers/openrouter.js');
-    const { OPENAI_API_KEY_ENV } = await import('./providers/openai-embeddings.js');
-    const envVarName = wizardAnswers.embeddingProvider === 'openrouter'
-      ? OPENROUTER_API_KEY_ENV
-      : OPENAI_API_KEY_ENV;
-    writeSecret(vaultDir, envVarName, wizardAnswers.embeddingApiKey);
   }
 
   // --- Symbiont selection and registration ---
@@ -208,8 +174,8 @@ export async function run(args: string[]): Promise<void> {
   if (daemonHealthy) {
     try {
       const daemonJson = JSON.parse(fs.readFileSync(path.join(vaultDir, 'daemon.json'), 'utf-8'));
-      daemonUrl = `http://localhost:${daemonJson.port}/`;
-    } catch { /* daemon.json not readable — skip URL */ }
+      daemonUrl = `http://localhost:${daemonJson.port}/settings`;
+    } catch { /* daemon.json not readable -- skip URL */ }
   }
 
   console.log('');
@@ -222,10 +188,21 @@ export async function run(args: string[]): Promise<void> {
   console.log(`Vault:    ${vaultDir}`);
   if (daemonUrl) {
     console.log(`Dashboard: ${daemonUrl}`);
+
+    if (isInteractive) {
+      console.log('');
+      console.log('  Data collection is active. Configure the Myco agent and');
+      console.log('  embedding providers in the dashboard to unlock the full');
+      console.log('  intelligence pipeline.');
+
+      // Auto-open browser to settings -- fire-and-forget
+      const { openBrowser } = await import('./open-browser.js');
+      openBrowser(daemonUrl);
+    }
   } else if (!daemonHealthy) {
-    console.log('Dashboard: daemon failed to start — run `myco doctor` to diagnose');
+    console.log('Dashboard: daemon failed to start -- run `myco doctor` to diagnose');
   }
   console.log('');
-  console.log('Start a coding session — Myco will begin capturing automatically.');
+  console.log('Start a coding session -- Myco will begin capturing automatically.');
 }
 

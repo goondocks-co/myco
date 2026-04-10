@@ -87,8 +87,8 @@ describe('getProviderEnvVars', () => {
     expect(vars[ENV_ANTHROPIC_BASE_URL]).toBe('http://my-lmstudio:1234');
   });
 
-  it('returns empty object for cloud', () => {
-    const provider: ProviderConfig = { type: 'cloud' };
+  it('returns empty object for anthropic', () => {
+    const provider: ProviderConfig = { type: 'anthropic' };
     const vars = getProviderEnvVars(provider);
 
     expect(vars).toEqual({});
@@ -118,8 +118,8 @@ describe('buildPhaseEnv', () => {
     expect(result).toBeUndefined();
   });
 
-  it('cloud provider returns undefined (no overrides needed)', () => {
-    const result = buildPhaseEnv({ type: 'cloud' });
+  it('anthropic provider returns undefined (no overrides needed)', () => {
+    const result = buildPhaseEnv({ type: 'anthropic' });
     expect(result).toBeUndefined();
   });
 

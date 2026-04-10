@@ -1,17 +1,11 @@
 import { useState, useEffect } from 'react';
-import { Cloud, Server, Cpu, CheckCircle2, XCircle, Loader2, Zap, ChevronDown, ChevronRight, Clock } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2, Zap, ChevronDown, ChevronRight, Clock } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Surface } from '../ui/surface';
 import { Badge } from '../ui/badge';
 import { Switch } from '../ui/switch';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../ui/select';
+import { ProviderModelSelector } from '../providers/ProviderModelSelector';
 import {
   useProviders,
   useTaskConfig,
@@ -22,20 +16,6 @@ import {
   type ScheduleOverride,
 } from '../../hooks/use-providers';
 import type { PhaseDefinition } from '../../hooks/use-agent';
-
-/* ---------- Constants ---------- */
-
-const PROVIDER_LABELS: Record<string, string> = {
-  cloud: 'Anthropic Cloud',
-  ollama: 'Ollama',
-  lmstudio: 'LM Studio',
-};
-
-const PROVIDER_ICONS: Record<string, typeof Cloud> = {
-  cloud: Cloud,
-  ollama: Server,
-  lmstudio: Cpu,
-};
 
 /* ---------- Types ---------- */
 
@@ -55,131 +35,6 @@ interface TaskProviderConfigProps {
 }
 
 /* ---------- Sub-components ---------- */
-
-/** Compact provider/model selector reused for both task-level and phase-level. */
-function ProviderModelSelector({
-  providerType,
-  model,
-  baseUrl,
-  contextLength,
-  modelPlaceholder,
-  providers,
-  isLoadingProviders,
-  onProviderChange,
-  onModelChange,
-  onBaseUrlChange,
-  onContextLengthChange,
-}: {
-  providerType: string;
-  model: string;
-  baseUrl: string;
-  contextLength: string;
-  modelPlaceholder?: string;
-  providers: { type: string; available: boolean; baseUrl?: string; models: string[] }[];
-  isLoadingProviders: boolean;
-  onProviderChange: (type: string) => void;
-  onModelChange: (model: string) => void;
-  onBaseUrlChange: (url: string) => void;
-  onContextLengthChange: (ctx: string) => void;
-}) {
-  const selectedProvider = providers.find((p) => p.type === providerType);
-  const isLocal = providerType === 'ollama' || providerType === 'lmstudio';
-  const availableModels = selectedProvider?.models ?? [];
-
-  return (
-    <div className="space-y-3">
-      {/* Provider selector */}
-      <div className="grid grid-cols-3 gap-2">
-        {(['cloud', 'ollama', 'lmstudio'] as const).map((type) => {
-          const Icon = PROVIDER_ICONS[type];
-          const info = providers.find((p) => p.type === type);
-          const isSelected = providerType === type;
-          if (!Icon) return null;
-          return (
-            <button
-              key={type}
-              onClick={() => onProviderChange(type)}
-              className={`
-                flex flex-col items-center gap-1.5 rounded-md border px-3 py-2.5 transition-colors
-                ${isSelected
-                  ? 'border-primary/40 bg-primary/5 text-on-surface'
-                  : 'border-[var(--ghost-border)] bg-surface-container-lowest text-on-surface-variant hover:border-primary/20'
-                }
-              `}
-            >
-              <Icon className="h-4 w-4" />
-              <span className="font-sans text-xs font-medium">{PROVIDER_LABELS[type]}</span>
-              {!isLoadingProviders && (
-                <Badge
-                  variant={info?.available ? 'secondary' : 'destructive'}
-                  className="text-[10px] px-1.5 py-0"
-                >
-                  {info?.available ? 'online' : 'offline'}
-                </Badge>
-              )}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Base URL (local providers only) */}
-      {isLocal && (
-        <div className="space-y-1">
-          <label className="font-sans text-xs text-on-surface-variant">Base URL</label>
-          <Input
-            value={baseUrl}
-            onChange={(e) => onBaseUrlChange(e.target.value)}
-            placeholder={selectedProvider?.baseUrl ?? ''}
-          />
-        </div>
-      )}
-
-      {/* Context length (local providers only) */}
-      {isLocal && (
-        <div className="space-y-1">
-          <label className="font-sans text-xs text-on-surface-variant">Context Length</label>
-          <Input
-            type="number"
-            value={contextLength}
-            onChange={(e) => onContextLengthChange(e.target.value)}
-            placeholder="32768 (default)"
-          />
-          <p className="font-sans text-[11px] text-on-surface-variant/70">
-            Leave blank to use the 32K default. Myco creates a Modelfile
-            variant at this size so the model loads at the size you asked
-            for, not its (much larger) native default.
-          </p>
-        </div>
-      )}
-
-      {/* Model selector */}
-      <div className="space-y-1">
-        <label className="font-sans text-xs text-on-surface-variant">Model</label>
-        {availableModels.length > 0 ? (
-          <Select value={model} onValueChange={onModelChange}>
-            <SelectTrigger>
-              <SelectValue placeholder={modelPlaceholder ?? 'Select a model'} />
-            </SelectTrigger>
-            <SelectContent>
-              {availableModels.map((m) => (
-                <SelectItem key={m} value={m}>
-                  <span className="font-mono text-sm">{m}</span>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        ) : (
-          <Input
-            value={model}
-            onChange={(e) => onModelChange(e.target.value)}
-            placeholder={selectedProvider?.available === false ? 'Provider offline' : 'Enter model name'}
-            disabled={selectedProvider?.available === false}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
 
 /** Per-phase config row — collapsible. */
 function PhaseConfigRow({
@@ -216,7 +71,7 @@ function PhaseConfigRow({
         <div className="px-3 pb-3 space-y-3 border-t border-[var(--ghost-border)]">
           <div className="pt-3">
             <ProviderModelSelector
-              providerType={override.provider?.type ?? 'cloud'}
+              providerType={override.provider?.type ?? 'anthropic'}
               model={override.provider?.model ?? override.model ?? ''}
               baseUrl={override.provider?.base_url ?? ''}
               contextLength={override.provider?.context_length != null ? String(override.provider.context_length) : ''}
@@ -289,7 +144,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
 
   const currentConfig = taskConfigData?.config;
 
-  const [providerType, setProviderType] = useState<string>('cloud');
+  const [providerType, setProviderType] = useState<string>('anthropic');
   const [model, setModel] = useState<string>('');
   const [baseUrl, setBaseUrl] = useState<string>('');
   const [contextLength, setContextLength] = useState<string>('');
@@ -303,7 +158,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
   // Sync from myco.yaml config when it loads
   useEffect(() => {
     if (currentConfig) {
-      setProviderType(currentConfig.provider?.type ?? 'cloud');
+      setProviderType(currentConfig.provider?.type ?? 'anthropic');
       setModel(currentConfig.provider?.model ?? currentConfig.model ?? '');
       setBaseUrl(currentConfig.provider?.base_url ?? '');
       setContextLength(currentConfig.provider?.context_length != null ? String(currentConfig.provider.context_length) : '');
@@ -395,7 +250,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       },
       {
         onSuccess: () => {
-          setProviderType('cloud');
+          setProviderType('anthropic');
           setModel('');
           setBaseUrl('');
           setContextLength('');

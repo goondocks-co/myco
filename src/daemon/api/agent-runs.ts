@@ -57,12 +57,26 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
   async function handleRun(req: RouteRequest): Promise<RouteResponse> {
     const { task, instruction: rawInstruction, agentId } = AgentRunBody.parse(req.body);
 
+    // Guard: ensure a provider is configured before allowing a run.
+    // Per-task overrides can supply a provider even when the global is absent.
+    const mycoConfig = loadConfig(vaultDir);
+    const globalProvider = mycoConfig.agent.provider;
+    const taskProvider = task ? mycoConfig.agent.tasks?.[task]?.provider : undefined;
+    if (!globalProvider && !taskProvider) {
+      return {
+        status: 400,
+        body: {
+          ok: false,
+          error: 'No agent provider configured. Configure one in Settings.',
+        },
+      };
+    }
+
     let instruction = rawInstruction;
     let runContext: { candidate_id?: string } | undefined;
     if (task && !instruction) {
       let built;
       try {
-        const mycoConfig = loadConfig(vaultDir);
         const taskParams = mycoConfig.agent.tasks?.[task]?.params;
         built = buildTaskInstruction(task, taskParams);
       } catch {

@@ -167,6 +167,45 @@ export const MIGRATIONS: Migration[] = [
       doc.skills = skills;
     },
   },
+  {
+    version: 4,
+    name: 'rename-cloud-provider-to-anthropic',
+    migrate(doc: Record<string, unknown>, _vaultDir: string): void {
+      // Rename `provider.type: cloud` -> `provider.type: anthropic` everywhere
+      // it appears in the agent config: global default, per-task, per-phase.
+      const renameProvider = (provider: unknown): void => {
+        if (
+          provider &&
+          typeof provider === 'object' &&
+          (provider as Record<string, unknown>).type === 'cloud'
+        ) {
+          (provider as Record<string, unknown>).type = 'anthropic';
+        }
+      };
+
+      const agent = doc.agent as Record<string, unknown> | undefined;
+      if (!agent) return;
+
+      // Global default provider
+      renameProvider(agent.provider);
+
+      // Per-task overrides
+      const tasks = agent.tasks as Record<string, Record<string, unknown>> | undefined;
+      if (tasks) {
+        for (const taskConfig of Object.values(tasks)) {
+          renameProvider(taskConfig.provider);
+
+          // Per-phase overrides within a task
+          const phases = taskConfig.phases as Record<string, Record<string, unknown>> | undefined;
+          if (phases) {
+            for (const phaseConfig of Object.values(phases)) {
+              renameProvider(phaseConfig.provider);
+            }
+          }
+        }
+      }
+    },
+  },
 ];
 
 /** Current migration version — the highest version in MIGRATIONS. */
