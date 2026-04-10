@@ -4,7 +4,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node .agents/myco-hook.cjs hook session-start",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook session-start",
           "timeout": 10
         }
       ]
@@ -15,7 +15,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node .agents/myco-hook.cjs hook user-prompt-submit",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook user-prompt-submit",
           "timeout": 5
         }
       ]
@@ -26,7 +26,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node .agents/myco-hook.cjs hook post-tool-use",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook post-tool-use",
           "timeout": 5
         }
       ]
@@ -37,7 +37,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node .agents/myco-hook.cjs hook post-tool-use-failure",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook post-tool-use-failure",
           "timeout": 5
         }
       ]
@@ -48,7 +48,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node .agents/myco-hook.cjs hook stop",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook stop",
           "timeout": 30
         }
       ]
@@ -59,7 +59,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node .agents/myco-hook.cjs hook session-end",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook session-end",
           "timeout": 10
         }
       ]
@@ -70,7 +70,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node .agents/myco-hook.cjs hook subagent-start",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook subagent-start",
           "timeout": 5
         }
       ]
@@ -81,7 +81,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node .agents/myco-hook.cjs hook subagent-stop",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook subagent-stop",
           "timeout": 10
         }
       ]
@@ -92,7 +92,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node .agents/myco-hook.cjs hook stop-failure",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook stop-failure",
           "timeout": 10
         }
       ]
@@ -103,7 +103,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node .agents/myco-hook.cjs hook task-completed",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook task-completed",
           "timeout": 5
         }
       ]
@@ -114,7 +114,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node .agents/myco-hook.cjs hook pre-compact",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook pre-compact",
           "timeout": 5
         }
       ]
@@ -125,7 +125,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node .agents/myco-hook.cjs hook post-compact",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook post-compact",
           "timeout": 5
         }
       ]
