@@ -2,22 +2,22 @@
   "hooks": {
     "pre_user_prompt": [
       {
-        "command": "node .agents/myco-hook.cjs hook user-prompt-submit"
+        "command": "cd \"$(git rev-parse --show-toplevel 2>/dev/null || echo .)\" && node .agents/myco-hook.cjs hook user-prompt-submit"
       }
     ],
     "post_run_command": [
       {
-        "command": "node .agents/myco-hook.cjs hook post-tool-use"
+        "command": "cd \"$(git rev-parse --show-toplevel 2>/dev/null || echo .)\" && node .agents/myco-hook.cjs hook post-tool-use"
       }
     ],
     "post_write_code": [
       {
-        "command": "node .agents/myco-hook.cjs hook post-tool-use"
+        "command": "cd \"$(git rev-parse --show-toplevel 2>/dev/null || echo .)\" && node .agents/myco-hook.cjs hook post-tool-use"
       }
     ],
     "post_cascade_response": [
       {
-        "command": "node .agents/myco-hook.cjs hook stop"
+        "command": "cd \"$(git rev-parse --show-toplevel 2>/dev/null || echo .)\" && node .agents/myco-hook.cjs hook stop"
       }
     ]
   }
