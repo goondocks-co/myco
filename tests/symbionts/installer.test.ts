@@ -159,14 +159,28 @@ const HOOKS_TEMPLATE = {
   SessionStart: [
     {
       hooks: [
-        { type: 'command', command: 'node .agents/myco-hook.cjs hook session-start', timeout: 10 },
+        { type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook session-start', timeout: 10 },
       ],
     },
   ],
   Stop: [
     {
       hooks: [
-        { type: 'command', command: 'node .agents/myco-hook.cjs hook stop', timeout: 30 },
+        { type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook stop', timeout: 30 },
+      ],
+    },
+  ],
+  PreCompact: [
+    {
+      hooks: [
+        { type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook pre-compact', timeout: 5 },
+      ],
+    },
+  ],
+  PostCompact: [
+    {
+      hooks: [
+        { type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook post-compact', timeout: 5 },
       ],
     },
   ],
@@ -213,16 +227,17 @@ function setupPackageRoot(): void {
     permissions: { allow: ['Bash(myco-run *)', 'Bash(myco-run:*)', 'Bash(myco *)', 'Bash(myco:*)'] },
   });
   writeJson(path.join(cursorTemplateDir, 'hooks.json'), {
-    sessionStart: [{ command: 'node .agents/myco-hook.cjs hook session-start', type: 'command', timeout: 10 }],
-    stop: [{ command: 'node .agents/myco-hook.cjs hook stop', type: 'command', timeout: 30 }],
+    sessionStart: [{ command: 'cd "${CURSOR_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook session-start', type: 'command', timeout: 10 }],
+    stop: [{ command: 'cd "${CURSOR_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook stop', type: 'command', timeout: 30 }],
+    preCompact: [{ command: 'cd "${CURSOR_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook pre-compact', type: 'command', timeout: 5 }],
   });
   writeJson(path.join(cursorTemplateDir, 'mcp.json'), MCP_TEMPLATE);
   writeJson(path.join(cursorTemplateDir, 'settings.json'), {
     'chat.tools.terminal.autoApprove': { 'myco-run': true, 'myco': true },
   });
   writeJson(path.join(codexTemplateDir, 'hooks.json'), {
-    SessionStart: [{ hooks: [{ type: 'command', command: 'node .agents/myco-hook.cjs hook session-start', timeout: 10 }] }],
-    Stop: [{ hooks: [{ type: 'command', command: 'node .agents/myco-hook.cjs hook stop', timeout: 30 }] }],
+    SessionStart: [{ hooks: [{ type: 'command', command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-hook.cjs hook session-start', timeout: 10 }] }],
+    Stop: [{ hooks: [{ type: 'command', command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-hook.cjs hook stop', timeout: 30 }] }],
   });
   writeJson(path.join(codexTemplateDir, 'mcp.json'), {
     myco: { command: 'myco-run', args: ['mcp'] },
@@ -231,16 +246,18 @@ function setupPackageRoot(): void {
     features: { codex_hooks: true },
   });
   writeJson(path.join(vscodeTemplateDir, 'hooks.json'), {
-    SessionStart: [{ hooks: [{ type: 'command', command: 'node .agents/myco-hook.cjs hook session-start', timeout: 10 }] }],
-    Stop: [{ hooks: [{ type: 'command', command: 'node .agents/myco-hook.cjs hook stop', timeout: 30 }] }],
+    SessionStart: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook session-start', timeout: 10 }] }],
+    Stop: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook stop', timeout: 30 }] }],
+    PreCompact: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook pre-compact', timeout: 5 }] }],
   });
   writeJson(path.join(vscodeTemplateDir, 'mcp.json'), MCP_TEMPLATE);
   writeJson(path.join(vscodeTemplateDir, 'settings.json'), {
     'chat.tools.terminal.autoApprove': { 'myco-run': true, 'myco': true },
   });
   writeJson(path.join(geminiTemplateDir, 'hooks.json'), {
-    SessionStart: [{ hooks: [{ name: 'myco-session-start', type: 'command', command: 'node .agents/myco-hook.cjs hook session-start', timeout: 10000 }] }],
-    AfterAgent: [{ hooks: [{ name: 'myco-stop', type: 'command', command: 'node .agents/myco-hook.cjs hook stop', timeout: 30000 }] }],
+    SessionStart: [{ hooks: [{ name: 'myco-session-start', type: 'command', command: 'cd "${GEMINI_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook session-start', timeout: 10000 }] }],
+    AfterAgent: [{ hooks: [{ name: 'myco-stop', type: 'command', command: 'cd "${GEMINI_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook stop', timeout: 30000 }] }],
+    PreCompress: [{ hooks: [{ name: 'myco-pre-compact', type: 'command', command: 'cd "${GEMINI_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook pre-compact', timeout: 5000 }] }],
   });
   writeJson(path.join(geminiTemplateDir, 'mcp.json'), {
     myco: { command: 'myco-run', args: ['mcp'] },
@@ -252,8 +269,8 @@ function setupPackageRoot(): void {
   const windsurfTemplateDir = path.join(packageRoot, 'src/symbionts/templates/windsurf');
   fs.mkdirSync(windsurfTemplateDir, { recursive: true });
   writeJson(path.join(windsurfTemplateDir, 'hooks.json'), {
-    pre_user_prompt: [{ command: 'node .agents/myco-hook.cjs hook user-prompt-submit' }],
-    post_cascade_response: [{ command: 'node .agents/myco-hook.cjs hook stop' }],
+    pre_user_prompt: [{ command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-hook.cjs hook user-prompt-submit' }],
+    post_cascade_response: [{ command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-hook.cjs hook stop' }],
   });
 
   // opencode uses plugin-file hooks + non-standard MCP key + a package.json for plugin deps
@@ -265,7 +282,7 @@ function setupPackageRoot(): void {
     myco: { type: 'local', command: ['myco-run', 'mcp'] },
   });
   writeJson(path.join(opencodeTemplateDir, 'settings.json'), {
-    permission: { bash: { 'myco-run *': 'allow', 'node .agents/myco-hook.cjs *': 'allow' } },
+    permission: { bash: { 'myco-run *': 'allow', 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs *': 'allow' } },
   });
 
   // Copy hook-guard template so installHookGuard can find it
@@ -389,7 +406,7 @@ describe('installHooks', () => {
       (g: unknown) => ((g as { hooks: Array<{ command: string }> }).hooks ?? []).map(h => h.command),
     );
     expect(commands).toContain('my-other-tool start');
-    expect(commands).toContain('node .agents/myco-hook.cjs hook session-start');
+    expect(commands).toContain('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook session-start');
   });
 
   it('replaces stale Myco hooks on update', () => {
@@ -438,6 +455,53 @@ describe('installHooks', () => {
     const installer = new SymbiontInstaller(NO_HOOKS_MANIFEST, projectRoot, packageRoot);
     const result = installer.installHooks();
     expect(result).toBe(false);
+  });
+
+  it('installs pre and post compact hooks for Claude Code', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+
+    const settings = readJson(path.join(projectRoot, '.claude/settings.json'));
+    const hooks = settings.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+
+    expect(hooks.PreCompact).toHaveLength(1);
+    expect(hooks.PostCompact).toHaveLength(1);
+    expect(hooks.PreCompact[0]?.hooks[0]?.command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook pre-compact');
+    expect(hooks.PostCompact[0]?.hooks[0]?.command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook post-compact');
+  });
+
+  it('installs pre-compact hook for Cursor', () => {
+    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+
+    const settings = readJson(path.join(projectRoot, '.cursor/hooks.json'));
+    const preCompact = ((settings.hooks as Record<string, unknown[]>).preCompact as Array<{ command: string }>);
+
+    expect(preCompact).toHaveLength(1);
+    expect(preCompact[0]?.command).toBe('cd "${CURSOR_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook pre-compact');
+  });
+
+  it('installs pre-compact hook for Gemini CLI', () => {
+    fs.mkdirSync(path.join(projectRoot, '.gemini'), { recursive: true });
+    const installer = new SymbiontInstaller(GEMINI_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+
+    const settings = readJson(path.join(projectRoot, '.gemini/settings.json'));
+    const hooks = settings.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+
+    expect(hooks.PreCompress).toHaveLength(1);
+    expect(hooks.PreCompress[0]?.hooks[0]?.command).toBe('cd "${GEMINI_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook pre-compact');
+  });
+
+  it('installs pre-compact hook for VS Code Copilot', () => {
+    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+
+    const settings = readJson(path.join(projectRoot, '.github/hooks/myco-hooks.json'));
+    const preCompact = ((settings.hooks as Record<string, unknown[]>).PreCompact as Array<{ hooks: Array<{ command: string }> }>);
+
+    expect(preCompact).toHaveLength(1);
+    expect(preCompact[0]?.hooks[0]?.command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook pre-compact');
   });
 });
 
@@ -1284,7 +1348,7 @@ describe('Windsurf flat hook format', () => {
 
     const hooks = readJson(path.join(projectRoot, '.windsurf/hooks.json'));
     const groups = (hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>;
-    expect(groups[0].command).toBe('node .agents/myco-hook.cjs hook user-prompt-submit');
+    expect(groups[0].command).toBe('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-hook.cjs hook user-prompt-submit');
     // Should NOT have nested hooks array
     expect(groups[0].hooks).toBeUndefined();
   });
@@ -1305,7 +1369,7 @@ describe('Windsurf flat hook format', () => {
     const commands = ((hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>)
       .map((g) => g.command);
     expect(commands).toContain('other-tool check');
-    expect(commands).toContain('node .agents/myco-hook.cjs hook user-prompt-submit');
+    expect(commands).toContain('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-hook.cjs hook user-prompt-submit');
   });
 
   it('replaces stale Myco flat hooks', () => {
@@ -1324,7 +1388,7 @@ describe('Windsurf flat hook format', () => {
     const commands = ((hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>)
       .map((g) => g.command);
     expect(commands).not.toContain('myco-run hook old-event');
-    expect(commands).toContain('node .agents/myco-hook.cjs hook user-prompt-submit');
+    expect(commands).toContain('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-hook.cjs hook user-prompt-submit');
   });
 
   it('uninstalls flat Myco hooks', () => {
@@ -1654,7 +1718,7 @@ describe('old-format hook backward compatibility', () => {
     // Old hooks replaced, not stacked
     expect(hooks.SessionStart).toHaveLength(1);
     const command = ((hooks.SessionStart[0] as { hooks: Array<{ command: string }> }).hooks[0]).command;
-    expect(command).toBe('node .agents/myco-hook.cjs hook session-start');
+    expect(command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook session-start');
   });
 
   it('replaces old-format flat hooks in Windsurf', () => {
@@ -1674,7 +1738,7 @@ describe('old-format hook backward compatibility', () => {
       .map((g) => g.command);
     // Old format removed, new format added
     expect(commands).not.toContain('myco-run hook user-prompt-submit');
-    expect(commands).toContain('node .agents/myco-hook.cjs hook user-prompt-submit');
+    expect(commands).toContain('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-hook.cjs hook user-prompt-submit');
     // No duplication
     expect(commands).toHaveLength(1);
   });
@@ -1696,13 +1760,13 @@ describe('hook template validation', () => {
           if (Array.isArray(group.hooks)) {
             for (const hook of group.hooks as Array<{ command?: string }>) {
               if (hook.command) {
-                expect(hook.command).toMatch(/^node \.agents\/myco-hook\.cjs /);
+                expect(hook.command).toMatch(/\.agents\/myco-hook\.cjs /);
               }
             }
           }
           // Flat format
           if (typeof group.command === 'string') {
-            expect(group.command).toMatch(/^node \.agents\/myco-hook\.cjs /);
+            expect(group.command).toMatch(/\.agents\/myco-hook\.cjs /);
           }
         }
       }
@@ -1839,7 +1903,7 @@ describe('opencode (plugin-file hooks)', () => {
     const openCodeJson = readJson(path.join(projectRoot, 'opencode.json'));
     const permission = openCodeJson.permission as Record<string, Record<string, string>>;
     expect(permission.bash['myco-run *']).toBe('allow');
-    expect(permission.bash['node .agents/myco-hook.cjs *']).toBe('allow');
+    expect(permission.bash['cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs *']).toBe('allow');
   });
 
   it('opencode does not trigger batched JSON install (hooks target is .ts)', () => {
@@ -1861,4 +1925,3 @@ describe('opencode (plugin-file hooks)', () => {
     expect(fs.existsSync(guardPath)).toBe(true);
   });
 });
-
