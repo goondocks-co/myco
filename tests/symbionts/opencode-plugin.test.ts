@@ -139,4 +139,95 @@ describe('opencode plugin runtime hooks', () => {
       output_preview: 'updated',
     });
   });
+
+  it('fetches resume context for resumed sessions and injects it once', async () => {
+    const directory = createProjectDir();
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/sessions/register')) {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url.endsWith('/context/resume')) {
+        return new Response(JSON.stringify({ text: 'Resume recap' }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const client = {
+      app: { log: vi.fn().mockResolvedValue(undefined) },
+      session: {
+        messages: vi.fn(),
+        prompt: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+
+    const plugin = await MycoPlugin({ client, directory, worktree: directory });
+    const resumeEvent = {
+      event: {
+        type: 'session.created',
+        properties: { info: { id: 'resume-session', parentID: 'parent-session' } },
+      },
+    };
+
+    await plugin.event(resumeEvent);
+    await plugin.event(resumeEvent);
+
+    expect(client.session.prompt).toHaveBeenCalledTimes(1);
+    expect(client.session.prompt).toHaveBeenCalledWith({
+      path: { id: 'resume-session' },
+      body: {
+        parts: [
+          {
+            type: 'text',
+            text: 'Resume recap',
+            synthetic: true,
+            metadata: { myco: true },
+          },
+        ],
+        noReply: true,
+      },
+    });
+
+    const urls = fetchMock.mock.calls.map((call) => call[0]);
+    expect(urls).toContain('http://localhost:32123/context/resume');
+    expect(urls).not.toContain('http://localhost:32123/context');
+  });
+
+  it('posts pre-compaction telemetry before appending context', async () => {
+    const directory = createProjectDir();
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/events')) {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url.endsWith('/context')) {
+        return new Response(JSON.stringify({ text: 'Compaction context' }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const client = {
+      app: { log: vi.fn().mockResolvedValue(undefined) },
+      session: { messages: vi.fn() },
+    };
+
+    const plugin = await MycoPlugin({ client, directory, worktree: directory });
+    const output = { context: [] as string[] };
+
+    await plugin['experimental.session.compacting'](
+      { sessionID: 'ses-compact-1', trigger: 'auto' },
+      output,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('http://localhost:32123/events');
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      type: 'pre_compact',
+      session_id: 'ses-compact-1',
+      trigger: 'auto',
+    });
+    expect(output.context).toEqual([
+      '## Myco — Project Context (preserved across compaction)\n\nCompaction context',
+    ]);
+  });
 });
