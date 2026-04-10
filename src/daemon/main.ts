@@ -59,7 +59,7 @@ import {
   handleGetDigest,
 } from './api/mycelium.js';
 import { createSearchHandler } from './api/search.js';
-import { createSessionContextHandler, createPromptContextHandler } from './api/context.js';
+import { createSessionContextHandler, createPromptContextHandler, createResumeContextHandler } from './api/context.js';
 import { handleGetFeed } from './api/feed.js';
 import { handleListSymbionts } from './api/symbionts.js';
 import {
@@ -390,6 +390,7 @@ export async function main(): Promise<void> {
   // --- Context injection (digest + semantic spore search) ---
   const contextDeps = { embeddingManager, config, logger };
   server.registerRoute('POST', '/context', createSessionContextHandler(contextDeps));
+  server.registerRoute('POST', '/context/resume', createResumeContextHandler(contextDeps));
   server.registerRoute('POST', '/context/prompt', createPromptContextHandler(contextDeps));
 
   // --- Dashboard API routes ---

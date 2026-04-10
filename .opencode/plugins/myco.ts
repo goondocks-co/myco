@@ -43,6 +43,9 @@ const MYCO_FETCH_TIMEOUT_MS = 3000;
 /** Tail window read from opencode when building the end-of-turn assistant summary. */
 const SESSION_IDLE_TAIL_LIMIT = 12;
 
+/** Max size of resume context injection to keep resumed sessions lean. */
+const RESUME_CONTEXT_MAX_CHARS = 4000;
+
 /** Heading prefix for compaction context — makes Myco's contribution recognizable in the compacted summary. */
 const COMPACTION_HEADING = "## Myco — Project Context (preserved across compaction)\n\n";
 
@@ -149,6 +152,9 @@ let cachedDaemonPort: number | null | undefined = undefined;
  * for each one when `server.instance.disposed` fires.
  */
 const activeOpencodeSessions = new Set<string>();
+
+/** Resume injections are process-local and should run at most once per session. */
+const resumeInjectedSessions = new Set<string>();
 
 /** Read the Myco daemon port from .myco/daemon.json in the project directory. */
 function readDaemonPortFromDisk(directory: string): number | null {
@@ -385,6 +391,37 @@ async function fetchMycoSessionContext(
   return text.length > 0 ? text : null;
 }
 
+/** Fetch a small resume recap for a resumed opencode session. */
+async function fetchMycoResumeContext(
+  directory: string,
+  sessionId: string,
+  parentSessionId: string,
+): Promise<string | null> {
+  const result = await postJson(directory, "/context/resume", {
+    session_id: sessionId,
+    parent_session_id: parentSessionId,
+  });
+  if (!result.ok) return null;
+  const data = result.data as { text?: string } | undefined;
+  const text = data?.text?.trim() ?? "";
+  if (!text || text.length > RESUME_CONTEXT_MAX_CHARS) return null;
+  return text;
+}
+
+/** Post a compaction telemetry event. */
+async function mycoPostCompact(
+  directory: string,
+  sessionId: string,
+  trigger: string | undefined,
+): Promise<void> {
+  await postEventWithBuffer(directory, sessionId, {
+    type: "pre_compact",
+    session_id: sessionId,
+    agent: "opencode",
+    ...(trigger ? { trigger } : {}),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Opencode session injection — push synthetic context into session history.
 // ---------------------------------------------------------------------------
@@ -485,21 +522,23 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
 
         activeOpencodeSessions.add(sessionId);
 
-        // Run the capture (register session with Myco daemon) and context fetch
-        // concurrently — they don't depend on each other, and parallelizing saves
-        // one round-trip of latency before the user's first turn lands. Context
-        // is fetched only for fresh sessions; resume sessions inherit the parent's
-        // history and don't need another injection.
-        //
-        // Re-entrancy: the synthetic text part carries `synthetic: true`; if opencode
-        // fires chat.message for it, our handler's synthetic-flag check skips it.
+        const parentSessionId = info.parentID || undefined;
+        const contextPromise = parentSessionId
+          ? (resumeInjectedSessions.has(sessionId)
+            ? Promise.resolve(null)
+            : fetchMycoResumeContext(directory, sessionId, parentSessionId))
+          : fetchMycoSessionContext(directory, sessionId);
+
+        // Run registration and context fetch concurrently — they don't depend
+        // on each other, and parallelizing saves one round-trip of latency.
         const [, sessionContext] = await Promise.all([
-          mycoRegisterSession(directory, sessionId, info.parentID || undefined),
-          info.parentID ? Promise.resolve(null) : fetchMycoSessionContext(directory, sessionId),
+          mycoRegisterSession(directory, sessionId, parentSessionId),
+          contextPromise,
         ]);
 
         if (sessionContext) {
           await injectSyntheticContext(client, sessionId, sessionContext);
+          if (parentSessionId) resumeInjectedSessions.add(sessionId);
         }
         return;
       }
@@ -508,6 +547,7 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
         const info = event.properties?.info ?? {};
         if (info.id) {
           activeOpencodeSessions.delete(info.id);
+          resumeInjectedSessions.delete(info.id);
           await mycoUnregisterSession(directory, info.id);
         }
         return;
@@ -525,6 +565,7 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
         if (activeOpencodeSessions.size === 0) return;
         const toClose = Array.from(activeOpencodeSessions);
         activeOpencodeSessions.clear();
+        for (const id of toClose) resumeInjectedSessions.delete(id);
         await Promise.all(toClose.map((id) => mycoUnregisterSession(directory, id)));
         return;
       }
@@ -676,6 +717,8 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
     "experimental.session.compacting": async (input: any, output: any) => {
       const sessionId = input?.sessionID;
       if (!sessionId) return;
+
+      await mycoPostCompact(directory, sessionId, typeof input?.trigger === "string" ? input.trigger : undefined);
 
       const sessionContext = await fetchMycoSessionContext(directory, sessionId);
       if (!sessionContext) return;

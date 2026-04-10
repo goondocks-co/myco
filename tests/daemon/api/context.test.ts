@@ -5,7 +5,8 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { upsertDigestExtract } from '@myco/db/queries/digest-extracts';
 import { insertSpore } from '@myco/db/queries/spores';
 import { registerAgent } from '@myco/db/queries/agents';
-import { createSessionContextHandler, createPromptContextHandler } from '@myco/daemon/api/context';
+import { upsertSession } from '@myco/db/queries/sessions';
+import { createSessionContextHandler, createPromptContextHandler, createResumeContextHandler } from '@myco/daemon/api/context';
 import type { ContextDeps } from '@myco/daemon/api/context';
 import type { RouteRequest } from '@myco/daemon/router';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager';
@@ -68,6 +69,7 @@ describe('createSessionContextHandler', () => {
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => {
     getDatabase().prepare('DELETE FROM digest_extracts').run();
+    getDatabase().prepare('DELETE FROM sessions').run();
   });
 
   it('returns basic context when no digest extract exists', async () => {
@@ -129,6 +131,47 @@ describe('createSessionContextHandler', () => {
 
     expect(body.source).toBe('basic');
     expect(body.text).not.toContain('# Wrong tier');
+  });
+});
+
+describe('createResumeContextHandler', () => {
+  beforeAll(() => {
+    setupTestDb();
+    registerAgent({ id: DEFAULT_AGENT_ID, name: 'myco-agent', created_at: NOW });
+  });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => {
+    getDatabase().prepare('DELETE FROM sessions').run();
+  });
+
+  it('returns empty when no parent session exists', async () => {
+    const handler = createResumeContextHandler(makeDeps());
+    const result = await handler(makeReq({ session_id: 'resume-1', parent_session_id: 'missing-parent' }));
+
+    expect((result.body as { text: string }).text).toBe('');
+  });
+
+  it('returns a compact recap from the parent session', async () => {
+    upsertSession({
+      id: 'parent-1',
+      agent: 'opencode',
+      started_at: NOW,
+      created_at: NOW,
+      branch: 'feat/opencode',
+      title: 'Opencode capture follow-up',
+      summary: 'Added richer tool metadata and improved idle-time assistant summaries.',
+    });
+
+    const handler = createResumeContextHandler(makeDeps());
+    const result = await handler(makeReq({ session_id: 'resume-2', parent_session_id: 'parent-1' }));
+    const body = result.body as { text: string; source: string };
+
+    expect(body.source).toBe('resume');
+    expect(body.text).toContain('Resuming work from: Opencode capture follow-up');
+    expect(body.text).toContain('Added richer tool metadata');
+    expect(body.text).toContain('Branch:: `feat/opencode`');
+    expect(body.text).toContain('Previous Session:: `parent-1`');
+    expect(body.text).toContain('Session:: `resume-2`');
   });
 });
 

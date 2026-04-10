@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { getDigestExtract } from '@myco/db/queries/digest-extracts.js';
 import { hydrateSearchResults } from '@myco/db/queries/search.js';
+import { getSession } from '@myco/db/queries/sessions.js';
 import {
   DEFAULT_AGENT_ID,
   EXCLUDED_SPORE_STATUSES,
@@ -40,6 +41,12 @@ export interface ContextDeps {
 
 const SessionContextBody = z.object({
   session_id: z.string().optional(),
+  branch: z.string().optional(),
+});
+
+const ResumeContextBody = z.object({
+  session_id: z.string(),
+  parent_session_id: z.string().optional(),
   branch: z.string().optional(),
 });
 
@@ -119,6 +126,87 @@ export function createSessionContextHandler(deps: ContextDeps) {
       };
     } catch (error) {
       logger.error(LOG_KINDS.CONTEXT_SESSION, 'Session context failed', { error: (error as Error).message });
+      return { body: { text: '' } };
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Resume context handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a handler that injects a small resume-specific recap for opencode.
+ *
+ * Resume sessions already inherit their chat history, so this endpoint avoids
+ * repeating the full digest. It returns only a terse recap from the parent
+ * session when there is meaningful prior context to surface.
+ */
+export function createResumeContextHandler(deps: ContextDeps) {
+  return async function handleResumeContext(req: RouteRequest): Promise<RouteResponse> {
+    const { session_id, parent_session_id, branch } = ResumeContextBody.parse(req.body);
+    const { logger } = deps;
+
+    logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Resume context query', {
+      session_id,
+      parent_session_id,
+    });
+
+    try {
+      const parentSession = parent_session_id ? getSession(parent_session_id) : null;
+      const resolvedBranch = branch ?? parentSession?.branch ?? null;
+      const parts: string[] = [];
+
+      if (parentSession?.title) {
+        parts.push(`Resuming work from: ${parentSession.title}`);
+      }
+
+      if (parentSession?.summary) {
+        parts.push(parentSession.summary);
+      }
+
+      if (resolvedBranch) {
+        parts.push(`Branch:: \`${resolvedBranch}\``);
+      }
+
+      if (parentSession && parent_session_id) {
+        parts.push(`Previous Session:: \`${parent_session_id}\``);
+      }
+
+      if (parts.length === 0) {
+        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No resume context available', { session_id, parent_session_id });
+        return { body: { text: '' } };
+      }
+
+      parts.push(`Session:: \`${session_id}\``);
+      const contextText = parts.join('\n\n');
+      const estimatedTokens = estimateTokens(contextText);
+
+      logger.info(
+        LOG_KINDS.CONTEXT_SESSION,
+        `Resume context: ${estimatedTokens} est. tokens`,
+        {
+          session_id,
+          parent_session_id,
+          branch: resolvedBranch ?? undefined,
+          text_length: contextText.length,
+          estimated_tokens: estimatedTokens,
+          injected_text: contextText,
+        },
+      );
+
+      return {
+        body: {
+          text: contextText,
+          source: 'resume',
+        },
+      };
+    } catch (error) {
+      logger.error(LOG_KINDS.CONTEXT_SESSION, 'Resume context failed', {
+        session_id,
+        parent_session_id,
+        error: (error as Error).message,
+      });
       return { body: { text: '' } };
     }
   };
