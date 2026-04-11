@@ -174,3 +174,5 @@ This function is the single source of truth. Do not read `myco.yaml.symbionts` d
 **Don't edit `.myco/` contents directly.** The vault database and daemon state in `.myco/` are managed exclusively by the daemon. Direct edits can corrupt session history or break sync.
 
 **Myco Agent pipeline won't run after init without configuration.** `myco init` writes `scheduled_tasks_enabled: false` and `event_tasks_enabled: false` explicitly to `myco.yaml`. If the agent pipeline isn't running after setup, check the **Myco Agent** section in the daemon UI — LLM provider, embedding provider, and per-task scheduling all require explicit opt-in.
+
+**CLI flags are ignored on re-init of an existing vault.** Provider flags like `--embedding-provider` and `--agent-provider` are scoped exclusively to new vault creation. Running `myco init --agent-provider anthropic` on a project that already has a `.myco/` vault has no effect on provider settings — the existing configuration is preserved. To change providers on an existing vault, use the Settings UI in the daemon.

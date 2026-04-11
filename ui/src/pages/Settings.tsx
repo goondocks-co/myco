@@ -157,39 +157,19 @@ function buildProjectConfigUpdate(form: FormState, original: MycoConfig): MycoCo
   };
 }
 
-/* ---------- Per-section dirty checks ---------- */
+/* ---------- Per-section field map (drives dirty checks) ---------- */
 
-function isAgentDirty(form: FormState, orig: FormState): boolean {
-  return (
-    form.agentProviderType !== orig.agentProviderType ||
-    form.agentModel !== orig.agentModel ||
-    form.agentBaseUrl !== orig.agentBaseUrl ||
-    form.agentContextLength !== orig.agentContextLength
-  );
-}
+type SaveSection = 'agent' | 'embedding' | 'context' | 'project';
 
-function isEmbeddingDirty(form: FormState, orig: FormState): boolean {
-  return (
-    form.embeddingProvider !== orig.embeddingProvider ||
-    form.embeddingModel !== orig.embeddingModel ||
-    form.embeddingBaseUrl !== orig.embeddingBaseUrl
-  );
-}
+const SECTION_FIELDS: Record<SaveSection, (keyof FormState)[]> = {
+  agent: ['agentProviderType', 'agentModel', 'agentBaseUrl', 'agentContextLength'],
+  embedding: ['embeddingProvider', 'embeddingModel', 'embeddingBaseUrl'],
+  context: ['contextDigestTier', 'contextPromptSearch', 'contextMaxSpores'],
+  project: ['daemonPort', 'logLevel', 'logRetentionDays'],
+};
 
-function isContextDirty(form: FormState, orig: FormState): boolean {
-  return (
-    form.contextDigestTier !== orig.contextDigestTier ||
-    form.contextPromptSearch !== orig.contextPromptSearch ||
-    form.contextMaxSpores !== orig.contextMaxSpores
-  );
-}
-
-function isProjectDirty(form: FormState, orig: FormState): boolean {
-  return (
-    form.daemonPort !== orig.daemonPort ||
-    form.logLevel !== orig.logLevel ||
-    form.logRetentionDays !== orig.logRetentionDays
-  );
+function isSectionDirty(section: SaveSection, form: FormState, orig: FormState): boolean {
+  return SECTION_FIELDS[section].some((k) => form[k] !== orig[k]);
 }
 
 /* ---------- Sub-components ---------- */
@@ -266,7 +246,6 @@ export default function Settings() {
     }
   }
 
-  type SaveSection = 'agent' | 'embedding' | 'context' | 'project';
   const [saveMessage, setSaveMessage] = useState<{ section: SaveSection; type: 'success' | 'error'; text: string } | null>(null);
   const [testState, setTestState] = useState<TestState>('idle');
   const [testMessage, setTestMessage] = useState<string>('');
@@ -290,13 +269,12 @@ export default function Settings() {
     }
   }, [form, providersData]);
 
-  // Per-section dirty checks. origForm is memoized on config so per-keystroke
-  // re-renders don't reallocate it.
+  // origForm is memoized on config so per-keystroke re-renders don't reallocate it.
   const origForm = useMemo(() => (config ? toFormState(config) : null), [config]);
-  const agentDirty = !!(form && origForm && isAgentDirty(form, origForm));
-  const embeddingDirty = !!(form && origForm && isEmbeddingDirty(form, origForm));
-  const contextDirty = !!(form && origForm && isContextDirty(form, origForm));
-  const projectDirty = !!(form && origForm && isProjectDirty(form, origForm));
+  const agentDirty = !!(form && origForm && isSectionDirty('agent', form, origForm));
+  const embeddingDirty = !!(form && origForm && isSectionDirty('embedding', form, origForm));
+  const contextDirty = !!(form && origForm && isSectionDirty('context', form, origForm));
+  const projectDirty = !!(form && origForm && isSectionDirty('project', form, origForm));
 
   const setField = useCallback(<K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm(prev => (prev ? { ...prev, [key]: value } : prev));

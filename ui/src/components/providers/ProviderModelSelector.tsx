@@ -61,17 +61,16 @@ export function ProviderModelSelector({
 
   return (
     <div className="space-y-3">
-      {/* Provider selector */}
+      {/* Provider selector — derived from /providers response order */}
       <div className="grid grid-cols-3 gap-2">
-        {(['anthropic', 'ollama', 'lmstudio'] as const).map((type) => {
-          const Icon = PROVIDER_ICONS[type];
-          const info = providers.find((p) => p.type === type);
-          const isSelected = providerType === type;
+        {providers.map((info) => {
+          const Icon = PROVIDER_ICONS[info.type];
           if (!Icon) return null;
+          const isSelected = providerType === info.type;
           return (
             <button
-              key={type}
-              onClick={() => onProviderChange(type)}
+              key={info.type}
+              onClick={() => onProviderChange(info.type)}
               className={`
                 flex flex-col items-center gap-1.5 rounded-md border px-3 py-2.5 transition-colors
                 ${isSelected
@@ -81,13 +80,13 @@ export function ProviderModelSelector({
               `}
             >
               <Icon className="h-4 w-4" />
-              <span className="font-sans text-xs font-medium">{PROVIDER_LABELS[type]}</span>
+              <span className="font-sans text-xs font-medium">{PROVIDER_LABELS[info.type] ?? info.type}</span>
               {!isLoadingProviders && (
                 <Badge
-                  variant={info?.available ? 'secondary' : 'destructive'}
+                  variant={info.available ? 'secondary' : 'destructive'}
                   className="text-[10px] px-1.5 py-0"
                 >
-                  {info?.available ? 'online' : 'offline'}
+                  {info.available ? 'online' : 'offline'}
                 </Badge>
               )}
             </button>

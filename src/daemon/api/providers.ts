@@ -54,10 +54,11 @@ interface TestResult {
  * slow/unavailable provider doesn't block the others.
  */
 export async function handleGetProviders(): Promise<RouteResponse> {
+  // UI rendering order: Anthropic first (recommended default), then locals.
   const results = await Promise.allSettled([
+    detectAnthropic(),
     detectLocalProviderInfo('ollama', OllamaBackend.DEFAULT_BASE_URL),
     detectLocalProviderInfo('lmstudio', LmStudioBackend.DEFAULT_BASE_URL),
-    detectAnthropic(),
   ]);
 
   const providers: ProviderInfo[] = results.map((r) =>
