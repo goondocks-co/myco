@@ -1,6 +1,8 @@
 import { DaemonClient } from './client.js';
 import { readStdin } from './read-stdin.js';
 import { normalizeHookInput } from './normalize.js';
+import { evaluateSessionStartRules } from './capture-rules.js';
+import { loadManifests } from '../symbionts/detect.js';
 import { loadConfig } from '../config/loader.js';
 import { buildInjectedContext } from '../context/injector.js';
 import { initDatabase, vaultDbPath } from '../db/client.js';
@@ -20,7 +22,17 @@ export async function main() {
     const healthy = await client.ensureRunning();
 
     const rawInput = JSON.parse(await readStdin());
-    const { sessionId, agent } = normalizeHookInput(rawInput);
+    const { sessionId, agent, transcriptPath } = normalizeHookInput(rawInput);
+
+    // Apply session_start capture rules BEFORE registering the session.
+    // For Codex ephemeral sub-invocations (title generation, etc.) this
+    // structural drop prevents the phantom row from ever being created,
+    // rather than creating it and cascade-deleting at user_prompt time.
+    const decision = evaluateSessionStartRules(loadManifests(), agent, { transcriptPath });
+    if (decision.action === 'drop') {
+      process.stderr.write(`[myco] session-start: dropped (${decision.reason ?? 'rule'})\n`);
+      return;
+    }
 
     let branch: string | undefined;
     try {

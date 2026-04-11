@@ -21,7 +21,7 @@
 
 import type { CaptureRule, SymbiontManifest } from '../symbionts/manifest-schema.js';
 
-/** Structured context a rule can match against. */
+/** Structured context a rule can match against at UserPromptSubmit time. */
 export interface UserPromptRuleContext {
   /** The user prompt text as received from the hook. */
   prompt: string;
@@ -29,10 +29,21 @@ export interface UserPromptRuleContext {
   transcriptPath?: string;
 }
 
-/** Outcome of evaluating the rules against one captured user prompt. */
+/** Structured context a rule can match against at SessionStart time. */
+export interface SessionStartRuleContext {
+  /** Transcript path from the hook payload, if any. Empty/undefined signals an ephemeral session. */
+  transcriptPath?: string;
+}
+
+/** Outcome of evaluating user_prompt rules. */
 export type UserPromptDecision =
   | { action: 'pass'; prompt: string }
   | { action: 'rewrite'; prompt: string; reason?: string }
+  | { action: 'drop'; reason?: string };
+
+/** Outcome of evaluating session_start rules. No rewrite — there's no prompt text yet. */
+export type SessionStartDecision =
+  | { action: 'pass' }
   | { action: 'drop'; reason?: string };
 
 /**
@@ -61,6 +72,39 @@ export function evaluateUserPromptRules(
     }
   }
   return { action: 'pass', prompt: ctx.prompt };
+}
+
+/**
+ * Evaluate all session_start rules from every manifest.
+ *
+ * Same first-match-wins semantics as user_prompt rules. The only action
+ * session_start rules can take is `drop` — text rewriting doesn't apply
+ * because there's no prompt text at SessionStart time. Rules that
+ * specify prompt-based conditions (prompt_starts_with / prompt_contains)
+ * match against an empty prompt here, so they'll never fire on the
+ * session_start pass.
+ *
+ * Callers should skip session registration when the result is `drop`.
+ */
+export function evaluateSessionStartRules(
+  manifests: SymbiontManifest[],
+  detectedAgent: string,
+  ctx: SessionStartRuleContext,
+): SessionStartDecision {
+  for (const manifest of manifests) {
+    const rules = manifest.capture?.rules ?? [];
+    for (const rule of rules) {
+      if (rule.event !== 'session_start') continue;
+      if (!scopePermits(rule, manifest.name, detectedAgent)) continue;
+      if (!whenMatches(rule, { prompt: '', transcriptPath: ctx.transcriptPath })) continue;
+      if (rule.action === 'drop') {
+        return { action: 'drop', reason: rule.reason };
+      }
+      // rewrite_prompt is meaningless at session_start — skip and let
+      // later rules have a chance to match.
+    }
+  }
+  return { action: 'pass' };
 }
 
 function scopePermits(rule: CaptureRule, owningAgent: string, detectedAgent: string): boolean {

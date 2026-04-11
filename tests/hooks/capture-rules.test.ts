@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateUserPromptRules, type UserPromptRuleContext } from '../../src/hooks/capture-rules.js';
+import {
+  evaluateUserPromptRules,
+  evaluateSessionStartRules,
+  type UserPromptRuleContext,
+} from '../../src/hooks/capture-rules.js';
 import type { SymbiontManifest } from '../../src/symbionts/manifest-schema.js';
 
 /**
@@ -212,6 +216,92 @@ describe('evaluateUserPromptRules', () => {
       ]);
       const result = evaluateUserPromptRules([m], 'codex', ctx({ prompt: 'any prompt at all' }));
       expect(result).toEqual({ action: 'pass', prompt: 'any prompt at all' });
+    });
+  });
+});
+
+describe('evaluateSessionStartRules', () => {
+  const dropRule = manifestWithRules('codex', [
+    {
+      event: 'session_start',
+      scope: 'any_agent',
+      when: { transcript_path_missing: true },
+      action: 'drop',
+      reason: 'ephemeral-sub-invocation',
+      trim: true,
+    },
+  ]);
+
+  it('drops when transcript_path is missing at SessionStart', () => {
+    const result = evaluateSessionStartRules([dropRule], 'codex', { transcriptPath: undefined });
+    expect(result).toEqual({ action: 'drop', reason: 'ephemeral-sub-invocation' });
+  });
+
+  it('passes when transcript_path is populated at SessionStart', () => {
+    const result = evaluateSessionStartRules([dropRule], 'codex', {
+      transcriptPath: '/Users/me/.codex/sessions/2026/04/11/rollout-abc.jsonl',
+    });
+    expect(result).toEqual({ action: 'pass' });
+  });
+
+  it('fires even when the detected agent differs (scope: any_agent)', () => {
+    // Detection typically fails for ephemeral sub-invocations because
+    // transcript_path is the detection signal. Scope `any_agent`
+    // ensures the rule still fires under the claude-code default.
+    const result = evaluateSessionStartRules([dropRule], 'claude-code', { transcriptPath: undefined });
+    expect(result).toEqual({ action: 'drop', reason: 'ephemeral-sub-invocation' });
+  });
+
+  it('ignores user_prompt rules even when conditions would match', () => {
+    // A user_prompt rule must not accidentally fire at SessionStart time.
+    const m = manifestWithRules('codex', [
+      {
+        event: 'user_prompt',
+        scope: 'any_agent',
+        when: { transcript_path_missing: true },
+        action: 'drop',
+        reason: 'user-prompt-only',
+        trim: true,
+      },
+    ]);
+    const result = evaluateSessionStartRules([m], 'codex', { transcriptPath: undefined });
+    expect(result).toEqual({ action: 'pass' });
+  });
+
+  it('ignores session_start rules that use prompt-text conditions', () => {
+    // No prompt exists at SessionStart, so prompt_starts_with is unreachable.
+    // The rule should silently fail to match rather than fire on empty input.
+    const m = manifestWithRules('codex', [
+      {
+        event: 'session_start',
+        scope: 'any_agent',
+        when: { prompt_starts_with: 'anything' },
+        action: 'drop',
+        reason: 'prompt-on-session-start',
+        trim: true,
+      },
+    ]);
+    const result = evaluateSessionStartRules([m], 'codex', { transcriptPath: undefined });
+    expect(result).toEqual({ action: 'pass' });
+  });
+
+  it('respects this_agent scope when the detected agent matches', () => {
+    const m = manifestWithRules('codex', [
+      {
+        event: 'session_start',
+        scope: 'this_agent',
+        when: { transcript_path_missing: true },
+        action: 'drop',
+        reason: 'codex-only',
+        trim: true,
+      },
+    ]);
+    expect(evaluateSessionStartRules([m], 'codex', { transcriptPath: undefined })).toEqual({
+      action: 'drop',
+      reason: 'codex-only',
+    });
+    expect(evaluateSessionStartRules([m], 'claude-code', { transcriptPath: undefined })).toEqual({
+      action: 'pass',
     });
   });
 });

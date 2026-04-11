@@ -27,16 +27,25 @@ import { z } from 'zod';
  *     patterns where detection itself might fail — e.g., an internal
  *     sub-invocation that omits the fields agent detection keys on.
  *
+ * Events:
+ *   - `session_start`: fires on SessionStart, before any prompts or
+ *     tools are captured. The right place to catch ephemeral sub-
+ *     invocations so they're never registered as sessions at all.
+ *   - `user_prompt`: fires on UserPromptSubmit. Safety net for anything
+ *     that slips past session_start, and the only layer where
+ *     `rewrite_prompt` makes sense (prompt text doesn't exist until
+ *     the prompt is submitted).
+ *
  * Actions:
- *   - `drop`: discard the event entirely. For user_prompt, the hook
- *     additionally removes the session row the prior SessionStart
- *     just registered, so phantom sub-sessions don't pollute the UI.
+ *   - `drop`: discard the event entirely. For session_start, the hook
+ *     skips registering the session row. For user_prompt, the hook
+ *     skips posting the event and cascade-deletes any session row that
+ *     may have been registered before the drop rule could fire.
  *   - `rewrite_prompt`: replace the captured prompt with the substring
- *     after `extract_after`. Useful for stripping IDE-injected
- *     preambles so the stored prompt reflects the user's own words.
+ *     after `extract_after`. Only valid for `user_prompt` events.
  */
 const CaptureRuleSchema = z.object({
-  event: z.enum(['user_prompt']),
+  event: z.enum(['session_start', 'user_prompt']),
   scope: z.enum(['this_agent', 'any_agent']).default('this_agent'),
   when: z.object({
     prompt_starts_with: z.string().optional(),
