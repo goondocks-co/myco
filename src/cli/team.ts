@@ -69,10 +69,15 @@ const TOML_DB_ID_REGEX = /database_id\s*=\s*"([^"]+)"/;
 const TOML_KV_PLACEHOLDER_REGEX = /<YOUR_KV_NAMESPACE_ID>/g;
 
 /** Regex to extract the KV namespace ID from an existing wrangler.toml. */
-const TOML_KV_ID_REGEX = /\[\[kv_namespaces\]\][\s\S]*?id\s*=\s*"([0-9a-f]{32})"/;
+const TOML_KV_ID_REGEX = /\[\[kv_namespaces\]\][\s\S]*?id\s*=\s*"([0-9a-f]+)"/;
 
-/** Regex to extract KV namespace ID from wrangler kv namespace create output. */
-const KV_ID_REGEX = /id:\s*"?([0-9a-f]{32})"?/i;
+/**
+ * Regex to extract the KV namespace ID from `wrangler kv namespace create` output.
+ * Wrangler prints a JSON configuration snippet like:
+ *   { "kv_namespaces": [ { "binding": "...", "id": "7cc069cb32b4438b29079cca4714056" } ] }
+ * Note: Cloudflare KV IDs are hex strings of variable length (observed 31-32 chars).
+ */
+const KV_ID_REGEX = /"id":\s*"([0-9a-f]+)"/i;
 
 
 // ---------------------------------------------------------------------------

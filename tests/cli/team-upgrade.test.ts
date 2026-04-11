@@ -133,13 +133,17 @@ describe('upgradeWorker', () => {
   });
 
   it('provisions a KV namespace on existing deployments that lack one', async () => {
-    // Queue the expected wrangler/npm commands in order:
-    // 1. kv namespace create → returns new KV ID
-    // 2. npm install → ignored output
-    // 3. wrangler secret put → ignored output
-    // 4. wrangler deploy → returns deploy URL
+    // Simulate wrangler's actual output format: a JSON config snippet with "id": "..."
+    // Real-world observation: KV IDs can be 31 hex chars, not always 32.
+    const wranglerKvCreateOutput = `⛅️ wrangler 4.8.1
+Resource location: remote
+🌀 Creating namespace with title "myco-team-abc12345-secrets"
+✨ Success! To access your new KV Namespace in your Worker, add the following snippet to your configuration file:
+{ "kv_namespaces": [ { "binding": "myco_team_abc12345_secrets", "id": "7cc069cb32b4438b29079cca4714056" } ] }
+`;
+
     execHandlers.push(
-      () => 'id: "0123456789abcdef0123456789abcdef"\n',
+      () => wranglerKvCreateOutput,
       () => '',
       () => '',
       () => 'https://myco-team-abc12345.test.workers.dev\n',
@@ -151,24 +155,19 @@ describe('upgradeWorker', () => {
     expect(result.success).toBe(true);
     expect(result.worker_url).toBe('https://myco-team-abc12345.test.workers.dev');
 
-    // KV namespace create was the first call
     expect(execCalls[0]).toMatchObject({
       command: 'wrangler',
       args: ['kv', 'namespace', 'create', 'myco-team-abc12345-secrets'],
     });
 
-    // npm install ran in the deploy dir
     const npmCall = execCalls.find((c) => c.command === 'npm' && c.args[0] === 'install');
     expect(npmCall).toBeDefined();
     expect(npmCall?.cwd).toBe(deployDir);
 
-    // wrangler.toml in deploy dir has the real KV ID, not the placeholder
     const patchedToml = fs.readFileSync(path.join(deployDir, 'wrangler.toml'), 'utf-8');
     expect(patchedToml).not.toContain('<YOUR_KV_NAMESPACE_ID>');
-    expect(patchedToml).toContain('id = "0123456789abcdef0123456789abcdef"');
-    // Preserves existing D1 ID
+    expect(patchedToml).toContain('id = "7cc069cb32b4438b29079cca4714056"');
     expect(patchedToml).toContain('database_id = "f9b0e166-a7e3-476c-b7a7-7a7f08723d67"');
-    // Preserves existing worker name
     expect(patchedToml).toContain('name = "myco-team-abc12345"');
   });
 
@@ -213,7 +212,7 @@ describe('upgradeWorker', () => {
 
   it('returns error when npm install fails', async () => {
     execHandlers.push(
-      () => 'id: "0123456789abcdef0123456789abcdef"\n',
+      () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
       () => new Error('npm ERR! ENOENT package.json'),
     );
 
@@ -226,7 +225,7 @@ describe('upgradeWorker', () => {
 
   it('runs npm install in the deploy dir before wrangler deploy', async () => {
     execHandlers.push(
-      () => 'id: "0123456789abcdef0123456789abcdef"\n',
+      () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
       () => '',
       () => '',
       () => 'https://myco-team-abc12345.test.workers.dev\n',
