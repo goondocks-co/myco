@@ -65,6 +65,20 @@ const TOML_INDEX_NAME_REGEX = /index_name\s*=\s*"[^"]*"/g;
 /** Regex to match database_id in existing wrangler.toml. */
 const TOML_DB_ID_REGEX = /database_id\s*=\s*"([^"]+)"/;
 
+/** Regex to match wrangler.toml KV namespace placeholder. */
+const TOML_KV_PLACEHOLDER_REGEX = /<YOUR_KV_NAMESPACE_ID>/g;
+
+/** Regex to extract the KV namespace ID from an existing wrangler.toml. */
+const TOML_KV_ID_REGEX = /\[\[kv_namespaces\]\][\s\S]*?id\s*=\s*"([0-9a-f]+)"/;
+
+/**
+ * Regex to extract the KV namespace ID from `wrangler kv namespace create` output.
+ * Wrangler prints a JSON configuration snippet like:
+ *   { "kv_namespaces": [ { "binding": "...", "id": "7cc069cb32b4438b29079cca4714056" } ] }
+ * Note: Cloudflare KV IDs are hex strings of variable length (observed 31-32 chars).
+ */
+const KV_ID_REGEX = /"id":\s*"([0-9a-f]+)"/i;
+
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -81,14 +95,24 @@ function resourceName(vaultDir: string): string {
   return `${TEAM_RESOURCE_PREFIX}-${projectHash(vaultDir)}`;
 }
 
-/** Run a wrangler command and return stdout. Throws on failure. */
+/** Run a wrangler command and return stdout. Throws on failure, surfacing stderr. */
 function wrangler(args: string[], options?: { cwd?: string }): string {
-  return execFileSync('wrangler', args, {
-    encoding: 'utf-8',
-    timeout: WRANGLER_COMMAND_TIMEOUT_MS,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    ...options,
-  });
+  try {
+    return execFileSync('wrangler', args, {
+      encoding: 'utf-8',
+      timeout: WRANGLER_COMMAND_TIMEOUT_MS,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      ...options,
+    });
+  } catch (err) {
+    // execFileSync loses stderr in err.message — reconstruct it here so
+    // callers see the actual wrangler failure instead of just "Command failed".
+    const execErr = err as Error & { stderr?: Buffer | string; stdout?: Buffer | string };
+    const stderr = execErr.stderr?.toString() ?? '';
+    const stdout = execErr.stdout?.toString() ?? '';
+    const detail = [stderr, stdout].filter(Boolean).join('\n').trim();
+    throw new Error(detail || execErr.message);
+  }
 }
 
 /** Find the worker source directory. Checks dist layout first (installed), then source layout (dev). */
@@ -105,7 +129,7 @@ function locateWorkerSource(): string {
  * Copy worker source to the vault deployment directory and patch wrangler.toml
  * with actual D1 database ID and resource names.
  */
-function prepareDeployDir(vaultDir: string, d1Id: string): string {
+function prepareDeployDir(vaultDir: string, d1Id: string, kvId: string): string {
   const srcDir = locateWorkerSource();
   const deployDir = path.join(vaultDir, TEAM_WORKER_DIR);
 
@@ -120,9 +144,64 @@ function prepareDeployDir(vaultDir: string, d1Id: string): string {
   toml = toml.replace(TOML_D1_PLACEHOLDER_REGEX, d1Id);
   toml = toml.replace(TOML_DB_NAME_REGEX, `database_name = "${name}"`);
   toml = toml.replace(TOML_INDEX_NAME_REGEX, `index_name = "${name}-vectors"`);
+  toml = toml.replace(TOML_KV_PLACEHOLDER_REGEX, kvId);
   fs.writeFileSync(tomlPath, toml, 'utf-8');
 
+  // Install runtime dependencies before deploy (required for bundled imports)
+  installDeploymentDeps(deployDir);
+
   return deployDir;
+}
+
+/** Extract a JSON array from wrangler output that may be prefixed with banner text. */
+function extractJsonArray(output: string): unknown[] {
+  const start = output.indexOf('[');
+  const end = output.lastIndexOf(']');
+  if (start === -1 || end === -1 || end < start) {
+    throw new Error(`No JSON array found in output:\n${output}`);
+  }
+  return JSON.parse(output.slice(start, end + 1));
+}
+
+/** Ensure a KV namespace exists for this project. Returns the namespace ID. */
+function ensureKvNamespace(name: string): string {
+  const kvName = `${name}-secrets`;
+  const lookupExisting = (): string => {
+    const listOutput = wrangler(['kv', 'namespace', 'list']);
+    const namespaces = extractJsonArray(listOutput) as Array<{ id: string; title: string }>;
+    // Wrangler sometimes rewrites hyphens to underscores in titles
+    const normalize = (s: string) => s.replace(/[-_]/g, '');
+    const target = normalize(kvName);
+    const existing = namespaces.find((ns) => normalize(ns.title) === target || normalize(ns.title).endsWith(target));
+    if (!existing) throw new Error(`KV namespace "${kvName}" not found in list of ${namespaces.length} namespaces`);
+    return existing.id;
+  };
+
+  try {
+    const output = wrangler(['kv', 'namespace', 'create', kvName]);
+    const match = output.match(KV_ID_REGEX);
+    if (match) return match[1];
+    // Created successfully but we couldn't parse — fall back to list lookup
+    return lookupExisting();
+  } catch (err) {
+    const errMsg = (err as Error).message;
+    if (errMsg.includes('already exists') || errMsg.includes('duplicate') || errMsg.includes('same title')) {
+      return lookupExisting();
+    }
+    throw err;
+  }
+}
+
+/** Install npm dependencies in the deploy directory. Required for runtime imports. */
+function installDeploymentDeps(deployDir: string): void {
+  const packageJsonPath = path.join(deployDir, 'package.json');
+  if (!fs.existsSync(packageJsonPath)) return;
+  execFileSync('npm', ['install', '--silent', '--no-audit', '--no-fund'], {
+    encoding: 'utf-8',
+    timeout: WRANGLER_COMMAND_TIMEOUT_MS * 3,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    cwd: deployDir,
+  });
 }
 
 /** Extract D1 database ID from wrangler d1 create output (handles both JSON and text formats). */
@@ -211,12 +290,23 @@ export async function teamInit(vaultDir: string): Promise<void> {
     }
   }
 
-  // 5. Generate API key
+  // 5. Create KV namespace for runtime secrets (MCP tokens)
+  console.log('Creating KV namespace for secrets...');
+  let kvId: string;
+  try {
+    kvId = ensureKvNamespace(name);
+    console.log(`KV namespace ready: ${kvId}\n`);
+  } catch (err) {
+    console.error(`Failed to create KV namespace: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
+  // 6. Generate API key
   const apiKey = crypto.randomBytes(API_KEY_BYTES).toString('hex');
 
-  // 6. Prepare deployment directory
+  // 7. Prepare deployment directory
   console.log('Preparing worker deployment...');
-  const deployDir = prepareDeployDir(vaultDir, d1Id);
+  const deployDir = prepareDeployDir(vaultDir, d1Id, kvId);
 
   // 7. Set API key secret via wrangler
   console.log('Setting API key secret...');
@@ -320,6 +410,20 @@ export function upgradeWorker(vaultDir: string): UpgradeResult {
   const nameMatch = existingToml.match(/^name\s*=\s*"([^"]*)"/m);
   const dbNameMatch = existingToml.match(/database_name\s*=\s*"([^"]*)"/);
   const indexNameMatch = existingToml.match(/index_name\s*=\s*"([^"]*)"/);
+  const workerName = nameMatch?.[1] ?? resourceName(vaultDir);
+
+  // KV namespace may not exist on older deployments — create or reuse.
+  const kvMatch = existingToml.match(TOML_KV_ID_REGEX);
+  let kvId: string;
+  if (kvMatch) {
+    kvId = kvMatch[1];
+  } else {
+    try {
+      kvId = ensureKvNamespace(workerName);
+    } catch (err) {
+      return { success: false, error: `Failed to provision KV namespace: ${(err as Error).message}` };
+    }
+  }
 
   // Re-copy worker source from package (updated code)
   const srcDir = locateWorkerSource();
@@ -327,12 +431,19 @@ export function upgradeWorker(vaultDir: string): UpgradeResult {
 
   // Patch wrangler.toml preserving existing resource names
   let toml = fs.readFileSync(path.join(deployDir, 'wrangler.toml'), 'utf-8');
-  const workerName = nameMatch?.[1] ?? resourceName(vaultDir);
   toml = toml.replace(TOML_NAME_REGEX, `name = "${workerName}"`);
   toml = toml.replace(TOML_D1_PLACEHOLDER_REGEX, d1Id);
   toml = toml.replace(TOML_DB_NAME_REGEX, `database_name = "${dbNameMatch?.[1] ?? workerName}"`);
   toml = toml.replace(TOML_INDEX_NAME_REGEX, `index_name = "${indexNameMatch?.[1] ?? `${workerName}-vectors`}"`);
+  toml = toml.replace(TOML_KV_PLACEHOLDER_REGEX, kvId);
   fs.writeFileSync(path.join(deployDir, 'wrangler.toml'), toml, 'utf-8');
+
+  // Install runtime dependencies before deploy (required for bundled imports)
+  try {
+    installDeploymentDeps(deployDir);
+  } catch (err) {
+    return { success: false, error: `Failed to install worker dependencies: ${(err as Error).message}` };
+  }
 
   // Re-set API key secret before deploy (deploy can wipe secrets)
   const secrets = readSecrets(vaultDir);

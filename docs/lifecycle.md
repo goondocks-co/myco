@@ -1,459 +1,118 @@
 # Daemon Lifecycle
 
-Myco runs a long-lived background daemon that processes session events, runs intelligence tasks, maintains the search index, and continuously synthesizes knowledge into digest extracts. The daemon is fully automatic — users never start, stop, or restart it manually.
+Myco runs a long-lived background daemon that captures session activity, processes it into knowledge, and serves context back to your agents. This page covers what gets captured, how the daemon manages itself, and what to do when things go sideways.
 
-## Session Flow
+## Session capture
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant Hook as Agent Hooks
-    participant Daemon
-    participant Transcript as Agent Transcript
-    participant DB as SQLite
-    participant LLM
+When you start a session in any configured agent (Claude Code, Cursor, Codex, etc.), the symbiont's hooks register the session with the daemon and begin capturing events:
 
-    Note over Hook,Daemon: Session Start
-    Hook->>Daemon: POST /sessions/register {session_id, branch}
-    Daemon->>DB: Upsert session (status=active)
-    Hook->>Daemon: POST /context {branch}
-    Daemon-->>Hook: Digest extract (or layer-based fallback)
-    Hook-->>User: Context injected
+- **User prompts** — every message you send the agent
+- **Tool uses** — every file read, bash command, edit, or search the agent runs
+- **Subagent activity** — when the agent delegates to a subagent, that work is recorded too
+- **Assistant turns** — pulled from the agent's native transcript (not re-captured from the API)
+- **Attachments** — images you paste into the conversation are extracted and saved to `attachments/`
 
-    Note over Hook,Daemon: During Session
-    User->>Hook: Prompt submitted
-    Hook->>Daemon: POST /events {user_prompt}
-    Daemon->>DB: Close open batch, create new batch
-    Hook->>Daemon: POST /context/prompt {prompt}
-    Daemon-->>Hook: Relevant spores (vector search)
-    Hook-->>User: Spores injected
+Capture is automatic and continuous. You never need to trigger it.
 
-    User->>Hook: Tool used
-    Hook->>Daemon: POST /events {tool_use}
-    Daemon->>DB: Insert activity
+At session start, Myco injects context into the conversation: a project digest extract, relevant spores for the current git branch, and the session's metadata. That context is what lets your agent start productive immediately instead of asking questions.
 
-    Note over Hook,Daemon: Per-Turn Stop (async)
-    Hook->>Daemon: POST /events/stop
-    Daemon-->>Hook: {ok: true}
-    Daemon->>Transcript: Parse transcript (tool_count)
-    Daemon->>DB: Update session stats
+On every prompt, Myco runs a semantic search against your prompt text and injects the top matching spores — so ongoing work benefits from prior learnings without the agent having to ask.
 
-    Note over Hook,Daemon: Session End
-    Hook->>Daemon: POST /sessions/unregister
-    Daemon->>DB: Close session (set ended_at)
-    Daemon->>LLM: Fire-and-forget title/summary task
-```
+## Power management
 
-### Event Types
+The daemon adapts its background work rate to the developer's activity. Four states:
 
-| Event | Hook | What happens |
-|-------|------|-------------|
-| `user_prompt` | UserPromptSubmit | Close open batch, create new batch in DB |
-| `tool_use` | PostToolUse | Insert activity, increment batch activity_count |
-| `tool_failure` | PostToolUseFailure | Insert activity with success=0 |
-| `subagent_start` | SubagentStart | Record as activity |
-| `subagent_stop` | SubagentStop | Record as activity |
-| `pre_compact` | PreCompact | Record compaction event |
-| `post_compact` | PostCompact | Record compaction event |
-| `task_completed` | TaskCompleted | Record as activity |
-
-### Batch Summary Triggers
-
-Summaries are event-driven, triggered on configurable intervals:
-- Every N batches (configurable via `agent.summary_batch_interval`, default 5)
-- On session stop: fire-and-forget title-summary agent task
-- Setting `summary_batch_interval: 0` disables interval-based triggers
-
-## Intelligence Agent
-
-The intelligence agent runs inside the daemon, processing captured data through configurable task phases. Tasks are defined as YAML files with a dependency graph of phases.
-
-### Task Execution Model
-
-```mermaid
-flowchart TD
-    Trigger[Agent Trigger] --> Load[Load Task Definition]
-    Load --> Orchestrator{Orchestrator<br/>Enabled?}
-    Orchestrator -->|Yes| Plan[Generate Plan<br/>SDK query]
-    Orchestrator -->|No| Waves
-    Plan --> Waves[Compute Waves<br/>Kahn's Algorithm]
-    Waves --> W1[Wave 1<br/>read-state]
-    W1 --> W2[Wave 2<br/>extract + summarize]
-    W2 --> W3[Wave 3<br/>consolidate + graph]
-    W3 --> W4[Wave 4<br/>digest]
-    W4 --> W5[Wave 5<br/>report]
-
-    style Trigger fill:#e8f5e9
-    style Waves fill:#e1f5fe
-```
-
-Phases in the same wave run in parallel via `Promise.allSettled()`. Each phase gets:
-- Scoped tools (only the tools listed in `phase.tools[]`)
-- A turn budget (`phase.maxTurns`)
-- Isolated provider environment (via SDK `env` option)
-- Results from prior phases as context
-
-### Provider Config Resolution
-
-```
-Agent definition (YAML)
-  ↓ overridden by
-Database agent row
-  ↓ overridden by
-Task YAML (built-in or user)
-  ↓ overridden by
-myco.yaml global (agent.provider / agent.model)
-  ↓ overridden by
-myco.yaml per-task (agent.tasks.<name>.provider)
-  ↓ overridden by
-myco.yaml per-phase (agent.tasks.<name>.phases.<phase>.provider)
-```
-
-### Built-in Tasks
-
-Ten tasks cover intelligence processing and the skill lifecycle.
-
-**Intelligence tasks:**
-
-| Task | Phases | Description |
-|------|--------|-------------|
-| `full-intelligence` | read-state → extract + summarize → consolidate + graph → digest → report | Complete pipeline |
-| `title-summary` | Single phase | Generate/update session titles and summaries |
-| `extract-only` | read-state → extract | Observation extraction only |
-| `review-session` | Single phase | Deep review of a specific session |
-| `supersession-sweep` | Single phase | Find and supersede stale spores |
-| `digest-only` | Single phase | Regenerate digest extracts |
-| `graph-maintenance` | Single phase | Entity and edge maintenance |
-
-**Skill lifecycle tasks:**
-
-| Task | Phases | Description |
-|------|--------|-------------|
-| `skill-survey` | explore-spores + explore-sessions + explore-plans → evaluate | Discover procedural skill candidates from vault knowledge |
-| `skill-generate` | draft → validate → finalize | Generate one approved candidate into a validated SKILL.md |
-| `skill-evolve` | assess → evolve | Monitor active skills for drift, rewrite stale content, split oversized skills |
-
-Skill tasks are gated by pre-conditions — `skill-generate` only runs when approved candidates exist, `skill-evolve` only when active skills exist. See the [Skills docs](skills.md).
-
-### Consolidation
-
-When the intelligence agent finds 3+ semantically similar spores, it synthesizes them into a **wisdom** spore:
-
-1. Wisdom spore created with `observation_type: 'wisdom'` and `properties.consolidated_from`
-2. `DERIVED_FROM` graph edges auto-created from wisdom to each source
-3. Source spores resolved with action `consolidate` (status → 'consolidated')
-4. Consolidated spores excluded from future consolidation
-
-## Digest System
-
-The digest engine synthesizes accumulated knowledge into tiered context extracts. These pre-computed summaries are served instantly at session start.
-
-```mermaid
-flowchart TD
-    Timer[Metabolism Timer] --> Check{New<br/>Substrate?}
-    Check -->|Yes| Tiers[Generate Extracts<br/>Sequential: 1500 → 3000 → 5000 → 10000]
-    Check -->|No| Backoff[Metabolic Slowdown<br/>15m → 30m → 1h → dormancy]
-    Tiers --> Store[Store in digest_extracts<br/>table]
-    Store --> Reset[Reset to Active Metabolism]
-
-    Session[New Session Registered] --> Activate[Activate Metabolism]
-    Activate --> Timer
-
-    style Timer fill:#e8f5e9
-    style Backoff fill:#fff3e0
-    style Tiers fill:#e1f5fe
-```
-
-### Metabolism States
-
-| State | Interval | Trigger |
+| State | Behavior | Trigger |
 |-------|----------|---------|
-| **Active** | 5 minutes | Substrate found, or session registered |
-| **Cooling** | 15m → 30m → 1h | Empty cycles (no new substrate) |
-| **Dormant** | Suspended | No substrate for 2+ hours |
+| **active** | Fast polling, all background jobs run | Any HTTP request from a live session |
+| **idle** | Slower polling, most jobs still run | No activity for 10 seconds |
+| **sleep** | Rare polling, only maintenance jobs run | No activity for 60 seconds |
+| **deep_sleep** | Timers stopped, no background work | No activity for 10 minutes |
 
-### Tiered Extracts
+Any request wakes the daemon back to active. This means the daemon gets out of the way when you step away from your machine, and it costs nothing on idle laptops.
 
-| Tier | Character | Use Case |
-|------|-----------|----------|
-| **1,500** | Executive briefing | Quick orientation — what is this, what's active, what to avoid |
-| **3,000** | Team standup | Enough to start contributing — decisions, plans, conventions |
-| **5,000** | Deep onboarding | Full context — trade-offs, patterns, team dynamics |
-| **10,000** | Institutional knowledge | Everything — thread history, design tensions, lessons learned |
+## Where data lives
 
-## Graph Architecture
+Everything Myco captures lives in your project's `.myco/` directory:
 
-The knowledge graph uses a two-layer model stored in the `graph_edges` table:
+| Path | Purpose |
+|------|---------|
+| `myco.db` | Sessions, batches, activities, spores, entities, graph edges, plans, artifacts, skills, FTS indexes |
+| `vectors.db` | Semantic search embeddings |
+| `myco.yaml` | Vault configuration (providers, schedules, etc.) |
+| `secrets.env` | API keys (gitignored) |
+| `logs/daemon.log` | Structured daemon logs (JSONL) |
+| `attachments/` | Images extracted from session transcripts |
+| `buffer/` | Per-session event buffers (ephemeral) |
+| `tasks/` | User-defined agent task YAMLs (optional) |
 
-**Lineage layer** (automatic, no LLM):
-- `FROM_SESSION` — spore → session (created on spore insert)
-- `EXTRACTED_FROM` — spore → batch (created on spore insert)
-- `HAS_BATCH` — session → batch (created on batch insert)
-- `DERIVED_FROM` — wisdom spore → source spore (created on consolidation)
+`myco.db` and `vectors.db` should be **not** committed to git — they're local state that rebuilds from session captures. Myco's own `.gitignore` entries are added automatically by `myco init`.
 
-**Intelligence layer** (agent-created, LLM-driven):
-- `RELATES_TO` — semantic relationship between spores or entities
-- `SUPERSEDED_BY` — newer observation replaces older one
-- `REFERENCES` — spore references an entity
-- `DEPENDS_ON` — architectural dependency between entities
-- `AFFECTS` — observation impacts a component
-
-Node types: `session`, `batch`, `spore`, `entity`.
-
-### Entity Types
-
-Three types:
-- **component** — module, class, service, or significant function
-- **concept** — architectural pattern or domain concept spanning 2+ sessions
-- **person** — contributor or team member
-
-Entities are created only when referenced by 3+ spores from 2+ sessions.
-
-## Indexing & Embedding
-
-Every database write can trigger a two-stage indexing process: FTS for keyword search, vector embeddings for semantic search.
-
-```mermaid
-flowchart LR
-    Write[DB Write] --> FTS[FTS Index<br/>SQLite FTS5]
-    Write --> Embed{Embedding<br/>Provider<br/>Available?}
-    Embed -->|Yes| Gen[Generate<br/>Embedding]
-    Embed -->|No| Skip[Skip<br/>Vector Index]
-    Gen --> Vec[Vector Index<br/>sqlite-vec]
-
-    style FTS fill:#e1f5fe
-    style Vec fill:#f3e5f5
-    style Skip fill:#fff3e0
-```
-
-### What Gets Indexed
-
-| Content | When | Embedded |
-|---------|------|----------|
-| Sessions | On close | Yes (fire-and-forget) |
-| Prompt batches | On close | FTS only |
-| Spores | On insert | Yes (fire-and-forget) |
-| Plans | On capture | Yes (fire-and-forget) |
-| Artifacts | On capture | Yes (fire-and-forget) |
-
-### Embedding Reconciliation
-
-The `EmbeddingManager` runs periodic reconciliation via the PowerManager:
-- **Embed missing** — find rows with `embedded=0`, generate and store vectors
-- **Clean orphans** — remove vectors for deleted records
-- **Reembed stale** — re-embed vectors from a previous model after provider change
-
-Embeddings are always fire-and-forget — they never block the response. If providers are unavailable, records are still written and FTS-indexed. Semantic search degrades gracefully.
-
-## Context Injection
+## Context injection
 
 Two injection points, each with a different purpose:
 
-```mermaid
-flowchart TD
-    SS[SessionStart] --> Struct[Digest Extract<br/>Pre-computed project understanding<br/>or layer-based fallback]
-    UP[UserPromptSubmit] --> Sem[Semantic Context<br/>Vector search against prompt<br/>Top 3 relevant spores]
+**Session start** — Project understanding. At the start of each session, Myco injects the digest extract (or a fallback built from recent sessions and active spores if no digest exists yet). Total budget is around 1200 tokens, plus the session ID and current git branch.
 
-    Struct --> Agent[Agent Context Window]
-    Sem --> Agent
+**Per prompt** — Targeted intelligence. On every prompt you submit, Myco runs a semantic search against your prompt text and injects the top matching spores. Each result includes its spore ID so the agent can follow up with `myco_get` for more detail. Very short prompts skip this to avoid noise.
 
-    style SS fill:#e8f5e9
-    style UP fill:#fff3e0
-```
+## Degraded mode
 
-**Session start** — injected once, project understanding:
-- Digest extract at the configured tier (when extracts exist)
-- Fallback layers: active plans, recent sessions, relevant spores, team activity
-- Total budget: ~1200 tokens
-- Session ID and branch name always appended
+If the daemon is unreachable for any reason (crash, upgrade in progress, network hiccup), hooks degrade gracefully:
 
-**Per-prompt** — injected on every prompt, targeted intelligence:
-- Vector similarity search against the prompt text
-- Top 3 spores, filtered for superseded/archived
-- Each result includes the spore ID for follow-up
-- Short prompts (<10 chars) skip the search
+- `SessionStart` — context injection falls back to a local DB query, no digest or semantic search
+- `UserPromptSubmit` — events buffered to disk (JSONL files in `buffer/`), no context injection for that prompt
+- `PostToolUse` and `Stop` — events buffered to disk
+- `SessionEnd` — no-op
 
-## Power Management
+The next time the daemon starts, it reconciles the buffered events and you lose nothing. Buffer files are cleaned up automatically after 24 hours.
 
-The daemon adapts its background work rate based on activity:
+## Daemon management
 
-```mermaid
-flowchart LR
-    Active[Active<br/>5s intervals] -->|10s idle| Idle[Idle<br/>30s intervals]
-    Idle -->|60s idle| Sleep[Sleep<br/>5m intervals]
-    Sleep -->|600s idle| Deep[Deep Sleep<br/>timer stopped]
-    Deep -->|any request| Active
-    Sleep -->|any request| Active
-    Idle -->|any request| Active
-```
-
-| State | Job interval | Trigger to wake |
-|-------|-------------|-----------------|
-| **active** | 5 seconds | Any HTTP request |
-| **idle** | 30 seconds | Any HTTP request |
-| **sleep** | 5 minutes | Any HTTP request |
-| **deep_sleep** | Stopped | Any HTTP request |
-
-### Registered Jobs
-
-| Job | States | Purpose |
-|-----|--------|---------|
-| `embedding-reconcile` | active, idle | Batch embed missing rows, clean orphans |
-| `session-maintenance` | active, idle, sleep | Complete stale sessions, delete dead ones |
-| `agent-auto-run` | active, idle | Run intelligence agent on unprocessed batches |
-
-## Daemon Startup
-
-```mermaid
-flowchart TD
-    Hook[SessionStart Hook] --> Health{Daemon<br/>Healthy?}
-    Health -->|Yes| Register[Register Session]
-    Health -->|No| Spawn[Spawn Daemon]
-    Spawn --> Wait[Wait for Health<br/>100ms → 200ms → 400ms → 800ms → 1500ms]
-    Wait --> Ready{Healthy?}
-    Ready -->|Yes| Register
-    Ready -->|No| Degraded[Degraded Mode<br/>Buffer to disk]
-    Register --> Context[Inject Session Context]
-```
-
-The daemon initializes in this order:
-
-1. Kill stale daemon (check `daemon.json` PID)
-2. Load secrets from `secrets.env`
-3. Load config from `myco.yaml`
-4. Initialize SQLite database + schema (idempotent)
-5. Initialize embedding system (vector store, provider, record source, manager)
-6. Register built-in agents and tasks from YAML definitions
-7. Clean stale agent runs (crash recovery)
-8. Resolve UI directory (`dist/ui/`)
-9. Create PowerManager (state machine for background jobs)
-10. Create HTTP server
-11. Create SessionRegistry
-12. Create TranscriptMiner
-13. Clean stale event buffers (>24h)
-14. Reconcile buffered events from downtime
-15. Register ~40+ API routes
-16. Start server (evict existing daemon, resolve port)
-17. Register power jobs (embedding, session maintenance, agent auto-run)
-18. Start PowerManager tick loop
-19. Write `daemon.json` with PID and port
-
-## Shutdown
-
-The daemon shuts itself down after a grace period with no active sessions:
-
-```mermaid
-flowchart LR
-    Unreg[Last Session<br/>Unregisters] --> Grace[Grace Timer<br/>30 seconds]
-    Grace --> Check{New Session<br/>Registered?}
-    Check -->|Yes| Cancel[Cancel Timer]
-    Check -->|No| Shutdown[Clean Shutdown]
-    Shutdown --> Close[Close DB<br/>Stop PowerManager<br/>Flush Logs]
-```
-
-## Degraded Mode
-
-If the daemon is unreachable, hooks fall back gracefully:
-
-| Hook | Degraded behavior |
-|------|-------------------|
-| `SessionStart` | Context injection via local DB query (no digest, no semantic search) |
-| `UserPromptSubmit` | Events buffered to disk (JSONL files), no context injection |
-| `PostToolUse` | Events buffered to disk |
-| `Stop` | Buffered to disk, processed when daemon returns |
-| `SessionEnd` | No-op |
-
-Buffered events are reconciled by the daemon when it next starts. Buffer files are cleaned up after 24 hours.
-
-## After Plugin Updates
-
-1. Old daemon continues running with old code until it shuts down
-2. Next `SessionStart` hook spawns a new daemon from the updated `dist/` directory
-3. New daemon picks up seamlessly — same database, same indexes, same config
-
-No manual restart needed. For development, use `make build && myco-dev restart`.
-
-## Configuration
-
-```yaml
-version: 3
-embedding:
-  provider: ollama              # ollama | openai-compatible | openrouter | openai
-  model: bge-m3                 # embedding model name
-  base_url: http://...          # optional, for custom endpoints
-daemon:
-  port: null                    # null = auto-assign, persisted once resolved
-  log_level: info               # debug | info | warn | error
-capture:
-  transcript_paths: []          # additional transcript search paths
-  artifact_watch:               # directories to watch for plan files
-    - .claude/plans/
-    - .cursor/plans/
-  artifact_extensions: [.md]
-  buffer_max_events: 500
-agent:
-  scheduled_tasks_enabled: true   # master switch for all PowerManager-scheduled tasks
-  event_tasks_enabled: true       # master switch for event-driven tasks (title-summary)
-  summary_batch_interval: 5       # batches between title/summary triggers (0 = disable)
-  provider:                       # global default provider
-    type: anthropic               # anthropic | ollama | lmstudio
-    model: claude-sonnet-4-6      # optional model override
-    context_length: 8192          # optional, for local models
-  tasks:                          # per-task overrides (provider and schedule)
-    title-summary:
-      provider:
-        type: ollama
-        model: granite4:small-h
-    skill-survey:
-      schedule:
-        enabled: true
-        intervalSeconds: 600      # 10 minutes
-skills:
-  confidence_threshold: 0.7       # minimum score for auto-created candidates
-  usage_stale_days: 30            # flag unused skills after N days
-```
-
-## Monitoring
+You typically don't need to manage the daemon yourself — it spawns automatically on session start and shuts down after a grace period with no active sessions. But these commands are available:
 
 ```bash
-myco stats          # PID, port, active sessions, database stats
+myco stats          # Is it running? On what port? Active sessions?
 myco doctor         # Health check: vault, DB, providers, agents, daemon
 myco doctor --fix   # Auto-repair fixable issues
 myco logs           # Tail daemon logs
+myco restart        # Manual restart (rarely needed)
 ```
 
-## Database
+## After plugin updates
 
-All data lives in SQLite:
+When you update Myco:
 
-| Database | Contents |
-|----------|----------|
-| `myco.db` | Sessions, batches, activities, spores, entities, graph edges, agent runs/reports/turns, digest extracts, plans, artifacts, team, FTS indexes |
-| `vectors.db` | sqlite-vec vector embeddings (1024-dim for bge-m3) |
+1. The running daemon keeps going with the old code until it shuts down naturally
+2. The next session start spawns a new daemon from the updated package
+3. The new daemon picks up seamlessly — same database, same indexes, same config
 
-Supporting files:
+No manual restart needed. If you want to pick up changes immediately, run `myco restart`.
 
-| File | Purpose |
-|------|---------|
-| `myco.yaml` | Vault configuration |
-| `daemon.json` | Running daemon PID and port |
-| `secrets.env` | API keys for cloud providers (gitignored) |
-| `buffer/*.jsonl` | Per-session event buffers (ephemeral) |
-| `attachments/*.png` | Images extracted from session transcripts |
-| `logs/daemon.log` | Daemon structured logs (JSONL) |
-| `tasks/*.yaml` | User-created agent task definitions |
+## Configuration
 
-## Transcript Sourcing
+The most common settings, with defaults:
 
-Session conversation turns are built from the agent's native transcript file — not from Myco's event buffer. The buffer only captures what hooks send (user prompts, tool uses) and has no AI responses.
+```yaml
+version: 3
 
-The symbiont adapter registry tries each adapter in priority order:
+embedding:
+  provider: ollama              # ollama | openai-compatible | openrouter | openai
+  model: bge-m3
 
-| Agent | Transcript Location | Format |
-|-------|-------------------|--------|
-| Claude Code | `~/.claude/projects/<project>/<session>.jsonl` | JSONL (`type` field) |
-| Cursor (newer) | `~/.cursor/projects/<project>/agent-transcripts/<session>/<session>.jsonl` | JSONL (`role` field) |
-| Cursor (older) | `~/.cursor/projects/<project>/agent-transcripts/<session>.txt` | Plain text (`user:`/`assistant:` markers) |
-| Buffer fallback | `buffer/<session>.jsonl` | Myco's own event buffer (no AI responses) |
+daemon:
+  port: null                    # null = auto-assign
+  log_level: info               # debug | info | warn | error
 
-Images in transcripts are decoded and saved to `attachments/` as `{session-id}-t{turn}-{index}.{ext}`.
+capture:
+  transcript_paths: []          # additional transcript search paths
+
+agent:
+  scheduled_tasks_enabled: true
+  event_tasks_enabled: true
+  provider:
+    type: anthropic             # anthropic | ollama | lmstudio
+    model: claude-sonnet-4-6
+```
+
+See [Intelligence Pipeline](agent-harness.md) for the full `agent:` configuration reference, including per-task and per-phase provider overrides.

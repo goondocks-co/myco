@@ -1,611 +1,150 @@
-# Agent Harness
+# Intelligence Pipeline
 
-Myco's agent harness is the execution environment that runs every background task — from intelligence extraction to skill curation. It's a multi-phase reasoning pipeline with scoped tool servers, per-phase provider isolation, dependency-based wave execution, and structural enforcement of read-only phases. This document covers the harness architecture, the tasks that run on it, the tool surface, and how to configure scheduling and providers.
+Myco runs an intelligence pipeline in the background that reads your captured sessions, extracts observations into the knowledge vault, maintains the graph, and keeps digest extracts fresh. It's fully automatic — once providers are configured, you don't need to trigger it manually. This page covers what it does, what tasks are available, how to configure providers, and how to schedule or disable parts of it.
 
-## Architecture
+## What the pipeline produces
 
-The harness has three layers: **trigger**, **executor**, and **tools**.
+- **Spores** — discrete observations extracted from session activity (gotchas, decisions, discoveries, trade-offs, bug fixes, and higher-order wisdom syntheses)
+- **Entities and edges** — a knowledge graph linking spores to components, concepts, and people
+- **Session titles and summaries** — human-readable labels for every captured session, generated from the actual work done
+- **Digest extracts** — pre-computed project context at three depth tiers (1500 / 5000 / 10000 tokens) that get injected at session start
+- **Skill candidates** — procedural patterns worth turning into [skills](skills.md) (requires approval)
 
-```mermaid
-flowchart TD
-    subgraph Trigger["Trigger Layer"]
-        AutoRun["PowerManager<br/>agent-auto-run job"]
-        Manual["Dashboard<br/>manual trigger"]
-        StopHook["Stop Hook<br/>title-summary"]
-    end
+Every piece of this comes from the same source material: the prompts, tool calls, and assistant summaries captured by the symbiont hooks. Nothing is invented; everything traces back to a session.
 
-    subgraph Executor["Executor Layer"]
-        Load["Load Task Definition<br/>(YAML)"]
-        Orch["Orchestrator<br/>dynamic phase planning"]
-        Waves["Wave Computation<br/>Kahn's topological sort"]
-        Par["Parallel Execution<br/>Promise.allSettled()"]
-    end
+## Tasks
 
-    subgraph Tools["Tool Layer (MCP)"]
-        Read["Read Tools<br/>vault_state, vault_spores,<br/>vault_search_semantic, ..."]
-        Write["Write Tools<br/>vault_create_spore,<br/>vault_create_entity, ..."]
-        Report["vault_report"]
-    end
+Ten tasks cover the full lifecycle. Most users only interact with `full-intelligence` (the default scheduled task) — the others are available for manual trigger or specialized workflows.
 
-    AutoRun --> Load
-    Manual --> Load
-    StopHook --> Load
-    Load --> Orch
-    Orch --> Waves
-    Waves --> Par
-    Par --> Read
-    Par --> Write
-    Par --> Report
-```
+### Intelligence
 
-**Trigger layer** — The daemon's PowerManager runs the agent on a configurable interval when unprocessed batches exist. The dashboard provides manual triggers. The stop hook fires a lightweight `title-summary` task after each session turn.
+| Task | What it does |
+|------|-------------|
+| `full-intelligence` | The complete pipeline. Runs on unprocessed batches, extracts spores, maintains the graph, refreshes digests. Scheduled by default. |
+| `title-summary` | Generates or updates a session title and summary. Runs automatically after each session turn. |
+| `extract-only` | Spore extraction without the graph or digest work. Useful for catching up after a long gap. |
+| `review-session` | Deep end-to-end processing of a single session. Trigger from the session detail page. |
+| `graph-maintenance` | Entity creation, edge linking, and deduplication pass. |
+| `digest-only` | Regenerate digest extracts from the current vault state. |
+| `supersession-sweep` | Find and resolve duplicate or contradictory spores. |
 
-**Executor layer** — Loads a task definition (YAML), optionally consults the orchestrator to skip unnecessary phases, then computes execution waves from the phase dependency graph using Kahn's algorithm. Phases within a wave run in parallel.
+### Skill lifecycle
 
-**Tool layer** — Each phase gets a scoped MCP tool server with only the tools listed in its definition. The agent cannot call tools outside its assigned set.
+| Task | What it does |
+|------|-------------|
+| `skill-survey` | Discovers procedural skill candidates from vault knowledge. Runs periodically. |
+| `skill-generate` | Generates a validated SKILL.md file from one approved candidate. Runs when approved candidates exist. |
+| `skill-evolve` | Monitors active skills for knowledge drift and rewrites stale content. |
 
-## Wave Execution Model
+See the [Skills docs](skills.md) for the full skill lifecycle.
 
-Phases declare dependencies on other phases. The executor builds a DAG and sorts phases into **waves** — groups that can execute in parallel because their dependencies are satisfied.
+## Configuring providers
 
-```mermaid
-flowchart LR
-    subgraph W1["Wave 1"]
-        RS["read-state"]
-    end
+Every task can use a different LLM provider. Configuration is all in `myco.yaml` under the `agent:` key, with a precedence hierarchy from global defaults to per-phase overrides.
 
-    subgraph W2["Wave 2"]
-        EX["extract"]
-        SU["summarize"]
-    end
+### The simplest setup
 
-    subgraph W3["Wave 3"]
-        CO["consolidate"]
-        GR["graph"]
-    end
-
-    subgraph W4["Wave 4"]
-        DA["digest-assess"]
-    end
-
-    subgraph W5["Wave 5"]
-        D1["digest-10000"]
-        D5["digest-5000"]
-        D15["digest-1500"]
-    end
-
-    subgraph W6["Wave 6"]
-        RE["report"]
-    end
-
-    RS --> EX
-    RS --> SU
-    EX --> CO
-    EX --> GR
-    CO --> DA
-    DA --> D1
-    DA --> D5
-    DA --> D15
-    D1 --> RE
-    D5 --> RE
-    D15 --> RE
-    EX --> RE
-    SU --> RE
-    CO --> RE
-    GR --> RE
-    DA --> RE
-```
-
-Each phase runs as an isolated SDK `query()` call with:
-
-| Constraint | Mechanism |
-|-----------|-----------|
-| **Scoped tools** | Only tools declared in `phase.tools[]` are available |
-| **Turn budget** | `phase.maxTurns` caps the number of LLM turns |
-| **Provider isolation** | SDK `env` option passes credentials without mutating `process.env` |
-| **Prior context** | Previous phase summaries injected into the prompt (opt-out with `skipPriorContext: true`) |
-| **Deterministic session ID** | SHA256 of `runId + phaseName` — idempotent across retries |
-
-If a **required** phase fails, the pipeline stops. If an **optional** phase fails, the pipeline continues — remaining phases execute without that phase's output.
-
-## The Intelligence Pipeline
-
-The default `full-intelligence` task is the complete pipeline. Here's what each phase does.
-
-### Wave 1: Read State
-
-```
-Phase: read-state (required, 6 turns)
-Tools: vault_state, vault_unprocessed, vault_spores, vault_report
-```
-
-Reads the cursor position (`last_processed_batch_id`) and checks for unprocessed batches. If nothing is pending, the pipeline short-circuits with a skip report.
-
-### Wave 2: Extract + Summarize
-
-Two independent phases run in parallel.
-
-```
-Phase: extract (required, 35 turns)
-Tools: vault_unprocessed, vault_spores, vault_search_fts, vault_search_semantic,
-       vault_create_spore, vault_resolve_spore, vault_mark_processed,
-       vault_set_state, vault_report
-```
-
-The heaviest phase. Reads unprocessed batches, groups candidate observations by topic, searches for existing coverage, and creates or supersedes spores. The agent follows a strict protocol: **search before creating** to keep the vault sharp rather than bloated. After processing, it marks batches as processed and advances the cursor.
-
-```
-Phase: summarize (optional, 10 turns)
-Tools: vault_sessions, vault_unprocessed, vault_spores,
-       vault_update_session, vault_report
-```
-
-Generates or updates titles and summaries for sessions that received new batches. Titles describe what was accomplished (not what was asked), and summaries are detail-rich for semantic search embedding.
-
-### Wave 3: Consolidate + Graph
-
-Two independent phases run in parallel.
-
-```
-Phase: consolidate (optional, 22 turns)
-Tools: vault_spores, vault_search_semantic, vault_create_spore,
-       vault_resolve_spore, vault_report
-```
-
-Searches for clusters of related spores. When 3+ active spores cover the same topic, it synthesizes them into a **wisdom** spore — a higher-order observation that preserves all specific details from the sources. Source spores are resolved with action `consolidate`, removing them from search results while preserving them in the database with lineage metadata.
-
-For pairs of redundant spores, it keeps the better one and supersedes the weaker.
-
-```
-Phase: graph (optional, 25 turns)
-Tools: vault_spores, vault_sessions, vault_search_semantic, vault_entities,
-       vault_edges, vault_create_entity, vault_create_edge, vault_report
-```
-
-Builds the semantic layer of the knowledge graph. Creates entities for components, concepts, and people that appear across multiple spores, then links spores to entities via `REFERENCES` edges and entities to each other via `DEPENDS_ON` and `AFFECTS` edges. Always checks for existing entities and edges before creating to prevent duplicates.
-
-### Wave 4: Digest Assess
-
-```
-Phase: digest-assess (required, 8 turns)
-Tools: vault_spores, vault_sessions, vault_search_semantic,
-       vault_read_digest, vault_report
-```
-
-Evaluates what changed during extraction and consolidation, then produces detailed findings for the three parallel tier writers. This phase decides per-tier whether to UPDATE or SKIP based on the volume of new material and each tier's freshness. Its output is the primary input for the digest tiers — they cannot call search tools themselves.
-
-### Wave 5: Digest Tiers (3 parallel)
-
-Three independent phases run in parallel, each writing one digest tier.
-
-```
-Phase: digest-10000 (optional, 7 turns)  — Full institutional knowledge
-Phase: digest-5000  (optional, 5 turns)  — Deep onboarding
-Phase: digest-1500  (optional, 3 turns)  — Executive briefing
-Tools: vault_search_semantic, vault_read_digest, vault_write_digest, vault_report
-```
-
-Each tier reads its current content, integrates new material from the assess phase, and writes the updated digest. The tiers form a compression hierarchy — each is roughly 3x smaller than the one above, applying increasing selectivity:
-
-| Tier | Budget | Content |
-|------|--------|---------|
-| **10,000** | ~10,000 tokens | Complete archive — full thread history, design tensions, lessons learned |
-| **5,000** | ~5,000 tokens | Deep onboarding — trade-offs, patterns, architectural decisions |
-| **1,500** | ~1,500 tokens | Executive briefing — critical gotchas, blockers, and open issues only |
-
-### Wave 6: Report
-
-```
-Phase: report (required, 3 turns)
-Tools: vault_report
-```
-
-Produces a final summary: batches processed, spores created (by type), sessions updated, wisdom created, entities and edges created, digest tiers written. This phase receives prior phase summaries so it can accurately tally what each phase accomplished.
-
-## Built-in Tasks
-
-Ten tasks cover the full lifecycle, from lightweight title generation through the complete intelligence pipeline and the skill lifecycle engine.
-
-### Intelligence tasks
-
-| Task | Type | Turns | Timeout | Purpose |
-|------|------|-------|---------|---------|
-| **full-intelligence** | Phased (10 phases, 6 waves) | 130 | 30 min | Complete pipeline — extract, consolidate, graph, digest |
-| **title-summary** | Single query | 15 | 2 min | Generate/update session titles and summaries |
-| **extract-only** | Single query | 30 | 5 min | Extract spores + update summaries, no graph or digest |
-| **review-session** | Single query | 40 | 8 min | End-to-end processing of a single session |
-| **graph-maintenance** | Single query | 40 | 8 min | Entity creation, edge linking, deduplication |
-| **digest-only** | Single query | 28 | 30 min | Regenerate all digest tiers from current vault state |
-| **supersession-sweep** | Single query | 30 | 5 min | Find and resolve duplicate/contradictory spores |
-
-### Skill lifecycle tasks
-
-| Task | Type | Turns | Timeout | Purpose |
-|------|------|-------|---------|---------|
-| **skill-survey** | Phased (3 parallel explore + evaluate) | 65 | 10 min | Discover procedural skill candidates from vault knowledge |
-| **skill-generate** | Phased (draft → validate → finalize) | 30 | 15 min | Generate one approved candidate into a validated SKILL.md |
-| **skill-evolve** | Phased (assess + rewrite) | 80 | 20 min | Monitor active skills for drift, rewrite stale content, split oversized skills |
-
-Skill tasks are gated by pre-conditions so they never run wastefully — `skill-generate` only runs when at least one approved candidate exists, and `skill-evolve` only runs when at least one active Myco-managed skill exists. See the [Skills docs](skills.md) for the full lifecycle.
-
-**Phased tasks** use the wave executor with parallel execution, scoped tools, and dependency-based ordering. **Single query tasks** run as one SDK `query()` call with the full tool set.
-
-### When each task runs
-
-```mermaid
-flowchart TD
-    SessionStop["Session turn completes"] --> TS["title-summary<br/>(event-driven)"]
-    Scheduled["PowerManager<br/>(per-task schedule)"] --> FI["full-intelligence<br/>(default, on unprocessed batches)"]
-    Scheduled --> SS["skill-survey<br/>(idle, periodic)"]
-    Scheduled --> SG["skill-generate<br/>(has approved candidates)"]
-    Scheduled --> SE["skill-evolve<br/>(has active skills)"]
-    Dashboard["Dashboard manual trigger"] --> Any["Any task<br/>(user selects)"]
-    Targeted["Session context menu"] --> RS["review-session<br/>(specific session_id)"]
-```
-
-Each task declares its own `schedule` block in its YAML definition: `enabled`, `intervalSeconds`, allowed power states (`runIn`), and optional `preCondition`. Two global toggles in `myco.yaml` master-gate the entire system: `agent.scheduled_tasks_enabled` (periodic tasks) and `agent.event_tasks_enabled` (event-driven tasks like `title-summary`).
-
-## Tool System
-
-The agent operates through 23 `vault_*` tools exposed over a scoped MCP server, grouped by function. Each tool carries MCP annotations (including a `readOnly` flag) so the executor can enforce which phases are allowed to mutate state.
-
-### Read tools
-
-| Tool | Purpose |
-|------|---------|
-| `vault_state` | Key-value store for cursor position and preferences |
-| `vault_unprocessed` | Prompt batches not yet processed, with cursor pagination |
-| `vault_spores` | List spores with filters: type, status, agent, session |
-| `vault_sessions` | List sessions with optional status filter |
-| `vault_search_fts` | Full-text keyword search (FTS5) across batches and activities |
-| `vault_search_semantic` | Vector similarity search across spores, sessions, plans, and artifacts |
-| `vault_entities` | List knowledge graph entities with type/name filters |
-| `vault_edges` | List graph edges with source/target/type filters |
-| `vault_read_digest` | Read digest metadata or a specific tier's content |
-| `vault_skill_candidates` | List skill candidates with status filter (pending, approved, dismissed, generated) |
-| `vault_skill_records` | List or read active Myco-managed skills and their full lineage |
-
-### Write tools
-
-| Tool | Purpose |
-|------|---------|
-| `vault_create_spore` | Create a new observation with type, content, importance, tags |
-| `vault_resolve_spore` | Resolve lifecycle: supersede, archive, consolidate |
-| `vault_create_entity` | Create/upsert a knowledge graph node (component, concept, person) |
-| `vault_create_edge` | Create a directed relationship between nodes |
-| `vault_update_session` | Set a session's title and/or summary |
-| `vault_mark_processed` | Mark a batch as processed (removes from `vault_unprocessed`) |
-| `vault_set_state` | Store a key-value pair (cursor, preferences) |
-| `vault_write_digest` | Write a digest extract at a given token tier |
-| `vault_stage_skill` | Write a draft SKILL.md to `.myco/staging/skills/` (not yet visible to agents) |
-| `vault_finalize_skill` | Promote a validated staged skill to `.agents/skills/` and record lineage |
-| `vault_write_skill` | Direct write path for skill evolve and retire actions, with dedup + rollback |
-
-### Observability
-
-| Tool | Purpose |
-|------|---------|
-| `vault_report` | Record a structured report for the current run |
-
-### Scoped tool servers
-
-For phased tasks, the executor creates a **scoped MCP server** per phase that filters the full tool set down to only the tools listed in `phase.tools[]`. This prevents a phase from accidentally (or intentionally) calling tools outside its responsibility — extract phases can't write digests, digest phases can't create spores.
-
-### Read-only phase enforcement
-
-Phases can declare `readOnly: true` in their YAML definition. When set, the executor filters out any tools that would mutate vault state, even if they're listed in `phase.tools[]`. This provides a structural guarantee — not just a prompt suggestion — that exploration phases cannot accidentally write data. All three exploration phases of `skill-survey` use `readOnly: true`, as does the assess phase of `skill-evolve`.
-
-## Spore Lifecycle
-
-Spores are the fundamental unit of knowledge in Myco. Each spore is a discrete observation extracted from session data.
-
-### Observation types
-
-| Type | What it captures |
-|------|-----------------|
-| **gotcha** | Surprising behavior or hidden pitfall that would save time if known in advance |
-| **decision** | Architectural or implementation choice with rationale |
-| **discovery** | New understanding about the codebase, a tool, or an approach |
-| **trade_off** | Deliberate compromise with pros and cons weighed |
-| **bug_fix** | Bug found and fixed, including root cause |
-| **wisdom** | Higher-order synthesis from 3+ related spores (created during consolidation) |
-
-### Status transitions
-
-```mermaid
-stateDiagram-v2
-    [*] --> active: vault_create_spore
-    active --> superseded: vault_resolve_spore<br/>(action: supersede)
-    active --> archived: vault_resolve_spore<br/>(action: archive)
-    active --> consolidated: vault_resolve_spore<br/>(action: consolidate)
-
-    note right of active: Appears in search results<br/>and context injection
-    note right of superseded: Preserved with lineage<br/>excluded from search
-    note right of consolidated: Source for wisdom spore<br/>excluded from search
-    note right of archived: Historical record<br/>excluded from search
-```
-
-Only **active** spores appear in search results and context injection. Resolved spores remain in the database with full provenance but are excluded from agent context.
-
-### Consolidation flow
-
-```mermaid
-flowchart LR
-    S1["Spore A<br/>(active)"] --> W["Wisdom Spore<br/>(active)"]
-    S2["Spore B<br/>(active)"] --> W
-    S3["Spore C<br/>(active)"] --> W
-
-    W -->|DERIVED_FROM| S1
-    W -->|DERIVED_FROM| S2
-    W -->|DERIVED_FROM| S3
-
-    S1 -.->|consolidated| S1x["Spore A<br/>(consolidated)"]
-    S2 -.->|consolidated| S2x["Spore B<br/>(consolidated)"]
-    S3 -.->|consolidated| S3x["Spore C<br/>(consolidated)"]
-```
-
-When 3+ semantically similar spores are found, the agent:
-1. Creates a wisdom spore with `properties.consolidated_from` listing source IDs
-2. `DERIVED_FROM` edges are auto-created from wisdom to each source
-3. Each source is resolved with action `consolidate`
-4. The wisdom spore preserves **all** specific details from sources — file paths, error messages, concrete values
-
-## Knowledge Graph
-
-The graph uses a two-layer model stored in the `graph_edges` table.
-
-```mermaid
-flowchart TD
-    subgraph Lineage["Lineage Layer (automatic)"]
-        Session["Session"] -->|HAS_BATCH| Batch["Batch"]
-        Spore["Spore"] -->|FROM_SESSION| Session
-        Spore -->|EXTRACTED_FROM| Batch
-        Wisdom["Wisdom"] -->|DERIVED_FROM| Source["Source Spore"]
-    end
-
-    subgraph Semantic["Semantic Layer (agent-created)"]
-        SporeS["Spore"] -->|REFERENCES| Entity["Entity"]
-        EntityA["Entity"] -->|DEPENDS_ON| EntityB["Entity"]
-        SporeT["Spore"] -->|AFFECTS| EntityC["Entity"]
-        SporeU["Spore"] -->|RELATES_TO| SporeV["Spore"]
-        SporeW["Spore"] -->|SUPERSEDED_BY| SporeX["Spore"]
-    end
-```
-
-**Lineage layer** — Created automatically by the daemon on insert. Traces provenance: which session, which batch, which source spores. Never created by the agent.
-
-**Semantic layer** — Created by the agent during the graph phase. Captures meaning: what references what, what depends on what, what affects what.
-
-### Entity types
-
-| Type | What it represents | Example |
-|------|-------------------|---------|
-| **component** | Module, class, service, or significant function | `DaemonClient`, `SQLite`, `EventBuffer` |
-| **concept** | Architectural pattern or domain concept spanning 2+ sessions | `cursor-based pagination`, `idempotent writes` |
-| **person** | Contributor or team member | `Chris` |
-
-Entities are created only when referenced by 3+ spores from 2+ different sessions. They are hubs in the graph, not labels for every concept mentioned.
-
-### Edge types
-
-| Edge | Direction | Meaning |
-|------|-----------|---------|
-| `REFERENCES` | spore → entity | Spore discusses this entity |
-| `DEPENDS_ON` | entity → entity | Architectural dependency |
-| `AFFECTS` | spore → entity | Observation impacts this component |
-| `RELATES_TO` | any → any | General semantic relationship |
-| `SUPERSEDED_BY` | spore → spore | Newer observation replaces older |
-
-## Orchestrator
-
-The orchestrator is an optional pre-planning step that runs before wave execution. When enabled, it analyzes the vault state and decides which phases to skip and what context to inject.
-
-```mermaid
-sequenceDiagram
-    participant Executor
-    participant Orchestrator as Orchestrator (LLM)
-    participant Vault
-
-    Executor->>Vault: Run context queries<br/>(unprocessed count, cursor, recent spores)
-    Vault-->>Executor: Context results
-    Executor->>Orchestrator: Vault state + phase definitions
-    Orchestrator-->>Executor: Phase directives (JSON)
-    Note over Executor: Apply directives:<br/>- Skip unnecessary phases<br/>- Override turn budgets<br/>- Inject context notes
-    Executor->>Executor: Compute waves from<br/>remaining phases
-```
-
-The orchestrator produces a JSON plan with per-phase directives:
-- **skip** — Remove this phase from execution (only optional phases)
-- **maxTurns** — Override the phase's turn budget
-- **contextNotes** — Inject guidance into the phase prompt under "## Orchestrator Guidance"
-
-This prevents wasted computation — if the vault has no consolidation candidates, the orchestrator can skip the consolidate and digest phases entirely.
-
-## Provider Configuration
-
-Every task and phase can use a different LLM provider. The resolution follows a strict precedence hierarchy:
-
-```mermaid
-flowchart TD
-    A["Agent YAML default<br/>(agent.yaml → model)"] --> B
-    B["Task YAML override<br/>(task.yaml → model)"] --> C
-    C["myco.yaml global<br/>(agent.provider)"] --> D
-    D["myco.yaml per-task<br/>(agent.tasks.&lt;name&gt;.provider)"] --> E
-    E["myco.yaml per-phase<br/>(agent.tasks.&lt;name&gt;.phases.&lt;phase&gt;.provider)"]
-
-    style E fill:#e8f5e9
-    style A fill:#fff3e0
-```
-
-Higher in the diagram = lower priority. The per-phase config in `myco.yaml` wins over everything.
-
-### Example configuration
+One provider for everything:
 
 ```yaml
 agent:
-  scheduled_tasks_enabled: true      # Master toggle for scheduled tasks
+  provider:
+    type: anthropic
+    model: claude-sonnet-4-6
+```
+
+That's it. Every task will use Claude Sonnet via the Anthropic API (or your Claude Code OAuth if you have it).
+
+### Per-task overrides
+
+A common pattern is using a fast local model for lightweight tasks (title generation) and a capable cloud model for the heavy work:
+
+```yaml
+agent:
   provider:                          # Global default
     type: anthropic
     model: claude-sonnet-4-6
   tasks:
     title-summary:
-      provider:                      # Fast local model for titles
+      provider:                      # Local model for titles
         type: ollama
         model: granite4:small-h
         context_length: 32768
-    full-intelligence:
-      schedule:
-        enabled: true
-        intervalSeconds: 300         # Check for unprocessed batches every 5 min
-      phases:
-        extract:
-          provider:                  # Anthropic for extraction quality
-            type: anthropic
-            model: claude-sonnet-4-6
-        consolidate:
-          provider:                  # Local for cost savings
-            type: ollama
-            model: llama3.2
 ```
 
 ### Supported providers
 
-| Provider | Type | Notes |
-|----------|------|-------|
-| **Anthropic** | `anthropic` | Claude models via Anthropic API or Claude Code OAuth |
-| **Ollama** | `ollama` | Local models, auto-creates context-aware variants |
-| **LM Studio** | `lmstudio` | Local models via OpenAI-compatible API |
+| Provider | Type string | Notes |
+|----------|-------------|-------|
+| Anthropic | `anthropic` | Uses your Claude Code OAuth or `ANTHROPIC_API_KEY` |
+| Ollama | `ollama` | Local models; specify `base_url` if not on the default port |
+| LM Studio | `lmstudio` | Local models via OpenAI-compatible API |
 
-For Ollama, the executor automatically creates Modelfile variants with the correct `num_ctx` parameter baked in, since per-request context window overrides are unreliable when a model is already loaded.
+For local providers, set a `context_length` that matches the model's capabilities — Myco uses it to configure the runtime correctly.
 
-## Digest System
+### Per-phase overrides (advanced)
 
-The digest synthesizes accumulated knowledge into tiered extracts — pre-computed context served instantly at session start.
-
-```mermaid
-flowchart TD
-    subgraph Pipeline["Digest Pipeline"]
-        Assess["digest-assess<br/>Evaluate what changed"] --> T10["digest-10000<br/>Full archive"]
-        Assess --> T5["digest-5000<br/>Deep onboarding"]
-        Assess --> T15["digest-1500<br/>Executive briefing"]
-    end
-
-    subgraph Serve["Context Injection"]
-        T10 --> SS["Session Start<br/>→ agent context window"]
-        T5 --> SS
-        T15 --> SS
-    end
-```
-
-The three tiers serve different use cases:
-
-| Tier | Compression | Use case |
-|------|-------------|----------|
-| **10,000** | ~3x from raw | Long-context sessions that need full institutional knowledge |
-| **5,000** | ~6x from raw | Standard sessions — trade-offs, patterns, decisions |
-| **1,500** | ~20x from raw | Quick orientation — what is this, what's active, what to avoid |
-
-The assess phase acts as a gatekeeper — if changes are minor (< 3 new spores, 0 entity changes), it skips all tier updates. Each tier integrates new material into its existing content rather than rewriting from scratch.
-
-## Scheduling & Auto-Run Behavior
-
-Scheduling is **per-task**. Each task YAML declares its own schedule block:
-
-```yaml
-schedule:
-  enabled: true
-  intervalSeconds: 600
-  runIn:
-    - idle
-  preCondition: has-approved-candidates   # Optional gate
-```
-
-The daemon's PowerManager ticks periodically and, for each scheduled task, checks: is scheduling enabled, has the interval elapsed, is the current power state in `runIn`, and does the pre-condition pass? Only when all four answer yes does the task run.
-
-```mermaid
-flowchart TD
-    Tick["PowerManager tick"] --> Global{"agent.scheduled_tasks_enabled?"}
-    Global -->|No| Skip["Skip all scheduled tasks"]
-    Global -->|Yes| PerTask["For each task:"]
-    PerTask --> Check1{"task.schedule<br/>enabled?"}
-    Check1 -->|No| Skip
-    Check1 -->|Yes| Check2{"Interval<br/>elapsed?"}
-    Check2 -->|No| Skip
-    Check2 -->|Yes| Check3{"Power state<br/>in runIn?"}
-    Check3 -->|No| Skip
-    Check3 -->|Yes| Check4{"PreCondition<br/>passes?"}
-    Check4 -->|No| Skip
-    Check4 -->|Yes| Check5{"Task already<br/>running?"}
-    Check5 -->|Yes| Skip
-    Check5 -->|No| Run["Run task"]
-```
-
-Most tasks only run in `active` and `idle` power states — never during `sleep` or `deep_sleep`. This prevents background work from running when the developer has stepped away.
-
-### Global agent toggles
-
-Two master switches in `myco.yaml` gate the whole system regardless of per-task schedules:
-
-| Toggle | Controls |
-|--------|----------|
-| `agent.scheduled_tasks_enabled` | All PowerManager-scheduled tasks (default: `true`) |
-| `agent.event_tasks_enabled` | Event-driven tasks like `title-summary` (default: `true`) |
-
-Flip either to `false` to silence the agent without editing each task definition.
-
-## Configuration Reference
-
-All agent configuration lives under the `agent:` key in `myco.yaml`:
+For phased tasks like `full-intelligence`, you can override the provider for individual phases. Useful for mixing cloud quality and local cost:
 
 ```yaml
 agent:
-  # Global toggles (master switches)
-  scheduled_tasks_enabled: true      # Enable scheduled tasks (overrides all per-task schedules)
-  event_tasks_enabled: true          # Enable event-driven tasks (title-summary)
-  summary_batch_interval: 5          # Batches between title-summary triggers (0 = disable)
-
-  # Default provider for all tasks
-  provider:
-    type: anthropic                  # anthropic | ollama | lmstudio
-    model: claude-sonnet-4-6         # Model name
-    base_url: http://...             # For local providers
-    context_length: 8192             # For local models
-
-  # Per-task overrides (all fields optional)
   tasks:
-    <task-name>:
-      provider: { ... }             # Override provider for this task
-      maxTurns: N                   # Override turn budget
-      timeoutSeconds: N             # Override timeout
-      schedule:
-        enabled: true               # Enable this task's schedule
-        intervalSeconds: 600        # Minimum seconds between runs
+    full-intelligence:
       phases:
-        <phase-name>:
-          provider: { ... }         # Override provider for this phase
-          maxTurns: N               # Override turn budget for this phase
+        extract:
+          provider:
+            type: anthropic           # Quality for extraction
+            model: claude-sonnet-4-6
+        consolidate:
+          provider:
+            type: ollama              # Local for consolidation
+            model: llama3.2
 ```
 
-Scheduling defaults ship baked into each task YAML under `src/agent/definitions/tasks/`. Overrides in `myco.yaml` always win, letting users enable, disable, or retime any task without touching code.
+## Scheduling
 
-### Task definitions
+Each task runs on its own schedule. The defaults ship with the built-in task definitions; you override them in `myco.yaml`.
 
-Built-in tasks are defined in `src/agent/definitions/tasks/*.yaml`. Custom tasks can be placed in `.myco/tasks/*.yaml` and are loaded at daemon startup alongside built-in definitions.
+```yaml
+agent:
+  scheduled_tasks_enabled: true      # Master switch for all scheduled tasks
+  event_tasks_enabled: true          # Master switch for event-driven tasks (title-summary)
+  tasks:
+    full-intelligence:
+      schedule:
+        enabled: true
+        intervalSeconds: 300         # Check for unprocessed batches every 5 min
+    skill-survey:
+      schedule:
+        enabled: true
+        intervalSeconds: 600         # Every 10 min when candidates might exist
+```
 
-Each task YAML supports:
+The two master switches (`scheduled_tasks_enabled` and `event_tasks_enabled`) silence the agent without editing per-task config — flip them off when you want the daemon to only capture, without processing.
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `name` | Yes | Unique identifier |
-| `displayName` | Yes | Human-readable name |
-| `description` | Yes | What the task does |
-| `agent` | Yes | Agent definition to use |
-| `prompt` | Yes | System instructions for the task |
-| `isDefault` | No | Whether this is the default auto-run task |
-| `model` | No | Default model override |
-| `maxTurns` | No | Maximum LLM turns |
-| `timeoutSeconds` | No | Execution timeout |
-| `phases` | No | Phase definitions for phased execution |
-| `orchestrator` | No | Orchestrator configuration |
-| `contextQueries` | No | Pre-execution vault queries |
-| `toolOverrides` | No | Tool subset for single-query tasks |
+Tasks only run when the daemon is in an active or idle power state. Background work never fires when the developer has stepped away.
+
+## Triggering tasks manually
+
+From the dashboard's **Operations** page you can kick off any task on demand — useful for catching up after a gap, re-running after a provider change, or testing a new task configuration.
+
+From the CLI:
+
+```bash
+myco agent run full-intelligence      # Run the default pipeline now
+myco agent run skill-survey            # Survey for new skill candidates
+```
+
+## Custom tasks
+
+Drop a YAML task definition into `.myco/tasks/*.yaml` and it'll be loaded at daemon startup alongside the built-ins. Custom tasks have access to the same tool set and the same scheduling options as built-ins. The built-in task definitions are in `src/agent/definitions/tasks/` if you want reference examples.
+
+## Monitoring and troubleshooting
+
+| Command | What it shows |
+|---------|--------------|
+| `myco stats` | Daemon status, active sessions, database stats |
+| `myco doctor` | Health check — vault, DB, providers, agents, daemon |
+| `myco logs` | Tail daemon logs |
+
+The dashboard's **Logs** page gives you real-time filtered output if you'd rather read it in the UI. Agent run details (which phases ran, what they produced) live on the **Operations** page.

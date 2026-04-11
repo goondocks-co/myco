@@ -8,6 +8,10 @@
 
 import { initD1Schema } from './schema';
 import { validateAuth } from './auth';
+import { createMcpHandler } from 'agents/mcp';
+import { createMcpServerInstance } from './mcp/server';
+import { authenticateMcpRequest, ensureMcpToken, rotateMcpToken, getMcpTokenHash, MCP_TOKEN_KEY } from './mcp/auth';
+import { embedText, hydrateVectorMatches } from './search-helpers';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -19,6 +23,7 @@ export interface Env {
   AI: Ai;
   MYCO_TEAM_API_KEY: string;
   SYNC_PROTOCOL_VERSION: string;
+  MYCO_SECRETS: KVNamespace;
 }
 
 /** Tables that support embedding in Vectorize. */
@@ -112,13 +117,6 @@ function vectorId(table: string, id: string, machineId: string): string {
   return `${table}:${id}:${machineId}`;
 }
 
-/**
- * Embed text via Workers AI (bge-m3) and return the vector.
- */
-async function embedText(ai: Ai, text: string): Promise<number[]> {
-  const result = await ai.run('@cf/baai/bge-m3', { text: [text] });
-  return result.data[0];
-}
 
 /**
  * Build column names and placeholders for an INSERT OR REPLACE from a data object.
@@ -150,10 +148,15 @@ function buildInsertParts(
 // ---------------------------------------------------------------------------
 
 async function handleHealth(env: Env): Promise<Response> {
-  const result = await env.MYCO_TEAM_DB.prepare('SELECT COUNT(*) as count FROM nodes').first<{
-    count: number;
-  }>();
-  return jsonResponse({ status: 'ok', nodes: result?.count ?? 0 });
+  const [countResult, storedToken] = await Promise.all([
+    env.MYCO_TEAM_DB.prepare('SELECT COUNT(*) as count FROM nodes').first<{ count: number }>(),
+    env.MYCO_SECRETS.get(MCP_TOKEN_KEY),
+  ]);
+
+  const count = countResult?.count ?? 0;
+  const mcpTokenHash = storedToken ? getMcpTokenHash(storedToken) : null;
+
+  return jsonResponse({ status: 'ok', nodes: count, mcp_token_hash: mcpTokenHash });
 }
 
 async function handleConnect(request: Request, env: Env): Promise<Response> {
@@ -191,10 +194,15 @@ async function handleConnect(request: Request, env: Env): Promise<Response> {
     config[row.key] = row.value;
   }
 
+  // MCP token is stored in KV (encrypted at rest), not in team_config
+  const mcpToken = await ensureMcpToken(env.MYCO_SECRETS);
+
   return jsonResponse({
     status: 'connected',
     sync_protocol_version: parseInt(env.SYNC_PROTOCOL_VERSION, 10),
     config,
+    mcp_token: mcpToken,
+    mcp_endpoint: '/mcp',
   });
 }
 
@@ -333,61 +341,16 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
 
   const topK = Math.min(parseInt(url.searchParams.get('top_k') ?? String(DEFAULT_TOP_K), 10), MAX_TOP_K);
 
-  // Embed query
   const queryVector = await embedText(env.AI, query);
+  const matches = await env.MYCO_TEAM_VECTORS.query(queryVector, { topK, returnMetadata: 'all' });
 
-  // Search Vectorize
-  const matches = await env.MYCO_TEAM_VECTORS.query(queryVector, {
-    topK,
-    returnMetadata: 'all',
-  });
+  const validMatches = matches.matches
+    .filter((m) => m.metadata)
+    .map((m) => ({ metadata: m.metadata as { table: string; id: string; machine_id: string }, score: m.score }));
 
-  // Group matches by table for batch hydration
-  const byTable = new Map<string, { id: string; machine_id: string; score: number }[]>();
-  for (const match of matches.matches) {
-    const meta = match.metadata as { table: string; id: string; machine_id: string } | undefined;
-    if (!meta) continue;
-    let group = byTable.get(meta.table);
-    if (!group) {
-      group = [];
-      byTable.set(meta.table, group);
-    }
-    group.push({ id: meta.id, machine_id: meta.machine_id, score: match.score });
-  }
+  const results = await hydrateVectorMatches(env.MYCO_TEAM_DB, validMatches);
 
-  // Batch-query each table and build results
-  const results: SearchResult[] = [];
-  for (const [table, items] of byTable) {
-    const placeholders = items.map(() => '(?, ?)').join(', ');
-    const binds = items.flatMap((i) => [i.id, i.machine_id]);
-    const { results: rows } = await env.MYCO_TEAM_DB.prepare(
-      `SELECT * FROM ${table} WHERE (id, machine_id) IN (VALUES ${placeholders})`,
-    ).bind(...binds).all();
-
-    const rowMap = new Map<string, Record<string, unknown>>();
-    for (const row of rows) {
-      const r = row as Record<string, unknown>;
-      rowMap.set(`${r.id}:${r.machine_id}`, r);
-    }
-
-    for (const item of items) {
-      const row = rowMap.get(`${item.id}:${item.machine_id}`);
-      if (row) {
-        results.push({
-          table,
-          id: item.id,
-          machine_id: item.machine_id,
-          score: item.score,
-          data: row,
-        });
-      }
-    }
-  }
-
-  // Sort by score to preserve ranking after batch hydration
-  results.sort((a, b) => b.score - a.score);
-
-  return jsonResponse({ results });
+  return jsonResponse({ results: results.map((r) => ({ table: r.type, ...r })) });
 }
 
 async function handleGetConfig(env: Env): Promise<Response> {
@@ -429,7 +392,7 @@ async function handlePutConfig(request: Request, env: Env): Promise<Response> {
 // ---------------------------------------------------------------------------
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
@@ -446,6 +409,30 @@ export default {
         const message = err instanceof Error ? err.message : String(err);
         return errorResponse(`Health check failed: ${message}`, 500);
       }
+    }
+
+    // MCP routes — separate auth from sync routes
+    if (path.startsWith('/mcp')) {
+      if (!schemaInitialized) {
+        await initD1Schema(env.MYCO_TEAM_DB);
+        schemaInitialized = true;
+      }
+
+      // Token rotation — authenticated with team API key
+      if (path === '/mcp/rotate' && method === 'POST') {
+        const rotateAuthError = validateAuth(request, env);
+        if (rotateAuthError) return rotateAuthError;
+        const newToken = await rotateMcpToken(env.MYCO_SECRETS);
+        return jsonResponse({ token: newToken });
+      }
+
+      // MCP protocol — authenticated with MCP access token
+      const mcpAuthError = await authenticateMcpRequest(request, env.MYCO_SECRETS);
+      if (mcpAuthError) return mcpAuthError;
+
+      const server = createMcpServerInstance(env);
+      const handler = createMcpHandler(server);
+      return handler(request, env, ctx);
     }
 
     // All other routes require auth
