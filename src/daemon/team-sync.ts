@@ -184,10 +184,13 @@ export class TeamSyncClient {
 
       const data = (await res.json()) as TeamHealthResponse;
 
-      // If worker indicates token has changed, re-connect to fetch new token.
-      // Guard: only fire when we've previously received a token (mcpTokenHash !== null),
-      // otherwise every first health check would trigger a spurious reconnect.
-      if (this.mcpTokenHash && data.mcp_token_hash && data.mcp_token_hash !== this.mcpTokenHash) {
+      // If the worker reports a different token hash than we have cached,
+      // reconnect to fetch the token. This handles three cases:
+      //   1. Initial hydration — worker has a token but we haven't fetched it yet
+      //      (e.g. daemon started before worker upgrade)
+      //   2. Token rotation — worker has a new token
+      //   3. Worker switched — hash differs from any previously known value
+      if (data.mcp_token_hash && data.mcp_token_hash !== this.mcpTokenHash) {
         try {
           await this.connect({ machine_id: this.machineId });
         } catch {
