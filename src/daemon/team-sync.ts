@@ -45,6 +45,7 @@ export interface TeamHealthResponse {
   status: string;
   node_count: number;
   sync_protocol_version: number;
+  mcp_token_hash?: string;
 }
 
 export interface TeamConnectInfo {
@@ -57,6 +58,8 @@ export interface TeamConnectInfo {
 export interface TeamConfigResponse {
   config: Record<string, unknown>;
   sync_protocol_version: number;
+  mcp_token?: string;
+  mcp_endpoint?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +72,8 @@ export class TeamSyncClient {
   private readonly machineId: string;
   private readonly syncProtocolVersion: number;
   private readonly fetchFn: typeof globalThis.fetch;
+  private mcpToken: string | null = null;
+  private mcpTokenHash: string | null = null;
 
   constructor(options: TeamSyncClientOptions) {
     this.workerUrl = options.workerUrl.replace(/\/+$/, '');
@@ -76,6 +81,15 @@ export class TeamSyncClient {
     this.machineId = options.machineId;
     this.syncProtocolVersion = options.syncProtocolVersion;
     this.fetchFn = options.fetch ?? globalThis.fetch;
+  }
+
+  // Must match getMcpTokenHash() in src/worker/src/mcp/auth.ts
+  private static hashToken(token: string): string {
+    let hash = 0;
+    for (let i = 0; i < token.length; i++) {
+      hash = ((hash << 5) - hash + token.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hash).toString(16).padStart(8, '0').slice(0, 8);
   }
 
   /**
@@ -87,7 +101,12 @@ export class TeamSyncClient {
       machine_id: this.machineId,
       sync_protocol_version: this.syncProtocolVersion,
     });
-    return res as TeamConfigResponse;
+    const response = res as TeamConfigResponse;
+    if (response.mcp_token) {
+      this.mcpToken = response.mcp_token;
+      this.mcpTokenHash = TeamSyncClient.hashToken(response.mcp_token);
+    }
+    return response;
   }
 
   /**
@@ -163,7 +182,20 @@ export class TeamSyncClient {
         throw new Error(`Health check failed: ${res.status} ${res.statusText}`);
       }
 
-      return (await res.json()) as TeamHealthResponse;
+      const data = (await res.json()) as TeamHealthResponse;
+
+      // If worker indicates token has changed, re-connect to fetch new token.
+      // Guard: only fire when we've previously received a token (mcpTokenHash !== null),
+      // otherwise every first health check would trigger a spurious reconnect.
+      if (this.mcpTokenHash && data.mcp_token_hash && data.mcp_token_hash !== this.mcpTokenHash) {
+        try {
+          await this.connect({ machine_id: this.machineId });
+        } catch {
+          // Non-fatal: token will be picked up on next connect
+        }
+      }
+
+      return data;
     } finally {
       clearTimeout(timer);
     }
@@ -175,6 +207,26 @@ export class TeamSyncClient {
   async getConfig(): Promise<TeamConfigResponse> {
     const res = await this.request('GET', '/config');
     return res as TeamConfigResponse;
+  }
+
+  // ---------------------------------------------------------------------------
+  // MCP token accessors
+  // ---------------------------------------------------------------------------
+
+  getMcpToken(): string | null {
+    return this.mcpToken;
+  }
+
+  getMcpEndpoint(): string | null {
+    if (!this.mcpToken) return null;
+    return `${this.workerUrl}/mcp`;
+  }
+
+  async rotateMcpToken(): Promise<string> {
+    const result = await this.request('POST', '/mcp/rotate') as { token: string };
+    this.mcpToken = result.token;
+    this.mcpTokenHash = TeamSyncClient.hashToken(result.token);
+    return result.token;
   }
 
   // ---------------------------------------------------------------------------

@@ -16,6 +16,11 @@ database_id = "<YOUR_D1_DATABASE_ID>"
 binding = "MYCO_TEAM_VECTORS"
 index_name = "myco-team-vectors"
 
+# KV namespace for runtime secrets (MCP tokens, etc.)
+[[kv_namespaces]]
+binding = "MYCO_SECRETS"
+id = "<YOUR_KV_NAMESPACE_ID>"
+
 # Workers AI binding
 [ai]
 binding = "AI"

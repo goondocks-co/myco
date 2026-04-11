@@ -11,6 +11,7 @@ import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
 import { StatCard } from '../components/ui/stat-card';
+import { ConfirmDialog } from '../components/ui/confirm-dialog';
 
 /* ---------- Helpers ---------- */
 
@@ -164,6 +165,9 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
   const [upgradeMessage, setUpgradeMessage] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [retryMessage, setRetryMessage] = useState<string | null>(null);
+  const [showMcpSnippet, setShowMcpSnippet] = useState(false);
+  const [showRotateConfirm, setShowRotateConfirm] = useState(false);
+  const [rotating, setRotating] = useState(false);
 
   const handleDisconnect = async () => {
     setDisconnecting(true);
@@ -314,6 +318,60 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
         </div>
       </Surface>
 
+      {/* Cloud MCP Endpoint */}
+      {status.mcp_token && status.mcp_endpoint && (
+        <Surface level="low" ghostBorder className="p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <SectionHeader>Cloud MCP Endpoint</SectionHeader>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowMcpSnippet(!showMcpSnippet)}
+                className="text-xs text-on-surface-variant hover:text-on-surface transition-colors"
+              >
+                {showMcpSnippet ? 'Hide snippet' : 'Config snippet'}
+              </button>
+              <button
+                onClick={() => setShowRotateConfirm(true)}
+                className="text-xs text-on-surface-variant hover:text-terracotta-text transition-colors"
+              >
+                Rotate token
+              </button>
+            </div>
+          </div>
+          <p className="text-xs text-on-surface-variant">
+            Configure cloud agents with this endpoint to access project intelligence.
+          </p>
+          <div className="space-y-3">
+            <CopyableField label="MCP URL" value={status.mcp_endpoint} />
+            <RedactedField label="MCP Access Token" value={status.mcp_token} />
+          </div>
+
+          {showMcpSnippet && (() => {
+            const snippet = JSON.stringify({
+              mcp_servers: [{
+                type: 'url',
+                url: status.mcp_endpoint,
+                name: 'myco',
+                authorization_token: status.mcp_token,
+              }],
+            }, null, 2);
+            return (
+              <div className="relative">
+                <pre className="text-xs bg-surface-container p-3 rounded-lg overflow-x-auto text-on-surface-variant">
+                  {snippet}
+                </pre>
+                <button
+                  onClick={() => navigator.clipboard.writeText(snippet)}
+                  className="absolute top-2 right-2 p-1 rounded hover:bg-surface-container-high transition-colors"
+                >
+                  <Copy className="h-3.5 w-3.5 text-on-surface-variant" />
+                </button>
+              </div>
+            );
+          })()}
+        </Surface>
+      )}
+
       {/* Connection details */}
       <Surface level="low" ghostBorder className="p-5 space-y-4">
         <SectionHeader>This Node</SectionHeader>
@@ -388,6 +446,28 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
           {disconnecting ? 'Disconnecting...' : 'Disconnect'}
         </Button>
       </div>
+
+      <ConfirmDialog
+        open={showRotateConfirm}
+        onOpenChange={setShowRotateConfirm}
+        title="Rotate MCP Access Token"
+        description="This will invalidate the current MCP token. Any cloud agents using it will lose access until reconfigured with the new token."
+        confirmLabel="Rotate Token"
+        variant="destructive"
+        isPending={rotating}
+        onConfirm={async () => {
+          setRotating(true);
+          try {
+            await postJson('/team/rotate-mcp-token');
+            queryClient.invalidateQueries({ queryKey: ['team-status'] });
+            setShowRotateConfirm(false);
+          } catch {
+            // Error visible via status refetch
+          } finally {
+            setRotating(false);
+          }
+        }}
+      />
     </div>
   );
 }

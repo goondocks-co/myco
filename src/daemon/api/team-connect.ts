@@ -159,6 +159,8 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
           : false,
         schema_version: SCHEMA_VERSION,
         sync_protocol_version: SYNC_PROTOCOL_VERSION,
+        mcp_token: client?.getMcpToken() ?? null,
+        mcp_endpoint: client?.getMcpEndpoint() ?? null,
       },
     };
   }
@@ -198,5 +200,25 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     return { body: result };
   }
 
-  return { handleConnect, handleDisconnect, handleStatus, handleBackfill, handleRetryFailed, handleUpgradeWorker };
+  /** POST /api/team/rotate-mcp-token — rotate the MCP bearer token. */
+  async function handleRotateMcpToken(_req: RouteRequest): Promise<RouteResponse> {
+    const client = deps.getTeamClient();
+    if (!client) {
+      return {
+        status: 400,
+        body: { error: 'Team sync not connected' },
+      };
+    }
+    try {
+      const token = await client.rotateMcpToken();
+      return { body: { token } };
+    } catch (err) {
+      return {
+        status: 500,
+        body: { error: String(err) },
+      };
+    }
+  }
+
+  return { handleConnect, handleDisconnect, handleStatus, handleBackfill, handleRetryFailed, handleUpgradeWorker, handleRotateMcpToken };
 }
