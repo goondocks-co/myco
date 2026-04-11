@@ -16,6 +16,12 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 /** Timeout for the live Anthropic model list query (short -- fall back fast). */
 const ANTHROPIC_MODELS_TIMEOUT_MS = 5000;
 
+/** TTL for the cached live Anthropic model list. The list changes rarely
+ *  and the SDK call is the slowest part of `/providers`; cache to keep the
+ *  endpoint snappy under React Query's 30s stale time. */
+const ANTHROPIC_MODELS_CACHE_TTL_MS = 10 * 60 * 1000;
+let anthropicModelsCache: { ts: number; models: string[] } | null = null;
+
 /** HTTP status codes. */
 const HTTP_OK = 200;
 const HTTP_BAD_REQUEST = 400;
@@ -108,8 +114,7 @@ export async function handleTestProvider(req: RouteRequest): Promise<RouteRespon
 // ---------------------------------------------------------------------------
 
 /** Detect a local provider (Ollama or LM Studio) and wrap as ProviderInfo.
- *  Filters out embedding models (bge-, nomic-embed, etc.) and Myco-created
- *  context variants -- the agent provider dropdown only needs LLMs. */
+ *  Filters embedding models out — the agent provider only runs LLM tasks. */
 async function detectLocalProviderInfo(
   type: 'ollama' | 'lmstudio',
   defaultBaseUrl: string,
@@ -127,9 +132,15 @@ async function detectAnthropic(): Promise<ProviderInfo> {
   // API key, Bedrock, Vertex, or Foundry. The daemon can't reliably detect
   // which method is in use since env vars aren't always inherited.
   //
-  // Try to query the live model list via the SDK. If it fails (no API key
-  // set in the daemon's env, no network, OAuth-only auth), fall back to the
-  // hardcoded ANTHROPIC_MODELS constant so the dropdown is never empty.
+  // The live model list is cached with a 10-minute TTL so we don't hit the
+  // SDK on every `/providers` request. On any failure (no API key set in the
+  // daemon's env, no network, OAuth-only auth) we fall back to the hardcoded
+  // ANTHROPIC_MODELS constant so the dropdown is never empty.
+  const now = Date.now();
+  if (anthropicModelsCache && now - anthropicModelsCache.ts < ANTHROPIC_MODELS_CACHE_TTL_MS) {
+    return { type: 'anthropic', available: true, models: anthropicModelsCache.models };
+  }
+
   let models = ANTHROPIC_MODELS;
   try {
     const client = new Anthropic();
@@ -146,6 +157,7 @@ async function detectAnthropic(): Promise<ProviderInfo> {
   } catch {
     // Fall through to hardcoded ANTHROPIC_MODELS
   }
+  anthropicModelsCache = { ts: now, models };
   return { type: 'anthropic', available: true, models };
 }
 

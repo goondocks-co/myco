@@ -1,11 +1,5 @@
 /**
  * Shared provider + model selector for agent provider configuration.
- *
- * Renders three provider buttons (Cloud / Ollama / LM Studio) with online
- * status badges, then conditional Base URL and Context Length inputs for
- * local providers, and finally a model dropdown (or text input fallback
- * when the provider is offline / has no models).
- *
  * Used by both the Settings page (global agent provider) and the Agent
  * Tasks page (per-task provider override).
  */
@@ -19,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../ui/select';
+import type { ProviderInfo } from '../../hooks/use-providers';
 
 const PROVIDER_LABELS: Record<string, string> = {
   anthropic: 'Anthropic',
@@ -31,13 +26,6 @@ const PROVIDER_ICONS: Record<string, typeof Cloud> = {
   ollama: Server,
   lmstudio: Cpu,
 };
-
-export interface ProviderInfo {
-  type: string;
-  available: boolean;
-  baseUrl?: string;
-  models: string[];
-}
 
 export interface ProviderModelSelectorProps {
   providerType: string;
@@ -68,7 +56,7 @@ export function ProviderModelSelector({
 }: ProviderModelSelectorProps) {
   const selectedProvider = providers.find((p) => p.type === providerType);
   const isLocal = providerType === 'ollama' || providerType === 'lmstudio';
-  const isSelected = providerType === 'anthropic' || isLocal;
+  const hasSelection = providerType !== '';
   const availableModels = selectedProvider?.models ?? [];
 
   return (
@@ -138,7 +126,7 @@ export function ProviderModelSelector({
       )}
 
       {/* Model selector — hidden when no provider is selected */}
-      {isSelected && (
+      {hasSelection && (
         <div className="space-y-1">
           <label className="font-sans text-xs text-on-surface-variant">Model</label>
           {availableModels.length > 0 ? (

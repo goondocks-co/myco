@@ -12,6 +12,7 @@ import {
   useTestProvider,
   useUpdateTaskConfig,
   type ProviderConfig,
+  type ProviderInfo,
   type PhaseOverride,
   type ScheduleOverride,
 } from '../../hooks/use-providers';
@@ -48,7 +49,7 @@ function PhaseConfigRow({
   phase: PhaseDefinition;
   override: PhaseOverride;
   taskModel: string;
-  providers: { type: string; available: boolean; baseUrl?: string; models: string[] }[];
+  providers: ProviderInfo[];
   isLoadingProviders: boolean;
   onChange: (update: PhaseOverride | null) => void;
 }) {

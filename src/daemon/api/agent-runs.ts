@@ -10,6 +10,7 @@ import { listRuns, countRuns, getRun, getLatestRunId } from '@myco/db/queries/ru
 import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
 import { buildTaskInstruction, isInstructionRequiredTask } from '@myco/agent/instruction-builders.js';
+import { hasConfiguredProvider } from '@myco/agent/config-resolver.js';
 import { loadConfig } from '@myco/config/loader.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -58,11 +59,9 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     const { task, instruction: rawInstruction, agentId } = AgentRunBody.parse(req.body);
 
     // Guard: ensure a provider is configured before allowing a run.
-    // Per-task overrides can supply a provider even when the global is absent.
+    // Uses the same per-task-over-global precedence as the executor's resolver.
     const mycoConfig = loadConfig(vaultDir);
-    const globalProvider = mycoConfig.agent.provider;
-    const taskProvider = task ? mycoConfig.agent.tasks?.[task]?.provider : undefined;
-    if (!globalProvider && !taskProvider) {
+    if (!hasConfiguredProvider(mycoConfig, task)) {
       return {
         status: 400,
         body: {

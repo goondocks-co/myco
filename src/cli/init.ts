@@ -18,7 +18,6 @@ import os from 'node:os';
 /** Directories that must exist inside a vault for correct operation. */
 const VAULT_REQUIRED_DIRS = ['buffer', 'attachments', 'logs'] as const;
 
-/** Print the welcome banner with the current package version. */
 function printBanner(): void {
   const version = getPluginVersion();
   console.log('');

@@ -86,25 +86,6 @@ export function useProviders() {
   });
 }
 
-/**
- * Fetch embedding models for a given provider.
- *
- * Uses the same `/models` endpoint that the test-connection button hits,
- * with `type=embedding` filtering to exclude LLM-only models.
- */
-export function useEmbeddingModels(provider: string | undefined, baseUrl: string | undefined) {
-  return useQuery<{ provider: string; models: string[] }>({
-    queryKey: ['embedding-models', provider, baseUrl],
-    queryFn: ({ signal }) => {
-      const params = new URLSearchParams({ provider: provider!, type: 'embedding' });
-      if (baseUrl) params.set('base_url', baseUrl);
-      return fetchJson<{ provider: string; models: string[] }>(`/models?${params.toString()}`, { signal });
-    },
-    enabled: !!provider,
-    staleTime: PROVIDERS_STALE_TIME,
-  });
-}
-
 /** Test connectivity to a specific provider. */
 export function useTestProvider() {
   return useMutation<TestProviderResponse, Error, ProviderConfig>({

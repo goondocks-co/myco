@@ -1,10 +1,11 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import { CheckCircle, XCircle, Loader2 } from 'lucide-react';
 import { useConfig, type MycoConfig } from '../hooks/use-config';
 import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
-import { useProviders, useEmbeddingModels } from '../hooks/use-providers';
-import { fetchJson, postJson } from '../lib/api';
+import { useProviders, useTestProvider } from '../hooks/use-providers';
+import { useModels } from '../hooks/use-models';
+import { fetchJson } from '../lib/api';
 import { parseNumericField } from '../lib/format';
 import { DEFAULT_DIGEST_TIER, DEFAULT_MAX_SPORES } from '../lib/constants';
 import { Surface } from '../components/ui/surface';
@@ -73,9 +74,7 @@ function toFormState(config: MycoConfig): FormState {
     agentProviderType: (config.agent?.provider?.type as AgentProviderType) ?? '',
     agentModel: config.agent?.provider?.model ?? config.agent?.model ?? '',
     agentBaseUrl: config.agent?.provider?.base_url ?? '',
-    agentContextLength: config.agent?.provider?.context_length != null
-      ? String(config.agent.provider!.context_length)
-      : '',
+    agentContextLength: config.agent?.provider?.context_length?.toString() ?? '',
   };
 }
 
@@ -252,37 +251,18 @@ export default function Settings() {
   const { data: stats } = useDaemon();
   const { restart } = useRestart();
   const { data: providersData, isPending: isLoadingProviders } = useProviders();
+  const agentTestMutation = useTestProvider();
 
   // Initialise form from config on first load. A ref tracks whether we have
   // initialised so we only seed once — subsequent config refetches do NOT
   // overwrite user edits. This replaces the previous useEffect + null-check
   // pattern which is a React anti-pattern for derived initial state.
   const formInitialised = useRef(false);
-  const agentModelBackfilled = useRef(false);
   const [form, setForm] = useState<FormState | null>(null);
   if (config && !formInitialised.current) {
     formInitialised.current = true;
-    // Safe to call during render: React batches the setState and re-renders
-    // once. This avoids the "unnecessary Effect for initialising state" pattern.
     if (form === null) {
       setForm(toFormState(config));
-    }
-  }
-
-  // Backfill the agent model from providers data when the form has a
-  // provider configured but no model -- happens when an older config wrote
-  // `agent.provider.type` without a model. Only runs once per page load.
-  if (
-    form &&
-    form.agentProviderType !== '' &&
-    form.agentModel === '' &&
-    !agentModelBackfilled.current
-  ) {
-    const providerInfo = providersData?.providers.find(p => p.type === form.agentProviderType);
-    const firstModel = providerInfo?.models?.[0];
-    if (firstModel) {
-      agentModelBackfilled.current = true;
-      setForm(prev => prev ? { ...prev, agentModel: firstModel } : prev);
     }
   }
 
@@ -290,19 +270,29 @@ export default function Settings() {
   const [saveMessage, setSaveMessage] = useState<{ section: SaveSection; type: 'success' | 'error'; text: string } | null>(null);
   const [testState, setTestState] = useState<TestState>('idle');
   const [testMessage, setTestMessage] = useState<string>('');
-  const [agentTestState, setAgentTestState] = useState<TestState>('idle');
-  const [agentTestMessage, setAgentTestMessage] = useState<string>('');
 
   // Fetch embedding models for the currently selected provider/baseUrl.
-  // Reuses the same /models endpoint that the test connection button hits.
-  const { data: embeddingModelsData } = useEmbeddingModels(
-    form?.embeddingProvider,
+  const { data: embeddingModelsData } = useModels(
+    form?.embeddingProvider ?? null,
     form?.embeddingBaseUrl || undefined,
+    'embedding',
   );
   const embeddingModels = embeddingModelsData?.models ?? [];
 
-  // Per-section dirty checks -- compute fresh form state from config to compare.
-  const origForm = config ? toFormState(config) : null;
+  // Backfill the agent model when an older config has provider.type but no
+  // model — fall back to the provider's first available model so the dropdown
+  // never shows a blank Save state. Only fires when the model field is empty.
+  useEffect(() => {
+    if (!form || form.agentProviderType === '' || form.agentModel !== '') return;
+    const firstModel = providersData?.providers.find(p => p.type === form.agentProviderType)?.models?.[0];
+    if (firstModel) {
+      setForm(prev => prev ? { ...prev, agentModel: firstModel } : prev);
+    }
+  }, [form, providersData]);
+
+  // Per-section dirty checks. origForm is memoized on config so per-keystroke
+  // re-renders don't reallocate it.
+  const origForm = useMemo(() => (config ? toFormState(config) : null), [config]);
   const agentDirty = !!(form && origForm && isAgentDirty(form, origForm));
   const embeddingDirty = !!(form && origForm && isEmbeddingDirty(form, origForm));
   const contextDirty = !!(form && origForm && isContextDirty(form, origForm));
@@ -313,15 +303,19 @@ export default function Settings() {
     setSaveMessage(null);
   }, []);
 
-  /** Generic per-section save: builds a partial config update, saves, then restarts the daemon. */
-  const handleSectionSave = useCallback(async (
-    section: SaveSection,
-    buildUpdate: (form: FormState, config: MycoConfig) => MycoConfig,
-  ) => {
+  /** Per-section save: looks up the section's config builder, saves, restarts the daemon. */
+  const SECTION_BUILDERS: Record<SaveSection, (f: FormState, c: MycoConfig) => MycoConfig> = {
+    agent: buildAgentConfigUpdate,
+    embedding: buildEmbeddingConfigUpdate,
+    context: buildContextConfigUpdate,
+    project: buildProjectConfigUpdate,
+  };
+
+  const handleSectionSave = useCallback(async (section: SaveSection) => {
     if (!form || !config) return;
     setSaveMessage(null);
     try {
-      await saveConfig(buildUpdate(form, config));
+      await saveConfig(SECTION_BUILDERS[section](form, config));
       setSaveMessage({ section, type: 'success', text: 'Saved. Restarting daemon...' });
       try {
         await restart();
@@ -332,6 +326,8 @@ export default function Settings() {
     } catch {
       setSaveMessage({ section, type: 'error', text: 'Failed to save.' });
     }
+  // SECTION_BUILDERS is module-stable; safe to omit from deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form, config, saveConfig, restart]);
 
   const handleTestConnection = useCallback(async () => {
@@ -353,30 +349,13 @@ export default function Settings() {
     }
   }, [form]);
 
-  const handleTestAgentProvider = useCallback(async () => {
+  const handleTestAgentProvider = useCallback(() => {
     if (!form || !form.agentProviderType) return;
-    setAgentTestState('testing');
-    setAgentTestMessage('');
-    try {
-      const result = await postJson<{ ok: boolean; latency_ms?: number; error?: string }>(
-        '/providers/test',
-        {
-          type: form.agentProviderType,
-          ...(form.agentBaseUrl ? { base_url: form.agentBaseUrl } : {}),
-        },
-      );
-      if (result.ok) {
-        setAgentTestState('success');
-        setAgentTestMessage(`Connected -- ${result.latency_ms}ms`);
-      } else {
-        setAgentTestState('error');
-        setAgentTestMessage(result.error ?? 'Connection failed.');
-      }
-    } catch (err) {
-      setAgentTestState('error');
-      setAgentTestMessage(err instanceof Error ? err.message : 'Connection failed.');
-    }
-  }, [form]);
+    agentTestMutation.mutate({
+      type: form.agentProviderType,
+      ...(form.agentBaseUrl ? { base_url: form.agentBaseUrl } : {}),
+    });
+  }, [form, agentTestMutation]);
 
   if (isLoading || !form || !config) {
     return (
@@ -419,69 +398,71 @@ export default function Settings() {
             onProviderChange={(type) => {
               setField('agentProviderType', type as AgentProviderType);
               const providerInfo = providers.find(p => p.type === type);
-              // Default to the first available model so the dropdown isn't
-              // empty -- prevents a save with an unset model.
+              // First available model defaults the dropdown so it never saves with an unset model
               setField('agentModel', providerInfo?.models?.[0] ?? '');
               setField('agentBaseUrl', providerInfo?.baseUrl ?? '');
               setField('agentContextLength', '');
-              setAgentTestState('idle');
-              setAgentTestMessage('');
+              agentTestMutation.reset();
             }}
             onModelChange={(m) => setField('agentModel', m)}
             onBaseUrlChange={(url) => {
               setField('agentBaseUrl', url);
-              setAgentTestState('idle');
-              setAgentTestMessage('');
+              agentTestMutation.reset();
             }}
             onContextLengthChange={(ctx) => setField('agentContextLength', ctx)}
           />
 
           {form.agentProviderType !== '' && (
-            <div className="flex items-center gap-3 pt-1">
+            <>
+              <div className="flex items-center gap-3 pt-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleTestAgentProvider}
+                  disabled={agentTestMutation.isPending}
+                >
+                  {agentTestMutation.isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : null}
+                  Test Connection
+                </Button>
+                {agentTestMutation.isSuccess && agentTestMutation.data.ok && (
+                  <span className="flex items-center gap-1 font-sans text-sm text-primary">
+                    <CheckCircle className="h-4 w-4" />
+                    Connected — {agentTestMutation.data.latency_ms}ms
+                  </span>
+                )}
+                {agentTestMutation.isSuccess && !agentTestMutation.data.ok && (
+                  <span className="flex items-center gap-1 font-sans text-sm text-tertiary">
+                    <XCircle className="h-4 w-4" />
+                    {agentTestMutation.data.error ?? 'Connection failed.'}
+                  </span>
+                )}
+                {agentTestMutation.isError && (
+                  <span className="flex items-center gap-1 font-sans text-sm text-tertiary">
+                    <XCircle className="h-4 w-4" />
+                    {agentTestMutation.error.message}
+                  </span>
+                )}
+              </div>
+
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
-                onClick={handleTestAgentProvider}
-                disabled={agentTestState === 'testing'}
+                onClick={() => {
+                  setField('agentProviderType', '');
+                  setField('agentModel', '');
+                  setField('agentBaseUrl', '');
+                  setField('agentContextLength', '');
+                  agentTestMutation.reset();
+                }}
+                className="text-xs text-on-surface-variant"
               >
-                {agentTestState === 'testing' ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : null}
-                Test Connection
+                Clear provider
               </Button>
-              {agentTestState === 'success' && (
-                <span className="flex items-center gap-1 font-sans text-sm text-primary">
-                  <CheckCircle className="h-4 w-4" />
-                  {agentTestMessage}
-                </span>
-              )}
-              {agentTestState === 'error' && (
-                <span className="flex items-center gap-1 font-sans text-sm text-tertiary">
-                  <XCircle className="h-4 w-4" />
-                  {agentTestMessage}
-                </span>
-              )}
-            </div>
-          )}
-
-          {form.agentProviderType !== '' && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setField('agentProviderType', '');
-                setField('agentModel', '');
-                setField('agentBaseUrl', '');
-                setField('agentContextLength', '');
-                setAgentTestState('idle');
-                setAgentTestMessage('');
-              }}
-              className="text-xs text-on-surface-variant"
-            >
-              Clear provider
-            </Button>
+            </>
           )}
 
           <SectionSaveRow
@@ -489,7 +470,7 @@ export default function Settings() {
             isSaving={isSaving}
             showMessage={saveMessage?.section === 'agent'}
             message={saveMessage}
-            onSave={() => handleSectionSave('agent', buildAgentConfigUpdate)}
+            onSave={() => handleSectionSave('agent')}
           />
         </Surface>
 
@@ -599,7 +580,7 @@ export default function Settings() {
             isSaving={isSaving}
             showMessage={saveMessage?.section === 'embedding'}
             message={saveMessage}
-            onSave={() => handleSectionSave('embedding', buildEmbeddingConfigUpdate)}
+            onSave={() => handleSectionSave('embedding')}
           />
         </Surface>
         </div>{/* end top row grid */}
@@ -659,7 +640,7 @@ export default function Settings() {
             isSaving={isSaving}
             showMessage={saveMessage?.section === 'context'}
             message={saveMessage}
-            onSave={() => handleSectionSave('context', buildContextConfigUpdate)}
+            onSave={() => handleSectionSave('context')}
           />
         </Surface>
 
@@ -731,7 +712,7 @@ export default function Settings() {
             isSaving={isSaving}
             showMessage={saveMessage?.section === 'project'}
             message={saveMessage}
-            onSave={() => handleSectionSave('project', buildProjectConfigUpdate)}
+            onSave={() => handleSectionSave('project')}
           />
         </Surface>
       </div>
