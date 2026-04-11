@@ -23,6 +23,7 @@ import { handleGetConfig, handlePutConfig, createPlanDirHandlers } from './api/c
 import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
 import { createUpdateHandlers } from './api/update.js';
+import { resolveGlobalPrefix, detectDevBuild } from './update-checker.js';
 import { getMachineId } from './machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
@@ -119,6 +120,8 @@ import {
   RESTART_RESPONSE_FLUSH_MS,
   epochSeconds,
 } from '../constants.js';
+import { RESTART_REASON_FILENAME } from '../constants/update.js';
+import { notify } from '../notifications/notify.js';
 import { PowerManager } from './power.js';
 import { registerPowerJobs } from './power-jobs.js';
 import {
@@ -221,12 +224,90 @@ export async function main(): Promise<void> {
   const machineId = getMachineId(vaultDir);
   logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
 
+  // --- Resolve npm global prefix + detect dev build ---
+  // globalPrefix is used both for installed-version detection (in the status
+  // handler) and for dev-build auto-detection. When MYCO_CMD is already set
+  // by a symbiont hook or explicit shell env, we skip both — nothing needs
+  // the prefix.
+  let globalPrefix: string | null = null;
+  if (!process.env.MYCO_CMD) {
+    try {
+      globalPrefix = resolveGlobalPrefix();
+      logger.debug(LOG_KINDS.DAEMON_START, 'npm global prefix resolved', { prefix: globalPrefix });
+    } catch (err) {
+      logger.warn(LOG_KINDS.DAEMON_START, 'Failed to resolve npm global prefix', {
+        error: (err as Error).message,
+      });
+    }
+
+    // Auto-detect dev builds: if the running binary isn't under the global
+    // prefix, set MYCO_CMD to the current CLI entry so update checks are
+    // exempted and any restart script respawns the same dev binary.
+    const devCliEntry = detectDevBuild(
+      globalPrefix,
+      process.argv[1],
+      process.env.MYCO_CMD,
+      fs.realpathSync,
+    );
+    if (devCliEntry) {
+      process.env.MYCO_CMD = devCliEntry;
+      globalPrefix = null;
+      logger.info(LOG_KINDS.DAEMON_START, 'Dev build detected; MYCO_CMD auto-set', {
+        cmd: devCliEntry,
+      });
+    }
+  }
+
   // --- SQLite initialization ---
   const db = initDatabase(vaultDbPath(vaultDir));
   createSchema(db, machineId);
   registerBuiltinDomains();
 
   logger.info(LOG_KINDS.DAEMON_START, 'SQLite initialized', { vault: vaultDir });
+
+  // --- Check for restart-reason signal file (left by version sync restart script) ---
+  {
+    const reasonPath = path.join(vaultDir, RESTART_REASON_FILENAME);
+    try {
+      if (fs.existsSync(reasonPath)) {
+        const raw = JSON.parse(fs.readFileSync(reasonPath, 'utf-8')) as {
+          reason?: string;
+          from_version?: string;
+          to_version?: string;
+          local_update_ran?: boolean;
+        };
+        fs.unlinkSync(reasonPath);
+
+        if (raw.reason === 'version_sync' && raw.to_version) {
+          const message = raw.local_update_ran
+            ? 'Restarted and updated local project hooks.'
+            : 'Restarted to pick up the latest version.';
+
+          notify(vaultDir, {
+            domain: 'daemon',
+            type: 'daemon.version_sync',
+            title: `Updated to v${raw.to_version}`,
+            message,
+            metadata: {
+              from_version: raw.from_version ?? 'unknown',
+              to_version: raw.to_version,
+              local_update_ran: raw.local_update_ran ?? false,
+            },
+          });
+
+          logger.info(LOG_KINDS.DAEMON_START, 'Version sync restart detected', {
+            from: raw.from_version,
+            to: raw.to_version,
+            local_update: raw.local_update_ran,
+          });
+        }
+      }
+    } catch (err) {
+      logger.warn(LOG_KINDS.DAEMON_START, 'Failed to read restart-reason file', {
+        error: (err as Error).message,
+      });
+    }
+  }
 
   // --- Team context ---
   initTeamContext(config.team.enabled, machineId);
@@ -450,6 +531,7 @@ export async function main(): Promise<void> {
     vaultDir,
     projectRoot: updateProjectRoot,
     currentVersion: server.version,
+    globalPrefix,
     scheduleShutdown: () => {
       setTimeout(() => {
         process.kill(process.pid, 'SIGTERM');

@@ -23,10 +23,12 @@ vi.mock('../../../src/daemon/update-checker.js', () => ({
   writeUpdateConfig: vi.fn(),
   clearCachedCheck: vi.fn(),
   isCacheStale: vi.fn(() => false),
+  getInstalledVersion: vi.fn(() => null),
 }));
 
 vi.mock('../../../src/daemon/update-installer.js', () => ({
   spawnUpdateScript: vi.fn(() => '/tmp/myco-update-123.sh'),
+  spawnRestartScript: vi.fn(() => '/tmp/myco-restart-123.sh'),
 }));
 
 import {
@@ -38,8 +40,9 @@ import {
   writeUpdateConfig,
   clearCachedCheck,
   isCacheStale,
+  getInstalledVersion,
 } from '../../../src/daemon/update-checker.js';
-import { spawnUpdateScript } from '../../../src/daemon/update-installer.js';
+import { spawnUpdateScript, spawnRestartScript } from '../../../src/daemon/update-installer.js';
 import { createUpdateHandlers } from '../../../src/daemon/api/update.js';
 import type { RouteRequest } from '../../../src/daemon/router.js';
 
@@ -349,5 +352,98 @@ describe('handleUpdateChannel', () => {
 
     expect(stable.status).toBeUndefined();
     expect(beta.status).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleUpdateStatus — restart_required detection
+// ---------------------------------------------------------------------------
+
+describe('handleUpdateStatus — restart_required', () => {
+  beforeEach(() => {
+    vi.mocked(isUpdateExempt).mockReturnValue(false);
+    vi.mocked(readCachedCheck).mockReturnValue(null);
+    vi.mocked(readUpdateConfig).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
+    vi.mocked(isCacheStale).mockReturnValue(false);
+    vi.mocked(statusFromCache).mockReturnValue(NO_UPDATE_STATUS);
+    vi.mocked(getInstalledVersion).mockReset();
+    vi.mocked(getInstalledVersion).mockReturnValue(null);
+    vi.mocked(spawnRestartScript).mockReset();
+    vi.mocked(spawnRestartScript).mockReturnValue('/tmp/myco-restart-123.sh');
+  });
+
+  it('triggers auto-restart when installed version > running version', async () => {
+    vi.mocked(getInstalledVersion).mockReturnValue('1.1.0');
+    const scheduleShutdown = vi.fn();
+    const { handleUpdateStatus } = createUpdateHandlers(
+      makeDeps({ scheduleShutdown, globalPrefix: '/usr/local' }),
+    );
+
+    const result = await handleUpdateStatus(makeReq());
+
+    expect(spawnRestartScript).toHaveBeenCalled();
+    expect(scheduleShutdown).toHaveBeenCalled();
+    expect(result.body).toMatchObject({ restarting: true, reason: 'version_sync' });
+  });
+
+  it('does not trigger restart when installed version matches running version', async () => {
+    vi.mocked(getInstalledVersion).mockReturnValue('1.0.0');
+    const { handleUpdateStatus } = createUpdateHandlers(
+      makeDeps({ globalPrefix: '/usr/local' }),
+    );
+
+    const result = await handleUpdateStatus(makeReq());
+
+    expect(spawnRestartScript).not.toHaveBeenCalled();
+    expect((result.body as Record<string, unknown>).restarting).toBeUndefined();
+  });
+
+  it('falls back to normal flow when installed version is null', async () => {
+    vi.mocked(getInstalledVersion).mockReturnValue(null);
+    vi.mocked(statusFromCache).mockReturnValue(NO_UPDATE_STATUS);
+    const { handleUpdateStatus } = createUpdateHandlers(
+      makeDeps({ globalPrefix: '/usr/local' }),
+    );
+
+    const result = await handleUpdateStatus(makeReq());
+
+    expect(spawnRestartScript).not.toHaveBeenCalled();
+    expect(result.body).toMatchObject({ exempt: false });
+  });
+
+  it('skips restart check when exempt (dev mode)', async () => {
+    vi.mocked(isUpdateExempt).mockReturnValue(true);
+    vi.mocked(getInstalledVersion).mockReturnValue('2.0.0');
+    const { handleUpdateStatus } = createUpdateHandlers(
+      makeDeps({ globalPrefix: '/usr/local' }),
+    );
+
+    const result = await handleUpdateStatus(makeReq());
+
+    expect(spawnRestartScript).not.toHaveBeenCalled();
+    expect(result.body).toMatchObject({ exempt: true });
+  });
+
+  it('skips restart check when globalPrefix is null', async () => {
+    vi.mocked(getInstalledVersion).mockReturnValue('1.1.0');
+    const { handleUpdateStatus } = createUpdateHandlers(
+      makeDeps({ globalPrefix: null }),
+    );
+
+    const result = await handleUpdateStatus(makeReq());
+
+    expect(spawnRestartScript).not.toHaveBeenCalled();
+    expect(getInstalledVersion).not.toHaveBeenCalled();
+  });
+
+  it('does not restart when installed version is lower than running (downgrade)', async () => {
+    vi.mocked(getInstalledVersion).mockReturnValue('0.9.0');
+    const { handleUpdateStatus } = createUpdateHandlers(
+      makeDeps({ globalPrefix: '/usr/local' }),
+    );
+
+    const result = await handleUpdateStatus(makeReq());
+
+    expect(spawnRestartScript).not.toHaveBeenCalled();
   });
 });

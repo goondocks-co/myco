@@ -1,10 +1,11 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { ArrowUpCircle, RefreshCw, CheckCircle2, AlertCircle, Shield } from 'lucide-react';
 import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { cn } from '../../lib/cn';
+import { RELEASE_CHANNELS } from '../../lib/constants';
 import {
   useUpdateStatus,
   useUpdateCheck,
@@ -13,8 +14,6 @@ import {
 } from '../../hooks/use-update-status';
 
 /* ---------- Constants ---------- */
-
-const CHANNELS = ['stable', 'beta'] as const;
 
 /** Interval for polling /health after update apply (ms). */
 const HEALTH_POLL_INTERVAL_MS = 500;
@@ -44,6 +43,36 @@ export function UpdateCard() {
 
   const [applyState, setApplyState] = useState<ApplyState>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Handle server-initiated restart (version sync)
+  useEffect(() => {
+    if (!status?.restarting) return;
+    if (applyState !== 'idle') return;
+
+    setApplyState('restarting');
+
+    const deadline = Date.now() + HEALTH_POLL_TIMEOUT_MS;
+    let cancelled = false;
+
+    const poll = async () => {
+      if (cancelled || Date.now() > deadline) return;
+      try {
+        const res = await fetch('/health');
+        if (res.ok) {
+          window.location.reload();
+          return;
+        }
+      } catch { /* daemon still down */ }
+      if (!cancelled) setTimeout(poll, HEALTH_POLL_INTERVAL_MS);
+    };
+
+    const timer = setTimeout(poll, HEALTH_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [status?.restarting, applyState]);
 
   const handleApply = useCallback(async () => {
     setApplyState('applying');
@@ -176,7 +205,7 @@ export function UpdateCard() {
       {/* Channel toggle row */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1">
-          {CHANNELS.map((ch) => (
+          {RELEASE_CHANNELS.map((ch) => (
             <Button
               key={ch}
               variant={activeChannel === ch ? 'default' : 'ghost'}

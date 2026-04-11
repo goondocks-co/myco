@@ -20,9 +20,13 @@ import {
   writeUpdateConfig,
   clearCachedCheck,
   isCacheStale,
+  getInstalledVersion,
 } from '../update-checker.js';
-import { spawnUpdateScript } from '../update-installer.js';
-import { RELEASE_CHANNELS } from '../../constants/update.js';
+import { spawnUpdateScript, spawnRestartScript } from '../update-installer.js';
+import { RELEASE_CHANNELS, UPDATE_STAMP_FILENAME } from '../../constants/update.js';
+import semver from 'semver';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { RouteRequest, RouteResponse } from '../router.js';
 
 // ---------------------------------------------------------------------------
@@ -39,6 +43,8 @@ export interface UpdateDeps {
   currentVersion: string;
   /** Callback that schedules a graceful daemon shutdown after the update script spawns. */
   scheduleShutdown: () => void;
+  /** npm global prefix, resolved once at daemon startup. Null if resolution failed. */
+  globalPrefix: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,7 +65,21 @@ const ChannelBodySchema = z.object({
  * Returns an object with named handlers for each update endpoint.
  */
 export function createUpdateHandlers(deps: UpdateDeps) {
-  const { vaultDir, projectRoot, currentVersion, scheduleShutdown } = deps;
+  const { vaultDir, projectRoot, currentVersion, scheduleShutdown, globalPrefix } = deps;
+
+  /** Prevents multiple restart scripts from racing during the shutdown window. */
+  let restartInitiated = false;
+
+  /** Returns true when the stamp file matches the current running version. */
+  function isStampCurrent(): boolean {
+    try {
+      const stampPath = path.join(vaultDir, UPDATE_STAMP_FILENAME);
+      const stamp = fs.readFileSync(stampPath, 'utf-8').trim();
+      return stamp === currentVersion;
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * GET /api/update/status — returns cached update state.
@@ -72,6 +92,35 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       return { body: { exempt: true, running_version: currentVersion } };
     }
 
+    // --- Installed-version check (short-circuits before registry) ---
+    if (globalPrefix && !restartInitiated) {
+      const installedVersion = getInstalledVersion(globalPrefix);
+      if (
+        installedVersion &&
+        semver.valid(installedVersion) &&
+        semver.valid(currentVersion) &&
+        semver.gt(installedVersion, currentVersion)
+      ) {
+        restartInitiated = true;
+        const runLocalUpdate = !isStampCurrent();
+        spawnRestartScript({
+          projectRoot, vaultDir, runLocalUpdate,
+          fromVersion: currentVersion,
+          toVersion: installedVersion,
+        });
+        scheduleShutdown();
+        return {
+          body: {
+            restarting: true,
+            reason: 'version_sync',
+            running_version: currentVersion,
+            installed_version: installedVersion,
+          },
+        };
+      }
+    }
+
+    // --- Normal registry check flow (unchanged) ---
     const config = readUpdateConfig();
     const cache = readCachedCheck();
 

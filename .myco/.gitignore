@@ -13,6 +13,10 @@ secrets.env
 # Machine ID
 machine_id
 
+# Update tracking — per-machine state
+last-update-version
+restart-reason.json
+
 # Binary attachments — screenshots captured from transcripts
 attachments/
 

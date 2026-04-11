@@ -35,6 +35,9 @@ import {
   isCacheStale,
   checkForUpdate,
   statusFromCache,
+  resolveGlobalPrefix,
+  getInstalledVersion,
+  detectDevBuild,
   type CachedCheck,
   type UpdateConfig,
 } from '@myco/daemon/update-checker.js';
@@ -443,5 +446,147 @@ describe('statusFromCache()', () => {
     const result = statusFromCache('1.0.0');
     expect(result!.update_available).toBe(true);
     expect(result!.latest_version).toBe('1.1.0-beta.1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveGlobalPrefix
+// ---------------------------------------------------------------------------
+
+describe('resolveGlobalPrefix()', () => {
+  it('returns trimmed stdout from npm prefix -g', () => {
+    // This test runs against the real npm — just verify it returns a non-empty string
+    const prefix = resolveGlobalPrefix();
+    expect(typeof prefix).toBe('string');
+    expect(prefix.length).toBeGreaterThan(0);
+    expect(prefix).not.toMatch(/\n/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getInstalledVersion
+// ---------------------------------------------------------------------------
+
+describe('getInstalledVersion()', () => {
+  it('returns version string when package.json exists at expected path', () => {
+    vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
+      if (String(p).includes('@goondocks/myco/package.json')) {
+        return JSON.stringify({ version: '1.2.3' });
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+
+    const result = getInstalledVersion('/usr/local');
+    expect(result).toBe('1.2.3');
+  });
+
+  it('returns null when package.json does not exist', () => {
+    mockNoFiles();
+    const result = getInstalledVersion('/usr/local');
+    expect(result).toBeNull();
+  });
+
+  it('returns null when package.json is malformed', () => {
+    vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
+      if (String(p).includes('@goondocks/myco/package.json')) {
+        return 'not json';
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+
+    const result = getInstalledVersion('/usr/local');
+    expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectDevBuild
+// ---------------------------------------------------------------------------
+
+describe('detectDevBuild()', () => {
+  /** Identity resolver — test paths don't exist, so bypass real realpath. */
+  const identityResolver = (p: string) => p;
+
+  it('returns null when MYCO_CMD is already set', () => {
+    const result = detectDevBuild('/opt/homebrew', '/home/user/.local/bin/myco-dev', 'myco-dev', identityResolver);
+    expect(result).toBeNull();
+  });
+
+  it('returns null when globalPrefix is null', () => {
+    const result = detectDevBuild(null, '/home/user/.local/bin/myco-dev', undefined, identityResolver);
+    expect(result).toBeNull();
+  });
+
+  it('returns null when cliEntry is missing', () => {
+    const result = detectDevBuild('/opt/homebrew', undefined, undefined, identityResolver);
+    expect(result).toBeNull();
+  });
+
+  it('returns cliEntry when binary is outside global prefix (dev build)', () => {
+    const result = detectDevBuild(
+      '/opt/homebrew',
+      '/home/user/.local/bin/myco-dev',
+      undefined,
+      identityResolver,
+    );
+    expect(result).toBe('/home/user/.local/bin/myco-dev');
+  });
+
+  it('returns null when binary is inside global prefix (proper install)', () => {
+    const result = detectDevBuild(
+      '/opt/homebrew',
+      '/opt/homebrew/lib/node_modules/@goondocks/myco/dist/cli.js',
+      undefined,
+      identityResolver,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('does not match on path prefix that is only a string prefix, not a path boundary', () => {
+    // /opt/homebrew-foo should NOT be considered under /opt/homebrew
+    const result = detectDevBuild(
+      '/opt/homebrew',
+      '/opt/homebrew-foo/bin/myco',
+      undefined,
+      identityResolver,
+    );
+    expect(result).toBe('/opt/homebrew-foo/bin/myco');
+  });
+
+  it('resolves symlinks via realpath before comparing', () => {
+    // Simulate a symlink: /home/user/.local/bin/myco-dev → /opt/homebrew/lib/node_modules/...
+    // If we followed the symlink, it would look like a proper install.
+    const symlinkResolver = (p: string) => {
+      if (p === '/home/user/.local/bin/myco-dev') {
+        return '/opt/homebrew/lib/node_modules/@goondocks/myco/dist/cli.js';
+      }
+      return p;
+    };
+
+    const result = detectDevBuild(
+      '/opt/homebrew',
+      '/home/user/.local/bin/myco-dev',
+      undefined,
+      symlinkResolver,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('returns null when realpath throws', () => {
+    const throwingResolver = () => {
+      throw new Error('ENOENT');
+    };
+
+    const result = detectDevBuild(
+      '/opt/homebrew',
+      '/home/user/.local/bin/myco-dev',
+      undefined,
+      throwingResolver,
+    );
+    expect(result).toBeNull();
   });
 });
