@@ -339,7 +339,7 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
             </div>
           </div>
           <p className="text-xs text-on-surface-variant">
-            Configure cloud agents with this endpoint to access project intelligence.
+            Configure cloud agents with this endpoint to access project team intelligence.
           </p>
           <div className="space-y-3">
             <CopyableField label="MCP URL" value={status.mcp_endpoint} />
