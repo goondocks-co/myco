@@ -47,25 +47,17 @@ Myco hooks into your agent's lifecycle — session starts, prompts, tool calls, 
 
 ### Intelligence
 
-The Myco agent is a multi-phase reasoning pipeline that runs in the background, processing captured data through a dependency graph of tasks. Phases are organized into **waves** — groups that execute in parallel — computed via topological sort from a DAG of dependencies.
+Myco runs an intelligence pipeline in the background that reads captured sessions and turns them into durable knowledge. It extracts **spores** (observations like decisions, gotchas, discoveries, trade-offs, bug fixes), generates session titles and summaries, links entities into a knowledge graph, and refreshes digest extracts — all automatically.
 
-The full intelligence pipeline flows through five waves:
+When the agent finds 3+ semantically similar spores, it synthesizes them into a **wisdom** spore — a higher-order observation that captures the pattern across sessions. Individual observations become institutional knowledge.
 
-```
-read-state → extract + summarize → consolidate + graph → digest → report
-```
+Every task can use a different LLM provider. Run title generation on a fast local model via Ollama, extraction on Claude, consolidation on a larger local model via LM Studio. Configure globally or per-task in `myco.yaml`, or use the [dashboard](#dashboard) to manage assignments visually.
 
-Each phase runs with scoped tools, a turn budget, isolated provider config, and results from prior phases as context. The agent extracts **spores** (observations like decisions, gotchas, discoveries, trade-offs, bug fixes), generates session summaries, links entities in the knowledge graph, and synthesizes digest extracts — all automatically.
-
-**Consolidation** is where individual observations become institutional knowledge. When the agent finds 3+ semantically similar spores, it synthesizes them into a **wisdom** spore — a higher-order observation that captures the pattern across sessions. Source spores are preserved with lineage metadata, and the wisdom spore becomes the canonical reference going forward.
-
-**Provider flexibility** — every task and phase can use a different LLM provider. Run title generation on a fast local model via Ollama, extraction on Claude, and consolidation on a larger local model via LM Studio. Configure globally or per-task in `myco.yaml`, or use the [dashboard](#dashboard) to manage assignments visually.
-
-Ten built-in tasks cover the full lifecycle — seven for intelligence processing (from lightweight `title-summary` to the complete `full-intelligence` pipeline) and three for the skill lifecycle engine (`skill-survey`, `skill-generate`, `skill-evolve`). For the full breakdown — wave execution, phase dependencies, tool scoping, read-only enforcement, orchestrator planning, and provider config — see the [Agent Harness docs](docs/agent-harness.md).
+See the [Intelligence Pipeline docs](docs/agent-harness.md) for the task catalog, provider configuration, and scheduling.
 
 ### Digest
 
-The digest system synthesizes accumulated knowledge into tiered **extracts** — pre-computed context at different depths:
+The digest synthesizes accumulated knowledge into tiered **extracts** — pre-computed context at different depths:
 
 | Tier | Purpose |
 |------|---------|
@@ -73,11 +65,11 @@ The digest system synthesizes accumulated knowledge into tiered **extracts** —
 | **5,000 tokens** | Deep onboarding — trade-offs, patterns, team dynamics |
 | **10,000 tokens** | Institutional knowledge — full thread history and design tensions |
 
-The digest runs on an adaptive **metabolism**: active when new substrate (undigested data) arrives, slowing through cooling phases, and entering dormancy when the project goes quiet. New sessions reactivate it.
+Extracts refresh in the background as new knowledge arrives. When the project goes quiet, refresh slows; new sessions wake it back up.
 
 ### Search
 
-Every record is indexed for both keyword search (FTS5) and semantic similarity (vector embeddings). Embedding providers are pluggable — use [Ollama](https://ollama.com) locally, or [OpenRouter](https://openrouter.ai) / [OpenAI](https://platform.openai.com) in the cloud. The index is fully rebuildable from the database.
+Every record is indexed for both keyword search and semantic similarity. Use [Ollama](https://ollama.com) locally for embeddings, or [OpenRouter](https://openrouter.ai) / [OpenAI](https://platform.openai.com) in the cloud. The index is fully rebuildable from the database.
 
 ### Context injection
 
@@ -98,9 +90,7 @@ A local web dashboard provides configuration and operations management. Manage i
 
 ### Symbionts
 
-Myco integrates with coding agents through **symbiont** adapters — named for the mycorrhizal symbiotic relationship between fungi and their host trees. Each adapter handles transcript discovery, conversation parsing, and project registration for its host agent.
-
-`myco init` detects available agents and lets you choose which to configure. Registration is project-local — hooks, MCP servers, skills, and auto-approve settings are written directly to each agent's config files.
+Myco integrates with coding agents through **symbionts** — named for the mycorrhizal symbiotic relationship between fungi and their host trees. `myco init` detects available agents and lets you choose which to configure. Registration is project-local — hooks, MCP servers, skills, and auto-approve settings are written directly to each agent's config files.
 
 | Agent | Hooks | MCP | Skills | Auto-Approve | Plans |
 |-------|-------|-----|--------|-------------|-------|
@@ -132,15 +122,13 @@ Runs on the Cloudflare free tier. See the [Team Sync docs](docs/team-sync.md) fo
 
 ### Cloud MCP Server
 
-Team sync also deploys a read-only **Cloud MCP server** on the same Worker, exposing your project's intelligence — search, digest, sessions, knowledge graph, skills — to cloud agents over Streamable HTTP. Connect Anthropic Managed Agents, OpenAI Workflows, N8N, or anything else that speaks MCP, and they get the same semantic fidelity your local agents already have. A per-project bearer token lives in Cloudflare Workers KV (encrypted at rest) and is distributed automatically to every connected daemon — no per-teammate secret management. See the [Cloud MCP docs](docs/cloud-mcp.md) for the full tool reference and setup.
+Team sync also deploys a read-only **Cloud MCP server** on the same Worker — a Streamable HTTP endpoint that exposes your project's intelligence to cloud agents like Anthropic Managed Agents, OpenAI Workflows, and N8N. Connect any tool that speaks MCP and it gets the same project context your local agents already have. See the [Cloud MCP docs](docs/cloud-mcp.md) for the tool reference and setup.
 
 ### Skills — automated curation, not just memory
 
 Memory is table stakes. Myco goes further: it turns everything your team learns into **repeatable workflows** that every agent follows. The intelligence pipeline identifies procedural patterns across sessions — debugging the build, adding API routes, configuring providers, resolving common gotchas — and surfaces them as candidates. You approve what becomes canon, and Myco generates validated SKILL.md files under `.agents/skills/`, symlinked into every agent's native skills directory.
 
-The result is consistency, quality, and excellence enforced by tooling. New teammates ship correctly on day one. Agents stop repeating the same mistakes. Your project's hard-won knowledge becomes the default path, not an optional footnote.
-
-Skills evolve as your code does. When a pattern is abandoned, a new gotcha is discovered, or a workflow shifts, the evolve task detects the drift and rewrites affected skills — preserving what's still accurate, incorporating what's new, and splitting skills that have grown too broad. Every change records full lineage: generation number, rationale, and a content snapshot. See the [Skills docs](docs/skills.md) for the full lifecycle.
+Skills evolve as your code does. When a pattern is abandoned, a new gotcha is discovered, or a workflow shifts, the evolve task rewrites affected skills — preserving what's still accurate, incorporating what's new, and splitting skills that have grown too broad. See the [Skills docs](docs/skills.md) for the full lifecycle.
 
 ### Backup & restore
 

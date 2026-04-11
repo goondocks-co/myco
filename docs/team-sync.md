@@ -1,47 +1,18 @@
 # Team Sync
 
-Share captured knowledge across machines and team members through a Cloudflare-backed sync layer. Local databases remain the source of truth — the cloud store is a queryable mirror that all connected nodes push to and search.
+Share captured knowledge across machines and team members through a Cloudflare-backed sync layer. Every teammate's agents benefit from the collective intelligence — the same digest, the same spores, the same graph — without you having to think about it.
 
-Team sync also deploys a [Cloud MCP Server](cloud-mcp.md) on the same Worker, exposing project intelligence to cloud agents (Anthropic Managed Agents, N8N, etc.) via Streamable HTTP. See [docs/cloud-mcp.md](cloud-mcp.md) for the complete guide.
+Team sync also deploys a [Cloud MCP Server](cloud-mcp.md) that exposes your project's knowledge to cloud agents (Anthropic Managed Agents, N8N, etc.). See [Cloud MCP docs](cloud-mcp.md) for that side of the feature.
 
-## How it works
+## What you get
 
-Each machine runs its own Myco daemon with a local SQLite database. When team sync is enabled, writes to knowledge tables (spores, sessions, plans, entities, graph edges) are enqueued in a local **outbox**. A background job pushes outbox batches to a thin **Cloudflare Worker**, which stores structured data in **D1** (SQLite) and embeddings in **Vectorize** (vector database). A **Workers KV** namespace holds runtime secrets — currently the Cloud MCP access token, separated from D1 so it's never exposed in database queries or backups.
+- Every new spore, session, plan, and graph edge syncs automatically in the background
+- Search queries fan out to both local and team data — results merge by relevance, tagged with source
+- Team context is additive — if the Worker is slow or unreachable, local results return alone
+- One-time backfill pushes all existing knowledge to the team store on first connect
+- Runs on the Cloudflare free tier for small teams
 
-When an agent searches for knowledge, Myco queries both the local database and the team Worker in parallel. Results are merged by relevance score and tagged with their source machine, so agents benefit from the entire team's accumulated intelligence.
-
-```mermaid
-graph LR
-    subgraph Node A
-        A_DB[(myco.db)]
-        A_Vec[(vectors.db)]
-    end
-
-    subgraph Cloudflare
-        W[Worker]
-        D1[(D1)]
-        V[(Vectorize)]
-        KV[(KV — secrets)]
-        AI[Workers AI]
-        W --> D1
-        W --> V
-        W --> KV
-        W --> AI
-    end
-
-    subgraph Node B
-        B_DB[(myco.db)]
-        B_Vec[(vectors.db)]
-    end
-
-    CA[Cloud Agent]
-
-    A_DB -- "POST /sync" --> W
-    W -- "GET /search" --> A_DB
-    B_DB -- "POST /sync" --> W
-    W -- "GET /search" --> B_DB
-    CA -- "MCP over Streamable HTTP" --> W
-```
+Local databases remain the source of truth — the cloud store is a queryable mirror. Nothing is pulled back down. Each record carries a machine identity for attribution.
 
 ## Quick start
 
@@ -56,13 +27,13 @@ wrangler login
 
 ### 2. Create the team
 
-One team member provisions the infrastructure. This creates a D1 database, a Vectorize index, a KV namespace for runtime secrets, and deploys the sync Worker.
+One team member runs this once. It provisions the Cloudflare infrastructure and deploys the sync Worker.
 
 ```bash
 myco team init
 ```
 
-The command outputs a **Worker URL** and **API key**. Share these with teammates.
+The command outputs a **Worker URL** and **API key**. Share these with teammates through your preferred out-of-band channel.
 
 ### 3. Connect teammates
 
@@ -81,36 +52,28 @@ On first connect, all existing local knowledge is backfilled into the outbox and
 | Plans and artifacts | Buffer files |
 | Resolution events | |
 | Digest extracts | |
+| Skill records and candidates | |
 
-Prompt batches sync without individual tool call activities — teammates see what was asked and answered, not every file read or bash command.
+Teammates see what was asked and answered, not every file read or bash command. That keeps the team store useful and keeps sync cost bounded.
 
 ## Machine identity
 
-Every record is tagged with a **machine identity** — a deterministic `{github_username}_{machine_hash}` (e.g., `chris_a7b3c2`). This enables:
+Every synced record is tagged with a **machine identity** — a deterministic `{github_username}_{machine_hash}` (e.g. `chris_a7b3c2`). This lets search results attribute knowledge to its source, and lets you filter "my data" vs "team data" when you want to.
 
-- Attributing knowledge to its source
-- Filtering "my data" vs "team data" in search results
-- Restoring backups from other machines without ID collisions
-
-The identity is generated once and cached at `.myco/machine_id`. It uses the GitHub username (via `gh` CLI or `GITHUB_USER` env) and a SHA256 hash of the machine's hostname, OS username, and MAC address.
+The identity is generated once per machine and cached at `.myco/machine_id`. Nothing to configure.
 
 ## Search fan-out
 
-When team sync is enabled, search queries run against both local and cloud databases in parallel:
-
-1. Local SQLite + sqlite-vec (semantic + FTS)
-2. Worker `/search` endpoint (Workers AI embedding + Vectorize + D1 FTS)
-
-Results merge into a single ranked list by similarity score. Since the cloud uses Workers AI `@cf/baai/bge-m3` (the same model recommended for local use), scores are directly comparable. Each result is tagged with its source:
+When team sync is connected, search queries hit both local and cloud databases in parallel, then merge by relevance score. Each result is tagged so you can tell where it came from:
 
 - `source: "local"` — from this machine
-- `source: "team:chris_a7b3c2"` — from the team store, attributed to a specific machine
+- `source: "team:chris_a7b3c2"` — from the team store, attributed
 
-If the Worker is slow or unreachable (strict 3-second timeout), local results return alone. Team search is additive, never blocking.
+If the cloud Worker is unreachable within a short timeout, local results return alone. Team search is always additive, never blocking.
 
 ## Cloud embedding alternative
 
-Since the team Worker uses Cloudflare Workers AI, team members who don't want to install Ollama locally can use Cloudflare's OpenAI-compatible embedding endpoint:
+If you don't want to run Ollama locally for embeddings, point at Cloudflare Workers AI instead — it uses the same model as the Worker, so embeddings are directly comparable:
 
 ```yaml
 # myco.yaml
@@ -120,83 +83,46 @@ embedding:
   base_url: https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1
 ```
 
-Store the Cloudflare API token in `secrets.env`. This uses the same model as the Worker, producing compatible embeddings.
+Store your Cloudflare API token in `secrets.env`.
 
 ## Backup & restore
 
-Independent of team sync, Myco creates local SQL dump backups for data resilience.
+Independent of team sync, Myco creates local SQL dump backups for resilience. Configure the backup directory on the **Operations** page, or click **Backup Now** for an on-demand dump. Restore supports a dry-run preview, and cross-machine restore preserves attribution so you can pull a teammate's backup file without losing who said what.
 
-- **Automatic** — backups run during daemon idle periods via the PowerManager
-- **Manual** — click "Backup Now" on the Operations page
-- **Configurable directory** — set a custom backup path (network share, git repo) on the Operations page
-- **Restore with preview** — dry-run shows what would be imported before executing
-- **Content-hash deduplication** — restoring never overwrites existing records
-- **Cross-machine restore** — restore a teammate's backup file; machine identity preserves attribution
-
-Backups include all knowledge tables (sessions, spores, entities, plans, etc.) but exclude logs, tool call activities, and vector embeddings (rebuilt automatically after restore).
-
-## Version awareness
-
-Team members may run different Myco versions. A `sync_protocol_version` (integer) gates compatibility:
-
-- The Worker stores a minimum and maximum supported protocol version
-- Nodes include their protocol version in every sync payload
-- Incompatible versions receive a clear error with upgrade instructions
-- **Forward-compatible by default** — the Worker ignores unknown fields, so newer nodes can add data without breaking older Workers
-
-The protocol version is decoupled from the npm package version. It only bumps on breaking changes to the sync wire format, which should be rare.
+Backups include all knowledge tables but exclude logs, tool call activities, and vector embeddings (rebuilt automatically after restore).
 
 ## Worker management
 
 ### Upgrade
 
-Any team member with Wrangler access can update the Worker:
+Any team member with Wrangler access can update the Worker to match their installed Myco version:
 
 ```bash
 myco team upgrade
 ```
 
-This redeploys the Worker with the current Myco version's bundled code.
+Or click **Update Worker** on the Team page when an update is available. The upgrade handles new infrastructure (like the KV namespace added for Cloud MCP), installs new runtime dependencies, and redeploys.
 
 ### Architecture
 
-The Worker is stateless — no WebSocket connections, no Durable Objects, no in-memory state. Each request reads from D1/Vectorize, processes, returns. Cloudflare handles scaling.
+The Worker is stateless — no WebSocket connections, no in-memory state. Each request reads from D1 or Vectorize, processes, and returns. Cloudflare handles scaling.
 
-**Worker endpoints:**
+Two Worker route groups:
 
-| Method | Route | Auth | Purpose |
-|--------|-------|------|---------|
-| `GET`  | `/health` | None | Connection status, node count, MCP token hash for change detection |
-| `POST` | `/connect` | Team API key | Register a node, return team config and current MCP access token |
-| `POST` | `/sync` | Team API key | Receive batch of records, write to D1 + Vectorize |
-| `GET`  | `/search` | Team API key | Semantic + FTS search across team data |
-| `GET`  | `/config` | Team API key | Return team configuration |
-| `PUT`  | `/config` | Team API key | Update team configuration |
-| `*`    | `/mcp/*` | MCP access token | Streamable HTTP MCP server for cloud agents |
-| `POST` | `/mcp/rotate` | Team API key | Rotate the MCP access token |
+- **Sync routes** (`/connect`, `/sync`, `/search`, `/config`, `/health`) — authenticated with the team API key, used by your daemon
+- **MCP routes** (`/mcp/*`, `/mcp/rotate`) — the [Cloud MCP Server](cloud-mcp.md) that cloud agents connect to
 
-See [Cloud MCP docs](cloud-mcp.md) for the full `/mcp` tool surface and cloud agent configuration.
+### Cost
 
-### Cloudflare free tier
-
-A small team (2-5 developers) stays well within free tier limits:
-
-| Service | Usage |
-|---------|-------|
-| Workers | Sync flushes + search queries |
-| D1 | Batch writes, search reads |
-| Vectorize | Embedding storage + similarity queries |
-| Workers AI | Embedding on sync + search |
-
-The $5/month paid tier provides significant headroom if needed.
+A small team (2-5 developers) stays comfortably within the Cloudflare free tier. The $5/month paid tier provides significant headroom if your team outgrows free.
 
 ## Dashboard
 
 ### Team page
 
 - **Not connected** — setup instructions and connect form (Worker URL + API key)
-- **Connected** — connection health, pending sync count, team credentials (copyable, with show/hide for the API key), machine identity, and a "Sync All" button for backfilling historical data
-- **Cloud MCP Endpoint** section (appears once the Worker has been upgraded to a Cloud-MCP-aware version) — shows the MCP URL, a redacted bearer token, a copy-paste config snippet for Anthropic Managed Agents, and a "Rotate token" action with a destructive-action confirmation. See [Cloud MCP docs](cloud-mcp.md).
+- **Connected** — connection health, pending sync count, team credentials (with show/hide for the API key), machine identity, and a "Sync All" button for backfilling historical data
+- **Cloud MCP Endpoint** — once the Worker supports Cloud MCP, this section shows the MCP URL, a redacted bearer token, a pre-formatted config snippet for Anthropic Managed Agents, and a "Rotate token" action. See [Cloud MCP docs](cloud-mcp.md).
 
 ### Operations page
 

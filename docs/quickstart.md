@@ -105,24 +105,9 @@ The dashboard lets you:
 
 All settings are saved to `myco.yaml` and take effect after a daemon restart (the dashboard handles this automatically).
 
-## MCP Tools
+## MCP tools
 
-Myco exposes 12 tools to your coding agent via MCP:
-
-| Tool | What it does |
-|------|-------------|
-| `myco_search` | Semantic + keyword search across spores, sessions, and plans |
-| `myco_recall` | Retrieve relevant spores for the current git branch and files |
-| `myco_context` | Fetch a digest extract at a specific token tier |
-| `myco_remember` | Capture a new observation (gotcha, decision, discovery, trade-off, bug-fix) |
-| `myco_supersede` | Mark a spore as replaced by a newer one |
-| `myco_consolidate` | Merge related spores into a wisdom note |
-| `myco_sessions` | Browse session history with filters |
-| `myco_plans` | List and read active plans |
-| `myco_graph` | Traverse knowledge graph connections |
-| `myco_team` | View team member activity |
-| `myco_skills` | List and inspect auto-generated skills and their lineage |
-| `myco_skill_candidates` | Browse the skill candidate approval queue |
+Myco exposes a set of MCP tools to your coding agent — search, recall, remember, browse sessions and plans, traverse the knowledge graph, and inspect skills. Agents discover them automatically through MCP.
 
 See [Agent Tools](agent-tools.md) for the full reference.
 
