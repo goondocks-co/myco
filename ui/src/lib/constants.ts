@@ -20,6 +20,10 @@ export const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 
 export const TASK_SOURCE_BUILTIN = 'built-in';
 export const TASK_SOURCE_USER = 'user';
 
+/** Release channels — must match backend RELEASE_CHANNELS. */
+export const RELEASE_CHANNELS = ['stable', 'beta'] as const;
+export type ReleaseChannel = (typeof RELEASE_CHANNELS)[number];
+
 /** Default page size for paginated list views. */
 export const DEFAULT_PAGE_SIZE = 50;
 

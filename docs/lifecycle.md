@@ -79,15 +79,22 @@ myco logs           # Tail daemon logs
 myco restart        # Manual restart (rarely needed)
 ```
 
-## After plugin updates
+## Updates
 
-When you update Myco:
+Myco installs a single global npm package, but a single machine may run one daemon per project. When a new version is available, you only need to update once — other projects catch up on their own.
 
-1. The running daemon keeps going with the old code until it shuts down naturally
-2. The next session start spawns a new daemon from the updated package
-3. The new daemon picks up seamlessly — same database, same indexes, same config
+### How to update
 
-No manual restart needed. If you want to pick up changes immediately, run `myco restart`.
+- **From the Operations page** — when a new version is available, an **Update & Restart** button appears. Click it to install the new package and restart that daemon.
+- **From the command line** — `npm update -g @goondocks/myco` installs the new version directly.
+
+Both paths end at the same state: the globally installed Myco package is at the new version.
+
+### What other projects do
+
+Other projects on the same machine discover the new version the next time you open their dashboard. They restart themselves, refresh their local hooks and symbiont registration if anything needs to change, and post a notification to their Operations page so you know what happened. You don't need to run `myco restart` or `myco update` manually in each project.
+
+If you want a daemon to pick up changes immediately rather than waiting for the next dashboard visit, `myco restart` still works and is instant.
 
 ## Configuration
 

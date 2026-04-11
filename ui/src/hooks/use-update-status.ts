@@ -16,6 +16,9 @@ export interface UpdateStatus {
   check_interval_hours?: number;
   last_check?: string;
   error?: string | null;
+  /** Set when daemon is auto-restarting for a version sync. */
+  restarting?: boolean;
+  reason?: string;
 }
 
 interface ApplyResponse {

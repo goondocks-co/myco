@@ -12,11 +12,13 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import YAML from 'yaml';
 import semver from 'semver';
 
 import {
   NPM_REGISTRY_URL,
+  NPM_PACKAGE_NAME,
   MYCO_GLOBAL_DIR,
   UPDATE_CHECK_CACHE_PATH,
   UPDATE_CONFIG_PATH,
@@ -72,11 +74,55 @@ const REGISTRY_FETCH_TIMEOUT_MS = 10_000;
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true when MYCO_CMD is set — indicates a dev symlink is in use and
- * update checks should be skipped.
+ * Returns true when MYCO_CMD is set — indicates a dev build is in use and
+ * update checks should be skipped. The daemon auto-sets MYCO_CMD at startup
+ * via detectDevBuild() when the running binary is not under the npm global
+ * prefix, so this check covers both explicit overrides (from symbiont hooks)
+ * and auto-detected dev runs.
  */
 export function isUpdateExempt(): boolean {
   return Boolean(process.env.MYCO_CMD);
+}
+
+/**
+ * Detects whether the running daemon is a dev build by comparing the CLI
+ * entry point's realpath against the npm global prefix's realpath. Returns
+ * the CLI entry path when a dev build is detected (so the caller can assign
+ * it to `process.env.MYCO_CMD`), or null when no auto-assignment applies.
+ *
+ * A dev build is any binary whose realpath is NOT under the npm global
+ * prefix — direct `myco-dev` invocations, `npm link` installs, local
+ * `node dist/cli.js` runs, etc.
+ *
+ * Returns null when:
+ * - envMycoCmd is truthy (explicit override always wins)
+ * - globalPrefix is null (npm prefix resolution failed; can't verify)
+ * - cliEntry is missing
+ * - realpath resolution throws
+ * - the binary IS under the global prefix (proper install — normal updates)
+ *
+ * All inputs are passed explicitly (no defaults) so tests can control the
+ * environment without inheriting from the enclosing process.
+ */
+export function detectDevBuild(
+  globalPrefix: string | null,
+  cliEntry: string | undefined,
+  envMycoCmd: string | undefined,
+  realpath: (p: string) => string,
+): string | null {
+  if (envMycoCmd) return null;
+  if (!globalPrefix) return null;
+  if (!cliEntry) return null;
+  try {
+    const resolvedEntry = realpath(cliEntry);
+    const resolvedPrefix = realpath(globalPrefix);
+    if (resolvedEntry.startsWith(resolvedPrefix + path.sep) || resolvedEntry === resolvedPrefix) {
+      return null;
+    }
+    return cliEntry;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +297,41 @@ function buildCheckResult(
     last_check: cache.checked_at,
     error,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Installed version detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves the npm global prefix by running `npm prefix -g`.
+ * Returns the trimmed path string. Throws on failure.
+ *
+ * Uses execFileSync (not execSync) to avoid shell injection — consistent
+ * with codebase conventions per src/utils/execFileNoThrow.ts patterns.
+ */
+export function resolveGlobalPrefix(): string {
+  return execFileSync('npm', ['prefix', '-g'], { encoding: 'utf-8', timeout: 5_000 }).trim();
+}
+
+/**
+ * Reads the version of the globally installed @goondocks/myco package
+ * from disk. Returns null if the package isn't installed or unreadable.
+ *
+ * Uses a direct fs.readFileSync of the package.json at the expected
+ * npm global path — no module resolution, no cache involvement.
+ */
+export function getInstalledVersion(globalPrefix: string): string | null {
+  try {
+    const pkgPath = path.join(
+      globalPrefix, 'lib', 'node_modules', NPM_PACKAGE_NAME, 'package.json',
+    );
+    const raw = fs.readFileSync(pkgPath, 'utf-8');
+    const pkg = JSON.parse(raw) as { version?: string };
+    return pkg.version ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------

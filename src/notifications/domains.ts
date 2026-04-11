@@ -45,4 +45,12 @@ export function registerBuiltinDomains(): void {
       { id: 'mycelium.spore.created', label: 'New spore extracted', defaultMode: 'summary', defaultLevel: 'info' },
     ],
   });
+
+  register({
+    domain: 'daemon',
+    label: 'Daemon',
+    types: [
+      { id: 'daemon.version_sync', label: 'Version sync restart', defaultMode: 'banner', defaultLevel: 'info' },
+    ],
+  });
 }
