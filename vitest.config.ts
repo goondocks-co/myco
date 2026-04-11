@@ -3,12 +3,44 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const TEST_PROFILE_FAST = 'fast';
+const TEST_PROFILE_INTEGRATION = 'integration';
+const DEFAULT_TEST_INCLUDES = ['tests/**/*.test.ts'];
+const DEFAULT_TEST_EXCLUDES = ['**/node_modules/**', '**/dist/**', '**/.worktrees/**'];
+const FAST_TEST_EXCLUDES = [
+  ...DEFAULT_TEST_EXCLUDES,
+  'tests/integration/**',
+  'tests/smoke/**',
+  'tests/daemon/integration.test.ts',
+  'tests/daemon/server.test.ts',
+  'tests/hooks/client.test.ts',
+];
+const INTEGRATION_TEST_INCLUDES = [
+  'tests/integration/**/*.test.ts',
+  'tests/smoke/**/*.test.ts',
+  'tests/daemon/integration.test.ts',
+  'tests/daemon/server.test.ts',
+  'tests/hooks/client.test.ts',
+];
+
+function resolveTestProfile() {
+  const profile = process.env.MYCO_TEST_PROFILE;
+  if (profile === TEST_PROFILE_FAST || profile === TEST_PROFILE_INTEGRATION) {
+    return profile;
+  }
+  return null;
+}
+
+const testProfile = resolveTestProfile();
+const testInclude = testProfile === TEST_PROFILE_INTEGRATION ? INTEGRATION_TEST_INCLUDES : DEFAULT_TEST_INCLUDES;
+const testExclude = testProfile === TEST_PROFILE_FAST ? FAST_TEST_EXCLUDES : DEFAULT_TEST_EXCLUDES;
 
 export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    exclude: ['**/node_modules/**', '**/dist/**', '**/.worktrees/**'],
+    exclude: testExclude,
+    include: testInclude,
     testTimeout: 15000,
     pool: 'threads',
     maxThreads: 4,

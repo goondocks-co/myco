@@ -1,6 +1,11 @@
-.PHONY: build build-only check test lint clean watch install dev-link dev-unlink ui-dev
+.PHONY: build build-fast build-only check check-fast test test-fast test-integration lint clean watch install dev-link dev-unlink ui-dev
 
-build: check
+build:
+	$(MAKE) -j2 check
+	npm run build
+
+build-fast:
+	$(MAKE) -j2 check-fast
 	npm run build
 
 build-only:
@@ -8,11 +13,19 @@ build-only:
 
 check: lint test
 
+check-fast: lint test-fast
+
 lint:
 	npx tsc --noEmit
 
 test:
 	npx vitest run
+
+test-fast:
+	npm run test:fast
+
+test-integration:
+	npm run test:integration
 
 watch:
 	npm run build:watch

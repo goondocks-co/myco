@@ -32,7 +32,7 @@ function makeStubCreator() {
 describe('resolveOllamaContextVariants', () => {
   it('passes through when there are no Ollama providers', async () => {
     const { createVariant, calls } = makeStubCreator();
-    const taskProvider: ProviderConfig = { type: 'cloud', model: 'claude-sonnet-4-6' };
+    const taskProvider: ProviderConfig = { type: 'anthropic', model: 'claude-sonnet-4-6' };
 
     const result = await resolveOllamaContextVariants(taskProvider, {}, createVariant);
 
@@ -190,7 +190,7 @@ describe('resolveOllamaContextVariants', () => {
     // the task baseline, ollama for a specific phase. The ollama phase
     // should still get a variant with the default context.
     const { createVariant, calls } = makeStubCreator();
-    const taskProvider: ProviderConfig = { type: 'cloud', model: 'claude-sonnet-4-6' };
+    const taskProvider: ProviderConfig = { type: 'anthropic', model: 'claude-sonnet-4-6' };
     const phaseOverrides = {
       draft: {
         maxTurns: 20,

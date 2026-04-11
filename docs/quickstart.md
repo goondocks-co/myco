@@ -1,18 +1,23 @@
 # Myco Quick Start
 
-Myco is a collective agent intelligence plugin that captures session knowledge — events, observations, decisions, trade-offs — into a SQLite-backed intelligence graph and serves it back via MCP tools. Install it, run `myco init` to configure your project, and start building institutional memory.
+Myco is a collective agent intelligence plugin that captures session knowledge — events, observations, decisions, trade-offs — into a SQLite-backed intelligence graph and serves it back via MCP tools. Install it, run `myco init` to bootstrap your project, then configure providers in the dashboard when you're ready.
 
 ## Requirements
 
 - **Node.js 22+**
-- **Embedding provider** (one of):
-  - [Ollama](https://ollama.com) with `bge-m3` model (local, free, recommended)
-  - [OpenRouter](https://openrouter.ai) API key (cloud)
-  - [OpenAI](https://platform.openai.com) API key (cloud)
-- **Intelligence provider** (one of):
-  - Cloud (Claude) — uses your existing Claude Code subscription or Anthropic API key
+- **At least one supported coding agent** — Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, or OpenCode
+
+Provider configuration (Myco Agent and embedding) is **optional** at install time — Myco works in data-collection mode out of the box, with full-text search over captured sessions. To enable the intelligence pipeline (spores, digest, skill lifecycle), configure providers in the dashboard after init.
+
+When you're ready to enable intelligence features, you'll need:
+
+- **Myco Agent provider** (one of):
+  - **Anthropic** — uses your existing Claude Code subscription or `ANTHROPIC_API_KEY`
   - [Ollama](https://ollama.com) — local models for extraction, summarization, and analysis
   - [LM Studio](https://lmstudio.ai) — local models via OpenAI-compatible API
+- **Embedding provider** (one of):
+  - [Ollama](https://ollama.com) with `bge-m3` model (local, free, recommended)
+  - [OpenAI-compatible](https://platform.openai.com) endpoint
 
 ## Install
 
@@ -32,24 +37,34 @@ npm install -g @goondocks/myco
 
 ## Set Up Your Project
 
-Run the interactive setup wizard:
-
 ```bash
 cd your-project
 myco init
 ```
 
-This guides you through:
+`myco init` is a fast bootstrap. It:
 
-1. **Intelligence provider** — Cloud (Claude), Ollama, or LM Studio for agent tasks
-2. **Embedding provider** — Ollama (local), OpenRouter, OpenAI, or skip
-3. **Model selection** — picks from available models with recommended defaults
-4. **Agent detection** — finds any installed agents (Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode) and registers Myco per project
+1. **Detects coding agents** — finds Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, or OpenCode and lets you pick which to register
+2. **Installs hooks, MCP entries, and skills** for each selected agent
+3. **Starts the daemon** in the background
+4. **Opens the dashboard** to the Settings page so you can configure providers when ready
 
-### Pull Ollama Models (if using local embeddings)
+The Myco Agent pipeline is **off by default** after init. Session capture starts immediately and you get full-text search out of the box. To enable the intelligence pipeline (spore extraction, digest, skill lifecycle), configure an agent provider in the dashboard's **Myco Agent** section — that enables the scheduled and event-driven task toggles automatically.
+
+### Configure Providers in the Dashboard
+
+After init, the dashboard opens to the Settings page. Two cards are at the top:
+
+- **Myco Agent** — pick Anthropic, Ollama, or LM Studio. The dropdown lists detected models. Click **Save** to enable the intelligence pipeline.
+- **Embedding** — pick Ollama or an OpenAI-compatible endpoint. Embedding models are filtered automatically.
+
+Each section saves independently. You can enable just one (e.g. embedding-only for semantic search) or both.
+
+### Pull Ollama Models (if using Ollama)
 
 ```bash
-ollama pull bge-m3
+ollama pull bge-m3                  # for embeddings
+ollama pull granite4:small-h        # for the agent (any LLM works)
 ```
 
 ### Health Check
@@ -59,6 +74,8 @@ After setup, verify everything is connected:
 ```bash
 myco doctor
 ```
+
+Doctor warns (rather than errors) when provider config is absent — data-collection mode is a valid post-init state.
 
 ## What Happens Next
 

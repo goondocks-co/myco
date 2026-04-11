@@ -68,7 +68,7 @@ export interface ContextQuery {
 
 /** API provider configuration for task execution. */
 export interface ProviderConfig {
-  type: 'cloud' | 'ollama' | 'lmstudio';
+  type: 'anthropic' | 'ollama' | 'lmstudio';
   baseUrl?: string;
   apiKey?: string;
   model?: string;

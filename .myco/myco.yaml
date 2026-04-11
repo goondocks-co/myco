@@ -1,5 +1,5 @@
 version: 3
-config_version: 3
+config_version: 4
 embedding:
   provider: ollama
   model: bge-m3:latest
@@ -20,21 +20,24 @@ agent:
   scheduled_tasks_enabled: true
   event_tasks_enabled: true
   provider:
-    type: cloud
+    type: anthropic
+    model: claude-sonnet-4-6
   tasks:
     full-intelligence:
       provider:
-        type: cloud
+        type: anthropic
         model: claude-sonnet-4-6
       phases:
         read-state:
           maxTurns: 20
+        extract:
+          maxTurns: 35
       schedule:
         enabled: true
         intervalSeconds: 1800
     title-summary:
       provider:
-        type: cloud
+        type: anthropic
         model: claude-sonnet-4-6
       timeoutSeconds: 180
     title-summary-custom:
@@ -44,25 +47,25 @@ agent:
         model: glm-4.7-flash:latest
     review-session:
       provider:
-        type: cloud
+        type: anthropic
         model: claude-sonnet-4-6
     skill-survey:
       provider:
-        type: cloud
+        type: anthropic
       schedule:
         enabled: true
         runIn:
           - idle
     skill-generate:
       provider:
-        type: cloud
+        type: anthropic
       schedule:
         enabled: true
         runIn:
           - idle
     skill-evolve:
       provider:
-        type: cloud
+        type: anthropic
       phases:
         assess:
           maxTurns: 30

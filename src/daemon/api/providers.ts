@@ -6,11 +6,21 @@
  *   POST /api/providers/test  — test connectivity to a specific provider
  */
 
+import Anthropic from '@anthropic-ai/sdk';
 import { OllamaBackend } from '../../intelligence/ollama.js';
 import { LmStudioBackend } from '../../intelligence/lm-studio.js';
 import { checkLocalProvider } from '../../intelligence/provider-check.js';
-import { ANTHROPIC_MODELS } from './models.js';
+import { ANTHROPIC_MODELS, filterLlmModels } from './models.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
+
+/** Timeout for the live Anthropic model list query (short -- fall back fast). */
+const ANTHROPIC_MODELS_TIMEOUT_MS = 5000;
+
+/** TTL for the cached live Anthropic model list. The list changes rarely
+ *  and the SDK call is the slowest part of `/providers`; cache to keep the
+ *  endpoint snappy under React Query's 30s stale time. */
+const ANTHROPIC_MODELS_CACHE_TTL_MS = 10 * 60 * 1000;
+let anthropicModelsCache: { ts: number; models: string[] } | null = null;
 
 /** HTTP status codes. */
 const HTTP_OK = 200;
@@ -44,10 +54,11 @@ interface TestResult {
  * slow/unavailable provider doesn't block the others.
  */
 export async function handleGetProviders(): Promise<RouteResponse> {
+  // UI rendering order: Anthropic first (recommended default), then locals.
   const results = await Promise.allSettled([
+    detectAnthropic(),
     detectLocalProviderInfo('ollama', OllamaBackend.DEFAULT_BASE_URL),
     detectLocalProviderInfo('lmstudio', LmStudioBackend.DEFAULT_BASE_URL),
-    detectCloud(),
   ]);
 
   const providers: ProviderInfo[] = results.map((r) =>
@@ -62,17 +73,17 @@ export async function handleGetProviders(): Promise<RouteResponse> {
 /**
  * Test connectivity to a specific provider.
  *
- * Accepts: { type: 'cloud' | 'ollama' | 'lmstudio', baseUrl?: string, model?: string }
+ * Accepts: { type: 'anthropic' | 'ollama' | 'lmstudio', baseUrl?: string, model?: string }
  * Returns: { ok: boolean, latency_ms?: number, error?: string }
  */
 export async function handleTestProvider(req: RouteRequest): Promise<RouteResponse> {
   const body = req.body as Record<string, unknown> | undefined;
   const type = body?.type as string | undefined;
 
-  if (!type || !['cloud', 'ollama', 'lmstudio'].includes(type)) {
+  if (!type || !['anthropic', 'ollama', 'lmstudio'].includes(type)) {
     return {
       status: HTTP_BAD_REQUEST,
-      body: { error: 'type is required and must be one of: cloud, ollama, lmstudio' },
+      body: { error: 'type is required and must be one of: anthropic, ollama, lmstudio' },
     };
   }
 
@@ -86,7 +97,7 @@ export async function handleTestProvider(req: RouteRequest): Promise<RouteRespon
     } else if (type === 'lmstudio') {
       result = await testLocalProvider(new LmStudioBackend({ base_url: baseUrl }), 'LM Studio', LmStudioBackend.DEFAULT_BASE_URL, baseUrl);
     } else {
-      result = testCloud();
+      result = testAnthropic();
     }
   } catch (err) {
     result = { ok: false, error: String(err) };
@@ -103,22 +114,52 @@ export async function handleTestProvider(req: RouteRequest): Promise<RouteRespon
 // Detection helpers
 // ---------------------------------------------------------------------------
 
-/** Detect a local provider (Ollama or LM Studio) and wrap as ProviderInfo. */
+/** Detect a local provider (Ollama or LM Studio) and wrap as ProviderInfo.
+ *  Filters embedding models out — the agent provider only runs LLM tasks. */
 async function detectLocalProviderInfo(
   type: 'ollama' | 'lmstudio',
   defaultBaseUrl: string,
 ): Promise<ProviderInfo> {
   const status = await checkLocalProvider(type);
   // Filter out Myco-created context variants (e.g., gpt-oss-ctx32768)
-  const models = status.models.filter(m => !/-ctx\d+/.test(m));
+  const variantFiltered = status.models.filter(m => !/-ctx\d+/.test(m));
+  // Drop embedding models -- the agent provider only runs LLM tasks
+  const models = filterLlmModels(variantFiltered);
   return { type, available: status.available, baseUrl: defaultBaseUrl, models };
 }
 
-async function detectCloud(): Promise<ProviderInfo> {
-  // Cloud is always available — the SDK handles auth internally via OAuth,
+async function detectAnthropic(): Promise<ProviderInfo> {
+  // Anthropic is always available — the SDK handles auth internally via OAuth,
   // API key, Bedrock, Vertex, or Foundry. The daemon can't reliably detect
   // which method is in use since env vars aren't always inherited.
-  return { type: 'cloud', available: true, models: ANTHROPIC_MODELS };
+  //
+  // The live model list is cached with a 10-minute TTL so we don't hit the
+  // SDK on every `/providers` request. On any failure (no API key set in the
+  // daemon's env, no network, OAuth-only auth) we fall back to the hardcoded
+  // ANTHROPIC_MODELS constant so the dropdown is never empty.
+  const now = Date.now();
+  if (anthropicModelsCache && now - anthropicModelsCache.ts < ANTHROPIC_MODELS_CACHE_TTL_MS) {
+    return { type: 'anthropic', available: true, models: anthropicModelsCache.models };
+  }
+
+  let models = ANTHROPIC_MODELS;
+  try {
+    const client = new Anthropic();
+    const response = await client.models.list(
+      { limit: 50 },
+      { timeout: ANTHROPIC_MODELS_TIMEOUT_MS },
+    );
+    const liveModels = response.data
+      .map((m) => m.id)
+      .filter((id) => id.startsWith('claude-'));
+    if (liveModels.length > 0) {
+      models = liveModels;
+    }
+  } catch {
+    // Fall through to hardcoded ANTHROPIC_MODELS
+  }
+  anthropicModelsCache = { ts: now, models };
+  return { type: 'anthropic', available: true, models };
 }
 
 // ---------------------------------------------------------------------------
@@ -139,7 +180,7 @@ async function testLocalProvider(
   return { ok: true };
 }
 
-function testCloud(): TestResult {
+function testAnthropic(): TestResult {
   // SDK handles auth — always report OK. Auth failures surface at runtime.
   return { ok: true };
 }

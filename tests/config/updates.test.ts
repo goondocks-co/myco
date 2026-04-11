@@ -130,7 +130,7 @@ describe('withTaskConfig', () => {
     let config = withTaskConfig(baseConfig(), 'full-intelligence', {
       phases: {
         extraction: { provider: { type: 'ollama' } },
-        linking: { provider: { type: 'cloud' } },
+        linking: { provider: { type: 'anthropic' } },
       },
     });
     config = withTaskConfig(config, 'full-intelligence', {

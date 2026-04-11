@@ -10,7 +10,7 @@ cd your-project
 myco init
 ```
 
-The wizard shows all available agents and lets you choose which to configure. Detected agents are pre-checked.
+`myco init` shows all available agents and lets you choose which to configure. Detected agents are pre-checked.
 
 ## How Registration Works
 

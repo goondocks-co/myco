@@ -10,7 +10,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 ## When to Use
 
-Apply this skill whenever you're wiring a new domain into Myco's notification system — even if the request is as simple as "make the digest task emit a notification when it's done." The skills domain (`vault_finalize_skill`) is the first domain with a wired emit point and serves as the reference implementation. Remaining domains (digest, sync, embedding) still have no emit points — follow this procedure to add them.
+Apply this skill whenever you're wiring a new domain into Myco's notification system — even if the request is as simple as "make the digest task emit a notification when it's done." The skills domain (`vault_finalize_skill`) is the reference emitter implementation. All five domains (agents, sessions, skills, mycelium, daemon) are now wired — use this procedure when adding a sixth domain or a new emission point within an existing domain.
 
 **Triggers:** "hook up notifications for X", "make X emit a notification/banner", "add notification when X completes", "wire up notification for [domain]"
 
@@ -37,7 +37,7 @@ notificationRegistry.register({
 
 **Idempotent:** Safe to call on every daemon restart. The registry is in-memory and rebuilt each time, so duplicate calls after restart are not a concern.
 
-There are 9 types registered across 4 domains: agents (2), sessions (2), skills (3), mycelium (2). All use the same `register()` pattern.
+There are 10 types registered across 5 domains: agents (2), sessions (2), skills (3), mycelium (2), daemon (1). All use the same `register()` pattern.
 
 ---
 
@@ -115,7 +115,7 @@ For a new domain, verify:
 
 ## Common Pitfalls
 
-**Reference implementation available.** The skills domain (`vault_finalize_skill`) is the first wired emitter — search the codebase for `vault_finalize_skill` to see a working `notificationService.emit()` call. Remaining domains (digest, sync, embedding) still have no emit points and follow this procedure from scratch.
+**Reference implementation available.** The skills domain (`vault_finalize_skill`) is the reference wired emitter — search the codebase for `vault_finalize_skill` to see a working `notificationService.emit()` call.
 
 **`register()` is not lazy.** The registry lookup on `emit()` throws if the type was never registered. Do not call `register()` inside the `emit()` path as a lazy fallback — declare all types at daemon startup.
 

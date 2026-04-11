@@ -10,6 +10,7 @@ import { listRuns, countRuns, getRun, getLatestRunId } from '@myco/db/queries/ru
 import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
 import { buildTaskInstruction, isInstructionRequiredTask } from '@myco/agent/instruction-builders.js';
+import { hasConfiguredProvider } from '@myco/agent/config-resolver.js';
 import { loadConfig } from '@myco/config/loader.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -57,12 +58,24 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
   async function handleRun(req: RouteRequest): Promise<RouteResponse> {
     const { task, instruction: rawInstruction, agentId } = AgentRunBody.parse(req.body);
 
+    // Guard: ensure a provider is configured before allowing a run.
+    // Uses the same per-task-over-global precedence as the executor's resolver.
+    const mycoConfig = loadConfig(vaultDir);
+    if (!hasConfiguredProvider(mycoConfig, task)) {
+      return {
+        status: 400,
+        body: {
+          ok: false,
+          error: 'No agent provider configured. Configure one in Settings.',
+        },
+      };
+    }
+
     let instruction = rawInstruction;
     let runContext: { candidate_id?: string } | undefined;
     if (task && !instruction) {
       let built;
       try {
-        const mycoConfig = loadConfig(vaultDir);
         const taskParams = mycoConfig.agent.tasks?.[task]?.params;
         built = buildTaskInstruction(task, taskParams);
       } catch {

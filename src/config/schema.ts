@@ -22,7 +22,7 @@ const CaptureSchema = z.object({
 
 /** Provider config shape used in both task-level and phase-level overrides. */
 const ProviderOverrideSchema = z.object({
-  type: z.enum(['cloud', 'ollama', 'lmstudio']),
+  type: z.enum(['anthropic', 'ollama', 'lmstudio']),
   base_url: z.string().optional(),
   model: z.string().optional(),
   /** Context window size for local models (Ollama num_ctx, LM Studio context_length). */

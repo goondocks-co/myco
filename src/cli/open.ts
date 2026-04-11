@@ -1,5 +1,5 @@
 import { connectToDaemon } from './shared.js';
-import { exec } from 'node:child_process';
+import { openBrowser } from './open-browser.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -18,11 +18,6 @@ export async function run(_args: string[], vaultDir: string): Promise<void> {
 
   const url = `http://localhost:${port}/`;
 
-  // `start` on Windows is a cmd.exe builtin, not an executable — must use exec, not execFile
-  const cmd = process.platform === 'darwin' ? `open ${url}`
-    : process.platform === 'win32' ? `start ${url}`
-    : `xdg-open ${url}`;
-
-  exec(cmd);
+  openBrowser(url);
   console.log(`Opened ${url}`);
 }

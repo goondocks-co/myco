@@ -21,7 +21,19 @@ import {
 } from './loader.js';
 import { loadAllTasks } from './registry.js';
 import { loadConfig } from '@myco/config/loader.js';
+import type { MycoConfig } from '@myco/config/schema.js';
 import type { ProviderConfig, EffectiveConfig } from './types.js';
+
+/**
+ * Returns true when an agent provider is configured for the given task —
+ * either via a per-task override (`agent.tasks[name].provider`) or the
+ * global default (`agent.provider`). Per-task overrides take precedence,
+ * matching the resolution order in `resolveRunConfig` below.
+ */
+export function hasConfiguredProvider(mycoConfig: MycoConfig, taskName?: string): boolean {
+  const taskProvider = taskName ? mycoConfig.agent.tasks?.[taskName]?.provider : undefined;
+  return !!(taskProvider ?? mycoConfig.agent.provider);
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -54,7 +66,7 @@ export interface ResolvedRunConfig {
  * (settings.json -> hooks -> daemon).
  */
 function toProviderConfig(p: {
-  type: 'cloud' | 'ollama' | 'lmstudio';
+  type: 'anthropic' | 'ollama' | 'lmstudio';
   base_url?: string;
   model?: string;
   context_length?: number;

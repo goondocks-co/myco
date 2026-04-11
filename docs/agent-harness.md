@@ -445,7 +445,7 @@ Higher in the diagram = lower priority. The per-phase config in `myco.yaml` wins
 agent:
   scheduled_tasks_enabled: true      # Master toggle for scheduled tasks
   provider:                          # Global default
-    type: cloud
+    type: anthropic
     model: claude-sonnet-4-6
   tasks:
     title-summary:
@@ -459,8 +459,8 @@ agent:
         intervalSeconds: 300         # Check for unprocessed batches every 5 min
       phases:
         extract:
-          provider:                  # Cloud for extraction quality
-            type: cloud
+          provider:                  # Anthropic for extraction quality
+            type: anthropic
             model: claude-sonnet-4-6
         consolidate:
           provider:                  # Local for cost savings
@@ -472,11 +472,9 @@ agent:
 
 | Provider | Type | Notes |
 |----------|------|-------|
-| **Cloud** (Anthropic) | `cloud` | Claude models via Anthropic API |
+| **Anthropic** | `anthropic` | Claude models via Anthropic API or Claude Code OAuth |
 | **Ollama** | `ollama` | Local models, auto-creates context-aware variants |
 | **LM Studio** | `lmstudio` | Local models via OpenAI-compatible API |
-| **OpenRouter** | `openrouter` | Cloud model gateway |
-| **OpenAI-compatible** | `openai-compatible` | Any OpenAI-compatible endpoint |
 
 For Ollama, the executor automatically creates Modelfile variants with the correct `num_ctx` parameter baked in, since per-request context window overrides are unreliable when a model is already loaded.
 
@@ -568,9 +566,9 @@ agent:
 
   # Default provider for all tasks
   provider:
-    type: cloud                      # cloud | ollama | lmstudio | openrouter | openai-compatible
+    type: anthropic                  # anthropic | ollama | lmstudio
     model: claude-sonnet-4-6         # Model name
-    base_url: http://...             # For local/custom endpoints
+    base_url: http://...             # For local providers
     context_length: 8192             # For local models
 
   # Per-task overrides (all fields optional)

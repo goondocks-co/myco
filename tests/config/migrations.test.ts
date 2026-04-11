@@ -149,9 +149,77 @@ describe('Migration v3: schedule-to-task-level', () => {
   });
 });
 
+const v4 = MIGRATIONS.find((m) => m.version === 4)!;
+
+describe('Migration v4: rename-cloud-provider-to-anthropic', () => {
+  it('renames global agent provider type from cloud to anthropic', () => {
+    const doc: Record<string, unknown> = {
+      agent: { provider: { type: 'cloud', model: 'claude-sonnet-4-6' } },
+    };
+    v4.migrate(doc, '/tmp');
+
+    const agent = doc.agent as Record<string, unknown>;
+    const provider = agent.provider as Record<string, unknown>;
+    expect(provider.type).toBe('anthropic');
+    expect(provider.model).toBe('claude-sonnet-4-6');
+  });
+
+  it('renames per-task provider override from cloud to anthropic', () => {
+    const doc: Record<string, unknown> = {
+      agent: {
+        tasks: {
+          'full-intelligence': { provider: { type: 'cloud' } },
+          'skill-survey': { provider: { type: 'ollama', model: 'gpt-oss' } },
+        },
+      },
+    };
+    v4.migrate(doc, '/tmp');
+
+    const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
+    expect((tasks['full-intelligence'].provider as Record<string, unknown>).type).toBe('anthropic');
+    // ollama should be untouched
+    expect((tasks['skill-survey'].provider as Record<string, unknown>).type).toBe('ollama');
+  });
+
+  it('renames per-phase provider override from cloud to anthropic', () => {
+    const doc: Record<string, unknown> = {
+      agent: {
+        tasks: {
+          'full-intelligence': {
+            phases: {
+              extract: { provider: { type: 'cloud' } },
+              digest: { provider: { type: 'lmstudio', base_url: 'http://localhost:1234' } },
+            },
+          },
+        },
+      },
+    };
+    v4.migrate(doc, '/tmp');
+
+    const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
+    const phases = tasks['full-intelligence'].phases as Record<string, Record<string, unknown>>;
+    expect((phases.extract.provider as Record<string, unknown>).type).toBe('anthropic');
+    expect((phases.digest.provider as Record<string, unknown>).type).toBe('lmstudio');
+  });
+
+  it('is a no-op when no agent section exists', () => {
+    const doc: Record<string, unknown> = { embedding: { provider: 'ollama' } };
+    expect(() => v4.migrate(doc, '/tmp')).not.toThrow();
+  });
+
+  it('is a no-op when no provider is configured', () => {
+    const doc: Record<string, unknown> = {
+      agent: { scheduled_tasks_enabled: false },
+    };
+    v4.migrate(doc, '/tmp');
+    const agent = doc.agent as Record<string, unknown>;
+    expect(agent.provider).toBeUndefined();
+  });
+});
+
 describe('CURRENT_MIGRATION_VERSION', () => {
-  it('is 3', () => {
-    expect(CURRENT_MIGRATION_VERSION).toBe(3);
+  it('is 4', () => {
+    expect(CURRENT_MIGRATION_VERSION).toBe(4);
   });
 });
 
@@ -163,22 +231,35 @@ describe('runMigrations', () => {
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(3);
+    expect(doc.config_version).toBe(4);
 
     const agent = doc.agent as Record<string, unknown>;
     const tasks = agent.tasks as Record<string, Record<string, unknown>>;
     expect(tasks['full-intelligence'].schedule).toBeDefined();
   });
 
-  it('skips v3 when config_version is already 3', () => {
+  it('runs v4 when config_version is 3', () => {
     const doc: Record<string, unknown> = {
       config_version: 3,
-      agent: { auto_run: true },
+      agent: { provider: { type: 'cloud' } },
+    };
+    const ran = runMigrations(doc, '/tmp');
+    expect(ran).toBe(true);
+    expect(doc.config_version).toBe(4);
+    const agent = doc.agent as Record<string, unknown>;
+    expect((agent.provider as Record<string, unknown>).type).toBe('anthropic');
+  });
+
+  it('skips all migrations when config_version is already 4', () => {
+    const doc: Record<string, unknown> = {
+      config_version: 4,
+      agent: { auto_run: true, provider: { type: 'cloud' } },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(false);
-    // auto_run should NOT have been touched
+    // auto_run and cloud should NOT have been touched
     const agent = doc.agent as Record<string, unknown>;
     expect(agent.auto_run).toBe(true);
+    expect((agent.provider as Record<string, unknown>).type).toBe('cloud');
   });
 });

@@ -646,7 +646,7 @@ export async function runAgent(
   const effectiveModel = effectiveProvider?.model ?? config.model;
   const runMeta = {
     model: effectiveModel,
-    provider: effectiveProvider?.type ?? 'cloud',
+    provider: effectiveProvider?.type ?? 'anthropic',
     ...(effectiveProvider?.baseUrl ? { baseUrl: effectiveProvider.baseUrl } : {}),
   };
 

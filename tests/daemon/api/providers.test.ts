@@ -83,14 +83,14 @@ describe('handleGetProviders', () => {
     expect(ollama!.models).toEqual(['llama3', 'codellama']);
   });
 
-  it('always reports cloud as available', async () => {
+  it('always reports anthropic as available', async () => {
     const result = await handleGetProviders();
     const providers = (result.body as { providers: Array<Record<string, unknown>> }).providers;
-    const cloud = providers.find((p) => p.type === 'cloud');
+    const anthropic = providers.find((p) => p.type === 'anthropic');
 
-    expect(cloud).toBeDefined();
-    expect(cloud!.available).toBe(true);
-    expect((cloud!.models as string[]).length).toBeGreaterThan(0);
+    expect(anthropic).toBeDefined();
+    expect(anthropic!.available).toBe(true);
+    expect((anthropic!.models as string[]).length).toBeGreaterThan(0);
   });
 });
 
@@ -171,11 +171,11 @@ describe('handleTestProvider — connectivity', () => {
     expect(body.error).toBeDefined();
   });
 
-  it('tests cloud provider with API key set', async () => {
+  it('tests anthropic provider with API key set', async () => {
     vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
 
     const result = await handleTestProvider({
-      body: { type: 'cloud' },
+      body: { type: 'anthropic' },
       query: {},
       params: {},
       pathname: '/api/providers/test',
@@ -186,9 +186,9 @@ describe('handleTestProvider — connectivity', () => {
     expect(body.ok).toBe(true);
   });
 
-  it('tests cloud provider always returns ok', async () => {
+  it('tests anthropic provider always returns ok', async () => {
     const result = await handleTestProvider({
-      body: { type: 'cloud' },
+      body: { type: 'anthropic' },
       query: {},
       params: {},
       pathname: '/api/providers/test',
