@@ -2,11 +2,14 @@
  * Tests for the update checker module.
  *
  * Covers:
- * - isUpdateExempt — dev-mode detection via MYCO_CMD
+ * - isUpdateExempt / setDevBuildCliEntry — dev-mode exemption via
+ *   module-level state (replaces the old MYCO_CMD env-var dispatch)
  * - readUpdateConfig — defaults when missing, reads YAML when present
  * - isCacheStale — null cache, fresh cache, expired cache
  * - checkForUpdate — fetches registry, update detection, channel logic
  * - statusFromCache — builds CheckResult from cache without registry
+ * - detectDevBuild — realpath comparison against npm global prefix
+ * - resolveMycoBinary — dev CLI entry vs literal `myco` fallback
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -31,6 +34,9 @@ vi.mock('node:os', () => ({
 import fs from 'node:fs';
 import {
   isUpdateExempt,
+  setDevBuildCliEntry,
+  getDevBuildCliEntry,
+  resolveMycoBinary,
   readUpdateConfig,
   isCacheStale,
   checkForUpdate,
@@ -108,6 +114,10 @@ function mockFetchFailure(message = 'network error'): void {
 beforeEach(() => {
   vi.resetAllMocks();
   vi.unstubAllEnvs();
+  // The dev-build CLI entry is module state — reset between tests so
+  // a prior test's "set to dev" doesn't bleed into the next test's
+  // "expect prod" assertion.
+  setDevBuildCliEntry(null);
   vi.mocked(fs.mkdirSync).mockReturnValue(undefined);
   vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
   vi.mocked(fs.unlinkSync).mockReturnValue(undefined);
@@ -115,21 +125,50 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  setDevBuildCliEntry(null);
 });
 
 // ---------------------------------------------------------------------------
 // isUpdateExempt
 // ---------------------------------------------------------------------------
 
-describe('isUpdateExempt()', () => {
-  it('returns false when MYCO_CMD is not set', () => {
-    vi.stubEnv('MYCO_CMD', '');
+describe('isUpdateExempt() / setDevBuildCliEntry() / getDevBuildCliEntry()', () => {
+  it('returns false when no dev-build CLI entry has been recorded', () => {
     expect(isUpdateExempt()).toBe(false);
+    expect(getDevBuildCliEntry()).toBeNull();
   });
 
-  it('returns true when MYCO_CMD is set', () => {
-    vi.stubEnv('MYCO_CMD', 'myco-dev');
+  it('returns true after setDevBuildCliEntry records a path', () => {
+    setDevBuildCliEntry('/Users/dev/.local/bin/myco-dev');
     expect(isUpdateExempt()).toBe(true);
+    expect(getDevBuildCliEntry()).toBe('/Users/dev/.local/bin/myco-dev');
+  });
+
+  it('returns false after setDevBuildCliEntry(null) clears the state', () => {
+    setDevBuildCliEntry('/Users/dev/.local/bin/myco-dev');
+    setDevBuildCliEntry(null);
+    expect(isUpdateExempt()).toBe(false);
+    expect(getDevBuildCliEntry()).toBeNull();
+  });
+
+  it('ignores the legacy MYCO_CMD env var entirely', () => {
+    // Regression guard: the old implementation returned true when
+    // MYCO_CMD was set in the process environment. Dev-mode exemption
+    // now flows through setDevBuildCliEntry exclusively — a stray
+    // MYCO_CMD leaked from a parent shell must have no effect.
+    vi.stubEnv('MYCO_CMD', 'myco-dev');
+    expect(isUpdateExempt()).toBe(false);
+  });
+});
+
+describe('resolveMycoBinary()', () => {
+  it('returns the recorded dev-build CLI entry when set', () => {
+    setDevBuildCliEntry('/Users/dev/.local/bin/myco-dev');
+    expect(resolveMycoBinary()).toBe('/Users/dev/.local/bin/myco-dev');
+  });
+
+  it('returns the literal `myco` fallback when no dev entry is recorded', () => {
+    expect(resolveMycoBinary()).toBe('myco');
   });
 });
 
@@ -511,18 +550,13 @@ describe('detectDevBuild()', () => {
   /** Identity resolver — test paths don't exist, so bypass real realpath. */
   const identityResolver = (p: string) => p;
 
-  it('returns null when MYCO_CMD is already set', () => {
-    const result = detectDevBuild('/opt/homebrew', '/home/user/.local/bin/myco-dev', 'myco-dev', identityResolver);
-    expect(result).toBeNull();
-  });
-
   it('returns null when globalPrefix is null', () => {
-    const result = detectDevBuild(null, '/home/user/.local/bin/myco-dev', undefined, identityResolver);
+    const result = detectDevBuild(null, '/home/user/.local/bin/myco-dev', identityResolver);
     expect(result).toBeNull();
   });
 
   it('returns null when cliEntry is missing', () => {
-    const result = detectDevBuild('/opt/homebrew', undefined, undefined, identityResolver);
+    const result = detectDevBuild('/opt/homebrew', undefined, identityResolver);
     expect(result).toBeNull();
   });
 
@@ -530,7 +564,6 @@ describe('detectDevBuild()', () => {
     const result = detectDevBuild(
       '/opt/homebrew',
       '/home/user/.local/bin/myco-dev',
-      undefined,
       identityResolver,
     );
     expect(result).toBe('/home/user/.local/bin/myco-dev');
@@ -540,7 +573,6 @@ describe('detectDevBuild()', () => {
     const result = detectDevBuild(
       '/opt/homebrew',
       '/opt/homebrew/lib/node_modules/@goondocks/myco/dist/cli.js',
-      undefined,
       identityResolver,
     );
     expect(result).toBeNull();
@@ -551,7 +583,6 @@ describe('detectDevBuild()', () => {
     const result = detectDevBuild(
       '/opt/homebrew',
       '/opt/homebrew-foo/bin/myco',
-      undefined,
       identityResolver,
     );
     expect(result).toBe('/opt/homebrew-foo/bin/myco');
@@ -570,7 +601,6 @@ describe('detectDevBuild()', () => {
     const result = detectDevBuild(
       '/opt/homebrew',
       '/home/user/.local/bin/myco-dev',
-      undefined,
       symlinkResolver,
     );
     expect(result).toBeNull();
@@ -584,7 +614,6 @@ describe('detectDevBuild()', () => {
     const result = detectDevBuild(
       '/opt/homebrew',
       '/home/user/.local/bin/myco-dev',
-      undefined,
       throwingResolver,
     );
     expect(result).toBeNull();

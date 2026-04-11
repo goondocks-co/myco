@@ -2,13 +2,12 @@
   "mcpServers": {
     "myco": {
       "type": "stdio",
-      "command": "myco-run",
+      "command": "node",
       "args": [
+        ".agents/myco-run.cjs",
         "mcp"
       ]
     }
   },
-  "env": {
-    "MYCO_CMD": "myco-dev"
-  }
+  "env": {}
 }

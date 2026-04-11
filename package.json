@@ -6,11 +6,9 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "myco": "dist/src/cli.js",
-    "myco-run": "bin/myco-run"
+    "myco": "dist/src/cli.js"
   },
   "files": [
-    "bin/",
     "dist/",
     "commands/",
     "skills/",

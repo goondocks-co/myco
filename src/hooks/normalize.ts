@@ -48,12 +48,14 @@ let cachedManifest: SymbiontManifest | null | undefined;
  * The hook command line rendered by the installer for every symbiont's
  * hooks.json looks like:
  *
- *     node .agents/myco-hook.cjs hook session-start --symbiont codex
+ *     node .agents/myco-run.cjs hook session-start --symbiont codex
  *
- * myco-hook.cjs passes all argv through to `myco-run`, so by the time
- * the hook handler module loads, `process.argv` contains the flag. This
- * is the installer's explicit declaration of which symbiont owns this
- * invocation — strictly more reliable than any runtime heuristic.
+ * `.agents/myco-run.cjs` resolves the myco binary via
+ * `.myco/runtime.command` and execs it with all argv passed through, so
+ * by the time the hook handler module loads, `process.argv` contains
+ * the flag. This is the installer's explicit declaration of which
+ * symbiont owns this invocation — strictly more reliable than any
+ * runtime heuristic.
  *
  * Supports both `--symbiont codex` (two args) and `--symbiont=codex`
  * (one arg) to be forgiving about shell quoting on Windows.

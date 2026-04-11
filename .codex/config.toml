@@ -1,12 +1,9 @@
 [shell_environment_policy]
 inherit = "core"
 
-[shell_environment_policy.set]
-MYCO_CMD = "myco-dev"
-
 [mcp_servers.myco]
-command = "myco-run"
-args = ["mcp"]
+command = "node"
+args = [".agents/myco-run.cjs", "mcp"]
 
 [features]
 codex_hooks = true

@@ -31,6 +31,14 @@ export interface InstallParams {
   projectRoot: string;
   /** Absolute path to the vault directory for `myco daemon --vault`. */
   vaultDir: string;
+  /**
+   * Literal myco binary the script should invoke for the post-install
+   * `update --project` step and the final daemon respawn. Baked into the
+   * script at generation time — see `resolveMycoBinary()` in update-checker
+   * for how the daemon picks it (dev build CLI entry in dev mode, bare
+   * `myco` in prod).
+   */
+  mycoBinary: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -48,22 +56,26 @@ export interface InstallParams {
  * 7. Cleans up the script file itself.
  */
 export function generateUpdateScript(params: InstallParams): string {
-  const { targetVersion, projectRoot, vaultDir } = params;
+  const { targetVersion, projectRoot, vaultDir, mycoBinary } = params;
 
   // Use JSON.stringify for safe path quoting (handles spaces, special chars).
   const packageSpec = `${NPM_PACKAGE_NAME}@${targetVersion}`;
   const quotedProjectRoot = JSON.stringify(projectRoot);
   const quotedVaultDir = JSON.stringify(vaultDir);
+  const quotedMycoBinary = JSON.stringify(mycoBinary);
   const quotedErrorPath = JSON.stringify(UPDATE_ERROR_PATH);
   const errorJson = JSON.stringify(
     JSON.stringify({ error: `npm install failed for ${packageSpec}` }),
   );
 
-  // Use ${MYCO_CMD:-myco} so dev environments (myco-dev) survive the restart.
-  // Matches the myco-run pattern: exec "${MYCO_CMD:-myco}" "$@"
+  // Bake the literal myco binary into the script at generation time. Prod
+  // installs get `"myco"` (PATH-resolves to the freshly-updated global
+  // binary). Dev builds get the CLI entry path recorded in update-checker
+  // state, so the restart respawns the same dev binary regardless of what
+  // the global install looks like after the upgrade.
   return `#!/bin/sh
 set -e
-MYCO="\${MYCO_CMD:-myco}"
+MYCO=${quotedMycoBinary}
 
 # Wait for daemon to exit cleanly
 sleep ${UPDATE_SCRIPT_DELAY_SECONDS}
@@ -133,6 +145,13 @@ export interface RestartParams {
   fromVersion: string;
   /** The version that will be running after restart (baked into the script). */
   toVersion: string;
+  /**
+   * Literal myco binary the script should invoke for the optional
+   * `update --project` step and the final daemon respawn. Baked into
+   * the script at generation time; see `resolveMycoBinary()` in
+   * update-checker for how callers pick it.
+   */
+  mycoBinary: string;
 }
 
 /**
@@ -144,9 +163,10 @@ export interface RestartParams {
  * 5. Cleans up the script file.
  */
 export function generateRestartScript(params: RestartParams): string {
-  const { projectRoot, vaultDir, runLocalUpdate, fromVersion, toVersion } = params;
+  const { projectRoot, vaultDir, runLocalUpdate, fromVersion, toVersion, mycoBinary } = params;
   const quotedProjectRoot = JSON.stringify(projectRoot);
   const quotedVaultDir = JSON.stringify(vaultDir);
+  const quotedMycoBinary = JSON.stringify(mycoBinary);
   const reasonFile = JSON.stringify(path.join(vaultDir, RESTART_REASON_FILENAME));
 
   // Bake version strings and reason JSON from Node to avoid shell interpolation
@@ -164,9 +184,11 @@ export function generateRestartScript(params: RestartParams): string {
 "$MYCO" update --project ${quotedProjectRoot} || true`
     : '';
 
+  // MYCO is baked as a literal at generation time — see InstallParams
+  // docstring for the dev vs prod binary selection rationale.
   return `#!/bin/sh
 set -e
-MYCO="\${MYCO_CMD:-myco}"
+MYCO=${quotedMycoBinary}
 
 # Wait for daemon to exit cleanly
 sleep ${UPDATE_SCRIPT_DELAY_SECONDS}

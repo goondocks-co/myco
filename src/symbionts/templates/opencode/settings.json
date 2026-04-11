@@ -1,8 +1,8 @@
 {
   "permission": {
     "bash": {
-      "myco-run *": "allow",
-      "myco *": "allow"
+      "myco *": "allow",
+      "myco-dev *": "allow"
     }
   }
 }

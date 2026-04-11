@@ -6,8 +6,14 @@
  * - Stable channel: compare against dist-tags.latest only.
  * - Beta channel: compare against max(dist-tags.latest, dist-tags.beta).
  *   Beta users can always reach stable (no-downgrade rule).
- * - Dev mode exemption: if MYCO_CMD is set the binary is a dev symlink;
- *   update checks are skipped entirely.
+ * - Dev mode exemption: the daemon records its own CLI entry at startup
+ *   via `setDevBuildCliEntry()` when `detectDevBuild()` reports the
+ *   running binary is outside the npm global prefix. When set, update
+ *   checks are skipped entirely and any child-spawned shell script
+ *   (update/restart) uses the recorded CLI entry as its restart
+ *   target. This replaced the previous `MYCO_CMD` env-var dispatch,
+ *   which was fragile because several symbionts do not propagate
+ *   env vars to hook or MCP child processes.
  */
 
 import fs from 'node:fs';
@@ -74,28 +80,71 @@ const REGISTRY_FETCH_TIMEOUT_MS = 10_000;
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true when MYCO_CMD is set — indicates a dev build is in use and
- * update checks should be skipped. The daemon auto-sets MYCO_CMD at startup
- * via detectDevBuild() when the running binary is not under the npm global
- * prefix, so this check covers both explicit overrides (from symbiont hooks)
- * and auto-detected dev runs.
+ * Module-level state: the CLI entry path of the running daemon when it's
+ * a dev build, or null when it's a proper global install.
+ *
+ * Set once at daemon startup from `main.ts` after `detectDevBuild()`
+ * reports its finding. Read by `isUpdateExempt()` (to skip update checks)
+ * and by `resolveMycoBinary()` (to choose the restart target for
+ * update/restart shell scripts).
+ *
+ * Test code can reset this via `setDevBuildCliEntry(null)`.
+ */
+let devBuildCliEntry: string | null = null;
+
+/**
+ * Record the daemon's dev-build CLI entry. Pass `null` to clear.
+ * Called once at daemon startup after `detectDevBuild()` decides whether
+ * the running binary is a dev build.
+ */
+export function setDevBuildCliEntry(cliEntry: string | null): void {
+  devBuildCliEntry = cliEntry;
+}
+
+/**
+ * Returns the recorded dev-build CLI entry, or null when the daemon is
+ * running from a proper global install.
+ */
+export function getDevBuildCliEntry(): string | null {
+  return devBuildCliEntry;
+}
+
+/**
+ * Resolve the myco binary that child-spawned restart/update scripts
+ * should invoke to restart the daemon.
+ *
+ * - Dev mode (dev build CLI entry set): use the literal CLI entry path,
+ *   so the restart respawns the same dev binary. After an npm update
+ *   this intentionally keeps running the dev build — dev mode is opaque
+ *   to global updates, which is the correct semantic.
+ * - Prod mode (no dev build CLI entry): fall back to the bare `myco`
+ *   command, which PATH-resolves to the freshly-updated global install.
+ */
+export function resolveMycoBinary(): string {
+  return devBuildCliEntry ?? 'myco';
+}
+
+/**
+ * Returns true when the daemon is running from a dev build — skip
+ * update checks and suppress the Operations UI update banner.
  */
 export function isUpdateExempt(): boolean {
-  return Boolean(process.env.MYCO_CMD);
+  return devBuildCliEntry !== null;
 }
 
 /**
  * Detects whether the running daemon is a dev build by comparing the CLI
- * entry point's realpath against the npm global prefix's realpath. Returns
- * the CLI entry path when a dev build is detected (so the caller can assign
- * it to `process.env.MYCO_CMD`), or null when no auto-assignment applies.
+ * entry point's realpath against the npm global prefix's realpath.
+ *
+ * Returns the CLI entry path when a dev build is detected (so the caller
+ * can record it via `setDevBuildCliEntry()`), or null when no dev build
+ * applies.
  *
  * A dev build is any binary whose realpath is NOT under the npm global
  * prefix — direct `myco-dev` invocations, `npm link` installs, local
  * `node dist/cli.js` runs, etc.
  *
  * Returns null when:
- * - envMycoCmd is truthy (explicit override always wins)
  * - globalPrefix is null (npm prefix resolution failed; can't verify)
  * - cliEntry is missing
  * - realpath resolution throws
@@ -107,10 +156,8 @@ export function isUpdateExempt(): boolean {
 export function detectDevBuild(
   globalPrefix: string | null,
   cliEntry: string | undefined,
-  envMycoCmd: string | undefined,
   realpath: (p: string) => string,
 ): string | null {
-  if (envMycoCmd) return null;
   if (!globalPrefix) return null;
   if (!cliEntry) return null;
   try {

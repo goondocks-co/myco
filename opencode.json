@@ -4,15 +4,16 @@
     "myco": {
       "type": "local",
       "command": [
-        "myco-run",
+        "node",
+        ".agents/myco-run.cjs",
         "mcp"
       ]
     }
   },
   "permission": {
     "bash": {
-      "myco-run *": "allow",
-      "myco *": "allow"
+      "myco *": "allow",
+      "myco-dev *": "allow"
     }
   }
 }
