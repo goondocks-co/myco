@@ -171,6 +171,32 @@ Resource location: remote
     expect(patchedToml).toContain('name = "myco-team-abc12345"');
   });
 
+  it('looks up KV namespace via list when create reports already-exists', async () => {
+    // Simulate retry after partial failure: wrangler rejects the create,
+    // then the list output has a banner prefix before the JSON array.
+    const listOutput = `⛅️ wrangler 4.8.1
+[
+  { "id": "aaaa1111bbbb2222cccc3333dddd4444", "title": "other-namespace" },
+  { "id": "7cc069cb32b4438b29079cca4714056", "title": "myco_team_abc12345_secrets" }
+]
+`;
+    execHandlers.push(
+      () => new Error('A namespace with the same title already exists'),
+      () => listOutput,
+      () => '',
+      () => '',
+      () => 'https://myco-team-abc12345.test.workers.dev\n',
+    );
+
+    const { upgradeWorker } = await import('@myco/cli/team.js');
+    const result = upgradeWorker(vaultDir);
+
+    expect(result.success).toBe(true);
+
+    const patchedToml = fs.readFileSync(path.join(deployDir, 'wrangler.toml'), 'utf-8');
+    expect(patchedToml).toContain('id = "7cc069cb32b4438b29079cca4714056"');
+  });
+
   it('preserves existing KV namespace ID when already present', async () => {
     // Pre-existing deployment that already has a KV block
     const tomlWithKv = LEGACY_TOML + '\n[[kv_namespaces]]\nbinding = "MYCO_SECRETS"\nid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n';

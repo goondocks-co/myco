@@ -153,23 +153,40 @@ function prepareDeployDir(vaultDir: string, d1Id: string, kvId: string): string 
   return deployDir;
 }
 
+/** Extract a JSON array from wrangler output that may be prefixed with banner text. */
+function extractJsonArray(output: string): unknown[] {
+  const start = output.indexOf('[');
+  const end = output.lastIndexOf(']');
+  if (start === -1 || end === -1 || end < start) {
+    throw new Error(`No JSON array found in output:\n${output}`);
+  }
+  return JSON.parse(output.slice(start, end + 1));
+}
+
 /** Ensure a KV namespace exists for this project. Returns the namespace ID. */
 function ensureKvNamespace(name: string): string {
   const kvName = `${name}-secrets`;
+  const lookupExisting = (): string => {
+    const listOutput = wrangler(['kv', 'namespace', 'list']);
+    const namespaces = extractJsonArray(listOutput) as Array<{ id: string; title: string }>;
+    // Wrangler sometimes rewrites hyphens to underscores in titles
+    const normalize = (s: string) => s.replace(/[-_]/g, '');
+    const target = normalize(kvName);
+    const existing = namespaces.find((ns) => normalize(ns.title) === target || normalize(ns.title).endsWith(target));
+    if (!existing) throw new Error(`KV namespace "${kvName}" not found in list of ${namespaces.length} namespaces`);
+    return existing.id;
+  };
+
   try {
     const output = wrangler(['kv', 'namespace', 'create', kvName]);
     const match = output.match(KV_ID_REGEX);
-    if (!match) throw new Error(`Could not parse KV namespace ID from output:\n${output}`);
-    return match[1];
+    if (match) return match[1];
+    // Created successfully but we couldn't parse — fall back to list lookup
+    return lookupExisting();
   } catch (err) {
     const errMsg = (err as Error).message;
-    if (errMsg.includes('already exists') || errMsg.includes('duplicate')) {
-      // Look up existing namespace
-      const listOutput = wrangler(['kv', 'namespace', 'list']);
-      const namespaces = JSON.parse(listOutput) as Array<{ id: string; title: string }>;
-      const existing = namespaces.find((ns) => ns.title === kvName || ns.title.endsWith(kvName));
-      if (!existing) throw new Error(`KV namespace "${kvName}" reported as existing but not found in list`);
-      return existing.id;
+    if (errMsg.includes('already exists') || errMsg.includes('duplicate') || errMsg.includes('same title')) {
+      return lookupExisting();
     }
     throw err;
   }
