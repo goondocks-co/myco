@@ -548,6 +548,7 @@ export async function main(): Promise<void> {
   const teamHandlers = createTeamHandlers({
     vaultDir,
     machineId,
+    logger,
     getTeamClient: teamSync.getTeamClient,
     setTeamClient: teamSync.setTeamClient,
   });

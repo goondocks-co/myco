@@ -13,6 +13,7 @@ import { SYNC_PROTOCOL_VERSION, TEAM_API_KEY_SECRET } from '@myco/constants.js';
 import { getPluginVersion } from '@myco/version.js';
 import { SCHEMA_VERSION } from '@myco/db/schema.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
+import type { DaemonLogger } from '../logger.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -26,6 +27,7 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 export interface TeamHandlerDeps {
   vaultDir: string;
   machineId: string;
+  logger: DaemonLogger;
   getTeamClient: () => TeamSyncClient | null;
   setTeamClient: (client: TeamSyncClient | null) => void;
 }
@@ -35,7 +37,7 @@ export interface TeamHandlerDeps {
 // ---------------------------------------------------------------------------
 
 export function createTeamHandlers(deps: TeamHandlerDeps) {
-  const { vaultDir, machineId } = deps;
+  const { vaultDir, machineId, logger } = deps;
 
   /**
    * POST /api/team/connect
@@ -180,10 +182,16 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
   /** POST /api/team/upgrade-worker — deploy latest worker and reinitialize client. */
   async function handleUpgradeWorker(_req: RouteRequest): Promise<RouteResponse> {
     const { upgradeWorker } = await import('@myco/cli/team.js');
+    logger.info('team-sync.upgrade.start', 'Starting worker upgrade');
     const result = upgradeWorker(vaultDir);
     if (!result.success) {
+      logger.error('team-sync.upgrade.failed', 'Worker upgrade failed', { error: result.error });
       return { status: 500, body: { error: result.error } };
     }
+    logger.info('team-sync.upgrade.complete', 'Worker upgrade complete', {
+      worker_url: result.worker_url,
+      version: result.version,
+    });
     // Reinitialize team client with potentially new URL
     if (result.worker_url && deps.getTeamClient()) {
       const secrets = readSecrets(vaultDir);
@@ -211,11 +219,14 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     }
     try {
       const token = await client.rotateMcpToken();
+      logger.info('team-sync.mcp-token.rotated', 'MCP access token rotated');
       return { body: { token } };
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error('team-sync.mcp-token.rotate-failed', 'MCP token rotation failed', { error: message });
       return {
         status: 500,
-        body: { error: String(err) },
+        body: { error: message },
       };
     }
   }

@@ -90,14 +90,24 @@ function resourceName(vaultDir: string): string {
   return `${TEAM_RESOURCE_PREFIX}-${projectHash(vaultDir)}`;
 }
 
-/** Run a wrangler command and return stdout. Throws on failure. */
+/** Run a wrangler command and return stdout. Throws on failure, surfacing stderr. */
 function wrangler(args: string[], options?: { cwd?: string }): string {
-  return execFileSync('wrangler', args, {
-    encoding: 'utf-8',
-    timeout: WRANGLER_COMMAND_TIMEOUT_MS,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    ...options,
-  });
+  try {
+    return execFileSync('wrangler', args, {
+      encoding: 'utf-8',
+      timeout: WRANGLER_COMMAND_TIMEOUT_MS,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      ...options,
+    });
+  } catch (err) {
+    // execFileSync loses stderr in err.message — reconstruct it here so
+    // callers see the actual wrangler failure instead of just "Command failed".
+    const execErr = err as Error & { stderr?: Buffer | string; stdout?: Buffer | string };
+    const stderr = execErr.stderr?.toString() ?? '';
+    const stdout = execErr.stdout?.toString() ?? '';
+    const detail = [stderr, stdout].filter(Boolean).join('\n').trim();
+    throw new Error(detail || execErr.message);
+  }
 }
 
 /** Find the worker source directory. Checks dist layout first (installed), then source layout (dev). */
