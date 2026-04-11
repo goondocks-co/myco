@@ -2,9 +2,11 @@
 
 Share captured knowledge across machines and team members through a Cloudflare-backed sync layer. Local databases remain the source of truth — the cloud store is a queryable mirror that all connected nodes push to and search.
 
+Team sync also deploys a [Cloud MCP Server](cloud-mcp.md) on the same Worker, exposing project intelligence to cloud agents (Anthropic Managed Agents, N8N, etc.) via Streamable HTTP. See [docs/cloud-mcp.md](cloud-mcp.md) for the complete guide.
+
 ## How it works
 
-Each machine runs its own Myco daemon with a local SQLite database. When team sync is enabled, writes to knowledge tables (spores, sessions, plans, entities, graph edges) are enqueued in a local **outbox**. A background job pushes outbox batches to a thin **Cloudflare Worker**, which stores structured data in **D1** (SQLite) and embeddings in **Vectorize** (vector database).
+Each machine runs its own Myco daemon with a local SQLite database. When team sync is enabled, writes to knowledge tables (spores, sessions, plans, entities, graph edges) are enqueued in a local **outbox**. A background job pushes outbox batches to a thin **Cloudflare Worker**, which stores structured data in **D1** (SQLite) and embeddings in **Vectorize** (vector database). A **Workers KV** namespace holds runtime secrets — currently the Cloud MCP access token, separated from D1 so it's never exposed in database queries or backups.
 
 When an agent searches for knowledge, Myco queries both the local database and the team Worker in parallel. Results are merged by relevance score and tagged with their source machine, so agents benefit from the entire team's accumulated intelligence.
 
@@ -19,9 +21,11 @@ graph LR
         W[Worker]
         D1[(D1)]
         V[(Vectorize)]
+        KV[(KV — secrets)]
         AI[Workers AI]
         W --> D1
         W --> V
+        W --> KV
         W --> AI
     end
 
@@ -30,10 +34,13 @@ graph LR
         B_Vec[(vectors.db)]
     end
 
+    CA[Cloud Agent]
+
     A_DB -- "POST /sync" --> W
     W -- "GET /search" --> A_DB
     B_DB -- "POST /sync" --> W
     W -- "GET /search" --> B_DB
+    CA -- "MCP over Streamable HTTP" --> W
 ```
 
 ## Quick start
@@ -49,7 +56,7 @@ wrangler login
 
 ### 2. Create the team
 
-One team member provisions the infrastructure. This creates a D1 database, a Vectorize index, and deploys the sync Worker.
+One team member provisions the infrastructure. This creates a D1 database, a Vectorize index, a KV namespace for runtime secrets, and deploys the sync Worker.
 
 ```bash
 myco team init
@@ -157,14 +164,18 @@ The Worker is stateless — no WebSocket connections, no Durable Objects, no in-
 
 **Worker endpoints:**
 
-| Method | Route | Purpose |
-|--------|-------|---------|
-| `GET` | `/health` | Connection status, node count (no auth required) |
-| `POST` | `/connect` | Register a node, return team config |
-| `POST` | `/sync` | Receive batch of records, write to D1 + Vectorize |
-| `GET` | `/search` | Semantic + FTS search across team data |
-| `GET` | `/config` | Return team configuration |
-| `PUT` | `/config` | Update team configuration |
+| Method | Route | Auth | Purpose |
+|--------|-------|------|---------|
+| `GET`  | `/health` | None | Connection status, node count, MCP token hash for change detection |
+| `POST` | `/connect` | Team API key | Register a node, return team config and current MCP access token |
+| `POST` | `/sync` | Team API key | Receive batch of records, write to D1 + Vectorize |
+| `GET`  | `/search` | Team API key | Semantic + FTS search across team data |
+| `GET`  | `/config` | Team API key | Return team configuration |
+| `PUT`  | `/config` | Team API key | Update team configuration |
+| `*`    | `/mcp/*` | MCP access token | Streamable HTTP MCP server for cloud agents |
+| `POST` | `/mcp/rotate` | Team API key | Rotate the MCP access token |
+
+See [Cloud MCP docs](cloud-mcp.md) for the full `/mcp` tool surface and cloud agent configuration.
 
 ### Cloudflare free tier
 
@@ -185,6 +196,7 @@ The $5/month paid tier provides significant headroom if needed.
 
 - **Not connected** — setup instructions and connect form (Worker URL + API key)
 - **Connected** — connection health, pending sync count, team credentials (copyable, with show/hide for the API key), machine identity, and a "Sync All" button for backfilling historical data
+- **Cloud MCP Endpoint** section (appears once the Worker has been upgraded to a Cloud-MCP-aware version) — shows the MCP URL, a redacted bearer token, a copy-paste config snippet for Anthropic Managed Agents, and a "Rotate token" action with a destructive-action confirmation. See [Cloud MCP docs](cloud-mcp.md).
 
 ### Operations page
 

@@ -121,7 +121,7 @@ See the [Symbiont docs](docs/symbionts.md) for detailed setup information per ag
 Share knowledge across machines and team members with one command:
 
 ```bash
-myco team init    # Provisions Cloudflare D1 + Vectorize + Worker
+myco team init    # Provisions Cloudflare D1 + Vectorize + KV + Worker
 ```
 
 Share the output URL and API key with teammates — they connect from the Team page in the dashboard. Once connected, knowledge syncs automatically: new spores, session summaries, plans, and graph edges push to the team store in the background. Search queries fan out to both local and cloud databases, merging results by relevance score.
@@ -129,6 +129,10 @@ Share the output URL and API key with teammates — they connect from the Team p
 Local databases remain the source of truth. The cloud store is a queryable mirror — no data is pulled back down. Each record carries a machine identity for attribution.
 
 Runs on the Cloudflare free tier. See the [Team Sync docs](docs/team-sync.md) for the full guide.
+
+### Cloud MCP Server
+
+Team sync also deploys a read-only **Cloud MCP server** on the same Worker, exposing your project's intelligence — search, digest, sessions, knowledge graph, skills — to cloud agents over Streamable HTTP. Connect Anthropic Managed Agents, OpenAI Workflows, N8N, or anything else that speaks MCP, and they get the same semantic fidelity your local agents already have. A per-project bearer token lives in Cloudflare Workers KV (encrypted at rest) and is distributed automatically to every connected daemon — no per-teammate secret management. See the [Cloud MCP docs](docs/cloud-mcp.md) for the full tool reference and setup.
 
 ### Skills — automated curation, not just memory
 
