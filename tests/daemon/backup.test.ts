@@ -243,6 +243,32 @@ describe('backup engine', () => {
       const backups = listBackups(tmpDir);
       expect(backups).toHaveLength(1);
     });
+
+    it('ignores cloud-sync conflict files with special characters', () => {
+      seedAgent();
+      seedSession('sess-007', LOCAL_MACHINE);
+      createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+
+      // Conflict marker with spaces, parens, and hash (e.g. Proton Drive)
+      fs.writeFileSync(
+        path.join(tmpDir, `${LOCAL_MACHINE} (# Edit conflict 2000-01-01 XXXXXXX #).sql`),
+        'fake backup',
+      );
+      // Conflict marker with spaces and parens (e.g. Dropbox)
+      fs.writeFileSync(
+        path.join(tmpDir, `${LOCAL_MACHINE} (conflicted copy 2000-01-01).sql`),
+        'fake backup',
+      );
+      // Conflict marker with extra dots (e.g. Syncthing)
+      fs.writeFileSync(
+        path.join(tmpDir, `${LOCAL_MACHINE}.sync-conflict-20000101-000000-ABCDEF0.sql`),
+        'fake backup',
+      );
+
+      const backups = listBackups(tmpDir);
+      expect(backups).toHaveLength(1);
+      expect(backups[0].file_name).toBe(`${LOCAL_MACHINE}.sql`);
+    });
   });
 
   describe('restorePreview()', () => {

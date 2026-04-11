@@ -32,6 +32,21 @@ export const BACKUP_TABLES = [
 /** File extension for backup dumps. */
 const BACKUP_EXTENSION = '.sql';
 
+/**
+ * Pattern matching a valid backup filename: `<machine_id>.sql`.
+ *
+ * Machine IDs follow `{github_user}_{machine_hash}` (see machine-id.ts)
+ * which uses alphanumerics, underscore, and hyphen — but never dots.
+ * The stem is constrained to `[A-Za-z0-9_-]` so a single literal `.sql`
+ * extension is the only dot in the filename.
+ *
+ * Constraining the stem rejects conflict markers introduced by cloud
+ * sync services when the backup directory lives inside a synced folder.
+ * These typically insert spaces, parentheses, quotes, or extra dots
+ * into filenames — none of which match a valid machine ID.
+ */
+const BACKUP_FILENAME_PATTERN = /^[A-Za-z0-9_-]+\.sql$/;
+
 /** Header comment template for backup files. */
 const BACKUP_HEADER_TEMPLATE = '-- Myco backup';
 
@@ -160,7 +175,7 @@ export function listBackups(backupDir: string): BackupMeta[] {
   const backups: BackupMeta[] = [];
 
   for (const entry of entries) {
-    if (!entry.endsWith(BACKUP_EXTENSION)) continue;
+    if (!BACKUP_FILENAME_PATTERN.test(entry)) continue;
 
     const filePath = path.join(backupDir, entry);
     const stat = fs.statSync(filePath);
