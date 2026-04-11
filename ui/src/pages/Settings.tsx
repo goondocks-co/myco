@@ -81,11 +81,14 @@ function toFormState(config: MycoConfig): FormState {
 /* ---------- Per-section config builders ---------- */
 //
 // Each section's save button writes only its own slice of the config.
-// All builders preserve unrelated sections via `...original` spread.
-// This lets users save sections independently without committing
-// half-finished edits in other sections.
+// All branches preserve unrelated sections via `...original` spread,
+// letting users save sections independently without committing
+// half-finished edits elsewhere on the page.
 
-function buildAgentConfigUpdate(form: FormState, original: MycoConfig): MycoConfig {
+/** Build an agent-section update with auto-enable/disable side effects on the
+ *  task toggles. Configuring a provider for the first time turns the agent
+ *  pipeline on; clearing the provider turns it off. */
+function buildAgentSection(form: FormState, original: MycoConfig): MycoConfig {
   const hadProvider = !!original.agent?.provider;
   const hasProvider = form.agentProviderType !== '';
 
@@ -98,7 +101,6 @@ function buildAgentConfigUpdate(form: FormState, original: MycoConfig): MycoConf
       }
     : undefined;
 
-  // Auto-enable on first provider config; auto-disable when cleared.
   let scheduledEnabled = original.agent?.scheduled_tasks_enabled;
   let eventEnabled = original.agent?.event_tasks_enabled;
   if (hasProvider && !hadProvider) {
@@ -121,40 +123,41 @@ function buildAgentConfigUpdate(form: FormState, original: MycoConfig): MycoConf
   };
 }
 
-function buildEmbeddingConfigUpdate(form: FormState, original: MycoConfig): MycoConfig {
-  return {
-    ...original,
-    embedding: {
-      ...original.embedding,
-      provider: form.embeddingProvider,
-      model: form.embeddingModel,
-      base_url: form.embeddingBaseUrl !== '' ? form.embeddingBaseUrl : undefined,
-    },
-  };
-}
-
-function buildContextConfigUpdate(form: FormState, original: MycoConfig): MycoConfig {
-  return {
-    ...original,
-    context: {
-      ...original.context,
-      digest_tier: parseNumericField(form.contextDigestTier, DEFAULT_DIGEST_TIER),
-      prompt_search: form.contextPromptSearch,
-      prompt_max_spores: parseNumericField(form.contextMaxSpores, DEFAULT_MAX_SPORES),
-    },
-  };
-}
-
-function buildProjectConfigUpdate(form: FormState, original: MycoConfig): MycoConfig {
-  return {
-    ...original,
-    daemon: {
-      ...original.daemon,
-      port: form.daemonPort !== '' ? Number(form.daemonPort) : null,
-      log_level: form.logLevel,
-      log_retention_days: Number(form.logRetentionDays),
-    },
-  };
+function buildSectionUpdate(section: SaveSection, form: FormState, original: MycoConfig): MycoConfig {
+  switch (section) {
+    case 'agent':
+      return buildAgentSection(form, original);
+    case 'embedding':
+      return {
+        ...original,
+        embedding: {
+          ...original.embedding,
+          provider: form.embeddingProvider,
+          model: form.embeddingModel,
+          base_url: form.embeddingBaseUrl !== '' ? form.embeddingBaseUrl : undefined,
+        },
+      };
+    case 'context':
+      return {
+        ...original,
+        context: {
+          ...original.context,
+          digest_tier: parseNumericField(form.contextDigestTier, DEFAULT_DIGEST_TIER),
+          prompt_search: form.contextPromptSearch,
+          prompt_max_spores: parseNumericField(form.contextMaxSpores, DEFAULT_MAX_SPORES),
+        },
+      };
+    case 'project':
+      return {
+        ...original,
+        daemon: {
+          ...original.daemon,
+          port: form.daemonPort !== '' ? Number(form.daemonPort) : null,
+          log_level: form.logLevel,
+          log_retention_days: Number(form.logRetentionDays),
+        },
+      };
+  }
 }
 
 /* ---------- Per-section field map (drives dirty checks) ---------- */
@@ -281,19 +284,11 @@ export default function Settings() {
     setSaveMessage(null);
   }, []);
 
-  /** Per-section save: looks up the section's config builder, saves, restarts the daemon. */
-  const SECTION_BUILDERS: Record<SaveSection, (f: FormState, c: MycoConfig) => MycoConfig> = {
-    agent: buildAgentConfigUpdate,
-    embedding: buildEmbeddingConfigUpdate,
-    context: buildContextConfigUpdate,
-    project: buildProjectConfigUpdate,
-  };
-
   const handleSectionSave = useCallback(async (section: SaveSection) => {
     if (!form || !config) return;
     setSaveMessage(null);
     try {
-      await saveConfig(SECTION_BUILDERS[section](form, config));
+      await saveConfig(buildSectionUpdate(section, form, config));
       setSaveMessage({ section, type: 'success', text: 'Saved. Restarting daemon...' });
       try {
         await restart();
@@ -304,8 +299,6 @@ export default function Settings() {
     } catch {
       setSaveMessage({ section, type: 'error', text: 'Failed to save.' });
     }
-  // SECTION_BUILDERS is module-stable; safe to omit from deps
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form, config, saveConfig, restart]);
 
   const handleTestConnection = useCallback(async () => {
