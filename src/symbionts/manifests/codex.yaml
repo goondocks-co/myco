@@ -11,6 +11,40 @@ hookFields:
   lastResponse: last_assistant_message
 capture:
   planDirs: []
+  rules:
+    # Ephemeral sub-invocation filter (structural, not text-based).
+    #
+    # Codex spawns internal LLM sub-invocations for things like UI
+    # title generation. Those sub-invocations fire SessionStart +
+    # UserPromptSubmit with their own session_id but never write a
+    # rollout transcript file, so their UserPromptSubmit arrives with
+    # `transcript_path: null`. Real user-facing sessions always have a
+    # rollout file in ~/.codex/sessions/... and therefore a populated
+    # transcript_path.
+    #
+    # Dropping on `transcript_path_missing` is a deliberately
+    # pattern-based signal — robust across Codex and extension updates
+    # because it keys on the Codex protocol contract (transcript_path
+    # is populated iff a real transcript exists), not on any specific
+    # prompt text that could drift.
+    #
+    # Scope is `any_agent` because detection itself falls back to
+    # transcript_path → configDir matching; when that's missing the
+    # hook can't attribute the event, so the owning manifest has to
+    # opt into enforcing the rule regardless.
+    - event: user_prompt
+      scope: any_agent
+      when:
+        transcript_path_missing: true
+      action: drop
+      reason: ephemeral-sub-invocation
+    # NOTE: the VS Code Codex extension wraps user prompts with an IDE
+    # context preamble (`# Context from my IDE setup:` … `## My request
+    # for Codex:`). Stripping that belongs in a follow-up that keys on
+    # the transcript's `session_meta.payload.originator == "codex_vscode"`
+    # signal rather than matching preamble text, per Chris's correctness
+    # bar against fragile text matching. Leaving unfiltered for now —
+    # session data is preserved, just shown with the wrapper.
 registration:
   hooksTarget: .codex/hooks.json
   mcpTarget: .codex/config.toml

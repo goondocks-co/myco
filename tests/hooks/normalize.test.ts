@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { normalizeHookInput, _resetManifestCache } from '../../src/hooks/normalize.js';
+import { normalizeHookInput, readSymbiontFlag, _resetManifestCache } from '../../src/hooks/normalize.js';
 
 // Mock loadManifests to avoid file system access during tests
 vi.mock('../../src/symbionts/detect.js', () => ({
@@ -244,6 +244,221 @@ describe('normalizeHookInput', () => {
       normalizeHookInput({ session_id: 's2' });
       // loadManifests should only be called once (cached after first call)
       expect(mockLoadManifests).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('readSymbiontFlag (pure argv parser)', () => {
+    it('reads --symbiont <name>', () => {
+      expect(readSymbiontFlag(['hook', 'session-start', '--symbiont', 'codex'])).toBe('codex');
+    });
+
+    it('reads --symbiont=<name> joined form', () => {
+      expect(readSymbiontFlag(['hook', 'session-start', '--symbiont=codex'])).toBe('codex');
+    });
+
+    it('returns undefined when no flag is present', () => {
+      expect(readSymbiontFlag(['hook', 'session-start'])).toBeUndefined();
+    });
+
+    it('returns undefined when --symbiont is dangling (no value)', () => {
+      expect(readSymbiontFlag(['hook', 'session-start', '--symbiont'])).toBeUndefined();
+    });
+
+    it('returns undefined when --symbiont is followed by another flag', () => {
+      expect(readSymbiontFlag(['--symbiont', '--debug'])).toBeUndefined();
+    });
+
+    it('finds the flag regardless of position in argv', () => {
+      expect(readSymbiontFlag(['--symbiont', 'windsurf', 'hook', 'stop'])).toBe('windsurf');
+    });
+  });
+
+  describe('argv-driven detection (--symbiont flag)', () => {
+    const originalArgv = process.argv;
+
+    const codexManifest = {
+      name: 'codex',
+      displayName: 'Codex',
+      binary: 'codex',
+      configDir: '.codex',
+      pluginRootEnvVar: 'CODEX_PLUGIN_ROOT',
+      hookFields: {
+        sessionId: 'session_id',
+        transcriptPath: 'transcript_path',
+        lastResponse: 'last_assistant_message',
+        prompt: 'prompt',
+        toolName: 'tool_name',
+        toolInput: 'tool_input',
+        toolOutput: 'tool_output',
+      },
+    };
+    const claudeManifest = {
+      name: 'claude-code',
+      displayName: 'Claude Code',
+      binary: 'claude',
+      configDir: '.claude',
+      pluginRootEnvVar: 'CLAUDE_PLUGIN_ROOT',
+      hookFields: {
+        sessionId: 'session_id',
+        transcriptPath: 'transcript_path',
+        lastResponse: 'last_assistant_message',
+        prompt: 'prompt',
+        toolName: 'tool_name',
+        toolInput: 'tool_input',
+        toolOutput: 'tool_output',
+      },
+    };
+
+    afterEach(() => {
+      process.argv = originalArgv;
+    });
+
+    it('uses --symbiont codex from argv as the primary signal', () => {
+      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      process.argv = ['node', 'myco-run', 'hook', 'session-start', '--symbiont', 'codex'];
+      const result = normalizeHookInput({ session_id: 'abc' });
+      expect(result.agent).toBe('codex');
+    });
+
+    it('argv flag wins over a misleading CLAUDE_PLUGIN_ROOT env var', () => {
+      // Regression guard: the installer owns agent identity; runtime env
+      // must not override the explicit installer declaration.
+      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      process.env.CLAUDE_PLUGIN_ROOT = '/fake/claude/plugin';
+      process.argv = ['node', 'myco-run', 'hook', 'session-start', '--symbiont', 'codex'];
+      const result = normalizeHookInput({ session_id: 'abc' });
+      expect(result.agent).toBe('codex');
+    });
+
+    it('argv flag wins over a transcript_path that looks like claude', () => {
+      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      process.argv = ['node', 'myco-run', 'hook', 'session-start', '--symbiont', 'codex'];
+      const result = normalizeHookInput({
+        session_id: 'abc',
+        transcript_path: '/Users/me/.claude/projects/foo/abc.jsonl',
+      });
+      expect(result.agent).toBe('codex');
+    });
+
+    it('unknown --symbiont value falls through to heuristic detection', () => {
+      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      process.argv = ['node', 'myco-run', 'hook', 'session-start', '--symbiont', 'bogus'];
+      // No env var, no transcript match → defaults to claude-code.
+      const result = normalizeHookInput({ session_id: 'abc' });
+      expect(result.agent).toBe('claude-code');
+    });
+
+    it('falls back to env var when --symbiont flag is absent', () => {
+      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      process.env.CLAUDE_PLUGIN_ROOT = '/some/path';
+      process.argv = ['node', 'myco-run', 'hook', 'session-start'];
+      const result = normalizeHookInput({ session_id: 'abc' });
+      expect(result.agent).toBe('claude-code');
+    });
+
+    it('falls back to transcript_path heuristic when argv and env are both absent', () => {
+      // Pre-flag installation safety net: a Codex session that somehow
+      // skipped the update should still be correctly attributed via
+      // configDir matching against the transcript_path.
+      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      process.argv = ['node', 'myco-run', 'hook', 'session-start'];
+      const result = normalizeHookInput({
+        session_id: 'abc',
+        transcript_path: '/Users/chris/.codex/sessions/2026/04/11/rollout-abc.jsonl',
+      });
+      expect(result.agent).toBe('codex');
+    });
+  });
+
+  describe('payload-driven detection (transcript_path → configDir, fallback)', () => {
+    // These exercise the third detection strategy: when neither
+    // pluginRootEnvVar nor sessionIdEnv is set, fall back to matching
+    // the payload's transcript_path / cwd against each manifest's
+    // configDir. This is how we attribute Codex sessions — Codex
+    // doesn't set a CODEX_PLUGIN_ROOT env var, but it does send
+    // transcript_path pointing into ~/.codex/sessions/.
+    const codexManifest = {
+      name: 'codex',
+      displayName: 'Codex',
+      binary: 'codex',
+      configDir: '.codex',
+      pluginRootEnvVar: 'CODEX_PLUGIN_ROOT',
+      hookFields: {
+        sessionId: 'session_id',
+        transcriptPath: 'transcript_path',
+        lastResponse: 'last_assistant_message',
+        prompt: 'prompt',
+        toolName: 'tool_name',
+        toolInput: 'tool_input',
+        toolOutput: 'tool_output',
+      },
+    };
+
+    const claudeManifest = {
+      name: 'claude-code',
+      displayName: 'Claude Code',
+      binary: 'claude',
+      configDir: '.claude',
+      pluginRootEnvVar: 'CLAUDE_PLUGIN_ROOT',
+      hookFields: {
+        sessionId: 'session_id',
+        transcriptPath: 'transcript_path',
+        lastResponse: 'last_assistant_message',
+        prompt: 'prompt',
+        toolName: 'tool_name',
+        toolInput: 'tool_input',
+        toolOutput: 'tool_output',
+      },
+    };
+
+    it('detects codex from transcript_path pointing into ~/.codex/', () => {
+      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      const result = normalizeHookInput({
+        session_id: '019d7d62',
+        transcript_path: '/Users/chris/.codex/sessions/2026/04/11/rollout-019d7d62.jsonl',
+        prompt: 'hi',
+      });
+      expect(result.agent).toBe('codex');
+    });
+
+    it('detects claude-code from transcript_path pointing into ~/.claude/', () => {
+      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      const result = normalizeHookInput({
+        session_id: 'abc',
+        transcript_path: '/Users/chris/.claude/projects/-Users-chris-Repos-foo/abc.jsonl',
+        prompt: 'hi',
+      });
+      expect(result.agent).toBe('claude-code');
+    });
+
+    it('falls back to cwd when transcript_path is absent', () => {
+      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      const result = normalizeHookInput({
+        session_id: 'abc',
+        cwd: '/Users/chris/.codex/projects/some-repo',
+        prompt: 'hi',
+      });
+      expect(result.agent).toBe('codex');
+    });
+
+    it('defaults to claude-code when neither env var, transcript_path, nor cwd carry a marker', () => {
+      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      const result = normalizeHookInput({ session_id: 'abc', prompt: 'hi' });
+      // Falls through to the DEFAULT_AGENT_NAME default.
+      expect(result.agent).toBe('claude-code');
+    });
+
+    it('env-var detection still wins over payload detection', () => {
+      // A Claude Code session with CLAUDE_PLUGIN_ROOT set should be
+      // attributed to claude-code even if some weird payload mentions
+      // ".codex/" — env-var is the strongest signal.
+      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      process.env.CLAUDE_PLUGIN_ROOT = '/some/path';
+      const result = normalizeHookInput({
+        session_id: 'abc',
+        transcript_path: '/Users/chris/.codex/sessions/x.jsonl',
+      });
+      expect(result.agent).toBe('claude-code');
     });
   });
 });

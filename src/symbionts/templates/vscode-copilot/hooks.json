@@ -4,7 +4,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook session-start",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook session-start --symbiont vscode-copilot",
           "timeout": 10
         }
       ]
@@ -15,7 +15,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook user-prompt-submit",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook user-prompt-submit --symbiont vscode-copilot",
           "timeout": 5
         }
       ]
@@ -26,7 +26,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook post-tool-use",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook post-tool-use --symbiont vscode-copilot",
           "timeout": 5
         }
       ]
@@ -37,7 +37,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook pre-compact",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook pre-compact --symbiont vscode-copilot",
           "timeout": 5
         }
       ]
@@ -48,7 +48,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook subagent-start",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook subagent-start --symbiont vscode-copilot",
           "timeout": 5
         }
       ]
@@ -59,7 +59,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook subagent-stop",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook subagent-stop --symbiont vscode-copilot",
           "timeout": 10
         }
       ]
@@ -70,7 +70,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook stop",
+          "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook stop --symbiont vscode-copilot",
           "timeout": 30
         }
       ]

@@ -1,7 +1,63 @@
 import { z } from 'zod';
 
+/**
+ * Declarative capture rules owned per-symbiont in its YAML manifest.
+ *
+ * Rules let each symbiont describe how Myco should filter or rewrite
+ * captured events *without* adding symbiont-specific branches inside
+ * the generic hook handlers. The hook loads the rules, a generic
+ * evaluator decides the action, and the hook acts on the result.
+ *
+ * Condition types (in `when`):
+ *   - `transcript_path_missing`: structural. Fires when the hook's
+ *     transcript_path field is absent/empty. A legitimate user-facing
+ *     session records a transcript; an ephemeral sub-invocation (e.g.,
+ *     an agent's internal title-generation call) does not. Preferred
+ *     over text matching because it doesn't drift as UIs evolve.
+ *   - `prompt_starts_with` / `prompt_contains`: text fallback. Use
+ *     when no structural signal is available. Document the upgrade path
+ *     in the YAML so future maintainers can replace it when a better
+ *     signal appears.
+ *
+ * Scope semantics:
+ *   - `this_agent` (default): rule fires only when the detected agent
+ *     matches the manifest that owns the rule. Use for behavior that
+ *     is specific to the symbiont and can rely on detection working.
+ *   - `any_agent`: rule fires regardless of detected agent. Use for
+ *     patterns where detection itself might fail — e.g., an internal
+ *     sub-invocation that omits the fields agent detection keys on.
+ *
+ * Actions:
+ *   - `drop`: discard the event entirely. For user_prompt, the hook
+ *     additionally removes the session row the prior SessionStart
+ *     just registered, so phantom sub-sessions don't pollute the UI.
+ *   - `rewrite_prompt`: replace the captured prompt with the substring
+ *     after `extract_after`. Useful for stripping IDE-injected
+ *     preambles so the stored prompt reflects the user's own words.
+ */
+const CaptureRuleSchema = z.object({
+  event: z.enum(['user_prompt']),
+  scope: z.enum(['this_agent', 'any_agent']).default('this_agent'),
+  when: z.object({
+    prompt_starts_with: z.string().optional(),
+    prompt_contains: z.string().optional(),
+    /** Structural: fires when transcript_path is absent or empty. */
+    transcript_path_missing: z.boolean().optional(),
+  }),
+  action: z.enum(['drop', 'rewrite_prompt']),
+  /** Short audit string logged when the rule matches (e.g., "codex-internal-title-gen"). */
+  reason: z.string().optional(),
+  /** For rewrite_prompt: keep only the substring after this marker (first occurrence). */
+  extract_after: z.string().optional(),
+  /** For rewrite_prompt: trim whitespace from the extracted substring. Default true. */
+  trim: z.boolean().default(true),
+});
+
+export type CaptureRule = z.infer<typeof CaptureRuleSchema>;
+
 const CaptureManifestSchema = z.object({
   planDirs: z.array(z.string()).default([]),
+  rules: z.array(CaptureRuleSchema).default([]),
 });
 
 const RegistrationSchema = z.object({

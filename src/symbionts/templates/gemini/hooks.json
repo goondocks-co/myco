@@ -5,7 +5,7 @@
         {
           "name": "myco-session-start",
           "type": "command",
-          "command": "cd \"${GEMINI_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook session-start",
+          "command": "cd \"${GEMINI_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook session-start --symbiont gemini",
           "timeout": 10000
         }
       ]
@@ -17,7 +17,7 @@
         {
           "name": "myco-user-prompt-submit",
           "type": "command",
-          "command": "cd \"${GEMINI_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook user-prompt-submit",
+          "command": "cd \"${GEMINI_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook user-prompt-submit --symbiont gemini",
           "timeout": 5000
         }
       ]
@@ -29,7 +29,7 @@
         {
           "name": "myco-post-tool-use",
           "type": "command",
-          "command": "cd \"${GEMINI_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook post-tool-use",
+          "command": "cd \"${GEMINI_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook post-tool-use --symbiont gemini",
           "timeout": 5000
         }
       ]
@@ -41,7 +41,7 @@
         {
           "name": "myco-stop",
           "type": "command",
-          "command": "cd \"${GEMINI_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook stop",
+          "command": "cd \"${GEMINI_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook stop --symbiont gemini",
           "timeout": 30000
         }
       ]
@@ -53,7 +53,7 @@
         {
           "name": "myco-session-end",
           "type": "command",
-          "command": "cd \"${GEMINI_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook session-end",
+          "command": "cd \"${GEMINI_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook session-end --symbiont gemini",
           "timeout": 10000
         }
       ]
@@ -65,7 +65,7 @@
         {
           "name": "myco-pre-compact",
           "type": "command",
-          "command": "cd \"${GEMINI_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook pre-compact",
+          "command": "cd \"${GEMINI_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook pre-compact --symbiont gemini",
           "timeout": 5000
         }
       ]

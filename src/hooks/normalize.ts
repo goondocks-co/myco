@@ -42,12 +42,77 @@ const DEFAULT_AGENT_NAME = 'claude-code';
 /** Cached manifest for the detected agent — resolved once per process. */
 let cachedManifest: SymbiontManifest | null | undefined;
 
-function detectManifest(): SymbiontManifest | null {
+/**
+ * Parse `--symbiont <name>` from process argv.
+ *
+ * The hook command line rendered by the installer for every symbiont's
+ * hooks.json looks like:
+ *
+ *     node .agents/myco-hook.cjs hook session-start --symbiont codex
+ *
+ * myco-hook.cjs passes all argv through to `myco-run`, so by the time
+ * the hook handler module loads, `process.argv` contains the flag. This
+ * is the installer's explicit declaration of which symbiont owns this
+ * invocation — strictly more reliable than any runtime heuristic.
+ *
+ * Supports both `--symbiont codex` (two args) and `--symbiont=codex`
+ * (one arg) to be forgiving about shell quoting on Windows.
+ */
+export function readSymbiontFlag(argv: readonly string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--symbiont') {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('-')) return next;
+    } else if (arg.startsWith('--symbiont=')) {
+      return arg.slice('--symbiont='.length);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Detect which symbiont is driving this hook invocation.
+ *
+ * Detection strategies in order:
+ *   1. **Primary** — `--symbiont <name>` argv flag rendered into each
+ *      agent's hooks.json at install time. Dead simple and unambiguous:
+ *      the installer knows which agent it's writing into, so we bake
+ *      the identity into the hook command itself.
+ *   2. `pluginRootEnvVar` (e.g., `CLAUDE_PLUGIN_ROOT`) — set natively by
+ *      agents that cooperate with a plugin system. Fallback for older
+ *      installs that predate the argv flag.
+ *   3. `sessionIdEnv` fallback (e.g., `GEMINI_SESSION_ID`) — set by agents
+ *      that expose the session via env var rather than payload field.
+ *   4. Payload-driven heuristic: match the event's `transcript_path` /
+ *      `cwd` against each manifest's `configDir`. Safety net for pre-
+ *      flag installations that have somehow also lost their env-var
+ *      signal. Generic — works for every manifest without per-agent
+ *      branching.
+ *
+ * The cache is per-process, which is fine: each hook invocation is a
+ * short-lived Node process. `input` is optional so callers that just
+ * want env-based detection (e.g., at module import time) still work.
+ */
+function detectManifest(input?: Record<string, unknown>): SymbiontManifest | null {
   if (cachedManifest !== undefined) return cachedManifest;
 
   const manifests = loadManifests();
 
-  // Try env-var detection: check pluginRootEnvVar for each manifest
+  // 1) Primary: explicit --symbiont flag from the installer-rendered
+  //    hook command. This is the source of truth when present.
+  const flagName = readSymbiontFlag(process.argv);
+  if (flagName) {
+    const m = manifests.find((x) => x.name === flagName);
+    if (m) {
+      cachedManifest = m;
+      return m;
+    }
+    // Flag specified an unknown manifest — fall through to heuristics
+    // rather than guessing. Logging happens at the handler level.
+  }
+
+  // 2) Env-var detection: check pluginRootEnvVar for each manifest.
   for (const m of manifests) {
     if (process.env[m.pluginRootEnvVar]) {
       cachedManifest = m;
@@ -55,11 +120,29 @@ function detectManifest(): SymbiontManifest | null {
     }
   }
 
-  // Fallback: check sessionIdEnv (e.g., GEMINI_SESSION_ID)
+  // 3) sessionIdEnv fallback (e.g., GEMINI_SESSION_ID).
   for (const m of manifests) {
     if (m.hookFields.sessionIdEnv && process.env[m.hookFields.sessionIdEnv]) {
       cachedManifest = m;
       return m;
+    }
+  }
+
+  // 4) Payload-driven heuristic: match configDir against transcript_path
+  //    / cwd. Kept as a safety net for pre-flag installations. Preferred
+  //    signals above always win when they're available.
+  if (input) {
+    const candidates: string[] = [];
+    const tp = input.transcript_path;
+    const cwd = input.cwd;
+    if (typeof tp === 'string' && tp.length > 0) candidates.push(tp);
+    if (typeof cwd === 'string' && cwd.length > 0) candidates.push(cwd);
+    for (const m of manifests) {
+      const marker = `/${m.configDir}/`;
+      if (candidates.some((c) => c.includes(marker))) {
+        cachedManifest = m;
+        return m;
+      }
     }
   }
 
@@ -86,7 +169,7 @@ function resolveField(input: Record<string, unknown>, fieldPath: string): unknow
  * Falls back to Claude Code field names if no agent is detected.
  */
 export function normalizeHookInput(input: Record<string, unknown>): NormalizedHookInput {
-  const manifest = detectManifest();
+  const manifest = detectManifest(input);
   const fields = manifest?.hookFields ?? DEFAULT_HOOK_FIELDS;
 
   // Resolve session ID: try the mapped field, then env var fallback, then MYCO_SESSION_ID
