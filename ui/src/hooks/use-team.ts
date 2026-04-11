@@ -17,6 +17,8 @@ export interface TeamStatusResponse {
   package_version: string;
   schema_version: number;
   sync_protocol_version: number;
+  mcp_token: string | null;
+  mcp_endpoint: string | null;
 }
 
 export function useTeamStatus() {

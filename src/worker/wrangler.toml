@@ -1,6 +1,10 @@
 name = "myco-team-sync"
 main = "src/index.ts"
 compatibility_date = "2025-03-27"
+# nodejs_compat is required by the agents SDK and @modelcontextprotocol/sdk,
+# which depend on packages that import Node.js built-ins (node:async_hooks,
+# node:diagnostics_channel, node:os, etc.).
+compatibility_flags = [ "nodejs_compat" ]
 
 [vars]
 SYNC_PROTOCOL_VERSION = "1"
@@ -15,6 +19,11 @@ database_id = "<YOUR_D1_DATABASE_ID>"
 [[vectorize]]
 binding = "MYCO_TEAM_VECTORS"
 index_name = "myco-team-vectors"
+
+# KV namespace for runtime secrets (MCP tokens, etc.)
+[[kv_namespaces]]
+binding = "MYCO_SECRETS"
+id = "<YOUR_KV_NAMESPACE_ID>"
 
 # Workers AI binding
 [ai]

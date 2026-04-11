@@ -13,5 +13,10 @@
     "@cloudflare/workers-types": "^4.20250320.0",
     "typescript": "^5.7.0",
     "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "agents": "^0.10.0",
+    "zod": "^4.3.6"
   }
 }

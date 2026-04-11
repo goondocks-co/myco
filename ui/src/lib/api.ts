@@ -33,6 +33,11 @@ export async function deleteJson<T>(path: string): Promise<T> {
 
 export class ApiError extends Error {
   constructor(public status: number, public body: unknown) {
-    super(`API error ${status}`);
+    // Include the server's error message if present so UI callers that
+    // only render err.message still surface the actual failure reason.
+    const detail = typeof body === 'object' && body !== null && 'error' in body
+      ? String((body as { error: unknown }).error)
+      : null;
+    super(detail ? `${detail} (API ${status})` : `API error ${status}`);
   }
 }

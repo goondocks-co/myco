@@ -8,7 +8,9 @@
  * Fully idempotent — safe to call on every request.
  */
 
-import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
+// Inline constants — the worker is deployed independently and cannot
+// import from the main @myco package at runtime.
+const CANDIDATE_STATUS = { APPROVED: 'approved', GENERATED: 'generated' } as const;
 
 const SESSIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS sessions (
