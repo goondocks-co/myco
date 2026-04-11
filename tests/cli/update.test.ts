@@ -147,4 +147,21 @@ describe('myco update', () => {
     const installedNames = vi.mocked(SymbiontInstaller).mock.calls.map((call) => call[0].name).sort();
     expect(installedNames).toEqual(['claude-code', 'cursor', 'gemini', 'vscode-copilot']);
   });
+
+  it('writes last-update-version stamp file after successful update', async () => {
+    const config = {
+      version: 3, config_version: 0,
+      symbionts: { 'claude-code': { enabled: true } },
+    };
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), YAML.stringify(config));
+    fs.mkdirSync(path.join(testDir, '.claude'), { recursive: true });
+
+    const { run } = await import('@myco/cli/update.js');
+    await run(['--project', testDir]);
+
+    const stampPath = path.join(vaultDir, 'last-update-version');
+    expect(fs.existsSync(stampPath)).toBe(true);
+    const stamp = fs.readFileSync(stampPath, 'utf-8').trim();
+    expect(stamp).toMatch(/^\d+\.\d+\.\d+/);
+  });
 });

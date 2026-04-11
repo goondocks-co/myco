@@ -2,6 +2,8 @@ import { resolveVaultDir } from '../vault/resolve.js';
 import { VAULT_GITIGNORE, registerSymbionts } from './shared.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { loadConfig, getEnabledSymbiontNames } from '../config/loader.js';
+import { getPluginVersion } from '../version.js';
+import { UPDATE_STAMP_FILENAME } from '../constants/update.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -72,6 +74,14 @@ export async function run(args: string[]): Promise<void> {
     updatedCount += registered;
   } else {
     console.log('  \u2013 No configured agents found');
+  }
+
+  // --- Write version stamp ---
+  try {
+    const stampPath = path.join(vaultDir, UPDATE_STAMP_FILENAME);
+    fs.writeFileSync(stampPath, getPluginVersion(), 'utf-8');
+  } catch {
+    // Non-fatal — stamp write failure shouldn't break the update
   }
 
   // --- Summary ---

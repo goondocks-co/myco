@@ -12,11 +12,13 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import YAML from 'yaml';
 import semver from 'semver';
 
 import {
   NPM_REGISTRY_URL,
+  NPM_PACKAGE_NAME,
   MYCO_GLOBAL_DIR,
   UPDATE_CHECK_CACHE_PATH,
   UPDATE_CONFIG_PATH,
@@ -251,6 +253,41 @@ function buildCheckResult(
     last_check: cache.checked_at,
     error,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Installed version detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves the npm global prefix by running `npm prefix -g`.
+ * Returns the trimmed path string. Throws on failure.
+ *
+ * Uses execFileSync (not execSync) to avoid shell injection — consistent
+ * with codebase conventions per src/utils/execFileNoThrow.ts patterns.
+ */
+export function resolveGlobalPrefix(): string {
+  return execFileSync('npm', ['prefix', '-g'], { encoding: 'utf-8', timeout: 5_000 }).trim();
+}
+
+/**
+ * Reads the version of the globally installed @goondocks/myco package
+ * from disk. Returns null if the package isn't installed or unreadable.
+ *
+ * Uses a direct fs.readFileSync of the package.json at the expected
+ * npm global path — no module resolution, no cache involvement.
+ */
+export function getInstalledVersion(globalPrefix: string): string | null {
+  try {
+    const pkgPath = path.join(
+      globalPrefix, 'lib', 'node_modules', NPM_PACKAGE_NAME, 'package.json',
+    );
+    const raw = fs.readFileSync(pkgPath, 'utf-8');
+    const pkg = JSON.parse(raw) as { version?: string };
+    return pkg.version ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------

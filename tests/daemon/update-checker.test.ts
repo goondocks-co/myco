@@ -35,6 +35,8 @@ import {
   isCacheStale,
   checkForUpdate,
   statusFromCache,
+  resolveGlobalPrefix,
+  getInstalledVersion,
   type CachedCheck,
   type UpdateConfig,
 } from '@myco/daemon/update-checker.js';
@@ -443,5 +445,59 @@ describe('statusFromCache()', () => {
     const result = statusFromCache('1.0.0');
     expect(result!.update_available).toBe(true);
     expect(result!.latest_version).toBe('1.1.0-beta.1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveGlobalPrefix
+// ---------------------------------------------------------------------------
+
+describe('resolveGlobalPrefix()', () => {
+  it('returns trimmed stdout from npm prefix -g', () => {
+    // This test runs against the real npm — just verify it returns a non-empty string
+    const prefix = resolveGlobalPrefix();
+    expect(typeof prefix).toBe('string');
+    expect(prefix.length).toBeGreaterThan(0);
+    expect(prefix).not.toMatch(/\n/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getInstalledVersion
+// ---------------------------------------------------------------------------
+
+describe('getInstalledVersion()', () => {
+  it('returns version string when package.json exists at expected path', () => {
+    vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
+      if (String(p).includes('@goondocks/myco/package.json')) {
+        return JSON.stringify({ version: '1.2.3' });
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+
+    const result = getInstalledVersion('/usr/local');
+    expect(result).toBe('1.2.3');
+  });
+
+  it('returns null when package.json does not exist', () => {
+    mockNoFiles();
+    const result = getInstalledVersion('/usr/local');
+    expect(result).toBeNull();
+  });
+
+  it('returns null when package.json is malformed', () => {
+    vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
+      if (String(p).includes('@goondocks/myco/package.json')) {
+        return 'not json';
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+
+    const result = getInstalledVersion('/usr/local');
+    expect(result).toBeNull();
   });
 });
