@@ -85,7 +85,7 @@ async function checkIntelligence(config: import('../config/schema.js').MycoConfi
 
     const label = `${provider.type}${provider.model ? ` / ${provider.model}` : ''}`;
 
-    if (provider.type === 'cloud') {
+    if (provider.type === 'anthropic') {
       return { name: 'Intelligence', status: 'ok', detail: `${label} (SDK handles auth)`, fixable: false };
     }
 

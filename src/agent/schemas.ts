@@ -21,7 +21,7 @@ export const CURRENT_TASK_SCHEMA_VERSION = 1;
 
 /** Schema for API provider configuration. */
 export const ProviderConfigSchema = z.object({
-  type: z.enum(['cloud', 'ollama', 'lmstudio']),
+  type: z.enum(['anthropic', 'ollama', 'lmstudio']),
   baseUrl: z.string().optional(),
   apiKey: z.string().optional(),
   model: z.string().optional(),

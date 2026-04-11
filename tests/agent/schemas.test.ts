@@ -38,13 +38,13 @@ describe('CURRENT_TASK_SCHEMA_VERSION', () => {
 // ---------------------------------------------------------------------------
 
 describe('ProviderConfigSchema', () => {
-  it('validates a minimal cloud provider', () => {
-    const result = ProviderConfigSchema.parse({ type: 'cloud' });
-    expect(result.type).toBe('cloud');
+  it('validates a minimal anthropic provider', () => {
+    const result = ProviderConfigSchema.parse({ type: 'anthropic' });
+    expect(result.type).toBe('anthropic');
   });
 
   it('validates all valid provider types', () => {
-    for (const type of ['cloud', 'ollama', 'lmstudio'] as const) {
+    for (const type of ['anthropic', 'ollama', 'lmstudio'] as const) {
       const result = ProviderConfigSchema.parse({ type });
       expect(result.type).toBe(type);
     }
@@ -66,7 +66,7 @@ describe('ProviderConfigSchema', () => {
 
   it('rejects invalid provider type', () => {
     expect(() => ProviderConfigSchema.parse({ type: 'openai' })).toThrow();
-    expect(() => ProviderConfigSchema.parse({ type: 'anthropic' })).toThrow();
+    expect(() => ProviderConfigSchema.parse({ type: 'cloud' })).toThrow();
     expect(() => ProviderConfigSchema.parse({ type: '' })).toThrow();
   });
 
@@ -90,13 +90,13 @@ describe('ExecutionConfigSchema', () => {
       model: 'claude-opus-4-20250514',
       maxTurns: 20,
       timeoutSeconds: 600,
-      provider: { type: 'cloud' },
+      provider: { type: 'anthropic' },
     });
 
     expect(result.model).toBe('claude-opus-4-20250514');
     expect(result.maxTurns).toBe(20);
     expect(result.timeoutSeconds).toBe(600);
-    expect(result.provider?.type).toBe('cloud');
+    expect(result.provider?.type).toBe('anthropic');
   });
 
   it('validates execution config with only model', () => {

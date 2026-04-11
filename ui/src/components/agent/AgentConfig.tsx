@@ -202,6 +202,7 @@ export function AgentConfig() {
   }
 
   const dirty = form && config ? isAgentDirty(form, config, defaultTaskFromApi) : false;
+  const hasAgentProvider = !!config?.agent?.provider;
 
   const setField = useCallback(<K extends keyof AgentFormState>(key: K, value: AgentFormState[K]) => {
     setForm((prev) => (prev ? { ...prev, [key]: value } : prev));
@@ -288,6 +289,7 @@ export function AgentConfig() {
             <Switch
               checked={form.scheduledTasksEnabled}
               onCheckedChange={(v) => setField('scheduledTasksEnabled', v)}
+              disabled={!hasAgentProvider}
             />
           </div>
           <div className="flex items-center justify-between">
@@ -300,9 +302,20 @@ export function AgentConfig() {
             <Switch
               checked={form.eventTasksEnabled}
               onCheckedChange={(v) => setField('eventTasksEnabled', v)}
+              disabled={!hasAgentProvider}
             />
           </div>
         </div>
+
+        {!hasAgentProvider && (
+          <p className="font-sans text-xs text-on-surface-variant/70">
+            Configure an agent provider in{' '}
+            <a href="/settings" className="underline hover:text-on-surface transition-colors">
+              Settings
+            </a>{' '}
+            to enable agent tasks.
+          </p>
+        )}
 
         <div className="border-t border-outline-variant/20" />
 

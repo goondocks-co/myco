@@ -25,7 +25,7 @@ cd your-project
 myco init
 ```
 
-The wizard detects your coding agents, sets up intelligence and embedding providers, and starts capturing. Works with Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, and OpenCode.
+`myco init` detects your coding agents, installs hooks, starts the daemon, and opens the dashboard. Pick the agent and embedding providers from the Settings page when you're ready — data capture starts immediately, intelligence is opt-in. Works with Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, and OpenCode.
 
 ## What is Myco?
 

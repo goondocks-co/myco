@@ -4,10 +4,12 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 
 const MODEL_LIST_TIMEOUT_MS = 5000;
 
-/** Well-known Anthropic models — no list API available locally. */
+/** Well-known Anthropic models — no list API available locally.
+ *  Sonnet is first because it's the recommended default for all built-in
+ *  tasks, and the UI auto-selects the first model when a provider is picked. */
 export const ANTHROPIC_MODELS = [
-  'claude-opus-4-6',
   'claude-sonnet-4-6',
+  'claude-opus-4-6',
   'claude-haiku-4-5-20251001',
 ];
 
@@ -25,7 +27,7 @@ function filterEmbeddingModels(models: string[]): string[] {
 }
 
 /** Filter models to exclude embedding models (LLM-only). */
-function filterLlmModels(models: string[]): string[] {
+export function filterLlmModels(models: string[]): string[] {
   return models.filter((m) => {
     const name = m.toLowerCase();
     return !EMBEDDING_PATTERNS.some((p) => name.includes(p));

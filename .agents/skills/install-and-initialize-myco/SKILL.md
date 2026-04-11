@@ -1,7 +1,6 @@
 ---
 name: myco:install-and-initialize-myco
-description: |
-  Use this skill when installing Myco for the first time, initializing Myco in a new project, or troubleshooting a broken installation. Activate even if the user just asks "how do I get started with Myco" or "how do I add Myco to my project" without explicitly saying "install." Covers the full lifecycle: bootstrapping the CLI via the install script, running `myco init`, verifying health with `myco doctor`, and managing updates and removal.
+description: "Use this skill when installing Myco for the first time, initializing Myco in a new project, or troubleshooting a broken installation. Activate even if the user just asks \"how do I get started with Myco\" or \"how do I add Myco to my project\" without explicitly saying \"install.\" Covers the full lifecycle: bootstrapping the CLI via the install script, running `myco init`, verifying health with `myco doctor`, and managing updates and removal."
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Bash, Grep, Glob
@@ -9,118 +8,171 @@ allowed-tools: Read, Bash, Grep, Glob
 
 # Install and Initialize Myco
 
-Myco is a project-local intelligence layer that captures developer sessions and builds institutional knowledge. This skill walks through bootstrapping the `myco` CLI, initializing a project vault, and verifying the installation is healthy.
-
 ## Prerequisites
 
-- Node.js 22+ installed
-- At least one supported coding agent present in the project (Claude Code, Cursor, Codex CLI, Gemini CLI, VS Code Copilot, Windsurf, or OpenCode)
-- An Anthropic API key (or compatible key) for the intelligence pipeline
-- You are standing at your project root — Myco installs into `.myco/` relative to your working directory
+- Node.js installed (Myco requires Node.js ≥ 18)
+- Git repository initialized for the target project
+- At least one supported agent installed (Claude Code, Cursor, Windsurf, Codex, Gemini CLI, or VS Code Copilot)
 
-## Step 1 — Bootstrap the CLI
+## Steps
+
+### 1. Bootstrap the CLI
+
+Install the Myco CLI globally via the install script:
 
 ```bash
-curl -fsSL https://myco.sh/install | sh
+curl -fsSL https://myco.sh/install.sh | bash
 ```
 
-The script installs `@goondocks/myco` globally via npm. Verify it worked:
+Or via npm:
+
+```bash
+npm install -g myco
+```
+
+Verify the installation:
 
 ```bash
 myco --version
 ```
 
-**npm link trap (dev machines):** If you previously ran `npm link` from the repo root, a global symlink at `/opt/homebrew/bin/myco` already exists. A plain `npm install -g` will throw EEXIST and silently fail. The install script handles this automatically — it removes conflicting packages (`@goondocks-co/myco`, `@goondocks/myco-ui`) and retries. If you're running the install manually, clear those packages first:
+### 2. Initialize Myco in a Project
+
+Navigate to the project root and run:
 
 ```bash
-npm rm -g @goondocks-co/myco @goondocks/myco-ui
-curl -fsSL https://myco.sh/install | sh
-```
-
-**`better-sqlite3` deprecation warning:** You'll see a `prebuild-install` deprecation notice during install. This comes from a transitive dependency and is harmless — ignore it.
-
-## Step 2 — Initialize the Project
-
-```bash
-cd /path/to/your/project
 myco init
 ```
 
-The interactive wizard does five things:
+**What `myco init` does:**
 
-1. **Detects agents** by checking for config-directory presence — NOT binary-on-PATH:
-   - `.claude/` → Claude Code
-   - `.cursor/` → Cursor
-   - `.codex/` → Codex CLI
-   - `.gemini/` → Gemini CLI
-   - `.vscode/` → VS Code Copilot
-   - `.codeium/windsurf/` → Windsurf
-   - `.opencode/` → OpenCode
+1. Creates `.myco/` directory (vault database, config, secrets)
+2. Writes `myco.yaml` with project configuration
+3. **Seeds the `symbionts` list in `myco.yaml`** — reads each installed symbiont's manifest `defaultEnabled` field via `SymbiontInstaller` and populates the per-project activation list with sensible defaults
+4. Registers MCP server entries for each enabled symbiont
+5. Installs hook files for each enabled symbiont — hooks use harness env vars (`${CLAUDE_PROJECT_DIR:-.}`, `${CURSOR_PROJECT_DIR:-.}`, etc.) for root-anchoring so they resolve correctly regardless of working directory
+6. Creates skill symlinks under `.agents/skills/`
+7. Creates thin `AGENTS.md` reference stubs for agents that require their own instruction file
+8. Starts the daemon in the background automatically
+9. Opens the Myco UI to the **Settings** page (`/settings`) in your browser
 
-   Agents whose config dir exists are pre-checked as defaults. Detection is informational — you can select or deselect any agent freely.
+**The Myco Agent pipeline is off-by-default after init.** `myco init` writes these keys explicitly to `myco.yaml`:
 
-2. **Prompts you to pick agents** — choose which to configure.
+```yaml
+agent:
+  scheduled_tasks_enabled: false
+  event_tasks_enabled: false
+```
 
-3. **Prompts for your API key** — stored in `.myco/secrets.env`, never in `myco.yaml`. This separation is enforced by convention; always keep keys in `secrets.env`.
+No Myco Agent pipeline features (agent pipeline, digest, skill lifecycle) are active until you enable them through the daemon UI after startup.
 
-4. **Creates the vault** at `.myco/`:
-   - `myco.yaml` — project config (symbiont list, plan dirs, daemon settings)
-   - `secrets.env` — API keys (gitignored automatically)
-   - `.gitignore` — covers `vault.db`, `daemon.json`, `backups/`, `.team-worker/`, and `secrets.env`
+**The `symbionts` list in `myco.yaml`:**
 
-5. **Runs `SymbiontInstaller`** — installs hook files and settings for each selected agent. Each agent gets its own hook that fires on session events (start, stop, prompt).
+```yaml
+symbionts:
+  - claude-code
+  - cursor
+  # windsurf is installed on this machine but defaultEnabled: false in manifest
+  # so it is NOT added to this project's list
+```
 
-After `init` completes, `.myco/` is the project's vault root. All subsequent Myco operations (daemon, agent runs, team sync) read from here.
+This list is the **per-project activation gate**. An agent installed on the machine but absent from this list is not active for this project. This decouples machine-level installation from project-level activation.
 
-## Step 3 — Verify with Doctor
+After `myco init`, review the `symbionts` list and add/remove agents for this project specifically.
+
+### 3. Verify the Installation
+
+Run the health check:
 
 ```bash
 myco doctor
 ```
 
 `myco doctor` checks:
-- CLI version and update availability
-- Vault database integrity (schema version, table presence)
-- Daemon connectivity
-- Agent hook installations
-- API key presence in `secrets.env`
+- Daemon is running and reachable
+- MCP entries are registered correctly for each active symbiont
+- Hook files are present and executable
+- Vault database is accessible
+- No configuration drift between `myco.yaml` and the active symbiont set
 
-Fix any warnings before proceeding. A red item means something won't work; yellow is advisory.
+Doctor flags agents whose config directory (`.claude/`, `.cursor/`, etc.) exists in the project but whose MCP entry is missing or stale. It does NOT flag agents that are installed globally but have no config directory here — binary presence without a project config directory is not a problem.
 
-## Step 4 — Start the Daemon
+**Note:** Doctor warns (rather than errors) when LLM or embedding providers are unconfigured. Data-collection mode is a valid post-init state — unconfigured providers mean the agent pipeline won't run, but session capture continues normally. These warnings are expected immediately after `myco init`.
+
+### 4. Start the Daemon
+
+`myco init` starts the daemon automatically on first init. For subsequent restarts after the daemon has stopped:
 
 ```bash
-myco open
+myco start
 ```
 
-The daemon runs in the background and listens for hook events from your coding agents. It writes raw session data (prompt batches, activities) to the vault. The intelligence agent (`myco-agent`) processes this data on a schedule.
-
-To check daemon status:
+The daemon runs in the background and handles session capture, agent task scheduling, and team sync. Verify it's running:
 
 ```bash
 myco status
 ```
 
-## Lifecycle Commands
+### 5. Configure Myco Agent (Optional)
 
-| Command | Purpose |
-|---|---|
-| `myco init` | First-time project setup |
-| `myco open` | Start the daemon |
-| `myco status` | Check daemon and vault health |
-| `myco doctor` | Full health check |
-| `myco update` | Update CLI and symbiont hooks |
-| `myco remove` | Uninstall hooks from agents (vault preserved) |
+After the daemon is running, open the **Myco Agent** section in the daemon UI to enable Myco Agent pipeline features:
+- LLM and embedding provider configuration
+- Agent pipeline scheduling (skill survey, digest, etc.)
+- Team sync settings
 
-**`myco update` during an active hook session:** If a hook fires while `npm update -g` is mid-run, you may see a `node:internal/modules/cjs/loader:1478` CJS loader error. This is npm's non-atomic file replacement in action — not a code regression. It self-resolves once npm finishes. Restart the daemon if it goes quiet afterward.
+The Myco Agent pipeline is intentionally off-by-default so new installations capture data before any processing runs. The `scheduled_tasks_enabled` and `event_tasks_enabled` flags in `myco.yaml` must both be set to `true` (or toggled via the UI) to activate pipeline tasks.
 
-## Adding or Removing Agents Later
+### 6. Managing Updates
 
-To add a new agent symbiont after initial setup, use the daemon UI (Settings → Symbionts) — this is the primary interface for managing agents. The CLI `myco init` is only for first-time bootstrap; subsequent agent changes go through the UI to avoid config divergence. There is one write path for `myco.yaml` — the UI owns it after init.
+```bash
+myco update
+```
 
-## What NOT to Do
+Updates the CLI binary and refreshes hook files, MCP entries, and skill symlinks for all active symbionts. `myco update` respects the existing `symbionts` list in `myco.yaml` — it does not overwrite or reset per-project activation choices.
 
-- **Don't edit `myco.yaml` by hand** to add agents. Use the UI.
-- **Don't put API keys in `myco.yaml`**. They belong in `.myco/secrets.env`.
-- **Don't run `myco init` in a subdirectory** unless you explicitly want a nested vault. Myco installs relative to your working directory.
-- **Don't commit `.myco/`** to git. The `.gitignore` created by `init` covers the sensitive and ephemeral files, but the directory itself should not be in version control.
+`myco update` also auto-migrates hook files from the old relative-path format (`node .agents/myco-hook.cjs`) to the current harness env-var format that uses `${CLAUDE_PROJECT_DIR:-.}` (and cursor/windsurf equivalents) for correct root resolution.
+
+### 7. Removing Myco from a Project
+
+```bash
+myco remove
+```
+
+Stops the daemon, removes hooks, removes MCP entries, removes skill symlinks, and cleans gitignore blocks. The vault (`.myco/` with all session history and spores) is **preserved by default**. To also delete the vault:
+
+```bash
+myco remove --remove-vault
+```
+
+## Querying Active Symbionts Programmatically
+
+The canonical function for reading which symbionts are active in a project:
+
+```typescript
+import { getEnabledSymbiontNames } from './src/config/loader.js';
+
+const enabled = getEnabledSymbiontNames(config);
+// Returns string[] of symbiont names from myco.yaml symbionts list
+```
+
+This function is the single source of truth. Do not read `myco.yaml.symbionts` directly or filter inline — previously copy-pasted in 3 places (`update.ts`, `doctor.ts`, daemon API), now canonicalized in `src/config/loader.ts`.
+
+## Common Pitfalls
+
+**`symbionts` list absent from `myco.yaml` after init.** If a symbiont's manifest is missing the `defaultEnabled` field, `SymbiontInstaller` cannot determine the default and the symbiont may be excluded from the initial list. Add it manually after init, or add `defaultEnabled: true/false` to the manifest before running init.
+
+**Machine-level install ≠ project-level activation.** An agent can be installed on the machine but absent from a project's `symbionts` list. `myco doctor` will not flag this. The symbiont is simply not active for that project. Use `myco init` or manually edit `myco.yaml` to add it.
+
+**`myco doctor` mis-reports agents as "unregistered."** This was a historical bug where doctor used binary-on-PATH presence to detect agents. Current behavior: doctor only flags agents whose config directory (`.claude/`, `.cursor/`, etc.) exists in the current project but MCP isn't registered. If you see a false positive, check whether the config directory actually exists.
+
+**`myco doctor` warnings for unconfigured providers are expected, not broken.** Immediately after `myco init`, doctor will warn that LLM/embedding providers are unconfigured. This is data-collection mode — valid and intentional. Configure providers via the daemon UI when ready.
+
+**`myco update` after adding a new symbiont to `symbionts`.** After manually adding a symbiont to the `symbionts` list in `myco.yaml`, run `myco update` to register its MCP entry and install its hooks. The daemon UI is the primary interface — CLI is only for bootstrap operations.
+
+**Old hook format (relative path) after upgrading.** Hooks installed before the harness env-var migration used bare relative paths (`node .agents/myco-hook.cjs`) and fail when the agent invokes them from a different working directory. Run `myco update` to auto-migrate to the current format that uses `${CLAUDE_PROJECT_DIR:-.}` (and cursor/windsurf equivalents) for correct root resolution.
+
+**Don't edit `.myco/` contents directly.** The vault database and daemon state in `.myco/` are managed exclusively by the daemon. Direct edits can corrupt session history or break sync.
+
+**Myco Agent pipeline won't run after init without configuration.** `myco init` writes `scheduled_tasks_enabled: false` and `event_tasks_enabled: false` explicitly to `myco.yaml`. If the agent pipeline isn't running after setup, check the **Myco Agent** section in the daemon UI — LLM provider, embedding provider, and per-task scheduling all require explicit opt-in.
+
+**CLI flags are ignored on re-init of an existing vault.** Provider flags like `--embedding-provider` and `--agent-provider` are scoped exclusively to new vault creation. Running `myco init --agent-provider anthropic` on a project that already has a `.myco/` vault has no effect on provider settings — the existing configuration is preserved. To change providers on an existing vault, use the Settings UI in the daemon.

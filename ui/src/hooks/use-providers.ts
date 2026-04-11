@@ -9,7 +9,7 @@ const PROVIDERS_STALE_TIME = 30_000;
 /* ---------- Types ---------- */
 
 export interface ProviderInfo {
-  type: 'cloud' | 'ollama' | 'lmstudio';
+  type: 'anthropic' | 'ollama' | 'lmstudio';
   available: boolean;
   baseUrl?: string;
   models: string[];
@@ -20,7 +20,7 @@ export interface ProvidersResponse {
 }
 
 export interface ProviderConfig {
-  type: 'cloud' | 'ollama' | 'lmstudio';
+  type: 'anthropic' | 'ollama' | 'lmstudio';
   model?: string;
   base_url?: string;
   context_length?: number;

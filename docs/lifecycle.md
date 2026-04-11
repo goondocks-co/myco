@@ -396,7 +396,7 @@ agent:
   event_tasks_enabled: true       # master switch for event-driven tasks (title-summary)
   summary_batch_interval: 5       # batches between title/summary triggers (0 = disable)
   provider:                       # global default provider
-    type: cloud                   # cloud | ollama | lmstudio | openrouter | openai-compatible
+    type: anthropic               # anthropic | ollama | lmstudio
     model: claude-sonnet-4-6      # optional model override
     context_length: 8192          # optional, for local models
   tasks:                          # per-task overrides (provider and schedule)

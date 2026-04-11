@@ -19,10 +19,14 @@
   "scripts": {
     "prepare": "npm run build",
     "postinstall": "test -d ui && cd ui && npm install || true",
-    "build": "tsup && (test -d ui && cd ui && npx vite build || true)",
+    "build": "sh -c 'npm run build:core & pid1=$!; npm run build:ui & pid2=$!; wait $pid1; s1=$?; wait $pid2; s2=$?; test $s1 -eq 0 -a $s2 -eq 0'",
+    "build:core": "tsup",
+    "build:ui": "test -d ui && cd ui && npx vite build || true",
     "build:watch": "tsc --watch",
     "build:types": "tsc",
     "test": "vitest run",
+    "test:fast": "MYCO_TEST_PROFILE=fast vitest run",
+    "test:integration": "MYCO_TEST_PROFILE=integration vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit"
   },
