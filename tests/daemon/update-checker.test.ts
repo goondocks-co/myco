@@ -37,6 +37,7 @@ import {
   statusFromCache,
   resolveGlobalPrefix,
   getInstalledVersion,
+  detectDevBuild,
   type CachedCheck,
   type UpdateConfig,
 } from '@myco/daemon/update-checker.js';
@@ -498,6 +499,94 @@ describe('getInstalledVersion()', () => {
     });
 
     const result = getInstalledVersion('/usr/local');
+    expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectDevBuild
+// ---------------------------------------------------------------------------
+
+describe('detectDevBuild()', () => {
+  /** Identity resolver — test paths don't exist, so bypass real realpath. */
+  const identityResolver = (p: string) => p;
+
+  it('returns null when MYCO_CMD is already set', () => {
+    const result = detectDevBuild('/opt/homebrew', '/home/user/.local/bin/myco-dev', 'myco-dev', identityResolver);
+    expect(result).toBeNull();
+  });
+
+  it('returns null when globalPrefix is null', () => {
+    const result = detectDevBuild(null, '/home/user/.local/bin/myco-dev', undefined, identityResolver);
+    expect(result).toBeNull();
+  });
+
+  it('returns null when cliEntry is missing', () => {
+    const result = detectDevBuild('/opt/homebrew', undefined, undefined, identityResolver);
+    expect(result).toBeNull();
+  });
+
+  it('returns cliEntry when binary is outside global prefix (dev build)', () => {
+    const result = detectDevBuild(
+      '/opt/homebrew',
+      '/home/user/.local/bin/myco-dev',
+      undefined,
+      identityResolver,
+    );
+    expect(result).toBe('/home/user/.local/bin/myco-dev');
+  });
+
+  it('returns null when binary is inside global prefix (proper install)', () => {
+    const result = detectDevBuild(
+      '/opt/homebrew',
+      '/opt/homebrew/lib/node_modules/@goondocks/myco/dist/cli.js',
+      undefined,
+      identityResolver,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('does not match on path prefix that is only a string prefix, not a path boundary', () => {
+    // /opt/homebrew-foo should NOT be considered under /opt/homebrew
+    const result = detectDevBuild(
+      '/opt/homebrew',
+      '/opt/homebrew-foo/bin/myco',
+      undefined,
+      identityResolver,
+    );
+    expect(result).toBe('/opt/homebrew-foo/bin/myco');
+  });
+
+  it('resolves symlinks via realpath before comparing', () => {
+    // Simulate a symlink: /home/user/.local/bin/myco-dev → /opt/homebrew/lib/node_modules/...
+    // If we followed the symlink, it would look like a proper install.
+    const symlinkResolver = (p: string) => {
+      if (p === '/home/user/.local/bin/myco-dev') {
+        return '/opt/homebrew/lib/node_modules/@goondocks/myco/dist/cli.js';
+      }
+      return p;
+    };
+
+    const result = detectDevBuild(
+      '/opt/homebrew',
+      '/home/user/.local/bin/myco-dev',
+      undefined,
+      symlinkResolver,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('returns null when realpath throws', () => {
+    const throwingResolver = () => {
+      throw new Error('ENOENT');
+    };
+
+    const result = detectDevBuild(
+      '/opt/homebrew',
+      '/home/user/.local/bin/myco-dev',
+      undefined,
+      throwingResolver,
+    );
     expect(result).toBeNull();
   });
 });

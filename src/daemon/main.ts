@@ -23,7 +23,7 @@ import { handleGetConfig, handlePutConfig, createPlanDirHandlers } from './api/c
 import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
 import { createUpdateHandlers } from './api/update.js';
-import { resolveGlobalPrefix } from './update-checker.js';
+import { resolveGlobalPrefix, detectDevBuild } from './update-checker.js';
 import { getMachineId } from './machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
@@ -224,7 +224,11 @@ export async function main(): Promise<void> {
   const machineId = getMachineId(vaultDir);
   logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
 
-  // --- Resolve npm global prefix for installed-version detection ---
+  // --- Resolve npm global prefix + detect dev build ---
+  // globalPrefix is used both for installed-version detection (in the status
+  // handler) and for dev-build auto-detection. When MYCO_CMD is already set
+  // by a symbiont hook or explicit shell env, we skip both — nothing needs
+  // the prefix.
   let globalPrefix: string | null = null;
   if (!process.env.MYCO_CMD) {
     try {
@@ -233,6 +237,23 @@ export async function main(): Promise<void> {
     } catch (err) {
       logger.warn(LOG_KINDS.DAEMON_START, 'Failed to resolve npm global prefix', {
         error: (err as Error).message,
+      });
+    }
+
+    // Auto-detect dev builds: if the running binary isn't under the global
+    // prefix, set MYCO_CMD to the current CLI entry so update checks are
+    // exempted and any restart script respawns the same dev binary.
+    const devCliEntry = detectDevBuild(
+      globalPrefix,
+      process.argv[1],
+      process.env.MYCO_CMD,
+      fs.realpathSync,
+    );
+    if (devCliEntry) {
+      process.env.MYCO_CMD = devCliEntry;
+      globalPrefix = null;
+      logger.info(LOG_KINDS.DAEMON_START, 'Dev build detected; MYCO_CMD auto-set', {
+        cmd: devCliEntry,
       });
     }
   }
