@@ -122,7 +122,7 @@ export default defineConfig({
           const destDir = path.join(destBase, entry.name);
           cpSync(srcDir, destDir, { recursive: true });
         } else if (entry.isFile()) {
-          // Shared templates (root-level files like hook-guard.cjs, instructions-stub.md)
+          // Shared templates (root-level files like myco-run.cjs, instructions-stub.md)
           copyFileSync(path.join(symbiontTemplates, entry.name), path.join(destBase, entry.name));
         }
       }

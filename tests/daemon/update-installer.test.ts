@@ -7,6 +7,7 @@ describe('generateRestartScript()', () => {
     vaultDir: '/home/user/project/.myco',
     fromVersion: '0.17.0',
     toVersion: '0.17.1',
+    mycoBinary: 'myco',
   };
 
   it('includes myco update when runLocalUpdate is true', () => {
@@ -31,9 +32,25 @@ describe('generateRestartScript()', () => {
     expect(script).toContain('restart-reason.json');
   });
 
-  it('uses MYCO_CMD env var with fallback', () => {
+  it('bakes the myco binary literal at script generation time (prod)', () => {
+    // Regression guard: the old implementation used `${MYCO_CMD:-myco}` —
+    // a runtime env-var dispatch inside the shell script that relied on
+    // the child process inheriting MYCO_CMD from its parent. The new
+    // implementation bakes the literal at generation time, eliminating
+    // the env-var dependency entirely.
     const script = generateRestartScript({ ...baseParams, runLocalUpdate: false });
-    expect(script).toContain('${MYCO_CMD:-myco}');
+    expect(script).not.toContain('${MYCO_CMD');
+    expect(script).toContain('MYCO="myco"');
+  });
+
+  it('bakes a dev-build CLI entry path when supplied', () => {
+    const script = generateRestartScript({
+      ...baseParams,
+      runLocalUpdate: false,
+      mycoBinary: '/Users/dev/.local/bin/myco-dev',
+    });
+    expect(script).toContain('MYCO="/Users/dev/.local/bin/myco-dev"');
+    expect(script).not.toContain('${MYCO_CMD');
   });
 
   it('cleans up the script file', () => {
@@ -60,13 +77,30 @@ describe('generateRestartScript()', () => {
 });
 
 describe('generateUpdateScript()', () => {
+  const baseParams = {
+    targetVersion: '1.0.0',
+    projectRoot: '/project',
+    vaultDir: '/project/.myco',
+    mycoBinary: 'myco',
+  };
+
   it('generates a valid update script (existing behavior sanity check)', () => {
-    const script = generateUpdateScript({
-      targetVersion: '1.0.0',
-      projectRoot: '/project',
-      vaultDir: '/project/.myco',
-    });
+    const script = generateUpdateScript(baseParams);
     expect(script).toContain('npm install -g');
     expect(script).toContain('update --project');
+  });
+
+  it('bakes the myco binary literal (no MYCO_CMD env-var dispatch)', () => {
+    const script = generateUpdateScript(baseParams);
+    expect(script).not.toContain('${MYCO_CMD');
+    expect(script).toContain('MYCO="myco"');
+  });
+
+  it('bakes a dev-build CLI entry path when supplied', () => {
+    const script = generateUpdateScript({
+      ...baseParams,
+      mycoBinary: '/Users/dev/.local/bin/myco-dev',
+    });
+    expect(script).toContain('MYCO="/Users/dev/.local/bin/myco-dev"');
   });
 });

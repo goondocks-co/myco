@@ -23,7 +23,7 @@ import { handleGetConfig, handlePutConfig, createPlanDirHandlers } from './api/c
 import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
 import { createUpdateHandlers } from './api/update.js';
-import { resolveGlobalPrefix, detectDevBuild } from './update-checker.js';
+import { resolveGlobalPrefix, detectDevBuild, setDevBuildCliEntry } from './update-checker.js';
 import { getMachineId } from './machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
@@ -226,36 +226,33 @@ export async function main(): Promise<void> {
 
   // --- Resolve npm global prefix + detect dev build ---
   // globalPrefix is used both for installed-version detection (in the status
-  // handler) and for dev-build auto-detection. When MYCO_CMD is already set
-  // by a symbiont hook or explicit shell env, we skip both — nothing needs
-  // the prefix.
+  // handler) and for dev-build auto-detection via detectDevBuild().
   let globalPrefix: string | null = null;
-  if (!process.env.MYCO_CMD) {
-    try {
-      globalPrefix = resolveGlobalPrefix();
-      logger.debug(LOG_KINDS.DAEMON_START, 'npm global prefix resolved', { prefix: globalPrefix });
-    } catch (err) {
-      logger.warn(LOG_KINDS.DAEMON_START, 'Failed to resolve npm global prefix', {
-        error: (err as Error).message,
-      });
-    }
+  try {
+    globalPrefix = resolveGlobalPrefix();
+    logger.debug(LOG_KINDS.DAEMON_START, 'npm global prefix resolved', { prefix: globalPrefix });
+  } catch (err) {
+    logger.warn(LOG_KINDS.DAEMON_START, 'Failed to resolve npm global prefix', {
+      error: (err as Error).message,
+    });
+  }
 
-    // Auto-detect dev builds: if the running binary isn't under the global
-    // prefix, set MYCO_CMD to the current CLI entry so update checks are
-    // exempted and any restart script respawns the same dev binary.
-    const devCliEntry = detectDevBuild(
-      globalPrefix,
-      process.argv[1],
-      process.env.MYCO_CMD,
-      fs.realpathSync,
-    );
-    if (devCliEntry) {
-      process.env.MYCO_CMD = devCliEntry;
-      globalPrefix = null;
-      logger.info(LOG_KINDS.DAEMON_START, 'Dev build detected; MYCO_CMD auto-set', {
-        cmd: devCliEntry,
-      });
-    }
+  // Auto-detect dev builds: if the running binary isn't under the global
+  // prefix, record the CLI entry via setDevBuildCliEntry() so update checks
+  // are exempted and any restart/update shell script uses the dev binary
+  // as its restart target (baked in at script-generation time — no env var
+  // propagation required).
+  const devCliEntry = detectDevBuild(
+    globalPrefix,
+    process.argv[1],
+    fs.realpathSync,
+  );
+  if (devCliEntry) {
+    setDevBuildCliEntry(devCliEntry);
+    globalPrefix = null;
+    logger.info(LOG_KINDS.DAEMON_START, 'Dev build detected; update checks exempted', {
+      cli_entry: devCliEntry,
+    });
   }
 
   // --- SQLite initialization ---

@@ -24,6 +24,7 @@ vi.mock('../../../src/daemon/update-checker.js', () => ({
   clearCachedCheck: vi.fn(),
   isCacheStale: vi.fn(() => false),
   getInstalledVersion: vi.fn(() => null),
+  resolveMycoBinary: vi.fn(() => 'myco'),
 }));
 
 vi.mock('../../../src/daemon/update-installer.js', () => ({
@@ -267,6 +268,7 @@ describe('handleUpdateApply', () => {
       targetVersion: '1.1.0',
       projectRoot: '/project',
       vaultDir: '/vault',
+      mycoBinary: 'myco',
     });
     expect(scheduleShutdown).toHaveBeenCalled();
     expect(result.body).toMatchObject({ status: 'applying', version: '1.1.0' });

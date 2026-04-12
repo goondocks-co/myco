@@ -159,28 +159,28 @@ const HOOKS_TEMPLATE = {
   SessionStart: [
     {
       hooks: [
-        { type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook session-start', timeout: 10 },
+        { type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont claude-code', timeout: 10 },
       ],
     },
   ],
   Stop: [
     {
       hooks: [
-        { type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook stop', timeout: 30 },
+        { type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook stop --symbiont claude-code', timeout: 30 },
       ],
     },
   ],
   PreCompact: [
     {
       hooks: [
-        { type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook pre-compact', timeout: 5 },
+        { type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont claude-code', timeout: 5 },
       ],
     },
   ],
   PostCompact: [
     {
       hooks: [
-        { type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook post-compact', timeout: 5 },
+        { type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook post-compact --symbiont claude-code', timeout: 5 },
       ],
     },
   ],
@@ -189,8 +189,7 @@ const HOOKS_TEMPLATE = {
 const MCP_TEMPLATE = {
   myco: {
     type: 'stdio',
-    command: 'myco-run',
-    args: ['mcp'],
+    command: 'myco-run', args: ['mcp'],
   },
 };
 
@@ -224,20 +223,20 @@ function setupPackageRoot(): void {
   writeJson(path.join(claudeTemplateDir, 'hooks.json'), HOOKS_TEMPLATE);
   writeJson(path.join(claudeTemplateDir, 'mcp.json'), MCP_TEMPLATE);
   writeJson(path.join(claudeTemplateDir, 'settings.json'), {
-    permissions: { allow: ['Bash(myco-run *)', 'Bash(myco-run:*)', 'Bash(myco *)', 'Bash(myco:*)'] },
+    permissions: { allow: ['Bash(myco *)', 'Bash(myco:*)', 'Bash(myco-dev *)', 'Bash(myco-dev:*)'] },
   });
   writeJson(path.join(cursorTemplateDir, 'hooks.json'), {
-    sessionStart: [{ command: 'cd "${CURSOR_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook session-start', type: 'command', timeout: 10 }],
-    stop: [{ command: 'cd "${CURSOR_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook stop', type: 'command', timeout: 30 }],
-    preCompact: [{ command: 'cd "${CURSOR_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook pre-compact', type: 'command', timeout: 5 }],
+    sessionStart: [{ command: 'cd "${CURSOR_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont cursor', type: 'command', timeout: 10 }],
+    stop: [{ command: 'cd "${CURSOR_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook stop --symbiont cursor', type: 'command', timeout: 30 }],
+    preCompact: [{ command: 'cd "${CURSOR_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont cursor', type: 'command', timeout: 5 }],
   });
   writeJson(path.join(cursorTemplateDir, 'mcp.json'), MCP_TEMPLATE);
   writeJson(path.join(cursorTemplateDir, 'settings.json'), {
-    'chat.tools.terminal.autoApprove': { 'myco-run': true, 'myco': true },
+    'chat.tools.terminal.autoApprove': { 'myco': true, 'myco-dev': true },
   });
   writeJson(path.join(codexTemplateDir, 'hooks.json'), {
-    SessionStart: [{ hooks: [{ type: 'command', command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-hook.cjs hook session-start', timeout: 10 }] }],
-    Stop: [{ hooks: [{ type: 'command', command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-hook.cjs hook stop', timeout: 30 }] }],
+    SessionStart: [{ hooks: [{ type: 'command', command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-run.cjs hook session-start --symbiont codex', timeout: 10 }] }],
+    Stop: [{ hooks: [{ type: 'command', command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-run.cjs hook stop --symbiont codex', timeout: 30 }] }],
   });
   writeJson(path.join(codexTemplateDir, 'mcp.json'), {
     myco: { command: 'myco-run', args: ['mcp'] },
@@ -246,31 +245,31 @@ function setupPackageRoot(): void {
     features: { codex_hooks: true },
   });
   writeJson(path.join(vscodeTemplateDir, 'hooks.json'), {
-    SessionStart: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook session-start', timeout: 10 }] }],
-    Stop: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook stop', timeout: 30 }] }],
-    PreCompact: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook pre-compact', timeout: 5 }] }],
+    SessionStart: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont vscode-copilot', timeout: 10 }] }],
+    Stop: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook stop --symbiont vscode-copilot', timeout: 30 }] }],
+    PreCompact: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont vscode-copilot', timeout: 5 }] }],
   });
   writeJson(path.join(vscodeTemplateDir, 'mcp.json'), MCP_TEMPLATE);
   writeJson(path.join(vscodeTemplateDir, 'settings.json'), {
-    'chat.tools.terminal.autoApprove': { 'myco-run': true, 'myco': true },
+    'chat.tools.terminal.autoApprove': { 'myco': true, 'myco-dev': true },
   });
   writeJson(path.join(geminiTemplateDir, 'hooks.json'), {
-    SessionStart: [{ hooks: [{ name: 'myco-session-start', type: 'command', command: 'cd "${GEMINI_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook session-start', timeout: 10000 }] }],
-    AfterAgent: [{ hooks: [{ name: 'myco-stop', type: 'command', command: 'cd "${GEMINI_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook stop', timeout: 30000 }] }],
-    PreCompress: [{ hooks: [{ name: 'myco-pre-compact', type: 'command', command: 'cd "${GEMINI_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook pre-compact', timeout: 5000 }] }],
+    SessionStart: [{ hooks: [{ name: 'myco-session-start', type: 'command', command: 'cd "${GEMINI_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont gemini', timeout: 10000 }] }],
+    AfterAgent: [{ hooks: [{ name: 'myco-stop', type: 'command', command: 'cd "${GEMINI_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook stop --symbiont gemini', timeout: 30000 }] }],
+    PreCompress: [{ hooks: [{ name: 'myco-pre-compact', type: 'command', command: 'cd "${GEMINI_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont gemini', timeout: 5000 }] }],
   });
   writeJson(path.join(geminiTemplateDir, 'mcp.json'), {
     myco: { command: 'myco-run', args: ['mcp'] },
   });
   writeJson(path.join(geminiTemplateDir, 'settings.json'), {
-    coreTools: ['ShellTool(myco-run *)', 'ShellTool(myco *)'],
+    coreTools: ['ShellTool(myco *)', 'ShellTool(myco-dev *)'],
   });
 
   const windsurfTemplateDir = path.join(packageRoot, 'src/symbionts/templates/windsurf');
   fs.mkdirSync(windsurfTemplateDir, { recursive: true });
   writeJson(path.join(windsurfTemplateDir, 'hooks.json'), {
-    pre_user_prompt: [{ command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-hook.cjs hook user-prompt-submit' }],
-    post_cascade_response: [{ command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-hook.cjs hook stop' }],
+    pre_user_prompt: [{ command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-run.cjs hook user-prompt-submit --symbiont windsurf' }],
+    post_cascade_response: [{ command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-run.cjs hook stop --symbiont windsurf' }],
   });
 
   // opencode uses plugin-file hooks + non-standard MCP key + a package.json for plugin deps
@@ -282,16 +281,16 @@ function setupPackageRoot(): void {
     myco: { type: 'local', command: ['myco-run', 'mcp'] },
   });
   writeJson(path.join(opencodeTemplateDir, 'settings.json'), {
-    permission: { bash: { 'myco-run *': 'allow', 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs *': 'allow' } },
+    permission: { bash: { 'myco *': 'allow', 'myco-dev *': 'allow' } },
   });
 
   // Copy hook-guard template so installHookGuard can find it
   fs.copyFileSync(
-    path.resolve('src/symbionts/templates/hook-guard.cjs'),
-    path.join(packageRoot, 'src/symbionts/templates/hook-guard.cjs'),
+    path.resolve('src/symbionts/templates/myco-run.cjs'),
+    path.join(packageRoot, 'src/symbionts/templates/myco-run.cjs'),
   );
   writeJson(path.join(windsurfTemplateDir, 'settings.json'), {
-    'windsurf.cascadeCommandsAllowList': ['myco-run', 'myco'],
+    'windsurf.cascadeCommandsAllowList': ['myco', 'myco-dev'],
   });
 
   // Create shared instruction stub template
@@ -406,7 +405,7 @@ describe('installHooks', () => {
       (g: unknown) => ((g as { hooks: Array<{ command: string }> }).hooks ?? []).map(h => h.command),
     );
     expect(commands).toContain('my-other-tool start');
-    expect(commands).toContain('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook session-start');
+    expect(commands).toContain('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont claude-code');
   });
 
   it('replaces stale Myco hooks on update', () => {
@@ -466,8 +465,8 @@ describe('installHooks', () => {
 
     expect(hooks.PreCompact).toHaveLength(1);
     expect(hooks.PostCompact).toHaveLength(1);
-    expect(hooks.PreCompact[0]?.hooks[0]?.command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook pre-compact');
-    expect(hooks.PostCompact[0]?.hooks[0]?.command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook post-compact');
+    expect(hooks.PreCompact[0]?.hooks[0]?.command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont claude-code');
+    expect(hooks.PostCompact[0]?.hooks[0]?.command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook post-compact --symbiont claude-code');
   });
 
   it('installs pre-compact hook for Cursor', () => {
@@ -478,7 +477,7 @@ describe('installHooks', () => {
     const preCompact = ((settings.hooks as Record<string, unknown[]>).preCompact as Array<{ command: string }>);
 
     expect(preCompact).toHaveLength(1);
-    expect(preCompact[0]?.command).toBe('cd "${CURSOR_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook pre-compact');
+    expect(preCompact[0]?.command).toBe('cd "${CURSOR_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont cursor');
   });
 
   it('installs pre-compact hook for Gemini CLI', () => {
@@ -490,7 +489,7 @@ describe('installHooks', () => {
     const hooks = settings.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
 
     expect(hooks.PreCompress).toHaveLength(1);
-    expect(hooks.PreCompress[0]?.hooks[0]?.command).toBe('cd "${GEMINI_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook pre-compact');
+    expect(hooks.PreCompress[0]?.hooks[0]?.command).toBe('cd "${GEMINI_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont gemini');
   });
 
   it('installs pre-compact hook for VS Code Copilot', () => {
@@ -501,7 +500,7 @@ describe('installHooks', () => {
     const preCompact = ((settings.hooks as Record<string, unknown[]>).PreCompact as Array<{ hooks: Array<{ command: string }> }>);
 
     expect(preCompact).toHaveLength(1);
-    expect(preCompact[0]?.hooks[0]?.command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook pre-compact');
+    expect(preCompact[0]?.hooks[0]?.command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont vscode-copilot');
   });
 });
 
@@ -522,6 +521,7 @@ describe('installMcp', () => {
     const servers = config.mcpServers as Record<string, unknown>;
     expect(servers.myco).toBeDefined();
     expect((servers.myco as Record<string, unknown>).command).toBe('myco-run');
+    expect((servers.myco as Record<string, unknown>).args).toEqual(['mcp']);
   });
 
   it('writes MCP server to .cursor/mcp.json for Cursor', () => {
@@ -664,7 +664,7 @@ describe('installSettings', () => {
     installer.installSettings();
 
     const settings = readJson(path.join(projectRoot, '.claude/settings.json'));
-    expect((settings.permissions as { allow: string[] }).allow).toContain('Bash(myco-run *)');
+    expect((settings.permissions as { allow: string[] }).allow).toContain('Bash(myco-dev *)');
     expect((settings.permissions as { allow: string[] }).allow).toContain('Bash(myco *)');
   });
 
@@ -674,8 +674,8 @@ describe('installSettings', () => {
 
     const settings = readJson(path.join(projectRoot, '.cursor/settings.json'));
     expect((settings as Record<string, unknown>)['chat.tools.terminal.autoApprove']).toEqual({
-      'myco-run': true,
       'myco': true,
+      'myco-dev': true,
     });
   });
 
@@ -685,8 +685,8 @@ describe('installSettings', () => {
 
     const settings = readJson(path.join(projectRoot, '.vscode/settings.json'));
     expect((settings as Record<string, unknown>)['chat.tools.terminal.autoApprove']).toEqual({
-      'myco-run': true,
       'myco': true,
+      'myco-dev': true,
     });
   });
 
@@ -704,7 +704,7 @@ describe('installSettings', () => {
     const settings = readJson(path.join(settingsDir, 'settings.json'));
     expect((settings as Record<string, unknown>).env).toEqual({ FOO: 'bar' });
     expect((settings.permissions as { allow: string[] }).allow).toContain('Bash(git *)');
-    expect((settings.permissions as { allow: string[] }).allow).toContain('Bash(myco-run *)');
+    expect((settings.permissions as { allow: string[] }).allow).toContain('Bash(myco-dev *)');
   });
 
   it('deduplicates on repeated install', () => {
@@ -714,7 +714,7 @@ describe('installSettings', () => {
 
     const settings = readJson(path.join(projectRoot, '.claude/settings.json'));
     const allow = (settings.permissions as { allow: string[] }).allow;
-    const mycoEntries = allow.filter((e: string) => e === 'Bash(myco-run *)');
+    const mycoEntries = allow.filter((e: string) => e === 'Bash(myco-dev *)');
     expect(mycoEntries.length).toBe(1);
   });
 
@@ -741,8 +741,8 @@ describe('installSettings', () => {
     const settings = readJson(path.join(settingsDir, 'settings.json'));
     const autoApprove = (settings as Record<string, unknown>)['chat.tools.terminal.autoApprove'] as Record<string, boolean>;
     expect(autoApprove['other-tool']).toBe(true);
-    expect(autoApprove['myco-run']).toBe(true);
     expect(autoApprove['myco']).toBe(true);
+    expect(autoApprove['myco-dev']).toBe(true);
   });
 });
 
@@ -771,7 +771,7 @@ describe('install', () => {
     expect(fs.existsSync(settingsPath)).toBe(true);
     const settings = readJson(settingsPath);
     expect(settings.hooks).toBeDefined();
-    expect((settings.permissions as { allow: string[] }).allow).toContain('Bash(myco-run *)');
+    expect((settings.permissions as { allow: string[] }).allow).toContain('Bash(myco-dev *)');
 
     // MCP config
     const mcpPath = path.join(projectRoot, '.mcp.json');
@@ -811,8 +811,8 @@ describe('install', () => {
     // Settings in .vscode/settings.json
     const settings = readJson(path.join(projectRoot, '.vscode/settings.json'));
     expect((settings as Record<string, unknown>)['chat.tools.terminal.autoApprove']).toEqual({
-      'myco-run': true,
       'myco': true,
+      'myco-dev': true,
     });
   });
 
@@ -832,7 +832,7 @@ describe('install', () => {
     expect(settings.hooks).toBeDefined();
     expect((settings as Record<string, unknown>).mcpServers).toBeDefined();
     expect(((settings as Record<string, unknown>).mcpServers as Record<string, unknown>).myco).toBeDefined();
-    expect((settings as Record<string, unknown>).coreTools).toContain('ShellTool(myco-run *)');
+    expect((settings as Record<string, unknown>).coreTools).toContain('ShellTool(myco-dev *)');
   });
 
   it('is idempotent — running twice produces same result', () => {
@@ -953,6 +953,7 @@ describe('installMcp (TOML)', () => {
 
     const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
     expect(content).toContain('command = "myco-run"');
+    expect(content).toContain('args = ["mcp"]');
     expect(content).not.toContain('old-command');
   });
 });
@@ -987,9 +988,9 @@ describe('installSettings (TOML)', () => {
     const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
     expect(content).toContain('[shell_environment_policy]');
     expect(content).toContain('inherit = "core"');
+    expect(content).toContain('[mcp_servers.myco]');
     expect(content).toContain('[shell_environment_policy.set]');
     expect(content).toContain('MYCO_CMD = "myco-dev"');
-    expect(content).toContain('[mcp_servers.myco]');
     expect(content).toContain('command = "myco-run"');
     expect(content).toContain('[features]');
     expect(content).toContain('codex_hooks = true');
@@ -1097,15 +1098,14 @@ describe('uninstallSettings (TOML)', () => {
     expect(result).toBe(false);
   });
 
-  it('full install then uninstall restores original content', () => {
+  it('full install then uninstall leaves legacy MYCO_CMD stripped', () => {
     const codexDir = path.join(projectRoot, '.codex');
     fs.mkdirSync(codexDir, { recursive: true });
     const original = '[shell_environment_policy]\ninherit = "core"\n\n[shell_environment_policy.set]\nMYCO_CMD = "myco-dev"\n';
     fs.writeFileSync(path.join(codexDir, 'config.toml'), original);
 
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
-    installer.installMcp();
-    installer.installSettings();
+    installer.install();
 
     installer.uninstallSettings();
     installer.uninstallMcp();
@@ -1113,9 +1113,70 @@ describe('uninstallSettings (TOML)', () => {
     const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
     expect(content).toContain('[shell_environment_policy]');
     expect(content).toContain('inherit = "core"');
-    expect(content).toContain('MYCO_CMD = "myco-dev"');
+    expect(content).not.toContain('MYCO_CMD = "myco-dev"');
+    expect(content).not.toContain('[shell_environment_policy.set]');
     expect(content).not.toContain('[features]');
     expect(content).not.toContain('[mcp_servers.myco]');
+  });
+
+  it('cleanup preserves `myco-run` inside exec argv arrays (opencode MCP shape)', () => {
+    // Regression: an earlier version of stripLegacyFromJson walked into
+    // every array and filtered out `myco-run` as a legacy token. That
+    // would corrupt opencode.json which stores its MCP server command
+    // as `command: ["myco-run", "mcp"]` — stripping the first element
+    // would leave `command: ["mcp"]` and break the MCP spawn. The
+    // cleanup must now recognize `command` / `args` as exec argv arrays
+    // and skip them.
+    const openCodeJsonPath = path.join(projectRoot, 'opencode.json');
+    writeJson(openCodeJsonPath, {
+      mcp: {
+        myco: {
+          type: 'local',
+          command: ['myco-run', 'mcp'],
+        },
+      },
+      permission: {
+        bash: {
+          'myco-run *': 'allow',  // legacy allowlist — this SHOULD get stripped
+          'myco *': 'allow',
+        },
+      },
+    });
+
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    const result = readJson(openCodeJsonPath);
+    // Exec argv array preserved verbatim.
+    expect(((result.mcp as Record<string, unknown>).myco as Record<string, unknown>).command)
+      .toEqual(['myco-run', 'mcp']);
+    // Legacy permission key stripped.
+    const bash = ((result.permission as Record<string, unknown>).bash) as Record<string, unknown>;
+    expect(bash['myco-run *']).toBeUndefined();
+    // Non-legacy keys preserved.
+    expect(bash['myco *']).toBe('allow');
+  });
+
+  it('cleanup strips `myco-run` from windsurf cascadeCommandsAllowList (non-exec string array)', () => {
+    // Counterpart to the opencode preservation test: a non-exec string
+    // array (windsurf's shell allowlist) should still get `myco-run`
+    // stripped, because that entry is a legacy permission token, not
+    // an invocation argv.
+    const settingsDir = path.join(projectRoot, '.windsurf');
+    fs.mkdirSync(settingsDir, { recursive: true });
+    writeJson(path.join(settingsDir, 'settings.json'), {
+      'windsurf.cascadeCommandsAllowList': ['other-cmd', 'myco-run', 'myco', 'myco-dev'],
+    });
+
+    const installer = new SymbiontInstaller(WINDSURF_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    const settings = readJson(path.join(settingsDir, 'settings.json'));
+    const allow = (settings as Record<string, unknown>)['windsurf.cascadeCommandsAllowList'] as string[];
+    expect(allow).toContain('other-cmd');
+    expect(allow).toContain('myco');
+    expect(allow).toContain('myco-dev');
+    expect(allow).not.toContain('myco-run');
   });
 });
 
@@ -1229,7 +1290,7 @@ describe('uninstall', () => {
     installer.install();
 
     const settingsBefore = readJson(path.join(projectRoot, '.claude/settings.json'));
-    expect((settingsBefore.permissions as { allow: string[] }).allow).toContain('Bash(myco-run *)');
+    expect((settingsBefore.permissions as { allow: string[] }).allow).toContain('Bash(myco-dev *)');
 
     installer.uninstallSettings();
 
@@ -1253,7 +1314,7 @@ describe('uninstall', () => {
     const settingsDir = path.join(projectRoot, '.vscode');
     fs.mkdirSync(settingsDir, { recursive: true });
     writeJson(path.join(settingsDir, 'settings.json'), {
-      'chat.tools.terminal.autoApprove': { 'other-tool': true, 'myco-run': true, 'myco': true },
+      'chat.tools.terminal.autoApprove': { 'other-tool': true, 'myco': true, 'myco-dev': true },
     });
 
     const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
@@ -1262,8 +1323,8 @@ describe('uninstall', () => {
     const settings = readJson(path.join(settingsDir, 'settings.json'));
     const autoApprove = (settings as Record<string, unknown>)['chat.tools.terminal.autoApprove'] as Record<string, boolean>;
     expect(autoApprove['other-tool']).toBe(true);
-    expect(autoApprove['myco-run']).toBeUndefined();
     expect(autoApprove['myco']).toBeUndefined();
+    expect(autoApprove['myco-dev']).toBeUndefined();
   });
 
   it('removes coreTools entries from Gemini settings', () => {
@@ -1281,7 +1342,7 @@ describe('uninstall', () => {
     const geminiDir = path.join(projectRoot, '.gemini');
     fs.mkdirSync(geminiDir, { recursive: true });
     writeJson(path.join(geminiDir, 'settings.json'), {
-      coreTools: ['ShellTool(other-tool *)', 'ShellTool(myco-run *)', 'ShellTool(myco *)'],
+      coreTools: ['ShellTool(other-tool *)', 'ShellTool(myco *)', 'ShellTool(myco-dev *)'],
     });
 
     const installer = new SymbiontInstaller(GEMINI_MANIFEST, projectRoot, packageRoot);
@@ -1290,15 +1351,15 @@ describe('uninstall', () => {
     const settings = readJson(path.join(geminiDir, 'settings.json'));
     const coreTools = settings.coreTools as string[];
     expect(coreTools).toContain('ShellTool(other-tool *)');
-    expect(coreTools).not.toContain('ShellTool(myco-run *)');
     expect(coreTools).not.toContain('ShellTool(myco *)');
+    expect(coreTools).not.toContain('ShellTool(myco-dev *)');
   });
 
   it('preserves non-Myco permissions on uninstall', () => {
     const settingsDir = path.join(projectRoot, '.claude');
     fs.mkdirSync(settingsDir, { recursive: true });
     writeJson(path.join(settingsDir, 'settings.json'), {
-      permissions: { allow: ['Bash(git *)', 'Bash(myco-run *)', 'Bash(myco *)'] },
+      permissions: { allow: ['Bash(git *)', 'Bash(myco *)', 'Bash(myco-dev *)'] },
     });
 
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
@@ -1307,8 +1368,8 @@ describe('uninstall', () => {
     const settings = readJson(path.join(settingsDir, 'settings.json'));
     const allow = (settings.permissions as { allow: string[] }).allow;
     expect(allow).toContain('Bash(git *)');
-    expect(allow).not.toContain('Bash(myco-run *)');
     expect(allow).not.toContain('Bash(myco *)');
+    expect(allow).not.toContain('Bash(myco-dev *)');
   });
 
   it('full uninstall removes everything install added', () => {
@@ -1348,7 +1409,7 @@ describe('Windsurf flat hook format', () => {
 
     const hooks = readJson(path.join(projectRoot, '.windsurf/hooks.json'));
     const groups = (hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>;
-    expect(groups[0].command).toBe('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-hook.cjs hook user-prompt-submit');
+    expect(groups[0].command).toBe('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-run.cjs hook user-prompt-submit --symbiont windsurf');
     // Should NOT have nested hooks array
     expect(groups[0].hooks).toBeUndefined();
   });
@@ -1369,7 +1430,7 @@ describe('Windsurf flat hook format', () => {
     const commands = ((hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>)
       .map((g) => g.command);
     expect(commands).toContain('other-tool check');
-    expect(commands).toContain('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-hook.cjs hook user-prompt-submit');
+    expect(commands).toContain('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-run.cjs hook user-prompt-submit --symbiont windsurf');
   });
 
   it('replaces stale Myco flat hooks', () => {
@@ -1388,7 +1449,7 @@ describe('Windsurf flat hook format', () => {
     const commands = ((hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>)
       .map((g) => g.command);
     expect(commands).not.toContain('myco-run hook old-event');
-    expect(commands).toContain('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-hook.cjs hook user-prompt-submit');
+    expect(commands).toContain('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-run.cjs hook user-prompt-submit --symbiont windsurf');
   });
 
   it('uninstalls flat Myco hooks', () => {
@@ -1444,7 +1505,7 @@ describe('Windsurf install', () => {
 
     // Settings has cascadeCommandsAllowList
     const settings = readJson(path.join(projectRoot, '.windsurf/settings.json'));
-    expect((settings as Record<string, unknown>)['windsurf.cascadeCommandsAllowList']).toContain('myco-run');
+    expect((settings as Record<string, unknown>)['windsurf.cascadeCommandsAllowList']).toContain('myco-dev');
   });
 
   it('removes cascadeCommandsAllowList entries on uninstall', () => {
@@ -1462,7 +1523,7 @@ describe('Windsurf install', () => {
     const settingsDir = path.join(projectRoot, '.windsurf');
     fs.mkdirSync(settingsDir, { recursive: true });
     writeJson(path.join(settingsDir, 'settings.json'), {
-      'windsurf.cascadeCommandsAllowList': ['other-cmd', 'myco-run', 'myco'],
+      'windsurf.cascadeCommandsAllowList': ['other-cmd', 'myco', 'myco-dev'],
     });
 
     const installer = new SymbiontInstaller(WINDSURF_MANIFEST, projectRoot, packageRoot);
@@ -1471,8 +1532,8 @@ describe('Windsurf install', () => {
     const settings = readJson(path.join(settingsDir, 'settings.json'));
     const allowList = (settings as Record<string, unknown>)['windsurf.cascadeCommandsAllowList'] as string[];
     expect(allowList).toContain('other-cmd');
-    expect(allowList).not.toContain('myco-run');
     expect(allowList).not.toContain('myco');
+    expect(allowList).not.toContain('myco-dev');
   });
 });
 
@@ -1609,12 +1670,12 @@ describe('uninstallInstructions', () => {
 // =====================
 
 describe('installHookGuard', () => {
-  it('writes .agents/myco-hook.cjs', () => {
+  it('writes .agents/myco-run.cjs', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     const result = installer.installHookGuard();
 
     expect(result).toBe(true);
-    const guardPath = path.join(projectRoot, '.agents/myco-hook.cjs');
+    const guardPath = path.join(projectRoot, '.agents/myco-run.cjs');
     expect(fs.existsSync(guardPath)).toBe(true);
     const content = fs.readFileSync(guardPath, 'utf-8');
     expect(content).toContain('hook guard');
@@ -1624,7 +1685,7 @@ describe('installHookGuard', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.installHookGuard();
 
-    const guardPath = path.join(projectRoot, '.agents/myco-hook.cjs');
+    const guardPath = path.join(projectRoot, '.agents/myco-run.cjs');
     const stat1 = fs.statSync(guardPath);
 
     // Second install should return false (no change)
@@ -1640,7 +1701,7 @@ describe('installHookGuard', () => {
     const result = installer.installHookGuard();
 
     expect(result).toBe(false);
-    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-hook.cjs'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-run.cjs'))).toBe(false);
   });
 
   it('install() writes hook guard before hooks', () => {
@@ -1648,7 +1709,7 @@ describe('installHookGuard', () => {
     installer.install();
 
     // Hook guard should exist
-    const guardPath = path.join(projectRoot, '.agents/myco-hook.cjs');
+    const guardPath = path.join(projectRoot, '.agents/myco-run.cjs');
     expect(fs.existsSync(guardPath)).toBe(true);
   });
 });
@@ -1658,14 +1719,14 @@ describe('installHookGuard', () => {
 // =====================
 
 describe('uninstallHookGuard', () => {
-  it('removes .agents/myco-hook.cjs', () => {
+  it('removes .agents/myco-run.cjs', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.installHookGuard();
-    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-hook.cjs'))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-run.cjs'))).toBe(true);
 
     const result = installer.uninstallHookGuard();
     expect(result).toBe(true);
-    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-hook.cjs'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-run.cjs'))).toBe(false);
   });
 
   it('does not fail if guard does not exist', () => {
@@ -1683,10 +1744,10 @@ describe('uninstallHookGuard', () => {
   it('uninstall() removes hook guard', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.install();
-    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-hook.cjs'))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-run.cjs'))).toBe(true);
 
     installer.uninstall();
-    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-hook.cjs'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-run.cjs'))).toBe(false);
   });
 });
 
@@ -1718,7 +1779,7 @@ describe('old-format hook backward compatibility', () => {
     // Old hooks replaced, not stacked
     expect(hooks.SessionStart).toHaveLength(1);
     const command = ((hooks.SessionStart[0] as { hooks: Array<{ command: string }> }).hooks[0]).command;
-    expect(command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs hook session-start');
+    expect(command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont claude-code');
   });
 
   it('replaces old-format flat hooks in Windsurf', () => {
@@ -1738,7 +1799,7 @@ describe('old-format hook backward compatibility', () => {
       .map((g) => g.command);
     // Old format removed, new format added
     expect(commands).not.toContain('myco-run hook user-prompt-submit');
-    expect(commands).toContain('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-hook.cjs hook user-prompt-submit');
+    expect(commands).toContain('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-run.cjs hook user-prompt-submit --symbiont windsurf');
     // No duplication
     expect(commands).toHaveLength(1);
   });
@@ -1760,13 +1821,13 @@ describe('hook template validation', () => {
           if (Array.isArray(group.hooks)) {
             for (const hook of group.hooks as Array<{ command?: string }>) {
               if (hook.command) {
-                expect(hook.command).toMatch(/\.agents\/myco-hook\.cjs /);
+                expect(hook.command).toMatch(/\.agents\/myco-run\.cjs /);
               }
             }
           }
           // Flat format
           if (typeof group.command === 'string') {
-            expect(group.command).toMatch(/\.agents\/myco-hook\.cjs /);
+            expect(group.command).toMatch(/\.agents\/myco-run\.cjs /);
           }
         }
       }
@@ -1902,8 +1963,8 @@ describe('opencode (plugin-file hooks)', () => {
 
     const openCodeJson = readJson(path.join(projectRoot, 'opencode.json'));
     const permission = openCodeJson.permission as Record<string, Record<string, string>>;
-    expect(permission.bash['myco-run *']).toBe('allow');
-    expect(permission.bash['cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-hook.cjs *']).toBe('allow');
+    expect(permission.bash['myco *']).toBe('allow');
+    expect(permission.bash['myco-dev *']).toBe('allow');
   });
 
   it('opencode does not trigger batched JSON install (hooks target is .ts)', () => {
@@ -1921,7 +1982,7 @@ describe('opencode (plugin-file hooks)', () => {
     const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
     installer.install();
 
-    const guardPath = path.join(projectRoot, '.agents/myco-hook.cjs');
+    const guardPath = path.join(projectRoot, '.agents/myco-run.cjs');
     expect(fs.existsSync(guardPath)).toBe(true);
   });
 });

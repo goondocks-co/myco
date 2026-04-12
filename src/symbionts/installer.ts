@@ -19,13 +19,19 @@ const WRANGLER_CACHE_DIR = '.wrangler/';
 const TEMPLATES_SUBDIR = 'src/symbionts/templates';
 
 /** Filename of the hook guard template in the templates directory. */
-const HOOK_GUARD_TEMPLATE_FILENAME = 'hook-guard.cjs';
+const HOOK_GUARD_TEMPLATE_FILENAME = 'myco-run.cjs';
 
 /** Filename when installed into the project .agents/ directory. */
-const HOOK_GUARD_INSTALLED_FILENAME = 'myco-hook.cjs';
+const HOOK_GUARD_INSTALLED_FILENAME = 'myco-run.cjs';
 
 /** Project-relative path where the hook guard is installed. */
 const HOOK_GUARD_PROJECT_PATH = `.agents/${HOOK_GUARD_INSTALLED_FILENAME}`;
+
+/**
+ * Legacy guard filename we still delete on install to clean up previous
+ * installations that used `.agents/myco-hook.cjs` before the rename.
+ */
+const LEGACY_HOOK_GUARD_PATH = '.agents/myco-hook.cjs';
 
 /** Subdirectory within the package where skills live. */
 const SKILLS_SUBDIR = 'skills';
@@ -112,8 +118,15 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Copy the hook-guard script into .agents/myco-hook.cjs.
-   * Returns true if the file was written (or updated); false if skipped or N/A.
+   * Copy the hook guard script into .agents/myco-run.cjs and delete the
+   * legacy .agents/myco-hook.cjs if present.
+   *
+   * The guard is the cross-platform entry point for lifecycle hooks.
+   * Hook commands invoke `node .agents/myco-run.cjs …`, and the guard
+   * resolves which myco binary to exec via `.myco/runtime.command`.
+   * MCP server spawn continues to use the published `myco-run` binary.
+   * Returns true if the file was written (or updated); false if skipped
+   * or N/A.
    */
   installHookGuard(): boolean {
     const reg = this.manifest.registration;
@@ -122,6 +135,13 @@ export class SymbiontInstaller {
     const guardTemplate = this.readTemplateFile(HOOK_GUARD_TEMPLATE_FILENAME);
     if (!guardTemplate) return false;
 
+    // Sweep legacy guard file on every install — harmless no-op if absent.
+    // Prevents the old and new guard files coexisting for projects that
+    // were last installed under the `myco-hook.cjs` naming.
+    try {
+      fs.unlinkSync(path.join(this.projectRoot, LEGACY_HOOK_GUARD_PATH));
+    } catch { /* no legacy file present */ }
+
     return this.writeManagedFile(
       path.join(this.projectRoot, HOOK_GUARD_PROJECT_PATH),
       guardTemplate,
@@ -129,20 +149,22 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Remove the hook-guard script from .agents/myco-hook.cjs.
-   * Returns true if the file was removed; false otherwise.
+   * Remove the hook guard script from .agents/myco-run.cjs.
+   * Also deletes the legacy .agents/myco-hook.cjs if present.
+   * Returns true if any file was removed; false otherwise.
    */
   uninstallHookGuard(): boolean {
     const reg = this.manifest.registration;
     if (!reg?.hooksTarget) return false;
 
-    const targetPath = path.join(this.projectRoot, HOOK_GUARD_PROJECT_PATH);
-    try {
-      fs.unlinkSync(targetPath);
-      return true;
-    } catch {
-      return false;
+    let removed = false;
+    for (const relPath of [HOOK_GUARD_PROJECT_PATH, LEGACY_HOOK_GUARD_PATH]) {
+      try {
+        fs.unlinkSync(path.join(this.projectRoot, relPath));
+        removed = true;
+      } catch { /* not present */ }
     }
+    return removed;
   }
 
   /** Load a JSON template file for this symbiont. Returns null if not found. */
@@ -166,6 +188,11 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     // Install hook guard before hooks so the guard script is in place when hooks reference it
     this.installHookGuard();
+    // One-time migration: sweep legacy MYCO_CMD / myco-run entries that
+    // the pre-runtime.command dispatch pattern wrote into symbiont config
+    // files. Idempotent — no-op on clean files. Runs before installSettings
+    // so the stale entries don't survive a deep-merge into the new template.
+    this.cleanupLegacyMycoCmdEntries();
     const result = this.shouldBatchJsonTargets(reg)
       ? this.installBatchedJson(reg!)
       : {
@@ -178,6 +205,147 @@ export class SymbiontInstaller {
         };
     this.updateGitignore();
     return result;
+  }
+
+  /**
+   * Sweep legacy `MYCO_CMD` env-var writes and `myco-run` command-name
+   * entries from this symbiont's installed config files.
+   *
+   * Background: prior to the `.myco/runtime.command` refactor, `make
+   * dev-link` injected `MYCO_CMD=myco-dev` into each symbiont's env
+   * block (`.claude/settings.json` → `env`, `.cursor/mcp.json` →
+   * `mcp.myco.env`, `.codex/config.toml` →
+   * `[shell_environment_policy.set]`), and each symbiont's template
+   * permission allowlist listed `myco-run` as a callable command. The
+   * env-var pattern is now obsolete — `.myco/runtime.command` is the
+   * hook-side source of truth — while the old allowlist entries remain
+   * legacy noise after the permissions refactor.
+   *
+   * This cleanup runs automatically on every install/update pass so
+   * contributors upgrading across this refactor don't need to manually
+   * edit any config file. Idempotent: a second run after cleanup is a
+   * no-op. Safe to remove from the install pipeline once every known
+   * contributor has updated at least once.
+   */
+  private cleanupLegacyMycoCmdEntries(): void {
+    const reg = this.manifest.registration;
+    if (!reg) return;
+
+    if (reg.settingsTarget) {
+      const settingsPath = path.join(this.projectRoot, reg.settingsTarget);
+      const format = reg.settingsFormat ?? 'json';
+      if (format === 'toml') {
+        this.stripLegacyFromToml(settingsPath);
+      } else {
+        this.stripLegacyFromJson(settingsPath);
+      }
+    }
+
+    if (reg.mcpTarget && reg.mcpFormat !== 'toml') {
+      // MCP server env blocks — cursor writes MYCO_CMD here under
+      // `mcp.myco.env` / `mcpServers.myco.env`. TOML MCP targets live
+      // inside the same config.toml already handled above.
+      this.stripLegacyFromJson(path.join(this.projectRoot, reg.mcpTarget));
+    }
+  }
+
+  /**
+   * Walk a JSON settings/MCP file and delete legacy MYCO_CMD + myco-run
+   * entries. Writes back only if something changed.
+   *
+   * Removes:
+   * - `MYCO_CMD` key from any object named `env` anywhere in the tree
+   * - `myco-run` / `myco-run *` / `myco-run:*` / `Bash(myco-run *)` /
+   *   `Bash(myco-run:*)` / `ShellTool(myco-run *)` from string arrays
+   * - `myco-run` / `myco-run *` keys from object-boolean maps like
+   *   `chat.tools.terminal.autoApprove`
+   */
+  private stripLegacyFromJson(filePath: string): void {
+    let raw: string;
+    try { raw = fs.readFileSync(filePath, 'utf-8'); } catch { return; }
+    let data: unknown;
+    try { data = JSON.parse(raw); } catch { return; }
+
+    let changed = false;
+    const LEGACY_STRINGS = new Set([
+      'myco-run',
+      'myco-run *',
+      'myco-run:*',
+      'Bash(myco-run *)',
+      'Bash(myco-run:*)',
+      'ShellTool(myco-run *)',
+    ]);
+    const LEGACY_OBJECT_KEYS = ['myco-run', 'myco-run *'];
+    // Fields whose array values are exec argvs (process invocation arrays),
+    // NOT allowlist tokens. The cleanup sweep must not touch these because
+    // `myco-run` remains the PUBLISHED MCP launcher command — stripping it
+    // from an opencode-style `command: ["myco-run", "mcp"]` array would
+    // corrupt the MCP spawn. Only works today because installMcp() deep-
+    // merges the template back in after cleanup; don't rely on that mask.
+    const EXEC_ARGV_KEYS = new Set(['command', 'args']);
+
+    const walk = (node: unknown, parentKey?: string): void => {
+      if (node === null || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        // Exec argv arrays are process invocations (e.g. opencode's
+        // `command: ["myco-run", "mcp"]`). Never strip tokens from these
+        // — `myco-run` is the intended MCP command.
+        if (parentKey !== undefined && EXEC_ARGV_KEYS.has(parentKey)) return;
+        // String arrays: filter out legacy allowlist tokens in place.
+        for (let i = node.length - 1; i >= 0; i--) {
+          if (typeof node[i] === 'string' && LEGACY_STRINGS.has(node[i] as string)) {
+            node.splice(i, 1);
+            changed = true;
+          } else {
+            walk(node[i]);
+          }
+        }
+        return;
+      }
+      const obj = node as Record<string, unknown>;
+      // Env blocks: strip MYCO_CMD specifically. We check by key name so
+      // we match any `env` object at any nesting level.
+      if (parentKey === 'env' && 'MYCO_CMD' in obj) {
+        delete obj.MYCO_CMD;
+        changed = true;
+      }
+      // Object-boolean maps keyed on command name: strip legacy keys.
+      // Skip inside exec argv scalar fields (e.g. `command: "myco-run"`)
+      // would be caught by the LEGACY_OBJECT_KEYS lookup only when the
+      // key is literally `myco-run`, which is a command-name key in
+      // allowlist objects — exec argv scalars are fine because the
+      // scalar value `"myco-run"` is walked as a string and skipped.
+      for (const key of LEGACY_OBJECT_KEYS) {
+        if (key in obj) {
+          delete obj[key];
+          changed = true;
+        }
+      }
+      for (const [k, v] of Object.entries(obj)) {
+        walk(v, k);
+      }
+    };
+
+    walk(data);
+
+    if (changed) {
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    }
+  }
+
+  /**
+   * Strip `MYCO_CMD = "..."` from the `[shell_environment_policy.set]`
+   * section of a TOML settings file. Leaves the rest of the file
+   * untouched. Drops the `[shell_environment_policy.set]` header entirely
+   * when the section becomes empty.
+   */
+  private stripLegacyFromToml(filePath: string): void {
+    let raw: string;
+    try { raw = fs.readFileSync(filePath, 'utf-8'); } catch { return; }
+    const next = removeTomlSectionKeys(raw, 'shell_environment_policy.set', ['MYCO_CMD']);
+    if (next !== raw) {
+      fs.writeFileSync(filePath, next, 'utf-8');
+    }
   }
 
   /**

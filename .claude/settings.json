@@ -1,14 +1,12 @@
 {
-  "env": {
-    "MYCO_CMD": "myco-dev"
-  },
+  "env": {},
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook session-start",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-run.cjs hook session-start --symbiont claude-code",
             "timeout": 10
           }
         ]
@@ -19,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook user-prompt-submit",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-run.cjs hook user-prompt-submit --symbiont claude-code",
             "timeout": 5
           }
         ]
@@ -30,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook post-tool-use",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-run.cjs hook post-tool-use --symbiont claude-code",
             "timeout": 5
           }
         ]
@@ -41,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook post-tool-use-failure",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-run.cjs hook post-tool-use-failure --symbiont claude-code",
             "timeout": 5
           }
         ]
@@ -52,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook stop",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-run.cjs hook stop --symbiont claude-code",
             "timeout": 30
           }
         ]
@@ -63,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook session-end",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-run.cjs hook session-end --symbiont claude-code",
             "timeout": 10
           }
         ]
@@ -74,7 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook subagent-start",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-run.cjs hook subagent-start --symbiont claude-code",
             "timeout": 5
           }
         ]
@@ -85,7 +83,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook subagent-stop",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-run.cjs hook subagent-stop --symbiont claude-code",
             "timeout": 10
           }
         ]
@@ -96,7 +94,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook stop-failure",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-run.cjs hook stop-failure --symbiont claude-code",
             "timeout": 10
           }
         ]
@@ -107,7 +105,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook task-completed",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-run.cjs hook task-completed --symbiont claude-code",
             "timeout": 5
           }
         ]
@@ -118,7 +116,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook pre-compact",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-run.cjs hook pre-compact --symbiont claude-code",
             "timeout": 5
           }
         ]
@@ -129,7 +127,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-hook.cjs hook post-compact",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agents/myco-run.cjs hook post-compact --symbiont claude-code",
             "timeout": 5
           }
         ]
@@ -138,10 +136,10 @@
   },
   "permissions": {
     "allow": [
-      "Bash(myco-run *)",
-      "Bash(myco-run:*)",
       "Bash(myco *)",
-      "Bash(myco:*)"
+      "Bash(myco:*)",
+      "Bash(myco-dev *)",
+      "Bash(myco-dev:*)"
     ]
   }
 }

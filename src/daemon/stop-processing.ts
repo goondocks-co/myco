@@ -98,12 +98,20 @@ export function createStopProcessor(deps: StopProcessorDeps): {
   let activeStopProcessing: Promise<void> | null = null;
   const sessionTitleCache = new Map<string, string>();
 
-  // Route body schema
+  // Route body schema.
+  //
+  // `transcript_path` is nullish (missing, undefined, or literal `null`)
+  // because some symbionts fire Stop hooks for internal sub-invocations
+  // that never write a transcript — notably Codex's title-generation
+  // ephemeral session. The SessionStart capture-rule filter already
+  // skips registering such sessions, so a null transcript_path here
+  // means "Stop for a session we never captured." The handler treats
+  // that case as a silent no-op rather than erroring.
   const StopBody = z.object({
     session_id: z.string(),
     user: z.string().optional(),
-    transcript_path: z.string().optional(),
-    last_assistant_message: z.string().optional(),
+    transcript_path: z.string().nullish(),
+    last_assistant_message: z.string().nullish(),
   });
 
   /**
@@ -327,12 +335,35 @@ export function createStopProcessor(deps: StopProcessorDeps): {
 
   const handleStopRoute: RouteHandler = async (req) => {
     const { session_id: sessionId, user, transcript_path: hookTranscriptPath, last_assistant_message: lastAssistantMessage } = StopBody.parse(req.body);
+
+    // Ephemeral sub-invocation guard.
+    //
+    // When Codex (or a similar agent) spawns an internal sub-invocation
+    // that never writes a transcript — e.g., its title-generation call —
+    // the sub-invocation's Stop hook fires with transcript_path=null.
+    // The SessionStart capture-rule filter already skips registering
+    // that session_id, so at this point we have no session row and no
+    // meaningful Stop to process. Silently no-op rather than auto-
+    // registering a row we then have nothing to update.
+    const existingSessionMeta = registry.getSession(sessionId);
+    if (!hookTranscriptPath && !existingSessionMeta) {
+      // Info level so `grep hooks.stop` in the default daemon log confirms
+      // the ephemeral-sub-invocation drop pattern is firing without
+      // needing to crank the log level. Codex's sub-invocation behavior
+      // is experimental upstream and may change over time — this log is
+      // the signal we'd watch if the pattern needed revisiting.
+      logger.info(LOG_KINDS.HOOKS_STOP, 'Stop ignored — ephemeral sub-invocation', {
+        session_id: sessionId,
+      });
+      return { body: { ok: true, ignored: 'ephemeral-sub-invocation' } };
+    }
+
     // Ensure session is registered (handles daemon restarts mid-session)
-    if (!registry.getSession(sessionId)) {
+    if (!existingSessionMeta) {
       registry.register(sessionId, { started_at: new Date().toISOString() });
       logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from stop event', { session_id: sessionId });
     }
-    const sessionMeta = registry.getSession(sessionId);
+    const sessionMeta = existingSessionMeta ?? registry.getSession(sessionId);
     logger.info(LOG_KINDS.HOOKS_STOP, 'Stop received', {
       session_id: sessionId,
       has_transcript_path: !!hookTranscriptPath,
@@ -345,7 +376,12 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     });
 
     // Respond immediately — the hook should not block on processing.
-    const run = () => processStopEvent(sessionId, user, sessionMeta, hookTranscriptPath, lastAssistantMessage).catch((err) => {
+    // Normalize nullish hook fields to undefined so downstream processStopEvent
+    // keeps its existing `string | undefined` contract (the schema accepts
+    // `nullish()` for robustness against ephemeral sub-invocation Stop events).
+    const normalizedTranscriptPath = hookTranscriptPath ?? undefined;
+    const normalizedAssistantMessage = lastAssistantMessage ?? undefined;
+    const run = () => processStopEvent(sessionId, user, sessionMeta, normalizedTranscriptPath, normalizedAssistantMessage).catch((err) => {
       logger.error(LOG_KINDS.PROCESSOR_SESSION, 'Stop processing failed', { session_id: sessionId, error: (err as Error).message });
     });
 

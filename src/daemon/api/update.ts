@@ -21,6 +21,7 @@ import {
   clearCachedCheck,
   isCacheStale,
   getInstalledVersion,
+  resolveMycoBinary,
 } from '../update-checker.js';
 import { spawnUpdateScript, spawnRestartScript } from '../update-installer.js';
 import { RELEASE_CHANNELS, UPDATE_STAMP_FILENAME } from '../../constants/update.js';
@@ -107,6 +108,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
           projectRoot, vaultDir, runLocalUpdate,
           fromVersion: currentVersion,
           toVersion: installedVersion,
+          mycoBinary: resolveMycoBinary(),
         });
         scheduleShutdown();
         return {
@@ -184,7 +186,12 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       return { status: 400, body: { error: 'no_update_available' } };
     }
 
-    spawnUpdateScript({ targetVersion: status.latest_version, projectRoot, vaultDir });
+    spawnUpdateScript({
+      targetVersion: status.latest_version,
+      projectRoot,
+      vaultDir,
+      mycoBinary: resolveMycoBinary(),
+    });
     scheduleShutdown();
 
     return { body: { status: 'applying', version: status.latest_version } };
