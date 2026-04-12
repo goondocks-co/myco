@@ -81,6 +81,12 @@ attachments/
 
 # Team worker deployment — patched wrangler.toml + source copy
 .team-worker/
+
+# Runtime command alias — per-contributor override for which myco binary
+# the hook guard invokes. Default (file absent) is \`myco\`; \`make dev-link\`
+# writes \`myco-dev\`; users can hand-edit for PATH conflicts or pinning.
+# Never committed — different contributors use different aliases.
+runtime.command
 `;
 
 /** Collapse an absolute home-dir path to its `~/` form for portable config storage. */

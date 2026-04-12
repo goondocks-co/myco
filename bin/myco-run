@@ -1,2 +1,15 @@
-#!/bin/sh
-exec "${MYCO_CMD:-myco}" "$@"
+#!/usr/bin/env node
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+
+const scriptPath = fs.realpathSync(process.argv[1]);
+const cliEntry = path.resolve(path.dirname(scriptPath), '..', 'dist', 'src', 'cli.js');
+
+try {
+  execFileSync(process.execPath, [cliEntry, ...process.argv.slice(2)], { stdio: 'inherit' });
+} catch (error) {
+  if (error.code === 'ENOENT') process.exit(0);
+  process.exit(error.status ?? 1);
+}

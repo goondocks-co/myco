@@ -1,6 +1,8 @@
 import { DaemonClient } from './client.js';
 import { readStdin } from './read-stdin.js';
 import { normalizeHookInput } from './normalize.js';
+import { evaluateUserPromptRules } from './capture-rules.js';
+import { loadManifests } from '../symbionts/detect.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import fs from 'node:fs';
@@ -13,14 +15,40 @@ export async function main() {
   try {
     const rawInput = JSON.parse(await readStdin());
     const input = normalizeHookInput(rawInput);
-    const prompt = input.prompt ?? '';
+    const rawPrompt = input.prompt ?? '';
     const sessionId = input.sessionId;
+
+    // Apply generic capture rules owned by each symbiont's manifest.
+    // The hook stays symbiont-agnostic — per-agent behavior lives in YAML.
+    // Pass structural context so rules can key on things like
+    // `transcript_path_missing` without doing their own text mining.
+    const decision = evaluateUserPromptRules(loadManifests(), input.agent, {
+      prompt: rawPrompt,
+      transcriptPath: input.transcriptPath,
+    });
 
     const client = new DaemonClient(VAULT_DIR);
     // Spawn daemon if needed but don't block on full health check backoff.
     // The event POST will fail fast if daemon isn't ready — buffer absorbs it.
     if (!(await client.isHealthy())) {
       client.spawnDaemon();
+    }
+
+    if (decision.action === 'drop') {
+      // A rule classified this prompt as a phantom sub-invocation (e.g., an
+      // agent's internal title-generation call). SessionStart already
+      // registered the session row; delete it so it doesn't linger as a
+      // zero-prompt ghost in the UI. Silently tolerate failures — the
+      // session-maintenance sweep will clean up stragglers within the
+      // stale threshold as a safety net.
+      process.stderr.write(`[myco] user-prompt-submit: dropped (${decision.reason ?? 'rule'})\n`);
+      await client.delete(`/api/sessions/${sessionId}`);
+      return;
+    }
+
+    const prompt = decision.action === 'rewrite' ? decision.prompt : rawPrompt;
+    if (decision.action === 'rewrite') {
+      process.stderr.write(`[myco] user-prompt-submit: rewritten (${decision.reason ?? 'rule'})\n`);
     }
 
     // Forward prompt as event for capture

@@ -1,20 +1,31 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-/** Prefix used to identify Myco-owned hooks in settings files. */
-const MYCO_HOOK_COMMAND_PREFIX = 'myco-run';
-
-/** Check if a command string belongs to Myco (old or new guard format). */
+/**
+ * Check if a command string belongs to Myco.
+ *
+ * Three legacy shapes we still need to recognize so uninstall / re-install
+ * can strip old entries cleanly:
+ *   1. `.agents/myco-run.cjs`  — current hook guard entry point
+ *   2. `.agents/myco-hook.cjs` — prior cross-platform guard (pre-rename)
+ *   3. `myco-run` bare         — published MCP entry point and old shell shim
+ *
+ * Any of these signals "this is our group, safe to replace on reinstall."
+ */
 export function isMycoHookCommand(command: string): boolean {
-  return command.startsWith(MYCO_HOOK_COMMAND_PREFIX) || command.includes('.agents/myco-hook.cjs');
+  return (
+    command.includes('.agents/myco-run.cjs') ||
+    command.includes('.agents/myco-hook.cjs') ||
+    command.startsWith('myco-run')
+  );
 }
 
 /**
  * Check if a hook group is Myco-owned.
  * Handles both nested format (Claude Code, Codex, etc.) and flat format (Windsurf).
  *
- * Nested: { hooks: [{ command: "cd \"$(git rev-parse ...)\" && node .agents/myco-hook.cjs ..." }] }
- * Flat:   { command: "cd \"$(git rev-parse ...)\" && node .agents/myco-hook.cjs ..." }
+ * Nested: { hooks: [{ command: "cd \"$(git rev-parse ...)\" && node .agents/myco-run.cjs ..." }] }
+ * Flat:   { command: "cd \"$(git rev-parse ...)\" && node .agents/myco-run.cjs ..." }
  */
 export function isMycoHookGroup(group: Record<string, unknown>): boolean {
   // Nested format: { hooks: [{ command: "..." }] }

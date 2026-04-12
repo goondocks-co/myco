@@ -8,7 +8,5 @@
       ]
     }
   },
-  "env": {
-    "MYCO_CMD": "myco-dev"
-  }
+  "env": {}
 }

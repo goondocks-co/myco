@@ -1,6 +1,6 @@
 {
   "coreTools": [
-    "ShellTool(myco-run *)",
-    "ShellTool(myco *)"
+    "ShellTool(myco *)",
+    "ShellTool(myco-dev *)"
   ]
 }

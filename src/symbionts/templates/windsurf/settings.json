@@ -1,6 +1,6 @@
 {
   "windsurf.cascadeCommandsAllowList": [
-    "myco-run",
-    "myco"
+    "myco",
+    "myco-dev"
   ]
 }

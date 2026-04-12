@@ -25,8 +25,8 @@ myco init                                       # Interactive wizard: embedding 
 **Dev binary setup:**
 
 ```sh
-make dev-link    # Creates myco-dev + myco-run symlinks, sets MYCO_CMD in all agent settings
-make dev-unlink  # Removes symlinks, clears MYCO_CMD
+make dev-link    # Creates myco-dev + myco-run symlinks, writes .myco/runtime.command
+make dev-unlink  # Removes the symlinks and .myco/runtime.command
 ```
 
 After changing hook or daemon code, run `make build` — the wrapper script picks up the new build automatically.
