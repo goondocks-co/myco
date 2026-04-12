@@ -75,9 +75,8 @@
   },
   "mcpServers": {
     "myco": {
-      "command": "node",
+      "command": "myco-run",
       "args": [
-        ".agents/myco-run.cjs",
         "mcp"
       ]
     }

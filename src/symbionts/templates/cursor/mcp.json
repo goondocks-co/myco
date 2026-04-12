@@ -1,10 +1,7 @@
 {
   "myco": {
     "type": "stdio",
-    "command": "node",
-    "args": [
-      ".agents/myco-run.cjs",
-      "mcp"
-    ]
+    "command": "myco-run",
+    "args": ["mcp"]
   }
 }

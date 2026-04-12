@@ -121,11 +121,12 @@ export class SymbiontInstaller {
    * Copy the hook guard script into .agents/myco-run.cjs and delete the
    * legacy .agents/myco-hook.cjs if present.
    *
-   * The guard is the unified cross-platform entry point for BOTH the
-   * lifecycle hook pipeline and the MCP server spawn. Both paths invoke
-   * `node .agents/myco-run.cjs …`, and the guard resolves which myco
-   * binary to exec via `.myco/runtime.command`. Returns true if the file
-   * was written (or updated); false if skipped or N/A.
+   * The guard is the cross-platform entry point for lifecycle hooks.
+   * Hook commands invoke `node .agents/myco-run.cjs …`, and the guard
+   * resolves which myco binary to exec via `.myco/runtime.command`.
+   * MCP server spawn continues to use the published `myco-run` binary.
+   * Returns true if the file was written (or updated); false if skipped
+   * or N/A.
    */
   installHookGuard(): boolean {
     const reg = this.manifest.registration;
@@ -215,9 +216,10 @@ export class SymbiontInstaller {
    * block (`.claude/settings.json` → `env`, `.cursor/mcp.json` →
    * `mcp.myco.env`, `.codex/config.toml` →
    * `[shell_environment_policy.set]`), and each symbiont's template
-   * permission allowlist listed `myco-run` as a callable command. Both
-   * patterns are now obsolete — the runtime.command file is the single
-   * source of truth, and `myco-run` is no longer a published binary.
+   * permission allowlist listed `myco-run` as a callable command. The
+   * env-var pattern is now obsolete — `.myco/runtime.command` is the
+   * hook-side source of truth — while the old allowlist entries remain
+   * legacy noise after the permissions refactor.
    *
    * This cleanup runs automatically on every install/update pass so
    * contributors upgrading across this refactor don't need to manually

@@ -2,8 +2,8 @@
 inherit = "core"
 
 [mcp_servers.myco]
-command = "node"
-args = [".agents/myco-run.cjs", "mcp"]
+command = "myco-run"
+args = ["mcp"]
 
 [features]
 codex_hooks = true

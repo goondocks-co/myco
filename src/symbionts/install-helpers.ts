@@ -6,9 +6,9 @@ import path from 'node:path';
  *
  * Three legacy shapes we still need to recognize so uninstall / re-install
  * can strip old entries cleanly:
- *   1. `.agents/myco-run.cjs`  — current unified entry point (hooks + MCP)
+ *   1. `.agents/myco-run.cjs`  — current hook guard entry point
  *   2. `.agents/myco-hook.cjs` — prior cross-platform guard (pre-rename)
- *   3. `myco-run` bare         — original shell shim before the guard existed
+ *   3. `myco-run` bare         — published MCP entry point and old shell shim
  *
  * Any of these signals "this is our group, safe to replace on reinstall."
  */

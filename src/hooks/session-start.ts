@@ -17,10 +17,6 @@ export async function main() {
   if (!fs.existsSync(path.join(VAULT_DIR, 'myco.yaml'))) return;
 
   try {
-    const config = loadConfig(VAULT_DIR);
-    const client = new DaemonClient(VAULT_DIR);
-    const healthy = await client.ensureRunning();
-
     const rawInput = JSON.parse(await readStdin());
     const { sessionId, agent, transcriptPath } = normalizeHookInput(rawInput);
 
@@ -33,6 +29,10 @@ export async function main() {
       process.stderr.write(`[myco] session-start: dropped (${decision.reason ?? 'rule'})\n`);
       return;
     }
+
+    const config = loadConfig(VAULT_DIR);
+    const client = new DaemonClient(VAULT_DIR);
+    const healthy = await client.ensureRunning();
 
     let branch: string | undefined;
     try {
