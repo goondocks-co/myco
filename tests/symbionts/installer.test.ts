@@ -1118,6 +1118,66 @@ describe('uninstallSettings (TOML)', () => {
     expect(content).not.toContain('[features]');
     expect(content).not.toContain('[mcp_servers.myco]');
   });
+
+  it('cleanup preserves `myco-run` inside exec argv arrays (opencode MCP shape)', () => {
+    // Regression: an earlier version of stripLegacyFromJson walked into
+    // every array and filtered out `myco-run` as a legacy token. That
+    // would corrupt opencode.json which stores its MCP server command
+    // as `command: ["myco-run", "mcp"]` — stripping the first element
+    // would leave `command: ["mcp"]` and break the MCP spawn. The
+    // cleanup must now recognize `command` / `args` as exec argv arrays
+    // and skip them.
+    const openCodeJsonPath = path.join(projectRoot, 'opencode.json');
+    writeJson(openCodeJsonPath, {
+      mcp: {
+        myco: {
+          type: 'local',
+          command: ['myco-run', 'mcp'],
+        },
+      },
+      permission: {
+        bash: {
+          'myco-run *': 'allow',  // legacy allowlist — this SHOULD get stripped
+          'myco *': 'allow',
+        },
+      },
+    });
+
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    const result = readJson(openCodeJsonPath);
+    // Exec argv array preserved verbatim.
+    expect(((result.mcp as Record<string, unknown>).myco as Record<string, unknown>).command)
+      .toEqual(['myco-run', 'mcp']);
+    // Legacy permission key stripped.
+    const bash = ((result.permission as Record<string, unknown>).bash) as Record<string, unknown>;
+    expect(bash['myco-run *']).toBeUndefined();
+    // Non-legacy keys preserved.
+    expect(bash['myco *']).toBe('allow');
+  });
+
+  it('cleanup strips `myco-run` from windsurf cascadeCommandsAllowList (non-exec string array)', () => {
+    // Counterpart to the opencode preservation test: a non-exec string
+    // array (windsurf's shell allowlist) should still get `myco-run`
+    // stripped, because that entry is a legacy permission token, not
+    // an invocation argv.
+    const settingsDir = path.join(projectRoot, '.windsurf');
+    fs.mkdirSync(settingsDir, { recursive: true });
+    writeJson(path.join(settingsDir, 'settings.json'), {
+      'windsurf.cascadeCommandsAllowList': ['other-cmd', 'myco-run', 'myco', 'myco-dev'],
+    });
+
+    const installer = new SymbiontInstaller(WINDSURF_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    const settings = readJson(path.join(settingsDir, 'settings.json'));
+    const allow = (settings as Record<string, unknown>)['windsurf.cascadeCommandsAllowList'] as string[];
+    expect(allow).toContain('other-cmd');
+    expect(allow).toContain('myco');
+    expect(allow).toContain('myco-dev');
+    expect(allow).not.toContain('myco-run');
+  });
 });
 
 // =====================

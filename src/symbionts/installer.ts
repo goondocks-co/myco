@@ -276,11 +276,22 @@ export class SymbiontInstaller {
       'ShellTool(myco-run *)',
     ]);
     const LEGACY_OBJECT_KEYS = ['myco-run', 'myco-run *'];
+    // Fields whose array values are exec argvs (process invocation arrays),
+    // NOT allowlist tokens. The cleanup sweep must not touch these because
+    // `myco-run` remains the PUBLISHED MCP launcher command — stripping it
+    // from an opencode-style `command: ["myco-run", "mcp"]` array would
+    // corrupt the MCP spawn. Only works today because installMcp() deep-
+    // merges the template back in after cleanup; don't rely on that mask.
+    const EXEC_ARGV_KEYS = new Set(['command', 'args']);
 
     const walk = (node: unknown, parentKey?: string): void => {
       if (node === null || typeof node !== 'object') return;
       if (Array.isArray(node)) {
-        // String arrays: filter out legacy tokens in place.
+        // Exec argv arrays are process invocations (e.g. opencode's
+        // `command: ["myco-run", "mcp"]`). Never strip tokens from these
+        // — `myco-run` is the intended MCP command.
+        if (parentKey !== undefined && EXEC_ARGV_KEYS.has(parentKey)) return;
+        // String arrays: filter out legacy allowlist tokens in place.
         for (let i = node.length - 1; i >= 0; i--) {
           if (typeof node[i] === 'string' && LEGACY_STRINGS.has(node[i] as string)) {
             node.splice(i, 1);
@@ -299,6 +310,11 @@ export class SymbiontInstaller {
         changed = true;
       }
       // Object-boolean maps keyed on command name: strip legacy keys.
+      // Skip inside exec argv scalar fields (e.g. `command: "myco-run"`)
+      // would be caught by the LEGACY_OBJECT_KEYS lookup only when the
+      // key is literally `myco-run`, which is a command-name key in
+      // allowlist objects — exec argv scalars are fine because the
+      // scalar value `"myco-run"` is walked as a string and skipped.
       for (const key of LEGACY_OBJECT_KEYS) {
         if (key in obj) {
           delete obj[key];
