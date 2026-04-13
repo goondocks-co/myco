@@ -21,28 +21,30 @@ vi.mock('node:child_process', async () => {
   };
 });
 
-describe('teamDestroy', () => {
+describe('collectiveDestroy', () => {
   let tempHomeDir: string;
   let previousHome: string | undefined;
 
   beforeEach(() => {
-    tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-destroy-'));
+    tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-collective-destroy-'));
     previousHome = process.env.HOME;
     process.env.HOME = tempHomeDir;
     execHandlers.length = 0;
     execCalls.length = 0;
 
-    const configPath = path.join(tempHomeDir, '.myco-team', 'config.json');
+    const configPath = path.join(tempHomeDir, '.myco-collective', 'config.json');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, JSON.stringify({
-      worker_name: 'myco-team-test',
-      worker_url: 'https://myco-team-test.example.workers.dev',
-      api_key: 'api-key',
+      worker_name: 'myco-collective-test',
+      worker_url: 'https://myco-collective-test.example.workers.dev',
+      admin_token: 'admin-token',
       mcp_token: 'mcp-token',
       created_at: '2026-04-13T00:00:00.000Z',
       last_upgraded: '2026-04-13T00:00:00.000Z',
-      config_version: 1,
-      vault_dir: '/tmp/fake-vault',
+      config_version: 2,
+      d1_database_id: 'db-uuid-123',
+      kv_namespace_id: 'kv-namespace-456',
+      deploy_dir: path.join(tempHomeDir, '.myco-collective', 'deployments', 'myco-collective-test'),
     }), 'utf-8');
   });
 
@@ -62,8 +64,7 @@ describe('teamDestroy', () => {
     execHandlers.push(
       () => new Error('worker delete exploded'),
       () => '',
-      () => '[]',
-      () => '[]',
+      () => '',
     );
 
     vi.doMock('@myco-deploy/index.js', async () => {
@@ -74,19 +75,15 @@ describe('teamDestroy', () => {
       };
     });
 
-    const { teamDestroy } = await import('../../packages/myco-team/src/cli.js');
-
-    await expect(teamDestroy()).rejects.toThrow('Local state preserved for retry');
-    expect(fs.existsSync(path.join(tempHomeDir, '.myco-team', 'config.json'))).toBe(true);
+    const { collectiveDestroy } = await import('../../packages/myco-collective/src/cli.js');
+    await expect(collectiveDestroy()).rejects.toThrow('Local state preserved for retry');
+    expect(fs.existsSync(path.join(tempHomeDir, '.myco-collective', 'config.json'))).toBe(true);
   });
 
-  it('uses the current wrangler destroy flags for remote teardown', async () => {
+  it('uses wrangler-compatible destroy arguments for D1 and KV cleanup', async () => {
     execHandlers.push(
       () => '',
       () => '',
-      () => JSON.stringify([{ name: 'myco-team-test', uuid: 'db-uuid-123' }]),
-      () => '',
-      () => JSON.stringify([{ id: 'kv-namespace-456', title: 'myco-team-test-secrets' }]),
       () => '',
     );
 
@@ -98,12 +95,11 @@ describe('teamDestroy', () => {
       };
     });
 
-    const { teamDestroy } = await import('../../packages/myco-team/src/cli.js');
-    await teamDestroy();
+    const { collectiveDestroy } = await import('../../packages/myco-collective/src/cli.js');
+    await collectiveDestroy();
 
-    expect(execCalls.map((call) => call.args)).toContainEqual(['delete', 'myco-team-test']);
-    expect(execCalls.map((call) => call.args)).toContainEqual(['vectorize', 'delete', 'myco-team-test-vectors']);
-    expect(execCalls.map((call) => call.args)).toContainEqual(['d1', 'delete', 'myco-team-test', '--skip-confirmation']);
+    expect(execCalls.map((call) => call.args)).toContainEqual(['delete', 'myco-collective-test']);
+    expect(execCalls.map((call) => call.args)).toContainEqual(['d1', 'delete', 'myco-collective-test', '--skip-confirmation']);
     expect(execCalls.map((call) => call.args)).toContainEqual([
       'kv',
       'namespace',
@@ -112,6 +108,6 @@ describe('teamDestroy', () => {
       'kv-namespace-456',
       '--skip-confirmation',
     ]);
-    expect(fs.existsSync(path.join(tempHomeDir, '.myco-team', 'config.json'))).toBe(false);
+    expect(fs.existsSync(path.join(tempHomeDir, '.myco-collective', 'config.json'))).toBe(false);
   });
 });

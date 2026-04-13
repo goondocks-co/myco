@@ -8,6 +8,7 @@
 import { updateTeamConfig, loadConfig } from '@myco/config/loader.js';
 import { writeSecret, readSecrets } from '@myco/config/secrets.js';
 import { countPending, countDeadLettered, backfillUnsynced, retryDeadLettered } from '@myco/db/queries/team-outbox.js';
+import { readJsonConfig, resolveHomeConfigPath } from '@myco-deploy/index.js';
 import { TeamSyncClient } from '../team-sync.js';
 import { SYNC_PROTOCOL_VERSION, TEAM_API_KEY_SECRET } from '@myco/constants.js';
 import { getPluginVersion } from '@myco/version.js';
@@ -19,6 +20,17 @@ import type { DaemonLogger } from '../logger.js';
 // Constants
 // ---------------------------------------------------------------------------
 
+const TEAM_CONFIG_DIR = '.myco-team';
+const TEAM_CONFIG_FILE = 'config.json';
+
+interface TeamLocalConfig {
+  package_version?: string;
+}
+
+function readInstalledTeamPackageVersion(): string | null {
+  const config = readJsonConfig<TeamLocalConfig>(resolveHomeConfigPath(TEAM_CONFIG_DIR, TEAM_CONFIG_FILE));
+  return config?.package_version?.trim() || null;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -121,6 +133,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     const client = deps.getTeamClient();
     const secrets = readSecrets(vaultDir);
     const hasApiKey = Boolean(secrets[TEAM_API_KEY_SECRET]);
+    const installedTeamPackageVersion = readInstalledTeamPackageVersion();
 
     let healthy = false;
     let healthError: string | undefined;
@@ -164,10 +177,12 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         dead_letter_count: deadLetterCount,
         machine_id: machineId,
         package_version: getPluginVersion(),
+        installed_team_package_version: installedTeamPackageVersion,
         deployed_worker_version: config.team.deployed_worker_version ?? null,
-        worker_update_available: config.team.enabled
-          ? config.team.deployed_worker_version !== getPluginVersion()
-          : false,
+        worker_update_available:
+          config.team.enabled &&
+          Boolean(installedTeamPackageVersion) &&
+          config.team.deployed_worker_version !== installedTeamPackageVersion,
         collective_connected: collectiveStatus?.connected ?? false,
         collective_url: collectiveStatus?.collective_url ?? null,
         collective_project_id: collectiveStatus?.project_id ?? null,

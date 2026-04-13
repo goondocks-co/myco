@@ -3,8 +3,9 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = '/Users/chris/Repos/myco-collective-v1';
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TEAM_CONFIG_PATH = path.join(os.homedir(), '.myco-team', 'config.json');
 const COLLECTIVE_CONFIG_PATH = path.join(os.homedir(), '.myco-collective', 'config.json');
 const SMOKE_PREFIX = 'myco-smoke';

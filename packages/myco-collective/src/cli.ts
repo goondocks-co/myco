@@ -247,8 +247,19 @@ export async function collectiveStatus(): Promise<void> {
   let remoteHealth: unknown = null;
 
   try {
-    const response = await fetch(`${config.worker_url}/health`);
-    remoteHealth = response.ok ? await response.json() : { status: response.status };
+    const verifyResponse = await fetch(`${config.worker_url}/api/auth/verify`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.admin_token}`,
+      },
+    });
+
+    if (verifyResponse.ok) {
+      remoteHealth = await verifyResponse.json();
+    } else {
+      const healthResponse = await fetch(`${config.worker_url}/health`);
+      remoteHealth = healthResponse.ok ? await healthResponse.json() : { status: healthResponse.status };
+    }
   } catch (error) {
     remoteHealth = { error: (error as Error).message };
   }
@@ -330,7 +341,7 @@ export async function collectiveDestroy(): Promise<void> {
   }
 
   try {
-    wrangler(['d1', 'delete', config.d1_database_id, '--skip-confirmation']);
+    wrangler(['d1', 'delete', config.worker_name, '--skip-confirmation']);
   } catch (error) {
     errors.push(`d1 delete failed: ${(error as Error).message}`);
   }
@@ -340,7 +351,6 @@ export async function collectiveDestroy(): Promise<void> {
       'kv',
       'namespace',
       'delete',
-      `${config.worker_name}-secrets`,
       '--namespace-id',
       config.kv_namespace_id,
       '--skip-confirmation',

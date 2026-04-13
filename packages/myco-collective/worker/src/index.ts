@@ -332,8 +332,10 @@ async function handleAuthRotate(request: Request, env: Env): Promise<Response> {
   });
 }
 
-async function handleApiQuery(request: Request, env: Env): Promise<Response> {
-  const body = await request.json() as { tool?: string; args?: Record<string, unknown> };
+export async function dispatchApiQuery(
+  env: Env,
+  body: { tool?: string; args?: Record<string, unknown> },
+): Promise<Response> {
   const tool = body.tool ?? '';
   if (!tool) {
     return jsonResponse({ error: 'tool is required' }, 400);
@@ -366,6 +368,11 @@ async function handleApiQuery(request: Request, env: Env): Promise<Response> {
   }
 }
 
+async function handleApiQuery(request: Request, env: Env): Promise<Response> {
+  const body = await request.json() as { tool?: string; args?: Record<string, unknown> };
+  return dispatchApiQuery(env, body);
+}
+
 async function handleWorkerSettings(env: Env): Promise<Response> {
   const settings = await listSettings(env);
   return jsonResponse({
@@ -383,7 +390,7 @@ async function handleWorkerQuery(request: Request, env: Env): Promise<Response> 
   if (!WORKER_QUERY_TOOLS.has(tool)) {
     return jsonResponse({ error: `Worker queries do not support ${tool}` }, 400);
   }
-  return handleApiQuery(request, env);
+  return dispatchApiQuery(env, body);
 }
 
 export default {

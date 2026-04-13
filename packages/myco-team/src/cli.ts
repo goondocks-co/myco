@@ -55,6 +55,8 @@ const TEAM_WORKER_DIR = '.team-worker';
 const TEAM_CONFIG_DIR = '.myco-team';
 const TEAM_CONFIG_FILE = 'config.json';
 const TEAM_CONFIG_VERSION = 1;
+const TEAM_MCP_ROTATION_RETRY_ATTEMPTS = 10;
+const TEAM_MCP_ROTATION_RETRY_DELAY_MS = 1500;
 
 /** Regex to match wrangler.toml name field. */
 const TOML_NAME_REGEX = /^name\s*=\s*"[^"]*"/m;
@@ -129,6 +131,7 @@ export interface TeamLocalConfig {
   worker_url: string;
   api_key: string;
   mcp_token: string | null;
+  package_version: string;
   vault_dir?: string;
   created_at: string;
   last_upgraded: string;
@@ -153,6 +156,32 @@ function requireLocalConfig(): TeamLocalConfig {
 
   console.error(`No local myco-team config found at ${resolveLocalConfigPath()}`);
   process.exit(1);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function rotateMcpTokenWithRetry(workerUrl: string, apiKey: string): Promise<string> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= TEAM_MCP_ROTATION_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return await rotateMcpTokenForWorker(workerUrl, apiKey);
+    } catch (error) {
+      lastError = error as Error;
+      const isRetryable =
+        lastError.message.includes('401') &&
+        lastError.message.includes('Invalid API key') &&
+        attempt < TEAM_MCP_ROTATION_RETRY_ATTEMPTS;
+      if (!isRetryable) {
+        throw lastError;
+      }
+      await delay(TEAM_MCP_ROTATION_RETRY_DELAY_MS);
+    }
+  }
+
+  throw lastError ?? new Error('MCP token rotation failed');
 }
 
 function resolveVaultDirForConfig(config: TeamLocalConfig): string | null {
@@ -429,6 +458,7 @@ export async function teamInit(vaultDir: string): Promise<void> {
     worker_url: workerUrl,
     api_key: apiKey,
     mcp_token: mcpToken,
+    package_version: getTeamPackageVersion(),
     vault_dir: vaultDir,
     created_at: new Date().toISOString(),
     last_upgraded: new Date().toISOString(),
@@ -551,6 +581,7 @@ export function upgradeWorker(vaultDir: string): UpgradeResult {
         ...localConfig,
         worker_name: workerName,
         worker_url: workerUrl,
+        package_version: version,
         vault_dir: vaultDir,
         last_upgraded: new Date().toISOString(),
       });
@@ -585,6 +616,7 @@ export async function teamStatus(): Promise<void> {
   console.log(`URL:         ${config.worker_url}`);
   console.log(`API Key:     ${maskSecret(config.api_key)}`);
   console.log(`MCP Token:   ${maskSecret(config.mcp_token)}`);
+  console.log(`Package v:   ${config.package_version}`);
   console.log(`Created:     ${config.created_at}`);
   console.log(`Upgraded:    ${config.last_upgraded}`);
   console.log(`Config v:    ${config.config_version}`);
@@ -609,14 +641,31 @@ export async function teamRotateTokens(which: 'api' | 'mcp' | 'all' = 'all'): Pr
       timeoutMs: WRANGLER_COMMAND_TIMEOUT_MS,
     });
     writeSecret(vaultDir, TEAM_API_KEY_SECRET, apiKey);
-    nextConfig = { ...nextConfig, api_key: apiKey, vault_dir: vaultDir };
+    nextConfig = {
+      ...nextConfig,
+      api_key: apiKey,
+      vault_dir: vaultDir,
+      package_version: getTeamPackageVersion(),
+      last_upgraded: new Date().toISOString(),
+    };
+    writeLocalConfig(nextConfig);
   }
 
   if (which === 'mcp' || which === 'all') {
-    nextConfig = {
-      ...nextConfig,
-      mcp_token: await rotateMcpTokenForWorker(config.worker_url, nextConfig.api_key),
-    };
+    try {
+      nextConfig = {
+        ...nextConfig,
+        mcp_token: await rotateMcpTokenWithRetry(config.worker_url, nextConfig.api_key),
+      };
+    } catch (error) {
+      writeLocalConfig({
+        ...nextConfig,
+        last_upgraded: new Date().toISOString(),
+      });
+      throw new Error(
+        `API key rotation completed, but MCP token rotation failed. Local config was updated to the new API key.\n${(error as Error).message}`,
+      );
+    }
   }
 
   nextConfig.last_upgraded = new Date().toISOString();
@@ -647,10 +696,20 @@ export async function teamDestroy(): Promise<void> {
     const databases = JSON.parse(wrangler(['d1', 'list', '--json'])) as Array<{ name: string; uuid: string }>;
     const database = databases.find((entry) => entry.name === config.worker_name);
     if (database) {
-      wrangler(['d1', 'delete', database.uuid, '--yes']);
+      wrangler(['d1', 'delete', database.name, '--skip-confirmation']);
     }
   } catch (error) {
     errors.push(`d1 delete failed: ${(error as Error).message}`);
+  }
+
+  try {
+    const namespaces = extractJsonArray(wrangler(['kv', 'namespace', 'list'])) as Array<{ id: string; title: string }>;
+    const namespace = namespaces.find((entry) => entry.title === `${config.worker_name}-secrets`);
+    if (namespace) {
+      wrangler(['kv', 'namespace', 'delete', '--namespace-id', namespace.id, '--skip-confirmation']);
+    }
+  } catch (error) {
+    errors.push(`kv delete failed: ${(error as Error).message}`);
   }
 
   if (errors.length > 0) {

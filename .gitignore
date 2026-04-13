@@ -9,6 +9,7 @@ dist/
 # Dev tooling
 .worktrees/
 .playwright-mcp/
+.playwright-cli/
 
 # Specs and plans — captured in Myco vault, not the repo
 docs/superpowers/
