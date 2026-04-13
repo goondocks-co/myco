@@ -26,7 +26,8 @@ export type SearchResultType =
   | 'plan'
   | 'artifact'
   | 'prompt_batch'
-  | 'activity';
+  | 'activity'
+  | 'skill';
 
 /** A single result returned from full-text or semantic search. */
 export interface SearchResult {
@@ -278,6 +279,9 @@ export function hydrateSearchResults(
   const artifactStmt = db.prepare(
     `SELECT id, title, content FROM artifacts WHERE id IN (SELECT value FROM json_each(?))`,
   );
+  const skillStmt = db.prepare(
+    `SELECT id, name, display_name, description FROM skill_records WHERE id IN (SELECT value FROM json_each(?))`,
+  );
 
   // --- sessions ---
   const sessionResults = byNamespace.get('sessions');
@@ -356,6 +360,26 @@ export function hydrateSearchResults(
         type: 'artifact',
         title: row.title,
         preview: (row.content ?? '').slice(0, SEARCH_PREVIEW_CHARS),
+        score: vr.similarity,
+      });
+    }
+  }
+
+  // --- skill_records ---
+  const skillResults = byNamespace.get('skill_records');
+  if (skillResults && skillResults.length > 0) {
+    const ids = skillResults.map((r) => r.id);
+    const rows = skillStmt.all(JSON.stringify(ids)) as Array<{ id: string; name: string; display_name: string; description: string }>;
+
+    const rowMap = new Map(rows.map((r) => [r.id, r]));
+    for (const vr of skillResults) {
+      const row = rowMap.get(vr.id);
+      if (!row) continue;
+      results.push({
+        id: row.id,
+        type: 'skill',
+        title: row.display_name || row.name,
+        preview: row.description.slice(0, SEARCH_PREVIEW_CHARS),
         score: vr.similarity,
       });
     }
