@@ -245,8 +245,68 @@ interface SkillAssessmentEntry {
 interface SkillOverlapPair {
   skillA: string;
   skillB: string;
-  jaccard: number;
+  descriptionJaccard: number;
+  headingOverlap: number;
+  sharedHeadings: string[];
   verdict: 'potential-merge' | 'potential-narrow' | 'distinct';
+}
+
+/** Per-skill structural analysis for the inventory phase. */
+interface SkillStructure {
+  name: string;
+  sectionCount: number;
+  headings: string[];
+  narrow: boolean;
+}
+
+/** Minimum H2 section count for a skill to be considered broad enough. */
+const MIN_SECTIONS_FOR_STANDALONE = 2;
+
+/**
+ * Extract H2 headings from SKILL.md content (lines starting with "## ").
+ * Excludes frontmatter and the top-level H1 title.
+ */
+function extractHeadings(content: string): string[] {
+  // Skip frontmatter
+  const bodyMatch = content.match(/^---[\s\S]*?---\n([\s\S]*)$/);
+  const body = bodyMatch ? bodyMatch[1] : content;
+  return body
+    .split('\n')
+    .filter(line => line.startsWith('## '))
+    .map(line => line.slice(3).trim());
+}
+
+/**
+ * Compute heading overlap between two skills using tokenized Jaccard
+ * on H2 heading text. Returns { score, sharedHeadings }.
+ */
+function headingOverlap(
+  headingsA: string[],
+  headingsB: string[],
+): { score: number; shared: string[] } {
+  if (headingsA.length === 0 || headingsB.length === 0) return { score: 0, shared: [] };
+
+  // Tokenize each heading into significant words (reusing the same stemming logic)
+  const tokenize = (h: string) => new Set(
+    h.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length >= 4),
+  );
+
+  const shared: string[] = [];
+  for (const a of headingsA) {
+    const aTokens = tokenize(a);
+    for (const b of headingsB) {
+      const bTokens = tokenize(b);
+      const intersection = [...aTokens].filter(t => bTokens.has(t)).length;
+      const union = new Set([...aTokens, ...bTokens]).size;
+      if (union > 0 && intersection / union >= 0.5) {
+        shared.push(`"${a}" ~ "${b}"`);
+      }
+    }
+  }
+
+  // Score: fraction of the smaller skill's headings that have a match
+  const smaller = Math.min(headingsA.length, headingsB.length);
+  return { score: smaller > 0 ? shared.length / smaller : 0, shared };
 }
 
 /**
@@ -326,22 +386,56 @@ export function buildSkillEvolveInstruction(
     return 'No skills need assessment. All active skills are current or were recently assessed. Report skip via vault_report and finish.';
   }
 
-  // Pre-compute pairwise similarity for the inventory phase.
+  // ----- Structural analysis: section counts + heading extraction -----
+  // Read each skill's content from disk and extract H2 headings.
+  // This gives the inventory phase mechanical signals for narrow/merge
+  // detection that don't depend on LLM judgment.
+  const structures: SkillStructure[] = [];
+  const skillHeadings = new Map<string, string[]>();
+  for (const skill of allSkills) {
+    let content = '';
+    if (projectRoot && skill.path) {
+      try { content = readFileSync(resolve(projectRoot, skill.path), 'utf-8'); } catch { /* missing */ }
+    }
+    const headings = extractHeadings(content);
+    skillHeadings.set(skill.name, headings);
+    structures.push({
+      name: skill.name,
+      sectionCount: headings.length,
+      headings,
+      narrow: headings.length < MIN_SECTIONS_FOR_STANDALONE,
+    });
+  }
+
+  // ----- Pairwise similarity: description + heading overlap -----
   // Runs after the early-exit so we don't compute O(n²) scores for no-op runs.
   const overlaps: SkillOverlapPair[] = [];
   for (let i = 0; i < allSkills.length; i++) {
     for (let j = i + 1; j < allSkills.length; j++) {
       const a = allSkills[i];
       const b = allSkills[j];
-      const jaccard = descriptionSimilarity(a.description, b.description);
-      if (jaccard >= DESCRIPTION_DUPLICATE_THRESHOLD * 0.75) {
-        overlaps.push({
-          skillA: a.name,
-          skillB: b.name,
-          jaccard: Math.round(jaccard * 100) / 100,
-          verdict: jaccard >= DESCRIPTION_DUPLICATE_THRESHOLD ? 'potential-merge' : 'potential-narrow',
-        });
-      }
+      const descJaccard = descriptionSimilarity(a.description, b.description);
+      const aHeadings = skillHeadings.get(a.name) ?? [];
+      const bHeadings = skillHeadings.get(b.name) ?? [];
+      const ho = headingOverlap(aHeadings, bHeadings);
+
+      // Flag if EITHER description similarity OR heading overlap is significant
+      const descFlag = descJaccard >= DESCRIPTION_DUPLICATE_THRESHOLD * 0.75;
+      const headingFlag = ho.score >= 0.4;
+      if (!descFlag && !headingFlag) continue;
+
+      const verdict = (descJaccard >= DESCRIPTION_DUPLICATE_THRESHOLD || ho.score >= 0.5)
+        ? 'potential-merge'
+        : 'potential-narrow';
+
+      overlaps.push({
+        skillA: a.name,
+        skillB: b.name,
+        descriptionJaccard: Math.round(descJaccard * 100) / 100,
+        headingOverlap: Math.round(ho.score * 100) / 100,
+        sharedHeadings: ho.shared,
+        verdict,
+      });
     }
   }
 
@@ -364,19 +458,40 @@ export function buildSkillEvolveInstruction(
     parts.push(skill.contentSnapshot);
   }
 
-  // Inventory section — all active skills for cross-skill analysis
+  // Inventory section — all active skills with structural signals
   parts.push('');
   parts.push('## All Active Skills (for inventory analysis)');
-  for (const skill of allSkills) {
-    parts.push(`- **${skill.name}** (gen ${skill.generation}): ${skill.description.slice(0, 200)}`);
+  for (const s of structures) {
+    const skill = allSkills.find(sk => sk.name === s.name)!;
+    const narrowTag = s.narrow ? ' **[NARROW — <2 sections]**' : '';
+    parts.push(`- **${skill.name}** (gen ${skill.generation}, ${s.sectionCount} sections${narrowTag}): ${skill.description.slice(0, 200)}`);
+    if (s.headings.length > 0) {
+      parts.push(`  Headings: ${s.headings.join(' | ')}`);
+    }
   }
 
+  // Mechanically narrow skills — explicit flags for the inventory phase
+  const narrowSkills = structures.filter(s => s.narrow);
+  if (narrowSkills.length > 0) {
+    parts.push('');
+    parts.push('## Mechanically Narrow Skills (<2 H2 sections)');
+    parts.push('These skills have insufficient section breadth for domain-level standalone status.');
+    parts.push('Determine which broader skill each should be absorbed into.');
+    for (const s of narrowSkills) {
+      parts.push(`- **${s.name}**: ${s.sectionCount} section(s). Headings: ${s.headings.length > 0 ? s.headings.join(' | ') : '(none)'}`);
+    }
+  }
+
+  // Pairwise overlap analysis (description + heading)
   if (overlaps.length > 0) {
     parts.push('');
-    parts.push('## Pre-computed Description Similarity');
-    parts.push('Pairs flagged above threshold (mechanically computed — validate before acting):');
+    parts.push('## Pre-computed Skill Overlap');
+    parts.push('Pairs flagged by description similarity AND/OR heading overlap (mechanically computed — validate before acting):');
     for (const o of overlaps) {
-      parts.push(`- ${o.skillA} <-> ${o.skillB}: ${o.jaccard} (${o.verdict})`);
+      parts.push(`- **${o.skillA}** <-> **${o.skillB}**: desc=${o.descriptionJaccard}, headings=${o.headingOverlap} (${o.verdict})`);
+      if (o.sharedHeadings.length > 0) {
+        parts.push(`  Shared headings: ${o.sharedHeadings.join('; ')}`);
+      }
     }
   }
 

@@ -25,41 +25,49 @@ params:
 phases:
   - name: inventory
     prompt: |
-      The instruction contains all active skills with descriptions
-      and pre-computed pairwise similarity scores between skills
-      whose descriptions overlap.
+      The instruction contains pre-computed structural analysis of
+      all active skills. Two mechanical signals are provided:
 
-      Build a domain map of the current skill inventory:
+      1. **Narrow skills** — skills with <2 H2 sections are flagged
+         as mechanically narrow. These are NOT broad enough for
+         standalone domain status.
 
-      1. Read the full skill list and similarity pairs.
+      2. **Overlap pairs** — skill pairs with similar descriptions
+         OR overlapping H2 headings are flagged with scores.
 
-      2. For each similarity pair flagged as "potential-merge":
-         - Do the two skills cover genuinely different procedures,
-           or are they overlapping domains?
-         - Would merging them produce a coherent, broader skill?
+      ## Your job: validate and assign targets
 
-      3. For each skill, assess its scope:
-         - Is this skill broad enough to justify standalone status?
-         - Or is it a single procedure that belongs as a section
-           within a broader skill?
-         - Compare against the domain-level scope of other skills.
+      For each **mechanically narrow** skill:
+      - Confirm it is genuinely narrow (not a false positive, e.g.,
+        a debugging playbook with one long section is not narrow).
+      - Identify which broader skill it should be absorbed into.
+        Look at the heading lists to find the best domain match.
 
-      4. Store inventory analysis via vault_set_state
-         (key: skill-evolve-inventory) as JSON with structure:
-         {
-           "merge_candidates": [
-             { "source": "skill-name-a", "target": "skill-name-b",
-               "reason": "..." }
-           ],
-           "narrow_candidates": [
-             { "skill": "skill-name", "absorb_into": "broader-skill",
-               "reason": "..." }
-           ]
-         }
+      For each **overlap pair**:
+      - Confirm the overlap is real (not just shared vocabulary).
+      - If real, decide merge direction: which skill is the target
+        (broader, higher generation) and which is the source.
 
-      Bias toward keeping skills separate when in doubt. Only flag
-      merges/narrows when the overlap is clear and the merged result
-      would be coherent.
+      If no skills are flagged as narrow and no overlap pairs exist,
+      skip to storing an empty analysis.
+
+      ## Store results
+
+      Store via vault_set_state (key: skill-evolve-inventory) as:
+      {
+        "merge_candidates": [
+          { "source": "skill-name-a", "target": "skill-name-b",
+            "reason": "..." }
+        ],
+        "narrow_candidates": [
+          { "skill": "skill-name", "absorb_into": "broader-skill",
+            "reason": "..." }
+        ]
+      }
+
+      Only override the mechanical signals when you have clear
+      evidence that the flag is wrong. The default is to act on
+      the mechanical flags, not to find reasons to keep everything.
 
       If the instruction says "No skills need assessment", report
       skip via vault_report and finish.
