@@ -113,7 +113,7 @@ myco team upgrade
 
 Or click **Update Worker** on the Team page when an update is available. The upgrade handles new infrastructure (like the KV namespace added for Cloud MCP), installs new runtime dependencies, and redeploys.
 
-If you use the standalone team CLI, update it separately:
+If you use the standalone team CLI, the Operations page now detects and applies its package update when that CLI is installed on the same machine. Manual npm updates still work if you want them:
 
 ```bash
 npm update -g @goondocks/myco-team

@@ -128,11 +128,11 @@ export function createUpdateHandlers(deps: UpdateDeps) {
 
     if (isCacheStale(cache, config.check_interval_hours)) {
       // Fire-and-forget — don't block the response on the registry fetch.
-      checkForUpdate(currentVersion).catch(() => {});
+      checkForUpdate(currentVersion, globalPrefix).catch(() => {});
     }
 
     // Pass pre-read config and cache to avoid reading the files a second time.
-    const status = statusFromCache(currentVersion, cache, config);
+    const status = statusFromCache(currentVersion, cache, config, globalPrefix);
     if (!status) {
       // No cache yet — return minimal response; background check will populate it.
       return {
@@ -167,7 +167,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       };
     }
 
-    const result = await checkForUpdate(currentVersion);
+    const result = await checkForUpdate(currentVersion, globalPrefix);
     return { body: { exempt: false, ...result } };
   }
 
@@ -181,20 +181,29 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       return { status: 400, body: { error: 'update_exempt' } };
     }
 
-    const status = statusFromCache(currentVersion);
-    if (!status || !status.update_available) {
+    const status = statusFromCache(currentVersion, undefined, undefined, globalPrefix);
+    const packageSpecs = (status?.packages ?? [])
+      .filter((pkg) => pkg.installed && pkg.update_available && pkg.latest_version)
+      .map((pkg) => `${pkg.package_name}@${pkg.latest_version}`);
+    if (!status || packageSpecs.length === 0) {
       return { status: 400, body: { error: 'no_update_available' } };
     }
 
     spawnUpdateScript({
-      targetVersion: status.latest_version,
+      packageSpecs,
       projectRoot,
       vaultDir,
       mycoBinary: resolveMycoBinary(),
     });
     scheduleShutdown();
 
-    return { body: { status: 'applying', version: status.latest_version } };
+    return {
+      body: {
+        status: 'applying',
+        version: status.latest_version,
+        packages: packageSpecs,
+      },
+    };
   }
 
   /**
@@ -214,7 +223,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     writeUpdateConfig({ ...config, channel });
     clearCachedCheck();
 
-    const channelStatus = statusFromCache(currentVersion);
+    const channelStatus = statusFromCache(currentVersion, undefined, undefined, globalPrefix);
     if (!channelStatus) {
       return {
         body: {

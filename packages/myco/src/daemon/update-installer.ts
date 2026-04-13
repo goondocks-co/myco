@@ -12,7 +12,6 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 import {
-  NPM_PACKAGE_NAME,
   MYCO_GLOBAL_DIR,
   UPDATE_ERROR_PATH,
   UPDATE_SCRIPT_DELAY_SECONDS,
@@ -25,8 +24,8 @@ import {
 
 /** Parameters required to generate and spawn an update script. */
 export interface InstallParams {
-  /** The target version to install (e.g. "0.11.0"). */
-  targetVersion: string;
+  /** Fully-qualified npm package specs to install (e.g. ["@goondocks/myco@0.11.0"]). */
+  packageSpecs: string[];
   /** Absolute path to the project root for `myco update --project`. */
   projectRoot: string;
   /** Absolute path to the vault directory for `myco daemon --vault`. */
@@ -56,16 +55,16 @@ export interface InstallParams {
  * 7. Cleans up the script file itself.
  */
 export function generateUpdateScript(params: InstallParams): string {
-  const { targetVersion, projectRoot, vaultDir, mycoBinary } = params;
+  const { packageSpecs, projectRoot, vaultDir, mycoBinary } = params;
 
   // Use JSON.stringify for safe path quoting (handles spaces, special chars).
-  const packageSpec = `${NPM_PACKAGE_NAME}@${targetVersion}`;
+  const installArgs = packageSpecs.map((spec) => JSON.stringify(spec)).join(' ');
   const quotedProjectRoot = JSON.stringify(projectRoot);
   const quotedVaultDir = JSON.stringify(vaultDir);
   const quotedMycoBinary = JSON.stringify(mycoBinary);
   const quotedErrorPath = JSON.stringify(UPDATE_ERROR_PATH);
   const errorJson = JSON.stringify(
-    JSON.stringify({ error: `npm install failed for ${packageSpec}` }),
+    JSON.stringify({ error: `npm install failed for ${packageSpecs.join(', ')}` }),
   );
 
   // Bake the literal myco binary into the script at generation time. Prod
@@ -81,7 +80,7 @@ MYCO=${quotedMycoBinary}
 sleep ${UPDATE_SCRIPT_DELAY_SECONDS}
 
 # Attempt the update
-if npm install -g ${packageSpec} 2>&1; then
+if npm install -g ${installArgs} 2>&1; then
   # Sync project files (gitignore, symbiont registration)
   "$MYCO" update --project ${quotedProjectRoot} || true
   # Clear any previous error

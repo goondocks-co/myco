@@ -111,14 +111,14 @@ npm update -g @goondocks/myco-collective
 myco-collective upgrade
 ```
 
-If you also use the standalone team CLI, update that separately:
+If you also use the standalone team CLI, you can still update it directly:
 
 ```bash
 npm update -g @goondocks/myco-team
 myco-team upgrade
 ```
 
-Project-local Myco installs still update through `@goondocks/myco`.
+Project-local Myco installs still update through `@goondocks/myco`. Once the standalone Team or Collective CLI is installed on a machine, the main Myco Operations page also detects and applies those package updates for you.
 
 ## Daily use
 

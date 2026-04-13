@@ -43,7 +43,7 @@ Existing users upgrade the main product the same way:
 npm update -g @goondocks/myco
 ```
 
-That updates the local CLI, daemon, hooks, dashboard, and the built-in team-sync workflow. You do not need to install extra packages unless you want one of the standalone operator CLIs:
+That updates the local CLI, daemon, hooks, dashboard, and the built-in team-sync workflow. If you later install one of the standalone operator CLIs, the Operations page will detect and apply updates for those installed Myco packages too. You do not need to install extra packages unless you want one of the standalone operator CLIs:
 
 - `@goondocks/myco-team` for direct team-worker administration commands
 - `@goondocks/myco-collective` for cross-project Collective administration

@@ -23,8 +23,9 @@ import YAML from 'yaml';
 import semver from 'semver';
 
 import {
-  NPM_REGISTRY_URL,
+  NPM_REGISTRY_BASE_URL,
   NPM_PACKAGE_NAME,
+  UPDATE_PACKAGES,
   MYCO_GLOBAL_DIR,
   UPDATE_CHECK_CACHE_PATH,
   UPDATE_CONFIG_PATH,
@@ -34,6 +35,7 @@ import {
   DEFAULT_RELEASE_CHANNEL,
   RELEASE_CHANNELS,
   type ReleaseChannel,
+  type UpdatePackageId,
 } from '../constants/update.js';
 
 // ---------------------------------------------------------------------------
@@ -46,13 +48,31 @@ export interface UpdateConfig {
   check_interval_hours: number;
 }
 
+/** Cached dist-tags for a single package. */
+export interface CachedPackageCheck {
+  package_name: string;
+  latest_stable: string;
+  latest_beta: string | null;
+}
+
 /** Cached result of a registry check stored in ~/.myco/last-update-check.json */
 export interface CachedCheck {
   checked_at: string;
-  current_version: string;
-  latest_stable: string;
-  latest_beta: string | null;
   channel: ReleaseChannel;
+  packages: Partial<Record<UpdatePackageId, CachedPackageCheck>>;
+}
+
+/** Installed/update status for one globally installed Myco package. */
+export interface PackageCheckResult {
+  id: UpdatePackageId;
+  display_name: string;
+  package_name: string;
+  installed: boolean;
+  installed_version: string | null;
+  latest_version: string | null;
+  latest_stable: string | null;
+  latest_beta: string | null;
+  update_available: boolean;
 }
 
 /** Result returned to callers of checkForUpdate / statusFromCache */
@@ -66,6 +86,7 @@ export interface CheckResult {
   check_interval_hours: number;
   last_check: string;
   error: string | null;
+  packages: PackageCheckResult[];
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +248,39 @@ export function writeUpdateConfig(config: UpdateConfig): void {
 export function readCachedCheck(): CachedCheck | null {
   try {
     const raw = fs.readFileSync(UPDATE_CHECK_CACHE_PATH, 'utf-8');
-    return JSON.parse(raw) as CachedCheck;
+    const parsed = JSON.parse(raw) as CachedCheck | Record<string, unknown>;
+
+    if (parsed && typeof parsed === 'object' && 'packages' in parsed && parsed.packages) {
+      return parsed as CachedCheck;
+    }
+
+    const legacy = parsed as {
+      checked_at?: string;
+      channel?: ReleaseChannel;
+      latest_stable?: string;
+      latest_beta?: string | null;
+    };
+
+    if (
+      typeof legacy.checked_at === 'string' &&
+      typeof legacy.latest_stable === 'string'
+    ) {
+      return {
+        checked_at: legacy.checked_at,
+        channel: RELEASE_CHANNELS.includes(legacy.channel as ReleaseChannel)
+          ? (legacy.channel as ReleaseChannel)
+          : DEFAULT_RELEASE_CHANNEL,
+        packages: {
+          myco: {
+            package_name: NPM_PACKAGE_NAME,
+            latest_stable: legacy.latest_stable,
+            latest_beta: legacy.latest_beta ?? null,
+          },
+        },
+      };
+    }
+
+    return null;
   } catch {
     return null;
   }
@@ -291,6 +344,11 @@ interface NpmRegistryResponse {
   'dist-tags': NpmDistTags;
 }
 
+/** Build the npm registry URL for a specific package. */
+function packageRegistryUrl(packageName: string): string {
+  return `${NPM_REGISTRY_BASE_URL}/${encodeURIComponent(packageName)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Channel comparison logic
 // ---------------------------------------------------------------------------
@@ -313,6 +371,73 @@ function resolveTargetVersion(distTags: NpmDistTags, channel: ReleaseChannel): s
   return higher;
 }
 
+function resolveTargetVersionFromCache(
+  pkg: CachedPackageCheck,
+  channel: ReleaseChannel,
+): string {
+  return resolveTargetVersion(
+    { latest: pkg.latest_stable, beta: pkg.latest_beta ?? undefined },
+    channel,
+  );
+}
+
+function buildInstalledPackageVersions(
+  globalPrefix: string | null,
+  currentVersion: string,
+): Record<UpdatePackageId, string | null> {
+  const installed: Record<UpdatePackageId, string | null> = {
+    myco: currentVersion,
+    'myco-team': null,
+    'myco-collective': null,
+  };
+
+  if (globalPrefix === null) return installed;
+
+  for (const pkg of UPDATE_PACKAGES) {
+    const version = getInstalledVersion(globalPrefix, pkg.packageName);
+    if (pkg.id === 'myco') {
+      installed.myco = version ?? currentVersion;
+      continue;
+    }
+    installed[pkg.id] = version;
+  }
+
+  return installed;
+}
+
+function buildPackageResults(
+  currentVersion: string,
+  cache: CachedCheck,
+  channel: ReleaseChannel,
+  globalPrefix: string | null,
+): PackageCheckResult[] {
+  const installedVersions = buildInstalledPackageVersions(globalPrefix, currentVersion);
+
+  return UPDATE_PACKAGES.map((pkg) => {
+    const cached = cache.packages[pkg.id];
+    const installedVersion = installedVersions[pkg.id];
+    const latestVersion = cached ? resolveTargetVersionFromCache(cached, channel) : null;
+    const updateAvailable =
+      installedVersion !== null &&
+      latestVersion !== null &&
+      semver.valid(installedVersion) !== null &&
+      semver.valid(latestVersion) !== null &&
+      semver.gt(latestVersion, installedVersion);
+
+    return {
+      id: pkg.id,
+      display_name: pkg.displayName,
+      package_name: pkg.packageName,
+      installed: installedVersion !== null,
+      installed_version: installedVersion,
+      latest_version: latestVersion,
+      latest_stable: cached?.latest_stable ?? null,
+      latest_beta: cached?.latest_beta ?? null,
+      update_available: updateAvailable,
+    };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // CheckResult builder
 // ---------------------------------------------------------------------------
@@ -322,27 +447,26 @@ function buildCheckResult(
   cache: CachedCheck,
   config: UpdateConfig,
   error: string | null,
+  globalPrefix: string | null,
 ): CheckResult {
-  const targetVersion = resolveTargetVersion(
-    { latest: cache.latest_stable, beta: cache.latest_beta ?? undefined },
-    cache.channel,
-  );
-
-  const update_available =
-    semver.valid(currentVersion) !== null &&
-    semver.valid(targetVersion) !== null &&
-    semver.gt(targetVersion, currentVersion);
+  const packages = buildPackageResults(currentVersion, cache, cache.channel, globalPrefix);
+  const primaryPackage = packages.find((pkg) => pkg.id === 'myco');
+  const targetVersion = primaryPackage?.latest_version ?? currentVersion;
+  const latestStable = primaryPackage?.latest_stable ?? currentVersion;
+  const latestBeta = primaryPackage?.latest_beta ?? null;
+  const updateAvailable = packages.some((pkg) => pkg.installed && pkg.update_available);
 
   return {
-    update_available,
+    update_available: updateAvailable,
     running_version: currentVersion,
     latest_version: targetVersion,
-    latest_stable: cache.latest_stable,
-    latest_beta: cache.latest_beta,
+    latest_stable: latestStable,
+    latest_beta: latestBeta,
     channel: cache.channel,
     check_interval_hours: config.check_interval_hours,
     last_check: cache.checked_at,
     error,
+    packages,
   };
 }
 
@@ -368,10 +492,13 @@ export function resolveGlobalPrefix(): string {
  * Uses a direct fs.readFileSync of the package.json at the expected
  * npm global path — no module resolution, no cache involvement.
  */
-export function getInstalledVersion(globalPrefix: string): string | null {
+export function getInstalledVersion(
+  globalPrefix: string,
+  packageName = NPM_PACKAGE_NAME,
+): string | null {
   try {
     const pkgPath = path.join(
-      globalPrefix, 'lib', 'node_modules', NPM_PACKAGE_NAME, 'package.json',
+      globalPrefix, 'lib', 'node_modules', packageName, 'package.json',
     );
     const raw = fs.readFileSync(pkgPath, 'utf-8');
     const pkg = JSON.parse(raw) as { version?: string };
@@ -392,33 +519,62 @@ export function getInstalledVersion(globalPrefix: string): string | null {
  * one exists. If no cache exists and the fetch fails, the error field is set
  * and update_available is false.
  */
-export async function checkForUpdate(currentVersion: string): Promise<CheckResult> {
+export async function checkForUpdate(
+  currentVersion: string,
+  globalPrefix: string | null = null,
+): Promise<CheckResult> {
   const config = readUpdateConfig();
   const existingCache = readCachedCheck();
 
-  let distTags: NpmDistTags;
-  let fetchError: string | null = null;
+  const freshPackages: Partial<Record<UpdatePackageId, CachedPackageCheck>> = {};
+  const fetchErrors: string[] = [];
 
-  try {
-    const response = await fetch(NPM_REGISTRY_URL, {
-      signal: AbortSignal.timeout(REGISTRY_FETCH_TIMEOUT_MS),
-    });
+  const registryChecks = await Promise.allSettled(
+    UPDATE_PACKAGES.map(async (pkg) => {
+      const response = await fetch(packageRegistryUrl(pkg.packageName), {
+        signal: AbortSignal.timeout(REGISTRY_FETCH_TIMEOUT_MS),
+      });
 
-    if (!response.ok) {
-      throw new Error(`Registry responded with ${response.status}`);
+      if (!response.ok) {
+        throw new Error(`${pkg.packageName}: registry responded with ${response.status}`);
+      }
+
+      const data = (await response.json()) as NpmRegistryResponse;
+      return {
+        id: pkg.id,
+        package_name: pkg.packageName,
+        latest_stable: data['dist-tags'].latest,
+        latest_beta: data['dist-tags'].beta ?? null,
+      };
+    }),
+  );
+
+  for (const result of registryChecks) {
+    if (result.status === 'fulfilled') {
+      freshPackages[result.value.id] = {
+        package_name: result.value.package_name,
+        latest_stable: result.value.latest_stable,
+        latest_beta: result.value.latest_beta,
+      };
+      continue;
     }
 
-    const data = (await response.json()) as NpmRegistryResponse;
-    distTags = data['dist-tags'];
-  } catch (err) {
-    fetchError = err instanceof Error ? err.message : String(err);
+    const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
+    fetchErrors.push(message);
+  }
 
-    // Fall back to stale cache on network error
-    if (existingCache !== null) {
-      return buildCheckResult(currentVersion, existingCache, config, fetchError);
+  if (existingCache !== null) {
+    for (const pkg of UPDATE_PACKAGES) {
+      if (freshPackages[pkg.id] !== undefined) continue;
+      const cached = existingCache.packages[pkg.id];
+      if (cached) {
+        freshPackages[pkg.id] = cached;
+      }
     }
+  }
 
-    // No cache at all — return a no-update result with the error
+  if (Object.keys(freshPackages).length === 0) {
+    const fetchError = fetchErrors[0] ?? 'registry fetch failed';
     return {
       update_available: false,
       running_version: currentVersion,
@@ -429,20 +585,19 @@ export async function checkForUpdate(currentVersion: string): Promise<CheckResul
       check_interval_hours: config.check_interval_hours,
       last_check: new Date().toISOString(),
       error: fetchError,
+      packages: buildPackageResults(
+        currentVersion,
+        { checked_at: new Date().toISOString(), channel: config.channel, packages: {} },
+        config.channel,
+        globalPrefix,
+      ),
     };
   }
 
-  const latestStable = distTags.latest;
-  const latestBeta = distTags.beta ?? null;
-  const targetVersion = resolveTargetVersion(distTags, config.channel);
-
-  // Write fresh cache
   const freshCache: CachedCheck = {
     checked_at: new Date().toISOString(),
-    current_version: currentVersion,
-    latest_stable: latestStable,
-    latest_beta: latestBeta,
     channel: config.channel,
+    packages: freshPackages,
   };
 
   try {
@@ -452,7 +607,8 @@ export async function checkForUpdate(currentVersion: string): Promise<CheckResul
     // Cache write failure is non-fatal
   }
 
-  return buildCheckResult(currentVersion, freshCache, config, null);
+  const error = fetchErrors.length > 0 ? fetchErrors.join('; ') : null;
+  return buildCheckResult(currentVersion, freshCache, config, error, globalPrefix);
 }
 
 /**
@@ -466,10 +622,11 @@ export function statusFromCache(
   currentVersion: string,
   cache?: CachedCheck | null,
   config?: UpdateConfig,
+  globalPrefix: string | null = null,
 ): CheckResult | null {
   const resolvedCache = cache !== undefined ? cache : readCachedCheck();
   if (resolvedCache === null) return null;
 
   const resolvedConfig = config !== undefined ? config : readUpdateConfig();
-  return buildCheckResult(currentVersion, resolvedCache, resolvedConfig, null);
+  return buildCheckResult(currentVersion, resolvedCache, resolvedConfig, null, globalPrefix);
 }

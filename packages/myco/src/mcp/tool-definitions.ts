@@ -35,7 +35,7 @@ const PROP_TAGS = 'Tags for discoverability — component names, technologies, c
 export const TOOL_DEFINITIONS = [
   {
     name: TOOL_SEARCH,
-    description: 'Search the vault for prior decisions, gotchas, bug fixes, and session history. Use before making design decisions, when debugging non-obvious issues, or when wondering why code is structured a certain way.',
+    description: 'Search the vault for prior sessions, spores, plans, and artifacts. Use before making design decisions, when debugging non-obvious issues, or when wondering why code is structured a certain way.',
     inputSchema: {
       type: 'object' as const,
       properties: {

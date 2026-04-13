@@ -33,6 +33,15 @@ function formatLastCheck(iso: string | undefined | null): string {
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+function updateBadgeLabel(
+  packageCount: number,
+  latestVersion: string | undefined,
+): string | null {
+  if (packageCount <= 0) return null;
+  if (packageCount === 1 && latestVersion) return latestVersion;
+  return `${packageCount} packages`;
+}
+
 /* ---------- UpdateCard ---------- */
 
 export function UpdateCard() {
@@ -128,6 +137,10 @@ export function UpdateCard() {
   const isApplying = applyState === 'applying' || applyState === 'restarting';
   const updateAvailable = status.update_available === true;
   const activeChannel = status.channel ?? 'stable';
+  const installedPackages = (status.packages ?? []).filter((pkg) => pkg.installed);
+  const pendingPackages = installedPackages.filter((pkg) => pkg.update_available);
+  const pendingCount = pendingPackages.length;
+  const latestBadge = updateBadgeLabel(pendingCount, pendingPackages[0]?.latest_version ?? undefined);
 
   // State 2: exempt (dev mode)
   if (status.exempt) {
@@ -157,8 +170,8 @@ export function UpdateCard() {
         </div>
         <div className="flex items-center gap-2">
           <span className="font-mono text-xs text-outline">{status.running_version}</span>
-          {updateAvailable && status.latest_version && (
-            <Badge variant="warning">{status.latest_version}</Badge>
+          {updateAvailable && latestBadge && (
+            <Badge variant="warning">{latestBadge}</Badge>
           )}
         </div>
       </div>
@@ -180,7 +193,7 @@ export function UpdateCard() {
             ) : (
               <>
                 <ArrowUpCircle className="mr-1.5 h-3.5 w-3.5" />
-                Update &amp; Restart
+                {pendingCount > 1 ? `Update ${pendingCount} Packages & Restart` : 'Update & Restart'}
               </>
             )}
           </Button>
@@ -221,6 +234,31 @@ export function UpdateCard() {
           Checked: {formatLastCheck(status.last_check)}
         </span>
       </div>
+
+      {installedPackages.length > 0 && (
+        <div className="space-y-2">
+          {installedPackages.map((pkg) => (
+            <div
+              key={pkg.id}
+              className="flex items-center justify-between gap-3 rounded-md border border-outline/20 px-3 py-2"
+            >
+              <div className="min-w-0">
+                <div className="font-sans text-sm text-on-surface">{pkg.display_name}</div>
+                <div className="font-mono text-xs text-on-surface-variant">
+                  {pkg.installed_version ?? 'not installed'}
+                  {pkg.update_available && pkg.latest_version ? ` → ${pkg.latest_version}` : ''}
+                </div>
+              </div>
+              <Badge variant={pkg.update_available ? 'warning' : 'secondary'}>
+                {pkg.update_available ? 'Update available' : 'Installed'}
+              </Badge>
+            </div>
+          ))}
+          <p className="font-sans text-xs text-on-surface-variant">
+            Installed Myco packages update together from this machine-level updater.
+          </p>
+        </div>
+      )}
 
       {/* Error row */}
       {(applyState === 'error' || status.error) && (

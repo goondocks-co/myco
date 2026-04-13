@@ -5,6 +5,18 @@ import { POLL_INTERVALS } from '../lib/constants';
 
 /* ---------- Types ---------- */
 
+export interface UpdatePackageStatus {
+  id: string;
+  display_name: string;
+  package_name: string;
+  installed: boolean;
+  installed_version: string | null;
+  latest_version: string | null;
+  latest_stable: string | null;
+  latest_beta: string | null;
+  update_available: boolean;
+}
+
 export interface UpdateStatus {
   exempt: boolean;
   running_version: string;
@@ -19,6 +31,7 @@ export interface UpdateStatus {
   /** Set when daemon is auto-restarting for a version sync. */
   restarting?: boolean;
   reason?: string;
+  packages?: UpdatePackageStatus[];
 }
 
 interface ApplyResponse {

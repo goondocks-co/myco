@@ -73,6 +73,19 @@ const UPDATE_AVAILABLE_STATUS = {
   check_interval_hours: 6,
   last_check: '2026-03-28T00:00:00.000Z',
   error: null,
+  packages: [
+    {
+      id: 'myco',
+      display_name: 'Myco',
+      package_name: '@goondocks/myco',
+      installed: true,
+      installed_version: '1.0.0',
+      latest_version: '1.1.0',
+      latest_stable: '1.1.0',
+      latest_beta: null,
+      update_available: true,
+    },
+  ],
 };
 
 /** A representative CheckResult with no update available. */
@@ -81,6 +94,14 @@ const NO_UPDATE_STATUS = {
   update_available: false,
   latest_version: '1.0.0',
   latest_stable: '1.0.0',
+  packages: [
+    {
+      ...UPDATE_AVAILABLE_STATUS.packages[0],
+      latest_version: '1.0.0',
+      latest_stable: '1.0.0',
+      update_available: false,
+    },
+  ],
 };
 
 /** Default deps for tests. */
@@ -149,7 +170,7 @@ describe('handleUpdateStatus', () => {
     // Response returned immediately (does not await checkForUpdate)
     expect(result.body).toMatchObject({ exempt: false });
     // Background check was triggered
-    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0');
+    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined);
   });
 
   it('returns exempt:false in body when not exempt', async () => {
@@ -203,7 +224,7 @@ describe('handleUpdateCheck', () => {
 
     const result = await handleUpdateCheck(makeReq());
 
-    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0');
+    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined);
     expect(result.body).toMatchObject({ exempt: false, update_available: true });
   });
 
@@ -265,7 +286,7 @@ describe('handleUpdateApply', () => {
     const result = await handleUpdateApply(makeReq());
 
     expect(spawnUpdateScript).toHaveBeenCalledWith({
-      targetVersion: '1.1.0',
+      packageSpecs: ['@goondocks/myco@1.1.0'],
       projectRoot: '/project',
       vaultDir: '/vault',
       mycoBinary: 'myco',
@@ -281,6 +302,36 @@ describe('handleUpdateApply', () => {
     await handleUpdateApply(makeReq());
 
     expect(spawnUpdateScript).not.toHaveBeenCalled();
+  });
+
+  it('includes optional installed packages when they have updates', async () => {
+    vi.mocked(statusFromCache).mockReturnValue({
+      ...UPDATE_AVAILABLE_STATUS,
+      packages: [
+        ...UPDATE_AVAILABLE_STATUS.packages,
+        {
+          id: 'myco-team',
+          display_name: 'Myco Team',
+          package_name: '@goondocks/myco-team',
+          installed: true,
+          installed_version: '0.1.0',
+          latest_version: '0.1.1',
+          latest_stable: '0.1.1',
+          latest_beta: null,
+          update_available: true,
+        },
+      ],
+    });
+    const { handleUpdateApply } = createUpdateHandlers(makeDeps());
+
+    await handleUpdateApply(makeReq());
+
+    expect(spawnUpdateScript).toHaveBeenCalledWith({
+      packageSpecs: ['@goondocks/myco@1.1.0', '@goondocks/myco-team@0.1.1'],
+      projectRoot: '/project',
+      vaultDir: '/vault',
+      mycoBinary: 'myco',
+    });
   });
 });
 

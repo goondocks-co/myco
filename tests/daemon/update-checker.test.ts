@@ -58,10 +58,14 @@ import {
 function makeCachedCheck(overrides: Partial<CachedCheck> = {}): CachedCheck {
   return {
     checked_at: new Date().toISOString(),
-    current_version: '1.0.0',
-    latest_stable: '1.1.0',
-    latest_beta: null,
     channel: 'stable',
+    packages: {
+      myco: {
+        package_name: '@goondocks/myco',
+        latest_stable: '1.1.0',
+        latest_beta: null,
+      },
+    },
     ...overrides,
   };
 }
@@ -295,8 +299,7 @@ describe('checkForUpdate()', () => {
     expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledOnce();
     const writtenContent = vi.mocked(fs.writeFileSync).mock.calls[0][1] as string;
     const cached = JSON.parse(writtenContent) as CachedCheck;
-    expect(cached.latest_stable).toBe('1.5.0');
-    expect(cached.current_version).toBe('1.0.0');
+    expect(cached.packages.myco?.latest_stable).toBe('1.5.0');
   });
 
   describe('beta channel', () => {
@@ -362,8 +365,14 @@ describe('checkForUpdate()', () => {
   describe('error handling', () => {
     it('returns cached result with error when fetch fails and cache exists', async () => {
       const staleCache = makeCachedCheck({
-        latest_stable: '1.2.0',
         channel: 'stable',
+        packages: {
+          myco: {
+            package_name: '@goondocks/myco',
+            latest_stable: '1.2.0',
+            latest_beta: null,
+          },
+        },
       });
       vi.mocked(fs.readFileSync).mockImplementation((p) => {
         if (String(p).endsWith('last-update-check.json')) {
@@ -421,10 +430,15 @@ describe('statusFromCache()', () => {
 
   it('builds a CheckResult from cache when cache exists', () => {
     const cache = makeCachedCheck({
-      latest_stable: '1.5.0',
-      latest_beta: null,
       channel: 'stable',
       checked_at: new Date().toISOString(),
+      packages: {
+        myco: {
+          package_name: '@goondocks/myco',
+          latest_stable: '1.5.0',
+          latest_beta: null,
+        },
+      },
     });
 
     vi.mocked(fs.readFileSync).mockImplementation((p) => {
@@ -449,10 +463,14 @@ describe('statusFromCache()', () => {
 
   it('correctly detects no update from cache', () => {
     const cache = makeCachedCheck({
-      current_version: '1.5.0',
-      latest_stable: '1.5.0',
-      latest_beta: null,
       channel: 'stable',
+      packages: {
+        myco: {
+          package_name: '@goondocks/myco',
+          latest_stable: '1.5.0',
+          latest_beta: null,
+        },
+      },
     });
 
     vi.mocked(fs.readFileSync).mockImplementation((p) => {
@@ -470,9 +488,14 @@ describe('statusFromCache()', () => {
 
   it('uses beta channel logic when cache channel is beta', () => {
     const cache = makeCachedCheck({
-      latest_stable: '1.0.0',
-      latest_beta: '1.1.0-beta.1',
       channel: 'beta',
+      packages: {
+        myco: {
+          package_name: '@goondocks/myco',
+          latest_stable: '1.0.0',
+          latest_beta: '1.1.0-beta.1',
+        },
+      },
     });
 
     vi.mocked(fs.readFileSync).mockImplementation((p) => {

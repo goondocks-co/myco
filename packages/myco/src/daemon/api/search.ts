@@ -23,6 +23,28 @@ import type { TeamSyncClient, TeamSearchResult } from '../team-sync.js';
 /** Valid search modes. */
 type SearchMode = 'auto' | 'semantic' | 'fts';
 
+const SEARCH_NAMESPACE_RULES: Array<{ key: string; value?: string }> = [
+  { key: 'all', value: undefined },
+  { key: 'session', value: 'sessions' },
+  { key: 'sessions', value: 'sessions' },
+  { key: 'spore', value: 'spores' },
+  { key: 'spores', value: 'spores' },
+  { key: 'plan', value: 'plans' },
+  { key: 'plans', value: 'plans' },
+  { key: 'artifact', value: 'artifacts' },
+  { key: 'artifacts', value: 'artifacts' },
+  { key: 'skill', value: 'skill_records' },
+  { key: 'skill_records', value: 'skill_records' },
+];
+
+export function normalizeSearchNamespace(value?: string): string | undefined {
+  if (!value) return undefined;
+  for (const rule of SEARCH_NAMESPACE_RULES) {
+    if (rule.key === value) return rule.value;
+  }
+  return value;
+}
+
 /** Dependencies injected by the daemon when registering the route. */
 export interface SearchDeps {
   embeddingManager: EmbeddingManager;
@@ -72,7 +94,7 @@ export function createSearchHandler(deps: SearchDeps) {
     }
 
     // Vector search with optional namespace/type filtering
-    const searchNamespace = namespace ?? type;
+    const searchNamespace = normalizeSearchNamespace(namespace ?? type);
     const vectorResults = deps.embeddingManager.searchVectors(queryVector, {
       namespace: searchNamespace,
       limit,

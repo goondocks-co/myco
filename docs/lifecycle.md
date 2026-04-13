@@ -90,7 +90,7 @@ Myco installs a single global npm package, but a single machine may run one daem
 
 Both paths end at the same state: the globally installed Myco package is at the new version.
 
-If you also use one of the optional standalone operator CLIs, update those separately:
+If you also installed one of the optional standalone operator CLIs, the Operations page detects and applies those package updates alongside `@goondocks/myco`. Manual npm updates are still available, but they are no longer the normal path once those packages are installed:
 
 - `npm update -g @goondocks/myco-team`
 - `npm update -g @goondocks/myco-collective`

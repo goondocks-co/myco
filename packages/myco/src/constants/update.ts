@@ -1,8 +1,8 @@
 import path from 'node:path';
 import os from 'node:os';
 
-/** npm registry URL for the Myco package. */
-export const NPM_REGISTRY_URL = 'https://registry.npmjs.org/@goondocks/myco';
+/** npm registry base URL for Myco packages. */
+export const NPM_REGISTRY_BASE_URL = 'https://registry.npmjs.org';
 
 /** Global Myco directory for machine-wide state. */
 export const MYCO_GLOBAL_DIR = path.join(os.homedir(), '.myco');
@@ -28,8 +28,22 @@ export const UPDATE_CHECK_INTERVAL_HOURS = 6;
 /** Milliseconds per hour. */
 export const MS_PER_HOUR = 3_600_000;
 
-/** npm package name. */
+/** Primary Myco npm package name. */
 export const NPM_PACKAGE_NAME = '@goondocks/myco';
+
+/** Optional standalone Myco Team package name. */
+export const TEAM_PACKAGE_NAME = '@goondocks/myco-team';
+
+/** Optional standalone Myco Collective package name. */
+export const COLLECTIVE_PACKAGE_NAME = '@goondocks/myco-collective';
+
+/** Global-package update targets shown in the Operations UI. */
+export const UPDATE_PACKAGES = [
+  { id: 'myco', packageName: NPM_PACKAGE_NAME, displayName: 'Myco' },
+  { id: 'myco-team', packageName: TEAM_PACKAGE_NAME, displayName: 'Myco Team' },
+  { id: 'myco-collective', packageName: COLLECTIVE_PACKAGE_NAME, displayName: 'Myco Collective' },
+] as const;
+export type UpdatePackageId = (typeof UPDATE_PACKAGES)[number]['id'];
 
 /** Delay in seconds before update script starts (allows daemon to exit). */
 export const UPDATE_SCRIPT_DELAY_SECONDS = 2;

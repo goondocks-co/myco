@@ -37,6 +37,8 @@ npm update -g @goondocks/myco
 
 That remains the only package most users need. It updates the local CLI, daemon, hooks, dashboard, and the built-in `myco team init` / `myco team upgrade` flow.
 
+If you also installed the optional standalone operator packages, the Operations page now detects and applies updates for those installed Myco packages too. You only need to drop to npm for the initial install.
+
 Two new packages are optional operator surfaces:
 
 - `@goondocks/myco-team` — direct team-worker administration from the terminal
