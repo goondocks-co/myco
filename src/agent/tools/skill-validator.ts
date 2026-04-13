@@ -326,9 +326,10 @@ export function validateSkillContent(content: string, dirName: string): string[]
 
   // Check allowed-tools values -- must be Claude Code tool names, not vault agent tools.
   // These skills run in developer Claude Code sessions, not the agent pipeline.
-  const allowedToolsMatch = frontmatter.match(/^allowed-tools:\s*(.+)$/m);
-  if (allowedToolsMatch) {
-    const rawValue = allowedToolsMatch[1].trim();
+  // Uses extractFrontmatterField to handle both inline and YAML block-list formats.
+  const rawAllowedTools = extractFrontmatterField(content, 'allowed-tools');
+  if (rawAllowedTools) {
+    const rawValue = rawAllowedTools;
     // Reject vault_* tool names first — most informative message for the
     // common LLM mistake of copying its own agent tool context into the skill.
     if (rawValue.includes('vault_')) {
