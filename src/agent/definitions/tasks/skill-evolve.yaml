@@ -12,7 +12,7 @@ prompt: >-
 isDefault: false
 model: claude-sonnet-4-6
 maxTurns: 48
-timeoutSeconds: 1200
+timeoutSeconds: 1800
 schedule:
   enabled: false
   intervalSeconds: 900
