@@ -9,6 +9,10 @@
   "publishConfig": {
     "access": "public"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/goondocks-co/myco.git"
+  },
   "scripts": {
     "postinstall": "test -d ui && cd ui && npm install || true",
     "build": "sh -c 'npm run build:core & pid1=$!; npm run build:ui & pid2=$!; wait $pid1; s1=$?; wait $pid2; s2=$?; test $s1 -eq 0 -a $s2 -eq 0'",
