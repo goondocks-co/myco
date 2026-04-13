@@ -32,6 +32,7 @@ const EMBEDDABLE_TABLES: Record<string, string> = {
   sessions: 'summary',
   plans: 'content',
   artifacts: 'content',
+  skill_records: 'description',
 };
 
 /** All tables the sync endpoint accepts records for. */
@@ -269,7 +270,11 @@ async function handleSync(request: Request, env: Env): Promise<Response> {
           if (table === 'spores' && record.data.status === 'superseded') {
             embeddingTasks.push(() => deleteVector(env, table, id, machine_id));
           } else {
-            embeddingTasks.push(() => embedAndUpsert(env, table, id, machine_id, textContent));
+            // Include domain-specific metadata for richer search results
+            const extra: Record<string, string> = {};
+            if (table === 'skill_records' && record.data.name) extra.name = record.data.name as string;
+            if (table === 'spores' && record.data.observation_type) extra.observation_type = record.data.observation_type as string;
+            embeddingTasks.push(() => embedAndUpsert(env, table, id, machine_id, textContent, extra));
           }
         }
       }
@@ -311,6 +316,7 @@ async function embedAndUpsert(
   id: string,
   machineId: string,
   text: string,
+  extra?: Record<string, string>,
 ): Promise<void> {
   const vector = await embedText(env.AI, text);
   const vid = vectorId(table, id, machineId);
@@ -318,7 +324,7 @@ async function embedAndUpsert(
     {
       id: vid,
       values: vector,
-      metadata: { table, id, machine_id: machineId },
+      metadata: { table, id, machine_id: machineId, ...extra },
     },
   ]);
 }

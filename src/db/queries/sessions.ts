@@ -109,6 +109,8 @@ export interface ListSessionsOptions {
   status?: string;
   agent?: string;
   search?: string;
+  /** Only return sessions created after this epoch-seconds timestamp. */
+  since?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +292,10 @@ function buildSessionsWhere(
     conditions.push(`(title LIKE ? OR id LIKE ?)`);
     const pattern = `%${options.search}%`;
     params.push(pattern, pattern);
+  }
+  if (options.since !== undefined) {
+    conditions.push('created_at > ?');
+    params.push(options.since);
   }
 
   return {
@@ -511,10 +517,14 @@ export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
   const exists = db.prepare(`SELECT id FROM sessions WHERE id = ?`).get(sessionId);
   if (!exists) return zeroCounts;
 
-  // Collect IDs/paths needed for post-transaction cleanup before deleting
+  // Collect IDs/paths needed for post-transaction cleanup before deleting.
+  // Spores can reference prompt_batches from a different session (cross-session
+  // spore linkage), so we must also collect spores linked via prompt_batch_id.
   const sporeIds = (db.prepare(
-    `SELECT id FROM spores WHERE session_id = ?`,
-  ).all(sessionId) as { id: string }[]).map((r) => r.id);
+    `SELECT id FROM spores
+     WHERE session_id = ?
+        OR prompt_batch_id IN (SELECT id FROM prompt_batches WHERE session_id = ?)`,
+  ).all(sessionId, sessionId) as { id: string }[]).map((r) => r.id);
 
   const attachmentPaths = (db.prepare(
     `SELECT file_path FROM attachments WHERE session_id = ?`,
@@ -532,6 +542,10 @@ export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
   // resolution_events can reference spores across sessions (e.g. a later
   // session supersedes an earlier session's spore), so we match by either
   // session_id OR spore_id-in-this-session to catch cross-session references.
+  //
+  // Spores can also reference prompt_batches from a different session
+  // (cross-session prompt_batch_id linkage). We must delete those spores
+  // BEFORE deleting prompt_batches to avoid FK violations.
   const result = db.transaction(() => {
     db.prepare(`DELETE FROM activities WHERE session_id = ?`).run(sessionId);
     const attachments = db.prepare(`DELETE FROM attachments WHERE session_id = ?`).run(sessionId);
@@ -540,10 +554,18 @@ export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
     const resEvents = db.prepare(
       `DELETE FROM resolution_events
        WHERE session_id = ?
-          OR spore_id IN (SELECT id FROM spores WHERE session_id = ?)`,
-    ).run(sessionId, sessionId);
+          OR spore_id IN (
+            SELECT id FROM spores
+            WHERE session_id = ?
+               OR prompt_batch_id IN (SELECT id FROM prompt_batches WHERE session_id = ?)
+          )`,
+    ).run(sessionId, sessionId, sessionId);
     const edges = db.prepare(`DELETE FROM graph_edges WHERE session_id = ?`).run(sessionId);
-    const spores = db.prepare(`DELETE FROM spores WHERE session_id = ?`).run(sessionId);
+    const spores = db.prepare(
+      `DELETE FROM spores
+       WHERE session_id = ?
+          OR prompt_batch_id IN (SELECT id FROM prompt_batches WHERE session_id = ?)`,
+    ).run(sessionId, sessionId);
     const prompts = db.prepare(`DELETE FROM prompt_batches WHERE session_id = ?`).run(sessionId);
     const session = db.prepare(`DELETE FROM sessions WHERE id = ?`).run(sessionId);
 

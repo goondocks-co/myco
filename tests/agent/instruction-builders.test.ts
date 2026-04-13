@@ -177,15 +177,15 @@ describe('buildSkillEvolveInstruction', () => {
     expect(result).toContain('stale-enough');
   });
 
-  it('includes skill content from lineage snapshot', () => {
+  it('does not include full content in instruction (read on-demand via tool)', () => {
     const now = epochSeconds();
     const watermark = now - 10000;
     createSkillWithWatermark('content-check', watermark);
     createSpore(now - 100);
 
     const result = buildSkillEvolveInstruction();
-    expect(result).toContain('### Current Content');
-    expect(result).toContain('content-check');
+    expect(result).not.toContain('### Current Content');
+    expect(result).toContain('content-check'); // skill name still present in metadata
   });
 
   it('includes new spore IDs in the instruction', () => {
@@ -278,7 +278,7 @@ describe('isInstructionRequiredTask', () => {
 
   it('returns false for generic tasks like full-intelligence', () => {
     expect(isInstructionRequiredTask('full-intelligence')).toBe(false);
-    expect(isInstructionRequiredTask('skill-survey')).toBe(false);
+    expect(isInstructionRequiredTask('skill-survey')).toBe(true);
   });
 });
 

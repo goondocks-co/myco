@@ -17,6 +17,7 @@ export interface DomainMetadata {
   session_id?: string;
   observation_type?: string;
   project_root?: string;
+  name?: string;
 }
 
 /** Full metadata stored per vector in the VectorStore. */
@@ -32,6 +33,7 @@ export interface EmbeddingMetadata {
   session_id?: string;
   observation_type?: string;
   project_root?: string;
+  name?: string;
 }
 
 /** Result from similarity search. */
@@ -77,6 +79,7 @@ export interface VectorStore {
   stats(namespace?: string): VectorStoreStats;
   getStaleIds(namespace: string, currentModel: string, limit: number): string[];
   getEmbeddedIds(namespace: string): string[];
+  pairwiseSimilarity(namespace: string, threshold?: number): Array<{ idA: string; idB: string; similarity: number }>;
 }
 
 /** Generates vectors from text. Wraps the existing EmbeddingProvider. */

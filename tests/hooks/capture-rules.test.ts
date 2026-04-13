@@ -36,6 +36,7 @@ function ctx(partial: Partial<UserPromptRuleContext> = {}): UserPromptRuleContex
   return {
     prompt: partial.prompt ?? 'default prompt text',
     transcriptPath: partial.transcriptPath,
+    transcriptMeta: partial.transcriptMeta,
   };
 }
 
@@ -302,6 +303,125 @@ describe('evaluateSessionStartRules', () => {
     });
     expect(evaluateSessionStartRules([m], 'claude-code', { transcriptPath: undefined })).toEqual({
       action: 'pass',
+    });
+  });
+});
+
+describe('transcript_meta_field_exists condition', () => {
+  const subagentRule = manifestWithRules('codex', [
+    {
+      event: 'session_start',
+      scope: 'this_agent',
+      when: { transcript_meta_field_exists: 'source.subagent' },
+      action: 'drop',
+      reason: 'subagent-thread-spawn',
+      trim: true,
+    },
+  ]);
+
+  const subagentMeta = {
+    source: { subagent: { thread_spawn: { parent_thread_id: 'abc', depth: 1 } } },
+  };
+  const userMeta = { source: 'vscode' };
+
+  describe('evaluateSessionStartRules', () => {
+    it('drops when the meta field exists (sub-agent session)', () => {
+      const result = evaluateSessionStartRules([subagentRule], 'codex', {
+        transcriptPath: '/some/path.jsonl',
+        transcriptMeta: subagentMeta,
+      });
+      expect(result).toEqual({ action: 'drop', reason: 'subagent-thread-spawn' });
+    });
+
+    it('passes when the meta field does not exist (user session)', () => {
+      const result = evaluateSessionStartRules([subagentRule], 'codex', {
+        transcriptPath: '/some/path.jsonl',
+        transcriptMeta: userMeta,
+      });
+      expect(result).toEqual({ action: 'pass' });
+    });
+
+    it('passes when transcriptMeta is undefined (file unreadable)', () => {
+      const result = evaluateSessionStartRules([subagentRule], 'codex', {
+        transcriptPath: '/some/path.jsonl',
+        transcriptMeta: undefined,
+      });
+      expect(result).toEqual({ action: 'pass' });
+    });
+
+    it('passes when field path resolves to a falsy value', () => {
+      const result = evaluateSessionStartRules([subagentRule], 'codex', {
+        transcriptPath: '/some/path.jsonl',
+        transcriptMeta: { source: { subagent: null } },
+      });
+      expect(result).toEqual({ action: 'pass' });
+    });
+  });
+
+  describe('evaluateUserPromptRules (safety net)', () => {
+    const promptRule = manifestWithRules('codex', [
+      {
+        event: 'user_prompt',
+        scope: 'this_agent',
+        when: { transcript_meta_field_exists: 'source.subagent' },
+        action: 'drop',
+        reason: 'subagent-thread-spawn',
+        trim: true,
+      },
+    ]);
+
+    it('drops the prompt when the meta field exists', () => {
+      const result = evaluateUserPromptRules([promptRule], 'codex', ctx({
+        prompt: 'Review this code',
+        transcriptMeta: subagentMeta,
+      }));
+      expect(result).toEqual({ action: 'drop', reason: 'subagent-thread-spawn' });
+    });
+
+    it('passes the prompt when the meta field is absent', () => {
+      const result = evaluateUserPromptRules([promptRule], 'codex', ctx({
+        prompt: 'Review this code',
+        transcriptMeta: userMeta,
+      }));
+      expect(result).toEqual({ action: 'pass', prompt: 'Review this code' });
+    });
+  });
+
+  describe('deep field navigation', () => {
+    it('handles multi-level dot-paths', () => {
+      const deepRule = manifestWithRules('agent', [
+        {
+          event: 'session_start',
+          scope: 'this_agent',
+          when: { transcript_meta_field_exists: 'source.subagent.thread_spawn.depth' },
+          action: 'drop',
+          reason: 'deep-field',
+          trim: true,
+        },
+      ]);
+      const result = evaluateSessionStartRules([deepRule], 'agent', {
+        transcriptPath: '/path.jsonl',
+        transcriptMeta: subagentMeta,
+      });
+      expect(result).toEqual({ action: 'drop', reason: 'deep-field' });
+    });
+
+    it('returns pass for partial path that stops at a non-object', () => {
+      const deepRule = manifestWithRules('agent', [
+        {
+          event: 'session_start',
+          scope: 'this_agent',
+          when: { transcript_meta_field_exists: 'source.subagent.nonexistent' },
+          action: 'drop',
+          reason: 'missing-deep',
+          trim: true,
+        },
+      ]);
+      const result = evaluateSessionStartRules([deepRule], 'agent', {
+        transcriptPath: '/path.jsonl',
+        transcriptMeta: userMeta, // source is a string, not an object
+      });
+      expect(result).toEqual({ action: 'pass' });
     });
   });
 });

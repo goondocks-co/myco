@@ -33,34 +33,40 @@ phases:
       ---
       name: myco:kebab-case-name
       description: |
-        One paragraph that serves as the PRIMARY triggering mechanism.
-        Be explicit about when this skill activates. Include concrete
-        keywords, file names, and scenarios. Be somewhat pushy to
-        counter undertriggering — include "even if the user doesn't
-        explicitly ask for [topic]" language when appropriate.
+        One paragraph serving as the PRIMARY triggering mechanism.
+        Cover the full procedural domain — mention all the major
+        procedures this skill covers. Be explicit about when this
+        activates. Include "even if the user doesn't explicitly
+        ask for [topic]" language when appropriate.
       managed_by: myco
       user-invocable: true
       allowed-tools: Read, Edit, Write, Bash, Grep, Glob
       ---
 
-      # Skill Title
+      # Domain Title
 
-      Brief context paragraph (2-3 sentences) explaining what this
-      procedure accomplishes and when you'd use it.
+      Brief context paragraph (2-3 sentences) explaining the
+      procedural domain and when you'd use this skill.
 
       ## Prerequisites
 
-      What must be true before starting.
+      What must be true before starting any procedure in this domain.
 
-      ## Steps
+      ## Procedure A: [Name]
 
-      Numbered, concrete steps with file paths and code examples.
-      Each step should reference specific files in this project.
+      Steps for the first major procedure in this domain.
 
-      ## Common Pitfalls
+      ## Procedure B: [Name]
 
-      Inline with the steps where possible, or as a short section
-      at the end for cross-cutting gotchas.
+      Steps for the second major procedure.
+
+      ## Procedure C: [Name]
+
+      Steps for the third major procedure.
+
+      ## Cross-Cutting Gotchas
+
+      Pitfalls that span multiple procedures in this domain.
       ```
 
       ## Frontmatter Fields
@@ -79,21 +85,27 @@ phases:
 
       ## Writing Principles
 
+      - **This candidate represents a procedural domain** — a family
+        of related tasks that share prerequisite knowledge. The skill
+        should cover the full domain, not just a single procedure.
+      - **A well-scoped skill has 3-6 major sections**, each describing
+        a distinct procedure within the domain. If the candidate maps
+        to fewer than 2 sections, note this in the rationale — it may
+        be too narrow.
       - **Explain reasoning, not rigid rules.** "Because X, do Y"
-        is better than "ALWAYS do Y." Use theory of mind — the agent
-        using this skill is smart enough to understand WHY.
-      - **Stay under 500 lines.** Be concise but complete.
-      - **Use concrete file paths** from this project, not generic examples.
+        is better than "ALWAYS do Y." The agent using this skill
+        understands WHY.
+      - **Stay under 800 lines.** Be concise but complete.
+      - **Use concrete file paths** from this project.
       - **Include code patterns** where they help (inline code blocks).
       - **Include examples** — show input/output or before/after where
         it makes the procedure clearer.
-      - **Reference gotchas inline** where the developer would encounter
-        them, not in a separate section.
+      - **Reference gotchas inline** where the developer would
+        encounter them, not in a separate section.
       - **The description is the trigger.** An agent reading just the
-        description should know whether this skill applies to their task.
+        description should know whether this skill applies.
       - **Be general enough to survive change.** The skill should teach
-        the pattern, not just document the current state. If a file path
-        changes, the procedure should still make sense.
+        the pattern, not just document the current state.
 
       ## Tool Call
 
@@ -143,14 +155,19 @@ phases:
          function names, and code patterns from this project?
          Generic advice ("add a config file") is not enough.
 
-      4. **Length:** Under 500 lines?
+      4. **Length:** Under 800 lines?
 
-      5. **Conflicts:** Does it overlap with existing skills?
+      5. **Domain scope:** Does this skill cover a procedural domain
+         (multiple related procedures as sections) or just a single
+         procedure? If single, flag as potentially too narrow. Count
+         the ## headings — expect 3-6 for a well-scoped domain skill.
+
+      6. **Conflicts:** Does it overlap with existing skills?
          Use vault_skill_records (action: list) to check. The
          staging path's dedup gate already ran on your description;
          this is a sanity check on the procedural content itself.
 
-      6. **Accuracy:** Spot-check 2-3 specific claims against the
+      7. **Accuracy:** Spot-check 2-3 specific claims against the
          vault. Use vault_search_fts to verify file paths and
          function names mentioned in the skill.
 

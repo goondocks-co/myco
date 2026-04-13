@@ -53,6 +53,32 @@ capture:
       action: drop
       reason: ephemeral-sub-invocation
 
+    # Layer 3 — sub-agent thread spawn filter (structural).
+    #
+    # Codex spawns sub-agents (thread_spawn) for code review, testing,
+    # etc. These write real transcript files but are NOT user-initiated
+    # sessions. Their session_meta has:
+    #   "source": {"subagent": {"thread_spawn": {...}}}
+    # while user sessions have "source": "vscode" or similar strings.
+    #
+    # This condition reads the transcript's first JSON line and checks
+    # the dot-path field — a structural signal that won't drift.
+    - event: session_start
+      scope: this_agent
+      when:
+        transcript_meta_field_exists: source.subagent
+      action: drop
+      reason: subagent-thread-spawn
+
+    # Layer 4 — safety net for sub-agent prompts that slip past
+    # SessionStart (e.g. transcript not yet flushed).
+    - event: user_prompt
+      scope: this_agent
+      when:
+        transcript_meta_field_exists: source.subagent
+      action: drop
+      reason: subagent-thread-spawn
+
     # Codex Desktop wraps user prompts with a file-mention preamble when
     # screenshots or files are attached:
     #   "# Files mentioned by the user:\n## <filename>: <path>\n## My request for Codex:\n<actual prompt>"

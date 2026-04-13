@@ -75,6 +75,8 @@ export interface ListSporesOptions {
   status?: string;
   session_id?: string;
   search?: string;
+  /** Only return spores created after this epoch-seconds timestamp. */
+  since?: number;
   limit?: number;
   offset?: number;
 }
@@ -232,6 +234,10 @@ function buildSporeWhere(
     conditions.push(`(content LIKE ? OR observation_type LIKE ?)`);
     const pattern = `%${options.search}%`;
     params.push(pattern, pattern);
+  }
+  if (options.since !== undefined) {
+    conditions.push('created_at > ?');
+    params.push(options.since);
   }
 
   return {

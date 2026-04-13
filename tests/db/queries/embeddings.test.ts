@@ -289,8 +289,8 @@ describe('embedding flag helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('EMBEDDABLE_TABLES', () => {
-    it('contains exactly the four tables with embedded flags', () => {
-      expect(EMBEDDABLE_TABLES).toEqual(['sessions', 'spores', 'plans', 'artifacts']);
+    it('contains exactly the five tables with embedded flags', () => {
+      expect(EMBEDDABLE_TABLES).toEqual(['sessions', 'spores', 'plans', 'artifacts', 'skill_records']);
     });
   });
 });

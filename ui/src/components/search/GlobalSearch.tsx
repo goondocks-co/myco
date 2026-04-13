@@ -29,6 +29,8 @@ function getResultPath(result: SearchResult): string {
       return result.session_id ? `/sessions/${result.session_id}` : '/sessions';
     case 'activity':
       return result.session_id ? `/sessions/${result.session_id}` : '/sessions';
+    case 'skill':
+      return `/skills?skill=${encodeURIComponent(result.id)}`;
     default:
       return '/';
   }

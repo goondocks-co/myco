@@ -5,6 +5,7 @@
  * for the /api/agent/run and /api/agent/runs/* endpoints.
  */
 
+import { resolve } from 'node:path';
 import { z } from 'zod';
 import { listRuns, countRuns, getRun, getLatestRunId } from '@myco/db/queries/runs.js';
 import { listReports } from '@myco/db/queries/reports.js';
@@ -35,7 +36,7 @@ const AgentRunBody = z.object({
 });
 
 // Re-export for backward compatibility
-export { buildTaskInstruction, SKILL_GENERATE_TASK, SKILL_EVOLVE_TASK } from '@myco/agent/instruction-builders.js';
+export { buildTaskInstruction, SKILL_GENERATE_TASK, SKILL_EVOLVE_TASK, SKILL_SURVEY_TASK } from '@myco/agent/instruction-builders.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,9 +78,11 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       let built;
       try {
         const taskParams = mycoConfig.agent.tasks?.[task]?.params;
-        built = buildTaskInstruction(task, taskParams);
+        const projectRoot = resolve(vaultDir, '..');
+        built = buildTaskInstruction(task, taskParams, agentId, projectRoot, embeddingManager);
       } catch {
-        built = buildTaskInstruction(task);
+        const projectRoot = resolve(vaultDir, '..');
+        built = buildTaskInstruction(task, undefined, agentId, projectRoot, embeddingManager);
       }
       instruction = built?.instruction;
       runContext = built?.context;

@@ -1,6 +1,6 @@
 ---
 name: myco:author-and-debug-agent-pipeline-tasks
-description: How to author, configure, and debug Myco agent pipeline tasks — covering task YAML anatomy (phases, schedule, dependsOn, preCondition), sweep scheduling design, parameter injection patterns, the taskOverrides scalar-drop gotcha, the skipPriorContext hallucination trap, timeout wiring, concurrency guard behavior and correctness, concurrent run audit log interleaving, LLM data-fidelity failure patterns, turn budget exhaustion, skill lifecycle task scheduling specifics, and fault-tolerance patterns. Use this skill when creating a new task YAML, adding schedule blocks, debugging a task that silently aborts or returns wrong data, or wiring phase dependencies. Apply it even if the user doesn't explicitly ask about task authoring — if they're modifying anything in src/agent/tasks/, src/agent/executor.ts, or src/daemon/task-scheduler.ts, this skill applies.
+description: How to author, configure, and debug Myco agent pipeline tasks — covering task YAML anatomy (phases, schedule, dependsOn, preCondition), sweep scheduling design, parameter injection patterns, the taskOverrides scalar-drop gotcha, the skipPriorContext hallucination trap, timeout wiring, concurrency guard behavior and correctness, concurrent run audit log interleaving, LLM data-fidelity failure patterns, turn budget exhaustion, skill lifecycle task specifics (generate/evolve responsibility split, embedding-based merge detection, evolve budget sizing, content-from-disk requirement), and fault-tolerance patterns. Also covers hardening new tasks and MCP tools: readOnly annotations, global toggle gate, phase-level readOnly enforcement, test coverage, and pre-ship checklist. Use this skill when creating a new task YAML, adding schedule blocks, debugging a task that silently aborts or returns wrong data, wiring phase dependencies, or hardening a task or MCP tool with safety controls. Apply it even if the user doesn't explicitly ask about task authoring — if they're modifying anything in src/agent/tasks/, src/agent/executor.ts, src/daemon/task-scheduler.ts, or src/mcp/tools/, this skill applies.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -39,13 +39,9 @@ phases:
 
 ### Sweep Scheduling
 
-`runDuringIdle: true` gates execution to periods when no user session is active. This prevents the agent from consuming context or compute while the developer is actively working.
-
-`intervalMinutes` sets the minimum gap between runs. The scheduler will not start a new run within this window even if idle.
+`runDuringIdle: true` gates execution to periods when no user session is active. `intervalMinutes` sets the minimum gap between runs.
 
 ### Risk-Profile-Based Default Enablement
-
-**Set `enabled` based on the risk/reversibility profile of the operation:**
 
 | Operation type | Default | Rationale |
 |---|---|---|
@@ -53,33 +49,27 @@ phases:
 | Generative (writes new files) | `enabled: false` | Creates artifacts; user should verify output quality first |
 | Mutative (modifies existing files) | `enabled: false` | Changes existing state; higher stakes; opt-in until trusted |
 
-**Example — skill lifecycle tasks:**
-- `skill-survey` → `enabled: true` (scans spores, creates candidates in DB only; read-like)
-- `skill-generate` → `enabled: false` (writes new SKILL.md files to disk)
-- `skill-evolve` → `enabled: false` (rewrites existing SKILL.md files)
+**Skill lifecycle example:** `skill-survey` → `enabled: true`; `skill-generate` and `skill-evolve` → `enabled: false`. When in doubt, default to `enabled: false` for any task that writes or modifies files.
 
-This asymmetry is intentional progressive onboarding: let evidence accumulate passively, then make generative/mutative steps user-driven until the user has reviewed output quality and established trust. When in doubt, default to `enabled: false` for any task that writes or modifies files.
+### Verifying the Scheduler Picked It Up
+
+After saving a task YAML, open **Daemon UI → Tasks** and confirm a "Next run" timestamp appears. A blank "Next run" indicates a YAML syntax error or wrong field name in the `schedule` block.
+
+### Schedule the Chain Root Only
+
+Only the root task needs a `schedule` block. Downstream tasks are fired by the executor when their dependency completes. Giving a downstream task both `schedule` and `dependsOn` creates a timing race.
+
+```yaml
+# ✅ Correct: root is scheduled, downstream is not
+# skill-survey.yaml — has schedule block
+# skill-generate.yaml — dependsOn: skill-survey, no schedule block
+```
 
 ## Phase Dependencies
 
-Use `dependsOn` to chain phases. The executor passes the prior phase's output as context to the next phase.
-
-```yaml
-phases:
-  - name: assess
-    maxTurns: 20
-    prompt: "Assess X. Output a JSON classification."
-  - name: execute
-    maxTurns: 15
-    dependsOn: assess
-    prompt: "Read classifications from prior phase. Execute only STALE items."
-```
-
-**Key:** The dependent phase receives the full output of the prior phase. Structure the prior phase's output as parseable data (JSON, table) so the next phase can extract it reliably.
+Use `dependsOn` to chain phases. The executor passes the prior phase's output as context to the next phase. Structure prior phase output as parseable data (JSON, table) so the next phase can extract it reliably.
 
 ## preCondition
-
-Use `preCondition` to skip a task run when there's nothing to do:
 
 ```yaml
 preCondition:
@@ -87,11 +77,9 @@ preCondition:
   expectNonEmpty: true
 ```
 
-The scheduler evaluates the condition before starting. If the condition is not met, the run is skipped and logged. This prevents wasted turn budgets on idle runs.
+Evaluated before starting. If the condition is not met, the run is skipped and logged.
 
 ## Parameter Injection
-
-Task prompts support `{{variable}}` interpolation from the `parameters` block:
 
 ```yaml
 parameters:
@@ -104,27 +92,19 @@ phases:
 
 ## The taskOverrides Scalar-Drop Gotcha
 
-When using `taskOverrides` in `myco.yaml` to customize a task's fields, **scalar values (strings, numbers, booleans) must be explicitly set** — they do not inherit from the base YAML. If you override `phases` without re-specifying `maxTurns` or `timeoutSeconds`, those fields silently drop to their defaults (often 0 or null), causing immediate truncation.
-
-**Pattern:** Always copy the full set of scalar fields into any `taskOverrides` block, even if you're only changing one value.
+When using `taskOverrides` in `myco.yaml`, **scalar values must be explicitly set** — they do not inherit from the base YAML. Always copy the full set of scalar fields into any `taskOverrides` block, even if you're only changing one value.
 
 ## The skipPriorContext Hallucination Trap
 
-Setting `skipPriorContext: true` on a phase prevents it from receiving the prior phase's output. This is useful for isolation but creates a hallucination risk: if the phase prompt refers to "the prior phase output" or "the classification above," the phase will have no data to ground it and may hallucinate plausible-sounding results.
-
-**Rule:** Only use `skipPriorContext: true` on phases that are genuinely independent. Never set it on a phase that references prior output in its prompt.
+`skipPriorContext: true` prevents a phase from receiving the prior phase's output. Only use it on phases that are genuinely independent. Never set it on a phase that references prior output in its prompt — the phase will hallucinate plausible-sounding results.
 
 ## Turn Budget Exhaustion
 
 ### Silent truncation pattern
 
-When `maxTurns` is reached, the agent stops mid-execution with no error. The run log shows "completed" but the work is incomplete. This is the hardest failure mode to detect because it looks like success.
-
-**Detection:** Check whether the expected artifacts (spores, skill files, DB records) were actually created. If fewer outputs than expected exist, budget exhaustion is likely.
+When `maxTurns` is reached, the agent stops mid-execution with no error. The run log shows "completed" but the work is incomplete. Check whether expected artifacts (spores, skill files, DB records) were actually created.
 
 ### Budget sizing for multi-item phases
-
-Phases that process N items (N STALE skills, N unprocessed batches) have multiplicative turn costs:
 
 ```
 phase maxTurns = N_items × turns_per_item + buffer
@@ -133,42 +113,167 @@ timeoutSeconds = estimated_wall_time × 1.5 safety margin
 ```
 
 **Skill-evolve example (3 STALE skills):**
-- assess phase: ~13 turns → set `maxTurns: 20`
+- assess phase: ~18 turns → set `maxTurns: 25` (bumped from 20; assess now reads full content from disk)
 - evolve phase: 3 × ~10 turns = 30 turns → set `maxTurns: 35`
-- task: 20 + 35 + 5 = 60 → set `maxTurns: 60`
+- task: 25 + 35 + 5 = 65 → set `maxTurns: 65`
 - time: 3 rewrites × ~5 min + assess ~3 min = ~18 min → set `timeoutSeconds: 1800`
+
+## Skill Lifecycle Task Specifics
+
+### Generate vs Evolve Responsibility Split
+
+- **`skill-generate`** — writes brand-new SKILL.md files from approved candidates. Never touches existing skill files.
+- **`skill-evolve`** — rewrites existing SKILL.md files using new spore evidence. Never creates new skills from candidates.
+
+These are intentionally separate tasks with separate `enabled` flags. Merging their responsibilities loses the ability to enable one without the other.
+
+### Embedding-Based Merge Detection in skill-evolve
+
+`skill-evolve` runs a 4-layer deduplication gate before writing any evolved skill:
+
+1. **Candidate lookup** — checks active skill candidates for the same topic
+2. **Name match** — exact name comparison against existing skills
+3. **Description token overlap** — token-frequency similarity against all active skills
+4. **Cosine embedding similarity** — vector search in the `myco-skills` Vectorize namespace
+
+The embedding search uses `vault_search_semantic` with `namespace: 'skills'`. If any existing skill exceeds the cosine threshold (~0.85), the evolution is blocked. **Critical**: always specify `namespace: 'skills'` — omitting it searches the default spore namespace instead.
+
+### Content Snapshot Must Come from Disk
+
+When the assess phase classifies skills (e.g., "STALE") and passes IDs to the act phase, the act phase must re-read full content from disk via `vault_skill_records(action: get)` before making changes. **Do not rely on lineage snapshots** — they may be stale or truncated.
+
+```yaml
+- name: assess
+  prompt: "Classify skills. Output JSON with skill IDs and statuses."
+- name: act
+  dependsOn: assess
+  prompt: |
+    For each STALE skill, call vault_skill_records(action: get, id: <id>)
+    to read the CURRENT on-disk content before modifying it.
+```
 
 ## Concurrency Guard Behavior
 
-The executor prevents concurrent runs of the same task via a lock. If a run is already in progress when the scheduler fires, the new run is skipped and logged. This is correct behavior — do not work around it.
-
-**Audit log interleaving:** When two tasks run concurrently (different task names), their log entries interleave in the audit log. This is expected. Filter by `task_name` when debugging a specific task's run history.
+The executor prevents concurrent runs of the same task via a lock. A new run is skipped if one is already in progress — this is correct behavior. When two tasks run concurrently (different names), their log entries interleave; filter by `task_name` when debugging.
 
 ## LLM Data-Fidelity Failure Patterns
 
-Observed failure modes when passing structured data between phases or between agent runs:
-
-1. **Truncation under context pressure** — long lists or large JSON blobs are silently truncated when the context window fills. The agent completes without error but operates on partial data.
-2. **Type coercion errors** — numbers passed as strings in YAML `parameters` may be coerced unpredictably depending on prompt wording.
-3. **Stale prior-phase assumption** — if a phase assumes prior phase output exists but `dependsOn` was not set, the phase hallucinates the data.
+1. **Truncation under context pressure** — long lists silently truncated when context fills; agent completes without error but operates on partial data.
+2. **Type coercion errors** — numbers passed as strings in YAML `parameters` may be coerced unpredictably.
+3. **Stale prior-phase assumption** — phase hallucinates data if `dependsOn` is not set but the prompt references prior output.
 
 **Mitigations:** Keep inter-phase data structures small; use IDs not full content when passing references; always set `dependsOn` on phases that reference prior output.
 
+## Hardening a New Task or MCP Tool
+
+Every new agent task and MCP tool must ship with three interlocking safety controls before merging.
+
+**Not covered here:** MCP tool anatomy (Zod schema, server.ts registration) → use `register-mcp-tool`. Debugging LLM behavior → see LLM Data-Fidelity section above.
+
+### Control 1: MCP `readOnly` Annotation
+
+Add `readOnly: true` to any tool that does not mutate vault state:
+
+```typescript
+export const vaultReadDigestTool = {
+  name: "vault_read_digest",
+  readOnly: true,   // ← required for read-only tools
+  inputSchema: { ... },
+};
+```
+
+Rules: `vault_read_*`, `vault_search_*`, `vault_spores`, `vault_entities`, `vault_edges` → `readOnly: true`. `vault_create_*`, `vault_update_*`, `vault_resolve_*`, `vault_write_*`, `vault_mark_*` → omit. **Gotcha:** annotating a mutating tool as `readOnly: true` silently suppresses the MCP host's confirmation dialog — trace the full call chain before marking read-only.
+
+### Control 2: Global Toggle Gate
+
+```yaml
+agent:
+  scheduled_tasks_enabled: true   # controls cron/interval task registration
+  event_tasks_enabled: true       # controls hook-triggered task dispatch
+```
+
+**Enforcement lives at the outermost boundary, NOT inside task execute functions.**
+
+```typescript
+// Scheduled: gate in registerScheduledTasks()
+function registerScheduledTasks(config: MycoConfig) {
+  if (!config.agent?.scheduled_tasks_enabled) return;
+  // ... register tasks ...
+}
+
+// Event-triggered: gate in the trigger function
+function triggerTitleSummary(sessionId: string, config: MycoConfig) {
+  if (!config.agent?.event_tasks_enabled) return;
+  // ... dispatch ...
+}
+```
+
+The **Run now** button in the Operations UI bypasses both flags — this is intentional.
+
+### Control 3: Phase-Level `readOnly` Enforcement
+
+```yaml
+phases:
+  - name: gather
+    readOnly: true    # executor rejects write tool calls during this phase
+    tools:
+      - vault_spores
+      - vault_search_fts
+  - name: draft
+    readOnly: false
+    tools:
+      - vault_write_skill
+```
+
+**Why tool enforcement, not prompt enforcement:** Prompts are suggestions; a confused LLM may attempt writes anyway. The executor gate is deterministic. **Gotcha:** after setting `readOnly: true`, remove write tools from the `tools:` list — a read-only phase with a write tool in its list produces spurious gate errors.
+
+### Control 4: Test Coverage (3 tests minimum)
+
+```typescript
+// Test A — toggle-off rejection
+it("does not register task when scheduled_tasks_enabled is false", async () => {
+  const config = buildTestConfig({ agent: { scheduled_tasks_enabled: false } });
+  expect(registerScheduledTasks(config)).toHaveLength(0);
+});
+
+// Test B — write rejected during readOnly phase
+it("rejects write tool call during readOnly phase", async () => {
+  const result = await executor.callTool("vault_create_spore", {...}, { phase: { readOnly: true } });
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("readOnly");
+});
+
+// Test C — happy-path enabled state
+it("registers task when scheduled_tasks_enabled is true", async () => {
+  const config = buildTestConfig({ agent: { scheduled_tasks_enabled: true } });
+  expect(registerScheduledTasks(config).map(j => j.name)).toContain("<your-task-name>");
+});
+```
+
+Use `buildTestConfig()` from `tests/helpers/` — do not construct config objects inline.
+
+### Pre-Ship Checklist
+
+- [ ] Read-only MCP tools have `readOnly: true`; mutating tools do not
+- [ ] `registerScheduledTasks()` checks `config.agent?.scheduled_tasks_enabled`
+- [ ] Event trigger functions check `config.agent?.event_tasks_enabled`
+- [ ] Phase-level `readOnly: true` set for all read-only phases
+- [ ] No write tools listed under read-only phases
+- [ ] Tests A, B, and C passing; `make build` passes clean
+- [ ] Live smoke test: toggle OFF → task doesn't run; toggle ON → runs; Run Now always works
+
 ## Common Pitfalls
 
-**Task runs but produces no output**
-1. Check `preCondition` — it may have evaluated false and skipped
-2. Check `maxTurns` — budget may have been exhausted at the first phase
-3. Check `enabled` — task may be disabled
+**Task runs but produces no output** — check `preCondition` (may evaluate false), `maxTurns` (budget exhausted at first phase), or `enabled: false`.
 
-**Task silently stops mid-run**
-Budget exhausted. Calculate: N_items × turns_per_item + buffer. Recalibrate both `maxTurns` (phase and task level) and `timeoutSeconds`.
+**Task silently stops mid-run** — budget exhausted. Recalculate: N_items × turns_per_item + buffer for both phase and task `maxTurns`.
 
-**Phase doesn't receive prior phase output**
-Check `dependsOn` is set on the consuming phase. Check `skipPriorContext` is not set. Verify the prior phase actually produces parseable output before the budget was exhausted.
+**Phase doesn't receive prior phase output** — check `dependsOn` is set, `skipPriorContext` is not set, prior phase produced parseable output before budget exhausted.
 
-**taskOverrides drops fields**
-Copy all scalar fields into the override block explicitly. YAML merge keys (`<<:`) do not deep-merge scalars reliably in all parsers.
+**taskOverrides drops fields** — copy all scalar fields into the override block explicitly.
 
-**skill-generate / skill-evolve never run despite being configured**
-These tasks are `enabled: false` by default. Enable them explicitly via Daemon UI → Agent Tasks. This is intentional: generative and mutative tasks require deliberate opt-in.
+**skill-generate / skill-evolve never run** — these are `enabled: false` by default. Enable via Daemon UI → Agent Tasks.
+
+**Downstream task scheduled alongside `dependsOn`** — creates a race; the downstream may self-fire before upstream has run. Only the chain root carries a `schedule` block.
+
+**skill-evolve blocks on dedup gate** — check `namespace: 'skills'` is specified in `vault_search_semantic` calls; omitting the namespace searches spores instead of skills.

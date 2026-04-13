@@ -32,6 +32,7 @@ export interface CandidateInsert {
   status?: string;
   source_ids?: string;
   skill_id?: string | null;
+  supersedes?: string | null;
   approved_at?: number | null;
   created_at: number;
   updated_at: number;
@@ -51,6 +52,7 @@ export interface CandidateUpdate {
   status?: string;
   source_ids?: string;
   skill_id?: string | null;
+  supersedes?: string | null;
   approved_at?: number | null;
   updated_at: number;
 }
@@ -66,6 +68,7 @@ export interface CandidateRow {
   status: string;
   source_ids: string;
   skill_id: string | null;
+  supersedes: string | null;
   approved_at: number | null;
   created_at: number;
   updated_at: number;
@@ -102,6 +105,7 @@ export const CANDIDATE_COLUMNS = [
   'status',
   'source_ids',
   'skill_id',
+  'supersedes',
   'approved_at',
   'created_at',
   'updated_at',
@@ -126,6 +130,7 @@ function toCandidateRow(row: Record<string, unknown>): CandidateRow {
     status: row.status as string,
     source_ids: (row.source_ids as string) ?? '[]',
     skill_id: (row.skill_id as string) ?? null,
+    supersedes: (row.supersedes as string) ?? null,
     approved_at: (row.approved_at as number) ?? null,
     created_at: row.created_at as number,
     updated_at: row.updated_at as number,
@@ -178,11 +183,11 @@ export function insertCandidate(data: CandidateInsert): CandidateRow {
   db.prepare(
     `INSERT INTO skill_candidates (
        id, agent_id, machine_id, topic, rationale,
-       confidence, status, source_ids, skill_id, approved_at,
+       confidence, status, source_ids, skill_id, supersedes, approved_at,
        created_at, updated_at
      ) VALUES (
        ?, ?, ?, ?, ?,
-       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?, ?,
        ?, ?
      )`,
   ).run(
@@ -195,6 +200,7 @@ export function insertCandidate(data: CandidateInsert): CandidateRow {
     data.status ?? DEFAULT_STATUS,
     data.source_ids ?? '[]',
     data.skill_id ?? null,
+    data.supersedes ?? null,
     data.approved_at ?? null,
     data.created_at,
     data.updated_at,
@@ -286,6 +292,7 @@ export function updateCandidate(
     status: 'status',
     source_ids: 'source_ids',
     skill_id: 'skill_id',
+    supersedes: 'supersedes',
     approved_at: 'approved_at',
     updated_at: 'updated_at',
   };

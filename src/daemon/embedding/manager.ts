@@ -375,6 +375,17 @@ export class EmbeddingManager {
     return this.vectorStore.search(query, options);
   }
 
+  /**
+   * Compute pairwise cosine similarity between all vectors in a namespace.
+   * Used by the evolve instruction builder to find semantically overlapping skills.
+   */
+  pairwiseSimilarity(
+    namespace: string,
+    threshold?: number,
+  ): Array<{ idA: string; idB: string; similarity: number }> {
+    return this.vectorStore.pairwiseSimilarity(namespace, threshold);
+  }
+
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------

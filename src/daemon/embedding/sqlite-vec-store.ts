@@ -363,6 +363,59 @@ export class SqliteVecVectorStore implements VectorStore {
     return rows.map((r) => r.record_id);
   }
 
+  /**
+   * Compute pairwise cosine similarity between all vectors in a namespace.
+   * Returns pairs above the threshold, sorted by similarity DESC.
+   *
+   * Uses sqlite-vec's KNN search: for each vector, find the top-K nearest
+   * neighbors within the same namespace. O(n * K) where K is small.
+   */
+  pairwiseSimilarity(
+    namespace: string,
+    threshold: number = 0.5,
+  ): Array<{ idA: string; idB: string; similarity: number }> {
+    this.validateNamespace(namespace);
+    const ns = namespace as EmbeddableNamespace;
+
+    // Get all record IDs and their vectors
+    const allRows = this.db.prepare(
+      `SELECT record_id, embedding FROM vec_${ns}`,
+    ).all() as Array<{ record_id: string; embedding: Buffer }>;
+
+    if (allRows.length < 2) return [];
+
+    const pairs: Array<{ idA: string; idB: string; similarity: number }> = [];
+    const seen = new Set<string>();
+
+    // For each vector, search for similar ones in the same namespace
+    const searchStmt = this.searchStmts.get(ns)!;
+    for (const row of allRows) {
+      const results = searchStmt.all(
+        row.embedding, // Use the raw embedding as the query vector
+        allRows.length, // K = all rows to get exhaustive comparison
+      ) as Array<{ record_id: string; distance: number }>;
+
+      for (const match of results) {
+        if (match.record_id === row.record_id) continue; // skip self
+        const pairKey = [row.record_id, match.record_id].sort().join('|');
+        if (seen.has(pairKey)) continue;
+        seen.add(pairKey);
+
+        const similarity = cosineDistanceToSimilarity(match.distance);
+        if (similarity >= threshold) {
+          pairs.push({
+            idA: row.record_id,
+            idB: match.record_id,
+            similarity: Math.round(similarity * 1000) / 1000,
+          });
+        }
+      }
+    }
+
+    pairs.sort((a, b) => b.similarity - a.similarity);
+    return pairs;
+  }
+
   // -------------------------------------------------------------------------
   // Lifecycle
   // -------------------------------------------------------------------------

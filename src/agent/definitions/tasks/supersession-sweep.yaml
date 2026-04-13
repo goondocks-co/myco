@@ -13,7 +13,7 @@ description: >
   Records resolution events for audit trail.
 agent: myco-agent
 isDefault: false
-model: claude-sonnet-4-6
+model: claude-haiku-4-5-20251001
 maxTurns: 30
 timeoutSeconds: 300
 

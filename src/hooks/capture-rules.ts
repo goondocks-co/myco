@@ -27,12 +27,16 @@ export interface UserPromptRuleContext {
   prompt: string;
   /** Transcript path from the hook payload, if any. Empty/undefined signals an ephemeral session. */
   transcriptPath?: string;
+  /** Parsed first JSON line (session_meta) from the transcript, if available. */
+  transcriptMeta?: Record<string, unknown>;
 }
 
 /** Structured context a rule can match against at SessionStart time. */
 export interface SessionStartRuleContext {
   /** Transcript path from the hook payload, if any. Empty/undefined signals an ephemeral session. */
   transcriptPath?: string;
+  /** Parsed first JSON line (session_meta) from the transcript, if available. */
+  transcriptMeta?: Record<string, unknown>;
 }
 
 /** Outcome of evaluating user_prompt rules. */
@@ -96,7 +100,7 @@ export function evaluateSessionStartRules(
     for (const rule of rules) {
       if (rule.event !== 'session_start') continue;
       if (!scopePermits(rule, manifest.name, detectedAgent)) continue;
-      if (!whenMatches(rule, { prompt: '', transcriptPath: ctx.transcriptPath })) continue;
+      if (!whenMatches(rule, { prompt: '', transcriptPath: ctx.transcriptPath, transcriptMeta: ctx.transcriptMeta })) continue;
       if (rule.action === 'drop') {
         return { action: 'drop', reason: rule.reason };
       }
@@ -113,14 +117,15 @@ function scopePermits(rule: CaptureRule, owningAgent: string, detectedAgent: str
 }
 
 function whenMatches(rule: CaptureRule, ctx: UserPromptRuleContext): boolean {
-  const { prompt_starts_with, prompt_contains, transcript_path_missing } = rule.when;
+  const { prompt_starts_with, prompt_contains, transcript_path_missing, transcript_meta_field_exists } = rule.when;
 
   // Refuse rules with no conditions — prevents a mistyped YAML file from
   // accidentally creating a blanket "drop everything" rule.
   const hasAnyCondition =
     prompt_starts_with !== undefined ||
     prompt_contains !== undefined ||
-    transcript_path_missing !== undefined;
+    transcript_path_missing !== undefined ||
+    transcript_meta_field_exists !== undefined;
   if (!hasAnyCondition) return false;
 
   if (prompt_starts_with && !ctx.prompt.startsWith(prompt_starts_with)) return false;
@@ -132,7 +137,25 @@ function whenMatches(rule: CaptureRule, ctx: UserPromptRuleContext): boolean {
     if (!transcript_path_missing && missing) return false;
   }
 
+  if (transcript_meta_field_exists !== undefined) {
+    if (!ctx.transcriptMeta) return false;
+    if (!resolveMetaField(ctx.transcriptMeta, transcript_meta_field_exists)) return false;
+  }
+
   return true;
+}
+
+/**
+ * Navigate a dot-path (e.g. "source.subagent") into a nested object.
+ * Returns the value if it exists and is truthy, undefined otherwise.
+ */
+function resolveMetaField(meta: Record<string, unknown>, fieldPath: string): unknown {
+  let current: unknown = meta;
+  for (const part of fieldPath.split('.')) {
+    if (current === null || current === undefined || typeof current !== 'object') return undefined;
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
 }
 
 function applyAction(rule: CaptureRule, ctx: UserPromptRuleContext): UserPromptDecision {

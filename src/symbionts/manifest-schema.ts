@@ -52,6 +52,19 @@ const CaptureRuleSchema = z.object({
     prompt_contains: z.string().optional(),
     /** Structural: fires when transcript_path is absent or empty. */
     transcript_path_missing: z.boolean().optional(),
+    /**
+     * Structural: fires when a dot-path field exists (and is truthy) in the
+     * transcript's first JSON line (session_meta). Use for detecting sub-agent
+     * sessions that have real transcript files but are not user-initiated.
+     *
+     * Example: `source.subagent` matches a Codex thread-spawn session whose
+     * session_meta has `"source": {"subagent": {...}}` but would NOT match
+     * a user session with `"source": "vscode"`.
+     *
+     * The hook handler reads the transcript and passes the parsed meta to
+     * the evaluator — the evaluator itself does no file I/O.
+     */
+    transcript_meta_field_exists: z.string().optional(),
   }),
   action: z.enum(['drop', 'rewrite_prompt']),
   /** Short audit string logged when the rule matches (e.g., "codex-internal-title-gen"). */
