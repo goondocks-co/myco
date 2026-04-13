@@ -22,7 +22,7 @@ import type { Tab } from '../components/ui/tab-switcher';
 
 /* ---------- Constants ---------- */
 
-const EMBEDDABLE_NAMESPACES = ['sessions', 'spores', 'plans', 'artifacts'] as const;
+const EMBEDDABLE_NAMESPACES = ['sessions', 'spores', 'plans', 'artifacts', 'skill_records'] as const;
 const EMBEDDING_LOG_CATEGORY = 'embedding';
 const DATABASE_LOG_CATEGORY = 'database';
 

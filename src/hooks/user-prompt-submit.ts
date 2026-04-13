@@ -2,6 +2,7 @@ import { DaemonClient } from './client.js';
 import { readStdin } from './read-stdin.js';
 import { normalizeHookInput } from './normalize.js';
 import { evaluateUserPromptRules } from './capture-rules.js';
+import { readTranscriptMeta } from './transcript-meta.js';
 import { loadManifests } from '../symbionts/detect.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { resolveVaultDir } from '../vault/resolve.js';
@@ -22,9 +23,11 @@ export async function main() {
     // The hook stays symbiont-agnostic — per-agent behavior lives in YAML.
     // Pass structural context so rules can key on things like
     // `transcript_path_missing` without doing their own text mining.
+    const transcriptMeta = input.transcriptPath ? readTranscriptMeta(input.transcriptPath) : undefined;
     const decision = evaluateUserPromptRules(loadManifests(), input.agent, {
       prompt: rawPrompt,
       transcriptPath: input.transcriptPath,
+      transcriptMeta: transcriptMeta ?? undefined,
     });
 
     const client = new DaemonClient(VAULT_DIR);

@@ -54,6 +54,14 @@ function planMetadata(row: Record<string, unknown>): DomainMetadata {
   };
 }
 
+/** Build metadata for a skill_records row. */
+function skillRecordMetadata(row: Record<string, unknown>): DomainMetadata {
+  return {
+    ...(row.status != null ? { status: row.status as string } : {}),
+    ...(row.name != null ? { name: row.name as string } : {}),
+  };
+}
+
 /** Get the metadata builder for a given namespace. */
 function metadataFor(namespace: EmbeddableTable, row: Record<string, unknown>): DomainMetadata {
   switch (namespace) {
@@ -65,6 +73,8 @@ function metadataFor(namespace: EmbeddableTable, row: Record<string, unknown>): 
       return planMetadata(row);
     case 'artifacts':
       return emptyMetadata();
+    case 'skill_records':
+      return skillRecordMetadata(row);
   }
 }
 
@@ -88,6 +98,10 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
 
     if (namespace === 'spores') {
       return this.getUnembeddedActiveSpores(limit);
+    }
+
+    if (namespace === 'skill_records') {
+      return this.getUnembeddedActiveSkillRecords(limit);
     }
 
     // For sessions/plans/artifacts: delegate to getUnembedded, then enrich with metadata
@@ -137,6 +151,12 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
         const rows = db.prepare(
           `SELECT id FROM artifacts WHERE content IS NOT NULL`,
         ).all() as Array<{ id: string }>;
+        return rows.map((r) => r.id);
+      }
+      case 'skill_records': {
+        const rows = db.prepare(
+          `SELECT id FROM skill_records WHERE status = ?`,
+        ).all(ACTIVE_STATUS) as Array<{ id: string }>;
         return rows.map((r) => r.id);
       }
     }
@@ -209,7 +229,7 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
     const db = getDatabase();
 
     const contentFilter = namespace === 'sessions' ? ' AND summary IS NOT NULL' : '';
-    const statusFilter = namespace === 'spores' ? ` AND status = '${ACTIVE_STATUS}'` : '';
+    const statusFilter = (namespace === 'spores' || namespace === 'skill_records') ? ` AND status = '${ACTIVE_STATUS}'` : '';
 
     const row = db.prepare(
       `SELECT COUNT(*) AS cnt FROM ${namespace} WHERE embedded = 0${contentFilter}${statusFilter}`,
@@ -241,6 +261,28 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
       id: String(row.id),
       text: row.text as string,
       metadata: sporeMetadata(row),
+    }));
+  }
+
+  /** Custom query for skill_records: embedded=0 AND status='active'. */
+  private getUnembeddedActiveSkillRecords(limit: number): Array<{
+    id: string;
+    text: string;
+    metadata: DomainMetadata;
+  }> {
+    const db = getDatabase();
+    const rows = db.prepare(
+      `SELECT id, description AS text, status, name
+       FROM skill_records
+       WHERE embedded = 0 AND status = ?
+       ORDER BY created_at ASC
+       LIMIT ?`,
+    ).all(ACTIVE_STATUS, limit) as Array<Record<string, unknown>>;
+
+    return rows.map((row) => ({
+      id: String(row.id),
+      text: row.text as string,
+      metadata: skillRecordMetadata(row),
     }));
   }
 }

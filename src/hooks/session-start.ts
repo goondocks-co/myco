@@ -2,6 +2,7 @@ import { DaemonClient } from './client.js';
 import { readStdin } from './read-stdin.js';
 import { normalizeHookInput } from './normalize.js';
 import { evaluateSessionStartRules } from './capture-rules.js';
+import { readTranscriptMeta } from './transcript-meta.js';
 import { loadManifests } from '../symbionts/detect.js';
 import { loadConfig } from '../config/loader.js';
 import { buildInjectedContext } from '../context/injector.js';
@@ -24,7 +25,13 @@ export async function main() {
     // For Codex ephemeral sub-invocations (title generation, etc.) this
     // structural drop prevents the phantom row from ever being created,
     // rather than creating it and cascade-deleting at user_prompt time.
-    const decision = evaluateSessionStartRules(loadManifests(), agent, { transcriptPath });
+    // Read the transcript's session_meta for rules that inspect it
+    // (e.g., detecting sub-agent thread spawns via source.subagent).
+    const transcriptMeta = transcriptPath ? readTranscriptMeta(transcriptPath) : undefined;
+    const decision = evaluateSessionStartRules(loadManifests(), agent, {
+      transcriptPath,
+      transcriptMeta: transcriptMeta ?? undefined,
+    });
     if (decision.action === 'drop') {
       process.stderr.write(`[myco] session-start: dropped (${decision.reason ?? 'rule'})\n`);
       return;
