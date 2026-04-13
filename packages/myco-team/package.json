@@ -6,12 +6,32 @@
   "bin": {
     "myco-team": "dist/main.js"
   },
+  "files": [
+    "dist/",
+    "worker/",
+    "README.md",
+    "LICENSE"
+  ],
   "publishConfig": {
     "access": "public"
   },
+  "license": "MIT",
+  "homepage": "https://github.com/goondocks-co/myco/tree/main/packages/myco-team",
+  "bugs": {
+    "url": "https://github.com/goondocks-co/myco/issues"
+  },
+  "keywords": [
+    "myco",
+    "team-sync",
+    "cloudflare",
+    "worker",
+    "mcp",
+    "cli"
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/goondocks-co/myco.git"
+    "url": "https://github.com/goondocks-co/myco.git",
+    "directory": "packages/myco-team"
   },
   "dependencies": {
     "yaml": "^2.4.0"

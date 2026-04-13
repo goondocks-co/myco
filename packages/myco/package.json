@@ -14,6 +14,8 @@
     "dist/",
     "commands/",
     "skills/",
+    "README.md",
+    "LICENSE",
     "CONTRIBUTING.md"
   ],
   "scripts": {
@@ -33,9 +35,24 @@
   "publishConfig": {
     "access": "public"
   },
+  "license": "MIT",
+  "homepage": "https://github.com/goondocks-co/myco",
+  "bugs": {
+    "url": "https://github.com/goondocks-co/myco/issues"
+  },
+  "keywords": [
+    "myco",
+    "mcp",
+    "ai-agents",
+    "claude-code",
+    "codex",
+    "team-sync",
+    "knowledge-graph"
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/goondocks-co/myco.git"
+    "url": "https://github.com/goondocks-co/myco.git",
+    "directory": "packages/myco"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.104",
