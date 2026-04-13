@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import { TranscriptMiner, extractTurnsFromBuffer } from '@myco/capture/transcript-miner.js';
 import type { TranscriptTurn } from '@myco/symbionts/adapter.js';
 import { captureBatchImages } from './capture-images.js';
+import { extractTaggedPlans, capturePlan, TRANSCRIPT_SOURCE_PREFIX } from './plan-capture.js';
 import {
   getLatestBatch,
   setResponseSummary,
@@ -44,6 +45,8 @@ export interface StopProcessorDeps {
   logger: DaemonLogger;
   config: MycoConfig;
   vaultDir: string;
+  /** Plan tag names to extract from transcript responses. Merged from all symbiont manifests. */
+  planTags: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -280,6 +283,35 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     if (responses.length > 0) {
       try { populateBatchResponses(sessionId, responses); }
       catch (err) { logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to populate batch responses', { error: String(err) }); }
+    }
+
+    // --- Plan tag extraction from transcript responses ---
+    if (deps.planTags.length > 0) {
+      for (const turn of allTurns) {
+        if (!turn.aiResponse) continue;
+        const taggedPlans = extractTaggedPlans(turn.aiResponse, deps.planTags);
+        for (const { tag, content } of taggedPlans) {
+          try {
+            capturePlan({
+              sourcePath: `${TRANSCRIPT_SOURCE_PREFIX}${tag}`,
+              content,
+              sessionId,
+              promptBatchId: latestBatch?.id ?? null,
+            });
+            logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan captured from transcript tag', {
+              session_id: sessionId,
+              tag,
+              content_length: content.length,
+            });
+          } catch (err) {
+            logger.warn(LOG_KINDS.CAPTURE_PLAN, 'Failed to capture plan from transcript tag', {
+              session_id: sessionId,
+              tag,
+              error: (err as Error).message,
+            });
+          }
+        }
+      }
     }
 
     // Trigger title/summary if the session still needs one.

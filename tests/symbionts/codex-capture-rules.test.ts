@@ -91,4 +91,27 @@ describe('codex.yaml capture rules', () => {
       expect(result).toEqual({ action: 'pass', prompt: 'real user question' });
     });
   });
+
+  describe('file-mention preamble rewrite', () => {
+    it('strips Codex Desktop file-mention preamble from screenshot prompts', () => {
+      const prompt = '\n# Files mentioned by the user:\n\n## CleanShot 2026-04-13.png: /Users/chris/Library/Application Support/CleanShot/media/screenshot.png\n\n## My request for Codex:\nhello, what do you see?\n';
+      const result = evaluateUserPromptRules(loadManifests(), 'codex', {
+        prompt,
+        transcriptPath: '/Users/chris/.codex/sessions/2026/04/13/rollout-abc.jsonl',
+      });
+      expect(result.action).toBe('rewrite');
+      if (result.action === 'rewrite') {
+        expect(result.prompt).toBe('hello, what do you see?');
+        expect(result.reason).toBe('codex-desktop-file-preamble');
+      }
+    });
+
+    it('passes normal prompts without preamble through unchanged', () => {
+      const result = evaluateUserPromptRules(loadManifests(), 'codex', {
+        prompt: 'Fix the bug in main.ts',
+        transcriptPath: '/Users/chris/.codex/sessions/2026/04/13/rollout-abc.jsonl',
+      });
+      expect(result).toEqual({ action: 'pass', prompt: 'Fix the bug in main.ts' });
+    });
+  });
 });

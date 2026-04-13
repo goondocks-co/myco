@@ -1,9 +1,46 @@
 import type { SymbiontAdapter } from './adapter.js';
-import { findJsonlInSubdirs, parseJsonlTurns } from './adapter.js';
+import { CodexJsonlParser } from './parsers/codex-jsonl.js';
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
 const TRANSCRIPT_BASE = path.join(os.homedir(), '.codex');
+const codexParser = new CodexJsonlParser();
+
+/**
+ * Find a Codex transcript file by session ID.
+ *
+ * Codex stores transcripts at:
+ *   <baseDir>/sessions/YYYY/MM/DD/rollout-<timestamp>-<sessionId>.jsonl
+ *
+ * Recursively scans the sessions directory for a JSONL file whose name
+ * contains the session ID.
+ */
+export function findCodexTranscript(baseDir: string, sessionId: string): string | null {
+  const sessionsDir = path.join(baseDir, 'sessions');
+  try {
+    return scanForSessionFile(sessionsDir, sessionId);
+  } catch {
+    return null;
+  }
+}
+
+function scanForSessionFile(dir: string, sessionId: string): string | null {
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+  catch { return null; }
+
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const found = scanForSessionFile(fullPath, sessionId);
+      if (found) return found;
+    } else if (entry.isFile() && entry.name.includes(sessionId) && entry.name.endsWith('.jsonl')) {
+      return fullPath;
+    }
+  }
+  return null;
+}
 
 export const codexAdapter: SymbiontAdapter = {
   name: 'codex',
@@ -19,13 +56,7 @@ export const codexAdapter: SymbiontAdapter = {
     toolOutput: 'tool_output',
   },
 
-  findTranscript: (sessionId) => findJsonlInSubdirs(TRANSCRIPT_BASE, sessionId),
+  findTranscript: (sessionId) => findCodexTranscript(TRANSCRIPT_BASE, sessionId),
 
-  // Codex uses 'role' field (like Cursor), not 'type' (like Claude Code)
-  parseTurns: (content) => parseJsonlTurns(content, {
-    roleField: 'role',
-    extractTimestamp: false,
-    skipToolResultUsers: false,
-    stripImageTextRefs: false,
-  }),
+  parseTurns: (content) => codexParser.parseTurns(content),
 };

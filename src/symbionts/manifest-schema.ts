@@ -66,6 +66,7 @@ export type CaptureRule = z.infer<typeof CaptureRuleSchema>;
 
 const CaptureManifestSchema = z.object({
   planDirs: z.array(z.string()).default([]),
+  planTags: z.array(z.string()).default([]),
   rules: z.array(CaptureRuleSchema).default([]),
 });
 

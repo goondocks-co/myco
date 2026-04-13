@@ -1,0 +1,118 @@
+import type { TranscriptParser } from './types.js';
+import type { TranscriptTurn, TranscriptImage } from '../adapter.js';
+import { PROMPT_PREVIEW_CHARS } from '../../constants.js';
+
+/** Parse a data URL (data:<mime>;base64,<data>) into media type and base64 data. */
+function parseDataUrl(url: string): { mediaType: string; data: string } | null {
+  const match = url.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) return null;
+  return { mediaType: match[1], data: match[2] };
+}
+
+/**
+ * Codex Desktop wraps user prompts with file-mention preambles when screenshots
+ * are attached, and injects <image> wrapper tags around image blocks. Strip both
+ * so the captured prompt contains only the user's actual text.
+ *
+ * Preamble pattern:
+ *   "# Files mentioned by the user:\n\n## <filename>: <path>\n\n## My request for Codex:\n<actual prompt>"
+ *
+ * Image wrapper tags (separate input_text blocks):
+ *   "<image name=[Image #1]>"  /  "</image>"
+ */
+const IMAGE_WRAPPER_TAG = /^<\/?image\b[^>]*>$/;
+const CODEX_PROMPT_MARKER = '## My request for Codex:\n';
+
+function cleanCodexPromptText(text: string): string {
+  // Strip image wrapper tags
+  if (IMAGE_WRAPPER_TAG.test(text.trim())) return '';
+  // Extract actual prompt from file-mention preamble
+  const idx = text.indexOf(CODEX_PROMPT_MARKER);
+  if (idx !== -1) return text.slice(idx + CODEX_PROMPT_MARKER.length);
+  return text;
+}
+
+/**
+ * Parses Codex's nested-payload JSONL transcript format.
+ *
+ * Codex JSONL entries have the structure:
+ *   { type: "response_item", payload: { type: "message", role: "user"|"assistant"|"developer", content: [...] } }
+ *
+ * Key differences from the standard (Claude Code) format:
+ * - Role is at payload.role, not top-level
+ * - Content is at payload.content, not message.content
+ * - User content blocks use type: "input_text", assistant use type: "output_text"
+ * - Tool use is separate "function_call" entries, not nested blocks
+ * - Images are data URLs in "input_image" blocks (data:<mime>;base64,<data>), not structured source objects
+ * - Codex Desktop wraps prompts with file-mention preambles and <image> tags when screenshots are attached — these are stripped
+ * - Non-conversation entries (event_msg, session_meta, turn_context, reasoning) are skipped
+ */
+export class CodexJsonlParser implements TranscriptParser {
+  parseTurns(content: string): TranscriptTurn[] {
+    const lines = content.split('\n').filter(Boolean);
+    const turns: TranscriptTurn[] = [];
+    let current: TranscriptTurn | null = null;
+
+    for (const line of lines) {
+      let entry: Record<string, unknown>;
+      try { entry = JSON.parse(line); } catch { continue; }
+
+      // Only process response_item entries — skip event_msg, session_meta, turn_context
+      if (entry.type !== 'response_item') continue;
+
+      const payload = entry.payload as Record<string, unknown> | undefined;
+      if (!payload) continue;
+
+      const payloadType = payload.type as string;
+      const timestamp = (entry.timestamp as string) ?? '';
+
+      // Function calls are separate entries — count them as tool use
+      if (payloadType === 'function_call') {
+        if (current) current.toolCount++;
+        continue;
+      }
+
+      // Only process message payloads from here
+      if (payloadType !== 'message') continue;
+
+      const role = payload.role as string;
+      const blocks = Array.isArray(payload.content)
+        ? (payload.content as Array<{ type: string; text?: string; image_url?: string }>)
+        : [];
+
+      if (role === 'user') {
+        const textParts = blocks
+          .filter((b) => b.type === 'input_text' && b.text?.trim())
+          .map((b) => cleanCodexPromptText(b.text!))
+          .filter((t) => t.trim());
+
+        if (textParts.length === 0) continue;
+
+        if (current) turns.push(current);
+
+        const promptText = textParts.join('\n').trim().slice(0, PROMPT_PREVIEW_CHARS);
+
+        // Extract images from input_image blocks (data URL format: data:<mime>;base64,<data>)
+        const images: TranscriptImage[] = [];
+        for (const b of blocks) {
+          if (b.type === 'input_image' && b.image_url) {
+            const parsed = parseDataUrl(b.image_url);
+            if (parsed) images.push(parsed);
+          }
+        }
+
+        current = { prompt: promptText, toolCount: 0, timestamp, ...(images.length > 0 ? { images } : {}) };
+      } else if (role === 'assistant' && current) {
+        const textParts = blocks
+          .filter((b) => b.type === 'output_text' && b.text)
+          .map((b) => b.text!);
+        const text = textParts.join('\n').trim();
+        if (text) current.aiResponse = text;
+      }
+      // role === 'developer' is silently skipped
+    }
+
+    if (current) turns.push(current);
+    return turns;
+  }
+}

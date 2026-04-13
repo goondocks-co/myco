@@ -16,8 +16,41 @@ import { upsertPlan } from '@myco/db/queries/plans.js';
 import type { PlanRow } from '@myco/db/queries/plans.js';
 
 // ---------------------------------------------------------------------------
+// Transcript-based plan extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract plan content from XML-style tags in transcript text.
+ *
+ * Scans the input text for each declared tag name and returns all matches.
+ * Tags are exact names (e.g., 'proposed_plan' matches `<proposed_plan>...</proposed_plan>`).
+ * Returns all occurrences — the caller decides upsert semantics (e.g., last one wins).
+ */
+export function extractTaggedPlans(
+  text: string,
+  tags: string[],
+): Array<{ tag: string; content: string }> {
+  const results: Array<{ tag: string; content: string }> = [];
+  for (const tag of tags) {
+    const regex = new RegExp(`<${tag}>\\n?([\\s\\S]*?)\\n?</${tag}>`, 'g');
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      const content = match[1].trim();
+      if (content) results.push({ tag, content });
+    }
+  }
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+/**
+ * Source path prefix for plans extracted from transcript tags.
+ * Used to build deterministic plan IDs: `transcript:<tagName>`.
+ */
+export const TRANSCRIPT_SOURCE_PREFIX = 'transcript:';
 
 /**
  * Tool names that constitute a file write operation.
