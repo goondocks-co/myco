@@ -19,6 +19,7 @@ import {
   isPlanWriteEvent,
   parsePlanTitle,
   capturePlan,
+  extractTaggedPlans,
   type PlanWatchConfig,
 } from '@myco/daemon/plan-capture.js';
 
@@ -456,5 +457,70 @@ describe('capturePlan', () => {
     });
 
     expect(result.title).toBe('roadmap.md');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractTaggedPlans
+// ---------------------------------------------------------------------------
+
+describe('extractTaggedPlans', () => {
+  it('extracts content from a single proposed_plan tag', () => {
+    const text = 'Some preamble.\n<proposed_plan>\n# My Plan\n\n## Steps\n1. Do this\n</proposed_plan>\nSome epilogue.';
+    const results = extractTaggedPlans(text, ['proposed_plan']);
+    expect(results).toHaveLength(1);
+    expect(results[0].tag).toBe('proposed_plan');
+    expect(results[0].content).toBe('# My Plan\n\n## Steps\n1. Do this');
+  });
+
+  it('returns empty array when no tags match', () => {
+    const text = 'Just regular text with no plan tags.';
+    const results = extractTaggedPlans(text, ['proposed_plan']);
+    expect(results).toEqual([]);
+  });
+
+  it('returns empty array when tags list is empty', () => {
+    const text = '<proposed_plan>\n# Plan\n</proposed_plan>';
+    const results = extractTaggedPlans(text, []);
+    expect(results).toEqual([]);
+  });
+
+  it('extracts from multiple different tag names', () => {
+    const text = '<proposed_plan>\n# Plan A\n</proposed_plan>\n\n<implementation_plan>\n# Plan B\n</implementation_plan>';
+    const results = extractTaggedPlans(text, ['proposed_plan', 'implementation_plan']);
+    expect(results).toHaveLength(2);
+    expect(results[0].tag).toBe('proposed_plan');
+    expect(results[0].content).toBe('# Plan A');
+    expect(results[1].tag).toBe('implementation_plan');
+    expect(results[1].content).toBe('# Plan B');
+  });
+
+  it('skips empty tag content', () => {
+    const text = '<proposed_plan>\n\n</proposed_plan>';
+    const results = extractTaggedPlans(text, ['proposed_plan']);
+    expect(results).toEqual([]);
+  });
+
+  it('handles tag content without leading/trailing newlines', () => {
+    const text = '<proposed_plan># Direct Plan</proposed_plan>';
+    const results = extractTaggedPlans(text, ['proposed_plan']);
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe('# Direct Plan');
+  });
+
+  it('handles multi-line markdown plan content', () => {
+    const planMd = '# Comprehensive Plan\n\n## Summary\n\nBuild the thing.\n\n## Steps\n\n1. Step one\n2. Step two\n\n## Notes\n\n- Note A\n- Note B';
+    const text = `<proposed_plan>\n${planMd}\n</proposed_plan>`;
+    const results = extractTaggedPlans(text, ['proposed_plan']);
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe(planMd);
+  });
+
+  it('returns all occurrences when same tag appears multiple times', () => {
+    const text = '<proposed_plan>\n# Original Plan\n</proposed_plan>\n\nSome discussion.\n\n<proposed_plan>\n# Revised Plan\n</proposed_plan>';
+    const results = extractTaggedPlans(text, ['proposed_plan']);
+    expect(results).toHaveLength(2);
+    expect(results[0].content).toBe('# Original Plan');
+    expect(results[1].content).toBe('# Revised Plan');
   });
 });
