@@ -108,6 +108,9 @@ describe('teamRotateTokens', () => {
     const { teamRotateTokens } = await import('../../packages/myco-team/src/cli.js');
     await teamRotateTokens('all');
 
+    const expectedPackageVersion = JSON.parse(
+      fs.readFileSync(path.join(process.cwd(), 'packages', 'myco-team', 'package.json'), 'utf-8'),
+    ) as { version: string };
     const localConfig = JSON.parse(fs.readFileSync(path.join(tempHomeDir, '.myco-team', 'config.json'), 'utf-8')) as {
       api_key: string;
       mcp_token: string | null;
@@ -117,7 +120,7 @@ describe('teamRotateTokens', () => {
 
     expect(localConfig.api_key).not.toBe('old-api-key');
     expect(localConfig.mcp_token).toBe('new-mcp-token');
-    expect(localConfig.package_version).toBe('0.1.0');
+    expect(localConfig.package_version).toBe(expectedPackageVersion.version);
     expect(secrets).toContain(`MYCO_TEAM_API_KEY=${localConfig.api_key}`);
     expect(fetchCalls).toBe(3);
   });
