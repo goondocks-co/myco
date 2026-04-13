@@ -6,12 +6,41 @@
   "bin": {
     "myco-collective": "dist/main.js"
   },
+  "files": [
+    "dist/",
+    "worker/",
+    "ui/index.html",
+    "ui/package.json",
+    "ui/package-lock.json",
+    "ui/postcss.config.js",
+    "ui/public/",
+    "ui/src/",
+    "ui/tailwind.config.ts",
+    "ui/tsconfig.json",
+    "ui/vite.config.ts",
+    "README.md",
+    "LICENSE"
+  ],
   "publishConfig": {
     "access": "public"
   },
+  "license": "MIT",
+  "homepage": "https://github.com/goondocks-co/myco/tree/main/packages/myco-collective",
+  "bugs": {
+    "url": "https://github.com/goondocks-co/myco/issues"
+  },
+  "keywords": [
+    "myco",
+    "collective",
+    "cloudflare",
+    "admin-ui",
+    "mcp",
+    "cli"
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/goondocks-co/myco.git"
+    "url": "https://github.com/goondocks-co/myco.git",
+    "directory": "packages/myco-collective"
   },
   "scripts": {
     "postinstall": "test -d ui && cd ui && npm install || true",
