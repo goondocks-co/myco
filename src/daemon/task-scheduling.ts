@@ -91,7 +91,7 @@ export async function registerScheduledTasks(
 
       const taskConfig = config.agent.tasks?.[taskName];
       const projectRoot = resolve(vaultDir, '..');
-      const built = buildTaskInstruction(taskName, taskConfig?.params, taskAgentMap.get(taskName), projectRoot);
+      const built = buildTaskInstruction(taskName, taskConfig?.params, taskAgentMap.get(taskName), projectRoot, embeddingManager);
 
       // Short-circuit: instruction-required tasks must not dispatch
       // the agent when there's no work. For skill-generate this means

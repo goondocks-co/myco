@@ -322,9 +322,18 @@ function headingOverlap(
  *
  * @param params - Optional overrides for assess_interval_hours and max_skills_per_run.
  */
+/**
+ * Optional embedding similarity provider. Decoupled from EmbeddingManager
+ * so the instruction builder doesn't depend on the daemon's embedding module.
+ */
+export interface SkillSimilarityProvider {
+  pairwiseSimilarity(namespace: string, threshold?: number): Array<{ idA: string; idB: string; similarity: number }>;
+}
+
 export function buildSkillEvolveInstruction(
   params?: Record<string, string | number | boolean>,
   projectRoot?: string,
+  similarityProvider?: SkillSimilarityProvider,
 ): string {
   const assessIntervalHours = Number(params?.assess_interval_hours ?? SKILL_EVOLVE_DEFAULT_ASSESS_INTERVAL_HOURS);
   const maxSkillsPerRun = Number(params?.max_skills_per_run ?? SKILL_EVOLVE_DEFAULT_MAX_SKILLS_PER_RUN);
@@ -482,16 +491,41 @@ export function buildSkillEvolveInstruction(
     }
   }
 
-  // Pairwise overlap analysis (description + heading)
+  // Pairwise overlap analysis (description tokens + heading overlap)
   if (overlaps.length > 0) {
     parts.push('');
-    parts.push('## Pre-computed Skill Overlap');
-    parts.push('Pairs flagged by description similarity AND/OR heading overlap (mechanically computed — validate before acting):');
+    parts.push('## Pre-computed Token Overlap');
+    parts.push('Pairs flagged by description token similarity AND/OR heading overlap:');
     for (const o of overlaps) {
       parts.push(`- **${o.skillA}** <-> **${o.skillB}**: desc=${o.descriptionJaccard}, headings=${o.headingOverlap} (${o.verdict})`);
       if (o.sharedHeadings.length > 0) {
         parts.push(`  Shared headings: ${o.sharedHeadings.join('; ')}`);
       }
+    }
+  }
+
+  // Semantic similarity from embeddings — strongest signal for overlap detection.
+  // Uses cosine similarity on embedded skill descriptions. Catches semantic
+  // overlap that token-based methods miss ("adding agent integration" ~= "onboarding a symbiont").
+  if (similarityProvider) {
+    // Build a name→id lookup for resolving embedding results
+    const idToName = new Map(allSkills.map(s => [s.id, s.name]));
+
+    try {
+      const semanticPairs = similarityProvider.pairwiseSimilarity('skill_records', 0.65);
+      if (semanticPairs.length > 0) {
+        parts.push('');
+        parts.push('## Semantic Similarity (embedding cosine distance)');
+        parts.push('Pairs with cosine similarity >= 0.65. This is the STRONGEST overlap signal.');
+        parts.push('High similarity (>0.8) means the skills describe nearly identical procedures.');
+        for (const p of semanticPairs) {
+          const nameA = idToName.get(p.idA) ?? p.idA;
+          const nameB = idToName.get(p.idB) ?? p.idB;
+          parts.push(`- **${nameA}** <-> **${nameB}**: cosine=${p.similarity}`);
+        }
+      }
+    } catch {
+      // Embeddings not available — fall through to token-based signals only
     }
   }
 
@@ -519,6 +553,7 @@ export function buildTaskInstruction(
   taskParams?: Record<string, string | number | boolean>,
   agentId?: string,
   projectRoot?: string,
+  similarityProvider?: SkillSimilarityProvider,
 ): BuiltTaskInstruction | undefined {
   switch (taskName) {
     case SKILL_GENERATE_TASK:
@@ -526,7 +561,7 @@ export function buildTaskInstruction(
     case SKILL_SURVEY_TASK:
       return agentId ? buildSkillSurveyInstruction(agentId) : undefined;
     case SKILL_EVOLVE_TASK: {
-      const instruction = buildSkillEvolveInstruction(taskParams, projectRoot);
+      const instruction = buildSkillEvolveInstruction(taskParams, projectRoot, similarityProvider);
       return instruction ? { instruction } : undefined;
     }
     default:

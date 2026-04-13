@@ -79,6 +79,7 @@ export interface VectorStore {
   stats(namespace?: string): VectorStoreStats;
   getStaleIds(namespace: string, currentModel: string, limit: number): string[];
   getEmbeddedIds(namespace: string): string[];
+  pairwiseSimilarity(namespace: string, threshold?: number): Array<{ idA: string; idB: string; similarity: number }>;
 }
 
 /** Generates vectors from text. Wraps the existing EmbeddingProvider. */

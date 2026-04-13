@@ -79,10 +79,10 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       try {
         const taskParams = mycoConfig.agent.tasks?.[task]?.params;
         const projectRoot = resolve(vaultDir, '..');
-        built = buildTaskInstruction(task, taskParams, agentId, projectRoot);
+        built = buildTaskInstruction(task, taskParams, agentId, projectRoot, embeddingManager);
       } catch {
         const projectRoot = resolve(vaultDir, '..');
-        built = buildTaskInstruction(task, undefined, agentId, projectRoot);
+        built = buildTaskInstruction(task, undefined, agentId, projectRoot, embeddingManager);
       }
       instruction = built?.instruction;
       runContext = built?.context;
