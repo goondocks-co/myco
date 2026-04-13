@@ -25,6 +25,8 @@ npm install -g wrangler
 wrangler login
 ```
 
+The built-in `myco team init` command continues to work from the main `@goondocks/myco` install. You do not need a second package just to enable team sync.
+
 ### 2. Create the team
 
 One team member runs this once. It provisions the Cloudflare infrastructure and deploys the sync Worker.
@@ -34,6 +36,14 @@ myco team init
 ```
 
 The command outputs a **Worker URL** and **API key**. Share these with teammates through your preferred out-of-band channel.
+
+If you want direct worker administration commands from the terminal, install the optional standalone CLI:
+
+```bash
+npm install -g @goondocks/myco-team
+```
+
+That adds `myco-team status`, `myco-team rotate-tokens`, and `myco-team destroy`.
 
 ### 3. Connect teammates
 
@@ -102,6 +112,15 @@ myco team upgrade
 ```
 
 Or click **Update Worker** on the Team page when an update is available. The upgrade handles new infrastructure (like the KV namespace added for Cloud MCP), installs new runtime dependencies, and redeploys.
+
+If you use the standalone team CLI, update it separately:
+
+```bash
+npm update -g @goondocks/myco-team
+myco-team upgrade
+```
+
+If you only use the built-in team commands, `npm update -g @goondocks/myco` remains your upgrade path.
 
 ### Architecture
 

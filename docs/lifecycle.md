@@ -90,6 +90,13 @@ Myco installs a single global npm package, but a single machine may run one daem
 
 Both paths end at the same state: the globally installed Myco package is at the new version.
 
+If you also use one of the optional standalone operator CLIs, update those separately:
+
+- `npm update -g @goondocks/myco-team`
+- `npm update -g @goondocks/myco-collective`
+
+Most users do not need those extra packages. The main `@goondocks/myco` install still covers normal local use, the dashboard, and the built-in `myco team init` / `myco team upgrade` flow.
+
 ### What other projects do
 
 Other projects on the same machine discover the new version the next time you open their dashboard. They restart themselves, refresh their local hooks and symbiont registration if anything needs to change, and post a notification to their Operations page so you know what happened. You don't need to run `myco restart` or `myco update` manually in each project.

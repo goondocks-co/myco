@@ -1,104 +1,155 @@
-# Myco Collective Workspace Layout
+# Myco Collective
 
-This branch restructures Myco into a workspace layout with three package surfaces:
+Run one Myco Collective to search across projects and manage shared settings for the team workers connected to it.
 
-- `packages/myco` — local CLI, daemon, hooks, MCP server, dashboard UI
-- `packages/myco-team` — team sync worker package and deployment CLI surface
-- `packages/myco-collective` — Collective worker package and deployment CLI surface
+The Collective sits above team sync:
 
-The repo root is the workspace orchestration layer only. Source, UI, worker, and publishable assets now live under their owning packages rather than mirrored root paths.
+- each project keeps its own local Myco install
+- each project can sync to a team worker
+- one Collective can connect multiple team workers and search across them
 
-## Commands
+## What you get
 
-The root build now verifies the workspace layout:
+- Cross-project search with project attribution on every result
+- A single place to see connected projects and their health
+- Shared settings overrides that flow down through each project's team worker
+- A worker-hosted admin UI for projects, settings, and search
 
-```sh
-make check
-make build
+The Collective does not replace the local Myco install. Developers still run `myco` in each project. The Collective is an optional admin layer for operators who want one view across multiple Myco-enabled projects.
+
+## Install
+
+Install the Collective CLI on the machine that will manage it:
+
+```bash
+npm install -g @goondocks/myco-collective
 ```
 
-Package-local builds:
+You also need:
 
-```sh
-npm run build -w @goondocks/myco
-npm run build -w @goondocks/myco-team
-npm run build -w @goondocks/myco-collective
+- a Cloudflare account
+- `wrangler` installed and authenticated
+- at least one project already using [team sync](team-sync.md)
+
+## Create a Collective
+
+```bash
+myco-collective install
 ```
 
-Release tags are package-scoped:
+That command provisions the Collective Worker, its database, and the admin UI in one step.
 
-- `myco/vX.Y.Z`
-- `myco-team/vX.Y.Z`
-- `myco-collective/vX.Y.Z`
+After install, open the deployed worker URL in your browser. The admin UI gives you four pages:
 
-Each tag triggers build, release, and npm publish for that package only.
+- **Dashboard** — connected projects and health
+- **Projects** — add or remove team workers
+- **Settings** — shared overrides
+- **Search** — cross-project search from one place
 
-## Validation
+## Connect a project
 
-Local validation for this branch is:
+Each project needs team sync first.
 
-```sh
-make check
-make build
+From the project itself:
+
+```bash
+myco team init
 ```
 
-Live Cloudflare validation is scripted in:
+Then add that team worker to the Collective:
 
-```sh
-node scripts/collective-cloudflare-smoke.mjs
+```bash
+myco-collective add-project <name> <worker_url> <api_key>
 ```
 
-That smoke run provisions a team worker and a Collective worker, verifies worker health and the hosted admin SPA, registers a project, confirms heartbeat/status propagation, rotates the Collective admin token, and then destroys the temporary Cloudflare resources.
+Once connected:
 
-## Team Worker
+- the local Team page shows Collective status
+- local `collective_*` tools become available automatically
+- shared settings flow through the team worker to the local daemon
 
-`packages/myco-team` now owns the team worker source previously embedded under `src/worker/`, including its standalone deployment CLI surface.
+## Upgrade path
 
-New team-worker Collective routes:
+### Existing Myco users
 
-- `POST /collective/configure`
-- `GET /collective/settings`
-- `GET /collective/status`
-- `POST /collective/query`
+If you already use Myco locally, your normal upgrade path does not change:
 
-## Collective Worker
+```bash
+npm update -g @goondocks/myco
+```
 
-`packages/myco-collective/worker` provides the initial Collective backend:
+That updates the main Myco CLI, daemon, hooks, dashboard, and the built-in `myco team init` / `myco team upgrade` flow. Most users do not need to install anything else.
 
-- D1 schema for `projects`, `settings_overrides`, and `collective_meta`
-- admin API routes under `/api/*`
-- MCP routes under `/mcp/*`
-- fan-out search/query handling across registered team workers
+### Team operators
 
-The initial CLI surface in `packages/myco-collective/src` supports:
+Install the standalone team CLI only if you want direct worker administration commands from the terminal:
 
-- `myco-collective install`
-- `myco-collective upgrade`
-- `myco-collective status`
-- `myco-collective rotate-tokens`
-- `myco-collective add-project`
-- `myco-collective destroy`
+```bash
+npm install -g @goondocks/myco-team
+```
 
-Deployment now stages a dedicated bundle under `~/.myco-collective/deployments/<worker-name>/` so worker config and built UI assets are deployed from an isolated artifact instead of mutating tracked package templates in place.
+That adds:
 
-## Local Myco Integration
+- `myco-team install`
+- `myco-team upgrade`
+- `myco-team status`
+- `myco-team rotate-tokens`
+- `myco-team destroy`
 
-The local daemon now proxies Collective access through the connected team worker:
+### Collective operators
 
-- `/api/collective/status`
-- `/api/collective/search`
-- `/api/collective/projects`
-- `/api/collective/project`
-- `/api/collective/settings`
+Install `@goondocks/myco-collective` only if you want to run a Collective.
 
-Local MCP exposes these tools only when team status reports a connected Collective:
+It is separate because it manages a different Cloudflare deployment and admin surface from the per-project Myco install.
 
-- `collective_search`
-- `collective_projects`
-- `collective_project`
+## Update
 
-## Worker-hosted UI
+Update the Collective CLI directly:
 
-`packages/myco-collective/worker` serves the built admin SPA using Cloudflare static assets. API, MCP, and health routes run the Worker first; all other routes fall through to the packaged UI with SPA-style not-found handling.
+```bash
+npm update -g @goondocks/myco-collective
+myco-collective upgrade
+```
 
-Both the team worker and the Collective worker include Cloudflare's `global_fetch_strictly_public` compatibility flag. The v1 design depends on same-account Worker-to-Worker fetches over `workers.dev` during project registration, settings sync, heartbeat updates, and Collective query fan-out, and Cloudflare returns error `1042` without that flag.
+If you also use the standalone team CLI, update that separately:
+
+```bash
+npm update -g @goondocks/myco-team
+myco-team upgrade
+```
+
+Project-local Myco installs still update through `@goondocks/myco`.
+
+## Daily use
+
+Most day-to-day work stays in the normal Myco surfaces:
+
+- developers use `myco` locally
+- the local Team page shows whether the project is connected to a Collective
+- local agents use `collective_search`, `collective_projects`, and `collective_project` when a Collective is connected
+
+The Collective UI is for operators who need to add projects, change shared settings, or run cross-project searches directly.
+
+## Authentication
+
+The Collective uses separate credentials for:
+
+- the admin UI and admin API
+- the cloud MCP surface
+- project-to-Collective worker communication
+
+Rotate them with:
+
+```bash
+myco-collective rotate-tokens admin
+myco-collective rotate-tokens mcp
+myco-collective rotate-tokens all
+```
+
+## Remove
+
+```bash
+myco-collective destroy
+```
+
+If remote cleanup fails, the CLI keeps the local config so you can retry safely.
