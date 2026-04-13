@@ -9,6 +9,10 @@
   "publishConfig": {
     "access": "public"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/goondocks-co/myco.git"
+  },
   "dependencies": {
     "yaml": "^2.4.0"
   },
