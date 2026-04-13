@@ -7,6 +7,7 @@
  * PowerManager.
  */
 
+import { resolve } from 'node:path';
 import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { PowerManager } from './power.js';
@@ -57,6 +58,12 @@ export async function registerScheduledTasks(
   const { loadAllTasks } = await import('@myco/agent/registry.js');
   const allTasks = Array.from(loadAllTasks(definitionsDir, vaultDir).values());
 
+  // Map task name → agent id for instruction builders that need it
+  const taskAgentMap = new Map<string, string>();
+  for (const task of allTasks) {
+    taskAgentMap.set(task.name, task.agent);
+  }
+
   // Seed lastRun from DB: find the most recent completed/failed run per task
   const initialLastRuns: Record<string, number> = {};
   try {
@@ -83,7 +90,8 @@ export async function registerScheduledTasks(
       const { runAgent } = await import('@myco/agent/executor.js');
 
       const taskConfig = config.agent.tasks?.[taskName];
-      const built = buildTaskInstruction(taskName, taskConfig?.params);
+      const projectRoot = resolve(vaultDir, '..');
+      const built = buildTaskInstruction(taskName, taskConfig?.params, taskAgentMap.get(taskName), projectRoot);
 
       // Short-circuit: instruction-required tasks must not dispatch
       // the agent when there's no work. For skill-generate this means

@@ -109,6 +109,8 @@ export interface ListSessionsOptions {
   status?: string;
   agent?: string;
   search?: string;
+  /** Only return sessions created after this epoch-seconds timestamp. */
+  since?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +292,10 @@ function buildSessionsWhere(
     conditions.push(`(title LIKE ? OR id LIKE ?)`);
     const pattern = `%${options.search}%`;
     params.push(pattern, pattern);
+  }
+  if (options.since !== undefined) {
+    conditions.push('created_at > ?');
+    params.push(options.since);
   }
 
   return {

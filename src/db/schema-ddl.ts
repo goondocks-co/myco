@@ -362,6 +362,7 @@ export const SKILL_CANDIDATES_TABLE = `
     status          TEXT NOT NULL DEFAULT 'identified',
     source_ids      TEXT NOT NULL DEFAULT '[]',
     skill_id        TEXT,
+    supersedes      TEXT,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
     approved_at     INTEGER,
@@ -505,6 +506,7 @@ export const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_sessions_processed ON sessions (processed)',
   'CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions (started_at)',
   'CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions (agent)',
+  'CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions (created_at)',
 
   // Prompt batches
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_session_id ON prompt_batches (session_id)',

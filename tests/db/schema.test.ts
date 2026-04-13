@@ -39,7 +39,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(10);
+      expect(SCHEMA_VERSION).toBe(11);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 

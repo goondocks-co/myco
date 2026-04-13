@@ -9,12 +9,20 @@
  * Each builder corresponds to a task that needs pre-assembled context.
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { listCandidates } from '@myco/db/queries/skill-candidates.js';
-import { getSpore, listSporeIdsSince } from '@myco/db/queries/spores.js';
-import { getSession } from '@myco/db/queries/sessions.js';
+import { getSpore, listSporeIdsSince, listSpores } from '@myco/db/queries/spores.js';
+import { getSession, listSessions } from '@myco/db/queries/sessions.js';
 import { listSkillRecords } from '@myco/db/queries/skill-records.js';
 import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
+import { listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
+import { getState, setState } from '@myco/db/queries/agent-state.js';
 import { epochSeconds } from '@myco/constants.js';
+import {
+  descriptionSimilarity,
+  DESCRIPTION_DUPLICATE_THRESHOLD,
+} from './tools/skill-validator.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -45,6 +53,16 @@ export interface BuiltTaskInstruction {
 
 /** Task name for the skill-evolve pipeline step. */
 export const SKILL_EVOLVE_TASK = 'skill-evolve';
+
+/** Task name for the skill-survey pipeline step. */
+export const SKILL_SURVEY_TASK = 'skill-survey';
+
+/** Caps for pre-assembled survey context. */
+const SURVEY_MAX_WISDOM_SPORES = 30;
+const SURVEY_MAX_SESSIONS = 15;
+
+/** State key for the survey watermark. */
+const SURVEY_WATERMARK_KEY = 'skill-survey-watermark';
 
 // ---------------------------------------------------------------------------
 // skill-generate
@@ -104,11 +122,111 @@ export function buildSkillGenerateInstruction(): BuiltTaskInstruction | undefine
 }
 
 // ---------------------------------------------------------------------------
+// skill-survey
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the instruction for a skill-survey run.
+ *
+ * Pre-assembles a baseline context document from the vault so the explore
+ * phase gets zero-turn orientation. Caps the input to keep turn budgets
+ * predictable regardless of time gaps between runs. Tracks a watermark
+ * via agent_state so subsequent runs process incrementally.
+ */
+export function buildSkillSurveyInstruction(
+  agentId: string,
+): BuiltTaskInstruction {
+  const now = epochSeconds();
+
+  // Read watermark — 0 means "never surveyed, scan everything"
+  const watermarkState = getState(agentId, SURVEY_WATERMARK_KEY);
+  const watermarkEpoch = watermarkState ? Number(watermarkState.value) : 0;
+  const sinceFilter = watermarkEpoch > 0 ? { since: watermarkEpoch } : {};
+
+  const parts: string[] = [
+    '## Pre-assembled Vault Context',
+    '',
+    `Survey watermark: ${watermarkEpoch === 0 ? 'first run (full scan)' : new Date(watermarkEpoch * 1000).toISOString()}`,
+    '',
+  ];
+
+  // 1. Digest — high-level landscape in one shot
+  const digests = listDigestExtracts(agentId);
+  if (digests.length > 0) {
+    parts.push('### Digest');
+    for (const d of digests) {
+      parts.push(`**Tier ${d.tier}** (${d.content.length} chars, generated ${new Date(d.generated_at * 1000).toISOString()}):`);
+      parts.push(d.content);
+      parts.push('');
+    }
+  }
+
+  // 2. Wisdom spores — highest signal observations
+  const wisdomSpores = listSpores({
+    observation_type: 'wisdom',
+    limit: SURVEY_MAX_WISDOM_SPORES,
+    ...sinceFilter,
+  });
+  if (wisdomSpores.length > 0) {
+    parts.push(`### Wisdom Spores (${wisdomSpores.length})`);
+    for (const s of wisdomSpores) {
+      parts.push(`- **${s.id}** (importance ${s.importance}): ${s.content.slice(0, 300)}`);
+    }
+    parts.push('');
+  }
+
+  // 3. Recent decisions and gotchas
+  const decisions = listSpores({
+    observation_type: 'decision',
+    limit: 20,
+    ...sinceFilter,
+  });
+  const gotchas = listSpores({
+    observation_type: 'gotcha',
+    limit: 10,
+    ...sinceFilter,
+  });
+  if (decisions.length > 0 || gotchas.length > 0) {
+    parts.push(`### Decisions (${decisions.length}) & Gotchas (${gotchas.length})`);
+    for (const s of [...decisions, ...gotchas]) {
+      parts.push(`- **${s.observation_type}** ${s.id}: ${s.content.slice(0, 200)}`);
+    }
+    parts.push('');
+  }
+
+  // 4. Recent sessions
+  const sessions = listSessions({
+    limit: SURVEY_MAX_SESSIONS,
+    ...sinceFilter,
+  });
+  if (sessions.length > 0) {
+    parts.push(`### Recent Sessions (${sessions.length})`);
+    for (const s of sessions) {
+      parts.push(`- **${s.id}**: ${s.title ?? '(untitled)'} — ${(s.summary ?? '').slice(0, 200)}`);
+    }
+    parts.push('');
+  }
+
+  // 5. Current skill inventory (for dedup awareness)
+  const activeSkills = listSkillRecords({ status: 'active', limit: 100 });
+  parts.push(`### Active Skills (${activeSkills.length})`);
+  for (const s of activeSkills) {
+    parts.push(`- **${s.name}**: ${s.description.slice(0, 150)}`);
+  }
+  parts.push('');
+
+  // Advance watermark
+  setState(agentId, SURVEY_WATERMARK_KEY, String(now), now);
+
+  return { instruction: parts.join('\n') };
+}
+
+// ---------------------------------------------------------------------------
 // skill-evolve
 // ---------------------------------------------------------------------------
 
 export const SKILL_EVOLVE_DEFAULT_ASSESS_INTERVAL_HOURS = 24;
-export const SKILL_EVOLVE_DEFAULT_MAX_SKILLS_PER_RUN = 5;
+export const SKILL_EVOLVE_DEFAULT_MAX_SKILLS_PER_RUN = 8;
 
 const SECONDS_PER_HOUR = 3600;
 
@@ -120,6 +238,14 @@ interface SkillAssessmentEntry {
   description: string;
   contentSnapshot: string;
   newSporeIds: string[];
+}
+
+/** Pre-computed overlap between two skills for the inventory phase. */
+interface SkillOverlapPair {
+  skillA: string;
+  skillB: string;
+  jaccard: number;
+  verdict: 'potential-merge' | 'potential-narrow' | 'distinct';
 }
 
 /**
@@ -137,6 +263,7 @@ interface SkillAssessmentEntry {
  */
 export function buildSkillEvolveInstruction(
   params?: Record<string, string | number | boolean>,
+  projectRoot?: string,
 ): string {
   const assessIntervalHours = Number(params?.assess_interval_hours ?? SKILL_EVOLVE_DEFAULT_ASSESS_INTERVAL_HOURS);
   const maxSkillsPerRun = Number(params?.max_skills_per_run ?? SKILL_EVOLVE_DEFAULT_MAX_SKILLS_PER_RUN);
@@ -163,15 +290,29 @@ export function buildSkillEvolveInstruction(
     const newSporeIds = listSporeIdsSince(knowledgeWatermark, 10);
     if (newSporeIds.length === 0) continue;
 
-    const lineage = listLineageForSkill(skill.id, 1);
-    if (lineage.length === 0) continue;
+    // Read current content from disk (not lineage snapshot which can be stale
+    // if the skill was evolved between lineage capture and this run).
+    let contentSnapshot = '';
+    if (projectRoot && skill.path) {
+      try {
+        contentSnapshot = readFileSync(resolve(projectRoot, skill.path), 'utf-8');
+      } catch {
+        // File missing — fall back to lineage snapshot
+        const lineage = listLineageForSkill(skill.id, 1);
+        contentSnapshot = lineage[0]?.content_snapshot ?? '';
+      }
+    } else {
+      const lineage = listLineageForSkill(skill.id, 1);
+      contentSnapshot = lineage[0]?.content_snapshot ?? '';
+    }
+    if (!contentSnapshot) continue;
 
     needsAssessment.push({
       id: skill.id,
       name: skill.name,
       generation: skill.generation,
       description: skill.description,
-      contentSnapshot: lineage[0].content_snapshot,
+      contentSnapshot,
       newSporeIds,
     });
 
@@ -182,6 +323,25 @@ export function buildSkillEvolveInstruction(
 
   if (needsAssessment.length === 0) {
     return 'No skills need assessment. All active skills are current or were recently assessed. Report skip via vault_report and finish.';
+  }
+
+  // Pre-compute pairwise similarity for the inventory phase.
+  // Runs after the early-exit so we don't compute O(n²) scores for no-op runs.
+  const overlaps: SkillOverlapPair[] = [];
+  for (let i = 0; i < allSkills.length; i++) {
+    for (let j = i + 1; j < allSkills.length; j++) {
+      const a = allSkills[i];
+      const b = allSkills[j];
+      const jaccard = descriptionSimilarity(a.description, b.description);
+      if (jaccard >= DESCRIPTION_DUPLICATE_THRESHOLD * 0.75) {
+        overlaps.push({
+          skillA: a.name,
+          skillB: b.name,
+          jaccard: Math.round(jaccard * 100) / 100,
+          verdict: jaccard >= DESCRIPTION_DUPLICATE_THRESHOLD ? 'potential-merge' : 'potential-narrow',
+        });
+      }
+    }
   }
 
   const parts: string[] = [
@@ -201,6 +361,22 @@ export function buildSkillEvolveInstruction(
     parts.push('### Current Content');
     parts.push('');
     parts.push(skill.contentSnapshot);
+  }
+
+  // Inventory section — all active skills for cross-skill analysis
+  parts.push('');
+  parts.push('## All Active Skills (for inventory analysis)');
+  for (const skill of allSkills) {
+    parts.push(`- **${skill.name}** (gen ${skill.generation}): ${skill.description.slice(0, 200)}`);
+  }
+
+  if (overlaps.length > 0) {
+    parts.push('');
+    parts.push('## Pre-computed Description Similarity');
+    parts.push('Pairs flagged above threshold (mechanically computed — validate before acting):');
+    for (const o of overlaps) {
+      parts.push(`- ${o.skillA} <-> ${o.skillB}: ${o.jaccard} (${o.verdict})`);
+    }
   }
 
   return parts.join('\n');
@@ -225,12 +401,16 @@ export function buildSkillEvolveInstruction(
 export function buildTaskInstruction(
   taskName: string,
   taskParams?: Record<string, string | number | boolean>,
+  agentId?: string,
+  projectRoot?: string,
 ): BuiltTaskInstruction | undefined {
   switch (taskName) {
     case SKILL_GENERATE_TASK:
       return buildSkillGenerateInstruction();
+    case SKILL_SURVEY_TASK:
+      return agentId ? buildSkillSurveyInstruction(agentId) : undefined;
     case SKILL_EVOLVE_TASK: {
-      const instruction = buildSkillEvolveInstruction(taskParams);
+      const instruction = buildSkillEvolveInstruction(taskParams, projectRoot);
       return instruction ? { instruction } : undefined;
     }
     default:
@@ -250,5 +430,7 @@ export function buildTaskInstruction(
  * so this returns false for them.
  */
 export function isInstructionRequiredTask(taskName: string): boolean {
-  return taskName === SKILL_GENERATE_TASK || taskName === SKILL_EVOLVE_TASK;
+  return taskName === SKILL_GENERATE_TASK
+    || taskName === SKILL_EVOLVE_TASK
+    || taskName === SKILL_SURVEY_TASK;
 }

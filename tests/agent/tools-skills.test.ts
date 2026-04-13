@@ -237,7 +237,7 @@ describe('vault skill tools', () => {
         return created.id;
       }
 
-      it('rejects a new candidate whose topic overlaps a dismissed candidate', async () => {
+      it('allows creation with warning when topic overlaps a dismissed candidate', async () => {
         await seedCandidate('How to add a new MCP tool to the Myco vault daemon', 'dismissed');
 
         const t = makeTool();
@@ -250,11 +250,13 @@ describe('vault skill tools', () => {
             },
             undefined,
           ),
-        ) as { error?: string; existing_candidate?: { status: string } };
+        ) as { id?: string; warning?: string; similar_dismissed_candidate?: { topic: string } };
 
-        expect(result.error).toBeDefined();
-        expect(result.error).toMatch(/dismissed/);
-        expect(result.existing_candidate?.status).toBe('dismissed');
+        // Dismissed overlap produces a soft warning, not a hard rejection
+        expect(result.id).toBeDefined();
+        expect(result.warning).toBeDefined();
+        expect(result.warning).toMatch(/dismissed/);
+        expect(result.similar_dismissed_candidate?.topic).toMatch(/MCP tool/);
       });
 
       it('rejects a new candidate whose topic overlaps a generated candidate', async () => {

@@ -6,7 +6,7 @@
  */
 
 /** Maximum lines for a generated skill. */
-export const MAX_SKILL_LINES = 500;
+export const MAX_SKILL_LINES = 800;
 
 /** Required frontmatter fields for Myco-managed skills. */
 export const REQUIRED_FRONTMATTER_FIELDS = ['name', 'description', 'managed_by', 'user-invocable', 'allowed-tools'] as const;
@@ -103,22 +103,25 @@ function stemToken(word: string): string {
  * short/noise tokens, with light stemming applied. Used for all
  * similarity metrics in this file.
  */
+/** Stopwords excluded from token sets — hoisted to module level to avoid
+ *  re-allocating on every `tokenSet()` call (matters in O(n²) loops). */
+const STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were',
+  'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did',
+  'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can',
+  'this', 'that', 'these', 'those', 'with', 'from', 'into', 'onto',
+  'for', 'when', 'where', 'which', 'what', 'who', 'how', 'why',
+  'use', 'uses', 'used', 'using', 'not', 'also', 'than', 'then',
+  'ensure', 'ensures', 'make', 'makes',
+]);
+
 function tokenSet(text: string): Set<string> {
-  const stopwords = new Set([
-    'the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were',
-    'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did',
-    'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can',
-    'this', 'that', 'these', 'those', 'with', 'from', 'into', 'onto',
-    'for', 'when', 'where', 'which', 'what', 'who', 'how', 'why',
-    'use', 'uses', 'used', 'using', 'not', 'also', 'than', 'then',
-    'ensure', 'ensures', 'make', 'makes',
-  ]);
   return new Set(
     text
       .toLowerCase()
       .replace(/[^a-z0-9_\s]/g, ' ')
       .split(/\s+/)
-      .filter((w) => w.length >= 4 && !stopwords.has(w))
+      .filter((w) => w.length >= 4 && !STOPWORDS.has(w))
       .map(stemToken),
   );
 }
@@ -228,7 +231,25 @@ export function checkFrontmatterPreservation(existing: string, incoming: string)
   for (const field of PROTECTED_FRONTMATTER_FIELDS) {
     const oldValue = extractFrontmatterField(existing, field);
     const newValue = extractFrontmatterField(incoming, field);
-    if (oldValue !== undefined && newValue !== undefined && oldValue !== newValue) {
+    if (oldValue === undefined || newValue === undefined) continue;
+
+    // For allowed-tools, normalize before comparing — YAML block-list syntax
+    // (- Read\n- Edit) and inline syntax (Read, Edit) are semantically identical.
+    if (field === 'allowed-tools') {
+      const oldParsed = parseAllowedTools(oldValue);
+      const newParsed = parseAllowedTools(newValue);
+      if (oldParsed && newParsed) {
+        const oldSet = new Set(oldParsed);
+        const newSet = new Set(newParsed);
+        const changed = oldSet.size !== newSet.size || [...oldSet].some(t => !newSet.has(t));
+        if (changed) {
+          violations.push(`${field}: was [${oldParsed.join(', ')}], changed to [${newParsed.join(', ')}]`);
+        }
+        continue;
+      }
+    }
+
+    if (oldValue !== newValue) {
       violations.push(`${field}: was "${oldValue}", changed to "${newValue}"`);
     }
   }

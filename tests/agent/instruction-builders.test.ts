@@ -278,7 +278,7 @@ describe('isInstructionRequiredTask', () => {
 
   it('returns false for generic tasks like full-intelligence', () => {
     expect(isInstructionRequiredTask('full-intelligence')).toBe(false);
-    expect(isInstructionRequiredTask('skill-survey')).toBe(false);
+    expect(isInstructionRequiredTask('skill-survey')).toBe(true);
   });
 });
 

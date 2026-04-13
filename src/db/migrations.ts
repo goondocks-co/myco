@@ -38,6 +38,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 8, migrate: (db) => migrateV7ToV8(db) },
   { version: 9, migrate: (db) => migrateV8ToV9(db) },
   { version: 10, migrate: (db) => migrateV9ToV10(db) },
+  { version: 11, migrate: (db) => migrateV10ToV11(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -578,6 +579,39 @@ function migrateV9ToV10(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(10, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
+ * Version 11 adds supersedes tracking to skill candidates.
+ *
+ *   - skill_candidates.supersedes TEXT (nullable) — JSON array of skill
+ *     record names that this candidate would replace. Used by the skill
+ *     survey task to create domain-level candidates that explicitly
+ *     subsume existing narrow skills.
+ *
+ * Idempotent: the ALTER is wrapped in try/catch so re-runs tolerate the
+ * existing column.
+ */
+function migrateV10ToV11(db: Database): void {
+  db.exec('BEGIN');
+  try {
+    try {
+      db.exec('ALTER TABLE skill_candidates ADD COLUMN supersedes TEXT');
+    } catch {
+      // Column already exists -- safe to ignore on re-run
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(11, epochSeconds());
 
     db.exec('COMMIT');
   } catch (err) {

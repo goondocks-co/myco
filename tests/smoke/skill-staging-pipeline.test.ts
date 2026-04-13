@@ -111,7 +111,7 @@ describe('smoke: skill staging pipeline (real on-disk SQLite)', () => {
       .prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1')
       .get() as { version: number };
     expect(row.version).toBe(SCHEMA_VERSION);
-    expect(row.version).toBe(10);
+    expect(row.version).toBe(11);
 
     const cols = db
       .prepare('PRAGMA table_info(skill_candidates)')

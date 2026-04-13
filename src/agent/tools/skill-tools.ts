@@ -108,7 +108,7 @@ export function createSkillTools(deps: VaultToolDeps) {
     const common = `already has an existing candidate with a similar topic: "${match.topic}"`;
     switch (match.status) {
       case CANDIDATE_STATUS.DISMISSED:
-        return `Candidate rejected: the vault ${common} that was previously dismissed. Do not re-identify dismissed topics.`;
+        return `Note: similar to dismissed candidate "${match.topic}". If this is a broader domain that subsumes the dismissed topic, creation is allowed.`;
       case CANDIDATE_STATUS.GENERATED:
         return `Candidate rejected: the vault ${common} that was already fulfilled by a generated skill. Do not re-identify.`;
       case CANDIDATE_STATUS.APPROVED:
@@ -419,6 +419,7 @@ export function createSkillTools(deps: VaultToolDeps) {
       ),
       source_ids: z.string().optional().describe('JSON array of source spore/entity IDs'),
       skill_id: z.string().optional().describe('Associated skill record ID (after materialization)'),
+      supersedes: z.string().optional().describe('JSON array of skill record names this candidate would replace (for domain-level candidates that subsume existing narrow skills)'),
       limit: z.number().optional().describe('Maximum candidates to return (for list)'),
     },
     async (args) => {
@@ -446,11 +447,20 @@ export function createSkillTools(deps: VaultToolDeps) {
             return textResult({ error: 'topic and rationale are required for create action' });
           }
 
+          // Parse supersedes list (skill names this candidate would replace)
+          let supersedesNames: string[] = [];
+          if (args.supersedes) {
+            try { supersedesNames = JSON.parse(args.supersedes); } catch { /* malformed */ }
+          }
+          const supersedesSet = new Set(supersedesNames);
+
           // Guard 1: reject if an active skill already covers this topic.
           // Checks whether all significant words from a skill name appear in the topic.
+          // Superseded skills are exempt from this check.
           const activeSkills = listSkillRecords({ agent_id: agentId, status: 'active', limit: 100 });
           const topicLower = args.topic.toLowerCase();
           const overlapping = activeSkills.filter((s) => {
+            if (supersedesSet.has(s.name)) return false; // exempt superseded skills
             const nameWords = s.name.split('-').filter((w: string) => w.length > 2);
             if (nameWords.length < 2) return false;
             return nameWords.every((w: string) => topicLower.includes(w));
@@ -466,18 +476,24 @@ export function createSkillTools(deps: VaultToolDeps) {
           // overlapping topic. The skill-survey prompt tells the agent to
           // check dismissed/generated candidates before re-identifying,
           // but self-grading is unreliable so the check is enforced here.
+          // Dismissed candidates produce a soft warning rather than a hard rejection.
           const allExisting = listCandidates({ agent_id: agentId, limit: 500 });
           const match = findOverlappingCandidate(args.topic, allExisting);
+          let dismissedMatch: typeof match | undefined;
           if (match) {
-            return textResult({
-              error: candidateOverlapError(match.candidate),
-              existing_candidate: {
-                id: match.candidate.id,
-                status: match.candidate.status,
-                topic: match.candidate.topic,
-              },
-              similarity: match.score,
-            });
+            if (match.candidate.status === CANDIDATE_STATUS.DISMISSED) {
+              dismissedMatch = match;
+            } else {
+              return textResult({
+                error: candidateOverlapError(match.candidate),
+                existing_candidate: {
+                  id: match.candidate.id,
+                  status: match.candidate.status,
+                  topic: match.candidate.topic,
+                },
+                similarity: match.score,
+              });
+            }
           }
 
           const now = epochSeconds();
@@ -490,9 +506,18 @@ export function createSkillTools(deps: VaultToolDeps) {
             confidence: args.confidence,
             status: args.status,
             source_ids: args.source_ids,
+            supersedes: args.supersedes,
             created_at: now,
             updated_at: now,
           });
+          const result: Record<string, unknown> = { ...candidate };
+          if (dismissedMatch) {
+            result.warning = candidateOverlapError(dismissedMatch.candidate);
+            result.similar_dismissed_candidate = {
+              id: dismissedMatch.candidate.id,
+              topic: dismissedMatch.candidate.topic,
+            };
+          }
           notify(vaultDir, {
             domain: 'skills',
             type: 'skill.surveyed',
@@ -501,7 +526,7 @@ export function createSkillTools(deps: VaultToolDeps) {
             link: '/skills?tab=candidates',
             metadata: { candidateId: candidate.id, topic: args.topic },
           });
-          return textResult(candidate);
+          return textResult(result);
         }
 
         case 'update': {
@@ -514,6 +539,7 @@ export function createSkillTools(deps: VaultToolDeps) {
             ...(args.status !== undefined ? { status: args.status } : {}),
             ...(args.source_ids !== undefined ? { source_ids: args.source_ids } : {}),
             ...(args.skill_id !== undefined ? { skill_id: args.skill_id } : {}),
+            ...(args.supersedes !== undefined ? { supersedes: args.supersedes } : {}),
             updated_at: now,
           });
           if (!updated) return textResult({ error: `Candidate not found: ${args.id}` });

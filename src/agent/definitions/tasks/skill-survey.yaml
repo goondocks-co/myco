@@ -1,15 +1,16 @@
 name: skill-survey
 displayName: Skill Candidate Survey
 description: >-
-  Analyze vault knowledge for procedural skill candidates. Identifies
-  clusters of related sessions, spores, and plans that describe how
-  to accomplish tasks in this project.
+  Analyze vault knowledge for procedural domain candidates. Identifies
+  broad categories of recurring developer work — not individual micro-
+  procedures — that warrant guided skill context.
 agent: myco-agent
 prompt: >-
-  Survey the vault knowledge graph for procedural skill candidates.
+  Survey the vault knowledge graph for procedural domain candidates.
+  The instruction contains pre-assembled vault context.
 isDefault: false
 model: claude-sonnet-4-6
-maxTurns: 65
+maxTurns: 35
 timeoutSeconds: 600
 schedule:
   enabled: true
@@ -17,167 +18,159 @@ schedule:
   runIn:
     - idle
 phases:
-  - name: explore-spores
+  - name: explore
     prompt: |
-      Identify procedural patterns from spores and entities.
-      You are one of three parallel exploration phases — focus only on spores.
-      Budget is tight — be efficient, not exhaustive.
+      The instruction contains pre-assembled vault context: digest,
+      recent wisdom spores, decisions, gotchas, sessions, and the
+      current skill inventory. Read it carefully — this is your
+      primary input.
 
-      1. Read the digest (vault_read_digest) for a high-level overview.
-         This gives you the landscape in one call.
+      Your goal: identify PROCEDURAL DOMAINS — broad categories of
+      recurring work where a developer benefits from guided context.
 
-      2. Query wisdom spores (vault_spores, observation_type: wisdom).
-         These are highest signal — synthesized from multiple sessions.
+      ## What is a procedural domain?
 
-      3. Query decisions and gotchas (vault_spores, limit 30 each).
-         One page per type is sufficient — don't paginate exhaustively.
+      A domain groups related procedures that share prerequisite
+      knowledge. Think "extending the daemon infrastructure" (covering
+      PowerManager jobs, MCP tools, config writes, notification
+      wiring) — NOT "registering a PowerManager job" alone.
 
-      4. Check vault_entities for high-mention components.
+      Good domain examples:
+      - "Vault schema and data layer extension" (migrations, tables,
+        queries, FTS indexes, constants)
+      - "Agent pipeline task authoring" (YAML anatomy, phases,
+        scheduling, parameter injection, fault tolerance)
+      - "Symbiont integration lifecycle" (manifests, hooks, config
+        directories, capture rules, installer registration)
 
-      Group findings by procedural topic ("how to do X").
-      Stop when you have a clear picture — diminishing returns
-      from additional queries waste turns.
+      Bad examples (too narrow — these are SECTIONS within a domain):
+      - "How to register a PowerManager job"
+      - "Adding an FTS5 index"
+      - "Writing a symbiont capture rule"
+
+      ## Scale guidance
+
+      20-30 broad skills for a complex project is the right order
+      of magnitude. If a topic would be a section heading within a
+      broader skill, it is not its own candidate.
+
+      ## Process
+
+      1. Read the pre-assembled context for orientation.
+
+      2. Use vault tools for TARGETED follow-up on promising
+         clusters. The baseline gives you direction — follow threads
+         that suggest a procedural domain exists.
+
+         Good follow-up queries:
+         - vault_search_fts to find additional sessions touching
+           a domain you spotted in the digest
+         - vault_spores to read full content of high-signal spores
+           summarized in the baseline
+         - vault_entities for components with high mention counts
+           that might anchor a domain
+
+         Do NOT exhaustively paginate or search every keyword.
+         You have ~12 tool calls — use them purposefully.
+
+      3. Group findings into candidate domains. For each domain,
+         note: the core theme, which procedures it covers, and
+         which source items provide evidence.
+
+      Store your domain clusters in working notes for the next phase.
     tools:
       - vault_spores
       - vault_entities
       - vault_edges
-      - vault_read_digest
+      - vault_sessions
+      - vault_search_fts
+      - vault_search_semantic
     maxTurns: 15
     required: true
     readOnly: true
 
-  - name: explore-sessions
+  - name: synthesize-evaluate
     prompt: |
-      Identify procedural workflows from session history.
-      You are one of three parallel exploration phases — focus only on sessions.
-      Budget is tight — be efficient, not exhaustive.
+      The explore phase identified procedural domain clusters from
+      the vault. Now evaluate each and create candidates for domains
+      that pass all criteria.
 
-      1. List recent sessions (vault_sessions, limit 20). Read summaries
-         to identify multi-step workflows and recurring implementation patterns.
-
-      2. Do 2-3 targeted FTS searches for procedural keywords:
-         vault_search_fts with queries like "migration step", "configure install",
-         "refactor debug". Combine related terms in ONE query rather than
-         searching each keyword separately.
-
-      Group findings by procedural topic ("how to do X").
-      Stop when you have a clear picture — you don't need to search
-      every possible keyword.
-    tools:
-      - vault_sessions
-      - vault_search_fts
-    maxTurns: 10
-    required: true
-    readOnly: true
-
-  - name: explore-plans
-    prompt: |
-      Identify procedures from plans and artifacts.
-      You are one of three parallel exploration phases — focus only on plans.
-      Budget is tight — be efficient, not exhaustive.
-
-      Plans contain explicit step-by-step procedures and design decisions.
-      They are often the most directly skill-ready content.
-
-      1. Use vault_search_semantic with 2-3 broad queries to find plans:
-         - "implementation plan design architecture"
-         - "migration setup configuration deployment"
-         Combine related concepts in each query. Do NOT search each
-         keyword separately.
-
-      2. If semantic search returns thin results, do ONE targeted FTS
-         search for a specific procedural term.
-
-      Group findings by procedural topic ("how to do X").
-      Stop when you have coverage — more queries have diminishing returns.
-    tools:
-      - vault_search_semantic
-      - vault_search_fts
-    maxTurns: 22
-    required: true
-    readOnly: true
-
-  - name: evaluate
-    prompt: |
-      Three parallel exploration phases have completed — one explored
-      spores and entities, one explored sessions, one explored plans.
-      Their findings are in the prior context.
-
-      BEFORE creating any candidates, you MUST load the dedup context:
-      1. vault_skill_records (action: list) — all active skills on disk
+      BEFORE creating any candidates, load the dedup context:
+      1. vault_skill_records (action: list) — all active skills
       2. vault_skill_candidates (action: list) — all existing candidates
-      Keep both lists for reference throughout this phase.
+      Keep both lists for reference.
 
-      For each procedural cluster identified, evaluate ALL of these
-      criteria. A candidate must pass EVERY one:
+      ## Evaluation criteria
 
-      1. PROCEDURE TEST: Is this "how to do X in this project"?
-         "What is X" or "X exists" is knowledge, not a skill. Skip it.
+      Each candidate must pass ALL of these at the DOMAIN level:
 
-      2. REPEATABILITY TEST: Will someone need to do this again?
-         Skills are repeatable how-to's for recurring tasks — things
-         a developer will do more than once as the project grows.
-         One-time fixes, bug patches, version-specific workarounds,
-         and already-applied migration steps are NOT skills. They are
-         vault knowledge (spores/wisdom) that should stay as spores.
-         Ask: "if a new contributor joined tomorrow, would they ever
-         need to follow this procedure?" If the answer is "no, it was
-         done once and the result is permanent," it is not a skill.
-         Examples of SKILLS: adding a new symbiont, creating a DB
-         migration, registering an MCP tool, authoring an agent task.
-         NOT skills: fixing a specific bug, applying a one-off schema
-         change, adapting to a framework update, addressing a one-off
-         behavioral change in a dependency.
+      1. PROCEDURE TEST: Does this domain describe "how to do a
+         family of related tasks in this project"? A domain about
+         "what X is" or "X exists" is knowledge, not a skill.
 
-      3. CROSS-SESSION EVIDENCE: Knowledge from 2+ sessions, 3+ source
-         items across sessions, spores, and plans.
+      2. REPEATABILITY TEST: Will developers need these procedures
+         again as the project grows? Domains covering extension
+         points (adding new X, extending Y) are strong candidates.
+         One-time fixes and bug patches are NOT skills.
 
-      4. DEDUPLICATION (mandatory — failures here create real problems):
-         Check BOTH lists from step 0 above.
-         - If an active skill record's name or description covers the
-           same procedure, do NOT create a duplicate. Skip it entirely.
-         - If a non-dismissed candidate covers the same topic, UPDATE
-           that candidate with new evidence instead of creating a new one.
-         - If a generated/dismissed candidate covered this, it was
-           already handled. Do not re-create it.
+      3. BREADTH TEST: Does this domain cover 2+ distinct procedures
+         that share prerequisite knowledge? A single procedure is
+         too narrow — it should be a section within a broader domain.
+         If you can't imagine 3+ major section headings, it's not
+         broad enough.
 
-      5. CONFIDENCE SCORE (0.0-1.0):
-         - Knowledge density (more sources = higher)
+      4. CROSS-SESSION EVIDENCE: Knowledge from 2+ sessions and 3+
+         source items (spores, sessions, plans).
+
+      5. DEDUPLICATION: Check BOTH lists from step 0.
+         - If an active skill already covers this domain, skip.
+         - If the domain SUBSUMES existing narrow skills (the domain
+           is broader and the narrow skills are sections within it),
+           create the candidate with `supersedes` listing the narrow
+           skill names as a JSON array. The dedup gate exempts
+           superseded skills from vocabulary overlap checks.
+         - If a non-dismissed candidate covers the same domain,
+           UPDATE it with new evidence instead of creating.
+         - Dismissed candidates: the gate allows creation with a
+           warning. If the dismissed topic is a narrow subset of
+           your broader domain, proceed.
+
+      6. CONFIDENCE SCORE (0.0-1.0):
+         - Domain breadth (more procedures covered = higher)
          - Cross-session evidence (wider = higher)
-         - Presence of wisdom spores (higher quality signal)
-         - Presence of plans with step-by-step procedures (higher)
+         - Wisdom spore presence (higher quality signal)
+         - Plan presence (step-by-step procedures = higher)
 
-      For each valid candidate, use vault_skill_candidates (action: create)
-      with topic, rationale, confidence, and source_ids (JSON array of
-      {id, type} objects referencing the spores, sessions, and plans).
+      ## Creating candidates
 
-      IMPORTANT: Write the rationale field as markdown. Include these
-      sections in every rationale:
-      - **Procedure verdict**: PASS/FAIL
-      - **Repeatability verdict**: PASS/FAIL with justification
-      - **Cross-session evidence**: session IDs and source count
-      - **Existing coverage**: list the skills/candidates you checked
-        and why this is genuinely new (not "NONE" — name what you checked)
-      Use **bold** for verdicts, numbered lists for steps, `code` for
-      file paths and function names. The rationale is displayed directly
-      to the user in the dashboard.
+      Use vault_skill_candidates (action: create) with:
+      - topic: the domain name (e.g., "Vault Schema and Data Layer Extension")
+      - rationale: markdown with these sections:
+        - **Domain scope**: what procedures this covers (bulleted list)
+        - **Procedure verdict**: PASS/FAIL
+        - **Repeatability verdict**: PASS/FAIL with justification
+        - **Breadth verdict**: PASS/FAIL with section count estimate
+        - **Cross-session evidence**: session IDs and source count
+        - **Existing coverage**: skills/candidates checked and why this
+          is new or broader (name what you checked, not "NONE")
+        - **Supersedes**: which existing narrow skills this replaces
+          (if any)
+      - confidence: 0.0-1.0
+      - source_ids: JSON array of {id, type} objects
+      - supersedes: JSON array of skill names this replaces (or omit)
 
-      If an existing candidate has new evidence, use vault_skill_candidates
-      (action: update) to increase confidence and add source_ids.
+      If an existing candidate has new evidence, use action: update.
 
-      Dismiss candidates whose underlying knowledge has been superseded
-      (action: update, status: dismissed).
+      Dismiss candidates whose underlying knowledge has been
+      superseded (action: update, status: dismissed).
 
-      Report a summary of candidates created, updated, and dismissed
-      using vault_report.
+      Report a summary via vault_report.
     tools:
       - vault_skill_candidates
       - vault_skill_records
       - vault_set_state
       - vault_report
-    maxTurns: 12
+    maxTurns: 15
     required: true
     dependsOn:
-      - explore-spores
-      - explore-sessions
-      - explore-plans
+      - explore

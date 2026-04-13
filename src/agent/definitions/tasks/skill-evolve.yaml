@@ -1,17 +1,17 @@
 name: skill-evolve
 displayName: Skill Evolution
 description: >-
-  Evaluate and evolve existing Myco-managed skills based on new
-  vault knowledge. Only assesses skills with new knowledge since
-  their last assessment, throttled to once per assess_interval_hours.
+  Evaluate and evolve existing Myco-managed skills. Assesses content
+  freshness, identifies merge and narrowness opportunities, and
+  autonomously consolidates the skill inventory.
 agent: myco-agent
 prompt: >-
-  Assess and update skills that have new knowledge since their last
-  assessment. The instruction contains pre-filtered skills with their
-  current content and new spore IDs.
+  Assess and evolve skills that have new knowledge or structural
+  overlap. The instruction contains pre-filtered skills with their
+  content, new spore IDs, and pre-computed similarity analysis.
 isDefault: false
 model: claude-sonnet-4-6
-maxTurns: 40
+maxTurns: 48
 timeoutSeconds: 1200
 schedule:
   enabled: false
@@ -21,75 +21,146 @@ schedule:
   preCondition: has-active-skills
 params:
   assess_interval_hours: 24
-  max_skills_per_run: 5
+  max_skills_per_run: 8
 phases:
+  - name: inventory
+    prompt: |
+      The instruction contains all active skills with descriptions
+      and pre-computed pairwise similarity scores between skills
+      whose descriptions overlap.
+
+      Build a domain map of the current skill inventory:
+
+      1. Read the full skill list and similarity pairs.
+
+      2. For each similarity pair flagged as "potential-merge":
+         - Do the two skills cover genuinely different procedures,
+           or are they overlapping domains?
+         - Would merging them produce a coherent, broader skill?
+
+      3. For each skill, assess its scope:
+         - Is this skill broad enough to justify standalone status?
+         - Or is it a single procedure that belongs as a section
+           within a broader skill?
+         - Compare against the domain-level scope of other skills.
+
+      4. Store inventory analysis via vault_set_state
+         (key: skill-evolve-inventory) as JSON with structure:
+         {
+           "merge_candidates": [
+             { "source": "skill-name-a", "target": "skill-name-b",
+               "reason": "..." }
+           ],
+           "narrow_candidates": [
+             { "skill": "skill-name", "absorb_into": "broader-skill",
+               "reason": "..." }
+           ]
+         }
+
+      Bias toward keeping skills separate when in doubt. Only flag
+      merges/narrows when the overlap is clear and the merged result
+      would be coherent.
+
+      If the instruction says "No skills need assessment", report
+      skip via vault_report and finish.
+    tools:
+      - vault_skill_records
+      - vault_set_state
+      - vault_report
+    maxTurns: 8
+    required: true
+    readOnly: true
+
   - name: assess
     prompt: |
-      The instruction contains skills that have new knowledge since
-      their last assessment. For each skill listed:
+      Read the inventory analysis from vault_state
+      (key: skill-evolve-inventory).
 
-      1. Read the new spores: fetch each ID from new_spore_ids via
-         vault_spores. Understand what changed.
+      There are TWO sources of skills to assess:
 
+      **A. Skills with new knowledge** — listed in the instruction
+      with content snapshots and new spore IDs. For each:
+      1. Read new spores via vault_spores. Understand what changed.
       2. Verify code references: use vault_search_fts to check 3-5
          key file paths and function names from the skill content.
-         Are they still valid? This is bounded — check specific
-         claims, do not search broadly.
+      3. Check the inventory analysis: is this skill also flagged
+         for merge or narrowness?
 
-      3. Classify:
-         - CURRENT — new knowledge doesn't affect this skill's procedures
-         - STALE — new knowledge changes a specific step, path, or gotcha.
-           Note exactly WHAT is new.
-         - DEPRECATED — key code references are gone or the procedure
-           is no longer relevant. Note what's missing.
+      **B. Inventory-flagged skills** — merge_candidates and
+      narrow_candidates from the inventory analysis. These may NOT
+      appear in the instruction (they may have no new knowledge).
+      For each flagged skill not already covered above:
+      1. Read its content via vault_skill_records (action: get).
+      2. Verify the inventory's merge/narrow recommendation by
+         reading both skills' content.
 
-      Bias toward CURRENT. A skill that is 90% accurate is better
-      left alone than rewritten with the risk of losing detail.
+      For ALL skills from both sources, classify with one of:
+         - CURRENT — still accurate, no changes needed.
+         - STALE — new knowledge changes specific steps, paths,
+           or gotchas. Note exactly WHAT is new.
+         - DEPRECATED — key code references are gone or the
+           procedure is no longer relevant. Note what's missing.
+         - MERGE — overlaps significantly with another skill
+           (from inventory analysis). Note the TARGET skill to
+           merge into.
+         - NARROW — too specific for standalone status (from
+           inventory analysis). Note the BROADER skill to absorb
+           into.
 
-      4. Update the skill's properties with the new watermark:
+         Bias toward CURRENT. A skill that is 90% accurate is
+         better left alone than rewritten with risk of losing detail.
+         Only classify MERGE/NARROW when the inventory analysis
+         supports it AND you agree after reading the content.
+
+      5. Update the skill's properties with the new watermark:
          vault_skill_records (action: update, id: <skill_id>,
-         properties: '{"last_assessed_at": <now>, "knowledge_watermark": <now>, "last_classification": "<classification>"}')
+         properties: '{"last_assessed_at": <now>,
+         "knowledge_watermark": <now>,
+         "last_classification": "<classification>"}')
 
-      5. Store classifications via vault_set_state
-         (key: skill-evolve-classifications) as JSON.
+      6. Store classifications via vault_set_state
+         (key: skill-evolve-classifications) as JSON:
+         [{ "skill_id": "...", "name": "...",
+            "classification": "...",
+            "target_skill": "..." (for MERGE/NARROW),
+            "details": "..." }]
 
       Report via vault_report.
 
-      If the instruction says "No skills need assessment", report
-      skip via vault_report and finish immediately.
+      If the instruction says "No skills need assessment" AND the
+      inventory has no merge/narrow candidates, report skip via
+      vault_report and finish.
     tools:
       - vault_spores
       - vault_search_fts
       - vault_skill_records
       - vault_set_state
       - vault_report
-    maxTurns: 20
+    maxTurns: 18
     required: true
+    dependsOn:
+      - inventory
 
-  - name: evolve
+  - name: act
     prompt: |
       Read classifications from vault_state
       (key: skill-evolve-classifications). Parse the JSON.
 
-      For each skill classified as STALE or DEPRECATED:
+      For each classified skill, take the appropriate action:
+
+      ## CURRENT — No action. Skip.
 
       ## STALE — Targeted update
 
       1. Read the current skill content from vault_skill_records
          (action: get).
-
       2. START from the existing content as-is. Copy it verbatim.
-         Then make ONLY the specific changes needed — insert new
-         sections, update incorrect facts, add missing steps.
-
+         Then make ONLY the specific changes needed.
          The diff between old and new should be MINIMAL.
-
-         Protected frontmatter rules (vault_write_skill enforces
-         these and will REJECT writes that violate them):
+         Protected frontmatter rules (enforced by vault_write_skill):
          - user-invocable: copy EXACT value from existing skill
          - allowed-tools: copy EXACT value from existing skill
          - description: do not shorten (>10% reduction is rejected)
-
       3. Write via vault_write_skill with a rationale explaining
          what specifically changed.
 
@@ -98,17 +169,45 @@ phases:
       1. vault_skill_records (action: update, status: retired)
       2. vault_skill_records (action: delete)
 
-      ## CURRENT — No action. Skip.
+      ## MERGE — Absorb into target skill
+
+      1. Read BOTH skills' full content from vault_skill_records
+         (action: get) — the source and the target.
+      2. Write MERGED content to the TARGET skill via
+         vault_write_skill. The merged skill should:
+         - Keep the target skill's name and frontmatter
+         - Incorporate the source skill's procedures as new sections
+         - Preserve all concrete file paths, code patterns, and
+           gotchas from both skills
+         - Have a coherent structure (not just concatenation)
+         Protected frontmatter rules apply to the target.
+      3. Rationale should explain: "Merged <source> into <target>:
+         <what was added>."
+      4. Delete the SOURCE skill: vault_skill_records (action: delete)
+         This cascades (lineage, usage, linked candidates).
+
+      ## NARROW — Absorb into broader skill
+
+      Same as MERGE: read both, write merged content to the broader
+      skill, delete the narrow one. The narrow skill becomes a section
+      within the broader skill.
+
+      ## Important
+
+      - Process MERGE/NARROW actions AFTER STALE updates, so you're
+        merging already-refreshed content.
+      - If vault_write_skill rejects a merge (e.g., dedup gate trips),
+        check the error and adjust content. If truly blocked, skip
+        and report the issue.
 
       Report all actions via vault_report.
     tools:
       - vault_write_skill
       - vault_skill_records
       - vault_skill_candidates
-      - vault_state
       - vault_search_fts
       - vault_report
-    maxTurns: 20
+    maxTurns: 18
     required: true
     dependsOn:
       - assess
