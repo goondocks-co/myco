@@ -12,7 +12,7 @@ import { getDatabase } from '@myco/db/client.js';
 // ---------------------------------------------------------------------------
 
 /** Tables that participate in vector embedding. */
-export const EMBEDDABLE_TABLES = ['sessions', 'spores', 'plans', 'artifacts'] as const;
+export const EMBEDDABLE_TABLES = ['sessions', 'spores', 'plans', 'artifacts', 'skill_records'] as const;
 
 /** TypeScript type for valid embeddable table names. */
 export type EmbeddableTable = (typeof EMBEDDABLE_TABLES)[number];
@@ -23,10 +23,11 @@ export const EMBEDDABLE_TEXT_COLUMNS: Record<EmbeddableTable, string> = {
   spores: 'content',
   plans: 'content',
   artifacts: 'content',
+  skill_records: 'description',
 };
 
 /** Error message for invalid table names. */
-const INVALID_TABLE_MSG = 'Invalid table name — must be one of: sessions, spores, plans, artifacts';
+const INVALID_TABLE_MSG = 'Invalid table name — must be one of: sessions, spores, plans, artifacts, skill_records';
 
 /** Default number of rows returned by getUnembedded. */
 const DEFAULT_UNEMBEDDED_LIMIT = 100;
@@ -73,7 +74,7 @@ export function getUnembedded(
   const db = getDatabase();
   const textCol = EMBEDDABLE_TEXT_COLUMNS[table as EmbeddableTable];
   const contentFilter = table === 'sessions' ? ' AND summary IS NOT NULL' : '';
-  const statusFilter = table === 'spores' ? " AND status = 'active'" : '';
+  const statusFilter = (table === 'spores' || table === 'skill_records') ? " AND status = 'active'" : '';
 
   return db.prepare(
     `SELECT id, created_at, ${textCol} AS text
@@ -94,19 +95,21 @@ export function getEmbeddingQueueDepth(): {
 
   const queueRow = db.prepare(`
     SELECT
-      (SELECT COUNT(*) FROM sessions  WHERE embedded = 0 AND summary IS NOT NULL) +
-      (SELECT COUNT(*) FROM spores    WHERE embedded = 0 AND status = 'active') +
-      (SELECT COUNT(*) FROM plans     WHERE embedded = 0 AND content IS NOT NULL) +
-      (SELECT COUNT(*) FROM artifacts WHERE embedded = 0 AND content IS NOT NULL)
+      (SELECT COUNT(*) FROM sessions      WHERE embedded = 0 AND summary IS NOT NULL) +
+      (SELECT COUNT(*) FROM spores        WHERE embedded = 0 AND status = 'active') +
+      (SELECT COUNT(*) FROM plans         WHERE embedded = 0 AND content IS NOT NULL) +
+      (SELECT COUNT(*) FROM artifacts     WHERE embedded = 0 AND content IS NOT NULL) +
+      (SELECT COUNT(*) FROM skill_records WHERE embedded = 0 AND status = 'active')
     AS cnt
   `).get() as { cnt: number };
 
   const embeddedRow = db.prepare(`
     SELECT
-      (SELECT COUNT(*) FROM sessions  WHERE embedded = 1) +
-      (SELECT COUNT(*) FROM spores    WHERE embedded = 1) +
-      (SELECT COUNT(*) FROM plans     WHERE embedded = 1) +
-      (SELECT COUNT(*) FROM artifacts WHERE embedded = 1)
+      (SELECT COUNT(*) FROM sessions      WHERE embedded = 1) +
+      (SELECT COUNT(*) FROM spores        WHERE embedded = 1) +
+      (SELECT COUNT(*) FROM plans         WHERE embedded = 1) +
+      (SELECT COUNT(*) FROM artifacts     WHERE embedded = 1) +
+      (SELECT COUNT(*) FROM skill_records WHERE embedded = 1)
     AS cnt
   `).get() as { cnt: number };
 

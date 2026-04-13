@@ -17,6 +17,7 @@ export interface DomainMetadata {
   session_id?: string;
   observation_type?: string;
   project_root?: string;
+  name?: string;
 }
 
 /** Full metadata stored per vector in the VectorStore. */
@@ -32,6 +33,7 @@ export interface EmbeddingMetadata {
   session_id?: string;
   observation_type?: string;
   project_root?: string;
+  name?: string;
 }
 
 /** Result from similarity search. */

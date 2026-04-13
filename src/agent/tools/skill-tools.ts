@@ -61,7 +61,7 @@ import { textResult, type VaultToolDeps } from './types.js';
 // ---------------------------------------------------------------------------
 
 export function createSkillTools(deps: VaultToolDeps) {
-  const { agentId, machineId, projectRoot, vaultDir, recordTurn } = deps;
+  const { agentId, machineId, projectRoot, vaultDir, recordTurn, embeddingManager } = deps;
 
   /**
    * Find the best-matching existing candidate (if any) whose topic
@@ -623,6 +623,7 @@ export function createSkillTools(deps: VaultToolDeps) {
           if (!args.id) return textResult({ error: 'id is required for delete action' });
           const result = deleteSkillRecordCascade(args.id);
           if (!result) return textResult({ error: `Skill record not found: ${args.id}` });
+          try { embeddingManager?.onRemoved('skill_records', result.id); } catch { /* best-effort */ }
           // Disk + symlink cleanup (best-effort)
           const root = projectRoot ?? process.cwd();
           if (!/[/\\]|\.\./.test(result.name)) {
@@ -759,6 +760,10 @@ export function createSkillTools(deps: VaultToolDeps) {
           recordId: result.id,
           generation: result.generation,
         });
+        embeddingManager?.onContentWritten('skill_records', result.id, args.description, {
+          status: 'active',
+          name: args.name,
+        }).catch(() => {});
         return textResult(result);
       }
 
@@ -831,6 +836,10 @@ export function createSkillTools(deps: VaultToolDeps) {
         recordId,
         generation,
       });
+      embeddingManager?.onContentWritten('skill_records', recordId, args.description, {
+        status: 'active',
+        name: args.name,
+      }).catch(() => {});
 
       recordTurn('vault_write_skill', args);
       return textResult({
@@ -1015,6 +1024,10 @@ export function createSkillTools(deps: VaultToolDeps) {
         recordId: result.id,
         generation: result.generation,
       });
+      embeddingManager?.onContentWritten('skill_records', result.id, manifest.description, {
+        status: 'active',
+        name: manifest.name,
+      }).catch(() => {});
 
       return textResult(result);
     },

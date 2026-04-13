@@ -378,6 +378,7 @@ export const SKILL_RECORDS_TABLE = `
     display_name    TEXT NOT NULL,
     description     TEXT NOT NULL,
     status          TEXT NOT NULL DEFAULT 'active',
+    embedded        INTEGER DEFAULT 0,
     generation      INTEGER NOT NULL DEFAULT 1,
     candidate_id    TEXT REFERENCES skill_candidates(id),
     source_ids      TEXT NOT NULL DEFAULT '[]',
