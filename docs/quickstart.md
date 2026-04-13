@@ -35,6 +35,19 @@ Or install manually:
 npm install -g @goondocks/myco
 ```
 
+## Upgrade Existing Installs
+
+Existing users upgrade the main product the same way:
+
+```bash
+npm update -g @goondocks/myco
+```
+
+That updates the local CLI, daemon, hooks, dashboard, and the built-in team-sync workflow. If you later install one of the standalone operator CLIs, the Operations page will detect and apply updates for those installed Myco packages too. You do not need to install extra packages unless you want one of the standalone operator CLIs:
+
+- `@goondocks/myco-team` for direct team-worker administration commands
+- `@goondocks/myco-collective` for cross-project Collective administration
+
 ## Set Up Your Project
 
 ```bash
@@ -167,3 +180,27 @@ curl http://localhost:11434/api/tags
 # For LM Studio
 curl http://localhost:1234/v1/models
 ```
+
+## Optional Operator CLIs
+
+Most users only need `@goondocks/myco`. Install the extra CLIs only when you want their dedicated operator surfaces.
+
+### Standalone team CLI
+
+```bash
+npm install -g @goondocks/myco-team
+```
+
+Use it for:
+
+- `myco-team status`
+- `myco-team rotate-tokens`
+- `myco-team destroy`
+
+### Collective CLI
+
+```bash
+npm install -g @goondocks/myco-collective
+```
+
+Use it to create and manage a [Myco Collective](collective.md).

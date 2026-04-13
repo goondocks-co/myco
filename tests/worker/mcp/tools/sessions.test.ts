@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { handleSessions } from '../../../../src/worker/src/mcp/tools/sessions';
+import { handleSessions } from '@myco-team-worker/mcp/tools/sessions';
 import { createFakeD1, parseToolResult } from './_helpers';
 
 describe('handleSessions', () => {

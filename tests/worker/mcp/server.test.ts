@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createMcpServerInstance } from '../../../src/worker/src/mcp/server';
+import { createMcpServerInstance } from '@myco-team-worker/mcp/server';
 
 describe('createMcpServerInstance', () => {
   it('creates a server instance', () => {

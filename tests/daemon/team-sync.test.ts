@@ -3,15 +3,15 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { TeamSyncClient } from '../../src/daemon/team-sync.js';
-import type { OutboxRow } from '../../src/db/queries/team-outbox.js';
+import { TeamSyncClient } from '@myco/daemon/team-sync.js';
+import type { OutboxRow } from '@myco/db/queries/team-outbox.js';
 import {
   initTeamContext,
   isTeamSyncEnabled,
   getTeamMachineId,
   getTeamSyncProtocolVersion,
   resetTeamContext,
-} from '../../src/daemon/team-context.js';
+} from '@myco/daemon/team-context.js';
 
 // ---------------------------------------------------------------------------
 // Mock fetch helper

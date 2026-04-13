@@ -6,7 +6,7 @@ import {
   MycoPlugin,
   collectAssistantSummaryFromMessages,
   normalizeToolInput,
-} from '../../src/symbionts/templates/opencode/plugin.ts';
+} from '@myco/symbionts/templates/opencode/plugin.ts';
 
 function createProjectDir(): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-opencode-plugin-'));

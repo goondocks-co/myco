@@ -78,7 +78,7 @@ describe('generateRestartScript()', () => {
 
 describe('generateUpdateScript()', () => {
   const baseParams = {
-    targetVersion: '1.0.0',
+    packageSpecs: ['@goondocks/myco@1.0.0'],
     projectRoot: '/project',
     vaultDir: '/project/.myco',
     mycoBinary: 'myco',
@@ -86,7 +86,7 @@ describe('generateUpdateScript()', () => {
 
   it('generates a valid update script (existing behavior sanity check)', () => {
     const script = generateUpdateScript(baseParams);
-    expect(script).toContain('npm install -g');
+    expect(script).toContain('npm install -g "@goondocks/myco@1.0.0"');
     expect(script).toContain('update --project');
   });
 
@@ -102,5 +102,13 @@ describe('generateUpdateScript()', () => {
       mycoBinary: '/Users/dev/.local/bin/myco-dev',
     });
     expect(script).toContain('MYCO="/Users/dev/.local/bin/myco-dev"');
+  });
+
+  it('installs multiple Myco package specs in one script', () => {
+    const script = generateUpdateScript({
+      ...baseParams,
+      packageSpecs: ['@goondocks/myco@1.0.0', '@goondocks/myco-team@0.1.1'],
+    });
+    expect(script).toContain('"@goondocks/myco@1.0.0" "@goondocks/myco-team@0.1.1"');
   });
 });

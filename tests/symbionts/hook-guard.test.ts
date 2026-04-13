@@ -19,7 +19,7 @@ import os from 'node:os';
  * resolves correctly regardless of what directory Node was launched from.
  */
 
-const guardSource = path.resolve('src/symbionts/templates/myco-run.cjs');
+const guardSource = path.resolve('packages/myco/src/symbionts/templates/myco-run.cjs');
 
 interface Fixture {
   tmpDir: string;

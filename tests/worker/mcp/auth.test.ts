@@ -6,7 +6,7 @@ import {
   ensureMcpToken,
   rotateMcpToken,
   authenticateMcpRequest,
-} from '../../../src/worker/src/mcp/auth';
+} from '@myco-team-worker/mcp/auth';
 
 function createFakeKV() {
   const store = new Map<string, string>();

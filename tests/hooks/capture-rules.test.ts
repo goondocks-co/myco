@@ -3,8 +3,8 @@ import {
   evaluateUserPromptRules,
   evaluateSessionStartRules,
   type UserPromptRuleContext,
-} from '../../src/hooks/capture-rules.js';
-import type { SymbiontManifest } from '../../src/symbionts/manifest-schema.js';
+} from '@myco/hooks/capture-rules.js';
+import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 
 /**
  * Minimal manifest factory — only the fields the evaluator actually reads.

@@ -4,14 +4,14 @@ import path from 'node:path';
 import os from 'node:os';
 import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client';
 import { createSchema } from '@myco/db/schema';
-import { DatabaseMaintenanceManager } from '../../../src/daemon/database/manager';
+import { DatabaseMaintenanceManager } from '@myco/daemon/database/manager';
 import {
   handleDatabaseDetails,
   handleDatabaseOptimize,
   handleDatabaseVacuum,
   handleDatabaseReindex,
   handleDatabaseIntegrityCheck,
-} from '../../../src/daemon/api/database';
+} from '@myco/daemon/api/database';
 
 function makeLogger() {
   return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };

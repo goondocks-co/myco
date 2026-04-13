@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { handleSearch } from '../../../../src/worker/src/mcp/tools/search';
+import { handleSearch } from '@myco-team-worker/mcp/tools/search';
 import { createFakeD1, createFakeVectorize, createFakeAI, parseToolResult } from './_helpers';
 
 describe('handleSearch', () => {

@@ -1,6 +1,6 @@
 /**
  * Sync-check between the backend CANDIDATE_STATUS constants and the
- * UI mirror in ui/src/lib/skill-candidate-status.ts. The two files
+ * UI mirror in packages/myco/ui/src/lib/skill-candidate-status.ts. The two files
  * exist separately because the UI is a distinct TypeScript project
  * with no alias into the backend src tree — this test catches any
  * drift at CI time.
@@ -42,10 +42,10 @@ describe('skill-candidate-status constants', () => {
     );
   });
 
-  it('UI mirror file at ui/src/lib/skill-candidate-status.ts has matching string values', () => {
+  it('UI mirror file at packages/myco/ui/src/lib/skill-candidate-status.ts has matching string values', () => {
     const uiMirrorPath = path.resolve(
       process.cwd(),
-      'ui/src/lib/skill-candidate-status.ts',
+      'packages/myco/ui/src/lib/skill-candidate-status.ts',
     );
     expect(fs.existsSync(uiMirrorPath)).toBe(true);
 

@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { TranscriptMiner, extractTurnsFromBuffer } from '../../src/capture/transcript-miner.js';
-import { claudeCodeAdapter } from '../../src/symbionts/claude-code.js';
-import { createPerProjectAdapter } from '../../src/symbionts/adapter.js';
-import { SymbiontRegistry } from '../../src/symbionts/registry.js';
+import { TranscriptMiner, extractTurnsFromBuffer } from '@myco/capture/transcript-miner.js';
+import { claudeCodeAdapter } from '@myco/symbionts/claude-code.js';
+import { createPerProjectAdapter } from '@myco/symbionts/adapter.js';
+import { SymbiontRegistry } from '@myco/symbionts/registry.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';

@@ -27,6 +27,23 @@ myco init
 
 `myco init` detects your coding agents, installs hooks, starts the daemon, and opens the dashboard. Pick the agent and embedding providers from the Settings page when you're ready — data capture starts immediately, intelligence is opt-in. Works with Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, and OpenCode.
 
+## Upgrade path
+
+Existing users still upgrade the main product the same way:
+
+```bash
+npm update -g @goondocks/myco
+```
+
+That remains the only package most users need. It updates the local CLI, daemon, hooks, dashboard, and the built-in `myco team init` / `myco team upgrade` flow.
+
+If you also installed the optional standalone operator packages, the Operations page now detects and applies updates for those installed Myco packages too. You only need to drop to npm for the initial install.
+
+Two new packages are optional operator surfaces:
+
+- `@goondocks/myco-team` — direct team-worker administration from the terminal
+- `@goondocks/myco-collective` — deploy and manage a Myco Collective
+
 ## What is Myco?
 
 Myco is the intelligence layer beneath your projects. Named after [mycorrhizal networks](https://en.wikipedia.org/wiki/Mycorrhizal_network) — the underground fungal systems that connect trees in a forest — Myco captures what happens across your coding sessions and connects it into a living knowledge graph, sharing intelligence between agents and team members beneath the surface.
@@ -119,6 +136,19 @@ Share the output URL and API key with teammates — they connect from the Team p
 Local databases remain the source of truth. The cloud store is a queryable mirror — no data is pulled back down. Each record carries a machine identity for attribution.
 
 Runs on the Cloudflare free tier. See the [Team Sync docs](docs/team-sync.md) for the full guide.
+
+### Collective
+
+Search across projects and manage shared settings by connecting multiple team workers to one Myco Collective.
+
+Install it only if you want the cross-project admin layer:
+
+```bash
+npm install -g @goondocks/myco-collective
+myco-collective install
+```
+
+The Collective gives you a worker-hosted admin UI for connected projects, shared settings, and cross-project search. See the [Collective guide](docs/collective.md).
 
 ### Cloud MCP Server
 

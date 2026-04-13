@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { loadManifests } from '../../src/symbionts/detect.js';
+import { loadManifests } from '@myco/symbionts/detect.js';
 import {
   evaluateUserPromptRules,
   evaluateSessionStartRules,
-} from '../../src/hooks/capture-rules.js';
+} from '@myco/hooks/capture-rules.js';
 
 /**
  * Integration test that exercises the REAL codex.yaml manifest through

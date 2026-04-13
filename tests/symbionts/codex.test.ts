@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { codexAdapter } from '../../src/symbionts/codex.js';
+import { codexAdapter } from '@myco/symbionts/codex.js';
 
 /** Build a JSONL string from an array of objects. */
 function toJsonl(entries: Record<string, unknown>[]): string {

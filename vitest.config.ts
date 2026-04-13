@@ -47,7 +47,11 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@myco': path.resolve(__dirname, './src'),
+      '@myco': path.resolve(__dirname, './packages/myco/src'),
+      '@myco-team': path.resolve(__dirname, './packages/myco-team/src'),
+      '@myco-team-worker': path.resolve(__dirname, './packages/myco-team/worker/src'),
+      '@myco-collective': path.resolve(__dirname, './packages/myco-collective/src'),
+      '@myco-deploy': path.resolve(__dirname, './packages/myco-deploy/src'),
     },
   },
 });

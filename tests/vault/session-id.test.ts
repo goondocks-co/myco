@@ -3,7 +3,7 @@ import {
   sessionNoteId,
   bareSessionId,
   sessionRelativePath,
-} from '../../src/vault/session-id.js';
+} from '@myco/vault/session-id.js';
 
 describe('session-id utilities', () => {
   describe('sessionNoteId', () => {

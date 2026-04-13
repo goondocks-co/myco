@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import * as sessionStart from '../../src/hooks/session-start.js';
-import * as sessionEnd from '../../src/hooks/session-end.js';
-import * as stop from '../../src/hooks/stop.js';
-import * as userPromptSubmit from '../../src/hooks/user-prompt-submit.js';
-import * as postToolUse from '../../src/hooks/post-tool-use.js';
+import * as sessionStart from '@myco/hooks/session-start.js';
+import * as sessionEnd from '@myco/hooks/session-end.js';
+import * as stop from '@myco/hooks/stop.js';
+import * as userPromptSubmit from '@myco/hooks/user-prompt-submit.js';
+import * as postToolUse from '@myco/hooks/post-tool-use.js';
 
 const VALID_HOOKS = [
   'session-start',

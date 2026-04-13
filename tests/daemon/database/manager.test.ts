@@ -7,8 +7,8 @@ import { createSchema } from '@myco/db/schema';
 import { DaemonLogger } from '@myco/daemon/logger';
 import { insertLogEntry } from '@myco/db/queries/logs';
 import { LOG_KINDS } from '@myco/constants/log-kinds';
-import { DatabaseMaintenanceManager } from '../../../src/daemon/database/manager';
-import { VacuumPrecheckError } from '../../../src/daemon/database/types';
+import { DatabaseMaintenanceManager } from '@myco/daemon/database/manager';
+import { VacuumPrecheckError } from '@myco/daemon/database/types';
 
 describe('DatabaseMaintenanceManager', () => {
   let tmpDir: string;

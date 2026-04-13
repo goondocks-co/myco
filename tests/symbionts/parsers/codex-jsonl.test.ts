@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CodexJsonlParser } from '../../../src/symbionts/parsers/codex-jsonl.js';
+import { CodexJsonlParser } from '@myco/symbionts/parsers/codex-jsonl.js';
 
 /**
  * Build a JSONL string from an array of entry objects.

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { PowerManager, type PowerState } from '../../src/daemon/power.js';
+import { PowerManager, type PowerState } from '@myco/daemon/power.js';
 
 describe('PowerManager', () => {
   let pm: PowerManager;

@@ -1,0 +1,60 @@
+name: Sync package versions on release
+
+on:
+  push:
+    tags:
+      - 'myco/v*.*.*'
+      - 'myco/v*.*.*-*'
+      - 'myco-team/v*.*.*'
+      - 'myco-team/v*.*.*-*'
+      - 'myco-collective/v*.*.*'
+      - 'myco-collective/v*.*.*-*'
+
+concurrency:
+  group: sync-package-versions
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Sync workspace versions from release tags
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Sync package.json versions from latest tags
+        run: node scripts/sync-package-versions.mjs
+
+      - name: Refresh root package-lock.json
+        run: npm install --package-lock-only --ignore-scripts
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add package.json package-lock.json \
+            packages/myco/package.json packages/myco/ui/package.json \
+            packages/myco-team/package.json packages/myco-team/worker/package.json \
+            packages/myco-collective/package.json packages/myco-collective/ui/package.json packages/myco-collective/worker/package.json
+
+          if git diff --cached --quiet; then
+            echo "No version changes to commit"
+            exit 0
+          fi
+
+          git commit -m "chore(release): sync workspace package versions [skip ci]"
+          git push
