@@ -237,7 +237,6 @@ interface SkillAssessmentEntry {
   name: string;
   generation: number;
   description: string;
-  contentSnapshot: string;
   newSporeIds: string[];
 }
 
@@ -360,29 +359,11 @@ export function buildSkillEvolveInstruction(
     const newSporeIds = listSporeIdsSince(knowledgeWatermark, 10);
     if (newSporeIds.length === 0) continue;
 
-    // Read current content from disk (not lineage snapshot which can be stale
-    // if the skill was evolved between lineage capture and this run).
-    let contentSnapshot = '';
-    if (projectRoot && skill.path) {
-      try {
-        contentSnapshot = readFileSync(resolve(projectRoot, skill.path), 'utf-8');
-      } catch {
-        // File missing — fall back to lineage snapshot
-        const lineage = listLineageForSkill(skill.id, 1);
-        contentSnapshot = lineage[0]?.content_snapshot ?? '';
-      }
-    } else {
-      const lineage = listLineageForSkill(skill.id, 1);
-      contentSnapshot = lineage[0]?.content_snapshot ?? '';
-    }
-    if (!contentSnapshot) continue;
-
     needsAssessment.push({
       id: skill.id,
       name: skill.name,
       generation: skill.generation,
       description: skill.description,
-      contentSnapshot,
       newSporeIds,
     });
 
@@ -461,10 +442,9 @@ export function buildSkillEvolveInstruction(
     parts.push(`id: ${skill.id}`);
     parts.push(`description: ${skill.description}`);
     parts.push(`new_spore_ids: ${JSON.stringify(skill.newSporeIds)}`);
-    parts.push('');
-    parts.push('### Current Content');
-    parts.push('');
-    parts.push(skill.contentSnapshot);
+    // Full content is NOT included here to keep the instruction lean.
+    // Use vault_skill_records (action: get, id: "<name>") to read
+    // the full SKILL.md content when you need to verify code references.
   }
 
   // Inventory section — all active skills with structural signals

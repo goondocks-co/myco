@@ -87,10 +87,14 @@ phases:
       There are TWO sources of skills to assess:
 
       **A. Skills with new knowledge** — listed in the instruction
-      with content snapshots and new spore IDs. For each:
+      with descriptions and new spore IDs (full content is NOT in
+      the instruction — read it on-demand). For each:
       1. Read new spores via vault_spores. Understand what changed.
-      2. Verify code references: use vault_search_fts to check 3-5
-         key file paths and function names from the skill content.
+      2. Only if the new spores suggest a procedural change, read
+         the skill's full content via vault_skill_records (action:
+         get, id: "<name>") and verify 2-3 code references via
+         vault_search_fts. Skip content reads for skills where
+         the new spores are clearly unrelated.
       3. Check the inventory analysis: is this skill also flagged
          for merge or narrowness?
 
