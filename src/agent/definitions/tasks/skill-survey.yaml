@@ -90,6 +90,7 @@ phases:
     readOnly: true
 
   - name: synthesize-evaluate
+    model: claude-sonnet-4-6
     prompt: |
       The explore phase identified procedural domain clusters from
       the vault. Now evaluate each and create candidates for domains

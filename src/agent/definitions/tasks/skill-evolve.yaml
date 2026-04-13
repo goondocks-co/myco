@@ -24,6 +24,7 @@ params:
   max_skills_per_run: 8
 phases:
   - name: inventory
+    model: claude-haiku-4-5-20251001
     prompt: |
       The instruction contains pre-computed structural analysis of
       all active skills. Two mechanical signals are provided:
@@ -80,6 +81,7 @@ phases:
     readOnly: true
 
   - name: assess
+    model: claude-sonnet-4-6
     prompt: |
       Read the inventory analysis from vault_state
       (key: skill-evolve-inventory).
@@ -154,6 +156,7 @@ phases:
       - inventory
 
   - name: act
+    model: claude-haiku-4-5-20251001
     prompt: |
       Read classifications from vault_state
       (key: skill-evolve-classifications). Parse the JSON.
