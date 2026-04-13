@@ -175,6 +175,84 @@ describe('symbiont manifests', () => {
     expect(manifest.capture?.planDirs).toEqual(['.gemini/plans/']);
   });
 
+  it('accepts planTags array in capture block', () => {
+    const result = SymbiontManifestSchema.parse({
+      name: 'test-agent',
+      displayName: 'Test Agent',
+      binary: 'test',
+      configDir: '.test',
+      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
+      hookFields: {
+        sessionId: 'session_id',
+        transcriptPath: 'transcript_path',
+        lastResponse: 'last_assistant_message',
+      },
+      capture: { planTags: ['proposed_plan'] },
+    });
+    expect(result.capture?.planTags).toEqual(['proposed_plan']);
+  });
+
+  it('defaults planTags to empty array when not specified', () => {
+    const result = SymbiontManifestSchema.parse({
+      name: 'test-agent',
+      displayName: 'Test Agent',
+      binary: 'test',
+      configDir: '.test',
+      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
+      hookFields: {
+        sessionId: 'session_id',
+        transcriptPath: 'transcript_path',
+        lastResponse: 'last_assistant_message',
+      },
+      capture: { planDirs: ['.test/plans/'] },
+    });
+    expect(result.capture?.planTags).toEqual([]);
+  });
+
+  it('accepts multiple plan tags', () => {
+    const result = SymbiontManifestSchema.parse({
+      name: 'test-agent',
+      displayName: 'Test Agent',
+      binary: 'test',
+      configDir: '.test',
+      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
+      hookFields: {
+        sessionId: 'session_id',
+        transcriptPath: 'transcript_path',
+        lastResponse: 'last_assistant_message',
+      },
+      capture: { planTags: ['proposed_plan', 'implementation_plan'] },
+    });
+    expect(result.capture?.planTags).toEqual(['proposed_plan', 'implementation_plan']);
+  });
+
+  it('planTags coexists with planDirs', () => {
+    const result = SymbiontManifestSchema.parse({
+      name: 'test-agent',
+      displayName: 'Test Agent',
+      binary: 'test',
+      configDir: '.test',
+      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
+      hookFields: {
+        sessionId: 'session_id',
+        transcriptPath: 'transcript_path',
+        lastResponse: 'last_assistant_message',
+      },
+      capture: {
+        planDirs: ['.test/plans/'],
+        planTags: ['proposed_plan'],
+      },
+    });
+    expect(result.capture?.planDirs).toEqual(['.test/plans/']);
+    expect(result.capture?.planTags).toEqual(['proposed_plan']);
+  });
+
+  it('codex manifest has planTags with proposed_plan', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'codex.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.capture?.planTags).toEqual(['proposed_plan']);
+  });
+
   it('defaults mcpFormat to json when not specified', () => {
     const manifest = SymbiontManifestSchema.parse({
       name: 'test-agent',

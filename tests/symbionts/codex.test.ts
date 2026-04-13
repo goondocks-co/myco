@@ -6,6 +6,28 @@ function toJsonl(entries: Record<string, unknown>[]): string {
   return entries.map((e) => JSON.stringify(e)).join('\n');
 }
 
+/** Helper: build a Codex response_item with a message payload. */
+function messageItem(
+  role: string,
+  blocks: Array<{ type: string; text?: string }>,
+  timestamp?: string,
+): Record<string, unknown> {
+  return {
+    type: 'response_item',
+    payload: { type: 'message', role, content: blocks },
+    ...(timestamp ? { timestamp } : {}),
+  };
+}
+
+/** Helper: build a Codex response_item with a function_call payload. */
+function functionCallItem(name: string, args: string, timestamp?: string): Record<string, unknown> {
+  return {
+    type: 'response_item',
+    payload: { type: 'function_call', name, arguments: args },
+    ...(timestamp ? { timestamp } : {}),
+  };
+}
+
 describe('codexAdapter', () => {
   it('has correct adapter metadata', () => {
     expect(codexAdapter.name).toBe('codex');
@@ -17,19 +39,13 @@ describe('codexAdapter', () => {
   describe('parseTurns', () => {
     it('parses user and assistant turns from JSONL with role field', () => {
       const content = toJsonl([
-        {
-          role: 'user',
-          message: { content: [{ type: 'text', text: 'Hello from Codex' }] },
-        },
-        {
-          role: 'assistant',
-          message: {
-            content: [
-              { type: 'text', text: 'Hi there!' },
-              { type: 'tool_use', name: 'Read', id: 't1' },
-            ],
-          },
-        },
+        messageItem('user', [{ type: 'input_text', text: 'Hello from Codex' }], '2026-04-13T10:00:00Z'),
+        messageItem(
+          'assistant',
+          [{ type: 'output_text', text: 'Hi there!' }],
+          '2026-04-13T10:00:30Z',
+        ),
+        functionCallItem('Read', '{}', '2026-04-13T10:00:20Z'),
       ]);
 
       const turns = codexAdapter.parseTurns(content);
@@ -41,28 +57,20 @@ describe('codexAdapter', () => {
 
     it('handles multiple conversation turns', () => {
       const content = toJsonl([
-        {
-          role: 'user',
-          message: { content: [{ type: 'text', text: 'First prompt' }] },
-        },
-        {
-          role: 'assistant',
-          message: { content: [{ type: 'text', text: 'First response' }] },
-        },
-        {
-          role: 'user',
-          message: { content: [{ type: 'text', text: 'Second prompt' }] },
-        },
-        {
-          role: 'assistant',
-          message: {
-            content: [
-              { type: 'tool_use', name: 'Edit', id: 't1' },
-              { type: 'tool_use', name: 'Write', id: 't2' },
-              { type: 'text', text: 'Done editing' },
-            ],
-          },
-        },
+        messageItem('user', [{ type: 'input_text', text: 'First prompt' }], '2026-04-13T10:00:00Z'),
+        messageItem(
+          'assistant',
+          [{ type: 'output_text', text: 'First response' }],
+          '2026-04-13T10:00:30Z',
+        ),
+        messageItem('user', [{ type: 'input_text', text: 'Second prompt' }], '2026-04-13T10:01:00Z'),
+        functionCallItem('Edit', '{"path":"/foo.ts"}', '2026-04-13T10:01:10Z'),
+        functionCallItem('Write', '{"path":"/bar.ts"}', '2026-04-13T10:01:20Z'),
+        messageItem(
+          'assistant',
+          [{ type: 'output_text', text: 'Done editing' }],
+          '2026-04-13T10:01:30Z',
+        ),
       ]);
 
       const turns = codexAdapter.parseTurns(content);
@@ -77,18 +85,14 @@ describe('codexAdapter', () => {
 
     it('skips entries with no text content', () => {
       const content = toJsonl([
-        {
-          role: 'user',
-          message: { content: [{ type: 'image', source: { data: 'abc' } }] },
-        },
-        {
-          role: 'user',
-          message: { content: [{ type: 'text', text: 'Real prompt' }] },
-        },
-        {
-          role: 'assistant',
-          message: { content: [{ type: 'text', text: 'Response' }] },
-        },
+        // user message with no input_text blocks — should be skipped
+        messageItem('user', [{ type: 'other_type', text: 'ignored' }], '2026-04-13T10:00:00Z'),
+        messageItem('user', [{ type: 'input_text', text: 'Real prompt' }], '2026-04-13T10:00:10Z'),
+        messageItem(
+          'assistant',
+          [{ type: 'output_text', text: 'Response' }],
+          '2026-04-13T10:00:30Z',
+        ),
       ]);
 
       const turns = codexAdapter.parseTurns(content);
@@ -101,10 +105,10 @@ describe('codexAdapter', () => {
     });
 
     it('skips malformed JSON lines', () => {
-      const content = 'not json\n' + JSON.stringify({
-        role: 'user',
-        message: { content: [{ type: 'text', text: 'Valid line' }] },
-      });
+      const validLine = JSON.stringify(
+        messageItem('user', [{ type: 'input_text', text: 'Valid line' }], '2026-04-13T10:00:00Z'),
+      );
+      const content = 'not json\n' + validLine;
 
       const turns = codexAdapter.parseTurns(content);
       expect(turns).toHaveLength(1);

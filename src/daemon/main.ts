@@ -192,6 +192,7 @@ export async function main(): Promise<void> {
 
   const manifests = loadManifests();
   const symbiontPlanDirs = manifests.flatMap((m) => m.capture?.planDirs ?? []);
+  const symbiontPlanTags = [...new Set(manifests.flatMap((m) => m.capture?.planTags ?? []))];
   const projectRoot = process.cwd();
   let planWatchConfig: PlanWatchConfig = {
     watchDirs: [...new Set([...symbiontPlanDirs, ...(config.capture.plan_dirs ?? [])])],
@@ -219,6 +220,9 @@ export async function main(): Promise<void> {
     embedding_provider: config.embedding.provider,
   });
   logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan watch directories', { dirs: planWatchConfig.watchDirs });
+  if (symbiontPlanTags.length > 0) {
+    logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan transcript tags', { tags: symbiontPlanTags });
+  }
 
   // --- Machine identity ---
   const machineId = getMachineId(vaultDir);
@@ -435,6 +439,7 @@ export async function main(): Promise<void> {
     logger,
     config,
     vaultDir,
+    planTags: symbiontPlanTags,
   });
 
   // --- Session routes ---

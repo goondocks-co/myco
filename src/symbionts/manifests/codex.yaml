@@ -11,6 +11,8 @@ hookFields:
   lastResponse: last_assistant_message
 capture:
   planDirs: []
+  planTags:
+    - proposed_plan
   rules:
     # Ephemeral sub-invocation filter (structural, two-layer defense).
     #
@@ -51,13 +53,23 @@ capture:
       action: drop
       reason: ephemeral-sub-invocation
 
-    # NOTE: the VS Code Codex extension wraps user prompts with an IDE
-    # context preamble (`# Context from my IDE setup:` … `## My request
-    # for Codex:`). Stripping that belongs in a follow-up that keys on
-    # the transcript's `session_meta.payload.originator == "codex_vscode"`
-    # signal rather than matching preamble text, per Chris's correctness
-    # bar against fragile text matching. Leaving unfiltered for now —
-    # session data is preserved, just shown with the wrapper.
+    # Codex Desktop wraps user prompts with a file-mention preamble when
+    # screenshots or files are attached:
+    #   "# Files mentioned by the user:\n## <filename>: <path>\n## My request for Codex:\n<actual prompt>"
+    # Strip the preamble so the captured prompt contains only the user's text.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_contains: "## My request for Codex:"
+      action: rewrite_prompt
+      extract_after: "## My request for Codex:\n"
+      reason: codex-desktop-file-preamble
+
+    # NOTE: the VS Code Codex extension uses a different preamble
+    # (`# Context from my IDE setup:` … `## My request for Codex:`).
+    # Keying on the shared `## My request for Codex:` marker above
+    # should handle both Desktop and VS Code variants. If the VS Code
+    # preamble diverges, add a separate rule keyed on its specific marker.
 registration:
   hooksTarget: .codex/hooks.json
   mcpTarget: .codex/config.toml
