@@ -34,9 +34,9 @@ const EXPECTED_TASK_COUNT = 10;
 /** Built-in agent name from agent.yaml. */
 const BUILT_IN_AGENT_NAME = 'myco-agent';
 
-/** Resolve the test definitions directory (src/agent/definitions/). */
+/** Resolve the test definitions directory from the package-owned source tree. */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFINITIONS_DIR = path.resolve(__dirname, '..', '..', 'src', 'agent', 'definitions');
+const DEFINITIONS_DIR = path.resolve(__dirname, '..', '..', 'packages', 'myco', 'src', 'agent', 'definitions');
 
 // ---------------------------------------------------------------------------
 // Helpers

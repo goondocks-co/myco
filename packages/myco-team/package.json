@@ -1,0 +1,20 @@
+{
+  "name": "@goondocks/myco-team",
+  "version": "0.1.0",
+  "description": "Myco team sync Cloudflare Worker and deployment CLI",
+  "type": "module",
+  "bin": {
+    "myco-team": "dist/main.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "yaml": "^2.4.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "lint": "tsc --noEmit",
+    "test": "echo 'myco-team tests run from repo root'"
+  }
+}

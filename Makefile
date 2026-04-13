@@ -31,7 +31,7 @@ watch:
 	npm run build:watch
 
 clean:
-	rm -rf dist
+	rm -rf packages/myco/dist packages/myco-team/dist packages/myco-collective/dist
 
 install:
 	npm install
@@ -43,19 +43,19 @@ ui-dev:
 		try{var y=fs.readFileSync(p.join(v,"myco.yaml"),"utf-8"),m=y.match(/^\\s*port:\\s*(\\d+)/m);if(m){console.log(m[1]);process.exit(0)}}catch{} \
 		console.log(19200)')}; \
 	echo "Proxying API to daemon on port $$port (override with MYCO_DAEMON_PORT=<port> make ui-dev)"; \
-	cd ui && MYCO_DAEMON_PORT=$$port npx vite dev
+	cd packages/myco/ui && MYCO_DAEMON_PORT=$$port npx vite dev
 
 dev-link:
 	npm run build
 	@mkdir -p $(HOME)/.local/bin
-	@ln -sf $(PWD)/dist/src/cli.js $(HOME)/.local/bin/myco-dev
+	@ln -sf $(PWD)/packages/myco/dist/src/cli.js $(HOME)/.local/bin/myco-dev
 	@chmod +x $(HOME)/.local/bin/myco-dev
-	@ln -sf $(PWD)/bin/myco-run $(HOME)/.local/bin/myco-run
+	@ln -sf $(PWD)/packages/myco/bin/myco-run $(HOME)/.local/bin/myco-run
 	@chmod +x $(HOME)/.local/bin/myco-run
 	@mkdir -p .myco
 	@printf 'myco-dev\n' > .myco/runtime.command
-	@echo "✓ myco-dev symlinked to $(PWD)/dist/src/cli.js"
-	@echo "✓ myco-run symlinked to $(PWD)/bin/myco-run"
+	@echo "✓ myco-dev symlinked to $(PWD)/packages/myco/dist/src/cli.js"
+	@echo "✓ myco-run symlinked to $(PWD)/packages/myco/bin/myco-run"
 	@echo "✓ .myco/runtime.command set to myco-dev"
 	@echo "  (the hook guard at .agents/myco-run.cjs reads this file)"
 

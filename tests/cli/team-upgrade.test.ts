@@ -23,14 +23,6 @@ vi.mock('node:child_process', async () => {
   };
 });
 
-vi.mock('@myco/symbionts/detect.js', async () => {
-  const actual = await vi.importActual<typeof import('@myco/symbionts/detect.js')>('@myco/symbionts/detect.js');
-  return {
-    ...actual,
-    resolvePackageRoot: vi.fn(),
-  };
-});
-
 // Minimal existing wrangler.toml — pre-KV (older deployment)
 const LEGACY_TOML = `name = "myco-team-abc12345"
 main = "src/index.ts"
@@ -92,14 +84,30 @@ describe('upgradeWorker', () => {
   let vaultDir: string;
   let sourceDir: string;
   let deployDir: string;
+  let tempHomeDir: string;
+  let previousHome: string | undefined;
+
+  async function importTeamCli(): Promise<typeof import('@myco/cli/team.js')> {
+    vi.doMock('@myco-deploy/index.js', async () => {
+      const actual = await vi.importActual<typeof import('@myco-deploy/index.js')>('@myco-deploy/index.js');
+      return {
+        ...actual,
+        resolveHomeConfigPath: (configDir: string, fileName: string) => path.join(tempHomeDir, configDir, fileName),
+      };
+    });
+    return import('@myco/cli/team.js');
+  }
 
   beforeEach(async () => {
     execCalls.length = 0;
     execHandlers.length = 0;
 
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-upgrade-'));
+    tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-home-'));
+    previousHome = process.env.HOME;
+    process.env.HOME = tempHomeDir;
     vaultDir = path.join(testDir, '.myco');
-    sourceDir = path.join(testDir, 'package-root', 'src', 'worker');
+    sourceDir = path.join(testDir, 'package-root', 'worker');
     deployDir = path.join(vaultDir, '.team-worker');
 
     fs.mkdirSync(vaultDir, { recursive: true });
@@ -123,13 +131,20 @@ describe('upgradeWorker', () => {
     // Fake "package" source the CLI will copy from
     createFakeWorkerSource(sourceDir);
 
-    const { resolvePackageRoot } = await import('@myco/symbionts/detect.js');
-    vi.mocked(resolvePackageRoot).mockReturnValue(path.join(testDir, 'package-root'));
+    process.env.MYCO_TEAM_PACKAGE_ROOT = path.join(testDir, 'package-root');
   });
 
   afterEach(() => {
     fs.rmSync(testDir, { recursive: true, force: true });
+    fs.rmSync(tempHomeDir, { recursive: true, force: true });
     vi.clearAllMocks();
+    vi.resetModules();
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    delete process.env.MYCO_TEAM_PACKAGE_ROOT;
   });
 
   it('provisions a KV namespace on existing deployments that lack one', async () => {
@@ -149,7 +164,7 @@ Resource location: remote
       () => 'https://myco-team-abc12345.test.workers.dev\n',
     );
 
-    const { upgradeWorker } = await import('@myco/cli/team.js');
+    const { upgradeWorker } = await importTeamCli();
     const result = upgradeWorker(vaultDir);
 
     expect(result.success).toBe(true);
@@ -188,7 +203,7 @@ Resource location: remote
       () => 'https://myco-team-abc12345.test.workers.dev\n',
     );
 
-    const { upgradeWorker } = await import('@myco/cli/team.js');
+    const { upgradeWorker } = await importTeamCli();
     const result = upgradeWorker(vaultDir);
 
     expect(result.success).toBe(true);
@@ -209,7 +224,7 @@ Resource location: remote
       () => 'https://myco-team-abc12345.test.workers.dev\n',
     );
 
-    const { upgradeWorker } = await import('@myco/cli/team.js');
+    const { upgradeWorker } = await importTeamCli();
     const result = upgradeWorker(vaultDir);
 
     expect(result.success).toBe(true);
@@ -228,7 +243,7 @@ Resource location: remote
   it('returns error when KV provisioning fails', async () => {
     execHandlers.push(() => new Error('Cloudflare API: authentication failed'));
 
-    const { upgradeWorker } = await import('@myco/cli/team.js');
+    const { upgradeWorker } = await importTeamCli();
     const result = upgradeWorker(vaultDir);
 
     expect(result.success).toBe(false);
@@ -242,7 +257,7 @@ Resource location: remote
       () => new Error('npm ERR! ENOENT package.json'),
     );
 
-    const { upgradeWorker } = await import('@myco/cli/team.js');
+    const { upgradeWorker } = await importTeamCli();
     const result = upgradeWorker(vaultDir);
 
     expect(result.success).toBe(false);
@@ -257,7 +272,7 @@ Resource location: remote
       () => 'https://myco-team-abc12345.test.workers.dev\n',
     );
 
-    const { upgradeWorker } = await import('@myco/cli/team.js');
+    const { upgradeWorker } = await importTeamCli();
     upgradeWorker(vaultDir);
 
     // Verify ordering: npm install must run before wrangler deploy

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { initD1Schema } from '../../src/worker/src/schema';
+import { initD1Schema } from '@myco-team-worker/schema';
 
 interface RecordedRun {
   sql: string;

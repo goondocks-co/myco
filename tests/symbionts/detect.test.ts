@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { loadManifests, detectSymbionts } from '../../src/symbionts/detect.js';
+import { loadManifests, detectSymbionts } from '@myco/symbionts/detect.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';

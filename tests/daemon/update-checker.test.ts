@@ -13,13 +13,14 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { MS_PER_HOUR } from '../../src/constants/update.js';
+import { MS_PER_HOUR } from '@myco/constants/update.js';
 
 // ---------------------------------------------------------------------------
 // Module mocks — must be hoisted before any imports that use the mocked modules
 // ---------------------------------------------------------------------------
 
 vi.mock('node:fs');
+vi.mock('node:child_process');
 vi.mock('node:os', () => ({
   default: {
     homedir: () => '/mock-home',
@@ -32,6 +33,7 @@ vi.mock('node:os', () => ({
 // evaluated during tests.
 
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import {
   isUpdateExempt,
   setDevBuildCliEntry,
@@ -56,10 +58,14 @@ import {
 function makeCachedCheck(overrides: Partial<CachedCheck> = {}): CachedCheck {
   return {
     checked_at: new Date().toISOString(),
-    current_version: '1.0.0',
-    latest_stable: '1.1.0',
-    latest_beta: null,
     channel: 'stable',
+    packages: {
+      myco: {
+        package_name: '@goondocks/myco',
+        latest_stable: '1.1.0',
+        latest_beta: null,
+      },
+    },
     ...overrides,
   };
 }
@@ -293,8 +299,7 @@ describe('checkForUpdate()', () => {
     expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledOnce();
     const writtenContent = vi.mocked(fs.writeFileSync).mock.calls[0][1] as string;
     const cached = JSON.parse(writtenContent) as CachedCheck;
-    expect(cached.latest_stable).toBe('1.5.0');
-    expect(cached.current_version).toBe('1.0.0');
+    expect(cached.packages.myco?.latest_stable).toBe('1.5.0');
   });
 
   describe('beta channel', () => {
@@ -360,8 +365,14 @@ describe('checkForUpdate()', () => {
   describe('error handling', () => {
     it('returns cached result with error when fetch fails and cache exists', async () => {
       const staleCache = makeCachedCheck({
-        latest_stable: '1.2.0',
         channel: 'stable',
+        packages: {
+          myco: {
+            package_name: '@goondocks/myco',
+            latest_stable: '1.2.0',
+            latest_beta: null,
+          },
+        },
       });
       vi.mocked(fs.readFileSync).mockImplementation((p) => {
         if (String(p).endsWith('last-update-check.json')) {
@@ -419,10 +430,15 @@ describe('statusFromCache()', () => {
 
   it('builds a CheckResult from cache when cache exists', () => {
     const cache = makeCachedCheck({
-      latest_stable: '1.5.0',
-      latest_beta: null,
       channel: 'stable',
       checked_at: new Date().toISOString(),
+      packages: {
+        myco: {
+          package_name: '@goondocks/myco',
+          latest_stable: '1.5.0',
+          latest_beta: null,
+        },
+      },
     });
 
     vi.mocked(fs.readFileSync).mockImplementation((p) => {
@@ -447,10 +463,14 @@ describe('statusFromCache()', () => {
 
   it('correctly detects no update from cache', () => {
     const cache = makeCachedCheck({
-      current_version: '1.5.0',
-      latest_stable: '1.5.0',
-      latest_beta: null,
       channel: 'stable',
+      packages: {
+        myco: {
+          package_name: '@goondocks/myco',
+          latest_stable: '1.5.0',
+          latest_beta: null,
+        },
+      },
     });
 
     vi.mocked(fs.readFileSync).mockImplementation((p) => {
@@ -468,9 +488,14 @@ describe('statusFromCache()', () => {
 
   it('uses beta channel logic when cache channel is beta', () => {
     const cache = makeCachedCheck({
-      latest_stable: '1.0.0',
-      latest_beta: '1.1.0-beta.1',
       channel: 'beta',
+      packages: {
+        myco: {
+          package_name: '@goondocks/myco',
+          latest_stable: '1.0.0',
+          latest_beta: '1.1.0-beta.1',
+        },
+      },
     });
 
     vi.mocked(fs.readFileSync).mockImplementation((p) => {
@@ -494,11 +519,12 @@ describe('statusFromCache()', () => {
 
 describe('resolveGlobalPrefix()', () => {
   it('returns trimmed stdout from npm prefix -g', () => {
-    // This test runs against the real npm — just verify it returns a non-empty string
+    vi.mocked(execFileSync).mockReturnValue('/usr/local\n' as never);
+
     const prefix = resolveGlobalPrefix();
     expect(typeof prefix).toBe('string');
-    expect(prefix.length).toBeGreaterThan(0);
-    expect(prefix).not.toMatch(/\n/);
+    expect(prefix).toBe('/usr/local');
+    expect(execFileSync).toHaveBeenCalledWith('npm', ['prefix', '-g'], { encoding: 'utf-8', timeout: 5_000 });
   });
 });
 

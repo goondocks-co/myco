@@ -1,0 +1,62 @@
+{
+  "name": "@goondocks/myco",
+  "version": "0.18.1",
+  "description": "Collective agent intelligence — Claude Code plugin",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "myco": "dist/src/cli.js",
+    "myco-run": "bin/myco-run"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "commands/",
+    "skills/",
+    "CONTRIBUTING.md"
+  ],
+  "scripts": {
+    "prepare": "npm run build",
+    "postinstall": "test -d ui && cd ui && npm install || true",
+    "build": "sh -c 'npm run build:core & pid1=$!; npm run build:ui & pid2=$!; wait $pid1; s1=$?; wait $pid2; s2=$?; test $s1 -eq 0 -a $s2 -eq 0'",
+    "build:core": "tsup",
+    "build:ui": "test -d ui && cd ui && npx vite build || true",
+    "build:watch": "tsc --watch",
+    "build:types": "tsc",
+    "test": "vitest run",
+    "test:fast": "MYCO_TEST_PROFILE=fast vitest run",
+    "test:integration": "MYCO_TEST_PROFILE=integration vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/goondocks-co/myco.git"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.104",
+    "@anthropic-ai/sdk": "^0.88.0",
+    "@inquirer/prompts": "^8.4.1",
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "better-sqlite3": "^12.9.0",
+    "chokidar": "^5.0.0",
+    "gray-matter": "^4.0.3",
+    "semver": "^7.7.4",
+    "sqlite-vec": "^0.1.8",
+    "yaml": "^2.4.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.6.0",
+    "@types/semver": "^7.7.1",
+    "tsup": "^8.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.4"
+  }
+}

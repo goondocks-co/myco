@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "outDir": "dist",
+    "rootDir": "..",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "resolveJsonModule": true,
+    "paths": {
+      "@myco/*": ["./src/*"],
+      "@myco-team/*": ["../myco-team/src/*"],
+      "@myco-collective/*": ["../myco-collective/src/*"],
+      "@myco-deploy/*": ["../myco-deploy/src/*"]
+    }
+  },
+  "include": ["src/**/*", "plugin/**/*"],
+  "exclude": ["node_modules", "dist", "tests", "ui", "src/worker", "src/symbionts/templates"]
+}

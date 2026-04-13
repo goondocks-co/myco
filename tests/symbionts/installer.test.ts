@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { SymbiontInstaller } from '../../src/symbionts/installer.js';
-import type { SymbiontManifest } from '../../src/symbionts/manifest-schema.js';
+import { SymbiontInstaller } from '@myco/symbionts/installer.js';
+import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -286,7 +286,7 @@ function setupPackageRoot(): void {
 
   // Copy hook-guard template so installHookGuard can find it
   fs.copyFileSync(
-    path.resolve('src/symbionts/templates/myco-run.cjs'),
+    path.resolve('packages/myco/src/symbionts/templates/myco-run.cjs'),
     path.join(packageRoot, 'src/symbionts/templates/myco-run.cjs'),
   );
   writeJson(path.join(windsurfTemplateDir, 'settings.json'), {
@@ -1813,7 +1813,7 @@ describe('hook template validation', () => {
   it('all hook templates use the guard prefix', () => {
     const templateDirs = ['claude-code', 'codex', 'cursor', 'gemini', 'vscode-copilot', 'windsurf'];
     for (const dir of templateDirs) {
-      const filePath = path.resolve(`src/symbionts/templates/${dir}/hooks.json`);
+      const filePath = path.resolve(`packages/myco/src/symbionts/templates/${dir}/hooks.json`);
       const template = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
       for (const [event, groups] of Object.entries(template)) {
         for (const group of groups as Array<Record<string, unknown>>) {

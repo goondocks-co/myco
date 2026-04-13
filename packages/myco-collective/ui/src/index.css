@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@font-face {
+  font-family: 'Newsreader';
+  src: url('/fonts/Newsreader-Variable.woff2') format('woff2');
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Newsreader';
+  src: url('/fonts/Newsreader-Italic-Variable.woff2') format('woff2');
+  font-weight: 200 800;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/GeistMono-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --collective-surface: #140d0a;
+    --collective-surface-soft: #201512;
+    --collective-panel: #281915;
+    --collective-outline: rgba(255, 231, 208, 0.11);
+    --collective-text: #fff4e8;
+    --collective-text-soft: #ceb6a2;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    min-height: 100%;
+    background:
+      radial-gradient(circle at top left, rgba(241, 139, 83, 0.24), transparent 38%),
+      radial-gradient(circle at top right, rgba(247, 179, 106, 0.16), transparent 30%),
+      linear-gradient(180deg, #120b08 0%, #0d0806 100%);
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: transparent;
+    color: var(--collective-text);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(rgba(255, 244, 230, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 244, 230, 0.03) 1px, transparent 1px);
+    background-size: 48px 48px;
+    mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent 90%);
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: 'Newsreader', Georgia, serif;
+  }
+
+  .font-mono {
+    font-family: 'Geist Mono', 'SFMono-Regular', monospace;
+  }
+}
