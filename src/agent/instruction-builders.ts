@@ -150,15 +150,16 @@ export function buildSkillSurveyInstruction(
     '',
   ];
 
-  // 1. Digest — high-level landscape in one shot
+  // 1. Digest — smallest tier only (landscape overview without flooding context).
+  // Full digests can be 50K+ chars across tiers; the smallest tier provides
+  // sufficient orientation for the explore phase to direct follow-up queries.
   const digests = listDigestExtracts(agentId);
   if (digests.length > 0) {
+    const smallest = digests.reduce((a, b) => a.tier < b.tier ? a : b);
     parts.push('### Digest');
-    for (const d of digests) {
-      parts.push(`**Tier ${d.tier}** (${d.content.length} chars, generated ${new Date(d.generated_at * 1000).toISOString()}):`);
-      parts.push(d.content);
-      parts.push('');
-    }
+    parts.push(`**Tier ${smallest.tier}** (${smallest.content.length} chars):`);
+    parts.push(smallest.content);
+    parts.push('');
   }
 
   // 2. Wisdom spores — highest signal observations
