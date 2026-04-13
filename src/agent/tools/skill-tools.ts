@@ -562,7 +562,7 @@ export function createSkillTools(deps: VaultToolDeps) {
 
   const vaultSkillRecords = tool(
     'vault_skill_records',
-    'Read, update, and delete skill records (materialized skills on disk). Supports list, get, update, and delete actions.',
+    'Read, update, and delete skill records (materialized skills on disk). Supports list, get, update, and delete actions. The get action includes the full SKILL.md file content.',
     {
       action: z.enum(['list', 'get', 'update', 'delete']).describe('Action to perform'),
       id: z.string().optional().describe('Skill record ID or name (required for get/update/delete)'),
@@ -589,7 +589,16 @@ export function createSkillTools(deps: VaultToolDeps) {
           if (!args.id) return textResult({ error: 'id is required for get action' });
           const record = getSkillRecord(args.id) ?? getSkillRecordByName(args.id);
           if (!record) return textResult({ error: `Skill record not found: ${args.id}` });
-          return textResult(record);
+          // Include file content so evolve/merge operations can read skill bodies
+          const result: Record<string, unknown> = { ...record };
+          if (record.path && projectRoot) {
+            try {
+              result.content = readFileSync(resolve(projectRoot, record.path), 'utf-8');
+            } catch {
+              // File missing — return record without content
+            }
+          }
+          return textResult(result);
         }
 
         case 'update': {

@@ -35,8 +35,28 @@ export const ALLOWED_CLAUDE_CODE_TOOLS: ReadonlySet<string> = new Set([
 export function extractFrontmatterField(content: string, field: string): string | undefined {
   const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
   if (!fmMatch) return undefined;
-  const match = fmMatch[1].match(new RegExp(`^${field}:\\s*(.+)$`, 'm'));
-  return match?.[1].trim();
+  const fm = fmMatch[1];
+
+  // Single-line value: `field: value`
+  const match = fm.match(new RegExp(`^${field}:\\s*(.+)$`, 'm'));
+  if (match) return match[1].trim();
+
+  // Multi-line YAML block-list: `field:\n  - item1\n  - item2`
+  // Collects indented `- ` entries into a comma-separated string.
+  const blockMatch = fm.match(new RegExp(`^${field}:\\s*$`, 'm'));
+  if (blockMatch) {
+    const startIdx = fm.indexOf(blockMatch[0]) + blockMatch[0].length;
+    const remaining = fm.slice(startIdx);
+    const items: string[] = [];
+    for (const line of remaining.split('\n')) {
+      const itemMatch = line.match(/^\s+-\s+(.+)$/);
+      if (!itemMatch) break;
+      items.push(itemMatch[1].trim());
+    }
+    if (items.length > 0) return items.join(', ');
+  }
+
+  return undefined;
 }
 
 /**
