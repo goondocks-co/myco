@@ -5,8 +5,8 @@ import { upsertSession, getSession } from '@myco/db/queries/sessions.js';
 import {
   completeStaleActiveSessions,
   findDeadSessionIds,
-} from '../../../src/daemon/jobs/session-maintenance.js';
-import { MS_PER_SECOND, STALE_SESSION_THRESHOLD_MS } from '../../../src/constants.js';
+} from '@myco/daemon/jobs/session-maintenance.js';
+import { MS_PER_SECOND, STALE_SESSION_THRESHOLD_MS } from '@myco/constants.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / MS_PER_SECOND);

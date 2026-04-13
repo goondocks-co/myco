@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { StandardJsonlParser } from '../../../src/symbionts/parsers/standard-jsonl.js';
+import { StandardJsonlParser } from '@myco/symbionts/parsers/standard-jsonl.js';
 
 /**
  * Build a JSONL string from an array of entry objects.

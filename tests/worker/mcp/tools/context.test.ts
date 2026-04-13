@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { handleContext } from '../../../../src/worker/src/mcp/tools/context';
+import { handleContext } from '@myco-team-worker/mcp/tools/context';
 import { createFakeD1, parseToolResult } from './_helpers';
 
 describe('handleContext', () => {

@@ -23,14 +23,6 @@ vi.mock('node:child_process', async () => {
   };
 });
 
-vi.mock('@myco/symbionts/detect.js', async () => {
-  const actual = await vi.importActual<typeof import('@myco/symbionts/detect.js')>('@myco/symbionts/detect.js');
-  return {
-    ...actual,
-    resolvePackageRoot: vi.fn(),
-  };
-});
-
 // Minimal existing wrangler.toml — pre-KV (older deployment)
 const LEGACY_TOML = `name = "myco-team-abc12345"
 main = "src/index.ts"
@@ -99,7 +91,7 @@ describe('upgradeWorker', () => {
 
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-upgrade-'));
     vaultDir = path.join(testDir, '.myco');
-    sourceDir = path.join(testDir, 'package-root', 'src', 'worker');
+    sourceDir = path.join(testDir, 'package-root', 'worker');
     deployDir = path.join(vaultDir, '.team-worker');
 
     fs.mkdirSync(vaultDir, { recursive: true });
@@ -123,13 +115,13 @@ describe('upgradeWorker', () => {
     // Fake "package" source the CLI will copy from
     createFakeWorkerSource(sourceDir);
 
-    const { resolvePackageRoot } = await import('@myco/symbionts/detect.js');
-    vi.mocked(resolvePackageRoot).mockReturnValue(path.join(testDir, 'package-root'));
+    process.env.MYCO_TEAM_PACKAGE_ROOT = path.join(testDir, 'package-root');
   });
 
   afterEach(() => {
     fs.rmSync(testDir, { recursive: true, force: true });
     vi.clearAllMocks();
+    delete process.env.MYCO_TEAM_PACKAGE_ROOT;
   });
 
   it('provisions a KV namespace on existing deployments that lack one', async () => {

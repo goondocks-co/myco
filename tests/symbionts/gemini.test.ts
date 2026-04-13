@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { geminiAdapter } from '../../src/symbionts/gemini.js';
+import { geminiAdapter } from '@myco/symbionts/gemini.js';
 
 /** Build a minimal Gemini transcript JSON. */
 function buildGeminiTranscript(messages: Array<{

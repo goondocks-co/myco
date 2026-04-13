@@ -13,9 +13,19 @@
     "sourceMap": true,
     "resolveJsonModule": true,
     "paths": {
-      "@myco/*": ["./src/*"]
+      "@myco/*": ["./packages/myco/src/*"],
+      "@myco-team/*": ["./packages/myco-team/src/*"],
+      "@myco-collective/*": ["./packages/myco-collective/src/*"],
+      "@myco-deploy/*": ["./packages/myco-deploy/src/*"]
     }
   },
-  "include": ["src/**/*", "plugin/**/*"],
-  "exclude": ["node_modules", "dist", "tests", "ui", "src/worker", "src/symbionts/templates"]
+  "include": ["packages/myco/src/**/*", "packages/myco-team/src/**/*", "packages/myco-collective/src/**/*", "packages/myco-deploy/src/**/*"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "tests",
+    "packages/myco/ui",
+    "packages/myco/src/worker",
+    "packages/myco/src/symbionts/templates"
+  ]
 }

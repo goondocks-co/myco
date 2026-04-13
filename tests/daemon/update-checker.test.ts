@@ -13,13 +13,14 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { MS_PER_HOUR } from '../../src/constants/update.js';
+import { MS_PER_HOUR } from '@myco/constants/update.js';
 
 // ---------------------------------------------------------------------------
 // Module mocks — must be hoisted before any imports that use the mocked modules
 // ---------------------------------------------------------------------------
 
 vi.mock('node:fs');
+vi.mock('node:child_process');
 vi.mock('node:os', () => ({
   default: {
     homedir: () => '/mock-home',
@@ -32,6 +33,7 @@ vi.mock('node:os', () => ({
 // evaluated during tests.
 
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import {
   isUpdateExempt,
   setDevBuildCliEntry,
@@ -494,11 +496,12 @@ describe('statusFromCache()', () => {
 
 describe('resolveGlobalPrefix()', () => {
   it('returns trimmed stdout from npm prefix -g', () => {
-    // This test runs against the real npm — just verify it returns a non-empty string
+    vi.mocked(execFileSync).mockReturnValue('/usr/local\n' as never);
+
     const prefix = resolveGlobalPrefix();
     expect(typeof prefix).toBe('string');
-    expect(prefix.length).toBeGreaterThan(0);
-    expect(prefix).not.toMatch(/\n/);
+    expect(prefix).toBe('/usr/local');
+    expect(execFileSync).toHaveBeenCalledWith('npm', ['prefix', '-g'], { encoding: 'utf-8', timeout: 5_000 });
   });
 });
 

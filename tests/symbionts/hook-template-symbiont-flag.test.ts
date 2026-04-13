@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadManifests } from '../../src/symbionts/detect.js';
+import { loadManifests } from '@myco/symbionts/detect.js';
 
 /**
  * Guard rail: every hook command in every JSON hooks template MUST
@@ -33,7 +33,7 @@ import { loadManifests } from '../../src/symbionts/detect.js';
 
 const TEMPLATES_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  '../../src/symbionts/templates',
+  '../../packages/myco/src/symbionts/templates',
 );
 
 /** Manifests that render a JSON hooks file the installer merges into the target. */

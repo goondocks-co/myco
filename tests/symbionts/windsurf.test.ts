@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { windsurfAdapter } from '../../src/symbionts/windsurf.js';
+import { windsurfAdapter } from '@myco/symbionts/windsurf.js';
 
 /** Build a JSONL string from an array of objects. */
 function toJsonl(entries: Record<string, unknown>[]): string {

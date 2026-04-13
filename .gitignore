@@ -22,3 +22,4 @@ docs/specs/
 .agents/skills/myco-curate
 .agents/skills/rules
 .wrangler/
+.context/

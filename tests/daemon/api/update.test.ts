@@ -14,7 +14,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Module mocks — hoisted before imports
 // ---------------------------------------------------------------------------
 
-vi.mock('../../../src/daemon/update-checker.js', () => ({
+vi.mock('@myco/daemon/update-checker.js', () => ({
   isUpdateExempt: vi.fn(() => false),
   checkForUpdate: vi.fn(),
   statusFromCache: vi.fn(),
@@ -27,7 +27,7 @@ vi.mock('../../../src/daemon/update-checker.js', () => ({
   resolveMycoBinary: vi.fn(() => 'myco'),
 }));
 
-vi.mock('../../../src/daemon/update-installer.js', () => ({
+vi.mock('@myco/daemon/update-installer.js', () => ({
   spawnUpdateScript: vi.fn(() => '/tmp/myco-update-123.sh'),
   spawnRestartScript: vi.fn(() => '/tmp/myco-restart-123.sh'),
 }));
@@ -42,10 +42,10 @@ import {
   clearCachedCheck,
   isCacheStale,
   getInstalledVersion,
-} from '../../../src/daemon/update-checker.js';
-import { spawnUpdateScript, spawnRestartScript } from '../../../src/daemon/update-installer.js';
-import { createUpdateHandlers } from '../../../src/daemon/api/update.js';
-import type { RouteRequest } from '../../../src/daemon/router.js';
+} from '@myco/daemon/update-checker.js';
+import { spawnUpdateScript, spawnRestartScript } from '@myco/daemon/update-installer.js';
+import { createUpdateHandlers } from '@myco/daemon/api/update.js';
+import type { RouteRequest } from '@myco/daemon/router.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

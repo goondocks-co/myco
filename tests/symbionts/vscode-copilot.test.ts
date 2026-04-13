@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { vscodeCopilotAdapter } from '../../src/symbionts/vscode-copilot.js';
+import { vscodeCopilotAdapter } from '@myco/symbionts/vscode-copilot.js';
 
 /** Build a VS Code delta JSONL string. */
 function buildVsCodeTranscript(

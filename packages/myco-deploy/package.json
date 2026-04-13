@@ -1,0 +1,7 @@
+{
+  "name": "@goondocks/myco-deploy",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Private deployment helpers shared by Myco workspace packages",
+  "type": "module"
+}

@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { normalizeHookInput, readSymbiontFlag, _resetManifestCache } from '../../src/hooks/normalize.js';
+import { normalizeHookInput, readSymbiontFlag, _resetManifestCache } from '@myco/hooks/normalize.js';
 
 // Mock loadManifests to avoid file system access during tests
-vi.mock('../../src/symbionts/detect.js', () => ({
+vi.mock('@myco/symbionts/detect.js', () => ({
   loadManifests: vi.fn().mockReturnValue([]),
 }));
 
-import { loadManifests } from '../../src/symbionts/detect.js';
+import { loadManifests } from '@myco/symbionts/detect.js';
 
 const mockLoadManifests = vi.mocked(loadManifests);
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { handleTeam } from '../../../../src/worker/src/mcp/tools/team';
+import { handleTeam } from '@myco-team-worker/mcp/tools/team';
 import { createFakeD1, parseToolResult } from './_helpers';
 
 describe('handleTeam', () => {

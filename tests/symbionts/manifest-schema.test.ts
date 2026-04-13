@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { SymbiontManifestSchema } from '../../src/symbionts/manifest-schema.js';
+import { SymbiontManifestSchema } from '@myco/symbionts/manifest-schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 
-const MANIFESTS_DIR = path.join(import.meta.dirname, '../../src/symbionts/manifests');
+const MANIFESTS_DIR = path.join(import.meta.dirname, '../../packages/myco/src/symbionts/manifests');
 
 describe('symbiont manifests', () => {
   const manifestFiles = fs.readdirSync(MANIFESTS_DIR).filter(f => f.endsWith('.yaml'));

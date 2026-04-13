@@ -1,0 +1,21 @@
+{
+  "name": "@goondocks/myco-collective",
+  "version": "0.1.0",
+  "description": "Myco Collective worker, admin UI, and deployment CLI",
+  "type": "module",
+  "bin": {
+    "myco-collective": "dist/main.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "postinstall": "test -d ui && cd ui && npm install || true",
+    "build": "sh -c 'npm run build:core & pid1=$!; npm run build:ui & pid2=$!; wait $pid1; s1=$?; wait $pid2; s2=$?; test $s1 -eq 0 -a $s2 -eq 0'",
+    "build:core": "tsup",
+    "build:ui": "test -d ui && cd ui && npx vite build",
+    "dev:ui": "test -d ui && cd ui && npx vite dev",
+    "lint": "tsc --noEmit",
+    "test": "echo 'myco-collective tests run from repo root'"
+  }
+}
