@@ -1,13 +1,23 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createTeamHandlers } from '../../../packages/myco/src/daemon/api/team-connect.js';
 
 describe('createTeamHandlers.handleStatus', () => {
   let tempHomeDir: string;
   let vaultDir: string;
   let previousHome: string | undefined;
+
+  async function importTeamConnect() {
+    vi.doMock('@myco-deploy/index.js', async () => {
+      const actual = await vi.importActual<typeof import('@myco-deploy/index.js')>('@myco-deploy/index.js');
+      return {
+        ...actual,
+        resolveHomeConfigPath: (configDir: string, fileName: string) => path.join(tempHomeDir, configDir, fileName),
+      };
+    });
+    return import('../../../packages/myco/src/daemon/api/team-connect.js');
+  }
 
   beforeEach(() => {
     tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-status-'));
@@ -42,6 +52,8 @@ describe('createTeamHandlers.handleStatus', () => {
   });
 
   afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock('@myco-deploy/index.js');
     if (previousHome === undefined) {
       delete process.env.HOME;
     } else {
@@ -51,6 +63,7 @@ describe('createTeamHandlers.handleStatus', () => {
   });
 
   it('compares deployed worker version against installed myco-team version', async () => {
+    const { createTeamHandlers } = await importTeamConnect();
     const handlers = createTeamHandlers({
       vaultDir,
       machineId: 'machine-test',
