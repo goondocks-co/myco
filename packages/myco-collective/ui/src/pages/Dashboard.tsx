@@ -1,11 +1,28 @@
 import { useQueries, useQuery } from '@tanstack/react-query';
-import { ArrowUpRight, KeyRound, Orbit, Package2, ShieldCheck } from 'lucide-react';
+import { RefreshCw, Sparkles } from 'lucide-react';
+import { Badge } from '../components/ui/badge';
 import { Card } from '../components/ui/card';
+import { PageHeader } from '../components/ui/page-header';
+import { SectionHeader } from '../components/ui/section-header';
 import { fetchHealth, fetchProjects, fetchSettings } from '../lib/api';
+import { formatTimestamp } from '../lib/format';
 
-function formatTimestamp(value: number | null): string {
-  if (!value) return 'Never';
-  return new Date(value * 1000).toLocaleString();
+function StatTile({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
+  return (
+    <Card className="p-5">
+      <SectionHeader>{label}</SectionHeader>
+      <div className="mt-3 font-serif text-2xl text-on-surface">{value}</div>
+      {hint && <p className="mt-2 text-sm text-on-surface-variant">{hint}</p>}
+    </Card>
+  );
 }
 
 export default function Dashboard() {
@@ -19,104 +36,84 @@ export default function Dashboard() {
 
   const projects = projectsQuery.data?.projects ?? [];
   const freshestProject = [...projects].sort((left, right) => (right.last_seen ?? 0) - (left.last_seen ?? 0))[0] ?? null;
-  const settingCount = Object.keys(settingsQuery.data?.settings_records ?? {}).length;
+  const records = settingsQuery.data?.settings_records ?? {};
+  const recordEntries = Object.entries(records);
 
   return (
     <div className="space-y-6">
-      <section className="grid gap-4 xl:grid-cols-[1.2fr,0.8fr]">
-        <Card className="overflow-hidden p-6 md:p-8">
-          <div className="flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between">
-            <div className="max-w-2xl">
-              <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-[#ceab91]">Dashboard</p>
-              <h2 className="mt-4 font-display text-5xl leading-none text-[#fff4e8] md:text-[4.3rem]">
-                Collective memory with an operator surface.
-              </h2>
-              <p className="mt-5 max-w-xl text-base leading-7 text-[#ccb6a6]">
-                The control plane is now responsible for registration, settings distribution, and federated search. This view keeps the cross-project surface legible while the branch stays isolated in the worktree.
-              </p>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-[24px] border border-[rgba(255,231,208,0.10)] bg-[rgba(255,248,240,0.04)] p-4">
-                <p className="font-mono text-[11px] uppercase tracking-[0.26em] text-[#9f8774]">Admin Auth</p>
-                <p className="mt-3 text-xl text-[#fff1e3]">
-                  {healthQuery.data?.admin_token_hash ? 'Provisioned' : 'Missing'}
-                </p>
-              </div>
-              <div className="rounded-[24px] border border-[rgba(255,231,208,0.10)] bg-[rgba(255,248,240,0.04)] p-4">
-                <p className="font-mono text-[11px] uppercase tracking-[0.26em] text-[#9f8774]">MCP Auth</p>
-                <p className="mt-3 text-xl text-[#fff1e3]">
-                  {healthQuery.data?.mcp_token_hash ? 'Provisioned' : 'Missing'}
-                </p>
-              </div>
-            </div>
+      <PageHeader
+        eyebrow="Dashboard"
+        title="Cross-project visibility without leaving the Collective."
+        subtitle="Hosted coordination for connected team workers, shared overrides, and federated memory search."
+        actions={(
+          <div className="flex flex-wrap gap-2">
+            <Badge variant={healthQuery.data?.admin_token_hash ? 'accent' : 'danger'}>
+              Admin {healthQuery.data?.admin_token_hash ? 'Ready' : 'Missing'}
+            </Badge>
+            <Badge variant={healthQuery.data?.mcp_token_hash ? 'accent' : 'danger'}>
+              MCP {healthQuery.data?.mcp_token_hash ? 'Ready' : 'Missing'}
+            </Badge>
           </div>
-        </Card>
-
-        <Card className="p-6 md:p-8">
-          <p className="font-mono text-[11px] uppercase tracking-[0.32em] text-[#ceab91]">Current Pulse</p>
-          <div className="mt-6 grid gap-4">
-            <div className="rounded-[24px] border border-[rgba(255,231,208,0.10)] bg-[rgba(255,248,240,0.04)] p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-[#c9b09e]">Latest remote contact</span>
-                <Orbit className="h-4 w-4 text-[#f7b36a]" />
-              </div>
-              <p className="mt-3 text-lg text-[#fff4e8]">{formatTimestamp(freshestProject?.last_seen ?? null)}</p>
-            </div>
-            <div className="rounded-[24px] border border-[rgba(255,231,208,0.10)] bg-[rgba(255,248,240,0.04)] p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-[#c9b09e]">Overrides in force</span>
-                <ShieldCheck className="h-4 w-4 text-[#f7b36a]" />
-              </div>
-              <p className="mt-3 text-lg text-[#fff4e8]">{settingCount}</p>
-            </div>
-          </div>
-        </Card>
-      </section>
+        )}
+      />
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {[
-          { label: 'Registered Projects', value: String(projects.length), icon: Package2 },
-          { label: 'Settings Overrides', value: String(settingCount), icon: ShieldCheck },
-          { label: 'Admin Token Hash', value: healthQuery.data?.admin_token_hash ?? 'Unavailable', icon: KeyRound },
-          { label: 'MCP Token Hash', value: healthQuery.data?.mcp_token_hash ?? 'Unavailable', icon: ArrowUpRight },
-        ].map(({ label, value, icon: Icon }) => (
-          <Card key={label} className="p-5">
-            <div className="flex items-center justify-between">
-              <p className="font-mono text-[11px] uppercase tracking-[0.28em] text-[#9f8774]">{label}</p>
-              <Icon className="h-4 w-4 text-[#f7b36a]" />
-            </div>
-            <p className="mt-5 break-all text-2xl text-[#fff3e5]">{value}</p>
-          </Card>
-        ))}
+        <StatTile
+          label="Registered Projects"
+          value={String(projects.length)}
+          hint={projects.length === 1 ? 'One connected team worker.' : 'Connected team workers.'}
+        />
+        <StatTile
+          label="Settings Overrides"
+          value={String(recordEntries.length)}
+          hint="Schema-backed settings currently distributed by the Collective."
+        />
+        <StatTile
+          label="Latest Remote Contact"
+          value={formatTimestamp(freshestProject?.last_seen)}
+          hint={freshestProject ? freshestProject.name : 'No active projects yet.'}
+        />
+        <StatTile
+          label="Collective Status"
+          value={healthQuery.data?.status ?? 'unknown'}
+          hint="Health endpoint summary for the hosted control plane."
+        />
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[1fr,1fr]">
+      <section className="grid gap-4 xl:grid-cols-[1.15fr,0.85fr]">
         <Card className="p-6">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <div>
-              <p className="font-mono text-[11px] uppercase tracking-[0.28em] text-[#9f8774]">Projects</p>
-              <h3 className="mt-2 font-display text-3xl text-[#fff3e5]">Registered workers</h3>
+              <SectionHeader>Projects</SectionHeader>
+              <h2 className="mt-2 font-serif text-2xl text-on-surface">Connected workers</h2>
             </div>
-            <span className="rounded-full border border-[rgba(255,231,208,0.10)] px-3 py-1 font-mono text-[11px] uppercase tracking-[0.22em] text-[#d2b29a]">
-              {projects.length} total
-            </span>
+            <Badge variant="subtle">{projects.length} total</Badge>
           </div>
 
           <div className="mt-5 space-y-3">
             {projects.map((project) => (
-              <div key={project.id} className="rounded-[24px] border border-[rgba(255,231,208,0.10)] bg-[rgba(255,248,240,0.04)] p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <p className="text-lg text-[#fff0e2]">{project.name}</p>
-                    <p className="text-sm text-[#b99f8c]">{project.worker_url}</p>
+              <div
+                key={project.id}
+                className="rounded-md border border-[var(--ghost-border)] bg-surface-container-low px-4 py-4"
+              >
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="min-w-0">
+                    <div className="text-base font-medium text-on-surface">{project.name}</div>
+                    <div className="mt-1 break-all text-sm text-on-surface-variant">
+                      {project.worker_url}
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {project.capabilities.map((capability) => (
+                        <Badge key={capability} variant="subtle">
+                          {capability}
+                        </Badge>
+                      ))}
+                    </div>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    {project.capabilities.map((capability) => (
-                      <span key={capability} className="rounded-full bg-[rgba(247,179,106,0.12)] px-3 py-1 text-xs text-[#ffd6ad]">
-                        {capability}
-                      </span>
-                    ))}
+                  <div className="grid shrink-0 gap-1 text-sm text-on-surface-variant lg:text-right">
+                    <div>Package {project.package_version ?? 'unknown'}</div>
+                    <div>Schema {project.schema_version ?? 'unknown'}</div>
+                    <div>Seen {formatTimestamp(project.last_seen)}</div>
                   </div>
                 </div>
               </div>
@@ -125,21 +122,39 @@ export default function Dashboard() {
         </Card>
 
         <Card className="p-6">
-          <p className="font-mono text-[11px] uppercase tracking-[0.28em] text-[#9f8774]">Overrides</p>
-          <h3 className="mt-2 font-display text-3xl text-[#fff3e5]">Active settings</h3>
-
+          <div className="flex items-center gap-3">
+            <Sparkles className="h-5 w-5 text-primary" />
+            <div>
+              <SectionHeader>Overrides</SectionHeader>
+              <h2 className="mt-2 font-serif text-xl text-on-surface">Recently updated</h2>
+            </div>
+          </div>
           <div className="mt-5 space-y-3">
-            {Object.entries(settingsQuery.data?.settings_records ?? {}).map(([key, record]) => (
-              <div key={key} className="rounded-[24px] border border-[rgba(255,231,208,0.10)] bg-[rgba(255,248,240,0.04)] p-4">
+            {recordEntries.slice(0, 4).map(([key, record]) => (
+              <div
+                key={key}
+                className="rounded-md border border-[var(--ghost-border)] bg-surface-container-low px-4 py-3"
+              >
                 <div className="flex items-center justify-between gap-3">
-                  <span className="font-mono text-xs uppercase tracking-[0.22em] text-[#f6c69b]">{key}</span>
-                  <span className="text-xs text-[#9f8774]">{formatTimestamp(record.updated_at)}</span>
+                  <div className="min-w-0">
+                    <div className="truncate font-mono text-[11px] uppercase tracking-[0.22em] text-primary">
+                      {key}
+                    </div>
+                    <div className="mt-1 truncate text-sm text-on-surface-variant">
+                      {record.description ?? 'No description provided.'}
+                    </div>
+                  </div>
+                  <div className="shrink-0 text-xs text-on-surface-variant">
+                    {formatTimestamp(record.updated_at)}
+                  </div>
                 </div>
-                <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words rounded-2xl bg-[rgba(8,4,3,0.42)] p-3 font-mono text-xs text-[#ffe9d0]">
-                  {JSON.stringify(record.value, null, 2)}
-                </pre>
               </div>
             ))}
+            {recordEntries.length === 0 && (
+              <div className="rounded-md border border-dashed border-[var(--ghost-border)] px-4 py-6 text-sm text-on-surface-variant">
+                No overrides yet.
+              </div>
+            )}
           </div>
         </Card>
       </section>

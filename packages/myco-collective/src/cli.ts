@@ -34,6 +34,7 @@ const CONFIG_VERSION = 2;
 const TOML_NAME_REGEX = /^name\s*=\s*"[^"]*"/m;
 const TOML_D1_PLACEHOLDER_REGEX = /<YOUR_D1_DATABASE_ID>/g;
 const TOML_KV_PLACEHOLDER_REGEX = /<YOUR_KV_NAMESPACE_ID>/g;
+const TOML_COLLECTIVE_NAME_REGEX = /^COLLECTIVE_NAME\s*=\s*"[^"]*"/m;
 const UI_BUILD_SCRIPT = 'build:ui';
 const ROTATE_CHOICES = new Set(['admin', 'mcp', 'all']);
 const ADMIN_BOOTSTRAP_SECRET = 'MYCO_BOOTSTRAP_ADMIN_TOKEN';
@@ -141,6 +142,21 @@ function workerSourceDir(): string {
 
 function uiBuildDir(): string {
   return path.join(packageRoot(), 'dist', 'ui');
+}
+
+function collectiveDisplayName(workerName: string): string {
+  const parts = workerName.split(/[_-\s]+/g).filter(Boolean);
+  if (parts.length === 0) return 'Collective';
+
+  const title = parts
+    .map((part) => {
+      if (/^myco$/i.test(part)) return 'Myco';
+      if (/^[a-z]{2,3}$/i.test(part)) return part.toUpperCase();
+      return part.charAt(0).toUpperCase() + part.slice(1);
+    })
+    .join(' ');
+
+  return /collective/i.test(title) ? title : `${title} Collective`;
 }
 
 function collectHomeScopedNames(): string[] {
@@ -302,6 +318,7 @@ function prepareDeployDir(config: { worker_name: string; d1_database_id: string;
         (wranglerToml) => wranglerToml.replace(TOML_NAME_REGEX, `name = "${config.worker_name}"`),
         (wranglerToml) => wranglerToml.replace(TOML_D1_PLACEHOLDER_REGEX, config.d1_database_id),
         (wranglerToml) => wranglerToml.replace(TOML_KV_PLACEHOLDER_REGEX, config.kv_namespace_id),
+        (wranglerToml) => wranglerToml.replace(TOML_COLLECTIVE_NAME_REGEX, `COLLECTIVE_NAME = "${collectiveDisplayName(config.worker_name)}"`),
       ],
     }],
     installDepsTimeoutMs: COMMAND_TIMEOUT_MS * 3,

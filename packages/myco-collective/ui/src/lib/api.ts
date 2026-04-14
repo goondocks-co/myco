@@ -1,4 +1,4 @@
-import { AuthVerifyResponse, HealthResponse, ProjectsResponse, SearchResponse, SettingsResponse } from './types';
+import { AuthVerifyResponse, CollectiveAccessResponse, HealthResponse, ProjectsResponse, SearchResponse, SettingsResponse } from './types';
 
 const API_BASE = '/api';
 const ADMIN_TOKEN_STORAGE_KEY = 'myco-collective-admin-token';
@@ -61,6 +61,14 @@ export function fetchHealth(): Promise<HealthResponse> {
 
 export function verifyAdminToken(): Promise<AuthVerifyResponse> {
   return requestJson<AuthVerifyResponse>('/auth/verify', { method: 'POST' });
+}
+
+export function fetchCollectiveAccess(): Promise<CollectiveAccessResponse> {
+  return requestJson<CollectiveAccessResponse>('/auth/access');
+}
+
+export function rotateCollectiveToken(which: 'admin' | 'mcp' | 'all'): Promise<Record<string, unknown>> {
+  return requestJson<Record<string, unknown>>('/auth/rotate', { method: 'POST', body: JSON.stringify({ which }) });
 }
 
 export function fetchProjects(): Promise<ProjectsResponse> {

@@ -1,74 +1,246 @@
-import { DatabaseZap, Layers3, LogOut, Radar, Search, Settings2 } from 'lucide-react';
-import { NavLink, Outlet } from 'react-router-dom';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Layers3,
+  LogOut,
+  Menu,
+  Moon,
+  Orbit,
+  Radar,
+  Search,
+  Settings2,
+  Sun,
+  X,
+} from 'lucide-react';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { Button } from '../components/ui/button';
+import { useTheme } from '../providers/theme';
 import { cn } from '../lib/cn';
+import { formatCollectiveName } from '../lib/format';
 
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: Radar },
+  { to: '/mcp-settings', label: 'MCP', icon: Orbit },
   { to: '/projects', label: 'Projects', icon: Layers3 },
   { to: '/settings', label: 'Settings', icon: Settings2 },
   { to: '/search', label: 'Search', icon: Search },
 ] as const;
+
+const SIDEBAR_COLLAPSED_KEY = 'myco-collective-sidebar-collapsed';
+const MOBILE_BREAKPOINT_PX = 1024;
 
 export interface LayoutProps {
   collectiveName: string;
   onLogout: () => void;
 }
 
-export default function Layout({ collectiveName, onLogout }: LayoutProps) {
+function useSidebarCollapse() {
+  const [collapsed, setCollapsedState] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true');
+
+  const toggle = useCallback(() => {
+    setCollapsedState((prev) => {
+      const next = !prev;
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
+      return next;
+    });
+  }, []);
+
+  return { collapsed, toggle };
+}
+
+function useMobileDrawer() {
+  const [open, setOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth < MOBILE_BREAKPOINT_PX,
+  );
+  const location = useLocation();
+
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX - 1}px)`);
+    const onChange = (event: MediaQueryListEvent) => {
+      setIsMobile(event.matches);
+      if (!event.matches) setOpen(false);
+    };
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  useEffect(() => {
+    setOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [open]);
+
+  return {
+    isMobile,
+    open,
+    toggle: () => setOpen((prev) => !prev),
+    close: () => setOpen(false),
+  };
+}
+
+function ThemeToggle({ collapsed }: { collapsed: boolean }) {
+  const { theme, setTheme } = useTheme();
+  const nextTheme = theme === 'dark' ? 'light' : 'dark';
+  const Icon = theme === 'dark' ? Sun : Moon;
+  const label = theme === 'dark' ? 'Light mode' : 'Dark mode';
+
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-[1540px] flex-col gap-6 px-4 py-4 md:px-6 lg:flex-row lg:px-8 lg:py-8">
-      <aside className="w-full rounded-[32px] border border-[rgba(255,231,208,0.11)] bg-[linear-gradient(180deg,rgba(21,13,10,0.98),rgba(10,7,6,0.98))] p-5 shadow-[0_22px_70px_rgba(0,0,0,0.32)] lg:sticky lg:top-8 lg:h-[calc(100vh-4rem)] lg:w-[320px]">
-        <div className="mb-8 space-y-3">
-          <div className="inline-flex items-center gap-2 rounded-full border border-[rgba(255,231,208,0.12)] bg-[rgba(255,244,230,0.05)] px-3 py-1 text-[11px] uppercase tracking-[0.34em] text-[#cfae95]">
-            <DatabaseZap className="h-3.5 w-3.5" />
-            Collective Control Plane
-          </div>
-          <div>
-            <h1 className="font-display text-4xl leading-none text-[#fff4e8] md:text-[3.35rem]">{collectiveName}</h1>
-            <p className="mt-3 max-w-[22rem] text-sm leading-6 text-[#b9a291]">
-              One operator surface for project registration, override transport, and cross-project memory search.
-            </p>
-          </div>
-        </div>
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={() => setTheme(nextTheme)}
+      title={collapsed ? label : undefined}
+      className={cn(collapsed ? 'h-8 w-8 p-0' : 'w-full justify-start gap-2 px-2')}
+    >
+      <Icon className="h-4 w-4" />
+      {!collapsed && <span>{label}</span>}
+    </Button>
+  );
+}
 
-        <nav className="space-y-2">
-          {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={to === '/'}
-              className={({ isActive }) => cn(
-                'flex items-center justify-between rounded-2xl px-4 py-3 text-sm transition-colors',
+function SidebarContent({
+  collectiveName,
+  collapsed,
+  onLogout,
+  onCollapseToggle,
+  showCollapseToggle,
+}: {
+  collectiveName: string;
+  collapsed: boolean;
+  onLogout: () => void;
+  onCollapseToggle?: () => void;
+  showCollapseToggle: boolean;
+}) {
+  const displayName = formatCollectiveName(collectiveName);
+  const compactLabel = displayName.replace(/\s+Collective$/i, '');
+
+  return (
+    <div className="flex h-full flex-col gap-5">
+      <div className="min-w-0">
+        <div className={cn('font-serif leading-none text-on-surface', collapsed ? 'text-2xl' : 'text-[1.55rem]')}>
+          myco
+        </div>
+        <div className={cn('mt-2 font-mono text-[10px] uppercase tracking-[0.22em] text-on-surface-variant', collapsed && 'text-center')}>
+          {collapsed ? compactLabel.slice(0, 3) : displayName}
+        </div>
+      </div>
+
+      <nav className="space-y-1" aria-label="Collective navigation">
+        {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+          <NavLink
+            key={to}
+            to={to}
+            end={to === '/'}
+            title={collapsed ? label : undefined}
+            className={({ isActive }) =>
+              cn(
+                'flex items-center rounded-md text-sm font-medium transition-colors',
+                collapsed ? 'justify-center px-3 py-2.5' : 'gap-3 px-3 py-2.5',
                 isActive
-                  ? 'bg-[linear-gradient(135deg,rgba(247,179,106,0.20),rgba(241,139,83,0.16))] text-[#fff3e5]'
-                  : 'text-[#c7b0a0] hover:bg-[rgba(255,244,230,0.05)] hover:text-[#fff3e5]',
-              )}
-            >
-              <span className="flex items-center gap-3">
-                <Icon className="h-4 w-4" />
-                {label}
-              </span>
-            </NavLink>
-          ))}
-        </nav>
+                  ? 'bg-surface-container-high text-on-surface shadow-[inset_2px_0_0_var(--primary)]'
+                  : 'text-on-surface-variant hover:bg-surface-container hover:text-on-surface',
+              )
+            }
+          >
+            <Icon className="h-4 w-4 shrink-0" />
+            {!collapsed && label}
+          </NavLink>
+        ))}
+      </nav>
 
-        <div className="mt-8 rounded-[26px] border border-[rgba(255,231,208,0.11)] bg-[rgba(255,248,240,0.04)] p-4">
-          <p className="font-mono text-[11px] uppercase tracking-[0.28em] text-[#a68d7a]">Release Discipline</p>
-          <p className="mt-3 text-sm leading-6 text-[#cfbbab]">
-            Package releases are isolated by tag prefix, so Collective changes stay decoupled from local Myco and team-worker publishes.
-          </p>
-        </div>
-
-        <Button variant="ghost" className="mt-6 w-full justify-between" onClick={onLogout}>
-          Clear Admin Token
+      <div className="mt-auto space-y-2">
+        <ThemeToggle collapsed={collapsed} />
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onLogout}
+          title={collapsed ? 'Clear Admin Token' : undefined}
+          className={cn(collapsed ? 'h-8 w-8 p-0' : 'w-full justify-between px-2')}
+        >
+          {!collapsed && <span>Clear Admin Token</span>}
           <LogOut className="h-4 w-4" />
         </Button>
-      </aside>
+        {showCollapseToggle && onCollapseToggle && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onCollapseToggle}
+            title={collapsed ? 'Expand sidebar' : undefined}
+            className={cn(collapsed ? 'h-8 w-8 p-0' : 'w-full justify-between px-2')}
+          >
+            {!collapsed && <span>Collapse</span>}
+            {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
 
-      <main className="min-w-0 flex-1">
-        <Outlet />
-      </main>
+export default function Layout({ collectiveName, onLogout }: LayoutProps) {
+  const { collapsed, toggle } = useSidebarCollapse();
+  const mobile = useMobileDrawer();
+  const displayName = formatCollectiveName(collectiveName);
+
+  return (
+    <div className="relative min-h-screen">
+      <header className="sticky top-0 z-30 border-b border-[var(--ghost-border)] bg-surface/90 backdrop-blur lg:hidden">
+        <div className="mx-auto flex max-w-[1600px] items-center justify-between px-4 py-3">
+          <div className="min-w-0">
+            <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-on-surface-variant">myco</p>
+            <div className="truncate font-serif text-xl text-on-surface">{displayName}</div>
+          </div>
+          <Button variant="ghost" size="icon" onClick={mobile.toggle} aria-label="Toggle navigation">
+            {mobile.open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </Button>
+        </div>
+      </header>
+
+      {mobile.isMobile && mobile.open && (
+        <>
+          <div className="fixed inset-0 z-40 bg-black/55 backdrop-blur-sm" onClick={mobile.close} />
+          <aside className="fixed inset-y-0 left-0 z-50 w-[88vw] max-w-sm border-r border-[var(--ghost-border)] bg-surface-container-low px-4 py-5">
+            <SidebarContent
+              collectiveName={displayName}
+              collapsed={false}
+              onLogout={onLogout}
+              showCollapseToggle={false}
+            />
+          </aside>
+        </>
+      )}
+
+      <div className="mx-auto flex max-w-[1600px] gap-0 lg:min-h-screen">
+        <aside
+          className={cn(
+            'hidden shrink-0 border-r border-[var(--ghost-border)] bg-surface-container-low lg:block',
+            collapsed ? 'w-[82px]' : 'w-[248px]',
+          )}
+        >
+          <div className={cn('sticky top-0 min-h-screen', collapsed ? 'px-2 py-4' : 'px-4 py-5')}>
+            <SidebarContent
+              collectiveName={displayName}
+              collapsed={collapsed}
+              onLogout={onLogout}
+              onCollapseToggle={toggle}
+              showCollapseToggle
+            />
+          </div>
+        </aside>
+
+        <main className="min-w-0 flex-1 px-4 py-5 md:px-6 lg:px-8 lg:py-7">
+          <Outlet />
+        </main>
+      </div>
     </div>
   );
 }

@@ -1,13 +1,23 @@
 import { useQuery } from '@tanstack/react-query';
-import { LockKeyhole, Sparkles } from 'lucide-react';
-import { FormEvent, useEffect, useState } from 'react';
+import { LockKeyhole, ShieldCheck } from 'lucide-react';
+import { type FormEvent, useEffect, useState } from 'react';
 import { Route, Routes } from 'react-router-dom';
+import { Badge } from './components/ui/badge';
 import { Button } from './components/ui/button';
 import { Card } from './components/ui/card';
 import { Input } from './components/ui/input';
+import { PageLoading } from './components/ui/page-loading';
 import Layout from './layout/Layout';
-import { ApiError, clearStoredAdminToken, getStoredAdminToken, setStoredAdminToken, verifyAdminToken } from './lib/api';
+import {
+  ApiError,
+  clearStoredAdminToken,
+  getStoredAdminToken,
+  setStoredAdminToken,
+  verifyAdminToken,
+} from './lib/api';
+import { formatCollectiveName } from './lib/format';
 import Dashboard from './pages/Dashboard';
+import Mcp from './pages/Mcp';
 import Projects from './pages/Projects';
 import Search from './pages/Search';
 import Settings from './pages/Settings';
@@ -26,6 +36,7 @@ function AuthGate({ onAuthenticated }: { onAuthenticated: () => void }) {
     event.preventDefault();
     setMessage(null);
     setStoredAdminToken(token);
+
     try {
       const result = await authQuery.refetch();
       if (result.error) throw result.error;
@@ -38,19 +49,21 @@ function AuthGate({ onAuthenticated }: { onAuthenticated: () => void }) {
 
   return (
     <div className="flex min-h-screen items-center justify-center px-4 py-10">
-      <Card className="w-full max-w-2xl overflow-hidden p-8 md:p-10">
-        <div className="inline-flex items-center gap-2 rounded-full border border-[rgba(255,231,208,0.10)] bg-[rgba(255,248,240,0.04)] px-3 py-1 font-mono text-[11px] uppercase tracking-[0.28em] text-[#d2b29a]">
-          <Sparkles className="h-3.5 w-3.5" />
-          Admin authentication
-        </div>
-        <h1 className="mt-6 font-display text-5xl text-[#fff4e8] md:text-6xl">Unlock the Collective.</h1>
-        <p className="mt-4 max-w-xl text-base leading-7 text-[#ccb6a6]">
-          The admin UI uses the Collective bearer token directly. This keeps the surface package-owned and self-contained while the backend still uses explicit bearer validation.
+      <Card className="w-full max-w-2xl overflow-hidden p-6 md:p-8">
+        <Badge variant="outline">
+          <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+          Collective Admin Access
+        </Badge>
+        <h1 className="mt-5 max-w-2xl font-serif text-3xl text-on-surface md:text-4xl">
+          Operator access for the hosted Collective.
+        </h1>
+        <p className="mt-3 max-w-2xl text-sm leading-6 text-on-surface-variant">
+          Authenticate once, then manage project registration, settings distribution, and cross-project search inside the same Myco UI language used by the daemon dashboard.
         </p>
 
-        <form className="mt-8 space-y-4" onSubmit={handleSubmit}>
+        <form className="mt-8 space-y-5" onSubmit={handleSubmit}>
           <div className="space-y-2">
-            <label className="text-sm text-[#ccb6a6]">Admin bearer token</label>
+            <label className="text-sm text-on-surface-variant">Admin bearer token</label>
             <Input
               type="password"
               value={token}
@@ -60,13 +73,18 @@ function AuthGate({ onAuthenticated }: { onAuthenticated: () => void }) {
             />
           </div>
 
-          <Button type="submit" disabled={authQuery.isFetching}>
-            <LockKeyhole className="mr-2 h-4 w-4" />
-            Authenticate
-          </Button>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button type="submit" disabled={authQuery.isFetching}>
+              <LockKeyhole className="mr-2 h-4 w-4" />
+              Authenticate
+            </Button>
+            <span className="text-sm text-on-surface-variant">
+              The token is stored locally in your browser for this operator surface.
+            </span>
+          </div>
         </form>
 
-        {message ? <p className="mt-4 text-sm text-[#ffc7bb]">{message}</p> : null}
+        {message && <p className="mt-4 text-sm text-tertiary">{message}</p>}
       </Card>
     </div>
   );
@@ -95,9 +113,9 @@ export default function App() {
 
   if (authQuery.isLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center text-[#d5bba8]">
-        Verifying Collective admin token…
-      </div>
+      <PageLoading isLoading error={null} loadingText="Verifying Collective admin token…">
+        {null}
+      </PageLoading>
     );
   }
 
@@ -112,8 +130,9 @@ export default function App() {
 
   return (
     <Routes>
-      <Route element={<Layout collectiveName={authQuery.data.collective_name} onLogout={handleLogout} />}>
+      <Route element={<Layout collectiveName={formatCollectiveName(authQuery.data.collective_name)} onLogout={handleLogout} />}>
         <Route path="/" element={<Dashboard />} />
+        <Route path="/mcp-settings" element={<Mcp />} />
         <Route path="/projects" element={<Projects />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/search" element={<Search />} />
