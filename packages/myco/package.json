@@ -1,6 +1,6 @@
 {
   "name": "@goondocks/myco",
-  "version": "0.19.5",
+  "version": "0.19.6",
   "description": "Collective agent intelligence — Claude Code plugin",
   "type": "module",
   "main": "dist/index.js",
