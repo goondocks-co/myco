@@ -15,7 +15,7 @@ import { textResult, type VaultToolDeps } from './types.js';
 // ---------------------------------------------------------------------------
 
 export function createObservabilityTools(deps: VaultToolDeps) {
-  const { runId, agentId, recordTurn } = deps;
+  const { runId, agentId } = deps;
 
   const vaultReport = tool(
     'vault_report',
@@ -26,7 +26,6 @@ export function createObservabilityTools(deps: VaultToolDeps) {
       details: z.record(z.string(), z.unknown()).optional().describe('Structured details as key-value pairs'),
     },
     async (args) => {
-      recordTurn('vault_report', args);
       const now = epochSeconds();
 
       const report = insertReport({

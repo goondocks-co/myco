@@ -7,6 +7,7 @@
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { getDatabase } from '@myco/db/client.js';
+import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 
 // Mock tryEmbed to return null immediately — no real embedding provider in tests
 vi.mock('@myco/intelligence/embed-query.js', () => ({
@@ -148,6 +149,13 @@ describe('vault tools', () => {
       const result = await t.handler({}, undefined);
       const data = parseResult(result) as unknown[];
       expect(data).toEqual([]);
+
+      const turns = getDatabase().prepare(
+        `SELECT tool_output_summary, completed_at FROM agent_turns WHERE run_id = ? ORDER BY id ASC`,
+      ).all(TEST_RUN_ID) as Array<{ tool_output_summary: string | null; completed_at: number | null }>;
+      expect(turns).toHaveLength(1);
+      expect(turns[0].completed_at).not.toBeNull();
+      expect(turns[0].tool_output_summary).toBe('[]');
     });
 
     it('returns unprocessed batches when include_active is set', async () => {
@@ -212,6 +220,29 @@ describe('vault tools', () => {
       expect(data).toHaveLength(1);
       expect(data[0].observation_type).toBe('gotcha');
     });
+
+    it('returns exact spores by id in the requested order', async () => {
+      insertSpore({
+        id: 'spore-a',
+        agent_id: TEST_AGENT_ID,
+        observation_type: 'gotcha',
+        content: 'Alpha',
+        created_at: epochNow(),
+      });
+      insertSpore({
+        id: 'spore-b',
+        agent_id: TEST_AGENT_ID,
+        observation_type: 'decision',
+        content: 'Beta',
+        created_at: epochNow(),
+      });
+
+      const t = findTool(tools, 'vault_spores');
+      const result = await t.handler({ ids: ['spore-b', 'spore-a'] }, undefined);
+      const data = parseResult(result) as Array<{ id: string; content: string }>;
+      expect(data.map((row) => row.id)).toEqual(['spore-b', 'spore-a']);
+      expect(data.map((row) => row.content)).toEqual(['Beta', 'Alpha']);
+    });
   });
 
   describe('vault_sessions', () => {
@@ -255,6 +286,61 @@ describe('vault tools', () => {
       const data = parseResult(result) as { results: unknown[]; message: string };
       expect(data.results).toEqual([]);
       expect(data.message).toBe('Embedding provider unavailable');
+
+      const turn = getDatabase().prepare(
+        `SELECT tool_output_summary, completed_at FROM agent_turns WHERE run_id = ? ORDER BY id DESC LIMIT 1`,
+      ).get(TEST_RUN_ID) as { tool_output_summary: string | null; completed_at: number | null };
+      expect(turn.completed_at).not.toBeNull();
+      expect(turn.tool_output_summary).toContain('Embedding provider unavailable');
+    });
+
+    it('excludes active-session results by default and hydrates local matches', async () => {
+      const completedSession = makeSession({ id: 'sess-complete', status: 'completed' });
+      upsertSession(completedSession);
+
+      insertSpore({
+        id: 'spore-active',
+        agent_id: TEST_AGENT_ID,
+        session_id: sessionId,
+        observation_type: 'decision',
+        content: 'Active session spore',
+        created_at: epochNow(),
+      });
+      insertSpore({
+        id: 'spore-complete',
+        agent_id: TEST_AGENT_ID,
+        session_id: completedSession.id,
+        observation_type: 'decision',
+        content: 'Completed session spore',
+        created_at: epochNow(),
+      });
+
+      const embeddingManager = {
+        embedQuery: async () => [0.1, 0.2],
+        searchVectors: () => [
+          {
+            id: 'spore-active',
+            namespace: 'spores',
+            similarity: 0.95,
+            metadata: { session_id: sessionId, observation_type: 'decision' },
+          },
+          {
+            id: 'spore-complete',
+            namespace: 'spores',
+            similarity: 0.9,
+            metadata: { session_id: completedSession.id, observation_type: 'decision' },
+          },
+        ],
+      } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
+
+      const semanticTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { embeddingManager });
+      const t = findTool(semanticTools, 'vault_search_semantic');
+      const result = await t.handler({ query: 'decision' }, undefined);
+      const data = parseResult(result) as { results: Array<{ id: string; preview: string; type: string }> };
+
+      expect(data.results.map((row) => row.id)).toEqual(['spore-complete']);
+      expect(data.results[0].type).toBe('spore');
+      expect(data.results[0].preview).toContain('Completed session spore');
     });
   });
 

@@ -61,7 +61,7 @@ import { textResult, type VaultToolDeps } from './types.js';
 // ---------------------------------------------------------------------------
 
 export function createSkillTools(deps: VaultToolDeps) {
-  const { agentId, machineId, projectRoot, vaultDir, recordTurn, embeddingManager } = deps;
+  const { agentId, machineId, projectRoot, vaultDir, embeddingManager } = deps;
 
   /**
    * Find the best-matching existing candidate (if any) whose topic
@@ -423,8 +423,6 @@ export function createSkillTools(deps: VaultToolDeps) {
       limit: z.number().optional().describe('Maximum candidates to return (for list)'),
     },
     async (args) => {
-      recordTurn('vault_skill_candidates', args);
-
       switch (args.action) {
         case 'list': {
           const candidates = listCandidates({
@@ -573,8 +571,6 @@ export function createSkillTools(deps: VaultToolDeps) {
       limit: z.number().optional().describe('Maximum records to return (for list)'),
     },
     async (args) => {
-      recordTurn('vault_skill_records', args);
-
       switch (args.action) {
         case 'list': {
           const records = listSkillRecords({
@@ -664,7 +660,6 @@ export function createSkillTools(deps: VaultToolDeps) {
       // Validate skill content before writing -- reject malformed skills
       const validationErrors = validateSkillContent(args.content, args.name);
       if (validationErrors.length > 0) {
-        recordTurn('vault_write_skill', args);
         return textResult({
           error: 'Skill validation failed. Fix these issues and try again.',
           issues: validationErrors,
@@ -673,7 +668,6 @@ export function createSkillTools(deps: VaultToolDeps) {
 
       // Path traversal guard -- reject names containing path separators or dot-dot sequences
       if (!args.name || /[/\\]|\.\./.test(args.name)) {
-        recordTurn('vault_write_skill', args);
         return textResult({
           error: 'Invalid skill name: must be a simple directory name without path separators or ".."',
         });
@@ -687,7 +681,6 @@ export function createSkillTools(deps: VaultToolDeps) {
         description: args.description,
       });
       if (dedupError) {
-        recordTurn('vault_write_skill', args);
         return textResult(dedupError);
       }
       const existing = getSkillRecordByName(args.name);
@@ -701,7 +694,6 @@ export function createSkillTools(deps: VaultToolDeps) {
         const existingContent = readFileSync(skillPath, 'utf-8');
         const violations = checkFrontmatterPreservation(existingContent, args.content);
         if (violations.length > 0) {
-          recordTurn('vault_write_skill', args);
           return textResult({
             error: 'Skill update rejected: protected frontmatter fields were changed. Read the existing skill and preserve these values exactly.',
             violations,
@@ -720,7 +712,6 @@ export function createSkillTools(deps: VaultToolDeps) {
         if (args.candidate_id) {
           const candidateError = requireApprovedCandidate(args.candidate_id);
           if (candidateError) {
-            recordTurn('vault_write_skill', args);
             return textResult(candidateError);
           }
         }
@@ -751,7 +742,6 @@ export function createSkillTools(deps: VaultToolDeps) {
           linkCandidate,
           label: 'vault_write_skill',
         });
-        recordTurn('vault_write_skill', args);
         if ('error' in result) return textResult(result);
         emitSkillNotification('created', {
           name: result.name,
@@ -823,7 +813,6 @@ export function createSkillTools(deps: VaultToolDeps) {
             rollbackErr instanceof Error ? rollbackErr.message : rollbackErr,
           );
         }
-        recordTurn('vault_write_skill', args);
         return textResult({
           error: `Skill write aborted: database transaction failed and on-disk state was rolled back. ${err instanceof Error ? err.message : String(err)}`,
         });
@@ -841,7 +830,6 @@ export function createSkillTools(deps: VaultToolDeps) {
         name: args.name,
       }).catch(() => {});
 
-      recordTurn('vault_write_skill', args);
       return textResult({
         id: recordId,
         name: args.name,
@@ -867,8 +855,6 @@ export function createSkillTools(deps: VaultToolDeps) {
       rationale: z.string().optional().describe('Why this skill is being created — stored in lineage after finalize'),
     },
     async (args) => {
-      recordTurn('vault_stage_skill', args);
-
       if (!vaultDir) {
         return textResult({
           error: 'vault_stage_skill requires vaultDir on the tool deps — staging has no location otherwise',
@@ -941,8 +927,6 @@ export function createSkillTools(deps: VaultToolDeps) {
       candidate_id: z.string().describe('Candidate ID whose staged skill should be promoted. Must match a previous vault_stage_skill call.'),
     },
     async (args) => {
-      recordTurn('vault_finalize_skill', args);
-
       if (!vaultDir) {
         return textResult({
           error: 'vault_finalize_skill requires vaultDir on the tool deps',
