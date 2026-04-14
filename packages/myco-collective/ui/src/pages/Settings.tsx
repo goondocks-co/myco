@@ -1,12 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FormEvent, useState } from 'react';
+import { type FormEvent, useState } from 'react';
+import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
+import { PageHeader } from '../components/ui/page-header';
+import { SectionHeader } from '../components/ui/section-header';
 import { fetchSettings, upsertSetting } from '../lib/api';
+import { formatTimestamp } from '../lib/format';
 
-function formatTimestamp(value: number): string {
-  return new Date(value * 1000).toLocaleString();
-}
+const TEXTAREA_BASE_CLASS = 'appearance-none min-h-36 w-full rounded-md border border-[var(--ghost-border)] bg-[var(--surface-container-lowest)] px-3 py-3 font-mono text-sm text-[var(--on-surface)] outline-none transition-colors placeholder:text-[color-mix(in_srgb,var(--on-surface-variant),transparent_25%)] focus:border-primary/40';
+const SELECT_BASE_CLASS = 'appearance-none h-9 w-full rounded-md border border-[var(--ghost-border)] bg-[var(--surface-container-lowest)] px-3 text-sm text-[var(--on-surface)] outline-none transition-colors focus:border-primary/40';
 
 export default function Settings() {
   const queryClient = useQueryClient();
@@ -44,19 +47,22 @@ export default function Settings() {
 
   return (
     <div className="space-y-6">
-      <Card className="p-6 md:p-8">
-        <p className="font-mono text-[11px] uppercase tracking-[0.32em] text-[#ceab91]">Settings</p>
-        <h2 className="mt-3 font-display text-4xl text-[#fff4e8] md:text-5xl">Transport override state with schema-backed intent.</h2>
-        <p className="mt-4 max-w-3xl text-base leading-7 text-[#cab3a2]">
-          The Collective owns override transport, not governance policy. This surface stays focused on an explicit schema-backed override set that team workers can cache and apply consistently.
-        </p>
-      </Card>
+      <PageHeader
+        eyebrow="Settings"
+        title="Shared settings transport with schema-backed intent."
+        subtitle="Collective owns override distribution, not product governance. This surface stays close to the contract team workers cache and apply."
+        actions={<Badge variant="subtle">{Object.keys(records).length} active</Badge>}
+      />
 
       <Card className="p-6">
-        <h3 className="font-display text-3xl text-[#fff2e5]">Upsert override</h3>
+        <div>
+          <SectionHeader>Upsert Override</SectionHeader>
+          <h2 className="mt-2 font-serif text-2xl text-on-surface">Edit Collective override state</h2>
+        </div>
+
         <form className="mt-6 grid gap-4 md:grid-cols-2" onSubmit={handleSubmit}>
           <div className="space-y-2">
-            <label className="text-sm text-[#ccb6a6]">Key</label>
+            <label className="text-xs text-on-surface-variant">Key</label>
             <select
               value={key}
               onChange={(event) => {
@@ -67,7 +73,7 @@ export default function Settings() {
                   setValueText(JSON.stringify(nextDefinition.example, null, 2));
                 }
               }}
-              className="h-11 w-full rounded-[24px] border border-[rgba(255,231,208,0.12)] bg-[rgba(255,248,240,0.05)] px-4 text-sm text-[#fff4e8] outline-none transition-colors focus:border-[rgba(247,179,106,0.55)]"
+              className={SELECT_BASE_CLASS}
               required
             >
               <option value="">Select a supported override</option>
@@ -76,30 +82,39 @@ export default function Settings() {
               ))}
             </select>
           </div>
+
           <div className="space-y-2 md:col-span-2">
-            <label className="text-sm text-[#ccb6a6]">JSON value</label>
+            <label className="text-xs text-on-surface-variant">JSON value</label>
             <textarea
               value={valueText}
               onChange={(event) => setValueText(event.target.value)}
-              className="min-h-32 w-full rounded-[24px] border border-[rgba(255,231,208,0.12)] bg-[rgba(255,248,240,0.05)] px-4 py-3 font-mono text-sm text-[#fff4e8] outline-none transition-colors placeholder:text-[#9e8b7e] focus:border-[rgba(247,179,106,0.55)]"
+              className={TEXTAREA_BASE_CLASS}
               placeholder='{"enabled": true}'
             />
           </div>
+
+          {selectedDefinition && (
+            <div className="md:col-span-2 rounded-md border border-[var(--ghost-border)] bg-surface-container-low px-4 py-4">
+              <div className="text-sm text-on-surface">{selectedDefinition.description}</div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Badge variant="subtle">{selectedDefinition.value_type}</Badge>
+                {selectedDefinition.enum_values?.map((value) => (
+                  <Badge key={value} variant="outline">{value}</Badge>
+                ))}
+                {selectedDefinition.minimum !== undefined && (
+                  <Badge variant="outline">min {selectedDefinition.minimum}</Badge>
+                )}
+                {selectedDefinition.maximum !== undefined && (
+                  <Badge variant="outline">max {selectedDefinition.maximum}</Badge>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="md:col-span-2 flex flex-wrap items-center gap-3">
             <Button type="submit" disabled={mutation.isPending}>Save override</Button>
-            {message ? <span className="text-sm text-[#d7c0ae]">{message}</span> : null}
+            {message && <span className="text-sm text-on-surface-variant">{message}</span>}
           </div>
-          {selectedDefinition ? (
-            <div className="md:col-span-2 rounded-[24px] border border-[rgba(255,231,208,0.10)] bg-[rgba(255,248,240,0.04)] p-4 text-sm text-[#ccb6a6]">
-              <p className="text-[#fff0e2]">{selectedDefinition.description}</p>
-              <p className="mt-2 font-mono text-xs uppercase tracking-[0.22em] text-[#f6c69b]">
-                {selectedDefinition.value_type}
-                {selectedDefinition.enum_values ? `: ${selectedDefinition.enum_values.join(', ')}` : ''}
-                {selectedDefinition.minimum !== undefined ? ` · min ${selectedDefinition.minimum}` : ''}
-                {selectedDefinition.maximum !== undefined ? ` · max ${selectedDefinition.maximum}` : ''}
-              </p>
-            </div>
-          ) : null}
         </form>
       </Card>
 
@@ -107,16 +122,20 @@ export default function Settings() {
         {Object.entries(records).map(([settingKey, record]) => (
           <Card key={settingKey} className="p-6">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-              <div>
-                <p className="font-mono text-[11px] uppercase tracking-[0.28em] text-[#f6c69b]">{settingKey}</p>
-                <p className="mt-2 text-sm text-[#bca493]">{record.description ?? 'No description provided.'}</p>
+              <div className="min-w-0">
+                <div className="truncate font-mono text-[11px] uppercase tracking-[0.22em] text-primary">
+                  {settingKey}
+                </div>
+                <div className="mt-2 text-sm text-on-surface-variant">
+                  {record.description ?? 'No description provided.'}
+                </div>
               </div>
-              <div className="text-right text-sm text-[#9f8774]">
+              <div className="text-sm text-on-surface-variant lg:text-right">
                 <div>{record.updated_by ?? 'admin'}</div>
                 <div>{formatTimestamp(record.updated_at)}</div>
               </div>
             </div>
-            <pre className="mt-4 overflow-x-auto whitespace-pre-wrap break-words rounded-[24px] bg-[rgba(8,4,3,0.42)] p-4 font-mono text-xs text-[#ffe9d0]">
+            <pre className="mt-4 overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-surface-container-lowest p-4 font-mono text-xs text-on-surface">
               {JSON.stringify(record.value, null, 2)}
             </pre>
           </Card>

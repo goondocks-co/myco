@@ -137,7 +137,7 @@ myco agent run skill-survey            # Survey for new skill candidates
 
 ## Custom tasks
 
-Drop a YAML task definition into `.myco/tasks/*.yaml` and it'll be loaded at daemon startup alongside the built-ins. Custom tasks have access to the same tool set and the same scheduling options as built-ins. The built-in task definitions are in `src/agent/definitions/tasks/` if you want reference examples.
+Drop a YAML task definition into `.myco/tasks/*.yaml` and it'll be loaded at daemon startup alongside the built-ins. Custom tasks have access to the same tool set and the same scheduling options as built-ins. The built-in task definitions are in `packages/myco/src/agent/definitions/tasks/` if you want reference examples.
 
 ## Monitoring and troubleshooting
 

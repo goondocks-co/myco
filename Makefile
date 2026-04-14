@@ -1,4 +1,4 @@
-.PHONY: build build-fast build-only check check-fast test test-fast test-integration lint clean watch install dev-link dev-unlink ui-dev
+.PHONY: build build-fast build-only check check-fast test test-fast test-integration lint clean watch install dev-link dev-unlink ui-dev collective-ui-dev
 
 build:
 	$(MAKE) -j2 check
@@ -44,6 +44,19 @@ ui-dev:
 		console.log(19200)')}; \
 	echo "Proxying API to daemon on port $$port (override with MYCO_DAEMON_PORT=<port> make ui-dev)"; \
 	cd packages/myco/ui && MYCO_DAEMON_PORT=$$port npx vite dev
+
+collective-ui-dev:
+	@collective_name=$${COLLECTIVE_NAME:-oss}; \
+	target=$${COLLECTIVE_UI_PROXY_TARGET:-$$(COLLECTIVE_NAME=$$collective_name node -e ' \
+		var fs=require("fs"),p=require("path"),os=require("os"); \
+		var name=process.env.COLLECTIVE_NAME||"oss"; \
+		var file=p.join(os.homedir(),".myco-collective",name,"config.json"); \
+		if(!fs.existsSync(file)){process.stderr.write("Missing Collective config at "+file+"\\n");process.exit(1)} \
+		var config=JSON.parse(fs.readFileSync(file,"utf-8")); \
+		if(!config.worker_url){process.stderr.write("Collective config at "+file+" is missing worker_url\\n");process.exit(1)} \
+		process.stdout.write(config.worker_url)')}; \
+	echo "Proxying Collective UI to $$target (override with COLLECTIVE_UI_PROXY_TARGET=<url> or COLLECTIVE_NAME=<name> make collective-ui-dev)"; \
+	cd packages/myco-collective/ui && COLLECTIVE_UI_PROXY_TARGET="$$target" npx vite dev
 
 dev-link:
 	npm run build

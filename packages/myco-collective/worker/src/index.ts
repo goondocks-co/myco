@@ -313,6 +313,21 @@ async function handleAuthVerify(env: Env): Promise<Response> {
   });
 }
 
+async function handleAuthAccess(request: Request, env: Env): Promise<Response> {
+  const [adminToken, mcpToken] = await Promise.all([
+    env.MYCO_SECRETS.get(ADMIN_TOKEN_KEY),
+    env.MYCO_SECRETS.get(MCP_TOKEN_KEY),
+  ]);
+
+  return jsonResponse({
+    collective_name: env.COLLECTIVE_NAME ?? 'Myco Collective',
+    mcp_endpoint: `${collectiveOrigin(request)}/mcp`,
+    mcp_token: mcpToken,
+    admin_token_hash: tokenHash(adminToken),
+    mcp_token_hash: tokenHash(mcpToken),
+  });
+}
+
 async function handleAuthRotate(request: Request, env: Env): Promise<Response> {
   const body = await request.json() as { which?: string };
   const which = body.which ?? 'all';
@@ -440,6 +455,7 @@ export default {
       if (authError) return authError;
 
       if (method === 'POST' && path === '/api/auth/verify') return handleAuthVerify(env);
+      if (method === 'GET' && path === '/api/auth/access') return handleAuthAccess(request, env);
       if (method === 'POST' && path === '/api/auth/rotate') return handleAuthRotate(request, env);
       if (method === 'GET' && path === '/api/projects') return handleListProjects(env);
       if (method === 'POST' && path === '/api/projects') return handleAddProject(request, env);

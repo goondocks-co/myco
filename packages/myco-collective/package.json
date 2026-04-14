@@ -9,15 +9,6 @@
   "files": [
     "dist/",
     "worker/",
-    "ui/index.html",
-    "ui/package.json",
-    "ui/package-lock.json",
-    "ui/postcss.config.js",
-    "ui/public/",
-    "ui/src/",
-    "ui/tailwind.config.ts",
-    "ui/tsconfig.json",
-    "ui/vite.config.ts",
     "README.md",
     "LICENSE"
   ],

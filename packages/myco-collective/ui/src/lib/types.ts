@@ -24,6 +24,14 @@ export interface AuthVerifyResponse {
   project_count: number;
 }
 
+export interface CollectiveAccessResponse {
+  collective_name: string;
+  mcp_endpoint: string;
+  mcp_token: string | null;
+  admin_token_hash: string | null;
+  mcp_token_hash: string | null;
+}
+
 export interface ProjectsResponse {
   projects: ProjectRecord[];
 }
@@ -54,6 +62,15 @@ export interface SearchResultRecord {
   id?: string;
   score?: number;
   table?: string;
+  title?: string;
+  preview?: string;
+  path?: string;
+  description?: string;
+  observation_type?: string;
+  status?: string;
+  session_id?: string;
+  started_at?: number;
+  url?: string;
   project?: {
     id: string;
     name: string;

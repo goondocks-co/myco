@@ -28,45 +28,125 @@
 
 @layer base {
   :root {
-    color-scheme: dark;
-    --collective-surface: #140d0a;
-    --collective-surface-soft: #201512;
-    --collective-panel: #281915;
-    --collective-outline: rgba(255, 231, 208, 0.11);
-    --collective-text: #fff4e8;
-    --collective-text-soft: #ceb6a2;
+    --surface: #111111;
+    --surface-dim: #0c0c0c;
+    --surface-bright: #444444;
+    --surface-container-lowest: #080808;
+    --surface-container-low: #171615;
+    --surface-container: #21201f;
+    --surface-container-high: #2d2c2a;
+    --surface-container-highest: #393735;
+    --surface-variant: #34312f;
+
+    --on-surface: #e5e2e1;
+    --on-surface-variant: #b8beb8;
+
+    --outline: #80867f;
+    --outline-variant: #40453f;
+
+    --primary: #abcfb8;
+    --on-primary: #163627;
+    --primary-container: #6f8f7b;
+    --primary-foreground: #163627;
+    --on-primary-container: #e8f5eb;
+
+    --secondary: #d3af73;
+    --on-secondary: #3d2b0c;
+    --secondary-container: #5d4313;
+    --secondary-foreground: #fff5e6;
+
+    --tertiary: #d28a73;
+    --on-tertiary: #44180e;
+    --tertiary-container: #7f4334;
+
+    --background: var(--surface);
+    --foreground: var(--on-surface);
+    --card: var(--surface-container-low);
+    --card-foreground: var(--on-surface);
+    --muted: var(--surface-container);
+    --muted-foreground: var(--on-surface-variant);
+    --accent: var(--surface-container-high);
+    --accent-foreground: var(--on-surface);
+    --border: var(--outline-variant);
+    --input: var(--outline-variant);
+    --ring: var(--primary);
+    --destructive: var(--tertiary);
+
+    --radius: 0.375rem;
+    --ghost-border: color-mix(in srgb, var(--outline-variant), transparent 74%);
+    --shadow-tint: 96, 65, 11;
   }
 
+  .light {
+    --surface: #f7f5ef;
+    --surface-dim: #ece7df;
+    --surface-bright: #ffffff;
+    --surface-container-lowest: #ffffff;
+    --surface-container-low: #fbfaf8;
+    --surface-container: #ede9e2;
+    --surface-container-high: #e1dbd2;
+    --surface-container-highest: #d5cec4;
+    --surface-variant: #d0c9c1;
+
+    --on-surface: #171615;
+    --on-surface-variant: #595e58;
+
+    --outline: #7f857e;
+    --outline-variant: #d2d6cf;
+
+    --primary: #446553;
+    --on-primary: #ffffff;
+    --primary-container: #abcfb8;
+    --primary-foreground: #ffffff;
+    --on-primary-container: #153526;
+
+    --secondary: #7a5720;
+    --on-secondary: #ffffff;
+    --secondary-container: #edd7b3;
+    --secondary-foreground: #ffffff;
+
+    --tertiary: #8f4d3c;
+    --on-tertiary: #ffffff;
+    --tertiary-container: #e7b5aa;
+
+    --background: var(--surface);
+    --foreground: var(--on-surface);
+    --card: var(--surface-container-low);
+    --card-foreground: var(--on-surface);
+    --muted: var(--surface-container);
+    --muted-foreground: var(--on-surface-variant);
+    --accent: var(--surface-container-high);
+    --accent-foreground: var(--on-surface);
+    --border: var(--outline-variant);
+    --input: var(--outline-variant);
+    --ring: var(--primary);
+    --destructive: var(--tertiary);
+
+    --ghost-border: color-mix(in srgb, var(--outline-variant), transparent 62%);
+    --shadow-tint: 96, 65, 11;
+  }
+}
+
+@layer base {
   * {
+    border-color: var(--ghost-border);
     box-sizing: border-box;
   }
 
   html {
     min-height: 100%;
-    background:
-      radial-gradient(circle at top left, rgba(241, 139, 83, 0.24), transparent 38%),
-      radial-gradient(circle at top right, rgba(247, 179, 106, 0.16), transparent 30%),
-      linear-gradient(180deg, #120b08 0%, #0d0806 100%);
+    background: var(--surface);
+    font-size: 14px;
   }
 
   body {
-    margin: 0;
     min-height: 100vh;
-    background: transparent;
-    color: var(--collective-text);
-    font-family: ui-sans-serif, system-ui, sans-serif;
-  }
-
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    background-image:
-      linear-gradient(rgba(255, 244, 230, 0.03) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(255, 244, 230, 0.03) 1px, transparent 1px);
-    background-size: 48px 48px;
-    mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent 90%);
+    margin: 0;
+    background: var(--surface);
+    color: var(--on-surface);
+    font-family: var(--font-ui, Inter, system-ui, sans-serif);
+    font-size: 0.875rem;
+    pointer-events: auto !important;
   }
 
   a {
@@ -75,12 +155,8 @@
   }
 }
 
-@layer utilities {
-  .font-display {
-    font-family: 'Newsreader', Georgia, serif;
-  }
-
-  .font-mono {
-    font-family: 'Geist Mono', 'SFMono-Regular', monospace;
+@layer components {
+  .glass-panel {
+    background: var(--surface-container-low);
   }
 }
