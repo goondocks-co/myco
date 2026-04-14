@@ -7,10 +7,12 @@ interface GraphCanvasProps {
   edges: GraphEdge[];
   onNodeSelect?: (node: GraphNode | null) => void;
   selectedNode?: GraphNode | null;
+  centerId?: string | null;
+  isLoading?: boolean;
 }
 
-export function GraphCanvas({ nodes, edges, onNodeSelect }: GraphCanvasProps) {
-  const { containerRef, resetView } = useGraphCanvas({ nodes, edges, onNodeSelect });
+export function GraphCanvas({ nodes, edges, onNodeSelect, centerId, isLoading }: GraphCanvasProps) {
+  const { containerRef, resetView } = useGraphCanvas({ nodes, edges, onNodeSelect, centerId });
 
   return (
     <div className="absolute inset-0">
@@ -25,21 +27,21 @@ export function GraphCanvas({ nodes, edges, onNodeSelect }: GraphCanvasProps) {
       />
       {/* Cytoscape container */}
       <div ref={containerRef} className="absolute inset-0 rounded-md" />
-      {/* Controls overlay */}
-      <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
-        <Button variant="ghost" size="sm" onClick={resetView} className="gap-1.5">
-          <RotateCcw className="h-3.5 w-3.5" />
-          Reset
+      {/* Controls overlay — bottom left next to stats */}
+      <div className="absolute bottom-3 left-3 z-10 flex items-center gap-3">
+        {nodes.length > 0 && (
+          <div className="flex items-center gap-3 font-mono text-[10px] text-on-surface-variant/60 mr-1">
+            <span>{nodes.length} nodes</span>
+            <span>{edges.length} edges</span>
+          </div>
+        )}
+        <Button variant="ghost" size="sm" onClick={resetView} className="gap-1.5 h-7 text-[10px] px-2 bg-surface-container-high/40 backdrop-blur-sm">
+          <RotateCcw className="h-3 w-3" />
+          Reset View
         </Button>
       </div>
-      {/* Stats overlay */}
-      {nodes.length > 0 && (
-        <div className="absolute bottom-3 left-3 z-10 flex items-center gap-3 font-mono text-[10px] text-on-surface-variant/60">
-          <span>{nodes.length} nodes</span>
-          <span>{edges.length} edges</span>
-        </div>
-      )}
-      {nodes.length === 0 && (
+      {/* Empty state */}
+      {!isLoading && nodes.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center">
           <p className="font-sans text-sm text-on-surface-variant">No nodes to display</p>
         </div>

@@ -11,7 +11,7 @@ import { useConfig } from '../../hooks/use-config';
 export function SystemNotifications() {
   const { config } = useConfig();
   const enabled = config?.notifications?.system_notifications ?? false;
-  const { data } = useNotifications({ status: 'unread', limit: 5 });
+  const { data } = useNotifications({ status: 'unread', mode: 'banner', limit: 5 });
   const seenRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {

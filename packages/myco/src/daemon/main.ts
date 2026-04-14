@@ -57,6 +57,7 @@ import {
   handleListSpores,
   handleGetSpore,
   handleListEntities,
+  handleGetGraphSeeds,
   handleGetGraph,
   handleGetFullGraph,
   handleGetDigest,
@@ -365,13 +366,24 @@ export async function main(): Promise<void> {
     const staleDb = getDatabase();
     // SQLite doesn't support RETURNING — query first, then update
     const staleRows = staleDb.prepare(
-      `SELECT id FROM agent_runs WHERE status = 'running'`,
-    ).all() as Array<{ id: string }>;
+      `SELECT id, task FROM agent_runs WHERE status = 'running'`,
+    ).all() as Array<{ id: string; task: string | null }>;
 
     if (staleRows.length > 0) {
+      const completedAt = epochSeconds();
       staleDb.prepare(
         `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = 'Daemon restarted while run was in progress' WHERE status = 'running'`,
-      ).run(epochSeconds());
+      ).run(completedAt);
+      for (const row of staleRows) {
+        notify(vaultDir, {
+          domain: 'agents',
+          type: 'agent.task.failure',
+          title: `Task failed: ${row.task ?? 'agent run'}`,
+          message: 'Daemon restarted while run was in progress',
+          link: `/agent?run=${row.id}`,
+          metadata: { taskName: row.task, runId: row.id, reason: 'daemon_restart' },
+        }, config);
+      }
       logger.info(LOG_KINDS.AGENT_RUN, 'Cleaned stale running agent runs', {
         count: staleRows.length,
         ids: staleRows.map((r) => r.id),
@@ -583,6 +595,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/spores', handleListSpores);
   server.registerRoute('GET', '/api/spores/:id', handleGetSpore);
   server.registerRoute('GET', '/api/entities', handleListEntities);
+  server.registerRoute('GET', '/api/graph/seeds', handleGetGraphSeeds);
   server.registerRoute('GET', '/api/graph', handleGetFullGraph);
   server.registerRoute('GET', '/api/graph/:id', handleGetGraph);
   server.registerRoute('GET', '/api/digest', handleGetDigest);
