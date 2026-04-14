@@ -10,6 +10,7 @@ dist/
 .worktrees/
 .playwright-mcp/
 .playwright-cli/
+test-results/
 
 # Specs and plans — captured in Myco vault, not the repo
 .superpowers/
