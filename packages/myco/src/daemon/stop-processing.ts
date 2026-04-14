@@ -30,6 +30,7 @@ import { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { EmbeddingManager } from './embedding/index.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import { triggerTitleSummary as sharedTriggerTitleSummary } from './trigger-title-summary.js';
 import type { RouteHandler } from './router.js';
 import type { RegisteredSession } from './lifecycle.js';
 
@@ -117,26 +118,8 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     last_assistant_message: z.string().nullish(),
   });
 
-  /**
-   * Fire-and-forget trigger for the title-summary agent task.
-   * Guards: summary_batch_interval must be > 0 (0 = disabled), no run
-   * already in progress. Callers add their own preconditions (e.g. batch
-   * threshold, missing title).
-   */
-  async function triggerTitleSummary(sessionId: string): Promise<void> {
-    if (config.agent.summary_batch_interval <= 0) return;
-    if (config.agent.event_tasks_enabled === false) return;
-    // No caller-side concurrency guard — the executor's per-task guard
-    // handles blocking duplicate title-summary runs.
-    try {
-      const { runAgent } = await import('../agent/executor.js');
-      runAgent(vaultDir, {
-        task: 'title-summary',
-        instruction: `Process session ${sessionId} only`,
-        embeddingManager,
-      }).catch(err => logger.warn(LOG_KINDS.AGENT_ERROR, 'Title-summary task failed', { error: String(err) }));
-    } catch { /* agent unavailable */ }
-  }
+  const triggerTitleSummary = (sessionId: string) =>
+    sharedTriggerTitleSummary(sessionId, { vaultDir, embeddingManager, config, logger });
 
   async function processStopEvent(
     sessionId: string,

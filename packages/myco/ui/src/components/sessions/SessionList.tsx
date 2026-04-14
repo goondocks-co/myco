@@ -7,12 +7,13 @@ import { ConfirmDialog } from '../ui/confirm-dialog';
 import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
 import { Pagination } from '../ui/pagination';
 import { useSessions, useDeleteSession, useSessionImpact, type SessionSummary } from '../../hooks/use-sessions';
+import { useSymbionts } from '../../hooks/use-symbionts';
 import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { shortSession } from '../../lib/format';
 import { StatusBadge } from './status-helpers';
 import { cn } from '../../lib/cn';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 /* ---------- Constants ---------- */
 
@@ -22,35 +23,26 @@ const SKELETON_ROW_COUNT = 5;
 /** Characters shown from session ID in table column. */
 const SESSION_ID_COLUMN_LENGTH = 12;
 
-const SESSION_FILTERS: FilterDefinition[] = [
-  {
-    key: 'status',
-    label: 'Status',
-    options: [
-      { value: FILTER_ALL, label: 'All statuses' },
-      { value: 'active', label: 'Active' },
-      { value: 'completed', label: 'Completed' },
-    ],
-  },
-  {
-    key: 'agent',
-    label: 'Agent',
-    options: [
-      { value: FILTER_ALL, label: 'All agents' },
-      { value: 'claude-code', label: 'Claude Code' },
-      { value: 'cursor', label: 'Cursor' },
-    ],
-  },
-];
+const STATUS_FILTER: FilterDefinition = {
+  key: 'status',
+  label: 'Status',
+  options: [
+    { value: FILTER_ALL, label: 'All statuses' },
+    { value: 'active', label: 'Active' },
+    { value: 'completed', label: 'Completed' },
+  ],
+};
 
 /* ---------- Sub-components ---------- */
 
 function SessionTableRow({
   session,
+  symbiontDisplayName,
   onClick,
   onDelete,
 }: {
   session: SessionSummary;
+  symbiontDisplayName: string;
   onClick: () => void;
   onDelete: () => void;
 }) {
@@ -84,10 +76,10 @@ function SessionTableRow({
         </span>
       </td>
 
-      {/* Agent */}
+      {/* Symbiont */}
       <td className="px-4 py-3">
         <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">
-          {session.agent || 'unknown'}
+          {symbiontDisplayName}
         </Badge>
       </td>
 
@@ -163,6 +155,38 @@ export function SessionList() {
   const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
   const deleteSession = useDeleteSession();
   const { data: impact } = useSessionImpact(deleteTarget?.id ?? null);
+  const { data: symbiontsData } = useSymbionts();
+
+  // Build the Symbiont filter from whichever symbionts this project has
+  // enabled. The filter key stays `agent` because that's what the backend
+  // sessions query expects, but the label and options reflect the project's
+  // actual configuration rather than a hardcoded list.
+  const sessionFilters = useMemo<FilterDefinition[]>(() => {
+    const enabledSymbionts = (symbiontsData?.symbionts ?? []).filter((s) => s.enabled);
+    const symbiontFilter: FilterDefinition = {
+      key: 'agent',
+      label: 'Symbiont',
+      options: [
+        { value: FILTER_ALL, label: 'All symbionts' },
+        ...enabledSymbionts.map((s) => ({ value: s.name, label: s.displayName })),
+      ],
+    };
+    return [STATUS_FILTER, symbiontFilter];
+  }, [symbiontsData]);
+
+  // Lookup from the DB-stored agent name (e.g. 'claude-code') to the
+  // manifest display name. Falls back to the raw name for sessions whose
+  // symbiont is no longer present — better than showing "unknown".
+  const symbiontDisplayName = useMemo(() => {
+    const lookup = new Map<string, string>();
+    for (const s of symbiontsData?.symbionts ?? []) {
+      lookup.set(s.name, s.displayName);
+    }
+    return (agent: string | null | undefined): string => {
+      if (!agent) return 'unknown';
+      return lookup.get(agent) ?? agent;
+    };
+  }, [symbiontsData]);
 
   const activeStatus = activeFilter('status');
   const activeAgent = activeFilter('agent');
@@ -190,7 +214,7 @@ export function SessionList() {
       searchPlaceholder="Search sessions..."
       searchValue={searchInput}
       onSearchChange={handleSearchChange}
-      filters={SESSION_FILTERS}
+      filters={sessionFilters}
       filterValues={filterValues}
       onFilterChange={handleFilterChange}
     />
@@ -201,7 +225,7 @@ export function SessionList() {
       <tr className="border-b border-[var(--ghost-border)] bg-surface-container/50">
         <ColHeader>Session ID</ColHeader>
         <ColHeader>Title</ColHeader>
-        <ColHeader>Agent</ColHeader>
+        <ColHeader>Symbiont</ColHeader>
         <ColHeader>Status</ColHeader>
         <ColHeader className="text-center">Turns</ColHeader>
         <ColHeader>Date</ColHeader>
@@ -266,6 +290,7 @@ export function SessionList() {
                 <SessionTableRow
                   key={session.id}
                   session={session}
+                  symbiontDisplayName={symbiontDisplayName(session.agent)}
                   onClick={() => navigate(`/sessions/${session.id}`)}
                   onDelete={() => setDeleteTarget(session)}
                 />

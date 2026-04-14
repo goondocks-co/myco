@@ -17,6 +17,7 @@ import {
   closeSession,
   getSessionImpact,
   deleteSessionCascade,
+  reactivateSessionIfCompleted,
 } from '@myco/db/queries/sessions.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';
 
@@ -221,6 +222,38 @@ describe('session query helpers', () => {
       const rows = listSessions({ agent: 'cursor', status: 'completed' });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('s3');
+    });
+
+    describe('active-session gating (includeActive flag)', () => {
+      it('by default (omitted) returns active sessions', async () => {
+        // Preserves existing UI behavior — the gate only engages when
+        // intelligence-task callers explicitly opt in.
+        const now = epochNow();
+        upsertSession(makeSession({ id: 'live', created_at: now, started_at: now }));
+        const rows = listSessions();
+        expect(rows.map((r) => r.id)).toContain('live');
+      });
+
+      it('with includeActive:false excludes active sessions', async () => {
+        const now = epochNow();
+        upsertSession(makeSession({ id: 'live', created_at: now, started_at: now }));
+        const done = makeSession({ id: 'done', created_at: now + 1, started_at: now + 1 });
+        upsertSession(done);
+        closeSession('done', now + 2);
+
+        const rows = listSessions({ includeActive: false });
+        expect(rows.map((r) => r.id)).toEqual(['done']);
+      });
+
+      it('an explicit status filter overrides includeActive:false', async () => {
+        const now = epochNow();
+        upsertSession(makeSession({ id: 'live', created_at: now, started_at: now }));
+
+        // Explicit status='active' takes precedence — caller is asking for
+        // in-flight sessions and shouldn't be silently filtered.
+        const rows = listSessions({ includeActive: false, status: 'active' });
+        expect(rows.map((r) => r.id)).toEqual(['live']);
+      });
     });
 
     it('paginates with offset', async () => {
@@ -640,6 +673,45 @@ describe('session query helpers', () => {
 
       const second = deleteSessionCascade(session.id);
       expect(second.deleted).toBe(false);
+    });
+  });
+
+  describe('reactivateSessionIfCompleted', () => {
+    it('flips a completed session back to active and returns true', () => {
+      const now = epochNow();
+      const session = makeSession({ id: 'sess-completed', status: 'completed', created_at: now, started_at: now });
+      upsertSession(session);
+
+      const flipped = reactivateSessionIfCompleted('sess-completed');
+
+      expect(flipped).toBe(true);
+      expect(getSession('sess-completed')?.status).toBe('active');
+    });
+
+    it('is a no-op for an already-active session and returns false', () => {
+      const session = makeSession({ id: 'sess-active', status: 'active' });
+      upsertSession(session);
+
+      const flipped = reactivateSessionIfCompleted('sess-active');
+
+      expect(flipped).toBe(false);
+      expect(getSession('sess-active')?.status).toBe('active');
+    });
+
+    it('returns false for a missing session', () => {
+      expect(reactivateSessionIfCompleted('nope')).toBe(false);
+    });
+
+    it('preserves ended_at when reactivating — the next completion overwrites it', () => {
+      const now = epochNow();
+      upsertSession({
+        ...makeSession({ id: 'sess-keep-end', status: 'completed', created_at: now, started_at: now }),
+        ended_at: now + 100,
+      });
+
+      reactivateSessionIfCompleted('sess-keep-end');
+
+      expect(getSession('sess-keep-end')?.ended_at).toBe(now + 100);
     });
   });
 });

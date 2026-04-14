@@ -150,14 +150,25 @@ describe('vault tools', () => {
       expect(data).toEqual([]);
     });
 
-    it('returns unprocessed batches', async () => {
+    it('returns unprocessed batches when include_active is set', async () => {
+      // The seeded session is `status = 'active'`, so the tool's default
+      // (exclude active) would return nothing. Opt in with include_active.
       insertBatch(makeBatch(sessionId));
+      insertBatch(makeBatch(sessionId));
+
+      const t = findTool(tools, 'vault_unprocessed');
+      const result = await t.handler({ include_active: true }, undefined);
+      const data = parseResult(result) as unknown[];
+      expect(data).toHaveLength(2);
+    });
+
+    it('excludes batches from active sessions by default', async () => {
       insertBatch(makeBatch(sessionId));
 
       const t = findTool(tools, 'vault_unprocessed');
       const result = await t.handler({}, undefined);
       const data = parseResult(result) as unknown[];
-      expect(data).toHaveLength(2);
+      expect(data).toEqual([]);
     });
 
     it('supports cursor-based pagination via after_id', async () => {
@@ -165,7 +176,7 @@ describe('vault tools', () => {
       insertBatch(makeBatch(sessionId));
 
       const t = findTool(tools, 'vault_unprocessed');
-      const result = await t.handler({ after_id: b1.id }, undefined);
+      const result = await t.handler({ after_id: b1.id, include_active: true }, undefined);
       const data = parseResult(result) as unknown[];
       expect(data).toHaveLength(1);
     });
@@ -204,12 +215,20 @@ describe('vault tools', () => {
   });
 
   describe('vault_sessions', () => {
-    it('returns sessions', async () => {
+    it('returns sessions when include_active is set', async () => {
+      // The seeded session is active — without include_active the tool
+      // defaults to excluding in-flight sessions.
+      const t = findTool(tools, 'vault_sessions');
+      const result = await t.handler({ include_active: true }, undefined);
+      const data = parseResult(result) as unknown[];
+      expect(data.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('excludes active sessions by default', async () => {
       const t = findTool(tools, 'vault_sessions');
       const result = await t.handler({}, undefined);
       const data = parseResult(result) as unknown[];
-      // At least the one session we created in beforeEach
-      expect(data.length).toBeGreaterThanOrEqual(1);
+      expect(data).toEqual([]);
     });
 
     it('filters by status', async () => {

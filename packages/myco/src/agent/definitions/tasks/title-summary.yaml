@@ -28,16 +28,17 @@ prompt: |
 
   **If a target session ID is specified above:**
   Always process it — the user explicitly requested regeneration.
-  Call `vault_sessions` to get its current title/summary.
-  Call `vault_search_fts` with the session ID to find ALL its prompt
-  batches (processed and unprocessed). Do NOT skip even if there are
-  no new unprocessed batches.
+  Call `vault_sessions` with `include_active: true` to get its current
+  title/summary (the session may still be active). Call `vault_search_fts`
+  with the session ID to find ALL its prompt batches (processed and
+  unprocessed). Do NOT skip even if there are no new unprocessed batches.
 
   **If no target session specified (automatic run):**
-  Call `vault_unprocessed` to find sessions with new prompt batches.
-  Group by session_id — each session with unprocessed batches needs
-  its summary updated. Call `vault_sessions` for those sessions.
-  If no sessions have unprocessed batches, report "skip" and finish.
+  Call `vault_unprocessed` with `include_active: true` — titles are needed
+  mid-flight, not just after a session completes. Group by session_id —
+  each session with unprocessed batches needs its summary updated. Call
+  `vault_sessions` with `include_active: true` for those sessions. If no
+  sessions have unprocessed batches, report "skip" and finish.
 
   ## Phase 2 — Update Each Session (budget: 8 turns)
 

@@ -110,7 +110,7 @@ describe('executeContextQueries', () => {
         makeQuery({ tool: 'vault_unprocessed', limit: 5 }),
       ]);
 
-      expect(getUnprocessedBatches).toHaveBeenCalledWith({ limit: 5 });
+      expect(getUnprocessedBatches).toHaveBeenCalledWith({ limit: 5, includeActive: false });
     });
   });
 
@@ -128,6 +128,7 @@ describe('executeContextQueries', () => {
       expect(listSpores).toHaveBeenCalledWith({
         agent_id: TEST_AGENT_ID,
         limit: DEFAULT_CONTEXT_QUERY_LIMIT,
+        includeActive: false,
       });
     });
 
@@ -141,6 +142,7 @@ describe('executeContextQueries', () => {
       expect(listSpores).toHaveBeenCalledWith({
         agent_id: TEST_AGENT_ID,
         limit: 20,
+        includeActive: false,
       });
     });
   });
@@ -156,7 +158,7 @@ describe('executeContextQueries', () => {
       expect(results).toHaveLength(1);
       expect(results[0].tool).toBe('vault_sessions');
       expect(results[0].data).toEqual([MOCK_SESSION]);
-      expect(listSessions).toHaveBeenCalledWith({ limit: DEFAULT_CONTEXT_QUERY_LIMIT });
+      expect(listSessions).toHaveBeenCalledWith({ limit: DEFAULT_CONTEXT_QUERY_LIMIT, includeActive: false });
     });
   });
 
@@ -230,7 +232,10 @@ describe('executeContextQueries', () => {
 
       await executeContextQueries(TEST_AGENT_ID, [query]);
 
-      expect(getUnprocessedBatches).toHaveBeenCalledWith({ limit: DEFAULT_CONTEXT_QUERY_LIMIT });
+      expect(getUnprocessedBatches).toHaveBeenCalledWith({
+        limit: DEFAULT_CONTEXT_QUERY_LIMIT,
+        includeActive: false,
+      });
     });
 
     it('uses custom limit when specified', async () => {
@@ -240,7 +245,7 @@ describe('executeContextQueries', () => {
         makeQuery({ tool: 'vault_sessions', limit: 50 }),
       ]);
 
-      expect(listSessions).toHaveBeenCalledWith({ limit: 50 });
+      expect(listSessions).toHaveBeenCalledWith({ limit: 50, includeActive: false });
     });
   });
 

@@ -79,6 +79,15 @@ export interface ListSporesOptions {
   since?: number;
   limit?: number;
   offset?: number;
+  /**
+   * When explicitly `false`, exclude spores whose source session is still
+   * `status = 'active'` — intelligence-task reads (agent tools, context
+   * queries) should opt in to this. Defaults to permissive so UI listings
+   * and prompt-time context injection keep seeing in-flight work. Explicit
+   * `session_id` filters bypass this check: a direct lookup of one session's
+   * spores is always permitted.
+   */
+  includeActive?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +247,16 @@ function buildSporeWhere(
   if (options.since !== undefined) {
     conditions.push('created_at > ?');
     params.push(options.since);
+  }
+
+  // Only exclude spores from in-flight sessions when the caller explicitly
+  // asks for it (intelligence tasks). UI and hook-level context injection
+  // leave this unset so they see everything. A direct session_id filter
+  // bypasses the gate — that lookup is always permitted.
+  if (options.includeActive === false && options.session_id === undefined) {
+    conditions.push(
+      `(session_id IS NULL OR EXISTS (SELECT 1 FROM sessions s WHERE s.id = spores.session_id AND s.status != 'active'))`,
+    );
   }
 
   return {

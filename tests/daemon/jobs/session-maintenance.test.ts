@@ -48,7 +48,7 @@ describe('completeStaleActiveSessions', () => {
     const staleTime = epochNow() - STALE_THRESHOLD_S - 1;
     seedSession('stale-1', { status: 'active', startedAt: staleTime });
 
-    const count = completeStaleActiveSessions([]);
+    const count = completeStaleActiveSessions();
 
     expect(count).toBe(1);
     const session = getSession('stale-1');
@@ -59,28 +59,32 @@ describe('completeStaleActiveSessions', () => {
     const staleTime = epochNow() - STALE_THRESHOLD_S - 1;
     seedSession('stale-2', { status: 'active', batchStartedAt: staleTime });
 
-    const count = completeStaleActiveSessions([]);
+    const count = completeStaleActiveSessions();
 
     expect(count).toBe(1);
     const session = getSession('stale-2');
     expect(session?.status).toBe('completed');
   });
 
-  it('skips registered sessions', () => {
+  it('completes idle sessions regardless of whether they are still registered', () => {
+    // Registry-exclusion was previously applied here and created a bug: a
+    // user with the TUI open but idle for >24h kept a session indefinitely
+    // active, which blocked every intelligence task from seeing its data.
+    // The activity-timestamp check itself is sufficient protection — a
+    // resumed session gets flipped back to 'active' by event-dispatch.
     const staleTime = epochNow() - STALE_THRESHOLD_S - 1;
-    seedSession('registered-1', { status: 'active', startedAt: staleTime });
+    seedSession('registered-but-idle', { status: 'active', startedAt: staleTime });
 
-    const count = completeStaleActiveSessions(['registered-1']);
+    const count = completeStaleActiveSessions();
 
-    expect(count).toBe(0);
-    const session = getSession('registered-1');
-    expect(session?.status).toBe('active');
+    expect(count).toBe(1);
+    expect(getSession('registered-but-idle')?.status).toBe('completed');
   });
 
   it('skips recently active sessions', () => {
     seedSession('fresh-1', { status: 'active', batchStartedAt: epochNow() });
 
-    const count = completeStaleActiveSessions([]);
+    const count = completeStaleActiveSessions();
 
     expect(count).toBe(0);
     const session = getSession('fresh-1');
@@ -91,9 +95,33 @@ describe('completeStaleActiveSessions', () => {
     const staleTime = epochNow() - STALE_THRESHOLD_S - 1;
     seedSession('completed-1', { status: 'completed', startedAt: staleTime });
 
-    const count = completeStaleActiveSessions([]);
+    const count = completeStaleActiveSessions();
 
     expect(count).toBe(0);
+  });
+
+  it('honors the configured threshold override', () => {
+    // 10-minute session — stale under a 5-minute threshold, fresh under the default.
+    const tenMinAgo = epochNow() - 10 * 60;
+    seedSession('config-threshold', { status: 'active', batchStartedAt: tenMinAgo });
+
+    expect(completeStaleActiveSessions(STALE_THRESHOLD_S)).toBe(0);
+    expect(getSession('config-threshold')?.status).toBe('active');
+
+    expect(completeStaleActiveSessions(5 * 60)).toBe(1);
+    expect(getSession('config-threshold')?.status).toBe('completed');
+  });
+
+  it('sets ended_at on the completed row', () => {
+    const staleTime = epochNow() - STALE_THRESHOLD_S - 1;
+    seedSession('ended-at-check', { status: 'active', startedAt: staleTime });
+
+    const before = epochNow();
+    completeStaleActiveSessions();
+    const session = getSession('ended-at-check');
+
+    expect(session?.ended_at).not.toBeNull();
+    expect(session?.ended_at).toBeGreaterThanOrEqual(before);
   });
 });
 
