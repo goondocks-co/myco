@@ -1,3 +1,11 @@
+@import './themes/_shared-accents.css';
+@import './themes/sage.css';
+@import './themes/moss.css';
+@import './themes/terracotta.css';
+@import './themes/dusk.css';
+@import './themes/plum.css';
+@import './themes/slate.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -65,18 +73,7 @@
     --outline: #8b928c;
     --outline-variant: #424843;
 
-    --primary: #abcfb8;
-    --on-primary: #163627;
-    --primary-container: #7b9e89;
     --on-primary-container: #143525;
-
-    --secondary: #edbf7f;
-    --on-secondary: #442b00;
-    --secondary-container: #60410b;
-
-    --tertiary: #ffb4a1;
-    --on-tertiary: #5d1806;
-    --tertiary-container: #df7a60;
 
     --inverse-surface: #e5e2e1;
     --inverse-on-surface: #303030;
@@ -122,18 +119,7 @@
     --outline: #8b928c;
     --outline-variant: #c1c8c2;
 
-    --primary: #446553;
-    --on-primary: #FFFFFF;
-    --primary-container: #7b9e89;
     --on-primary-container: #002113;
-
-    --secondary: #60410b;
-    --on-secondary: #FFFFFF;
-    --secondary-container: #ffddb2;
-
-    --tertiary: #8B5C44;
-    --on-tertiary: #FFFFFF;
-    --tertiary-container: #ffdbd2;
 
     --inverse-surface: #303030;
     --inverse-on-surface: #e5e2e1;

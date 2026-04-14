@@ -1,0 +1,13 @@
+[data-theme="slate"] {
+  --primary: #a6b0b8;
+  --on-primary: #161a1d;
+  --primary-container: #72808b;
+  --on-primary-container: #161a1d;
+}
+
+[data-theme="slate"].light {
+  --primary: #525c65;
+  --on-primary: #ffffff;
+  --primary-container: #c8ced5;
+  --on-primary-container: #161a1d;
+}

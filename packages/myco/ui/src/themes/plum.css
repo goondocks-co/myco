@@ -1,0 +1,13 @@
+[data-theme="plum"] {
+  --primary: #b59ec8;
+  --on-primary: #1a0f24;
+  --primary-container: #7d6992;
+  --on-primary-container: #1a0f24;
+}
+
+[data-theme="plum"].light {
+  --primary: #604a76;
+  --on-primary: #ffffff;
+  --primary-container: #d6c4e2;
+  --on-primary-container: #1a0f24;
+}

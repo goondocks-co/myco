@@ -1,0 +1,31 @@
+/*
+ * Shared secondary (amber) and tertiary (terracotta) accents for themes
+ * that use the neutral-accent family: moss, dusk, plum, slate.
+ * Sage and terracotta themes override these with their own accent choices.
+ */
+
+[data-theme="moss"],
+[data-theme="dusk"],
+[data-theme="plum"],
+[data-theme="slate"] {
+  --secondary: #d3b172;
+  --on-secondary: #3d2b0c;
+  --secondary-container: #5a3f10;
+
+  --tertiary: #d28a73;
+  --on-tertiary: #44180e;
+  --tertiary-container: #7f4334;
+}
+
+[data-theme="moss"].light,
+[data-theme="dusk"].light,
+[data-theme="plum"].light,
+[data-theme="slate"].light {
+  --secondary: #6b4e1e;
+  --on-secondary: #ffffff;
+  --secondary-container: #e6d1a3;
+
+  --tertiary: #8f4d3c;
+  --on-tertiary: #ffffff;
+  --tertiary-container: #e7b5aa;
+}

@@ -1,0 +1,29 @@
+[data-theme="terracotta"] {
+  --primary: #d28a73;
+  --on-primary: #44180e;
+  --primary-container: #8a4c3a;
+  --on-primary-container: #44180e;
+
+  --secondary: #d3b172;
+  --on-secondary: #3d2b0c;
+  --secondary-container: #5a3f10;
+
+  --tertiary: #abcfb8;
+  --on-tertiary: #163627;
+  --tertiary-container: #6f8f7b;
+}
+
+[data-theme="terracotta"].light {
+  --primary: #8b4c36;
+  --on-primary: #ffffff;
+  --primary-container: #e7b3a0;
+  --on-primary-container: #44180e;
+
+  --secondary: #6b4e1e;
+  --on-secondary: #ffffff;
+  --secondary-container: #e6d1a3;
+
+  --tertiary: #446553;
+  --on-tertiary: #ffffff;
+  --tertiary-container: #abcfb8;
+}

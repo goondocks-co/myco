@@ -1,0 +1,13 @@
+[data-theme="dusk"] {
+  --primary: #8faed1;
+  --on-primary: #0c1620;
+  --primary-container: #5a7aa0;
+  --on-primary-container: #0c1620;
+}
+
+[data-theme="dusk"].light {
+  --primary: #3e5b80;
+  --on-primary: #ffffff;
+  --primary-container: #b5cae4;
+  --on-primary-container: #0c1620;
+}

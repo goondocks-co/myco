@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { loadConfig, saveConfig, updateConfig } from '@myco/config/loader';
+import { loadLocalConfig, loadMergedConfig, saveLocalConfig, updateLocalConfig, clearLocalConfigKeys } from '@myco/config/loader';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -145,5 +146,105 @@ intelligence:
     saveConfig(tmpDir, config);
     const loaded = loadConfig(tmpDir);
     expect(loaded.embedding.provider).toBe('ollama');
+  });
+});
+
+function writeProject(dir: string, yaml: string) {
+  fs.writeFileSync(path.join(dir, 'myco.yaml'), yaml);
+}
+function writeLocal(dir: string, yaml: string) {
+  // Tests treat `dir` as the vault directory (matches resolveVaultDir's `.myco/` convention).
+  // local.yaml sits directly inside the vault, alongside myco.yaml — no extra `.myco/` prefix.
+  fs.writeFileSync(path.join(dir, 'local.yaml'), yaml);
+}
+
+describe('Local config overlay', () => {
+  let tmpDir: string;
+  beforeEach(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-overlay-')); });
+  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it('loadLocalConfig returns {} when file missing', () => {
+    expect(loadLocalConfig(tmpDir)).toEqual({});
+  });
+
+  it('loadLocalConfig returns {} when file empty', () => {
+    writeLocal(tmpDir, '');
+    expect(loadLocalConfig(tmpDir)).toEqual({});
+  });
+
+  it('loadMergedConfig overlays local onto project at leaf', () => {
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nappearance:\n  theme: sage\n  mode: dark\n`);
+    writeLocal(tmpDir, `appearance:\n  theme: moss\n`);
+    const merged = loadMergedConfig(tmpDir);
+    expect(merged.appearance.theme).toBe('moss');
+    expect(merged.appearance.mode).toBe('dark');
+  });
+
+  it('loadMergedConfig returns project unchanged when no local', () => {
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`);
+    const merged = loadMergedConfig(tmpDir);
+    expect(merged.appearance.theme).toBe('sage');
+  });
+
+  it('saveLocalConfig creates local.yaml and deep-merges', () => {
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`);
+    saveLocalConfig(tmpDir, { appearance: { theme: 'plum' } });
+    saveLocalConfig(tmpDir, { appearance: { font: 'geist-mono' } });
+    const local = loadLocalConfig(tmpDir);
+    expect(local.appearance).toEqual({ theme: 'plum', font: 'geist-mono' });
+  });
+
+  it('updateLocalConfig round-trips through callback', () => {
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`);
+    updateLocalConfig(tmpDir, (local) => ({ ...local, appearance: { ...local.appearance, theme: 'dusk' } }));
+    expect(loadLocalConfig(tmpDir).appearance?.theme).toBe('dusk');
+  });
+
+  it('clearLocalConfigKeys removes leaf overrides', () => {
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`);
+    saveLocalConfig(tmpDir, { appearance: { theme: 'plum', font: 'geist-mono' } });
+    clearLocalConfigKeys(tmpDir, ['appearance.theme']);
+    const local = loadLocalConfig(tmpDir);
+    expect(local.appearance).toEqual({ font: 'geist-mono' });
+  });
+
+  it('clearLocalConfigKeys does not create local.yaml when nothing to clear', () => {
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`);
+    // No local.yaml exists, no overrides to clear
+    clearLocalConfigKeys(tmpDir, ['appearance.theme']);
+    expect(fs.existsSync(path.join(tmpDir, 'local.yaml'))).toBe(false);
+  });
+
+  it('clearLocalConfigKeys does not write file when key is already absent', () => {
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`);
+    saveLocalConfig(tmpDir, { appearance: { theme: 'moss' } });
+    const mtimeBefore = fs.statSync(path.join(tmpDir, 'local.yaml')).mtimeMs;
+    // Clear a key that doesn't exist
+    clearLocalConfigKeys(tmpDir, ['appearance.font']);
+    const mtimeAfter = fs.statSync(path.join(tmpDir, 'local.yaml')).mtimeMs;
+    expect(mtimeAfter).toBe(mtimeBefore);
+  });
+
+  it('merged-array policy: local arrays replace project arrays', () => {
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\ncapture:\n  plan_dirs: ['a', 'b']\n`);
+    writeLocal(tmpDir, `capture:\n  plan_dirs: ['c']\n`);
+    const merged = loadMergedConfig(tmpDir);
+    expect(merged.capture.plan_dirs).toEqual(['c']);
+  });
+
+  it('loadLocalConfig returns {} and warns when YAML is malformed', () => {
+    writeLocal(tmpDir, 'appearance: {\n  theme: "unterminated');
+    // loadLocalConfig should not throw
+    expect(loadLocalConfig(tmpDir)).toEqual({});
+  });
+
+  it('loadLocalConfig returns {} when YAML root is a scalar', () => {
+    writeLocal(tmpDir, 'sage');
+    expect(loadLocalConfig(tmpDir)).toEqual({});
+  });
+
+  it('loadLocalConfig returns {} when YAML root is an array', () => {
+    writeLocal(tmpDir, '- a\n- b\n');
+    expect(loadLocalConfig(tmpDir)).toEqual({});
   });
 });

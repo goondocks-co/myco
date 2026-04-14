@@ -1,4 +1,5 @@
 import type { MycoConfig, EmbeddingProviderConfig, ContextConfig, TaskProviderOverride, PhaseOverride } from './schema.js';
+import { setAtPath } from '../utils/dot-path.js';
 
 /**
  * Set a value at a dot-separated path, returning a new config object.
@@ -6,19 +7,7 @@ import type { MycoConfig, EmbeddingProviderConfig, ContextConfig, TaskProviderOv
  */
 export function withValue(config: MycoConfig, dotPath: string, value: unknown): MycoConfig {
   const clone = structuredClone(config) as MycoConfig & Record<string, unknown>;
-  const segments = dotPath.split('.');
-  let current: Record<string, unknown> = clone;
-
-  for (let i = 0; i < segments.length - 1; i++) {
-    const segment = segments[i];
-    if (current[segment] === undefined || current[segment] === null || typeof current[segment] !== 'object') {
-      current[segment] = {};
-    }
-    current = current[segment] as Record<string, unknown>;
-  }
-
-  current[segments[segments.length - 1]] = value;
-
+  setAtPath(clone, dotPath, value);
   return clone as MycoConfig;
 }
 

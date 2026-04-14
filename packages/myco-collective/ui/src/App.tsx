@@ -107,6 +107,15 @@ export default function App() {
     }
   }, [authQuery.error]);
 
+  // Keep document.title in sync with the collective name so browser tabs
+  // remain distinguishable when a user has multiple Collective UIs open.
+  // Tabs truncate from the right, so the collective name must lead.
+  const collectiveName = authQuery.data?.collective_name ?? null;
+  useEffect(() => {
+    const formatted = collectiveName ? formatCollectiveName(collectiveName) : null;
+    document.title = formatted ? `${formatted} \u2014 Myco Collective` : 'Myco Collective';
+  }, [collectiveName]);
+
   if (!storedToken) {
     return <AuthGate onAuthenticated={() => setAuthGeneration((value) => value + 1)} />;
   }

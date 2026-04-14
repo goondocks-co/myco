@@ -1,0 +1,29 @@
+[data-theme="sage"] {
+  --primary: #abcfb8;
+  --on-primary: #163627;
+  --primary-container: #7b9e89;
+  --on-primary-container: #143525;
+
+  --secondary: #edbf7f;
+  --on-secondary: #442b00;
+  --secondary-container: #60410b;
+
+  --tertiary: #ffb4a1;
+  --on-tertiary: #5d1806;
+  --tertiary-container: #df7a60;
+}
+
+[data-theme="sage"].light {
+  --primary: #446553;
+  --on-primary: #ffffff;
+  --primary-container: #7b9e89;
+  --on-primary-container: #002113;
+
+  --secondary: #60410b;
+  --on-secondary: #ffffff;
+  --secondary-container: #ffddb2;
+
+  --tertiary: #8B5C44;
+  --on-tertiary: #ffffff;
+  --tertiary-container: #ffdbd2;
+}
