@@ -1,7 +1,13 @@
 ---
-name: myco:symbiont-integration
-description: |
-  Use this skill when adding a new agent/IDE symbiont to Myco, maintaining an existing one, or debugging capture pipeline issues — even if the user doesn't explicitly ask for "symbiont integration." Covers the full lifecycle: authoring the capture manifest (CaptureManifestSchema, planDirs, planTags, rules, agent identity), creating and wiring hook templates with --symbiont argv binding, implementing the TranscriptParser OO interface (StandardJsonlParser / CodexJsonlParser pattern, parseTurns polymorphism, multi-message assistant turns, plugin-boundary normalization), handling image/attachment format differences across agents (Codex input_image+image_url data URL vs Claude Code image+source.data raw base64), configuring declarative capture rules (scope, drop, extract_after, transcript_path_missing), integrating the cross-platform hook guard (.agents/myco-hook.cjs), registering the symbiont in SymbiontInstaller (install/update/remove/doctor), and maintaining installer test fixtures. Also covers debugging the capture pipeline: session identity (transcript_path as canonical durable key), the 3-layer phantom session defense (Zod null-guard, filter-before-wake ordering, complete drop filter), hook entry point bifurcation, env var injection rules, and transcript path parsing failures.
+name: myco:myco-symbiont-integration
+description: >-
+  Use this skill when adding or maintaining a Myco symbiont integration,
+  or debugging capture-pipeline and installer issues for a supported agent.
+  It covers manifests, hook templates, transcript parsing, image and
+  attachment format differences, declarative capture rules, the cross-platform
+  hook guard, SymbiontInstaller wiring, installer fixtures, session identity,
+  phantom-session defenses, environment-variable injection, and transcript
+  path parsing failures.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob

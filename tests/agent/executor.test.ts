@@ -41,10 +41,10 @@ let capturedQueryArgs: { prompt: string; options?: Record<string, unknown> } | n
  * Per-call behaviors. Each query() call shifts the next behavior.
  * Falls back to mockQueryBehavior when exhausted.
  */
-let mockQueryBehaviors: Array<'success' | 'error' | 'empty'> = [];
+let mockQueryBehaviors: Array<'success' | 'error' | 'empty' | 'abort'> = [];
 
 /** Default behavior when mockQueryBehaviors is empty. */
-let mockQueryBehavior: 'success' | 'error' | 'empty' = 'success';
+let mockQueryBehavior: 'success' | 'error' | 'empty' | 'abort' = 'success';
 
 /** Custom error message for the 'error' behavior. */
 let mockErrorMessage = 'SDK exploded';
@@ -80,6 +80,14 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         [Symbol.asyncIterator]: async function* () {
           if (behavior === 'error') {
             throw new Error(mockErrorMessage);
+          }
+
+          if (behavior === 'abort') {
+            const controller = args.options?.abortController;
+            if (controller instanceof AbortController) {
+              controller.abort(new Error('Agent run timed out after 1 seconds'));
+            }
+            throw new Error('Claude Code process aborted by user');
           }
 
           if (behavior === 'success') {
@@ -773,6 +781,23 @@ describe('runAgent — phased execution', () => {
     const run = getRun(result.runId);
     expect(run!.status).toBe('failed');
     expect(run!.error).toContain('extract');
+  });
+
+  it('surfaces timeout abort reasons instead of generic user-abort text', async () => {
+    mockYamlPhases = [
+      { name: 'explore', prompt: 'Explore.', tools: ['vault_state'], maxTurns: 3, required: true },
+    ];
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    mockQueryBehaviors = ['abort'];
+
+    const result = await runAgent(TEST_VAULT_DIR);
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('Agent run timed out after 1 seconds');
+    expect(result.error).not.toContain('Claude Code process aborted by user');
+    expect(result.phases?.[0].summary).toContain('Agent run timed out after 1 seconds');
   });
 
   it('continues pipeline when an optional phase fails', async () => {

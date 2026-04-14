@@ -5,8 +5,16 @@
  * a skill is accepted.
  */
 
+import { parse as parseYaml } from 'yaml';
+
 /** Maximum lines for a generated skill. */
 export const MAX_SKILL_LINES = 800;
+
+/** Maximum description length accepted by Codex skill frontmatter. */
+export const MAX_SKILL_DESCRIPTION_CHARS = 1024;
+
+/** Frontmatter delimiters at the top of a SKILL.md file. */
+const FRONTMATTER_PATTERN = /^---\n([\s\S]*?)\n---/;
 
 /** Required frontmatter fields for Myco-managed skills. */
 export const REQUIRED_FRONTMATTER_FIELDS = ['name', 'description', 'managed_by', 'user-invocable', 'allowed-tools'] as const;
@@ -28,14 +36,50 @@ export const ALLOWED_CLAUDE_CODE_TOOLS: ReadonlySet<string> = new Set([
   'Task', 'TodoWrite',
 ]);
 
+type ParsedFrontmatter = Record<string, unknown>;
+
+function extractFrontmatterBlock(content: string): string | undefined {
+  return content.match(FRONTMATTER_PATTERN)?.[1];
+}
+
+function parseFrontmatter(content: string): ParsedFrontmatter | null {
+  const block = extractFrontmatterBlock(content);
+  if (!block) return null;
+  const parsed = parseYaml(block);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
+  return parsed as ParsedFrontmatter;
+}
+
+function normalizeFrontmatterValue(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'boolean' || typeof value === 'number') return String(value);
+  if (Array.isArray(value)) {
+    const items = value
+      .map((item) => (typeof item === 'string' ? item : null))
+      .filter((item): item is string => item !== null);
+    return items.length > 0 ? items.join(', ') : undefined;
+  }
+  return undefined;
+}
+
 /**
  * Extract a frontmatter field value from SKILL.md content.
  * Returns the raw value string, or undefined if not found.
  */
 export function extractFrontmatterField(content: string, field: string): string | undefined {
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!fmMatch) return undefined;
-  const fm = fmMatch[1];
+  try {
+    const parsed = parseFrontmatter(content);
+    const normalized = normalizeFrontmatterValue(parsed?.[field]);
+    if (normalized !== undefined) return normalized;
+  } catch {
+    // Fall back to the legacy line-based extraction so callers can still
+    // compare or repair malformed frontmatter already on disk.
+  }
+
+  const fm = extractFrontmatterBlock(content);
+  if (!fm) return undefined;
 
   // Single-line value: `field: value`
   const match = fm.match(new RegExp(`^${field}:\\s*(.+)$`, 'm'));
@@ -297,37 +341,60 @@ export function validateSkillContent(content: string, dirName: string): string[]
   const issues: string[] = [];
 
   // Check for frontmatter delimiters
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!fmMatch) {
+  const frontmatter = extractFrontmatterBlock(content);
+  if (!frontmatter) {
     issues.push('Missing YAML frontmatter (must start with --- and end with ---)');
     return issues; // Can't check fields without frontmatter
   }
 
-  const frontmatter = fmMatch[1];
+  let parsedFrontmatter: ParsedFrontmatter | null = null;
+  try {
+    parsedFrontmatter = parseFrontmatter(content);
+  } catch (error) {
+    const message = error instanceof Error ? error.message.split('\n')[0] : String(error);
+    issues.push(`Invalid YAML frontmatter: ${message}`);
+    return issues;
+  }
+  if (!parsedFrontmatter) {
+    issues.push('Invalid YAML frontmatter: top-level frontmatter must be a mapping/object');
+    return issues;
+  }
 
   // Check required fields
   for (const field of REQUIRED_FRONTMATTER_FIELDS) {
-    if (!frontmatter.includes(`${field}:`)) {
+    if (!(field in parsedFrontmatter)) {
       issues.push(`Missing required frontmatter field: ${field}`);
     }
   }
 
   // Check myco: prefix on name
-  const nameMatch = frontmatter.match(/^name:\s*(.+)$/m);
-  if (nameMatch && !nameMatch[1].trim().startsWith('myco:')) {
-    issues.push(`Skill name must start with "myco:" prefix. Got: "${nameMatch[1].trim()}"`);
+  const nameValue = normalizeFrontmatterValue(parsedFrontmatter.name);
+  if (nameValue && !nameValue.startsWith('myco:')) {
+    issues.push(`Skill name must start with "myco:" prefix. Got: "${nameValue}"`);
+  }
+  if (nameValue && nameValue !== `myco:${dirName}`) {
+    issues.push(`Skill name must match directory name. Expected "myco:${dirName}", got "${nameValue}"`);
   }
 
   // Check managed_by: myco
-  const managedMatch = frontmatter.match(/^managed_by:\s*(.+)$/m);
-  if (managedMatch && managedMatch[1].trim() !== 'myco') {
-    issues.push(`managed_by must be "myco". Got: "${managedMatch[1].trim()}"`);
+  const managedByValue = normalizeFrontmatterValue(parsedFrontmatter.managed_by);
+  if (managedByValue && managedByValue !== 'myco') {
+    issues.push(`managed_by must be "myco". Got: "${managedByValue}"`);
+  }
+
+  // Codex and other agents reject overly long descriptions.
+  const descriptionValue = normalizeFrontmatterValue(parsedFrontmatter.description);
+  if (descriptionValue && descriptionValue.length > MAX_SKILL_DESCRIPTION_CHARS) {
+    issues.push(
+      `description exceeds maximum length of ${MAX_SKILL_DESCRIPTION_CHARS} characters ` +
+      `(got ${descriptionValue.length})`,
+    );
   }
 
   // Check allowed-tools values -- must be Claude Code tool names, not vault agent tools.
   // These skills run in developer Claude Code sessions, not the agent pipeline.
   // Uses extractFrontmatterField to handle both inline and YAML block-list formats.
-  const rawAllowedTools = extractFrontmatterField(content, 'allowed-tools');
+  const rawAllowedTools = normalizeFrontmatterValue(parsedFrontmatter['allowed-tools']);
   if (rawAllowedTools) {
     const rawValue = rawAllowedTools;
     // Reject vault_* tool names first — most informative message for the

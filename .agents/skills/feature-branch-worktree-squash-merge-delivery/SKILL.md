@@ -1,6 +1,11 @@
 ---
 name: myco:feature-branch-worktree-squash-merge-delivery
-description: Use this skill when delivering a non-trivial Myco feature that spans multiple files and requires clean commit history in a PR. Activates whenever you need to use git worktrees for isolated implementation, run the /simplify quality pass (with full procedure: duplication extraction, dispatch table replacement, function signature simplification, React prop threading), use `make build` as the full quality gate, or squash all worktree commits into a single clean PR commit. Keywords: git worktree, feature branch, feature/my-feature-name, squash merge, make build, /simplify, clean commit history.
+description: >-
+  Use this skill when delivering a non-trivial Myco feature that spans
+  multiple files and needs clean PR history. It applies whenever you need
+  git worktrees for isolated implementation, the `/simplify` quality pass,
+  `make build` as the full quality gate, or a single clean squash-merge
+  commit for the final PR.
 managed_by: myco
 version: 1
 user-invocable: true
