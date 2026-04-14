@@ -76,31 +76,38 @@ make build && myco restart
 
 ## Project Structure
 
+The repo is an npm workspace with three publishable packages and one private helper package under `packages/`.
+
 ```
 myco/
-├── .github/               # CI workflows + VS Code Copilot agent manifest
-├── skills/                # Skill markdown files (subdirectory per skill)
-├── src/
-│   ├── agent/             # Intelligence pipeline: wave-based executor, task definitions, orchestrator
-│   ├── capture/           # Event buffering (EventBuffer) and buffer-based turn fallback
-│   ├── cli/               # CLI commands (init wizard, doctor, config)
-│   ├── config/            # Vault config loading and Zod schema
-│   ├── context/           # Context injection for UserPromptSubmit hook
-│   ├── daemon/            # Long-lived HTTP daemon: batch processing, session lifecycle, digest
-│   ├── db/                # SQLite database schema and migrations
-│   ├── entries/           # Hook entry wrappers
-│   ├── hooks/             # Hook entry points (thin — delegate to daemon)
-│   ├── index/             # SQLite FTS5 + sqlite-vec vector search
-│   ├── intelligence/      # LLM backend abstraction (Ollama, LM Studio, Anthropic)
-│   ├── mcp/               # MCP server + tool handlers
-│   ├── prompts/           # LLM prompt templates (extraction, summary, title, classification)
-│   ├── services/          # Shared service logic (used by both CLI and API)
-│   ├── symbionts/         # Symbiont adapters and manifests (Claude Code, Cursor, Codex, VS Code, Gemini, Windsurf, OpenCode) — transcript discovery, parsing, and project-local registration
-│   └── vault/             # Reader, writer, Zod schemas for database records
-├── tests/                 # Mirrors src/ structure
-├── ui/                    # React + Tailwind dashboard (Vite build → dist/ui/)
-├── docs/                  # Lifecycle, quickstart, agent tools
-└── Makefile               # Dev shortcuts
+├── .github/                          # CI workflows + VS Code Copilot agent manifest
+├── packages/
+│   ├── myco/                         # Main package: CLI, daemon, hooks, MCP, dashboard
+│   │   ├── src/
+│   │   │   ├── agent/                # Intelligence pipeline: wave-based executor, task definitions, orchestrator
+│   │   │   ├── capture/              # Event buffering (EventBuffer) and buffer-based turn fallback
+│   │   │   ├── cli/                  # CLI commands (init wizard, doctor, config)
+│   │   │   ├── config/               # Vault config loading and Zod schema
+│   │   │   ├── context/              # Context injection for UserPromptSubmit hook
+│   │   │   ├── daemon/               # Long-lived HTTP daemon: batch processing, session lifecycle, digest
+│   │   │   ├── db/                   # SQLite database schema and migrations
+│   │   │   ├── entries/              # Hook entry wrappers
+│   │   │   ├── hooks/                # Hook entry points (thin — delegate to daemon)
+│   │   │   ├── index/                # SQLite FTS5 + sqlite-vec vector search
+│   │   │   ├── intelligence/         # LLM backend abstraction (Ollama, LM Studio, Anthropic)
+│   │   │   ├── mcp/                  # MCP server + tool handlers
+│   │   │   ├── prompts/              # LLM prompt templates (extraction, summary, title, classification)
+│   │   │   ├── services/             # Shared service logic (used by both CLI and API)
+│   │   │   ├── symbionts/            # Symbiont adapters and manifests (Claude Code, Cursor, Codex, VS Code, Gemini, Windsurf, OpenCode) — transcript discovery, parsing, and project-local registration
+│   │   │   └── vault/                # Reader, writer, Zod schemas for database records
+│   │   ├── ui/                       # React + Tailwind dashboard (Vite build → dist/ui/)
+│   │   └── skills/                   # Skill markdown files (subdirectory per skill)
+│   ├── myco-team/                    # Standalone operator CLI for team-sync workers + worker source
+│   ├── myco-collective/              # Standalone operator CLI for a Myco Collective + worker + admin UI
+│   └── myco-deploy/                  # Private shared deploy helpers used by the two operator CLIs
+├── tests/                            # Mirrors packages/myco/src/ structure
+├── docs/                             # Lifecycle, quickstart, agent tools
+└── Makefile                          # Dev shortcuts
 ```
 
 ## Architecture
@@ -114,12 +121,18 @@ See [docs/lifecycle.md](docs/lifecycle.md) for the full lifecycle with diagrams.
 
 ## Distribution
 
-Published as `@goondocks/myco` on [npmjs.org](https://www.npmjs.com/package/@goondocks/myco).
+Three packages are published to [npmjs.org](https://www.npmjs.com/) under the `@goondocks` scope:
+
+- [`@goondocks/myco`](https://www.npmjs.com/package/@goondocks/myco) — main CLI, daemon, hooks, dashboard, and built-in `myco team init` / `myco team upgrade` flow
+- [`@goondocks/myco-team`](https://www.npmjs.com/package/@goondocks/myco-team) — standalone team-sync operator CLI (`myco-team`)
+- [`@goondocks/myco-collective`](https://www.npmjs.com/package/@goondocks/myco-collective) — standalone Collective operator CLI (`myco-collective`)
+
+`@goondocks/myco-deploy` under `packages/` is private — it holds the shared Cloudflare deploy helpers the two operator CLIs depend on.
 
 1. Push to `main` — CI runs lint + tests
 2. Tag a release (`v0.x.y`) — triggers the publish workflow
-3. `npm publish` builds and pushes to npmjs.org
-4. Users update via `npm update -g @goondocks/myco` or re-run the install script
+3. `npm publish` builds and pushes each publishable package to npmjs.org
+4. Users update via `npm update -g @goondocks/myco` (or the corresponding `-team` / `-collective` package) or re-run the install script
 
 ## Conventions
 
