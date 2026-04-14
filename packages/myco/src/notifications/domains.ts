@@ -13,8 +13,8 @@ export function registerBuiltinDomains(): void {
     domain: 'agents',
     label: 'Agent Tasks',
     types: [
-      { id: 'agent.task.success', label: 'Task completed', defaultMode: 'banner', defaultLevel: 'success' },
-      { id: 'agent.task.failure', label: 'Task failed', defaultMode: 'banner', defaultLevel: 'error' },
+      { id: 'agent.task.success', label: 'Task completed', defaultMode: 'summary', defaultLevel: 'success' },
+      { id: 'agent.task.failure', label: 'Task failed', defaultMode: 'summary', defaultLevel: 'error' },
     ],
   });
 
@@ -32,8 +32,8 @@ export function registerBuiltinDomains(): void {
     label: 'Skills',
     types: [
       { id: 'skill.surveyed', label: 'Skill candidate surveyed', defaultMode: 'summary', defaultLevel: 'info' },
-      { id: 'skill.created', label: 'Skill created', defaultMode: 'banner', defaultLevel: 'success' },
-      { id: 'skill.evolved', label: 'Skill evolved', defaultMode: 'banner', defaultLevel: 'info' },
+      { id: 'skill.created', label: 'Skill created', defaultMode: 'summary', defaultLevel: 'success' },
+      { id: 'skill.evolved', label: 'Skill evolved', defaultMode: 'summary', defaultLevel: 'info' },
     ],
   });
 
@@ -50,7 +50,7 @@ export function registerBuiltinDomains(): void {
     domain: 'daemon',
     label: 'Daemon',
     types: [
-      { id: 'daemon.version_sync', label: 'Version sync restart', defaultMode: 'banner', defaultLevel: 'info' },
+      { id: 'daemon.version_sync', label: 'Version sync restart', defaultMode: 'summary', defaultLevel: 'info' },
     ],
   });
 }

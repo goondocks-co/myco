@@ -1,18 +1,13 @@
 import { useState, useCallback, useRef } from 'react';
 import {
   Settings2,
-  Cpu,
   Activity,
-  CheckCircle,
-  XCircle,
   Loader2,
-  ExternalLink,
 } from 'lucide-react';
 import { useConfig, type MycoConfig } from '../../hooks/use-config';
 import { useDaemon, type StatsResponse } from '../../hooks/use-daemon';
 import { useAgentTasks, type TaskRow } from '../../hooks/use-agent';
 import { useRestart } from '../../hooks/use-restart';
-import { fetchJson } from '../../lib/api';
 import { formatUptime, formatEpochAgo, parseNumericField } from '../../lib/format';
 import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
@@ -27,8 +22,6 @@ import {
 } from '../ui/select';
 import { Switch } from '../ui/switch';
 import { DEFAULT_SUMMARY_BATCH_INTERVAL } from '../../lib/constants';
-
-type TestState = 'idle' | 'testing' | 'success' | 'error';
 
 /* ---------- Types ---------- */
 
@@ -184,8 +177,6 @@ export function AgentConfig() {
 
   const [form, setForm] = useState<AgentFormState | null>(null);
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [testState, setTestState] = useState<TestState>('idle');
-  const [testMessage, setTestMessage] = useState('');
 
   const tasks: TaskRow[] = tasksData?.tasks ?? [];
   const defaultTaskFromApi = tasks.find((t) => t.isDefault)?.name ?? '';
@@ -231,28 +222,6 @@ export function AgentConfig() {
       }
     } catch {
       setSaveMessage({ type: 'error', text: 'Failed to save settings.' });
-    }
-  };
-
-  const handleTestEmbedding = async () => {
-    if (!config) return;
-    setTestState('testing');
-    setTestMessage('');
-    try {
-      const params = new URLSearchParams({
-        provider: config.embedding.provider,
-        type: 'embedding',
-      });
-      if (config.embedding.base_url) params.set('base_url', config.embedding.base_url);
-      const result = await fetchJson<{ provider: string; models: string[] }>(
-        `/models?${params.toString()}`,
-      );
-      const count = result.models.length;
-      setTestState('success');
-      setTestMessage(`Connected -- ${count} model${count !== 1 ? 's' : ''} available.`);
-    } catch (err) {
-      setTestState('error');
-      setTestMessage(err instanceof Error ? err.message : 'Connection failed.');
     }
   };
 
@@ -387,73 +356,6 @@ export function AgentConfig() {
               }
             >
               {saveMessage.text}
-            </span>
-          )}
-        </div>
-      </Surface>
-
-      {/* ---------- Embedding Configuration (read-only summary + link) ---------- */}
-      <Surface level="low" className="p-6 space-y-4 border-t-2 border-t-ochre">
-        <SectionHeader>
-          <span className="flex items-center gap-2">
-            <Cpu className="h-4 w-4 text-secondary" />
-            Embedding Configuration
-          </span>
-        </SectionHeader>
-
-        <div className="grid grid-cols-2 gap-x-6 gap-y-2">
-          <div>
-            <p className="font-sans text-xs text-on-surface-variant">Provider</p>
-            <p className="text-sm font-mono text-on-surface mt-0.5">
-              {config.embedding.provider}
-            </p>
-          </div>
-          <div>
-            <p className="font-sans text-xs text-on-surface-variant">Model</p>
-            <p className="text-sm font-mono text-on-surface mt-0.5 truncate" title={config.embedding.model}>
-              {config.embedding.model}
-            </p>
-          </div>
-          {config.embedding.base_url && (
-            <div className="col-span-2">
-              <p className="font-sans text-xs text-on-surface-variant">Base URL</p>
-              <p className="text-sm font-mono text-on-surface mt-0.5 truncate" title={config.embedding.base_url}>
-                {config.embedding.base_url}
-              </p>
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center gap-3 pt-2 border-t border-outline-variant/20">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={handleTestEmbedding}
-            disabled={testState === 'testing'}
-          >
-            {testState === 'testing' ? (
-              <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-            ) : null}
-            Test Connection
-          </Button>
-          <a
-            href="/settings"
-            className="flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface transition-colors"
-          >
-            <ExternalLink className="h-3 w-3" />
-            Edit in Settings
-          </a>
-          {testState === 'success' && (
-            <span className="flex items-center gap-1 font-sans text-xs text-primary">
-              <CheckCircle className="h-3.5 w-3.5" />
-              {testMessage}
-            </span>
-          )}
-          {testState === 'error' && (
-            <span className="flex items-center gap-1 font-sans text-xs text-tertiary">
-              <XCircle className="h-3.5 w-3.5" />
-              {testMessage}
             </span>
           )}
         </div>

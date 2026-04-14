@@ -14,6 +14,11 @@ import {
   SelectValue,
 } from '../ui/select';
 
+const MODE_LABELS = {
+  banner: 'Banner',
+  summary: 'Summary',
+} as const;
+
 interface NotifFormState {
   enabled: boolean;
   system_notifications: boolean;
@@ -36,6 +41,10 @@ function FieldHint({ children }: { children: React.ReactNode }) {
   return <p className="font-sans text-xs text-on-surface-variant">{children}</p>;
 }
 
+function SectionCard({ children }: { children: React.ReactNode }) {
+  return <div className="rounded-lg border border-outline-variant/20 bg-surface-container/40 p-4">{children}</div>;
+}
+
 export function NotificationSettings() {
   const { config, saveConfig, isSaving } = useConfig();
   const { data: registryData } = useNotificationRegistry();
@@ -48,7 +57,7 @@ export function NotificationSettings() {
       setForm({
         enabled: config.notifications?.enabled ?? true,
         system_notifications: config.notifications?.system_notifications ?? false,
-        default_mode: config.notifications?.default_mode ?? 'banner',
+        default_mode: config.notifications?.default_mode ?? 'summary',
         domains: config.notifications?.domains ?? {},
       });
     }
@@ -88,10 +97,11 @@ export function NotificationSettings() {
   if (!form || !config) return null;
 
   const domains = registryData?.domains ?? [];
+  const controlsDisabled = !form.enabled;
   const isDirty = config ? (
     form.enabled !== (config.notifications?.enabled ?? true) ||
     form.system_notifications !== (config.notifications?.system_notifications ?? false) ||
-    form.default_mode !== (config.notifications?.default_mode ?? 'banner') ||
+    form.default_mode !== (config.notifications?.default_mode ?? 'summary') ||
     JSON.stringify(form.domains) !== JSON.stringify(config.notifications?.domains ?? {})
   ) : false;
 
@@ -100,90 +110,122 @@ export function NotificationSettings() {
       <SectionHeader>Notifications</SectionHeader>
 
       <div className="space-y-4">
-        {/* Master toggle */}
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5">
-            <FieldLabel>Enabled</FieldLabel>
-            <FieldHint>Master switch for all notification types.</FieldHint>
-          </div>
-          <Switch checked={form.enabled} onCheckedChange={v => setField('enabled', v)} />
-        </div>
-
-        {/* System notifications */}
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5">
-            <FieldLabel>System Notifications</FieldLabel>
-            <FieldHint>Show browser notifications when the tab is not focused.</FieldHint>
-          </div>
-          <Switch
-            checked={form.system_notifications}
-            onCheckedChange={v => setField('system_notifications', v)}
-            disabled={!form.enabled}
-          />
-        </div>
-
-        {/* Default mode */}
-        <div className="space-y-1.5">
-          <FieldLabel>Default Mode</FieldLabel>
-          <Select
-            value={form.default_mode}
-            onValueChange={v => setField('default_mode', v as 'banner' | 'summary')}
-            disabled={!form.enabled}
-          >
-            <SelectTrigger className="w-40">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="banner">Banner</SelectItem>
-              <SelectItem value="summary">Summary</SelectItem>
-            </SelectContent>
-          </Select>
-          <FieldHint>Banner shows as a pop-up overlay. Summary shows only in the notification panel.</FieldHint>
-        </div>
-
-        {/* Per-domain toggles */}
-        {domains.length > 0 && (
-          <div className="space-y-3 pt-2">
-            <FieldLabel>Domain Notifications</FieldLabel>
-            <div className="space-y-3">
-              {domains.map(d => {
-                const domainConfig = form.domains[d.domain] ?? { enabled: true };
-                const domainEnabled = domainConfig.enabled;
-                return (
-                  <div key={d.domain} className="flex items-center justify-between gap-3 py-1">
-                    <div className="space-y-0.5 flex-1 min-w-0">
-                      <span className="text-sm text-on-surface">{d.label}</span>
-                      <p className="text-[11px] text-on-surface-variant">
-                        {d.types.map(t => t.label).join(', ')}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <Select
-                        value={domainConfig.mode ?? 'default'}
-                        onValueChange={v => updateDomain(d.domain, { mode: v === 'default' ? undefined : (v as 'banner' | 'summary') })}
-                        disabled={!form.enabled || !domainEnabled}
-                      >
-                        <SelectTrigger className="w-[110px] h-8 text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="default">Default</SelectItem>
-                          <SelectItem value="banner">Banner</SelectItem>
-                          <SelectItem value="summary">Summary</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <Switch
-                        checked={domainEnabled}
-                        onCheckedChange={v => updateDomain(d.domain, { enabled: v })}
-                        disabled={!form.enabled}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
+        <SectionCard>
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <FieldLabel>Notifications</FieldLabel>
+              <FieldHint>Turn the notification system on or off for this project.</FieldHint>
             </div>
+            <Switch checked={form.enabled} onCheckedChange={v => setField('enabled', v)} />
           </div>
-        )}
+        </SectionCard>
+
+        <div className={controlsDisabled ? 'space-y-4 opacity-60' : 'space-y-4'}>
+          <SectionCard>
+            <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+              <div className="space-y-1.5">
+                <FieldLabel>Default Display</FieldLabel>
+                <FieldHint>
+                  `Summary` keeps notifications in the panel only. `Banner` also shows a temporary in-app popup.
+                </FieldHint>
+              </div>
+              <Select
+                value={form.default_mode}
+                onValueChange={v => setField('default_mode', v as 'banner' | 'summary')}
+                disabled={controlsDisabled}
+              >
+                <SelectTrigger className="w-40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="summary">Summary</SelectItem>
+                  <SelectItem value="banner">Banner</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </SectionCard>
+
+          <SectionCard>
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <FieldLabel>Browser Notifications</FieldLabel>
+                <FieldHint>
+                  Use OS/browser popups when the Myco tab is not focused. Only banner-mode notifications use this.
+                </FieldHint>
+              </div>
+              <Switch
+                checked={form.system_notifications}
+                onCheckedChange={v => setField('system_notifications', v)}
+                disabled={controlsDisabled}
+              />
+            </div>
+          </SectionCard>
+
+          {domains.length > 0 && (
+            <SectionCard>
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <FieldLabel>Per-Domain Overrides</FieldLabel>
+                  <FieldHint>Leave a domain on `Default` unless you want it to behave differently from the project-wide setting.</FieldHint>
+                </div>
+
+                <div className="space-y-2">
+                  {domains.map(d => {
+                    const domainConfig = form.domains[d.domain] ?? { enabled: true };
+                    const domainEnabled = domainConfig.enabled;
+                    const effectiveMode = domainConfig.mode ?? form.default_mode;
+                    return (
+                      <div
+                        key={d.domain}
+                        className="rounded-md border border-outline-variant/20 bg-surface-container-low/40 px-3 py-3"
+                      >
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="min-w-0 flex-1 space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium text-on-surface">{d.label}</span>
+                              <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[11px] text-on-surface-variant">
+                                {domainEnabled ? MODE_LABELS[effectiveMode] : 'Off'}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-on-surface-variant">
+                              {d.types.map(t => t.label).join(', ')}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-2 self-start">
+                            <Select
+                              value={domainConfig.mode ?? 'default'}
+                              onValueChange={v => updateDomain(d.domain, { mode: v === 'default' ? undefined : (v as 'banner' | 'summary') })}
+                              disabled={controlsDisabled || !domainEnabled}
+                            >
+                              <SelectTrigger className="h-8 w-[120px] text-xs">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="default">Default</SelectItem>
+                                <SelectItem value="summary">Summary</SelectItem>
+                                <SelectItem value="banner">Banner</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <Switch
+                              checked={domainEnabled}
+                              onCheckedChange={v => updateDomain(d.domain, { enabled: v })}
+                              disabled={controlsDisabled}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </SectionCard>
+          )}
+
+          {controlsDisabled && (
+            <FieldHint>Notifications are currently disabled, so display and domain settings are inactive.</FieldHint>
+          )}
+        </div>
       </div>
 
       {/* Save row */}

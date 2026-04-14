@@ -14,6 +14,7 @@ import { buildTaskInstruction, isInstructionRequiredTask } from '@myco/agent/ins
 import { hasConfiguredProvider } from '@myco/agent/config-resolver.js';
 import { loadConfig } from '@myco/config/loader.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import { notify } from '@myco/notifications/notify.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
@@ -121,13 +122,29 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
 
     resultPromise
       .then((result) => {
+        const taskName = task ?? 'agent run';
         if (result.status === 'failed') {
+          notify(vaultDir, {
+            domain: 'agents',
+            type: 'agent.task.failure',
+            title: `Task failed: ${taskName}`,
+            message: result.error ?? 'Unknown error',
+            link: `/agent?run=${result.runId}`,
+            metadata: { taskName: task ?? null, runId: result.runId },
+          }, mycoConfig);
           logger.error(LOG_KINDS.AGENT_ERROR, 'Agent run failed', {
             runId: result.runId,
             error: result.error ?? 'No error message',
             phases: result.phases?.map(p => `${p.name}:${p.status}`) ?? [],
           });
         } else {
+          notify(vaultDir, {
+            domain: 'agents',
+            type: 'agent.task.success',
+            title: `Task completed: ${taskName}`,
+            link: `/agent?run=${result.runId}`,
+            metadata: { taskName: task ?? null, runId: result.runId },
+          }, mycoConfig);
           logger.info(LOG_KINDS.AGENT_RUN, 'Agent run completed', {
             runId: result.runId,
             status: result.status,

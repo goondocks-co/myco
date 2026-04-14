@@ -124,7 +124,7 @@ const NotificationsSchema = z.object({
   /** Allow browser system notifications (Notification API). */
   system_notifications: z.boolean().default(false),
   /** Default display mode for new notification types. */
-  default_mode: z.enum(['banner', 'summary']).default('banner'),
+  default_mode: z.enum(['banner', 'summary']).default('summary'),
   /** Per-domain settings. Keys are domain names from the registry. */
   domains: z.record(z.string(), z.object({
     enabled: z.boolean().default(true),
