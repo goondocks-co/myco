@@ -1,7 +1,7 @@
 {
   "name": "@goondocks/myco-monorepo",
   "private": true,
-  "version": "0.19.5",
+  "version": "0.19.6",
   "description": "Myco monorepo workspace root",
   "type": "module",
   "workspaces": [
