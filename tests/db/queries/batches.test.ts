@@ -223,6 +223,37 @@ describe('prompt batch query helpers', () => {
       const rows = getUnprocessedBatches();
       expect(rows).toEqual([]);
     });
+
+    describe('active-session gating (includeActive flag)', () => {
+      it('by default (omitted) includes batches from active sessions', () => {
+        insertBatch(makeBatch(sessionId, { user_prompt: 'live' }));
+        const rows = getUnprocessedBatches();
+        expect(rows).toHaveLength(1);
+      });
+
+      it('with includeActive:false excludes batches from active sessions', () => {
+        insertBatch(makeBatch(sessionId, { user_prompt: 'live' }));
+        const rows = getUnprocessedBatches({ includeActive: false });
+        expect(rows).toEqual([]);
+      });
+
+      it('with includeActive:false includes batches from completed sessions', () => {
+        // Complete the session, then insert a batch referencing it.
+        const completedSession = makeSession({ status: 'completed' });
+        upsertSession(completedSession);
+        insertBatch(makeBatch(completedSession.id, { user_prompt: 'settled' }));
+
+        const rows = getUnprocessedBatches({ includeActive: false });
+        expect(rows).toHaveLength(1);
+        expect(rows[0].user_prompt).toBe('settled');
+      });
+
+      it('with includeActive:true bypasses the filter even for active sessions', () => {
+        insertBatch(makeBatch(sessionId, { user_prompt: 'live' }));
+        const rows = getUnprocessedBatches({ includeActive: true });
+        expect(rows).toHaveLength(1);
+      });
+    });
   });
 
   // ---------------------------------------------------------------------------

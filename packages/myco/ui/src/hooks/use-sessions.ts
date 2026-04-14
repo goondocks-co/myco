@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchJson, deleteJson } from '../lib/api';
+import { fetchJson, deleteJson, postJson } from '../lib/api';
 import { usePowerQuery } from './use-power-query';
 import { POLL_INTERVALS } from '../lib/constants';
 
@@ -207,6 +207,18 @@ export function useDeleteSession() {
     mutationFn: (sessionId: string) =>
       deleteJson<{ ok: boolean; counts: Record<string, number> }>(`/sessions/${sessionId}`),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    },
+  });
+}
+
+export function useCompleteSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (sessionId: string) =>
+      postJson<{ ok: boolean; was_active: boolean }>(`/sessions/${sessionId}/complete`),
+    onSuccess: (_data, sessionId) => {
+      queryClient.invalidateQueries({ queryKey: ['session', sessionId] });
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
     },
   });

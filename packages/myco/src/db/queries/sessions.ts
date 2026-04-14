@@ -111,6 +111,12 @@ export interface ListSessionsOptions {
   search?: string;
   /** Only return sessions created after this epoch-seconds timestamp. */
   since?: number;
+  /**
+   * When explicitly `false` and no `status` filter is set, exclude sessions
+   * still in `status = 'active'` — intelligence-task reads opt in to this.
+   * Defaults permissive so UI listings keep showing in-flight sessions.
+   */
+  includeActive?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +304,13 @@ function buildSessionsWhere(
     params.push(options.since);
   }
 
+  // Exclude active sessions only when the caller explicitly opts in and
+  // hasn't already constrained `status`. Intelligence-task reads set this
+  // to avoid picking up in-flight work; UI/CLI leave it unset.
+  if (options.includeActive === false && options.status === undefined) {
+    conditions.push(`status != 'active'`);
+  }
+
   return {
     where: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
     params,
@@ -341,6 +354,22 @@ export function countSessions(
   ).get(...params) as { count: number };
 
   return row.count;
+}
+
+/**
+ * Return the set of session IDs currently in `status = 'active'`.
+ *
+ * Used by the semantic-search path, which can't apply a SQL join against
+ * session status (the vector store is a separate concern), so it filters
+ * results in-memory against this set instead. Bounded by the number of
+ * concurrent in-flight sessions — typically small.
+ */
+export function getActiveSessionIds(): Set<string> {
+  const db = getDatabase();
+  const rows = db.prepare(
+    `SELECT id FROM sessions WHERE status = 'active'`,
+  ).all() as Array<{ id: string }>;
+  return new Set(rows.map((r) => r.id));
 }
 
 /**

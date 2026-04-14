@@ -164,8 +164,17 @@ export async function registerScheduledTasks(
     },
     preConditions: {
       'has-unprocessed-batches': () => {
+        // Only count unprocessed batches from sessions that have settled
+        // (status != 'active'). Otherwise full-intelligence fires on every
+        // live prompt and then filters everything out — wasted agent runs.
         const row = getDatabase().prepare(
-          'SELECT 1 FROM prompt_batches WHERE processed = 0 LIMIT 1'
+          `SELECT 1 FROM prompt_batches pb
+           WHERE pb.processed = 0
+             AND EXISTS (
+               SELECT 1 FROM sessions s
+               WHERE s.id = pb.session_id AND s.status != 'active'
+             )
+           LIMIT 1`,
         ).get();
         return row !== undefined;
       },

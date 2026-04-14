@@ -223,6 +223,38 @@ describe('session query helpers', () => {
       expect(rows[0].id).toBe('s3');
     });
 
+    describe('active-session gating (includeActive flag)', () => {
+      it('by default (omitted) returns active sessions', async () => {
+        // Preserves existing UI behavior — the gate only engages when
+        // intelligence-task callers explicitly opt in.
+        const now = epochNow();
+        upsertSession(makeSession({ id: 'live', created_at: now, started_at: now }));
+        const rows = listSessions();
+        expect(rows.map((r) => r.id)).toContain('live');
+      });
+
+      it('with includeActive:false excludes active sessions', async () => {
+        const now = epochNow();
+        upsertSession(makeSession({ id: 'live', created_at: now, started_at: now }));
+        const done = makeSession({ id: 'done', created_at: now + 1, started_at: now + 1 });
+        upsertSession(done);
+        closeSession('done', now + 2);
+
+        const rows = listSessions({ includeActive: false });
+        expect(rows.map((r) => r.id)).toEqual(['done']);
+      });
+
+      it('an explicit status filter overrides includeActive:false', async () => {
+        const now = epochNow();
+        upsertSession(makeSession({ id: 'live', created_at: now, started_at: now }));
+
+        // Explicit status='active' takes precedence — caller is asking for
+        // in-flight sessions and shouldn't be silently filtered.
+        const rows = listSessions({ includeActive: false, status: 'active' });
+        expect(rows.map((r) => r.id)).toEqual(['live']);
+      });
+    });
+
     it('paginates with offset', async () => {
       const now = epochNow();
       for (let i = 0; i < 5; i++) {

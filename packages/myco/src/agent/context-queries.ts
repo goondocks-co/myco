@@ -131,13 +131,15 @@ async function executeQuery(
 ): Promise<unknown> {
   switch (tool) {
     case 'vault_unprocessed':
-      return getUnprocessedBatches({ limit });
+      // Agent pre-planning context should only see settled work — a task
+      // planning against in-flight batches is working from partial signal.
+      return getUnprocessedBatches({ limit, includeActive: false });
 
     case 'vault_spores':
-      return listSpores({ agent_id: agentId, limit });
+      return listSpores({ agent_id: agentId, limit, includeActive: false });
 
     case 'vault_sessions':
-      return listSessions({ limit });
+      return listSessions({ limit, includeActive: false });
 
     case 'vault_state':
       return getStatesForAgent(agentId);
