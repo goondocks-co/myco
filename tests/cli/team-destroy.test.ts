@@ -22,40 +22,32 @@ vi.mock('node:child_process', async () => {
 });
 
 describe('teamDestroy', () => {
-  let tempHomeDir: string;
-  let previousHome: string | undefined;
+  let tempDir: string;
+  let vaultDir: string;
 
   beforeEach(() => {
-    tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-destroy-'));
-    previousHome = process.env.HOME;
-    process.env.HOME = tempHomeDir;
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-destroy-'));
+    vaultDir = path.join(tempDir, 'project', '.myco');
     execHandlers.length = 0;
     execCalls.length = 0;
 
-    const configPath = path.join(tempHomeDir, '.myco-team', 'config.json');
+    const configPath = path.join(vaultDir, 'team', 'config.json');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, JSON.stringify({
       worker_name: 'myco-team-test',
       worker_url: 'https://myco-team-test.example.workers.dev',
-      api_key: 'api-key',
-      mcp_token: 'mcp-token',
+      package_version: '0.1.1',
       created_at: '2026-04-13T00:00:00.000Z',
       last_upgraded: '2026-04-13T00:00:00.000Z',
       config_version: 1,
-      vault_dir: '/tmp/fake-vault',
     }), 'utf-8');
+    fs.writeFileSync(path.join(vaultDir, 'secrets.env'), 'MYCO_TEAM_API_KEY=api-key\n', 'utf-8');
   });
 
   afterEach(() => {
-    if (previousHome === undefined) {
-      delete process.env.HOME;
-    } else {
-      process.env.HOME = previousHome;
-    }
-    fs.rmSync(tempHomeDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true });
     vi.clearAllMocks();
     vi.resetModules();
-    vi.doUnmock('@myco-deploy/index.js');
   });
 
   it('preserves local retry state when remote teardown fails', async () => {
@@ -66,18 +58,10 @@ describe('teamDestroy', () => {
       () => '[]',
     );
 
-    vi.doMock('@myco-deploy/index.js', async () => {
-      const actual = await vi.importActual<typeof import('@myco-deploy/index.js')>('@myco-deploy/index.js');
-      return {
-        ...actual,
-        resolveHomeConfigPath: (configDir: string, fileName: string) => path.join(tempHomeDir, configDir, fileName),
-      };
-    });
-
     const { teamDestroy } = await import('../../packages/myco-team/src/cli.js');
 
-    await expect(teamDestroy()).rejects.toThrow('Local state preserved for retry');
-    expect(fs.existsSync(path.join(tempHomeDir, '.myco-team', 'config.json'))).toBe(true);
+    await expect(teamDestroy(vaultDir)).rejects.toThrow('Local state preserved for retry');
+    expect(fs.existsSync(path.join(vaultDir, 'team', 'config.json'))).toBe(true);
   });
 
   it('uses the current wrangler destroy flags for remote teardown', async () => {
@@ -90,16 +74,8 @@ describe('teamDestroy', () => {
       () => '',
     );
 
-    vi.doMock('@myco-deploy/index.js', async () => {
-      const actual = await vi.importActual<typeof import('@myco-deploy/index.js')>('@myco-deploy/index.js');
-      return {
-        ...actual,
-        resolveHomeConfigPath: (configDir: string, fileName: string) => path.join(tempHomeDir, configDir, fileName),
-      };
-    });
-
     const { teamDestroy } = await import('../../packages/myco-team/src/cli.js');
-    await teamDestroy();
+    await teamDestroy(vaultDir);
 
     expect(execCalls.map((call) => call.args)).toContainEqual(['delete', 'myco-team-test']);
     expect(execCalls.map((call) => call.args)).toContainEqual(['vectorize', 'delete', 'myco-team-test-vectors']);
@@ -112,6 +88,6 @@ describe('teamDestroy', () => {
       'kv-namespace-456',
       '--skip-confirmation',
     ]);
-    expect(fs.existsSync(path.join(tempHomeDir, '.myco-team', 'config.json'))).toBe(false);
+    expect(fs.existsSync(path.join(vaultDir, 'team', 'config.json'))).toBe(false);
   });
 });

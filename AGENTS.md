@@ -216,7 +216,8 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
   plans/             # Plan notes
   artifacts/         # Artifact references
   attachments/       # Images extracted from session transcripts
-  team/              # Team member notes
+  team/              # Team sync admin state and worker deployment files
+  collective/        # Collective admin state and worker deployment files
   digest/            # Pre-computed context extracts and digest trace
   logs/              # Daemon logs
 ```

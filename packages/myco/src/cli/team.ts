@@ -1,4 +1,5 @@
 export {
+  getTeamPackageVersion,
   teamInit,
   teamUpgrade,
   upgradeWorker,

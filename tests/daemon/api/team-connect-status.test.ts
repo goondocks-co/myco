@@ -10,26 +10,12 @@ function readPackageVersion(...segments: string[]): string {
 }
 
 describe('createTeamHandlers.handleStatus', () => {
-  let tempHomeDir: string;
+  let tempDir: string;
   let vaultDir: string;
-  let previousHome: string | undefined;
-
-  async function importTeamConnect() {
-    vi.doMock('@myco-deploy/index.js', async () => {
-      const actual = await vi.importActual<typeof import('@myco-deploy/index.js')>('@myco-deploy/index.js');
-      return {
-        ...actual,
-        resolveHomeConfigPath: (configDir: string, fileName: string) => path.join(tempHomeDir, configDir, fileName),
-      };
-    });
-    return import('../../../packages/myco/src/daemon/api/team-connect.js');
-  }
 
   beforeEach(() => {
-    tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-status-'));
-    vaultDir = path.join(tempHomeDir, 'project', '.myco');
-    previousHome = process.env.HOME;
-    process.env.HOME = tempHomeDir;
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-status-'));
+    vaultDir = path.join(tempDir, 'project', '.myco');
 
     fs.mkdirSync(vaultDir, { recursive: true });
     fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), [
@@ -38,19 +24,15 @@ describe('createTeamHandlers.handleStatus', () => {
       'team:',
       '  enabled: true',
       '  worker_url: https://myco-team-test.example.workers.dev',
-      '  deployed_worker_version: 0.1.0',
     ].join('\n'), 'utf-8');
     fs.writeFileSync(path.join(vaultDir, 'secrets.env'), 'MYCO_TEAM_API_KEY=test-api-key\n', 'utf-8');
 
-    const configPath = path.join(tempHomeDir, '.myco-team', 'config.json');
+    const configPath = path.join(vaultDir, 'team', 'config.json');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, JSON.stringify({
       worker_name: 'myco-team-test',
       worker_url: 'https://myco-team-test.example.workers.dev',
-      api_key: 'test-api-key',
-      mcp_token: 'test-mcp-token',
       package_version: '0.1.0',
-      vault_dir: vaultDir,
       created_at: '2026-04-13T00:00:00.000Z',
       last_upgraded: '2026-04-13T00:00:00.000Z',
       config_version: 1,
@@ -59,17 +41,14 @@ describe('createTeamHandlers.handleStatus', () => {
 
   afterEach(() => {
     vi.resetModules();
-    vi.doUnmock('@myco-deploy/index.js');
-    if (previousHome === undefined) {
-      delete process.env.HOME;
-    } else {
-      process.env.HOME = previousHome;
-    }
-    fs.rmSync(tempHomeDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   it('compares deployed worker version against installed myco-team version', async () => {
-    const { createTeamHandlers } = await importTeamConnect();
+    const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+    const teamPackageJson = JSON.parse(
+      fs.readFileSync(path.join(process.cwd(), 'packages', 'myco-team', 'package.json'), 'utf-8'),
+    ) as { version: string };
     const handlers = createTeamHandlers({
       vaultDir,
       machineId: 'machine-test',
@@ -79,21 +58,42 @@ describe('createTeamHandlers.handleStatus', () => {
         warn: () => undefined,
         error: () => undefined,
       },
-      getTeamClient: () => null,
+      getTeamClient: () => ({
+        health: async () => ({
+          status: 'ok',
+          node_count: 1,
+          sync_protocol_version: 1,
+          package_version: '0.1.0',
+          schema_version: 12,
+        }),
+        getCollectiveStatus: async () => ({
+          connected: false,
+          collective_url: null,
+          project_id: null,
+          last_settings_sync: null,
+          last_heartbeat: null,
+          capabilities: [],
+          settings: {},
+        }),
+        getMcpToken: () => null,
+        getMcpEndpoint: () => null,
+      }) as never,
       setTeamClient: () => undefined,
     });
 
     const response = await handlers.handleStatus({} as never);
     const body = response.body as {
-      installed_team_package_version: string | null;
+      local_team_package_version: string | null;
+      cached_team_package_version: string | null;
       deployed_worker_version: string | null;
       worker_update_available: boolean;
       package_version: string;
     };
 
     expect(body.package_version).toBe(readPackageVersion('packages', 'myco', 'package.json'));
-    expect(body.installed_team_package_version).toBe('0.1.0');
+    expect(body.local_team_package_version).toBe(teamPackageJson.version);
+    expect(body.cached_team_package_version).toBe('0.1.0');
     expect(body.deployed_worker_version).toBe('0.1.0');
-    expect(body.worker_update_available).toBe(false);
+    expect(body.worker_update_available).toBe(body.local_team_package_version !== body.deployed_worker_version);
   });
 });

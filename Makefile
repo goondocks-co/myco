@@ -50,19 +50,29 @@ dev-link:
 	@mkdir -p $(HOME)/.local/bin
 	@ln -sf $(PWD)/packages/myco/dist/src/cli.js $(HOME)/.local/bin/myco-dev
 	@chmod +x $(HOME)/.local/bin/myco-dev
+	@ln -sf $(PWD)/packages/myco-team/dist/main.js $(HOME)/.local/bin/myco-team-dev
+	@chmod +x $(HOME)/.local/bin/myco-team-dev
+	@ln -sf $(PWD)/packages/myco-collective/dist/main.js $(HOME)/.local/bin/myco-collective-dev
+	@chmod +x $(HOME)/.local/bin/myco-collective-dev
 	@ln -sf $(PWD)/packages/myco/bin/myco-run $(HOME)/.local/bin/myco-run
 	@chmod +x $(HOME)/.local/bin/myco-run
 	@mkdir -p .myco
 	@printf 'myco-dev\n' > .myco/runtime.command
 	@echo "✓ myco-dev symlinked to $(PWD)/packages/myco/dist/src/cli.js"
+	@echo "✓ myco-team-dev symlinked to $(PWD)/packages/myco-team/dist/main.js"
+	@echo "✓ myco-collective-dev symlinked to $(PWD)/packages/myco-collective/dist/main.js"
 	@echo "✓ myco-run symlinked to $(PWD)/packages/myco/bin/myco-run"
 	@echo "✓ .myco/runtime.command set to myco-dev"
 	@echo "  (the hook guard at .agents/myco-run.cjs reads this file)"
 
 dev-unlink:
 	@rm -f $(HOME)/.local/bin/myco-dev
+	@rm -f $(HOME)/.local/bin/myco-team-dev
+	@rm -f $(HOME)/.local/bin/myco-collective-dev
 	@rm -f $(HOME)/.local/bin/myco-run
 	@rm -f .myco/runtime.command
 	@echo "✓ myco-dev symlink removed"
+	@echo "✓ myco-team-dev symlink removed"
+	@echo "✓ myco-collective-dev symlink removed"
 	@echo "✓ myco-run symlink removed"
 	@echo "✓ .myco/runtime.command removed — hook guard falls back to default 'myco'"

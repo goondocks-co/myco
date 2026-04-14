@@ -45,6 +45,8 @@ export interface TeamHealthResponse {
   status: string;
   node_count: number;
   sync_protocol_version: number;
+  package_version?: string;
+  schema_version?: number | null;
   mcp_token_hash?: string;
 }
 

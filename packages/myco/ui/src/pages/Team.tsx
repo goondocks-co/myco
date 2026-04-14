@@ -244,7 +244,7 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
               <div>
                 <p className="text-sm font-medium text-on-surface">Worker update available</p>
                 <p className="text-xs text-on-surface-variant">
-                  Deployed: v{status.deployed_worker_version ?? '?'} — Local: v{status.package_version}
+                  Deployed: v{status.deployed_worker_version ?? '?'} — Local team package: v{status.local_team_package_version ?? '?'}
                 </p>
               </div>
             </div>

@@ -11,6 +11,7 @@ import {
   parseWorkerUrl,
   readJsonConfig,
   resolveHomeConfigPath,
+  resolveVaultConfigPath,
   runWrangler,
   stageDeploymentDir,
   writeJsonConfig,
@@ -58,6 +59,11 @@ describe('local config helpers', () => {
   it('builds home config paths under the requested directory', () => {
     const result = resolveHomeConfigPath('.myco-collective', 'config.json');
     expect(result).toBe(path.join(os.homedir(), '.myco-collective', 'config.json'));
+  });
+
+  it('builds vault config paths under the requested directory', () => {
+    const result = resolveVaultConfigPath('/tmp/example/.myco', 'team', 'config.json');
+    expect(result).toBe('/tmp/example/.myco/team/config.json');
   });
 
   it('masks secrets and generates hex tokens', () => {

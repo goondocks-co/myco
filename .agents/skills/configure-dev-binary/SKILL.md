@@ -1,7 +1,7 @@
 ---
 name: myco:configure-dev-binary
 description: |
-  Use this skill when you need to make the Myco project itself use `myco-dev` (the locally-built binary from `dist/index.cjs`) instead of the globally-installed `myco`. This applies whenever you are dogfooding unreleased changes, setting up a new dev machine, or switching back to the production binary. Even if the user only says "test my changes locally" or "run the dev build," invoke this skill — the binary-switching mechanism is non-obvious and has a three-generation history of failed approaches that this skill documents.
+  Use this skill when you need to make the Myco project itself use `myco-dev` (the locally-built binary from `packages/myco/dist/src/cli.js`) instead of the globally-installed `myco`. This applies whenever you are dogfooding unreleased changes, setting up a new dev machine, or switching back to the production binary. Even if the user only says "test my changes locally" or "run the dev build," invoke this skill — the binary-switching mechanism is non-obvious and has a three-generation history of failed approaches that this skill documents.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -13,7 +13,7 @@ When developing Myco itself, you often need the project's hooks and daemon to in
 
 ## Prerequisites
 
-- The project is built: `dist/index.cjs` must exist. Run `make build` first if it doesn't.
+- The project is built: `packages/myco/dist/src/cli.js` must exist. Run `make build` first if it doesn't.
 - You are in the repository root (`/Users/chris/Repos/myco` or equivalent).
 - The globally-installed `myco` is already working (used as the fallback when `.myco/runtime.command` is absent).
 
@@ -26,7 +26,7 @@ make dev-link
 ```
 
 This does two things:
-- Creates `~/.local/bin/myco-dev` as a symlink pointing at `dist/index.cjs` in your repo.
+- Creates `~/.local/bin/myco-dev` as a symlink pointing at `packages/myco/dist/src/cli.js` in your repo.
 - Writes `.myco/runtime.command` containing the absolute path to `myco-dev`.
 
 `myco-hook.cjs` reads `.myco/runtime.command` at every hook invocation and substitutes that path for the default `myco` command. Because the read happens at hook-fire time (not at shell startup), no shell restart is required.
@@ -49,7 +49,7 @@ After editing source files, rebuild:
 make build
 ```
 
-Because `~/.local/bin/myco-dev` is a symlink to `dist/index.cjs` in your repo, the rebuilt artifact is immediately available to hooks without re-running `make dev-link`.
+Because `~/.local/bin/myco-dev` is a symlink to `packages/myco/dist/src/cli.js` in your repo, the rebuilt artifact is immediately available to hooks without re-running `make dev-link`.
 
 ### 4. Verify
 
@@ -83,4 +83,5 @@ The hook reads an explicit file path — there is no PATH lookup and no env var 
 - **Never delete `bin/myco-run`** even if it looks unused. It is the stable entrypoint for MCP server mode. Deleting it breaks MCP-based integrations.
 - **Use `make dev-link`, not `npm link`.** `npm link` rewires global resolution and will interfere with production-install testing in the same shell session.
 - **`.myco/runtime.command` is machine-specific.** If you copy your repo to another machine, re-run `make dev-link` there — the path baked into the file will be wrong otherwise.
-- **Rebuild before testing.** `myco-dev doctor` (or any hook) reads the binary on disk. Stale `dist/index.cjs` means stale behavior, even if your source edits look right.
+- **Rebuild before testing.** `myco-dev doctor` (or any hook) reads the binary on disk. Stale `packages/myco/dist/src/cli.js` means stale behavior, even if your source edits look right.
+- **Symlink goes stale after package relocation.** When the Myco project restructures (e.g., moving into a monorepo), `~/.local/bin/myco-dev` still points to the old location. If `packages/myco/dist/src/cli.js` doesn't exist at the old path, hooks will fail silently. Fix this by re-running `make dev-link` after any significant directory reorganization.

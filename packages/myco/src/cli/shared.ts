@@ -79,8 +79,11 @@ restart-reason.json
 # Binary attachments — screenshots captured from transcripts
 attachments/
 
-# Team worker deployment — patched wrangler.toml + source copy
-.team-worker/
+# Team sync admin state + worker deployment
+team/
+
+# Collective admin state + worker deployment
+collective/
 
 # Runtime command alias — per-contributor override for which myco binary
 # the hook guard invokes. Default (file absent) is \`myco\`; \`make dev-link\`
@@ -135,4 +138,3 @@ export function registerSymbionts(
   }
   return count;
 }
-

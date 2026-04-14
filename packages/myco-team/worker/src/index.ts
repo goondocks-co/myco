@@ -329,6 +329,7 @@ async function getCollectiveWorkerToken(env: Env): Promise<string | null> {
 // ---------------------------------------------------------------------------
 
 async function handleHealth(env: Env): Promise<Response> {
+  const metadata = teamCollectiveMetadata(env);
   const [countResult, storedToken] = await Promise.all([
     env.MYCO_TEAM_DB.prepare('SELECT COUNT(*) as count FROM nodes').first<{ count: number }>(),
     env.MYCO_SECRETS.get(MCP_TOKEN_KEY),
@@ -337,7 +338,15 @@ async function handleHealth(env: Env): Promise<Response> {
   const count = countResult?.count ?? 0;
   const mcpTokenHash = storedToken ? getMcpTokenHash(storedToken) : null;
 
-  return jsonResponse({ status: 'ok', nodes: count, mcp_token_hash: mcpTokenHash });
+  return jsonResponse({
+    status: 'ok',
+    nodes: count,
+    node_count: count,
+    sync_protocol_version: parseInt(env.SYNC_PROTOCOL_VERSION, 10),
+    package_version: metadata.package_version,
+    schema_version: metadata.schema_version,
+    mcp_token_hash: mcpTokenHash,
+  });
 }
 
 async function handleConnect(request: Request, env: Env): Promise<Response> {
