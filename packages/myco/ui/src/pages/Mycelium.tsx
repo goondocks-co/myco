@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { GraphCanvas } from '../components/mycelium/GraphCanvas';
 import { Inspector } from '../components/mycelium/Inspector';
 import { SporeList } from '../components/mycelium/SporeList';
@@ -432,6 +433,7 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
 /* ---------- Component ---------- */
 
 export default function Mycelium() {
+  const location = useLocation();
   const initial = readUrlState();
   const [activeTab, setActiveTab] = useState<ActiveTab>(initial.tab);
   const [selectedSpore, setSelectedSpore] = useState<SporeSummary | null>(
@@ -447,17 +449,13 @@ export default function Mycelium() {
     writeUrlState(activeTab, selectedSpore?.id);
   }, [activeTab, selectedSpore?.id]);
 
-  // Restore state from URL on browser back/forward
+  // Sync state from URL when navigation updates search params.
   useEffect(() => {
-    function handlePopState() {
-      skipNextPush.current = true;
-      const state = readUrlState();
-      setActiveTab(state.tab);
-      setSelectedSpore(state.sporeId ? { id: state.sporeId } as SporeSummary : null);
-    }
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
+    skipNextPush.current = true;
+    const state = readUrlState();
+    setActiveTab(state.tab);
+    setSelectedSpore(state.sporeId ? { id: state.sporeId } as SporeSummary : null);
+  }, [location.search, location.key]);
 
   function handleSelectSpore(spore: SporeSummary) {
     setSelectedSpore(spore);

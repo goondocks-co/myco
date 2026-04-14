@@ -34,6 +34,7 @@ interface EntityFilterProps {
   onSearchChange: (query: string) => void;
   enabledEdgeTypes?: Set<string>;
   onToggleEdgeType?: (type: string) => void;
+  embedded?: boolean;
 }
 
 /* ---------- Component ---------- */
@@ -46,11 +47,119 @@ export function EntityFilter({
   onSearchChange,
   enabledEdgeTypes,
   onToggleEdgeType,
+  embedded = false,
 }: EntityFilterProps) {
   const [open, setOpen] = useState(false);
 
   const totalNodes = Object.values(entityCounts).reduce((a, b) => a + b, 0);
   const activeFilterCount = ENTITY_TYPES.length - enabledTypes.size;
+
+  const content = (
+    <div className="p-3 space-y-4">
+      <div className="relative">
+        <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-on-surface-variant/50" />
+        <Input
+          placeholder="Search nodes..."
+          value={searchQuery}
+          onChange={(e) => onSearchChange(e.target.value)}
+          className="text-xs pl-7 h-7"
+        />
+      </div>
+
+      <div className="space-y-1">
+        {ENTITY_TYPES.map((et) => {
+          const count = entityCounts[et.type] ?? 0;
+          const enabled = enabledTypes.has(et.type);
+          return (
+            <label
+              key={et.type}
+              className="flex items-center gap-2 py-1 cursor-pointer group"
+            >
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={() => onToggleType(et.type)}
+                className="sr-only"
+              />
+              <div
+                className={cn(
+                  'h-3 w-3 rounded-sm flex items-center justify-center transition-colors',
+                  enabled ? 'bg-surface-container-high' : 'bg-surface-container-lowest',
+                )}
+              >
+                {enabled && <div className={cn('h-1.5 w-1.5 rounded-full', et.dotColor)} />}
+              </div>
+              <span
+                className={cn(
+                  'font-sans text-xs transition-colors',
+                  enabled ? 'text-on-surface' : 'text-on-surface-variant/50',
+                )}
+              >
+                {et.label}
+              </span>
+              <span className="ml-auto font-mono text-[10px] text-on-surface-variant/50">
+                {count}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+
+      {enabledEdgeTypes && onToggleEdgeType && (
+        <div className="space-y-1 pt-1 border-t border-outline-variant/10">
+          <div className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant/60 pt-1">
+            Edges
+          </div>
+          {EDGE_TYPES.map((et) => {
+            const enabled = enabledEdgeTypes.has(et.type);
+            return (
+              <label
+                key={et.type}
+                className="flex items-center gap-2 py-0.5 cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={() => onToggleEdgeType(et.type)}
+                  className="sr-only"
+                />
+                <div
+                  className={cn(
+                    'h-2.5 w-2.5 rounded-sm flex items-center justify-center transition-colors',
+                    enabled ? 'bg-surface-container-high' : 'bg-surface-container-lowest',
+                  )}
+                >
+                  {enabled && <div className="h-1 w-1 rounded-full bg-outline" />}
+                </div>
+                <span
+                  className={cn(
+                    'font-sans text-[11px] transition-colors',
+                    enabled ? 'text-on-surface-variant' : 'text-on-surface-variant/40',
+                  )}
+                >
+                  {et.label}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
+  if (embedded) {
+    return (
+      <div className="rounded-lg bg-surface-container/95 backdrop-blur-md shadow-lg border border-outline-variant/20 overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-2 border-b border-outline-variant/10">
+          <span className="font-sans text-xs font-medium uppercase tracking-widest text-on-surface-variant">
+            Filters
+          </span>
+          <span className="font-mono text-[10px] text-on-surface-variant/50">{totalNodes}</span>
+        </div>
+        {content}
+      </div>
+    );
+  }
 
   return (
     <div className="absolute top-3 left-3 z-10">
@@ -91,99 +200,7 @@ export function EntityFilter({
             </button>
           </div>
 
-          <div className="p-3 space-y-4">
-            {/* Search */}
-            <div className="relative">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-on-surface-variant/50" />
-              <Input
-                placeholder="Search nodes..."
-                value={searchQuery}
-                onChange={(e) => onSearchChange(e.target.value)}
-                className="text-xs pl-7 h-7"
-              />
-            </div>
-
-            {/* Entity type filters */}
-            <div className="space-y-1">
-              {ENTITY_TYPES.map((et) => {
-                const count = entityCounts[et.type] ?? 0;
-                const enabled = enabledTypes.has(et.type);
-                return (
-                  <label
-                    key={et.type}
-                    className="flex items-center gap-2 py-1 cursor-pointer group"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={enabled}
-                      onChange={() => onToggleType(et.type)}
-                      className="sr-only"
-                    />
-                    <div
-                      className={cn(
-                        'h-3 w-3 rounded-sm flex items-center justify-center transition-colors',
-                        enabled ? 'bg-surface-container-high' : 'bg-surface-container-lowest',
-                      )}
-                    >
-                      {enabled && <div className={cn('h-1.5 w-1.5 rounded-full', et.dotColor)} />}
-                    </div>
-                    <span
-                      className={cn(
-                        'font-sans text-xs transition-colors',
-                        enabled ? 'text-on-surface' : 'text-on-surface-variant/50',
-                      )}
-                    >
-                      {et.label}
-                    </span>
-                    <span className="ml-auto font-mono text-[10px] text-on-surface-variant/50">
-                      {count}
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-
-            {/* Edge type filters */}
-            {enabledEdgeTypes && onToggleEdgeType && (
-              <div className="space-y-1 pt-1 border-t border-outline-variant/10">
-                <div className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant/60 pt-1">
-                  Edges
-                </div>
-                {EDGE_TYPES.map((et) => {
-                  const enabled = enabledEdgeTypes.has(et.type);
-                  return (
-                    <label
-                      key={et.type}
-                      className="flex items-center gap-2 py-0.5 cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={enabled}
-                        onChange={() => onToggleEdgeType(et.type)}
-                        className="sr-only"
-                      />
-                      <div
-                        className={cn(
-                          'h-2.5 w-2.5 rounded-sm flex items-center justify-center transition-colors',
-                          enabled ? 'bg-surface-container-high' : 'bg-surface-container-lowest',
-                        )}
-                      >
-                        {enabled && <div className="h-1 w-1 rounded-full bg-outline" />}
-                      </div>
-                      <span
-                        className={cn(
-                          'font-sans text-[11px] transition-colors',
-                          enabled ? 'text-on-surface-variant' : 'text-on-surface-variant/40',
-                        )}
-                      >
-                        {et.label}
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+          {content}
         </div>
       )}
     </div>

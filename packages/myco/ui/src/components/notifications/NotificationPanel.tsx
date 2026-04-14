@@ -41,6 +41,8 @@ const SECTION_TITLES = {
   read: 'Earlier',
 } as const;
 
+const NOTIFICATION_NAVIGATION_SOURCE = 'notification-panel';
+
 function timeAgo(epochSec: number): string {
   const seconds = Math.floor(Date.now() / 1000) - epochSec;
   if (seconds < 60) return 'just now';
@@ -171,7 +173,12 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
         updateNotification.mutate({ id: notification.id, status: 'read' });
       }
       if (notification.link) {
-        navigate(notification.link);
+        navigate(notification.link, {
+          state: {
+            source: NOTIFICATION_NAVIGATION_SOURCE,
+            triggeredAt: Date.now(),
+          },
+        });
         onClose();
       }
     },
@@ -220,7 +227,7 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
                 )}
               </div>
               <p className="text-xs text-on-surface-variant">
-                New items stay here until read or dismissed. Summary notifications live here even when no banner was shown.
+                New items stay here until read or dismissed.
               </p>
             </div>
 
