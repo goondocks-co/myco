@@ -18,9 +18,10 @@ docs/specs/
 .superpowers/
 .worktrees
 
+.context/
+
 # Myco managed (machine-specific)
 .agents/skills/myco
 .agents/skills/myco-curate
 .agents/skills/rules
 .wrangler/
-.context/
