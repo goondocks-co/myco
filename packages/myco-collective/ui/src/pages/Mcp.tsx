@@ -10,6 +10,8 @@ import { fetchCollectiveAccess, rotateCollectiveToken } from '../lib/api';
 
 const COPY_RESET_MS = 2000;
 const MCP_SERVER_NAME = 'myco-collective';
+const TOKEN_VISIBLE_LABEL = 'Hide token';
+const TOKEN_HIDDEN_LABEL = 'Reveal token';
 
 function buildServerSlug(collectiveName: string): string {
   const normalized = collectiveName
@@ -32,6 +34,10 @@ function useCopyFeedback() {
   }, []);
 
   return { copied, handleCopy };
+}
+
+function redactSecret(value: string): string {
+  return `${value.slice(0, 8)}${'*'.repeat(Math.max(0, value.length - 12))}${value.slice(-4)}`;
 }
 
 function CopyButton({ value, label }: { value: string; label: string }) {
@@ -64,27 +70,35 @@ function CopyableField({ label, value, mono = true }: { label: string; value: st
   );
 }
 
-function RedactedField({ label, value }: { label: string; value: string }) {
-  const [visible, setVisible] = useState(false);
-
-  const redacted = `${value.slice(0, 8)}${'*'.repeat(Math.max(0, value.length - 12))}${value.slice(-4)}`;
+function RedactedField({
+  label,
+  value,
+  visible,
+  onToggle,
+}: {
+  label: string;
+  value: string;
+  visible: boolean;
+  onToggle: () => void;
+}) {
+  const displayValue = visible ? value : redactSecret(value);
 
   return (
     <div className="space-y-1.5">
       <span className="text-xs text-on-surface-variant">{label}</span>
       <div className="flex items-start gap-2">
-        <span className="min-w-0 break-all font-mono text-sm text-on-surface">{visible ? value : redacted}</span>
+        <span className="min-w-0 break-all font-mono text-sm text-on-surface">{displayValue}</span>
         <button
           type="button"
-          onClick={() => setVisible((current) => !current)}
+          onClick={onToggle}
           className="shrink-0 rounded p-1 text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface"
-          title={visible ? 'Hide token' : 'Reveal token'}
-          aria-label={visible ? 'Hide token' : 'Reveal token'}
+          title={visible ? TOKEN_VISIBLE_LABEL : TOKEN_HIDDEN_LABEL}
+          aria-label={visible ? TOKEN_VISIBLE_LABEL : TOKEN_HIDDEN_LABEL}
         >
           {visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
         </button>
         <div className="shrink-0">
-          <CopyButton value={value} label={`Copy ${label}`} />
+          <CopyButton value={displayValue} label={`Copy ${label}`} />
         </div>
       </div>
     </div>
@@ -125,6 +139,7 @@ function SnippetCard({
 export default function Mcp() {
   const queryClient = useQueryClient();
   const [message, setMessage] = useState<string | null>(null);
+  const [tokenVisible, setTokenVisible] = useState(false);
   const accessQuery = useQuery({ queryKey: ['collective-access'], queryFn: fetchCollectiveAccess });
 
   const rotateMutation = useMutation({
@@ -140,9 +155,12 @@ export default function Mcp() {
 
   const collectiveName = accessQuery.data?.collective_name ?? 'Collective';
   const serverName = buildServerSlug(collectiveName);
+  const rawToken = accessQuery.data?.mcp_token ?? null;
+  const visibleToken = rawToken && tokenVisible ? rawToken : rawToken ? redactSecret(rawToken) : null;
+  const authorizationHeader = rawToken ? `Authorization: Bearer ${visibleToken}` : null;
 
   const claudeAgentSnippet = useMemo(() => {
-    if (!accessQuery.data?.mcp_token) return null;
+    if (!rawToken) return null;
 
     return JSON.stringify({
       mcp_servers: [
@@ -150,23 +168,23 @@ export default function Mcp() {
           name: serverName,
           type: 'url',
           url: accessQuery.data.mcp_endpoint,
-          authorization_token: accessQuery.data.mcp_token,
+          authorization_token: tokenVisible ? rawToken : redactSecret(rawToken),
         },
       ],
     }, null, 2);
-  }, [accessQuery.data?.mcp_endpoint, accessQuery.data?.mcp_token, serverName]);
+  }, [accessQuery.data?.mcp_endpoint, rawToken, serverName, tokenVisible]);
 
   const inspectorSnippet = useMemo(() => {
-    if (!accessQuery.data?.mcp_token) return null;
+    if (!rawToken) return null;
 
     return [
       'npx @modelcontextprotocol/inspector',
       '',
       '# Transport: Streamable HTTP',
       `# URL: ${accessQuery.data.mcp_endpoint}`,
-      `# Header: Authorization: Bearer ${accessQuery.data.mcp_token}`,
+      `# Header: Authorization: Bearer ${tokenVisible ? rawToken : redactSecret(rawToken)}`,
     ].join('\n');
-  }, [accessQuery.data?.mcp_endpoint, accessQuery.data?.mcp_token]);
+  }, [accessQuery.data?.mcp_endpoint, rawToken, tokenVisible]);
 
   return (
     <div className="space-y-6">
@@ -219,13 +237,18 @@ export default function Mcp() {
             {accessQuery.data?.mcp_endpoint && (
               <CopyableField label="MCP URL" value={accessQuery.data.mcp_endpoint} />
             )}
-            {accessQuery.data?.mcp_token && (
-              <RedactedField label="MCP Access Token" value={accessQuery.data.mcp_token} />
+            {rawToken && (
+              <RedactedField
+                label="MCP Access Token"
+                value={rawToken}
+                visible={tokenVisible}
+                onToggle={() => setTokenVisible((current) => !current)}
+              />
             )}
-            {accessQuery.data?.mcp_token && (
+            {authorizationHeader && (
               <CopyableField
                 label="Authorization Header"
-                value={`Authorization: Bearer ${accessQuery.data.mcp_token}`}
+                value={authorizationHeader}
                 mono
               />
             )}

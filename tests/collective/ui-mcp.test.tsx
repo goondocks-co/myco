@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Mcp from '../../packages/myco-collective/ui/src/pages/Mcp';
 
@@ -58,15 +58,20 @@ describe('Collective MCP page', () => {
     vi.unstubAllGlobals();
   });
 
-  it('shows hosted access details and Claude-first setup snippets', async () => {
+  it('keeps token-bearing fields and snippets masked until revealed', async () => {
     renderMcp();
 
     expect(await screen.findByText('Hosted MCP access for the Collective.')).toBeInTheDocument();
     expect(await screen.findByText('Managed agent MCP JSON')).toBeInTheDocument();
-    expect(
-      (await screen.findAllByText((content) => content.includes('https://oss.goondocks.workers.dev/mcp'))).length,
-    ).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Authorization: Bearer abcdef1234567890fedcba/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/abcdef12\*+dcba/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Authorization: Bearer abcdef12\*+dcba/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Authorization: Bearer abcdef1234567890fedcba/)).not.toBeInTheDocument();
+    expect(screen.getByText(/authorization_token\": \"abcdef12\*+dcba/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reveal token' }));
+
+    expect((await screen.findAllByText(/Authorization: Bearer abcdef1234567890fedcba/)).length).toBeGreaterThan(0);
+    expect(screen.getByText(/authorization_token\": \"abcdef1234567890fedcba/)).toBeInTheDocument();
     expect(screen.getByText('Claude Code plugin support')).toBeInTheDocument();
     expect(screen.getByText('Codex plugin support')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Rotate token' })).toBeInTheDocument();
