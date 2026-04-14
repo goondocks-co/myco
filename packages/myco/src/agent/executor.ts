@@ -147,6 +147,14 @@ function logToolResultBlocks(phaseName: string, message: unknown): void {
   }
 }
 
+function abortReasonMessage(abortController?: AbortController): string | null {
+  if (!abortController?.signal.aborted) return null;
+  const reason = abortController.signal.reason;
+  if (reason instanceof Error) return reason.message;
+  if (typeof reason === 'string' && reason.length > 0) return reason;
+  return 'Agent run aborted';
+}
+
 // ---------------------------------------------------------------------------
 // Prompt composition
 // ---------------------------------------------------------------------------
@@ -311,13 +319,14 @@ async function executePhase(
       summary: phaseSummary,
     };
   } catch (err) {
+    const abortReason = abortReasonMessage(abortController);
     return {
       name: phase.name,
       status: 'failed',
       turnsUsed: phaseTurns,
       tokensUsed: phaseTokens,
       costUsd: phaseCost,
-      summary: `Error: ${toErrorMessage(err)}`,
+      summary: abortReason ? `Error: ${abortReason}` : `Error: ${toErrorMessage(err)}`,
     };
   }
 }
@@ -678,7 +687,7 @@ export async function runAgent(
   const timeoutMs = config.timeoutSeconds * MS_PER_SECOND;
   const timeoutId = setTimeout(() => {
     console.warn(`[agent] Run ${runId} exceeded timeout (${config.timeoutSeconds}s), aborting`);
-    taskAbortController.abort();
+    taskAbortController.abort(new Error(`Agent run timed out after ${config.timeoutSeconds} seconds`));
   }, timeoutMs);
   timeoutId.unref?.();
 

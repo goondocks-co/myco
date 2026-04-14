@@ -20,6 +20,7 @@ import { insertCandidate, updateCandidate } from '@myco/db/queries/skill-candida
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { createVaultTools } from '@myco/agent/tools.js';
+import { MAX_SKILL_DESCRIPTION_CHARS } from '@myco/agent/tools/skill-validator.js';
 import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 
@@ -1088,6 +1089,82 @@ describe('vault skill tools', () => {
       const result = await stage(candidate.id, 'gate-approved');
       expect(result.error).toBeUndefined();
       expect(result.status).toBe('staged');
+    });
+
+    it('vault_stage_skill rejects malformed YAML frontmatter', async () => {
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Gate malformed yaml', rationale: 'r' },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+
+      const stageTool = findTool(tools, 'vault_stage_skill');
+      const result = parseResult(
+        await stageTool.handler(
+          {
+            candidate_id: candidate.id,
+            name: 'gate-malformed-yaml',
+            display_name: 'Gate Malformed YAML',
+            description: 'Malformed YAML skill',
+            content:
+              '---\n' +
+              'name: myco:gate-malformed-yaml\n' +
+              'description: Use this skill for end-to-end delivery: planning, coding, verification\n' +
+              'managed_by: myco\n' +
+              'user-invocable: true\n' +
+              'allowed-tools: Read, Grep, Glob\n' +
+              '---\n\n# Broken',
+            rationale: 'gate test',
+          },
+          undefined,
+        ),
+      ) as { error?: string; issues?: string[] };
+
+      expect(result.error).toContain('validation failed');
+      expect(result.issues?.some((issue) => issue.includes('Invalid YAML frontmatter'))).toBe(true);
+    });
+
+    it('vault_stage_skill rejects descriptions over the compatibility limit', async () => {
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Gate long description', rationale: 'r' },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+
+      const tooLongDescription = 'a'.repeat(MAX_SKILL_DESCRIPTION_CHARS + 1);
+      const stageTool = findTool(tools, 'vault_stage_skill');
+      const result = parseResult(
+        await stageTool.handler(
+          {
+            candidate_id: candidate.id,
+            name: 'gate-long-description',
+            display_name: 'Gate Long Description',
+            description: tooLongDescription,
+            content:
+              '---\n' +
+              'name: myco:gate-long-description\n' +
+              `description: ${tooLongDescription}\n` +
+              'managed_by: myco\n' +
+              'user-invocable: true\n' +
+              'allowed-tools: Read, Grep, Glob\n' +
+              '---\n\n# Too long',
+            rationale: 'gate test',
+          },
+          undefined,
+        ),
+      ) as { error?: string; issues?: string[] };
+
+      expect(result.error).toContain('validation failed');
+      expect(
+        result.issues?.some((issue) =>
+          issue.includes(`description exceeds maximum length of ${MAX_SKILL_DESCRIPTION_CHARS}`)),
+      ).toBe(true);
     });
 
     it('vault_write_skill rejects create path when candidate is not approved', async () => {
