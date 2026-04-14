@@ -82,9 +82,6 @@ attachments/
 # Team sync admin state + worker deployment
 team/
 
-# Collective admin state + worker deployment
-collective/
-
 # Runtime command alias — per-contributor override for which myco binary
 # the hook guard invokes. Default (file absent) is \`myco\`; \`make dev-link\`
 # writes \`myco-dev\`; users can hand-edit for PATH conflicts or pinning.

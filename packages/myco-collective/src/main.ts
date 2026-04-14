@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { resolveVaultDir } from '@myco/vault/resolve.js';
 import { collectiveAddProject, collectiveDestroy, collectiveInstall, collectiveRotateTokens, collectiveStatus, collectiveUpgrade } from './cli.js';
 
 const [command, ...args] = process.argv.slice(2);
@@ -9,39 +8,36 @@ function showHelp(): void {
   console.log(`Usage: myco-collective <command>
 
 Commands:
-  install [name] [project_dir]
-  upgrade [project_dir]
-  status [project_dir]
-  rotate-tokens [admin|mcp|all] [project_dir]
-  add-project <name> <worker_url> <api_key> [project_dir]
-  destroy [project_dir]
+  install [name]
+  upgrade [name]
+  status [name]
+  rotate-tokens [admin|mcp|all] [name]
+  add-project <name> <worker_url> <api_key> [collective_name]
+  destroy [name]
 `);
 }
 
 const COMMAND_HANDLERS: Record<string, CommandHandler> = {
-  install: async (commandArgs) => collectiveInstall(
-    resolveVaultDir(commandArgs[1] ?? process.cwd()),
-    commandArgs[0],
-  ),
-  upgrade: async (commandArgs) => collectiveUpgrade(resolveVaultDir(commandArgs[0] ?? process.cwd())),
-  status: async (commandArgs) => collectiveStatus(resolveVaultDir(commandArgs[0] ?? process.cwd())),
+  install: async (commandArgs) => collectiveInstall(commandArgs[0]),
+  upgrade: async (commandArgs) => collectiveUpgrade(commandArgs[0]),
+  status: async (commandArgs) => collectiveStatus(commandArgs[0]),
   'rotate-tokens': async (commandArgs) => collectiveRotateTokens(
-    resolveVaultDir(commandArgs[1] ?? process.cwd()),
+    commandArgs[1],
     (commandArgs[0] as 'admin' | 'mcp' | 'all' | undefined) ?? 'all',
   ),
   'add-project': async (commandArgs) => {
     if (commandArgs.length < 3) {
-      console.error('Usage: myco-collective add-project <name> <worker_url> <api_key> [project_dir]');
+      console.error('Usage: myco-collective add-project <name> <worker_url> <api_key> [collective_name]');
       process.exit(1);
     }
     await collectiveAddProject(
-      resolveVaultDir(commandArgs[3] ?? process.cwd()),
       commandArgs[0],
       commandArgs[1],
       commandArgs[2],
+      commandArgs[3],
     );
   },
-  destroy: async (commandArgs) => collectiveDestroy(resolveVaultDir(commandArgs[0] ?? process.cwd())),
+  destroy: async (commandArgs) => collectiveDestroy(commandArgs[0]),
 };
 
 if (!command || command === '--help' || command === '-h') {

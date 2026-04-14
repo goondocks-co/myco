@@ -94,8 +94,8 @@ function createSmokeProject() {
 async function main() {
   const smokeProject = createSmokeProject();
   const teamConfigPath = path.join(smokeProject.vaultDir, 'team', 'config.json');
-  const collectiveConfigPath = path.join(smokeProject.vaultDir, 'collective', 'config.json');
   const secretsPath = path.join(smokeProject.vaultDir, 'secrets.env');
+  const collectiveConfigPath = path.join(os.homedir(), '.myco-collective', COLLECTIVE_NAME, 'config.json');
   let teamInstalled = false;
   let collectiveInstalled = false;
 
@@ -115,11 +115,10 @@ async function main() {
       return result;
     });
 
-    run('node', ['packages/myco-collective/dist/main.js', 'install', COLLECTIVE_NAME, smokeProject.projectDir]);
+    run('node', ['packages/myco-collective/dist/main.js', 'install', COLLECTIVE_NAME]);
     collectiveInstalled = true;
     let collectiveConfig = readJson(collectiveConfigPath);
-    let collectiveSecrets = readSecrets(secretsPath);
-    assert(collectiveConfig.worker_url && collectiveSecrets.MYCO_COLLECTIVE_ADMIN_TOKEN, 'Collective config missing worker_url or admin token');
+    assert(collectiveConfig.worker_url && collectiveConfig.admin_token, 'Collective config missing worker_url or admin token');
 
     const collectiveHealth = await waitForCheck('Collective health', async () => {
       const result = await fetchJson(`${collectiveConfig.worker_url}/health`);
@@ -148,11 +147,11 @@ async function main() {
       TEAM_PROJECT_NAME,
       teamConfig.worker_url,
       teamSecrets.MYCO_TEAM_API_KEY,
-      smokeProject.projectDir,
+      COLLECTIVE_NAME,
     ]);
 
     const collectiveProjects = await fetchJson(`${collectiveConfig.worker_url}/api/projects`, {
-      headers: { Authorization: `Bearer ${collectiveSecrets.MYCO_COLLECTIVE_ADMIN_TOKEN}` },
+      headers: { Authorization: `Bearer ${collectiveConfig.admin_token}` },
     });
     assert(collectiveProjects.response.ok, `Collective project listing failed: ${collectiveProjects.response.status}`);
     assert(Array.isArray(collectiveProjects.body?.projects), 'Collective project listing did not return projects');
@@ -172,7 +171,7 @@ async function main() {
     const queryProjects = await fetchJson(`${collectiveConfig.worker_url}/api/query`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${collectiveSecrets.MYCO_COLLECTIVE_ADMIN_TOKEN}`,
+        Authorization: `Bearer ${collectiveConfig.admin_token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ tool: 'collective_projects', args: {} }),
@@ -183,21 +182,20 @@ async function main() {
     await waitForCheck('Collective auth verify', async () => {
       const verify = await fetchJson(`${collectiveConfig.worker_url}/api/auth/verify`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${collectiveSecrets.MYCO_COLLECTIVE_ADMIN_TOKEN}` },
+        headers: { Authorization: `Bearer ${collectiveConfig.admin_token}` },
       });
       assert(verify.response.ok, `Collective auth verify failed: ${verify.response.status}`);
       return verify;
     });
 
-    const oldAdminToken = collectiveSecrets.MYCO_COLLECTIVE_ADMIN_TOKEN;
-    run('node', ['packages/myco-collective/dist/main.js', 'rotate-tokens', 'admin', smokeProject.projectDir]);
+    const oldAdminToken = collectiveConfig.admin_token;
+    run('node', ['packages/myco-collective/dist/main.js', 'rotate-tokens', 'admin', COLLECTIVE_NAME]);
     collectiveConfig = readJson(collectiveConfigPath);
-    collectiveSecrets = readSecrets(secretsPath);
-    assert(collectiveSecrets.MYCO_COLLECTIVE_ADMIN_TOKEN !== oldAdminToken, 'Collective admin token did not rotate');
+    assert(collectiveConfig.admin_token !== oldAdminToken, 'Collective admin token did not rotate');
 
     const verifyNewToken = await fetchJson(`${collectiveConfig.worker_url}/api/auth/verify`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${collectiveSecrets.MYCO_COLLECTIVE_ADMIN_TOKEN}` },
+      headers: { Authorization: `Bearer ${collectiveConfig.admin_token}` },
     });
     assert(verifyNewToken.response.ok, `Verification with rotated admin token failed: ${verifyNewToken.response.status}`);
 
@@ -216,7 +214,7 @@ async function main() {
   } finally {
     if (collectiveInstalled) {
       try {
-        run('node', ['packages/myco-collective/dist/main.js', 'destroy', smokeProject.projectDir]);
+        run('node', ['packages/myco-collective/dist/main.js', 'destroy', COLLECTIVE_NAME]);
       } catch (error) {
         console.error(`Collective cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
       }

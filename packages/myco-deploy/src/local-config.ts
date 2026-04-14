@@ -3,8 +3,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+const MYCO_HOME_OVERRIDE_ENV = 'MYCO_HOME_OVERRIDE';
+
+export function resolveHomeDir(): string {
+  return process.env[MYCO_HOME_OVERRIDE_ENV]?.trim() || os.homedir();
+}
+
 export function resolveHomeConfigPath(configDir: string, fileName: string): string {
-  return path.join(os.homedir(), configDir, fileName);
+  return path.join(resolveHomeDir(), configDir, fileName);
+}
+
+export function resolveNamedHomeConfigPath(configDir: string, name: string, fileName: string): string {
+  return path.join(resolveHomeDir(), configDir, name, fileName);
 }
 
 export function resolveVaultConfigPath(vaultDir: string, configDir: string, fileName: string): string {
