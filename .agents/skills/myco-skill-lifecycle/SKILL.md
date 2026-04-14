@@ -1,6 +1,13 @@
 ---
 name: myco:myco-skill-lifecycle
-description: Use this skill when you need to run the Myco skill lifecycle end-to-end: identifying skill candidates from vault knowledge, curating them through the approval workflow, generating SKILL.md files on disk, and evolving existing skills as the vault grows. Activate even if the user only asks about one phase — understanding the full chain prevents common sequencing mistakes. Applies to tasks named skill-survey, skill-generate, skill-evolve, and to any work on the Skills dashboard in the Daemon UI. Also relevant when candidates appear but no skills materialize, when the survey returns zero results, or when a generated skill needs to be refreshed.
+description: >-
+  Use this skill when running or debugging the Myco skill lifecycle end to end:
+  identifying candidates from vault knowledge, curating them through approval,
+  generating `SKILL.md` files, and evolving existing skills as the vault grows.
+  It applies to `skill-survey`, `skill-generate`, `skill-evolve`, and any work
+  on the Skills dashboard, including cases where candidates appear but no
+  skills materialize, surveys return zero results, or generated skills need
+  refreshes.
 managed_by: myco
 user-invocable: true
 allowed-tools:

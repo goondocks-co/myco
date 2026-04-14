@@ -1,6 +1,14 @@
 ---
 name: myco:author-and-debug-agent-pipeline-tasks
-description: How to author, configure, and debug Myco agent pipeline tasks — covering task YAML anatomy (phases, schedule, dependsOn, preCondition), sweep scheduling design, parameter injection patterns, the taskOverrides scalar-drop gotcha, the skipPriorContext hallucination trap, timeout wiring, concurrency guard behavior and correctness, concurrent run audit log interleaving, LLM data-fidelity failure patterns, turn budget exhaustion, skill lifecycle task specifics (generate/evolve responsibility split, embedding-based merge detection, evolve budget sizing, content-from-disk requirement), and fault-tolerance patterns. Also covers hardening new tasks and MCP tools: readOnly annotations, global toggle gate, phase-level readOnly enforcement, test coverage, and pre-ship checklist. Use this skill when creating a new task YAML, adding schedule blocks, debugging a task that silently aborts or returns wrong data, wiring phase dependencies, or hardening a task or MCP tool with safety controls. Apply it even if the user doesn't explicitly ask about task authoring — if they're modifying anything in src/agent/tasks/, src/agent/executor.ts, src/daemon/task-scheduler.ts, or src/mcp/tools/, this skill applies.
+description: >-
+  Use this skill when authoring, configuring, or debugging Myco agent pipeline
+  tasks. It covers task YAML anatomy, scheduling, parameter injection,
+  timeout and concurrency behavior, audit-log interpretation, turn-budget
+  failures, skill-lifecycle task constraints, and hardening patterns for
+  new tasks and MCP tools. Apply it whenever work touches
+  `src/agent/tasks/`, `src/agent/executor.ts`, `src/daemon/task-scheduler.ts`,
+  or `src/mcp/tools/`, even if the user does not explicitly mention task
+  authoring.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob

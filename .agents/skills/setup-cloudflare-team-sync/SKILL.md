@@ -1,6 +1,13 @@
 ---
 name: myco:setup-cloudflare-team-sync
-description: Use this skill when setting up Myco's team sync feature using Cloudflare Workers, D1, and Vectorize — or when debugging issues with an existing sync deployment. Activates for tasks involving myco team init, the Team page in the daemon UI, Cloudflare Worker deployment, wrangler CLI setup, machine identity, or cross-machine vault sync. Also applies when diagnosing team sync failures even if the user doesn't explicitly frame it as a Cloudflare problem — symptoms like pending count not draining, sync not working, record count shortfall, or embeddings not appearing on another machine all fall under this skill. Also covers the outbox implementation pattern: paired writes, the drain loop, Power Manager integration (runIn states, preventsDeepSleep), dead-letter handling, and adding new record types to team sync.
+description: >-
+  Use this skill when setting up or debugging Myco team sync on Cloudflare.
+  It applies to `myco team init`, the Team page in the daemon UI, Worker
+  deployment, Wrangler setup, machine identity, cross-machine vault sync, and
+  failure modes like pending outbox drains, missing remote records, or
+  embeddings not appearing on another machine. It also covers the outbox
+  pattern, paired writes, drain-loop behavior, PowerManager integration, and
+  adding new record types to sync.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob

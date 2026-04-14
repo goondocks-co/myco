@@ -18,6 +18,7 @@ import {
   topicOverlapSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
   TOPIC_OVERLAP_THRESHOLD,
+  MAX_SKILL_DESCRIPTION_CHARS,
 } from '@myco/agent/tools/skill-validator.js';
 import { buildScheduledJobs, type ScheduledJobContext } from '@myco/daemon/task-scheduler.js';
 import { loadConfig } from '@myco/config/loader.js';
@@ -369,44 +370,73 @@ describe('validateSkillContent quality gate', () => {
 
   it('accepts valid skill content', () => {
     const content = '---\nname: myco:test-skill\ndescription: A test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: Read, Grep, Glob\n---\n\nBody content here.';
-    const issues = validateSkillContent(content, 'test');
+    const issues = validateSkillContent(content, 'test-skill');
     expect(issues).toHaveLength(0);
   });
 
   it('rejects vault agent tool names in allowed-tools (comma format)', () => {
     const content = '---\nname: myco:test-skill\ndescription: A test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: vault_search_fts, vault_spores\n---\n\nBody';
-    const issues = validateSkillContent(content, 'test');
+    const issues = validateSkillContent(content, 'test-skill');
     expect(issues.some(i => i.includes('vault agent tool names'))).toBe(true);
   });
 
   it('rejects vault agent tool names in allowed-tools (YAML list format)', () => {
     const content = '---\nname: myco:test-skill\ndescription: A test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools:\n  - vault_search_fts\n  - vault_spores\n---\n\nBody';
-    const issues = validateSkillContent(content, 'test');
+    const issues = validateSkillContent(content, 'test-skill');
     expect(issues.some(i => i.includes('vault agent tool names'))).toBe(true);
   });
 
   it('rejects allowed-tools: [None] — the model confabulation that prompted this gate', () => {
     const content = '---\nname: myco:test-skill\ndescription: A test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: [None]\n---\n\nBody';
-    const issues = validateSkillContent(content, 'test');
+    const issues = validateSkillContent(content, 'test-skill');
     expect(issues.some(i => i.includes('malformed'))).toBe(true);
   });
 
   it('rejects allowed-tools: None (bare sentinel)', () => {
     const content = '---\nname: myco:test-skill\ndescription: A test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: None\n---\n\nBody';
-    const issues = validateSkillContent(content, 'test');
+    const issues = validateSkillContent(content, 'test-skill');
     expect(issues.some(i => i.includes('malformed'))).toBe(true);
   });
 
   it('rejects unknown tool names in allowed-tools', () => {
     const content = '---\nname: myco:test-skill\ndescription: A test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: Read, ReadFile, Shell\n---\n\nBody';
-    const issues = validateSkillContent(content, 'test');
+    const issues = validateSkillContent(content, 'test-skill');
     expect(issues.some(i => i.includes('unknown tool name'))).toBe(true);
   });
 
   it('accepts inline YAML list format with valid tools', () => {
     const content = '---\nname: myco:test-skill\ndescription: A test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: [Read, Edit, Write]\n---\n\nBody';
-    const issues = validateSkillContent(content, 'test');
+    const issues = validateSkillContent(content, 'test-skill');
     expect(issues).toHaveLength(0);
+  });
+
+  it('rejects malformed YAML frontmatter even when required field substrings are present', () => {
+    const content =
+      '---\n' +
+      'name: myco:test-skill\n' +
+      'description: Use this skill for end-to-end delivery: planning, coding, verification\n' +
+      'managed_by: myco\n' +
+      'user-invocable: true\n' +
+      'allowed-tools: Read, Grep, Glob\n' +
+      '---\n\nBody';
+    const issues = validateSkillContent(content, 'test-skill');
+    expect(issues.some((issue) => issue.includes('Invalid YAML frontmatter'))).toBe(true);
+  });
+
+  it('rejects descriptions that exceed the Codex-compatible length limit', () => {
+    const description = 'a'.repeat(MAX_SKILL_DESCRIPTION_CHARS + 1);
+    const content =
+      '---\n' +
+      'name: myco:test-skill\n' +
+      `description: ${description}\n` +
+      'managed_by: myco\n' +
+      'user-invocable: true\n' +
+      'allowed-tools: Read, Grep, Glob\n' +
+      '---\n\nBody';
+    const issues = validateSkillContent(content, 'test-skill');
+    expect(
+      issues.some((issue) => issue.includes(`description exceeds maximum length of ${MAX_SKILL_DESCRIPTION_CHARS}`)),
+    ).toBe(true);
   });
 });
 

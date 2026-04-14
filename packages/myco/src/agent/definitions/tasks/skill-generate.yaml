@@ -73,6 +73,13 @@ phases:
 
       - **user-invocable: true** — makes the skill available as a slash
         command (e.g., `/add-symbiont`). Set this for all procedural skills.
+      - **description formatting** — keep the description YAML-safe.
+        Prefer the block-scalar form shown above (`description: |` or
+        `description: >-`) instead of a long plain scalar, because colons
+        inside an unquoted single-line value can produce invalid YAML.
+      - **description length** — keep the fully rendered description at or
+        under 1024 characters. Longer descriptions are rejected by Codex and
+        other skill loaders even if the rest of the file is valid.
       - **allowed-tools** — comma-separated list of **Claude Code tool
         names** that the skill needs. These skills run in developer
         Claude Code sessions, NOT in the agent pipeline. NEVER use
@@ -156,6 +163,8 @@ phases:
          Generic advice ("add a config file") is not enough.
 
       4. **Length:** Under 800 lines?
+      4a. **Frontmatter validity:** Does the YAML frontmatter parse cleanly,
+          and is the rendered description still <= 1024 characters?
 
       5. **Domain scope:** Does this skill cover a procedural domain
          (multiple related procedures as sections) or just a single
