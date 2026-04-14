@@ -57,6 +57,7 @@ import {
   handleListSpores,
   handleGetSpore,
   handleListEntities,
+  handleGetGraphSeeds,
   handleGetGraph,
   handleGetFullGraph,
   handleGetDigest,
@@ -594,6 +595,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/spores', handleListSpores);
   server.registerRoute('GET', '/api/spores/:id', handleGetSpore);
   server.registerRoute('GET', '/api/entities', handleListEntities);
+  server.registerRoute('GET', '/api/graph/seeds', handleGetGraphSeeds);
   server.registerRoute('GET', '/api/graph', handleGetFullGraph);
   server.registerRoute('GET', '/api/graph/:id', handleGetGraph);
   server.registerRoute('GET', '/api/digest', handleGetDigest);
