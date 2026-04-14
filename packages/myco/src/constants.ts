@@ -377,6 +377,12 @@ export const TEAM_SEARCH_TIMEOUT_MS = 3000;
 export const TEAM_HEALTH_TIMEOUT_MS = 5000;
 /** Secrets key for the team API key in secrets.env. */
 export const TEAM_API_KEY_SECRET = 'MYCO_TEAM_API_KEY';
+/** Secrets key for the team MCP token in secrets.env. */
+export const TEAM_MCP_TOKEN_SECRET = 'MYCO_TEAM_MCP_TOKEN';
+/** Secrets key for the Collective admin token in secrets.env. */
+export const COLLECTIVE_ADMIN_TOKEN_SECRET = 'MYCO_COLLECTIVE_ADMIN_TOKEN';
+/** Secrets key for the Collective MCP token in secrets.env. */
+export const COLLECTIVE_MCP_TOKEN_SECRET = 'MYCO_COLLECTIVE_MCP_TOKEN';
 /** Timeout for wrangler CLI commands (ms). */
 export const WRANGLER_COMMAND_TIMEOUT_MS = 60_000;
 

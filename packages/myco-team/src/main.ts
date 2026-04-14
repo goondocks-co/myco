@@ -11,18 +11,21 @@ function showHelp(): void {
 Commands:
   install [project_dir]
   upgrade [project_dir]
-  status
-  rotate-tokens [api|mcp|all]
-  destroy
+  status [project_dir]
+  rotate-tokens [api|mcp|all] [project_dir]
+  destroy [project_dir]
 `);
 }
 
 const COMMAND_HANDLERS: Record<string, CommandHandler> = {
   install: async (commandArgs) => teamInit(resolveVaultDir(commandArgs[0] ?? process.cwd())),
   upgrade: async (commandArgs) => teamUpgrade(resolveVaultDir(commandArgs[0] ?? process.cwd())),
-  status: async () => teamStatus(),
-  'rotate-tokens': async (commandArgs) => teamRotateTokens((commandArgs[0] as 'api' | 'mcp' | 'all' | undefined) ?? 'all'),
-  destroy: async () => teamDestroy(),
+  status: async (commandArgs) => teamStatus(resolveVaultDir(commandArgs[0] ?? process.cwd())),
+  'rotate-tokens': async (commandArgs) => teamRotateTokens(
+    resolveVaultDir(commandArgs[1] ?? process.cwd()),
+    (commandArgs[0] as 'api' | 'mcp' | 'all' | undefined) ?? 'all',
+  ),
+  destroy: async (commandArgs) => teamDestroy(resolveVaultDir(commandArgs[0] ?? process.cwd())),
 };
 
 if (!command || command === '--help' || command === '-h') {

@@ -7,6 +7,10 @@ export function resolveHomeConfigPath(configDir: string, fileName: string): stri
   return path.join(os.homedir(), configDir, fileName);
 }
 
+export function resolveVaultConfigPath(vaultDir: string, configDir: string, fileName: string): string {
+  return path.join(vaultDir, configDir, fileName);
+}
+
 export function readJsonConfig<T>(configPath: string): T | null {
   if (!fs.existsSync(configPath)) return null;
   return JSON.parse(fs.readFileSync(configPath, 'utf-8')) as T;

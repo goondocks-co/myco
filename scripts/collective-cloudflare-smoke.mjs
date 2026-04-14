@@ -6,8 +6,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const TEAM_CONFIG_PATH = path.join(os.homedir(), '.myco-team', 'config.json');
-const COLLECTIVE_CONFIG_PATH = path.join(os.homedir(), '.myco-collective', 'config.json');
 const SMOKE_PREFIX = 'myco-smoke';
 const NOW = Date.now();
 const TEAM_PROJECT_NAME = `${SMOKE_PREFIX}-project-${NOW}`;
@@ -31,22 +29,20 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
 }
 
-function backupFile(filePath) {
-  if (!fs.existsSync(filePath)) return null;
-  const backupPath = `${filePath}.smoke-backup-${NOW}`;
-  fs.mkdirSync(path.dirname(backupPath), { recursive: true });
-  fs.copyFileSync(filePath, backupPath);
-  return backupPath;
-}
-
-function restoreBackup(originalPath, backupPath) {
-  if (!backupPath) {
-    fs.rmSync(originalPath, { force: true });
-    return;
+function readSecrets(filePath) {
+  if (!fs.existsSync(filePath)) return {};
+  const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
+  const secrets = {};
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const separatorIndex = trimmed.indexOf('=');
+    if (separatorIndex === -1) continue;
+    const key = trimmed.slice(0, separatorIndex).trim();
+    const value = trimmed.slice(separatorIndex + 1).trim();
+    secrets[key] = value;
   }
-  fs.mkdirSync(path.dirname(originalPath), { recursive: true });
-  fs.copyFileSync(backupPath, originalPath);
-  fs.rmSync(backupPath, { force: true });
+  return secrets;
 }
 
 async function fetchJson(url, init = {}) {
@@ -96,9 +92,10 @@ function createSmokeProject() {
 }
 
 async function main() {
-  const teamBackup = backupFile(TEAM_CONFIG_PATH);
-  const collectiveBackup = backupFile(COLLECTIVE_CONFIG_PATH);
   const smokeProject = createSmokeProject();
+  const teamConfigPath = path.join(smokeProject.vaultDir, 'team', 'config.json');
+  const collectiveConfigPath = path.join(smokeProject.vaultDir, 'collective', 'config.json');
+  const secretsPath = path.join(smokeProject.vaultDir, 'secrets.env');
   let teamInstalled = false;
   let collectiveInstalled = false;
 
@@ -107,8 +104,9 @@ async function main() {
 
     run('node', ['packages/myco-team/dist/main.js', 'install', smokeProject.projectDir]);
     teamInstalled = true;
-    const teamConfig = readJson(TEAM_CONFIG_PATH);
-    assert(teamConfig.worker_url && teamConfig.api_key, 'Team config missing worker_url or api_key');
+    const teamConfig = readJson(teamConfigPath);
+    const teamSecrets = readSecrets(secretsPath);
+    assert(teamConfig.worker_url && teamSecrets.MYCO_TEAM_API_KEY, 'Team config missing worker_url or API key');
 
     const teamHealth = await waitForCheck('Team health', async () => {
       const result = await fetchJson(`${teamConfig.worker_url}/health`);
@@ -117,10 +115,11 @@ async function main() {
       return result;
     });
 
-    run('node', ['packages/myco-collective/dist/main.js', 'install', COLLECTIVE_NAME]);
+    run('node', ['packages/myco-collective/dist/main.js', 'install', COLLECTIVE_NAME, smokeProject.projectDir]);
     collectiveInstalled = true;
-    let collectiveConfig = readJson(COLLECTIVE_CONFIG_PATH);
-    assert(collectiveConfig.worker_url && collectiveConfig.admin_token, 'Collective config missing worker_url or admin_token');
+    let collectiveConfig = readJson(collectiveConfigPath);
+    let collectiveSecrets = readSecrets(secretsPath);
+    assert(collectiveConfig.worker_url && collectiveSecrets.MYCO_COLLECTIVE_ADMIN_TOKEN, 'Collective config missing worker_url or admin token');
 
     const collectiveHealth = await waitForCheck('Collective health', async () => {
       const result = await fetchJson(`${collectiveConfig.worker_url}/health`);
@@ -148,11 +147,12 @@ async function main() {
       'add-project',
       TEAM_PROJECT_NAME,
       teamConfig.worker_url,
-      teamConfig.api_key,
+      teamSecrets.MYCO_TEAM_API_KEY,
+      smokeProject.projectDir,
     ]);
 
     const collectiveProjects = await fetchJson(`${collectiveConfig.worker_url}/api/projects`, {
-      headers: { Authorization: `Bearer ${collectiveConfig.admin_token}` },
+      headers: { Authorization: `Bearer ${collectiveSecrets.MYCO_COLLECTIVE_ADMIN_TOKEN}` },
     });
     assert(collectiveProjects.response.ok, `Collective project listing failed: ${collectiveProjects.response.status}`);
     assert(Array.isArray(collectiveProjects.body?.projects), 'Collective project listing did not return projects');
@@ -162,7 +162,7 @@ async function main() {
     assert(collectiveProjects.body.projects[0].schema_version, 'Collective project did not record schema_version');
 
     const teamCollectiveStatus = await fetchJson(`${teamConfig.worker_url}/collective/status`, {
-      headers: { Authorization: `Bearer ${teamConfig.api_key}` },
+      headers: { Authorization: `Bearer ${teamSecrets.MYCO_TEAM_API_KEY}` },
     });
     assert(teamCollectiveStatus.response.ok, `Team collective status failed: ${teamCollectiveStatus.response.status}`);
     assert(teamCollectiveStatus.body?.connected === true, 'Team worker did not report a connected Collective');
@@ -172,7 +172,7 @@ async function main() {
     const queryProjects = await fetchJson(`${collectiveConfig.worker_url}/api/query`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${collectiveConfig.admin_token}`,
+        Authorization: `Bearer ${collectiveSecrets.MYCO_COLLECTIVE_ADMIN_TOKEN}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ tool: 'collective_projects', args: {} }),
@@ -180,14 +180,24 @@ async function main() {
     assert(queryProjects.response.ok, `Collective query failed: ${queryProjects.response.status}`);
     assert(Array.isArray(queryProjects.body?.projects), 'Collective query did not return projects');
 
-    const oldAdminToken = collectiveConfig.admin_token;
-    run('node', ['packages/myco-collective/dist/main.js', 'rotate-tokens', 'admin']);
-    collectiveConfig = readJson(COLLECTIVE_CONFIG_PATH);
-    assert(collectiveConfig.admin_token !== oldAdminToken, 'Collective admin token did not rotate');
+    await waitForCheck('Collective auth verify', async () => {
+      const verify = await fetchJson(`${collectiveConfig.worker_url}/api/auth/verify`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${collectiveSecrets.MYCO_COLLECTIVE_ADMIN_TOKEN}` },
+      });
+      assert(verify.response.ok, `Collective auth verify failed: ${verify.response.status}`);
+      return verify;
+    });
+
+    const oldAdminToken = collectiveSecrets.MYCO_COLLECTIVE_ADMIN_TOKEN;
+    run('node', ['packages/myco-collective/dist/main.js', 'rotate-tokens', 'admin', smokeProject.projectDir]);
+    collectiveConfig = readJson(collectiveConfigPath);
+    collectiveSecrets = readSecrets(secretsPath);
+    assert(collectiveSecrets.MYCO_COLLECTIVE_ADMIN_TOKEN !== oldAdminToken, 'Collective admin token did not rotate');
 
     const verifyNewToken = await fetchJson(`${collectiveConfig.worker_url}/api/auth/verify`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${collectiveConfig.admin_token}` },
+      headers: { Authorization: `Bearer ${collectiveSecrets.MYCO_COLLECTIVE_ADMIN_TOKEN}` },
     });
     assert(verifyNewToken.response.ok, `Verification with rotated admin token failed: ${verifyNewToken.response.status}`);
 
@@ -206,7 +216,7 @@ async function main() {
   } finally {
     if (collectiveInstalled) {
       try {
-        run('node', ['packages/myco-collective/dist/main.js', 'destroy']);
+        run('node', ['packages/myco-collective/dist/main.js', 'destroy', smokeProject.projectDir]);
       } catch (error) {
         console.error(`Collective cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -214,14 +224,11 @@ async function main() {
 
     if (teamInstalled) {
       try {
-        run('node', ['packages/myco-team/dist/main.js', 'destroy']);
+        run('node', ['packages/myco-team/dist/main.js', 'destroy', smokeProject.projectDir]);
       } catch (error) {
         console.error(`Team cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-
-    restoreBackup(COLLECTIVE_CONFIG_PATH, collectiveBackup);
-    restoreBackup(TEAM_CONFIG_PATH, teamBackup);
     fs.rmSync(smokeProject.projectDir, { recursive: true, force: true });
   }
 }

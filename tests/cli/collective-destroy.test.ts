@@ -22,42 +22,38 @@ vi.mock('node:child_process', async () => {
 });
 
 describe('collectiveDestroy', () => {
-  let tempHomeDir: string;
-  let previousHome: string | undefined;
+  let tempDir: string;
+  let vaultDir: string;
 
   beforeEach(() => {
-    tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-collective-destroy-'));
-    previousHome = process.env.HOME;
-    process.env.HOME = tempHomeDir;
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-collective-destroy-'));
+    vaultDir = path.join(tempDir, 'project', '.myco');
     execHandlers.length = 0;
     execCalls.length = 0;
 
-    const configPath = path.join(tempHomeDir, '.myco-collective', 'config.json');
+    const configPath = path.join(vaultDir, 'collective', 'config.json');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, JSON.stringify({
       worker_name: 'myco-collective-test',
       worker_url: 'https://myco-collective-test.example.workers.dev',
-      admin_token: 'admin-token',
-      mcp_token: 'mcp-token',
       created_at: '2026-04-13T00:00:00.000Z',
       last_upgraded: '2026-04-13T00:00:00.000Z',
       config_version: 2,
       d1_database_id: 'db-uuid-123',
       kv_namespace_id: 'kv-namespace-456',
-      deploy_dir: path.join(tempHomeDir, '.myco-collective', 'deployments', 'myco-collective-test'),
+      deploy_dir: path.join(vaultDir, 'collective', 'worker'),
     }), 'utf-8');
+    fs.writeFileSync(
+      path.join(vaultDir, 'secrets.env'),
+      'MYCO_COLLECTIVE_ADMIN_TOKEN=admin-token\nMYCO_COLLECTIVE_MCP_TOKEN=mcp-token\n',
+      'utf-8',
+    );
   });
 
   afterEach(() => {
-    if (previousHome === undefined) {
-      delete process.env.HOME;
-    } else {
-      process.env.HOME = previousHome;
-    }
-    fs.rmSync(tempHomeDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true });
     vi.clearAllMocks();
     vi.resetModules();
-    vi.doUnmock('@myco-deploy/index.js');
   });
 
   it('preserves local retry state when remote teardown fails', async () => {
@@ -67,17 +63,9 @@ describe('collectiveDestroy', () => {
       () => '',
     );
 
-    vi.doMock('@myco-deploy/index.js', async () => {
-      const actual = await vi.importActual<typeof import('@myco-deploy/index.js')>('@myco-deploy/index.js');
-      return {
-        ...actual,
-        resolveHomeConfigPath: (configDir: string, fileName: string) => path.join(tempHomeDir, configDir, fileName),
-      };
-    });
-
     const { collectiveDestroy } = await import('../../packages/myco-collective/src/cli.js');
-    await expect(collectiveDestroy()).rejects.toThrow('Local state preserved for retry');
-    expect(fs.existsSync(path.join(tempHomeDir, '.myco-collective', 'config.json'))).toBe(true);
+    await expect(collectiveDestroy(vaultDir)).rejects.toThrow('Local state preserved for retry');
+    expect(fs.existsSync(path.join(vaultDir, 'collective', 'config.json'))).toBe(true);
   });
 
   it('uses wrangler-compatible destroy arguments for D1 and KV cleanup', async () => {
@@ -87,16 +75,8 @@ describe('collectiveDestroy', () => {
       () => '',
     );
 
-    vi.doMock('@myco-deploy/index.js', async () => {
-      const actual = await vi.importActual<typeof import('@myco-deploy/index.js')>('@myco-deploy/index.js');
-      return {
-        ...actual,
-        resolveHomeConfigPath: (configDir: string, fileName: string) => path.join(tempHomeDir, configDir, fileName),
-      };
-    });
-
     const { collectiveDestroy } = await import('../../packages/myco-collective/src/cli.js');
-    await collectiveDestroy();
+    await collectiveDestroy(vaultDir);
 
     expect(execCalls.map((call) => call.args)).toContainEqual(['delete', 'myco-collective-test']);
     expect(execCalls.map((call) => call.args)).toContainEqual(['d1', 'delete', 'myco-collective-test', '--skip-confirmation']);
@@ -108,6 +88,6 @@ describe('collectiveDestroy', () => {
       'kv-namespace-456',
       '--skip-confirmation',
     ]);
-    expect(fs.existsSync(path.join(tempHomeDir, '.myco-collective', 'config.json'))).toBe(false);
+    expect(fs.existsSync(path.join(vaultDir, 'collective', 'config.json'))).toBe(false);
   });
 });

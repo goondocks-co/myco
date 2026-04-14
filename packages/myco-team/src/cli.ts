@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CONFIG_FILENAME, loadConfig, updateTeamConfig } from '@myco/config/loader.js';
 import { writeSecret, readSecrets } from '@myco/config/secrets.js';
-import { WRANGLER_COMMAND_TIMEOUT_MS, TEAM_API_KEY_SECRET } from '@myco/constants.js';
+import { WRANGLER_COMMAND_TIMEOUT_MS, TEAM_API_KEY_SECRET, TEAM_MCP_TOKEN_SECRET } from '@myco/constants.js';
 import { SCHEMA_VERSION } from '@myco/db/schema.js';
 import {
   extractJsonArray,
@@ -22,10 +22,13 @@ import {
   parseWorkerUrl,
   readJsonConfig,
   resolveHomeConfigPath,
+  resolveVaultConfigPath,
   runWrangler,
   stageDeploymentDir,
   writeJsonConfig,
 } from '@myco-deploy/index.js';
+
+declare const __MYCO_TEAM_VERSION__: string;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -50,10 +53,12 @@ const PROJECT_HASH_LENGTH = 8;
 /** Source directory for worker files (relative to package root). */
 const WORKER_SOURCE_DIR = 'worker';
 
-/** Deployment directory name within the vault. */
-const TEAM_WORKER_DIR = '.team-worker';
-const TEAM_CONFIG_DIR = '.myco-team';
+/** Team sync state directory within the vault. */
+const TEAM_STATE_DIR = 'team';
+const TEAM_DEPLOY_DIR = 'worker';
 const TEAM_CONFIG_FILE = 'config.json';
+const LEGACY_TEAM_CONFIG_DIR = '.myco-team';
+const LEGACY_TEAM_DEPLOY_DIR = '.team-worker';
 const TEAM_CONFIG_VERSION = 1;
 const TEAM_MCP_ROTATION_RETRY_ATTEMPTS = 10;
 const TEAM_MCP_ROTATION_RETRY_DELAY_MS = 1500;
@@ -106,7 +111,11 @@ function resolvePackageRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 }
 
-function getTeamPackageVersion(): string {
+export function getTeamPackageVersion(): string {
+  if (typeof __MYCO_TEAM_VERSION__ !== 'undefined') {
+    return __MYCO_TEAM_VERSION__;
+  }
+
   const packageRoot = resolvePackageRoot();
   const candidatePaths = [
     path.join(packageRoot, 'package.json'),
@@ -129,32 +138,78 @@ function getMycoSchemaVersion(): string {
 export interface TeamLocalConfig {
   worker_name: string;
   worker_url: string;
-  api_key: string;
-  mcp_token: string | null;
   package_version: string;
-  vault_dir?: string;
   created_at: string;
   last_upgraded: string;
   config_version: number;
 }
 
-function resolveLocalConfigPath(): string {
-  return resolveHomeConfigPath(TEAM_CONFIG_DIR, TEAM_CONFIG_FILE);
+interface LegacyTeamLocalConfig extends TeamLocalConfig {
+  api_key?: string;
+  mcp_token?: string | null;
+  vault_dir?: string;
 }
 
-function readLocalConfig(): TeamLocalConfig | null {
-  return readJsonConfig<TeamLocalConfig>(resolveLocalConfigPath());
+function resolveLocalConfigPath(vaultDir: string): string {
+  return resolveVaultConfigPath(vaultDir, TEAM_STATE_DIR, TEAM_CONFIG_FILE);
 }
 
-function writeLocalConfig(config: TeamLocalConfig): void {
-  writeJsonConfig(resolveLocalConfigPath(), config);
+function resolveLegacyLocalConfigPath(): string {
+  return resolveHomeConfigPath(LEGACY_TEAM_CONFIG_DIR, TEAM_CONFIG_FILE);
 }
 
-function requireLocalConfig(): TeamLocalConfig {
-  const config = readLocalConfig();
+function resolveDeployDir(vaultDir: string): string {
+  return path.join(vaultDir, TEAM_STATE_DIR, TEAM_DEPLOY_DIR);
+}
+
+function resolveLegacyDeployDir(vaultDir: string): string {
+  return path.join(vaultDir, LEGACY_TEAM_DEPLOY_DIR);
+}
+
+function writeLocalConfig(vaultDir: string, config: TeamLocalConfig): void {
+  writeJsonConfig(resolveLocalConfigPath(vaultDir), config);
+}
+
+function migrateLegacyDeployDir(vaultDir: string): void {
+  const legacyDeployDir = resolveLegacyDeployDir(vaultDir);
+  const nextDeployDir = resolveDeployDir(vaultDir);
+  if (!fs.existsSync(legacyDeployDir) || fs.existsSync(nextDeployDir)) return;
+
+  fs.mkdirSync(path.dirname(nextDeployDir), { recursive: true });
+  fs.renameSync(legacyDeployDir, nextDeployDir);
+}
+
+function readLocalConfig(vaultDir: string): TeamLocalConfig | null {
+  const config = readJsonConfig<TeamLocalConfig>(resolveLocalConfigPath(vaultDir));
+  if (config) {
+    migrateLegacyDeployDir(vaultDir);
+    return config;
+  }
+
+  const legacyConfig = readJsonConfig<LegacyTeamLocalConfig>(resolveLegacyLocalConfigPath());
+  if (!legacyConfig) return null;
+  if (legacyConfig.vault_dir && legacyConfig.vault_dir !== vaultDir) return null;
+
+  const migrated: TeamLocalConfig = {
+    worker_name: legacyConfig.worker_name,
+    worker_url: legacyConfig.worker_url,
+    package_version: legacyConfig.package_version,
+    created_at: legacyConfig.created_at,
+    last_upgraded: legacyConfig.last_upgraded,
+    config_version: legacyConfig.config_version ?? TEAM_CONFIG_VERSION,
+  };
+  writeLocalConfig(vaultDir, migrated);
+  if (legacyConfig.api_key) writeSecret(vaultDir, TEAM_API_KEY_SECRET, legacyConfig.api_key);
+  if (legacyConfig.mcp_token) writeSecret(vaultDir, TEAM_MCP_TOKEN_SECRET, legacyConfig.mcp_token);
+  migrateLegacyDeployDir(vaultDir);
+  return migrated;
+}
+
+function requireLocalConfig(vaultDir: string): TeamLocalConfig {
+  const config = readLocalConfig(vaultDir);
   if (config) return config;
 
-  console.error(`No local myco-team config found at ${resolveLocalConfigPath()}`);
+  console.error(`No local myco-team config found at ${resolveLocalConfigPath(vaultDir)}`);
   process.exit(1);
 }
 
@@ -184,39 +239,6 @@ async function rotateMcpTokenWithRetry(workerUrl: string, apiKey: string): Promi
   throw lastError ?? new Error('MCP token rotation failed');
 }
 
-function resolveVaultDirForConfig(config: TeamLocalConfig): string | null {
-  const configuredVaultDir = config.vault_dir?.trim();
-  if (configuredVaultDir && fs.existsSync(path.join(configuredVaultDir, CONFIG_FILENAME))) {
-    return configuredVaultDir;
-  }
-
-  let currentDir = process.cwd();
-  while (true) {
-    const candidateDirs = path.basename(currentDir) === '.myco'
-      ? [currentDir]
-      : [path.join(currentDir, '.myco')];
-
-    for (const candidateDir of candidateDirs) {
-      const configPath = path.join(candidateDir, CONFIG_FILENAME);
-      if (!fs.existsSync(configPath)) continue;
-      try {
-        const candidateConfig = loadConfig(candidateDir);
-        if (candidateConfig.team.worker_url === config.worker_url) {
-          return candidateDir;
-        }
-      } catch {
-        // Ignore unrelated or invalid config candidates while walking upward.
-      }
-    }
-
-    const parentDir = path.dirname(currentDir);
-    if (parentDir === currentDir) break;
-    currentDir = parentDir;
-  }
-
-  return null;
-}
-
 /** Run a wrangler command and return stdout. Throws on failure, surfacing stderr. */
 function wrangler(args: string[], options?: { cwd?: string }): string {
   return runWrangler(args, { cwd: options?.cwd, timeoutMs: WRANGLER_COMMAND_TIMEOUT_MS });
@@ -238,7 +260,7 @@ function locateWorkerSource(): string {
  */
 function prepareDeployDir(vaultDir: string, d1Id: string, kvId: string): string {
   const srcDir = locateWorkerSource();
-  const deployDir = path.join(vaultDir, TEAM_WORKER_DIR);
+  const deployDir = resolveDeployDir(vaultDir);
   const name = resourceName(vaultDir);
   return stageDeploymentDir({
     sourceDir: srcDir,
@@ -450,16 +472,13 @@ export async function teamInit(vaultDir: string): Promise<void> {
   updateTeamConfig(vaultDir, {
     enabled: true,
     worker_url: workerUrl,
-    deployed_worker_version: getTeamPackageVersion(),
   });
   writeSecret(vaultDir, TEAM_API_KEY_SECRET, apiKey);
-  writeLocalConfig({
+  if (mcpToken) writeSecret(vaultDir, TEAM_MCP_TOKEN_SECRET, mcpToken);
+  writeLocalConfig(vaultDir, {
     worker_name: name,
     worker_url: workerUrl,
-    api_key: apiKey,
-    mcp_token: mcpToken,
     package_version: getTeamPackageVersion(),
-    vault_dir: vaultDir,
     created_at: new Date().toISOString(),
     last_upgraded: new Date().toISOString(),
     config_version: TEAM_CONFIG_VERSION,
@@ -495,7 +514,8 @@ export function upgradeWorker(vaultDir: string): UpgradeResult {
     return { success: false, error: 'No team sync configured. Run: myco team init' };
   }
 
-  const deployDir = path.join(vaultDir, TEAM_WORKER_DIR);
+  migrateLegacyDeployDir(vaultDir);
+  const deployDir = resolveDeployDir(vaultDir);
   const tomlPath = path.join(deployDir, 'wrangler.toml');
 
   if (!fs.existsSync(tomlPath)) {
@@ -573,16 +593,14 @@ export function upgradeWorker(vaultDir: string): UpgradeResult {
 
     updateTeamConfig(vaultDir, {
       worker_url: workerUrl,
-      deployed_worker_version: version,
     });
-    const localConfig = readLocalConfig();
+    const localConfig = readLocalConfig(vaultDir);
     if (localConfig) {
-      writeLocalConfig({
+      writeLocalConfig(vaultDir, {
         ...localConfig,
         worker_name: workerName,
         worker_url: workerUrl,
         package_version: version,
-        vault_dir: vaultDir,
         last_upgraded: new Date().toISOString(),
       });
     }
@@ -609,56 +627,51 @@ export async function teamUpgrade(vaultDir: string): Promise<void> {
   console.log('\nUpgrade complete.');
 }
 
-export async function teamStatus(): Promise<void> {
-  const config = requireLocalConfig();
+export async function teamStatus(vaultDir: string): Promise<void> {
+  const config = requireLocalConfig(vaultDir);
+  const secrets = readSecrets(vaultDir);
 
   console.log(`Worker:      ${config.worker_name}`);
   console.log(`URL:         ${config.worker_url}`);
-  console.log(`API Key:     ${maskSecret(config.api_key)}`);
-  console.log(`MCP Token:   ${maskSecret(config.mcp_token)}`);
+  console.log(`API Key:     ${maskSecret(secrets[TEAM_API_KEY_SECRET] ?? null)}`);
+  console.log(`MCP Token:   ${maskSecret(secrets[TEAM_MCP_TOKEN_SECRET] ?? null)}`);
   console.log(`Package v:   ${config.package_version}`);
   console.log(`Created:     ${config.created_at}`);
   console.log(`Upgraded:    ${config.last_upgraded}`);
   console.log(`Config v:    ${config.config_version}`);
 }
 
-export async function teamRotateTokens(which: 'api' | 'mcp' | 'all' = 'all'): Promise<void> {
-  const config = requireLocalConfig();
+export async function teamRotateTokens(vaultDir: string, which: 'api' | 'mcp' | 'all' = 'all'): Promise<void> {
+  const config = requireLocalConfig(vaultDir);
+  const secrets = readSecrets(vaultDir);
+  let currentApiKey = secrets[TEAM_API_KEY_SECRET] ?? '';
+  let currentMcpToken = secrets[TEAM_MCP_TOKEN_SECRET] ?? null;
 
   let nextConfig = { ...config };
 
   if (which === 'api' || which === 'all') {
-    const vaultDir = resolveVaultDirForConfig(config);
-    if (!vaultDir) {
-      throw new Error(
-        'Cannot resolve the project vault for API key rotation. Run this command from the project root or update ~/.myco-team/config.json with vault_dir first.',
-      );
-    }
     const apiKey = crypto.randomBytes(API_KEY_BYTES).toString('hex');
     runWrangler(['secret', 'put', TEAM_API_KEY_SECRET, '--name', config.worker_name], {
-      cwd: path.join(resolvePackageRoot(), WORKER_SOURCE_DIR),
+      cwd: resolveDeployDir(vaultDir),
       input: apiKey,
       timeoutMs: WRANGLER_COMMAND_TIMEOUT_MS,
     });
     writeSecret(vaultDir, TEAM_API_KEY_SECRET, apiKey);
+    currentApiKey = apiKey;
     nextConfig = {
       ...nextConfig,
-      api_key: apiKey,
-      vault_dir: vaultDir,
       package_version: getTeamPackageVersion(),
       last_upgraded: new Date().toISOString(),
     };
-    writeLocalConfig(nextConfig);
+    writeLocalConfig(vaultDir, nextConfig);
   }
 
   if (which === 'mcp' || which === 'all') {
     try {
-      nextConfig = {
-        ...nextConfig,
-        mcp_token: await rotateMcpTokenWithRetry(config.worker_url, nextConfig.api_key),
-      };
+      currentMcpToken = await rotateMcpTokenWithRetry(config.worker_url, currentApiKey);
+      if (currentMcpToken) writeSecret(vaultDir, TEAM_MCP_TOKEN_SECRET, currentMcpToken);
     } catch (error) {
-      writeLocalConfig({
+      writeLocalConfig(vaultDir, {
         ...nextConfig,
         last_upgraded: new Date().toISOString(),
       });
@@ -669,19 +682,19 @@ export async function teamRotateTokens(which: 'api' | 'mcp' | 'all' = 'all'): Pr
   }
 
   nextConfig.last_upgraded = new Date().toISOString();
-  writeLocalConfig(nextConfig);
+  writeLocalConfig(vaultDir, nextConfig);
 
-  console.log(`API Key:   ${maskSecret(nextConfig.api_key)}`);
-  console.log(`MCP Token: ${maskSecret(nextConfig.mcp_token)}`);
+  console.log(`API Key:   ${maskSecret(currentApiKey)}`);
+  console.log(`MCP Token: ${maskSecret(currentMcpToken)}`);
 }
 
-export async function teamDestroy(): Promise<void> {
-  const config = requireLocalConfig();
+export async function teamDestroy(vaultDir: string): Promise<void> {
+  const config = requireLocalConfig(vaultDir);
   const errors: string[] = [];
-  const workerSourceDir = path.join(resolvePackageRoot(), WORKER_SOURCE_DIR);
+  const deployDir = resolveDeployDir(vaultDir);
 
   try {
-    wrangler(['delete', config.worker_name], { cwd: workerSourceDir });
+    wrangler(['delete', config.worker_name], { cwd: deployDir });
   } catch (error) {
     errors.push(`worker delete failed: ${(error as Error).message}`);
   }
@@ -716,6 +729,6 @@ export async function teamDestroy(): Promise<void> {
     throw new Error(`Team destroy incomplete. Local state preserved for retry.\n${errors.join('\n')}`);
   }
 
-  fs.rmSync(resolveLocalConfigPath(), { force: true });
-  console.log(`Destroyed local myco-team config for ${config.worker_name}.`);
+  fs.rmSync(path.join(vaultDir, TEAM_STATE_DIR), { recursive: true, force: true });
+  console.log(`Destroyed local myco-team state for ${config.worker_name}.`);
 }

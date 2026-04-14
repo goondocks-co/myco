@@ -108,7 +108,7 @@ describe('upgradeWorker', () => {
     process.env.HOME = tempHomeDir;
     vaultDir = path.join(testDir, '.myco');
     sourceDir = path.join(testDir, 'package-root', 'worker');
-    deployDir = path.join(vaultDir, '.team-worker');
+    deployDir = path.join(vaultDir, 'team', 'worker');
 
     fs.mkdirSync(vaultDir, { recursive: true });
     fs.mkdirSync(deployDir, { recursive: true });

@@ -3,6 +3,7 @@ import { copyFileSync, cpSync, mkdirSync, readdirSync, existsSync, readFileSync 
 import path from 'node:path';
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'));
+const teamPkg = JSON.parse(readFileSync('../myco-team/package.json', 'utf-8'));
 
 export default defineConfig({
   entry: {
@@ -24,6 +25,7 @@ export default defineConfig({
   clean: true,
   define: {
     '__MYCO_VERSION__': JSON.stringify(pkg.version),
+    '__MYCO_TEAM_VERSION__': JSON.stringify(teamPkg.version),
   },
   // Inject createRequire shim so CJS deps (yaml) can require Node builtins
   banner: {
