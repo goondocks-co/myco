@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { handleGetConfig, handlePutConfig } from '@myco/daemon/api/config';
+import { createPlanDirHandlers, handleGetConfig, handlePutConfig } from '@myco/daemon/api/config';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -24,14 +24,50 @@ describe('config API', () => {
   });
 
   it('PUT validates and saves config', async () => {
-    const newConfig = { version: 3, embedding: { provider: 'ollama', model: 'nomic-embed-text' } };
+    const newConfig = {
+      version: 3,
+      embedding: { provider: 'ollama', model: 'nomic-embed-text' },
+      capture: { ignore_plan_dirs_in_git: true },
+    };
     const result = await handlePutConfig(vaultDir, newConfig);
     expect(result.status).toBeUndefined(); // 200 default
+    const saved = YAML.parse(fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8')) as { capture?: { ignore_plan_dirs_in_git?: boolean } };
+    expect(saved.capture?.ignore_plan_dirs_in_git).toBe(true);
   });
 
   it('PUT returns 400 for invalid config', async () => {
     const invalid = { version: 3, embedding: { provider: 'invalid-provider' } };
     const result = await handlePutConfig(vaultDir, invalid);
     expect(result.status).toBe(400);
+  });
+
+  it('plan dir handlers persist the gitignore toggle and run reconciliation', async () => {
+    let reconciled = false;
+    const handlers = createPlanDirHandlers({
+      vaultDir,
+      symbiontPlanDirsByAgent: {},
+      symbiontPlanDirs: [],
+      planWatchConfig: { watchDirs: [], projectRoot: path.dirname(vaultDir) },
+      setPlanWatchConfig: () => {},
+      reconcileProjectFiles: () => { reconciled = true; },
+    });
+
+    const result = await handlers.handleUpdatePlanDirs({ body: {
+      plan_dirs: ['docs/design'],
+      ignore_plan_dirs_in_git: true,
+    } } as never);
+
+    expect(result.status).toBeUndefined();
+    expect(reconciled).toBe(true);
+    expect(result.body).toMatchObject({
+      custom: ['docs/design'],
+      ignore_plan_dirs_in_git: true,
+    });
+
+    const saved = YAML.parse(fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8')) as {
+      capture?: { plan_dirs?: string[]; ignore_plan_dirs_in_git?: boolean };
+    };
+    expect(saved.capture?.plan_dirs).toEqual(['docs/design']);
+    expect(saved.capture?.ignore_plan_dirs_in_git).toBe(true);
   });
 });
