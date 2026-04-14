@@ -246,7 +246,17 @@ function cleanupMigratedProjectState(vaultDir: string): void {
 }
 
 function ensureUiBuild(): void {
-  fs.rmSync(uiBuildDir(), { recursive: true, force: true });
+  const indexPath = path.join(uiBuildDir(), 'index.html');
+  if (fs.existsSync(indexPath)) return;
+
+  const uiSourceDir = path.join(packageRoot(), 'ui');
+  if (!fs.existsSync(uiSourceDir)) {
+    throw new Error(
+      `Collective UI build output is missing at ${indexPath}. ` +
+        `Reinstall @goondocks/myco-collective to restore it.`,
+    );
+  }
+
   execFileSync('npm', ['run', UI_BUILD_SCRIPT], {
     cwd: packageRoot(),
     env: buildCommandEnv(),
@@ -255,7 +265,6 @@ function ensureUiBuild(): void {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
-  const indexPath = path.join(uiBuildDir(), 'index.html');
   if (!fs.existsSync(indexPath)) {
     throw new Error(`Collective UI build output is missing at ${indexPath}`);
   }

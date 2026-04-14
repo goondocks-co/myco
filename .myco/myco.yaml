@@ -7,6 +7,7 @@ daemon:
   port: 21039
   log_level: debug
   log_retention_days: 30
+  stale_session_threshold_ms: 3600000
 capture:
   transcript_paths: []
   plan_dirs:
