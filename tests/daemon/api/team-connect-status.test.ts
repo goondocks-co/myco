@@ -3,6 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+function readPackageVersion(...segments: string[]): string {
+  const filePath = path.join(process.cwd(), ...segments);
+  const packageJson = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as { version: string };
+  return packageJson.version;
+}
+
 describe('createTeamHandlers.handleStatus', () => {
   let tempHomeDir: string;
   let vaultDir: string;
@@ -85,7 +91,7 @@ describe('createTeamHandlers.handleStatus', () => {
       package_version: string;
     };
 
-    expect(body.package_version).toBe('0.18.1');
+    expect(body.package_version).toBe(readPackageVersion('packages', 'myco', 'package.json'));
     expect(body.installed_team_package_version).toBe('0.1.0');
     expect(body.deployed_worker_version).toBe('0.1.0');
     expect(body.worker_update_available).toBe(false);
