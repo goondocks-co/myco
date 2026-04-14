@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 const execHandlers: Array<() => string | Error> = [];
@@ -23,34 +22,39 @@ vi.mock('node:child_process', async () => {
 
 describe('collectiveDestroy', () => {
   let tempDir: string;
-  let vaultDir: string;
+  let originalHome: string | undefined;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-collective-destroy-'));
-    vaultDir = path.join(tempDir, 'project', '.myco');
+    tempDir = fs.mkdtempSync(path.join('/tmp', 'myco-collective-destroy-'));
+    originalHome = process.env.HOME;
+    process.env.MYCO_HOME_OVERRIDE = tempDir;
+    process.env.HOME = tempDir;
     execHandlers.length = 0;
     execCalls.length = 0;
 
-    const configPath = path.join(vaultDir, 'collective', 'config.json');
+    const configPath = path.join(tempDir, '.myco-collective', 'oss', 'config.json');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, JSON.stringify({
-      worker_name: 'myco-collective-test',
-      worker_url: 'https://myco-collective-test.example.workers.dev',
+      worker_name: 'oss',
+      worker_url: 'https://oss.example.workers.dev',
       created_at: '2026-04-13T00:00:00.000Z',
       last_upgraded: '2026-04-13T00:00:00.000Z',
       config_version: 2,
       d1_database_id: 'db-uuid-123',
       kv_namespace_id: 'kv-namespace-456',
-      deploy_dir: path.join(vaultDir, 'collective', 'worker'),
+      deploy_dir: path.join(tempDir, '.myco-collective', 'oss', 'worker'),
+      admin_token: 'admin-token',
+      mcp_token: 'mcp-token',
     }), 'utf-8');
-    fs.writeFileSync(
-      path.join(vaultDir, 'secrets.env'),
-      'MYCO_COLLECTIVE_ADMIN_TOKEN=admin-token\nMYCO_COLLECTIVE_MCP_TOKEN=mcp-token\n',
-      'utf-8',
-    );
   });
 
   afterEach(() => {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    delete process.env.MYCO_HOME_OVERRIDE;
     fs.rmSync(tempDir, { recursive: true, force: true });
     vi.clearAllMocks();
     vi.resetModules();
@@ -64,8 +68,8 @@ describe('collectiveDestroy', () => {
     );
 
     const { collectiveDestroy } = await import('../../packages/myco-collective/src/cli.js');
-    await expect(collectiveDestroy(vaultDir)).rejects.toThrow('Local state preserved for retry');
-    expect(fs.existsSync(path.join(vaultDir, 'collective', 'config.json'))).toBe(true);
+    await expect(collectiveDestroy('oss')).rejects.toThrow('Local state preserved for retry');
+    expect(fs.existsSync(path.join(tempDir, '.myco-collective', 'oss', 'config.json'))).toBe(true);
   });
 
   it('uses wrangler-compatible destroy arguments for D1 and KV cleanup', async () => {
@@ -76,10 +80,10 @@ describe('collectiveDestroy', () => {
     );
 
     const { collectiveDestroy } = await import('../../packages/myco-collective/src/cli.js');
-    await collectiveDestroy(vaultDir);
+    await collectiveDestroy('oss');
 
-    expect(execCalls.map((call) => call.args)).toContainEqual(['delete', 'myco-collective-test']);
-    expect(execCalls.map((call) => call.args)).toContainEqual(['d1', 'delete', 'myco-collective-test', '--skip-confirmation']);
+    expect(execCalls.map((call) => call.args)).toContainEqual(['delete', 'oss']);
+    expect(execCalls.map((call) => call.args)).toContainEqual(['d1', 'delete', 'oss', '--skip-confirmation']);
     expect(execCalls.map((call) => call.args)).toContainEqual([
       'kv',
       'namespace',
@@ -88,6 +92,6 @@ describe('collectiveDestroy', () => {
       'kv-namespace-456',
       '--skip-confirmation',
     ]);
-    expect(fs.existsSync(path.join(vaultDir, 'collective', 'config.json'))).toBe(false);
+    expect(fs.existsSync(path.join(tempDir, '.myco-collective', 'oss', 'config.json'))).toBe(false);
   });
 });

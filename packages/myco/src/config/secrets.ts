@@ -38,6 +38,27 @@ export function writeSecret(vaultDir: string, key: string, value: string): void 
   fs.writeFileSync(secretsPath, content, 'utf-8');
 }
 
+/** Remove one or more secrets from <vault>/secrets.env, preserving remaining entries. */
+export function deleteSecrets(vaultDir: string, keys: string[]): void {
+  const secretsPath = path.join(vaultDir, SECRETS_FILE);
+  if (!fs.existsSync(secretsPath)) return;
+
+  const existing = readSecrets(vaultDir);
+  for (const key of keys) delete existing[key];
+
+  const entries = Object.entries(existing);
+  if (entries.length === 0) {
+    fs.rmSync(secretsPath, { force: true });
+    return;
+  }
+
+  const content = entries
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n') + '\n';
+
+  fs.writeFileSync(secretsPath, content, 'utf-8');
+}
+
 /** Load secrets from <vault>/secrets.env into process.env (without overwriting existing vars). */
 export function loadSecrets(vaultDir: string): void {
   const secrets = readSecrets(vaultDir);

@@ -10,6 +10,8 @@ npm install -g @goondocks/myco-collective
 
 Most Myco users do not need this package. It is for operators who want to connect multiple Team Sync deployments to one Collective and manage them from a shared admin UI.
 
+Collective admin state is stored per deployment under `~/.myco-collective/<name>/`.
+
 ## What you can do
 
 - Install or upgrade a Collective deployment
@@ -21,11 +23,11 @@ Most Myco users do not need this package. It is for operators who want to connec
 ## Common commands
 
 ```bash
-myco-collective install
-myco-collective status
-myco-collective add-project <name> <worker_url> <api_key>
-myco-collective rotate-tokens admin
-myco-collective destroy
+myco-collective install oss
+myco-collective status oss
+myco-collective add-project myco-main https://team.example.workers.dev <api_key> oss
+myco-collective rotate-tokens admin oss
+myco-collective destroy oss
 ```
 
 ## Upgrade
