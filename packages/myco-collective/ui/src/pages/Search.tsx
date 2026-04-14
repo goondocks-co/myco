@@ -1,16 +1,18 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { FormEvent, useMemo, useState } from 'react';
-import { Button } from '../components/ui/button';
+import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { Card } from '../components/ui/card';
 import { Input } from '../components/ui/input';
+import { PageHeader } from '../components/ui/page-header';
+import { SectionHeader } from '../components/ui/section-header';
+import { Button } from '../components/ui/button';
+import { SearchFailureCard } from '../components/search/SearchFailureCard';
+import { SearchInspector } from '../components/search/SearchInspector';
+import { SearchResultCard } from '../components/search/SearchResultCard';
+import { normalizeSearchResult } from '../components/search/model';
 import { fetchProjects, runSearch } from '../lib/api';
-import type { SearchResultRecord } from '../lib/types';
+import { titleCaseFromSnake } from '../lib/format';
 
-function buildResultTitle(result: SearchResultRecord): string {
-  const table = typeof result.table === 'string' ? result.table : 'result';
-  const id = typeof result.id === 'string' ? result.id : 'unidentified';
-  return `${table}:${id}`;
-}
+const SELECT_BASE_CLASS = 'appearance-none h-9 w-full rounded-md border border-[var(--ghost-border)] bg-[var(--surface-container-lowest)] px-3 text-sm text-[var(--on-surface)] outline-none transition-colors focus:border-primary/40';
 
 export default function Search() {
   const projectsQuery = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
@@ -18,6 +20,8 @@ export default function Search() {
   const [project, setProject] = useState('');
   const [limit, setLimit] = useState('10');
   const [message, setMessage] = useState<string | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
 
   const searchMutation = useMutation({
     mutationFn: runSearch,
@@ -27,19 +31,35 @@ export default function Search() {
   });
 
   const groupedResults = useMemo(() => {
-    const groups = new Map<string, SearchResultRecord[]>();
-    for (const result of searchMutation.data?.results ?? []) {
-      const projectName = result.project?.name ?? 'Unknown project';
-      const current = groups.get(projectName) ?? [];
-      current.push(result);
-      groups.set(projectName, current);
+    const groups = new Map<string, ReturnType<typeof normalizeSearchResult>[]>();
+    for (const [index, result] of (searchMutation.data?.results ?? []).entries()) {
+      const normalized = normalizeSearchResult(result, index);
+      const current = groups.get(normalized.projectName) ?? [];
+      current.push(normalized);
+      groups.set(normalized.projectName, current);
     }
     return Array.from(groups.entries());
   }, [searchMutation.data]);
 
+  const flatResults = useMemo(() => groupedResults.flatMap(([, results]) => results), [groupedResults]);
+  const selectedResult = flatResults.find((result) => result.key === selectedKey) ?? null;
+
+  useEffect(() => {
+    if (flatResults.length === 0) {
+      setSelectedKey(null);
+      setMobileInspectorOpen(false);
+      return;
+    }
+
+    if (!selectedKey || !flatResults.some((result) => result.key === selectedKey)) {
+      setSelectedKey(flatResults[0]?.key ?? null);
+    }
+  }, [flatResults, selectedKey]);
+
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setMessage(null);
+    setMobileInspectorOpen(false);
     searchMutation.mutate({
       tool: 'collective_search',
       args: {
@@ -52,78 +72,116 @@ export default function Search() {
 
   return (
     <div className="space-y-6">
-      <Card className="p-6 md:p-8">
-        <p className="font-mono text-[11px] uppercase tracking-[0.32em] text-[#ceab91]">Cross-Project Search</p>
-        <h2 className="mt-3 font-display text-4xl text-[#fff4e8] md:text-5xl">Fan out, attribute, and return partial results cleanly.</h2>
-        <p className="mt-4 max-w-3xl text-base leading-7 text-[#cab3a2]">
-          The Collective is expected to continue returning usable results even when some team workers are slow, missing, or incompatible. This view stays aligned with that contract and keeps project attribution visible on every hit.
-        </p>
-      </Card>
+      <PageHeader
+        eyebrow="Cross-Project Search"
+        title="Search across teams without losing context."
+        subtitle="Federated search stays in one workspace. Results remain grouped by project, and richer detail opens in-place so you can compare before you drill deeper."
+      />
 
       <Card className="p-6">
-        <form className="grid gap-4 lg:grid-cols-[2fr,1fr,120px,auto]" onSubmit={handleSubmit}>
-          <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="search term or question" required />
-          <select
-            value={project}
-            onChange={(event) => setProject(event.target.value)}
-            className="h-11 rounded-2xl border border-[rgba(255,231,208,0.12)] bg-[rgba(255,248,240,0.05)] px-4 text-sm text-[#fff4e8] outline-none"
-          >
-            <option value="">All projects</option>
-            {(projectsQuery.data?.projects ?? []).map((entry) => (
-              <option key={entry.id} value={entry.id}>{entry.name}</option>
-            ))}
-          </select>
-          <Input value={limit} onChange={(event) => setLimit(event.target.value)} placeholder="10" />
-          <Button type="submit" disabled={searchMutation.isPending}>Run search</Button>
+        <form className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(220px,0.8fr)_96px_auto]" onSubmit={handleSubmit}>
+          <div className="space-y-2">
+            <label className="text-xs text-on-surface-variant">Query</label>
+            <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="collective config split" required />
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs text-on-surface-variant">Project filter</label>
+            <select
+              value={project}
+              onChange={(event) => setProject(event.target.value)}
+              className={SELECT_BASE_CLASS}
+            >
+              <option value="">All projects</option>
+              {(projectsQuery.data?.projects ?? []).map((entry) => (
+                <option key={entry.id} value={entry.id}>{entry.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs text-on-surface-variant">Limit</label>
+            <Input value={limit} onChange={(event) => setLimit(event.target.value)} placeholder="10" className="h-9" />
+          </div>
+          <div className="flex items-end">
+            <Button type="submit" className="w-full xl:w-auto" disabled={searchMutation.isPending}>
+              Run search
+            </Button>
+          </div>
         </form>
-        {message ? <p className="mt-3 text-sm text-[#d7c0ae]">{message}</p> : null}
+        {message && <p className="mt-4 text-sm text-tertiary">{message}</p>}
       </Card>
 
-      <div className="space-y-4">
-        {(searchMutation.data?.errors?.length ?? 0) > 0 ? (
-          <Card className="p-6">
-            <h3 className="font-display text-2xl text-[#fff2e5]">Partial failures</h3>
-            <div className="mt-4 space-y-3">
-              {(searchMutation.data?.errors ?? []).map((error) => (
-                <div key={`${error.project.id}-${error.error}`} className="rounded-[20px] border border-[rgba(255,180,160,0.16)] bg-[rgba(120,32,16,0.18)] p-4 text-sm text-[#ffd8cd]">
-                  <p className="text-[#fff0e2]">{error.project.name}</p>
-                  <p className="mt-1 break-all">{error.error}{error.status ? ` (status ${error.status})` : ''}</p>
-                </div>
-              ))}
-            </div>
-          </Card>
-        ) : null}
-        {groupedResults.map(([projectName, results]) => (
-          <Card key={projectName} className="p-6">
-            <div className="flex items-center justify-between gap-4">
-              <h3 className="font-display text-3xl text-[#fff2e5]">{projectName}</h3>
-              <span className="rounded-full border border-[rgba(255,231,208,0.10)] px-3 py-1 font-mono text-[11px] uppercase tracking-[0.22em] text-[#d2b29a]">
-                {results.length} hits
-              </span>
-            </div>
-            <div className="mt-5 grid gap-3">
-              {results.map((result) => (
-                <div key={`${projectName}-${buildResultTitle(result)}`} className="rounded-[24px] border border-[rgba(255,231,208,0.10)] bg-[rgba(255,248,240,0.04)] p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <p className="text-lg text-[#fff0e2]">{buildResultTitle(result)}</p>
-                      <p className="font-mono text-xs uppercase tracking-[0.22em] text-[#b79d8a]">
-                        score {Number(result.score ?? 0).toFixed(3)}
-                      </p>
-                    </div>
-                    <span className="rounded-full bg-[rgba(247,179,106,0.12)] px-3 py-1 text-xs text-[#ffd6ad]">
-                      {result.project?.worker_url ?? 'unknown worker'}
-                    </span>
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+        <div className="space-y-4">
+          <SearchFailureCard errors={searchMutation.data?.errors ?? []} />
+
+          {groupedResults.length === 0 ? (
+            <Card className="p-6">
+              <SectionHeader>Search Results</SectionHeader>
+              <div className="mt-3 text-base text-on-surface">
+                {searchMutation.isPending ? 'Searching connected projects…' : 'Run a query to inspect cross-project results.'}
+              </div>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-on-surface-variant">
+                Results stay grouped by project. Selecting one opens a detail inspector without throwing away the current search context.
+              </p>
+            </Card>
+          ) : (
+            groupedResults.map(([projectName, results]) => (
+              <Card key={projectName} className="p-6">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <SectionHeader>{projectName}</SectionHeader>
+                    <h2 className="mt-2 font-serif text-2xl text-on-surface">
+                      {titleCaseFromSnake(projectName)}
+                    </h2>
                   </div>
-                  <pre className="mt-4 overflow-x-auto whitespace-pre-wrap break-words rounded-[22px] bg-[rgba(8,4,3,0.42)] p-4 font-mono text-xs text-[#ffe9d0]">
-                    {JSON.stringify(result, null, 2)}
-                  </pre>
+                  <div className="text-xs text-on-surface-variant">{results.length} result{results.length === 1 ? '' : 's'}</div>
                 </div>
-              ))}
-            </div>
-          </Card>
-        ))}
+
+                <div className="mt-5 overflow-hidden rounded-md border border-[var(--ghost-border)] bg-surface-container-low">
+                  {results.map((result) => (
+                    <SearchResultCard
+                      key={result.key}
+                      result={result}
+                      selected={result.key === selectedKey}
+                      onSelect={() => {
+                        setSelectedKey(result.key);
+                        setMobileInspectorOpen(true);
+                      }}
+                    />
+                  ))}
+                </div>
+              </Card>
+            ))
+          )}
+        </div>
+
+        <div className="hidden xl:block">
+          {selectedResult ? (
+            <SearchInspector result={selectedResult} onClose={() => setSelectedKey(null)} />
+          ) : (
+            <Card className="sticky top-7 p-5">
+              <SectionHeader>Result Detail</SectionHeader>
+              <h3 className="mt-2 font-serif text-xl text-on-surface">Select a result</h3>
+              <p className="mt-4 text-sm leading-6 text-on-surface-variant">
+                Use the inspector to compare hits across projects, inspect metadata, and open raw record details only when needed.
+              </p>
+            </Card>
+          )}
+        </div>
       </div>
+
+      {selectedResult && mobileInspectorOpen && (
+        <>
+          <div className="fixed inset-0 z-40 bg-black/55 backdrop-blur-sm xl:hidden" onClick={() => setMobileInspectorOpen(false)} />
+          <div className="fixed inset-x-0 bottom-0 top-16 z-50 overflow-hidden rounded-t-3xl border border-[var(--ghost-border)] xl:hidden">
+            <SearchInspector
+              result={selectedResult}
+              onClose={() => setMobileInspectorOpen(false)}
+              mobile
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 }

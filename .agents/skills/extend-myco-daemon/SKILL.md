@@ -37,7 +37,7 @@ The Myco daemon is a long-running Node.js process that hosts MCP tools, backgrou
 - PowerManager: `src/daemon/power-manager.ts`
 - MCP server: `src/mcp/server.ts`; individual tools: `src/mcp/tools/`
 - Notification registry and types: `src/notifications/`
-- Auto-update logic: `src/daemon/updater.ts`
+- Auto-update logic: `src/daemon/update-checker.ts`, `src/daemon/update-installer.ts`, `src/api/update.ts`
 
 ---
 
@@ -51,12 +51,12 @@ Use when you need background work on a schedule — interval polling, outbox dra
 # In .myco/tasks/<task-name>.yaml or equivalent task config:
 schedule:
   intervalSeconds: 60          # minimum interval between runs
-  runIn: ["active", "idle"]    # power states that permit this job
+  runIn: [\"active\", \"idle\"]    # power states that permit this job
   preventsDeepSleep: false     # true only if job MUST flush before deep sleep
 ```
 
 - **`intervalSeconds`**: PowerManager may delay if the daemon is mid-transition.
-- **`runIn`**: Valid states are `"active"`, `"idle"`, `"sleep"`. Omit `"deep_sleep"` unless absolutely necessary.
+- **`runIn`**: Valid states are `\"active\"`, `\"idle\"`, `\"sleep\"`. Omit `\"deep_sleep\"` unless absolutely necessary.
 - **`preventsDeepSleep`**: Set `true` only for outbox-flush or sync-critical jobs; it delays deep sleep until the current run finishes.
 
 ### Step 2 — Register the job callback
@@ -277,21 +277,27 @@ Use when working on version checking, release channel management, update state c
 
 ### How auto-update works
 
-1. **Version check**: The updater polls npm for the latest version matching the configured release channel (`stable` or `beta`).
+1. **Multi-package version check**: The updater detects all installed `@goondocks/*` packages in the npm global prefix, then polls npm for the latest version of each matching the configured release channel (`stable` or `beta`).
 2. **State caching**: The result is cached in memory (and optionally on disk) to avoid registry hammering on each daemon wake.
-3. **User notification**: When a newer version is available, a notification is emitted via the notification domain.
-4. **Detached restart**: If the user approves (or auto-update is enabled), a detached child process installs the new version and restarts the daemon.
+3. **User notification**: When newer versions are available, a notification is emitted via the notification domain.
+4. **Detached restart**: If the user approves (or auto-update is enabled), a detached child process installs the new versions and restarts the daemon.
 
-### Working with the updater (`src/daemon/updater.ts`)
+### Working with the updater
+
+The updater is split into two modules: `src/daemon/update-checker.ts` (detecting installed packages and polling npm) and `src/daemon/update-installer.ts` (applying updates).
 
 ```typescript
 // Check for updates (returns cached result if still fresh):
-const updateInfo = await checkForUpdate(currentVersion, channel);
-// Returns: { available: boolean, latestVersion: string, channel: 'stable' | 'beta' }
+// Pass the array of installed package names (e.g., ['@goondocks/myco', '@goondocks/myco-team'])
+const updateInfo = await checkPackages(installedPackages, channel);
+// Returns: { '@goondocks/myco': '0.19.0', '@goondocks/myco-team': '0.1.1' } 
+// (only packages with newer versions available)
 
-// Apply update (triggers detached restart):
-await applyUpdate(updateInfo.latestVersion);
+// Apply updates (triggers detached restart):
+await installUpdates(updateInfo);
 ```
+
+The return value from `checkPackages` is a map of `{ packageName: newVersion }` — only packages with newer versions are included. Empty object `{}` means all installed packages are up-to-date.
 
 ### Null guards on cold cache reads
 
@@ -304,7 +310,8 @@ if (cached === null) {
   scheduleUpdateCheck();
   return;
 }
-if (cached.available) {
+if (Object.keys(cached).length > 0) {
+  // At least one package has a newer version available
   // Surface update notification
 }
 ```
@@ -316,10 +323,12 @@ Failing to null-guard causes `TypeError: Cannot read properties of null` on fres
 ```typescript
 // stable → npm 'latest' tag; beta → npm 'beta' tag
 const distTag = channel === 'beta' ? 'beta' : 'latest';
-const latestVersion = await fetchNpmVersion('myco', distTag);
+// checkPackages internally maps over all detected @goondocks/* packages
+// and fetches latestVersion for each using the distTag
+const updateInfo = await checkPackages(installedPackages, channel);
 ```
 
-**Beta channel can downgrade**: If a user is on `1.2.0-beta.3` and switches to `stable`, the `latest` tag may be `1.1.5`. Compare semver and warn before applying a downgrade.
+**Beta channel can downgrade**: If a user is on `@goondocks/myco@1.2.0-beta.3` and switches to `stable`, the npm `latest` tag for that package may be `1.1.5`. Compare semver per package and warn before applying a downgrade.
 
 ### Race condition on restart
 
@@ -340,11 +349,11 @@ async function triggerRestart() {
 
 ### Operations page surface
 
-The Operations page surfaces: current daemon version, update availability (from cached state), release channel selector, "Check for updates" button, and "Apply update" button. The page polls `/daemon/update-status` — ensure that endpoint returns the latest cached state after a check completes.
+The Operations page surfaces: current installed versions (from `update-checker.ts`), available updates (from cached state), release channel selector, "Check for updates" button, and "Apply update" button. The page polls `/daemon/update-status` — ensure that endpoint returns the latest cached state after a check completes. Files involved: `src/ui/UpdateCard.tsx`, `src/ui/hooks/use-update-status.ts`, `src/api/update.ts`.
 
 ### Gotchas
 
-**Detached restart loses in-flight work**: Any in-flight PowerManager jobs, pending notifications, or open MCP connections are dropped on restart. If your feature has critical in-flight state, flush it before calling `applyUpdate`.
+**Detached restart loses in-flight work**: Any in-flight PowerManager jobs, pending notifications, or open MCP connections are dropped on restart. If your feature has critical in-flight state, flush it before calling `installUpdates`.
 
 **Null cache on cold start**: Always null-guard. The cache is populated on first check, not on daemon init.
 
