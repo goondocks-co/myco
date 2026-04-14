@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { HelpCircle, ExternalLink } from 'lucide-react';
 import { PageHeader } from '../components/ui/page-header';
 import type { Tab } from '../components/ui/tab-switcher';
@@ -132,6 +132,7 @@ function SkillsHelpDialog() {
 /* ---------- Component ---------- */
 
 export default function Skills() {
+  const location = useLocation();
   const initial = readUrlState();
   const [tab, setTab] = useState<SkillsTab>(initial.tab);
   const [selectedSkill, setSelectedSkill] = useState<string | undefined>(initial.skill);
@@ -145,6 +146,12 @@ export default function Skills() {
   useEffect(() => {
     writeUrlState(tab, selectedSkill);
   }, [tab, selectedSkill]);
+
+  useEffect(() => {
+    const state = readUrlState();
+    setTab(state.tab);
+    setSelectedSkill(state.skill);
+  }, [location.search, location.key]);
 
   const switchTab = useCallback((id: string) => {
     const t = id as SkillsTab;

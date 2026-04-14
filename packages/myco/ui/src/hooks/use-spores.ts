@@ -86,6 +86,11 @@ export interface GraphResponse {
   edges: GraphEdge[];
 }
 
+export interface GraphSeedResponse {
+  seeds: GraphNode[];
+  recommended_id: string | null;
+}
+
 export interface DigestTier {
   tier: number;
   content: string;
@@ -145,12 +150,12 @@ export function useEntities(options?: { mentioned_in?: string; note_type?: strin
   });
 }
 
-export function useGraph(entityId: string | undefined, depth: number = 1) {
+export function useGraph(entityId: string | undefined, depth: number = 1, enabled: boolean = true) {
   return useQuery<GraphResponse>({
     queryKey: ['graph', entityId, depth],
     queryFn: ({ signal }) =>
       fetchJson<GraphResponse>(`/graph/${entityId}?depth=${depth}`, { signal }),
-    enabled: entityId !== undefined,
+    enabled: enabled && entityId !== undefined,
     staleTime: GRAPH_STALE_TIME,
   });
 }
@@ -160,10 +165,19 @@ export interface FullGraphResponse {
   edges: GraphEdge[];
 }
 
-export function useFullGraph() {
+export function useFullGraph(enabled: boolean = true) {
   return useQuery<FullGraphResponse>({
     queryKey: ['full-graph'],
     queryFn: ({ signal }) => fetchJson<FullGraphResponse>('/graph', { signal }),
+    enabled,
+    staleTime: GRAPH_STALE_TIME,
+  });
+}
+
+export function useGraphSeeds() {
+  return useQuery<GraphSeedResponse>({
+    queryKey: ['graph-seeds'],
+    queryFn: ({ signal }) => fetchJson<GraphSeedResponse>('/graph/seeds', { signal }),
     staleTime: GRAPH_STALE_TIME,
   });
 }

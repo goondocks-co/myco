@@ -38,12 +38,14 @@ export function notify(
     const domainConfig = cfg.notifications.domains[payload.domain];
     if (domainConfig && !domainConfig.enabled) return null;
 
-    // Resolve mode: payload > domain config > type registry default > global default
+    // Resolve mode: payload > domain config > global default > type registry default.
+    // The project config is the user's explicit preference; registry defaults are
+    // only a fallback for older configs and unconfigured callers.
     const registeredType = getType(payload.type);
     const mode: NotificationMode = payload.mode
       ?? domainConfig?.mode
-      ?? registeredType?.type.defaultMode
-      ?? cfg.notifications.default_mode;
+      ?? cfg.notifications.default_mode
+      ?? registeredType?.type.defaultMode;
     const level: NotificationLevel = payload.level
       ?? registeredType?.type.defaultLevel
       ?? 'info';

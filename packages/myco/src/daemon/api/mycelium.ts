@@ -1,5 +1,6 @@
 import { listSpores, countSpores, getSpore } from '@myco/db/queries/spores.js';
 import { listEntities, getEntity } from '@myco/db/queries/entities.js';
+import { getSession } from '@myco/db/queries/sessions.js';
 import { listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import { getGraphForNode } from '@myco/db/queries/graph-edges.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -24,6 +25,11 @@ const MAX_GRAPH_DEPTH = 3;
 
 /** Spore node name preview length (first N chars of content). */
 const SPORE_NAME_PREVIEW_CHARS = 60;
+
+/** Seed counts for focused graph startup. */
+const GRAPH_SEED_ENTITY_LIMIT = 4;
+const GRAPH_SEED_SPORE_LIMIT = 4;
+const GRAPH_SEED_SESSION_LIMIT = 4;
 
 /** Edge types to exclude from graph visualization (too granular). */
 const EXCLUDED_GRAPH_EDGE_TYPES = new Set(['HAS_BATCH', 'EXTRACTED_FROM']);
@@ -83,19 +89,114 @@ export async function handleListEntities(req: RouteRequest): Promise<RouteRespon
   return { body: { entities } };
 }
 
+export async function handleGetGraphSeeds(_req: RouteRequest): Promise<RouteResponse> {
+  const db = getDatabase();
+
+  const sporeRows = db.prepare(
+    `SELECT id, observation_type, status, content, created_at
+     FROM spores
+     WHERE agent_id = ? AND status = 'active'
+     ORDER BY created_at DESC
+     LIMIT ?`,
+  ).all(DEFAULT_AGENT_ID, GRAPH_SEED_SPORE_LIMIT) as Array<Record<string, unknown>>;
+
+  const sessionRows = db.prepare(
+    `SELECT id, title, summary, status, started_at as created_at
+     FROM sessions
+     WHERE status != 'active'
+     ORDER BY started_at DESC
+     LIMIT ?`,
+  ).all(GRAPH_SEED_SESSION_LIMIT) as Array<Record<string, unknown>>;
+
+  const entityRows = db.prepare(
+    `SELECT e.id, e.type, e.name, e.status, e.first_seen as created_at, COUNT(em.entity_id) as mention_count
+     FROM entities e
+     LEFT JOIN entity_mentions em ON em.entity_id = e.id
+     WHERE e.agent_id = ? AND e.status = 'active'
+     GROUP BY e.id
+     ORDER BY mention_count DESC, e.last_seen DESC
+     LIMIT ?`,
+  ).all(DEFAULT_AGENT_ID, GRAPH_SEED_ENTITY_LIMIT) as Array<Record<string, unknown>>;
+
+  const sporeSeeds = sporeRows.map((row) => ({
+      id: row.id as string,
+      name: ((row.content as string) ?? '').slice(0, SPORE_NAME_PREVIEW_CHARS),
+      type: 'spore' as const,
+      status: (row.status as string) ?? undefined,
+      created_at: row.created_at as number | undefined,
+      content: row.content as string | undefined,
+      observation_type: row.observation_type as string | undefined,
+    }));
+  const sessionSeeds = sessionRows.map((row) => ({
+      id: row.id as string,
+      name: (row.title as string) ?? `Session ${(row.id as string).slice(-6)}`,
+      type: 'session' as const,
+      status: (row.status as string) ?? undefined,
+      created_at: row.created_at as number | undefined,
+      content: (row.summary as string) ?? undefined,
+    }));
+  const entitySeeds = entityRows.map((row) => ({
+      id: row.id as string,
+      name: row.name as string,
+      type: row.type as string,
+      status: (row.status as string) ?? undefined,
+      created_at: row.created_at as number | undefined,
+      mention_count: Number(row.mention_count) || 0,
+    }));
+
+  const seeds = [
+    ...entitySeeds,
+    ...sessionSeeds,
+    ...sporeSeeds,
+  ];
+
+  const recommendedId = entitySeeds[0]?.id
+    ?? sessionSeeds[0]?.id
+    ?? sporeSeeds[0]?.id
+    ?? null;
+
+  return {
+    body: {
+      seeds,
+      recommended_id: recommendedId,
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Graph handler
 // ---------------------------------------------------------------------------
 
 export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> {
   const depth = Math.min(Number(req.query.depth) || DEFAULT_GRAPH_DEPTH, MAX_GRAPH_DEPTH);
+  const id = req.params.id;
 
-  // Verify center entity exists
-  const center = getEntity(req.params.id);
-  if (!center) return { status: 404, body: { error: 'not_found' } };
+  // Verify center node exists in any of the primary tables
+  let centerNode: any = null;
+  let centerType: 'entity' | 'spore' | 'session' = 'entity';
+
+  const entity = getEntity(id);
+  if (entity) {
+    centerNode = entity;
+    centerType = 'entity';
+  } else {
+    const spore = getSpore(id);
+    if (spore) {
+      centerNode = spore;
+      centerType = 'spore';
+    } else {
+      const session = getSession(id);
+      if (session) {
+        centerNode = session;
+        centerType = 'session';
+      }
+    }
+  }
+
+  if (!centerNode) return { status: 404, body: { error: 'not_found' } };
 
   // Use graph_edges for BFS traversal
-  const graph = getGraphForNode(req.params.id, 'entity', { depth });
+  const graph = getGraphForNode(id, centerType, { depth });
 
   // Filter out batch-related edges (too granular for visualization)
   const filteredEdges = graph.edges.filter(
@@ -110,20 +211,23 @@ export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> 
   const sessionIds = new Set<string>();
 
   for (const edge of filteredEdges) {
-    for (const [id, type] of [
+    for (const [nodeId, type] of [
       [edge.source_id, edge.source_type],
       [edge.target_id, edge.target_type],
     ] as [string, string][]) {
       switch (type) {
-        case 'entity': entityIds.add(id); break;
-        case 'spore': sporeIds.add(id); break;
-        case 'session': sessionIds.add(id); break;
+        case 'entity': entityIds.add(nodeId); break;
+        case 'spore': sporeIds.add(nodeId); break;
+        case 'session': sessionIds.add(nodeId); break;
         // batch nodes are intentionally excluded
       }
     }
   }
-  // Center entity is always included
-  entityIds.add(center.id);
+  
+  // Center node is always included in the appropriate set
+  if (centerType === 'entity') entityIds.add(id);
+  if (centerType === 'spore') sporeIds.add(id);
+  if (centerType === 'session') sessionIds.add(id);
 
   // --- Batch-fetch entity nodes ---
   const entityIdArray = Array.from(entityIds);
@@ -202,9 +306,6 @@ export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> 
     })),
   ];
 
-  // Identify the center node from the unified array
-  const centerNode = allNodes.find((n) => n.id === center.id);
-
   // Map edges to UI-friendly shape (label + weight instead of type + confidence)
   const uiEdges = filteredEdges.map((e) => ({
     source_id: e.source_id,
@@ -213,10 +314,12 @@ export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> 
     weight: e.confidence,
   }));
 
+  const centerResponseNode = allNodes.find((n) => n.id === id);
+
   return {
     body: {
-      center: centerNode ?? { ...center, mention_count: mentionCounts.get(center.id) ?? 0 },
-      nodes: allNodes.filter((n) => n.id !== center.id),
+      center: centerResponseNode,
+      nodes: allNodes.filter((n) => n.id !== id),
       edges: uiEdges,
       depth,
     },

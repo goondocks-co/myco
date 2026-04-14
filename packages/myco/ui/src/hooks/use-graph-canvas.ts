@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import cytoscape, { type Core, type ElementDefinition, type NodeSingular } from 'cytoscape';
+import { formatGraphLabel } from '../lib/graph-labels';
 
 /* ---------- Graph palette ---------- */
 
@@ -76,6 +77,15 @@ const COSE_GRAVITY = 0.2;
 /** COSE layout: animation duration (ms). */
 const COSE_ANIMATION_DURATION = 600;
 
+/** Focused COSE layout repulsion force. */
+const FOCUS_NODE_REPULSION = 6000;
+
+/** Focused COSE ideal edge length. */
+const FOCUS_IDEAL_EDGE_LENGTH = 150;
+
+/** Focused layout animation duration (ms). */
+const FOCUS_ANIMATION_DURATION = 300;
+
 /** Fit padding (px) used by resetView. */
 const FIT_PADDING = 50;
 
@@ -121,20 +131,23 @@ interface UseGraphCanvasOptions {
   nodes: GraphNode[];
   edges: GraphEdge[];
   onNodeSelect?: (node: GraphNode | null) => void;
+  centerId?: string | null;
 }
 
 /* ---------- Helpers ---------- */
 
 /** Compute node size based on its degree (connection count). */
-function nodeSizeFromDegree(degree: number): number {
+function nodeSizeFromDegree(degree: number, isCenter: boolean): number {
+  if (isCenter) return NODE_SIZE_MAX * 1.2;
   const t = Math.min(degree / NODE_SIZE_DEGREE_CAP, 1);
   return NODE_SIZE_MIN + t * (NODE_SIZE_MAX - NODE_SIZE_MIN);
 }
 
 /** Truncate label for display. */
 function truncateLabel(name: string): string {
-  if (name.length <= NODE_LABEL_MAX_LENGTH) return name;
-  return name.slice(0, NODE_LABEL_MAX_LENGTH - 1) + '\u2026';
+  const formatted = formatGraphLabel(name);
+  if (formatted.length <= NODE_LABEL_MAX_LENGTH) return formatted;
+  return formatted.slice(0, NODE_LABEL_MAX_LENGTH - 1) + '\u2026';
 }
 
 /** Get node color for a given type. */
@@ -144,7 +157,7 @@ function nodeColor(type: string): string {
 
 /* ---------- Hook ---------- */
 
-export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOptions) {
+export function useGraphCanvas({ nodes, edges, onNodeSelect, centerId }: UseGraphCanvasOptions) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const onNodeSelectRef = useRef(onNodeSelect);
@@ -169,15 +182,18 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
     const elements: ElementDefinition[] = [
       ...nodes.map((n) => {
         const typeLabel = NODE_TYPE_LABELS[n.type?.toLowerCase()] ?? NODE_TYPE_LABELS.other;
+        const isCenter = n.id === centerId;
         return {
           data: {
             id: n.id,
             label: `${truncateLabel(n.name)}\n${typeLabel}`,
             fullLabel: n.name,
             type: n.type,
+            isCenter,
             degree: degreeMap.get(n.id) ?? 0,
-            nodeSize: nodeSizeFromDegree(degreeMap.get(n.id) ?? 0),
+            nodeSize: nodeSizeFromDegree(degreeMap.get(n.id) ?? 0, isCenter),
           },
+          classes: isCenter ? 'center' : '',
         };
       }),
       ...edges.map((e, i) => ({
@@ -222,6 +238,18 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
             'border-color': PALETTE.sage,
             'border-opacity': 0,
             'overlay-opacity': 0,
+          },
+        },
+        /* ---- Center node — extra prominent ---- */
+        {
+          selector: 'node.center',
+          style: {
+            'border-width': 2,
+            'border-color': PALETTE.onSurface,
+            'border-opacity': 0.4,
+            'text-outline-color': PALETTE.surface,
+            'text-outline-width': 3,
+            'font-weight': 'bold',
           },
         },
         /* ---- Node hover ---- */
@@ -297,31 +325,59 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
       maxZoom: 3,
     });
 
-    /* Run COSE layout and fit to viewport when done */
-    const layout = cy.layout({
-      name: 'cose',
-      animate: true,
-      animationDuration: COSE_ANIMATION_DURATION,
-      nodeRepulsion: () => COSE_NODE_REPULSION,
-      idealEdgeLength: () => COSE_IDEAL_EDGE_LENGTH,
-      gravity: COSE_GRAVITY,
-      nodeDimensionsIncludeLabels: true,
-      fit: true,
-      padding: FIT_PADDING,
-    });
-    layout.on('layoutstop', () => {
-      // Center on the most-connected node and zoom to show its neighborhood
-      const nodes = cy.nodes();
-      const { ele: mostConnected, value: maxDeg } = nodes.max((ele) => (ele as NodeSingular).degree(false));
-      if (maxDeg > 2 && nodes.length > 20) {
-        cy.animate({
-          center: { eles: mostConnected },
-          zoom: 1.2,
-          duration: 300,
-          easing: 'ease-out',
+    /* Use an organic layout in both modes; focus mode just fits the neighborhood
+       instead of forcing a zoomed center lock. */
+    const layout = centerId
+      ? cy.layout({
+          name: 'cose',
+          animate: true,
+          animationDuration: FOCUS_ANIMATION_DURATION,
+          nodeRepulsion: () => FOCUS_NODE_REPULSION,
+          idealEdgeLength: () => FOCUS_IDEAL_EDGE_LENGTH,
+          gravity: COSE_GRAVITY,
+          nodeDimensionsIncludeLabels: true,
+          fit: true,
+          padding: FIT_PADDING,
+          randomize: false,
+        })
+      : cy.layout({
+          name: 'cose',
+          animate: true,
+          animationDuration: COSE_ANIMATION_DURATION,
+          nodeRepulsion: () => COSE_NODE_REPULSION,
+          idealEdgeLength: () => COSE_IDEAL_EDGE_LENGTH,
+          gravity: COSE_GRAVITY,
+          nodeDimensionsIncludeLabels: true,
+          fit: true,
+          padding: FIT_PADDING,
         });
+    layout.on('layoutstop', () => {
+      const cy = cyRef.current;
+      if (!cy) return;
+
+      const nodes = cy.nodes();
+      const centerNode = cy.$('node.center');
+
+      if (centerNode.length > 0) {
+        const neighborhood = centerNode.closedNeighborhood();
+        cy.fit(neighborhood, FIT_PADDING * 1.5);
+        if (cy.zoom() > 1.05) {
+          cy.zoom(1.05);
+          cy.center(centerNode);
+        }
       } else {
-        cy.fit(undefined, FIT_PADDING);
+        // In global mode, center on the most-connected node or fit all
+        const { ele: mostConnected, value: maxDeg } = nodes.max((ele) => (ele as NodeSingular).degree(false));
+        if (maxDeg > 2 && nodes.length > 20) {
+          cy.animate({
+            center: { eles: mostConnected },
+            zoom: 1.2,
+            duration: 300,
+            easing: 'ease-out',
+          });
+        } else {
+          cy.fit(undefined, FIT_PADDING);
+        }
       }
     });
     layout.run();
@@ -385,7 +441,7 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect }: UseGraphCanvasOpt
       cy.destroy();
       cyRef.current = null;
     };
-  }, [nodes, edges]);
+  }, [nodes, edges, centerId]);
 
   const resetView = useCallback(() => {
     const cy = cyRef.current;

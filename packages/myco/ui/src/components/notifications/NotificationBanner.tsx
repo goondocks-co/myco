@@ -5,7 +5,7 @@ import { cn } from '../../lib/cn';
 import { useNotifications, useUpdateNotification, type Notification, type NotificationLevel } from '../../hooks/use-notifications';
 
 const BANNER_MAX_VISIBLE = 3;
-const BANNER_AUTO_DISMISS_MS = 8_000;
+const BANNER_AUTO_DISMISS_MS = 5_000;
 
 const LEVEL_STYLES: Record<NotificationLevel, string> = {
   info: 'bg-primary/10 border-primary/20 text-primary',
@@ -29,18 +29,17 @@ export function NotificationBanner() {
 
   const banners = (data?.items ?? []).filter((n) => !dismissed.has(n.id));
 
-  // Auto-dismiss non-error banners after timeout
+  // Banner mode is intentionally transient. Even failure banners should clear
+  // quickly so the notification center remains the durable record.
   useEffect(() => {
     const timers: ReturnType<typeof setTimeout>[] = [];
     for (const n of banners) {
-      if (n.level !== 'error') {
-        timers.push(
-          setTimeout(() => {
-            setDismissed((prev) => new Set(prev).add(n.id));
-            updateNotification.mutate({ id: n.id, status: 'read' });
-          }, BANNER_AUTO_DISMISS_MS),
-        );
-      }
+      timers.push(
+        setTimeout(() => {
+          setDismissed((prev) => new Set(prev).add(n.id));
+          updateNotification.mutate({ id: n.id, status: 'read' });
+        }, BANNER_AUTO_DISMISS_MS),
+      );
     }
     return () => timers.forEach(clearTimeout);
   }, [banners.map((n) => n.id).join(',')]); // eslint-disable-line react-hooks/exhaustive-deps

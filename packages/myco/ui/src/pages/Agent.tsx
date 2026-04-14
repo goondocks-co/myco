@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Play } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { PageHeader } from '../components/ui/page-header';
@@ -58,6 +59,7 @@ const TABS: Tab[] = [
 /* ---------- Component ---------- */
 
 export default function Agent() {
+  const location = useLocation();
   const initial = readUrlState();
   const [tab, setTab] = useState<AgentTab>(initial.tab);
   const [selectedRunId, setSelectedRunId] = useState<string | undefined>(initial.runId);
@@ -73,18 +75,14 @@ export default function Agent() {
     writeUrlState(tab, selectedRunId, selectedTaskId);
   }, [tab, selectedRunId, selectedTaskId]);
 
-  // Restore state from URL on browser back/forward
+  // Sync state from URL when navigation updates search params.
   useEffect(() => {
-    function handlePopState() {
-      skipNextPush.current = true;
-      const state = readUrlState();
-      setTab(state.tab);
-      setSelectedRunId(state.runId);
-      setSelectedTaskId(state.taskId);
-    }
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
+    skipNextPush.current = true;
+    const state = readUrlState();
+    setTab(state.tab);
+    setSelectedRunId(state.runId);
+    setSelectedTaskId(state.taskId);
+  }, [location.search, location.key]);
 
   const switchTab = useCallback((id: string) => {
     const t = id as AgentTab;

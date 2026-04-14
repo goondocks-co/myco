@@ -2,8 +2,10 @@ import { useNavigate } from 'react-router-dom';
 import { Surface } from '../ui/surface';
 import { Badge } from '../ui/badge';
 import { SectionHeader } from '../ui/section-header';
+import { MarkdownContent } from '../ui/markdown-content';
+import { formatGraphLabel } from '../../lib/graph-labels';
 
-import { X, ArrowRight, ExternalLink } from 'lucide-react';
+import { X, ArrowRight, ExternalLink, Loader2 } from 'lucide-react';
 import type { GraphNode, GraphEdge } from '../../hooks/use-graph-canvas';
 
 /* ---------- Constants ---------- */
@@ -41,6 +43,7 @@ interface Connection {
   nodeType: string;
   edgeLabel: string;
   direction: 'outgoing' | 'incoming';
+  status?: string;
 }
 
 interface InspectorProps {
@@ -51,8 +54,9 @@ interface InspectorProps {
   markdownPreview?: string;
   connectedSpores?: Array<{ id: string; name: string; type: string }>;
   onClose?: () => void;
-  onNodeSelect?: (node: GraphNode) => void;
+  onNodeSelect?: (node: GraphNode, source?: 'canvas' | 'inspector') => void;
   onNavigateToSpore?: (id: string) => void;
+  isConnectionsLoading?: boolean;
 }
 
 /* ---------- Sub-components ---------- */
@@ -75,7 +79,7 @@ function getNodeRoute(node: GraphNode): string | null {
   return null;
 }
 
-export function Inspector({ node, edges, nodes, metadata, markdownPreview, connectedSpores, onClose, onNodeSelect, onNavigateToSpore }: InspectorProps) {
+export function Inspector({ node, edges, nodes, metadata, markdownPreview, connectedSpores, onClose, onNodeSelect, onNavigateToSpore, isConnectionsLoading }: InspectorProps) {
   const navigate = useNavigate();
   if (!node) return null;
 
@@ -90,15 +94,17 @@ export function Inspector({ node, edges, nodes, metadata, markdownPreview, conne
     if (edge.source_id === node.id) {
       const target = nodeMap.get(edge.target_id);
       if (target) {
-        connections.push({ nodeId: target.id, nodeName: target.name, nodeType: target.type, edgeLabel: edge.label ?? 'connected', direction: 'outgoing' });
+        connections.push({ nodeId: target.id, nodeName: target.name, nodeType: target.type, edgeLabel: edge.label ?? 'connected', direction: 'outgoing', status: target.status });
       }
     } else if (edge.target_id === node.id) {
       const source = nodeMap.get(edge.source_id);
       if (source) {
-        connections.push({ nodeId: source.id, nodeName: source.name, nodeType: source.type, edgeLabel: edge.label ?? 'connected', direction: 'incoming' });
+        connections.push({ nodeId: source.id, nodeName: source.name, nodeType: source.type, edgeLabel: edge.label ?? 'connected', direction: 'incoming', status: source.status });
       }
     }
   }
+
+  connections.sort((a, b) => a.nodeName.localeCompare(b.nodeName));
 
   // Use explicit markdownPreview prop, or fall back to node content (spore/session)
   const previewText = markdownPreview ?? node.content;
@@ -111,7 +117,7 @@ export function Inspector({ node, edges, nodes, metadata, markdownPreview, conne
   const previewLabel = node.type === 'spore' ? 'Observation' : node.type === 'session' ? 'Summary' : 'Notes';
 
   return (
-    <Surface glass className="absolute top-0 right-0 z-20 w-[320px] max-h-full overflow-y-auto flex flex-col shadow-lg border border-outline-variant/15 rounded-md">
+    <Surface glass className="absolute top-3 right-3 bottom-3 z-20 w-[320px] overflow-y-auto flex flex-col shadow-lg border border-outline-variant/15 rounded-md">
       {/* Header */}
       <div className="p-4 pb-3">
         <div className="flex items-start justify-between gap-2">
@@ -123,23 +129,25 @@ export function Inspector({ node, edges, nodes, metadata, markdownPreview, conne
               </Badge>
             </div>
             <h2 className="font-serif text-lg text-on-surface leading-tight break-words">
-              {node.name}
+              {formatGraphLabel(node.name)}
             </h2>
-            {getNodeRoute(node) && (
-              <button
-                onClick={() => {
-                  if (node.type === 'spore' && onNavigateToSpore) {
-                    onNavigateToSpore(node.id);
-                  } else {
-                    navigate(getNodeRoute(node)!);
-                  }
-                }}
-                className="inline-flex items-center gap-1 mt-1.5 font-sans text-xs text-on-surface-variant hover:text-primary transition-colors group cursor-pointer"
-              >
-                <span>View {node.type}</span>
-                <ExternalLink className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
-              </button>
-            )}
+            <div className="flex flex-wrap items-center gap-3 mt-2">
+              {getNodeRoute(node) && (
+                <button
+                  onClick={() => {
+                    if (node.type === 'spore' && onNavigateToSpore) {
+                      onNavigateToSpore(node.id);
+                    } else {
+                      navigate(getNodeRoute(node)!);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-primary transition-colors group cursor-pointer"
+                >
+                  <span>View {node.type}</span>
+                  <ExternalLink className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
+                </button>
+              )}
+            </div>
           </div>
           {onClose && (
             <button
@@ -189,39 +197,58 @@ export function Inspector({ node, edges, nodes, metadata, markdownPreview, conne
             <SectionHeader>{previewLabel}</SectionHeader>
             <Surface
               level="lowest"
-              className="p-3 font-sans text-xs text-on-surface-variant whitespace-pre-wrap leading-relaxed"
+              className="p-3"
             >
-              {truncatedPreview}
+              <MarkdownContent
+                content={truncatedPreview}
+                className="text-xs leading-relaxed text-on-surface-variant"
+              />
             </Surface>
           </div>
         </>
       )}
 
       {/* Connections */}
-      {connections.length > 0 && (
+      {(connections.length > 0 || isConnectionsLoading) && (
         <>
           <div className="h-px bg-surface-container-high/50" />
           <div className="px-4 py-3 space-y-2">
-            <SectionHeader>Connections ({connections.length})</SectionHeader>
+            <div className="flex items-center justify-between gap-2">
+              <SectionHeader>Connections ({connections.length})</SectionHeader>
+              {isConnectionsLoading && (
+                <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-on-surface-variant">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Updating
+                </span>
+              )}
+            </div>
             <div className="space-y-1">
               {connections.map((conn, i) => {
                 const connTypeKey = conn.nodeType.toLowerCase();
                 const connDot = TYPE_DOT_COLOR[connTypeKey] ?? 'bg-outline';
-                const targetNode = nodeMap.get(conn.nodeId);
                 return (
                   <button
                     key={`${conn.nodeId}-${conn.edgeLabel}-${i}`}
-                    className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-surface-container-high/50 transition-colors group"
-                    onClick={() => targetNode && onNodeSelect?.(targetNode)}
+                    className="group w-full rounded-md border border-transparent px-2 py-2 text-left transition-colors hover:border-outline-variant/10 hover:bg-surface-container-high/50"
+                    onClick={() => {
+                      const existingNode = nodeMap.get(conn.nodeId);
+                      onNodeSelect?.(existingNode ?? { id: conn.nodeId, name: conn.nodeName, type: conn.nodeType, status: conn.status }, 'inspector');
+                    }}
                   >
-                    <div className={`h-2 w-2 rounded-full ${connDot} shrink-0`} />
-                    <span className="font-sans text-xs text-on-surface truncate flex-1 group-hover:text-primary transition-colors">
-                      {conn.nodeName}
-                    </span>
-                    <ArrowRight className={`h-3 w-3 shrink-0 ${conn.direction === 'incoming' ? 'rotate-180' : ''} text-on-surface-variant/50`} />
-                    <span className="font-mono text-[9px] text-on-surface-variant/60 shrink-0 max-w-[80px] truncate">
-                      {conn.edgeLabel}
-                    </span>
+                    <div className="flex items-start gap-2">
+                      <div className={`mt-1 h-2 w-2 rounded-full ${connDot} shrink-0`} />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-sans text-xs text-on-surface transition-colors group-hover:text-primary">
+                          {formatGraphLabel(conn.nodeName)}
+                        </div>
+                        <div className="mt-0.5 flex items-center gap-1 text-[9px] uppercase tracking-wider text-on-surface-variant/60">
+                          <span>{conn.nodeType}</span>
+                          <span>•</span>
+                          <span>{conn.edgeLabel}</span>
+                        </div>
+                      </div>
+                      <ArrowRight className={`mt-0.5 h-3 w-3 shrink-0 text-on-surface-variant/50 ${conn.direction === 'incoming' ? 'rotate-180' : ''}`} />
+                    </div>
                   </button>
                 );
               })}
