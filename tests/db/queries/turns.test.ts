@@ -9,7 +9,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertRun } from '@myco/db/queries/runs.js';
-import { insertTurn, listTurns } from '@myco/db/queries/turns.js';
+import { insertTurn, listTurns, updateTurn } from '@myco/db/queries/turns.js';
 import type { TurnInsert } from '@myco/db/queries/turns.js';
 
 /** Epoch seconds helper. */
@@ -108,6 +108,38 @@ describe('turn query helpers', () => {
     it('returns empty array for run with no turns', async () => {
       const rows = listTurns('no-such-run');
       expect(rows).toEqual([]);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // updateTurn
+  // ---------------------------------------------------------------------------
+
+  describe('updateTurn', () => {
+    it('updates tool_output_summary and completed_at after insert', async () => {
+      const row = insertTurn(makeTurn({
+        tool_input: '{"query":"spores"}',
+        started_at: epochNow() - 5,
+      }));
+      const completedAt = epochNow();
+
+      const updated = updateTurn(row.id, {
+        tool_output_summary: 'Found 3 spores',
+        completed_at: completedAt,
+      });
+
+      expect(updated).not.toBeNull();
+      expect(updated!.tool_output_summary).toBe('Found 3 spores');
+      expect(updated!.completed_at).toBe(completedAt);
+    });
+
+    it('returns null when the turn does not exist', async () => {
+      const updated = updateTurn(999999, {
+        tool_output_summary: 'Nope',
+        completed_at: epochNow(),
+      });
+
+      expect(updated).toBeNull();
     });
   });
 });

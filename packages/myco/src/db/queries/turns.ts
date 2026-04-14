@@ -23,6 +23,12 @@ export interface TurnInsert {
   completed_at?: number | null;
 }
 
+/** Fields that can be updated after a turn row has been created. */
+export interface TurnCompletion {
+  tool_output_summary?: string | null;
+  completed_at?: number | null;
+}
+
 /** Row shape returned from agent_turns queries (all columns). */
 export interface TurnRow {
   id: number;
@@ -108,6 +114,31 @@ export function insertTurn(data: TurnInsert): TurnRow {
 
   return toTurnRow(
     db.prepare(`SELECT ${SELECT_COLUMNS} FROM agent_turns WHERE id = ?`).get(turnId) as Record<string, unknown>,
+  );
+}
+
+/**
+ * Update completion metadata for an existing turn.
+ *
+ * @returns the updated row, or null if the turn does not exist.
+ */
+export function updateTurn(id: number, completion: TurnCompletion): TurnRow | null {
+  const db = getDatabase();
+
+  const info = db.prepare(
+    `UPDATE agent_turns
+     SET tool_output_summary = ?, completed_at = ?
+     WHERE id = ?`,
+  ).run(
+    completion.tool_output_summary ?? null,
+    completion.completed_at ?? null,
+    id,
+  );
+
+  if (info.changes === 0) return null;
+
+  return toTurnRow(
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM agent_turns WHERE id = ?`).get(id) as Record<string, unknown>,
   );
 }
 

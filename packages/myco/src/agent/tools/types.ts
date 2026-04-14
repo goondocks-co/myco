@@ -23,6 +23,6 @@ export interface VaultToolDeps {
   machineId?: string;
   projectRoot?: string;
   vaultDir?: string;
-  /** Record a turn in the audit trail. Fire-and-forget. */
-  recordTurn: (toolName: string, toolInput: unknown) => void;
+  /** Record a turn in the audit trail. Returns the inserted row id when available. */
+  recordTurn: (toolName: string, toolInput: unknown) => number | null;
 }

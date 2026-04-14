@@ -1,6 +1,6 @@
 ---
 name: myco:debug-daemon-errors
-description: |
+description: >
   Use this skill whenever the Myco daemon is misbehaving — even if the user doesn't explicitly ask for a debugging procedure. Activates for: daemon process crashes, uncaught exceptions, FK constraint violations, PowerManager jobs not firing, scheduler starvation, outbox drain loops, duplicate or phantom sessions, executor tasks that silently succeed or stall, and any log output from the daemon's core subsystems (PowerManager, SQLite, outbox, session lifecycle, phased executor). This is the cross-cutting playbook for investigating, tracing, and surgically fixing daemon-layer bugs — distinct from debugging agent task YAML, schema migrations, or outbox architecture design.
 managed_by: myco
 user-invocable: true
@@ -197,9 +197,9 @@ export function findDeadSessionIds(registeredSessionIds: string[]): string[] {
 
 ### Executor — Phase Transition Under Dead AbortController
 
-If a task shows a misleading error like *"Claude Code process aborted by user"* when no user abort occurred, the root cause is a phase timeout in phase 1 that leaves phase 2 running under an already-aborted `AbortController`.
+If a task shows a misleading error like *"Claude Code process aborted by user"* when no user abort occurred, the root cause is a timeout in an earlier phase that leaves a later phase running under an already-aborted `AbortController`. This can occur at **both the phase level and the task level**.
 
-**Sequence:**
+**Sequence (Phase-Level Timeout):**
 1. Phase 1 starts and begins polling Claude Code.
 2. After N minutes (the `phaseTimeoutSeconds` limit), phase 1 times out and calls `abort()` on the shared `AbortController`.
 3. Phase 1 transitions to phase 2 (assuming the task allows fallback phases).
@@ -207,15 +207,23 @@ If a task shows a misleading error like *"Claude Code process aborted by user"* 
 5. Any fetch or stream in phase 2 using the AbortController immediately throws `AbortError`.
 6. The error is recorded as a user abort when it was actually a timeout in the prior phase.
 
-**Trace:** Check the executor's phase runner for timeout handling:
+**Sequence (Task-Level Timeout):**
+1. The task executor has a separate timeout (e.g., `taskMaxDurationSeconds`) that spans all phases.
+2. Phase 1 runs and completes normally.
+3. Phase 2 begins and does work, but the task-level timeout fires partway through.
+4. The task-level timeout calls `abort()` on the shared `AbortController`.
+5. Phase 2's ongoing work throws `AbortError` and records a user abort when it was actually a task timeout.
+
+**Trace:** Check the executor's phase runner and task orchestrator for timeout handling:
 ```bash
-grep -rn "phaseTimeoutSeconds\|AbortController\|phase.*transition" src/daemon/executor/ --include="*.ts"
+grep -rn "phaseTimeoutSeconds\|taskMaxDurationSeconds\|AbortController\|phase.*transition" src/daemon/executor/ --include="*.ts"
 ```
 
 Look for:
 - Whether `AbortController` is created per-phase or reused across phases
 - Whether the timeout calls `abort()` on the controller
 - Whether phase 2 begins with a fresh controller or inherits the prior phase's
+- Whether a task-level timeout also exists and where it calls abort
 
 **Fix pattern:** Create a new `AbortController` for each phase:
 ```typescript
@@ -241,7 +249,25 @@ for (const phase of task.phases) {
 }
 ```
 
-**Pitfall:** Reusing the same `AbortController` across phases creates a trap — the second phase inherits an already-triggered abort from the first, making the error message lie about which phase timed out.
+**Task-level timeout handling:**
+```typescript
+// Create one timeout for the entire task at the orchestrator level
+const taskController = new AbortController();
+const taskTimeout = setTimeout(() => {
+  taskController.abort();
+  logger.warn(`[Executor] Task ${task.id} timeout after ${config.taskMaxDurationSeconds}s`);
+}, config.taskMaxDurationSeconds * 1000);
+
+try {
+  // Pass the task-level controller to each phase runner; they may wrap in phase-level controllers
+  const result = await runAllPhases(task, taskController);
+  return result;
+} finally {
+  clearTimeout(taskTimeout);
+}
+```
+
+**Pitfall:** Reusing the same `AbortController` across phases creates a trap — the second phase inherits an already-triggered abort from the first, making the error message lie about which phase timed out. Task-level timeouts must also use a separate guard to distinguish task timeout from phase timeout.
 
 ---
 
@@ -309,5 +335,5 @@ Write the smallest test that reproduces the failure. For FK violations, this is 
 | Outbox drain loops without progress | Missing `approved_at` guard | Guard status transitions to set value only once |
 | Two sessions for one conversation | No duplicate guard on session insert | Check for existing session ID before insert |
 | Sessions vanish mid-run, no explicit error | `findDeadSessionIds()` too aggressive | Set `DEAD_SESSION_MAX_PROMPTS = 0`; add `status != 'active'` filter |
-| Task shows "process aborted by user" without user action | Phase timeout exhausts phase 1; phase 2 runs under dead AbortController | Create fresh `AbortController` for each phase; don't reuse across phases |
+| Task shows "process aborted by user" without user action | **Phase-level OR task-level timeout** — one phase times out, next phase runs under dead AbortController (spore `1f76ffdd`) | Create fresh `AbortController` for each phase; don't reuse across phases; distinguish task-level timeout from phase timeout in error logging |
 | Task status = `complete`, no output | Exception swallowed in executor | Separate success path from catch block; mark failed on error |
