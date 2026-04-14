@@ -45,7 +45,7 @@ Look for the **first anomalous line**, not just the error message. The error is 
 Each daemon subsystem has a distinct failure signature:
 
 | Subsystem | Failure Signature |
-|-----------|------------------|
+|-----------|-------------------|
 | **PowerManager** | A registered job stops firing after initial runs; scheduler log goes quiet; work is inserted but nothing picks it up |
 | **SQLite FK cascade** | `FOREIGN KEY constraint failed` on delete; or orphaned child rows after parent deletion |
 | **Outbox drain** | Drain runs on every tick but the same records never leave; loop visible in logs with no progress |
@@ -195,6 +195,56 @@ export function findDeadSessionIds(registeredSessionIds: string[]): string[] {
 
 ---
 
+### Executor — Phase Transition Under Dead AbortController
+
+If a task shows a misleading error like *"Claude Code process aborted by user"* when no user abort occurred, the root cause is a phase timeout in phase 1 that leaves phase 2 running under an already-aborted `AbortController`.
+
+**Sequence:**
+1. Phase 1 starts and begins polling Claude Code.
+2. After N minutes (the `phaseTimeoutSeconds` limit), phase 1 times out and calls `abort()` on the shared `AbortController`.
+3. Phase 1 transitions to phase 2 (assuming the task allows fallback phases).
+4. Phase 2 starts with the same `AbortController`, which is already aborted.
+5. Any fetch or stream in phase 2 using the AbortController immediately throws `AbortError`.
+6. The error is recorded as a user abort when it was actually a timeout in the prior phase.
+
+**Trace:** Check the executor's phase runner for timeout handling:
+```bash
+grep -rn "phaseTimeoutSeconds\|AbortController\|phase.*transition" src/daemon/executor/ --include="*.ts"
+```
+
+Look for:
+- Whether `AbortController` is created per-phase or reused across phases
+- Whether the timeout calls `abort()` on the controller
+- Whether phase 2 begins with a fresh controller or inherits the prior phase's
+
+**Fix pattern:** Create a new `AbortController` for each phase:
+```typescript
+for (const phase of task.phases) {
+  const phaseController = new AbortController();  // Fresh controller per phase
+  const phaseTimeout = setTimeout(() => {
+    phaseController.abort();
+  }, config.phaseTimeoutSeconds * 1000);
+
+  try {
+    const result = await runPhase(phase, phaseController);
+    clearTimeout(phaseTimeout);
+    return result; // Success — don't try next phase
+  } catch (err) {
+    clearTimeout(phaseTimeout);
+    if (err.name === 'AbortError') {
+      // Timeout in THIS phase — log it specifically
+      logger.warn(`[Executor] Phase ${phase.name} timeout after ${config.phaseTimeoutSeconds}s`);
+      continue; // Try next phase with a fresh controller
+    }
+    throw err;
+  }
+}
+```
+
+**Pitfall:** Reusing the same `AbortController` across phases creates a trap — the second phase inherits an already-triggered abort from the first, making the error message lie about which phase timed out.
+
+---
+
 ### Executor — Status Swallowing
 
 If an executor task transitions to a terminal status (`complete`, `failed`) without producing output or logging an error, the executor is catching an exception and recording "success" rather than propagating the failure.
@@ -259,4 +309,5 @@ Write the smallest test that reproduces the failure. For FK violations, this is 
 | Outbox drain loops without progress | Missing `approved_at` guard | Guard status transitions to set value only once |
 | Two sessions for one conversation | No duplicate guard on session insert | Check for existing session ID before insert |
 | Sessions vanish mid-run, no explicit error | `findDeadSessionIds()` too aggressive | Set `DEAD_SESSION_MAX_PROMPTS = 0`; add `status != 'active'` filter |
+| Task shows "process aborted by user" without user action | Phase timeout exhausts phase 1; phase 2 runs under dead AbortController | Create fresh `AbortController` for each phase; don't reuse across phases |
 | Task status = `complete`, no output | Exception swallowed in executor | Separate success path from catch block; mark failed on error |

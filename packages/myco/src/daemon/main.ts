@@ -23,6 +23,7 @@ import { handleGetConfig, handlePutConfig, createPlanDirHandlers } from './api/c
 import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
 import { createUpdateHandlers } from './api/update.js';
+import { reconcileConfiguredSymbionts } from '../symbionts/reconcile.js';
 import { resolveGlobalPrefix, detectDevBuild, setDevBuildCliEntry } from './update-checker.js';
 import { getMachineId } from './machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
@@ -486,6 +487,7 @@ export async function main(): Promise<void> {
   server.registerRoute('PUT', '/api/config', async (req) => {
     const result = await handlePutConfig(vaultDir, req.body);
     if (!result.status || result.status < 400) {
+      reconcileConfiguredSymbionts(path.dirname(vaultDir), vaultDir);
       configHash = computeConfigHash(vaultDir);
     }
     return result;
@@ -504,9 +506,16 @@ export async function main(): Promise<void> {
     symbiontPlanDirs,
     planWatchConfig,
     setPlanWatchConfig: (cfg) => { planWatchConfig = cfg; },
+    reconcileProjectFiles: () => { reconcileConfiguredSymbionts(path.dirname(vaultDir), vaultDir); },
   });
   server.registerRoute('GET', '/api/config/plan-dirs', planDirHandlers.handleGetPlanDirs);
-  server.registerRoute('POST', '/api/config/plan-dirs', planDirHandlers.handleUpdatePlanDirs);
+  server.registerRoute('POST', '/api/config/plan-dirs', async (req) => {
+    const result = await planDirHandlers.handleUpdatePlanDirs(req);
+    if (!result.status || result.status < 400) {
+      configHash = computeConfigHash(vaultDir);
+    }
+    return result;
+  });
 
   // V2 stats — vault counts, embedding coverage, agent status, digest freshness
   const configHashRef = { get: () => configHash };

@@ -1,6 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+const DEFAULT_AGENTS_STARTER = `# Project Rules
+
+<!-- This starter file was created by Myco. Replace it with your project's rules and conventions. -->
+
+Rules haven't been defined yet. Use the /rules skill to generate project rules, or edit this file directly.
+`;
+
 /**
  * Check if a command string belongs to Myco.
  *
@@ -54,6 +61,8 @@ export function ensureAgentsMd(projectRoot: string, packageRoot: string): void {
       return;
     } catch { /* try next */ }
   }
+
+  fs.writeFileSync(agentsMdPath, DEFAULT_AGENTS_STARTER, 'utf-8');
 }
 
 export function ensureSymlink(linkPath: string, target: string): void {

@@ -336,3 +336,11 @@ myco restart     # or myco-dev restart in dogfooding mode
 ```
 
 Or manually: kill the PID in `.myco/daemon.json`, then let the next session-start hook spawn a fresh one.
+
+
+<!-- myco:managed:start -->
+## Myco Managed Guidance
+
+- When `capture.ignore_plan_dirs_in_git` is enabled, custom directories in `capture.plan_dirs` may be intentionally gitignored after capture into Myco.
+- Do not force-add files from intentionally gitignored custom plan directories unless the user explicitly asks.
+<!-- myco:managed:end -->

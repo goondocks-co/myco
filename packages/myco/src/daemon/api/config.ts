@@ -50,6 +50,12 @@ export interface PlanDirDeps {
   symbiontPlanDirs: string[];
   planWatchConfig: PlanWatchConfig;
   setPlanWatchConfig: (config: PlanWatchConfig) => void;
+  reconcileProjectFiles?: () => void;
+}
+
+interface PlanDirRequestBody {
+  plan_dirs: string[];
+  ignore_plan_dirs_in_git?: boolean;
 }
 
 export function createPlanDirHandlers(deps: PlanDirDeps) {
@@ -57,30 +63,45 @@ export function createPlanDirHandlers(deps: PlanDirDeps) {
 
   /** GET /api/config/plan-dirs */
   async function handleGetPlanDirs(_req: RouteRequest): Promise<RouteResponse> {
+    const config = loadConfig(vaultDir);
     return {
       body: {
         symbiont: symbiontPlanDirsByAgent,
         custom: deps.planWatchConfig.watchDirs.filter((d) => !symbiontPlanDirs.includes(d)),
+        ignore_plan_dirs_in_git: config.capture.ignore_plan_dirs_in_git,
       },
     };
   }
 
   /** POST /api/config/plan-dirs */
   async function handleUpdatePlanDirs(req: RouteRequest): Promise<RouteResponse> {
-    const body = req.body as { plan_dirs: string[] };
+    const body = req.body as PlanDirRequestBody;
     if (!Array.isArray(body.plan_dirs)) {
       return { status: 400, body: { error: 'plan_dirs must be an array' } };
     }
+    if (body.ignore_plan_dirs_in_git !== undefined && typeof body.ignore_plan_dirs_in_git !== 'boolean') {
+      return { status: 400, body: { error: 'ignore_plan_dirs_in_git must be a boolean' } };
+    }
     const updated = updateConfig(vaultDir, (cfg) => ({
       ...cfg,
-      capture: { ...cfg.capture, plan_dirs: body.plan_dirs },
+      capture: {
+        ...cfg.capture,
+        plan_dirs: body.plan_dirs,
+        ignore_plan_dirs_in_git: body.ignore_plan_dirs_in_git ?? cfg.capture.ignore_plan_dirs_in_git,
+      },
     }));
     // Refresh in-memory config so plan capture picks up new dirs immediately
     deps.setPlanWatchConfig({
       ...deps.planWatchConfig,
       watchDirs: [...new Set([...symbiontPlanDirs, ...body.plan_dirs])],
     });
-    return { body: { custom: updated.capture.plan_dirs } };
+    deps.reconcileProjectFiles?.();
+    return {
+      body: {
+        custom: updated.capture.plan_dirs,
+        ignore_plan_dirs_in_git: updated.capture.ignore_plan_dirs_in_git,
+      },
+    };
   }
 
   return { handleGetPlanDirs, handleUpdatePlanDirs };

@@ -13,6 +13,8 @@ capture:
   plan_dirs:
     - docs/superpowers/specs/
     - docs/superpowers/plans/
+    - docs/design/
+  ignore_plan_dirs_in_git: true
   artifact_extensions:
     - .md
   buffer_max_events: 500

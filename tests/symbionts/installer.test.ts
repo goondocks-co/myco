@@ -910,6 +910,62 @@ describe('gitignore management', () => {
     expect(gitignore).toContain('node_modules/');
     expect(gitignore).toContain('.agents/skills/myco');
   });
+
+  it('adds repo-relative custom plan dirs when ignore_plan_dirs_in_git is enabled', () => {
+    fs.writeFileSync(path.join(projectRoot, '.gitignore'), 'node_modules/\n');
+    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.myco/myco.yaml'), [
+      'version: 3',
+      'capture:',
+      '  plan_dirs:',
+      '    - docs/design',
+      '    - ./docs/specs/',
+      '    - ~/plans',
+      '    - /tmp/plans',
+      '  ignore_plan_dirs_in_git: true',
+      '',
+    ].join('\n'));
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
+    expect(gitignore).toContain('docs/design/');
+    expect(gitignore).toContain('docs/specs/');
+    expect(gitignore).not.toContain('~/plans');
+    expect(gitignore).not.toContain('/tmp/plans');
+  });
+
+  it('removes custom plan dirs from the managed block when the flag is disabled', () => {
+    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.myco/myco.yaml'), [
+      'version: 3',
+      'capture:',
+      '  plan_dirs:',
+      '    - docs/design',
+      '  ignore_plan_dirs_in_git: true',
+      '',
+    ].join('\n'));
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    fs.writeFileSync(path.join(projectRoot, '.myco/myco.yaml'), [
+      'version: 3',
+      'capture:',
+      '  plan_dirs:',
+      '    - docs/design',
+      '  ignore_plan_dirs_in_git: false',
+      '',
+    ].join('\n'));
+    installer.install();
+
+    const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
+    expect(gitignore).not.toContain('docs/design/');
+    expect(gitignore).toContain('.agents/skills/myco');
+  });
 });
 
 // =====================
@@ -1616,6 +1672,33 @@ describe('installInstructions', () => {
     expect(result).toBe(true);
     const content = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf-8');
     expect(content).toContain('Claude Code');
+  });
+});
+
+describe('AGENTS.md managed guidance', () => {
+  it('adds the Myco-managed guidance block to an existing AGENTS.md', () => {
+    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, 'AGENTS.md'), '# Project Rules\n\nKeep tests current.\n');
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    const content = fs.readFileSync(path.join(projectRoot, 'AGENTS.md'), 'utf-8');
+    expect(content).toContain('myco:managed:start');
+    expect(content).toContain('capture.ignore_plan_dirs_in_git');
+    expect(content).toContain('Keep tests current.');
+  });
+
+  it('reconciles the managed guidance block without duplicating it', () => {
+    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+    installer.install();
+
+    const content = fs.readFileSync(path.join(projectRoot, 'AGENTS.md'), 'utf-8');
+    const matches = content.match(/myco:managed:start/g);
+    expect(matches?.length).toBe(1);
   });
 });
 
