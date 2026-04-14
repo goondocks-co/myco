@@ -373,6 +373,34 @@ export function getActiveSessionIds(): Set<string> {
 }
 
 /**
+ * Flip a session back to `status = 'active'` if it's currently `'completed'`.
+ *
+ * Called on live user activity (`user_prompt` events) so a session that was
+ * auto-completed by the stale sweep or manually completed via the API snaps
+ * back to active transparently when the user resumes. No-op for sessions
+ * that are already active or don't exist.
+ *
+ * The `ended_at` column is intentionally preserved — it records the most
+ * recent completion time, and the next completion will overwrite it.
+ *
+ * @returns true if a row was updated (session was completed and is now active)
+ */
+export function reactivateSessionIfCompleted(id: string): boolean {
+  const db = getDatabase();
+  const info = db.prepare(
+    `UPDATE sessions SET status = 'active' WHERE id = ? AND status = 'completed'`,
+  ).run(id);
+  if (info.changes === 0) return false;
+
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ?`,
+  ).get(id) as Record<string, unknown> | undefined;
+  if (row) syncRow('sessions', toSessionRow(row));
+
+  return true;
+}
+
+/**
  * Update specific fields on an existing session.
  *
  * @returns the updated row, or null if the session does not exist.

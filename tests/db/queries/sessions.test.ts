@@ -17,6 +17,7 @@ import {
   closeSession,
   getSessionImpact,
   deleteSessionCascade,
+  reactivateSessionIfCompleted,
 } from '@myco/db/queries/sessions.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';
 
@@ -672,6 +673,45 @@ describe('session query helpers', () => {
 
       const second = deleteSessionCascade(session.id);
       expect(second.deleted).toBe(false);
+    });
+  });
+
+  describe('reactivateSessionIfCompleted', () => {
+    it('flips a completed session back to active and returns true', () => {
+      const now = epochNow();
+      const session = makeSession({ id: 'sess-completed', status: 'completed', created_at: now, started_at: now });
+      upsertSession(session);
+
+      const flipped = reactivateSessionIfCompleted('sess-completed');
+
+      expect(flipped).toBe(true);
+      expect(getSession('sess-completed')?.status).toBe('active');
+    });
+
+    it('is a no-op for an already-active session and returns false', () => {
+      const session = makeSession({ id: 'sess-active', status: 'active' });
+      upsertSession(session);
+
+      const flipped = reactivateSessionIfCompleted('sess-active');
+
+      expect(flipped).toBe(false);
+      expect(getSession('sess-active')?.status).toBe('active');
+    });
+
+    it('returns false for a missing session', () => {
+      expect(reactivateSessionIfCompleted('nope')).toBe(false);
+    });
+
+    it('preserves ended_at when reactivating — the next completion overwrites it', () => {
+      const now = epochNow();
+      upsertSession({
+        ...makeSession({ id: 'sess-keep-end', status: 'completed', created_at: now, started_at: now }),
+        ended_at: now + 100,
+      });
+
+      reactivateSessionIfCompleted('sess-keep-end');
+
+      expect(getSession('sess-keep-end')?.ended_at).toBe(now + 100);
     });
   });
 });
