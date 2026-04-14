@@ -90,6 +90,7 @@ export const LOG_KINDS = {
 
   // API operations
   API_SESSION_DELETE: 'api.session-delete',
+  API_SESSION_COMPLETE: 'api.session-complete',
 
   // MCP
   MCP_EVENT: 'mcp.event',

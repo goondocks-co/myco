@@ -552,8 +552,9 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/sessions', handleListSessions);
 
   server.registerRoute('GET', '/api/sessions/:id', handleGetSession);
-  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir, logger });
+  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir, logger, config });
   server.registerRoute('GET', '/api/sessions/:id/impact', sessionMutations.handleGetSessionImpact);
+  server.registerRoute('POST', '/api/sessions/:id/complete', sessionMutations.handleCompleteSession);
   server.registerRoute('DELETE', '/api/sessions/:id', sessionMutations.handleDeleteSession);
   server.registerRoute('GET', '/api/sessions/:id/batches', handleGetSessionBatches);
   server.registerRoute('GET', '/api/batches/:id/activities', handleGetBatchActivities);

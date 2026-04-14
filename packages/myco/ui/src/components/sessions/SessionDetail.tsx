@@ -1,13 +1,13 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlertCircle, Loader2, Sparkles, Check, Trash2 } from 'lucide-react';
+import { ArrowLeft, AlertCircle, Loader2, Sparkles, Check, Trash2, CheckCircle2 } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Surface } from '../ui/surface';
 import { StatCard } from '../ui/stat-card';
 import { SectionHeader } from '../ui/section-header';
 import { ConfirmDialog } from '../ui/confirm-dialog';
-import { useSession, useDeleteSession, useSessionImpact, useSessionPlans } from '../../hooks/use-sessions';
+import { useSession, useDeleteSession, useSessionImpact, useSessionPlans, useCompleteSession } from '../../hooks/use-sessions';
 import { useSymbionts, buildResumeCommand } from '../../hooks/use-symbionts';
 import { useTriggerRun } from '../../hooks/use-agent';
 import { BatchTimeline } from './BatchTimeline';
@@ -103,6 +103,7 @@ export function SessionDetail({ id }: SessionDetailProps) {
   const { data: session, isLoading, isError, error } = useSession(id);
   const { data: symbiontsData } = useSymbionts();
   const triggerRun = useTriggerRun();
+  const completeSession = useCompleteSession();
   const [summaryStatus, setSummaryStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [deleteOpen, setDeleteOpen] = useState(false);
 
@@ -207,6 +208,35 @@ export function SessionDetail({ id }: SessionDetailProps) {
             )}
             {summaryStatus === 'done' ? 'Summary Requested' : 'Generate Summary'}
           </Button>
+          {(() => {
+            const isAlreadyCompleted = session.status !== 'active';
+            const label = completeSession.isSuccess
+              ? 'Session Completed'
+              : isAlreadyCompleted
+                ? 'Already Completed'
+                : 'Complete Session';
+            return (
+              <Button
+                variant="secondary"
+                size="sm"
+                className="gap-2"
+                disabled={completeSession.isPending || isAlreadyCompleted}
+                title={
+                  isAlreadyCompleted
+                    ? 'Session is already completed'
+                    : 'Mark this session completed and regenerate its summary'
+                }
+                onClick={() => completeSession.mutate(id)}
+              >
+                {completeSession.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4" />
+                )}
+                {label}
+              </Button>
+            );
+          })()}
           <Button
             variant="ghost"
             size="sm"

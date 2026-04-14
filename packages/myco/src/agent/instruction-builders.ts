@@ -162,10 +162,13 @@ export function buildSkillSurveyInstruction(
     parts.push('');
   }
 
-  // 2. Wisdom spores — highest signal observations
+  // 2. Wisdom spores — highest signal observations.
+  // Skill-survey runs against settled work only so spores from in-flight
+  // sessions don't bait candidates for procedures that haven't stabilized.
   const wisdomSpores = listSpores({
     observation_type: 'wisdom',
     limit: SURVEY_MAX_WISDOM_SPORES,
+    includeActive: false,
     ...sinceFilter,
   });
   if (wisdomSpores.length > 0) {
@@ -180,11 +183,13 @@ export function buildSkillSurveyInstruction(
   const decisions = listSpores({
     observation_type: 'decision',
     limit: 20,
+    includeActive: false,
     ...sinceFilter,
   });
   const gotchas = listSpores({
     observation_type: 'gotcha',
     limit: 10,
+    includeActive: false,
     ...sinceFilter,
   });
   if (decisions.length > 0 || gotchas.length > 0) {
@@ -198,6 +203,7 @@ export function buildSkillSurveyInstruction(
   // 4. Recent sessions
   const sessions = listSessions({
     limit: SURVEY_MAX_SESSIONS,
+    includeActive: false,
     ...sinceFilter,
   });
   if (sessions.length > 0) {

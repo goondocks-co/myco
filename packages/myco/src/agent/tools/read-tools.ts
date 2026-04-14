@@ -10,7 +10,7 @@ import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { SEARCH_SIMILARITY_THRESHOLD, TEAM_SOURCE_PREFIX } from '@myco/constants.js';
 import { getUnprocessedBatches } from '@myco/db/queries/batches.js';
 import { listSpores } from '@myco/db/queries/spores.js';
-import { listSessions } from '@myco/db/queries/sessions.js';
+import { listSessions, getActiveSessionIds } from '@myco/db/queries/sessions.js';
 import { getStatesForAgent } from '@myco/db/queries/agent-state.js';
 import { fullTextSearch } from '@myco/db/queries/search.js';
 import { listEntities } from '@myco/db/queries/entities.js';
@@ -48,16 +48,18 @@ export function createReadTools(deps: VaultToolDeps) {
 
   const vaultUnprocessed = tool(
     'vault_unprocessed',
-    'Get unprocessed prompt batches, ordered by id ASC. Supports cursor-based pagination.',
+    'Get unprocessed prompt batches, ordered by id ASC. Supports cursor-based pagination. Batches from in-flight sessions are excluded by default so intelligence tasks only process settled work; pass include_active=true only if you specifically need live data (e.g., title-summary).',
     {
       after_id: z.number().optional().describe('Return batches with id greater than this'),
       limit: z.number().optional().describe('Maximum number of batches to return'),
+      include_active: z.boolean().optional().describe('Include batches from sessions still in active status (default: false)'),
     },
     async (args) => {
       recordTurn('vault_unprocessed', args);
       const batches = getUnprocessedBatches({
         after_id: args.after_id,
         limit: args.limit ?? DEFAULT_UNPROCESSED_LIMIT,
+        includeActive: args.include_active === true,
       });
       return textResult(batches);
     },
@@ -66,13 +68,14 @@ export function createReadTools(deps: VaultToolDeps) {
 
   const vaultSpores = tool(
     'vault_spores',
-    'List spores with optional filters (agent, observation type, status, session).',
+    'List spores with optional filters (agent, observation type, status, session). Spores from in-flight sessions are excluded by default; passing a specific session_id bypasses this filter. Pass include_active=true to bulk-read live work.',
     {
       agent_id: z.string().optional().describe('Filter by agent ID'),
       observation_type: z.string().optional().describe('Filter by observation type (e.g., gotcha, decision)'),
       status: z.enum(['active', 'superseded', 'archived']).optional().describe('Filter by status'),
-      session_id: z.string().optional().describe('Filter by session ID'),
+      session_id: z.string().optional().describe('Filter by session ID (bypasses active-session gating)'),
       limit: z.number().optional().describe('Maximum number of spores to return'),
+      include_active: z.boolean().optional().describe('Include spores from sessions still in active status (default: false)'),
     },
     async (args) => {
       recordTurn('vault_spores', args);
@@ -82,6 +85,7 @@ export function createReadTools(deps: VaultToolDeps) {
         status: args.status,
         session_id: args.session_id,
         limit: args.limit ?? DEFAULT_SPORES_LIMIT,
+        includeActive: args.include_active === true,
       });
       return textResult(spores);
     },
@@ -90,16 +94,18 @@ export function createReadTools(deps: VaultToolDeps) {
 
   const vaultSessions = tool(
     'vault_sessions',
-    'List sessions with optional status filter, ordered by created_at DESC.',
+    'List sessions with optional status filter, ordered by created_at DESC. In-flight sessions are excluded by default; pass include_active=true or an explicit status to see them.',
     {
       limit: z.number().optional().describe('Maximum number of sessions to return'),
       status: z.string().optional().describe('Filter by status (active, completed)'),
+      include_active: z.boolean().optional().describe('Include sessions still in active status (default: false)'),
     },
     async (args) => {
       recordTurn('vault_sessions', args);
       const sessions = listSessions({
         limit: args.limit ?? DEFAULT_SESSIONS_LIMIT,
         status: args.status,
+        includeActive: args.include_active === true,
       });
       return textResult(sessions);
     },
@@ -108,11 +114,12 @@ export function createReadTools(deps: VaultToolDeps) {
 
   const vaultSearchFts = tool(
     'vault_search_fts',
-    'Full-text search across sessions, spores, prompt batches, and activities using FTS5. Best for finding exact keywords, file paths, function names, and specific text. Searches: session titles/summaries, spore content, user prompts, AI response summaries, tool calls.',
+    'Full-text search across sessions, spores, prompt batches, and activities using FTS5. Best for finding exact keywords, file paths, function names, and specific text. Results from in-flight sessions are hidden by default so intelligence tasks only see settled work; pass include_active=true to bypass.',
     {
       query: z.string().describe('Search query text'),
       type: z.string().optional().describe('Restrict to a result type (session, spore, prompt_batch, activity)'),
       limit: z.number().optional().describe('Maximum number of results to return'),
+      include_active: z.boolean().optional().describe('Include results from sessions still in active status (default: false)'),
     },
     async (args) => {
       recordTurn('vault_search_fts', args);
@@ -120,6 +127,7 @@ export function createReadTools(deps: VaultToolDeps) {
         const results = fullTextSearch(args.query, {
           type: args.type,
           limit: args.limit ?? DEFAULT_SEARCH_LIMIT,
+          includeActive: args.include_active === true,
         });
         return textResult({ results });
       } catch {
@@ -131,11 +139,12 @@ export function createReadTools(deps: VaultToolDeps) {
 
   const vaultSearchSemantic = tool(
     'vault_search_semantic',
-    'Semantic similarity search across embedded vault content (spores, sessions, plans, artifacts, skill_records). Best for finding conceptually related content. Returns results ranked by similarity score.',
+    'Semantic similarity search across embedded vault content (spores, sessions, plans, artifacts, skill_records). Best for finding conceptually related content. Returns results ranked by similarity score. Results from in-flight sessions are filtered out by default; pass include_active=true to bypass.',
     {
       query: z.string().describe('Search query text'),
       namespace: z.string().optional().describe('Restrict to a content type: spores, sessions, plans, artifacts, skill_records. Omit to search all.'),
       limit: z.number().optional().describe('Maximum results to return'),
+      include_active: z.boolean().optional().describe('Include results from sessions still in active status (default: false)'),
     },
     async (args) => {
       recordTurn('vault_search_semantic', args);
@@ -148,6 +157,7 @@ export function createReadTools(deps: VaultToolDeps) {
           return textResult({ results: [], message: 'Embedding provider unavailable' });
         }
         const searchLimit = args.limit ?? DEFAULT_SEARCH_LIMIT;
+        const excludeActive = args.include_active !== true;
 
         // Fire local and team search in parallel
         const [localResults, teamResults] = await Promise.all([
@@ -171,14 +181,27 @@ export function createReadTools(deps: VaultToolDeps) {
           : teamResults;
 
         // Merge by similarity/score (normalize to common key), slice to limit
-        const merged = [
+        let merged = [
           ...localResults.map((r) => ({ ...r, score: r.similarity })),
           ...dedupedTeam,
         ]
-          .sort((a, b) => ((b.score as number) ?? 0) - ((a.score as number) ?? 0))
-          .slice(0, searchLimit);
+          .sort((a, b) => ((b.score as number) ?? 0) - ((a.score as number) ?? 0));
 
-        return textResult({ results: merged });
+        // The vector store is a separate concern from the session table, so
+        // we filter active-session results in memory. Results without a
+        // session_id (agent-authored spores, project-scoped artifacts)
+        // always pass through.
+        if (excludeActive) {
+          const activeIds = getActiveSessionIds();
+          if (activeIds.size > 0) {
+            merged = merged.filter((r) => {
+              const sid = (r as { metadata?: { session_id?: unknown } }).metadata?.session_id;
+              return typeof sid !== 'string' || !activeIds.has(sid);
+            });
+          }
+        }
+
+        return textResult({ results: merged.slice(0, searchLimit) });
       } catch {
         return textResult({ results: [], message: 'Semantic search unavailable' });
       }

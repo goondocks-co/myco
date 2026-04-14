@@ -274,6 +274,43 @@ describe('spore query helpers', () => {
       expect(page2).toHaveLength(1);
       expect(page2[0].id).toBe('sp1');
     });
+
+    describe('active-session gating (includeActive flag)', () => {
+      it('by default includes spores from active sessions', () => {
+        // beforeEach seeds `sessionId` as an active session.
+        insertSpore(makeSpore(agentId, { id: 'spore-live', session_id: sessionId }));
+        const rows = listSpores({ agent_id: agentId });
+        expect(rows.map((r) => r.id)).toContain('spore-live');
+      });
+
+      it('with includeActive:false excludes spores from active sessions', () => {
+        insertSpore(makeSpore(agentId, { id: 'spore-live', session_id: sessionId }));
+
+        // Create a completed session and a spore attached to it.
+        const completed = makeSession({ status: 'completed' });
+        upsertSession(completed);
+        insertSpore(makeSpore(agentId, { id: 'spore-settled', session_id: completed.id }));
+
+        const rows = listSpores({ agent_id: agentId, includeActive: false });
+        const ids = rows.map((r) => r.id);
+        expect(ids).toContain('spore-settled');
+        expect(ids).not.toContain('spore-live');
+      });
+
+      it('includeActive:false keeps spores with no session_id (agent-authored)', () => {
+        insertSpore(makeSpore(agentId, { id: 'spore-global', session_id: null }));
+        const rows = listSpores({ agent_id: agentId, includeActive: false });
+        expect(rows.map((r) => r.id)).toContain('spore-global');
+      });
+
+      it('an explicit session_id filter bypasses the active-session gate', () => {
+        // Direct session-scoped lookup is always permitted — useful for the
+        // UI when the user is viewing a session's own spores live.
+        insertSpore(makeSpore(agentId, { id: 'spore-live', session_id: sessionId }));
+        const rows = listSpores({ session_id: sessionId, includeActive: false });
+        expect(rows.map((r) => r.id)).toContain('spore-live');
+      });
+    });
   });
 
   // ---------------------------------------------------------------------------

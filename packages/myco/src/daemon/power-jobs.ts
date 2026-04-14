@@ -76,6 +76,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
       registeredSessionIds: () => registry.sessions,
       embeddingManager,
       vaultDir,
+      staleThresholdMs: config.daemon.stale_session_threshold_ms,
     }),
   });
 

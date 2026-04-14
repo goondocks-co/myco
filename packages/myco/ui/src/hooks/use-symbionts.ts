@@ -12,6 +12,7 @@ export interface SymbiontInfo {
   name: string;
   displayName: string;
   binary: string;
+  enabled: boolean;
   resumeCommand?: string;
 }
 

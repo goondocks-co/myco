@@ -243,9 +243,14 @@ export function populateBatchResponses(
  * Get unprocessed batches, ordered by id ASC (insertion order).
  *
  * Supports cursor-based pagination via `after_id` and a `limit` cap.
+ *
+ * When `includeActive` is explicitly `false`, batches from sessions still
+ * in `status = 'active'` are excluded — intelligence tasks opt in to this
+ * so they don't reason over in-flight work. The default is permissive to
+ * preserve behavior for tests and any non-agent caller.
  */
 export function getUnprocessedBatches(
-  options: { after_id?: number; limit?: number } = {},
+  options: { after_id?: number; limit?: number; includeActive?: boolean } = {},
 ): BatchRow[] {
   const db = getDatabase();
 
@@ -255,6 +260,12 @@ export function getUnprocessedBatches(
   if (options.after_id !== undefined) {
     conditions.push(`id > ?`);
     params.push(options.after_id);
+  }
+
+  if (options.includeActive === false) {
+    conditions.push(
+      `EXISTS (SELECT 1 FROM sessions s WHERE s.id = prompt_batches.session_id AND s.status != 'active')`,
+    );
   }
 
   const limit = options.limit ?? DEFAULT_UNPROCESSED_LIMIT;

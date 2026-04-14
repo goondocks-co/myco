@@ -3,7 +3,7 @@
  *
  * Two tasks run in sequence:
  * 1. Complete stale active sessions — active sessions with no new prompts
- *    in more than STALE_SESSION_THRESHOLD_MS are marked completed.
+ *    in more than the configured stale threshold are marked completed.
  * 2. Delete dead sessions — sessions with ≤ DEAD_SESSION_MAX_PROMPTS prompts
  *    are deleted via cascade, including vault file and embedding vector cleanup.
  */
@@ -21,38 +21,36 @@ import type { EmbeddingManager } from '../embedding/manager.js';
 import { cleanupAfterSessionCascade } from './session-cleanup.js';
 import { LOG_KINDS } from '../../constants/log-kinds.js';
 
-/** Stale threshold in epoch seconds (derived from the ms constant). */
-const STALE_SESSION_THRESHOLD_S = STALE_SESSION_THRESHOLD_MS / MS_PER_SECOND;
-
 /**
  * Complete active sessions whose last prompt is older than the stale threshold.
  *
  * Uses COALESCE to fall back to the session's started_at when no prompt
  * batches exist (session was registered but never received a prompt).
  *
+ * The activity-timestamp predicate itself is the only protection: sessions
+ * with recent work fall outside the stale window and won't be swept. A
+ * previously-registered session that's been idle past the threshold is
+ * swept normally — if it later receives a new event, `event-dispatch.ts`
+ * upserts it back to `status='active'`, so marking completed is reversible.
+ *
+ * @param thresholdSeconds window of inactivity before a session is stale
  * @returns number of sessions completed
  */
-export function completeStaleActiveSessions(registeredSessionIds: string[]): number {
+export function completeStaleActiveSessions(
+  thresholdSeconds: number = STALE_SESSION_THRESHOLD_MS / MS_PER_SECOND,
+): number {
   const db = getDatabase();
-  const cutoff = epochSeconds() - STALE_SESSION_THRESHOLD_S;
-
-  // Build exclusion clause for registered sessions
-  const excludePlaceholders = registeredSessionIds.length > 0
-    ? `AND id NOT IN (${registeredSessionIds.map(() => '?').join(', ')})`
-    : '';
-
-  const params: unknown[] = [cutoff, ...registeredSessionIds];
+  const cutoff = epochSeconds() - thresholdSeconds;
 
   const info = db.prepare(
     `UPDATE sessions
-     SET status = 'completed'
+     SET status = 'completed', ended_at = COALESCE(ended_at, ?)
      WHERE status = 'active'
        AND COALESCE(
          (SELECT MAX(pb.started_at) FROM prompt_batches pb WHERE pb.session_id = sessions.id),
          sessions.started_at
-       ) < ?
-       ${excludePlaceholders}`,
-  ).run(...params);
+       ) < ?`,
+  ).run(epochSeconds(), cutoff);
 
   return info.changes;
 }
@@ -94,6 +92,11 @@ export interface SessionMaintenanceDeps {
   registeredSessionIds: () => string[];
   embeddingManager: EmbeddingManager;
   vaultDir: string;
+  /**
+   * Inactivity window (ms) after which an active session is marked completed.
+   * When omitted, falls back to `STALE_SESSION_THRESHOLD_MS`.
+   */
+  staleThresholdMs?: number;
 }
 
 /**
@@ -102,11 +105,12 @@ export interface SessionMaintenanceDeps {
  * 2. Delete dead sessions (cascade)
  */
 export async function runSessionMaintenance(deps: SessionMaintenanceDeps): Promise<void> {
-  const { logger, registeredSessionIds, embeddingManager, vaultDir } = deps;
+  const { logger, registeredSessionIds, embeddingManager, vaultDir, staleThresholdMs } = deps;
   const registered = registeredSessionIds();
 
   // Task 1: Complete stale sessions
-  const completed = completeStaleActiveSessions(registered);
+  const thresholdSeconds = (staleThresholdMs ?? STALE_SESSION_THRESHOLD_MS) / MS_PER_SECOND;
+  const completed = completeStaleActiveSessions(thresholdSeconds);
   if (completed > 0) {
     logger.info(LOG_KINDS.MAINTENANCE_SESSION, 'Completed stale sessions', { count: completed });
   }

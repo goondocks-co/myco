@@ -29,7 +29,7 @@ import {
   handleCompact,
 } from './event-handlers.js';
 import { getLatestBatch } from '@myco/db/queries/batches.js';
-import { upsertSession } from '@myco/db/queries/sessions.js';
+import { upsertSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
 import { captureBatchImages, type CapturedImage } from './capture-images.js';
 import { epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -133,6 +133,16 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           prompt_preview: promptText.slice(0, LOG_PROMPT_PREVIEW_CHARS),
           prompt_length: promptText.length,
         });
+        // Flip a completed session back to active on genuine user activity.
+        // The auto-register branch above only reactivates when the session
+        // isn't in the in-memory registry (e.g., after daemon restart) —
+        // without this, a manually-completed or stale-swept session stays
+        // hidden from intelligence-task queries even after the user resumes.
+        if (reactivateSessionIfCompleted(event.session_id)) {
+          logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Reactivated completed session on new activity', {
+            session_id: event.session_id,
+          });
+        }
         try {
           const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined);
           logger.debug(LOG_KINDS.CAPTURE_BATCH, 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });

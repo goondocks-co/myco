@@ -45,6 +45,12 @@ export interface SearchOptions {
   type?: string;
   /** Maximum number of results to return (default: SEARCH_RESULTS_DEFAULT_LIMIT). */
   limit?: number;
+  /**
+   * When explicitly `false`, hide results belonging to sessions still in
+   * `status = 'active'` (and active sessions themselves). Intelligence-task
+   * reads opt in to this; UI/CLI callers leave it unset.
+   */
+  includeActive?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,18 +81,22 @@ export function fullTextSearch(
   const db = getDatabase();
   const limit = options.limit ?? SEARCH_RESULTS_DEFAULT_LIMIT;
   const typeFilter = options.type;
+  const excludeActive = options.includeActive === false;
 
   const results: SearchResult[] = [];
 
   // -- prompt_batches branch ------------------------------------------------
   if (typeFilter === undefined || typeFilter === 'prompt_batch') {
+    const activeGate = excludeActive
+      ? ` AND EXISTS (SELECT 1 FROM sessions s WHERE s.id = pb.session_id AND s.status != 'active')`
+      : '';
     const batchRows = db.prepare(
       `SELECT pb.id, pb.prompt_number, pb.session_id,
               substr(COALESCE(pb.user_prompt, '') || ' ' || COALESCE(pb.response_summary, ''), 1, ?) AS preview,
               fts.rank
        FROM prompt_batches_fts fts
        JOIN prompt_batches pb ON pb.id = fts.rowid
-       WHERE prompt_batches_fts MATCH ?
+       WHERE prompt_batches_fts MATCH ?${activeGate}
        ORDER BY fts.rank
        LIMIT ?`
     ).all(SEARCH_PREVIEW_CHARS, query, limit) as Array<{
@@ -113,12 +123,15 @@ export function fullTextSearch(
 
   // -- activities branch ----------------------------------------------------
   if (typeFilter === undefined || typeFilter === 'activity') {
+    const activeGate = excludeActive
+      ? ` AND EXISTS (SELECT 1 FROM sessions s WHERE s.id = a.session_id AND s.status != 'active')`
+      : '';
     const activityRows = db.prepare(
       `SELECT a.id, a.tool_name, a.tool_input, a.file_path, a.session_id,
               fts.rank
        FROM activities_fts fts
        JOIN activities a ON a.id = fts.rowid
-       WHERE activities_fts MATCH ?
+       WHERE activities_fts MATCH ?${activeGate}
        ORDER BY fts.rank
        LIMIT ?`
     ).all(query, limit) as Array<{
@@ -145,13 +158,19 @@ export function fullTextSearch(
 
   // -- spores branch --------------------------------------------------------
   if (typeFilter === undefined || typeFilter === 'spore') {
+    // Spores may have a NULL session_id (agent-authored, no source session),
+    // which are always kept; only spores attached to still-active sessions
+    // are excluded when the gate is on.
+    const activeGate = excludeActive
+      ? ` AND (s.session_id IS NULL OR EXISTS (SELECT 1 FROM sessions ss WHERE ss.id = s.session_id AND ss.status != 'active'))`
+      : '';
     const sporeRows = db.prepare(
       `SELECT s.id, s.observation_type, s.session_id,
               substr(COALESCE(s.content, ''), 1, ?) AS preview,
               fts.rank
        FROM spores_fts fts
        JOIN spores s ON s.rowid = fts.rowid
-       WHERE spores_fts MATCH ?
+       WHERE spores_fts MATCH ?${activeGate}
        ORDER BY fts.rank
        LIMIT ?`
     ).all(SEARCH_PREVIEW_CHARS, query, limit) as Array<{
@@ -176,13 +195,14 @@ export function fullTextSearch(
 
   // -- sessions branch ------------------------------------------------------
   if (typeFilter === undefined || typeFilter === 'session') {
+    const activeGate = excludeActive ? ` AND s.status != 'active'` : '';
     const sessionRows = db.prepare(
       `SELECT s.id, s.title,
               substr(COALESCE(s.summary, s.title, ''), 1, ?) AS preview,
               fts.rank
        FROM sessions_fts fts
        JOIN sessions s ON s.rowid = fts.rowid
-       WHERE sessions_fts MATCH ?
+       WHERE sessions_fts MATCH ?${activeGate}
        ORDER BY fts.rank
        LIMIT ?`
     ).all(SEARCH_PREVIEW_CHARS, query, limit) as Array<{

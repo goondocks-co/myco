@@ -1,13 +1,16 @@
-import { getSession, listSessions, countSessions, deleteSessionCascade, getSessionImpact } from '@myco/db/queries/sessions.js';
+import { getSession, listSessions, countSessions, deleteSessionCascade, getSessionImpact, updateSession } from '@myco/db/queries/sessions.js';
 import { listBatchesBySession, countBatchesBySession } from '@myco/db/queries/batches.js';
 import { listActivitiesByBatch, countActivities } from '@myco/db/queries/activities.js';
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
 import { listPlansBySession } from '@myco/db/queries/plans.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import { epochSeconds } from '@myco/constants.js';
 import { cleanupAfterSessionCascade } from '../jobs/session-cleanup.js';
+import { triggerTitleSummary } from '../trigger-title-summary.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
+import type { MycoConfig } from '@myco/config/schema.js';
 
 const DEFAULT_LIST_LIMIT = 50;
 const DEFAULT_LIST_OFFSET = 0;
@@ -79,10 +82,11 @@ export interface SessionMutationDeps {
   embeddingManager: EmbeddingManager;
   vaultDir: string;
   logger: DaemonLogger;
+  config: MycoConfig;
 }
 
 export function createSessionMutationHandlers(deps: SessionMutationDeps) {
-  const { embeddingManager, vaultDir, logger } = deps;
+  const { embeddingManager, vaultDir, logger, config } = deps;
 
   /** DELETE /api/sessions/:id — cascade delete with post-transaction cleanup. */
   async function handleDeleteSession(req: RouteRequest): Promise<RouteResponse> {
@@ -100,6 +104,41 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
     return { body: { ok: true, counts: result.counts } };
   }
 
+  /**
+   * POST /api/sessions/:id/complete — manual mirror of the SessionEnd hook.
+   *
+   * Flips the session to `status = 'completed'` (if not already) and fires
+   * the title-summary task so the summary regenerates against the full arc.
+   * Kept deliberately forgiving: completing an already-completed session is
+   * idempotent — it re-triggers the regenerate without rewriting status.
+   *
+   * Exists because the SessionEnd hook isn't reliably fired by every
+   * symbiont, and because users sometimes know a session is done before
+   * any timer-based stale-sweep would catch it.
+   */
+  async function handleCompleteSession(req: RouteRequest): Promise<RouteResponse> {
+    const sessionId = req.params.id;
+    const session = getSession(sessionId);
+    if (!session) return { status: 404, body: { error: 'Session not found' } };
+
+    const wasActive = session.status === 'active';
+    if (wasActive) {
+      updateSession(sessionId, {
+        status: 'completed',
+        ended_at: session.ended_at ?? epochSeconds(),
+      });
+    }
+
+    await triggerTitleSummary(sessionId, { vaultDir, embeddingManager, config, logger });
+
+    logger.info(LOG_KINDS.API_SESSION_COMPLETE, 'Session manually completed', {
+      session_id: sessionId,
+      was_active: wasActive,
+    });
+
+    return { body: { ok: true, was_active: wasActive } };
+  }
+
   /** GET /api/sessions/:id/impact — get session impact data. */
   async function handleGetSessionImpact(req: RouteRequest): Promise<RouteResponse> {
     const sessionId = req.params.id;
@@ -109,5 +148,5 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
     return { body: impact };
   }
 
-  return { handleDeleteSession, handleGetSessionImpact };
+  return { handleDeleteSession, handleCompleteSession, handleGetSessionImpact };
 }

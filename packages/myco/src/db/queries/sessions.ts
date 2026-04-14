@@ -111,6 +111,12 @@ export interface ListSessionsOptions {
   search?: string;
   /** Only return sessions created after this epoch-seconds timestamp. */
   since?: number;
+  /**
+   * When explicitly `false` and no `status` filter is set, exclude sessions
+   * still in `status = 'active'` — intelligence-task reads opt in to this.
+   * Defaults permissive so UI listings keep showing in-flight sessions.
+   */
+  includeActive?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +304,13 @@ function buildSessionsWhere(
     params.push(options.since);
   }
 
+  // Exclude active sessions only when the caller explicitly opts in and
+  // hasn't already constrained `status`. Intelligence-task reads set this
+  // to avoid picking up in-flight work; UI/CLI leave it unset.
+  if (options.includeActive === false && options.status === undefined) {
+    conditions.push(`status != 'active'`);
+  }
+
   return {
     where: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
     params,
@@ -341,6 +354,50 @@ export function countSessions(
   ).get(...params) as { count: number };
 
   return row.count;
+}
+
+/**
+ * Return the set of session IDs currently in `status = 'active'`.
+ *
+ * Used by the semantic-search path, which can't apply a SQL join against
+ * session status (the vector store is a separate concern), so it filters
+ * results in-memory against this set instead. Bounded by the number of
+ * concurrent in-flight sessions — typically small.
+ */
+export function getActiveSessionIds(): Set<string> {
+  const db = getDatabase();
+  const rows = db.prepare(
+    `SELECT id FROM sessions WHERE status = 'active'`,
+  ).all() as Array<{ id: string }>;
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * Flip a session back to `status = 'active'` if it's currently `'completed'`.
+ *
+ * Called on live user activity (`user_prompt` events) so a session that was
+ * auto-completed by the stale sweep or manually completed via the API snaps
+ * back to active transparently when the user resumes. No-op for sessions
+ * that are already active or don't exist.
+ *
+ * The `ended_at` column is intentionally preserved — it records the most
+ * recent completion time, and the next completion will overwrite it.
+ *
+ * @returns true if a row was updated (session was completed and is now active)
+ */
+export function reactivateSessionIfCompleted(id: string): boolean {
+  const db = getDatabase();
+  const info = db.prepare(
+    `UPDATE sessions SET status = 'active' WHERE id = ? AND status = 'completed'`,
+  ).run(id);
+  if (info.changes === 0) return false;
+
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ?`,
+  ).get(id) as Record<string, unknown> | undefined;
+  if (row) syncRow('sessions', toSessionRow(row));
+
+  return true;
 }
 
 /**

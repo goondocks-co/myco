@@ -11,6 +11,13 @@ const DaemonSchema = z.object({
   port: z.number().int().min(1024).max(65535).nullable().default(null),
   log_level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   log_retention_days: z.number().int().min(1).max(365).default(30),
+  /**
+   * Time without new prompts before an active session is auto-completed (ms).
+   * Intelligence tasks (full-intelligence, skill-survey, etc.) only process
+   * settled sessions, so this threshold directly controls how fresh their
+   * inputs are. Defaults to 1 hour.
+   */
+  stale_session_threshold_ms: z.number().int().min(60_000).default(60 * 60 * 1000),
 });
 
 const CaptureSchema = z.object({
