@@ -7,6 +7,8 @@ import { UPDATE_STAMP_FILENAME } from '../constants/update.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
+// `myco update` is also the migration path for refreshing managed AGENTS.md content.
+
 export async function run(args: string[]): Promise<void> {
   let projectRoot: string | undefined;
   const projectIdx = args.indexOf('--project');

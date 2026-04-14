@@ -4,16 +4,20 @@ import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
 import { Input } from '../ui/input';
 import { Button } from '../ui/button';
+import { Switch } from '../ui/switch';
 
 interface PlanDirsResponse {
   symbiont: Record<string, string[]>;
   custom: string[];
+  ignore_plan_dirs_in_git: boolean;
 }
 
 export function PlanCaptureCard() {
   const [symbiont, setSymbiont] = useState<Record<string, string[]>>({});
   const [custom, setCustom] = useState<string[]>([]);
   const [savedCustom, setSavedCustom] = useState<string[]>([]);
+  const [ignoreInGit, setIgnoreInGit] = useState(false);
+  const [savedIgnoreInGit, setSavedIgnoreInGit] = useState(false);
   const [newDir, setNewDir] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -25,6 +29,8 @@ export function PlanCaptureCard() {
         setSymbiont(data.symbiont);
         setCustom(data.custom);
         setSavedCustom(data.custom);
+        setIgnoreInGit(data.ignore_plan_dirs_in_git);
+        setSavedIgnoreInGit(data.ignore_plan_dirs_in_git);
       })
       .catch(() => {
         // leave defaults on error
@@ -34,7 +40,8 @@ export function PlanCaptureCard() {
 
   const dirty =
     custom.length !== savedCustom.length ||
-    custom.some((d, i) => d !== savedCustom[i]);
+    custom.some((d, i) => d !== savedCustom[i]) ||
+    ignoreInGit !== savedIgnoreInGit;
 
   const handleAdd = useCallback(() => {
     const trimmed = newDir.trim();
@@ -53,18 +60,21 @@ export function PlanCaptureCard() {
     setIsSaving(true);
     setSaveMessage(null);
     try {
-      const result = await postJson<{ custom: string[] }>('/config/plan-dirs', {
+      const result = await postJson<{ custom: string[]; ignore_plan_dirs_in_git: boolean }>('/config/plan-dirs', {
         plan_dirs: custom,
+        ignore_plan_dirs_in_git: ignoreInGit,
       });
       setSavedCustom(result.custom);
       setCustom(result.custom);
+      setSavedIgnoreInGit(result.ignore_plan_dirs_in_git);
+      setIgnoreInGit(result.ignore_plan_dirs_in_git);
       setSaveMessage({ type: 'success', text: 'Plan directories saved.' });
     } catch {
       setSaveMessage({ type: 'error', text: 'Failed to save plan directories.' });
     } finally {
       setIsSaving(false);
     }
-  }, [custom]);
+  }, [custom, ignoreInGit]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -120,6 +130,16 @@ export function PlanCaptureCard() {
             <p className="font-sans text-xs text-on-surface-variant">
               Additional directories to watch for plan files.
             </p>
+
+            <div className="flex items-start justify-between gap-4 rounded bg-surface-container px-3 py-2">
+              <div className="space-y-1">
+                <p className="font-sans text-xs font-medium text-on-surface">Ignore Custom Plan Dirs In Git</p>
+                <p className="font-sans text-xs text-on-surface-variant">
+                  Add repo-relative custom plan directories to the Myco-managed block in <code>.gitignore</code>.
+                </p>
+              </div>
+              <Switch checked={ignoreInGit} onCheckedChange={setIgnoreInGit} disabled={isSaving} />
+            </div>
 
             {custom.length > 0 && (
               <div className="space-y-1">

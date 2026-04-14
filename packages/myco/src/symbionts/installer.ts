@@ -5,6 +5,7 @@ import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, removeTomlS
 import { deepMergeSettings, deepRemoveSettings } from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup } from './install-helpers.js';
+import { loadConfig } from '../config/loader.js';
 
 /** Current comment header for Myco-managed .gitignore block. */
 const GITIGNORE_COMMENT = '# Myco managed (machine-specific)';
@@ -14,6 +15,15 @@ const GITIGNORE_SKILLS_COMMENT_LEGACY = '# Myco skill symlinks (machine-specific
 
 /** Wrangler cache directory created by team sync operations. */
 const WRANGLER_CACHE_DIR = '.wrangler/';
+const AGENTS_MANAGED_START = '<!-- myco:managed:start -->';
+const AGENTS_MANAGED_END = '<!-- myco:managed:end -->';
+const AGENTS_MANAGED_BLOCK = `${AGENTS_MANAGED_START}
+## Myco Managed Guidance
+
+- When \`capture.ignore_plan_dirs_in_git\` is enabled, custom directories in \`capture.plan_dirs\` may be intentionally gitignored after capture into Myco.
+- Do not force-add files from intentionally gitignored custom plan directories unless the user explicitly asks.
+${AGENTS_MANAGED_END}
+`;
 
 /** Subdirectory within the package where symbiont templates live. */
 const TEMPLATES_SUBDIR = 'src/symbionts/templates';
@@ -186,6 +196,7 @@ export class SymbiontInstaller {
   /** Run all registration steps. */
   install(): InstallResult {
     const reg = this.manifest.registration;
+    this.reconcileAgentsMd();
     // Install hook guard before hooks so the guard script is in place when hooks reference it
     this.installHookGuard();
     // One-time migration: sweep legacy MYCO_CMD / myco-run entries that
@@ -205,6 +216,64 @@ export class SymbiontInstaller {
         };
     this.updateGitignore();
     return result;
+  }
+
+  private reconcileAgentsMd(): void {
+    ensureAgentsMd(this.projectRoot, this.packageRoot);
+    const agentsPath = path.join(this.projectRoot, 'AGENTS.md');
+    let content = '';
+    try {
+      content = fs.readFileSync(agentsPath, 'utf-8');
+    } catch {
+      return;
+    }
+
+    const stripped = this.stripManagedAgentsBlock(content);
+    const separator = stripped.length > 0 && !stripped.endsWith('\n') ? '\n' : '';
+    const spacer = stripped.trimEnd().length > 0 ? '\n\n' : '';
+    const result = `${stripped}${separator}${spacer}${AGENTS_MANAGED_BLOCK}`;
+    if (result === content) return;
+    fs.writeFileSync(agentsPath, result, 'utf-8');
+  }
+
+  private stripManagedAgentsBlock(content: string): string {
+    const startIdx = content.indexOf(AGENTS_MANAGED_START);
+    if (startIdx === -1) return content.trimEnd();
+    const endIdx = content.indexOf(AGENTS_MANAGED_END, startIdx);
+    if (endIdx === -1) return content.trimEnd();
+    const afterEnd = endIdx + AGENTS_MANAGED_END.length;
+    return (content.slice(0, startIdx) + content.slice(afterEnd)).trimEnd();
+  }
+
+  private getCustomPlanGitignoreEntries(): string[] {
+    const config = this.loadProjectConfig();
+    if (!config?.capture.ignore_plan_dirs_in_git) return [];
+
+    return [...new Set(
+      config.capture.plan_dirs
+        .map((dir) => this.normalizeProjectRelativeDir(dir))
+        .filter((dir): dir is string => dir !== null),
+    )];
+  }
+
+  private loadProjectConfig() {
+    try {
+      return loadConfig(path.join(this.projectRoot, '.myco'));
+    } catch {
+      return null;
+    }
+  }
+
+  private normalizeProjectRelativeDir(dir: string): string | null {
+    const slashNormalized = dir.trim().replaceAll('\\', '/');
+    if (!slashNormalized) return null;
+    if (slashNormalized.startsWith('~/')) return null;
+    if (path.posix.isAbsolute(slashNormalized) || path.win32.isAbsolute(slashNormalized)) return null;
+
+    const withoutDotPrefix = slashNormalized.replace(/^\.\//, '');
+    const normalized = path.posix.normalize(withoutDotPrefix);
+    if (normalized === '.' || normalized === '..' || normalized.startsWith('../')) return null;
+    return normalized.endsWith('/') ? normalized : `${normalized}/`;
   }
 
   /**
@@ -614,6 +683,7 @@ export class SymbiontInstaller {
     // instead of polluting the project-level .gitignore.
     const desired = [
       ...skillNames.map((name) => `${CANONICAL_SKILLS_DIR}/${name}`),
+      ...this.getCustomPlanGitignoreEntries(),
       WRANGLER_CACHE_DIR,
     ];
 
@@ -645,22 +715,33 @@ export class SymbiontInstaller {
    * directory entries. Returns the cleaned content.
    */
   private stripMycoGitignoreBlock(content: string, skillNames: string[]): string {
+    let stripped = content;
+
+    const managedStart = stripped.indexOf(GITIGNORE_COMMENT);
+    if (managedStart !== -1) {
+      const managedEndMatch = stripped.slice(managedStart).match(/\n\n/);
+      const managedEnd = managedEndMatch
+        ? managedStart + managedEndMatch.index! + managedEndMatch[0].length
+        : stripped.length;
+      stripped = stripped.slice(0, managedStart) + stripped.slice(managedEnd);
+    }
+
     const reg = this.manifest.registration;
-    const ownedLines = new Set<string>([
-      GITIGNORE_COMMENT,
+    const legacyOwnedLines = new Set<string>([
       GITIGNORE_SKILLS_COMMENT_LEGACY,
-      `${CANONICAL_SKILLS_DIR}/`, // legacy blanket entry
+      `${CANONICAL_SKILLS_DIR}/`,
       WRANGLER_CACHE_DIR,
     ]);
     for (const name of skillNames) {
-      ownedLines.add(`${CANONICAL_SKILLS_DIR}/${name}`);
+      legacyOwnedLines.add(`${CANONICAL_SKILLS_DIR}/${name}`);
       if (reg?.skillsTarget && reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
-        ownedLines.add(`${reg.skillsTarget}/${name}`);
+        legacyOwnedLines.add(`${reg.skillsTarget}/${name}`);
       }
     }
 
-    const lines = content.split('\n');
-    const filtered = lines.filter((line) => !ownedLines.has(line));
+    const filtered = stripped
+      .split('\n')
+      .filter((line) => !legacyOwnedLines.has(line));
     return filtered.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + (filtered.length > 0 ? '\n' : '');
   }
 

@@ -12,9 +12,6 @@ dist/
 .playwright-cli/
 
 # Specs and plans — captured in Myco vault, not the repo
-docs/superpowers/
-docs/plans/
-docs/specs/
 .superpowers/
 .worktrees
 
@@ -24,4 +21,7 @@ docs/specs/
 .agents/skills/myco
 .agents/skills/myco-curate
 .agents/skills/rules
+docs/superpowers/specs/
+docs/superpowers/plans/
+docs/design/
 .wrangler/

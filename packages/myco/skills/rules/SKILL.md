@@ -193,6 +193,12 @@ Good rule: "better-sqlite3 MUST be installed with native bindings, not WASM. The
    - Place it in the correct file and section
 3. If the developer dismisses: the observation stays as context, not a rule
 
+### Myco-managed operational rule example
+
+When a project uses Myco-managed capture behavior, encode that intent as an explicit rule instead of letting agents infer from `.gitignore` alone.
+
+- Good: "When `capture.ignore_plan_dirs_in_git` is enabled, agents MUST treat custom `capture.plan_dirs` as intentionally gitignored after capture into Myco. Agents MUST NOT force-add files from those directories unless the user explicitly asks."
+
 ### What stays as a spore, NOT a rule
 
 Reject promotion for:
