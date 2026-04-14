@@ -26,7 +26,7 @@ import { textResult, type VaultToolDeps } from './types.js';
 // ---------------------------------------------------------------------------
 
 export function createWriteTools(deps: VaultToolDeps) {
-  const { agentId, embeddingManager, machineId, recordTurn } = deps;
+  const { agentId, embeddingManager, machineId } = deps;
 
   const vaultCreateSpore = tool(
     'vault_create_spore',
@@ -71,8 +71,6 @@ export function createWriteTools(deps: VaultToolDeps) {
         session_id: args.session_id,
       }).catch(() => {});
 
-      // Spore notifications are batched post-run (daemon emits summary after agent completes)
-      recordTurn('vault_create_spore', args);
       return textResult(spore);
     },
     { annotations: { openWorldHint: true } },
@@ -102,7 +100,6 @@ export function createWriteTools(deps: VaultToolDeps) {
         last_seen: now,
       });
 
-      recordTurn('vault_create_entity', args);
       return textResult(entity);
     },
     { annotations: { idempotentHint: true } },
@@ -139,7 +136,6 @@ export function createWriteTools(deps: VaultToolDeps) {
         created_at: now,
       });
 
-      recordTurn('vault_create_edge', args);
       return textResult(edge);
     },
     { annotations: { idempotentHint: true } },
@@ -187,7 +183,6 @@ export function createWriteTools(deps: VaultToolDeps) {
         try { embeddingManager?.onStatusChanged('spores', args.spore_id, newStatus); } catch { /* best-effort */ }
       }
 
-      recordTurn('vault_resolve_spore', args);
       return textResult({ spore: updatedSpore, resolution_event_id: eventId });
     },
     { annotations: { destructiveHint: true } },
@@ -212,7 +207,6 @@ export function createWriteTools(deps: VaultToolDeps) {
         embeddingManager?.onContentWritten('sessions', args.session_id, args.summary, {}).catch(() => {});
       }
 
-      recordTurn('vault_update_session', args);
       return textResult(session);
     },
     { annotations: { idempotentHint: true } },
@@ -229,7 +223,6 @@ export function createWriteTools(deps: VaultToolDeps) {
       const now = epochSeconds();
       const state = setState(agentId, args.key, args.value, now);
 
-      recordTurn('vault_set_state', args);
       return textResult(state);
     },
     { annotations: { idempotentHint: true } },
@@ -242,7 +235,6 @@ export function createWriteTools(deps: VaultToolDeps) {
       tier: z.number().optional().describe('Specific tier to read in full (e.g., 1500, 5000, 10000). Omit to get summary of all tiers.'),
     },
     async (args) => {
-      recordTurn('vault_read_digest', args);
       const extracts = listDigestExtracts(agentId);
 
       if (args.tier !== undefined) {
@@ -278,8 +270,6 @@ export function createWriteTools(deps: VaultToolDeps) {
         generated_at: now,
       });
 
-      // Digest notifications are batched post-run (daemon emits summary after agent completes)
-      recordTurn('vault_write_digest', args);
       return textResult(extract);
     },
     { annotations: { idempotentHint: true } },
@@ -294,7 +284,6 @@ export function createWriteTools(deps: VaultToolDeps) {
     async (args) => {
       const batch = markBatchProcessed(args.batch_id);
 
-      recordTurn('vault_mark_processed', args);
       return textResult(batch);
     },
     { annotations: { destructiveHint: true } },

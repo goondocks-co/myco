@@ -18,12 +18,12 @@
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { epochSeconds } from '@myco/constants.js';
 import { getPluginVersion } from '@myco/version.js';
-import { insertTurn } from '@myco/db/queries/turns.js';
+import { insertTurn, updateTurn } from '@myco/db/queries/turns.js';
 import { createReadTools } from './tools/read-tools.js';
 import { createWriteTools } from './tools/write-tools.js';
 import { createObservabilityTools } from './tools/observability-tools.js';
 import { createSkillTools } from './tools/skill-tools.js';
-import type { VaultToolDeps } from './tools/types.js';
+import type { SdkMcpToolDefinition, VaultToolDeps } from './tools/types.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 
@@ -70,6 +70,9 @@ const SKILL_TOOL_NAMES = new Set([
   'vault_stage_skill', 'vault_finalize_skill',
 ]);
 
+/** Max chars stored from a tool response in the run audit trail. */
+const TOOL_OUTPUT_SUMMARY_LIMIT = 240;
+
 /**
  * Total number of vault tools defined. Derived from the union of the
  * four tool-group sets above so this constant can never drift from the
@@ -85,6 +88,29 @@ export const VAULT_TOOL_COUNT =
 function setsOverlap(a: Set<string>, b: Set<string>): boolean {
   for (const item of a) { if (b.has(item)) return true; }
   return false;
+}
+
+function truncateSummary(text: string | null): string | null {
+  if (!text) return null;
+  return text.length > TOOL_OUTPUT_SUMMARY_LIMIT
+    ? `${text.slice(0, TOOL_OUTPUT_SUMMARY_LIMIT - 1)}…`
+    : text;
+}
+
+function summarizeToolResult(result: unknown): string | null {
+  if (!result || typeof result !== 'object') return null;
+  const content = (result as { content?: unknown }).content;
+  if (!Array.isArray(content) || content.length === 0) return null;
+  const first = content[0] as { type?: unknown; text?: unknown } | undefined;
+  if (!first || first.type !== 'text' || typeof first.text !== 'string') return null;
+  return truncateSummary(first.text.replace(/\s+/g, ' ').trim());
+}
+
+function summarizeToolError(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return truncateSummary(error.message) ?? 'Tool failed';
+  }
+  return truncateSummary(String(error)) ?? 'Tool failed';
 }
 
 /**
@@ -107,10 +133,10 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
    * Called for ALL tool invocations (read and write) for full visibility.
    * Fire-and-forget — does not block the tool response.
    */
-  function recordTurn(toolName: string, toolInput: unknown): void {
+  function recordTurn(toolName: string, toolInput: unknown): number | null {
     turnCounter++;
     try {
-      insertTurn({
+      const turn = insertTurn({
         run_id: runId,
         agent_id: agentId,
         turn_number: turnCounter,
@@ -118,8 +144,10 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
         tool_input: JSON.stringify(toolInput),
         started_at: epochSeconds(),
       });
+      return turn.id;
     } catch {
       /* audit trail is best-effort */
+      return null;
     }
   }
 
@@ -136,12 +164,50 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
 
   // When onlyNames is provided, skip factory calls for groups with no overlap
   const needsAll = !onlyNames;
-  return [
+  const tools = [
     ...(needsAll || setsOverlap(onlyNames!, READ_TOOL_NAMES) ? createReadTools(deps) : []),
     ...(needsAll || setsOverlap(onlyNames!, WRITE_TOOL_NAMES) ? createWriteTools(deps) : []),
     ...(needsAll || setsOverlap(onlyNames!, OBSERVABILITY_TOOL_NAMES) ? createObservabilityTools(deps) : []),
     ...(needsAll || setsOverlap(onlyNames!, SKILL_TOOL_NAMES) ? createSkillTools(deps) : []),
   ];
+
+  return tools.map((toolDef) => wrapToolWithAudit(toolDef as SdkMcpToolDefinition<any>)) as typeof tools;
+
+  function wrapToolWithAudit(toolDef: SdkMcpToolDefinition<any>): SdkMcpToolDefinition<any> {
+    const originalHandler = toolDef.handler;
+    return {
+      ...toolDef,
+      handler: async (args, extra) => {
+        const turnId = recordTurn(toolDef.name, args);
+        try {
+          const result = await originalHandler(args, extra);
+          if (turnId !== null) {
+            try {
+              updateTurn(turnId, {
+                tool_output_summary: summarizeToolResult(result),
+                completed_at: epochSeconds(),
+              });
+            } catch {
+              /* audit trail is best-effort */
+            }
+          }
+          return result;
+        } catch (error) {
+          if (turnId !== null) {
+            try {
+              updateTurn(turnId, {
+                tool_output_summary: summarizeToolError(error),
+                completed_at: epochSeconds(),
+              });
+            } catch {
+              /* audit trail is best-effort */
+            }
+          }
+          throw error;
+        }
+      },
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------

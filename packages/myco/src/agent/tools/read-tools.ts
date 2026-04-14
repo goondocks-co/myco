@@ -9,10 +9,10 @@ import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { SEARCH_SIMILARITY_THRESHOLD, TEAM_SOURCE_PREFIX } from '@myco/constants.js';
 import { getUnprocessedBatches } from '@myco/db/queries/batches.js';
-import { listSpores } from '@myco/db/queries/spores.js';
+import { getSpore, listSpores } from '@myco/db/queries/spores.js';
 import { listSessions, getActiveSessionIds } from '@myco/db/queries/sessions.js';
 import { getStatesForAgent } from '@myco/db/queries/agent-state.js';
-import { fullTextSearch } from '@myco/db/queries/search.js';
+import { fullTextSearch, hydrateSearchResults } from '@myco/db/queries/search.js';
 import { listEntities } from '@myco/db/queries/entities.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
 import { textResult, type VaultToolDeps } from './types.js';
@@ -44,7 +44,7 @@ const DEFAULT_EDGES_LIMIT = 50;
 // ---------------------------------------------------------------------------
 
 export function createReadTools(deps: VaultToolDeps) {
-  const { agentId, embeddingManager, teamClient, machineId, recordTurn } = deps;
+  const { agentId, embeddingManager, teamClient, machineId } = deps;
 
   const vaultUnprocessed = tool(
     'vault_unprocessed',
@@ -55,7 +55,6 @@ export function createReadTools(deps: VaultToolDeps) {
       include_active: z.boolean().optional().describe('Include batches from sessions still in active status (default: false)'),
     },
     async (args) => {
-      recordTurn('vault_unprocessed', args);
       const batches = getUnprocessedBatches({
         after_id: args.after_id,
         limit: args.limit ?? DEFAULT_UNPROCESSED_LIMIT,
@@ -68,8 +67,9 @@ export function createReadTools(deps: VaultToolDeps) {
 
   const vaultSpores = tool(
     'vault_spores',
-    'List spores with optional filters (agent, observation type, status, session). Spores from in-flight sessions are excluded by default; passing a specific session_id bypasses this filter. Pass include_active=true to bulk-read live work.',
+    'List spores with optional filters (agent, observation type, status, session), or fetch exact spores by id for full-content inspection after a semantic shortlist. Spores from in-flight sessions are excluded by default; passing a specific session_id or ids bypasses this filter. Pass include_active=true to bulk-read live work.',
     {
+      ids: z.array(z.string()).optional().describe('Fetch exact spores by id in the given order; bypasses active-session gating'),
       agent_id: z.string().optional().describe('Filter by agent ID'),
       observation_type: z.string().optional().describe('Filter by observation type (e.g., gotcha, decision)'),
       status: z.enum(['active', 'superseded', 'archived']).optional().describe('Filter by status'),
@@ -78,7 +78,12 @@ export function createReadTools(deps: VaultToolDeps) {
       include_active: z.boolean().optional().describe('Include spores from sessions still in active status (default: false)'),
     },
     async (args) => {
-      recordTurn('vault_spores', args);
+      if (args.ids && args.ids.length > 0) {
+        const spores = args.ids
+          .map((id) => getSpore(id))
+          .filter((spore): spore is NonNullable<typeof spore> => spore !== null);
+        return textResult(spores);
+      }
       const spores = listSpores({
         agent_id: args.agent_id,
         observation_type: args.observation_type,
@@ -101,7 +106,6 @@ export function createReadTools(deps: VaultToolDeps) {
       include_active: z.boolean().optional().describe('Include sessions still in active status (default: false)'),
     },
     async (args) => {
-      recordTurn('vault_sessions', args);
       const sessions = listSessions({
         limit: args.limit ?? DEFAULT_SESSIONS_LIMIT,
         status: args.status,
@@ -122,7 +126,6 @@ export function createReadTools(deps: VaultToolDeps) {
       include_active: z.boolean().optional().describe('Include results from sessions still in active status (default: false)'),
     },
     async (args) => {
-      recordTurn('vault_search_fts', args);
       try {
         const results = fullTextSearch(args.query, {
           type: args.type,
@@ -147,7 +150,6 @@ export function createReadTools(deps: VaultToolDeps) {
       include_active: z.boolean().optional().describe('Include results from sessions still in active status (default: false)'),
     },
     async (args) => {
-      recordTurn('vault_search_semantic', args);
       if (!embeddingManager) {
         return textResult({ results: [], message: 'Embedding provider unavailable' });
       }
@@ -158,9 +160,10 @@ export function createReadTools(deps: VaultToolDeps) {
         }
         const searchLimit = args.limit ?? DEFAULT_SEARCH_LIMIT;
         const excludeActive = args.include_active !== true;
+        const activeIds = excludeActive ? getActiveSessionIds() : new Set<string>();
 
         // Fire local and team search in parallel
-        const [localResults, teamResults] = await Promise.all([
+        const [rawLocalResults, teamResults] = await Promise.all([
           Promise.resolve(
             embeddingManager.searchVectors(queryVector, {
               namespace: args.namespace,
@@ -175,33 +178,38 @@ export function createReadTools(deps: VaultToolDeps) {
             : Promise.resolve([] as Array<Record<string, unknown>>),
         ]);
 
+        const localResults = activeIds.size > 0
+          ? rawLocalResults.filter((r) => {
+              const sid = r.metadata?.session_id;
+              return typeof sid !== 'string' || !activeIds.has(sid);
+            })
+          : rawLocalResults;
+
+        const hydratedLocalResults = hydrateSearchResults(localResults).map((r) => ({
+          ...r,
+          source: 'local' as const,
+        }));
+
         // Deduplicate: skip team results from this machine (we already have them locally)
-        const dedupedTeam = machineId
+        let dedupedTeam = machineId
           ? teamResults.filter((r) => (r as Record<string, unknown>).machine_id !== machineId)
           : teamResults;
 
-        // Merge by similarity/score (normalize to common key), slice to limit
-        let merged = [
-          ...localResults.map((r) => ({ ...r, score: r.similarity })),
-          ...dedupedTeam,
-        ]
-          .sort((a, b) => ((b.score as number) ?? 0) - ((a.score as number) ?? 0));
-
-        // The vector store is a separate concern from the session table, so
-        // we filter active-session results in memory. Results without a
-        // session_id (agent-authored spores, project-scoped artifacts)
-        // always pass through.
-        if (excludeActive) {
-          const activeIds = getActiveSessionIds();
-          if (activeIds.size > 0) {
-            merged = merged.filter((r) => {
-              const sid = (r as { metadata?: { session_id?: unknown } }).metadata?.session_id;
-              return typeof sid !== 'string' || !activeIds.has(sid);
-            });
-          }
+        if (activeIds.size > 0) {
+          dedupedTeam = dedupedTeam.filter((r) => {
+            const sid = (r as { metadata?: { session_id?: unknown } }).metadata?.session_id;
+            return typeof sid !== 'string' || !activeIds.has(sid);
+          });
         }
 
-        return textResult({ results: merged.slice(0, searchLimit) });
+        const merged = [
+          ...hydratedLocalResults,
+          ...dedupedTeam,
+        ]
+          .sort((a, b) => ((b.score as number) ?? 0) - ((a.score as number) ?? 0))
+          .slice(0, searchLimit);
+
+        return textResult({ results: merged });
       } catch {
         return textResult({ results: [], message: 'Semantic search unavailable' });
       }
@@ -214,7 +222,6 @@ export function createReadTools(deps: VaultToolDeps) {
     'Get all state key-value pairs for the current agent.',
     {},
     async () => {
-      recordTurn('vault_state', {});
       const states = getStatesForAgent(agentId);
       return textResult(states);
     },
@@ -230,7 +237,6 @@ export function createReadTools(deps: VaultToolDeps) {
       limit: z.number().optional().describe('Maximum entities to return'),
     },
     async (args) => {
-      recordTurn('vault_entities', args);
       const entities = listEntities({
         agent_id: agentId,
         type: args.type,
@@ -252,7 +258,6 @@ export function createReadTools(deps: VaultToolDeps) {
       limit: z.number().optional().describe('Maximum edges to return'),
     },
     async (args) => {
-      recordTurn('vault_edges', args);
       const edges = listGraphEdges({
         sourceId: args.source_id,
         targetId: args.target_id,
