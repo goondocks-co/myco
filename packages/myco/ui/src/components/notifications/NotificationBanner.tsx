@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { X, CheckCircle2, AlertTriangle, AlertCircle, Info } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { POLL_INTERVALS } from '../../lib/constants';
-import { useLiveNotifications, useUpdateNotification, type Notification, type NotificationLevel } from '../../hooks/use-notifications';
+import { useNotifications, useUpdateNotification, type Notification, type NotificationLevel } from '../../hooks/use-notifications';
 
 const BANNER_MAX_VISIBLE = 3;
 const BANNER_AUTO_DISMISS_MS = 5_000;
@@ -26,7 +26,7 @@ const LEVEL_ICONS: Record<NotificationLevel, typeof Info> = {
 };
 
 export function NotificationBanner({ panelOpen = false }: { panelOpen?: boolean }) {
-  const { data } = useLiveNotifications({
+  const { data } = useNotifications({
     status: 'unread',
     mode: 'banner',
     limit: BANNER_MAX_VISIBLE,

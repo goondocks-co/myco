@@ -8,7 +8,7 @@ const useNotificationsMock = vi.fn();
 const useScopedConfigMock = vi.fn();
 
 vi.mock('../../packages/myco/ui/src/hooks/use-notifications', () => ({
-  useLiveNotifications: () => useNotificationsMock(),
+  useNotifications: () => useNotificationsMock(),
 }));
 
 vi.mock('../../packages/myco/ui/src/hooks/use-scoped-config', () => ({

@@ -14,7 +14,7 @@ import { cn } from '../../lib/cn';
 import { Button } from '../ui/button';
 import { MarkdownContent } from '../ui/markdown-content';
 import {
-  useLiveNotifications,
+  useNotifications,
   useUpdateNotification,
   useMarkAllRead,
   useDismissAll,
@@ -146,7 +146,7 @@ function NotificationRow({
 }
 
 export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
-  const { data, refetch } = useLiveNotifications({
+  const { data, refetch } = useNotifications({
     limit: 50,
     enabled: open,
     pollCategory: 'realtime',

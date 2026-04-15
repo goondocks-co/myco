@@ -51,6 +51,16 @@ interface RegistryResponse {
   domains: NotificationDomainDescriptor[];
 }
 
+interface NotificationQueryOptions {
+  status?: NotificationStatus;
+  domain?: string;
+  mode?: NotificationMode;
+  limit?: number;
+  enabled?: boolean;
+  pollCategory?: PollCategory;
+  refetchInterval?: number | false;
+}
+
 // ---------------------------------------------------------------------------
 // Poll interval for unread count badge
 // ---------------------------------------------------------------------------
@@ -72,40 +82,7 @@ export function useUnreadCount() {
 }
 
 /** Fetch notifications with optional filters. */
-export function useNotifications(opts?: {
-  status?: NotificationStatus;
-  domain?: string;
-  mode?: NotificationMode;
-  limit?: number;
-  enabled?: boolean;
-  pollCategory?: PollCategory;
-  refetchInterval?: number | false;
-}) {
-  const params = new URLSearchParams();
-  if (opts?.status) params.set('status', opts.status);
-  if (opts?.domain) params.set('domain', opts.domain);
-  if (opts?.mode) params.set('mode', opts.mode);
-  if (opts?.limit) params.set('limit', String(opts.limit));
-  const qs = params.toString();
-  const path = qs ? `/notifications?${qs}` : '/notifications';
-
-  return useQuery<NotificationListResponse>({
-    queryKey: ['notifications', 'list', opts],
-    queryFn: ({ signal }) => fetchJson<NotificationListResponse>(path, { signal }),
-    enabled: opts?.enabled,
-  });
-}
-
-/** Fetch notifications with power-aware polling support. */
-export function useLiveNotifications(opts?: {
-  status?: NotificationStatus;
-  domain?: string;
-  mode?: NotificationMode;
-  limit?: number;
-  enabled?: boolean;
-  pollCategory: PollCategory;
-  refetchInterval: number;
-}) {
+export function useNotifications(opts?: NotificationQueryOptions) {
   const params = new URLSearchParams();
   if (opts?.status) params.set('status', opts.status);
   if (opts?.domain) params.set('domain', opts.domain);
@@ -118,8 +95,8 @@ export function useLiveNotifications(opts?: {
     queryKey: ['notifications', 'list', opts],
     queryFn: ({ signal }) => fetchJson<NotificationListResponse>(path, { signal }),
     enabled: opts?.enabled,
-    pollCategory: opts.pollCategory,
-    refetchInterval: opts.refetchInterval,
+    pollCategory: opts?.pollCategory ?? 'standard',
+    refetchInterval: opts?.refetchInterval ?? false,
   });
 }
 

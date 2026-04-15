@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { useLiveNotifications, type Notification } from '../../hooks/use-notifications';
+import { useNotifications, type Notification } from '../../hooks/use-notifications';
 import { useScopedConfig } from '../../hooks/use-scoped-config';
 import { POLL_INTERVALS } from '../../lib/constants';
 
@@ -12,7 +12,7 @@ import { POLL_INTERVALS } from '../../lib/constants';
 export function SystemNotifications() {
   const { effective } = useScopedConfig();
   const enabled = effective?.notifications?.system_notifications ?? false;
-  const { data, refetch } = useLiveNotifications({
+  const { data, refetch } = useNotifications({
     status: 'unread',
     mode: 'banner',
     limit: 5,
