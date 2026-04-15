@@ -56,4 +56,20 @@ describe('DaemonLogger', () => {
     expect(files.length).toBeGreaterThan(1);
     expect(files.length).toBeLessThanOrEqual(4); // daemon.log + 3 rotated
   });
+
+  it('setLevel changes the active level for subsequent writes', () => {
+    const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-logger-setlevel-'));
+    try {
+      const logger = new DaemonLogger(logDir, { level: 'info' });
+      logger.debug('test', 'should-be-dropped');
+      logger.setLevel('debug');
+      logger.debug('test', 'should-appear');
+      const logFile = path.join(logDir, 'daemon.log');
+      const contents = fs.readFileSync(logFile, 'utf-8');
+      expect(contents).not.toContain('should-be-dropped');
+      expect(contents).toContain('should-appear');
+    } finally {
+      fs.rmSync(logDir, { recursive: true, force: true });
+    }
+  });
 });
