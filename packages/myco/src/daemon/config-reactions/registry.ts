@@ -10,9 +10,7 @@
  * - A reaction MUST NOT issue a scoped-config write itself (would recurse).
  */
 
-export interface ReactionLogger {
-  error(kind: string, message: string, data?: Record<string, unknown>): void;
-}
+import type { Logger } from '../logger.js';
 
 export interface ConfigReactionRegistry {
   /**
@@ -39,7 +37,7 @@ interface Entry {
   fn: () => void | Promise<void>;
 }
 
-export function createConfigReactionRegistry(logger: ReactionLogger): ConfigReactionRegistry {
+export function createConfigReactionRegistry(logger: Logger): ConfigReactionRegistry {
   const entries: Entry[] = [];
 
   return {

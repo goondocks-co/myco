@@ -4,7 +4,6 @@ import YAML from 'yaml';
 import { MycoConfigSchema, type MycoConfig, type BackupConfig, type TeamConfig } from './schema.js';
 import { runMigrations, CURRENT_MIGRATION_VERSION } from './migrations.js';
 import { deepMerge } from '../utils/deep-merge.js';
-import { unsetAtPath } from '../utils/dot-path.js';
 
 export const CONFIG_FILENAME = 'myco.yaml';
 export const LOCAL_CONFIG_FILENAME = 'local.yaml';
@@ -190,18 +189,25 @@ export function loadMergedConfig(vaultDir: string): MycoConfig {
   return MycoConfigSchema.parse(merged);
 }
 
-/** Write a partial to <vaultDir>/local.yaml, deep-merging with existing local content. */
-export function saveLocalConfig(vaultDir: string, patch: Partial<MycoConfig>): Partial<MycoConfig> {
-  const existing = loadLocalConfig(vaultDir);
-  const next = deepMergeConfig(existing as Record<string, unknown>, patch as Record<string, unknown>) as Partial<MycoConfig>;
-
-  const existingYaml = YAML.stringify(existing);
+/**
+ * Write local.yaml only when the serialized contents differ from `current`.
+ * Skips the write (and mkdirSync) on a no-op to avoid noisy file mtimes.
+ */
+function writeLocalYamlIfChanged<T>(vaultDir: string, current: T, next: T): T {
+  const existingYaml = YAML.stringify(current);
   const nextYaml = YAML.stringify(next);
   if (existingYaml === nextYaml) return next;
 
   fs.mkdirSync(vaultDir, { recursive: true });
   fs.writeFileSync(localConfigPath(vaultDir), nextYaml, 'utf-8');
   return next;
+}
+
+/** Write a partial to <vaultDir>/local.yaml, deep-merging with existing local content. */
+export function saveLocalConfig(vaultDir: string, patch: Partial<MycoConfig>): Partial<MycoConfig> {
+  const existing = loadLocalConfig(vaultDir);
+  const next = deepMergeConfig(existing as Record<string, unknown>, patch as Record<string, unknown>) as Partial<MycoConfig>;
+  return writeLocalYamlIfChanged(vaultDir, existing, next);
 }
 
 /**
@@ -215,28 +221,5 @@ export function updateLocalConfig(
   fn: (local: Partial<MycoConfig>) => Partial<MycoConfig>,
 ): Partial<MycoConfig> {
   const current = loadLocalConfig(vaultDir);
-  const updated = fn(current);
-
-  const existingYaml = YAML.stringify(current);
-  const nextYaml = YAML.stringify(updated);
-  if (existingYaml === nextYaml) return updated;
-
-  fs.mkdirSync(vaultDir, { recursive: true });
-  fs.writeFileSync(localConfigPath(vaultDir), nextYaml, 'utf-8');
-  return updated;
-}
-
-/**
- * Clear one or more top-level keys from local config (e.g. to "reset to project default").
- * Accepts dotted paths (e.g. 'appearance.theme') for single-field resets.
- */
-export function clearLocalConfigKeys(vaultDir: string, keys: string[]): Partial<MycoConfig> {
-  const current = loadLocalConfig(vaultDir) as Record<string, unknown>;
-  const changed = keys.reduce((acc, key) => unsetAtPath(current, key) || acc, false);
-
-  if (!changed) return current;
-
-  fs.mkdirSync(vaultDir, { recursive: true });
-  fs.writeFileSync(localConfigPath(vaultDir), YAML.stringify(current), 'utf-8');
-  return current;
+  return writeLocalYamlIfChanged(vaultDir, current, fn(current));
 }

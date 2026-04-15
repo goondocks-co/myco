@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { loadConfig, saveConfig, updateConfig } from '@myco/config/loader';
-import { loadLocalConfig, loadMergedConfig, saveLocalConfig, updateLocalConfig, clearLocalConfigKeys } from '@myco/config/loader';
+import { loadLocalConfig, loadMergedConfig, saveLocalConfig, updateLocalConfig } from '@myco/config/loader';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -198,31 +198,6 @@ describe('Local config overlay', () => {
     writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`);
     updateLocalConfig(tmpDir, (local) => ({ ...local, appearance: { ...local.appearance, theme: 'dusk' } }));
     expect(loadLocalConfig(tmpDir).appearance?.theme).toBe('dusk');
-  });
-
-  it('clearLocalConfigKeys removes leaf overrides', () => {
-    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`);
-    saveLocalConfig(tmpDir, { appearance: { theme: 'plum', font: 'geist-mono' } });
-    clearLocalConfigKeys(tmpDir, ['appearance.theme']);
-    const local = loadLocalConfig(tmpDir);
-    expect(local.appearance).toEqual({ font: 'geist-mono' });
-  });
-
-  it('clearLocalConfigKeys does not create local.yaml when nothing to clear', () => {
-    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`);
-    // No local.yaml exists, no overrides to clear
-    clearLocalConfigKeys(tmpDir, ['appearance.theme']);
-    expect(fs.existsSync(path.join(tmpDir, 'local.yaml'))).toBe(false);
-  });
-
-  it('clearLocalConfigKeys does not write file when key is already absent', () => {
-    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`);
-    saveLocalConfig(tmpDir, { appearance: { theme: 'moss' } });
-    const mtimeBefore = fs.statSync(path.join(tmpDir, 'local.yaml')).mtimeMs;
-    // Clear a key that doesn't exist
-    clearLocalConfigKeys(tmpDir, ['appearance.font']);
-    const mtimeAfter = fs.statSync(path.join(tmpDir, 'local.yaml')).mtimeMs;
-    expect(mtimeAfter).toBe(mtimeBefore);
   });
 
   it('merged-array policy: local arrays replace project arrays', () => {

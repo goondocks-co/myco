@@ -68,7 +68,7 @@ describe('createPlanWatchReaction', () => {
     expect(planWatchConfig.watchDirs).toContain('/local/override');
   });
 
-  it('swallows loadMergedConfig errors (malformed yaml during reconcile should not throw)', () => {
+  it('propagates load errors (registry is responsible for error isolation)', () => {
     fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), '::: not yaml');
     const planWatchConfig: PlanWatchConfig = {
       projectRoot: tmpDir,
@@ -79,8 +79,8 @@ describe('createPlanWatchReaction', () => {
       symbiontPlanDirs: ['/symbiont/x'],
       planWatchConfig,
     });
-    expect(() => reaction()).not.toThrow();
-    // watchDirs unchanged on failure
+    expect(() => reaction()).toThrow();
+    // watchDirs unchanged because the throw happened before the assignment.
     expect(planWatchConfig.watchDirs).toEqual(['/symbiont/x']);
   });
 });

@@ -75,38 +75,23 @@ export function useScopedConfig() {
     [invalidateForScope],
   );
 
+  /**
+   * Atomic write to the chosen scope. Applies a patch (field -> value pairs)
+   * and optionally clears a set of dot-paths — both in a single PUT so
+   * coupled transitions can't tear (e.g. Clear Provider unsets the provider
+   * and disables the tied task toggles together).
+   */
   const setFields = useCallback(
     async (
       fields: Array<{ path: ConfigPath; value: unknown }>,
       scope: Scope,
+      clearPaths?: ConfigPath[],
     ): Promise<void> => {
       const patch: Record<string, unknown> = {};
       for (const { path, value } of fields) {
         setAtPath(patch, path, value);
       }
-      await writeScopedConfig(scope, patch);
-      invalidateForScope(scope);
-    },
-    [invalidateForScope],
-  );
-
-  /**
-   * Atomic patch + clear at the chosen scope. One PUT to /config/scoped
-   * applies field writes and key removals together — useful for transitions
-   * that would otherwise race (e.g. Clear Provider needs to unset the
-   * provider and disable the tied task toggles in a single step).
-   */
-  const setFieldsAndClear = useCallback(
-    async (
-      fields: Array<{ path: ConfigPath; value: unknown }>,
-      clearPaths: ConfigPath[],
-      scope: Scope,
-    ): Promise<void> => {
-      const patch: Record<string, unknown> = {};
-      for (const { path, value } of fields) {
-        setAtPath(patch, path, value);
-      }
-      await writeScopedConfig(scope, patch, clearPaths as string[]);
+      await writeScopedConfig(scope, patch, clearPaths as string[] | undefined);
       invalidateForScope(scope);
     },
     [invalidateForScope],
@@ -139,7 +124,6 @@ export function useScopedConfig() {
     isLocalOverride,
     setField,
     setFields,
-    setFieldsAndClear,
     resetField,
     promoteField,
   };

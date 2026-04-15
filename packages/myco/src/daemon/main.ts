@@ -205,7 +205,7 @@ export async function main(): Promise<void> {
   const symbiontPlanDirs = manifests.flatMap((m) => m.capture?.planDirs ?? []);
   const symbiontPlanTags = [...new Set(manifests.flatMap((m) => m.capture?.planTags ?? []))];
   const projectRoot = process.cwd();
-  let planWatchConfig: PlanWatchConfig = {
+  const planWatchConfig: PlanWatchConfig = {
     watchDirs: [...new Set([...symbiontPlanDirs, ...(config.capture.plan_dirs ?? [])])],
     projectRoot,
     extensions: config.capture.artifact_extensions,
@@ -521,32 +521,25 @@ export async function main(): Promise<void> {
   // packages/myco/src/daemon/config-reactions/registry.ts for the contract.
   const reactions = createConfigReactionRegistry(logger);
 
-  // Fires on every write — keeps the live-stats configHash in sync.
+  // Refresh the live-stats configHash on every write.
   reactions.on([], () => { configHash = computeConfigHash(vaultDir); });
 
-  // Fires on every write — preserves today's symbiont reconcile behavior.
-  // TODO(follow-up): narrow to ['capture.plan_dirs', 'capture.ignore_plan_dirs_in_git']
-  // once reconcile's actual dependencies are audited.
-  reactions.on([], () => {
+  // Reinstall symbiont artefacts (agent hooks, .gitignore) when capture dirs
+  // or symbiont enablement change. The reconcile has no other config inputs.
+  reactions.on(['capture', 'symbionts'], () => {
     reconcileConfiguredSymbionts(path.dirname(vaultDir), vaultDir);
   });
 
-  // Fires when capture.* changes — updates the in-memory watch dir list.
+  // Refresh the in-memory plan-watch list on capture changes.
   reactions.on(['capture'], createPlanWatchReaction({
     vaultDir,
     symbiontPlanDirs,
     planWatchConfig,
   }));
 
-  // Fires when daemon.log_level changes — live-reconfigures the logger.
-  // Reads the MERGED config because log_level defaults to local scope in the
-  // UI; reading project-only would miss per-machine overrides.
+  // Live-reconfigure the logger on daemon.log_level change.
   reactions.on(['daemon.log_level'], () => {
-    try {
-      logger.setLevel(loadMergedConfig(vaultDir).daemon.log_level);
-    } catch {
-      // Swallow transient load failures; next reaction still runs.
-    }
+    logger.setLevel(loadMergedConfig(vaultDir).daemon.log_level);
   });
 
   server.registerRoute('PUT', '/api/config/scoped', async (req) => {
