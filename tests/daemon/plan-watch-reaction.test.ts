@@ -49,7 +49,26 @@ describe('createPlanWatchReaction', () => {
     expect(planWatchConfig.watchDirs.filter((d) => d === '/symbiont/x')).toHaveLength(1);
   });
 
-  it('swallows loadConfig errors (malformed yaml during reconcile should not throw)', () => {
+  it('picks up plan_dirs from local overlay (merged config, not project-only)', () => {
+    // Project has no custom plan dirs; local overlay adds one.
+    fs.writeFileSync(path.join(tmpDir, 'myco.yaml'),
+      `version: 3\ncapture:\n  plan_dirs: []\n`);
+    fs.writeFileSync(path.join(tmpDir, 'local.yaml'),
+      `capture:\n  plan_dirs:\n    - /local/override\n`);
+    const planWatchConfig: PlanWatchConfig = {
+      projectRoot: tmpDir,
+      watchDirs: [],
+    };
+    const reaction = createPlanWatchReaction({
+      vaultDir: tmpDir,
+      symbiontPlanDirs: [],
+      planWatchConfig,
+    });
+    reaction();
+    expect(planWatchConfig.watchDirs).toContain('/local/override');
+  });
+
+  it('swallows loadMergedConfig errors (malformed yaml during reconcile should not throw)', () => {
     fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), '::: not yaml');
     const planWatchConfig: PlanWatchConfig = {
       projectRoot: tmpDir,

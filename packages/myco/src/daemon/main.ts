@@ -10,7 +10,7 @@
 import { DaemonServer } from './server.js';
 import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger } from './logger.js';
-import { loadConfig, updateConfig } from '../config/loader.js';
+import { loadConfig, loadMergedConfig, updateConfig } from '../config/loader.js';
 import { resolvePort } from './port.js';
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
@@ -539,9 +539,11 @@ export async function main(): Promise<void> {
   }));
 
   // Fires when daemon.log_level changes — live-reconfigures the logger.
+  // Reads the MERGED config because log_level defaults to local scope in the
+  // UI; reading project-only would miss per-machine overrides.
   reactions.on(['daemon.log_level'], () => {
     try {
-      logger.setLevel(loadConfig(vaultDir).daemon.log_level);
+      logger.setLevel(loadMergedConfig(vaultDir).daemon.log_level);
     } catch {
       // Swallow transient load failures; next reaction still runs.
     }

@@ -288,4 +288,31 @@ describe('log-retention power job', () => {
     const rows = getLogTail(50).entries;
     expect(rows.some((r) => r.message === 'old-entry')).toBe(true);
   });
+
+  it('honors local.yaml overrides for log_retention_days (merged config)', async () => {
+    registerPowerJobs(pm as never, buildDeps());
+
+    // Project config keeps retention=7; local overlay raises to 30.
+    fs.writeFileSync(path.join(tmpDir, 'local.yaml'),
+      `daemon:\n  log_retention_days: 30\n`);
+
+    const FOURTEEN_DAYS_AGO = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+    insertLogEntry({
+      timestamp: FOURTEEN_DAYS_AGO,
+      level: 'info',
+      kind: 'test',
+      component: 'test',
+      message: 'overlay-entry',
+      data: null,
+      session_id: null,
+    });
+
+    await pm.find('log-retention').fn();
+
+    const { getLogTail } = await import('@myco/db/queries/logs');
+    const rows = getLogTail(50).entries;
+    // With merged config the overlay wins (30 days retention) and the 14-day-old entry survives.
+    // With project-only the stale 7-day retention would delete it.
+    expect(rows.some((r) => r.message === 'overlay-entry')).toBe(true);
+  });
 });
