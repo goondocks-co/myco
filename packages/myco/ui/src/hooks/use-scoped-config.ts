@@ -90,6 +90,28 @@ export function useScopedConfig() {
     [invalidateForScope],
   );
 
+  /**
+   * Atomic patch + clear at the chosen scope. One PUT to /config/scoped
+   * applies field writes and key removals together — useful for transitions
+   * that would otherwise race (e.g. Clear Provider needs to unset the
+   * provider and disable the tied task toggles in a single step).
+   */
+  const setFieldsAndClear = useCallback(
+    async (
+      fields: Array<{ path: ConfigPath; value: unknown }>,
+      clearPaths: ConfigPath[],
+      scope: Scope,
+    ): Promise<void> => {
+      const patch: Record<string, unknown> = {};
+      for (const { path, value } of fields) {
+        setAtPath(patch, path, value);
+      }
+      await writeScopedConfig(scope, patch, clearPaths as string[]);
+      invalidateForScope(scope);
+    },
+    [invalidateForScope],
+  );
+
   const resetField = useCallback(async (path: ConfigPath): Promise<void> => {
     await clearLocalConfigKeys([path]);
     invalidateLocal();
@@ -117,6 +139,7 @@ export function useScopedConfig() {
     isLocalOverride,
     setField,
     setFields,
+    setFieldsAndClear,
     resetField,
     promoteField,
   };

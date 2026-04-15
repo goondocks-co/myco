@@ -115,7 +115,7 @@ function providerToDraft(p: { type?: string; model?: string; base_url?: string; 
  *    • Clear Provider also disables both task toggles
  *  These mirror the previous batched-Save behaviour but happen atomically. */
 function AgentProviderCard() {
-  const { effective, setField, setFields, isLocalOverride, resetField, promoteField } = useScopedConfig();
+  const { effective, setField, setFields, setFieldsAndClear, isLocalOverride, resetField, promoteField } = useScopedConfig();
   const { data: providersData, isPending: isLoadingProviders } = useProviders();
   const agentTestMutation = useTestProvider();
 
@@ -192,25 +192,23 @@ function AgentProviderCard() {
   const handleClear = useCallback(async () => {
     setDraft({ type: '', model: '', baseUrl: '', contextLength: '' });
     agentTestMutation.reset();
-    // /simplify Q7: sequence the two writes so a partial failure (e.g. the
-    // toggles write succeeds but resetField fails) doesn't leave the user
-    // with disabled tasks AND a still-set provider — we'd rather both
-    // succeed or both error out.
-    //
-    // deepMerge skips undefined source values, so writing { provider: undefined }
-    // won't clear a project-scoped provider. resetField clears the local
-    // override only; a project-scoped provider must be removed from
-    // myco.yaml directly.
+    // One atomic PUT: disables both task toggles AND clears the local
+    // agent.provider override. Server applies clear-before-patch in a single
+    // write, so there's no partial-failure window. A project-scoped provider
+    // still requires editing myco.yaml directly.
     try {
-      await setFields([
-        { path: 'agent.scheduled_tasks_enabled', value: false },
-        { path: 'agent.event_tasks_enabled', value: false },
-      ], 'local');
-      await resetField('agent.provider');
+      await setFieldsAndClear(
+        [
+          { path: 'agent.scheduled_tasks_enabled', value: false },
+          { path: 'agent.event_tasks_enabled', value: false },
+        ],
+        ['agent.provider'],
+        'local',
+      );
     } catch (err) {
       console.error('[agent-card] clear provider failed', err);
     }
-  }, [setFields, resetField, agentTestMutation]);
+  }, [setFieldsAndClear, agentTestMutation]);
 
   const handleTestConnection = useCallback(() => {
     if (draft.type === '') return;

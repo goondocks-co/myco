@@ -59,8 +59,11 @@ export function fetchLocalConfig(signal?: AbortSignal): Promise<Partial<MergedCo
 export function writeScopedConfig(
   scope: 'project' | 'local',
   patch: Record<string, unknown>,
+  clear?: string[],
 ): Promise<unknown> {
-  return putJson<unknown>('/config/scoped', { scope, patch });
+  const body: Record<string, unknown> = { scope, patch };
+  if (clear && clear.length > 0) body.clear = clear;
+  return putJson<unknown>('/config/scoped', body);
 }
 
 export function clearLocalConfigKeys(keys: string[]): Promise<unknown> {
