@@ -557,21 +557,9 @@ export async function main(): Promise<void> {
   });
 
   const planDirHandlers = createPlanDirHandlers({
-    vaultDir,
     symbiontPlanDirsByAgent,
-    symbiontPlanDirs,
-    planWatchConfig,
-    setPlanWatchConfig: (cfg) => { planWatchConfig = cfg; },
-    reconcileProjectFiles: () => { reconcileConfiguredSymbionts(path.dirname(vaultDir), vaultDir); },
   });
   server.registerRoute('GET', '/api/config/plan-dirs', planDirHandlers.handleGetPlanDirs);
-  server.registerRoute('POST', '/api/config/plan-dirs', async (req) => {
-    const result = await planDirHandlers.handleUpdatePlanDirs(req);
-    if (!result.status || result.status < 400) {
-      configHash = computeConfigHash(vaultDir);
-    }
-    return result;
-  });
 
   // V2 stats — vault counts, embedding coverage, agent status, digest freshness
   const configHashRef = { get: () => configHash };
