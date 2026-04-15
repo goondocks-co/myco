@@ -39,12 +39,15 @@ function mockEmbeddingManager(overrides: Record<string, unknown> = {}): Embeddin
   } as unknown as EmbeddingManager;
 }
 
-function makeDeps(overrides: Partial<ContextDeps> = {}): ContextDeps {
+function makeDeps(overrides: Partial<ContextDeps> & { config?: MycoConfig } = {}): ContextDeps {
+  // Legacy tests pass `config` directly; translate into the liveConfig holder
+  // that the handler now reads from at call time.
+  const { config, liveConfig, ...rest } = overrides;
   return {
     embeddingManager: mockEmbeddingManager(),
     logger: mockLogger(),
-    config: MycoConfigSchema.parse({ version: 3 }),
-    ...overrides,
+    liveConfig: liveConfig ?? { current: config ?? MycoConfigSchema.parse({ version: 3 }) },
+    ...rest,
   };
 }
 

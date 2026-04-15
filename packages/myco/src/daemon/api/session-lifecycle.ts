@@ -49,7 +49,10 @@ export interface SessionLifecycleDeps {
   powerManager: PowerManager;
   machineId: string;
   logger: DaemonLogger;
-  config: MycoConfig;
+  // Holder so notify() consults the current merged config — a user toggling
+  // notifications.enabled or a domain's enabled flag sees the next event gate
+  // respect the change without a daemon restart.
+  liveConfig: { current: MycoConfig };
   vaultDir: string;
 }
 
@@ -67,7 +70,7 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
     powerManager,
     machineId,
     logger,
-    config,
+    liveConfig,
     vaultDir,
   } = deps;
 
@@ -108,7 +111,7 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
       message: branch ? `Branch: ${branch}` : undefined,
       link: `/sessions/${session_id}`,
       metadata: { sessionId: session_id, agent: agent ?? 'claude-code', branch },
-    }, config);
+    }, liveConfig.current);
 
     return { body: { ok: true, sessions: registry.sessions } };
   }
@@ -138,7 +141,7 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
       title: 'Session ended',
       link: `/sessions/${session_id}`,
       metadata: { sessionId: session_id },
-    }, config);
+    }, liveConfig.current);
 
     return { body: { ok: true, sessions: registry.sessions } };
   }

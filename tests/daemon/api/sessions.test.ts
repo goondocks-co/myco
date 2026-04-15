@@ -50,14 +50,16 @@ describe('handleCompleteSession', () => {
     // `event_tasks_enabled: false` short-circuits triggerTitleSummary before
     // it tries to dynamic-import the agent executor — test isolation without
     // needing to mock the whole module.
-    const config = {
-      agent: { summary_batch_interval: 5, event_tasks_enabled: false },
+    const liveConfig = {
+      current: {
+        agent: { summary_batch_interval: 5, event_tasks_enabled: false },
+      },
     };
     return createSessionMutationHandlers({
       embeddingManager: makeEmbeddingManagerStub() as never,
       vaultDir: tmpDir,
       logger: makeLogger() as never,
-      config: config as never,
+      liveConfig: liveConfig as never,
     });
   }
 

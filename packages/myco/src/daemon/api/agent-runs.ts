@@ -12,7 +12,7 @@ import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
 import { buildTaskInstruction, isInstructionRequiredTask } from '@myco/agent/instruction-builders.js';
 import { hasConfiguredProvider } from '@myco/agent/config-resolver.js';
-import { loadConfig } from '@myco/config/loader.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { notify } from '@myco/notifications/notify.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -62,7 +62,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
 
     // Guard: ensure a provider is configured before allowing a run.
     // Uses the same per-task-over-global precedence as the executor's resolver.
-    const mycoConfig = loadConfig(vaultDir);
+    const mycoConfig = loadMergedConfig(vaultDir);
     if (!hasConfiguredProvider(mycoConfig, task)) {
       return {
         status: 400,

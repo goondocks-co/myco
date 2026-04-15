@@ -131,6 +131,19 @@ describe('myco init', () => {
     consoleSpy.mockRestore();
   });
 
+  it('leaves agent toggles at their schema default (true) — init no longer scaffolds them as false', async () => {
+    // Regression: init used to explicitly write scheduled_tasks_enabled=false
+    // and event_tasks_enabled=false into myco.yaml. Combined with the daemon
+    // reading project-only config, this meant the scheduler never ran on a
+    // fresh install even when the user enabled the toggles at personal scope.
+    const vault = path.join(testDir, 'vault');
+    await run(['--vault', vault, '--embedding-model', 'bge-m3']);
+
+    const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
+    expect(config.agent.scheduled_tasks_enabled).toBe(true);
+    expect(config.agent.event_tasks_enabled).toBe(true);
+  });
+
   it('initializes plan_dirs as empty array (agent-specific dirs come from symbiont manifests)', async () => {
     const vault = path.join(testDir, 'vault');
     await run(['--vault', vault, '--embedding-model', 'bge-m3']);

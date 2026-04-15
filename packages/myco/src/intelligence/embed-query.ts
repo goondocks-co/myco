@@ -26,11 +26,11 @@ export async function tryEmbed(text: string): Promise<number[] | null> {
       // Dynamic import to avoid hard dependency on config at load time.
       // In Phase 1, embedding providers may not be configured.
       const { createEmbeddingProvider } = await import('./llm.js');
-      const { loadConfig } = await import('@myco/config/loader.js');
+      const { loadMergedConfig } = await import('@myco/config/loader.js');
       const { resolveVaultDir } = await import('@myco/vault/resolve.js');
 
       const vaultDir = resolveVaultDir();
-      const config = loadConfig(vaultDir);
+      const config = loadMergedConfig(vaultDir);
       if (!config.embedding) return null;
 
       cachedProvider = createEmbeddingProvider(config.embedding);

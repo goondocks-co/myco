@@ -50,7 +50,9 @@ export interface EventDispatchDeps {
   powerManager: PowerManager;
   logger: DaemonLogger;
   machineId: string;
-  config: MycoConfig;
+  // Holder so summary_batch_interval is read fresh on each user_prompt event —
+  // changing the interval in Settings takes effect on the very next prompt.
+  liveConfig: { current: MycoConfig };
   vaultDir: string;
   reconcileSession: (sessionId: string) => void;
   planWatchConfig: PlanWatchConfig; // object reference — mutated in place for hot-reload
@@ -68,7 +70,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     powerManager,
     logger,
     machineId,
-    config,
+    liveConfig,
     vaultDir: vaultDir,
     reconcileSession,
     planWatchConfig,
@@ -165,7 +167,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
 
           // Batch-threshold summary trigger
           const batchCount = promptNumber;
-          const summaryInterval = config.agent.summary_batch_interval;
+          const summaryInterval = liveConfig.current.agent.summary_batch_interval;
           if (summaryInterval > 0 && batchCount > 0 && batchCount % summaryInterval === 0) {
             triggerTitleSummary(event.session_id);
           }

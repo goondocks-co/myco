@@ -10,7 +10,7 @@
 import { DaemonServer } from './server.js';
 import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger } from './logger.js';
-import { loadConfig, updateConfig } from '../config/loader.js';
+import { loadMergedConfig, updateConfig } from '../config/loader.js';
 import { resolvePort } from './port.js';
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
@@ -200,7 +200,14 @@ export async function main(): Promise<void> {
   // Load API keys from secrets.env into process.env before any provider init
   loadSecrets(vaultDir);
 
-  const config = loadConfig(vaultDir);
+  // Merged = project (myco.yaml) + personal overlay (local.yaml). Any gate
+  // downstream of this needs to see personal overrides, so the daemon loads
+  // the merged view and never the raw project config.
+  const config = loadMergedConfig(vaultDir);
+  // Mutable holder that reactions update after each scoped-config write, so
+  // runtime gates (scheduled-task registration, event triggers) observe the
+  // flipped value without a daemon restart.
+  const liveConfig: { current: typeof config } = { current: config };
 
   const manifests = loadManifests();
   const symbiontPlanDirs = manifests.flatMap((m) => m.capture?.planDirs ?? []);
@@ -391,7 +398,7 @@ export async function main(): Promise<void> {
           message: 'Daemon restarted while run was in progress',
           link: `/agent?run=${row.id}`,
           metadata: { taskName: row.task, runId: row.id, reason: 'daemon_restart' },
-        }, config);
+        }, liveConfig.current);
       }
       logger.info(LOG_KINDS.AGENT_RUN, 'Cleaned stale running agent runs', {
         count: staleRows.length,
@@ -460,7 +467,7 @@ export async function main(): Promise<void> {
     transcriptMiner,
     embeddingManager,
     logger,
-    config,
+    liveConfig,
     vaultDir,
     planTags: symbiontPlanTags,
   });
@@ -468,7 +475,7 @@ export async function main(): Promise<void> {
   // --- Session routes ---
   const sessionLifecycle = createSessionLifecycleHandlers({
     registry, sessionBuffers, reconciler, stopProcessor,
-    server, powerManager, machineId, logger, config, vaultDir,
+    server, powerManager, machineId, logger, liveConfig, vaultDir,
   });
   server.registerRoute('POST', '/sessions/register', sessionLifecycle.handleRegister);
   server.registerRoute('POST', '/sessions/unregister', sessionLifecycle.handleUnregister);
@@ -481,7 +488,7 @@ export async function main(): Promise<void> {
     powerManager,
     logger,
     machineId,
-    config,
+    liveConfig,
     vaultDir,
     reconcileSession: reconciler.reconcileSession,
     planWatchConfig,
@@ -494,7 +501,7 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/events/stop', stopProcessor.handleStopRoute);
 
   // --- Context injection (digest + semantic spore search) ---
-  const contextDeps = { embeddingManager, config, logger };
+  const contextDeps = { embeddingManager, liveConfig, logger };
   server.registerRoute('POST', '/context', createSessionContextHandler(contextDeps));
   server.registerRoute('POST', '/context/resume', createResumeContextHandler(contextDeps));
   server.registerRoute('POST', '/context/prompt', createPromptContextHandler(contextDeps));
@@ -526,6 +533,11 @@ export async function main(): Promise<void> {
   // Refresh the live-stats configHash on every write.
   reactions.on([], () => { configHash = computeConfigHash(vaultDir); });
 
+  // Keep liveConfig pointed at the latest merged config so runtime gates
+  // (agent.scheduled_tasks_enabled, agent.event_tasks_enabled) pick up
+  // toggle flips immediately.
+  reactions.on([], (ctx) => { liveConfig.current = ctx; });
+
   // Reinstall symbiont artefacts (agent hooks, .gitignore) when capture dirs
   // or symbiont enablement change. The reconcile has no other config inputs.
   reactions.on(['capture', 'symbionts'], (ctx) => {
@@ -548,14 +560,31 @@ export async function main(): Promise<void> {
     }
   });
 
+  async function syncScheduledTasks() {
+    await registerScheduledTasks(powerManager, { definitionsDir, vaultDir, embeddingManager, logger, liveConfig });
+  }
+
+  reactions.on(['agent.tasks'], async () => {
+    await syncScheduledTasks();
+  });
+
+  async function applyConfigWriteReactions(touchedPaths: string[]) {
+    const reactionContext = loadReactionContext(vaultDir, logger);
+    if (!reactionContext) {
+      configHash = computeConfigHash(vaultDir);
+      return null;
+    }
+    await reactions.fire(touchedPaths, reactionContext);
+    return reactionContext;
+  }
+
   server.registerRoute('PUT', '/api/config/scoped', async (req) => {
     const result = await handlePutScopedConfig(vaultDir, req.body);
     if (!result.status || result.status < 400) {
       const body = req.body as { scope: 'project' | 'local'; patch?: unknown; clear?: string[] };
       const touchedPaths = computeTouchedPaths(body.patch, body.clear);
-      const reactionContext = loadReactionContext(vaultDir, logger);
+      const reactionContext = await applyConfigWriteReactions(touchedPaths);
       if (reactionContext) {
-        await reactions.fire(touchedPaths, reactionContext);
         const summary = buildScopedConfigSaveNotification(body.scope, touchedPaths);
         notify(vaultDir, {
           domain: 'settings',
@@ -621,7 +650,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/sessions', handleListSessions);
 
   server.registerRoute('GET', '/api/sessions/:id', handleGetSession);
-  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir, logger, config });
+  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir, logger, liveConfig });
   server.registerRoute('GET', '/api/sessions/:id/impact', sessionMutations.handleGetSessionImpact);
   server.registerRoute('POST', '/api/sessions/:id/complete', sessionMutations.handleCompleteSession);
   server.registerRoute('DELETE', '/api/sessions/:id', sessionMutations.handleDeleteSession);
@@ -662,12 +691,42 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/agent/tasks', async (req) => handleListTasks(req, vaultDir));
   server.registerRoute('GET', '/api/agent/tasks/:id', async (req) => handleGetTask(req, vaultDir));
   server.registerRoute('GET', '/api/agent/tasks/:id/yaml', async (req) => handleGetTaskYaml(req, vaultDir));
-  server.registerRoute('PUT', '/api/agent/tasks/:id', async (req) => handleUpdateTask(req, vaultDir));
-  server.registerRoute('POST', '/api/agent/tasks', async (req) => handleCreateTask(req, vaultDir));
-  server.registerRoute('POST', '/api/agent/tasks/:id/copy', async (req) => handleCopyTask(req, vaultDir));
-  server.registerRoute('DELETE', '/api/agent/tasks/:id', async (req) => handleDeleteTask(req, vaultDir));
+  server.registerRoute('PUT', '/api/agent/tasks/:id', async (req) => {
+    const result = await handleUpdateTask(req, vaultDir);
+    if (!result.status || result.status < 400) {
+      await syncScheduledTasks();
+    }
+    return result;
+  });
+  server.registerRoute('POST', '/api/agent/tasks', async (req) => {
+    const result = await handleCreateTask(req, vaultDir);
+    if (!result.status || result.status < 400) {
+      await syncScheduledTasks();
+    }
+    return result;
+  });
+  server.registerRoute('POST', '/api/agent/tasks/:id/copy', async (req) => {
+    const result = await handleCopyTask(req, vaultDir);
+    if (!result.status || result.status < 400) {
+      await syncScheduledTasks();
+    }
+    return result;
+  });
+  server.registerRoute('DELETE', '/api/agent/tasks/:id', async (req) => {
+    const result = await handleDeleteTask(req, vaultDir);
+    if (!result.status || result.status < 400) {
+      await syncScheduledTasks();
+    }
+    return result;
+  });
   server.registerRoute('GET', '/api/agent/tasks/:id/config', async (req) => handleGetTaskConfig(req, vaultDir));
-  server.registerRoute('PUT', '/api/agent/tasks/:id/config', async (req) => handleUpdateTaskConfig(req, vaultDir));
+  server.registerRoute('PUT', '/api/agent/tasks/:id/config', async (req) => {
+    const result = await handleUpdateTaskConfig(req, vaultDir);
+    if (!result.status || result.status < 400) {
+      await applyConfigWriteReactions([`agent.tasks.${req.params.id}`]);
+    }
+    return result;
+  });
 
   // --- Provider detection & testing ---
   server.registerRoute('GET', '/api/providers', async () => handleGetProviders());
@@ -685,11 +744,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/mcp/team', mcpProxy.handleTeam);
 
   // --- Backup routes ---
-  const rawBackupDir = config.backup.dir;
-  const backupDir = rawBackupDir
-    ? path.resolve(rawBackupDir.startsWith('~/') ? path.join(os.homedir(), rawBackupDir.slice(2)) : rawBackupDir)
-    : path.resolve(vaultDir, 'backups');
-  const backupHandlers = createBackupHandlers({ db, backupDir, machineId });
+  const backupHandlers = createBackupHandlers({ db, machineId, vaultDir, liveConfig });
   server.registerRoute('POST', '/api/backup', backupHandlers.handleCreateBackup);
   server.registerRoute('GET', '/api/backups', backupHandlers.handleListBackups);
   server.registerRoute('POST', '/api/restore/preview', backupHandlers.handleRestorePreview);
@@ -697,10 +752,20 @@ export async function main(): Promise<void> {
 
   const backupConfigHandlers = createBackupConfigHandlers({ vaultDir });
   server.registerRoute('GET', '/api/backup/config', backupConfigHandlers.handleGetBackupConfig);
-  server.registerRoute('PUT', '/api/backup/config', backupConfigHandlers.handlePutBackupConfig);
+  server.registerRoute('PUT', '/api/backup/config', async (req) => {
+    const result = await backupConfigHandlers.handlePutBackupConfig(req);
+    if (!result.status || result.status < 400) {
+      await applyConfigWriteReactions(['backup.dir']);
+    }
+    return result;
+  });
 
   // --- Team sync ---
-  const teamSync = initTeamSync({ config, machineId, logger, vaultDir, serverVersion: server.version });
+  const teamSync = initTeamSync({ liveConfig, machineId, logger, vaultDir, serverVersion: server.version });
+  reactions.on(['team'], async () => {
+    await teamSync.reconcileClient();
+  });
+  await teamSync.reconcileClient();
 
   const teamHandlers = createTeamHandlers({
     vaultDir,
@@ -709,8 +774,20 @@ export async function main(): Promise<void> {
     getTeamClient: teamSync.getTeamClient,
     setTeamClient: teamSync.setTeamClient,
   });
-  server.registerRoute('POST', '/api/team/connect', teamHandlers.handleConnect);
-  server.registerRoute('POST', '/api/team/disconnect', teamHandlers.handleDisconnect);
+  server.registerRoute('POST', '/api/team/connect', async (req) => {
+    const result = await teamHandlers.handleConnect(req);
+    if (!result.status || result.status < 400) {
+      await applyConfigWriteReactions(['team.enabled', 'team.worker_url']);
+    }
+    return result;
+  });
+  server.registerRoute('POST', '/api/team/disconnect', async (req) => {
+    const result = await teamHandlers.handleDisconnect(req);
+    if (!result.status || result.status < 400) {
+      await applyConfigWriteReactions(['team.enabled', 'team.worker_url']);
+    }
+    return result;
+  });
   server.registerRoute('GET', '/api/team/status', teamHandlers.handleStatus);
   server.registerRoute('POST', '/api/team/backfill', teamHandlers.handleBackfill);
   server.registerRoute('POST', '/api/team/retry-failed', teamHandlers.handleRetryFailed);
@@ -775,11 +852,11 @@ export async function main(): Promise<void> {
   }
 
   // --- Register power-managed jobs ---
-  registerPowerJobs(powerManager, { embeddingManager, registry, logger, config, db, backupDir, machineId, vaultDir, databaseManager });
+  registerPowerJobs(powerManager, { embeddingManager, registry, logger, liveConfig, db, machineId, vaultDir, databaseManager });
   teamSync.registerFlushJob(powerManager);
 
   // -- Dynamic task scheduling --
-  await registerScheduledTasks(powerManager, { definitionsDir, vaultDir, embeddingManager, logger, config });
+  await registerScheduledTasks(powerManager, { definitionsDir, vaultDir, embeddingManager, logger, liveConfig });
 
   powerManager.start();
 
