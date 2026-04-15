@@ -3,7 +3,9 @@ import { Cpu, Database, Play, Trash2, RefreshCw, RotateCcw, ArrowDown, Pause } f
 import { useQueryClient } from '@tanstack/react-query';
 import { useEmbeddingDetails, type EmbeddingDetails } from '../hooks/use-embedding-details';
 import { useDatabaseDetails, type DatabaseDetails } from '../hooks/use-database-details';
-import { useConfig } from '../hooks/use-config';
+import { useScopedConfig } from '../hooks/use-scoped-config';
+import { ScopedField } from '../components/config/ScopedField';
+import { Switch } from '../components/ui/switch';
 import { useLogFeed } from '../hooks/use-log-feed';
 import { Badge } from '../components/ui/badge';
 import { postJson, ApiError } from '../lib/api';
@@ -246,25 +248,17 @@ function ScheduledMaintenanceCard({
   details: DatabaseDetails;
   onActionResult: (r: { type: 'success' | 'error'; text: string }) => void;
 }) {
-  const { config, saveConfig, isSaving } = useConfig();
+  const { effective } = useScopedConfig();
   const queryClient = useQueryClient();
   const [running, setRunning] = useState(false);
 
-  if (!config) return null;
+  if (!effective) return null;
 
-  const enabled = config.maintenance.auto_optimize;
-  const intervalHours = config.maintenance.auto_optimize_interval_hours;
+  const enabled = effective.maintenance.auto_optimize;
+  const intervalHours = effective.maintenance.auto_optimize_interval_hours;
 
   const lastRunMs = details.last_optimize_at ? new Date(details.last_optimize_at).getTime() : null;
   const nextRunMs = lastRunMs !== null ? lastRunMs + intervalHours * SECONDS_PER_HOUR * 1000 - Date.now() : 0;
-
-  async function persist(next: { auto_optimize?: boolean; auto_optimize_interval_hours?: number }) {
-    try {
-      await saveConfig({ maintenance: next });
-    } catch (err) {
-      onActionResult({ type: 'error', text: 'Config save failed: ' + (err as Error).message });
-    }
-  }
 
   async function handleRunNow() {
     setRunning(true);
@@ -291,30 +285,37 @@ function ScheduledMaintenanceCard({
     <Surface level="low" className="p-6 space-y-4">
       <SectionHeader>Scheduled Maintenance</SectionHeader>
       <div className="flex flex-wrap items-center gap-3 font-sans text-sm">
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={enabled}
-            disabled={isSaving}
-            onChange={(e) => persist({ auto_optimize: e.target.checked })}
-            className="h-4 w-4 accent-primary"
-          />
-          <span className="text-on-surface">Auto-optimize</span>
-        </label>
-        <span className="text-on-surface-variant">every</span>
-        <select
-          value={intervalHours}
-          disabled={!enabled || isSaving}
-          onChange={(e) => persist({ auto_optimize_interval_hours: Number(e.target.value) })}
-          className="rounded-md border border-outline bg-surface-container px-2 py-1 text-on-surface text-sm"
+        <ScopedField
+          path="maintenance.auto_optimize"
+          label="Auto-optimize"
+          defaultScope="local"
         >
-          <option value={6}>6 hours</option>
-          <option value={12}>12 hours</option>
-          <option value={24}>24 hours</option>
-          <option value={72}>3 days</option>
-          <option value={168}>7 days</option>
-          <option value={720}>30 days</option>
-        </select>
+          {({ value, onChange }) => (
+            <Switch checked={value ?? false} onCheckedChange={onChange} />
+          )}
+        </ScopedField>
+        <span className="text-on-surface-variant">every</span>
+        <ScopedField
+          path="maintenance.auto_optimize_interval_hours"
+          label=""
+          defaultScope="local"
+        >
+          {({ value, onChange }) => (
+            <select
+              value={value ?? 24}
+              disabled={!enabled}
+              onChange={(e) => onChange(Number(e.target.value))}
+              className="rounded-md border border-outline bg-surface-container px-2 py-1 text-on-surface text-sm"
+            >
+              <option value={6}>6 hours</option>
+              <option value={12}>12 hours</option>
+              <option value={24}>24 hours</option>
+              <option value={72}>3 days</option>
+              <option value={168}>7 days</option>
+              <option value={720}>30 days</option>
+            </select>
+          )}
+        </ScopedField>
       </div>
       <p className="font-sans text-sm text-on-surface-variant">
         Last run: {details.last_optimize_at ? formatTimeAgo(details.last_optimize_at) : 'never'}

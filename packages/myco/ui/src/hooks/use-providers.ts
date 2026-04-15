@@ -49,6 +49,47 @@ export interface TaskConfigOverride {
   params?: Record<string, string | number | boolean>;
 }
 
+/** Form-state shape for editing a provider in the UI — string values for
+ *  number fields so HTML number inputs bind cleanly without empty-state
+ *  flicker. Used by both the global Agent Provider card and per-task
+ *  TaskProviderConfig. */
+export interface ProviderDraft {
+  type: ProviderConfig['type'] | '';
+  model: string;
+  baseUrl: string;
+  contextLength: string;
+}
+
+/** Seed a draft from a freshly-selected provider type — picks the first
+ *  available model and the provider's default base URL. Both the global
+ *  Agent card and per-task config call this on the provider-type change
+ *  event; centralized so the two stay in sync. */
+export function seedDraftFromProviderType(
+  type: string,
+  providers: ProviderInfo[],
+): ProviderDraft {
+  const info = providers.find((p) => p.type === type);
+  return {
+    type: type as ProviderConfig['type'],
+    model: info?.models?.[0] ?? '',
+    baseUrl: info?.baseUrl ?? '',
+    contextLength: '',
+  };
+}
+
+/** Build the persisted ProviderConfig from a draft. Drops empty optional
+ *  fields and only includes base_url/context_length for local providers. */
+export function draftToProviderConfig(draft: ProviderDraft): ProviderConfig | undefined {
+  if (draft.type === '') return undefined;
+  const isLocal = draft.type === 'ollama' || draft.type === 'lmstudio';
+  return {
+    type: draft.type,
+    ...(draft.model ? { model: draft.model } : {}),
+    ...(isLocal && draft.baseUrl ? { base_url: draft.baseUrl } : {}),
+    ...(isLocal && draft.contextLength ? { context_length: Number(draft.contextLength) } : {}),
+  };
+}
+
 export interface TaskConfigResponse {
   taskId: string;
   config: TaskConfigOverride | null;

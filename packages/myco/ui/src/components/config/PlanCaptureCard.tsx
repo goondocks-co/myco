@@ -1,87 +1,38 @@
-import { useState, useEffect, useCallback } from 'react';
-import { fetchJson, postJson } from '../../lib/api';
+import { useState, useEffect } from 'react';
+import { fetchJson } from '../../lib/api';
 import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
 import { Input } from '../ui/input';
 import { Button } from '../ui/button';
 import { Switch } from '../ui/switch';
+import { ScopedField } from './ScopedField';
 
-interface PlanDirsResponse {
+interface PlanDirsAgentResponse {
   symbiont: Record<string, string[]>;
-  custom: string[];
-  ignore_plan_dirs_in_git: boolean;
 }
 
+/**
+ * Plan Capture — project-only by design. Plan directories define what *this
+ * project* watches; per-machine overrides would create silent drift between
+ * teammates. Both fields use lockScope='project' so the Personal pill never
+ * appears, and adds/removes immediately rewrite the array via the scoped
+ * config endpoint. The daemon's scoped-write hook re-runs symbiont
+ * reconciliation (.gitignore) and refreshes the in-memory plan watcher on
+ * every successful write.
+ */
 export function PlanCaptureCard() {
   const [symbiont, setSymbiont] = useState<Record<string, string[]>>({});
-  const [custom, setCustom] = useState<string[]>([]);
-  const [savedCustom, setSavedCustom] = useState<string[]>([]);
-  const [ignoreInGit, setIgnoreInGit] = useState(false);
-  const [savedIgnoreInGit, setSavedIgnoreInGit] = useState(false);
   const [newDir, setNewDir] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
-  const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  // Symbiont-managed plan dirs come from a separate read-only endpoint
+  // (manifest-derived, not from myco.yaml).
   useEffect(() => {
-    fetchJson<PlanDirsResponse>('/config/plan-dirs')
-      .then((data) => {
-        setSymbiont(data.symbiont);
-        setCustom(data.custom);
-        setSavedCustom(data.custom);
-        setIgnoreInGit(data.ignore_plan_dirs_in_git);
-        setSavedIgnoreInGit(data.ignore_plan_dirs_in_git);
-      })
-      .catch(() => {
-        // leave defaults on error
-      })
+    fetchJson<PlanDirsAgentResponse>('/config/plan-dirs')
+      .then((data) => setSymbiont(data.symbiont))
+      .catch(() => {})
       .finally(() => setIsLoading(false));
   }, []);
-
-  const dirty =
-    custom.length !== savedCustom.length ||
-    custom.some((d, i) => d !== savedCustom[i]) ||
-    ignoreInGit !== savedIgnoreInGit;
-
-  const handleAdd = useCallback(() => {
-    const trimmed = newDir.trim();
-    if (!trimmed || custom.includes(trimmed)) return;
-    setCustom((prev) => [...prev, trimmed]);
-    setNewDir('');
-    setSaveMessage(null);
-  }, [newDir, custom]);
-
-  const handleRemove = useCallback((dir: string) => {
-    setCustom((prev) => prev.filter((d) => d !== dir));
-    setSaveMessage(null);
-  }, []);
-
-  const handleSave = useCallback(async () => {
-    setIsSaving(true);
-    setSaveMessage(null);
-    try {
-      const result = await postJson<{ custom: string[]; ignore_plan_dirs_in_git: boolean }>('/config/plan-dirs', {
-        plan_dirs: custom,
-        ignore_plan_dirs_in_git: ignoreInGit,
-      });
-      setSavedCustom(result.custom);
-      setCustom(result.custom);
-      setSavedIgnoreInGit(result.ignore_plan_dirs_in_git);
-      setIgnoreInGit(result.ignore_plan_dirs_in_git);
-      setSaveMessage({ type: 'success', text: 'Plan directories saved.' });
-    } catch {
-      setSaveMessage({ type: 'error', text: 'Failed to save plan directories.' });
-    } finally {
-      setIsSaving(false);
-    }
-  }, [custom, ignoreInGit]);
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === 'Enter') handleAdd();
-    },
-    [handleAdd],
-  );
 
   const symbiontEntries = Object.entries(symbiont);
 
@@ -93,7 +44,7 @@ export function PlanCaptureCard() {
         <p className="font-sans text-sm text-on-surface-variant">Loading...</p>
       ) : (
         <div className="space-y-5">
-          {/* Agent directories — read-only */}
+          {/* Agent directories — read-only, derived from symbiont manifests */}
           <div className="space-y-2">
             <p className="font-sans text-sm font-medium text-on-surface">Agent Directories</p>
             <p className="font-sans text-xs text-on-surface-variant">
@@ -124,82 +75,80 @@ export function PlanCaptureCard() {
             )}
           </div>
 
-          {/* Custom directories — editable */}
-          <div className="space-y-2">
-            <p className="font-sans text-sm font-medium text-on-surface">Custom Directories</p>
-            <p className="font-sans text-xs text-on-surface-variant">
-              Additional directories to watch for plan files.
-            </p>
-
-            <div className="flex items-start justify-between gap-4 rounded bg-surface-container px-3 py-2">
-              <div className="space-y-1">
-                <p className="font-sans text-xs font-medium text-on-surface">Ignore Custom Plan Dirs In Git</p>
-                <p className="font-sans text-xs text-on-surface-variant">
-                  Add repo-relative custom plan directories to the Myco-managed block in <code>.gitignore</code>.
-                </p>
-              </div>
-              <Switch checked={ignoreInGit} onCheckedChange={setIgnoreInGit} disabled={isSaving} />
-            </div>
-
-            {custom.length > 0 && (
-              <div className="space-y-1">
-                {custom.map((dir) => (
-                  <div
-                    key={dir}
-                    className="flex items-center gap-2 rounded bg-surface-container px-3 py-1.5"
-                  >
-                    <span className="flex-1 font-mono text-xs text-on-surface">{dir}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleRemove(dir)}
-                      className="font-sans text-xs text-on-surface-variant hover:text-tertiary transition-colors leading-none"
-                      aria-label={`Remove ${dir}`}
-                    >
-                      x
-                    </button>
-                  </div>
-                ))}
-              </div>
+          <ScopedField
+            path="capture.ignore_plan_dirs_in_git"
+            label="Ignore Custom Plan Dirs In Git"
+            lockScope="project"
+            hint=".gitignore is rewritten on every change"
+          >
+            {({ value, onChange }) => (
+              <Switch checked={value ?? false} onCheckedChange={onChange} />
             )}
+          </ScopedField>
 
-            <div className="flex gap-2">
-              <Input
-                placeholder="/path/to/plans"
-                value={newDir}
-                onChange={(e) => setNewDir(e.target.value)}
-                onKeyDown={handleKeyDown}
-                className="flex-1 font-mono text-xs"
-              />
-              <Button type="button" size="sm" onClick={handleAdd} disabled={!newDir.trim()}>
-                Add
-              </Button>
-            </div>
-          </div>
+          <ScopedField
+            path="capture.plan_dirs"
+            label="Custom Directories"
+            lockScope="project"
+            hint="extra paths to watch for plan files"
+          >
+            {({ value, onChange }) => {
+              const dirs = value ?? [];
+              return (
+                <div className="space-y-2">
+                  {dirs.length > 0 && (
+                    <div className="space-y-1">
+                      {dirs.map((dir) => (
+                        <div
+                          key={dir}
+                          className="flex items-center gap-2 rounded bg-surface-container px-3 py-1.5"
+                        >
+                          <span className="flex-1 font-mono text-xs text-on-surface">{dir}</span>
+                          <button
+                            type="button"
+                            onClick={() => onChange(dirs.filter((d) => d !== dir))}
+                            className="font-sans text-xs text-on-surface-variant hover:text-tertiary transition-colors leading-none"
+                            aria-label={`Remove ${dir}`}
+                          >
+                            x
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
-          {/* Save row — only visible when dirty */}
-          {dirty && (
-            <div className="flex items-center gap-4 pt-1">
-              <Button onClick={handleSave} disabled={isSaving} size="sm">
-                {isSaving ? 'Saving...' : 'Save'}
-              </Button>
-              {saveMessage && (
-                <span
-                  className={
-                    saveMessage.type === 'success'
-                      ? 'font-sans text-sm text-primary'
-                      : 'font-sans text-sm text-tertiary'
-                  }
-                >
-                  {saveMessage.text}
-                </span>
-              )}
-            </div>
-          )}
-
-          {/* Success message when not dirty */}
-          {!dirty && saveMessage?.type === 'success' && (
-            <p className="font-sans text-sm text-primary">{saveMessage.text}</p>
-          )}
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="/path/to/plans"
+                      value={newDir}
+                      onChange={(e) => setNewDir(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter') return;
+                        const trimmed = newDir.trim();
+                        if (!trimmed || dirs.includes(trimmed)) return;
+                        onChange([...dirs, trimmed]);
+                        setNewDir('');
+                      }}
+                      className="flex-1 font-mono text-xs"
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => {
+                        const trimmed = newDir.trim();
+                        if (!trimmed || dirs.includes(trimmed)) return;
+                        onChange([...dirs, trimmed]);
+                        setNewDir('');
+                      }}
+                      disabled={!newDir.trim()}
+                    >
+                      Add
+                    </Button>
+                  </div>
+                </div>
+              );
+            }}
+          </ScopedField>
         </div>
       )}
     </Surface>

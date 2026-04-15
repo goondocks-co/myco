@@ -1,18 +1,16 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback } from 'react';
 import {
   Settings2,
   Activity,
   Loader2,
 } from 'lucide-react';
-import { useConfig, type MycoConfig } from '../../hooks/use-config';
 import { useDaemon, type StatsResponse } from '../../hooks/use-daemon';
 import { useAgentTasks, type TaskRow } from '../../hooks/use-agent';
-import { useRestart } from '../../hooks/use-restart';
-import { formatUptime, formatEpochAgo, parseNumericField } from '../../lib/format';
+import { useScopedConfig } from '../../hooks/use-scoped-config';
+import { formatUptime, formatEpochAgo } from '../../lib/format';
 import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
 import { Input } from '../ui/input';
-import { Button } from '../ui/button';
 import {
   Select,
   SelectContent,
@@ -21,37 +19,8 @@ import {
   SelectValue,
 } from '../ui/select';
 import { Switch } from '../ui/switch';
+import { ScopedField } from '../config/ScopedField';
 import { DEFAULT_SUMMARY_BATCH_INTERVAL } from '../../lib/constants';
-
-/* ---------- Types ---------- */
-
-interface AgentFormState {
-  summaryBatchInterval: string;
-  defaultTask: string;
-  scheduledTasksEnabled: boolean;
-  eventTasksEnabled: boolean;
-}
-
-/* ---------- Helpers ---------- */
-
-function toAgentForm(config: MycoConfig, defaultTaskName?: string): AgentFormState {
-  return {
-    summaryBatchInterval: String(config.agent?.summary_batch_interval ?? DEFAULT_SUMMARY_BATCH_INTERVAL),
-    defaultTask: defaultTaskName ?? '',
-    scheduledTasksEnabled: config.agent?.scheduled_tasks_enabled ?? true,
-    eventTasksEnabled: config.agent?.event_tasks_enabled ?? true,
-  };
-}
-
-function isAgentDirty(form: AgentFormState, config: MycoConfig, originalDefaultTask: string): boolean {
-  const orig = toAgentForm(config, originalDefaultTask);
-  return (
-    form.summaryBatchInterval !== orig.summaryBatchInterval ||
-    form.defaultTask !== orig.defaultTask ||
-    form.scheduledTasksEnabled !== orig.scheduledTasksEnabled ||
-    form.eventTasksEnabled !== orig.eventTasksEnabled
-  );
-}
 
 /* ---------- Sub-components ---------- */
 
@@ -170,59 +139,25 @@ function SystemHealthSection({ stats }: { stats: StatsResponse }) {
 /* ---------- Component ---------- */
 
 export function AgentConfig() {
-  const { config, isLoading: configLoading, saveConfig, isSaving } = useConfig();
+  const { effective, isLoading: configLoading } = useScopedConfig();
   const { data: stats, isLoading: statsLoading } = useDaemon();
   const { data: tasksData, isLoading: tasksLoading } = useAgentTasks();
-  const { restart } = useRestart();
-
-  const [form, setForm] = useState<AgentFormState | null>(null);
-  const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const tasks: TaskRow[] = tasksData?.tasks ?? [];
+  const [selectedDefaultTask, setSelectedDefaultTask] = useState<string | null>(null);
   const defaultTaskFromApi = tasks.find((t) => t.isDefault)?.name ?? '';
+  const defaultTask = selectedDefaultTask ?? defaultTaskFromApi;
 
-  // Initialise form from config once config + tasks load. A ref tracks whether
-  // we have initialised so we only seed once — subsequent refetches do NOT
-  // overwrite user edits. This replaces the previous useEffect pattern.
-  const formInitialised = useRef(false);
-  if (config && !tasksLoading && !formInitialised.current) {
-    formInitialised.current = true;
-    if (form === null) {
-      setForm(toAgentForm(config, defaultTaskFromApi));
-    }
-  }
-
-  const dirty = form && config ? isAgentDirty(form, config, defaultTaskFromApi) : false;
-  const hasAgentProvider = !!config?.agent?.provider;
-
-  const setField = useCallback(<K extends keyof AgentFormState>(key: K, value: AgentFormState[K]) => {
-    setForm((prev) => (prev ? { ...prev, [key]: value } : prev));
-    setSaveMessage(null);
+  const handleDefaultTaskChange = useCallback((next: string) => {
+    setSelectedDefaultTask(next);
+    // Default-task selection is handled by a separate endpoint (agent tasks),
+    // not by the scoped config — persistence of this selection is a TODO
+    // tracked alongside the per-task override UI. For now it's session-only.
   }, []);
 
-  const handleSave = async () => {
-    if (!form || !config) return;
-    setSaveMessage(null);
-    try {
-      await saveConfig({
-        agent: {
-          summary_batch_interval: parseNumericField(form.summaryBatchInterval, DEFAULT_SUMMARY_BATCH_INTERVAL),
-          scheduled_tasks_enabled: form.scheduledTasksEnabled,
-          event_tasks_enabled: form.eventTasksEnabled,
-        },
-      });
-      setSaveMessage({ type: 'success', text: 'Agent settings saved. Restarting daemon...' });
-      try {
-        await restart();
-      } catch {
-        setSaveMessage({ type: 'success', text: 'Settings saved. Daemon restart may require manual action.' });
-      }
-    } catch {
-      setSaveMessage({ type: 'error', text: 'Failed to save settings.' });
-    }
-  };
+  const hasAgentProvider = !!effective?.agent?.provider;
 
-  if (configLoading || !config || !form) {
+  if (configLoading || !effective) {
     return (
       <div className="space-y-4">
         {[1, 2, 3].map((i) => (
@@ -243,34 +178,37 @@ export function AgentConfig() {
           </span>
         </SectionHeader>
 
-        {/* Global agent toggles */}
+        {/* Global agent toggles — personal-default: each machine opts in independently */}
         <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <label className="font-sans text-sm font-medium text-on-surface">Scheduled Tasks</label>
-              <p className="font-sans text-xs text-on-surface-variant">
-                Intelligence, skill survey, and skill evolution run automatically on a schedule
-              </p>
-            </div>
-            <Switch
-              checked={form.scheduledTasksEnabled}
-              onCheckedChange={(v) => setField('scheduledTasksEnabled', v)}
-              disabled={!hasAgentProvider}
-            />
-          </div>
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <label className="font-sans text-sm font-medium text-on-surface">Event-Driven Tasks</label>
-              <p className="font-sans text-xs text-on-surface-variant">
-                Titles and summaries generated automatically after coding sessions
-              </p>
-            </div>
-            <Switch
-              checked={form.eventTasksEnabled}
-              onCheckedChange={(v) => setField('eventTasksEnabled', v)}
-              disabled={!hasAgentProvider}
-            />
-          </div>
+          <ScopedField
+            path="agent.scheduled_tasks_enabled"
+            label="Scheduled Tasks"
+            defaultScope="local"
+            hint="runs intelligence/skill-survey/skill-evolve on a cron"
+          >
+            {({ value, onChange }) => (
+              <Switch
+                checked={value ?? true}
+                onCheckedChange={onChange}
+                disabled={!hasAgentProvider}
+              />
+            )}
+          </ScopedField>
+
+          <ScopedField
+            path="agent.event_tasks_enabled"
+            label="Event-Driven Tasks"
+            defaultScope="local"
+            hint="titles + summaries on session end"
+          >
+            {({ value, onChange }) => (
+              <Switch
+                checked={value ?? true}
+                onCheckedChange={onChange}
+                disabled={!hasAgentProvider}
+              />
+            )}
+          </ScopedField>
         </div>
 
         {!hasAgentProvider && (
@@ -285,26 +223,31 @@ export function AgentConfig() {
 
         <div className="border-t border-outline-variant/20" />
 
-        {/* Title & Summary batch interval */}
-        <div className="space-y-1">
-          <label className="font-sans text-sm font-medium text-on-surface">Title &amp; Summary Batch Interval</label>
-          <div className="flex items-center gap-3">
-            <Input
-              type="number"
-              min={0}
-              placeholder={String(DEFAULT_SUMMARY_BATCH_INTERVAL)}
-              value={form.summaryBatchInterval}
-              onChange={(e) => setField('summaryBatchInterval', e.target.value)}
-              className="w-32 font-mono"
-            />
-            <span className="font-sans text-xs text-on-surface-variant">batches</span>
-          </div>
-          <p className="font-sans text-xs text-on-surface-variant">
-            Run the Title &amp; Summary task every N batches to keep active sessions properly titled. Set to 0 to disable.
-          </p>
-        </div>
+        {/* Title & Summary batch interval — project-default (pipeline cadence is team-agreed) */}
+        <ScopedField
+          path="agent.summary_batch_interval"
+          label="Title & Summary Batch Interval"
+          defaultScope="project"
+          commitOn="blur"
+          hint="batches between event-driven summary triggers; 0 disables"
+        >
+          {({ value, onChange, onBlur }) => (
+            <div className="flex items-center gap-3">
+              <Input
+                type="number"
+                min={0}
+                placeholder={String(DEFAULT_SUMMARY_BATCH_INTERVAL)}
+                value={value ?? ''}
+                onChange={(e) => onChange(Number(e.target.value))}
+                onBlur={onBlur}
+                className="w-32 font-mono"
+              />
+              <span className="font-sans text-xs text-on-surface-variant">batches</span>
+            </div>
+          )}
+        </ScopedField>
 
-        {/* Default task */}
+        {/* Default task — persistence handled by a separate agent-tasks endpoint */}
         <div className="space-y-1">
           <label className="font-sans text-sm font-medium text-on-surface">Default Task</label>
           {tasksLoading ? (
@@ -313,10 +256,7 @@ export function AgentConfig() {
               Loading tasks...
             </div>
           ) : (
-            <Select
-              value={form.defaultTask}
-              onValueChange={(v) => setField('defaultTask', v)}
-            >
+            <Select value={defaultTask} onValueChange={handleDefaultTaskChange}>
               <SelectTrigger>
                 <SelectValue placeholder="Select default task" />
               </SelectTrigger>
@@ -332,29 +272,6 @@ export function AgentConfig() {
           <p className="font-sans text-xs text-on-surface-variant">
             The task used when Run Now is clicked or no task is specified.
           </p>
-        </div>
-
-        {/* Save row */}
-        <div className="flex items-center gap-3 pt-2 border-t border-outline-variant/20">
-          <Button
-            onClick={handleSave}
-            disabled={!dirty || isSaving}
-            size="sm"
-          >
-            {isSaving ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
-            Save Changes
-          </Button>
-          {saveMessage && (
-            <span
-              className={
-                saveMessage.type === 'success'
-                  ? 'font-sans text-xs text-primary'
-                  : 'font-sans text-xs text-tertiary'
-              }
-            >
-              {saveMessage.text}
-            </span>
-          )}
         </div>
       </Surface>
 

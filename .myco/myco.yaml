@@ -5,7 +5,7 @@ embedding:
   model: bge-m3:latest
 daemon:
   port: 21039
-  log_level: debug
+  log_level: info
   log_retention_days: 30
   stale_session_threshold_ms: 3600000
 capture:
@@ -62,6 +62,9 @@ agent:
     skill-generate:
       provider:
         type: anthropic
+      phases:
+        validate:
+          maxTurns: 30
       schedule:
         enabled: true
         runIn:
@@ -102,7 +105,12 @@ notifications:
     sessions:
       enabled: false
     mycelium:
-      enabled: false
+      enabled: true
+appearance:
+  theme: sage
+  mode: dark
+  font: default
+  density: normal
 symbionts:
   claude-code:
     enabled: true

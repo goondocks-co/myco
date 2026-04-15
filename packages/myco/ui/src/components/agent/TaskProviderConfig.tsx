@@ -11,6 +11,7 @@ import {
   useTaskConfig,
   useTestProvider,
   useUpdateTaskConfig,
+  seedDraftFromProviderType,
   type ProviderConfig,
   type ProviderInfo,
   type PhaseOverride,
@@ -179,14 +180,14 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
   const providers = providersData?.providers ?? [];
 
   function handleProviderChange(type: string) {
-    const providerInfo = providers.find(p => p.type === type);
-    setProviderType(type);
     // Default to the first available model so the dropdown never shows a
     // stale value from the previous provider (Radix Select renders the prior
     // value instead of the placeholder when value='' is passed).
-    setModel(providerInfo?.models?.[0] ?? '');
-    setBaseUrl(providerInfo?.baseUrl ?? '');
-    setContextLength('');
+    const draft = seedDraftFromProviderType(type, providers);
+    setProviderType(type);
+    setModel(draft.model);
+    setBaseUrl(draft.baseUrl);
+    setContextLength(draft.contextLength);
     setDirty(true);
     testMutation.reset();
   }

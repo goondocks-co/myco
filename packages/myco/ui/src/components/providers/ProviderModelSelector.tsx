@@ -39,6 +39,10 @@ export interface ProviderModelSelectorProps {
   onModelChange: (model: string) => void;
   onBaseUrlChange: (url: string) => void;
   onContextLengthChange: (ctx: string) => void;
+  /** Optional blur handlers — when present, callers commit text-input edits
+   *  on blur rather than on every keystroke. */
+  onBaseUrlBlur?: () => void;
+  onContextLengthBlur?: () => void;
 }
 
 export function ProviderModelSelector({
@@ -53,6 +57,8 @@ export function ProviderModelSelector({
   onModelChange,
   onBaseUrlChange,
   onContextLengthChange,
+  onBaseUrlBlur,
+  onContextLengthBlur,
 }: ProviderModelSelectorProps) {
   const selectedProvider = providers.find((p) => p.type === providerType);
   const isLocal = providerType === 'ollama' || providerType === 'lmstudio';
@@ -101,6 +107,7 @@ export function ProviderModelSelector({
           <Input
             value={baseUrl}
             onChange={(e) => onBaseUrlChange(e.target.value)}
+            onBlur={onBaseUrlBlur}
             placeholder={selectedProvider?.baseUrl ?? ''}
           />
         </div>
@@ -114,6 +121,7 @@ export function ProviderModelSelector({
             type="number"
             value={contextLength}
             onChange={(e) => onContextLengthChange(e.target.value)}
+            onBlur={onContextLengthBlur}
             placeholder="32768 (default)"
           />
           <p className="font-sans text-[11px] text-on-surface-variant/70">

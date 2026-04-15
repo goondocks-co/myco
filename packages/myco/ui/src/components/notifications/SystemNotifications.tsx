@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useNotifications, type Notification } from '../../hooks/use-notifications';
-import { useConfig } from '../../hooks/use-config';
+import { useScopedConfig } from '../../hooks/use-scoped-config';
 
 /**
  * Invisible component that fires browser Notification API alerts
@@ -9,8 +9,8 @@ import { useConfig } from '../../hooks/use-config';
  * Only active when `notifications.system_notifications` is enabled in config.
  */
 export function SystemNotifications() {
-  const { config } = useConfig();
-  const enabled = config?.notifications?.system_notifications ?? false;
+  const { effective } = useScopedConfig();
+  const enabled = effective?.notifications?.system_notifications ?? false;
   const { data } = useNotifications({ status: 'unread', mode: 'banner', limit: 5 });
   const seenRef = useRef<Set<string>>(new Set());
 
