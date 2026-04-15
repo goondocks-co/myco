@@ -21,7 +21,6 @@ import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import {
   handleGetConfig,
-  handlePutConfig,
   handleGetMergedConfig,
   handleGetLocalConfig,
   handlePutScopedConfig,
@@ -504,14 +503,6 @@ export async function main(): Promise<void> {
 
   server.registerRoute('GET', '/api/config', async () => handleGetConfig(vaultDir));
   server.registerRoute('GET', '/api/symbionts', async () => handleListSymbionts(vaultDir));
-  server.registerRoute('PUT', '/api/config', async (req) => {
-    const result = await handlePutConfig(vaultDir, req.body);
-    if (!result.status || result.status < 400) {
-      reconcileConfiguredSymbionts(path.dirname(vaultDir), vaultDir);
-      configHash = computeConfigHash(vaultDir);
-    }
-    return result;
-  });
 
   server.registerRoute('GET', '/api/config/merged', async () => handleGetMergedConfig(vaultDir));
   server.registerRoute('GET', '/api/config/local', async () => handleGetLocalConfig(vaultDir));

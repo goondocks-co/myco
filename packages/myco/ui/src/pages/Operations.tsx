@@ -260,13 +260,7 @@ function ScheduledMaintenanceCard({
 
   async function persist(next: { auto_optimize?: boolean; auto_optimize_interval_hours?: number }) {
     try {
-      await saveConfig({
-        ...config!,
-        maintenance: {
-          ...config!.maintenance,
-          ...next,
-        },
-      });
+      await saveConfig({ maintenance: next });
     } catch (err) {
       onActionResult({ type: 'error', text: 'Config save failed: ' + (err as Error).message });
     }
