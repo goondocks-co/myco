@@ -14,6 +14,11 @@ import { z } from 'zod';
  *     session records a transcript; an ephemeral sub-invocation (e.g.,
  *     an agent's internal title-generation call) does not. Preferred
  *     over text matching because it doesn't drift as UIs evolve.
+ *   - `transcript_meta_field_equals`: structural. Fires when a dot-path
+ *     field in the transcript's first JSON line equals a specific scalar
+ *     value (for example, `source = "exec"`). Use for source-kind or mode
+ *     filters that are stable in transcript metadata but not represented
+ *     by field presence alone.
  *   - `prompt_starts_with` / `prompt_contains`: text fallback. Use
  *     when no structural signal is available. Document the upgrade path
  *     in the YAML so future maintainers can replace it when a better
@@ -68,6 +73,15 @@ const CaptureRuleSchema = z.object({
      * the evaluator — the evaluator itself does no file I/O.
      */
     transcript_meta_field_exists: z.string().optional(),
+    /**
+     * Structural: fires when a dot-path field in session_meta exactly equals
+     * a scalar value (string / number / boolean / null). Use for stable
+     * source-kind markers like `source = "exec"`.
+     */
+    transcript_meta_field_equals: z.object({
+      path: z.string(),
+      value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+    }).optional(),
   }),
   action: z.enum(['drop', 'rewrite_prompt']),
   /** Short audit string logged when the rule matches (e.g., "codex-internal-title-gen"). */

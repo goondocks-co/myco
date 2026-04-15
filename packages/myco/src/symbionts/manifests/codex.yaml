@@ -79,6 +79,33 @@ capture:
       action: drop
       reason: subagent-thread-spawn
 
+    # Layer 5 — non-interactive exec filter (structural).
+    #
+    # `codex exec` writes a real rollout transcript, but it is a
+    # programmatic validation/automation surface rather than the user's
+    # interactive Codex conversation. Those transcripts have:
+    #   "source": "exec"
+    # in session_meta. Treat them as junk capture for the interactive
+    # session archive and drop them before materializing a session row.
+    - event: session_start
+      scope: this_agent
+      when:
+        transcript_meta_field_equals:
+          path: source
+          value: exec
+      action: drop
+      reason: noninteractive-exec
+
+    # Layer 6 — safety net for exec prompts that slip past SessionStart.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        transcript_meta_field_equals:
+          path: source
+          value: exec
+      action: drop
+      reason: noninteractive-exec
+
     # Codex Desktop wraps user prompts with a file-mention preamble when
     # screenshots or files are attached:
     #   "# Files mentioned by the user:\n## <filename>: <path>\n## My request for Codex:\n<actual prompt>"

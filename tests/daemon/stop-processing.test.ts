@@ -42,6 +42,31 @@ function writeCodexSubagentTranscript(sessionId: string): string {
   return transcriptPath;
 }
 
+function writeCodexExecTranscript(sessionId: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-codex-exec-'));
+  const transcriptPath = path.join(dir, `rollout-${sessionId}.jsonl`);
+  const lines = [
+    JSON.stringify({
+      type: 'session_meta',
+      payload: {
+        id: sessionId,
+        source: 'exec',
+        cwd: '/Users/chris/Repos/myco',
+      },
+    }),
+    JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'reply with exactly ok' }],
+      },
+    }),
+  ];
+  fs.writeFileSync(transcriptPath, `${lines.join('\n')}\n`);
+  return transcriptPath;
+}
+
 function makeStopProcessor(vaultDir: string) {
   return createStopProcessor({
     registry: new SessionRegistry({ gracePeriod: 1, onEmpty: () => {} }),
@@ -128,6 +153,41 @@ describe('createStopProcessor session capture rules', () => {
     } as never);
 
     expect(res.body).toEqual({ ok: true, ignored: 'subagent-thread-spawn' });
+    expect(getSession(sessionId)).toBeNull();
+    expect(listBatchesBySession(sessionId)).toHaveLength(0);
+  });
+
+  it('ignores and deletes a leaked noninteractive exec session row', async () => {
+    const sessionId = 'codex-exec-stop-001';
+    const now = epochNow();
+    const transcriptPath = writeCodexExecTranscript(sessionId);
+    const stopProcessor = makeStopProcessor(vaultDir);
+
+    upsertSession({
+      id: sessionId,
+      agent: 'codex',
+      status: 'active',
+      started_at: now,
+      created_at: now,
+    });
+    insertBatch({
+      session_id: sessionId,
+      prompt_number: 1,
+      user_prompt: 'reply with exactly ok',
+      started_at: now,
+      created_at: now,
+    });
+
+    const res = await stopProcessor.handleStopRoute({
+      body: {
+        session_id: sessionId,
+        agent: 'codex',
+        transcript_path: transcriptPath,
+        last_assistant_message: 'ok',
+      },
+    } as never);
+
+    expect(res.body).toEqual({ ok: true, ignored: 'noninteractive-exec' });
     expect(getSession(sessionId)).toBeNull();
     expect(listBatchesBySession(sessionId)).toHaveLength(0);
   });

@@ -125,7 +125,7 @@ Check for these problems when assessing vault health:
 | Issue | How to detect | Meaning |
 |-------|--------------|---------|
 | **Stale buffers** | `.jsonl` files in `<vault>/buffer/` older than 24 hours | Events were captured but never processed — LLM may have been unavailable |
-| **Missing index** | `<vault>/index.db` does not exist | FTS search will not work; suggest `node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js rebuild` |
+| **Missing vault DB** | `<vault>/myco.db` does not exist | The vault database is missing or the project is not initialized; suggest `myco init` or check vault resolution |
 | **Missing vectors** | `<vault>/vectors.db` does not exist | Semantic search disabled; embeddings may be unconfigured |
 | **Old config version** | `version` in `myco.yaml` is less than `2` | Vault may need migration; suggest running `myco init` |
 

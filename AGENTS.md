@@ -208,7 +208,7 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
 .myco/   # Project-local vault
   myco.yaml          # Vault configuration
   daemon.json        # Running daemon PID/port
-  index.db           # SQLite FTS5 index
+  myco.db            # Primary SQLite vault DB (sessions, spores, plans, FTS)
   vectors.db         # sqlite-vec vector embeddings
   buffer/            # Per-session JSONL event buffers (ephemeral)
   sessions/          # Session notes by date

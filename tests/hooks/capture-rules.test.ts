@@ -425,3 +425,73 @@ describe('transcript_meta_field_exists condition', () => {
     });
   });
 });
+
+describe('transcript_meta_field_equals condition', () => {
+  const execRule = manifestWithRules('codex', [
+    {
+      event: 'session_start',
+      scope: 'this_agent',
+      when: {
+        transcript_meta_field_equals: {
+          path: 'source',
+          value: 'exec',
+        },
+      },
+      action: 'drop',
+      reason: 'noninteractive-exec',
+      trim: true,
+    },
+  ]);
+
+  describe('evaluateSessionStartRules', () => {
+    it('drops when the meta field equals the configured scalar', () => {
+      const result = evaluateSessionStartRules([execRule], 'codex', {
+        transcriptPath: '/some/path.jsonl',
+        transcriptMeta: { source: 'exec' },
+      });
+      expect(result).toEqual({ action: 'drop', reason: 'noninteractive-exec' });
+    });
+
+    it('passes when the meta field has a different value', () => {
+      const result = evaluateSessionStartRules([execRule], 'codex', {
+        transcriptPath: '/some/path.jsonl',
+        transcriptMeta: { source: 'vscode' },
+      });
+      expect(result).toEqual({ action: 'pass' });
+    });
+
+    it('passes when the field is missing', () => {
+      const result = evaluateSessionStartRules([execRule], 'codex', {
+        transcriptPath: '/some/path.jsonl',
+        transcriptMeta: { cwd: '/tmp/project' },
+      });
+      expect(result).toEqual({ action: 'pass' });
+    });
+  });
+
+  describe('evaluateUserPromptRules', () => {
+    const promptRule = manifestWithRules('codex', [
+      {
+        event: 'user_prompt',
+        scope: 'this_agent',
+        when: {
+          transcript_meta_field_equals: {
+            path: 'source',
+            value: 'exec',
+          },
+        },
+        action: 'drop',
+        reason: 'noninteractive-exec',
+        trim: true,
+      },
+    ]);
+
+    it('drops the prompt when the meta field equals the configured scalar', () => {
+      const result = evaluateUserPromptRules([promptRule], 'codex', ctx({
+        prompt: 'reply with exactly ok',
+        transcriptMeta: { source: 'exec' },
+      }));
+      expect(result).toEqual({ action: 'drop', reason: 'noninteractive-exec' });
+    });
+  });
+});
