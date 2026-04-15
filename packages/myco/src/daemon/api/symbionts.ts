@@ -1,5 +1,5 @@
 import { loadManifests } from '@myco/symbionts/detect.js';
-import { loadConfig, getEnabledSymbiontNames } from '../../config/loader.js';
+import { loadMergedConfig, getEnabledSymbiontNames } from '../../config/loader.js';
 import type { RouteResponse } from '../router.js';
 
 // ---------------------------------------------------------------------------
@@ -32,7 +32,7 @@ export async function handleListSymbionts(vaultDir: string): Promise<RouteRespon
 
   let enabledNames: Set<string> | null = null;
   try {
-    enabledNames = getEnabledSymbiontNames(loadConfig(vaultDir));
+    enabledNames = getEnabledSymbiontNames(loadMergedConfig(vaultDir));
   } catch { /* config not loadable */ }
 
   const symbionts: SymbiontInfo[] = manifests.map((m) => ({

@@ -79,7 +79,7 @@ function makeStopProcessor(vaultDir: string) {
       warn: vi.fn(),
       error: vi.fn(),
     } as never,
-    config: { agent: { event_tasks_enabled: false } } as never,
+    liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
     vaultDir,
     planTags: [],
   });

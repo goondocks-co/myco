@@ -32,7 +32,10 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 // ---------------------------------------------------------------------------
 
 export interface TeamSyncDeps {
-  config: MycoConfig;
+  // Holder so the flush job and client reconciliation both read the current
+  // value of team settings and can hot-reload team sync without a daemon
+  // restart.
+  liveConfig: { current: MycoConfig };
   machineId: string;
   logger: DaemonLogger;
   vaultDir: string;
@@ -42,6 +45,7 @@ export interface TeamSyncDeps {
 export interface TeamSyncResult {
   getTeamClient: () => TeamSyncClient | null;
   setTeamClient: (client: TeamSyncClient | null) => void;
+  reconcileClient: () => Promise<void>;
   registerFlushJob: (powerManager: PowerManager) => void;
 }
 
@@ -50,53 +54,74 @@ export interface TeamSyncResult {
 // ---------------------------------------------------------------------------
 
 export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
-  const { config, machineId, logger, vaultDir, serverVersion } = deps;
-
+  const { liveConfig, machineId, logger, vaultDir, serverVersion } = deps;
   let teamClient: TeamSyncClient | null = null;
+  let clientSignature: string | null = null;
 
-  // Initialize team client from saved config if team sync is enabled
-  if (config.team.enabled && config.team.worker_url) {
-    const secrets = readSecrets(vaultDir);
-    const teamApiKey = secrets[TEAM_API_KEY_SECRET];
-    if (teamApiKey) {
-      teamClient = new TeamSyncClient({
-        workerUrl: config.team.worker_url,
-        apiKey: teamApiKey,
-        machineId,
-        syncProtocolVersion: SYNC_PROTOCOL_VERSION,
-      });
-      logger.info(LOG_KINDS.TEAM_SYNC_START, 'Team sync client initialized', { worker_url: config.team.worker_url });
+  async function reconcileClient(): Promise<void> {
+    const config = liveConfig.current;
+    const workerUrl = config.team.worker_url?.trim() || null;
+    const apiKey = readSecrets(vaultDir)[TEAM_API_KEY_SECRET]?.trim() || null;
+    const nextSignature = config.team.enabled && workerUrl && apiKey
+      ? `${workerUrl}\n${apiKey}`
+      : null;
 
-      // Register this node with the team worker (fire-and-forget)
-      teamClient.connect({
+    if (!nextSignature) {
+      if (teamClient) {
+        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Team sync client cleared', {
+          enabled: config.team.enabled,
+          has_worker_url: Boolean(workerUrl),
+          has_api_key: Boolean(apiKey),
+        });
+      }
+      teamClient = null;
+      clientSignature = null;
+      return;
+    }
+
+    if (teamClient && clientSignature === nextSignature) return;
+
+    const activeWorkerUrl = workerUrl!;
+    const activeApiKey = apiKey!;
+    teamClient = new TeamSyncClient({
+      workerUrl: activeWorkerUrl,
+      apiKey: activeApiKey,
+      machineId,
+      syncProtocolVersion: SYNC_PROTOCOL_VERSION,
+    });
+    clientSignature = nextSignature;
+
+    logger.info(LOG_KINDS.TEAM_SYNC_START, 'Team sync client initialized', { worker_url: activeWorkerUrl });
+
+    try {
+      await teamClient.connect({
         machine_id: machineId,
         version: serverVersion,
-      }).then(() => {
-        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Node registered with team worker');
-      }).catch((err) => {
-        logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Node registration failed (will retry on next flush)', { error: (err as Error).message });
       });
+      logger.info(LOG_KINDS.TEAM_SYNC_START, 'Node registered with team worker');
+    } catch (err) {
+      logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Node registration failed (will retry on next flush)', {
+        error: (err as Error).message,
+      });
+    }
 
-      // Backfill unsynced records into outbox (fire-and-forget — can be large)
-      setTimeout(() => {
-        try {
-          const backfilled = backfillUnsynced(machineId);
-          if (backfilled > 0) {
-            logger.info(LOG_KINDS.TEAM_SYNC_START, `Backfilled ${backfilled} unsynced records into outbox`);
-          }
-        } catch (err) {
-          logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Backfill failed', { error: (err as Error).message });
-        }
-      }, 0);
+    try {
+      const backfilled = backfillUnsynced(machineId);
+      if (backfilled > 0) {
+        logger.info(LOG_KINDS.TEAM_SYNC_START, `Backfilled ${backfilled} unsynced records into outbox`);
+      }
+    } catch (err) {
+      logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Backfill failed', { error: (err as Error).message });
     }
   }
 
   return {
     getTeamClient: () => teamClient,
     setTeamClient: (client) => { teamClient = client; },
+    reconcileClient,
     registerFlushJob: (powerManager) => {
-      if (!config.team.enabled) return;
-
+      // Always register the flush job; gate at run time so toggling
+      // team.enabled in Settings takes effect without a daemon restart.
       const logDeadLettered = (ids: number[]) => {
         if (ids.length > 0) {
           logger.error(LOG_KINDS.TEAM_SYNC_DEAD_LETTER, `Dead-lettered ${ids.length} records after max retries`, { ids });
@@ -106,8 +131,9 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       powerManager.register({
         name: 'team-sync-flush',
         runIn: ['active', 'idle', 'sleep'],
-        preventsDeepSleep: () => countPending() > 0,
+        preventsDeepSleep: () => liveConfig.current.team.enabled && countPending() > 0,
         fn: async () => {
+          if (!liveConfig.current.team.enabled) return;
           const client = teamClient;
           if (!client) return;
 

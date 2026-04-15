@@ -7,7 +7,7 @@
  */
 
 import crypto from 'node:crypto';
-import { loadConfig } from '@myco/config/loader.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
 import { insertNotification } from '@myco/db/queries/notifications.js';
 import { getType } from './registry.js';
 import type { MycoConfig } from '@myco/config/schema.js';
@@ -21,7 +21,7 @@ import type { NotificationMode, NotificationLevel, CreateNotificationPayload } f
  *
  * @param vaultDir — vault directory; pass undefined to no-op (avoids if-guards at call sites).
  * @param payload — notification content.
- * @param config — pre-loaded config to avoid redundant loadConfig() disk reads.
+ * @param config — pre-loaded merged config to avoid redundant disk reads.
  */
 export function notify(
   vaultDir: string | undefined,
@@ -31,7 +31,7 @@ export function notify(
   if (!vaultDir) return null;
 
   try {
-    const cfg = config ?? loadConfig(vaultDir);
+    const cfg = config ?? loadMergedConfig(vaultDir);
 
     if (!cfg.notifications.enabled) return null;
 

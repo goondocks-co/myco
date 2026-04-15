@@ -4,7 +4,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { getEmbeddingQueueDepth } from '@myco/db/queries/embeddings.js';
-import { loadConfig } from '@myco/config/loader.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
 import { isProcessAlive } from '@myco/cli/shared.js';
 import { DIGEST_TIERS } from '@myco/constants.js';
 import fs from 'node:fs';
@@ -78,7 +78,7 @@ export function gatherStats(vaultDir: string, options?: { active_sessions?: stri
   const db = getDatabase();
 
   // Load config for embedding provider info (sync — already on disk)
-  const config = loadConfig(vaultDir);
+  const config = loadMergedConfig(vaultDir);
 
   // All queries are synchronous — no Promise.all needed
   const session_count = countTable(db, 'sessions');

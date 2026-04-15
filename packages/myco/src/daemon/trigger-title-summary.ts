@@ -15,7 +15,10 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 export interface TriggerTitleSummaryDeps {
   vaultDir: string;
   embeddingManager: EmbeddingManager;
-  config: MycoConfig;
+  // Holder rather than snapshot so the gates below observe toggle flips
+  // (agent.event_tasks_enabled, agent.summary_batch_interval) from Settings
+  // without a daemon restart.
+  liveConfig: { current: MycoConfig };
   logger: DaemonLogger;
 }
 
@@ -34,7 +37,8 @@ export async function triggerTitleSummary(
   sessionId: string,
   deps: TriggerTitleSummaryDeps,
 ): Promise<void> {
-  const { vaultDir, embeddingManager, config, logger } = deps;
+  const { vaultDir, embeddingManager, liveConfig, logger } = deps;
+  const config = liveConfig.current;
 
   if (config.agent.summary_batch_interval <= 0) return;
   if (config.agent.event_tasks_enabled === false) return;

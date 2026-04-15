@@ -64,8 +64,8 @@ export async function run(args: string[]): Promise<void> {
 
   // Show existing config summary on re-init
   if (alreadyInitialized && isInteractive) {
-    const { loadConfig } = await import('../config/loader.js');
-    const config = loadConfig(vaultDir);
+    const { loadMergedConfig } = await import('../config/loader.js');
+    const config = loadMergedConfig(vaultDir);
     const agentProvider = config.agent.provider;
     const embConfig = config.embedding;
 
@@ -84,14 +84,12 @@ export async function run(args: string[]): Promise<void> {
       fs.mkdirSync(path.join(vaultDir, dir), { recursive: true });
     }
 
-    // Agent disabled by default -- user enables via dashboard after configuring a provider
+    // Let schema defaults fill the agent section. Scheduled/event toggles
+    // default to true, but the agent only runs once the user configures a
+    // provider in Settings, so a no-op "enabled" state is safe.
     const config = MycoConfigSchema.parse({
       version: 3,
       ...(Object.keys(embeddingFromFlags).length > 0 ? { embedding: embeddingFromFlags } : {}),
-      agent: {
-        scheduled_tasks_enabled: false,
-        event_tasks_enabled: false,
-      },
     });
 
     saveConfig(vaultDir, config);
@@ -113,8 +111,8 @@ export async function run(args: string[]): Promise<void> {
   let existingSymbionts: Record<string, { enabled: boolean }> | undefined;
   if (alreadyInitialized && isInteractive) {
     try {
-      const { loadConfig } = await import('../config/loader.js');
-      const existing = loadConfig(vaultDir);
+      const { loadMergedConfig } = await import('../config/loader.js');
+      const existing = loadMergedConfig(vaultDir);
       existingSymbionts = existing.symbionts;
     } catch { /* config not loadable — skip pre-check */ }
   }

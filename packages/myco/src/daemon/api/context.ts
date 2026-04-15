@@ -32,7 +32,10 @@ import type { DaemonLogger } from '../logger.js';
 export interface ContextDeps {
   embeddingManager: EmbeddingManager;
   logger: DaemonLogger;
-  config: MycoConfig;
+  // Holder so each request reads the current merged config — a user can
+  // flip `context.prompt_search` or bump `context.digest_tier` and the
+  // very next request sees the change without a daemon restart.
+  liveConfig: { current: MycoConfig };
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +71,8 @@ const PromptContextBody = z.object({
 export function createSessionContextHandler(deps: ContextDeps) {
   return async function handleSessionContext(req: RouteRequest): Promise<RouteResponse> {
     const { session_id, branch } = SessionContextBody.parse(req.body);
-    const { logger, config } = deps;
+    const { logger, liveConfig } = deps;
+    const config = liveConfig.current;
 
     logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Session context query', { session_id });
 
@@ -225,7 +229,8 @@ export function createResumeContextHandler(deps: ContextDeps) {
 export function createPromptContextHandler(deps: ContextDeps) {
   return async function handlePromptContext(req: RouteRequest): Promise<RouteResponse> {
     const { prompt, session_id } = PromptContextBody.parse(req.body);
-    const { logger, config, embeddingManager } = deps;
+    const { logger, liveConfig, embeddingManager } = deps;
+    const config = liveConfig.current;
 
     // Guard: prompt search disabled
     if (!config.context.prompt_search) {

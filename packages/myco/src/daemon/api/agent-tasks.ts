@@ -25,7 +25,7 @@ import {
 } from '@myco/agent/registry.js';
 import { resolveDefinitionsDir } from '@myco/agent/loader.js';
 import { USER_TASK_SOURCE } from '@myco/constants.js';
-import { loadConfig, updateConfig } from '../../config/loader.js';
+import { loadMergedConfig, updateConfig } from '../../config/loader.js';
 import { withTaskConfig } from '../../config/updates.js';
 import type { TaskConfigUpdate } from '../../config/updates.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -305,7 +305,7 @@ export async function handleGetTaskConfig(
   vaultDir: string,
 ): Promise<RouteResponse> {
   const taskId = req.params.id;
-  const config = loadConfig(vaultDir);
+  const config = loadMergedConfig(vaultDir);
   const taskConfig = config.agent.tasks?.[taskId] ?? null;
   return { status: HTTP_OK, body: { taskId, config: taskConfig } };
 }

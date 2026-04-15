@@ -1,5 +1,5 @@
 import { getEmbeddingQueueDepth } from '@myco/db/queries/embeddings.js';
-import { loadConfig } from '../../config/loader.js';
+import { loadMergedConfig } from '../../config/loader.js';
 import { EMBEDDING_BATCH_SIZE } from '../../constants.js';
 import type { EmbeddingManager } from '../embedding/index.js';
 import type { RouteResponse } from '../router.js';
@@ -19,7 +19,7 @@ const EMBEDDING_STATUS_PENDING = 'pending';
 // ---------------------------------------------------------------------------
 
 export async function handleGetEmbeddingStatus(vaultDir: string): Promise<RouteResponse> {
-  const config = loadConfig(vaultDir);
+  const config = loadMergedConfig(vaultDir);
 
   const { queue_depth, embedded_count } = getEmbeddingQueueDepth();
 

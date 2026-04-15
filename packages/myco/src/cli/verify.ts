@@ -1,10 +1,10 @@
-import { loadConfig } from '../config/loader.js';
+import { loadMergedConfig } from '../config/loader.js';
 import { createEmbeddingProvider } from '../intelligence/llm.js';
 
 const VERIFY_EMBEDDING_INPUT = 'test';
 
 export async function run(_args: string[], vaultDir: string): Promise<void> {
-  const config = loadConfig(vaultDir);
+  const config = loadMergedConfig(vaultDir);
   const embeddingConfig = config.embedding;
 
   let embeddingOk = false;

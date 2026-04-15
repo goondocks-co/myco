@@ -8,13 +8,15 @@
 
 import type { Database } from 'better-sqlite3';
 import type { RouteRequest, RouteResponse } from '../router.js';
+import type { MycoConfig } from '../../config/schema.js';
 import {
   createBackup,
   listBackups,
   restorePreview,
   restoreBackup,
 } from '../backup.js';
-import { loadConfig, updateBackupConfig } from '../../config/loader.js';
+import { loadMergedConfig, updateBackupConfig } from '../../config/loader.js';
+import os from 'node:os';
 import path from 'node:path';
 
 // ---------------------------------------------------------------------------
@@ -24,8 +26,26 @@ import path from 'node:path';
 /** Dependencies injected by the daemon when registering backup routes. */
 export interface BackupDeps {
   db: Database;
-  backupDir: string;
   machineId: string;
+  vaultDir: string;
+  // Holder so the dir is re-resolved on every request — a user can change
+  // `backup.dir` in Settings (either scope) and the next backup writes to
+  // the new location without a daemon restart.
+  liveConfig: { current: MycoConfig };
+}
+
+/**
+ * Resolve the effective backup directory from the current config. The user's
+ * configured path may be relative or start with `~/`; absent, it falls back
+ * to `<vaultDir>/backups`.
+ */
+export function resolveBackupDir(config: MycoConfig, vaultDir: string): string {
+  const rawDir = config.backup.dir;
+  if (!rawDir) return path.resolve(vaultDir, 'backups');
+  const expanded = rawDir.startsWith('~/')
+    ? path.join(os.homedir(), rawDir.slice(2))
+    : rawDir;
+  return path.resolve(expanded);
 }
 
 // ---------------------------------------------------------------------------
@@ -38,10 +58,13 @@ export interface BackupDeps {
  * Returns an object with named handlers for each backup endpoint.
  */
 export function createBackupHandlers(deps: BackupDeps) {
+  const currentBackupDir = () => resolveBackupDir(deps.liveConfig.current, deps.vaultDir);
+
   /** POST /api/backup — create a new backup of all synced tables. */
   async function handleCreateBackup(_req: RouteRequest): Promise<RouteResponse> {
-    const filePath = createBackup(deps.db, deps.backupDir, deps.machineId);
-    const backups = listBackups(deps.backupDir);
+    const backupDir = currentBackupDir();
+    const filePath = createBackup(deps.db, backupDir, deps.machineId);
+    const backups = listBackups(backupDir);
     const created = backups.find((b) => b.machine_id === deps.machineId);
 
     return {
@@ -55,7 +78,7 @@ export function createBackupHandlers(deps: BackupDeps) {
 
   /** GET /api/backups — list all backup files with metadata. */
   async function handleListBackups(_req: RouteRequest): Promise<RouteResponse> {
-    const backups = listBackups(deps.backupDir);
+    const backups = listBackups(currentBackupDir());
     return { body: { backups } };
   }
 
@@ -66,13 +89,14 @@ export function createBackupHandlers(deps: BackupDeps) {
       return { status: 400, body: { error: 'missing_machine_id' } };
     }
 
-    const backups = listBackups(deps.backupDir);
+    const backupDir = currentBackupDir();
+    const backups = listBackups(backupDir);
     const backup = backups.find((b) => b.machine_id === machine_id);
     if (!backup) {
       return { status: 404, body: { error: 'backup_not_found' } };
     }
 
-    const backupPath = `${deps.backupDir}/${backup.file_name}`;
+    const backupPath = `${backupDir}/${backup.file_name}`;
     const tables = restorePreview(deps.db, backupPath);
     const total_new = tables.reduce((sum, t) => sum + t.new, 0);
     const total_existing = tables.reduce((sum, t) => sum + t.existing, 0);
@@ -87,13 +111,14 @@ export function createBackupHandlers(deps: BackupDeps) {
       return { status: 400, body: { error: 'missing_machine_id' } };
     }
 
-    const backups = listBackups(deps.backupDir);
+    const backupDir = currentBackupDir();
+    const backups = listBackups(backupDir);
     const backup = backups.find((b) => b.machine_id === machine_id);
     if (!backup) {
       return { status: 404, body: { error: 'backup_not_found' } };
     }
 
-    const backupPath = `${deps.backupDir}/${backup.file_name}`;
+    const backupPath = `${backupDir}/${backup.file_name}`;
     const result = restoreBackup(deps.db, backupPath);
 
     return { body: { machine_id, ...result } };
@@ -121,9 +146,9 @@ export interface BackupConfigDeps {
 export function createBackupConfigHandlers(deps: BackupConfigDeps) {
   const { vaultDir } = deps;
 
-  /** GET /api/backup/config — read the configured backup directory. */
+  /** GET /api/backup/config — read the configured backup directory (merged). */
   async function handleGetBackupConfig(): Promise<RouteResponse> {
-    const cfg = loadConfig(vaultDir);
+    const cfg = loadMergedConfig(vaultDir);
     return { body: { dir: cfg.backup.dir ?? null, default_dir: path.resolve(vaultDir, 'backups') } };
   }
 

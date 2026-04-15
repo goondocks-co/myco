@@ -165,4 +165,18 @@ describe('PowerManager', () => {
     await vi.advanceTimersByTimeAsync(1_100);
     expect(jobFn).toHaveBeenCalled();
   });
+
+  it('replaces a named job group without disturbing other jobs', () => {
+    pm.register({ name: 'scheduled:old-task', runIn: ['active'], fn: vi.fn().mockResolvedValue(undefined) });
+    pm.register({ name: 'embedding-reconcile', runIn: ['idle'], fn: vi.fn().mockResolvedValue(undefined) });
+
+    pm.replaceGroup('scheduled:', [
+      { name: 'scheduled:new-task', runIn: ['sleep'], fn: vi.fn().mockResolvedValue(undefined) },
+    ]);
+
+    expect((pm as unknown as { jobs: Array<{ name: string }> }).jobs.map((job) => job.name)).toEqual([
+      'embedding-reconcile',
+      'scheduled:new-task',
+    ]);
+  });
 });

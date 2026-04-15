@@ -5,7 +5,7 @@ import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, removeTomlS
 import { deepMergeSettings, deepRemoveSettings } from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup } from './install-helpers.js';
-import { loadConfig } from '../config/loader.js';
+import { loadMergedConfig } from '../config/loader.js';
 
 /** Current comment header for Myco-managed .gitignore block. */
 const GITIGNORE_COMMENT = '# Myco managed (machine-specific)';
@@ -265,7 +265,7 @@ export class SymbiontInstaller {
 
   private loadProjectConfig() {
     try {
-      return loadConfig(path.join(this.projectRoot, '.myco'));
+      return loadMergedConfig(path.join(this.projectRoot, '.myco'));
     } catch {
       return null;
     }
