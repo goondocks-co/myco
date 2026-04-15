@@ -64,7 +64,9 @@ export function writeScopedConfig(
 }
 
 export function clearLocalConfigKeys(keys: string[]): Promise<unknown> {
-  return postJson<unknown>('/config/local/clear', { keys });
+  // Unified scoped write: clear-only request. Empty patch is allowed when
+  // clear is non-empty (server validates this).
+  return putJson<unknown>('/config/scoped', { scope: 'local', patch: {}, clear: keys });
 }
 
 export class ApiError extends Error {
