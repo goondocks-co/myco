@@ -109,6 +109,12 @@ export interface ListSessionsOptions {
   status?: string;
   agent?: string;
   search?: string;
+  /** Filter to sessions that ran on this git branch. */
+  branch?: string;
+  /** Filter to sessions authored by this user. */
+  user?: string;
+  /** Filter to this exact session id (used for plan→session resolution). */
+  id?: string;
   /** Only return sessions created after this epoch-seconds timestamp. */
   since?: number;
   /**
@@ -292,6 +298,21 @@ function buildSessionsWhere(
   if (options.agent !== undefined) {
     conditions.push(`agent = ?`);
     params.push(options.agent);
+  }
+
+  if (options.branch !== undefined) {
+    conditions.push(`branch = ?`);
+    params.push(options.branch);
+  }
+
+  if (options.user !== undefined) {
+    conditions.push(`"user" = ?`);
+    params.push(options.user);
+  }
+
+  if (options.id !== undefined) {
+    conditions.push(`id = ?`);
+    params.push(options.id);
   }
 
   if (options.search !== undefined && options.search.length > 0) {

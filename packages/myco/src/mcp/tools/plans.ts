@@ -12,6 +12,7 @@ import { buildEndpoint } from './shared.js';
 // ---------------------------------------------------------------------------
 
 interface PlansInput {
+  id?: string;
   status?: string;
   limit?: number;
 }
@@ -23,6 +24,8 @@ interface PlanSummary {
   progress: string;
   tags: string[];
   created_at: number;
+  /** Full plan content — present only when looked up by id. */
+  content?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -34,6 +37,7 @@ export async function handleMycoPlans(
   client: DaemonClient,
 ): Promise<PlanSummary[]> {
   const endpoint = buildEndpoint('/api/mcp/plans', {
+    id: input.id,
     status: input.status,
     limit: input.limit,
   });

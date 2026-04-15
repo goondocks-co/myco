@@ -48,4 +48,30 @@ describe('myco_plans', () => {
     await handleMycoPlans({ limit: 5 }, client);
     expect(client.get).toHaveBeenCalledWith(expect.stringContaining('limit=5'));
   });
+
+  it('forwards id to daemon when looking up a specific plan', async () => {
+    const client = mockClient({
+      plans: [{
+        id: 'plan-auth',
+        title: 'Auth',
+        status: 'active',
+        progress: '0/3',
+        tags: [],
+        created_at: 1700000000,
+        content: '# Plan content here',
+      }],
+    });
+    await handleMycoPlans({ id: 'plan-auth' }, client);
+    expect(client.get).toHaveBeenCalledWith(expect.stringContaining('id=plan-auth'));
+  });
+
+  it('surfaces plan content on single-plan lookup response', async () => {
+    const content = '# Auth Redesign\n\n- [x] Step 1\n- [ ] Step 2';
+    const client = mockClient({
+      plans: [{ id: 'plan-auth', title: 'Auth', status: 'active', progress: '1/2', tags: [], created_at: 1700000000, content }],
+    });
+    const results = await handleMycoPlans({ id: 'plan-auth' }, client);
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe(content);
+  });
 });

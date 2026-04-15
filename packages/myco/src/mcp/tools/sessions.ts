@@ -12,8 +12,12 @@ import { buildEndpoint } from './shared.js';
 // ---------------------------------------------------------------------------
 
 interface SessionsInput {
-  limit?: number;
+  plan?: string;
+  branch?: string;
+  user?: string;
+  since?: string;
   status?: string;
+  limit?: number;
 }
 
 interface SessionSummary {
@@ -40,8 +44,12 @@ export async function handleMycoSessions(
   client: DaemonClient,
 ): Promise<SessionSummary[]> {
   const endpoint = buildEndpoint('/api/mcp/sessions', {
-    limit: input.limit,
+    plan: input.plan,
+    branch: input.branch,
+    user: input.user,
+    since: input.since,
     status: input.status,
+    limit: input.limit,
   });
   const result = await client.get(endpoint);
 
