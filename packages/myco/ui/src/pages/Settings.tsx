@@ -535,7 +535,6 @@ function ProjectCard({ vaultName }: { vaultName: string }) {
           path="daemon.log_level"
           label="Log Level"
           defaultScope="local"
-          requiresRestart
         >
           {({ value, onChange }) => (
             <Select value={value ?? 'info'} onValueChange={(v) => onChange(v as LogLevel)}>
@@ -557,7 +556,6 @@ function ProjectCard({ vaultName }: { vaultName: string }) {
           path="daemon.log_retention_days"
           label="Log Retention (days)"
           defaultScope="local"
-          requiresRestart
           commitOn="blur"
         >
           {({ value, onChange, onBlur }) => (
