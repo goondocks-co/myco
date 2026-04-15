@@ -4,10 +4,10 @@
  * Sage and terracotta themes override these with their own accent choices.
  */
 
-[data-theme="moss"],
-[data-theme="dusk"],
-[data-theme="plum"],
-[data-theme="slate"] {
+:root[data-theme="moss"],
+:root[data-theme="dusk"],
+:root[data-theme="plum"],
+:root[data-theme="slate"] {
   --secondary: #d3b172;
   --on-secondary: #3d2b0c;
   --secondary-container: #5a3f10;
@@ -17,10 +17,10 @@
   --tertiary-container: #7f4334;
 }
 
-[data-theme="moss"].light,
-[data-theme="dusk"].light,
-[data-theme="plum"].light,
-[data-theme="slate"].light {
+:root[data-theme="moss"].light,
+:root[data-theme="dusk"].light,
+:root[data-theme="plum"].light,
+:root[data-theme="slate"].light {
   --secondary: #6b4e1e;
   --on-secondary: #ffffff;
   --secondary-container: #e6d1a3;

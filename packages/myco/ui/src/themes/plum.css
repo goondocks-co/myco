@@ -1,13 +1,32 @@
-[data-theme="plum"] {
+:root[data-theme="plum"] {
   --primary: #b59ec8;
   --on-primary: #1a0f24;
   --primary-container: #7d6992;
   --on-primary-container: #1a0f24;
+
+  /* Subtle violet-tinted dark surfaces. */
+  --surface: #100d13;
+  --surface-dim: #0b080e;
+  --surface-container-lowest: #08060b;
+  --surface-container-low: #1c1722;
+  --surface-container: #26202c;
+  --surface-container-high: #322a3a;
+  --surface-container-highest: #3d3447;
+  --outline-variant: #443b4f;
 }
 
-[data-theme="plum"].light {
+:root[data-theme="plum"].light {
   --primary: #604a76;
   --on-primary: #ffffff;
   --primary-container: #d6c4e2;
   --on-primary-container: #1a0f24;
+
+  --surface: #f7f3fa;
+  --surface-dim: #ebe4f0;
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #f1ebf5;
+  --surface-container: #e4dbeb;
+  --surface-container-high: #d2c6dc;
+  --surface-container-highest: #c0b1cd;
+  --outline-variant: #c8b9d5;
 }

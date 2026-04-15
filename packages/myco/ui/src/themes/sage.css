@@ -1,4 +1,4 @@
-[data-theme="sage"] {
+:root[data-theme="sage"] {
   --primary: #abcfb8;
   --on-primary: #163627;
   --primary-container: #7b9e89;
@@ -13,7 +13,7 @@
   --tertiary-container: #df7a60;
 }
 
-[data-theme="sage"].light {
+:root[data-theme="sage"].light {
   --primary: #446553;
   --on-primary: #ffffff;
   --primary-container: #7b9e89;

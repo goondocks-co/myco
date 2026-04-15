@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from 'react';
-import { MoreVertical, Monitor, Moon, Sun, Check } from 'lucide-react';
+import { useState, useEffect, type ReactNode } from 'react';
+import { MoreVertical, Monitor, Moon, Sun, Check, ChevronDown } from 'lucide-react';
 import {
   APPEARANCE_THEMES,
   APPEARANCE_MODES,
@@ -78,9 +78,23 @@ function PersonalPillMenu({
   );
 }
 
+const SECTION_EXPANDED_KEY = 'myco-ui-appearance-expanded';
+
+function readSectionExpanded(): boolean {
+  // Default expanded so first-time users discover the controls; once they
+  // collapse it, the choice persists across sessions.
+  const stored = typeof window !== 'undefined' ? localStorage.getItem(SECTION_EXPANDED_KEY) : null;
+  return stored === null ? true : stored === 'true';
+}
+
 export function AppearanceSection({ collapsed }: { collapsed: boolean }) {
   const { effective, local, set, resetKey, saveAllAsProject, resetAll } = useAppearance();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [expanded, setExpanded] = useState<boolean>(readSectionExpanded);
+
+  useEffect(() => {
+    localStorage.setItem(SECTION_EXPANDED_KEY, String(expanded));
+  }, [expanded]);
 
   const isPersonal = (key: keyof Appearance) => local[key] !== undefined;
 
@@ -111,20 +125,31 @@ export function AppearanceSection({ collapsed }: { collapsed: boolean }) {
   );
 
   return (
-    <div className="space-y-3 rounded-md border border-[var(--ghost-border)] p-3">
+    <div className={`rounded-md border border-[var(--ghost-border)] p-3 ${expanded ? 'space-y-3' : ''}`}>
       <div className="flex items-center justify-between">
-        <h3 className="text-[10px] uppercase tracking-[0.22em] text-on-surface-variant">Appearance</h3>
         <button
           type="button"
-          onClick={() => setMenuOpen((o) => !o)}
-          className="rounded p-1 hover:bg-surface-container-high"
-          aria-label="Appearance menu"
+          onClick={() => setExpanded((e) => !e)}
+          className="-m-1 flex flex-1 items-center gap-1.5 rounded p-1 text-left hover:bg-surface-container-high"
+          aria-expanded={expanded}
+          aria-label={expanded ? 'Collapse appearance section' : 'Expand appearance section'}
         >
-          <MoreVertical className="h-3.5 w-3.5" />
+          <ChevronDown className={`h-3 w-3 text-on-surface-variant transition-transform ${expanded ? '' : '-rotate-90'}`} />
+          <h3 className="text-[10px] uppercase tracking-[0.22em] text-on-surface-variant">Appearance</h3>
         </button>
+        {expanded && (
+          <button
+            type="button"
+            onClick={() => setMenuOpen((o) => !o)}
+            className="rounded p-1 hover:bg-surface-container-high"
+            aria-label="Appearance menu"
+          >
+            <MoreVertical className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
 
-      {menuOpen && (
+      {expanded && menuOpen && (
         <div className="flex flex-col gap-1 text-sm">
           <button
             type="button"
@@ -143,72 +168,76 @@ export function AppearanceSection({ collapsed }: { collapsed: boolean }) {
         </div>
       )}
 
-      {controlRow('Color theme', 'theme', (
-        <div className="mt-2 grid grid-cols-6 gap-1.5">
-          {APPEARANCE_THEMES.map((key) => {
-            const meta = THEME_LABELS[key];
-            return (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setLocal('theme', key)}
-                title={meta.label}
-                aria-label={meta.label}
-                className={`relative aspect-square rounded-md border ${effective.theme === key ? 'border-primary' : 'border-[var(--ghost-border)]'}`}
-                style={{ backgroundColor: meta.swatch }}
-              >
-                {effective.theme === key && <Check className="absolute inset-0 m-auto h-3 w-3 text-on-surface" />}
-              </button>
-            );
-          })}
-        </div>
-      ))}
-
-      {controlRow('Mode', 'mode', (
-        <div className="mt-2 grid grid-cols-3 gap-1.5">
-          {APPEARANCE_MODES.map((key) => {
-            const { icon: Icon, label } = MODE_META[key];
-            return (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setLocal('mode', key)}
-                className={`flex items-center justify-center gap-1 rounded-md border py-1 text-xs ${effective.mode === key ? 'border-primary text-on-surface' : 'border-[var(--ghost-border)] text-on-surface-variant'}`}
-                aria-label={label}
-              >
-                <Icon className="h-3 w-3" /> {label}
-              </button>
-            );
-          })}
-        </div>
-      ))}
-
-      {controlRow('Font', 'font', (
-        <select
-          value={effective.font}
-          onChange={(e) => setLocal('font', e.target.value as FontKey)}
-          className="mt-2 h-8 w-full rounded-md border border-[var(--ghost-border)] bg-[var(--surface-container-lowest)] px-2 text-xs"
-        >
-          {APPEARANCE_FONTS.map((key) => (
-            <option key={key} value={key}>{FONT_LABELS[key]}</option>
+      {expanded && (
+        <>
+          {controlRow('Color theme', 'theme', (
+            <div className="mt-2 grid grid-cols-6 gap-1.5">
+              {APPEARANCE_THEMES.map((key) => {
+                const meta = THEME_LABELS[key];
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setLocal('theme', key)}
+                    title={meta.label}
+                    aria-label={meta.label}
+                    className={`relative aspect-square rounded-md border ${effective.theme === key ? 'border-primary' : 'border-[var(--ghost-border)]'}`}
+                    style={{ backgroundColor: meta.swatch }}
+                  >
+                    {effective.theme === key && <Check className="absolute inset-0 m-auto h-3 w-3 text-on-surface" />}
+                  </button>
+                );
+              })}
+            </div>
           ))}
-        </select>
-      ))}
 
-      {controlRow('Density', 'density', (
-        <div className="mt-2 grid grid-cols-3 gap-1.5">
-          {APPEARANCE_DENSITIES.map((key) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setLocal('density', key)}
-              className={`rounded-md border py-1 text-xs capitalize ${effective.density === key ? 'border-primary text-on-surface' : 'border-[var(--ghost-border)] text-on-surface-variant'}`}
+          {controlRow('Mode', 'mode', (
+            <div className="mt-2 grid grid-cols-3 gap-1.5">
+              {APPEARANCE_MODES.map((key) => {
+                const { icon: Icon, label } = MODE_META[key];
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setLocal('mode', key)}
+                    className={`flex items-center justify-center gap-1 rounded-md border py-1 text-xs ${effective.mode === key ? 'border-primary text-on-surface' : 'border-[var(--ghost-border)] text-on-surface-variant'}`}
+                    aria-label={label}
+                  >
+                    <Icon className="h-3 w-3" /> {label}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+
+          {controlRow('Font', 'font', (
+            <select
+              value={effective.font}
+              onChange={(e) => setLocal('font', e.target.value as FontKey)}
+              className="mt-2 h-8 w-full rounded-md border border-[var(--ghost-border)] bg-[var(--surface-container-lowest)] px-2 text-xs"
             >
-              {key}
-            </button>
+              {APPEARANCE_FONTS.map((key) => (
+                <option key={key} value={key}>{FONT_LABELS[key]}</option>
+              ))}
+            </select>
           ))}
-        </div>
-      ))}
+
+          {controlRow('Density', 'density', (
+            <div className="mt-2 grid grid-cols-3 gap-1.5">
+              {APPEARANCE_DENSITIES.map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setLocal('density', key)}
+                  className={`rounded-md border py-1 text-xs capitalize ${effective.density === key ? 'border-primary text-on-surface' : 'border-[var(--ghost-border)] text-on-surface-variant'}`}
+                >
+                  {key}
+                </button>
+              ))}
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }
