@@ -204,14 +204,26 @@ export function saveLocalConfig(vaultDir: string, patch: Partial<MycoConfig>): P
   return next;
 }
 
-/** Callback-style update for local config. */
+/**
+ * Callback-style update for local config. Replace-semantics: the value
+ * returned by `fn` is written verbatim (so callers can remove keys by
+ * omitting them). Callers that want merge-semantics should spread
+ * `...local` inside their callback, or use `saveLocalConfig` directly.
+ */
 export function updateLocalConfig(
   vaultDir: string,
   fn: (local: Partial<MycoConfig>) => Partial<MycoConfig>,
 ): Partial<MycoConfig> {
   const current = loadLocalConfig(vaultDir);
   const updated = fn(current);
-  return saveLocalConfig(vaultDir, updated);
+
+  const existingYaml = YAML.stringify(current);
+  const nextYaml = YAML.stringify(updated);
+  if (existingYaml === nextYaml) return updated;
+
+  fs.mkdirSync(vaultDir, { recursive: true });
+  fs.writeFileSync(localConfigPath(vaultDir), nextYaml, 'utf-8');
+  return updated;
 }
 
 /**
