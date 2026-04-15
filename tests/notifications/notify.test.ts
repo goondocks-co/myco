@@ -71,4 +71,30 @@ describe('notify', () => {
       mode: 'banner',
     });
   });
+
+  it('uses the migrated settings-domain banner default over the global summary mode', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'myco.yaml'),
+      [
+        'version: 3',
+        'config_version: 4',
+        'notifications:',
+        '  default_mode: summary',
+        '',
+      ].join('\n'),
+    );
+
+    const id = notify(tmpDir, {
+      domain: 'settings',
+      type: 'settings.saved',
+      title: 'Settings saved',
+    });
+
+    expect(id).toBeTruthy();
+    expect(getNotification(id!)).toMatchObject({
+      domain: 'settings',
+      type: 'settings.saved',
+      mode: 'banner',
+    });
+  });
 });

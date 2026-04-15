@@ -1,6 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import {
+  CONFIG_FOCUS_FIELD_PARAM,
+  CONFIG_FOCUS_SECTION_PARAM,
+  configFieldId,
+} from '@myco/config/focus';
+import {
   LayoutDashboard,
   Settings,
   Network,
@@ -48,6 +53,13 @@ const SIDEBAR_COLLAPSED_KEY = 'myco-ui-sidebar-collapsed';
 
 /** Tailwind `md` breakpoint in pixels. Below this, the sidebar becomes a mobile drawer. */
 const MOBILE_BREAKPOINT_PX = 768;
+const CONFIG_FOCUS_SCROLL_DELAY_MS = 80;
+const CONFIG_FOCUS_HIGHLIGHT_DURATION_MS = 2_000;
+const CONFIG_FOCUS_HIGHLIGHT_CLASSES = [
+  'ring-2',
+  'ring-primary/40',
+  'bg-primary/5',
+];
 
 /* ---------- Sidebar collapse hook ---------- */
 
@@ -339,10 +351,29 @@ export default function Layout() {
   const openNotifPanel = useCallback(() => setNotifPanelOpen(true), []);
   const closeNotifPanel = useCallback(() => setNotifPanelOpen(false), []);
 
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const field = params.get(CONFIG_FOCUS_FIELD_PARAM) ?? undefined;
+    const section = params.get(CONFIG_FOCUS_SECTION_PARAM) ?? undefined;
+    if (!field && !section) return;
+
+    const timeoutId = window.setTimeout(() => {
+      const target = findConfigFocusElement(field, section);
+      if (!target) return;
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.classList.add(...CONFIG_FOCUS_HIGHLIGHT_CLASSES);
+      window.setTimeout(() => {
+        target.classList.remove(...CONFIG_FOCUS_HIGHLIGHT_CLASSES);
+      }, CONFIG_FOCUS_HIGHLIGHT_DURATION_MS);
+    }, CONFIG_FOCUS_SCROLL_DELAY_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [location.key, location.search]);
+
   return (
     <div className="flex h-screen bg-background">
       <GlobalSearch open={searchOpen} onOpenChange={setSearchOpen} />
-      <NotificationBanner />
+      <NotificationBanner panelOpen={notifPanelOpen} />
       <NotificationPanel open={notifPanelOpen} onClose={closeNotifPanel} />
       <SystemNotifications />
 
@@ -447,4 +478,24 @@ export default function Layout() {
       </main>
     </div>
   );
+}
+
+function findConfigFocusElement(field?: string, section?: string): HTMLElement | null {
+  if (field) {
+    let current = field;
+    while (current.length > 0) {
+      const element = document.getElementById(configFieldId(current));
+      if (element instanceof HTMLElement) return element;
+      const lastDot = current.lastIndexOf('.');
+      if (lastDot === -1) break;
+      current = current.slice(0, lastDot);
+    }
+  }
+
+  if (section) {
+    const sectionElement = document.getElementById(section);
+    if (sectionElement instanceof HTMLElement) return sectionElement;
+  }
+
+  return null;
 }

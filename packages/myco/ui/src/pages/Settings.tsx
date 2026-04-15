@@ -2,6 +2,10 @@ import { useState, useCallback, useEffect } from 'react';
 import { CheckCircle, XCircle, Loader2 } from 'lucide-react';
 import { useDaemon } from '../hooks/use-daemon';
 import {
+  CONFIG_SECTION_IDS,
+  configFieldId,
+} from '@myco/config/focus';
+import {
   useProviders,
   useTestProvider,
   seedDraftFromProviderType,
@@ -26,7 +30,7 @@ import {
 import { Switch } from '../components/ui/switch';
 import { PlanCaptureCard } from '../components/config/PlanCaptureCard';
 import { ScopedField } from '../components/config/ScopedField';
-import { ScopePill } from '../components/config/ScopePill';
+import { ScopeBadge, ScopePill } from '../components/config/ScopePill';
 import { RestartGateProvider, RestartBanner } from '../components/config/restart-gate';
 import { useScopedConfig } from '../hooks/use-scoped-config';
 import { NotificationSettings } from '../components/notifications/NotificationSettings';
@@ -192,25 +196,22 @@ function AgentProviderCard() {
   const handleClear = useCallback(async () => {
     setDraft({ type: '', model: '', baseUrl: '', contextLength: '' });
     agentTestMutation.reset();
-    // /simplify Q7: sequence the two writes so a partial failure (e.g. the
-    // toggles write succeeds but resetField fails) doesn't leave the user
-    // with disabled tasks AND a still-set provider — we'd rather both
-    // succeed or both error out.
-    //
-    // deepMerge skips undefined source values, so writing { provider: undefined }
-    // won't clear a project-scoped provider. resetField clears the local
-    // override only; a project-scoped provider must be removed from
+    // Atomic: disable both task toggles and clear the local agent.provider
+    // override in one PUT. A project-scoped provider still requires editing
     // myco.yaml directly.
     try {
-      await setFields([
-        { path: 'agent.scheduled_tasks_enabled', value: false },
-        { path: 'agent.event_tasks_enabled', value: false },
-      ], 'local');
-      await resetField('agent.provider');
+      await setFields(
+        [
+          { path: 'agent.scheduled_tasks_enabled', value: false },
+          { path: 'agent.event_tasks_enabled', value: false },
+        ],
+        'local',
+        ['agent.provider'],
+      );
     } catch (err) {
       console.error('[agent-card] clear provider failed', err);
     }
-  }, [setFields, resetField, agentTestMutation]);
+  }, [setFields, agentTestMutation]);
 
   const handleTestConnection = useCallback(() => {
     if (draft.type === '') return;
@@ -221,11 +222,20 @@ function AgentProviderCard() {
   }, [draft.type, draft.baseUrl, agentTestMutation]);
 
   return (
-    <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-sage">
+    <Surface
+      id={CONFIG_SECTION_IDS.settingsAgent}
+      data-config-field="agent.provider"
+      level="low"
+      className="rounded-lg p-6 space-y-5 border-t-2 border-t-sage transition-all duration-300"
+    >
       <SectionHeader>
         <span className="flex items-center gap-2">
           Myco Agent
-          {personal && <ScopePill onPromote={() => promoteField('agent.provider')} onReset={() => resetField('agent.provider')} />}
+          {personal ? (
+            <ScopePill onPromote={() => promoteField('agent.provider')} onReset={() => resetField('agent.provider')} />
+          ) : (
+            <ScopeBadge scope="project" />
+          )}
         </span>
       </SectionHeader>
 
@@ -328,7 +338,11 @@ function EmbeddingCard() {
   }, [currentProvider, currentBaseUrl]);
 
   return (
-    <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-ochre">
+    <Surface
+      id={CONFIG_SECTION_IDS.settingsEmbedding}
+      level="low"
+      className="rounded-lg p-6 space-y-5 border-t-2 border-t-ochre transition-all duration-300"
+    >
       <SectionHeader>Embedding</SectionHeader>
 
       <div className="space-y-4">
@@ -434,7 +448,11 @@ function EmbeddingCard() {
  *  by default. Still overridable per-machine via the Personal pill. */
 function ContextInjectionCard() {
   return (
-    <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-ochre">
+    <Surface
+      id={CONFIG_SECTION_IDS.settingsContextInjection}
+      level="low"
+      className="rounded-lg p-6 space-y-5 border-t-2 border-t-ochre transition-all duration-300"
+    >
       <SectionHeader>Context Injection</SectionHeader>
 
       <div className="space-y-4">
@@ -500,12 +518,20 @@ function ContextInjectionCard() {
  *  lets any field be promoted/reset between personal and project scope. */
 function ProjectCard({ vaultName }: { vaultName: string }) {
   return (
-    <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-sage">
+    <Surface
+      id={CONFIG_SECTION_IDS.settingsProject}
+      level="low"
+      className="rounded-lg p-6 space-y-5 border-t-2 border-t-sage transition-all duration-300"
+    >
       <SectionHeader>Project</SectionHeader>
 
       <div className="space-y-4">
         {/* Vault name -- read-only */}
-        <div className="space-y-1.5">
+        <div
+          id={configFieldId('vault.name')}
+          data-config-field="vault.name"
+          className="space-y-1.5 rounded-md transition-all duration-300"
+        >
           <label className="font-sans text-sm font-medium text-on-surface">Vault Name</label>
           <Input value={vaultName} readOnly disabled className="text-on-surface-variant bg-surface-container-lowest" />
         </div>
@@ -535,7 +561,6 @@ function ProjectCard({ vaultName }: { vaultName: string }) {
           path="daemon.log_level"
           label="Log Level"
           defaultScope="local"
-          requiresRestart
         >
           {({ value, onChange }) => (
             <Select value={value ?? 'info'} onValueChange={(v) => onChange(v as LogLevel)}>
@@ -557,7 +582,6 @@ function ProjectCard({ vaultName }: { vaultName: string }) {
           path="daemon.log_retention_days"
           label="Log Retention (days)"
           defaultScope="local"
-          requiresRestart
           commitOn="blur"
         >
           {({ value, onChange, onBlur }) => (

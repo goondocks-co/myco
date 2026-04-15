@@ -67,6 +67,15 @@ export class DaemonLogger {
     this.persistFn = fn;
   }
 
+  /**
+   * Change the active log level at runtime. Subsequent writes use the new
+   * threshold immediately — no restart required. Used by the
+   * daemon.log_level config reaction.
+   */
+  setLevel(level: LogLevel): void {
+    this.level = level;
+  }
+
   debug(kind: string, message: string, data?: Record<string, unknown>): void {
     this.write('debug', kind, message, data);
   }

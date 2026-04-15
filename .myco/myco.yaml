@@ -1,5 +1,5 @@
 version: 3
-config_version: 4
+config_version: 5
 embedding:
   provider: ollama
   model: bge-m3:latest
@@ -106,6 +106,9 @@ notifications:
       enabled: false
     mycelium:
       enabled: true
+    settings:
+      enabled: true
+      mode: banner
 appearance:
   theme: sage
   mode: dark

@@ -5,16 +5,16 @@ description: >
   Myco daemon web UI or Collective UI — even if the user doesn't explicitly
   ask about design compliance or testing. Covers: design system token
   integration (6-theme system: sage/moss/terracotta/dusk/plum/slate with ochre
-  reserved for Collective, PostCSS @import ordering, CSS cascade specificity),
-  app shell grammar and master-detail layout enforcement, canary signal
-  detection and design drift recovery, React component patterns (useCallback
-  deps, SectionSaveRow, toFormState/builder, ScopedField), configuration page
-  architecture with collapsible sections and kebab menus, localStorage→file
-  migration with idempotent design, I/O optimization patterns, Playwright smoke
-  tests with computed CSS verification, favicon-per-theme SVG switching,
-  dynamic title pattern, RedactedField copy-button gotcha. Activates whenever
-  building daemon UI pages, reviewing components for visual compliance, or
-  debugging stale-closure bugs.
+  reserved for Collective, PostCSS @import ordering, CSS cascade specificity,
+  theme authoring and browser verification), app shell grammar and
+  master-detail layout enforcement, canary signal detection and design drift
+  recovery, React component patterns (useCallback deps, SectionSaveRow,
+  ScopedField with useScopedConfig, write-on-blur, DotPaths<T>), config page
+  architecture with collapsible sections and kebab menus, localStorage
+  migration, I/O optimization, Playwright tests, favicon switching, title
+  pattern, AppearanceProvider constraints, Vitest fixtures, RedactedField
+  gotcha, hard-refresh gotcha. Activates whenever building daemon UI or
+  reviewing components for visual compliance.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -22,103 +22,253 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Daemon UI Development
 
-The Myco daemon UI has a deliberate design language — a specific color palette, layout grammar, and component vocabulary. Deviating from it is the single most common source of rework in new UI surfaces. Two full rounds of rework on the Collective UI confirm this is a recurring risk, not a one-time mistake.
+The Myco daemon UI has deliberate design language, layout patterns, and configuration system. Deviating from established patterns causes rework. Two full rewrites of the Collective UI confirm this is a recurring risk.
 
-Apply these procedures whenever touching daemon or Collective UI code.
+Apply these procedures whenever touching daemon or Collective UI code, especially for settings and configuration interfaces.
 
 ## Prerequisites
 
-- Locate the daemon UI source: `packages/daemon/src/ui/` (or equivalent)
-- Locate the Collective UI source: `packages/collective-ui/`
-- Have a browser open for screenshot review before merging any visual changes
-- Confirm ESLint is running with `react-hooks/exhaustive-deps` enabled and treated as an error
-- Review the 6-theme system and theme CSS file organization in `packages/daemon/src/ui/styles/themes/`
+- Daemon UI source: `packages/daemon/src/ui/`
+- Config module: `src/config/loader.ts` is canonical
+- ESLint: `react-hooks/exhaustive-deps` enabled as error
+- Theme files: `packages/daemon/src/ui/styles/themes/`
+- AppearanceProvider: `packages/daemon/src/ui/components/AppearanceProvider.tsx`
+- All YAML writes flow through `updateConfig()` — never write `myco.yaml` or `.myco/local.yaml` directly
 
 ## Procedure 1: Design System Token Integration
 
-The daemon uses CSS custom properties for color, typography, and spacing. Never introduce custom color values — even one hardcoded hex breaks visual consistency across the surface.
+Never introduce custom color values. Even one hardcoded hex breaks visual consistency.
 
 ### 6-Theme System
 
-The design system includes **6 named themes**. Each theme has a unique primary color mapped to `--color-primary` and related accent/structural tokens. Ochre is reserved exclusively for the Collective UI and must not appear in daemon theme files.
-
-**Available themes:**
-- Sage (cool green, daemon default)
-- Moss (saturated green)
-- Terracotta (warm orange-red)
-- Dusk (cool purple-blue)
-- Plum (warm purple)
-- Slate (neutral blue-gray)
-
-**Ochre (Collective-only):** Do not reference or define `--color-ochre` in daemon theme CSS. This prevents visual bleed when the Collective is embedded.
+Six named themes: Sage (default), Moss, Terracotta, Dusk, Plum, Slate. Ochre is reserved for Collective UI only.
 
 ### Palette tokens structure
 
-Theme files are imported via PostCSS in `src/ui/styles/main.css`:
+Theme files imported via PostCSS in `src/ui/styles/main.css`:
 
 ```css
 /* CRITICAL: @import must precede @tailwind directives */
-/* Otherwise theme CSS is silently dropped from the bundle (no build error) */
 @import './themes/sage.css';
 @import './themes/moss.css';
-@import './themes/terracotta.css';
-@import './themes/dusk.css';
-@import './themes/plum.css';
-@import './themes/slate.css';
-
-/* @tailwind directives come AFTER theme imports */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 ```
 
-If `@tailwind` appears before theme `@import`, the theme CSS is discarded silently — no build warning, but the themes don't work at runtime.
+If `@tailwind` precedes theme `@import`, the theme CSS is silently discarded — no build error.
 
 ### CSS cascade and specificity
 
-Theme selectors must use `:root[data-theme="...\"]` (not bare `[data-theme="...\"]`) to match the specificity of `:root` baseline styles. A selector like `[data-theme="sage"]` has the same specificity as `:root`, and source-order becomes unpredictable — the last declaration wins, breaking theme switching.
+Theme selectors must use `:root[data-theme="...\"]` to match `:root` specificity. Bare selectors cause source-order nondeterminism:
 
 ```css
-/* CORRECT — :root specificity */
-:root[data-theme="sage"] {
-  --color-primary: #4a7c59;
-}
+/* CORRECT */
+:root[data-theme="sage"] { --color-primary: #4a7c59; }
 
-/* WRONG — same specificity as :root, source order wins */
-[data-theme="sage"] {
-  --color-primary: #4a7c59;
+/* WRONG — source order wins unpredictably */
+[data-theme="sage"] { --color-primary: #4a7c59; }
+```
+
+**Before writing CSS:**
+1. Inventory current custom properties from theme files
+2. Search for hardcoded values: `grep -rn "#[0-9a-fA-F]{3,6}" src/your-surface/`
+3. Use daemon tokens; don't invent new variables
+
+## Procedure 1b: Adding a New Theme and Configuring the Appearance System
+
+Adding a new theme requires coordinated changes across a CSS file, a TypeScript union type, `AppearanceProvider`, and the picker component. Several failure modes are invisible to TypeScript/Vitest and only surface in browser.
+
+### Step 1 — Create the CSS file
+
+Create the theme file:
+
+```
+packages/daemon/src/ui/styles/themes/<name>.css
+```
+
+Minimal structure:
+
+```css
+/* IMPORTANT: All @import must precede @tailwind — see Procedure 1 */
+:root[data-theme="<name>"] {
+  --color-primary: #…;
+  --color-surface: #…;
+  /* mirror the full token set from an existing theme like sage.css */
 }
 ```
 
-**Typography hierarchy** — three fonts, each with a distinct role:
-- Display/heading font: large structural labels
-- Body font: content and descriptions
-- Mono font: code, IDs, config values
+Use `:root[data-theme="<name>"]` (specificity 0,2,0). Bare `[data-theme="<name>"]` (0,1,0) loses to `:root` baseline overrides. See Procedure 1 for the full specificity explanation.
 
-**Tonal layering**: backgrounds use tonal steps of the primary color or neutral grays — not flat white or arbitrary colors.
+### Step 2 — Import in main.css
 
-**Before writing any CSS in a new component:**
-1. Read the daemon shell's theme files to inventory all current custom properties
-2. Search for hardcoded values in your new file: `grep -rn "#[0-9a-fA-F]{3,6}|rgb(" src/your-surface/`
-3. If a color isn't available as a daemon token, do not invent a new variable — decide whether the token belongs in the design system
+In `packages/daemon/src/ui/styles/main.css`:
 
-Warm neutrals and ochre (`#brown`, beige tones, warm hex values, any use of `--color-ochre`) are the primary canary signals for design drift. See Procedure 3.
+```css
+@import './themes/sage.css';
+@import './themes/moss.css';
+/* … existing themes … */
+@import './themes/<name>.css';   /* ← add here, BEFORE @tailwind */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+```
+
+`@import` must precede `@tailwind`. If placed after, PostCSS silently discards the import — no error, no warning.
+
+### Step 3 — Extend the ThemeName union type
+
+Locate `ThemeName` (in `AppearanceProvider.tsx` or a co-located types file):
+
+```typescript
+export type ThemeName = 'sage' | 'moss' | 'terracotta' | 'dusk' | 'plum' | 'slate' | '<name>';
+```
+
+TypeScript will surface callers via exhaustiveness checks. It will NOT catch missing CSS custom properties.
+
+### Step 4 — Register in AppearanceProvider and the theme picker
+
+In `AppearanceProvider.tsx`, add the new theme to the `THEMES` array used to apply `data-theme` on `<html>`:
+
+```typescript
+const THEMES: ThemeName[] = ['sage', 'moss', 'terracotta', 'dusk', 'plum', 'slate', '<name>'];
+```
+
+In the theme picker component (e.g., `ThemePicker.tsx`), add a tile:
+
+```tsx
+<ThemeTile name="<name>" label="<Display Name>" />
+```
+
+The tile order in the picker should match the order in `THEMES[]`.
+
+**After all four steps, proceed to the browser verification procedure below.**
+
+### Browser-Only Verification — Mandatory Smoke Test
+
+The TypeScript, Vitest, ESLint, and tsc toolchain is completely blind to CSS build and render semantics. A theme can pass all CI checks while being broken in browser. Browser verification is mandatory before shipping any theme change.
+
+**Smoke test steps:**
+
+1. Start the daemon UI dev server (`pnpm dev` in `packages/daemon`)
+2. Open DevTools → Elements → select the `<html>` element
+3. Confirm `data-theme` attribute is set to the new theme name
+4. Open DevTools → Computed tab → filter by `--color-primary` (or another key token)
+5. Verify the expected hex value resolves — not empty, not inherited from another theme
+6. Switch themes via the Appearance picker → confirm `data-theme` updates on `<html>`
+7. Verify the new theme's computed values change correctly on switch
+8. Hard-refresh (Cmd+Shift+R / Ctrl+Shift+R) to rule out stale browser cache
+9. Screenshot the rendered result before committing
+
+**Diagnosis table — "passes CI, broken in browser":**
+
+| Symptom | Root cause | Fix |
+|---------|-----------|--------|
+| All custom properties empty | `@import` placed after `@tailwind` | Move `@import` before `@tailwind base` in main.css |
+| Theme partially applies | Bare `[data-theme]` specificity loss | Use `:root[data-theme=\"...\"]` |
+| Computed properties missing | CSS file not imported in main.css | Add `@import './themes/<name>.css'` |
+| Picker shows tile, theme doesn't apply | ThemeName added but THEMES[] not updated | Add to THEMES array in AppearanceProvider |
+| Correct DevTools values but wrong on screen | Browser cache stale | Hard-refresh (Cmd+Shift+R) |
+
+### AppearanceProvider Server-Side Import Constraint
+
+`AppearanceProvider` runs in browser context. It must not import any module that references Node.js-only APIs (`node:path`, `node:fs`, `node:os`, etc.). Bundle splits that pull daemon internals into the UI bundle will silently break AppearanceProvider in browser.
+
+**Symptom:** AppearanceProvider starts failing after a refactor that touched config-adjacent imports.
+
+**Wrong pattern — pulls node:* into UI bundle:**
+
+```typescript
+import { loadConfig } from '../../config/loader'; // ← node:path inside loader
+
+export function AppearanceProvider({ children }: Props) {
+  const config = loadConfig(vaultDir); // breaks in browser
+}
+```
+
+**Correct pattern — delegate to useScopedConfig hook:**
+
+```typescript
+import { useScopedConfig } from '../hooks/useScopedConfig';
+import type { AppearanceConfig } from '../../types/config';
+
+export function AppearanceProvider({ children }: Props) {
+  const { value: appearance } = useScopedConfig<AppearanceConfig>('appearance', 'personal');
+  
+  // use appearance.theme, appearance.fontScale, etc. directly
+  return (
+    <html data-theme={appearance?.theme || 'sage'}>
+      {/* … */}
+    </html>
+  );
+}
+```
+
+The hook handles config loading outside the UI bundle. No Node.js imports reach the browser. Run `vite build --reporter verbose` to confirm no unexpected Node.js modules appear in the UI bundle.
+
+### Appearance Section UX Pattern
+
+The Appearance settings section follows a locked UX pattern. New appearance controls must fit inside it; do not introduce alternative layouts.
+
+**Locked pattern:**
+
+```
+┌─ Appearance ──────────────────── [personal pill: Sage] ──┐
+│  (collapsed by default; click header to expand)           │
+│                                                           │
+│  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ │
+│  │ Sage │ │ Moss │ │Terra │ │ Dusk │ │ Plum │ │Slate │ │
+│  └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ │
+│  [Font Scale selector]                                    │
+└───────────────────────────────────────────────────────────┘
+```
+
+Rules:
+- The section header always shows a preview pill of the current personal theme
+- Expanding reveals the full theme grid picker
+- Theme and font scale default to **Personal** scope (written to `.myco/local.yaml`)
+- New appearance controls (e.g., density, icon size) go inside this collapsible section, following the same personal-scope default
+- If a design calls for a non-collapsible or non-pill appearance control, redirect to this pattern
+
+### Vitest and the local.yaml Test Mental Model
+
+Vitest tests that mock `vaultDir` load `myco.yaml` from the fixture directory but **do not load `.myco/local.yaml`** unless the fixture explicitly contains one. Appearance preferences (theme, font scale) are written to the local scope. Tests that omit `local.yaml` from their fixture will see project defaults instead of personal overrides.
+
+**Symptom:** Test passes. In production, the user's chosen theme reverts to the project default on next load. The write went to `local.yaml`, but the test fixture never included it.
+
+**Incomplete fixture — misses personal layer:**
+
+```
+test-fixtures/vault/
+  myco.yaml          ← loads fine, but personal prefs invisible
+```
+
+**Complete fixture — covers both config layers:**
+
+```
+test-fixtures/vault/
+  myco.yaml          ← project defaults
+  local.yaml         ← personal overrides (appearance.theme, appearance.fontScale)
+```
+
+**Assert the write scope and verify round-trip:**
+
+```typescript
+// 1. Confirm the write went to local scope
+expect(writtenScope).toBe('local');
+
+// 2. Read local.yaml directly to verify the value persisted
+const localConfig = readYaml(path.join(testVaultDir, 'local.yaml'));
+expect(localConfig.appearance?.theme).toBe('moss');
+```
+
+When authoring tests for any appearance preference, always include `local.yaml` in the fixture and assert `scope === 'local'` on the write.
 
 ## Procedure 2: App Shell Grammar and Master-Detail Layout
 
-Daemon UI pages follow a **master-detail layout**: a list/overview panel on the left, a detail/inspector panel on the right. Full-width cards or centered-column editorial layouts are incorrect for daemon pages.
+Daemon pages use **master-detail layout**: left list/overview, right detail/inspector. Full-width or centered-column layouts are incorrect.
 
-**App shell components — extract, do not rebuild:**
-- **Nav rail**: solid structural rail, left-anchored, no rounded "bubble" borders on nav items
-- **Sidebar**: same structural treatment as the nav rail
-- **Page shell wrapper**: consistent padding, title placement, content area
-
-Do not rebuild the chrome from scratch when creating a new UI surface. Extract the daemon's shell primitives and compose your page inside them. Both times the Collective UI was rebuilt from scratch, the result required full visual rework because the structural language diverged.
-
-**How to extract and reuse:**
-1. Read the daemon's main layout component to identify shell primitives
-2. Import those primitives into the new surface
-3. Compose your page content inside the shell — do not recreate structural HTML
+**Extract, do not rebuild:** Nav rail, sidebar, and page shell are structural primitives. Extract them rather than rebuilding chrome from scratch. Both Collective UI rewrites required full visual rework because the structural language diverged.
 
 **Master-detail pattern:**
 ```
@@ -126,458 +276,235 @@ Do not rebuild the chrome from scratch when creating a new UI surface. Extract t
 │  Left: list/overview │  Right: detail/inspector   │
 └──────────────────────┴───────────────────────────┘
 ```
-If your page renders a single centered column of cards, stop and re-evaluate the layout.
 
 ## Procedure 3: Canary Signal Detection and Design Drift Recovery
 
-Design drift is detectable early via three canary signals. When any signal appears, **stop and audit before writing more code**.
+Design drift is detectable via three signals. Stop and audit when any appear.
 
-**The three canary signals:**
+**The three signals:**
 
 | Signal | Correct | Wrong |
-|--------|---------|----------|
-| Color palette | Sage, moss, terracotta, dusk, plum, slate (via `--color-primary` theme variable); ochre only in Collective | Brown, warm neutrals, arbitrary hex values, ochre in daemon CSS |
-| Navigation elements | Solid structural rail | Bubble-bordered or rounded nav pills |
-| Base font size | Daemon density scale (tighter) | Large editorial scale |
+|--------|---------|------------|
+| Color | Sage, moss, terracotta, dusk, plum, slate via `--color-primary` | Brown, warm neutrals, arbitrary hex, ochre in daemon CSS |
+| Navigation | Solid structural rail | Bubble-bordered or rounded nav pills |
+| Font size | Daemon density (tight) | Large editorial scale |
 
-**Detection — run both checks:**
-```bash
-# Should only see daemon tokens
-grep -rn "var(--" src/your-surface/
-
-# Should return nothing
-grep -rn "#[0-9a-fA-F]{3,6}|ochre" src/your-surface/
-```
-Screenshot the live page and visually scan all three signals.
-
-**Recovery procedure** (apply in order):
-
-1. **List custom CSS variables** defined in the new surface's CSS files — any `--custom-var` not sourced from the daemon shell
-2. **Replace each** with the daemon token equivalent (warm neutral → `--color-charcoal`, theme color → `--color-primary`, etc.)
-3. **Identify rebuilt structural chrome** — find nav, sidebar, or shell HTML built from scratch in the new surface
-4. **Replace** with extracted daemon shell components (see Procedure 2)
-5. **Verify master-detail layout** — confirm the page uses the two-panel pattern, not a centered column
-6. **Verify PostCSS @import ordering** — check `main.css` theme imports precede `@tailwind` directives
-7. **Verify theme CSS specificity** — all theme selectors use `:root[data-theme="...\"]`
-8. **Re-run detection** — grep + screenshot
-9. **Screenshot review before merging** — do not merge without a visual comparison against the daemon design language
+**Recovery (in order):**
+1. List custom CSS variables not from daemon shell
+2. Replace with daemon token equivalents
+3. Find rebuilt structural chrome; replace with extracted components
+4. Verify master-detail layout, PostCSS order, theme CSS specificity
+5. Re-run detection
+6. Screenshot before merging
 
 ## Procedure 4: React Component Patterns
 
 ### useCallback dep completeness
 
-Every `useCallback` and `useEffect` must list all captured state and prop variables in the dependency array. A missing dep causes stale-closure bugs where the callback holds an outdated value at call time.
+Every `useCallback` must list all captured state/prop variables. Missing deps cause stale-closure bugs:
 
 ```typescript
-// WRONG — ignoreInGit is captured from state but not listed
-const handleSave = useCallback(async () => {
-  await saveConfig({ ignoreInGit });
-}, []);  // ← stale closure: ignoreInGit is always the initial value
-
 // CORRECT
 const handleSave = useCallback(async () => {
   await saveConfig({ ignoreInGit });
-}, [ignoreInGit]);  // ← dep listed; callback refreshes when value changes
+}, [ignoreInGit]);
 ```
 
-ESLint's `react-hooks/exhaustive-deps` rule catches this automatically. Never disable it to silence a warning — fix the dependency array instead. This class of bug is invisible in unit tests but caught by Playwright (the API call posts the stale value).
+ESLint's `react-hooks/exhaustive-deps` catches these. Never suppress it.
 
-### SectionSaveRow pattern
+### SectionSaveRow and builder pattern
 
-Config forms use per-section save, not a single form-wide submit. Each editable section ends with a `<SectionSaveRow>` that shows Save/Cancel only when the section has unsaved changes.
-
-```tsx
-<SectionSaveRow
-  dirty={dirty}
-  onSave={handleSave}
-  onCancel={handleCancel}
-/>
-```
-
-The `dirty` flag compares current form state to the last-saved value, not to the initially loaded value. This allows the user to reset to the last save without reloading the page.
-
-### toFormState / dirty-check / builder pattern
-
-Config pages follow a three-function pattern for state management:
+Config forms use per-section save. Each section ends with `<SectionSaveRow>` showing Save/Cancel only when unsaved changes exist.
 
 ```typescript
-// 1. Load config → form state
-function toFormState(config: MyConfig): FormState { ... }
-
-// 2. Compute dirty flag
-const dirty = !isEqual(formState, toFormState(savedConfig));
-
-// 3. Build updated config for save — spread original FIRST, overlay form values
+// 3. Build updated config — spread original FIRST, overlay form
 function formToConfig(original: MyConfig, form: FormState): MyConfig {
-  return { ...original, ...form };
+  return { ...original, ...form };  // ← original FIRST
 }
 ```
 
-**Critical**: `formToConfig` must spread `original` before overlaying `form`. This preserves config fields not present in the form (server-managed fields, future fields the form doesn't know about). Reversing the order silently drops those fields from every save.
+**CRITICAL**: Spread `original` before overlaying `form`. Reversing silently drops fields not in the form.
 
-### ScopedField pattern — Personal vs. Team settings
+### ScopedField pattern — Path-based API (PR #80+)
 
-When a setting can be scoped to Personal (machine-local) or Team (shared), use the `ScopedField` component pattern:
+`ScopedField` uses path-based declarative API for composability and type-safety:
 
 ```tsx
 <ScopedField
-  label="Provider Model"
-  scope={scope}  // 'personal' | 'team'
-  onScopeChange={setScope}
-  hint="Where this setting is stored"
+  path="daemon.log_level"
+  defaultScope="personal"
+  label="Log Level"
 >
-  <ProviderModelSelector value={model} onChange={setModel} />
+  {(value, onChange) => (
+    <Select value={value} onChange={onChange} />
+  )}
 </ScopedField>
 ```
 
-Each scoped field includes:
-- **Personal pill** — a clickable label showing current scope (top-right of the field)
-- **Scope menu** — on click, toggle between Personal and Team
-- **Promote/reset semantics** — changing scope may promote a personal setting to team or reset team to personal
+**Key behaviors:** DotPath<T> typing (type-safe paths at compile-time), render prop pattern, Personal/Team scope UI with clickable scope pill, requiresRestart flag for daemon restarts, automatic notification emissions.
 
-**Key behaviors:**
-- When scope is "Team," the field is visually distinct (slightly different background or border)
-- A button or dropdown on the field lets the user change scope; the field itself is read-only to the scope
-- Saving a Team-scoped field syncs it across all machines in the team; Personal stays local
+### useScopedConfig hook
 
-See Procedure 5 (Configuration Page Architecture) for how to surface scope toggles in the UI layout.
-
-## Procedure 5: Configuration Page Architecture
-
-### Dashboard page = status summary only
-
-The dashboard page shows status and quick-glance information. It is not the configuration authority for complex features.
-
-```
-Dashboard widget:
-  ✓ Status indicator (enabled/disabled, connected/disconnected)
-  ✓ Key metric or last-updated time
-  ✓ "Configure →" link to dedicated page
-  ✗ Multi-step setup forms
-  ✗ Agent-specific instructions
-  ✗ Token input fields
-```
-
-### Dedicated config page
-
-A feature deserves its own dedicated route (e.g., `/mcp-settings`) when it has:
-- Multi-step setup (generate token → copy to agent → verify)
-- Agent-specific instructions that vary by configuration
-- Multiple independent config sections
-
-**Registering a new dedicated page:**
-1. Add a route entry in the daemon UI router config
-2. Add a nav link in the appropriate nav section
-3. Create the page component: `src/ui/pages/MyFeaturePage.tsx`
-4. Apply master-detail layout (Procedure 2)
-5. Use `SectionSaveRow` per editable section (Procedure 4)
-
-### Token/secret reveal state consistency
-
-When a page shows multiple sensitive fields (API tokens, secrets), all fields must share a single reveal/hide state — one `showTokens` boolean, not one state variable per field.
+For reading/updating scoped config outside `ScopedField`, use `useScopedConfig`:
 
 ```typescript
-// CORRECT — single toggle controls all fields
-const [showTokens, setShowTokens] = useState(false);
-
-// WRONG — divergent state; fields get out of sync
-const [showToken1, setShowToken1] = useState(false);
-const [showToken2, setShowToken2] = useState(false);
+const { value, setValue, scope, setScope, isDirty, isSaving, error } = 
+  useScopedConfig<T>(path, defaultScope);
 ```
 
-## Procedure 6: Playwright Smoke Test Authoring for Config UI
+Hook automatically persists changes and emits notifications.
 
-Every config UI form should have a Playwright smoke test that verifies the form doesn't silently discard or corrupt values.
+### Write-on-blur vs. write-on-change
 
-### What to test
+**Write-on-blur (text inputs):** Collect locally, save on blur. Prevents daemon validation of incomplete values.
 
-1. **Toggle state round-trip**: enable a toggle → save → reload → toggle is still enabled
-2. **API POST with correct value**: intercept the save request and assert the payload contains the current form value (not a stale/default value — this is the `useCallback` dep bug in production)
-3. **Visual state consistency**: verify the UI reflects the saved state after reload (badge, token field, status indicator)
-4. **Computed style verification**: check that CSS theme values are applied at runtime, not just that files exist
+**Write-on-change (toggles/selects):** Save immediately for finite-value inputs.
 
-### Test structure
+## Procedure 5: Config System Architecture — Two-Tier File Model
+
+Configuration splits across two YAML files that deep-merge on load:
+
+| File | Committed | Scope | Purpose |
+|------|-----------|-------|------------|
+| `myco.yaml` | ✅ yes | Project/team | Shared defaults |
+| `.myco/local.yaml` | ❌ gitignored | Per-machine | Personal overrides |
+
+`loadConfig()` deep-merges with local winning. **Arrays are replaced, not concatenated.**
+
+### Config write invariant — updateConfig() single write path
+
+**INVARIANT**: All YAML writes flow through `updateConfig()` in `src/config/loader.ts`. Never write files directly. Diverging write paths cause silent serialisation bugs.
+
+```typescript
+await updateConfig(vaultDir, partialConfig, scope);  // scope: 'project' | 'local'
+```
+
+### REST API: scope-aware patch endpoint
+
+```
+PUT /api/config/scoped
+Body: { "scope": "project" | "local", ...fieldUpdates }
+```
+
+Patch-style: merges partial object onto file. Route handlers call `updateConfig()` internally.
+
+## Procedure 6: Config Toggle Side-Effects and Managed Blocks
+
+Some toggles require file mutations beyond `myco.yaml` (e.g., `.gitignore`, `tsconfig.json`). Use managed-block pattern:
+
+**Step 1:** Single opt-in boolean in `myco.yaml`
+**Step 2:** Static managed block in affected file, inserted by `myco init`, reconciled by `myco update`
+**Step 3:** In-process reconciliation after config save:
+
+```typescript
+await symbionts.reconcile(vaultDir, updatedConfig);
+```
+
+## Procedure 7: Configuration Page Architecture and Form Safety
+
+### Page types
+
+**Dashboard:** Status summary only. "Configure →" link to dedicated page.
+
+**Dedicated config page:** Route (e.g., `/mcp-settings`) for multi-step setup, agent-specific instructions, multiple sections.
+
+### React form safety
+
+**Failure 1 — Field loss:**
+
+```typescript
+// ✅ CORRECT — preserves unrelated fields
+return { ...current, theme: formValues.theme, font: formValues.font };
+```
+
+**Failure 2 — Stale closure:**
+
+```typescript
+// ✅ CORRECT — recreates when state changes
+const handleSave = useCallback(() => {
+  await saveFn(formToConfig(formValues, currentConfig));
+}, [formValues, currentConfig]);
+```
+
+## Procedure 8: Configuration Page UI and Scope Defaults
+
+### Collapsible sections
+
+**Sidebar:** Collapse to icon-only. Persist to `localStorage` under `sidebar-collapsed`.
+
+**Content:** Hide content, title remains. Persist to `localStorage` under `section-visibility-<name>`.
+
+**localStorage exception:** UI layout state uses `localStorage`. Config values use vault/project file.
+
+### Section kebab menu
+
+**Batch promote:** Copy all Personal settings in section to Team scope.
+
+**Reset all:** Clear overrides, revert to project defaults.
+
+### Scope defaults matrix
+
+**Personal (machine-local):** Log level, bind address, TLS paths, IDE paths, font size, theme, timezone, resource limits, refresh intervals.
+
+**Team (shared):** Project name, notification modes, MCP servers, archive policies, symbiont config, experimental features, excluded paths.
+
+Default to **Personal** scope when unlisted.
+
+## Procedure 9: Playwright Smoke Tests
+
+Every config form needs Playwright smoke test verifying no silent value discards.
+
+**What to test:**
+1. Toggle round-trip (save → reload → still enabled)
+2. API POST has correct value (intercept, assert payload)
+3. Visual state consistency (UI reflects saved state after reload)
 
 ```typescript
 test('config toggle round-trips correctly', async ({ page }) => {
   await page.goto('/mcp-settings');
-
-  // Capture the outgoing save request
   const [request] = await Promise.all([
-    page.waitForRequest(
-      req => req.url().includes('/api/config') && req.method() === 'POST'
-    ),
-    page.click('[data-testid="ignore-in-git-toggle"]'),
+    page.waitForRequest(req => req.url().includes('/api/config') && req.method() === 'POST'),
+    page.click('[data-testid="toggle"]'),
     page.click('[data-testid="save-section"]'),
   ]);
-
-  const body = request.postDataJSON();
-  expect(body.ignoreInGit).toBe(true);  // not the stale pre-toggle value
-
-  // Verify UI reflects saved state after reload
+  expect(request.postDataJSON().field).toBe(true);
   await page.reload();
-  await expect(
-    page.locator('[data-testid="ignore-in-git-toggle"]')
-  ).toBeChecked();
-});
-
-// CSS verification — check theme colors are applied at runtime
-test('theme CSS is applied and renders correctly', async ({ page }) => {
-  await page.goto('/mcp-settings?theme=sage');
-  
-  const primaryElement = page.locator('[data-testid="primary-color-swatch"]');
-  const computedColor = await primaryElement.evaluate(
-    (el) => getComputedStyle(el).backgroundColor
-  );
-  
-  // Verify the computed style matches the theme (not a fallback or error state)
-  expect(computedColor).toMatch(/rgb\(\d+,\s*\d+,\s*\d+\)/);
-  // Do not test exact hex values; test that a color is computed
+  await expect(page.locator('[data-testid="toggle"]')).toBeChecked();
 });
 ```
 
-### Wire to CI
+## Procedure 10: Configuration Migration and I/O Optimization
 
-Add the spec file to the Playwright config's `testDir`. Run locally:
-```bash
-npx playwright test path/to/config-ui.spec.ts
-```
+### localStorage → file migration
 
-### What Playwright catches that unit tests miss
-
-- **`useCallback` dep bugs** — the API call posts the stale pre-toggle value; unit tests mock the call and never see the staleness
-- **`formToConfig` field-drop bugs** — the saved payload is missing fields; only caught by inspecting the actual POST body
-- **State-after-reload inconsistencies** — save returns 200 but the UI doesn't reflect it on reload
-- **CSS bundle gaps** — the theme CSS file exists but `@import` ordering is wrong or specificity is broken, so computed styles are fallback values
-
-## Procedure 7: Appearance Configuration UI and Settings Forms
-
-Config pages with collapsible sections and multi-field layouts must follow specific patterns to maintain consistency across the daemon.
-
-### Collapsible section UX
-
-When a config page has many sections, implement collapsible sections to reduce visual density and focus. The collapsible behavior differs by section type:
-
-**Sidebar sections that collapse to icon-only:**
-- Each sidebar nav item can collapse to show only an icon (typically the first character or a symbol)
-- On hover of the collapsed icon, show a tooltip with the full section name
-- Use `localStorage` to persist the collapsed/expanded state for UX continuity across page reloads
-- Do NOT use the daemon's main config file to store UI layout state — this is an ephemeral, machine-local preference
-
-**Content sections that fully hide:**
-- For non-sidebar content sections (e.g., "Appearance" settings), when collapsed, the entire section content hides — no compact icon state
-- Expand/collapse is controlled by a clickable header or chevron button
-- The section title remains visible even when collapsed
-- State is persisted to `localStorage` under a key like `section-visibility-<sectionName>`
-
-**localStorage ephemeral state exception:**
-Unlike config values (which go to the vault or shared project file), UI layout state (collapsed sections, revealed tokens, form scroll position) should use browser `localStorage`. This is a documented exception to the "all state in config files" rule.
+Check if `localStorage` has old keys. If found, read them, merge into config, write to persistent store. Add cleanup TODO:
 
 ```typescript
-// Ephemeral UI state — use localStorage
-const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-  return localStorage.getItem('sidebar-collapsed') === 'true';
-});
-
-const handleCollapse = useCallback((collapsed: boolean) => {
-  setSidebarCollapsed(collapsed);
-  localStorage.setItem('sidebar-collapsed', collapsed.toString());
-}, []);
+// TODO(2026-04-30): Remove localStorage migration code
 ```
 
-### Section kebab menu (batch actions)
+Do NOT set sentinel flags.
 
-When a config section has multiple fields that can be overridden or reset, expose a "kebab" menu (three-dot `⋮` button) next to the section title with these options:
+### I/O optimization
 
-**Batch promote to project defaults:**
-- "Promote all to project defaults" action
-- When clicked, copy all current Personal (machine-local) settings in this section to the Team/project scope
-- Shows a confirmation: "This will update Team settings for 4 fields"
-- After promotion, the fields visually transition to Team scope (e.g., different background or icon)
-
-**Reset all to defaults:**
-- "Reset all to defaults" action
-- Clears all overrides in the section back to the project defaults
-- Only appears if at least one field differs from the defaults
-- Confirmation: "This will reset 3 fields to project defaults. This cannot be undone."
-
-**Implementation:**
-```tsx
-function SectionKebabMenu({ 
-  fields,  // array of {name, isOverridden, isTeamScope}
-  onPromoteAll,
-  onResetAll,
-}) {
-  const overriddenCount = fields.filter(f => f.isOverridden).length;
-  const isAnyLocal = fields.some(f => !f.isTeamScope);
-  
-  return (
-    <Dropdown>
-      {isAnyLocal && (
-        <MenuItem 
-          onClick={() => onPromoteAll()}
-        >
-          Promote all to project defaults ({overriddenCount})
-        </MenuItem>
-      )}
-      {overriddenCount > 0 && (
-        <MenuItem 
-          onClick={() => onResetAll()}
-          appearance="danger"
-        >
-          Reset all to defaults
-        </MenuItem>
-      )}
-    </Dropdown>
-  );
-}
-```
-
-## Procedure 8: Configuration Migration and I/O Optimization
-
-When evolving a config surface (e.g., moving settings from localStorage to persisted config files), follow these patterns to maintain data integrity and optimize performance.
-
-### localStorage → file migration procedure
-
-When a feature stored settings in browser `localStorage` and now must move to persistent config files (vault or project file):
-
-**Idempotent migration design:**
-1. On first page load, check if `localStorage` has the old keys: `appearance.theme`, `appearance.density`, `appearance.fontSize`, `appearance.syncTheme`
-2. If found, read them and merge into the current config state
-3. Immediately write the merged config to the persistent store via the normal save endpoint
-4. Add a cleanup TODO comment with a deadline: `// TODO(2026-04-30): Remove localStorage migration code`
-5. Do NOT set a sentinel flag (like `migrationComplete: true`) in config — the deadline comment is sufficient
-
-**Why not a sentinel flag?**
-- A flag in config becomes a permanent part of the codebase
-- If the migration logic is removed (see cleanup deadline), the flag is orphaned
-- Deadline comments are self-documenting and easily grep-able for cleanup
-
-**Implementation:**
-```typescript
-// Load existing config first
-const [config, setConfig] = useState(loadedConfig);
-
-useEffect(() => {
-  // Check for and migrate localStorage settings
-  const oldTheme = localStorage.getItem('appearance.theme');
-  const oldDensity = localStorage.getItem('appearance.density');
-  const oldFontSize = localStorage.getItem('appearance.fontSize');
-  const oldSyncTheme = localStorage.getItem('appearance.syncTheme');
-
-  if (oldTheme || oldDensity || oldFontSize || oldSyncTheme) {
-    const migratedConfig = {
-      ...config,
-      appearance: {
-        ...config.appearance,
-        ...(oldTheme && { theme: oldTheme }),
-        ...(oldDensity && { density: oldDensity }),
-        ...(oldFontSize && { fontSize: oldFontSize }),
-        ...(oldSyncTheme && { syncTheme: oldSyncTheme === 'true' }),
-      },
-    };
-
-    // Save the migrated config to persistent store
-    saveConfig(migratedConfig);
-    setConfig(migratedConfig);
-
-    // Clear the old localStorage keys
-    localStorage.removeItem('appearance.theme');
-    localStorage.removeItem('appearance.density');
-    localStorage.removeItem('appearance.fontSize');
-    localStorage.removeItem('appearance.syncTheme');
-
-    // TODO(2026-04-30): Remove this migration block entirely
-  }
-}, []);
-```
-
-### I/O optimization patterns
-
-Config pages often perform frequent reads and writes. Apply these patterns to avoid redundant requests and DOM mutations:
-
-**Skip write when content unchanged:**
-- Before calling the save endpoint, compare the form state to the last-saved config
-- If they are identical, do not make the POST request
-- This is already handled by the `dirty` flag (Procedure 4), but verify in your `onSave` handler:
-
-```typescript
-const handleSave = useCallback(async () => {
-  if (!dirty) {
-    console.log('No changes; skipping save');
-    return;
-  }
-  await saveConfig(formToConfig(savedConfig, formState));
-}, [dirty, formState, savedConfig]);
-```
-
-**useMemo for appearance context on primitive keys:**
-- When creating a context for appearance settings (theme, density, font size), memoize the context value by primitive fields, not by object reference
-- Without memoization, every render creates a new object, causing all consumers to re-render unnecessarily
-
-```typescript
-// WRONG — new object on every render
-const appearanceValue = {
-  theme: currentTheme,
-  density: currentDensity,
-  fontSize: currentFontSize,
-};
-
-// CORRECT — memoized on primitive field values
-const appearanceValue = useMemo(() => ({
-  theme: currentTheme,
-  density: currentDensity,
-  fontSize: currentFontSize,
-}), [currentTheme, currentDensity, currentFontSize]);
-```
-
-**Guard DOM mutation before setAttribute/favicon href swap:**
-- When updating the favicon or applying theme CSS via DOM manipulation, check the current value before mutating
-- Unnecessary mutations can trigger page reflows and layout thrashing
-
-```typescript
-const updateFavicon = useCallback((theme: string) => {
-  const faviconLink = document.querySelector('link[rel="icon"]');
-  if (!faviconLink) return;
-
-  const newHref = `/favicons/theme-${theme}.svg`;
-  
-  // Guard: only mutate if href actually changed
-  if (faviconLink.getAttribute('href') !== newHref) {
-    faviconLink.setAttribute('href', newHref);
-  }
-}, []);
-```
-
-**Single loadConfig() in HTTP handlers:**
-- When a page has multiple sections that each call the config endpoint, consolidate to a single `loadConfig()` call in the page-level effect
-- Pass the full config down to child sections as props; do not have each section independently fetch config
-- Reduces request count and keeps config state synchronized across the page
-
-```typescript
-// Page-level: fetch once
-const [config, setConfig] = useState(null);
-
-useEffect(() => {
-  loadConfig().then(setConfig);
-}, []);
-
-// Child section receives config as prop
-<AppearanceSection config={config} onSave={handleSave} />
-<NotificationSection config={config} onSave={handleSave} />
-```
+Skip write when unchanged, use useMemo for appearance context, guard DOM mutations, single loadConfig() per page.
 
 ## Cross-Cutting Gotchas
 
-- **Warm neutral ≠ neutral** — in the daemon design system, "neutral" is charcoal-based. Brown/beige tones immediately signal a design system mismatch. Ochre in daemon CSS is also a canary for Collective UI code bleeding into daemon.
-- **PostCSS @import ordering is silent** — if theme `@import` statements appear AFTER `@tailwind`, the theme CSS is discarded silently. No build error, no warning. The only symptom is missing theme colors at runtime. Check `main.css` import order if themes don't render.
-- **CSS specificity requires `:root[data-theme="...\"]`** — bare `[data-theme="...\"]` has the same specificity as `:root`, causing source-order nondeterminism. Always use `:root[data-theme="...\"]`.
-- **Collective UI is a separate package but must inherit daemon design language** — it has its own deployment (`oss.goondocks.workers.dev`) but is not a separate visual system. Use `make collective-ui-dev` for a local proxy against live worker settings.
-- **ESLint hooks rule is your first line of defence** — never suppress `react-hooks/exhaustive-deps`. The warning is the bug report.
-- **Screenshot before merging** — visual consistency is the primary review signal for daemon UI. A screenshot comparison catches design drift that code review misses.
-- **`formToConfig` spread order is silent** — there is no runtime error when you get the spread order wrong. The only symptom is data loss in production. Test it with Playwright.
-- **Favicon-per-theme SVG switching** — the daemon renders 6 pre-generated SVG favicon variants (one per theme). At runtime, on theme change, the UI updates `<link rel="icon" href={faviconForTheme(theme)} />` to swap the favicon. The SVG files must exist in `public/favicons/theme-{name}.svg`. Missing SVG files show the fallback browser favicon (not an error).
-- **Dynamic page title pattern** — the page title follows the format `Myco — <project-name>`, sourced from the loaded `myco.yaml` config. Multiple local instances of Myco (different projects) must have distinct titles in browser tabs. If the title is not populated, check that `projectName` is loaded from config before rendering the page shell.
-- **RedactedField copy-button gotcha** — when displaying a masked token (e.g., `***`), the `<CopyButton>` component must receive the real token value, not the `displayValue`. Passing `displayValue` results in copying `***` to the clipboard. Correct usage: `<CopyButton value={realToken} />` with the button rendering the masked display separately.
-- **localStorage for UI state is ephemeral-only** — collapse/expand state, revealed token visibility, form scroll position belong in `localStorage`. Config values, team settings, and anything that should sync across machines belong in the vault or project config file. Never conflate the two.
-- **Cleanup deadline comments instead of sentinel flags** — when migrating data from one storage to another (localStorage → file), use TODO comments with deadlines, not sentinel config flags. Flags become orphaned when cleanup code is removed.
+- **PostCSS @import ordering is silent:** If theme `@import` appears AFTER `@tailwind`, theme CSS discarded silently.
+- **CSS specificity requires `:root[data-theme=\"...\"]`:** Bare selectors cause source-order nondeterminism.
+- **Screenshot before merging:** Catches design drift code review misses.
+- **`formToConfig` spread order is silent:** No runtime error when reversed. Symptom: production data loss. Test with Playwright.
+- **ESLint hooks rule is first line of defence:** Never suppress `react-hooks/exhaustive-deps`.
+- **updateConfig() is the single write path:** Never write YAML directly.
+- **Local .myco/local.yaml path is already scoped:** Don't prepend `.myco/` again. Use `path.join(vaultDir, 'local.yaml')`.
+- **Array replacement, not merge:** Local array completely replaces project array.
+- **Hard-refresh browser cache:** Cmd+Shift+R (Mac) or Ctrl+Shift+R (Windows/Linux).
+- **DotPaths<T> recursive template literal typing:** Type-check config paths at compile time.
+- **Favicon-per-theme SVG switching:** SVG files must exist in `public/favicons/theme-{name}.svg`.
+- **Dynamic page title pattern:** Format `Myco — <project-name>` from `myco.yaml`.
+- **RedactedField copy-button gotcha:** Pass real token to CopyButton, not masked displayValue.
+- **localStorage for UI state only:** Collapse/reveal state in localStorage. Config values in vault/project file.
+- **Theme file creation without registration:** Creating a .css file without adding it to ThemeName union and THEMES array results in silent no-op.
+- **AppearanceProvider bundle split risk:** Never import config loaders or Node.js modules inside AppearanceProvider. Use the useScopedConfig hook pattern instead, which handles config loading outside the UI bundle context.
+- **Appearance preference write scope is always 'local':** Theme and font scale overrides go to `.myco/local.yaml`, not `myco.yaml`. Personal machine scope.

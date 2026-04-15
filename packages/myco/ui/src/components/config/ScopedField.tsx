@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { getAtPath } from '@myco/utils/dot-path';
+import { configFieldId } from '@myco/config/focus';
 import { useScopedConfig, type Scope } from '../../hooks/use-scoped-config';
 import { useMarkRestartDirty } from './restart-gate';
-import { ScopePill } from './ScopePill';
+import { ScopeBadge, ScopePill } from './ScopePill';
 import type { ConfigPath, ConfigValueAt } from '../../lib/config-paths';
 
 interface ScopedFieldRenderArgs<T> {
@@ -52,7 +53,7 @@ export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
   // callback identity doesn't churn on every refetch (React Query returns a
   // new object reference even when data is unchanged).
   const effective = getAtPath((effectiveConfig ?? {}) as Record<string, unknown>, path) as T | undefined;
-  const isPersonal = !lockScope && getAtPath((local ?? {}) as Record<string, unknown>, path) !== undefined;
+  const hasLocalOverride = !lockScope && getAtPath((local ?? {}) as Record<string, unknown>, path) !== undefined;
   const writeScope: Scope = lockScope ?? defaultScope;
 
   const effectiveRef = useRef(effective);
@@ -106,17 +107,19 @@ export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
   }, [commit, commitOn, draft]);
 
   return (
-    <div className="space-y-1.5">
+    <div id={configFieldId(path)} data-config-field={path} className="space-y-1.5 rounded-md transition-all duration-300">
       <div className="flex items-center gap-2">
         <label className="font-sans text-sm font-medium text-on-surface">{label}</label>
         {hint && (
           <span className="font-sans text-xs text-on-surface-variant font-normal">({hint})</span>
         )}
-        {isPersonal && (
+        {hasLocalOverride ? (
           <ScopePill
             onPromote={() => promoteField(path).catch((err) => console.error('[scoped-field] promote failed', err))}
             onReset={() => resetField(path).catch((err) => console.error('[scoped-field] reset failed', err))}
           />
+        ) : (
+          <ScopeBadge scope={lockScope === 'local' ? 'personal' : 'project'} />
         )}
       </div>
       {children({ value: draft, onChange: handleChange, onBlur: handleBlur })}
@@ -129,4 +132,3 @@ export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
     </div>
   );
 }
-

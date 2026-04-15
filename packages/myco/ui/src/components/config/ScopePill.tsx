@@ -1,10 +1,48 @@
 import { useState } from 'react';
 
+type ScopeLabel = 'Personal' | 'Project';
+
 interface ScopePillProps {
   /** Promote local override to project scope. */
   onPromote: () => void | Promise<void>;
   /** Clear the local override so the project value shines through. */
   onReset: () => void | Promise<void>;
+}
+
+interface ScopeBadgeProps {
+  scope: 'personal' | 'project';
+}
+
+const SCOPE_BADGE_LABELS: Record<ScopeBadgeProps['scope'], ScopeLabel> = {
+  personal: 'Personal',
+  project: 'Project',
+};
+
+const SCOPE_BADGE_TITLES: Record<ScopeBadgeProps['scope'], string> = {
+  personal: 'This setting is overridden on this machine',
+  project: 'This setting is using the shared project value',
+};
+
+const SCOPE_BADGE_CLASSES: Record<ScopeBadgeProps['scope'], string> = {
+  personal: 'border-primary/40 bg-primary/5 text-primary',
+  project: 'border-outline-variant/30 bg-surface-container-high/40 text-on-surface-variant',
+};
+
+export function ScopeBadge({ scope }: ScopeBadgeProps) {
+  const label = SCOPE_BADGE_LABELS[scope];
+
+  return (
+    <span
+      title={SCOPE_BADGE_TITLES[scope]}
+      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-wider ${SCOPE_BADGE_CLASSES[scope]}`}
+    >
+      <span
+        className={`inline-block h-1.5 w-1.5 rounded-full ${scope === 'personal' ? 'bg-primary' : 'bg-outline-variant/80'}`}
+        aria-hidden
+      />
+      {label}
+    </span>
+  );
 }
 
 /**
@@ -26,10 +64,9 @@ export function ScopePill({ onPromote, onReset }: ScopePillProps) {
         type="button"
         onClick={() => setOpen((o) => !o)}
         title="This setting is overridden on this machine"
-        className="inline-flex items-center gap-1 rounded border border-primary/40 bg-primary/5 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-primary hover:bg-primary/10 transition-colors cursor-pointer"
+        className="cursor-pointer transition-colors hover:bg-primary/10"
       >
-        <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary" aria-hidden />
-        Personal
+        <ScopeBadge scope="personal" />
       </button>
       {open && (
         <div className="absolute left-0 top-full z-10 mt-1 w-44 rounded-md border border-outline-variant/20 bg-surface-container-high p-1 text-xs shadow-lg">

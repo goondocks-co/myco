@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Cpu, Database, Play, Trash2, RefreshCw, RotateCcw, ArrowDown, Pause } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
+import { CONFIG_SECTION_IDS } from '@myco/config/focus';
 import { useEmbeddingDetails, type EmbeddingDetails } from '../hooks/use-embedding-details';
 import { useDatabaseDetails, type DatabaseDetails } from '../hooks/use-database-details';
 import { useScopedConfig } from '../hooks/use-scoped-config';
@@ -190,7 +191,11 @@ function IndexesPanel({ indexes }: { indexes: DatabaseDetails['indexes'] }) {
   const autoCount = indexes.filter((i) => i.type === 'auto').length;
 
   return (
-    <Surface level="low" className="p-6 space-y-4">
+    <Surface
+      id={CONFIG_SECTION_IDS.operationsMaintenance}
+      level="low"
+      className="rounded-lg p-6 space-y-4 transition-all duration-300"
+    >
       <div className="flex items-center justify-between">
         <SectionHeader>Indexes</SectionHeader>
         <button

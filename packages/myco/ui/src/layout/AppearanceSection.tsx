@@ -6,6 +6,7 @@ import {
   APPEARANCE_FONTS,
   APPEARANCE_DENSITIES,
 } from '@myco/config/appearance-values';
+import { CONFIG_SECTION_IDS, configFieldId } from '@myco/config/focus';
 import {
   useAppearance,
   type Theme,
@@ -13,7 +14,7 @@ import {
   type FontKey,
   type Appearance,
 } from '../providers/appearance';
-import { ScopePill } from '../components/config/ScopePill';
+import { ScopeBadge, ScopePill } from '../components/config/ScopePill';
 
 const THEME_LABELS: Record<Theme, { label: string; swatch: string }> = {
   sage: { label: 'Sage', swatch: '#abcfb8' },
@@ -71,14 +72,20 @@ export function AppearanceSection({ collapsed }: { collapsed: boolean }) {
     controlKey: K,
     children: ReactNode,
   ) => (
-    <div>
+    <div
+      id={configFieldId(`appearance.${controlKey}`)}
+      data-config-field={`appearance.${controlKey}`}
+      className="rounded-md transition-all duration-300"
+    >
       <div className="flex items-center text-xs text-on-surface-variant">
         {label}
-        {isPersonal(controlKey) && (
+        {isPersonal(controlKey) ? (
           <ScopePill
             onPromote={() => set(controlKey, effective[controlKey], 'project').catch((err) => console.error('[appearance] promote failed', err))}
             onReset={() => resetKey(controlKey).catch((err) => console.error('[appearance] reset failed', err))}
           />
+        ) : (
+          <ScopeBadge scope="project" />
         )}
       </div>
       {children}
@@ -86,7 +93,10 @@ export function AppearanceSection({ collapsed }: { collapsed: boolean }) {
   );
 
   return (
-    <div className={`rounded-md border border-[var(--ghost-border)] p-3 ${expanded ? 'space-y-3' : ''}`}>
+    <div
+      id={CONFIG_SECTION_IDS.appearance}
+      className={`rounded-md border border-[var(--ghost-border)] p-3 ${expanded ? 'space-y-3' : ''}`}
+    >
       <div className="flex items-center justify-between">
         <button
           type="button"

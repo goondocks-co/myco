@@ -16,6 +16,7 @@ import type { DatabaseMaintenanceManager } from './database/manager.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import { createBackup } from './backup.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
+import { loadMergedConfig } from '../config/loader.js';
 import {
   listStaleStagingDirs,
   cleanupStagedSkill,
@@ -84,7 +85,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     name: 'log-retention',
     runIn: ['idle', 'sleep'],
     fn: async () => {
-      const retentionDays = config.daemon.log_retention_days;
+      const retentionDays = loadMergedConfig(vaultDir).daemon.log_retention_days;
       const cutoff = new Date(Date.now() - retentionDays * MS_PER_DAY).toISOString();
       const deleted = deleteOldLogs(cutoff);
       if (deleted > 0) {

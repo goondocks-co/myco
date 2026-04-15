@@ -10,7 +10,7 @@ const HEARTBEAT_DEEP_SLEEP_CAP_MS = 30_000;
 
 export interface UsePowerQueryOptions<T> extends Omit<UseQueryOptions<T>, 'refetchInterval'> {
   pollCategory: PollCategory;
-  refetchInterval: number;
+  refetchInterval: number | false;
 }
 
 /**
@@ -47,7 +47,9 @@ export function usePowerQuery<T>(options: UsePowerQueryOptions<T>): UseQueryResu
   const powerState = usePowerState();
   const { pollCategory, refetchInterval: baseInterval, ...queryOptions } = options;
 
-  const effectiveInterval = computePollInterval(baseInterval, pollCategory, powerState);
+  const effectiveInterval = baseInterval === false
+    ? false
+    : computePollInterval(baseInterval, pollCategory, powerState);
 
   return useQuery({
     ...queryOptions,
