@@ -68,9 +68,7 @@ const CODEX_MANIFEST: SymbiontManifest = {
     hooksTarget: '.codex/hooks.json',
     mcpTarget: '.codex/config.toml',
     mcpFormat: 'toml',
-    mcpEnv: {
-      MYCO_PROJECT_ROOT: '{projectRoot}',
-    },
+    mcpCwd: '.',
     skillsTarget: '.agents/skills',
     settingsTarget: '.codex/config.toml',
     settingsFormat: 'toml',
@@ -986,8 +984,8 @@ describe('installMcp (TOML)', () => {
     expect(content).toContain('[mcp_servers.myco]');
     expect(content).toContain('command = "myco-run"');
     expect(content).toContain('args = ["mcp"]');
-    expect(content).toContain('[mcp_servers.myco.env]');
-    expect(content).toContain(`MYCO_PROJECT_ROOT = "${projectRoot}"`);
+    expect(content).toContain('cwd = "."');
+    expect(content).not.toContain('[mcp_servers.myco.env]');
   });
 
   it('preserves existing TOML content', () => {
@@ -1016,6 +1014,22 @@ describe('installMcp (TOML)', () => {
     expect(content).toContain('command = "myco-run"');
     expect(content).toContain('args = ["mcp"]');
     expect(content).not.toContain('old-command');
+  });
+
+  it('resolves mcpCwd placeholders through the manifest-owned installer path', () => {
+    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
+    const installer = new SymbiontInstaller({
+      ...CODEX_MANIFEST,
+      registration: {
+        ...CODEX_MANIFEST.registration!,
+        mcpCwd: '{projectRoot}',
+      },
+    }, projectRoot, packageRoot);
+
+    installer.installMcp();
+
+    const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
+    expect(content).toContain(`cwd = "${projectRoot}"`);
   });
 });
 

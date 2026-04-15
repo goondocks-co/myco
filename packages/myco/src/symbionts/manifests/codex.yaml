@@ -100,8 +100,7 @@ registration:
   hooksTarget: .codex/hooks.json
   mcpTarget: .codex/config.toml
   mcpFormat: toml
-  mcpEnv:
-    MYCO_PROJECT_ROOT: "{projectRoot}"
+  mcpCwd: "."
   skillsTarget: .agents/skills
   settingsTarget: .codex/config.toml
   settingsFormat: toml

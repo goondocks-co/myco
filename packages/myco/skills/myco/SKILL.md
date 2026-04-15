@@ -37,9 +37,21 @@ For reconfiguration, status checks, and ongoing management, use the CLI commands
 
 ## MCP Tools Reference
 
+The local Myco MCP server registers 12 core tools. When the project is connected to a Myco Collective, 3 additional `collective_*` tools are also registered. Tools are defined in `packages/myco/src/mcp/tool-definitions.ts` — that file is the source of truth.
+
+### myco_context — Get the project digest
+
+Retrieve Myco's pre-computed project digest: a synthesis of project history, decisions, patterns, active work, and institutional knowledge. This is the right tool when you need broad orientation on the project, not when you need to find a specific prior record.
+
+```json
+{ "tier": 5000 }
+```
+
+Tiers: `1500` (executive briefing), `5000` (default), `10000` (comprehensive). Prefer this over `myco_search` for broad project orientation; use `myco_search` when you need specific prior decisions or bug fixes.
+
 ### myco_search — Find knowledge across the vault
 
-Combined semantic + full-text search across sessions, plans, and spores.
+Search across sessions, plans, and spores.
 
 ```json
 { "query": "why did we choose JWT over session cookies", "type": "spore", "limit": 5 }
@@ -47,20 +59,15 @@ Combined semantic + full-text search across sessions, plans, and spores.
 
 **When to use**: searching for prior decisions, debugging context, or understanding rationale. The `type` filter narrows results — use `"spore"` for decisions/gotchas, `"session"` for session history, `"plan"` for plans, or omit for all.
 
-**Example**: before choosing an authentication approach, search for prior decisions:
-```json
-{ "query": "authentication approach JWT session", "type": "spore" }
-```
+### myco_recall — Look up a single vault note by ID
 
-### myco_recall — Get context for current work
-
-Automatic context retrieval based on git branch and files you're working on.
+Return the full content of a specific session, spore, or plan given its ID. Use this after `myco_search` or `myco_graph` returns an ID you want to read in full.
 
 ```json
-{ "branch": "feature/auth-redesign", "files": ["src/auth/middleware.ts"] }
+{ "note_id": "decision-abc123" }
 ```
 
-**When to use**: starting work on a feature or wanting deeper context than what was injected at session start. This is the "what do I need to know?" tool.
+(Note: this is *not* a branch-based context tool. For project orientation, use `myco_context`.)
 
 ### myco_remember — Save an observation
 
@@ -70,12 +77,7 @@ Store a noteworthy observation for future sessions. Only save things that aren't
 { "content": "better-sqlite3 WASM build fails on Node 22 ARM — must use native build", "type": "gotcha", "tags": ["sqlite", "build"] }
 ```
 
-**Observation types:**
-- `gotcha` — non-obvious pitfall, constraint, or workaround
-- `bug_fix` — root cause of a bug and what fixed it
-- `decision` — why an approach was chosen over alternatives
-- `discovery` — significant insight about the codebase, tooling, or domain
-- `trade_off` — what was sacrificed and what was gained
+**Observation types:** `gotcha`, `bug_fix`, `decision`, `discovery`, `trade_off`, `cross-cutting`.
 
 **What makes a good observation:**
 - Specific: file names, function names, actual error messages, concrete values
@@ -86,15 +88,21 @@ Store a noteworthy observation for future sessions. Only save things that aren't
 **Bad**: "the auth system is complex"
 **Good**: "bcrypt.compare() silently returns false (not an error) on hash format mismatch — spent 2h debugging; the hash column was VARCHAR(50) but bcrypt outputs 60 chars"
 
-### myco_plans — Check plan status
+Session association is derived by the daemon; the MCP client does not pass it.
 
-List active plans and their progress.
+### myco_plans — List plans or read a single plan
+
+List plans and their progress, or retrieve a single plan's full content by ID.
 
 ```json
 { "status": "active" }
 ```
 
-Use `{ "id": "plan-name" }` to read a specific plan's content.
+```json
+{ "id": "plan-feature-x" }
+```
+
+When `id` is set, the response includes the plan's `content` field. Otherwise the list shape contains summary metadata only.
 
 ### myco_sessions — Browse session history
 
@@ -104,7 +112,7 @@ Query past sessions with filters.
 { "branch": "feature/auth", "limit": 5 }
 ```
 
-Filter by `plan`, `branch`, `user`, or `since` (ISO timestamp). Useful for understanding what work has been done on a feature before continuing it.
+Filter by `plan`, `branch`, `user`, or `since` (ISO timestamp).
 
 ### myco_graph — Traverse vault connections
 
@@ -114,16 +122,6 @@ Follow graph connections between records — find related sessions, spores, and 
 { "note_id": "session-abc123", "direction": "both", "depth": 2 }
 ```
 
-**When to use**: exploring how a decision connects to sessions and other spores, or understanding the lineage of a feature's development across multiple sessions.
-
-### myco_orphans — Find disconnected notes
-
-Find records with no incoming or outgoing graph connections — potentially stale or unconnected knowledge.
-
-```json
-{}
-```
-
 ### myco_team — See teammate activity
 
 See what teammates have been working on, filtered by files or plan.
@@ -131,16 +129,6 @@ See what teammates have been working on, filtered by files or plan.
 ```json
 { "plan": "auth-redesign" }
 ```
-
-### myco_logs — Debug the daemon
-
-View daemon logs for debugging when sessions aren't being captured, observations are missing, or embeddings fail.
-
-```json
-{ "level": "warn", "component": "processor", "limit": 20 }
-```
-
-Components: `daemon`, `processor`, `hooks`, `lifecycle`, `embeddings`, `lineage`, `watcher`, `digest`, `intelligence`.
 
 ### myco_supersede — Mark a spore as replaced
 
@@ -154,20 +142,67 @@ When a newer observation makes an older one obsolete, supersede it. The old spor
 
 ### myco_consolidate — Merge spores into wisdom
 
-When multiple spores describe aspects of the same insight, consolidate them into a single comprehensive note. Source spores are marked superseded with links to the new wisdom note.
+Merge 2+ related spores into a single wisdom note. The daemon inserts the new spore, then marks each source `superseded` and writes a `resolution_events` row (action=`consolidate`) linking it to the new wisdom spore. The source content stays in the vault — nothing is deleted.
 
 ```json
 {
   "source_spore_ids": ["gotcha-aaa111", "gotcha-bbb222", "gotcha-ccc333"],
   "consolidated_content": "# SQLite Operational Gotchas\n\n1. WAL mode requires shared memory...\n2. Single writer lock...\n3. FTS5 tokenization...",
   "observation_type": "gotcha",
-  "tags": ["sqlite", "infrastructure"]
+  "tags": ["sqlite", "infrastructure"],
+  "reason": "Three related SQLite gotchas merged into one reference"
 }
 ```
 
-**When to use**: 3+ spores share a root cause, describe the same pattern from different angles, or would be more useful as a single comprehensive reference.
+**When to use**: multiple spores share a root cause, describe the same pattern from different angles, or would be more useful as a single comprehensive reference. Prefer this over manually running `myco_supersede` repeatedly.
 
 For detailed patterns on when and how to consolidate, read `references/wisdom.md`.
+
+### myco_skills — Inspect skills in the vault
+
+List skills generated by Myco, filter by status, or look up a specific skill by ID or name.
+
+```json
+{ "status": "active" }
+```
+
+```json
+{ "id": "install-and-initialize-myco" }
+```
+
+### myco_skill_candidates — Manage skill candidates
+
+List, approve, or dismiss candidate skills identified from vault observations.
+
+```json
+{ "action": "list", "status": "identified" }
+```
+
+Valid actions: `list`, `approve`, `dismiss`. Use `{ "id": "<candidate-id>" }` to target a specific candidate.
+
+### Collective tools (only when connected)
+
+The following tools appear only when the project is connected to a Myco Collective — they are conditionally registered by `createMycoServer` based on the team status.
+
+#### collective_projects — List projects in the collective
+
+```json
+{}
+```
+
+#### collective_project — Get metadata for one project
+
+```json
+{ "project": "myco-main", "include_digest": false }
+```
+
+#### collective_search — Search across collective projects
+
+Results include project attribution.
+
+```json
+{ "query": "authentication approach", "project": "myco-main", "limit": 5 }
+```
 
 ## Wisdom — Keeping the Vault Clean
 

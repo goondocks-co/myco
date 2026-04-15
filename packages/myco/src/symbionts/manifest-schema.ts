@@ -106,6 +106,13 @@ const RegistrationSchema = z.object({
   mcpTarget: z.string().optional(),
   mcpFormat: z.enum(['json', 'toml']).default('json'),
   /**
+   * Optional working directory injected into the Myco MCP server entry. Values
+   * may use `{projectRoot}` and `{vaultDir}` placeholders, or remain relative
+   * (for example `.` in a project-local config file) when the host agent
+   * resolves paths against the config file location.
+   */
+  mcpCwd: z.string().optional(),
+  /**
    * Optional env vars injected into the Myco MCP server entry. Values may use
    * `{projectRoot}` and `{vaultDir}` placeholders so symbionts whose MCP child
    * starts outside the repo can still anchor Myco to the correct project.

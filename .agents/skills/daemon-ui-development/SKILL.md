@@ -9,12 +9,12 @@ description: >
   theme authoring and browser verification), app shell grammar and
   master-detail layout enforcement, canary signal detection and design drift
   recovery, React component patterns (useCallback deps, SectionSaveRow,
-  ScopedField with useScopedConfig, write-on-blur, DotPaths<T>), config page
-  architecture with collapsible sections and kebab menus, localStorage
-  migration, I/O optimization, Playwright tests, favicon switching, title
-  pattern, AppearanceProvider constraints, Vitest fixtures, RedactedField
-  gotcha, hard-refresh gotcha. Activates whenever building daemon UI or
-  reviewing components for visual compliance.
+  ScopedField with useScopedConfig, write-on-blur, DotPaths<T>, atomic
+  multi-field writes), config page architecture with collapsible sections and
+  kebab menus, localStorage migration, I/O optimization, Playwright tests,
+  favicon switching, title pattern, AppearanceProvider constraints, Vitest
+  fixtures, RedactedField gotcha, hard-refresh gotcha. Activates whenever
+  building daemon UI or reviewing components for visual compliance.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -34,6 +34,7 @@ Apply these procedures whenever touching daemon or Collective UI code, especiall
 - Theme files: `packages/daemon/src/ui/styles/themes/`
 - AppearanceProvider: `packages/daemon/src/ui/components/AppearanceProvider.tsx`
 - All YAML writes flow through `updateConfig()` — never write `myco.yaml` or `.myco/local.yaml` directly
+- ConfigReactionRegistry: `src/daemon/reactions/ConfigReactionRegistry.ts` for config side-effect orchestration
 
 ## Procedure 1: Design System Token Integration
 
@@ -284,7 +285,7 @@ Design drift is detectable via three signals. Stop and audit when any appear.
 **The three signals:**
 
 | Signal | Correct | Wrong |
-|--------|---------|------------|
+|--------|---------|----------|
 | Color | Sage, moss, terracotta, dusk, plum, slate via `--color-primary` | Brown, warm neutrals, arbitrary hex, ochre in daemon CSS |
 | Navigation | Solid structural rail | Bubble-bordered or rounded nav pills |
 | Font size | Daemon density (tight) | Large editorial scale |
@@ -343,16 +344,45 @@ function formToConfig(original: MyConfig, form: FormState): MyConfig {
 
 **Key behaviors:** DotPath<T> typing (type-safe paths at compile-time), render prop pattern, Personal/Team scope UI with clickable scope pill, requiresRestart flag for daemon restarts, automatic notification emissions.
 
-### useScopedConfig hook
+### useScopedConfig hook with atomic multi-field writes
 
 For reading/updating scoped config outside `ScopedField`, use `useScopedConfig`:
 
 ```typescript
-const { value, setValue, scope, setScope, isDirty, isSaving, error } = 
+const { value, setValue, scope, setScope, setFields, isDirty, isSaving, error } = 
   useScopedConfig<T>(path, defaultScope);
 ```
 
 Hook automatically persists changes and emits notifications.
+
+**Atomic multi-field writes** via `setFields()`:
+
+When you need coupled state transitions (e.g., "Clear Provider button disables provider AND clears API key in one atomic save"), use the `setFields(scope, patch, clearKeys?)` method:
+
+```typescript
+const handleClearProvider = useCallback(async () => {
+  // Atomically disable provider and clear its secrets
+  await setFields('personal', 
+    { enabled: false },           // updates to apply
+    ['auth', 'secretKey']         // keys to clear (set to null)
+  );
+}, [setFields]);
+```
+
+**Why atomic writes matter:** Without atomicity, two separate `setValue()` calls can be split across distinct API requests. If the second fails, the first's mutation (e.g., enabling) persists without its dependent cleanup (e.g., secret clearing). Coupled state transitions require a single atomic `setFields()` call that merges field updates and clears in a single REST request.
+
+**The REST API contract:** `setFields()` translates to:
+
+```
+PUT /api/config/scoped
+Body: { 
+  "scope": "personal" | "team", 
+  "patch": { enabled: false },
+  "clear": ["auth", "secretKey"]
+}
+```
+
+The daemon handler merges `patch` fields, then sets `clear` keys to `null` in a single transaction. Callers see a single atomic notification instead of two.
 
 ### Write-on-blur vs. write-on-change
 
@@ -365,7 +395,7 @@ Hook automatically persists changes and emits notifications.
 Configuration splits across two YAML files that deep-merge on load:
 
 | File | Committed | Scope | Purpose |
-|------|-----------|-------|------------|
+|------|-----------|-------|---------|
 | `myco.yaml` | ✅ yes | Project/team | Shared defaults |
 | `.myco/local.yaml` | ❌ gitignored | Per-machine | Personal overrides |
 
@@ -379,22 +409,85 @@ Configuration splits across two YAML files that deep-merge on load:
 await updateConfig(vaultDir, partialConfig, scope);  // scope: 'project' | 'local'
 ```
 
-### REST API: scope-aware patch endpoint
+### REST API: scope-aware atomic patch endpoint
 
 ```
 PUT /api/config/scoped
-Body: { "scope": "project" | "local", ...fieldUpdates }
+Body: { "scope": "project" | "local", "patch": {...}, "clear": [...] }
 ```
 
-Patch-style: merges partial object onto file. Route handlers call `updateConfig()` internally.
+Atomic patch-style with optional clears: merges `patch` fields onto file, then sets `clear` keys to `null`. Route handlers call `updateConfig()` internally. Single transaction ensures coupled mutations (e.g., disabling provider while clearing secrets) succeed or fail together.
+
+Example payload for clearing multiple fields in one request:
+
+```json
+{
+  "scope": "personal",
+  "patch": { "provider.enabled": false },
+  "clear": ["provider.apiKey", "provider.secretKey"]
+}
+```
 
 ## Procedure 6: Config Toggle Side-Effects and Managed Blocks
 
-Some toggles require file mutations beyond `myco.yaml` (e.g., `.gitignore`, `tsconfig.json`). Use managed-block pattern:
+Some toggles require file mutations beyond `myco.yaml` (e.g., `.gitignore`, `tsconfig.json`). Use managed-block pattern with ConfigReactionRegistry:
 
 **Step 1:** Single opt-in boolean in `myco.yaml`
-**Step 2:** Static managed block in affected file, inserted by `myco init`, reconciled by `myco update`
-**Step 3:** In-process reconciliation after config save:
+
+**Step 2:** Register a config reaction via ConfigReactionRegistry closure factory:
+
+```typescript
+// In src/daemon/reactions/ConfigReactionRegistry.ts
+registry.onConfigChange('archive.enabled', async (enabled, config, paths) => {
+  if (enabled) {
+    await ensureManagedBlock(paths.gitignore, 'archive', '.myco/archive/**');
+  } else {
+    await removeManagedBlock(paths.gitignore, 'archive');
+  }
+});
+```
+
+**Step 3:** ConfigReactionRegistry CQRS pattern (query-first architecture)
+
+The registry uses **closure factories and path-prefix subscriptions** to minimize Zod parses (67% reduction):
+
+```typescript
+// Query-first: register reactions by path prefix
+registry.subscribe('daemon.*', async (context) => {
+  // context includes partial config, full config, and paths
+  // Reactions fire only if the subscribed path changed
+});
+
+// Shared post-write context: all reactions share the validated config
+// Reactions do NOT re-parse config; they receive the fresh-read context
+```
+
+**Reaction vs. fresh-read decision rule:**
+
+- **Use a reaction** when the side-effect is tied to a specific config field (e.g., "when archive.enabled toggles, sync .gitignore")
+- **Use a fresh-read** when the side-effect depends on multiple unrelated fields or requires fresh state (e.g., "sync all managed blocks after any config write")
+
+Reactions are cheaper (no re-parse) and more declarative (field→effect mapping is explicit).
+
+**Example: Multi-field coupled side-effect**
+
+```typescript
+// Register a reaction on the provider namespace
+registry.subscribe('provider.*', async (context) => {
+  const { patch, config, paths } = context;
+  
+  // Reaction context includes only fields that changed (patch)
+  // AND the full validated config (for dependent fields)
+  if (patch.enabled === false) {
+    // Provider was disabled; clear related secrets from .myco/secrets.env
+    await clearSecrets(paths.secretsEnv, ['provider.apiKey', 'provider.secret']);
+  }
+});
+```
+
+The registry's post-write context is **shared**: once config is validated and persisted, all registered reactions see the same consistent state. No Zod re-parses, no stale-closure reactions.
+
+**Step 4:** In-process reconciliation after config save:
 
 ```typescript
 await symbionts.reconcile(vaultDir, updatedConfig);
@@ -508,3 +601,6 @@ Skip write when unchanged, use useMemo for appearance context, guard DOM mutatio
 - **Theme file creation without registration:** Creating a .css file without adding it to ThemeName union and THEMES array results in silent no-op.
 - **AppearanceProvider bundle split risk:** Never import config loaders or Node.js modules inside AppearanceProvider. Use the useScopedConfig hook pattern instead, which handles config loading outside the UI bundle context.
 - **Appearance preference write scope is always 'local':** Theme and font scale overrides go to `.myco/local.yaml`, not `myco.yaml`. Personal machine scope.
+- **Atomic multi-field writes prevent split-request mutations:** `setFields(scope, patch, clearKeys)` ensures coupled state transitions (e.g., disabling provider and clearing secrets) succeed or fail together. Never use two separate `setValue()` calls for logically paired updates.
+- **ConfigReactionRegistry query-first design:** Register reactions by path prefix, not by watching raw config objects. Reactions receive only changed fields (patch) plus full validated config. No Zod re-parses; shared post-write context ensures consistency.
+- **Reaction vs. fresh-read:** Use reactions for field-specific side-effects (archive.enabled → .gitignore). Use fresh-reads only when side-effects span multiple unrelated fields or require external state. Reactions are cheaper and more explicit.
