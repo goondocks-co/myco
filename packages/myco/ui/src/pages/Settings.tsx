@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import { CheckCircle, XCircle, Loader2 } from 'lucide-react';
-import { useConfig, type MycoConfig } from '../hooks/use-config';
+import { useConfig, type MycoConfig, type MycoConfigPatch } from '../hooks/use-config';
 import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
 import { useProviders, useTestProvider } from '../hooks/use-providers';
@@ -78,17 +78,16 @@ function toFormState(config: MycoConfig): FormState {
   };
 }
 
-/* ---------- Per-section config builders ---------- */
+/* ---------- Per-section patch builders ---------- */
 //
-// Each section's save button writes only its own slice of the config.
-// All branches preserve unrelated sections via `...original` spread,
-// letting users save sections independently without committing
-// half-finished edits elsewhere on the page.
+// Each section's save button emits a patch containing only its own slice.
+// The server deep-merges the patch into the current config, so unrelated
+// sections are preserved without the UI needing to know about them.
 
-/** Build an agent-section update with auto-enable/disable side effects on the
+/** Build an agent-section patch with auto-enable/disable side effects on the
  *  task toggles. Configuring a provider for the first time turns the agent
  *  pipeline on; clearing the provider turns it off. */
-function buildAgentSection(form: FormState, original: MycoConfig): MycoConfig {
+function buildAgentPatch(form: FormState, original: MycoConfig): MycoConfigPatch {
   const hadProvider = !!original.agent?.provider;
   const hasProvider = form.agentProviderType !== '';
 
@@ -112,9 +111,7 @@ function buildAgentSection(form: FormState, original: MycoConfig): MycoConfig {
   }
 
   return {
-    ...original,
     agent: {
-      ...original.agent,
       provider: agentProvider,
       model: undefined,
       scheduled_tasks_enabled: scheduledEnabled,
@@ -123,15 +120,13 @@ function buildAgentSection(form: FormState, original: MycoConfig): MycoConfig {
   };
 }
 
-function buildSectionUpdate(section: SaveSection, form: FormState, original: MycoConfig): MycoConfig {
+function buildSectionPatch(section: SaveSection, form: FormState, original: MycoConfig): MycoConfigPatch {
   switch (section) {
     case 'agent':
-      return buildAgentSection(form, original);
+      return buildAgentPatch(form, original);
     case 'embedding':
       return {
-        ...original,
         embedding: {
-          ...original.embedding,
           provider: form.embeddingProvider,
           model: form.embeddingModel,
           base_url: form.embeddingBaseUrl !== '' ? form.embeddingBaseUrl : undefined,
@@ -139,9 +134,7 @@ function buildSectionUpdate(section: SaveSection, form: FormState, original: Myc
       };
     case 'context':
       return {
-        ...original,
         context: {
-          ...original.context,
           digest_tier: parseNumericField(form.contextDigestTier, DEFAULT_DIGEST_TIER),
           prompt_search: form.contextPromptSearch,
           prompt_max_spores: parseNumericField(form.contextMaxSpores, DEFAULT_MAX_SPORES),
@@ -149,9 +142,7 @@ function buildSectionUpdate(section: SaveSection, form: FormState, original: Myc
       };
     case 'project':
       return {
-        ...original,
         daemon: {
-          ...original.daemon,
           port: form.daemonPort !== '' ? Number(form.daemonPort) : null,
           log_level: form.logLevel,
           log_retention_days: Number(form.logRetentionDays),
@@ -288,7 +279,7 @@ export default function Settings() {
     if (!form || !config) return;
     setSaveMessage(null);
     try {
-      await saveConfig(buildSectionUpdate(section, form, config));
+      await saveConfig(buildSectionPatch(section, form, config));
       setSaveMessage({ section, type: 'success', text: 'Saved. Restarting daemon...' });
       try {
         await restart();

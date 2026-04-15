@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { createPlanDirHandlers, handleGetConfig, handlePutConfig } from '@myco/daemon/api/config';
+import { createPlanDirHandlers, handleGetConfig, handlePutScopedConfig } from '@myco/daemon/api/config';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -23,21 +23,46 @@ describe('config API', () => {
     expect(result.body).toHaveProperty('version', 3);
   });
 
-  it('PUT validates and saves config', async () => {
-    const newConfig = {
-      version: 3,
-      embedding: { provider: 'ollama', model: 'nomic-embed-text' },
-      capture: { ignore_plan_dirs_in_git: true },
-    };
-    const result = await handlePutConfig(vaultDir, newConfig);
+  it('PUT scoped patch merges and saves config', async () => {
+    const result = await handlePutScopedConfig(vaultDir, {
+      scope: 'project',
+      patch: {
+        embedding: { provider: 'ollama', model: 'nomic-embed-text' },
+        capture: { ignore_plan_dirs_in_git: true },
+      },
+    });
     expect(result.status).toBeUndefined(); // 200 default
-    const saved = YAML.parse(fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8')) as { capture?: { ignore_plan_dirs_in_git?: boolean } };
+    const saved = YAML.parse(fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8')) as {
+      embedding?: { model?: string };
+      capture?: { ignore_plan_dirs_in_git?: boolean };
+    };
+    expect(saved.embedding?.model).toBe('nomic-embed-text');
     expect(saved.capture?.ignore_plan_dirs_in_git).toBe(true);
   });
 
-  it('PUT returns 400 for invalid config', async () => {
-    const invalid = { version: 3, embedding: { provider: 'invalid-provider' } };
-    const result = await handlePutConfig(vaultDir, invalid);
+  it('PUT scoped patch preserves unrelated sections', async () => {
+    await handlePutScopedConfig(vaultDir, {
+      scope: 'project',
+      patch: { daemon: { log_level: 'debug' } },
+    });
+    const saved = YAML.parse(fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8')) as {
+      embedding?: { model?: string };
+      daemon?: { log_level?: string };
+    };
+    expect(saved.embedding?.model).toBe('bge-m3');
+    expect(saved.daemon?.log_level).toBe('debug');
+  });
+
+  it('PUT scoped returns 400 for missing patch', async () => {
+    const result = await handlePutScopedConfig(vaultDir, { scope: 'project' });
+    expect(result.status).toBe(400);
+  });
+
+  it('PUT scoped returns 400 for schema-invalid patch', async () => {
+    const result = await handlePutScopedConfig(vaultDir, {
+      scope: 'project',
+      patch: { embedding: { provider: 'invalid-provider' } },
+    });
     expect(result.status).toBe(400);
   });
 

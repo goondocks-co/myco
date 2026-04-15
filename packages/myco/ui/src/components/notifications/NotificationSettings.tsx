@@ -84,10 +84,7 @@ export function NotificationSettings() {
     if (!form || !config) return;
     setSaveMessage(null);
     try {
-      await saveConfig({
-        ...config,
-        notifications: form,
-      });
+      await saveConfig({ notifications: form });
       setSaveMessage({ type: 'success', text: 'Notification settings saved.' });
     } catch {
       setSaveMessage({ type: 'error', text: 'Failed to save notification settings.' });
