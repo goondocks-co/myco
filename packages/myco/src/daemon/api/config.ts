@@ -17,20 +17,6 @@ export async function handleGetConfig(vaultDir: string): Promise<RouteResponse> 
   return { body: config };
 }
 
-export async function handlePutConfig(vaultDir: string, body: unknown): Promise<RouteResponse> {
-  const result = MycoConfigSchema.safeParse(body);
-  if (!result.success) {
-    return {
-      status: 400,
-      body: { error: 'validation_failed', issues: result.error.issues },
-    };
-  }
-  const updated = updateConfig(vaultDir, (current) =>
-    deepMergeConfig(current as Record<string, unknown>, result.data as Record<string, unknown>) as MycoConfig,
-  );
-  return { body: updated };
-}
-
 // ---------------------------------------------------------------------------
 // Scoped config handlers (project vs. local overlay)
 // ---------------------------------------------------------------------------
@@ -49,39 +35,35 @@ export async function handleGetLocalConfig(vaultDir: string): Promise<RouteRespo
 interface ScopedPutBody {
   scope?: 'project' | 'local';
   patch?: Record<string, unknown>;
-  config?: unknown; // legacy full-config body (scope='project' only)
 }
 
-/** PUT /api/config/scoped — scope-aware write (project patch, project full-config, or local patch). */
+/** PUT /api/config/scoped — deep-merge a partial patch into project or local config. */
 export async function handlePutScopedConfig(vaultDir: string, body: unknown): Promise<RouteResponse> {
   const payload = (body ?? {}) as ScopedPutBody;
   const scope = payload.scope ?? 'project';
   const patch = payload.patch;
 
+  if (!patch || typeof patch !== 'object') {
+    return { status: 400, body: { error: 'patch required' } };
+  }
+
   if (scope === 'local') {
-    if (!patch || typeof patch !== 'object') {
-      return { status: 400, body: { error: 'patch required for scope=local' } };
-    }
     const updated = saveLocalConfig(vaultDir, patch as Partial<MycoConfig>);
     return { body: updated };
   }
 
-  if (patch && typeof patch === 'object') {
-    try {
-      const updated = updateConfig(vaultDir, (current) => {
-        const merged = deepMergeConfig(current as Record<string, unknown>, patch as Record<string, unknown>);
-        return MycoConfigSchema.parse(merged);
-      });
-      return { body: updated };
-    } catch (err) {
-      if (err instanceof z.ZodError) {
-        return { status: 400, body: { error: 'validation_failed', issues: err.issues } };
-      }
-      throw err;
+  try {
+    const updated = updateConfig(vaultDir, (current) => {
+      const merged = deepMergeConfig(current as Record<string, unknown>, patch as Record<string, unknown>);
+      return MycoConfigSchema.parse(merged);
+    });
+    return { body: updated };
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return { status: 400, body: { error: 'validation_failed', issues: err.issues } };
     }
+    throw err;
   }
-  // Legacy full-config body
-  return handlePutConfig(vaultDir, payload.config ?? body);
 }
 
 interface ClearLocalBody { keys?: string[]; }

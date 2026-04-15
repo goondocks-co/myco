@@ -52,13 +52,9 @@ describe('scoped config HTTP handlers', () => {
     expect(Array.isArray((res.body as any).issues)).toBe(true);
   });
 
-  it('PUT /scoped scope=project without patch falls back to full-config path', async () => {
-    await handlePutScopedConfig(tmpDir, {
-      scope: 'project',
-      config: { version: 3, embedding: { provider: 'ollama', model: 'bge-m3' }, appearance: { theme: 'dusk', mode: 'dark', font: 'default', density: 'normal' } },
-    });
-    const project = fs.readFileSync(path.join(tmpDir, 'myco.yaml'), 'utf-8');
-    expect(project).toContain('theme: dusk');
+  it('PUT /scoped scope=project without patch returns 400', async () => {
+    const res = await handlePutScopedConfig(tmpDir, { scope: 'project' });
+    expect(res.status).toBe(400);
   });
 
   it('POST /local/clear removes specified keys', async () => {

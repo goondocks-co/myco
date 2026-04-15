@@ -204,16 +204,13 @@ export function AgentConfig() {
     if (!form || !config) return;
     setSaveMessage(null);
     try {
-      const updated: MycoConfig = {
-        ...config,
+      await saveConfig({
         agent: {
-          ...config.agent,
           summary_batch_interval: parseNumericField(form.summaryBatchInterval, DEFAULT_SUMMARY_BATCH_INTERVAL),
           scheduled_tasks_enabled: form.scheduledTasksEnabled,
           event_tasks_enabled: form.eventTasksEnabled,
         },
-      };
-      await saveConfig(updated);
+      });
       setSaveMessage({ type: 'success', text: 'Agent settings saved. Restarting daemon...' });
       try {
         await restart();

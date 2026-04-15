@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchJson, putJson } from '../lib/api';
+import { fetchJson, writeScopedConfig } from '../lib/api';
 
 export interface MycoConfig {
   version: 3;
@@ -28,7 +28,6 @@ export interface MycoConfig {
     summary_batch_interval: number;
     scheduled_tasks_enabled?: boolean;
     event_tasks_enabled?: boolean;
-    /** Fields below are set via Agent Tasks page, not Settings — preserve on save. */
     provider?: { type: string; base_url?: string; model?: string; context_length?: number };
     model?: string;
     tasks?: Record<string, unknown>;
@@ -37,7 +36,6 @@ export interface MycoConfig {
     digest_tier: number;
     prompt_search: boolean;
     prompt_max_spores: number;
-    /** Extensible — preserve unknown fields on save. */
     [key: string]: unknown;
   };
   notifications: {
@@ -48,6 +46,13 @@ export interface MycoConfig {
   };
 }
 
+/** Recursive partial — lets each caller send only the sections (and nested fields) it owns. */
+export type MycoConfigPatch = {
+  [K in keyof MycoConfig]?: MycoConfig[K] extends Record<string, unknown>
+    ? Partial<MycoConfig[K]>
+    : MycoConfig[K];
+};
+
 export function useConfig() {
   const queryClient = useQueryClient();
 
@@ -57,7 +62,8 @@ export function useConfig() {
   });
 
   const mutation = useMutation({
-    mutationFn: (config: MycoConfig) => putJson<MycoConfig>('/config', config),
+    mutationFn: (patch: MycoConfigPatch) =>
+      writeScopedConfig('project', patch as Record<string, unknown>) as Promise<MycoConfig>,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['config'] }),
   });
 
