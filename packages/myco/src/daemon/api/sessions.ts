@@ -82,11 +82,11 @@ export interface SessionMutationDeps {
   embeddingManager: EmbeddingManager;
   vaultDir: string;
   logger: DaemonLogger;
-  config: MycoConfig;
+  liveConfig: { current: MycoConfig };
 }
 
 export function createSessionMutationHandlers(deps: SessionMutationDeps) {
-  const { embeddingManager, vaultDir, logger, config } = deps;
+  const { embeddingManager, vaultDir, logger, liveConfig } = deps;
 
   /** DELETE /api/sessions/:id — cascade delete with post-transaction cleanup. */
   async function handleDeleteSession(req: RouteRequest): Promise<RouteResponse> {
@@ -129,7 +129,7 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
       });
     }
 
-    await triggerTitleSummary(sessionId, { vaultDir, embeddingManager, config, logger });
+    await triggerTitleSummary(sessionId, { vaultDir, embeddingManager, liveConfig, logger });
 
     logger.info(LOG_KINDS.API_SESSION_COMPLETE, 'Session manually completed', {
       session_id: sessionId,

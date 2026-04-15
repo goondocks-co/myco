@@ -21,6 +21,8 @@ import { getDatabase } from '@myco/db/client.js';
 import { notify } from '@myco/notifications/notify.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 
+const SCHEDULED_JOB_PREFIX = 'scheduled:';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -30,7 +32,9 @@ export interface TaskSchedulingDeps {
   vaultDir: string;
   embeddingManager: EmbeddingManager;
   logger: DaemonLogger;
-  config: MycoConfig;
+  // Holder so the run-time gate below sees toggle flips
+  // (agent.scheduled_tasks_enabled) without a daemon restart.
+  liveConfig: { current: MycoConfig };
 }
 
 // ---------------------------------------------------------------------------
@@ -41,7 +45,7 @@ export async function registerScheduledTasks(
   powerManager: PowerManager,
   deps: TaskSchedulingDeps,
 ): Promise<void> {
-  const { definitionsDir, vaultDir, embeddingManager, logger, config } = deps;
+  const { definitionsDir, vaultDir, embeddingManager, logger, liveConfig } = deps;
   const runningTasks = new Set<string>();
 
   if (!definitionsDir) {
@@ -49,10 +53,12 @@ export async function registerScheduledTasks(
     return;
   }
 
-  // Global agent toggle — skip all scheduled task registration when disabled
-  if (config.agent.scheduled_tasks_enabled === false) {
-    logger.info(LOG_KINDS.AGENT_RUN, 'Scheduled agent tasks disabled globally (agent.scheduled_tasks_enabled: false)');
-    return;
+  // Jobs always register. The scheduled_tasks_enabled gate lives inside
+  // runTask so flipping the toggle in Settings takes effect immediately —
+  // registration-time gating would lock the scheduler to its startup value.
+  let lastEnabled = liveConfig.current.agent.scheduled_tasks_enabled !== false;
+  if (!lastEnabled) {
+    logger.info(LOG_KINDS.AGENT_RUN, 'Scheduled agent tasks disabled (agent.scheduled_tasks_enabled: false) — jobs registered but will no-op until enabled');
   }
 
   const { loadAllTasks } = await import('@myco/agent/registry.js');
@@ -87,6 +93,22 @@ export async function registerScheduledTasks(
       else runningTasks.delete(name);
     },
     runTask: async (taskName) => {
+      const config = liveConfig.current;
+
+      // Runtime gate — honors the toggle flipped since startup. We log once
+      // per transition so the log doesn't repeat on every scheduler tick.
+      const enabled = config.agent.scheduled_tasks_enabled !== false;
+      if (enabled !== lastEnabled) {
+        logger.info(
+          LOG_KINDS.AGENT_RUN,
+          enabled
+            ? 'Scheduled agent tasks re-enabled — resuming'
+            : 'Scheduled agent tasks disabled — skipping until re-enabled',
+        );
+        lastEnabled = enabled;
+      }
+      if (!enabled) return;
+
       const { runAgent } = await import('@myco/agent/executor.js');
 
       const taskConfig = config.agent.tasks?.[taskName];
@@ -194,14 +216,12 @@ export async function registerScheduledTasks(
 
   const scheduledJobs = buildScheduledJobs(
     allTasks,
-    config.agent.tasks ?? {},
+    liveConfig.current.agent.tasks ?? {},
     scheduledContext,
     initialLastRuns,
   );
-  for (const job of scheduledJobs) {
-    powerManager.register(job);
-  }
-  logger.info(LOG_KINDS.DAEMON_START, `Registered ${scheduledJobs.length} scheduled task(s)`, {
+  powerManager.replaceGroup(SCHEDULED_JOB_PREFIX, scheduledJobs);
+  logger.info(LOG_KINDS.DAEMON_START, `Synced ${scheduledJobs.length} scheduled task(s)`, {
     tasks: scheduledJobs.map((j) => j.name),
   });
 }

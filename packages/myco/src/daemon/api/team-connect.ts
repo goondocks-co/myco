@@ -5,7 +5,7 @@
  * close over the daemon's shared state (vault dir, machine ID, team client).
  */
 
-import { updateTeamConfig, loadConfig } from '@myco/config/loader.js';
+import { updateTeamConfig, loadMergedConfig } from '@myco/config/loader.js';
 import { writeSecret, readSecrets } from '@myco/config/secrets.js';
 import { countPending, countDeadLettered, backfillUnsynced, retryDeadLettered } from '@myco/db/queries/team-outbox.js';
 import { readJsonConfig, resolveVaultConfigPath } from '@myco-deploy/index.js';
@@ -105,10 +105,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     });
     writeSecret(vaultDir, TEAM_API_KEY_SECRET, api_key);
 
-    // Set the live client
-    deps.setTeamClient(client);
-
-    const config = loadConfig(vaultDir);
+    const config = loadMergedConfig(vaultDir);
     return { body: { connected: true, team: config.team } };
   }
 
@@ -119,7 +116,6 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
    */
   async function handleDisconnect(_req: RouteRequest): Promise<RouteResponse> {
     updateTeamConfig(vaultDir, { enabled: false });
-    deps.setTeamClient(null);
 
     return { body: { connected: false } };
   }
@@ -130,7 +126,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
    * Returns connection status, health check result, pending sync count, and machine_id.
    */
   async function handleStatus(_req: RouteRequest): Promise<RouteResponse> {
-    const config = loadConfig(vaultDir);
+    const config = loadMergedConfig(vaultDir);
     const client = deps.getTeamClient();
     const secrets = readSecrets(vaultDir);
     const hasApiKey = Boolean(secrets[TEAM_API_KEY_SECRET]);

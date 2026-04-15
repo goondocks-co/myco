@@ -4,7 +4,7 @@ import { normalizeHookInput } from './normalize.js';
 import { evaluateSessionCaptureRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
 import { loadManifests } from '../symbionts/detect.js';
-import { loadConfig } from '../config/loader.js';
+import { loadMergedConfig } from '../config/loader.js';
 import { buildInjectedContext } from '../context/injector.js';
 import { initDatabase, vaultDbPath } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
@@ -37,7 +37,7 @@ export async function main() {
       return;
     }
 
-    const config = loadConfig(VAULT_DIR);
+    const config = loadMergedConfig(VAULT_DIR);
     const client = new DaemonClient(VAULT_DIR);
     const healthy = await client.ensureRunning();
 

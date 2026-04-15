@@ -39,6 +39,11 @@ export class PowerManager {
     this.jobs.push(job);
   }
 
+  replaceGroup(prefix: string, jobs: PowerJob[]): void {
+    this.jobs = this.jobs.filter((job) => !job.name.startsWith(prefix));
+    this.jobs.push(...jobs);
+  }
+
   recordActivity(): void {
     this.lastActivity = Date.now();
     this.deepSleepHeld = false;

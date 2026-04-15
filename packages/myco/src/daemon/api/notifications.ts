@@ -16,7 +16,7 @@ import {
 } from '../../db/queries/notifications.js';
 import { getAllDomains } from '../../notifications/registry.js';
 import { notify } from '../../notifications/notify.js';
-import { loadConfig } from '../../config/loader.js';
+import { loadMergedConfig } from '../../config/loader.js';
 import type { NotificationMode } from '../../notifications/types.js';
 
 // ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ export async function handleCreateNotification(
   const { domain, type, title, message, link, metadata } = parsed.data;
 
   // Check config for structured HTTP responses before delegating
-  const config = loadConfig(vaultDir);
+  const config = loadMergedConfig(vaultDir);
   if (!config.notifications.enabled) {
     return { body: { ok: true, suppressed: true, reason: 'notifications_disabled' } };
   }

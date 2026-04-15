@@ -48,7 +48,7 @@ export interface StopProcessorDeps {
   transcriptMiner: TranscriptMiner;
   embeddingManager: EmbeddingManager;
   logger: DaemonLogger;
-  config: MycoConfig;
+  liveConfig: { current: MycoConfig };
   vaultDir: string;
   /** Plan tag names to extract from transcript responses. Merged from all symbiont manifests. */
   planTags: string[];
@@ -100,7 +100,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
   getActiveProcessing: () => Promise<void> | null;
   triggerTitleSummary: (sessionId: string) => Promise<void>;
 } {
-  const { registry, sessionBuffers, transcriptMiner, embeddingManager, logger, config, vaultDir } = deps;
+  const { registry, sessionBuffers, transcriptMiner, embeddingManager, logger, liveConfig, vaultDir } = deps;
 
   // Internal state
   let activeStopProcessing: Promise<void> | null = null;
@@ -124,7 +124,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
   });
 
   const triggerTitleSummary = (sessionId: string) =>
-    sharedTriggerTitleSummary(sessionId, { vaultDir, embeddingManager, config, logger });
+    sharedTriggerTitleSummary(sessionId, { vaultDir, embeddingManager, liveConfig, logger });
 
   function cleanupInvalidCapturedSession(sessionId: string): boolean {
     registry.unregister(sessionId);

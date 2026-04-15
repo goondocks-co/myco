@@ -46,8 +46,8 @@ async function checkVault(vaultDir: string): Promise<{ check: DoctorCheck; confi
     return { check: { name: 'Vault', status: 'fail', detail: `${CONFIG_FILENAME} not found in ${vaultDir}`, fixable: false }, config: null };
   }
   try {
-    const { loadConfig } = await import('../config/loader.js');
-    const config = loadConfig(vaultDir);
+    const { loadMergedConfig } = await import('../config/loader.js');
+    const config = loadMergedConfig(vaultDir);
     return { check: { name: 'Vault', status: 'ok', detail: `.myco/ (v${config.version})`, fixable: false }, config };
   } catch (err) {
     return { check: { name: 'Vault', status: 'fail', detail: `${CONFIG_FILENAME} parse error: ${(err as Error).message}`, fixable: false }, config: null };

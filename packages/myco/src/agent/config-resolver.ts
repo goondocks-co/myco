@@ -20,7 +20,7 @@ import {
   resolveEffectiveConfig,
 } from './loader.js';
 import { loadAllTasks } from './registry.js';
-import { loadConfig } from '@myco/config/loader.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { ProviderConfig, EffectiveConfig } from './types.js';
 
@@ -147,7 +147,7 @@ export function resolveRunConfig(
   let phaseProviderOverrides: Record<string, { provider?: ProviderConfig; maxTurns?: number }> = {};
   let taskParams: Record<string, string | number | boolean> | undefined;
   try {
-    const mycoConfig = loadConfig(vaultDir);
+    const mycoConfig = loadMergedConfig(vaultDir);
 
     // Per-task override takes priority over global
     const taskConfig = taskName ? mycoConfig.agent.tasks?.[taskName] : undefined;

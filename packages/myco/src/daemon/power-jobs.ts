@@ -15,8 +15,8 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import type { DatabaseMaintenanceManager } from './database/manager.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import { createBackup } from './backup.js';
+import { resolveBackupDir } from './api/backup.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
-import { loadMergedConfig } from '../config/loader.js';
 import {
   listStaleStagingDirs,
   cleanupStagedSkill,
@@ -39,9 +39,10 @@ export interface PowerJobDeps {
   embeddingManager: EmbeddingManager;
   registry: SessionRegistry;
   logger: DaemonLogger;
-  config: MycoConfig;
+  // Holder so each job observes the current merged config at run time and
+  // picks up setting flips without a daemon restart.
+  liveConfig: { current: MycoConfig };
   db: Database;
-  backupDir: string;
   machineId: string;
   vaultDir: string;
   databaseManager: DatabaseMaintenanceManager;
@@ -52,7 +53,7 @@ export interface PowerJobDeps {
 // ---------------------------------------------------------------------------
 
 export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps): void {
-  const { embeddingManager, registry, logger, config, db, backupDir, machineId, vaultDir, databaseManager } = deps;
+  const { embeddingManager, registry, logger, liveConfig, db, machineId, vaultDir, databaseManager } = deps;
 
   let reconcileRunning = false;
   powerManager.register({
@@ -77,7 +78,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
       registeredSessionIds: () => registry.sessions,
       embeddingManager,
       vaultDir,
-      staleThresholdMs: config.daemon.stale_session_threshold_ms,
+      staleThresholdMs: liveConfig.current.daemon.stale_session_threshold_ms,
     }),
   });
 
@@ -85,7 +86,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     name: 'log-retention',
     runIn: ['idle', 'sleep'],
     fn: async () => {
-      const retentionDays = loadMergedConfig(vaultDir).daemon.log_retention_days;
+      const retentionDays = liveConfig.current.daemon.log_retention_days;
       const cutoff = new Date(Date.now() - retentionDays * MS_PER_DAY).toISOString();
       const deleted = deleteOldLogs(cutoff);
       if (deleted > 0) {
@@ -100,6 +101,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     runIn: ['idle', 'sleep'],
     fn: async () => {
       try {
+        const backupDir = resolveBackupDir(liveConfig.current, vaultDir);
         logger.info(LOG_KINDS.BACKUP_START, 'Auto-backup starting');
         const filePath = createBackup(db, backupDir, machineId);
         logger.info(LOG_KINDS.BACKUP_COMPLETE, 'Auto-backup complete', { file_path: filePath });
@@ -114,6 +116,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     name: 'database-optimize',
     runIn: ['idle', 'sleep'],
     fn: async () => {
+      const config = liveConfig.current;
       if (!config.maintenance?.auto_optimize) return;
       const intervalMs = (config.maintenance.auto_optimize_interval_hours ?? 24) * MS_PER_HOUR;
       const lastRun = await databaseManager.getLastOptimizeAt();
