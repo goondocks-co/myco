@@ -18,7 +18,6 @@ describe('createPlanWatchReaction', () => {
     const planWatchConfig: PlanWatchConfig = {
       projectRoot: tmpDir,
       watchDirs: ['/symbiont/x'],
-      recentBatchWindowMs: 5000,
     };
     const consumer = planWatchConfig; // simulates event-dispatch closure
 
@@ -40,7 +39,6 @@ describe('createPlanWatchReaction', () => {
     const planWatchConfig: PlanWatchConfig = {
       projectRoot: tmpDir,
       watchDirs: [],
-      recentBatchWindowMs: 5000,
     };
     const reaction = createPlanWatchReaction({
       vaultDir: tmpDir,
@@ -56,7 +54,6 @@ describe('createPlanWatchReaction', () => {
     const planWatchConfig: PlanWatchConfig = {
       projectRoot: tmpDir,
       watchDirs: ['/symbiont/x'],
-      recentBatchWindowMs: 5000,
     };
     const reaction = createPlanWatchReaction({
       vaultDir: tmpDir,
