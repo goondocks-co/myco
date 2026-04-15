@@ -3,16 +3,24 @@
  * daemon instead of opening its own SQLite connection.
  *
  * Factory function injects machineId and embeddingManager; returns handlers
- * for remember, supersede, plans, sessions, and team endpoints.
+ * for remember, supersede, consolidate, plans, sessions, and team endpoints.
  */
 
 import { z } from 'zod';
-import { epochSeconds, USER_AGENT_ID, USER_AGENT_NAME } from '@myco/constants.js';
+import {
+  epochSeconds,
+  MCP_SESSIONS_DEFAULT_LIMIT,
+  SESSION_SUMMARY_PREVIEW_CHARS,
+  USER_AGENT_ID,
+  USER_AGENT_NAME,
+} from '@myco/constants.js';
+import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertSpore, updateSporeStatus } from '@myco/db/queries/spores.js';
-import { listPlans } from '@myco/db/queries/plans.js';
+import { getPlan, listPlans } from '@myco/db/queries/plans.js';
 import { listSessions } from '@myco/db/queries/sessions.js';
 import { listTeamMembers } from '@myco/db/queries/team-members.js';
+import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 
@@ -22,6 +30,7 @@ import type { EmbeddingManager } from '../embedding/manager.js';
 
 const SPORE_ID_RANDOM_BYTES = 4;
 const RESOLUTION_ID_RANDOM_BYTES = 8;
+const MIN_CONSOLIDATE_SOURCES = 2;
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -36,6 +45,43 @@ const RememberBody = z.object({
 const SupersedeBody = z.object({
   old_spore_id: z.string(),
   new_spore_id: z.string(),
+  reason: z.string().optional(),
+});
+
+/**
+ * Convert an ISO-8601 string to epoch seconds.
+ * Returns undefined if parsing fails (silently — callers treat undefined as "no filter").
+ */
+function isoToEpochSeconds(iso: string): number | undefined {
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? undefined : Math.floor(ms / 1000);
+}
+
+function registerMcpUserAgent(createdAt: number): void {
+  registerAgent({
+    id: USER_AGENT_ID,
+    name: USER_AGENT_NAME,
+    created_at: createdAt,
+  });
+}
+
+function toPlanProgress(content: string | null): string {
+  const planContent = content ?? '';
+  const checked = (planContent.match(/- \[x\]/gi) ?? []).length;
+  const unchecked = (planContent.match(/- \[ \]/g) ?? []).length;
+  const total = checked + unchecked;
+  return total === 0 ? 'N/A' : `${checked}/${total}`;
+}
+
+function toPlanTags(tags: string | null): string[] {
+  return tags ? tags.split(',').map((tag) => tag.trim()) : [];
+}
+
+const ConsolidateBody = z.object({
+  source_spore_ids: z.array(z.string()).min(MIN_CONSOLIDATE_SOURCES),
+  consolidated_content: z.string().min(1),
+  observation_type: z.string(),
+  tags: z.array(z.string()).optional(),
   reason: z.string().optional(),
 });
 
@@ -55,6 +101,24 @@ export interface McpProxyDeps {
 export function createMcpProxyHandlers(deps: McpProxyDeps) {
   const { machineId, embeddingManager } = deps;
 
+  function toPlanSummary(row: {
+    id: string;
+    title: string | null;
+    status: string;
+    content: string | null;
+    tags: string | null;
+    created_at: number;
+  }) {
+    return {
+      id: row.id,
+      title: row.title,
+      status: row.status,
+      progress: toPlanProgress(row.content),
+      tags: toPlanTags(row.tags),
+      created_at: row.created_at,
+    };
+  }
+
   /** POST /api/mcp/remember — create a spore and trigger embedding. */
   async function handleRemember(req: RouteRequest): Promise<RouteResponse> {
     const { content, type, tags } = RememberBody.parse(req.body);
@@ -64,12 +128,7 @@ export function createMcpProxyHandlers(deps: McpProxyDeps) {
     const id = `${observationType}-${randomBytes(SPORE_ID_RANDOM_BYTES).toString('hex')}`;
     const now = epochSeconds();
 
-    // Ensure the user agent exists (idempotent upsert)
-    registerAgent({
-      id: USER_AGENT_ID,
-      name: USER_AGENT_NAME,
-      created_at: now,
-    });
+    registerMcpUserAgent(now);
 
     const spore = insertSpore({
       id,
@@ -106,15 +165,9 @@ export function createMcpProxyHandlers(deps: McpProxyDeps) {
     updateSporeStatus(old_spore_id, 'superseded', now);
     try { embeddingManager.onStatusChanged('spores', old_spore_id, 'superseded'); } catch { /* best-effort */ }
 
-    // Ensure user agent exists (idempotent)
-    registerAgent({
-      id: USER_AGENT_ID,
-      name: USER_AGENT_NAME,
-      created_at: now,
-    });
+    registerMcpUserAgent(now);
 
     // Record resolution event for audit trail
-    const { insertResolutionEvent } = await import('@myco/db/queries/resolution-events.js');
     const resolutionId = `res-${randomBytes(RESOLUTION_ID_RANDOM_BYTES).toString('hex')}`;
 
     insertResolutionEvent({
@@ -137,39 +190,122 @@ export function createMcpProxyHandlers(deps: McpProxyDeps) {
     };
   }
 
-  /** GET /api/mcp/plans — list plans with progress calculation. */
+  /**
+   * POST /api/mcp/consolidate — merge source spores into a single wisdom spore.
+   *
+   * Inserts a new spore with the consolidated content, then for each source:
+   *   - marks its status as 'superseded'
+   *   - records a resolution_events row (action='consolidate', new_spore_id=wisdom)
+   *
+   * Returns { new_spore_id, sources_superseded, status: 'consolidated' }.
+   */
+  async function handleConsolidate(req: RouteRequest): Promise<RouteResponse> {
+    const { source_spore_ids, consolidated_content, observation_type, tags, reason } = ConsolidateBody.parse(req.body);
+    const { randomBytes } = await import('node:crypto');
+    const now = epochSeconds();
+    const newSporeId = `${observation_type}-${randomBytes(SPORE_ID_RANDOM_BYTES).toString('hex')}`;
+    const db = getDatabase();
+
+    registerMcpUserAgent(now);
+
+    const { wisdom, sourcesSuperseded } = db.transaction(() => {
+      const insertedWisdom = insertSpore({
+        id: newSporeId,
+        agent_id: USER_AGENT_ID,
+        machine_id: machineId,
+        observation_type,
+        content: consolidated_content,
+        tags: tags ? tags.join(', ') : null,
+        created_at: now,
+      });
+
+      const supersededSourceIds: string[] = [];
+      for (const sourceId of source_spore_ids) {
+        updateSporeStatus(sourceId, 'superseded', now);
+        insertResolutionEvent({
+          id: `res-${randomBytes(RESOLUTION_ID_RANDOM_BYTES).toString('hex')}`,
+          agent_id: USER_AGENT_ID,
+          machine_id: machineId,
+          spore_id: sourceId,
+          action: 'consolidate',
+          new_spore_id: newSporeId,
+          reason: reason ?? null,
+          created_at: now,
+        });
+        supersededSourceIds.push(sourceId);
+      }
+
+      return { wisdom: insertedWisdom, sourcesSuperseded: supersededSourceIds };
+    })();
+
+    embeddingManager.onContentWritten('spores', wisdom.id, consolidated_content, {
+      status: 'active',
+      observation_type,
+    }).catch(() => {});
+    for (const sourceId of sourcesSuperseded) {
+      try { embeddingManager.onStatusChanged('spores', sourceId, 'superseded'); } catch { /* best-effort */ }
+    }
+
+    return {
+      body: {
+        new_spore_id: newSporeId,
+        sources_superseded: sourcesSuperseded,
+        status: 'consolidated' as const,
+        created_at: now,
+      },
+    };
+  }
+
+  /** GET /api/mcp/plans — list plans, or return a single plan with content when id is set. */
   async function handlePlans(req: RouteRequest): Promise<RouteResponse> {
+    const id = typeof req.query.id === 'string' ? req.query.id : undefined;
+
+    if (id) {
+      const row = getPlan(id);
+      if (!row) return { body: { plans: [] } };
+      return {
+        body: {
+          plans: [{
+            ...toPlanSummary(row),
+            content: row.content,
+          }],
+        },
+      };
+    }
+
     const statusFilter = req.query.status === 'all' ? undefined : req.query.status;
     const limit = req.query.limit ? Number(req.query.limit) : undefined;
 
     const rows = listPlans({ status: statusFilter, limit });
-
-    const plans = rows.map((row) => {
-      const content = row.content ?? '';
-      const checked = (content.match(/- \[x\]/gi) ?? []).length;
-      const unchecked = (content.match(/- \[ \]/g) ?? []).length;
-      const total = checked + unchecked;
-      const progress = total === 0 ? 'N/A' : `${checked}/${total}`;
-
-      return {
-        id: row.id,
-        title: row.title,
-        status: row.status,
-        progress,
-        tags: row.tags ? row.tags.split(',').map((t) => t.trim()) : [],
-        created_at: row.created_at,
-      };
-    });
+    const plans = rows.map(toPlanSummary);
 
     return { body: { plans } };
   }
 
-  /** GET /api/mcp/sessions — list sessions with field mapping. */
+  /**
+   * GET /api/mcp/sessions — list sessions with optional filters.
+   *
+   * Supports query params: limit, status, branch, user, since (ISO string), plan.
+   * `plan` resolves to the session recorded for that plan via `getPlan().session_id`.
+   */
   async function handleSessions(req: RouteRequest): Promise<RouteResponse> {
-    const limit = req.query.limit ? Number(req.query.limit) : 20;
-    const status = req.query.status;
+    const limit = req.query.limit ? Number(req.query.limit) : MCP_SESSIONS_DEFAULT_LIMIT;
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+    const branch = typeof req.query.branch === 'string' ? req.query.branch : undefined;
+    const user = typeof req.query.user === 'string' ? req.query.user : undefined;
+    const plan = typeof req.query.plan === 'string' ? req.query.plan : undefined;
+    const sinceRaw = typeof req.query.since === 'string' ? req.query.since : undefined;
 
-    const rows = listSessions({ limit, status });
+    const since = sinceRaw ? isoToEpochSeconds(sinceRaw) : undefined;
+
+    let id: string | undefined;
+    if (plan) {
+      const planRow = getPlan(plan);
+      if (!planRow || !planRow.session_id) return { body: { sessions: [] } };
+      id = planRow.session_id;
+    }
+
+    const rows = listSessions({ limit, status, branch, user, since, id });
     const sessions = rows.map((row) => ({
       id: row.id,
       agent: row.agent,
@@ -179,7 +315,7 @@ export function createMcpProxyHandlers(deps: McpProxyDeps) {
       ended_at: row.ended_at,
       status: row.status,
       title: row.title,
-      summary: (row.summary ?? '').slice(0, 300),
+      summary: (row.summary ?? '').slice(0, SESSION_SUMMARY_PREVIEW_CHARS),
       prompt_count: row.prompt_count,
       tool_count: row.tool_count,
       parent_session_id: row.parent_session_id,
@@ -205,6 +341,7 @@ export function createMcpProxyHandlers(deps: McpProxyDeps) {
   return {
     handleRemember,
     handleSupersede,
+    handleConsolidate,
     handlePlans,
     handleSessions,
     handleTeam,

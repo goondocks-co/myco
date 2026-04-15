@@ -59,15 +59,13 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: TOOL_REMEMBER,
-    description: 'Save a decision, gotcha, bug fix, discovery, or trade-off as a permanent spore. Use after making a key decision, fixing a tricky bug, discovering something non-obvious, or encountering a gotcha.',
+    description: 'Save a decision, gotcha, bug fix, discovery, or trade-off as a permanent spore. Use after making a key decision, fixing a tricky bug, discovering something non-obvious, or encountering a gotcha. Session association is derived by the daemon — the MCP client does not pass it.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         content: { type: 'string', description: 'The observation — include context, reasoning, and what someone encountering this in the future needs to know' },
         type: { type: 'string', enum: OBSERVATION_TYPES, description: `Observation type: ${OBSERVATION_TYPES.join(', ')}` },
         tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
-        session: { type: 'string', description: 'Your current session ID — auto-detected if omitted' },
-        related_plan: { type: 'string', description: 'Plan ID if this observation relates to an active plan' },
       },
       required: ['content', 'type'],
     },
@@ -89,24 +87,21 @@ export const TOOL_DEFINITIONS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        plan: { type: 'string', description: 'Filter sessions linked to a specific plan' },
+        plan: { type: 'string', description: 'Filter to the session linked to this plan id' },
         branch: { type: 'string', description: PROP_BRANCH },
         user: { type: 'string', description: 'Filter sessions by user' },
         since: { type: 'string', description: PROP_SINCE },
+        status: { type: 'string', description: 'Filter by session status (e.g., active, completed)' },
         limit: { type: 'number', description: `Max results (default: ${MCP_SESSIONS_DEFAULT_LIMIT})` },
       },
     },
   },
   {
     name: TOOL_TEAM,
-    description: 'See what teammates have been working on — filter by shared files or plan to understand who has context on a component.',
+    description: 'List team members registered in the vault. Returns id, user, role, joined, and tags per member. Phase-1 scope: no filters.',
     inputSchema: {
       type: 'object' as const,
-      properties: {
-        files: { type: 'array', items: { type: 'string' }, description: 'File paths to find teammates who worked on them' },
-        plan: { type: 'string', description: 'Plan ID to find teammates collaborating on it' },
-        since: { type: 'string', description: PROP_SINCE },
-      },
+      properties: {},
     },
   },
   {
@@ -137,7 +132,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: TOOL_CONSOLIDATE,
-    description: 'Merge 3+ related spores into a single comprehensive wisdom note. Use when multiple observations describe aspects of the same insight, share a root cause, or would be more useful as one reference. Source spores are marked superseded.',
+    description: 'Merge 2+ related spores into a single comprehensive wisdom note. Inserts a new spore with the consolidated content; each source spore is marked superseded with a resolution_events row linking it to the new wisdom spore. Use when multiple observations describe aspects of the same insight, share a root cause, or would be more useful as one reference.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -145,6 +140,7 @@ export const TOOL_DEFINITIONS = [
         consolidated_content: { type: 'string', description: 'The merged, comprehensive content — synthesize, do not just concatenate' },
         observation_type: { type: 'string', enum: OBSERVATION_TYPES, description: `Type for the consolidated wisdom note: ${OBSERVATION_TYPES.join(', ')}` },
         tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
+        reason: { type: 'string', description: 'Optional reason recorded on each resolution event' },
       },
       required: ['source_spore_ids', 'consolidated_content', 'observation_type'],
     },
