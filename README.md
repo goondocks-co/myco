@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="packages/myco/assets/hero-wide.svg" alt="Myco" width="100%">
+  <img src="docs/assets/myco-hero-wide.jpg" alt="Myco" width="100%">
 </p>
 
 <p align="center">
