@@ -1,6 +1,9 @@
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
+export const MYCO_PROJECT_ROOT_ENV = 'MYCO_PROJECT_ROOT';
+export const MYCO_VAULT_DIR_ENV = 'MYCO_VAULT_DIR';
+
 /**
  * Resolve the vault directory.
  *
@@ -9,10 +12,29 @@ import { execFileSync } from 'node:child_process';
  *
  * Uses git to find the repo root so this works correctly in
  * git worktrees — worktree agents resolve to the same vault
- * as the main working tree.
+ * as the main working tree. Some symbionts launch their MCP child with
+ * cwd=/, so explicit env anchors win before any cwd-based fallback.
  */
-export function resolveVaultDir(cwd = process.cwd()): string {
+export function resolveVaultDir(
+  cwd = process.cwd(),
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const explicitVaultDir = readAbsoluteEnv(env, MYCO_VAULT_DIR_ENV);
+  if (explicitVaultDir) return explicitVaultDir;
+
+  const explicitProjectRoot = readAbsoluteEnv(env, MYCO_PROJECT_ROOT_ENV);
+  if (explicitProjectRoot) return path.join(explicitProjectRoot, '.myco');
+
   return path.join(resolveRepoRoot(cwd), '.myco');
+}
+
+function readAbsoluteEnv(
+  env: NodeJS.ProcessEnv,
+  key: string,
+): string | null {
+  const raw = env[key];
+  if (typeof raw !== 'string' || raw.length === 0) return null;
+  return path.isAbsolute(raw) ? raw : null;
 }
 
 /**

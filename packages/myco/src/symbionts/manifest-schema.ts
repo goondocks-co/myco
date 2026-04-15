@@ -29,8 +29,11 @@ import { z } from 'zod';
  *
  * Events:
  *   - `session_start`: fires on SessionStart, before any prompts or
- *     tools are captured. The right place to catch ephemeral sub-
- *     invocations so they're never registered as sessions at all.
+ *     tools are captured. The same rules are also reusable at later
+ *     lifecycle boundaries that could still materialize a session row
+ *     (for example, transcript-backed stop processing after a missed
+ *     SessionStart). This is the durable "session capture rules"
+ *     contract for every symbiont.
  *   - `user_prompt`: fires on UserPromptSubmit. Safety net for anything
  *     that slips past session_start, and the only layer where
  *     `rewrite_prompt` makes sense (prompt text doesn't exist until
@@ -102,6 +105,12 @@ const RegistrationSchema = z.object({
   pluginPackageTarget: z.string().optional(),
   mcpTarget: z.string().optional(),
   mcpFormat: z.enum(['json', 'toml']).default('json'),
+  /**
+   * Optional env vars injected into the Myco MCP server entry. Values may use
+   * `{projectRoot}` and `{vaultDir}` placeholders so symbionts whose MCP child
+   * starts outside the repo can still anchor Myco to the correct project.
+   */
+  mcpEnv: z.record(z.string(), z.string()).default({}),
   /**
    * JSON key under which MCP server entries are stored in the MCP config file.
    * Defaults to 'mcpServers' (used by Claude Code, Cursor, etc.). opencode uses 'mcp'.

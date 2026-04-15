@@ -46,7 +46,7 @@ export type UserPromptDecision =
   | { action: 'rewrite'; prompt: string; reason?: string }
   | { action: 'drop'; reason?: string };
 
-/** Outcome of evaluating session_start rules. No rewrite — there's no prompt text yet. */
+/** Outcome of evaluating session capture rules. No rewrite — there's no prompt text yet. */
 export type SessionStartDecision =
   | { action: 'pass' }
   | { action: 'drop'; reason?: string };
@@ -110,6 +110,23 @@ export function evaluateSessionStartRules(
     }
   }
   return { action: 'pass' };
+}
+
+/**
+ * Evaluate whether a session should be materialized at a lifecycle boundary.
+ *
+ * SessionStart uses this before registering a session row. Stop processing uses
+ * the same decision before transcript-backed capture or stop-driven
+ * auto-registration. Keeping both boundaries on the same manifest-driven
+ * evaluator makes the rule sustainable for every symbiont, not just the one
+ * that first exposed the gap.
+ */
+export function evaluateSessionCaptureRules(
+  manifests: SymbiontManifest[],
+  detectedAgent: string,
+  ctx: SessionStartRuleContext,
+): SessionStartDecision {
+  return evaluateSessionStartRules(manifests, detectedAgent, ctx);
 }
 
 function scopePermits(rule: CaptureRule, owningAgent: string, detectedAgent: string): boolean {

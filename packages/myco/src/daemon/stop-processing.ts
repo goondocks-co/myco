@@ -10,6 +10,7 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import { TranscriptMiner, extractTurnsFromBuffer } from '@myco/capture/transcript-miner.js';
 import type { TranscriptTurn } from '@myco/symbionts/adapter.js';
+import { loadManifests } from '@myco/symbionts/detect.js';
 import { captureBatchImages } from './capture-images.js';
 import { extractTaggedPlans, capturePlan, TRANSCRIPT_SOURCE_PREFIX } from './plan-capture.js';
 import {
@@ -20,7 +21,7 @@ import {
   listBatchesBySession,
   findBatchByPromptPrefix,
 } from '@myco/db/queries/batches.js';
-import { getSession, updateSession } from '@myco/db/queries/sessions.js';
+import { deleteSessionCascade, getSession, updateSession } from '@myco/db/queries/sessions.js';
 import { detectSkillUsage, SKILL_USAGE_DETECTION_ENABLED } from './skill-usage.js';
 import { epochSeconds, LOG_MESSAGE_PREVIEW_CHARS } from '@myco/constants.js';
 import { TITLE_PREVIEW_CHARS } from './event-handlers.js';
@@ -33,6 +34,9 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { triggerTitleSummary as sharedTriggerTitleSummary } from './trigger-title-summary.js';
 import type { RouteHandler } from './router.js';
 import type { RegisteredSession } from './lifecycle.js';
+import { evaluateSessionCaptureRules } from '@myco/hooks/capture-rules.js';
+import { readTranscriptMeta } from '@myco/hooks/transcript-meta.js';
+import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -113,6 +117,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
   // that case as a silent no-op rather than erroring.
   const StopBody = z.object({
     session_id: z.string(),
+    agent: z.string().optional(),
     user: z.string().optional(),
     transcript_path: z.string().nullish(),
     last_assistant_message: z.string().nullish(),
@@ -120,6 +125,18 @@ export function createStopProcessor(deps: StopProcessorDeps): {
 
   const triggerTitleSummary = (sessionId: string) =>
     sharedTriggerTitleSummary(sessionId, { vaultDir, embeddingManager, config, logger });
+
+  function cleanupInvalidCapturedSession(sessionId: string): boolean {
+    registry.unregister(sessionId);
+    sessionBuffers.delete(sessionId);
+    sessionTitleCache.delete(sessionId);
+
+    const result = deleteSessionCascade(sessionId);
+    if (!result.deleted) return false;
+
+    cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir).catch(() => {});
+    return true;
+  }
 
   async function processStopEvent(
     sessionId: string,
@@ -349,7 +366,31 @@ export function createStopProcessor(deps: StopProcessorDeps): {
   }
 
   const handleStopRoute: RouteHandler = async (req) => {
-    const { session_id: sessionId, user, transcript_path: hookTranscriptPath, last_assistant_message: lastAssistantMessage } = StopBody.parse(req.body);
+    const {
+      session_id: sessionId,
+      agent,
+      user,
+      transcript_path: hookTranscriptPath,
+      last_assistant_message: lastAssistantMessage,
+    } = StopBody.parse(req.body);
+
+    if (hookTranscriptPath) {
+      const transcriptMeta = readTranscriptMeta(hookTranscriptPath) ?? undefined;
+      const detectedAgent = agent ?? getSession(sessionId)?.agent ?? 'claude-code';
+      const decision = evaluateSessionCaptureRules(loadManifests(), detectedAgent, {
+        transcriptPath: hookTranscriptPath,
+        transcriptMeta,
+      });
+      if (decision.action === 'drop') {
+        const deleted = cleanupInvalidCapturedSession(sessionId);
+        logger.info(LOG_KINDS.HOOKS_STOP, 'Stop ignored — invalid captured session', {
+          session_id: sessionId,
+          reason: decision.reason ?? 'rule',
+          deleted_existing_session: deleted,
+        });
+        return { body: { ok: true, ignored: decision.reason ?? 'rule' } };
+      }
+    }
 
     // Ephemeral sub-invocation guard.
     //
