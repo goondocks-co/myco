@@ -516,8 +516,9 @@ export async function main(): Promise<void> {
   }
 
   // --- Config-change reaction registry ---
-  // Reactions register once at daemon startup. `fire(touchedPaths)` runs every
-  // matching reaction after a successful scoped-config write. See
+  // Reactions register once at daemon startup. `fire(touchedPaths, ctx)` runs
+  // every matching reaction after a successful scoped-config write, passing
+  // the freshly merged config so reactions don't reload it themselves. See
   // packages/myco/src/daemon/config-reactions/registry.ts for the contract.
   const reactions = createConfigReactionRegistry(logger);
 
@@ -526,27 +527,26 @@ export async function main(): Promise<void> {
 
   // Reinstall symbiont artefacts (agent hooks, .gitignore) when capture dirs
   // or symbiont enablement change. The reconcile has no other config inputs.
-  reactions.on(['capture', 'symbionts'], () => {
-    reconcileConfiguredSymbionts(path.dirname(vaultDir), vaultDir);
+  reactions.on(['capture', 'symbionts'], (ctx) => {
+    reconcileConfiguredSymbionts(path.dirname(vaultDir), vaultDir, ctx);
   });
 
   // Refresh the in-memory plan-watch list on capture changes.
   reactions.on(['capture'], createPlanWatchReaction({
-    vaultDir,
     symbiontPlanDirs,
     planWatchConfig,
   }));
 
   // Live-reconfigure the logger on daemon.log_level change.
-  reactions.on(['daemon.log_level'], () => {
-    logger.setLevel(loadMergedConfig(vaultDir).daemon.log_level);
+  reactions.on(['daemon.log_level'], (ctx) => {
+    logger.setLevel(ctx.daemon.log_level);
   });
 
   server.registerRoute('PUT', '/api/config/scoped', async (req) => {
     const result = await handlePutScopedConfig(vaultDir, req.body);
     if (!result.status || result.status < 400) {
       const body = req.body as { patch?: unknown; clear?: string[] };
-      await reactions.fire(computeTouchedPaths(body.patch, body.clear));
+      await reactions.fire(computeTouchedPaths(body.patch, body.clear), loadMergedConfig(vaultDir));
     }
     return result;
   });

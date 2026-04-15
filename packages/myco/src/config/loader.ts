@@ -106,7 +106,8 @@ export function loadConfig(vaultDir: string): MycoConfig {
 }
 
 export function saveConfig(vaultDir: string, config: MycoConfig): void {
-  // Validate before writing — OAK lesson: validate on write, not just read
+  // Validate before writing — OAK lesson: validate on write, not just read.
+  // This is the single parse point for all write paths.
   const validated = MycoConfigSchema.parse(config);
 
   const configPath = path.join(vaultDir, CONFIG_FILENAME);

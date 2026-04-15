@@ -1,86 +1,53 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
+import { describe, it, expect } from 'vitest';
 import { createPlanWatchReaction } from '@myco/daemon/plan-watch-reaction.js';
 import type { PlanWatchConfig } from '@myco/daemon/plan-capture.js';
+import type { MycoConfig } from '@myco/config/schema.js';
+
+function ctxWithPlanDirs(planDirs: string[]): MycoConfig {
+  return { capture: { plan_dirs: planDirs } } as unknown as MycoConfig;
+}
 
 describe('createPlanWatchReaction', () => {
-  let tmpDir: string;
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-planwatch-'));
-    fs.writeFileSync(path.join(tmpDir, 'myco.yaml'),
-      `version: 3\ncapture:\n  plan_dirs:\n    - /custom/a\n`);
-  });
-  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
-
   it('mutates planWatchConfig.watchDirs in place so closure consumers see updates', () => {
     const planWatchConfig: PlanWatchConfig = {
-      projectRoot: tmpDir,
+      projectRoot: '/tmp/project',
       watchDirs: ['/symbiont/x'],
     };
     const consumer = planWatchConfig; // simulates event-dispatch closure
 
     const reaction = createPlanWatchReaction({
-      vaultDir: tmpDir,
       symbiontPlanDirs: ['/symbiont/x'],
       planWatchConfig,
     });
-    reaction();
+    reaction(ctxWithPlanDirs(['/custom/a']));
 
-    // Mutation in place — consumer sees the update without being passed a new ref.
     expect(consumer.watchDirs).toContain('/symbiont/x');
     expect(consumer.watchDirs).toContain('/custom/a');
   });
 
   it('deduplicates overlap between symbiont dirs and custom dirs', () => {
-    fs.writeFileSync(path.join(tmpDir, 'myco.yaml'),
-      `version: 3\ncapture:\n  plan_dirs:\n    - /symbiont/x\n    - /custom/a\n`);
     const planWatchConfig: PlanWatchConfig = {
-      projectRoot: tmpDir,
+      projectRoot: '/tmp/project',
       watchDirs: [],
     };
     const reaction = createPlanWatchReaction({
-      vaultDir: tmpDir,
       symbiontPlanDirs: ['/symbiont/x'],
       planWatchConfig,
     });
-    reaction();
+    reaction(ctxWithPlanDirs(['/symbiont/x', '/custom/a']));
     expect(planWatchConfig.watchDirs.filter((d) => d === '/symbiont/x')).toHaveLength(1);
   });
 
-  it('picks up plan_dirs from local overlay (merged config, not project-only)', () => {
-    // Project has no custom plan dirs; local overlay adds one.
-    fs.writeFileSync(path.join(tmpDir, 'myco.yaml'),
-      `version: 3\ncapture:\n  plan_dirs: []\n`);
-    fs.writeFileSync(path.join(tmpDir, 'local.yaml'),
-      `capture:\n  plan_dirs:\n    - /local/override\n`);
+  it('handles missing plan_dirs (undefined -> empty)', () => {
     const planWatchConfig: PlanWatchConfig = {
-      projectRoot: tmpDir,
-      watchDirs: [],
+      projectRoot: '/tmp/project',
+      watchDirs: ['stale'],
     };
     const reaction = createPlanWatchReaction({
-      vaultDir: tmpDir,
-      symbiontPlanDirs: [],
-      planWatchConfig,
-    });
-    reaction();
-    expect(planWatchConfig.watchDirs).toContain('/local/override');
-  });
-
-  it('propagates load errors (registry is responsible for error isolation)', () => {
-    fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), '::: not yaml');
-    const planWatchConfig: PlanWatchConfig = {
-      projectRoot: tmpDir,
-      watchDirs: ['/symbiont/x'],
-    };
-    const reaction = createPlanWatchReaction({
-      vaultDir: tmpDir,
       symbiontPlanDirs: ['/symbiont/x'],
       planWatchConfig,
     });
-    expect(() => reaction()).toThrow();
-    // watchDirs unchanged because the throw happened before the assignment.
+    reaction({ capture: {} } as unknown as MycoConfig);
     expect(planWatchConfig.watchDirs).toEqual(['/symbiont/x']);
   });
 });

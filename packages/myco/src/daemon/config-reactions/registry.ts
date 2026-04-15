@@ -11,6 +11,9 @@
  */
 
 import type { Logger } from '../logger.js';
+import type { MycoConfig } from '../../config/schema.js';
+
+export type ConfigReaction = (ctx: MycoConfig) => void | Promise<void>;
 
 export interface ConfigReactionRegistry {
   /**
@@ -21,20 +24,24 @@ export interface ConfigReactionRegistry {
    * A prefix `p` matches a touched path `t` when `t === p` or
    * `t.startsWith(p + '.')`. So `'capture'` matches `'capture.plan_dirs'`
    * but not `'captures.x'` or `'capture_mode'`.
+   *
+   * The reaction receives the post-write merged config (project + local
+   * overlay). Use this instead of reloading — the registry has already paid
+   * the YAML + schema parse cost once.
    */
-  on(paths: string[], reaction: () => void | Promise<void>): void;
+  on(paths: string[], reaction: ConfigReaction): void;
 
   /**
    * Fire every matching reaction in registration order. Awaits each in turn.
    * If a reaction throws, the error is logged and subsequent reactions still
    * run — the scoped write itself has already succeeded by this point.
    */
-  fire(touchedPaths: string[]): Promise<void>;
+  fire(touchedPaths: string[], ctx: MycoConfig): Promise<void>;
 }
 
 interface Entry {
   paths: string[];
-  fn: () => void | Promise<void>;
+  fn: ConfigReaction;
 }
 
 export function createConfigReactionRegistry(logger: Logger): ConfigReactionRegistry {
@@ -44,11 +51,11 @@ export function createConfigReactionRegistry(logger: Logger): ConfigReactionRegi
     on(paths, fn) {
       entries.push({ paths, fn });
     },
-    async fire(touchedPaths) {
+    async fire(touchedPaths, ctx) {
       for (const entry of entries) {
         if (!shouldFire(entry.paths, touchedPaths)) continue;
         try {
-          await entry.fn();
+          await entry.fn(ctx);
         } catch (err) {
           logger.error('config-reactions', 'reaction threw', { error: String(err) });
         }

@@ -7,7 +7,7 @@ import {
   deepMergeConfig,
 } from '../../config/loader.js';
 import { z } from 'zod';
-import { MycoConfigSchema, type MycoConfig } from '../../config/schema.js';
+import type { MycoConfig } from '../../config/schema.js';
 import { unsetAtPath } from '../../utils/dot-path.js';
 import { enumerateLeafPaths } from '../config-reactions/touched-paths.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -86,11 +86,13 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
   }
 
   try {
+    // saveConfig (called by updateConfig) runs the Zod parse — the callback
+    // returns the deep-merged object without validating, and any invalid
+    // shape raises a ZodError that we convert to a 400 below.
     const updated = updateConfig(vaultDir, (current) => {
       const working = structuredClone(current) as Record<string, unknown>;
       for (const key of clearList) unsetAtPath(working, key);
-      const merged = deepMergeConfig(working, patch as Record<string, unknown>);
-      return MycoConfigSchema.parse(merged);
+      return deepMergeConfig(working, patch as Record<string, unknown>) as MycoConfig;
     });
     return { body: updated };
   } catch (err) {
