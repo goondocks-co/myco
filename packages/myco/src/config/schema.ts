@@ -49,7 +49,7 @@ const ScheduleOverrideSchema = z.object({
   enabled: z.boolean().optional(),
   intervalSeconds: z.number().int().positive().optional(),
   runIn: z.array(z.enum([...SCHEDULABLE_POWER_STATES])).optional(),
-  preCondition: z.enum(['has-unprocessed-batches', 'has-active-skills', 'has-approved-candidates']).optional(),
+  preCondition: z.enum(['has-unprocessed-batches', 'has-active-skills', 'has-approved-candidates', 'has-skill-survey-evidence']).optional(),
 }).optional();
 
 /** Per-task config override — stored in myco.yaml under agent.tasks. */

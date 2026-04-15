@@ -18,6 +18,7 @@ schedule:
   intervalSeconds: 600
   runIn:
     - idle
+    - sleep
   preCondition: has-approved-candidates
 phases:
   - name: draft

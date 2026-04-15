@@ -14,9 +14,11 @@ maxTurns: 35
 timeoutSeconds: 1800
 schedule:
   enabled: true
-  intervalSeconds: 600
+  intervalSeconds: 21600
   runIn:
     - idle
+    - sleep
+  preCondition: has-skill-survey-evidence
 phases:
   - name: explore
     prompt: |
@@ -57,6 +59,9 @@ phases:
       ## Process
 
       1. Read the pre-assembled context for orientation.
+         It already excludes active-session data and only exists when
+         the vault has enough settled knowledge to support a serious
+         candidate review.
 
       2. Use vault tools for TARGETED follow-up on promising
          clusters. The baseline gives you direction — follow threads
@@ -76,6 +81,10 @@ phases:
       3. Group findings into candidate domains. For each domain,
          note: the core theme, which procedures it covers, and
          which source items provide evidence.
+
+      4. Reject generic engineering domains even if they are common.
+         A valid candidate must be specific to this project's named
+         components, files, commands, or conventions.
 
       Store your domain clusters in working notes for the next phase.
     tools:
@@ -103,27 +112,34 @@ phases:
 
       ## Evaluation criteria
 
-      Each candidate must pass ALL of these at the DOMAIN level:
+      Each candidate must pass ALL of these at the DOMAIN level.
+      If any required criterion fails, reject the domain and do not
+      create or update a candidate.
 
       1. PROCEDURE TEST: Does this domain describe "how to do a
          family of related tasks in this project"? A domain about
          "what X is" or "X exists" is knowledge, not a skill.
 
-      2. REPEATABILITY TEST: Will developers need these procedures
+      2. PROJECT-SPECIFICITY TEST: Is this domain meaningfully tied
+         to THIS repository? It must be anchored to named project
+         components, files, commands, or conventions. Generic
+         engineering topics FAIL.
+
+      3. REPEATABILITY TEST: Will developers need these procedures
          again as the project grows? Domains covering extension
          points (adding new X, extending Y) are strong candidates.
          One-time fixes and bug patches are NOT skills.
 
-      3. BREADTH TEST: Does this domain cover 2+ distinct procedures
+      4. BREADTH TEST: Does this domain cover 2+ distinct procedures
          that share prerequisite knowledge? A single procedure is
          too narrow — it should be a section within a broader domain.
          If you can't imagine 3+ major section headings, it's not
          broad enough.
 
-      4. CROSS-SESSION EVIDENCE: Knowledge from 2+ sessions and 3+
+      5. CROSS-SESSION EVIDENCE: Knowledge from 2+ sessions and 3+
          source items (spores, sessions, plans).
 
-      5. DEDUPLICATION: Check BOTH lists from step 0.
+      6. DEDUPLICATION: Check BOTH lists from step 0.
          - If an active skill already covers this domain, skip.
          - If the domain SUBSUMES existing narrow skills (the domain
            is broader and the narrow skills are sections within it),
@@ -136,7 +152,7 @@ phases:
            warning. If the dismissed topic is a narrow subset of
            your broader domain, proceed.
 
-      6. CONFIDENCE SCORE (0.0-1.0):
+      7. CONFIDENCE SCORE (0.0-1.0):
          - Domain breadth (more procedures covered = higher)
          - Cross-session evidence (wider = higher)
          - Wisdom spore presence (higher quality signal)
