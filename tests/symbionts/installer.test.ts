@@ -68,6 +68,9 @@ const CODEX_MANIFEST: SymbiontManifest = {
     hooksTarget: '.codex/hooks.json',
     mcpTarget: '.codex/config.toml',
     mcpFormat: 'toml',
+    mcpEnv: {
+      MYCO_PROJECT_ROOT: '{projectRoot}',
+    },
     skillsTarget: '.agents/skills',
     settingsTarget: '.codex/config.toml',
     settingsFormat: 'toml',
@@ -983,6 +986,8 @@ describe('installMcp (TOML)', () => {
     expect(content).toContain('[mcp_servers.myco]');
     expect(content).toContain('command = "myco-run"');
     expect(content).toContain('args = ["mcp"]');
+    expect(content).toContain('[mcp_servers.myco.env]');
+    expect(content).toContain(`MYCO_PROJECT_ROOT = "${projectRoot}"`);
   });
 
   it('preserves existing TOML content', () => {

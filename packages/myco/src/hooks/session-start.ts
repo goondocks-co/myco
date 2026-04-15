@@ -1,7 +1,7 @@
 import { DaemonClient } from './client.js';
 import { readStdin } from './read-stdin.js';
 import { normalizeHookInput } from './normalize.js';
-import { evaluateSessionStartRules } from './capture-rules.js';
+import { evaluateSessionCaptureRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
 import { loadManifests } from '../symbionts/detect.js';
 import { loadConfig } from '../config/loader.js';
@@ -28,7 +28,7 @@ export async function main() {
     // Read the transcript's session_meta for rules that inspect it
     // (e.g., detecting sub-agent thread spawns via source.subagent).
     const transcriptMeta = transcriptPath ? readTranscriptMeta(transcriptPath) : undefined;
-    const decision = evaluateSessionStartRules(loadManifests(), agent, {
+    const decision = evaluateSessionCaptureRules(loadManifests(), agent, {
       transcriptPath,
       transcriptMeta: transcriptMeta ?? undefined,
     });

@@ -51,6 +51,8 @@ const CANONICAL_SKILLS_DIR = '.agents/skills';
 
 /** MCP server name used by Myco in all symbiont configurations. */
 export const MYCO_MCP_SERVER_NAME = 'myco';
+const MCP_ENV_PROJECT_ROOT_TOKEN = '{projectRoot}';
+const MCP_ENV_VAULT_DIR_TOKEN = '{vaultDir}';
 
 /**
  * Marker substring written into plugin-file hook templates (e.g., opencode's plugin.ts).
@@ -856,7 +858,7 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     if (!reg?.mcpTarget) return false;
 
-    const template = this.loadTemplate('mcp');
+    const template = this.buildMcpTemplate(this.loadTemplate('mcp'));
     if (!template) return false;
 
     const targetPath = path.join(this.projectRoot, reg.mcpTarget);
@@ -864,6 +866,52 @@ export class SymbiontInstaller {
       return this.installMcpToml(targetPath, template);
     }
     return this.installMcpJson(targetPath, template);
+  }
+
+  private buildMcpTemplate(
+    template: Record<string, unknown> | null,
+  ): Record<string, unknown> | null {
+    if (!template) return null;
+
+    const resolvedEnv = this.resolveMcpEnv();
+    if (Object.keys(resolvedEnv).length === 0) return template;
+
+    return Object.fromEntries(
+      Object.entries(template).map(([name, def]) => {
+        if (!def || typeof def !== 'object' || Array.isArray(def)) return [name, def];
+        const server = def as Record<string, unknown>;
+        const existingEnv = (
+          server.env && typeof server.env === 'object' && !Array.isArray(server.env)
+            ? server.env
+            : {}
+        ) as Record<string, unknown>;
+        return [
+          name,
+          {
+            ...server,
+            env: {
+              ...existingEnv,
+              ...resolvedEnv,
+            },
+          },
+        ];
+      }),
+    );
+  }
+
+  private resolveMcpEnv(): Record<string, string> {
+    const entries = Object.entries(this.manifest.registration?.mcpEnv ?? {});
+    if (entries.length === 0) return {};
+
+    const vaultDir = path.join(this.projectRoot, '.myco');
+    return Object.fromEntries(
+      entries.map(([key, value]) => [
+        key,
+        value
+          .replaceAll(MCP_ENV_PROJECT_ROOT_TOKEN, this.projectRoot)
+          .replaceAll(MCP_ENV_VAULT_DIR_TOKEN, vaultDir),
+      ]),
+    );
   }
 
   /**
