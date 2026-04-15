@@ -222,7 +222,7 @@ describe('agent loader', () => {
       expect(fi?.schedule).toBeDefined();
       expect(fi!.schedule!.enabled).toBe(true);
       expect(fi!.schedule!.intervalSeconds).toBe(300);
-      expect(fi!.schedule!.runIn).toEqual(['active', 'idle']);
+      expect(fi!.schedule!.runIn).toEqual(['idle', 'sleep']);
       expect(fi!.schedule!.preCondition).toBe('has-unprocessed-batches');
     });
 
@@ -230,8 +230,9 @@ describe('agent loader', () => {
       const tasks = loadAgentTasks(DEFINITIONS_DIR);
       const ss = tasks.find((t) => t.name === 'skill-survey');
       expect(ss?.schedule?.enabled).toBe(true);
-      expect(ss?.schedule?.intervalSeconds).toBe(600);
-      expect(ss?.schedule?.runIn).toEqual(['idle']);
+      expect(ss?.schedule?.intervalSeconds).toBe(21600);
+      expect(ss?.schedule?.runIn).toEqual(['idle', 'sleep']);
+      expect(ss?.schedule?.preCondition).toBe('has-skill-survey-evidence');
     });
 
     it('loads schedule from skill-evolve task', () => {

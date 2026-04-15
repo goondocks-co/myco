@@ -607,6 +607,15 @@ describe('TaskScheduleSchema', () => {
     });
 
     expect(result2.preCondition).toBe('has-active-skills');
+
+    const result3 = TaskScheduleSchema.parse({
+      enabled: true,
+      intervalSeconds: 3600,
+      runIn: ['idle', 'sleep'],
+      preCondition: 'has-skill-survey-evidence',
+    });
+
+    expect(result3.preCondition).toBe('has-skill-survey-evidence');
   });
 
   it('defaults enabled to false when omitted', () => {

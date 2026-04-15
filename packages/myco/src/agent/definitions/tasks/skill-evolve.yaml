@@ -18,6 +18,7 @@ schedule:
   intervalSeconds: 900
   runIn:
     - idle
+    - sleep
   preCondition: has-active-skills
 params:
   assess_interval_hours: 24

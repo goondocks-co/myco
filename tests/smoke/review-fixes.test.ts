@@ -211,6 +211,26 @@ describe('P2 #5: preCondition enum alignment', () => {
     // If the enum was wrong, this would fail with a Zod validation error
     expect(result.success).toBe(true);
   });
+
+  it('config schema accepts has-skill-survey-evidence in task override', async () => {
+    const { MycoConfigSchema } = await import('@myco/config/schema.js');
+    const result = MycoConfigSchema.safeParse({
+      version: 3,
+      config_version: 3,
+      embedding: { provider: 'ollama', model: 'test' },
+      daemon: { port: 21039 },
+      capture: {},
+      agent: {
+        tasks: {
+          'skill-survey': {
+            schedule: { preCondition: 'has-skill-survey-evidence' },
+          },
+        },
+      },
+      context: {},
+    });
+    expect(result.success).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
