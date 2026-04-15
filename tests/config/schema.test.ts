@@ -163,6 +163,53 @@ describe('MycoConfigSchema v3', () => {
     expect(config.agent.tasks?.['skill-survey']?.schedule?.enabled).toBe(true);
     expect(config.agent.tasks?.['skill-survey']?.schedule?.intervalSeconds).toBe(900);
   });
+
+  it('fills in default appearance section when absent', () => {
+    const parsed = MycoConfigSchema.parse({ version: 3 });
+    expect(parsed.appearance).toEqual({
+      theme: 'sage',
+      mode: 'dark',
+      font: 'default',
+      density: 'normal',
+    });
+  });
+
+  it('accepts partial appearance and fills missing fields', () => {
+    const parsed = MycoConfigSchema.parse({
+      version: 3,
+      appearance: { theme: 'moss' },
+    });
+    expect(parsed.appearance.theme).toBe('moss');
+    expect(parsed.appearance.mode).toBe('dark');
+    expect(parsed.appearance.font).toBe('default');
+    expect(parsed.appearance.density).toBe('normal');
+  });
+
+  it('accepts all valid appearance enum values', () => {
+    const parsed = MycoConfigSchema.parse({
+      version: 3,
+      appearance: {
+        theme: 'terracotta',
+        mode: 'light',
+        font: 'jetbrains-mono',
+        density: 'compact',
+      },
+    });
+    expect(parsed.appearance).toEqual({
+      theme: 'terracotta',
+      mode: 'light',
+      font: 'jetbrains-mono',
+      density: 'compact',
+    });
+  });
+
+  it('rejects invalid appearance theme', () => {
+    const result = MycoConfigSchema.safeParse({
+      version: 3,
+      appearance: { theme: 'not-a-theme' },
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('MaintenanceSchema', () => {

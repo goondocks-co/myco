@@ -56,12 +56,22 @@ function CopyButton({ value, label }: { value: string; label: string }) {
   );
 }
 
-function CopyableField({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
+function CopyableField({
+  label,
+  value,
+  displayValue,
+  mono = true,
+}: {
+  label: string;
+  value: string;
+  displayValue?: string;
+  mono?: boolean;
+}) {
   return (
     <div className="space-y-1.5">
       <span className="text-xs text-on-surface-variant">{label}</span>
       <div className="flex items-start gap-2">
-        <span className={`min-w-0 break-all text-sm text-on-surface ${mono ? 'font-mono' : ''}`}>{value}</span>
+        <span className={`min-w-0 break-all text-sm text-on-surface ${mono ? 'font-mono' : ''}`}>{displayValue ?? value}</span>
         <div className="shrink-0">
           <CopyButton value={value} label={`Copy ${label}`} />
         </div>
@@ -98,7 +108,7 @@ function RedactedField({
           {visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
         </button>
         <div className="shrink-0">
-          <CopyButton value={displayValue} label={`Copy ${label}`} />
+          <CopyButton value={value} label={`Copy ${label}`} />
         </div>
       </div>
     </div>
@@ -109,13 +119,15 @@ function SnippetCard({
   eyebrow,
   title,
   description,
-  code,
+  displayCode,
+  clipboardCode,
   language,
 }: {
   eyebrow: string;
   title: string;
   description: string;
-  code: string;
+  displayCode: string;
+  clipboardCode: string;
   language: string;
 }) {
   return (
@@ -128,9 +140,9 @@ function SnippetCard({
           <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-on-surface-variant">
             {language}
           </span>
-          <CopyButton value={code} label={`Copy ${title} snippet`} />
+          <CopyButton value={clipboardCode} label={`Copy ${title} snippet`} />
         </div>
-        <pre className="overflow-x-auto px-4 py-4 text-xs text-on-surface-variant">{code}</pre>
+        <pre className="overflow-x-auto px-4 py-4 text-xs text-on-surface-variant">{displayCode}</pre>
       </div>
     </Card>
   );
@@ -156,34 +168,38 @@ export default function Mcp() {
   const collectiveName = accessQuery.data?.collective_name ?? 'Collective';
   const serverName = buildServerSlug(collectiveName);
   const rawToken = accessQuery.data?.mcp_token ?? null;
-  const visibleToken = rawToken && tokenVisible ? rawToken : rawToken ? redactSecret(rawToken) : null;
-  const authorizationHeader = rawToken ? `Authorization: Bearer ${visibleToken}` : null;
 
-  const claudeAgentSnippet = useMemo(() => {
-    if (!rawToken) return null;
-
-    return JSON.stringify({
+  const claudeAgentSnippets = useMemo(() => {
+    if (!rawToken || !accessQuery.data?.mcp_endpoint) return null;
+    const build = (token: string) => JSON.stringify({
       mcp_servers: [
         {
           name: serverName,
           type: 'url',
-          url: accessQuery.data.mcp_endpoint,
-          authorization_token: tokenVisible ? rawToken : redactSecret(rawToken),
+          url: accessQuery.data!.mcp_endpoint,
+          authorization_token: token,
         },
       ],
     }, null, 2);
+    return {
+      clipboard: build(rawToken),
+      display: build(tokenVisible ? rawToken : redactSecret(rawToken)),
+    };
   }, [accessQuery.data?.mcp_endpoint, rawToken, serverName, tokenVisible]);
 
-  const inspectorSnippet = useMemo(() => {
-    if (!rawToken) return null;
-
-    return [
+  const inspectorSnippets = useMemo(() => {
+    if (!rawToken || !accessQuery.data?.mcp_endpoint) return null;
+    const build = (token: string) => [
       'npx @modelcontextprotocol/inspector',
       '',
       '# Transport: Streamable HTTP',
-      `# URL: ${accessQuery.data.mcp_endpoint}`,
-      `# Header: Authorization: Bearer ${tokenVisible ? rawToken : redactSecret(rawToken)}`,
+      `# URL: ${accessQuery.data!.mcp_endpoint}`,
+      `# Header: Authorization: Bearer ${token}`,
     ].join('\n');
+    return {
+      clipboard: build(rawToken),
+      display: build(tokenVisible ? rawToken : redactSecret(rawToken)),
+    };
   }, [accessQuery.data?.mcp_endpoint, rawToken, tokenVisible]);
 
   return (
@@ -245,10 +261,11 @@ export default function Mcp() {
                 onToggle={() => setTokenVisible((current) => !current)}
               />
             )}
-            {authorizationHeader && (
+            {rawToken && (
               <CopyableField
                 label="Authorization Header"
-                value={authorizationHeader}
+                value={`Authorization: Bearer ${rawToken}`}
+                displayValue={`Authorization: Bearer ${tokenVisible ? rawToken : redactSecret(rawToken)}`}
                 mono
               />
             )}
@@ -260,24 +277,26 @@ export default function Mcp() {
           )}
         </Card>
 
-        {claudeAgentSnippet && (
+        {claudeAgentSnippets && (
           <SnippetCard
             eyebrow="Claude agents"
             title="Managed agent MCP JSON"
             description="Paste this into Anthropic's remote MCP configuration so Claude can call the Collective directly with the hosted bearer token."
-            code={claudeAgentSnippet}
+            displayCode={claudeAgentSnippets.display}
+            clipboardCode={claudeAgentSnippets.clipboard}
             language="JSON"
           />
         )}
       </section>
 
       <section className="grid gap-4 xl:grid-cols-[1fr,1fr]">
-        {inspectorSnippet && (
+        {inspectorSnippets && (
           <SnippetCard
             eyebrow="Verification"
             title="MCP Inspector"
             description="Use Inspector when you want to verify transport, auth, and the exposed tool list before wiring a production agent."
-            code={inspectorSnippet}
+            displayCode={inspectorSnippets.display}
+            clipboardCode={inspectorSnippets.clipboard}
             language="Shell"
           />
         )}

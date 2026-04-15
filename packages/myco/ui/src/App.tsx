@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import Layout from './layout/Layout';
 import Dashboard from './pages/Dashboard';
@@ -9,8 +10,23 @@ import Settings from './pages/Settings';
 import Operations from './pages/Operations';
 import Team from './pages/Team';
 import Logs from './pages/Logs';
+import { useDaemon } from './hooks/use-daemon';
+
+/**
+ * Keep `document.title` in sync with the active vault's project name so browser
+ * tabs remain distinguishable when a user runs multiple daemons side-by-side.
+ * Tabs truncate from the right, so the project name must lead.
+ */
+function useDocumentTitle() {
+  const { data } = useDaemon();
+  const name = data?.vault.name ?? null;
+  useEffect(() => {
+    document.title = name ? `${name} \u2014 Myco` : 'Myco';
+  }, [name]);
+}
 
 export default function App() {
+  useDocumentTitle();
   return (
     <Routes>
       <Route element={<Layout />}>

@@ -92,7 +92,7 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
   const [viewMode, setViewMode] = useState<ViewMode>('focus');
   const [focusId, setFocusId] = useState<string | null>(null);
   const [focusDepth, setFocusDepth] = useState<number>(2);
-  const [enabledTypes, setEnabledTypes] = useState<Set<string>>(new Set(ALL_NODE_TYPES));
+  const [enabledTypes] = useState<Set<string>>(new Set(ALL_NODE_TYPES));
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [focusTrail, setFocusTrail] = useState<GraphNode[]>([]);
@@ -151,16 +151,6 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
 
   const allGraphNodes = useMemo(() => extractGraphNodes(graphData), [graphData]);
 
-  const nodeCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const node of allGraphNodes) {
-      const type = node.type.toLowerCase();
-      const bucket = ALL_NODE_TYPES.has(type) ? type : 'other';
-      counts[bucket] = (counts[bucket] ?? 0) + 1;
-    }
-    return counts;
-  }, [allGraphNodes]);
-
   const filteredNodes = useMemo(() => {
     return allGraphNodes.filter((node) => {
       const type = node.type.toLowerCase();
@@ -175,18 +165,6 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
     const visibleIds = new Set(filteredNodes.map((node) => node.id));
     return edges.filter((edge) => visibleIds.has(edge.source_id) && visibleIds.has(edge.target_id));
   }, [graphData?.edges, filteredNodes]);
-
-  const handleToggleType = useCallback((type: string) => {
-    setEnabledTypes((prev) => {
-      const next = new Set(prev);
-      if (next.has(type)) {
-        next.delete(type);
-      } else {
-        next.add(type);
-      }
-      return next;
-    });
-  }, []);
 
   const handleNodeSelect = useCallback((node: GraphNode | null, source: 'canvas' | 'inspector' = 'canvas') => {
     setSelectedNode(node);

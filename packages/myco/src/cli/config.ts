@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, updateConfig } from '../config/loader.js';
 import { withValue } from '../config/updates.js';
+import { getAtPath } from '../utils/dot-path.js';
 
 const DAEMON_STATE_FILENAME = 'daemon.json';
 
@@ -31,7 +32,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 
 function configGet(dotPath: string, vaultDir: string): void {
   const config = loadConfig(vaultDir);
-  const value = walkPath(config as Record<string, unknown>, dotPath);
+  const value = getAtPath(config as Record<string, unknown>, dotPath);
   if (value === undefined) {
     console.error(`Key not found: ${dotPath}`);
     process.exit(1);
@@ -61,19 +62,6 @@ function configSet(dotPath: string, rawValue: string, vaultDir: string): void {
   if (fs.existsSync(path.join(vaultDir, DAEMON_STATE_FILENAME))) {
     console.log('Note: restart the daemon for changes to take effect (myco restart)');
   }
-}
-
-/** Walk a dot-separated path to retrieve a nested value. */
-function walkPath(obj: Record<string, unknown>, dotPath: string): unknown {
-  const segments = dotPath.split('.');
-  let current: unknown = obj;
-  for (const segment of segments) {
-    if (current === null || current === undefined || typeof current !== 'object') {
-      return undefined;
-    }
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return current;
 }
 
 /** Parse a string value as JSON (number, boolean, array, object), falling back to raw string. */

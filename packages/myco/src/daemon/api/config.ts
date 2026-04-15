@@ -1,27 +1,16 @@
-import { loadConfig, updateConfig } from '../../config/loader.js';
+import {
+  loadConfig,
+  updateConfig,
+  loadMergedConfig,
+  loadLocalConfig,
+  saveLocalConfig,
+  clearLocalConfigKeys,
+  deepMergeConfig,
+} from '../../config/loader.js';
+import { z } from 'zod';
 import { MycoConfigSchema, type MycoConfig } from '../../config/schema.js';
 import type { PlanWatchConfig } from '../plan-capture.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
-
-/**
- * Section-level deep merge: for each top-level section in `incoming`, merge it
- * into `current` — incoming fields overwrite, but fields in `current` that are
- * absent from `incoming` survive. This prevents a save that only touches
- * `context.digest_tier` from wiping `agent.tasks`.
- */
-function mergeConfigSections(current: MycoConfig, incoming: MycoConfig): MycoConfig {
-  return {
-    ...current,
-    daemon: { ...current.daemon, ...incoming.daemon },
-    embedding: { ...current.embedding, ...incoming.embedding },
-    capture: { ...current.capture, ...incoming.capture },
-    agent: { ...current.agent, ...incoming.agent },
-    context: { ...current.context, ...incoming.context },
-    backup: { ...current.backup, ...incoming.backup },
-    team: { ...current.team, ...incoming.team },
-    notifications: { ...current.notifications, ...incoming.notifications },
-  };
-}
 
 export async function handleGetConfig(vaultDir: string): Promise<RouteResponse> {
   const config = loadConfig(vaultDir);
@@ -36,7 +25,74 @@ export async function handlePutConfig(vaultDir: string, body: unknown): Promise<
       body: { error: 'validation_failed', issues: result.error.issues },
     };
   }
-  const updated = updateConfig(vaultDir, (current) => mergeConfigSections(current, result.data));
+  const updated = updateConfig(vaultDir, (current) =>
+    deepMergeConfig(current as Record<string, unknown>, result.data as Record<string, unknown>) as MycoConfig,
+  );
+  return { body: updated };
+}
+
+// ---------------------------------------------------------------------------
+// Scoped config handlers (project vs. local overlay)
+// ---------------------------------------------------------------------------
+
+/** GET /api/config/merged — project config with local overlay applied. */
+export async function handleGetMergedConfig(vaultDir: string): Promise<RouteResponse> {
+  const config = loadMergedConfig(vaultDir);
+  return { body: config };
+}
+
+/** GET /api/config/local — raw local overrides (may be empty). */
+export async function handleGetLocalConfig(vaultDir: string): Promise<RouteResponse> {
+  return { body: loadLocalConfig(vaultDir) };
+}
+
+interface ScopedPutBody {
+  scope?: 'project' | 'local';
+  patch?: Record<string, unknown>;
+  config?: unknown; // legacy full-config body (scope='project' only)
+}
+
+/** PUT /api/config/scoped — scope-aware write (project patch, project full-config, or local patch). */
+export async function handlePutScopedConfig(vaultDir: string, body: unknown): Promise<RouteResponse> {
+  const payload = (body ?? {}) as ScopedPutBody;
+  const scope = payload.scope ?? 'project';
+  const patch = payload.patch;
+
+  if (scope === 'local') {
+    if (!patch || typeof patch !== 'object') {
+      return { status: 400, body: { error: 'patch required for scope=local' } };
+    }
+    const updated = saveLocalConfig(vaultDir, patch as Partial<MycoConfig>);
+    return { body: updated };
+  }
+
+  if (patch && typeof patch === 'object') {
+    try {
+      const updated = updateConfig(vaultDir, (current) => {
+        const merged = deepMergeConfig(current as Record<string, unknown>, patch as Record<string, unknown>);
+        return MycoConfigSchema.parse(merged);
+      });
+      return { body: updated };
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return { status: 400, body: { error: 'validation_failed', issues: err.issues } };
+      }
+      throw err;
+    }
+  }
+  // Legacy full-config body
+  return handlePutConfig(vaultDir, payload.config ?? body);
+}
+
+interface ClearLocalBody { keys?: string[]; }
+
+/** POST /api/config/local/clear — delete specific keys (supports dotted paths) from local overrides. */
+export async function handleClearLocalConfig(vaultDir: string, body: unknown): Promise<RouteResponse> {
+  const { keys } = (body ?? {}) as ClearLocalBody;
+  if (!Array.isArray(keys) || keys.length === 0) {
+    return { status: 400, body: { error: 'keys array required' } };
+  }
+  const updated = clearLocalConfigKeys(vaultDir, keys);
   return { body: updated };
 }
 

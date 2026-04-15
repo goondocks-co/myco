@@ -90,6 +90,9 @@ staging/
 # writes \`myco-dev\`; users can hand-edit for PATH conflicts or pinning.
 # Never committed — different contributors use different aliases.
 runtime.command
+
+# Per-user appearance and settings overrides
+local.yaml
 `;
 
 /** Collapse an absolute home-dir path to its `~/` form for portable config storage. */

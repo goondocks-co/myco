@@ -5,13 +5,7 @@ import {
   Settings,
   Network,
   ScrollText,
-  Sun,
-  Moon,
-  Monitor,
   RotateCcw,
-  Type,
-  Minus,
-  Plus,
   ChevronLeft,
   ChevronRight,
   MessageSquare,
@@ -24,9 +18,7 @@ import {
   Sparkles,
   Bell,
 } from 'lucide-react';
-import { useTheme } from '../providers/theme';
 import { useUpdateStatus } from '../hooks/use-update-status';
-import { useFont, type FontOption } from '../providers/font';
 import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
 import { Button } from '../components/ui/button';
@@ -36,6 +28,7 @@ import { NotificationPanel } from '../components/notifications/NotificationPanel
 import { SystemNotifications } from '../components/notifications/SystemNotifications';
 import { useUnreadCount } from '../hooks/use-notifications';
 import { cn } from '../lib/cn';
+import { AppearanceSection } from './AppearanceSection';
 
 /* ---------- Constants ---------- */
 
@@ -51,70 +44,10 @@ const NAV_ITEMS = [
   { to: '/logs', label: 'Logs', icon: ScrollText },
 ] as const;
 
-const FONT_OPTIONS: { value: FontOption; label: string }[] = [
-  { value: 'default', label: 'Default' },
-  { value: 'geist-mono', label: 'Geist Mono' },
-  { value: 'system', label: 'System' },
-  { value: 'sf-mono', label: 'SF Mono' },
-  { value: 'fira-code', label: 'Fira Code' },
-  { value: 'jetbrains-mono', label: 'JetBrains' },
-];
-
-type Density = 'compact' | 'normal' | 'comfy';
-
-const DENSITY_VALUES: Record<Density, number> = {
-  compact: 0.85,
-  normal: 1,
-  comfy: 1.15,
-};
-
-const DENSITY_LABELS: Record<Density, string> = {
-  compact: 'Compact',
-  normal: 'Normal',
-  comfy: 'Comfy',
-};
-
-const DENSITY_ORDER: Density[] = ['compact', 'normal', 'comfy'];
-
 const SIDEBAR_COLLAPSED_KEY = 'myco-ui-sidebar-collapsed';
 
 /** Tailwind `md` breakpoint in pixels. Below this, the sidebar becomes a mobile drawer. */
 const MOBILE_BREAKPOINT_PX = 768;
-
-const DENSITY_STORAGE_KEY = 'myco-ui-density';
-const DENSITY_CSS_VAR = '--density';
-const DEFAULT_DENSITY: Density = 'normal';
-
-/* ---------- Density hook ---------- */
-
-function getStoredDensity(): Density {
-  const stored = localStorage.getItem(DENSITY_STORAGE_KEY);
-  if (stored && stored in DENSITY_VALUES) {
-    return stored as Density;
-  }
-  return DEFAULT_DENSITY;
-}
-
-function applyDensity(density: Density): void {
-  const value = DENSITY_VALUES[density];
-  document.documentElement.style.setProperty(DENSITY_CSS_VAR, String(value));
-  document.documentElement.style.fontSize = `calc(14px * ${value})`;
-}
-
-function useDensity() {
-  const [density, setDensityState] = useState<Density>(getStoredDensity);
-
-  const setDensity = useCallback((next: Density) => {
-    localStorage.setItem(DENSITY_STORAGE_KEY, next);
-    setDensityState(next);
-  }, []);
-
-  useEffect(() => {
-    applyDensity(density);
-  }, [density]);
-
-  return { density, setDensity };
-}
 
 /* ---------- Sidebar collapse hook ---------- */
 
@@ -174,41 +107,6 @@ function useMobileDrawer() {
 
 /* ---------- Sub-components ---------- */
 
-/** Theme cycle order: light → dark → system → light. */
-const THEME_CYCLE = ['light', 'dark', 'system'] as const;
-
-const THEME_ICONS = { light: Sun, dark: Moon, system: Monitor } as const;
-const THEME_LABELS = { light: 'Light', dark: 'Dark', system: 'System' } as const;
-
-function ThemeToggle({ collapsed = false }: { collapsed?: boolean }) {
-  const { theme, setTheme } = useTheme();
-
-  const cycleTheme = () => {
-    const idx = THEME_CYCLE.indexOf(theme as typeof THEME_CYCLE[number]);
-    const next = THEME_CYCLE[(idx + 1) % THEME_CYCLE.length]!;
-    setTheme(next);
-  };
-
-  const Icon = THEME_ICONS[theme as keyof typeof THEME_ICONS] ?? Monitor;
-  const label = THEME_LABELS[theme as keyof typeof THEME_LABELS] ?? 'System';
-
-  return (
-    <Button
-      variant="ghost"
-      size="sm"
-      onClick={cycleTheme}
-      title={collapsed ? `${label} mode` : undefined}
-      className={cn(
-        'text-on-surface-variant hover:text-on-surface',
-        collapsed ? 'w-8 p-0 justify-center' : 'w-full justify-start gap-2',
-      )}
-    >
-      <Icon className="h-4 w-4" />
-      {!collapsed && <span>{label}</span>}
-    </Button>
-  );
-}
-
 function RestartButton({ collapsed = false }: { collapsed?: boolean }) {
   const { restart, isRestarting } = useRestart();
 
@@ -227,69 +125,6 @@ function RestartButton({ collapsed = false }: { collapsed?: boolean }) {
       <RotateCcw className={cn('h-4 w-4', isRestarting && 'animate-spin')} />
       {!collapsed && <span>{isRestarting ? 'Restarting...' : 'Restart Daemon'}</span>}
     </Button>
-  );
-}
-
-function FontSelector() {
-  const { font, setFont } = useFont();
-
-  return (
-    <label className="flex items-center gap-2 px-2 py-1 text-sm text-on-surface-variant hover:text-on-surface cursor-pointer">
-      <Type className="h-4 w-4 shrink-0" />
-      <select
-        value={font}
-        onChange={(e) => setFont(e.target.value as FontOption)}
-        className="w-full bg-transparent border-none outline-none cursor-pointer text-sm appearance-none"
-      >
-        {FONT_OPTIONS.map((opt) => (
-          <option key={opt.value} value={opt.value}>{opt.label}</option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function DensityControl({ density, setDensity }: { density: Density; setDensity: (d: Density) => void }) {
-  const currentIndex = DENSITY_ORDER.indexOf(density);
-
-  const decrease = () => {
-    const prev = DENSITY_ORDER[currentIndex - 1];
-    if (currentIndex > 0 && prev !== undefined) {
-      setDensity(prev);
-    }
-  };
-
-  const increase = () => {
-    const next = DENSITY_ORDER[currentIndex + 1];
-    if (currentIndex < DENSITY_ORDER.length - 1 && next !== undefined) {
-      setDensity(next);
-    }
-  };
-
-  return (
-    <div className="flex items-center gap-1 px-3 py-1">
-      <button
-        onClick={decrease}
-        disabled={currentIndex === 0}
-        className="rounded p-0.5 text-on-surface-variant hover:text-on-surface disabled:opacity-30"
-        aria-label="Decrease density"
-      >
-        <Minus className="h-3 w-3" />
-      </button>
-      <div className="flex flex-1 justify-center">
-        <span className="text-xs text-on-surface-variant select-none">
-          {DENSITY_LABELS[density]}
-        </span>
-      </div>
-      <button
-        onClick={increase}
-        disabled={currentIndex === DENSITY_ORDER.length - 1}
-        className="rounded p-0.5 text-on-surface-variant hover:text-on-surface disabled:opacity-30"
-        aria-label="Increase density"
-      >
-        <Plus className="h-3 w-3" />
-      </button>
-    </div>
   );
 }
 
@@ -327,8 +162,6 @@ function OperationsNavLink({ collapsed }: { collapsed: boolean }) {
 function SidebarContent({
   collapsed,
   vaultName,
-  density,
-  setDensity,
   onSearchOpen,
   onNotificationsOpen,
   unreadCount,
@@ -337,8 +170,6 @@ function SidebarContent({
 }: {
   collapsed: boolean;
   vaultName: string | undefined;
-  density: Density;
-  setDensity: (d: Density) => void;
   onSearchOpen: () => void;
   onNotificationsOpen: () => void;
   unreadCount: number;
@@ -439,11 +270,9 @@ function SidebarContent({
       </nav>
 
       {/* Footer */}
-      <div className={cn('py-3 space-y-1 mt-auto', collapsed ? 'px-1 flex flex-col items-center' : 'px-2')}>
+      <div className={cn('py-3 space-y-2 mt-auto', collapsed ? 'px-1 flex flex-col items-center' : 'px-2')}>
+        {!collapsed && <AppearanceSection collapsed={collapsed} />}
         <RestartButton collapsed={collapsed} />
-        {!collapsed && <FontSelector />}
-        {!collapsed && <DensityControl density={density} setDensity={setDensity} />}
-        <ThemeToggle collapsed={collapsed} />
       </div>
 
       {/* Collapse toggle — desktop only */}
@@ -472,7 +301,6 @@ function SidebarContent({
 
 export default function Layout() {
   const { collapsed, toggle } = useSidebarCollapse();
-  const { density, setDensity } = useDensity();
   const { data: stats } = useDaemon();
   const vaultName = stats?.vault.name;
   const [searchOpen, setSearchOpen] = useState(false);
@@ -579,8 +407,6 @@ export default function Layout() {
           <SidebarContent
             collapsed={false}
             vaultName={vaultName}
-            density={density}
-            setDensity={setDensity}
             onSearchOpen={openSearch}
             onNotificationsOpen={openNotifPanel}
             unreadCount={unreadCount}
@@ -600,8 +426,6 @@ export default function Layout() {
           <SidebarContent
             collapsed={collapsed}
             vaultName={vaultName}
-            density={density}
-            setDensity={setDensity}
             onSearchOpen={openSearch}
             onNotificationsOpen={openNotifPanel}
             unreadCount={unreadCount}

@@ -19,7 +19,15 @@ import { findPackageRoot } from '../utils/find-package-root.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
-import { handleGetConfig, handlePutConfig, createPlanDirHandlers } from './api/config.js';
+import {
+  handleGetConfig,
+  handlePutConfig,
+  handleGetMergedConfig,
+  handleGetLocalConfig,
+  handlePutScopedConfig,
+  handleClearLocalConfig,
+  createPlanDirHandlers,
+} from './api/config.js';
 import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
 import { createUpdateHandlers } from './api/update.js';
@@ -500,6 +508,24 @@ export async function main(): Promise<void> {
     const result = await handlePutConfig(vaultDir, req.body);
     if (!result.status || result.status < 400) {
       reconcileConfiguredSymbionts(path.dirname(vaultDir), vaultDir);
+      configHash = computeConfigHash(vaultDir);
+    }
+    return result;
+  });
+
+  server.registerRoute('GET', '/api/config/merged', async () => handleGetMergedConfig(vaultDir));
+  server.registerRoute('GET', '/api/config/local', async () => handleGetLocalConfig(vaultDir));
+  server.registerRoute('PUT', '/api/config/scoped', async (req) => {
+    const result = await handlePutScopedConfig(vaultDir, req.body);
+    if (!result.status || result.status < 400) {
+      reconcileConfiguredSymbionts(path.dirname(vaultDir), vaultDir);
+      configHash = computeConfigHash(vaultDir);
+    }
+    return result;
+  });
+  server.registerRoute('POST', '/api/config/local/clear', async (req) => {
+    const result = await handleClearLocalConfig(vaultDir, req.body);
+    if (!result.status || result.status < 400) {
       configHash = computeConfigHash(vaultDir);
     }
     return result;

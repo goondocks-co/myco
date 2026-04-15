@@ -1,0 +1,32 @@
+:root[data-theme="slate"] {
+  --primary: #a6b0b8;
+  --on-primary: #161a1d;
+  --primary-container: #72808b;
+  --on-primary-container: #161a1d;
+
+  /* Cool gray-blue tinted dark surfaces — understated, technical. */
+  --surface: #0e1012;
+  --surface-dim: #090b0d;
+  --surface-container-lowest: #07090a;
+  --surface-container-low: #181c1f;
+  --surface-container: #22272b;
+  --surface-container-high: #2c3338;
+  --surface-container-highest: #363f44;
+  --outline-variant: #3b424a;
+}
+
+:root[data-theme="slate"].light {
+  --primary: #525c65;
+  --on-primary: #ffffff;
+  --primary-container: #c8ced5;
+  --on-primary-container: #161a1d;
+
+  --surface: #f3f5f7;
+  --surface-dim: #e5e8ec;
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #edf0f3;
+  --surface-container: #e0e4e9;
+  --surface-container-high: #d1d6dc;
+  --surface-container-highest: #c1c8d0;
+  --outline-variant: #c8cdd3;
+}

@@ -1,28 +1,14 @@
-/** Deep merge two settings objects. Arrays are appended + deduplicated; objects recurse. */
+import { deepMerge, isPlainObject } from '../utils/deep-merge.js';
+
+/** Symbiont settings merge uses union semantics: arrays are concatenated and deduped. */
 export function deepMergeSettings(
   target: Record<string, unknown>,
   source: Record<string, unknown>,
 ): Record<string, unknown> {
-  const result = { ...target };
-  for (const [key, sourceVal] of Object.entries(source)) {
-    const targetVal = result[key];
-    if (Array.isArray(sourceVal) && Array.isArray(targetVal)) {
-      result[key] = [...new Set([...targetVal, ...sourceVal])];
-    } else if (isPlainObject(sourceVal) && isPlainObject(targetVal)) {
-      result[key] = deepMergeSettings(
-        targetVal as Record<string, unknown>,
-        sourceVal as Record<string, unknown>,
-      );
-    } else {
-      result[key] = sourceVal;
-    }
-  }
-  return result;
+  return deepMerge(target, source, { arrayStrategy: 'union' });
 }
 
-export function isPlainObject(val: unknown): val is Record<string, unknown> {
-  return typeof val === 'object' && val !== null && !Array.isArray(val);
-}
+export { isPlainObject };
 
 /**
  * Remove values from target that match the template structure.

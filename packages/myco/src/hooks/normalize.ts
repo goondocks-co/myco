@@ -9,6 +9,7 @@
 
 import { loadManifests } from '../symbionts/detect.js';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
+import { getAtPath } from '../utils/dot-path.js';
 
 /** Default field mappings when no agent manifest is detected (Claude Code conventions). */
 const DEFAULT_HOOK_FIELDS = {
@@ -153,20 +154,6 @@ function detectManifest(input?: Record<string, unknown>): SymbiontManifest | nul
 }
 
 /**
- * Resolve a potentially nested field path from the input.
- * Supports dot notation for nested objects (e.g., "tool_info.command_line").
- */
-function resolveField(input: Record<string, unknown>, fieldPath: string): unknown {
-  const parts = fieldPath.split('.');
-  let current: unknown = input;
-  for (const part of parts) {
-    if (current === null || current === undefined || typeof current !== 'object') return undefined;
-    current = (current as Record<string, unknown>)[part];
-  }
-  return current;
-}
-
-/**
  * Normalize a raw hook input using the active agent's manifest field mappings.
  * Falls back to Claude Code field names if no agent is detected.
  */
@@ -175,7 +162,7 @@ export function normalizeHookInput(input: Record<string, unknown>): NormalizedHo
   const fields = manifest?.hookFields ?? DEFAULT_HOOK_FIELDS;
 
   // Resolve session ID: try the mapped field, then env var fallback, then MYCO_SESSION_ID
-  const sessionIdFromInput = resolveField(input, fields.sessionId) as string | undefined;
+  const sessionIdFromInput = getAtPath(input, fields.sessionId) as string | undefined;
   const sessionIdFromEnv = 'sessionIdEnv' in fields && fields.sessionIdEnv
     ? process.env[fields.sessionIdEnv]
     : undefined;
@@ -187,12 +174,12 @@ export function normalizeHookInput(input: Record<string, unknown>): NormalizedHo
   return {
     agent: manifest?.name ?? DEFAULT_AGENT_NAME,
     sessionId,
-    transcriptPath: resolveField(input, fields.transcriptPath) as string | undefined,
-    lastResponse: resolveField(input, fields.lastResponse) as string | undefined,
-    prompt: resolveField(input, fields.prompt) as string | undefined,
-    toolName: resolveField(input, fields.toolName) as string | undefined,
-    toolInput: resolveField(input, fields.toolInput),
-    toolOutput: resolveField(input, fields.toolOutput),
+    transcriptPath: getAtPath(input, fields.transcriptPath) as string | undefined,
+    lastResponse: getAtPath(input, fields.lastResponse) as string | undefined,
+    prompt: getAtPath(input, fields.prompt) as string | undefined,
+    toolName: getAtPath(input, fields.toolName) as string | undefined,
+    toolInput: getAtPath(input, fields.toolInput),
+    toolOutput: getAtPath(input, fields.toolOutput),
     raw: input,
   };
 }
