@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useNotifications, type Notification } from '../../hooks/use-notifications';
 import { useScopedConfig } from '../../hooks/use-scoped-config';
+import { POLL_INTERVALS } from '../../lib/constants';
 
 /**
  * Invisible component that fires browser Notification API alerts
@@ -11,7 +12,14 @@ import { useScopedConfig } from '../../hooks/use-scoped-config';
 export function SystemNotifications() {
   const { effective } = useScopedConfig();
   const enabled = effective?.notifications?.system_notifications ?? false;
-  const { data } = useNotifications({ status: 'unread', mode: 'banner', limit: 5 });
+  const { data, refetch } = useNotifications({
+    status: 'unread',
+    mode: 'banner',
+    limit: 5,
+    enabled,
+    pollCategory: 'heartbeat',
+    refetchInterval: POLL_INTERVALS.PROGRESS,
+  });
   const seenRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -34,6 +42,24 @@ export function SystemNotifications() {
       showSystemNotification(n);
     }
   }, [enabled, data]);
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    const refetchWhenHidden = () => {
+      if (document.hidden || !document.hasFocus()) {
+        void refetch();
+      }
+    };
+
+    document.addEventListener('visibilitychange', refetchWhenHidden);
+    window.addEventListener('blur', refetchWhenHidden);
+
+    return () => {
+      document.removeEventListener('visibilitychange', refetchWhenHidden);
+      window.removeEventListener('blur', refetchWhenHidden);
+    };
+  }, [enabled, refetch]);
 
   return null;
 }

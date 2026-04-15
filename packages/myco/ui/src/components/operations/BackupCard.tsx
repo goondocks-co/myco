@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { CONFIG_SECTION_IDS } from '@myco/config/focus';
 import { HardDrive, Download, Upload, RefreshCw, FolderOpen } from 'lucide-react';
 import { postJson, fetchJson } from '../../lib/api';
 import { formatBytes } from '../../lib/format';
@@ -126,7 +127,11 @@ export function BackupCard() {
   }
 
   return (
-    <Surface level="low" className="p-6 space-y-4">
+    <Surface
+      id={CONFIG_SECTION_IDS.operationsBackup}
+      level="low"
+      className="rounded-lg p-6 space-y-4 transition-all duration-300"
+    >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <HardDrive className="h-4 w-4 text-primary" />

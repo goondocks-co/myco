@@ -222,3 +222,97 @@ describe('registerPowerJobs — staging-gc', () => {
     expect(fs.existsSync(path.resolve(stagingRoot(vaultDir), 'cand-b'))).toBe(true);
   });
 });
+
+describe('log-retention power job', () => {
+  let tmpDir: string;
+  let dbPath: string;
+  let pm: FakePowerManager;
+  let databaseManager: DatabaseMaintenanceManager;
+  let logger: DaemonLogger;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-pj-retain-'));
+    dbPath = path.join(tmpDir, 'myco.db');
+    initDatabase(dbPath);
+    createSchema(getDatabase());
+    logger = new DaemonLogger(path.join(tmpDir, 'logs'));
+    databaseManager = new DatabaseMaintenanceManager(dbPath, tmpDir, logger);
+    pm = new FakePowerManager();
+    // Seed initial myco.yaml with retention=7
+    fs.writeFileSync(path.join(tmpDir, 'myco.yaml'),
+      `version: 3\ndaemon:\n  log_retention_days: 7\n`);
+  });
+
+  afterEach(() => {
+    logger.close();
+    closeDatabase();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function buildDeps() {
+    return {
+      embeddingManager: { reconcile: async () => ({ embedded: 0, stale_reembedded: 0, orphans_cleaned: 0, duration_ms: 0 }) } as never,
+      registry: { listActive: () => [], sessions: [] } as never,
+      logger: logger as never,
+      config: { daemon: { log_retention_days: 7 }, backup: {}, maintenance: { auto_optimize: false, auto_optimize_interval_hours: 24 } } as never,
+      db: getDatabase(),
+      backupDir: path.join(tmpDir, 'backups'),
+      machineId: 'test-machine',
+      vaultDir: tmpDir,
+      databaseManager,
+    };
+  }
+
+  it('reads log_retention_days fresh from disk on each run', async () => {
+    registerPowerJobs(pm as never, buildDeps());
+
+    // Insert a log entry dated 14 days ago — would be deleted with retention=7.
+    const FOURTEEN_DAYS_AGO = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+    insertLogEntry({
+      timestamp: FOURTEEN_DAYS_AGO,
+      level: 'info',
+      kind: 'test',
+      component: 'test',
+      message: 'old-entry',
+      data: null,
+      session_id: null,
+    });
+
+    // Update yaml to retention=30. The job, if fresh-reading, should use 30 and keep the entry.
+    fs.writeFileSync(path.join(tmpDir, 'myco.yaml'),
+      `version: 3\ndaemon:\n  log_retention_days: 30\n`);
+
+    await pm.find('log-retention').fn();
+
+    const { getLogTail } = await import('@myco/db/queries/logs');
+    const rows = getLogTail(50).entries;
+    expect(rows.some((r) => r.message === 'old-entry')).toBe(true);
+  });
+
+  it('honors local.yaml overrides for log_retention_days (merged config)', async () => {
+    registerPowerJobs(pm as never, buildDeps());
+
+    // Project config keeps retention=7; local overlay raises to 30.
+    fs.writeFileSync(path.join(tmpDir, 'local.yaml'),
+      `daemon:\n  log_retention_days: 30\n`);
+
+    const FOURTEEN_DAYS_AGO = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+    insertLogEntry({
+      timestamp: FOURTEEN_DAYS_AGO,
+      level: 'info',
+      kind: 'test',
+      component: 'test',
+      message: 'overlay-entry',
+      data: null,
+      session_id: null,
+    });
+
+    await pm.find('log-retention').fn();
+
+    const { getLogTail } = await import('@myco/db/queries/logs');
+    const rows = getLogTail(50).entries;
+    // With merged config the overlay wins (30 days retention) and the 14-day-old entry survives.
+    // With project-only the stale 7-day retention would delete it.
+    expect(rows.some((r) => r.message === 'overlay-entry')).toBe(true);
+  });
+});

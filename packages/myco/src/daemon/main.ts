@@ -24,7 +24,6 @@ import {
   handleGetMergedConfig,
   handleGetLocalConfig,
   handlePutScopedConfig,
-  handleClearLocalConfig,
   createPlanDirHandlers,
 } from './api/config.js';
 import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
@@ -131,6 +130,7 @@ import {
   epochSeconds,
 } from '../constants.js';
 import { RESTART_REASON_FILENAME } from '../constants/update.js';
+import { buildScopedConfigSaveNotification } from '../config/focus.js';
 import { notify } from '../notifications/notify.js';
 import { PowerManager } from './power.js';
 import { registerPowerJobs } from './power-jobs.js';
@@ -142,6 +142,8 @@ import {
 import { createReconciler } from './reconciliation.js';
 import { createStopProcessor } from './stop-processing.js';
 import { createEventDispatcher } from './event-dispatch.js';
+import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
+import { createPlanWatchReaction } from './plan-watch-reaction.js';
 export {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
   handleSubagentStart, handleSubagentStop, handleStopFailure,
@@ -204,7 +206,7 @@ export async function main(): Promise<void> {
   const symbiontPlanDirs = manifests.flatMap((m) => m.capture?.planDirs ?? []);
   const symbiontPlanTags = [...new Set(manifests.flatMap((m) => m.capture?.planTags ?? []))];
   const projectRoot = process.cwd();
-  let planWatchConfig: PlanWatchConfig = {
+  const planWatchConfig: PlanWatchConfig = {
     watchDirs: [...new Set([...symbiontPlanDirs, ...(config.capture.plan_dirs ?? [])])],
     projectRoot,
     extensions: config.capture.artifact_extensions,
@@ -514,71 +516,66 @@ export async function main(): Promise<void> {
     if (dirs.length > 0) symbiontPlanDirsByAgent[m.displayName] = dirs;
   }
 
-  /** Refresh the in-memory planWatchConfig to reflect the current
-   *  `capture.plan_dirs` in myco.yaml. Called after any config write so new
-   *  directories are picked up without a daemon restart. Idempotent — if the
-   *  watchDirs set is unchanged the setter is a no-op. */
-  function reconcilePlanWatch() {
-    try {
-      const cfg = loadConfig(vaultDir);
-      const customDirs = cfg.capture.plan_dirs ?? [];
-      planWatchConfig = {
-        ...planWatchConfig,
-        watchDirs: [...new Set([...symbiontPlanDirs, ...customDirs])],
-      };
-    } catch {
-      // loadConfig can throw on malformed YAML; the scoped write already
-      // validated the result so this should not fire, but swallow to avoid
-      // taking down the route handler on a rare reconciliation failure.
-    }
-  }
+  // --- Config-change reaction registry ---
+  // Reactions register once at daemon startup. `fire(touchedPaths, ctx)` runs
+  // every matching reaction after a successful scoped-config write, passing
+  // the freshly merged config so reactions don't reload it themselves. See
+  // packages/myco/src/daemon/config-reactions/registry.ts for the contract.
+  const reactions = createConfigReactionRegistry(logger);
 
-  // /simplify E3: only re-read the config + reconcile plan dirs when the
-  // patch actually touches `capture` — toggling notifications shouldn't
-  // force a YAML read on every write.
-  function patchTouchesCapture(body: unknown): boolean {
-    const patch = (body as { patch?: Record<string, unknown> } | null)?.patch;
-    return patch !== undefined && patch !== null && 'capture' in patch;
-  }
-  function clearKeysTouchCapture(body: unknown): boolean {
-    const keys = (body as { keys?: string[] } | null)?.keys;
-    return Array.isArray(keys) && keys.some((k) => k === 'capture' || k.startsWith('capture.'));
-  }
+  // Refresh the live-stats configHash on every write.
+  reactions.on([], () => { configHash = computeConfigHash(vaultDir); });
+
+  // Reinstall symbiont artefacts (agent hooks, .gitignore) when capture dirs
+  // or symbiont enablement change. The reconcile has no other config inputs.
+  reactions.on(['capture', 'symbionts'], (ctx) => {
+    reconcileConfiguredSymbionts(path.dirname(vaultDir), vaultDir, ctx);
+  });
+
+  // Refresh the in-memory plan-watch list on capture changes.
+  reactions.on(['capture'], createPlanWatchReaction({
+    symbiontPlanDirs,
+    planWatchConfig,
+  }));
+
+  // Live-reconfigure the logger on daemon.log_level change.
+  reactions.on(['daemon.log_level'], (ctx) => {
+    logger.setLevel(ctx.daemon.log_level);
+    if (ctx.daemon.log_level === 'debug') {
+      process.env.MYCO_AGENT_DEBUG = '1';
+    } else {
+      delete process.env.MYCO_AGENT_DEBUG;
+    }
+  });
 
   server.registerRoute('PUT', '/api/config/scoped', async (req) => {
     const result = await handlePutScopedConfig(vaultDir, req.body);
     if (!result.status || result.status < 400) {
-      reconcileConfiguredSymbionts(path.dirname(vaultDir), vaultDir);
-      if (patchTouchesCapture(req.body)) reconcilePlanWatch();
-      configHash = computeConfigHash(vaultDir);
-    }
-    return result;
-  });
-  server.registerRoute('POST', '/api/config/local/clear', async (req) => {
-    const result = await handleClearLocalConfig(vaultDir, req.body);
-    if (!result.status || result.status < 400) {
-      if (clearKeysTouchCapture(req.body)) reconcilePlanWatch();
-      configHash = computeConfigHash(vaultDir);
+      const body = req.body as { scope: 'project' | 'local'; patch?: unknown; clear?: string[] };
+      const touchedPaths = computeTouchedPaths(body.patch, body.clear);
+      const reactionContext = loadReactionContext(vaultDir, logger);
+      if (reactionContext) {
+        await reactions.fire(touchedPaths, reactionContext);
+        const summary = buildScopedConfigSaveNotification(body.scope, touchedPaths);
+        notify(vaultDir, {
+          domain: 'settings',
+          type: 'settings.saved',
+          title: summary.title,
+          message: summary.message,
+          link: summary.link ?? undefined,
+          metadata: summary.metadata,
+        }, reactionContext);
+      } else {
+        configHash = computeConfigHash(vaultDir);
+      }
     }
     return result;
   });
 
   const planDirHandlers = createPlanDirHandlers({
-    vaultDir,
     symbiontPlanDirsByAgent,
-    symbiontPlanDirs,
-    planWatchConfig,
-    setPlanWatchConfig: (cfg) => { planWatchConfig = cfg; },
-    reconcileProjectFiles: () => { reconcileConfiguredSymbionts(path.dirname(vaultDir), vaultDir); },
   });
   server.registerRoute('GET', '/api/config/plan-dirs', planDirHandlers.handleGetPlanDirs);
-  server.registerRoute('POST', '/api/config/plan-dirs', async (req) => {
-    const result = await planDirHandlers.handleUpdatePlanDirs(req);
-    if (!result.status || result.status < 400) {
-      configHash = computeConfigHash(vaultDir);
-    }
-    return result;
-  });
 
   // V2 stats — vault counts, embedding coverage, agent status, digest freshness
   const configHashRef = { get: () => configHash };

@@ -59,12 +59,17 @@ export function fetchLocalConfig(signal?: AbortSignal): Promise<Partial<MergedCo
 export function writeScopedConfig(
   scope: 'project' | 'local',
   patch: Record<string, unknown>,
+  clear?: string[],
 ): Promise<unknown> {
-  return putJson<unknown>('/config/scoped', { scope, patch });
+  const body: Record<string, unknown> = { scope, patch };
+  if (clear && clear.length > 0) body.clear = clear;
+  return putJson<unknown>('/config/scoped', body);
 }
 
 export function clearLocalConfigKeys(keys: string[]): Promise<unknown> {
-  return postJson<unknown>('/config/local/clear', { keys });
+  // Unified scoped write: clear-only request. Empty patch is allowed when
+  // clear is non-empty (server validates this).
+  return putJson<unknown>('/config/scoped', { scope: 'local', patch: {}, clear: keys });
 }
 
 export class ApiError extends Error {

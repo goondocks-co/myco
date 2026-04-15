@@ -21,6 +21,7 @@ import {
   type Notification,
   type NotificationLevel,
 } from '../../hooks/use-notifications';
+import { POLL_INTERVALS } from '../../lib/constants';
 
 const LEVEL_DOT: Record<NotificationLevel, string> = {
   info: 'bg-primary',
@@ -145,7 +146,12 @@ function NotificationRow({
 }
 
 export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
-  const { data, refetch } = useNotifications({ limit: 50 });
+  const { data, refetch } = useNotifications({
+    limit: 50,
+    enabled: open,
+    pollCategory: 'realtime',
+    refetchInterval: POLL_INTERVALS.LOGS,
+  });
   const updateNotification = useUpdateNotification();
   const markAllRead = useMarkAllRead();
   const dismissAll = useDismissAll();

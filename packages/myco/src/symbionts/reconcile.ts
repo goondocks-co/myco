@@ -15,8 +15,12 @@ export function getConfiguredManifests(projectRoot: string, config: MycoConfig) 
   return allManifests.filter((manifest) => fs.existsSync(path.join(projectRoot, manifest.configDir)));
 }
 
-export function reconcileConfiguredSymbionts(projectRoot: string, vaultDir = path.join(projectRoot, '.myco')): number {
-  const config = loadConfig(vaultDir);
+export function reconcileConfiguredSymbionts(
+  projectRoot: string,
+  vaultDir = path.join(projectRoot, '.myco'),
+  preloadedConfig?: MycoConfig,
+): number {
+  const config = preloadedConfig ?? loadConfig(vaultDir);
   const manifests = getConfiguredManifests(projectRoot, config);
   const packageRoot = resolvePackageRoot();
   let updatedCount = 0;

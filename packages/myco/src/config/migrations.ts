@@ -206,6 +206,18 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 5,
+    name: 'seed-settings-notification-domain-default',
+    migrate(doc: Record<string, unknown>, _vaultDir: string): void {
+      const notifications = (doc.notifications ??= {}) as Record<string, unknown>;
+      const domains = (notifications.domains ??= {}) as Record<string, unknown>;
+      const settings = (domains.settings ??= {}) as Record<string, unknown>;
+
+      if (!('enabled' in settings)) settings.enabled = true;
+      if (!('mode' in settings)) settings.mode = 'banner';
+    },
+  },
 ];
 
 /** Current migration version — the highest version in MIGRATIONS. */

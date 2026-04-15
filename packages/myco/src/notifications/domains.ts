@@ -53,4 +53,12 @@ export function registerBuiltinDomains(): void {
       { id: 'daemon.version_sync', label: 'Version sync restart', defaultMode: 'summary', defaultLevel: 'info' },
     ],
   });
+
+  register({
+    domain: 'settings',
+    label: 'Settings',
+    types: [
+      { id: 'settings.saved', label: 'Settings saved', defaultMode: 'banner', defaultLevel: 'success' },
+    ],
+  });
 }

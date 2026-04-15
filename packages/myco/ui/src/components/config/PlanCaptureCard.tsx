@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { CONFIG_SECTION_IDS } from '@myco/config/focus';
 import { fetchJson } from '../../lib/api';
 import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
@@ -37,7 +38,11 @@ export function PlanCaptureCard() {
   const symbiontEntries = Object.entries(symbiont);
 
   return (
-    <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-amber-500">
+    <Surface
+      id={CONFIG_SECTION_IDS.settingsPlanCapture}
+      level="low"
+      className="rounded-lg p-6 space-y-5 border-t-2 border-t-amber-500 transition-all duration-300"
+    >
       <SectionHeader>Plan Capture</SectionHeader>
 
       {isLoading ? (

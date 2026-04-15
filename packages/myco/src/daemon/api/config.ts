@@ -1,15 +1,15 @@
 import {
   loadConfig,
   updateConfig,
+  updateLocalConfig,
   loadMergedConfig,
   loadLocalConfig,
-  saveLocalConfig,
-  clearLocalConfigKeys,
   deepMergeConfig,
 } from '../../config/loader.js';
 import { z } from 'zod';
 import { MycoConfigSchema, type MycoConfig } from '../../config/schema.js';
-import type { PlanWatchConfig } from '../plan-capture.js';
+import { unsetAtPath } from '../../utils/dot-path.js';
+import { enumerateLeafPaths } from '../config-reactions/touched-paths.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 
 export async function handleGetConfig(vaultDir: string): Promise<RouteResponse> {
@@ -35,27 +35,104 @@ export async function handleGetLocalConfig(vaultDir: string): Promise<RouteRespo
 interface ScopedPutBody {
   scope?: 'project' | 'local';
   patch?: Record<string, unknown>;
+  clear?: string[];
 }
 
-/** PUT /api/config/scoped — deep-merge a partial patch into project or local config. */
+const SCOPED_CONFIG_SCOPES = ['project', 'local'] as const;
+
+function isScopedConfigScope(value: unknown): value is ScopedPutBody['scope'] {
+  return typeof value === 'string'
+    && (SCOPED_CONFIG_SCOPES as readonly string[]).includes(value);
+}
+
+function validateClearList(clear: unknown): string[] | RouteResponse {
+  if (clear === undefined) return [];
+  if (!Array.isArray(clear)) {
+    return { status: 400, body: { error: 'clear must be an array of dot-paths' } };
+  }
+  const invalidEntry = clear.find((entry) => typeof entry !== 'string' || entry.trim().length === 0);
+  if (invalidEntry !== undefined) {
+    return { status: 400, body: { error: 'clear entries must be non-empty strings' } };
+  }
+  return clear;
+}
+
+function pathsOverlap(a: string, b: string): boolean {
+  return a === b || a.startsWith(`${b}.`) || b.startsWith(`${a}.`);
+}
+
+/**
+ * PUT /api/config/scoped — atomic patch + clear against project or local config.
+ *
+ * Request body:
+ *   { scope: 'project' | 'local',
+ *     patch?: DeepPartial<MycoConfig>,   // deep-merged into scope
+ *     clear?: string[] }                  // dot-paths removed from scope
+ *
+ * At least one of `patch` (non-empty object) or `clear` (non-empty array) is
+ * required. If both are present, overlapping keys are rejected (400). The
+ * server applies `clear` first, then merges `patch`, in a single write.
+ */
 export async function handlePutScopedConfig(vaultDir: string, body: unknown): Promise<RouteResponse> {
   const payload = (body ?? {}) as ScopedPutBody;
-  const scope = payload.scope ?? 'project';
-  const patch = payload.patch;
+  if (!isScopedConfigScope(payload.scope)) {
+    return { status: 400, body: { error: 'scope must be project or local' } };
+  }
+  const scope = payload.scope;
+  const patch = payload.patch ?? {};
+  const clearListOrError = validateClearList(payload.clear);
+  if (Array.isArray(clearListOrError) === false) return clearListOrError;
+  const clearList = clearListOrError;
 
-  if (!patch || typeof patch !== 'object') {
-    return { status: 400, body: { error: 'patch required' } };
+  if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
+    return { status: 400, body: { error: 'patch must be an object' } };
+  }
+  const patchLeaves = enumerateLeafPaths(patch);
+  const hasPatch = patchLeaves.length > 0;
+  const hasClear = clearList.length > 0;
+  if (!hasPatch && !hasClear) {
+    return { status: 400, body: { error: 'patch or clear required' } };
+  }
+
+  const overlap = patchLeaves.filter((leaf) => clearList.some((clearPath) => pathsOverlap(leaf, clearPath)));
+  if (overlap.length > 0) {
+    return { status: 400, body: { error: 'patch_clear_overlap', keys: overlap } };
   }
 
   if (scope === 'local') {
-    const updated = saveLocalConfig(vaultDir, patch as Partial<MycoConfig>);
-    return { body: updated };
+    try {
+      const project = loadConfig(vaultDir);
+      const updated = updateLocalConfig(vaultDir, (local) => {
+        const working = structuredClone(local) as Record<string, unknown>;
+        for (const key of clearList) unsetAtPath(working, key);
+        const nextLocal = deepMergeConfig(
+          working,
+          patch as Record<string, unknown>,
+        ) as Partial<MycoConfig>;
+        const merged = deepMergeConfig(
+          project as Record<string, unknown>,
+          nextLocal as Record<string, unknown>,
+        );
+        MycoConfigSchema.parse(merged);
+        return nextLocal;
+      });
+      return { body: updated };
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return { status: 400, body: { error: 'validation_failed', issues: err.issues } };
+      }
+      throw err;
+    }
   }
 
   try {
+    // saveConfig (called by updateConfig) runs the Zod parse — the callback
+    // returns the deep-merged object without validating, and any invalid
+    // shape raises a ZodError that we convert to a 400 below.
     const updated = updateConfig(vaultDir, (current) => {
-      const merged = deepMergeConfig(current as Record<string, unknown>, patch as Record<string, unknown>);
-      return MycoConfigSchema.parse(merged);
+      const working = structuredClone(current) as Record<string, unknown>;
+      for (const key of clearList) unsetAtPath(working, key);
+      return deepMergeConfig(working, patch as Record<string, unknown>) as MycoConfig;
     });
     return { body: updated };
   } catch (err) {
@@ -66,81 +143,24 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
   }
 }
 
-interface ClearLocalBody { keys?: string[]; }
-
-/** POST /api/config/local/clear — delete specific keys (supports dotted paths) from local overrides. */
-export async function handleClearLocalConfig(vaultDir: string, body: unknown): Promise<RouteResponse> {
-  const { keys } = (body ?? {}) as ClearLocalBody;
-  if (!Array.isArray(keys) || keys.length === 0) {
-    return { status: 400, body: { error: 'keys array required' } };
-  }
-  const updated = clearLocalConfigKeys(vaultDir, keys);
-  return { body: updated };
-}
-
 // ---------------------------------------------------------------------------
 // Plan-dirs factory (requires mutable references to runtime state)
 // ---------------------------------------------------------------------------
 
 export interface PlanDirDeps {
-  vaultDir: string;
   symbiontPlanDirsByAgent: Record<string, string[]>;
-  symbiontPlanDirs: string[];
-  planWatchConfig: PlanWatchConfig;
-  setPlanWatchConfig: (config: PlanWatchConfig) => void;
-  reconcileProjectFiles?: () => void;
-}
-
-interface PlanDirRequestBody {
-  plan_dirs: string[];
-  ignore_plan_dirs_in_git?: boolean;
 }
 
 export function createPlanDirHandlers(deps: PlanDirDeps) {
-  const { vaultDir, symbiontPlanDirsByAgent, symbiontPlanDirs } = deps;
-
-  /** GET /api/config/plan-dirs */
+  /**
+   * GET /api/config/plan-dirs — returns the symbiont-derived plan dir
+   * inventory (manifest-driven, never user-editable). Custom plan dirs
+   * are read/written through /api/config/scoped like any other config
+   * field.
+   */
   async function handleGetPlanDirs(_req: RouteRequest): Promise<RouteResponse> {
-    const config = loadConfig(vaultDir);
-    return {
-      body: {
-        symbiont: symbiontPlanDirsByAgent,
-        custom: deps.planWatchConfig.watchDirs.filter((d) => !symbiontPlanDirs.includes(d)),
-        ignore_plan_dirs_in_git: config.capture.ignore_plan_dirs_in_git,
-      },
-    };
+    return { body: { symbiont: deps.symbiontPlanDirsByAgent } };
   }
 
-  /** POST /api/config/plan-dirs */
-  async function handleUpdatePlanDirs(req: RouteRequest): Promise<RouteResponse> {
-    const body = req.body as PlanDirRequestBody;
-    if (!Array.isArray(body.plan_dirs)) {
-      return { status: 400, body: { error: 'plan_dirs must be an array' } };
-    }
-    if (body.ignore_plan_dirs_in_git !== undefined && typeof body.ignore_plan_dirs_in_git !== 'boolean') {
-      return { status: 400, body: { error: 'ignore_plan_dirs_in_git must be a boolean' } };
-    }
-    const updated = updateConfig(vaultDir, (cfg) => ({
-      ...cfg,
-      capture: {
-        ...cfg.capture,
-        plan_dirs: body.plan_dirs,
-        ignore_plan_dirs_in_git: body.ignore_plan_dirs_in_git ?? cfg.capture.ignore_plan_dirs_in_git,
-      },
-    }));
-    // Refresh in-memory config so plan capture picks up new dirs immediately
-    deps.setPlanWatchConfig({
-      ...deps.planWatchConfig,
-      watchDirs: [...new Set([...symbiontPlanDirs, ...body.plan_dirs])],
-    });
-    deps.reconcileProjectFiles?.();
-    return {
-      body: {
-        custom: updated.capture.plan_dirs,
-        ignore_plan_dirs_in_git: updated.capture.ignore_plan_dirs_in_git,
-      },
-    };
-  }
-
-  return { handleGetPlanDirs, handleUpdatePlanDirs };
+  return { handleGetPlanDirs };
 }
