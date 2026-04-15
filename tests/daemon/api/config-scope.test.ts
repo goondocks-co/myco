@@ -6,7 +6,6 @@ import {
   handleGetMergedConfig,
   handleGetLocalConfig,
   handlePutScopedConfig,
-  handleClearLocalConfig,
 } from '@myco/daemon/api/config';
 
 function seedProject(dir: string) {
@@ -55,13 +54,6 @@ describe('scoped config HTTP handlers', () => {
   it('PUT /scoped scope=project without patch returns 400', async () => {
     const res = await handlePutScopedConfig(tmpDir, { scope: 'project' });
     expect(res.status).toBe(400);
-  });
-
-  it('POST /local/clear removes specified keys', async () => {
-    await handlePutScopedConfig(tmpDir, { scope: 'local', patch: { appearance: { theme: 'dusk', font: 'geist-mono' } } });
-    await handleClearLocalConfig(tmpDir, { keys: ['appearance.theme'] });
-    const local = await handleGetLocalConfig(tmpDir);
-    expect((local.body as any).appearance).toEqual({ font: 'geist-mono' });
   });
 
   it('PUT /scoped scope=local rejects missing patch', async () => {

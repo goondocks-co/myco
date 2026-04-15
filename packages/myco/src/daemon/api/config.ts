@@ -4,7 +4,6 @@ import {
   updateLocalConfig,
   loadMergedConfig,
   loadLocalConfig,
-  clearLocalConfigKeys,
   deepMergeConfig,
 } from '../../config/loader.js';
 import { z } from 'zod';
@@ -101,18 +100,6 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
     }
     throw err;
   }
-}
-
-interface ClearLocalBody { keys?: string[]; }
-
-/** POST /api/config/local/clear — delete specific keys (supports dotted paths) from local overrides. */
-export async function handleClearLocalConfig(vaultDir: string, body: unknown): Promise<RouteResponse> {
-  const { keys } = (body ?? {}) as ClearLocalBody;
-  if (!Array.isArray(keys) || keys.length === 0) {
-    return { status: 400, body: { error: 'keys array required' } };
-  }
-  const updated = clearLocalConfigKeys(vaultDir, keys);
-  return { body: updated };
 }
 
 // ---------------------------------------------------------------------------

@@ -24,7 +24,6 @@ import {
   handleGetMergedConfig,
   handleGetLocalConfig,
   handlePutScopedConfig,
-  handleClearLocalConfig,
   createPlanDirHandlers,
 } from './api/config.js';
 import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
@@ -553,17 +552,6 @@ export async function main(): Promise<void> {
     if (!result.status || result.status < 400) {
       const body = req.body as { patch?: unknown; clear?: string[] };
       await reactions.fire(computeTouchedPaths(body.patch, body.clear));
-    }
-    return result;
-  });
-  // NOTE: POST /api/config/local/clear remains with its inline hooks until the
-  // UI migrates to the unified PUT endpoint (T8), after which this route
-  // is deleted in T9.
-  server.registerRoute('POST', '/api/config/local/clear', async (req) => {
-    const result = await handleClearLocalConfig(vaultDir, req.body);
-    if (!result.status || result.status < 400) {
-      const body = req.body as { keys?: string[] };
-      await reactions.fire(computeTouchedPaths(undefined, body.keys));
     }
     return result;
   });
