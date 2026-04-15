@@ -25,8 +25,8 @@ schedule:
   enabled: true
   intervalSeconds: 300
   runIn:
-    - active
     - idle
+    - sleep
   preCondition: has-unprocessed-batches
 
 orchestrator:

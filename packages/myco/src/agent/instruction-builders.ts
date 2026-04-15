@@ -12,8 +12,8 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { listCandidates } from '@myco/db/queries/skill-candidates.js';
-import { getSpore, listSporeIdsSince, listSpores } from '@myco/db/queries/spores.js';
-import { getSession, listSessions } from '@myco/db/queries/sessions.js';
+import { countSpores, getSpore, listSporeIdsSince, listSpores } from '@myco/db/queries/spores.js';
+import { countSessions, getSession, listSessions } from '@myco/db/queries/sessions.js';
 import { listSkillRecords } from '@myco/db/queries/skill-records.js';
 import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
@@ -60,9 +60,61 @@ export const SKILL_SURVEY_TASK = 'skill-survey';
 /** Caps for pre-assembled survey context. */
 const SURVEY_MAX_WISDOM_SPORES = 30;
 const SURVEY_MAX_SESSIONS = 15;
+const SURVEY_MIN_SETTLED_SESSIONS = 2;
+const SURVEY_MIN_SETTLED_ACTIVE_SPORES = 3;
 
 /** State key for the survey watermark. */
 const SURVEY_WATERMARK_KEY = 'skill-survey-watermark';
+
+export interface SkillSurveyEligibility {
+  eligible: boolean;
+  reason: 'insufficient-settled-sessions' | 'insufficient-settled-spores' | 'no-new-settled-knowledge' | null;
+}
+
+/**
+ * Determine whether skill-survey has enough settled knowledge to produce
+ * meaningful, project-specific candidates.
+ */
+export function getSkillSurveyEligibility(agentId?: string): SkillSurveyEligibility {
+  const settledSessionCount = countSessions({ includeActive: false });
+  if (settledSessionCount < SURVEY_MIN_SETTLED_SESSIONS) {
+    return { eligible: false, reason: 'insufficient-settled-sessions' };
+  }
+
+  const settledSporeCount = countSpores({ includeActive: false, status: 'active' });
+  if (settledSporeCount < SURVEY_MIN_SETTLED_ACTIVE_SPORES) {
+    return { eligible: false, reason: 'insufficient-settled-spores' };
+  }
+
+  if (!agentId) {
+    return { eligible: true, reason: null };
+  }
+
+  const watermarkState = getState(agentId, SURVEY_WATERMARK_KEY);
+  const watermarkEpoch = watermarkState ? Number(watermarkState.value) : 0;
+  if (watermarkEpoch <= 0) {
+    return { eligible: true, reason: null };
+  }
+
+  const hasNewSettledSessions = countSessions({
+    includeActive: false,
+    since: watermarkEpoch,
+  }) > 0;
+  if (hasNewSettledSessions) {
+    return { eligible: true, reason: null };
+  }
+
+  const hasNewSettledSpores = countSpores({
+    includeActive: false,
+    status: 'active',
+    since: watermarkEpoch,
+  }) > 0;
+  if (hasNewSettledSpores) {
+    return { eligible: true, reason: null };
+  }
+
+  return { eligible: false, reason: 'no-new-settled-knowledge' };
+}
 
 // ---------------------------------------------------------------------------
 // skill-generate
@@ -135,7 +187,12 @@ export function buildSkillGenerateInstruction(): BuiltTaskInstruction | undefine
  */
 export function buildSkillSurveyInstruction(
   agentId: string,
-): BuiltTaskInstruction {
+): BuiltTaskInstruction | undefined {
+  const eligibility = getSkillSurveyEligibility(agentId);
+  if (!eligibility.eligible) {
+    return undefined;
+  }
+
   const now = epochSeconds();
 
   // Read watermark — 0 means "never surveyed, scan everything"
@@ -147,6 +204,12 @@ export function buildSkillSurveyInstruction(
     '## Pre-assembled Vault Context',
     '',
     `Survey watermark: ${watermarkEpoch === 0 ? 'first run (full scan)' : new Date(watermarkEpoch * 1000).toISOString()}`,
+    `Eligibility gate: requires ${SURVEY_MIN_SETTLED_SESSIONS}+ settled sessions and ${SURVEY_MIN_SETTLED_ACTIVE_SPORES}+ active spores from settled work.`,
+    '',
+    'CRITICAL: only propose project-specific procedural domains.',
+    '- A valid domain must be anchored to this repository\'s components, files, commands, or conventions.',
+    '- Generic engineering topics that could apply to any Node/TypeScript/React repo are not candidates.',
+    '- If a domain fails repo-specificity or cross-session evidence, reject it instead of creating or updating a candidate.',
     '',
   ];
 

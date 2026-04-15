@@ -17,11 +17,14 @@ import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
 import { insertSpore } from '@myco/db/queries/spores.js';
 import { insertCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
+import { upsertSession } from '@myco/db/queries/sessions.js';
 import { epochSeconds } from '@myco/constants.js';
 import {
   buildSkillEvolveInstruction,
   buildSkillGenerateInstruction,
+  buildSkillSurveyInstruction,
   buildTaskInstruction,
+  getSkillSurveyEligibility,
   isInstructionRequiredTask,
   SKILL_GENERATE_TASK,
   SKILL_EVOLVE_TASK,
@@ -84,6 +87,53 @@ function createSpore(createdAt: number): string {
     created_at: createdAt,
   });
   return id;
+}
+
+function createSession(id: string, status: 'active' | 'completed', createdAt: number): void {
+  upsertSession({
+    id,
+    agent: 'claude-code',
+    started_at: createdAt,
+    created_at: createdAt,
+    ended_at: status === 'completed' ? createdAt + 60 : null,
+    status,
+    title: `${id} title`,
+    summary: `${id} summary covering repo-specific work`,
+  });
+}
+
+function createSettledSurveyCorpus(): void {
+  const now = epochSeconds();
+  createSession('settled-1', 'completed', now - 300);
+  createSession('settled-2', 'completed', now - 200);
+
+  insertSpore({
+    id: 'spore-survey-1',
+    agent_id: TEST_AGENT_ID,
+    session_id: 'settled-1',
+    observation_type: 'decision',
+    content: 'Use repo-specific daemon extension pattern in src/daemon/main.ts',
+    importance: 7,
+    created_at: now - 180,
+  });
+  insertSpore({
+    id: 'spore-survey-2',
+    agent_id: TEST_AGENT_ID,
+    session_id: 'settled-1',
+    observation_type: 'gotcha',
+    content: 'Project-specific scheduler guard must read settled sessions only',
+    importance: 6,
+    created_at: now - 170,
+  });
+  insertSpore({
+    id: 'spore-survey-3',
+    agent_id: TEST_AGENT_ID,
+    session_id: 'settled-2',
+    observation_type: 'discovery',
+    content: 'Named task YAML in packages/myco/src/agent/definitions/tasks anchors repo behavior',
+    importance: 5,
+    created_at: now - 160,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +313,101 @@ describe('buildSkillGenerateInstruction', () => {
   });
 });
 
+describe('buildSkillSurveyInstruction', () => {
+  beforeAll(() => {
+    setupTestDb();
+  });
+
+  afterAll(() => {
+    teardownTestDb();
+  });
+
+  beforeEach(() => {
+    cleanTestDb();
+    createAgent(TEST_AGENT_ID);
+  });
+
+  it('returns undefined when only active-session data exists', () => {
+    const now = epochSeconds();
+    createSession('active-only', 'active', now - 100);
+    insertSpore({
+      id: 'active-spore-1',
+      agent_id: TEST_AGENT_ID,
+      session_id: 'active-only',
+      observation_type: 'decision',
+      content: 'Live in-flight work should not count',
+      importance: 5,
+      created_at: now - 90,
+    });
+    insertSpore({
+      id: 'active-spore-2',
+      agent_id: TEST_AGENT_ID,
+      session_id: 'active-only',
+      observation_type: 'gotcha',
+      content: 'Still active session',
+      importance: 5,
+      created_at: now - 80,
+    });
+    insertSpore({
+      id: 'active-spore-3',
+      agent_id: TEST_AGENT_ID,
+      session_id: 'active-only',
+      observation_type: 'discovery',
+      content: 'No settled knowledge yet',
+      importance: 5,
+      created_at: now - 70,
+    });
+
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID)).toEqual({
+      eligible: false,
+      reason: 'insufficient-settled-sessions',
+    });
+    expect(buildSkillSurveyInstruction(TEST_AGENT_ID)).toBeUndefined();
+  });
+
+  it('returns undefined when settled corpus is still too sparse', () => {
+    const now = epochSeconds();
+    createSession('settled-only-one', 'completed', now - 100);
+    insertSpore({
+      id: 'settled-spore-1',
+      agent_id: TEST_AGENT_ID,
+      session_id: 'settled-only-one',
+      observation_type: 'decision',
+      content: 'One completed session is not enough',
+      importance: 5,
+      created_at: now - 90,
+    });
+
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID)).toEqual({
+      eligible: false,
+      reason: 'insufficient-settled-sessions',
+    });
+    expect(buildSkillSurveyInstruction(TEST_AGENT_ID)).toBeUndefined();
+  });
+
+  it('returns instruction only after enough settled sessions and spores exist', () => {
+    createSettledSurveyCorpus();
+
+    const result = buildSkillSurveyInstruction(TEST_AGENT_ID);
+    expect(result).toBeDefined();
+    expect(result!.instruction).toContain('Eligibility gate: requires 2+ settled sessions and 3+ active spores');
+    expect(result!.instruction).toContain('only propose project-specific procedural domains');
+    expect(result!.instruction).toContain('settled-1');
+    expect(result!.instruction).toContain('spore-survey-1');
+  });
+
+  it('returns undefined when no new settled knowledge exists after the watermark', () => {
+    createSettledSurveyCorpus();
+
+    expect(buildSkillSurveyInstruction(TEST_AGENT_ID)).toBeDefined();
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID)).toEqual({
+      eligible: false,
+      reason: 'no-new-settled-knowledge',
+    });
+    expect(buildSkillSurveyInstruction(TEST_AGENT_ID)).toBeUndefined();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // isInstructionRequiredTask — the dispatcher contract for "no work → skip".
 // ---------------------------------------------------------------------------
@@ -307,6 +452,18 @@ describe('buildTaskInstruction', () => {
 
   it('returns undefined for skill-generate when no approved candidates exist', () => {
     expect(buildTaskInstruction(SKILL_GENERATE_TASK)).toBeUndefined();
+  });
+
+  it('returns undefined for skill-survey when no settled survey corpus exists', () => {
+    expect(buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID)).toBeUndefined();
+  });
+
+  it('returns bundle for skill-survey when settled survey corpus exists', () => {
+    createSettledSurveyCorpus();
+
+    const result = buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID);
+    expect(result).toBeDefined();
+    expect(result!.instruction).toContain('project-specific procedural domains');
   });
 
   it('returns bundle for skill-generate when an approved candidate exists', () => {
