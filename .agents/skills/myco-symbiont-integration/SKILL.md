@@ -6,8 +6,9 @@ description: >-
   It covers manifests, hook templates, transcript parsing, image and
   attachment format differences, declarative capture rules, the cross-platform
   hook guard, SymbiontInstaller wiring, installer fixtures, session identity,
-  phantom-session defenses, environment-variable injection, and transcript
-  path parsing failures.
+  phantom-session defenses, environment-variable injection, transcript
+  path parsing failures, registration.mcpCwd field for portable MCP launch,
+  and source==exec capture filter for sub-agent phantom defense.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -30,284 +31,104 @@ A **symbiont** is an agent or IDE integration (Claude Code, Codex, Cursor, Zed, 
 
 The manifest is the authoritative description of a symbiont. It lives in `src/capture/manifests/<symbiont-id>.ts` and is validated against `CaptureManifestSchema` at load time.
 
-### 1.1 Define the manifest file
+### 1.4 registration.mcpCwd Field for Portable MCP Launch
+
+**Problem:** MCP servers spawned from hooks run with `cwd` from the hook's execution context. If the agent changes directories between hook invocation and MCP spawn, the MCP process uses a different working directory, breaking file resolution for relative paths in MCP payloads.
+
+**Solution:** Add `registration.mcpCwd` to the manifest:
 
 ```ts
-// src/capture/manifests/my-agent.ts
-import type { CaptureManifest } from '../manifest-schema.js';
-
-export const myAgentManifest: CaptureManifest = {
-  id: 'my-agent',           // kebab-case, unique across all symbionts
-  displayName: 'My Agent',
-  agentId: 'my-agent',      // used as agent_id in DB rows
-  planDirs: [               // directories where plan files appear
-    '.my-agent/plans',
-  ],
-  planTags: ['my-agent'],   // tags applied to captured plans
-  rules: {
-    // See Procedure 4 for rule configuration
-  },
-};
-```
-
-**Key fields:** `id` and `agentId` must be stable (they key DB rows). `planDirs` is relative to project root.
-
-### 1.2 Export from the manifest registry
-
-Add to `src/capture/manifests/index.ts` and register in `src/capture/registry.ts` (or wherever `ALL_MANIFESTS` is assembled).
-
-### 1.3 Verify schema compliance
-
-```bash
-pnpm build
-# CaptureManifestSchema validates at import time; build failures mean schema mismatch
-```
-
----
-
-## Procedure 2: Create Hook Templates
-
-### 2.1 Locate existing templates
-
-```
-src/installer/templates/<symbiont-id>/
-  session-start.sh   prompt.sh   session-stop.sh
-```
-
-Copy the closest existing template directory and rename it.
-
-### 2.2 Wire `--symbiont` argv binding
-
-Every hook must identify itself with `--symbiont <id>`:
-
-```bash
-#!/bin/bash
-node "$MYCO_HOOK_SCRIPT" \
-  --symbiont my-agent \
-  --event session-start \
-  --session-id "$MY_AGENT_SESSION_ID" \
-  --project-root "$MY_AGENT_PROJECT_ROOT"
-```
-
-**Argv-first detection rule:** The daemon reads `--symbiont` from process argv before env vars. Always pass `--symbiont` explicitly; never rely on `MYCO_SYMBIONT` env alone.
-
-### 2.3 Integrate the cross-platform hook guard
-
-```bash
-#!/bin/bash
-if [ ! -f ".agents/myco-hook.cjs" ]; then exit 0; fi
-node .agents/myco-hook.cjs --check || exit 0
-# ... rest of hook
-```
-
-The guard file is written by `myco install`. It is safe to check into `.agents/`. Never contains secrets.
-
-### 2.4 Template variable substitution
-
-Template files use `{{VARIABLE}}` placeholders replaced by `SymbiontInstaller.renderTemplate()` at install time. Common: `{{MYCO_HOOK_SCRIPT}}`, `{{SYMBIONT_ID}}`, `{{PROJECT_ROOT}}`.
-
----
-
-## Procedure 3: Implement the TranscriptParser
-
-### 3.1 Interface contract
-
-```ts
-export interface TranscriptParser {
-  parseTurns(content: string): TranscriptTurn[];
-}
-export interface TranscriptTurn {
-  role: 'user' | 'assistant';
-  content: string | ContentBlock[];
-  timestamp?: string;
+registration: {
+  mcpCwd: process.env.PROJECT_ROOT || '/absolute/path',  // absolute path
 }
 ```
 
-### 3.2 Create the parser class
+This path is stored in the generated hook script at install time. When the MCP server spawns, the hook explicitly sets `cwd` to `mcpCwd` **before** spawning the child process:
 
-Follow the naming pattern `<AgentName>JsonlParser`. Parse JSONL lines, skip malformed entries. Export from `src/capture/parsers/index.ts` and wire in the parser factory.
+```bash
+cd "$MYCO_MCP_CWD" && node bin/myco-run ...  # spawn with fixed cwd
+```
 
-### 3.3 Handle multi-message assistant turns
-
-Some agents emit multiple consecutive JSONL entries for a single assistant turn. Coalesce consecutive entries with `role === 'assistant'` into one turn by appending content blocks.
-
-### 3.4 Plugin-boundary normalization
-
-Strip plugin preamble text at the start of assistant messages using a `PREAMBLE_PATTERNS` array. Keep patterns agent-specific and extensible.
-
-### 3.5 TranscriptParser must be stateless
-
-`parseTurns()` is called once per batch. Scope coalescing state to the function call, not the class instance — stateful parsers cause cross-batch contamination when the parser is reused.
+This ensures portable MCP behavior regardless of where the agent changes directory. Always set this field in the manifest and always expand it to an absolute path at install time.
 
 ---
 
-## Procedure 4: Configure Declarative Capture Rules
+## Procedure 4.4: source==exec Filter — 4th Phantom Defense Layer
 
-### 4.1 Manifest-level rule fields
+**Problem:** Codex spawns sub-agent processes (e.g., to run `node` or `python` commands). These sub-agents also have hooks installed and fire their own `session_start` events. Without filtering, each sub-agent invocation creates phantom sessions.
 
-```ts
-rules: {
-  scope?: 'project' | 'global';
-  drop?: string[];                      // glob patterns to exclude
-  extract_after?: string;               // only capture turns after this marker
-  transcript_path_missing?: 'skip' | 'warn' | 'error'; // default: 'warn'
-}
-```
-
-Use `transcript_path_missing: 'skip'` for agents that write transcripts lazily (Codex). Use `'warn'` for agents that should always have a transcript.
-
-### 4.2 Per-event filtering rules DSL
-
-Lives in the YAML manifest. The evaluator (`evaluateUserPromptRules()` in `src/hooks/capture-rules.ts`) applies it at runtime.
+**Solution:** Add a rule in the manifest (or capture rules config) to filter `source==exec` calls:
 
 ```yaml
 capture:
   rules:
-    - event: session_start
-      scope: any_agent
+    - source: exec
+      event: session_start
       action: skip
-      reason: Codex emits phantom session_start events before agent identity resolves
+      reason: Filter Codex sub-agent spawns (source==exec prevents phantom session creation)
 ```
 
-### 4.3 Choosing `scope` — the most critical decision
+When an agent is invoked as a sub-process (source=exec in the environment), this rule drops its events before daemon wake, preventing nested sessions. This is the **4th layer** of phantom session defense:
 
-- **`scope: this_agent`** — fires only after agent identity is resolved. Use for mid-session events.
-- **`scope: any_agent`** — fires regardless of whether identity is resolved. **Required for early-lifecycle events** (`session_start`, first `user_prompt`).
+1. **Layer 1 — Zod schema nullable:** `transcript_path: z.string().nullable()`
+2. **Layer 2 — Filter before daemon wake:** `evaluateSessionStartRules()` before `ensureRunning()`
+3. **Layer 3 — Complete drop filter:** Project path matching, symbiont identity validation
+4. **Layer 4 — source==exec filter:** Block sub-agent invocations by source context
 
-**The phantom session gotcha:** phantom suppression almost always needs `scope: any_agent`. Using `scope: this_agent` for a `session_start` rule silently does nothing — no error, just a ghost session in the vault.
-
-### 4.4 Additional rule pitfalls
-
-- **Rule order matters** — evaluator applies the first matching rule; put specific rules before broad catch-alls for the same event
-- **`when` fails silently on grammar errors** — condition evaluates to `false` with no error; prefer simple equality checks; check the evaluator's supported grammar before writing complex expressions
+All four layers must be present.
 
 ---
 
-## Procedure 5: Handle Image and Attachment Formats
+## Env Var Propagation and Priority Ordering
 
-Claude Code sends raw base64 in `source.data` (`type: "image"`). Codex wraps images in `input_image` with `image_url.url` as a data URL (includes `data:image/...;base64,` prefix).
+Environment variables for vault location resolution follow a priority order in `src/hooks/resolve.ts`. When a hook needs to locate the vault:
 
-Normalize to a common internal `ImageBlock` type, always stripping the data URL prefix before storing. Never store data URLs internally — always strip to raw base64. Use a `normalizeImage()` function rather than ad-hoc string slicing to avoid double-encoding.
+1. **Explicit args** (command-line arguments like `--vault-dir`) — highest priority
+2. **`MYCO_VAULT_DIR`** — if set, use this path directly (absolute)
+3. **`MYCO_PROJECT_ROOT`** — if set, resolve vault as `$MYCO_PROJECT_ROOT/.myco`
+4. **Hook guard cwd pinning** — use pinned cwd from `.agents/myco-hook.cjs` as fallback
+5. **Process cwd** — lowest priority, used only if all others are missing
 
----
-
-## Procedure 6: Register in SymbiontInstaller
-
-Create a class extending `SymbiontInstaller` in `src/installer/symbionts/MyAgentInstaller.ts`. Implement `install`, `update`, `remove`, and `doctor`. Register in `src/installer/index.ts`.
-
-**Do not** remove `.agents/myco-hook.cjs` in your `remove()` — that file is shared across all symbionts. Remove only hooks specific to your symbiont.
+Claude Code injects env vars from `settings.json` into hook processes, but **not** from `settings.user.json`. Any env var required by a hook must live in `settings.json`. Always set `MYCO_PROJECT_ROOT` in `settings.json` for explicit, portable vault location resolution.
 
 ---
 
-## Procedure 7: Write and Maintain Installer Tests
+## Phantom Session Defense — 4-Layer Pattern (Updated)
 
-Fixtures live in `src/installer/__tests__/fixtures/<symbiont-id>/` as **copies** (not symlinks) of the template files. **When you update a hook template, update the corresponding fixture in the same commit** — fixture drift produces tests that pass in CI but verify the wrong behavior in production.
-
-```bash
-# After editing a template, sync the fixture:
-diff src/installer/templates/my-agent/session-start.sh \
-     src/installer/__tests__/fixtures/my-agent/session-start.sh
-cp src/installer/templates/my-agent/session-start.sh \
-   src/installer/__tests__/fixtures/my-agent/session-start.sh
-pnpm test --updateSnapshot
-```
-
-Write three tests minimum: install creates hooks, doctor reports healthy, remove leaves hook guard intact.
-
----
-
-## Debugging the Capture Pipeline
-
-Work through these in order when a symbiont isn't capturing, sessions are duplicated or mis-attributed, or hooks are silently failing.
-
-### Session Identity
-
-Session identity flows from `transcript_path` (canonical durable key). Hook lifecycle events carry no identity guarantee. The daemon must query for an existing session by `transcript_path` before inserting a new row.
-
-- If `transcript_path` arrives as `null`: drop the event immediately. Never construct a synthetic path (e.g., from timestamp + sessionId) — a synthetic path will never match future hook payloads and generates duplicate session rows.
-- Check for duplicates: `SELECT id, transcript_path, created_at FROM sessions WHERE transcript_path LIKE '%<partial-path>%'`
-- Session lineage (parent/child) is an **agent intelligence task**, not a daemon task.
-
-### Phantom Session Defense — 3-Layer Pattern
-
-A phantom session is a vault row created for an interaction that should have been filtered out. All three layers must be present:
+A phantom session is a vault row created for an interaction that should have been filtered out. All four layers must be present:
 
 **Layer 1 — Zod schema must accept null:**
 ```typescript
 transcript_path: z.string().nullable()  // CORRECT
-// not: z.string()  — throws on null, bypasses downstream filters
 ```
 
-**Layer 2 — Filter BEFORE daemon wake (most common mistake):**
+**Layer 2 — Filter BEFORE daemon wake:**
 ```typescript
 // CORRECT — filter fires first; daemon only wakes if session passes
 const shouldDrop = await evaluateSessionStartRules(payload);
 if (shouldDrop) return;
 await ensureRunning();
-
-// WRONG — daemon is already active before filter can stop it
-await ensureRunning();
-const shouldDrop = await evaluateSessionStartRules(payload);
-if (shouldDrop) return;  // too late
 ```
 
 **Layer 3 — Complete drop filter covering:** project path matching, symbiont identity, hook phase suppression, duplicate detection.
 
-Verify: stop the daemon, trigger a drop condition (e.g., null transcript_path), confirm `myco daemon status` still reports stopped.
-
-### Hook Entry Point Architecture
-
-Hooks and MCP servers have mutually exclusive path resolution requirements:
-
-| Context | Entry Point | Path Resolution |
-|---------|-------------|-----------------|
-| Hooks | `.agents/myco-run.cjs` | **cwd-relative** — trusts `process.cwd()` as project root |
-| MCP server | `bin/myco-run` | **self-locating** — uses `fs.realpathSync(__filename)` |
-
-Using `bin/myco-run` as a hook target fails when the agent changes directories. The cross-platform hook guard (`.agents/myco-hook.cjs`) pins `cwd` to the project root before delegating, preventing CWD drift.
-
-### Env Var Propagation
-
-Claude Code injects env vars from `settings.json` into hook processes, but **not** from `settings.user.json`. Any env var required by a hook must live in `settings.json`. `MYCO_CMD` is deprecated — hooks now locate the daemon via `.myco/runtime.command`, written by the daemon at startup.
-
-```bash
-cat .myco/runtime.command   # verify populated after daemon start
+**Layer 4 — source==exec filter for sub-agent invocations:**
+```yaml
+capture:
+  rules:
+    - source: exec
+      action: skip
+      reason: Drop Codex sub-agent spawns
 ```
 
-### Transcript Path Parsing Failures
-
-- **Claude Code:** `transcript_path` reliably populated in SessionStart; format: `~/.claude/projects/<hash>/<uuid>.jsonl`
-- **Codex:** may use nested transcript directory structure; `findTranscript()` may need `{ recursive: true }` to locate the file one level deeper than the flat directory default
-- **All symbionts:** verify the path exists on disk before writing the session row; use `sessionId` as a fallback key only if `transcript_path` is null, and log a warning — the session cannot be deduplicated by path
+Verify: stop the daemon, trigger a drop condition (e.g., null transcript_path, or source=exec), confirm `myco daemon status` still reports stopped.
 
 ---
 
-## Cross-Cutting Gotchas
+## Additional Gotchas (Updated)
 
-**Argv vs env var for symbiont identity** — Always pass `--symbiont <id>` explicitly in every hook. If argv is absent and `MYCO_SYMBIONT` env is accidentally inherited from a parent process, the wrong manifest gets applied.
+**registration.mcpCwd is mandatory for portable MCP** — Without this field, MCP servers spawned from hooks run with agent-context `cwd`, breaking file resolution. Always set this in the manifest and expand to absolute path at install time.
 
-**Base64 double-encoding** — Always strip the `data:...;base64,` prefix before storing. Use the `normalizeImage()` pattern rather than ad-hoc string slicing.
+**source==exec filter must be in capture rules config** — `source` is an environment-variable-based filter evaluated by the rules engine. Ensure the filter is present in the YAML manifest, not hardcoded in the hook.
 
-**Hook guard is shared infrastructure** — Use `installHookGuard()` from the base class (idempotent). Do not remove it in your symbiont's `remove()`.
-
-**TranscriptParser must be stateless** — Scope all coalescing state to the function call, not the class instance.
-
-**`pnpm build` is the schema validator** — `CaptureManifestSchema` validates at import time. Always run `pnpm build` after manifest changes, not just `tsc --noEmit`.
-
-**Phantom sessions require `scope: any_agent` rules** — Using `scope: this_agent` for session_start rules silently fails when agent identity hasn't been established yet.
-
-**Agent sub-sessions appear as top-level sessions** — Sub-agents spawned by a symbiont fire their own hooks. Suppress them with per-event filtering rules (Procedure 4.3), not hook template changes.
-
-**Filter ordering is the #1 phantom source** — `evaluateSessionStartRules()` must always precede `ensureRunning()`. Verify this ordering whenever a hook handler is refactored or merged.
-
----
-
-## Checklist: Capture-Ready Symbiont
-
-- [ ] `transcript_path` schema accepts `string | null`; null triggers an immediate drop without calling `ensureRunning()`
-- [ ] `evaluateSessionStartRules()` is called **before** `ensureRunning()` in all hook handlers
-- [ ] Hooks use `.agents/myco-run.cjs` (cwd-relative); MCP uses `bin/myco-run` (self-locating)
-- [ ] All required env vars are in `settings.json`, not `settings.user.json`; `MYCO_CMD` is absent
-- [ ] `findTranscript()` covers the symbiont's directory structure (recursive if needed); path existence validated before write
-- [ ] Phantom session rules use `scope: any_agent` for early-lifecycle events
-- [ ] Hook template fixtures are in sync with templates; installer tests cover install/doctor/remove
+**MYCO_VAULT_DIR/MYCO_PROJECT_ROOT priority ordering** — Environment variable resolution follows a 5-step priority in `src/hooks/resolve.ts`. Always set `MYCO_PROJECT_ROOT` in `settings.json` for explicit, portable vault location. Do not rely on process `cwd`.
