@@ -56,6 +56,21 @@ describe('scoped config HTTP handlers', () => {
     expect(res.status).toBe(400);
   });
 
+  it('PUT /scoped rejects missing scope', async () => {
+    const res = await handlePutScopedConfig(tmpDir, { patch: { appearance: { theme: 'moss' } } });
+    expect(res.status).toBe(400);
+    expect((res.body as any).error).toBe('scope must be project or local');
+  });
+
+  it('PUT /scoped rejects invalid scope', async () => {
+    const res = await handlePutScopedConfig(tmpDir, {
+      scope: 'bogus' as 'project',
+      patch: { appearance: { theme: 'moss' } },
+    });
+    expect(res.status).toBe(400);
+    expect((res.body as any).error).toBe('scope must be project or local');
+  });
+
   it('PUT /scoped scope=local rejects missing patch', async () => {
     const res = await handlePutScopedConfig(tmpDir, { scope: 'local' });
     expect(res.status).toBe(400);
@@ -102,6 +117,16 @@ describe('scoped config HTTP handlers', () => {
     expect((res.body as any).error).toBe('patch_clear_overlap');
   });
 
+  it('PUT /scoped rejects 400 when patch and clear overlap by ancestry', async () => {
+    const res = await handlePutScopedConfig(tmpDir, {
+      scope: 'local',
+      patch: { agent: { provider: { model: 'sonnet' } } },
+      clear: ['agent.provider'],
+    });
+    expect(res.status).toBe(400);
+    expect((res.body as any).error).toBe('patch_clear_overlap');
+  });
+
   it('PUT /scoped rejects 400 when neither patch nor clear present', async () => {
     const res = await handlePutScopedConfig(tmpDir, { scope: 'local' });
     expect(res.status).toBe(400);
@@ -112,11 +137,30 @@ describe('scoped config HTTP handlers', () => {
     expect(res.status).toBe(400);
   });
 
+  it('PUT /scoped rejects 400 when clear contains non-string entries', async () => {
+    const res = await handlePutScopedConfig(tmpDir, {
+      scope: 'local',
+      clear: [123 as unknown as string],
+    });
+    expect(res.status).toBe(400);
+    expect((res.body as any).error).toBe('clear entries must be non-empty strings');
+  });
+
   it('PUT /scoped with empty patch object and non-empty clear is valid', async () => {
     await handlePutScopedConfig(tmpDir, { scope: 'local', patch: { appearance: { theme: 'moss' } } });
     const res = await handlePutScopedConfig(tmpDir, { scope: 'local', patch: {}, clear: ['appearance.theme'] });
     expect(res.status).toBeUndefined();
     const local = await handleGetLocalConfig(tmpDir);
     expect((local.body as any).appearance?.theme).toBeUndefined();
+  });
+
+  it('PUT /scoped rejects invalid local overlays before writing local.yaml', async () => {
+    const res = await handlePutScopedConfig(tmpDir, {
+      scope: 'local',
+      patch: { daemon: { log_level: 'verbose' } },
+    });
+    expect(res.status).toBe(400);
+    expect((res.body as any).error).toBe('validation_failed');
+    expect(fs.existsSync(path.join(tmpDir, 'local.yaml'))).toBe(false);
   });
 });

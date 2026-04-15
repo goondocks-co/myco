@@ -21,5 +21,6 @@ export function createPlanWatchReaction(deps: PlanWatchReactionDeps): ConfigReac
   return (ctx) => {
     const customDirs = ctx.capture.plan_dirs ?? [];
     deps.planWatchConfig.watchDirs = [...new Set([...deps.symbiontPlanDirs, ...customDirs])];
+    deps.planWatchConfig.extensions = ctx.capture.artifact_extensions;
   };
 }

@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { CONFIG_SECTION_IDS } from '@myco/config/focus';
 import {
   Settings2,
   Activity,
@@ -170,7 +171,11 @@ export function AgentConfig() {
   return (
     <div className="space-y-6">
       {/* ---------- Agent Operations (editable) ---------- */}
-      <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-sage">
+      <Surface
+        id={CONFIG_SECTION_IDS.agentOperations}
+        level="low"
+        className="rounded-lg p-6 space-y-5 border-t-2 border-t-sage transition-all duration-300"
+      >
         <SectionHeader>
           <span className="flex items-center gap-2">
             <Settings2 className="h-4 w-4 text-primary" />

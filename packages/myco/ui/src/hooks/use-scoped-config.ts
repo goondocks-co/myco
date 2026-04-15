@@ -14,6 +14,7 @@ export type Scope = 'project' | 'local';
 
 const MERGED_KEY = ['config', 'merged'] as const;
 const LOCAL_KEY = ['config', 'local'] as const;
+const NOTIFICATIONS_KEY = ['notifications'] as const;
 
 /**
  * Scoped config hook — generalizes the Appearance provider pattern so any
@@ -53,13 +54,18 @@ export function useScopedConfig() {
   // Local writes only need the local query refetched; project writes need both
   // (because merged = project + local). Splitting saves a network round-trip
   // per personal-default toggle, which is the common case.
+  const invalidateNotifications = useCallback(() => {
+    void qc.invalidateQueries({ queryKey: NOTIFICATIONS_KEY });
+  }, [qc]);
   const invalidateLocal = useCallback(() => {
     void qc.invalidateQueries({ queryKey: LOCAL_KEY });
     void qc.invalidateQueries({ queryKey: MERGED_KEY });
-  }, [qc]);
+    invalidateNotifications();
+  }, [invalidateNotifications, qc]);
   const invalidateProject = useCallback(() => {
     void qc.invalidateQueries({ queryKey: MERGED_KEY });
-  }, [qc]);
+    invalidateNotifications();
+  }, [invalidateNotifications, qc]);
   const invalidateForScope = useCallback(
     (scope: Scope) => (scope === 'local' ? invalidateLocal() : invalidateProject()),
     [invalidateLocal, invalidateProject],

@@ -7,7 +7,7 @@ import {
   deepMergeConfig,
 } from '../../config/loader.js';
 import { z } from 'zod';
-import type { MycoConfig } from '../../config/schema.js';
+import { MycoConfigSchema, type MycoConfig } from '../../config/schema.js';
 import { unsetAtPath } from '../../utils/dot-path.js';
 import { enumerateLeafPaths } from '../config-reactions/touched-paths.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -38,6 +38,29 @@ interface ScopedPutBody {
   clear?: string[];
 }
 
+const SCOPED_CONFIG_SCOPES = ['project', 'local'] as const;
+
+function isScopedConfigScope(value: unknown): value is ScopedPutBody['scope'] {
+  return typeof value === 'string'
+    && (SCOPED_CONFIG_SCOPES as readonly string[]).includes(value);
+}
+
+function validateClearList(clear: unknown): string[] | RouteResponse {
+  if (clear === undefined) return [];
+  if (!Array.isArray(clear)) {
+    return { status: 400, body: { error: 'clear must be an array of dot-paths' } };
+  }
+  const invalidEntry = clear.find((entry) => typeof entry !== 'string' || entry.trim().length === 0);
+  if (invalidEntry !== undefined) {
+    return { status: 400, body: { error: 'clear entries must be non-empty strings' } };
+  }
+  return clear;
+}
+
+function pathsOverlap(a: string, b: string): boolean {
+  return a === b || a.startsWith(`${b}.`) || b.startsWith(`${a}.`);
+}
+
 /**
  * PUT /api/config/scoped — atomic patch + clear against project or local config.
  *
@@ -52,14 +75,14 @@ interface ScopedPutBody {
  */
 export async function handlePutScopedConfig(vaultDir: string, body: unknown): Promise<RouteResponse> {
   const payload = (body ?? {}) as ScopedPutBody;
-  const scope = payload.scope ?? 'project';
-  const patch = payload.patch ?? {};
-  const clear = payload.clear;
-
-  if (clear !== undefined && !Array.isArray(clear)) {
-    return { status: 400, body: { error: 'clear must be an array of dot-paths' } };
+  if (!isScopedConfigScope(payload.scope)) {
+    return { status: 400, body: { error: 'scope must be project or local' } };
   }
-  const clearList = clear ?? [];
+  const scope = payload.scope;
+  const patch = payload.patch ?? {};
+  const clearListOrError = validateClearList(payload.clear);
+  if (Array.isArray(clearListOrError) === false) return clearListOrError;
+  const clearList = clearListOrError;
 
   if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
     return { status: 400, body: { error: 'patch must be an object' } };
@@ -71,18 +94,35 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
     return { status: 400, body: { error: 'patch or clear required' } };
   }
 
-  const overlap = patchLeaves.filter((leaf) => clearList.includes(leaf));
+  const overlap = patchLeaves.filter((leaf) => clearList.some((clearPath) => pathsOverlap(leaf, clearPath)));
   if (overlap.length > 0) {
     return { status: 400, body: { error: 'patch_clear_overlap', keys: overlap } };
   }
 
   if (scope === 'local') {
-    const updated = updateLocalConfig(vaultDir, (local) => {
-      const working = structuredClone(local) as Record<string, unknown>;
-      for (const key of clearList) unsetAtPath(working, key);
-      return deepMergeConfig(working, patch as Record<string, unknown>) as Partial<MycoConfig>;
-    });
-    return { body: updated };
+    try {
+      const project = loadConfig(vaultDir);
+      const updated = updateLocalConfig(vaultDir, (local) => {
+        const working = structuredClone(local) as Record<string, unknown>;
+        for (const key of clearList) unsetAtPath(working, key);
+        const nextLocal = deepMergeConfig(
+          working,
+          patch as Record<string, unknown>,
+        ) as Partial<MycoConfig>;
+        const merged = deepMergeConfig(
+          project as Record<string, unknown>,
+          nextLocal as Record<string, unknown>,
+        );
+        MycoConfigSchema.parse(merged);
+        return nextLocal;
+      });
+      return { body: updated };
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return { status: 400, body: { error: 'validation_failed', issues: err.issues } };
+      }
+      throw err;
+    }
   }
 
   try {

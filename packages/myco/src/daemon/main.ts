@@ -10,7 +10,7 @@
 import { DaemonServer } from './server.js';
 import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger } from './logger.js';
-import { loadConfig, loadMergedConfig, updateConfig } from '../config/loader.js';
+import { loadConfig, updateConfig } from '../config/loader.js';
 import { resolvePort } from './port.js';
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
@@ -130,6 +130,7 @@ import {
   epochSeconds,
 } from '../constants.js';
 import { RESTART_REASON_FILENAME } from '../constants/update.js';
+import { buildScopedConfigSaveNotification } from '../config/focus.js';
 import { notify } from '../notifications/notify.js';
 import { PowerManager } from './power.js';
 import { registerPowerJobs } from './power-jobs.js';
@@ -141,7 +142,7 @@ import {
 import { createReconciler } from './reconciliation.js';
 import { createStopProcessor } from './stop-processing.js';
 import { createEventDispatcher } from './event-dispatch.js';
-import { createConfigReactionRegistry, computeTouchedPaths } from './config-reactions/index.js';
+import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
 export {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
@@ -540,13 +541,33 @@ export async function main(): Promise<void> {
   // Live-reconfigure the logger on daemon.log_level change.
   reactions.on(['daemon.log_level'], (ctx) => {
     logger.setLevel(ctx.daemon.log_level);
+    if (ctx.daemon.log_level === 'debug') {
+      process.env.MYCO_AGENT_DEBUG = '1';
+    } else {
+      delete process.env.MYCO_AGENT_DEBUG;
+    }
   });
 
   server.registerRoute('PUT', '/api/config/scoped', async (req) => {
     const result = await handlePutScopedConfig(vaultDir, req.body);
     if (!result.status || result.status < 400) {
-      const body = req.body as { patch?: unknown; clear?: string[] };
-      await reactions.fire(computeTouchedPaths(body.patch, body.clear), loadMergedConfig(vaultDir));
+      const body = req.body as { scope: 'project' | 'local'; patch?: unknown; clear?: string[] };
+      const touchedPaths = computeTouchedPaths(body.patch, body.clear);
+      const reactionContext = loadReactionContext(vaultDir, logger);
+      if (reactionContext) {
+        await reactions.fire(touchedPaths, reactionContext);
+        const summary = buildScopedConfigSaveNotification(body.scope, touchedPaths);
+        notify(vaultDir, {
+          domain: 'settings',
+          type: 'settings.saved',
+          title: summary.title,
+          message: summary.message,
+          link: summary.link ?? undefined,
+          metadata: summary.metadata,
+        }, reactionContext);
+      } else {
+        configHash = computeConfigHash(vaultDir);
+      }
     }
     return result;
   });

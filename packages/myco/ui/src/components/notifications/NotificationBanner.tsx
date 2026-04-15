@@ -2,10 +2,14 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { X, CheckCircle2, AlertTriangle, AlertCircle, Info } from 'lucide-react';
 import { cn } from '../../lib/cn';
-import { useNotifications, useUpdateNotification, type Notification, type NotificationLevel } from '../../hooks/use-notifications';
+import { POLL_INTERVALS } from '../../lib/constants';
+import { useLiveNotifications, useUpdateNotification, type Notification, type NotificationLevel } from '../../hooks/use-notifications';
 
 const BANNER_MAX_VISIBLE = 3;
 const BANNER_AUTO_DISMISS_MS = 5_000;
+const BANNER_EDGE_OFFSET_PX = 12;
+const BANNER_PANEL_OFFSET_PX = 400;
+const NOTIFICATION_NAVIGATION_SOURCE = 'notification-banner';
 
 const LEVEL_STYLES: Record<NotificationLevel, string> = {
   info: 'bg-primary/10 border-primary/20 text-primary',
@@ -21,8 +25,14 @@ const LEVEL_ICONS: Record<NotificationLevel, typeof Info> = {
   error: AlertCircle,
 };
 
-export function NotificationBanner() {
-  const { data } = useNotifications({ status: 'unread', mode: 'banner', limit: BANNER_MAX_VISIBLE });
+export function NotificationBanner({ panelOpen = false }: { panelOpen?: boolean }) {
+  const { data } = useLiveNotifications({
+    status: 'unread',
+    mode: 'banner',
+    limit: BANNER_MAX_VISIBLE,
+    pollCategory: 'realtime',
+    refetchInterval: POLL_INTERVALS.LOGS,
+  });
   const updateNotification = useUpdateNotification();
   const navigate = useNavigate();
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
@@ -49,7 +59,14 @@ export function NotificationBanner() {
   const handleClick = (n: Notification) => {
     updateNotification.mutate({ id: n.id, status: 'read' });
     setDismissed((prev) => new Set(prev).add(n.id));
-    if (n.link) navigate(n.link);
+    if (n.link) {
+      navigate(n.link, {
+        state: {
+          source: NOTIFICATION_NAVIGATION_SOURCE,
+          triggeredAt: Date.now(),
+        },
+      });
+    }
   };
 
   const handleDismiss = (e: React.MouseEvent, n: Notification) => {
@@ -59,7 +76,10 @@ export function NotificationBanner() {
   };
 
   return (
-    <div className="fixed top-3 right-3 z-50 flex flex-col gap-2 w-80">
+    <div
+      className="fixed top-3 z-[60] flex w-80 flex-col gap-2"
+      style={{ right: panelOpen ? BANNER_PANEL_OFFSET_PX : BANNER_EDGE_OFFSET_PX }}
+    >
       {banners.map((n) => {
         const Icon = LEVEL_ICONS[n.level];
         return (

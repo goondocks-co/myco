@@ -150,6 +150,7 @@ describe('Migration v3: schedule-to-task-level', () => {
 });
 
 const v4 = MIGRATIONS.find((m) => m.version === 4)!;
+const v5 = MIGRATIONS.find((m) => m.version === 5)!;
 
 describe('Migration v4: rename-cloud-provider-to-anthropic', () => {
   it('renames global agent provider type from cloud to anthropic', () => {
@@ -218,8 +219,49 @@ describe('Migration v4: rename-cloud-provider-to-anthropic', () => {
 });
 
 describe('CURRENT_MIGRATION_VERSION', () => {
-  it('is 4', () => {
-    expect(CURRENT_MIGRATION_VERSION).toBe(4);
+  it('is 5', () => {
+    expect(CURRENT_MIGRATION_VERSION).toBe(5);
+  });
+});
+
+describe('Migration v5: seed-settings-notification-domain-default', () => {
+  it('adds the settings notification domain with banner mode when missing', () => {
+    const doc: Record<string, unknown> = {
+      notifications: {
+        default_mode: 'summary',
+      },
+    };
+
+    v5.migrate(doc, '/tmp');
+
+    const notifications = doc.notifications as Record<string, unknown>;
+    const domains = notifications.domains as Record<string, Record<string, unknown>>;
+    expect(domains.settings).toEqual({
+      enabled: true,
+      mode: 'banner',
+    });
+  });
+
+  it('preserves explicit settings domain preferences', () => {
+    const doc: Record<string, unknown> = {
+      notifications: {
+        domains: {
+          settings: {
+            enabled: false,
+            mode: 'summary',
+          },
+        },
+      },
+    };
+
+    v5.migrate(doc, '/tmp');
+
+    const notifications = doc.notifications as Record<string, unknown>;
+    const domains = notifications.domains as Record<string, Record<string, unknown>>;
+    expect(domains.settings).toEqual({
+      enabled: false,
+      mode: 'summary',
+    });
   });
 });
 
@@ -231,11 +273,17 @@ describe('runMigrations', () => {
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(4);
+    expect(doc.config_version).toBe(5);
 
     const agent = doc.agent as Record<string, unknown>;
     const tasks = agent.tasks as Record<string, Record<string, unknown>>;
     expect(tasks['full-intelligence'].schedule).toBeDefined();
+    const notifications = doc.notifications as Record<string, unknown>;
+    const domains = notifications.domains as Record<string, Record<string, unknown>>;
+    expect(domains.settings).toEqual({
+      enabled: true,
+      mode: 'banner',
+    });
   });
 
   it('runs v4 when config_version is 3', () => {
@@ -245,14 +293,33 @@ describe('runMigrations', () => {
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(4);
+    expect(doc.config_version).toBe(5);
     const agent = doc.agent as Record<string, unknown>;
     expect((agent.provider as Record<string, unknown>).type).toBe('anthropic');
   });
 
-  it('skips all migrations when config_version is already 4', () => {
+  it('runs v5 when config_version is 4', () => {
     const doc: Record<string, unknown> = {
       config_version: 4,
+      notifications: {
+        default_mode: 'summary',
+      },
+    };
+    const ran = runMigrations(doc, '/tmp');
+    expect(ran).toBe(true);
+    expect(doc.config_version).toBe(5);
+
+    const notifications = doc.notifications as Record<string, unknown>;
+    const domains = notifications.domains as Record<string, Record<string, unknown>>;
+    expect(domains.settings).toEqual({
+      enabled: true,
+      mode: 'banner',
+    });
+  });
+
+  it('skips all migrations when config_version is already 5', () => {
+    const doc: Record<string, unknown> = {
+      config_version: 5,
       agent: { auto_run: true, provider: { type: 'cloud' } },
     };
     const ran = runMigrations(doc, '/tmp');

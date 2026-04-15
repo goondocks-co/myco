@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, postJson } from '../lib/api';
-import { usePowerQuery } from './use-power-query';
+import { usePowerQuery, type PollCategory } from './use-power-query';
 import { POLL_INTERVALS } from '../lib/constants';
 
 // ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ interface RegistryResponse {
 // Poll interval for unread count badge
 // ---------------------------------------------------------------------------
 
-const NOTIFICATION_POLL_MS = POLL_INTERVALS.STATS;
+const UNREAD_COUNT_POLL_MS = POLL_INTERVALS.LOGS;
 
 // ---------------------------------------------------------------------------
 // Hooks
@@ -66,7 +66,7 @@ export function useUnreadCount() {
   return usePowerQuery<UnreadCountResponse>({
     queryKey: ['notifications', 'unread-count'],
     queryFn: ({ signal }) => fetchJson<UnreadCountResponse>('/notifications/unread-count', { signal }),
-    refetchInterval: NOTIFICATION_POLL_MS,
+    refetchInterval: UNREAD_COUNT_POLL_MS,
     pollCategory: 'standard',
   });
 }
@@ -77,6 +77,9 @@ export function useNotifications(opts?: {
   domain?: string;
   mode?: NotificationMode;
   limit?: number;
+  enabled?: boolean;
+  pollCategory?: PollCategory;
+  refetchInterval?: number | false;
 }) {
   const params = new URLSearchParams();
   if (opts?.status) params.set('status', opts.status);
@@ -89,6 +92,34 @@ export function useNotifications(opts?: {
   return useQuery<NotificationListResponse>({
     queryKey: ['notifications', 'list', opts],
     queryFn: ({ signal }) => fetchJson<NotificationListResponse>(path, { signal }),
+    enabled: opts?.enabled,
+  });
+}
+
+/** Fetch notifications with power-aware polling support. */
+export function useLiveNotifications(opts?: {
+  status?: NotificationStatus;
+  domain?: string;
+  mode?: NotificationMode;
+  limit?: number;
+  enabled?: boolean;
+  pollCategory: PollCategory;
+  refetchInterval: number;
+}) {
+  const params = new URLSearchParams();
+  if (opts?.status) params.set('status', opts.status);
+  if (opts?.domain) params.set('domain', opts.domain);
+  if (opts?.mode) params.set('mode', opts.mode);
+  if (opts?.limit) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  const path = qs ? `/notifications?${qs}` : '/notifications';
+
+  return usePowerQuery<NotificationListResponse>({
+    queryKey: ['notifications', 'list', opts],
+    queryFn: ({ signal }) => fetchJson<NotificationListResponse>(path, { signal }),
+    enabled: opts?.enabled,
+    pollCategory: opts.pollCategory,
+    refetchInterval: opts.refetchInterval,
   });
 }
 

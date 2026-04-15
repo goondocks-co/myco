@@ -94,10 +94,12 @@ const PROMPT_SECTION_CURRENT_PHASE = '## Current Phase: ';
 // The daemon sets this env var automatically when log_level is "debug"
 // (see src/daemon/main.ts). It can also be set manually for ad-hoc runs.
 
-const DEBUG_TOOL_CALLS = process.env.MYCO_AGENT_DEBUG === '1';
-
 /** Max chars to print from tool input/output payloads. */
 const TOOL_DEBUG_PREVIEW_CHARS = 240;
+
+function debugToolCallsEnabled(): boolean {
+  return process.env.MYCO_AGENT_DEBUG === '1';
+}
 
 interface SdkContentBlock {
   type: string;
@@ -121,7 +123,7 @@ function previewPayload(value: unknown): string {
 }
 
 function logToolUseBlocks(phaseName: string, message: unknown): void {
-  if (!DEBUG_TOOL_CALLS) return;
+  if (!debugToolCallsEnabled()) return;
   const blocks = (message as SdkMessageWithContent).message?.content;
   if (!Array.isArray(blocks)) return;
   for (const block of blocks) {
@@ -134,7 +136,7 @@ function logToolUseBlocks(phaseName: string, message: unknown): void {
 }
 
 function logToolResultBlocks(phaseName: string, message: unknown): void {
-  if (!DEBUG_TOOL_CALLS) return;
+  if (!debugToolCallsEnabled()) return;
   const blocks = (message as SdkMessageWithContent).message?.content;
   if (!Array.isArray(blocks)) return;
   for (const block of blocks) {

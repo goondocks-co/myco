@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import { CONFIG_SECTION_IDS } from '@myco/config/focus';
 import { useScopedConfig } from '../../hooks/use-scoped-config';
 import { useNotificationRegistry } from '../../hooks/use-notifications';
 import { Surface } from '../ui/surface';
@@ -12,7 +13,7 @@ import {
   SelectValue,
 } from '../ui/select';
 import { ScopedField } from '../config/ScopedField';
-import { ScopePill } from '../config/ScopePill';
+import { ScopeBadge, ScopePill } from '../config/ScopePill';
 
 const MODE_LABELS = {
   banner: 'Banner',
@@ -61,7 +62,11 @@ export function NotificationSettings() {
   if (!effective) return null;
 
   return (
-    <Surface level="low" className="p-6 space-y-5 border-t-2 border-t-sage">
+    <Surface
+      id={CONFIG_SECTION_IDS.settingsNotifications}
+      level="low"
+      className="rounded-lg p-6 space-y-5 border-t-2 border-t-sage transition-all duration-300"
+    >
       <SectionHeader>Notifications</SectionHeader>
 
       <div className="space-y-4">
@@ -148,11 +153,13 @@ export function NotificationSettings() {
                               <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[11px] text-on-surface-variant">
                                 {domainEnabled ? MODE_LABELS[effectiveMode] : 'Off'}
                               </span>
-                              {personal && (
+                              {personal ? (
                                 <ScopePill
                                   onPromote={() => promoteField(domainPath)}
                                   onReset={() => resetField(domainPath)}
                                 />
+                              ) : (
+                                <ScopeBadge scope="project" />
                               )}
                             </div>
                             <p className="text-[11px] text-on-surface-variant">
@@ -198,4 +205,3 @@ export function NotificationSettings() {
     </Surface>
   );
 }
-
