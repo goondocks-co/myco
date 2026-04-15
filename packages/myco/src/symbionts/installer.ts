@@ -54,6 +54,11 @@ export const MYCO_MCP_SERVER_NAME = 'myco';
 const MCP_ENV_PROJECT_ROOT_TOKEN = '{projectRoot}';
 const MCP_ENV_VAULT_DIR_TOKEN = '{vaultDir}';
 
+interface McpLaunchOverrides {
+  cwd?: string;
+  env: Record<string, string>;
+}
+
 /**
  * Marker substring written into plugin-file hook templates (e.g., opencode's plugin.ts).
  * Uninstall only deletes plugin files whose content contains this marker, so
@@ -873,45 +878,56 @@ export class SymbiontInstaller {
   ): Record<string, unknown> | null {
     if (!template) return null;
 
-    const resolvedEnv = this.resolveMcpEnv();
-    if (Object.keys(resolvedEnv).length === 0) return template;
+    const overrides = this.resolveMcpLaunchOverrides();
+    if (!overrides.cwd && Object.keys(overrides.env).length === 0) return template;
 
     return Object.fromEntries(
       Object.entries(template).map(([name, def]) => {
         if (!def || typeof def !== 'object' || Array.isArray(def)) return [name, def];
         const server = def as Record<string, unknown>;
-        const existingEnv = (
-          server.env && typeof server.env === 'object' && !Array.isArray(server.env)
-            ? server.env
-            : {}
-        ) as Record<string, unknown>;
+        const mergedEnv = {
+          ...(
+            server.env && typeof server.env === 'object' && !Array.isArray(server.env)
+              ? server.env
+              : {}
+          ),
+          ...overrides.env,
+        } as Record<string, unknown>;
         return [
           name,
           {
             ...server,
-            env: {
-              ...existingEnv,
-              ...resolvedEnv,
-            },
+            ...(overrides.cwd ? { cwd: overrides.cwd } : {}),
+            ...(Object.keys(mergedEnv).length > 0 ? { env: mergedEnv } : {}),
           },
         ];
       }),
     );
   }
 
-  private resolveMcpEnv(): Record<string, string> {
-    const entries = Object.entries(this.manifest.registration?.mcpEnv ?? {});
-    if (entries.length === 0) return {};
-
+  private resolveMcpLaunchOverrides(): McpLaunchOverrides {
     const vaultDir = path.join(this.projectRoot, '.myco');
-    return Object.fromEntries(
-      entries.map(([key, value]) => [
-        key,
-        value
-          .replaceAll(MCP_ENV_PROJECT_ROOT_TOKEN, this.projectRoot)
-          .replaceAll(MCP_ENV_VAULT_DIR_TOKEN, vaultDir),
-      ]),
-    );
+    const registration = this.manifest.registration;
+    const envEntries = Object.entries(registration?.mcpEnv ?? {});
+    return {
+      cwd: this.resolveMcpPlaceholderValue(registration?.mcpCwd, vaultDir),
+      env: Object.fromEntries(
+        envEntries.flatMap(([key, value]) => {
+          const resolved = this.resolveMcpPlaceholderValue(value, vaultDir);
+          return resolved ? [[key, resolved] as const] : [];
+        }),
+      ),
+    };
+  }
+
+  private resolveMcpPlaceholderValue(
+    value: string | undefined,
+    vaultDir: string,
+  ): string | undefined {
+    if (!value) return value;
+    return value
+      .replaceAll(MCP_ENV_PROJECT_ROOT_TOKEN, this.projectRoot)
+      .replaceAll(MCP_ENV_VAULT_DIR_TOKEN, vaultDir);
   }
 
   /**
