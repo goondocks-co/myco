@@ -679,6 +679,7 @@ export async function main(): Promise<void> {
   const mcpProxy = createMcpProxyHandlers({ machineId, embeddingManager });
   server.registerRoute('POST', '/api/mcp/remember', mcpProxy.handleRemember);
   server.registerRoute('POST', '/api/mcp/supersede', mcpProxy.handleSupersede);
+  server.registerRoute('POST', '/api/mcp/consolidate', mcpProxy.handleConsolidate);
   server.registerRoute('GET', '/api/mcp/plans', mcpProxy.handlePlans);
   server.registerRoute('GET', '/api/mcp/sessions', mcpProxy.handleSessions);
   server.registerRoute('GET', '/api/mcp/team', mcpProxy.handleTeam);

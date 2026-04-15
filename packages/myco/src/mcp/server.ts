@@ -115,7 +115,10 @@ export function createMycoServer(vaultDir: string, client: DaemonClient): MycoSe
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_SESSIONS: {
-        const sessionsInput = input as { limit?: number; status?: string };
+        const sessionsInput = input as {
+          plan?: string; branch?: string; user?: string; since?: string;
+          status?: string; limit?: number;
+        };
         const result = await handleMycoSessions(sessionsInput, client);
         logActivity(TOOL_SESSIONS, { count: result.length, duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
@@ -139,9 +142,20 @@ export function createMycoServer(vaultDir: string, client: DaemonClient): MycoSe
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_CONSOLIDATE: {
-        const consolidateInput = input as { source_spore_ids: string[] };
-        const result = await handleMycoConsolidate(consolidateInput);
-        logActivity(TOOL_CONSOLIDATE, { status: result.status, duration_ms: Date.now() - start });
+        const consolidateInput = input as {
+          source_spore_ids: string[];
+          consolidated_content: string;
+          observation_type: string;
+          tags?: string[];
+          reason?: string;
+        };
+        const result = await handleMycoConsolidate(consolidateInput, client);
+        logActivity(TOOL_CONSOLIDATE, {
+          status: result.status,
+          new_spore_id: result.new_spore_id,
+          sources: result.sources_superseded.length,
+          duration_ms: Date.now() - start,
+        });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_CONTEXT: {
