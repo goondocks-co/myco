@@ -13,6 +13,7 @@ import {
   type FontKey,
   type Appearance,
 } from '../providers/appearance';
+import { ScopePill } from '../components/config/ScopePill';
 
 const THEME_LABELS: Record<Theme, { label: string; swatch: string }> = {
   sage: { label: 'Sage', swatch: '#abcfb8' },
@@ -37,46 +38,6 @@ const FONT_LABELS: Record<FontKey, string> = {
   'fira-code': 'Fira Code',
   'jetbrains-mono': 'JetBrains',
 };
-
-function PersonalPillMenu({
-  onPromote,
-  onReset,
-}: {
-  onPromote: () => void;
-  onReset: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <span className="relative ml-1 inline-block">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="rounded bg-surface-container-high px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-on-surface-variant hover:bg-surface-container-highest"
-      >
-        Personal
-      </button>
-      {open && (
-        <div className="absolute left-0 top-full z-10 mt-1 w-44 rounded-md border border-[var(--ghost-border)] bg-surface-container-high p-1 text-xs shadow-lg">
-          <button
-            type="button"
-            onClick={() => { onPromote(); setOpen(false); }}
-            className="block w-full rounded px-2 py-1 text-left hover:bg-surface-container-highest"
-          >
-            Save to project
-          </button>
-          <button
-            type="button"
-            onClick={() => { onReset(); setOpen(false); }}
-            className="block w-full rounded px-2 py-1 text-left hover:bg-surface-container-highest"
-          >
-            Reset to project
-          </button>
-        </div>
-      )}
-    </span>
-  );
-}
 
 const SECTION_EXPANDED_KEY = 'myco-ui-appearance-expanded';
 
@@ -114,7 +75,7 @@ export function AppearanceSection({ collapsed }: { collapsed: boolean }) {
       <div className="flex items-center text-xs text-on-surface-variant">
         {label}
         {isPersonal(controlKey) && (
-          <PersonalPillMenu
+          <ScopePill
             onPromote={() => set(controlKey, effective[controlKey], 'project').catch((err) => console.error('[appearance] promote failed', err))}
             onReset={() => resetKey(controlKey).catch((err) => console.error('[appearance] reset failed', err))}
           />

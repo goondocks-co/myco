@@ -21,16 +21,19 @@ export function getAtPath(obj: Record<string, unknown>, dotPath: string): unknow
  */
 export function setAtPath(obj: Record<string, unknown>, dotPath: string, value: unknown): void {
   const parts = dotPath.split('.');
+  const leaf = parts[parts.length - 1];
+  if (leaf === undefined) return;
   let current: Record<string, unknown> = obj;
   for (let i = 0; i < parts.length - 1; i += 1) {
     const segment = parts[i];
+    if (segment === undefined) return;
     const existing = current[segment];
     if (existing === undefined || existing === null || typeof existing !== 'object' || Array.isArray(existing)) {
       current[segment] = {};
     }
     current = current[segment] as Record<string, unknown>;
   }
-  current[parts[parts.length - 1]] = value;
+  current[leaf] = value;
 }
 
 /**
@@ -39,15 +42,18 @@ export function setAtPath(obj: Record<string, unknown>, dotPath: string, value: 
  */
 export function unsetAtPath(obj: Record<string, unknown>, dotPath: string): boolean {
   const parts = dotPath.split('.');
+  const leaf = parts[parts.length - 1];
+  if (leaf === undefined) return false;
   let cursor: Record<string, unknown> | undefined = obj;
   for (let i = 0; i < parts.length - 1 && cursor; i += 1) {
-    const next: unknown = cursor[parts[i]];
+    const segment = parts[i];
+    if (segment === undefined) { cursor = undefined; break; }
+    const next: unknown = cursor[segment];
     cursor = (next !== null && typeof next === 'object' && !Array.isArray(next))
       ? next as Record<string, unknown>
       : undefined;
   }
   if (!cursor) return false;
-  const leaf = parts[parts.length - 1];
   if (!(leaf in cursor)) return false;
   delete cursor[leaf];
   return true;

@@ -506,21 +506,6 @@ export async function main(): Promise<void> {
 
   server.registerRoute('GET', '/api/config/merged', async () => handleGetMergedConfig(vaultDir));
   server.registerRoute('GET', '/api/config/local', async () => handleGetLocalConfig(vaultDir));
-  server.registerRoute('PUT', '/api/config/scoped', async (req) => {
-    const result = await handlePutScopedConfig(vaultDir, req.body);
-    if (!result.status || result.status < 400) {
-      reconcileConfiguredSymbionts(path.dirname(vaultDir), vaultDir);
-      configHash = computeConfigHash(vaultDir);
-    }
-    return result;
-  });
-  server.registerRoute('POST', '/api/config/local/clear', async (req) => {
-    const result = await handleClearLocalConfig(vaultDir, req.body);
-    if (!result.status || result.status < 400) {
-      configHash = computeConfigHash(vaultDir);
-    }
-    return result;
-  });
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
   const symbiontPlanDirsByAgent: Record<string, string[]> = {};
@@ -528,6 +513,55 @@ export async function main(): Promise<void> {
     const dirs = m.capture?.planDirs ?? [];
     if (dirs.length > 0) symbiontPlanDirsByAgent[m.displayName] = dirs;
   }
+
+  /** Refresh the in-memory planWatchConfig to reflect the current
+   *  `capture.plan_dirs` in myco.yaml. Called after any config write so new
+   *  directories are picked up without a daemon restart. Idempotent — if the
+   *  watchDirs set is unchanged the setter is a no-op. */
+  function reconcilePlanWatch() {
+    try {
+      const cfg = loadConfig(vaultDir);
+      const customDirs = cfg.capture.plan_dirs ?? [];
+      planWatchConfig = {
+        ...planWatchConfig,
+        watchDirs: [...new Set([...symbiontPlanDirs, ...customDirs])],
+      };
+    } catch {
+      // loadConfig can throw on malformed YAML; the scoped write already
+      // validated the result so this should not fire, but swallow to avoid
+      // taking down the route handler on a rare reconciliation failure.
+    }
+  }
+
+  // /simplify E3: only re-read the config + reconcile plan dirs when the
+  // patch actually touches `capture` — toggling notifications shouldn't
+  // force a YAML read on every write.
+  function patchTouchesCapture(body: unknown): boolean {
+    const patch = (body as { patch?: Record<string, unknown> } | null)?.patch;
+    return patch !== undefined && patch !== null && 'capture' in patch;
+  }
+  function clearKeysTouchCapture(body: unknown): boolean {
+    const keys = (body as { keys?: string[] } | null)?.keys;
+    return Array.isArray(keys) && keys.some((k) => k === 'capture' || k.startsWith('capture.'));
+  }
+
+  server.registerRoute('PUT', '/api/config/scoped', async (req) => {
+    const result = await handlePutScopedConfig(vaultDir, req.body);
+    if (!result.status || result.status < 400) {
+      reconcileConfiguredSymbionts(path.dirname(vaultDir), vaultDir);
+      if (patchTouchesCapture(req.body)) reconcilePlanWatch();
+      configHash = computeConfigHash(vaultDir);
+    }
+    return result;
+  });
+  server.registerRoute('POST', '/api/config/local/clear', async (req) => {
+    const result = await handleClearLocalConfig(vaultDir, req.body);
+    if (!result.status || result.status < 400) {
+      if (clearKeysTouchCapture(req.body)) reconcilePlanWatch();
+      configHash = computeConfigHash(vaultDir);
+    }
+    return result;
+  });
 
   const planDirHandlers = createPlanDirHandlers({
     vaultDir,

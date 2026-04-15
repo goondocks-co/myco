@@ -1,5 +1,13 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchJson, writeScopedConfig } from '../lib/api';
+import type { AppearanceValues } from '@myco/config/appearance-values';
+
+/**
+ * Shared MycoConfig type. The actual config read/write hook lives in
+ * `use-scoped-config.ts` — that hook handles project + local overlay
+ * fetching and dotted-path writes through the scoped endpoints.
+ *
+ * Kept as a separate file because several non-config components import the
+ * shape (e.g., NotificationSettings reads `notifications.domains` types).
+ */
 
 export interface MycoConfig {
   version: 3;
@@ -23,6 +31,7 @@ export interface MycoConfig {
     plan_dirs: string[];
     artifact_extensions: string[];
     buffer_max_events: number;
+    ignore_plan_dirs_in_git?: boolean;
   };
   agent: {
     summary_batch_interval: number;
@@ -38,41 +47,14 @@ export interface MycoConfig {
     prompt_max_spores: number;
     [key: string]: unknown;
   };
+  backup: {
+    dir?: string;
+  };
   notifications: {
     enabled: boolean;
     system_notifications: boolean;
     default_mode: 'banner' | 'summary';
     domains: Record<string, { enabled: boolean; mode?: 'banner' | 'summary' }>;
   };
-}
-
-/** Recursive partial — lets each caller send only the sections (and nested fields) it owns. */
-export type MycoConfigPatch = {
-  [K in keyof MycoConfig]?: MycoConfig[K] extends Record<string, unknown>
-    ? Partial<MycoConfig[K]>
-    : MycoConfig[K];
-};
-
-export function useConfig() {
-  const queryClient = useQueryClient();
-
-  const query = useQuery({
-    queryKey: ['config'],
-    queryFn: ({ signal }) => fetchJson<MycoConfig>('/config', { signal }),
-  });
-
-  const mutation = useMutation({
-    mutationFn: (patch: MycoConfigPatch) =>
-      writeScopedConfig('project', patch as Record<string, unknown>) as Promise<MycoConfig>,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['config'] }),
-  });
-
-  return {
-    config: query.data,
-    isLoading: query.isLoading,
-    error: query.error,
-    saveConfig: mutation.mutateAsync,
-    isSaving: mutation.isPending,
-    saveError: mutation.error,
-  };
+  appearance: AppearanceValues;
 }

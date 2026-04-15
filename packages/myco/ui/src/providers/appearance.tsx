@@ -6,14 +6,8 @@ import {
   useMemo,
   type ReactNode,
 } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  fetchMergedConfig,
-  fetchLocalConfig,
-  writeScopedConfig,
-  clearLocalConfigKeys,
-  type AppearanceValues,
-} from '../lib/api';
+import { useScopedConfig } from '../hooks/use-scoped-config';
+import type { AppearanceValues } from '@myco/config/appearance-values';
 
 export type Theme = AppearanceValues['theme'];
 export type Mode = AppearanceValues['mode'];
@@ -124,35 +118,23 @@ function applyAppearance(a: Appearance): void {
 }
 
 export function AppearanceProvider({ children }: { children: ReactNode }) {
-  const qc = useQueryClient();
-  const merged = useQuery({
-    queryKey: ['config', 'merged'],
-    queryFn: ({ signal }) => fetchMergedConfig(signal),
-  });
-  const local = useQuery({
-    queryKey: ['config', 'local'],
-    queryFn: ({ signal }) => fetchLocalConfig(signal),
-  });
+  const { effective: cfg, local: localCfg, setField, resetField, promoteField } = useScopedConfig();
 
   const effective: Appearance = useMemo(
-    () => (merged.data?.appearance as Appearance | undefined) ?? DEFAULT_APPEARANCE,
-    [
-      merged.data?.appearance?.theme,
-      merged.data?.appearance?.mode,
-      merged.data?.appearance?.font,
-      merged.data?.appearance?.density,
-    ],
+    () => ((cfg?.appearance as Appearance | undefined) ?? DEFAULT_APPEARANCE),
+    [cfg?.appearance],
   );
 
   const localAppearance = useMemo(
-    () => (local.data?.appearance ?? {}) as Partial<Appearance>,
-    [local.data],
+    () => (localCfg.appearance ?? {}) as Partial<Appearance>,
+    [localCfg.appearance],
   );
 
   useEffect(() => {
     applyAppearance(effective);
   }, [effective]);
 
+  // System-mode follow: re-apply when the OS scheme flips.
   useEffect(() => {
     if (effective.mode !== 'system') return;
     const mql = window.matchMedia(LIGHT_MEDIA_QUERY);
@@ -162,30 +144,27 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
   }, [effective]);
 
   const set: AppearanceContextValue['set'] = useCallback(
-    async (key, value, scope) => {
-      await writeScopedConfig(scope, { appearance: { [key]: value } });
-      await qc.invalidateQueries({ queryKey: ['config'] });
-    },
-    [qc],
+    (key, value, scope) => setField(`appearance.${key}`, value, scope),
+    [setField],
   );
 
   const resetKey: AppearanceContextValue['resetKey'] = useCallback(
-    async (key) => {
-      await clearLocalConfigKeys([`appearance.${key}`]);
-      await qc.invalidateQueries({ queryKey: ['config'] });
-    },
-    [qc],
+    (key) => resetField(`appearance.${key}`),
+    [resetField],
   );
 
-  const saveAllAsProject = useCallback(async () => {
-    await writeScopedConfig('project', { appearance: effective });
-    await qc.invalidateQueries({ queryKey: ['config'] });
-  }, [effective, qc]);
+  // Promote the WHOLE appearance block to project — single atomic write +
+  // local-clear via promoteField, which already does both steps.
+  const saveAllAsProject = useCallback(
+    () => promoteField('appearance'),
+    [promoteField],
+  );
 
-  const resetAll = useCallback(async () => {
-    await clearLocalConfigKeys(['appearance']);
-    await qc.invalidateQueries({ queryKey: ['config'] });
-  }, [qc]);
+  // Reset all appearance overrides by clearing the entire local subtree.
+  const resetAll = useCallback(
+    () => resetField('appearance'),
+    [resetField],
+  );
 
   const value = useMemo<AppearanceContextValue>(
     () => ({

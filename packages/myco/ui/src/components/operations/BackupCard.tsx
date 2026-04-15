@@ -1,12 +1,13 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { HardDrive, Download, Upload, RefreshCw, FolderOpen } from 'lucide-react';
-import { postJson, fetchJson, putJson } from '../../lib/api';
+import { postJson, fetchJson } from '../../lib/api';
 import { formatBytes } from '../../lib/format';
 import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { cn } from '../../lib/cn';
+import { ScopedField } from '../config/ScopedField';
 
 /* ---------- Types ---------- */
 
@@ -67,30 +68,6 @@ export function BackupCard() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [preview, setPreview] = useState<RestorePreviewResponse | null>(null);
-
-  // Backup directory config
-  const [dirOverride, setDirOverride] = useState('');
-  const [dirSaving, setDirSaving] = useState(false);
-
-  useEffect(() => {
-    fetchJson<{ dir: string | null }>('/backup/config')
-      .then((res) => {
-        setDirOverride(res.dir ?? '');
-      })
-      .catch(() => {});
-  }, []);
-
-  const handleSaveDir = useCallback(async () => {
-    setDirSaving(true);
-    try {
-      await putJson('/backup/config', { dir: dirOverride || null });
-      setMessage({ type: 'success', text: dirOverride ? 'Backup directory updated. Restart daemon to apply.' : 'Backup directory reset to default. Restart daemon to apply.' });
-    } catch {
-      setMessage({ type: 'error', text: 'Failed to save backup directory.' });
-    } finally {
-      setDirSaving(false);
-    }
-  }, [dirOverride]);
 
   const refreshBackups = useCallback(async () => {
     try {
@@ -167,29 +144,31 @@ export function BackupCard() {
         </div>
       </div>
 
-      {/* Backup directory */}
-      <div className="space-y-1.5">
-        <label className="font-sans text-xs text-on-surface-variant flex items-center gap-1.5">
-          <FolderOpen className="h-3.5 w-3.5" />
-          Backup Directory
-        </label>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={dirOverride}
-            onChange={(e) => setDirOverride(e.target.value)}
-            placeholder=".myco/backups"
-            className="flex-1 bg-surface-container text-on-surface font-mono text-sm rounded px-3 py-1.5 outline-none border border-outline-variant/15 focus:border-primary/40 placeholder:text-on-surface-variant/50"
-          />
-          <Button variant="ghost" size="sm" onClick={handleSaveDir} disabled={dirSaving}>
-            {dirSaving ? 'Saving...' : 'Save'}
-          </Button>
-        </div>
-        <p className="font-sans text-xs text-on-surface-variant">
-          Override where backups are stored. Leave empty for default (.myco/backups).
-          Supports ~ for home directory. Useful for network shares or git-tracked directories.
-        </p>
-      </div>
+      {/* Backup directory — personal-default: each machine writes backups
+          to its own filesystem location (network share, external disk, etc). */}
+      <ScopedField
+        path="backup.dir"
+        label="Backup Directory"
+        defaultScope="local"
+        commitOn="blur"
+        requiresRestart
+        hint="leave blank for default .myco/backups; ~ supported"
+        parse={(v) => (v === '' ? (undefined as unknown as string) : v)}
+      >
+        {({ value, onChange, onBlur }) => (
+          <div className="flex items-center gap-2">
+            <FolderOpen className="h-3.5 w-3.5 text-on-surface-variant flex-shrink-0" />
+            <input
+              type="text"
+              value={value ?? ''}
+              onChange={(e) => onChange(e.target.value)}
+              onBlur={onBlur}
+              placeholder=".myco/backups"
+              className="flex-1 bg-surface-container text-on-surface font-mono text-sm rounded px-3 py-1.5 outline-none border border-outline-variant/15 focus:border-primary/40 placeholder:text-on-surface-variant/50"
+            />
+          </div>
+        )}
+      </ScopedField>
 
       {/* Message */}
       {message && (
