@@ -1,0 +1,32 @@
+:root[data-theme="moss"] {
+  --primary: #9ca884;
+  --on-primary: #1a1a0c;
+  --primary-container: #6e7a58;
+  --on-primary-container: #1a1a0c;
+
+  /* Olive-tinted dark surfaces — most visible on cards, hover, active states. */
+  --surface: #0e110d;
+  --surface-dim: #0a0c09;
+  --surface-container-lowest: #070906;
+  --surface-container-low: #181c14;
+  --surface-container: #20241b;
+  --surface-container-high: #2b3024;
+  --surface-container-highest: #353a2d;
+  --outline-variant: #3c4234;
+}
+
+:root[data-theme="moss"].light {
+  --primary: #5b6c43;
+  --on-primary: #ffffff;
+  --primary-container: #c1ccb0;
+  --on-primary-container: #1a1a0c;
+
+  --surface: #f5f6ed;
+  --surface-dim: #e8ebda;
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #f0f2e3;
+  --surface-container: #e6e9d6;
+  --surface-container-high: #d9ddc7;
+  --surface-container-highest: #cdd2b8;
+  --outline-variant: #c8ccb4;
+}

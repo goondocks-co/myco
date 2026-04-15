@@ -20,6 +20,7 @@
  */
 
 import type { CaptureRule, SymbiontManifest } from '../symbionts/manifest-schema.js';
+import { getAtPath } from '../utils/dot-path.js';
 
 /** Structured context a rule can match against at UserPromptSubmit time. */
 export interface UserPromptRuleContext {
@@ -139,23 +140,10 @@ function whenMatches(rule: CaptureRule, ctx: UserPromptRuleContext): boolean {
 
   if (transcript_meta_field_exists !== undefined) {
     if (!ctx.transcriptMeta) return false;
-    if (!resolveMetaField(ctx.transcriptMeta, transcript_meta_field_exists)) return false;
+    if (!getAtPath(ctx.transcriptMeta, transcript_meta_field_exists)) return false;
   }
 
   return true;
-}
-
-/**
- * Navigate a dot-path (e.g. "source.subagent") into a nested object.
- * Returns the value if it exists and is truthy, undefined otherwise.
- */
-function resolveMetaField(meta: Record<string, unknown>, fieldPath: string): unknown {
-  let current: unknown = meta;
-  for (const part of fieldPath.split('.')) {
-    if (current === null || current === undefined || typeof current !== 'object') return undefined;
-    current = (current as Record<string, unknown>)[part];
-  }
-  return current;
 }
 
 function applyAction(rule: CaptureRule, ctx: UserPromptRuleContext): UserPromptDecision {

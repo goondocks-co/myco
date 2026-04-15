@@ -62,7 +62,7 @@ export function SearchInspector({ result, onClose, mobile = false }: SearchInspe
 
       <div className="mt-5 flex flex-wrap gap-3">
         {result.deepLink && (
-          <Button asChild={false} variant="secondary" onClick={() => window.open(result.deepLink!, '_blank', 'noopener,noreferrer')}>
+          <Button variant="secondary" onClick={() => window.open(result.deepLink!, '_blank', 'noopener,noreferrer')}>
             <ExternalLink className="mr-2 h-4 w-4" />
             Open source detail
           </Button>

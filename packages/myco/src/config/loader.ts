@@ -3,8 +3,22 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { MycoConfigSchema, type MycoConfig, type BackupConfig, type TeamConfig } from './schema.js';
 import { runMigrations, CURRENT_MIGRATION_VERSION } from './migrations.js';
+import { deepMerge } from '../utils/deep-merge.js';
+import { unsetAtPath } from '../utils/dot-path.js';
 
 export const CONFIG_FILENAME = 'myco.yaml';
+export const LOCAL_CONFIG_FILENAME = 'local.yaml';
+
+function localConfigPath(vaultDir: string): string {
+  // vaultDir already points at `.myco/` (see resolveVaultDir), so local.yaml
+  // sits alongside myco.yaml in the vault — no extra `.myco/` prefix.
+  return path.join(vaultDir, LOCAL_CONFIG_FILENAME);
+}
+
+/** Config overlay uses replace semantics: arrays in source overwrite arrays in target. */
+export function deepMergeConfig<T extends Record<string, unknown>>(target: T, source: Partial<T>): T {
+  return deepMerge(target, source, { arrayStrategy: 'replace' });
+}
 
 export function loadConfig(vaultDir: string): MycoConfig {
   const configPath = path.join(vaultDir, CONFIG_FILENAME);
@@ -143,4 +157,74 @@ export function updateTeamConfig(
     ...config,
     team: { ...config.team, ...team },
   }));
+}
+
+/** Return raw local overrides, or `{}` if the file is missing, empty, malformed, or not a mapping. */
+export function loadLocalConfig(vaultDir: string): Partial<MycoConfig> {
+  const filePath = localConfigPath(vaultDir);
+  if (!fs.existsSync(filePath)) return {};
+  const raw = fs.readFileSync(filePath, 'utf-8').trim();
+  if (!raw) return {};
+
+  let parsed: unknown;
+  try {
+    parsed = YAML.parse(raw);
+  } catch (err) {
+    process.stderr.write(`[myco config] Failed to parse ${filePath}; ignoring local overrides. ${(err as Error).message}\n`);
+    return {};
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    process.stderr.write(`[myco config] ${filePath} must contain a YAML mapping; ignoring local overrides.\n`);
+    return {};
+  }
+
+  return parsed as Partial<MycoConfig>;
+}
+
+/** Load project config and overlay local overrides on top (leaf-level deep merge). */
+export function loadMergedConfig(vaultDir: string): MycoConfig {
+  const project = loadConfig(vaultDir);
+  const local = loadLocalConfig(vaultDir);
+  const merged = deepMergeConfig(project as Record<string, unknown>, local as Record<string, unknown>);
+  return MycoConfigSchema.parse(merged);
+}
+
+/** Write a partial to <vaultDir>/local.yaml, deep-merging with existing local content. */
+export function saveLocalConfig(vaultDir: string, patch: Partial<MycoConfig>): Partial<MycoConfig> {
+  const existing = loadLocalConfig(vaultDir);
+  const next = deepMergeConfig(existing as Record<string, unknown>, patch as Record<string, unknown>) as Partial<MycoConfig>;
+
+  const existingYaml = YAML.stringify(existing);
+  const nextYaml = YAML.stringify(next);
+  if (existingYaml === nextYaml) return next;
+
+  fs.mkdirSync(vaultDir, { recursive: true });
+  fs.writeFileSync(localConfigPath(vaultDir), nextYaml, 'utf-8');
+  return next;
+}
+
+/** Callback-style update for local config. */
+export function updateLocalConfig(
+  vaultDir: string,
+  fn: (local: Partial<MycoConfig>) => Partial<MycoConfig>,
+): Partial<MycoConfig> {
+  const current = loadLocalConfig(vaultDir);
+  const updated = fn(current);
+  return saveLocalConfig(vaultDir, updated);
+}
+
+/**
+ * Clear one or more top-level keys from local config (e.g. to "reset to project default").
+ * Accepts dotted paths (e.g. 'appearance.theme') for single-field resets.
+ */
+export function clearLocalConfigKeys(vaultDir: string, keys: string[]): Partial<MycoConfig> {
+  const current = loadLocalConfig(vaultDir) as Record<string, unknown>;
+  const changed = keys.reduce((acc, key) => unsetAtPath(current, key) || acc, false);
+
+  if (!changed) return current;
+
+  fs.mkdirSync(vaultDir, { recursive: true });
+  fs.writeFileSync(localConfigPath(vaultDir), YAML.stringify(current), 'utf-8');
+  return current;
 }

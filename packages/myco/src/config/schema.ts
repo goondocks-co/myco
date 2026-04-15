@@ -137,6 +137,30 @@ const SymbiontEntrySchema = z.object({
   enabled: z.boolean().default(true),
 });
 
+export {
+  APPEARANCE_THEMES,
+  APPEARANCE_MODES,
+  APPEARANCE_FONTS,
+  APPEARANCE_DENSITIES,
+  type AppearanceValues,
+} from './appearance-values.js';
+
+import {
+  APPEARANCE_THEMES,
+  APPEARANCE_MODES,
+  APPEARANCE_FONTS,
+  APPEARANCE_DENSITIES,
+} from './appearance-values.js';
+
+export const AppearanceConfigSchema = z.object({
+  theme: z.enum(APPEARANCE_THEMES).default('sage'),
+  mode: z.enum(APPEARANCE_MODES).default('dark'),
+  font: z.enum(APPEARANCE_FONTS).default('default'),
+  density: z.enum(APPEARANCE_DENSITIES).default('normal'),
+}).default({ theme: 'sage', mode: 'dark', font: 'default', density: 'normal' });
+
+export type AppearanceConfig = z.infer<typeof AppearanceConfigSchema>;
+
 export const MycoConfigSchema = z.preprocess(
   (raw: unknown) => {
     if (raw && typeof raw === 'object' && 'curation' in raw && !('agent' in raw)) {
@@ -158,6 +182,7 @@ export const MycoConfigSchema = z.preprocess(
     team: TeamSchema.default(() => TeamSchema.parse({})),
     skills: SkillsSchema.default(() => SkillsSchema.parse({})),
     notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
+    appearance: AppearanceConfigSchema,
     symbionts: z.record(z.string(), SymbiontEntrySchema).optional(),
   }),
 );
