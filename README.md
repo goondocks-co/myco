@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/hero-wide.svg" alt="Myco" width="100%">
+  <img src="packages/myco/assets/hero-wide.svg" alt="Myco" width="100%">
 </p>
 
 <p align="center">
@@ -102,7 +102,7 @@ Agents don't need to search explicitly — Myco surfaces what's relevant.
 A local web dashboard provides configuration and operations management. Manage intelligence providers and per-task model assignments, trigger agent and digest cycles, monitor daemon health, and view live logs.
 
 <p align="center">
-  <img src="assets/myco-dashboard.png" alt="Myco Dashboard" width="100%">
+  <img src="packages/myco/assets/myco-dashboard.png" alt="Myco Dashboard" width="100%">
 </p>
 
 ### Symbionts
