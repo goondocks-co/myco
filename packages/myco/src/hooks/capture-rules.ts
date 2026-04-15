@@ -135,7 +135,13 @@ function scopePermits(rule: CaptureRule, owningAgent: string, detectedAgent: str
 }
 
 function whenMatches(rule: CaptureRule, ctx: UserPromptRuleContext): boolean {
-  const { prompt_starts_with, prompt_contains, transcript_path_missing, transcript_meta_field_exists } = rule.when;
+  const {
+    prompt_starts_with,
+    prompt_contains,
+    transcript_path_missing,
+    transcript_meta_field_exists,
+    transcript_meta_field_equals,
+  } = rule.when;
 
   // Refuse rules with no conditions — prevents a mistyped YAML file from
   // accidentally creating a blanket "drop everything" rule.
@@ -143,7 +149,8 @@ function whenMatches(rule: CaptureRule, ctx: UserPromptRuleContext): boolean {
     prompt_starts_with !== undefined ||
     prompt_contains !== undefined ||
     transcript_path_missing !== undefined ||
-    transcript_meta_field_exists !== undefined;
+    transcript_meta_field_exists !== undefined ||
+    transcript_meta_field_equals !== undefined;
   if (!hasAnyCondition) return false;
 
   if (prompt_starts_with && !ctx.prompt.startsWith(prompt_starts_with)) return false;
@@ -158,6 +165,13 @@ function whenMatches(rule: CaptureRule, ctx: UserPromptRuleContext): boolean {
   if (transcript_meta_field_exists !== undefined) {
     if (!ctx.transcriptMeta) return false;
     if (!getAtPath(ctx.transcriptMeta, transcript_meta_field_exists)) return false;
+  }
+
+  if (transcript_meta_field_equals !== undefined) {
+    if (!ctx.transcriptMeta) return false;
+    if (getAtPath(ctx.transcriptMeta, transcript_meta_field_equals.path) !== transcript_meta_field_equals.value) {
+      return false;
+    }
   }
 
   return true;
