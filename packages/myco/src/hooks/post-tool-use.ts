@@ -27,6 +27,7 @@ export async function main() {
       output_preview: typeof input.toolOutput === 'string' ? input.toolOutput.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) : undefined,
       session_id: sessionId,
       agent: input.agent,
+      transcript_path: input.transcriptPath,
     });
 
     if (!result.ok) {
@@ -36,6 +37,7 @@ export async function main() {
         tool: input.toolName,
         input: input.toolInput,
         output_preview: typeof input.toolOutput === 'string' ? input.toolOutput.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) : undefined,
+        transcript_path: input.transcriptPath,
       });
     }
   } catch (error) {
