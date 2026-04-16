@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resolveCost } from '@myco/agent/cost/index.js';
+import { getCostProvider, resolveCost } from '@myco/agent/cost/index.js';
 import { OPENROUTER_API_KEY_ENV } from '@myco/cli/providers/openrouter.js';
 
 afterEach(() => {
@@ -8,6 +8,32 @@ afterEach(() => {
 });
 
 describe('resolveCost', () => {
+  it('exposes provider capabilities through the registry', () => {
+    const openRouterProvider = getCostProvider({
+      runtime: 'openai-agents',
+      model: 'openrouter/auto',
+      provider: { type: 'openrouter', model: 'openrouter/auto' },
+      usage: {},
+    });
+    const localProvider = getCostProvider({
+      runtime: 'claude-sdk',
+      model: 'llama3.2',
+      provider: { type: 'ollama', model: 'llama3.2' },
+      usage: {},
+    });
+
+    expect(openRouterProvider?.capabilities).toEqual({
+      estimateFromUsage: true,
+      fetchActualRunCost: true,
+      fetchCatalogPricing: true,
+    });
+    expect(localProvider?.capabilities).toEqual({
+      estimateFromUsage: false,
+      fetchActualRunCost: false,
+      fetchCatalogPricing: false,
+    });
+  });
+
   it('prefers actual cost reported by the runtime', async () => {
     const result = await resolveCost({
       runtime: 'claude-sdk',

@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from '../ui/select';
 import { SearchableSelect } from '../ui/searchable-select';
-import type { ProviderInfo } from '../../hooks/use-providers';
+import { defaultBaseUrlForProvider, providerSupportsRuntime, type ProviderInfo } from '../../hooks/use-providers';
 import { useModels } from '../../hooks/use-models';
 
 const RUNTIME_LABELS: Record<string, string> = {
@@ -41,10 +41,15 @@ const PROVIDER_ICONS: Record<string, typeof Cloud> = {
 };
 
 const MANUAL_MODEL_ENTRY_PROVIDERS = new Set(['ollama', 'lmstudio', 'openai-compatible']);
+const OPENAI_COMPATIBLE_BACKEND_OPTIONS = [
+  { value: 'lmstudio', label: 'LM Studio' },
+  { value: 'ollama', label: 'Ollama' },
+] as const;
 
 export interface ProviderModelSelectorProps {
   runtime: string;
   providerType: string;
+  localBackend?: 'ollama' | 'lmstudio' | '';
   model: string;
   baseUrl: string;
   contextLength: string;
@@ -54,6 +59,7 @@ export interface ProviderModelSelectorProps {
   showRuntimeSelector?: boolean;
   onRuntimeChange: (runtime: string) => void;
   onProviderChange: (type: string) => void;
+  onLocalBackendChange?: (localBackend: 'ollama' | 'lmstudio' | '') => void;
   onModelChange: (model: string) => void;
   onBaseUrlChange: (url: string) => void;
   onContextLengthChange: (ctx: string) => void;
@@ -66,6 +72,7 @@ export interface ProviderModelSelectorProps {
 export function ProviderModelSelector({
   runtime,
   providerType,
+  localBackend = '',
   model,
   baseUrl,
   contextLength,
@@ -75,17 +82,19 @@ export function ProviderModelSelector({
   showRuntimeSelector = true,
   onRuntimeChange,
   onProviderChange,
+  onLocalBackendChange,
   onModelChange,
   onBaseUrlChange,
   onContextLengthChange,
   onBaseUrlBlur,
   onContextLengthBlur,
 }: ProviderModelSelectorProps) {
-  const providersForRuntime = providers.filter((provider) => provider.runtime === runtime);
-  const selectedProvider = providersForRuntime.find((p) => p.type === providerType);
+  const providersForRuntime = providers.filter((provider) => providerSupportsRuntime(provider.type, runtime as 'claude-sdk' | 'openai-agents'));
+  const selectedProvider = providers.find((p) => p.type === providerType);
   const isLocal = providerType === 'ollama' || providerType === 'lmstudio' || providerType === 'openai-compatible';
   const hasSelection = providerType !== '';
-  const modelsQuery = useModels(providerType || null, baseUrl || selectedProvider?.baseUrl, 'llm');
+  const resolvedBaseUrl = baseUrl || defaultBaseUrlForProvider(providerType as 'ollama' | 'lmstudio' | 'openai-compatible' | undefined, localBackend, selectedProvider?.baseUrl);
+  const modelsQuery = useModels(providerType || null, resolvedBaseUrl, 'llm', localBackend || null);
   const availableModels = modelsQuery.data?.models ?? selectedProvider?.models ?? [];
   const allowsManualModelEntry = MANUAL_MODEL_ENTRY_PROVIDERS.has(providerType);
   const shouldShowModelSelect = availableModels.length > 0;
@@ -159,8 +168,30 @@ export function ProviderModelSelector({
             value={baseUrl}
             onChange={(e) => onBaseUrlChange(e.target.value)}
             onBlur={onBaseUrlBlur}
-            placeholder={selectedProvider?.baseUrl ?? ''}
+            placeholder={resolvedBaseUrl}
           />
+        </div>
+      )}
+
+      {providerType === 'openai-compatible' && onLocalBackendChange && (
+        <div className="space-y-1">
+          <label className="font-sans text-xs text-on-surface-variant">Local Backend</label>
+          <Select value={localBackend || 'lmstudio'} onValueChange={(value) => onLocalBackendChange(value as 'ollama' | 'lmstudio')}>
+            <SelectTrigger>
+              <SelectValue placeholder="Select a backend" />
+            </SelectTrigger>
+            <SelectContent>
+              {OPENAI_COMPATIBLE_BACKEND_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="font-sans text-[11px] text-on-surface-variant/70">
+            OpenAI-compatible chat endpoints look the same, but local backends
+            still need different model-loading and context handling.
+          </p>
         </div>
       )}
 

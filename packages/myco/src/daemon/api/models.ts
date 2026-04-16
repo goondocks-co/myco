@@ -1,5 +1,9 @@
 import { OllamaBackend } from '../../intelligence/ollama.js';
 import { LmStudioBackend } from '../../intelligence/lm-studio.js';
+import {
+  createLocalOpenAIBackend,
+  inferLocalOpenAIBackendKind,
+} from '../../intelligence/local-openai-backends.js';
 import { OPENAI_API_KEY_ENV } from '../../cli/providers/openai-embeddings.js';
 import { OPENROUTER_API_KEY_ENV } from '../../cli/providers/openrouter.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -90,6 +94,7 @@ async function fetchRemoteProviderModels(
 export async function handleGetModels(req: RouteRequest): Promise<RouteResponse> {
   const provider = req.query.provider;
   const type = req.query.type; // 'llm' | 'embedding' | undefined (all)
+  const localBackend = req.query.local_backend;
 
   if (!provider) {
     return { status: 400, body: { error: 'provider query parameter required' } };
@@ -98,11 +103,13 @@ export async function handleGetModels(req: RouteRequest): Promise<RouteResponse>
   let models: string[] = [];
 
   try {
-    if (provider === 'ollama') {
-      const backend = new OllamaBackend({ base_url: req.query.base_url });
-      models = await backend.listModels(MODEL_LIST_TIMEOUT_MS);
-    } else if (provider === 'lmstudio' || provider === 'lm-studio' || provider === 'openai-compatible') {
-      const backend = new LmStudioBackend({ base_url: req.query.base_url });
+    const localBackendKind = inferLocalOpenAIBackendKind({
+      type: provider === 'lm-studio' ? 'lmstudio' : provider as 'ollama' | 'lmstudio' | 'openai-compatible',
+      localBackend: localBackend as 'ollama' | 'lmstudio' | undefined,
+      baseUrl: req.query.base_url,
+    });
+    if (localBackendKind) {
+      const backend = createLocalOpenAIBackend(localBackendKind, req.query.base_url);
       models = await backend.listModels(MODEL_LIST_TIMEOUT_MS);
     } else if (provider === 'anthropic') {
       models = ANTHROPIC_MODELS;

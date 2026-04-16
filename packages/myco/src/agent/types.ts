@@ -88,6 +88,7 @@ export type ProviderType =
 export interface ProviderConfig {
   runtime?: RuntimeId;
   type: ProviderType;
+  localBackend?: 'ollama' | 'lmstudio';
   baseUrl?: string;
   apiKey?: string;
   model?: string;

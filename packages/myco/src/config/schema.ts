@@ -33,6 +33,7 @@ const CaptureSchema = z.object({
 const ProviderOverrideSchema = z.object({
   runtime: RuntimeIdSchema.optional(),
   type: z.enum(['anthropic', 'ollama', 'lmstudio', 'openai', 'openrouter', 'openai-compatible']),
+  local_backend: z.enum(['ollama', 'lmstudio']).optional(),
   base_url: z.string().optional(),
   model: z.string().optional(),
   reasoning_map: z.object({

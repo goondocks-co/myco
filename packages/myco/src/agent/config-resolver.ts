@@ -21,7 +21,7 @@ import {
 } from './loader.js';
 import { loadAllTasks } from './registry.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
-import type { MycoConfig } from '@myco/config/schema.js';
+import type { MycoConfig, PhaseOverride, TaskProviderOverride } from '@myco/config/schema.js';
 import type { ProviderConfig, EffectiveConfig, RuntimeId } from './types.js';
 import { inferRuntimeFromProviderType } from './provider-runtime.js';
 
@@ -71,6 +71,7 @@ export interface ResolvedRunConfig {
 function toProviderConfig(p: {
   runtime?: RuntimeId;
   type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible';
+  local_backend?: 'ollama' | 'lmstudio';
   base_url?: string;
   model?: string;
   reasoning_map?: Partial<Record<'low' | 'default' | 'high', string>>;
@@ -79,10 +80,25 @@ function toProviderConfig(p: {
   return {
     runtime: p.runtime ?? inferRuntimeFromProviderType(p.type),
     type: p.type,
+    localBackend: p.local_backend,
     baseUrl: p.base_url,
     model: p.model,
     reasoningMap: p.reasoning_map,
     contextLength: p.context_length,
+  };
+}
+
+function applyTaskConfigOverrides(
+  config: EffectiveConfig,
+  taskConfig: TaskProviderOverride | undefined,
+  runtime: RuntimeId,
+): EffectiveConfig {
+  return {
+    ...config,
+    runtime,
+    ...(taskConfig?.model ? { model: taskConfig.model } : {}),
+    ...(taskConfig?.maxTurns ? { maxTurns: taskConfig.maxTurns } : {}),
+    ...(taskConfig?.timeoutSeconds ? { timeoutSeconds: taskConfig.timeoutSeconds } : {}),
   };
 }
 
@@ -152,6 +168,7 @@ export function resolveRunConfig(
 
   // Load myco.yaml for provider overrides (global, per-task, per-phase)
   let taskProviderOverride: ProviderConfig | undefined;
+  let taskConfig: TaskProviderOverride | undefined;
   let phaseProviderOverrides: Record<string, { provider?: ProviderConfig; model?: string; maxTurns?: number }> = {};
   let taskParams: Record<string, string | number | boolean> | undefined;
   let runtime: RuntimeId = config.execution?.runtime
@@ -161,7 +178,7 @@ export function resolveRunConfig(
     const mycoConfig = loadMergedConfig(vaultDir);
 
     // Per-task override takes priority over global
-    const taskConfig = taskName ? mycoConfig.agent.tasks?.[taskName] : undefined;
+    taskConfig = taskName ? mycoConfig.agent.tasks?.[taskName] : undefined;
     const globalProvider = mycoConfig.agent.provider;
     runtime = taskConfig?.runtime
       ?? taskConfig?.provider?.runtime
@@ -182,7 +199,7 @@ export function resolveRunConfig(
 
     // Per-phase overrides from myco.yaml
     if (taskConfig?.phases) {
-      for (const [phaseName, phaseConfig] of Object.entries(taskConfig.phases)) {
+      for (const [phaseName, phaseConfig] of Object.entries(taskConfig.phases) as Array<[string, PhaseOverride]>) {
         phaseProviderOverrides[phaseName] = {
           ...(phaseConfig.provider ? { provider: toProviderConfig(phaseConfig.provider) } : {}),
           ...(phaseConfig.model != null ? { model: phaseConfig.model } : {}),
@@ -202,7 +219,7 @@ export function resolveRunConfig(
   }
 
   return {
-    config: { ...config, runtime },
+    config: applyTaskConfigOverrides(config, taskConfig, runtime),
     definitionsDir,
     taskProviderOverride,
     phaseProviderOverrides,

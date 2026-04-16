@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useState, useCallback, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Play } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { PageHeader } from '../components/ui/page-header';
@@ -24,8 +24,7 @@ const PARAM_TASK = 'task';
 const VALID_TABS = new Set<AgentTab>(['runs', 'tasks', 'config']);
 
 /** Read initial state from URL search params. */
-function readUrlState(): { tab: AgentTab; runId?: string; taskId?: string } {
-  const params = new URLSearchParams(window.location.search);
+function readUrlState(params: URLSearchParams): { tab: AgentTab; runId?: string; taskId?: string } {
   const rawTab = params.get(PARAM_TAB);
   const tab: AgentTab = rawTab && VALID_TABS.has(rawTab as AgentTab)
     ? (rawTab as AgentTab)
@@ -37,15 +36,12 @@ function readUrlState(): { tab: AgentTab; runId?: string; taskId?: string } {
   };
 }
 
-/** Write navigation state to URL search params. */
-function writeUrlState(tab: AgentTab, runId?: string, taskId?: string): void {
+function buildUrlState(tab: AgentTab, runId?: string, taskId?: string): URLSearchParams {
   const params = new URLSearchParams();
   if (tab !== 'runs') params.set(PARAM_TAB, tab);
   if (runId) params.set(PARAM_RUN, runId);
   if (taskId) params.set(PARAM_TASK, taskId);
-  const search = params.toString();
-  const url = search ? `${window.location.pathname}?${search}` : window.location.pathname;
-  window.history.pushState(null, '', url);
+  return params;
 }
 
 /* ---------- Tab definitions ---------- */
@@ -59,37 +55,21 @@ const TABS: Tab[] = [
 /* ---------- Component ---------- */
 
 export default function Agent() {
-  const location = useLocation();
-  const initial = readUrlState();
-  const [tab, setTab] = useState<AgentTab>(initial.tab);
-  const [selectedRunId, setSelectedRunId] = useState<string | undefined>(initial.runId);
-  const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>(initial.taskId);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { tab, runId: selectedRunId, taskId: selectedTaskId } = useMemo(
+    () => readUrlState(searchParams),
+    [searchParams],
+  );
   const [triggerOpen, setTriggerOpen] = useState(false);
-  const hasMounted = useRef(false);
-  const skipNextPush = useRef(false);
 
-  // Push URL whenever state changes (skip on mount and popstate)
-  useEffect(() => {
-    if (!hasMounted.current) { hasMounted.current = true; return; }
-    if (skipNextPush.current) { skipNextPush.current = false; return; }
-    writeUrlState(tab, selectedRunId, selectedTaskId);
-  }, [tab, selectedRunId, selectedTaskId]);
-
-  // Sync state from URL when navigation updates search params.
-  useEffect(() => {
-    skipNextPush.current = true;
-    const state = readUrlState();
-    setTab(state.tab);
-    setSelectedRunId(state.runId);
-    setSelectedTaskId(state.taskId);
-  }, [location.search, location.key]);
+  const navigateState = useCallback((nextTab: AgentTab, nextRunId?: string, nextTaskId?: string) => {
+    setSearchParams(buildUrlState(nextTab, nextRunId, nextTaskId));
+  }, [setSearchParams]);
 
   const switchTab = useCallback((id: string) => {
     const t = id as AgentTab;
-    setTab(t);
-    if (t !== 'runs') setSelectedRunId(undefined);
-    if (t !== 'tasks') setSelectedTaskId(undefined);
-  }, []);
+    navigateState(t);
+  }, [navigateState]);
 
   return (
     <div className="p-6 space-y-4">
@@ -112,9 +92,9 @@ export default function Agent() {
       {/* Runs tab */}
       {tab === 'runs' && (
         selectedRunId ? (
-          <RunDetail runId={selectedRunId} onBack={() => setSelectedRunId(undefined)} />
+          <RunDetail runId={selectedRunId} onBack={() => navigateState('runs')} />
         ) : (
-          <RunList onSelectRun={setSelectedRunId} onTriggerRun={() => setTriggerOpen(true)} />
+          <RunList onSelectRun={(id) => navigateState('runs', id)} onTriggerRun={() => setTriggerOpen(true)} />
         )
       )}
 
@@ -123,16 +103,14 @@ export default function Agent() {
         selectedTaskId ? (
           <TaskDetail
             taskId={selectedTaskId}
-            onBack={() => setSelectedTaskId(undefined)}
-            onNavigate={setSelectedTaskId}
+            onBack={() => navigateState('tasks')}
+            onNavigate={(taskId) => navigateState('tasks', undefined, taskId)}
             onRunTriggered={(runId) => {
-              setSelectedTaskId(undefined);
-              setTab('runs');
-              if (runId) setSelectedRunId(runId);
+              navigateState('runs', runId);
             }}
           />
         ) : (
-          <TaskList onSelect={setSelectedTaskId} />
+          <TaskList onSelect={(taskId) => navigateState('tasks', undefined, taskId)} />
         )
       )}
 
@@ -142,7 +120,7 @@ export default function Agent() {
       <TriggerRun
         open={triggerOpen}
         onOpenChange={setTriggerOpen}
-        onTriggered={() => setSelectedRunId(undefined)}
+        onTriggered={() => navigateState('runs')}
       />
     </div>
   );

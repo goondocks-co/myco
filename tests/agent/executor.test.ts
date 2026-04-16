@@ -16,6 +16,7 @@ import { insertRun, getRun } from '@myco/db/queries/runs.js';
 import { epochSeconds } from '@myco/constants.js';
 import { composeTaskPrompt, composePhasePrompt } from '@myco/agent/executor.js';
 import type { PhaseDefinition, ExecutionConfig, OrchestratorConfig } from '@myco/agent/types.js';
+import type { ReportRow } from '@myco/db/queries/reports.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -62,6 +63,8 @@ const DEFAULT_RESULT_TEXT = 'Agent run complete.';
  * of using num_turns from the SDK result.
  */
 let mockAssistantCount = 0;
+let mockToolCallCounts: Record<string, number> = {};
+let mockRunReports: ReportRow[] = [];
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => {
   return {
@@ -272,6 +275,22 @@ vi.mock('@myco/agent/tools.js', () => ({
   },
 }));
 
+vi.mock('@myco/db/queries/turns.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@myco/db/queries/turns.js')>();
+  return {
+    ...original,
+    countToolCallsByRun: () => mockToolCallCounts,
+  };
+});
+
+vi.mock('@myco/db/queries/reports.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@myco/db/queries/reports.js')>();
+  return {
+    ...original,
+    listReports: () => mockRunReports,
+  };
+});
+
 // ---------------------------------------------------------------------------
 // Mock: initDatabaseForVault (we manage DB ourselves in tests)
 // ---------------------------------------------------------------------------
@@ -330,6 +349,20 @@ async function createTestTask(): Promise<void> {
   });
 }
 
+async function createTask(taskId: string, prompt = TEST_TASK_PROMPT): Promise<void> {
+  const now = epochSeconds();
+  upsertTask({
+    id: taskId,
+    agent_id: TEST_AGENT_ID,
+    prompt,
+    display_name: taskId,
+    description: `Run ${taskId}`,
+    is_default: 0,
+    created_at: now,
+    updated_at: now,
+  });
+}
+
 /** Resets all mock state between tests. */
 function resetMockState(): void {
   capturedQueryArgs = null;
@@ -344,6 +377,8 @@ function resetMockState(): void {
   mockOrchestratorConfig = undefined;
   mockTaskReasoningLevel = undefined;
   mockAssistantCount = 0;
+  mockToolCallCounts = {};
+  mockRunReports = [];
   mockMergedConfig = {
     version: 3,
     config_version: 0,
@@ -682,6 +717,58 @@ describe('runAgent', () => {
     // The executor creates an AbortController and passes it to the SDK
     expect(opts.abortController).toBeDefined();
     expect(opts.abortController).toBeInstanceOf(AbortController);
+  });
+
+  it('fails title-summary when no report or session update side effect occurred', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+    await createTask('title-summary', 'Generate or update session titles and summaries.');
+
+    const result = await runAgent(TEST_VAULT_DIR, { task: 'title-summary' });
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('title-summary');
+    const run = getRun(result.runId);
+    expect(run?.status).toBe('failed');
+    expect(run?.error).toContain('title-summary');
+  });
+
+  it('allows title-summary to complete when it reports a skip', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+    await createTask('title-summary', 'Generate or update session titles and summaries.');
+
+    mockRunReports = [{
+      id: 1,
+      run_id: 'unused',
+      agent_id: TEST_AGENT_ID,
+      action: 'skip',
+      summary: 'No update needed',
+      details: null,
+      created_at: epochSeconds(),
+    }];
+
+    const result = await runAgent(TEST_VAULT_DIR, { task: 'title-summary' });
+
+    expect(result.status).toBe('completed');
+  });
+
+  it('allows title-summary to complete when it updates the session and reports', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+    await createTask('title-summary', 'Generate or update session titles and summaries.');
+
+    mockToolCallCounts = { vault_update_session: 1 };
+    mockRunReports = [{
+      id: 1,
+      run_id: 'unused',
+      agent_id: TEST_AGENT_ID,
+      action: 'summary',
+      summary: 'Sessions updated: 1',
+      details: null,
+      created_at: epochSeconds(),
+    }];
+
+    const result = await runAgent(TEST_VAULT_DIR, { task: 'title-summary' });
+
+    expect(result.status).toBe('completed');
   });
 });
 

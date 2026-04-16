@@ -233,6 +233,12 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
     () => parseJson<ParsedUsageData>(runData?.run?.usage_data),
     [runData?.run?.usage_data],
   );
+  const phaseResults = useMemo(() => {
+    const parsed = parseJson<Record<string, unknown>>(runData?.run?.actions_taken);
+    return parsed?.phases && Array.isArray(parsed.phases)
+      ? parsed.phases as PhaseResult[]
+      : null;
+  }, [runData?.run?.actions_taken]);
 
   if (runLoading) {
     return (
@@ -262,12 +268,6 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   const reports = reportsData?.reports ?? [];
   const turns = turnsData ?? [];
   const costCardLabel = run.cost_source === 'estimated' ? 'Estimated Cost' : 'Cost';
-  const phaseResults = useMemo(() => {
-    const parsed = parseJson<Record<string, unknown>>(run.actions_taken);
-    return parsed?.phases && Array.isArray(parsed.phases)
-      ? parsed.phases as PhaseResult[]
-      : null;
-  }, [run.actions_taken]);
 
   return (
     <div className="space-y-6">

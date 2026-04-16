@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  defaultBaseUrlForProvider,
   draftToProviderConfig,
   maybeInferRuntimeFromProviderType,
+  providerSupportsRuntime,
   seedDraftFromProviderType,
   type ProviderConfig,
   type ProviderDraft,
@@ -16,6 +18,7 @@ export interface ProviderDraftSource {
   provider?: {
     runtime?: string;
     type?: string;
+    local_backend?: 'ollama' | 'lmstudio';
     model?: string;
     reasoning_map?: Partial<Record<ReasoningLevel, string>>;
     base_url?: string;
@@ -26,6 +29,7 @@ export interface ProviderDraftSource {
 export interface ProviderDraftDefaults {
   runtime?: string;
   providerType?: string;
+  localBackend?: 'ollama' | 'lmstudio';
   model?: string;
   reasoningMap?: Partial<Record<ReasoningLevel, string>>;
   baseUrl?: string;
@@ -36,6 +40,7 @@ export function emptyProviderDraft(): ProviderDraft {
   return {
     runtime: '',
     type: '',
+    localBackend: '',
     model: '',
     reasoningLow: '',
     reasoningDefault: '',
@@ -66,6 +71,7 @@ export function providerDraftFromSource(
     return {
       runtime: runtimeFromSource(source, defaults),
       type: providerType,
+      localBackend: source?.provider?.local_backend ?? defaults?.localBackend ?? '',
       model: source?.provider?.model ?? source?.model ?? '',
       reasoningLow: source?.provider?.reasoning_map?.low ?? '',
       reasoningDefault: source?.provider?.reasoning_map?.default
@@ -81,6 +87,7 @@ export function providerDraftFromSource(
   return {
     runtime: runtimeFromSource(source, defaults),
     type: (defaults?.providerType as ProviderDraft['type'] | undefined) ?? '',
+    localBackend: defaults?.localBackend ?? '',
     model: source?.model ?? defaults?.model ?? '',
     reasoningLow: defaults?.reasoningMap?.low ?? '',
     reasoningDefault: defaults?.reasoningMap?.default
@@ -96,6 +103,7 @@ export function providerDraftFromSource(
 export function providerDraftsEqual(left: ProviderDraft, right: ProviderDraft): boolean {
   return left.runtime === right.runtime
     && left.type === right.type
+    && left.localBackend === right.localBackend
     && left.model === right.model
     && left.reasoningLow === right.reasoningLow
     && left.reasoningDefault === right.reasoningDefault
@@ -123,10 +131,16 @@ export function draftToNormalizedProviderConfig(
   });
 }
 
+function isDefaultLocalBaseUrl(value: string): boolean {
+  return value === ''
+    || value === defaultBaseUrlForProvider('openai-compatible', 'ollama')
+    || value === defaultBaseUrlForProvider('openai-compatible', 'lmstudio');
+}
+
 function nextDraftForRuntime(runtime: string, providers: ProviderInfo[]): ProviderDraft {
-  const firstProvider = providers.find((provider) => provider.runtime === runtime);
+  const firstProvider = providers.find((provider) => providerSupportsRuntime(provider.type, runtime as ProviderDraft['runtime']));
   if (firstProvider) {
-    return seedDraftFromProviderType(firstProvider.type, providers);
+    return seedDraftFromProviderType(firstProvider.type, providers, runtime as ProviderDraft['runtime']);
   }
   return {
     ...emptyProviderDraft(),
@@ -152,6 +166,7 @@ export function useProviderConfigDraft({
       source?.model,
       source?.provider?.runtime,
       source?.provider?.type,
+      source?.provider?.local_backend,
       source?.provider?.model,
       source?.provider?.reasoning_map?.low,
       source?.provider?.reasoning_map?.default,
@@ -160,6 +175,7 @@ export function useProviderConfigDraft({
       source?.provider?.context_length,
       defaults?.runtime,
       defaults?.providerType,
+      defaults?.localBackend,
       defaults?.model,
       defaults?.reasoningMap?.low,
       defaults?.reasoningMap?.default,
@@ -179,11 +195,20 @@ export function useProviderConfigDraft({
   const isDirty = !providerDraftsEqual(draft, savedDraft);
 
   const handleRuntimeChange = useCallback((runtime: string) => {
-    setDraft(nextDraftForRuntime(runtime, providers));
+    setDraft((prev) => {
+      if (providerSupportsRuntime(prev.type, runtime as ProviderDraft['runtime'])) {
+        return { ...prev, runtime: runtime as ProviderDraft['runtime'] };
+      }
+      return nextDraftForRuntime(runtime, providers);
+    });
   }, [providers]);
 
   const handleProviderChange = useCallback((type: string) => {
-    setDraft(seedDraftFromProviderType(type, providers));
+    setDraft((prev) => seedDraftFromProviderType(
+      type,
+      providers,
+      providerSupportsRuntime(type as ProviderDraft['type'], prev.runtime) ? prev.runtime : undefined,
+    ));
   }, [providers]);
 
   const handleModelChange = useCallback((model: string) => {
@@ -191,6 +216,24 @@ export function useProviderConfigDraft({
       ...prev,
       model,
       reasoningDefault: prev.reasoningDefault || model,
+    }));
+  }, []);
+
+  const handleLocalBackendChange = useCallback((localBackend: ProviderDraft['localBackend']) => {
+    setDraft((prev) => ({
+      ...prev,
+      localBackend,
+      ...(prev.type === 'openai-compatible' && localBackend && isDefaultLocalBaseUrl(prev.baseUrl)
+        ? { baseUrl: defaultBaseUrlForProvider(prev.type, localBackend) }
+        : {}),
+      ...(prev.type === 'openai-compatible'
+        ? {
+            model: '',
+            reasoningLow: '',
+            reasoningDefault: '',
+            reasoningHigh: '',
+          }
+        : {}),
     }));
   }, []);
 
@@ -236,6 +279,7 @@ export function useProviderConfigDraft({
     handleRuntimeChange,
     handleProviderChange,
     handleModelChange,
+    handleLocalBackendChange,
     handleReasoningChange,
     handleBaseUrlChange,
     handleContextLengthChange,

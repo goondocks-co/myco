@@ -37,11 +37,27 @@ import { executeContextQueries } from './context-queries.js';
 import { resolveRunConfig } from './config-resolver.js';
 import { resolveOllamaContextVariants } from './ollama-context.js';
 import { resolveReasoningModel } from './reasoning-levels.js';
+import { validateTaskPostconditions } from './task-postconditions.js';
 import { computeWaves, phaseSessionId } from './wave-computation.js';
 import { SKILL_GENERATE_TASK } from './instruction-builders.js';
 import { resolveCost } from './cost/index.js';
+import {
+  aggregateUsage,
+  abortReasonMessage,
+  buildUsageData,
+  checkpointResultsForResume,
+  isSessionResumeFailure,
+  parseCheckpointState,
+  resolveProviderForResume,
+  serializeCheckpointState,
+  type RunCheckpointState,
+} from './executor-state.js';
+import {
+  buildRunAccountingUpdate,
+  summarizePhaseCosts,
+} from './run-accounting.js';
 import { getAgentRuntime } from './runtime/index.js';
-import type { CostResolution, CostSource } from './cost/types.js';
+import type { CostResolution } from './cost/types.js';
 import type { ContextQueryResult } from './context-queries.js';
 import type { ProviderConfig } from './types.js';
 import type {
@@ -50,7 +66,6 @@ import type {
   EffectiveConfig,
   PhaseDefinition,
   PhaseResult,
-  ProviderType,
   RuntimeUsage,
 } from './types.js';
 
@@ -81,51 +96,6 @@ const PROMPT_SECTION_PRIOR_PHASES = '## Prior Phase Results';
 
 /** Header for the current phase in phased prompts. */
 const PROMPT_SECTION_CURRENT_PHASE = '## Current Phase: ';
-
-/** Error patterns that indicate an SDK/runtime session could not be resumed. */
-const SESSION_RESUME_ERROR_PATTERNS = [
-  /session/,
-  /resume/,
-  /previous[_ ]response/,
-  /conversation/,
-];
-
-interface PhaseCheckpoint {
-  name: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  summary?: string;
-  turnsUsed?: number;
-  tokensUsed?: number;
-  costUsd?: number;
-  costSource?: CostSource;
-  costData?: CostResolution;
-  sessionRef?: string;
-  sessionData?: unknown;
-  usage?: RuntimeUsage;
-  updatedAt: number;
-}
-
-interface RunCheckpointState {
-  runtime: EffectiveConfig['runtime'];
-  provider?: ProviderType;
-  model?: string;
-  sessionRef?: string;
-  sessionData?: unknown;
-  phases: Record<string, PhaseCheckpoint>;
-}
-
-function abortReasonMessage(abortController?: AbortController): string | null {
-  if (!abortController?.signal.aborted) return null;
-  const reason = abortController.signal.reason;
-  if (reason instanceof Error) return reason.message;
-  if (typeof reason === 'string' && reason.length > 0) return reason;
-  return 'Agent run aborted';
-}
-
-function isSessionResumeFailure(error: unknown): boolean {
-  const message = toErrorMessage(error).toLowerCase();
-  return SESSION_RESUME_ERROR_PATTERNS.some((pattern) => pattern.test(message));
-}
 
 // ---------------------------------------------------------------------------
 // Prompt composition
@@ -204,222 +174,6 @@ export function composePhasePrompt(
   parts.push(`${PROMPT_SECTION_CURRENT_PHASE}${phase.name}\n${phase.prompt}`);
 
   return parts.join(PROMPT_SECTION_SEPARATOR);
-}
-
-function parseCheckpointState(raw: string | null | undefined): RunCheckpointState {
-  if (!raw) {
-    return { runtime: 'claude-sdk', phases: {} };
-  }
-  try {
-    const parsed = JSON.parse(raw) as Partial<RunCheckpointState>;
-    return {
-      runtime: parsed.runtime ?? 'claude-sdk',
-      provider: parsed.provider,
-      model: parsed.model,
-      sessionRef: parsed.sessionRef,
-      sessionData: parsed.sessionData,
-      phases: parsed.phases ?? {},
-    };
-  } catch {
-    return { runtime: 'claude-sdk', phases: {} };
-  }
-}
-
-function checkpointResultsForResume(
-  config: EffectiveConfig,
-  checkpointState: RunCheckpointState,
-): PhaseResult[] {
-  if (!config.phases) return [];
-  const order = new Map(config.phases.map((phase, index) => [phase.name, index]));
-  return Object.values(checkpointState.phases)
-    .filter((phase) => phase.status === 'completed')
-    .sort((a, b) => (order.get(a.name) ?? 0) - (order.get(b.name) ?? 0))
-    .map((phase) => ({
-      name: phase.name,
-      status: 'completed',
-      turnsUsed: phase.turnsUsed ?? 0,
-      tokensUsed: phase.tokensUsed ?? 0,
-      costUsd: phase.costUsd ?? 0,
-      costSource: phase.costSource,
-      costData: phase.costData,
-      summary: phase.summary ?? '',
-      usage: phase.usage,
-      sessionRef: phase.sessionRef,
-    }));
-}
-
-function serializeCheckpointState(state: RunCheckpointState): string {
-  return JSON.stringify(state);
-}
-
-function aggregateUsage(usages: Array<RuntimeUsage | undefined>): RuntimeUsage {
-  const aggregate: RuntimeUsage = {
-    requests: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0,
-    reasoningTokens: 0,
-    cachedTokens: 0,
-    durationMs: 0,
-  };
-  let sawCost = false;
-
-  for (const usage of usages) {
-    if (!usage) continue;
-    aggregate.requests = (aggregate.requests ?? 0) + (usage.requests ?? 0);
-    aggregate.inputTokens = (aggregate.inputTokens ?? 0) + (usage.inputTokens ?? 0);
-    aggregate.outputTokens = (aggregate.outputTokens ?? 0) + (usage.outputTokens ?? 0);
-    aggregate.totalTokens = (aggregate.totalTokens ?? 0) + (usage.totalTokens ?? 0);
-    aggregate.reasoningTokens = (aggregate.reasoningTokens ?? 0) + (usage.reasoningTokens ?? 0);
-    aggregate.cachedTokens = (aggregate.cachedTokens ?? 0) + (usage.cachedTokens ?? 0);
-    aggregate.durationMs = (aggregate.durationMs ?? 0) + (usage.durationMs ?? 0);
-    if (usage.costUsd !== undefined && usage.costUsd !== null) {
-      aggregate.costUsd = (aggregate.costUsd ?? 0) + usage.costUsd;
-      sawCost = true;
-    }
-  }
-
-  if (!sawCost) {
-    delete aggregate.costUsd;
-  }
-
-  return aggregate;
-}
-
-function buildUsageData(
-  runUsage: RuntimeUsage,
-  runCost?: CostResolution,
-  phaseResults?: PhaseResult[],
-): string {
-  return JSON.stringify({
-    run: runUsage,
-    runCost: runCost ?? null,
-    phases: phaseResults?.map((phase) => ({
-      name: phase.name,
-      usage: phase.usage ?? null,
-      tokensUsed: phase.tokensUsed,
-      costUsd: phase.costUsd,
-      costSource: phase.costSource ?? null,
-      costData: phase.costData ?? null,
-    })) ?? [],
-  });
-}
-
-function buildActionsTaken(
-  runtime: EffectiveConfig['runtime'],
-  provider: ProviderConfig | undefined,
-  model: string,
-  phaseResults?: PhaseResult[],
-): string {
-  return JSON.stringify({
-    runtime,
-    model,
-    provider: provider?.type ?? 'anthropic',
-    ...(provider?.baseUrl ? { baseUrl: provider.baseUrl } : {}),
-    ...(phaseResults ? { phases: phaseResults } : {}),
-  });
-}
-
-function resolveProviderForResume(
-  currentProvider: ProviderConfig | undefined,
-  resumedRun: ReturnType<typeof getRun>,
-  checkpointState: RunCheckpointState,
-  runtime: EffectiveConfig['runtime'],
-  model: string,
-): ProviderConfig | undefined {
-  const persistedType = resumedRun?.provider ?? checkpointState.provider;
-  if (!persistedType) return currentProvider;
-  const matchingCurrentProvider = currentProvider?.type === persistedType ? currentProvider : undefined;
-
-  return {
-    ...(matchingCurrentProvider ?? {}),
-    runtime,
-    type: persistedType,
-    model,
-  };
-}
-
-function serializeCostData(cost: CostResolution | undefined): string | null {
-  return cost ? JSON.stringify(cost) : null;
-}
-
-function summarizePhaseCosts(phaseResults: PhaseResult[]): CostResolution {
-  const costedPhases = phaseResults.filter((phase) => phase.costData && phase.costData.costUsd !== null);
-  if (costedPhases.length === 0) {
-    return {
-      source: 'unavailable',
-      costUsd: null,
-      actualCostUsd: null,
-      estimatedCostUsd: null,
-      breakdown: {
-        inputTokens: 0,
-        cachedInputTokens: 0,
-        uncachedInputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        requestCount: 0,
-      },
-      pricingVersion: null,
-      message: 'No phase cost data available',
-    };
-  }
-
-  const firstCost = costedPhases[0].costData!;
-  const aggregate = {
-    costUsd: 0,
-    actualCostUsd: 0,
-    estimatedCostUsd: 0,
-    breakdown: {
-      inputTokens: 0,
-      cachedInputTokens: 0,
-      uncachedInputTokens: 0,
-      outputTokens: 0,
-      reasoningTokens: 0,
-      requestCount: 0,
-      inputCostUsd: 0,
-      cachedInputCostUsd: 0,
-      outputCostUsd: 0,
-      reasoningCostUsd: 0,
-      requestCostUsd: 0,
-      cacheSavingsUsd: 0,
-      totalCostUsd: 0,
-    },
-  };
-
-  for (const phase of costedPhases) {
-    const cost = phase.costData!;
-    const breakdown = cost.breakdown;
-    aggregate.costUsd += cost.costUsd ?? 0;
-    aggregate.actualCostUsd += cost.actualCostUsd ?? 0;
-    aggregate.estimatedCostUsd += cost.estimatedCostUsd ?? 0;
-    aggregate.breakdown.inputTokens += breakdown.inputTokens;
-    aggregate.breakdown.cachedInputTokens += breakdown.cachedInputTokens;
-    aggregate.breakdown.uncachedInputTokens += breakdown.uncachedInputTokens;
-    aggregate.breakdown.outputTokens += breakdown.outputTokens;
-    aggregate.breakdown.reasoningTokens += breakdown.reasoningTokens;
-    aggregate.breakdown.requestCount += breakdown.requestCount;
-    aggregate.breakdown.inputCostUsd += breakdown.inputCostUsd ?? 0;
-    aggregate.breakdown.cachedInputCostUsd += breakdown.cachedInputCostUsd ?? 0;
-    aggregate.breakdown.outputCostUsd += breakdown.outputCostUsd ?? 0;
-    aggregate.breakdown.reasoningCostUsd += breakdown.reasoningCostUsd ?? 0;
-    aggregate.breakdown.requestCostUsd += breakdown.requestCostUsd ?? 0;
-    aggregate.breakdown.cacheSavingsUsd += breakdown.cacheSavingsUsd ?? 0;
-  }
-  aggregate.breakdown.totalCostUsd = aggregate.costUsd;
-
-  const allActual = phaseResults.every((phase) => phase.costData?.source === 'actual');
-  const hasUnavailable = phaseResults.some((phase) => phase.costData?.source === 'unavailable');
-  return {
-    source: allActual ? 'actual' : 'estimated',
-    costUsd: aggregate.costUsd,
-    actualCostUsd: allActual ? aggregate.actualCostUsd : null,
-    estimatedCostUsd: allActual ? null : aggregate.costUsd,
-    breakdown: aggregate.breakdown,
-    pricingVersion: costedPhases.every((phase) => phase.costData?.pricingVersion === firstCost.pricingVersion)
-      ? firstCost.pricingVersion ?? null
-      : null,
-    ...(hasUnavailable ? { message: 'Some phase costs were unavailable; total reflects known phase costs only' } : {}),
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -931,6 +685,7 @@ export async function runAgent(
     : {
       runtime: runtimeId,
       provider: baseProvider?.type,
+      providerConfig: baseProvider,
       model: effectiveModel,
       phases: {},
     };
@@ -948,10 +703,12 @@ export async function runAgent(
   if (!resumedRun) {
     checkpointState.runtime = runtimeId;
     checkpointState.provider = effectiveProvider?.type;
+    checkpointState.providerConfig = effectiveProvider;
     checkpointState.model = effectiveModel;
   } else {
     checkpointState.runtime = checkpointState.runtime ?? runtimeId;
     checkpointState.provider = checkpointState.provider ?? effectiveProvider?.type;
+    checkpointState.providerConfig = checkpointState.providerConfig ?? effectiveProvider;
     checkpointState.model = checkpointState.model ?? effectiveModel;
   }
 
@@ -1043,18 +800,15 @@ export async function runAgent(
       currentCost: CostResolution = summarizePhaseCosts(currentPhaseResults),
     ) => {
       await Promise.resolve(updateRun(runId, {
-        runtime: runtimeId,
-        provider: effectiveProvider?.type ?? null,
-        model: effectiveModel,
-        session_ref: currentCheckpointState.sessionRef ?? null,
-        checkpoints: serializeCheckpointState(currentCheckpointState),
-        usage_data: buildUsageData(currentUsage, currentCost, currentPhaseResults),
-        cost_usd: currentCost.costUsd ?? null,
-        actual_cost_usd: currentCost.actualCostUsd,
-        estimated_cost_usd: currentCost.estimatedCostUsd,
-        cost_source: currentCost.source,
-        cost_data: serializeCostData(currentCost),
-        actions_taken: buildActionsTaken(runtimeId, effectiveProvider, effectiveModel, currentPhaseResults),
+        ...buildRunAccountingUpdate({
+          runtime: runtimeId,
+          provider: effectiveProvider,
+          model: effectiveModel,
+          checkpointState: currentCheckpointState,
+          usage: currentUsage,
+          costData: currentCost,
+          phaseResults: currentPhaseResults,
+        }),
       }));
     };
 
@@ -1125,27 +879,33 @@ export async function runAgent(
       checkpointState.sessionRef = result.sessionRef;
       checkpointState.sessionData = result.sessionData;
       await persistRuntimeState(checkpointState, undefined, usage, costData);
+
+      const postconditionError = validateTaskPostconditions({
+        runId,
+        taskName: config.taskName,
+      });
+      if (postconditionError) {
+        throw new Error(postconditionError);
+      }
     }
 
     clearTimeout(timeoutId);
     const completedAt = epochSeconds();
     updateRunStatus(runId, STATUS_COMPLETED, {
-      runtime: runtimeId,
-      provider: effectiveProvider?.type ?? null,
-      model: effectiveModel,
-      session_ref: runSessionRef ?? null,
       resumable: 0,
       resume_status: null,
       completed_at: completedAt,
       tokens_used: tokensUsed,
-      cost_usd: costData.costUsd ?? null,
-      actual_cost_usd: costData.actualCostUsd,
-      estimated_cost_usd: costData.estimatedCostUsd,
-      cost_source: costData.source,
-      cost_data: serializeCostData(costData),
-      checkpoints: serializeCheckpointState(checkpointState),
-      usage_data: buildUsageData(usage, costData, phaseResults),
-      actions_taken: buildActionsTaken(runtimeId, effectiveProvider, effectiveModel, phaseResults),
+      ...buildRunAccountingUpdate({
+        runtime: runtimeId,
+        provider: effectiveProvider,
+        model: effectiveModel,
+        checkpointState,
+        usage,
+        costData,
+        phaseResults,
+        sessionRef: runSessionRef,
+      }),
     });
 
     return {
@@ -1187,23 +947,20 @@ export async function runAgent(
         usage,
       });
       updateRunStatus(runId, STATUS_FAILED, {
-        runtime: runtimeId,
-        provider: effectiveProvider?.type ?? null,
-        model: effectiveModel,
-        session_ref: checkpointState.sessionRef ?? null,
         resumable: 1,
         resume_status: RESUME_STATUS_READY,
-        checkpoints: serializeCheckpointState(checkpointState),
-        usage_data: buildUsageData(usage, costData, phaseResults),
         completed_at: failedAt,
         tokens_used: usage.totalTokens ?? phaseResults?.reduce((sum, phase) => sum + phase.tokensUsed, 0) ?? undefined,
-        cost_usd: costData.costUsd ?? null,
-        actual_cost_usd: costData.actualCostUsd,
-        estimated_cost_usd: costData.estimatedCostUsd,
-        cost_source: costData.source,
-        cost_data: serializeCostData(costData),
         error: errorMessage,
-        actions_taken: buildActionsTaken(runtimeId, effectiveProvider, effectiveModel, phaseResults),
+        ...buildRunAccountingUpdate({
+          runtime: runtimeId,
+          provider: effectiveProvider,
+          model: effectiveModel,
+          checkpointState,
+          usage,
+          costData,
+          phaseResults,
+        }),
       });
     } catch (dbErr) {
       // DB failure in error path — log it but don't mask the original error

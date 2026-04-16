@@ -7,9 +7,15 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import { checkLocalProvider } from '../../intelligence/provider-check.js';
+import {
+  createLocalOpenAIBackend,
+  getLocalOpenAIBackendDefaultBaseUrl,
+  getLocalOpenAIBackendLabel,
+  inferLocalOpenAIBackendKind,
+} from '../../intelligence/local-openai-backends.js';
 import { OllamaBackend } from '../../intelligence/ollama.js';
 import { LmStudioBackend } from '../../intelligence/lm-studio.js';
-import { checkLocalProvider } from '../../intelligence/provider-check.js';
 import {
   ANTHROPIC_MODELS,
   filterLlmModels,
@@ -103,7 +109,7 @@ export async function handleGetProviders(): Promise<RouteResponse> {
 /**
  * Test connectivity to a specific provider.
  *
- * Accepts: { type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible', baseUrl?: string, model?: string }
+ * Accepts: { type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible', baseUrl?: string, local_backend?: 'ollama' | 'lmstudio', model?: string }
  * Returns: { ok: boolean, latency_ms?: number, error?: string }
  */
 export async function handleTestProvider(req: RouteRequest): Promise<RouteResponse> {
@@ -118,16 +124,17 @@ export async function handleTestProvider(req: RouteRequest): Promise<RouteRespon
   }
 
   const baseUrl = (body?.baseUrl as string | undefined) ?? (body?.base_url as string | undefined);
+  const localBackend = (body?.local_backend as 'ollama' | 'lmstudio' | undefined);
   const start = performance.now();
   let result: TestResult;
 
   try {
     if (type === 'ollama') {
-      result = await testLocalProvider(new OllamaBackend({ base_url: baseUrl }), 'Ollama', OllamaBackend.DEFAULT_BASE_URL, baseUrl);
+      result = await testResolvedLocalProvider('ollama', baseUrl);
     } else if (type === 'lmstudio') {
-      result = await testLocalProvider(new LmStudioBackend({ base_url: baseUrl }), 'LM Studio', LmStudioBackend.DEFAULT_BASE_URL, baseUrl);
+      result = await testResolvedLocalProvider('lmstudio', baseUrl);
     } else if (type === 'openai-compatible') {
-      result = await testLocalProvider(new LmStudioBackend({ base_url: baseUrl }), 'OpenAI-compatible provider', LmStudioBackend.DEFAULT_BASE_URL, baseUrl);
+      result = await testResolvedLocalProvider('openai-compatible', baseUrl, localBackend);
     } else if (type === 'openai') {
       result = await testRemoteProvider('openai', 'OpenAI', baseUrl);
     } else if (type === 'openrouter') {
@@ -247,6 +254,23 @@ async function testLocalProvider(
     return { ok: false, error: `${label} not reachable at ${baseUrl ?? defaultBaseUrl}` };
   }
   return { ok: true };
+}
+
+async function testResolvedLocalProvider(
+  type: 'ollama' | 'lmstudio' | 'openai-compatible',
+  baseUrl?: string,
+  localBackend?: 'ollama' | 'lmstudio',
+): Promise<TestResult> {
+  const kind = inferLocalOpenAIBackendKind({ type, localBackend, baseUrl }) ?? 'lmstudio';
+  const label = type === 'openai-compatible'
+    ? `OpenAI-compatible ${getLocalOpenAIBackendLabel(kind)} provider`
+    : getLocalOpenAIBackendLabel(kind);
+  return testLocalProvider(
+    createLocalOpenAIBackend(kind, baseUrl),
+    label,
+    getLocalOpenAIBackendDefaultBaseUrl(kind),
+    baseUrl,
+  );
 }
 
 function testAnthropic(): TestResult {

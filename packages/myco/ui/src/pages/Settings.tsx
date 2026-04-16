@@ -6,6 +6,7 @@ import {
   configFieldId,
 } from '@myco/config/focus';
 import {
+  defaultBaseUrlForProvider,
   useProviders,
   useTestProvider,
   maybeInferRuntimeFromProviderType,
@@ -149,6 +150,7 @@ function AgentProviderCard() {
     handleRuntimeChange,
     handleProviderChange,
     handleModelChange,
+    handleLocalBackendChange,
     handleReasoningChange,
     handleBaseUrlChange,
     handleContextLengthChange,
@@ -162,7 +164,8 @@ function AgentProviderCard() {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const secretProvider = isSecretProvider(draft.type) ? draft.type : null;
   const activeSecret = secretProvider ? providerSecretsData?.secrets[secretProvider] : undefined;
-  const modelsQuery = useModels(draft.type || null, draft.baseUrl || undefined, 'llm');
+  const resolvedAgentBaseUrl = draft.baseUrl || defaultBaseUrlForProvider(draft.type, draft.localBackend);
+  const modelsQuery = useModels(draft.type || null, resolvedAgentBaseUrl || undefined, 'llm', draft.localBackend || null);
   const reasoningModels = modelsQuery.data?.models ?? providers.find((info) => info.type === draft.type)?.models ?? [];
   const supportsReasoningMap = draft.type !== '';
   useEffect(() => { setApiKeyInput(''); }, [draft.type]);
@@ -257,9 +260,10 @@ function AgentProviderCard() {
     agentTestMutation.mutate({
       type: draft.type,
       runtime: draft.runtime || undefined,
+      ...(draft.type === 'openai-compatible' && draft.localBackend ? { local_backend: draft.localBackend } : {}),
       ...(draft.baseUrl ? { base_url: draft.baseUrl } : {}),
     });
-  }, [draft.baseUrl, draft.runtime, draft.type, agentTestMutation]);
+  }, [draft.baseUrl, draft.localBackend, draft.runtime, draft.type, agentTestMutation]);
 
   return (
     <Surface
@@ -289,6 +293,7 @@ function AgentProviderCard() {
       <ProviderModelSelector
         runtime={draft.runtime}
         providerType={draft.type}
+        localBackend={draft.localBackend}
         model={draft.model}
         baseUrl={draft.baseUrl}
         contextLength={draft.contextLength}
@@ -300,6 +305,10 @@ function AgentProviderCard() {
         }}
         onProviderChange={(type) => {
           handleProviderChange(type);
+          agentTestMutation.reset();
+        }}
+        onLocalBackendChange={(localBackend) => {
+          handleLocalBackendChange(localBackend);
           agentTestMutation.reset();
         }}
         onModelChange={handleModelChange}

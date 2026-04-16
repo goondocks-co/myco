@@ -15,6 +15,7 @@ export function withValue(config: MycoConfig, dotPath: string, value: unknown): 
 interface ProviderInput {
   runtime?: 'claude-sdk' | 'openai-agents';
   type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible';
+  local_backend?: 'ollama' | 'lmstudio';
   model?: string;
   reasoning_map?: Partial<Record<'low' | 'default' | 'high', string>>;
   base_url?: string;

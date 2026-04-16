@@ -15,6 +15,7 @@ import {
 import { SearchableSelect } from '../ui/searchable-select';
 import { ProviderModelSelector } from '../providers/ProviderModelSelector';
 import {
+  defaultBaseUrlForProvider,
   useProviders,
   useTaskConfig,
   useTestProvider,
@@ -49,6 +50,7 @@ interface TaskProviderConfigProps {
   defaults?: {
     runtime?: string;
     providerType?: string;
+    localBackend?: 'ollama' | 'lmstudio';
     reasoningLevel?: 'low' | 'default' | 'high';
     reasoningMap?: Partial<Record<'low' | 'default' | 'high', string>>;
     model?: string;
@@ -115,6 +117,7 @@ function PhaseConfigRow({
             <ProviderModelSelector
               runtime={override.provider?.runtime ?? taskRuntime}
               providerType={override.provider?.type ?? taskProviderType}
+              localBackend={override.provider?.local_backend ?? ''}
               model={override.provider?.model ?? override.model ?? ''}
               baseUrl={override.provider?.base_url ?? ''}
               contextLength={override.provider?.context_length != null ? String(override.provider.context_length) : ''}
@@ -135,6 +138,10 @@ function PhaseConfigRow({
                   model: undefined,
                 });
               }}
+              onLocalBackendChange={(localBackend) => onChange({
+                ...override,
+                provider: override.provider ? { ...override.provider, local_backend: localBackend || undefined } : undefined,
+              })}
               onModelChange={(m) => onChange({
                 ...override,
                 provider: override.provider ? { ...override.provider, model: m } : undefined,
@@ -223,6 +230,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
   const providerDraftDefaults = {
     runtime: defaults?.runtime,
     providerType: defaults?.providerType,
+    localBackend: defaults?.localBackend,
     model: defaults?.model,
     reasoningMap: defaults?.reasoningMap,
     baseUrl: defaults?.baseUrl,
@@ -235,6 +243,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
     handleRuntimeChange: handleDraftRuntimeChange,
     handleProviderChange: handleDraftProviderChange,
     handleModelChange: handleDraftModelChange,
+    handleLocalBackendChange: handleDraftLocalBackendChange,
     handleReasoningChange: handleDraftReasoningChange,
     handleBaseUrlChange: handleDraftBaseUrlChange,
     handleContextLengthChange: handleDraftContextLengthChange,
@@ -255,7 +264,8 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
   const reasoningHigh = draft.reasoningHigh;
   const baseUrl = draft.baseUrl;
   const contextLength = draft.contextLength;
-  const reasoningModelsQuery = useModels(providerType || null, baseUrl || undefined, 'llm');
+  const resolvedTaskBaseUrl = baseUrl || defaultBaseUrlForProvider(providerType, draft.localBackend);
+  const reasoningModelsQuery = useModels(providerType || null, resolvedTaskBaseUrl || undefined, 'llm', draft.localBackend || null);
   const reasoningModels = reasoningModelsQuery.data?.models ?? providers.find((provider) => provider.type === providerType)?.models ?? [];
   const effectiveRuntime = runtime
     || maybeInferRuntimeFromProviderType(providerType)
@@ -391,6 +401,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
     const config: ProviderConfig = {
       runtime: effectiveRuntime as ProviderConfig['runtime'],
       type: providerType as ProviderConfig['type'],
+      ...(providerType === 'openai-compatible' && draft.localBackend ? { local_backend: draft.localBackend } : {}),
       ...(isLocal && baseUrl ? { base_url: baseUrl } : {}),
     };
     testMutation.mutate(config);
@@ -413,6 +424,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       <ProviderModelSelector
         runtime={effectiveRuntime}
         providerType={providerType}
+        localBackend={draft.localBackend}
         model={model}
         baseUrl={baseUrl}
         contextLength={contextLength}
@@ -423,6 +435,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
           handleDraftRuntimeChange(nextRuntime);
         }}
         onProviderChange={handleProviderChange}
+        onLocalBackendChange={handleDraftLocalBackendChange}
         onModelChange={handleDraftModelChange}
         onBaseUrlChange={handleDraftBaseUrlChange}
         onContextLengthChange={handleDraftContextLengthChange}
@@ -544,7 +557,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
         <Button
           size="sm"
           onClick={handleSave}
-          disabled={!dirty || updateMutation.isPending}
+          disabled={!isDirty || updateMutation.isPending}
           className="gap-1.5"
         >
           {updateMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}

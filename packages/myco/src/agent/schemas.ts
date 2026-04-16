@@ -26,6 +26,7 @@ export const ReasoningLevelSchema = z.enum(['low', 'default', 'high']);
 export const ProviderConfigSchema = z.object({
   runtime: RuntimeIdSchema.optional(),
   type: z.enum(['anthropic', 'ollama', 'lmstudio', 'openai', 'openrouter', 'openai-compatible']),
+  localBackend: z.enum(['ollama', 'lmstudio']).optional(),
   baseUrl: z.string().optional(),
   apiKey: z.string().optional(),
   model: z.string().optional(),

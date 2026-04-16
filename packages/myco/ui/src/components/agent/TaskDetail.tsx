@@ -61,6 +61,7 @@ function getInheritedExecution(
       provider?: {
         runtime?: string;
         type?: string;
+        local_backend?: 'ollama' | 'lmstudio';
         model?: string;
         reasoning_map?: Partial<Record<'low' | 'default' | 'high', string>>;
         base_url?: string;
@@ -82,6 +83,7 @@ function getInheritedExecution(
       provider?: {
         runtime?: string;
         type?: string;
+        local_backend?: 'ollama' | 'lmstudio';
         model?: string;
         reasoning_map?: Partial<Record<'low' | 'default' | 'high', string>>;
         base_url?: string;
@@ -102,6 +104,7 @@ function getInheritedExecution(
       ?? maybeInferRuntimeFromProviderType(globalProvider?.type)
       ?? config?.agent?.runtime,
     providerType: taskProvider?.type ?? globalProvider?.type,
+    localBackend: taskProvider?.local_backend ?? globalProvider?.local_backend,
     reasoningLevel,
     model: resolveReasoningModel(reasoningLevel, taskProvider ?? globalProvider, fallbackModel),
     reasoningMap: taskProvider?.reasoning_map ?? globalProvider?.reasoning_map,
@@ -188,6 +191,7 @@ export function TaskDetail({ taskId, onBack, onNavigate, onRunTriggered }: TaskD
   const taskConfigDefaults = useMemo(() => ({
     runtime: inheritedExecution.runtime,
     providerType: inheritedExecution.providerType,
+    localBackend: inheritedExecution.localBackend,
     reasoningLevel: inheritedExecution.reasoningLevel,
     reasoningMap: inheritedExecution.reasoningMap,
     model: inheritedExecution.model,
@@ -198,6 +202,7 @@ export function TaskDetail({ taskId, onBack, onNavigate, onRunTriggered }: TaskD
   }), [
     inheritedExecution.runtime,
     inheritedExecution.providerType,
+    inheritedExecution.localBackend,
     inheritedExecution.reasoningLevel,
     inheritedExecution.reasoningMap,
     inheritedExecution.model,
