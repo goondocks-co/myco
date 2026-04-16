@@ -19,7 +19,7 @@ agent: myco-agent
 isDefault: true
 maxTurns: 150
 timeoutSeconds: 1800
-model: claude-sonnet-4-6
+reasoningLevel: default
 
 schedule:
   enabled: true
@@ -31,7 +31,7 @@ schedule:
 
 orchestrator:
   enabled: true
-  model: claude-sonnet-4-6
+  reasoningLevel: default
   maxTurns: 3
 
 contextQueries:
@@ -61,7 +61,7 @@ prompt: >
 
 phases:
   - name: read-state
-    model: claude-haiku-4-5-20251001
+    reasoningLevel: low
     # Root phase — no dependsOn
     prompt: |
       Read the current vault state to determine what needs processing.
@@ -81,7 +81,7 @@ phases:
     readOnly: true
 
   - name: extract
-    model: claude-haiku-4-5-20251001
+    reasoningLevel: low
     dependsOn: [read-state]
     prompt: |
       Extract observations from unprocessed batches as spores.
@@ -134,7 +134,7 @@ phases:
     required: true
 
   - name: summarize
-    model: claude-haiku-4-5-20251001
+    reasoningLevel: low
     dependsOn: [read-state]
     prompt: |
       Update session titles and summaries for sessions touched during extraction.
@@ -189,7 +189,7 @@ phases:
     required: false
 
   - name: consolidate
-    model: claude-sonnet-4-6
+    reasoningLevel: default
     dependsOn: [extract]
     prompt: |
       Consolidate related spores into wisdom and clean up redundancy.
@@ -255,7 +255,7 @@ phases:
     required: false
 
   - name: graph
-    model: claude-sonnet-4-6
+    reasoningLevel: default
     dependsOn: [extract]
     prompt: |
       Build the knowledge graph: create entities, then link spores to them.
@@ -323,7 +323,7 @@ phases:
   # in the same wave via Promise.allSettled().
 
   - name: digest-assess
-    model: claude-sonnet-4-6
+    reasoningLevel: default
     dependsOn: [consolidate]
     prompt: |
       Assess current digest state and gather material for tier updates.
@@ -390,7 +390,7 @@ phases:
     required: true
 
   - name: digest-10000
-    model: claude-haiku-4-5-20251001
+    reasoningLevel: low
     dependsOn: [digest-assess]
     prompt: |
       Update digest tier 10000 — Full institutional knowledge.
@@ -427,7 +427,7 @@ phases:
     required: false
 
   - name: digest-5000
-    model: claude-haiku-4-5-20251001
+    reasoningLevel: low
     dependsOn: [digest-assess]
     prompt: |
       Update digest tier 5000 — Deep onboarding.
@@ -463,7 +463,7 @@ phases:
     required: false
 
   - name: digest-1500
-    model: claude-haiku-4-5-20251001
+    reasoningLevel: low
     dependsOn: [digest-assess]
     prompt: |
       Update digest tier 1500 — Executive briefing.
@@ -499,7 +499,7 @@ phases:
     required: false
 
   - name: report
-    model: claude-haiku-4-5-20251001
+    reasoningLevel: low
     dependsOn: [extract, summarize, consolidate, graph, digest-assess, digest-10000, digest-5000, digest-1500]
     prompt: |
       Summarize what was done across all phases.

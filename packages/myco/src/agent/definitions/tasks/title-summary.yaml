@@ -13,7 +13,7 @@ description: >
   title and informative summary.
 agent: myco-agent
 isDefault: false
-model: claude-haiku-4-5-20251001
+reasoningLevel: low
 maxTurns: 15
 timeoutSeconds: 120
 

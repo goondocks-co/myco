@@ -3,7 +3,7 @@
  * Used by both the Settings page (global agent provider) and the Agent
  * Tasks page (per-task provider override).
  */
-import { Cloud, Server, Cpu } from 'lucide-react';
+import { Cloud, Server, Cpu, Loader2 } from 'lucide-react';
 import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import {
@@ -14,20 +14,35 @@ import {
   SelectValue,
 } from '../ui/select';
 import type { ProviderInfo } from '../../hooks/use-providers';
+import { useModels } from '../../hooks/use-models';
+
+const RUNTIME_LABELS: Record<string, string> = {
+  'claude-sdk': 'Claude SDK',
+  'openai-agents': 'OpenAI Agents',
+};
 
 const PROVIDER_LABELS: Record<string, string> = {
   anthropic: 'Anthropic',
   ollama: 'Ollama',
   lmstudio: 'LM Studio',
+  openai: 'OpenAI',
+  openrouter: 'OpenRouter',
+  'openai-compatible': 'OpenAI-compatible',
 };
 
 const PROVIDER_ICONS: Record<string, typeof Cloud> = {
   anthropic: Cloud,
   ollama: Server,
   lmstudio: Cpu,
+  openai: Cloud,
+  openrouter: Cloud,
+  'openai-compatible': Server,
 };
 
+const MANUAL_MODEL_ENTRY_PROVIDERS = new Set(['ollama', 'lmstudio', 'openai-compatible']);
+
 export interface ProviderModelSelectorProps {
+  runtime: string;
   providerType: string;
   model: string;
   baseUrl: string;
@@ -35,6 +50,8 @@ export interface ProviderModelSelectorProps {
   modelPlaceholder?: string;
   providers: ProviderInfo[];
   isLoadingProviders: boolean;
+  showRuntimeSelector?: boolean;
+  onRuntimeChange: (runtime: string) => void;
   onProviderChange: (type: string) => void;
   onModelChange: (model: string) => void;
   onBaseUrlChange: (url: string) => void;
@@ -46,6 +63,7 @@ export interface ProviderModelSelectorProps {
 }
 
 export function ProviderModelSelector({
+  runtime,
   providerType,
   model,
   baseUrl,
@@ -53,6 +71,8 @@ export function ProviderModelSelector({
   modelPlaceholder,
   providers,
   isLoadingProviders,
+  showRuntimeSelector = true,
+  onRuntimeChange,
   onProviderChange,
   onModelChange,
   onBaseUrlChange,
@@ -60,16 +80,46 @@ export function ProviderModelSelector({
   onBaseUrlBlur,
   onContextLengthBlur,
 }: ProviderModelSelectorProps) {
-  const selectedProvider = providers.find((p) => p.type === providerType);
-  const isLocal = providerType === 'ollama' || providerType === 'lmstudio';
+  const providersForRuntime = providers.filter((provider) => provider.runtime === runtime);
+  const selectedProvider = providersForRuntime.find((p) => p.type === providerType);
+  const isLocal = providerType === 'ollama' || providerType === 'lmstudio' || providerType === 'openai-compatible';
   const hasSelection = providerType !== '';
-  const availableModels = selectedProvider?.models ?? [];
+  const modelsQuery = useModels(providerType || null, baseUrl || selectedProvider?.baseUrl, 'llm');
+  const availableModels = modelsQuery.data?.models ?? selectedProvider?.models ?? [];
+  const allowsManualModelEntry = MANUAL_MODEL_ENTRY_PROVIDERS.has(providerType);
+  const shouldShowModelSelect = availableModels.length > 0;
+  const isLoadingModels = modelsQuery.isPending && hasSelection;
+  const needsApiKey = selectedProvider?.authConfigured === false;
+  const modelEmptyState = needsApiKey
+    ? 'Configure an API key to load models.'
+    : selectedProvider?.available === false
+      ? 'Provider unavailable.'
+      : 'No models returned.';
+  const modelPlaceholderText = modelPlaceholder ?? 'Select a model';
 
   return (
     <div className="space-y-3">
+      {showRuntimeSelector && (
+        <div className="space-y-1">
+          <label className="font-sans text-xs text-on-surface-variant">Runtime</label>
+          <Select value={runtime} onValueChange={onRuntimeChange}>
+            <SelectTrigger>
+              <SelectValue placeholder="Select a runtime" />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(RUNTIME_LABELS).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
       {/* Provider selector — derived from /providers response order */}
       <div className="grid grid-cols-3 gap-2">
-        {providers.map((info) => {
+        {providersForRuntime.map((info) => {
           const Icon = PROVIDER_ICONS[info.type];
           if (!Icon) return null;
           const isSelected = providerType === info.type;
@@ -89,10 +139,10 @@ export function ProviderModelSelector({
               <span className="font-sans text-xs font-medium">{PROVIDER_LABELS[info.type] ?? info.type}</span>
               {!isLoadingProviders && (
                 <Badge
-                  variant={info.available ? 'secondary' : 'destructive'}
+                  variant={info.authConfigured === false || !info.available ? 'destructive' : 'secondary'}
                   className="text-[10px] px-1.5 py-0"
                 >
-                  {info.available ? 'online' : 'offline'}
+                  {info.authConfigured === false ? 'key required' : info.available ? 'online' : 'offline'}
                 </Badge>
               )}
             </button>
@@ -136,10 +186,15 @@ export function ProviderModelSelector({
       {hasSelection && (
         <div className="space-y-1">
           <label className="font-sans text-xs text-on-surface-variant">Model</label>
-          {availableModels.length > 0 ? (
+          {isLoadingModels ? (
+            <div className="flex items-center gap-2 rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest px-3 py-2 text-sm text-on-surface-variant">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading models...
+            </div>
+          ) : shouldShowModelSelect ? (
             <Select value={model} onValueChange={onModelChange}>
               <SelectTrigger>
-                <SelectValue placeholder={modelPlaceholder ?? 'Select a model'} />
+                <SelectValue placeholder={modelPlaceholderText} />
               </SelectTrigger>
               <SelectContent>
                 {availableModels.map((m) => (
@@ -149,13 +204,17 @@ export function ProviderModelSelector({
                 ))}
               </SelectContent>
             </Select>
-          ) : (
+          ) : allowsManualModelEntry ? (
             <Input
               value={model}
               onChange={(e) => onModelChange(e.target.value)}
               placeholder={selectedProvider?.available === false ? 'Provider offline' : 'Enter model name'}
               disabled={selectedProvider?.available === false}
             />
+          ) : (
+            <div className="rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-sm text-on-surface-variant">{modelEmptyState}</p>
+            </div>
           )}
         </div>
       )}

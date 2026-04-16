@@ -22,7 +22,8 @@ import {
 import { loadAllTasks } from './registry.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import type { ProviderConfig, EffectiveConfig } from './types.js';
+import type { ProviderConfig, EffectiveConfig, RuntimeId } from './types.js';
+import { inferRuntimeFromProviderType } from './provider-runtime.js';
 
 /**
  * Returns true when an agent provider is configured for the given task —
@@ -47,12 +48,14 @@ export interface ResolvedRunConfig {
   definitionsDir: string;
   /** Task-level provider override from myco.yaml (global or per-task). */
   taskProviderOverride?: ProviderConfig;
-  /** Per-phase provider/maxTurns overrides from myco.yaml. */
-  phaseProviderOverrides: Record<string, { provider?: ProviderConfig; maxTurns?: number }>;
+  /** Per-phase provider/model/maxTurns overrides from myco.yaml. */
+  phaseProviderOverrides: Record<string, { provider?: ProviderConfig; model?: string; maxTurns?: number }>;
   /** Effective task name (from DB or options). */
   taskName?: string;
   /** Resolved task params — YAML defaults merged with myco.yaml overrides. */
   taskParams?: Record<string, string | number | boolean>;
+  /** Effective runtime after applying YAML + myco.yaml overrides. */
+  runtime: RuntimeId;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,15 +69,19 @@ export interface ResolvedRunConfig {
  * (settings.json -> hooks -> daemon).
  */
 function toProviderConfig(p: {
-  type: 'anthropic' | 'ollama' | 'lmstudio';
+  runtime?: RuntimeId;
+  type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible';
   base_url?: string;
   model?: string;
+  reasoning_map?: Partial<Record<'low' | 'default' | 'high', string>>;
   context_length?: number;
 }): ProviderConfig {
   return {
+    runtime: p.runtime ?? inferRuntimeFromProviderType(p.type),
     type: p.type,
     baseUrl: p.base_url,
     model: p.model,
+    reasoningMap: p.reasoning_map,
     contextLength: p.context_length,
   };
 }
@@ -130,6 +137,7 @@ export function resolveRunConfig(
           : {}),
         // Scalar config from YAML (model, turns, timeout) — DB doesn't store these
         ...(yamlTask?.model ? { model: yamlTask.model } : {}),
+        ...(yamlTask?.reasoningLevel ? { reasoningLevel: yamlTask.reasoningLevel } : {}),
         ...(yamlTask?.maxTurns ? { maxTurns: yamlTask.maxTurns } : {}),
         ...(yamlTask?.timeoutSeconds ? { timeoutSeconds: yamlTask.timeoutSeconds } : {}),
         // Structural config from YAML
@@ -144,14 +152,27 @@ export function resolveRunConfig(
 
   // Load myco.yaml for provider overrides (global, per-task, per-phase)
   let taskProviderOverride: ProviderConfig | undefined;
-  let phaseProviderOverrides: Record<string, { provider?: ProviderConfig; maxTurns?: number }> = {};
+  let phaseProviderOverrides: Record<string, { provider?: ProviderConfig; model?: string; maxTurns?: number }> = {};
   let taskParams: Record<string, string | number | boolean> | undefined;
+  let runtime: RuntimeId = config.execution?.runtime
+    ?? config.execution?.provider?.runtime
+    ?? 'claude-sdk';
   try {
     const mycoConfig = loadMergedConfig(vaultDir);
 
     // Per-task override takes priority over global
     const taskConfig = taskName ? mycoConfig.agent.tasks?.[taskName] : undefined;
     const globalProvider = mycoConfig.agent.provider;
+    runtime = taskConfig?.runtime
+      ?? taskConfig?.provider?.runtime
+      ?? inferRuntimeFromProviderType(taskConfig?.provider?.type)
+      ?? globalProvider?.runtime
+      ?? inferRuntimeFromProviderType(globalProvider?.type)
+      ?? mycoConfig.agent.runtime
+      ?? config.execution?.runtime
+      ?? config.execution?.provider?.runtime
+      ?? inferRuntimeFromProviderType(config.execution?.provider?.type)
+      ?? 'claude-sdk';
 
     if (taskConfig?.provider) {
       taskProviderOverride = toProviderConfig(taskConfig.provider);
@@ -164,6 +185,7 @@ export function resolveRunConfig(
       for (const [phaseName, phaseConfig] of Object.entries(taskConfig.phases)) {
         phaseProviderOverrides[phaseName] = {
           ...(phaseConfig.provider ? { provider: toProviderConfig(phaseConfig.provider) } : {}),
+          ...(phaseConfig.model != null ? { model: phaseConfig.model } : {}),
           ...(phaseConfig.maxTurns != null ? { maxTurns: phaseConfig.maxTurns } : {}),
         };
       }
@@ -180,11 +202,12 @@ export function resolveRunConfig(
   }
 
   return {
-    config,
+    config: { ...config, runtime },
     definitionsDir,
     taskProviderOverride,
     phaseProviderOverrides,
     taskName,
     taskParams,
+    runtime,
   };
 }

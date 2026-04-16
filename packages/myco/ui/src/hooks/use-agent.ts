@@ -34,12 +34,29 @@ export interface RunRow {
   task: string | null;
   instruction: string | null;
   status: string;
+  runtime: string | null;
+  provider: string | null;
+  model: string | null;
+  session_ref: string | null;
+  resumable: boolean;
+  resume_status: string | null;
+  resume_mode: string | null;
+  resumed_at: number | null;
+  checkpoints: string | null;
+  usage_data: string | null;
   started_at: number | null;
   completed_at: number | null;
   tokens_used: number | null;
   cost_usd: number | null;
   actions_taken: string | null;
   error: string | null;
+  phase_checkpoints?: Array<{
+    name: string;
+    status: string;
+    updatedAt: number;
+    tokensUsed?: number;
+    costUsd?: number;
+  }>;
 }
 
 export interface RunsResponse {
@@ -94,12 +111,24 @@ export interface TaskRow {
   isBuiltin?: boolean;
   toolOverrides?: string[];
   model?: string;
+  reasoningLevel?: 'low' | 'default' | 'high';
   maxTurns?: number;
   timeoutSeconds?: number;
   phases?: PhaseDefinition[];
-  execution?: { model?: string; maxTurns?: number; timeoutSeconds?: number };
+  execution?: {
+    runtime?: string;
+    provider?: {
+      type?: string;
+      model?: string;
+      reasoning_map?: Partial<Record<'low' | 'default' | 'high', string>>;
+    };
+    model?: string;
+    reasoningLevel?: 'low' | 'default' | 'high';
+    maxTurns?: number;
+    timeoutSeconds?: number;
+  };
   contextQueries?: Record<string, unknown[]>;
-  orchestrator?: { enabled: boolean; model?: string; maxTurns?: number };
+  orchestrator?: { enabled: boolean; model?: string; reasoningLevel?: 'low' | 'default' | 'high'; maxTurns?: number };
   schedule?: { enabled: boolean; intervalSeconds: number; runIn: ('active' | 'idle' | 'sleep')[]; preCondition?: string };
   params?: Record<string, string | number | boolean>;
   schemaVersion?: number;
@@ -111,6 +140,12 @@ export interface TriggerRunPayload {
 }
 
 export interface TriggerRunResponse {
+  ok: boolean;
+  message: string;
+  runId?: string;
+}
+
+export interface ResumeRunResponse {
   ok: boolean;
   message: string;
   runId?: string;
@@ -130,6 +165,7 @@ export interface PhaseDefinition {
   tools: string[];
   maxTurns: number;
   model?: string;
+  reasoningLevel?: 'low' | 'default' | 'high';
   required: boolean;
 }
 
@@ -301,6 +337,19 @@ export function useTriggerRun() {
       postJson<TriggerRunResponse>('/agent/run', payload),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['agent-runs'] });
+    },
+  });
+}
+
+export function useResumeRun() {
+  const queryClient = useQueryClient();
+
+  return useMutation<ResumeRunResponse, Error, { runId: string; mode?: 'manual' | 'scheduled' }>({
+    mutationFn: ({ runId, mode }) =>
+      postJson<ResumeRunResponse>(`/agent/runs/${runId}/resume`, mode ? { mode } : {}),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ['agent-runs'] });
+      void queryClient.invalidateQueries({ queryKey: ['agent-run', variables.runId] });
     },
   });
 }

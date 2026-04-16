@@ -37,7 +37,19 @@ export interface MycoConfig {
     summary_batch_interval: number;
     scheduled_tasks_enabled?: boolean;
     event_tasks_enabled?: boolean;
-    provider?: { type: string; base_url?: string; model?: string; context_length?: number };
+    runtime?: 'claude-sdk' | 'openai-agents';
+    provider?: {
+      runtime?: 'claude-sdk' | 'openai-agents';
+      type: string;
+      base_url?: string;
+      model?: string;
+      reasoning_map?: {
+        low?: string;
+        default?: string;
+        high?: string;
+      };
+      context_length?: number;
+    };
     model?: string;
     tasks?: Record<string, unknown>;
   };

@@ -257,17 +257,27 @@ const DIGEST_EXTRACTS_TABLE = `
 
 const AGENT_RUNS_TABLE = `
   CREATE TABLE IF NOT EXISTS agent_runs (
-    id            TEXT PRIMARY KEY,
-    agent_id      TEXT NOT NULL REFERENCES agents(id),
-    task          TEXT,
-    instruction   TEXT,
-    status        TEXT DEFAULT 'pending',
-    started_at    INTEGER,
-    completed_at  INTEGER,
-    tokens_used   INTEGER,
-    cost_usd      REAL,
-    actions_taken TEXT,
-    error         TEXT
+    id             TEXT PRIMARY KEY,
+    agent_id       TEXT NOT NULL REFERENCES agents(id),
+    task           TEXT,
+    instruction    TEXT,
+    status         TEXT DEFAULT 'pending',
+    runtime        TEXT,
+    provider       TEXT,
+    model          TEXT,
+    session_ref    TEXT,
+    resumable      INTEGER DEFAULT 0,
+    resume_status  TEXT,
+    resume_mode    TEXT,
+    resumed_at     INTEGER,
+    checkpoints    TEXT,
+    usage_data     TEXT,
+    started_at     INTEGER,
+    completed_at   INTEGER,
+    tokens_used    INTEGER,
+    cost_usd       REAL,
+    actions_taken  TEXT,
+    error          TEXT
   )`;
 
 const AGENT_REPORTS_TABLE = `

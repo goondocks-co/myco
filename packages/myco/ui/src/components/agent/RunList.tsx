@@ -85,7 +85,12 @@ function RunRowItem({
         </div>
       </td>
       <td className="px-4 py-3">
-        <RunStatusBadge status={run.status} />
+        <div className="flex items-center gap-2">
+          <RunStatusBadge status={run.status} />
+          {run.resumable && run.status === 'failed' && (
+            <span className="font-sans text-[10px] uppercase tracking-wide text-secondary">resumable</span>
+          )}
+        </div>
       </td>
       <td className="px-4 py-3 text-xs text-on-surface-variant font-mono">
         {formatEpochRelative(run.started_at)}

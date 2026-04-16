@@ -10,8 +10,14 @@ import Anthropic from '@anthropic-ai/sdk';
 import { OllamaBackend } from '../../intelligence/ollama.js';
 import { LmStudioBackend } from '../../intelligence/lm-studio.js';
 import { checkLocalProvider } from '../../intelligence/provider-check.js';
-import { ANTHROPIC_MODELS, filterLlmModels } from './models.js';
+import {
+  ANTHROPIC_MODELS,
+  filterLlmModels,
+  fetchRemoteProviderModels,
+  getRemoteProviderApiKey,
+} from './models.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
+import type { RuntimeId, ProviderType } from '@myco/agent/types.js';
 
 /** Timeout for the live Anthropic model list query (short -- fall back fast). */
 const ANTHROPIC_MODELS_TIMEOUT_MS = 5000;
@@ -31,8 +37,10 @@ const HTTP_BAD_REQUEST = 400;
 // ---------------------------------------------------------------------------
 
 interface ProviderInfo {
-  type: string;
+  type: ProviderType;
+  runtime: RuntimeId;
   available: boolean;
+  authConfigured?: boolean;
   baseUrl?: string;
   models: string[];
 }
@@ -54,17 +62,39 @@ interface TestResult {
  * slow/unavailable provider doesn't block the others.
  */
 export async function handleGetProviders(): Promise<RouteResponse> {
-  // UI rendering order: Anthropic first (recommended default), then locals.
-  const results = await Promise.allSettled([
-    detectAnthropic(),
-    detectLocalProviderInfo('ollama', OllamaBackend.DEFAULT_BASE_URL),
-    detectLocalProviderInfo('lmstudio', LmStudioBackend.DEFAULT_BASE_URL),
-  ]);
+  const detectionPlan: Array<{
+    detect: () => Promise<ProviderInfo>;
+    fallback: ProviderInfo;
+  }> = [
+    {
+      detect: () => detectAnthropic(),
+      fallback: { type: 'anthropic', runtime: 'claude-sdk', available: false, models: [] },
+    },
+    {
+      detect: () => detectLocalProviderInfo('ollama', OllamaBackend.DEFAULT_BASE_URL),
+      fallback: { type: 'ollama', runtime: 'claude-sdk', available: false, baseUrl: OllamaBackend.DEFAULT_BASE_URL, models: [] },
+    },
+    {
+      detect: () => detectLocalProviderInfo('lmstudio', LmStudioBackend.DEFAULT_BASE_URL),
+      fallback: { type: 'lmstudio', runtime: 'claude-sdk', available: false, baseUrl: LmStudioBackend.DEFAULT_BASE_URL, models: [] },
+    },
+    {
+      detect: () => detectRemoteProviderInfo('openai', 'https://api.openai.com/v1'),
+      fallback: { type: 'openai', runtime: 'openai-agents', available: false, authConfigured: false, baseUrl: 'https://api.openai.com/v1', models: [] },
+    },
+    {
+      detect: () => detectRemoteProviderInfo('openrouter', 'https://openrouter.ai/api/v1'),
+      fallback: { type: 'openrouter', runtime: 'openai-agents', available: false, authConfigured: false, baseUrl: 'https://openrouter.ai/api/v1', models: [] },
+    },
+    {
+      detect: () => detectLocalProviderInfo('openai-compatible', LmStudioBackend.DEFAULT_BASE_URL),
+      fallback: { type: 'openai-compatible', runtime: 'openai-agents', available: false, baseUrl: LmStudioBackend.DEFAULT_BASE_URL, models: [] },
+    },
+  ];
 
-  const providers: ProviderInfo[] = results.map((r) =>
-    r.status === 'fulfilled'
-      ? r.value
-      : { type: 'unknown', available: false, models: [] },
+  const results = await Promise.allSettled(detectionPlan.map((entry) => entry.detect()));
+  const providers: ProviderInfo[] = results.map((result, index) =>
+    result.status === 'fulfilled' ? result.value : detectionPlan[index].fallback,
   );
 
   return { status: HTTP_OK, body: { providers } };
@@ -73,21 +103,21 @@ export async function handleGetProviders(): Promise<RouteResponse> {
 /**
  * Test connectivity to a specific provider.
  *
- * Accepts: { type: 'anthropic' | 'ollama' | 'lmstudio', baseUrl?: string, model?: string }
+ * Accepts: { type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible', baseUrl?: string, model?: string }
  * Returns: { ok: boolean, latency_ms?: number, error?: string }
  */
 export async function handleTestProvider(req: RouteRequest): Promise<RouteResponse> {
   const body = req.body as Record<string, unknown> | undefined;
   const type = body?.type as string | undefined;
 
-  if (!type || !['anthropic', 'ollama', 'lmstudio'].includes(type)) {
+  if (!type || !['anthropic', 'ollama', 'lmstudio', 'openai', 'openrouter', 'openai-compatible'].includes(type)) {
     return {
       status: HTTP_BAD_REQUEST,
-      body: { error: 'type is required and must be one of: anthropic, ollama, lmstudio' },
+      body: { error: 'type is required and must be one of: anthropic, ollama, lmstudio, openai, openrouter, openai-compatible' },
     };
   }
 
-  const baseUrl = body?.baseUrl as string | undefined;
+  const baseUrl = (body?.baseUrl as string | undefined) ?? (body?.base_url as string | undefined);
   const start = performance.now();
   let result: TestResult;
 
@@ -96,6 +126,12 @@ export async function handleTestProvider(req: RouteRequest): Promise<RouteRespon
       result = await testLocalProvider(new OllamaBackend({ base_url: baseUrl }), 'Ollama', OllamaBackend.DEFAULT_BASE_URL, baseUrl);
     } else if (type === 'lmstudio') {
       result = await testLocalProvider(new LmStudioBackend({ base_url: baseUrl }), 'LM Studio', LmStudioBackend.DEFAULT_BASE_URL, baseUrl);
+    } else if (type === 'openai-compatible') {
+      result = await testLocalProvider(new LmStudioBackend({ base_url: baseUrl }), 'OpenAI-compatible provider', LmStudioBackend.DEFAULT_BASE_URL, baseUrl);
+    } else if (type === 'openai') {
+      result = await testRemoteProvider('openai', 'OpenAI', baseUrl);
+    } else if (type === 'openrouter') {
+      result = await testRemoteProvider('openrouter', 'OpenRouter', baseUrl);
     } else {
       result = testAnthropic();
     }
@@ -117,15 +153,21 @@ export async function handleTestProvider(req: RouteRequest): Promise<RouteRespon
 /** Detect a local provider (Ollama or LM Studio) and wrap as ProviderInfo.
  *  Filters embedding models out — the agent provider only runs LLM tasks. */
 async function detectLocalProviderInfo(
-  type: 'ollama' | 'lmstudio',
+  type: 'ollama' | 'lmstudio' | 'openai-compatible',
   defaultBaseUrl: string,
 ): Promise<ProviderInfo> {
-  const status = await checkLocalProvider(type);
+  const status = await checkLocalProvider(type === 'openai-compatible' ? 'lmstudio' : type);
   // Filter out Myco-created context variants (e.g., gpt-oss-ctx32768)
   const variantFiltered = status.models.filter(m => !/-ctx\d+/.test(m));
   // Drop embedding models -- the agent provider only runs LLM tasks
   const models = filterLlmModels(variantFiltered);
-  return { type, available: status.available, baseUrl: defaultBaseUrl, models };
+  return {
+    type,
+    runtime: type === 'openai-compatible' ? 'openai-agents' : 'claude-sdk',
+    available: status.available,
+    baseUrl: defaultBaseUrl,
+    models,
+  };
 }
 
 async function detectAnthropic(): Promise<ProviderInfo> {
@@ -139,7 +181,7 @@ async function detectAnthropic(): Promise<ProviderInfo> {
   // ANTHROPIC_MODELS constant so the dropdown is never empty.
   const now = Date.now();
   if (anthropicModelsCache && now - anthropicModelsCache.ts < ANTHROPIC_MODELS_CACHE_TTL_MS) {
-    return { type: 'anthropic', available: true, models: anthropicModelsCache.models };
+    return { type: 'anthropic', runtime: 'claude-sdk', available: true, models: anthropicModelsCache.models };
   }
 
   let models = ANTHROPIC_MODELS;
@@ -159,7 +201,34 @@ async function detectAnthropic(): Promise<ProviderInfo> {
     // Fall through to hardcoded ANTHROPIC_MODELS
   }
   anthropicModelsCache = { ts: now, models };
-  return { type: 'anthropic', available: true, models };
+  return { type: 'anthropic', runtime: 'claude-sdk', available: true, models };
+}
+
+async function detectRemoteProviderInfo(
+  type: 'openai' | 'openrouter',
+  baseUrl: string,
+): Promise<ProviderInfo> {
+  const authConfigured = Boolean(getRemoteProviderApiKey(type));
+  let models: string[] = [];
+  let available = false;
+
+  if (authConfigured) {
+    try {
+      models = await fetchRemoteProviderModels(type, baseUrl, ANTHROPIC_MODELS_TIMEOUT_MS);
+      available = true;
+    } catch {
+      available = false;
+    }
+  }
+
+  return {
+    type,
+    runtime: 'openai-agents',
+    available,
+    authConfigured,
+    baseUrl,
+    models,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -183,4 +252,20 @@ async function testLocalProvider(
 function testAnthropic(): TestResult {
   // SDK handles auth — always report OK. Auth failures surface at runtime.
   return { ok: true };
+}
+
+async function testRemoteProvider(
+  provider: 'openai' | 'openrouter',
+  label: string,
+  baseUrl?: string,
+): Promise<TestResult> {
+  if (!getRemoteProviderApiKey(provider)) {
+    return { ok: false, error: `${label} API key not configured in daemon secrets or environment` };
+  }
+  try {
+    await fetchRemoteProviderModels(provider, baseUrl);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : `${label} connection failed` };
+  }
 }

@@ -10,8 +10,16 @@ import {
   useTestProvider,
   seedDraftFromProviderType,
   draftToProviderConfig,
+  inferRuntimeFromProviderType,
+  resolveReasoningModel,
   type ProviderDraft,
 } from '../hooks/use-providers';
+import {
+  useDeleteProviderSecret,
+  useProviderSecrets,
+  useSaveProviderSecret,
+  type SecretProvider,
+} from '../hooks/use-provider-secrets';
 import { useModels } from '../hooks/use-models';
 import { fetchJson } from '../lib/api';
 import { DEFAULT_DIGEST_TIER, DEFAULT_MAX_SPORES } from '../lib/constants';
@@ -103,13 +111,37 @@ export default function Settings() {
   );
 }
 
-function providerToDraft(p: { type?: string; model?: string; base_url?: string; context_length?: number } | undefined): ProviderDraft {
+function providerToDraft(
+  p: {
+    runtime?: string;
+    type?: string;
+    model?: string;
+    reasoning_map?: { low?: string; default?: string; high?: string };
+    base_url?: string;
+    context_length?: number;
+  } | undefined,
+  runtimeOverride?: string,
+): ProviderDraft {
+  const type = (p?.type as ProviderDraft['type']) ?? '';
   return {
-    type: (p?.type as ProviderDraft['type']) ?? '',
+    runtime: (runtimeOverride as ProviderDraft['runtime'] | undefined) ?? (p?.runtime as ProviderDraft['runtime'] | undefined) ?? inferRuntimeFromProviderType(type),
+    type,
     model: p?.model ?? '',
+    reasoningLow: p?.reasoning_map?.low ?? '',
+    reasoningDefault: p?.reasoning_map?.default ?? p?.model ?? '',
+    reasoningHigh: p?.reasoning_map?.high ?? '',
     baseUrl: p?.base_url ?? '',
     contextLength: p?.context_length?.toString() ?? '',
   };
+}
+
+const REMOTE_SECRET_LABELS: Record<SecretProvider, string> = {
+  openai: 'OpenAI API Key',
+  openrouter: 'OpenRouter API Key',
+};
+
+function isSecretProvider(type: ProviderDraft['type']): type is SecretProvider {
+  return type === 'openai' || type === 'openrouter';
 }
 
 /** Myco Agent — personal-default. Provider type/model/base-url/context all
@@ -121,16 +153,27 @@ function providerToDraft(p: { type?: string; model?: string; base_url?: string; 
 function AgentProviderCard() {
   const { effective, setField, setFields, isLocalOverride, resetField, promoteField } = useScopedConfig();
   const { data: providersData, isPending: isLoadingProviders } = useProviders();
+  const { data: providerSecretsData } = useProviderSecrets();
+  const saveProviderSecret = useSaveProviderSecret();
+  const deleteProviderSecret = useDeleteProviderSecret();
   const agentTestMutation = useTestProvider();
 
   const providers = providersData?.providers ?? [];
   const provider = effective?.agent?.provider;
-  const [draft, setDraft] = useState<ProviderDraft>(() => providerToDraft(provider));
+  const agentRuntime = effective?.agent?.runtime;
+  const [draft, setDraft] = useState<ProviderDraft>(() => providerToDraft(provider, agentRuntime));
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const secretProvider = isSecretProvider(draft.type) ? draft.type : null;
+  const activeSecret = secretProvider ? providerSecretsData?.secrets[secretProvider] : undefined;
+  const modelsQuery = useModels(draft.type || null, draft.baseUrl || undefined, 'llm');
+  const reasoningModels = modelsQuery.data?.models ?? providers.find((info) => info.type === draft.type)?.models ?? [];
+  const supportsReasoningMap = draft.type !== '';
 
   // Re-sync when an external write changes the upstream value (other tab,
   // promote/reset). The ref-based `useScopedConfig` no longer churns
   // identities on every refetch, so this only fires on actual value change.
-  useEffect(() => { setDraft(providerToDraft(provider)); }, [provider]);
+  useEffect(() => { setDraft(providerToDraft(provider, agentRuntime)); }, [provider, agentRuntime]);
+  useEffect(() => { setApiKeyInput(''); }, [draft.type]);
 
   // Backfill the model when a legacy config has provider.type but no model.
   // /simplify Q1: previously this only mutated draft state, leaving the on-disk
@@ -145,20 +188,38 @@ function AgentProviderCard() {
     }
   }, [draft.type, draft.model, providers, providersData, setField]);
 
-  const personal = isLocalOverride('agent.provider');
+  const personal = isLocalOverride('agent.provider') || isLocalOverride('agent.runtime');
+  const handleResetScope = useCallback(async () => {
+    if (isLocalOverride('agent.runtime')) {
+      await resetField('agent.runtime');
+    }
+    if (isLocalOverride('agent.provider')) {
+      await resetField('agent.provider');
+    }
+  }, [isLocalOverride, resetField]);
+  const handlePromoteScope = useCallback(async () => {
+    if (isLocalOverride('agent.runtime')) {
+      await promoteField('agent.runtime');
+    }
+    if (isLocalOverride('agent.provider')) {
+      await promoteField('agent.provider');
+    }
+  }, [isLocalOverride, promoteField]);
 
   const writeProvider = useCallback((next: ProviderDraft, autoEnableTasks: boolean) => {
     const value = draftToProviderConfig(next);
+    const fields: Array<{ path: 'agent.runtime' | 'agent.provider' | 'agent.scheduled_tasks_enabled' | 'agent.event_tasks_enabled'; value: unknown }> = [
+      { path: 'agent.runtime', value: next.runtime || inferRuntimeFromProviderType(next.type) || undefined },
+      { path: 'agent.provider', value },
+    ];
     if (autoEnableTasks) {
-      void setFields([
-        { path: 'agent.provider', value },
+      fields.push(
         { path: 'agent.scheduled_tasks_enabled', value: true },
         { path: 'agent.event_tasks_enabled', value: true },
-      ], 'local');
-    } else {
-      void setField('agent.provider', value, 'local');
+      );
     }
-  }, [setField, setFields]);
+    void setFields(fields, 'local');
+  }, [setFields]);
 
   const handleProviderTypeChange = useCallback((type: string) => {
     const wasEmpty = draft.type === '';
@@ -169,7 +230,11 @@ function AgentProviderCard() {
   }, [draft.type, providers, writeProvider, agentTestMutation]);
 
   const handleModelChange = useCallback((model: string) => {
-    setDraft(prev => ({ ...prev, model }));
+    setDraft(prev => ({
+      ...prev,
+      model,
+      reasoningDefault: prev.reasoningDefault || model,
+    }));
     if (draft.type !== '') void setField('agent.provider.model', model, 'local');
   }, [draft.type, setField]);
 
@@ -194,7 +259,17 @@ function AgentProviderCard() {
   }, [draft.type, draft.contextLength, setField]);
 
   const handleClear = useCallback(async () => {
-    setDraft({ type: '', model: '', baseUrl: '', contextLength: '' });
+    setDraft((prev) => ({
+      ...prev,
+      runtime: '',
+      type: '',
+      model: '',
+      reasoningLow: '',
+      reasoningDefault: '',
+      reasoningHigh: '',
+      baseUrl: '',
+      contextLength: '',
+    }));
     agentTestMutation.reset();
     // Atomic: disable both task toggles and clear the local agent.provider
     // override in one PUT. A project-scoped provider still requires editing
@@ -206,20 +281,41 @@ function AgentProviderCard() {
           { path: 'agent.event_tasks_enabled', value: false },
         ],
         'local',
-        ['agent.provider'],
+        ['agent.provider', 'agent.runtime'],
       );
     } catch (err) {
       console.error('[agent-card] clear provider failed', err);
     }
   }, [setFields, agentTestMutation]);
 
+  const handleSaveApiKey = useCallback(() => {
+    if (!secretProvider || apiKeyInput.trim() === '') return;
+    saveProviderSecret.mutate({ provider: secretProvider, apiKey: apiKeyInput.trim() }, {
+      onSuccess: () => {
+        setApiKeyInput('');
+        agentTestMutation.reset();
+      },
+    });
+  }, [agentTestMutation, apiKeyInput, saveProviderSecret, secretProvider]);
+
+  const handleClearApiKey = useCallback(() => {
+    if (!secretProvider) return;
+    deleteProviderSecret.mutate(secretProvider, {
+      onSuccess: () => {
+        setApiKeyInput('');
+        agentTestMutation.reset();
+      },
+    });
+  }, [agentTestMutation, deleteProviderSecret, secretProvider]);
+
   const handleTestConnection = useCallback(() => {
     if (draft.type === '') return;
     agentTestMutation.mutate({
       type: draft.type,
+      runtime: draft.runtime || undefined,
       ...(draft.baseUrl ? { base_url: draft.baseUrl } : {}),
     });
-  }, [draft.type, draft.baseUrl, agentTestMutation]);
+  }, [draft.baseUrl, draft.runtime, draft.type, agentTestMutation]);
 
   return (
     <Surface
@@ -232,7 +328,7 @@ function AgentProviderCard() {
         <span className="flex items-center gap-2">
           Myco Agent
           {personal ? (
-            <ScopePill onPromote={() => promoteField('agent.provider')} onReset={() => resetField('agent.provider')} />
+            <ScopePill onPromote={handlePromoteScope} onReset={handleResetScope} />
           ) : (
             <ScopeBadge scope="project" />
           )}
@@ -247,12 +343,24 @@ function AgentProviderCard() {
       ) : null}
 
       <ProviderModelSelector
+        runtime={draft.runtime}
         providerType={draft.type}
         model={draft.model}
         baseUrl={draft.baseUrl}
         contextLength={draft.contextLength}
         providers={providers}
         isLoadingProviders={isLoadingProviders}
+        onRuntimeChange={(runtime) => {
+          setDraft(prev => ({ ...prev, runtime: runtime as ProviderDraft['runtime'] }));
+          const firstProvider = providers.find((provider) => provider.runtime === runtime);
+          if (firstProvider) {
+            const next = seedDraftFromProviderType(firstProvider.type, providers);
+            setDraft(next);
+            writeProvider(next, draft.type === '');
+          } else {
+            void setField('agent.runtime', runtime as ProviderDraft['runtime'] | undefined, 'local');
+          }
+        }}
         onProviderChange={handleProviderTypeChange}
         onModelChange={handleModelChange}
         onBaseUrlChange={handleBaseUrlChange}
@@ -260,6 +368,116 @@ function AgentProviderCard() {
         onBaseUrlBlur={handleBaseUrlBlur}
         onContextLengthBlur={handleContextLengthBlur}
       />
+
+      {supportsReasoningMap && (
+        <div className="space-y-3 rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest p-3">
+          <div>
+            <p className="font-sans text-xs text-on-surface-variant uppercase tracking-wide">Reasoning Profiles</p>
+            <p className="font-sans text-xs text-on-surface-variant/80 mt-1">
+              Built-in tasks resolve `low`, `default`, and `high` reasoning phases through these model mappings.
+            </p>
+          </div>
+          {([
+            ['low', 'Reasoning Low'],
+            ['default', 'Reasoning Default'],
+            ['high', 'Reasoning High'],
+          ] as const).map(([level, label]) => {
+            const value = level === 'low'
+              ? draft.reasoningLow
+              : level === 'default'
+                ? draft.reasoningDefault
+                : draft.reasoningHigh;
+            const setValue = (next: string) => {
+              setDraft((prev) => {
+                const updated = {
+                  ...prev,
+                  ...(level === 'low' ? { reasoningLow: next } : {}),
+                  ...(level === 'default' ? { reasoningDefault: next } : {}),
+                  ...(level === 'high' ? { reasoningHigh: next } : {}),
+                };
+                if (prev.type !== '') {
+                  writeProvider(updated, false);
+                }
+                return updated;
+              });
+            };
+            const placeholder = resolveReasoningModel(level, {
+              model: draft.model || undefined,
+              reasoning_map: {
+                ...(draft.reasoningLow ? { low: draft.reasoningLow } : {}),
+                ...(draft.reasoningDefault ? { default: draft.reasoningDefault } : {}),
+                ...(draft.reasoningHigh ? { high: draft.reasoningHigh } : {}),
+              },
+            }, draft.model);
+            return (
+              <div key={level} className="space-y-1">
+                <label className="font-sans text-xs text-on-surface-variant">{label}</label>
+                {reasoningModels.length > 0 ? (
+                  <Select value={value} onValueChange={setValue}>
+                    <SelectTrigger>
+                      <SelectValue placeholder={placeholder || 'Use default model'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {reasoningModels.map((m) => (
+                        <SelectItem key={`${level}-${m}`} value={m}>
+                          <span className="font-mono text-sm">{m}</span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input
+                    value={value}
+                    onChange={(e) => setValue(e.target.value)}
+                    placeholder={placeholder || 'Use default model'}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {secretProvider && (
+        <div className="space-y-2 rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest p-3">
+          <div className="space-y-1">
+            <label className="font-sans text-xs text-on-surface-variant">{REMOTE_SECRET_LABELS[secretProvider]}</label>
+            <Input
+              type="password"
+              value={apiKeyInput}
+              onChange={(e) => setApiKeyInput(e.target.value)}
+              placeholder={activeSecret?.configured ? 'Replace saved key' : 'Paste API key'}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={handleSaveApiKey}
+              disabled={saveProviderSecret.isPending || apiKeyInput.trim() === ''}
+            >
+              Save key
+            </Button>
+            {activeSecret?.configured && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={handleClearApiKey}
+                disabled={deleteProviderSecret.isPending}
+              >
+                Clear key
+              </Button>
+            )}
+            <span className="font-sans text-xs text-on-surface-variant break-all">
+              {activeSecret?.configured
+                ? `${activeSecret.maskedValue} stored ${activeSecret.source === 'vault' ? 'in vault secrets' : 'from environment'}`
+                : 'Key is required for model discovery and connection tests.'}
+            </span>
+          </div>
+        </div>
+      )}
 
       {draft.type !== '' && (
         <>

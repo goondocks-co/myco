@@ -6,6 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import type { ProviderType, RuntimeId } from '@myco/agent/types.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -26,17 +27,29 @@ export const STATUS_COMPLETED = 'completed';
 /** Run status for a run that encountered an error. */
 export const STATUS_FAILED = 'failed';
 
+/** Resume status used when a failed/interrupted run can be resumed. */
+export const RESUME_STATUS_READY = 'ready';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-/** Fields required (or optional) when inserting a run. */
 export interface RunInsert {
   id: string;
   agent_id: string;
   task?: string | null;
   instruction?: string | null;
   status?: string;
+  runtime?: RuntimeId | null;
+  provider?: ProviderType | null;
+  model?: string | null;
+  session_ref?: string | null;
+  resumable?: number | null;
+  resume_status?: string | null;
+  resume_mode?: string | null;
+  resumed_at?: number | null;
+  checkpoints?: string | null;
+  usage_data?: string | null;
   started_at?: number | null;
   completed_at?: number | null;
   tokens_used?: number | null;
@@ -45,13 +58,22 @@ export interface RunInsert {
   error?: string | null;
 }
 
-/** Row shape returned from agent_runs queries (all columns). */
 export interface RunRow {
   id: string;
   agent_id: string;
   task: string | null;
   instruction: string | null;
   status: string;
+  runtime: RuntimeId | null;
+  provider: ProviderType | null;
+  model: string | null;
+  session_ref: string | null;
+  resumable: number;
+  resume_status: string | null;
+  resume_mode: string | null;
+  resumed_at: number | null;
+  checkpoints: string | null;
+  usage_data: string | null;
   started_at: number | null;
   completed_at: number | null;
   tokens_used: number | null;
@@ -60,8 +82,26 @@ export interface RunRow {
   error: string | null;
 }
 
-/** Completion data passed to updateRunStatus. */
-export interface RunCompletion {
+export interface RunUpdate {
+  status?: string;
+  runtime?: RuntimeId | null;
+  provider?: ProviderType | null;
+  model?: string | null;
+  session_ref?: string | null;
+  resumable?: number | null;
+  resume_status?: string | null;
+  resume_mode?: string | null;
+  resumed_at?: number | null;
+  checkpoints?: string | null;
+  usage_data?: string | null;
+  completed_at?: number | null;
+  tokens_used?: number | null;
+  cost_usd?: number | null;
+  actions_taken?: string | null;
+  error?: string | null;
+}
+
+export interface RunCompletion extends RunUpdate {
   completed_at?: number;
   tokens_used?: number;
   cost_usd?: number;
@@ -69,7 +109,6 @@ export interface RunCompletion {
   error?: string;
 }
 
-/** Filter options for `listRuns`. */
 export interface ListRunsOptions {
   limit?: number;
   offset?: number;
@@ -89,6 +128,16 @@ const RUN_COLUMNS = [
   'task',
   'instruction',
   'status',
+  'runtime',
+  'provider',
+  'model',
+  'session_ref',
+  'resumable',
+  'resume_status',
+  'resume_mode',
+  'resumed_at',
+  'checkpoints',
+  'usage_data',
   'started_at',
   'completed_at',
   'tokens_used',
@@ -103,7 +152,6 @@ const SELECT_COLUMNS = RUN_COLUMNS.join(', ');
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Normalize a SQLite result row into a typed RunRow. */
 function toRunRow(row: Record<string, unknown>): RunRow {
   return {
     id: row.id as string,
@@ -111,6 +159,16 @@ function toRunRow(row: Record<string, unknown>): RunRow {
     task: (row.task as string) ?? null,
     instruction: (row.instruction as string) ?? null,
     status: row.status as string,
+    runtime: (row.runtime as RuntimeId) ?? null,
+    provider: (row.provider as ProviderType) ?? null,
+    model: (row.model as string) ?? null,
+    session_ref: (row.session_ref as string) ?? null,
+    resumable: Number(row.resumable ?? 0),
+    resume_status: (row.resume_status as string) ?? null,
+    resume_mode: (row.resume_mode as string) ?? null,
+    resumed_at: (row.resumed_at as number) ?? null,
+    checkpoints: (row.checkpoints as string) ?? null,
+    usage_data: (row.usage_data as string) ?? null,
     started_at: (row.started_at as number) ?? null,
     completed_at: (row.completed_at as number) ?? null,
     tokens_used: (row.tokens_used as number) ?? null,
@@ -120,62 +178,6 @@ function toRunRow(row: Record<string, unknown>): RunRow {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/**
- * Insert a new agent run.
- */
-export function insertRun(data: RunInsert): RunRow {
-  const db = getDatabase();
-
-  db.prepare(
-    `INSERT INTO agent_runs (
-       id, agent_id, task, instruction, status,
-       started_at, completed_at, tokens_used, cost_usd,
-       actions_taken, error
-     ) VALUES (
-       ?, ?, ?, ?, ?,
-       ?, ?, ?, ?,
-       ?, ?
-     )`,
-  ).run(
-    data.id,
-    data.agent_id,
-    data.task ?? null,
-    data.instruction ?? null,
-    data.status ?? DEFAULT_STATUS,
-    data.started_at ?? null,
-    data.completed_at ?? null,
-    data.tokens_used ?? null,
-    data.cost_usd ?? null,
-    data.actions_taken ?? null,
-    data.error ?? null,
-  );
-
-  return toRunRow(
-    db.prepare(`SELECT ${SELECT_COLUMNS} FROM agent_runs WHERE id = ?`).get(data.id) as Record<string, unknown>,
-  );
-}
-
-/**
- * Retrieve a single run by id.
- *
- * @returns the run row, or null if not found.
- */
-export function getRun(id: string): RunRow | null {
-  const db = getDatabase();
-
-  const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM agent_runs WHERE id = ?`,
-  ).get(id) as Record<string, unknown> | undefined;
-
-  if (!row) return null;
-  return toRunRow(row);
-}
-
-/** Build a WHERE clause and params array from ListRunsOptions filter fields. */
 function buildRunsWhere(
   options: Omit<ListRunsOptions, 'limit' | 'offset'>,
 ): { where: string; params: unknown[] } {
@@ -205,12 +207,96 @@ function buildRunsWhere(
   };
 }
 
-/**
- * List runs with optional filters, ordered by started_at DESC (nulls last).
- */
-export function listRuns(
-  options: ListRunsOptions = {},
-): RunRow[] {
+function buildUpdateClauses(update: RunUpdate): { setClauses: string[]; params: unknown[] } {
+  const mappings: Array<{ key: keyof RunUpdate; column: string }> = [
+    { key: 'status', column: 'status' },
+    { key: 'runtime', column: 'runtime' },
+    { key: 'provider', column: 'provider' },
+    { key: 'model', column: 'model' },
+    { key: 'session_ref', column: 'session_ref' },
+    { key: 'resumable', column: 'resumable' },
+    { key: 'resume_status', column: 'resume_status' },
+    { key: 'resume_mode', column: 'resume_mode' },
+    { key: 'resumed_at', column: 'resumed_at' },
+    { key: 'checkpoints', column: 'checkpoints' },
+    { key: 'usage_data', column: 'usage_data' },
+    { key: 'completed_at', column: 'completed_at' },
+    { key: 'tokens_used', column: 'tokens_used' },
+    { key: 'cost_usd', column: 'cost_usd' },
+    { key: 'actions_taken', column: 'actions_taken' },
+    { key: 'error', column: 'error' },
+  ];
+
+  const setClauses: string[] = [];
+  const params: unknown[] = [];
+
+  for (const { key, column } of mappings) {
+    if (key in update) {
+      setClauses.push(`${column} = ?`);
+      params.push(update[key]);
+    }
+  }
+
+  return { setClauses, params };
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+export function insertRun(data: RunInsert): RunRow {
+  const db = getDatabase();
+
+  db.prepare(
+    `INSERT INTO agent_runs (
+       id, agent_id, task, instruction, status,
+       runtime, provider, model, session_ref, resumable,
+       resume_status, resume_mode, resumed_at, checkpoints, usage_data,
+       started_at, completed_at, tokens_used, cost_usd,
+       actions_taken, error
+     ) VALUES (
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?,
+       ?, ?
+     )`,
+  ).run(
+    data.id,
+    data.agent_id,
+    data.task ?? null,
+    data.instruction ?? null,
+    data.status ?? DEFAULT_STATUS,
+    data.runtime ?? null,
+    data.provider ?? null,
+    data.model ?? null,
+    data.session_ref ?? null,
+    data.resumable ?? 0,
+    data.resume_status ?? null,
+    data.resume_mode ?? null,
+    data.resumed_at ?? null,
+    data.checkpoints ?? null,
+    data.usage_data ?? null,
+    data.started_at ?? null,
+    data.completed_at ?? null,
+    data.tokens_used ?? null,
+    data.cost_usd ?? null,
+    data.actions_taken ?? null,
+    data.error ?? null,
+  );
+
+  return getRun(data.id)!;
+}
+
+export function getRun(id: string): RunRow | null {
+  const db = getDatabase();
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM agent_runs WHERE id = ?`,
+  ).get(id) as Record<string, unknown> | undefined;
+  return row ? toRunRow(row) : null;
+}
+
+export function listRuns(options: ListRunsOptions = {}): RunRow[] {
   const db = getDatabase();
   const { where, params } = buildRunsWhere(options);
   const limit = options.limit ?? DEFAULT_LIST_LIMIT;
@@ -228,64 +314,23 @@ export function listRuns(
   return rows.map(toRunRow);
 }
 
-/**
- * Count runs matching the given filters (no limit/offset).
- */
 export function countRuns(
   options: Omit<ListRunsOptions, 'limit' | 'offset'> = {},
 ): number {
   const db = getDatabase();
   const { where, params } = buildRunsWhere(options);
-
   const row = db.prepare(
     `SELECT COUNT(*) as count FROM agent_runs ${where}`,
   ).get(...params) as { count: number };
-
   return row.count;
 }
 
-/**
- * Update a run's status, with optional completion data.
- *
- * @returns the updated row, or null if the run does not exist.
- */
-export function updateRunStatus(
-  id: string,
-  status: string,
-  completion?: RunCompletion,
-): RunRow | null {
+export function updateRun(id: string, update: RunUpdate): RunRow | null {
   const db = getDatabase();
-
-  const setClauses: string[] = ['status = ?'];
-  const params: unknown[] = [status];
-
-  if (completion?.completed_at !== undefined) {
-    setClauses.push(`completed_at = ?`);
-    params.push(completion.completed_at);
-  }
-
-  if (completion?.tokens_used !== undefined) {
-    setClauses.push(`tokens_used = ?`);
-    params.push(completion.tokens_used);
-  }
-
-  if (completion?.cost_usd !== undefined) {
-    setClauses.push(`cost_usd = ?`);
-    params.push(completion.cost_usd);
-  }
-
-  if (completion?.actions_taken !== undefined) {
-    setClauses.push(`actions_taken = ?`);
-    params.push(completion.actions_taken);
-  }
-
-  if (completion?.error !== undefined) {
-    setClauses.push(`error = ?`);
-    params.push(completion.error);
-  }
+  const { setClauses, params } = buildUpdateClauses(update);
+  if (setClauses.length === 0) return getRun(id);
 
   params.push(id);
-
   const info = db.prepare(
     `UPDATE agent_runs
      SET ${setClauses.join(', ')}
@@ -293,22 +338,19 @@ export function updateRunStatus(
   ).run(...params);
 
   if (info.changes === 0) return null;
-
-  return toRunRow(
-    db.prepare(`SELECT ${SELECT_COLUMNS} FROM agent_runs WHERE id = ?`).get(id) as Record<string, unknown>,
-  );
+  return getRun(id);
 }
 
-/**
- * Get the currently running run for an agent, if any.
- *
- * @returns the running run row, or null if no run is active.
- */
-export function getRunningRun(
-  agentId: string,
+export function updateRunStatus(
+  id: string,
+  status: string,
+  completion?: RunCompletion,
 ): RunRow | null {
-  const db = getDatabase();
+  return updateRun(id, { status, ...completion });
+}
 
+export function getRunningRun(agentId: string): RunRow | null {
+  const db = getDatabase();
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_runs
@@ -316,36 +358,22 @@ export function getRunningRun(
      ORDER BY started_at DESC NULLS LAST
      LIMIT 1`,
   ).get(agentId, STATUS_RUNNING) as Record<string, unknown> | undefined;
-
-  if (!row) return null;
-  return toRunRow(row);
+  return row ? toRunRow(row) : null;
 }
 
-/**
- * Check if a specific task is already running for an agent.
- *
- * @returns the run ID if running, or null.
- */
 export function getRunningRunForTask(
   agentId: string,
   taskName: string,
 ): string | null {
   const db = getDatabase();
-
   const row = db.prepare(
     `SELECT id FROM agent_runs
      WHERE agent_id = ? AND task = ? AND status = ?
      LIMIT 1`,
   ).get(agentId, taskName, STATUS_RUNNING) as { id: string } | undefined;
-
   return row?.id ?? null;
 }
 
-/**
- * Get the most recently started run for an agent, optionally filtered by task.
- *
- * @returns the run ID if found, or null.
- */
 export function getLatestRunId(
   agentId: string,
   taskName?: string,
@@ -369,4 +397,35 @@ export function getLatestRunId(
      LIMIT 1`,
   ).get(agentId) as { id: string } | undefined;
   return row?.id ?? null;
+}
+
+export function getLatestResumableRunForTask(
+  agentId: string,
+  taskName: string,
+): RunRow | null {
+  const db = getDatabase();
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS}
+     FROM agent_runs
+     WHERE agent_id = ?
+       AND task = ?
+       AND resumable = 1
+       AND status = ?
+     ORDER BY completed_at DESC NULLS LAST, started_at DESC NULLS LAST
+     LIMIT 1`,
+  ).get(agentId, taskName, STATUS_FAILED) as Record<string, unknown> | undefined;
+  return row ? toRunRow(row) : null;
+}
+
+export function markRunningRunsInterrupted(message: string): number {
+  const db = getDatabase();
+  const info = db.prepare(
+    `UPDATE agent_runs
+     SET status = ?,
+         resumable = 1,
+         resume_status = ?,
+         error = COALESCE(error, ?)
+     WHERE status = ?`,
+  ).run(STATUS_FAILED, RESUME_STATUS_READY, message, STATUS_RUNNING);
+  return info.changes;
 }

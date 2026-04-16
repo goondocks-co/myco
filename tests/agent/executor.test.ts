@@ -171,6 +171,9 @@ let mockExecution: ExecutionConfig | undefined;
 /** Orchestrator config to return from the registry mock. Set per-test. */
 let mockOrchestratorConfig: OrchestratorConfig | undefined;
 
+/** Top-level task reasoning level from the registry mock. Set per-test. */
+let mockTaskReasoningLevel: 'low' | 'default' | 'high' | undefined;
+
 vi.mock('@myco/agent/loader.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('@myco/agent/loader.js')>();
   return {
@@ -220,16 +223,17 @@ vi.mock('@myco/agent/loader.js', async (importOriginal) => {
 vi.mock('@myco/agent/registry.js', () => ({
   loadAllTasks: (_definitionsDir: string, _vaultDir?: string) => {
     const tasks = new Map();
-    const task = {
-      name: TEST_TASK_NAME,
-      displayName: 'Full Intelligence',
-      description: 'Run full intelligence pipeline',
-      agent: 'myco-agent',
-      prompt: mockYamlPhases ? 'Phased pipeline overview.' : TEST_TASK_PROMPT,
-      isDefault: true,
-      ...(mockYamlPhases ? { phases: mockYamlPhases } : {}),
-      ...(mockExecution ? { execution: mockExecution } : {}),
-      ...(mockOrchestratorConfig ? { orchestrator: mockOrchestratorConfig } : {}),
+      const task = {
+        name: TEST_TASK_NAME,
+        displayName: 'Full Intelligence',
+        description: 'Run full intelligence pipeline',
+        agent: 'myco-agent',
+        prompt: mockYamlPhases ? 'Phased pipeline overview.' : TEST_TASK_PROMPT,
+        isDefault: true,
+        ...(mockTaskReasoningLevel ? { reasoningLevel: mockTaskReasoningLevel } : {}),
+        ...(mockYamlPhases ? { phases: mockYamlPhases } : {}),
+        ...(mockExecution ? { execution: mockExecution } : {}),
+        ...(mockOrchestratorConfig ? { orchestrator: mockOrchestratorConfig } : {}),
     };
     tasks.set(TEST_TASK_NAME, task);
     return tasks;
@@ -283,15 +287,18 @@ vi.mock('@myco/db/client.js', async (importOriginal) => {
 // Mock: config loader (avoid filesystem reads for myco.yaml)
 // ---------------------------------------------------------------------------
 
+let mockMergedConfig: any = {
+  version: 3,
+  config_version: 0,
+  embedding: { provider: 'ollama', model: 'bge-m3' },
+  daemon: { port: null, log_level: 'info' },
+  capture: { transcript_paths: [], artifact_watch: [], artifact_extensions: [], buffer_max_events: 500 },
+  agent: { summary_batch_interval: 5 },
+};
+
 vi.mock('@myco/config/loader.js', () => ({
-  loadConfig: () => ({
-    version: 3,
-    config_version: 0,
-    embedding: { provider: 'ollama', model: 'bge-m3' },
-    daemon: { port: null, log_level: 'info' },
-    capture: { transcript_paths: [], artifact_watch: [], artifact_extensions: [], buffer_max_events: 500 },
-    agent: { summary_batch_interval: 5 },
-  }),
+  loadConfig: () => mockMergedConfig,
+  loadMergedConfig: () => mockMergedConfig,
 }));
 
 // ---------------------------------------------------------------------------
@@ -334,7 +341,16 @@ function resetMockState(): void {
   mockYamlPhases = undefined;
   mockExecution = undefined;
   mockOrchestratorConfig = undefined;
+  mockTaskReasoningLevel = undefined;
   mockAssistantCount = 0;
+  mockMergedConfig = {
+    version: 3,
+    config_version: 0,
+    embedding: { provider: 'ollama', model: 'bge-m3' },
+    daemon: { port: null, log_level: 'info' },
+    capture: { transcript_paths: [], artifact_watch: [], artifact_extensions: [], buffer_max_events: 500 },
+    agent: { summary_batch_interval: 5 },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -839,6 +855,54 @@ describe('runAgent — phased execution', () => {
     expect((allQueryCalls[0].options as Record<string, unknown>).model).toBe('claude-haiku-4-5');
     // Phase 2 should fall back to the task/agent model
     expect((allQueryCalls[1].options as Record<string, unknown>).model).toBe('claude-sonnet-4-20250514');
+  });
+
+  it('uses task-level reasoningLevel for single-query tasks', async () => {
+    mockYamlPhases = undefined;
+    mockTaskReasoningLevel = 'low';
+    mockExecution = {
+      provider: {
+        type: 'anthropic',
+        reasoningMap: {
+          low: 'claude-haiku-4-5',
+          default: 'claude-sonnet-4-6',
+        },
+      },
+    };
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    await runAgent(TEST_VAULT_DIR);
+
+    expect(allQueryCalls).toHaveLength(1);
+    expect((allQueryCalls[0].options as Record<string, unknown>).model).toBe('claude-haiku-4-5');
+  });
+
+  it('uses myco.yaml per-phase model overrides when present', async () => {
+    mockYamlPhases = [
+      { name: 'extract', prompt: 'Extract.', tools: ['vault_unprocessed'], maxTurns: 20, required: true },
+      { name: 'graph', prompt: 'Build graph.', tools: ['vault_create_entity'], maxTurns: 10, required: true, dependsOn: ['extract'] },
+    ];
+    mockMergedConfig = {
+      ...mockMergedConfig,
+      agent: {
+        ...mockMergedConfig.agent,
+        tasks: {
+          [TEST_TASK_NAME]: {
+            phases: {
+              extract: { model: 'claude-opus-4-6' },
+            },
+          },
+        },
+      },
+    };
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    await runAgent(TEST_VAULT_DIR);
+
+    expect(allQueryCalls).toHaveLength(2);
+    expect((allQueryCalls[0].options as Record<string, unknown>).model).toBe('claude-opus-4-6');
   });
 
   it('records correct aggregate tokens and cost', async () => {

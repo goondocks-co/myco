@@ -5,6 +5,13 @@ import { Input } from '../ui/input';
 import { Surface } from '../ui/surface';
 import { Badge } from '../ui/badge';
 import { Switch } from '../ui/switch';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../ui/select';
 import { ProviderModelSelector } from '../providers/ProviderModelSelector';
 import {
   useProviders,
@@ -12,12 +19,15 @@ import {
   useTestProvider,
   useUpdateTaskConfig,
   seedDraftFromProviderType,
+  inferRuntimeFromProviderType,
+  resolveReasoningModel,
   type ProviderConfig,
   type ProviderInfo,
   type PhaseOverride,
   type ScheduleOverride,
 } from '../../hooks/use-providers';
 import type { PhaseDefinition } from '../../hooks/use-agent';
+import { useModels } from '../../hooks/use-models';
 
 /* ---------- Types ---------- */
 
@@ -31,7 +41,17 @@ interface ScheduleDefaults {
 interface TaskProviderConfigProps {
   taskId: string;
   phases?: PhaseDefinition[];
-  defaults?: { model?: string; maxTurns?: number; timeoutSeconds?: number };
+  defaults?: {
+    runtime?: string;
+    providerType?: string;
+    reasoningLevel?: 'low' | 'default' | 'high';
+    reasoningMap?: Partial<Record<'low' | 'default' | 'high', string>>;
+    model?: string;
+    baseUrl?: string;
+    contextLength?: number;
+    maxTurns?: number;
+    timeoutSeconds?: number;
+  };
   schedule?: ScheduleDefaults;
   params?: Record<string, string | number | boolean>;
 }
@@ -42,20 +62,35 @@ interface TaskProviderConfigProps {
 function PhaseConfigRow({
   phase,
   override,
+  taskRuntime,
+  taskProviderType,
   taskModel,
+  taskReasoningMap,
   providers,
   isLoadingProviders,
   onChange,
 }: {
   phase: PhaseDefinition;
   override: PhaseOverride;
+  taskRuntime: string;
+  taskProviderType: string;
   taskModel: string;
+  taskReasoningMap?: Partial<Record<'low' | 'default' | 'high', string>>;
   providers: ProviderInfo[];
   isLoadingProviders: boolean;
   onChange: (update: PhaseOverride | null) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const hasOverride = override.provider !== undefined || override.model !== undefined || override.maxTurns !== undefined;
+  const modelPlaceholder = phase.model
+    ?? resolveReasoningModel(
+      phase.reasoningLevel,
+      {
+        model: taskModel || undefined,
+        reasoning_map: taskReasoningMap,
+      },
+      taskModel,
+    );
 
   return (
     <div className="border border-[var(--ghost-border)] rounded-md">
@@ -73,18 +108,25 @@ function PhaseConfigRow({
         <div className="px-3 pb-3 space-y-3 border-t border-[var(--ghost-border)]">
           <div className="pt-3">
             <ProviderModelSelector
-              providerType={override.provider?.type ?? 'anthropic'}
+              runtime={override.provider?.runtime ?? taskRuntime}
+              providerType={override.provider?.type ?? taskProviderType}
               model={override.provider?.model ?? override.model ?? ''}
               baseUrl={override.provider?.base_url ?? ''}
               contextLength={override.provider?.context_length != null ? String(override.provider.context_length) : ''}
-              modelPlaceholder={phase.model ?? taskModel}
+              modelPlaceholder={modelPlaceholder}
               providers={providers}
               isLoadingProviders={isLoadingProviders}
+              showRuntimeSelector={false}
+              onRuntimeChange={() => {}}
               onProviderChange={(type) => {
                 const bp = providers.find(p => p.type === type)?.baseUrl;
                 onChange({
                   ...override,
-                  provider: { type: type as ProviderConfig['type'], base_url: bp },
+                  provider: {
+                    runtime: (override.provider?.runtime ?? taskRuntime) as ProviderConfig['runtime'],
+                    type: type as ProviderConfig['type'],
+                    base_url: bp,
+                  },
                   model: undefined,
                 });
               }}
@@ -146,8 +188,12 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
 
   const currentConfig = taskConfigData?.config;
 
+  const [runtime, setRuntime] = useState<string>('claude-sdk');
   const [providerType, setProviderType] = useState<string>('anthropic');
   const [model, setModel] = useState<string>('');
+  const [reasoningLow, setReasoningLow] = useState<string>('');
+  const [reasoningDefault, setReasoningDefault] = useState<string>('');
+  const [reasoningHigh, setReasoningHigh] = useState<string>('');
   const [baseUrl, setBaseUrl] = useState<string>('');
   const [contextLength, setContextLength] = useState<string>('');
   const [maxTurns, setMaxTurns] = useState<string>('');
@@ -156,36 +202,85 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
   const [scheduleOverride, setScheduleOverride] = useState<ScheduleOverride>({});
   const [paramsOverride, setParamsOverride] = useState<Record<string, string | number | boolean>>({});
   const [dirty, setDirty] = useState(false);
+  const providers = providersData?.providers ?? [];
+  const reasoningModelsQuery = useModels(providerType || null, baseUrl || undefined, 'llm');
+  const reasoningModels = reasoningModelsQuery.data?.models ?? providers.find((provider) => provider.type === providerType)?.models ?? [];
+  const effectiveRuntime = runtime
+    || inferRuntimeFromProviderType(providerType as Parameters<typeof inferRuntimeFromProviderType>[0])
+    || defaults?.runtime
+    || inferRuntimeFromProviderType(defaults?.providerType as Parameters<typeof inferRuntimeFromProviderType>[0])
+    || 'claude-sdk';
+
+  useEffect(() => {
+    if (!runtime && effectiveRuntime) {
+      setRuntime(effectiveRuntime);
+    }
+  }, [effectiveRuntime, runtime]);
 
   // Sync from myco.yaml config when it loads
   useEffect(() => {
-    if (currentConfig) {
-      setProviderType(currentConfig.provider?.type ?? 'anthropic');
-      setModel(currentConfig.provider?.model ?? currentConfig.model ?? '');
-      setBaseUrl(currentConfig.provider?.base_url ?? '');
-      setContextLength(currentConfig.provider?.context_length != null ? String(currentConfig.provider.context_length) : '');
-      setMaxTurns(currentConfig.maxTurns != null ? String(currentConfig.maxTurns) : '');
-      setTimeoutSeconds(currentConfig.timeoutSeconds != null ? String(currentConfig.timeoutSeconds) : '');
-      setPhaseOverrides(currentConfig.phases ?? {});
-      setScheduleOverride(currentConfig.schedule ?? {});
-      setParamsOverride(currentConfig.params ?? {});
-      setDirty(false);
-    }
-  }, [currentConfig]);
+    if (!taskConfigData) return;
+    setRuntime(
+      currentConfig?.runtime
+      ?? currentConfig?.provider?.runtime
+      ?? inferRuntimeFromProviderType(currentConfig?.provider?.type)
+      ?? defaults?.runtime
+      ?? inferRuntimeFromProviderType(defaults?.providerType as Parameters<typeof inferRuntimeFromProviderType>[0])
+      ?? 'claude-sdk',
+    );
+    setProviderType(currentConfig?.provider?.type ?? defaults?.providerType ?? 'anthropic');
+    setModel(currentConfig?.provider?.model ?? currentConfig?.model ?? defaults?.model ?? '');
+    setReasoningLow(currentConfig?.provider?.reasoning_map?.low ?? defaults?.reasoningMap?.low ?? '');
+    setReasoningDefault(
+      currentConfig?.provider?.reasoning_map?.default
+      ?? currentConfig?.provider?.model
+      ?? currentConfig?.model
+      ?? defaults?.reasoningMap?.default
+      ?? defaults?.model
+      ?? '',
+    );
+    setReasoningHigh(currentConfig?.provider?.reasoning_map?.high ?? defaults?.reasoningMap?.high ?? '');
+    setBaseUrl(currentConfig?.provider?.base_url ?? defaults?.baseUrl ?? '');
+    setContextLength(
+      currentConfig?.provider?.context_length != null
+        ? String(currentConfig.provider.context_length)
+        : defaults?.contextLength != null
+          ? String(defaults.contextLength)
+          : '',
+    );
+    setMaxTurns(currentConfig?.maxTurns != null ? String(currentConfig.maxTurns) : '');
+    setTimeoutSeconds(currentConfig?.timeoutSeconds != null ? String(currentConfig.timeoutSeconds) : '');
+    setPhaseOverrides(currentConfig?.phases ?? {});
+    setScheduleOverride(currentConfig?.schedule ?? {});
+    setParamsOverride(currentConfig?.params ?? {});
+    setDirty(false);
+  }, [
+    currentConfig,
+    taskConfigData,
+    defaults?.runtime,
+    defaults?.providerType,
+    defaults?.model,
+    defaults?.reasoningMap,
+    defaults?.baseUrl,
+    defaults?.contextLength,
+    defaults?.maxTurns,
+    defaults?.timeoutSeconds,
+  ]);
 
   // Effective schedule values: user override merged over YAML defaults
   const effectiveScheduleEnabled = scheduleOverride.enabled ?? schedule?.enabled ?? false;
   const effectiveRunIn = scheduleOverride.runIn ?? schedule?.runIn ?? [];
-
-  const providers = providersData?.providers ?? [];
-
   function handleProviderChange(type: string) {
     // Default to the first available model so the dropdown never shows a
     // stale value from the previous provider (Radix Select renders the prior
     // value instead of the placeholder when value='' is passed).
-    const draft = seedDraftFromProviderType(type, providers);
-    setProviderType(type);
-    setModel(draft.model);
+      const draft = seedDraftFromProviderType(type, providers);
+      setRuntime(draft.runtime || runtime);
+      setProviderType(type);
+      setModel(draft.model || defaults?.model || '');
+      setReasoningLow(draft.reasoningLow);
+      setReasoningDefault(draft.reasoningDefault || draft.model || defaults?.model || '');
+      setReasoningHigh(draft.reasoningHigh);
     setBaseUrl(draft.baseUrl);
     setContextLength(draft.contextLength);
     setDirty(true);
@@ -206,10 +301,17 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
   }
 
   function handleSave() {
-    const isLocal = providerType === 'ollama' || providerType === 'lmstudio';
+    const isLocal = providerType === 'ollama' || providerType === 'lmstudio' || providerType === 'openai-compatible';
+    const reasoningMap = {
+      ...(reasoningLow ? { low: reasoningLow } : {}),
+      ...(reasoningDefault ? { default: reasoningDefault } : {}),
+      ...(reasoningHigh ? { high: reasoningHigh } : {}),
+    };
     const provider: ProviderConfig = {
+      runtime: effectiveRuntime as ProviderConfig['runtime'],
       type: providerType as ProviderConfig['type'],
       ...(model ? { model } : {}),
+      ...(Object.keys(reasoningMap).length > 0 ? { reasoning_map: reasoningMap } : {}),
       ...(isLocal && baseUrl ? { base_url: baseUrl } : {}),
       ...(isLocal && contextLength ? { context_length: Number(contextLength) } : {}),
     };
@@ -228,6 +330,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       {
         taskId,
         config: {
+          runtime: effectiveRuntime as 'claude-sdk' | 'openai-agents',
           provider,
           ...(maxTurns ? { maxTurns: Number(maxTurns) } : { maxTurns: null as unknown as number }),
           ...(timeoutSeconds ? { timeoutSeconds: Number(timeoutSeconds) } : { timeoutSeconds: null as unknown as number }),
@@ -245,6 +348,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       {
         taskId,
         config: {
+          runtime: null as unknown as 'claude-sdk' | 'openai-agents',
           provider: null as unknown as ProviderConfig,
           model: null as unknown as string,
           maxTurns: null as unknown as number,
@@ -256,10 +360,18 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       },
       {
         onSuccess: () => {
-          setProviderType('anthropic');
-          setModel('');
-          setBaseUrl('');
-          setContextLength('');
+          setRuntime(
+            defaults?.runtime
+            ?? inferRuntimeFromProviderType(defaults?.providerType as Parameters<typeof inferRuntimeFromProviderType>[0])
+            ?? 'claude-sdk',
+          );
+          setProviderType(defaults?.providerType ?? 'anthropic');
+          setModel(defaults?.model ?? '');
+          setReasoningLow(defaults?.reasoningMap?.low ?? '');
+          setReasoningDefault(defaults?.reasoningMap?.default ?? defaults?.model ?? '');
+          setReasoningHigh(defaults?.reasoningMap?.high ?? '');
+          setBaseUrl(defaults?.baseUrl ?? '');
+          setContextLength(defaults?.contextLength != null ? String(defaults.contextLength) : '');
           setMaxTurns('');
           setTimeoutSeconds('');
           setPhaseOverrides({});
@@ -272,8 +384,9 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
   }
 
   function handleTest() {
-    const isLocal = providerType === 'ollama' || providerType === 'lmstudio';
+    const isLocal = providerType === 'ollama' || providerType === 'lmstudio' || providerType === 'openai-compatible';
     const config: ProviderConfig = {
+      runtime: effectiveRuntime as ProviderConfig['runtime'],
       type: providerType as ProviderConfig['type'],
       ...(isLocal && baseUrl ? { base_url: baseUrl } : {}),
     };
@@ -295,6 +408,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
 
       {/* Task-level provider/model */}
       <ProviderModelSelector
+        runtime={effectiveRuntime}
         providerType={providerType}
         model={model}
         baseUrl={baseUrl}
@@ -302,11 +416,81 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
         modelPlaceholder={defaults?.model}
         providers={providers}
         isLoadingProviders={isLoadingProviders}
+        onRuntimeChange={(nextRuntime) => {
+          setRuntime(nextRuntime);
+          const firstProvider = providers.find((provider) => provider.runtime === nextRuntime);
+          if (firstProvider) {
+            const draft = seedDraftFromProviderType(firstProvider.type, providers);
+            setProviderType(draft.type);
+            setModel(draft.model);
+            setReasoningLow(draft.reasoningLow);
+            setReasoningDefault(draft.reasoningDefault || draft.model);
+            setReasoningHigh(draft.reasoningHigh);
+            setBaseUrl(draft.baseUrl);
+            setContextLength(draft.contextLength);
+          }
+          setDirty(true);
+        }}
         onProviderChange={handleProviderChange}
         onModelChange={(m) => { setModel(m); setDirty(true); }}
         onBaseUrlChange={(url) => { setBaseUrl(url); setDirty(true); }}
         onContextLengthChange={(ctx) => { setContextLength(ctx); setDirty(true); }}
       />
+
+      {providerType !== '' && (
+        <div className="space-y-3 rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest p-3">
+          <div>
+            <p className="font-sans text-xs text-on-surface-variant uppercase tracking-wide">Reasoning Profiles</p>
+            <p className="font-sans text-xs text-on-surface-variant/80 mt-1">
+              Built-in task reasoning levels resolve through these task-level model mappings before falling back to the inherited defaults.
+            </p>
+          </div>
+          {([
+            ['low', 'Reasoning Low', reasoningLow, setReasoningLow],
+            ['default', 'Reasoning Default', reasoningDefault, setReasoningDefault],
+            ['high', 'Reasoning High', reasoningHigh, setReasoningHigh],
+          ] as const).map(([level, label, value, setValue]) => {
+            const placeholder = resolveReasoningModel(
+              level,
+              {
+                model: model || undefined,
+                reasoning_map: {
+                  ...(reasoningLow ? { low: reasoningLow } : {}),
+                  ...(reasoningDefault ? { default: reasoningDefault } : {}),
+                  ...(reasoningHigh ? { high: reasoningHigh } : {}),
+                },
+              },
+              defaults?.reasoningMap?.[level] ?? defaults?.model,
+            );
+
+            return (
+              <div key={level} className="space-y-1">
+                <label className="font-sans text-xs text-on-surface-variant">{label}</label>
+                {reasoningModels.length > 0 ? (
+                  <Select value={value} onValueChange={(next) => { setValue(next); setDirty(true); }}>
+                    <SelectTrigger>
+                      <SelectValue placeholder={placeholder || 'Use inherited model'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {reasoningModels.map((candidate) => (
+                        <SelectItem key={`${level}-${candidate}`} value={candidate}>
+                          <span className="font-mono text-sm">{candidate}</span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input
+                    value={value}
+                    onChange={(e) => { setValue(e.target.value); setDirty(true); }}
+                    placeholder={placeholder || 'Use inherited model'}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Task-level maxTurns + timeout */}
       <div className="grid grid-cols-2 gap-3">
@@ -541,7 +725,15 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
               key={phase.name}
               phase={phase}
               override={phaseOverrides[phase.name] ?? {}}
-              taskModel={model || 'claude-sonnet-4-6'}
+              taskRuntime={effectiveRuntime}
+              taskProviderType={providerType}
+              taskModel={model || defaults?.model || ''}
+              taskReasoningMap={{
+                ...(defaults?.reasoningMap ?? {}),
+                ...(reasoningLow ? { low: reasoningLow } : {}),
+                ...(reasoningDefault ? { default: reasoningDefault } : {}),
+                ...(reasoningHigh ? { high: reasoningHigh } : {}),
+              }}
               providers={providers}
               isLoadingProviders={isLoadingProviders}
               onChange={(update) => handlePhaseChange(phase.name, update)}

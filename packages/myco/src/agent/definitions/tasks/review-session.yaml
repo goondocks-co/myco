@@ -13,7 +13,7 @@ description: >
   checks, and generates the session title and summary.
 agent: myco-agent
 isDefault: false
-model: claude-sonnet-4-6
+reasoningLevel: default
 maxTurns: 40
 timeoutSeconds: 480
 

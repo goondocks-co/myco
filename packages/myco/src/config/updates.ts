@@ -13,8 +13,10 @@ export function withValue(config: MycoConfig, dotPath: string, value: unknown): 
 
 /** Provider override shape used in task config updates. Null means delete. */
 interface ProviderInput {
-  type: 'anthropic' | 'ollama' | 'lmstudio';
+  runtime?: 'claude-sdk' | 'openai-agents';
+  type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible';
   model?: string;
+  reasoning_map?: Partial<Record<'low' | 'default' | 'high', string>>;
   base_url?: string;
   context_length?: number;
 }
@@ -29,6 +31,7 @@ interface PhaseInput {
 /** Input shape for task config updates. Null values mean "delete this field". */
 export interface TaskConfigUpdate {
   provider?: ProviderInput | null;
+  runtime?: 'claude-sdk' | 'openai-agents' | null;
   model?: string | null;
   maxTurns?: number | null;
   timeoutSeconds?: number | null;
@@ -55,6 +58,11 @@ export function withTaskConfig(
     } else if (update.provider !== undefined) {
       entry.provider = { ...update.provider };
     }
+  }
+
+  if ('runtime' in update) {
+    if (update.runtime === null) delete entry.runtime;
+    else if (update.runtime !== undefined) entry.runtime = update.runtime;
   }
 
   if ('model' in update) {
