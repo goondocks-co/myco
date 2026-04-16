@@ -56,13 +56,17 @@ export async function main() {
 
     // Forward prompt as event for capture
     const eventResult = await client.post('/events', {
-      type: 'user_prompt', prompt, session_id: sessionId, agent: input.agent,
+      type: 'user_prompt',
+      prompt,
+      session_id: sessionId,
+      agent: input.agent,
+      transcript_path: input.transcriptPath,
     });
 
     if (!eventResult.ok) {
       // Daemon still unreachable — write directly to buffer for later processing
       const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
-      buffer.append({ type: 'user_prompt', prompt });
+      buffer.append({ type: 'user_prompt', prompt, transcript_path: input.transcriptPath });
     }
 
     // Search for relevant spores to inject as context for this prompt.
