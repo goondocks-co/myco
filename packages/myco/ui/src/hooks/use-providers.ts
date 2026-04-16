@@ -85,6 +85,13 @@ export function inferRuntimeFromProviderType(
   return PROVIDER_RUNTIME_BY_TYPE[type];
 }
 
+export function maybeInferRuntimeFromProviderType(
+  type: ProviderDraft['type'] | undefined,
+): ProviderDraft['runtime'] | undefined {
+  const runtime = inferRuntimeFromProviderType(type);
+  return runtime || undefined;
+}
+
 export function resolveReasoningModel(
   reasoningLevel: 'low' | 'default' | 'high' | undefined,
   provider: {

@@ -6,7 +6,7 @@ import { Surface } from '../ui/surface';
 import { MarkdownContent } from '../ui/markdown-content';
 import { useTask, type PhaseDefinition } from '../../hooks/use-agent';
 import { useScopedConfig } from '../../hooks/use-scoped-config';
-import { inferRuntimeFromProviderType, resolveReasoningModel } from '../../hooks/use-providers';
+import { maybeInferRuntimeFromProviderType, resolveReasoningModel } from '../../hooks/use-providers';
 import { capitalize } from '../../lib/format';
 import { sourceBadgeVariant } from './helpers';
 import { TaskActions } from './TaskActions';
@@ -97,9 +97,9 @@ function getInheritedExecution(
   return {
     runtime: task.execution?.runtime
       ?? taskProvider?.runtime
-      ?? inferRuntimeFromProviderType(taskProvider?.type as Parameters<typeof inferRuntimeFromProviderType>[0])
+      ?? maybeInferRuntimeFromProviderType(taskProvider?.type)
       ?? globalProvider?.runtime
-      ?? inferRuntimeFromProviderType(globalProvider?.type as Parameters<typeof inferRuntimeFromProviderType>[0])
+      ?? maybeInferRuntimeFromProviderType(globalProvider?.type)
       ?? config?.agent?.runtime,
     providerType: taskProvider?.type ?? globalProvider?.type,
     reasoningLevel,

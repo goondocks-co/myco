@@ -18,7 +18,7 @@ import {
 } from '../ui/select';
 import { useAgentTasks, useTriggerRun, type TaskRow } from '../../hooks/use-agent';
 import { useScopedConfig } from '../../hooks/use-scoped-config';
-import { inferRuntimeFromProviderType, resolveReasoningModel, useTaskConfig } from '../../hooks/use-providers';
+import { maybeInferRuntimeFromProviderType, resolveReasoningModel, useTaskConfig } from '../../hooks/use-providers';
 
 /* ---------- Helpers ---------- */
 
@@ -53,12 +53,12 @@ export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps)
   const globalProvider = effective?.agent?.provider;
   const effectiveRuntime = taskConfig?.runtime
     ?? taskConfig?.provider?.runtime
-    ?? inferRuntimeFromProviderType(taskConfig?.provider?.type)
+    ?? maybeInferRuntimeFromProviderType(taskConfig?.provider?.type)
     ?? execution?.runtime
     ?? execution?.provider?.runtime
-    ?? inferRuntimeFromProviderType(execution?.provider?.type)
+    ?? maybeInferRuntimeFromProviderType(execution?.provider?.type)
     ?? globalProvider?.runtime
-    ?? inferRuntimeFromProviderType(globalProvider?.type)
+    ?? maybeInferRuntimeFromProviderType(globalProvider?.type)
     ?? effective?.agent?.runtime
     ?? 'claude-sdk';
   const effectiveProvider = taskConfig?.provider?.type

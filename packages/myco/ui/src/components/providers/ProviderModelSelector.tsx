@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../ui/select';
+import { SearchableSelect } from '../ui/searchable-select';
 import type { ProviderInfo } from '../../hooks/use-providers';
 import { useModels } from '../../hooks/use-models';
 
@@ -192,18 +193,19 @@ export function ProviderModelSelector({
               Loading models...
             </div>
           ) : shouldShowModelSelect ? (
-            <Select value={model} onValueChange={onModelChange}>
-              <SelectTrigger>
-                <SelectValue placeholder={modelPlaceholderText} />
-              </SelectTrigger>
-              <SelectContent>
-                {availableModels.map((m) => (
-                  <SelectItem key={m} value={m}>
-                    <span className="font-mono text-sm">{m}</span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <SearchableSelect
+              value={model}
+              onValueChange={onModelChange}
+              placeholder={modelPlaceholderText}
+              searchPlaceholder="Search models..."
+              emptyMessage="No models match that search."
+              options={availableModels.map((candidate) => ({
+                value: candidate,
+                label: candidate,
+              }))}
+              sortOptions
+              monospace
+            />
           ) : allowsManualModelEntry ? (
             <Input
               value={model}
