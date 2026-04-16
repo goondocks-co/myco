@@ -71,7 +71,12 @@ function toOpenAIUsage(rawResponses: Array<{
     { requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, reasoningTokens: 0, cachedTokens: 0 },
   );
 
-  return usage;
+  return {
+    ...usage,
+    requestUsageEntries: rawResponses.map((response) => ({
+      ...response.usage,
+    })),
+  };
 }
 
 function createProvider(input: RuntimeExecuteInput): OpenAIProvider {
@@ -132,13 +137,17 @@ export class OpenAIAgentsRuntime implements AgentRuntime {
         session,
         ...(input.abortController ? { signal: input.abortController.signal } : {}),
       });
+      const usage = toOpenAIUsage(result.rawResponses);
+      usage.providerData = {
+        lastResponseId: result.lastResponseId,
+      };
 
       return {
         finalText: typeof result.finalOutput === 'string'
           ? result.finalOutput
           : JSON.stringify(result.finalOutput ?? ''),
         turnsUsed: result.rawResponses.length,
-        usage: toOpenAIUsage(result.rawResponses),
+        usage,
         sessionRef,
         sessionData: persistedItems,
         rawRuntimeMetadata: {

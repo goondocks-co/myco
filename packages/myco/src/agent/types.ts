@@ -6,6 +6,8 @@
  * database overrides.
  */
 
+import type { CostResolution, CostSource } from '@myco/agent/cost/types.js';
+
 // ---------------------------------------------------------------------------
 // YAML-sourced definitions (read from src/agent/definitions/)
 // ---------------------------------------------------------------------------
@@ -55,6 +57,8 @@ export interface PhaseResult {
   turnsUsed: number;
   tokensUsed: number;
   costUsd: number;
+  costSource?: CostSource;
+  costData?: CostResolution;
   summary: string; // last assistant message or error
   usage?: RuntimeUsage;
   sessionRef?: string;
@@ -240,7 +244,9 @@ export interface AgentRunResult {
   status: 'completed' | 'failed' | 'skipped';
   reason?: string;
   tokensUsed?: number;
-  costUsd?: number;
+  costUsd?: number | null;
+  costSource?: CostSource;
+  costData?: CostResolution;
   error?: string;
   phases?: PhaseResult[];
   runtime?: RuntimeId;

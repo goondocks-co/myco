@@ -6,6 +6,7 @@
  * instance with the full schema.
  */
 
+import crypto from 'node:crypto';
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
 import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
@@ -482,12 +483,17 @@ describe('runAgent', () => {
     expect(result.runId).toBeDefined();
     expect(result.tokensUsed).toBe(1850);
     expect(result.costUsd).toBe(0.0042);
+    expect(result.costSource).toBe('actual');
 
     const run = getRun(result.runId);
     expect(run).not.toBeNull();
     expect(run!.status).toBe('completed');
     expect(run!.tokens_used).toBe(1850);
     expect(run!.cost_usd).toBe(0.0042);
+    expect(run!.actual_cost_usd).toBe(0.0042);
+    expect(run!.estimated_cost_usd).toBeNull();
+    expect(run!.cost_source).toBe('actual');
+    expect(run!.cost_data).toBeTruthy();
     expect(run!.task).toBe(TEST_TASK_NAME);
     expect(run!.agent_id).toBe(TEST_AGENT_ID);
     expect(run!.started_at).toBeGreaterThan(0);
@@ -544,6 +550,44 @@ describe('runAgent', () => {
     expect(run!.status).toBe('failed');
     expect(run!.error).toContain('API rate limit exceeded');
     expect(run!.completed_at).toBeGreaterThan(0);
+  });
+
+  it('resets started_at to the resume attempt time when resuming a failed run', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const existingRunId = crypto.randomUUID();
+    const originalStartedAt = epochSeconds() - 120;
+    const originalCompletedAt = epochSeconds() - 60;
+    insertRun({
+      id: existingRunId,
+      agent_id: TEST_AGENT_ID,
+      task: TEST_TASK_NAME,
+      status: 'failed',
+      instruction: 'Retry this run',
+      runtime: 'claude-sdk',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      resumable: 1,
+      resume_status: 'ready',
+      checkpoints: JSON.stringify({ runtime: 'claude-sdk', phases: {} }),
+      started_at: originalStartedAt,
+      completed_at: originalCompletedAt,
+      error: 'boom',
+    });
+
+    const result = await runAgent(TEST_VAULT_DIR, {
+      task: TEST_TASK_NAME,
+      instruction: 'Retry this run',
+      resumeRunId: existingRunId,
+      resumeMode: 'manual',
+    });
+
+    expect(result.status).toBe('completed');
+    const run = getRun(existingRunId);
+    expect(run).not.toBeNull();
+    expect(run!.started_at).toBeGreaterThan(originalStartedAt);
+    expect(run!.started_at).toBeGreaterThanOrEqual(run!.resumed_at ?? 0);
+    expect(run!.completed_at).toBeGreaterThanOrEqual(run!.started_at ?? 0);
   });
 
   it('stores user instruction in run record and prompt', async () => {
@@ -712,6 +756,7 @@ describe('runAgent — phased execution', () => {
     expect(result.phases![0].status).toBe('completed');
     expect(result.phases![0].tokensUsed).toBe(1850);
     expect(result.phases![0].costUsd).toBe(0.0042);
+    expect(result.phases![0].costSource).toBe('actual');
     expect(result.phases![0].turnsUsed).toBe(3);
 
     expect(result.phases![1].name).toBe('extract');
@@ -918,6 +963,8 @@ describe('runAgent — phased execution', () => {
     const run = getRun(result.runId);
     expect(run!.tokens_used).toBe(5550);
     expect(run!.cost_usd).toBeCloseTo(0.0126);
+    expect(run!.actual_cost_usd).toBeCloseTo(0.0126);
+    expect(run!.cost_source).toBe('actual');
   });
 
   // ---------------------------------------------------------------------------

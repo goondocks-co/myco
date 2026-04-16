@@ -7,6 +7,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import type { ProviderType, RuntimeId } from '@myco/agent/types.js';
+import type { CostSource } from '@myco/agent/cost/types.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -54,6 +55,10 @@ export interface RunInsert {
   completed_at?: number | null;
   tokens_used?: number | null;
   cost_usd?: number | null;
+  actual_cost_usd?: number | null;
+  estimated_cost_usd?: number | null;
+  cost_source?: CostSource | null;
+  cost_data?: string | null;
   actions_taken?: string | null;
   error?: string | null;
 }
@@ -78,6 +83,10 @@ export interface RunRow {
   completed_at: number | null;
   tokens_used: number | null;
   cost_usd: number | null;
+  actual_cost_usd: number | null;
+  estimated_cost_usd: number | null;
+  cost_source: CostSource | null;
+  cost_data: string | null;
   actions_taken: string | null;
   error: string | null;
 }
@@ -88,6 +97,7 @@ export interface RunUpdate {
   provider?: ProviderType | null;
   model?: string | null;
   session_ref?: string | null;
+  started_at?: number | null;
   resumable?: number | null;
   resume_status?: string | null;
   resume_mode?: string | null;
@@ -97,6 +107,10 @@ export interface RunUpdate {
   completed_at?: number | null;
   tokens_used?: number | null;
   cost_usd?: number | null;
+  actual_cost_usd?: number | null;
+  estimated_cost_usd?: number | null;
+  cost_source?: CostSource | null;
+  cost_data?: string | null;
   actions_taken?: string | null;
   error?: string | null;
 }
@@ -104,7 +118,11 @@ export interface RunUpdate {
 export interface RunCompletion extends RunUpdate {
   completed_at?: number;
   tokens_used?: number;
-  cost_usd?: number;
+  cost_usd?: number | null;
+  actual_cost_usd?: number | null;
+  estimated_cost_usd?: number | null;
+  cost_source?: CostSource | null;
+  cost_data?: string | null;
   actions_taken?: string;
   error?: string;
 }
@@ -142,6 +160,10 @@ const RUN_COLUMNS = [
   'completed_at',
   'tokens_used',
   'cost_usd',
+  'actual_cost_usd',
+  'estimated_cost_usd',
+  'cost_source',
+  'cost_data',
   'actions_taken',
   'error',
 ] as const;
@@ -173,6 +195,10 @@ function toRunRow(row: Record<string, unknown>): RunRow {
     completed_at: (row.completed_at as number) ?? null,
     tokens_used: (row.tokens_used as number) ?? null,
     cost_usd: (row.cost_usd as number) ?? null,
+    actual_cost_usd: (row.actual_cost_usd as number) ?? null,
+    estimated_cost_usd: (row.estimated_cost_usd as number) ?? null,
+    cost_source: (row.cost_source as CostSource) ?? null,
+    cost_data: (row.cost_data as string) ?? null,
     actions_taken: (row.actions_taken as string) ?? null,
     error: (row.error as string) ?? null,
   };
@@ -214,6 +240,7 @@ function buildUpdateClauses(update: RunUpdate): { setClauses: string[]; params: 
     { key: 'provider', column: 'provider' },
     { key: 'model', column: 'model' },
     { key: 'session_ref', column: 'session_ref' },
+    { key: 'started_at', column: 'started_at' },
     { key: 'resumable', column: 'resumable' },
     { key: 'resume_status', column: 'resume_status' },
     { key: 'resume_mode', column: 'resume_mode' },
@@ -223,6 +250,10 @@ function buildUpdateClauses(update: RunUpdate): { setClauses: string[]; params: 
     { key: 'completed_at', column: 'completed_at' },
     { key: 'tokens_used', column: 'tokens_used' },
     { key: 'cost_usd', column: 'cost_usd' },
+    { key: 'actual_cost_usd', column: 'actual_cost_usd' },
+    { key: 'estimated_cost_usd', column: 'estimated_cost_usd' },
+    { key: 'cost_source', column: 'cost_source' },
+    { key: 'cost_data', column: 'cost_data' },
     { key: 'actions_taken', column: 'actions_taken' },
     { key: 'error', column: 'error' },
   ];
@@ -253,11 +284,13 @@ export function insertRun(data: RunInsert): RunRow {
        runtime, provider, model, session_ref, resumable,
        resume_status, resume_mode, resumed_at, checkpoints, usage_data,
        started_at, completed_at, tokens_used, cost_usd,
+       actual_cost_usd, estimated_cost_usd, cost_source, cost_data,
        actions_taken, error
      ) VALUES (
        ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?,
+       ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?
      )`,
@@ -281,6 +314,10 @@ export function insertRun(data: RunInsert): RunRow {
     data.completed_at ?? null,
     data.tokens_used ?? null,
     data.cost_usd ?? null,
+    data.actual_cost_usd ?? null,
+    data.estimated_cost_usd ?? null,
+    data.cost_source ?? null,
+    data.cost_data ?? null,
     data.actions_taken ?? null,
     data.error ?? null,
   );

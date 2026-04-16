@@ -60,13 +60,14 @@ interface PhaseCheckpointSummary {
   updatedAt: number;
   tokensUsed?: number;
   costUsd?: number;
+  costSource?: string;
 }
 
 function buildPhaseCheckpointSummary(checkpointsRaw: string | null): PhaseCheckpointSummary[] {
   if (!checkpointsRaw) return [];
   try {
     const parsed = JSON.parse(checkpointsRaw) as {
-      phases?: Record<string, { name?: string; status?: string; updatedAt?: number; tokensUsed?: number; costUsd?: number }>;
+      phases?: Record<string, { name?: string; status?: string; updatedAt?: number; tokensUsed?: number; costUsd?: number; costSource?: string }>;
     };
     return Object.entries(parsed.phases ?? {}).map(([name, phase]) => ({
       name: phase.name ?? name,
@@ -74,6 +75,7 @@ function buildPhaseCheckpointSummary(checkpointsRaw: string | null): PhaseCheckp
       updatedAt: phase.updatedAt ?? 0,
       ...(phase.tokensUsed !== undefined ? { tokensUsed: phase.tokensUsed } : {}),
       ...(phase.costUsd !== undefined ? { costUsd: phase.costUsd } : {}),
+      ...(phase.costSource !== undefined ? { costSource: phase.costSource } : {}),
     }));
   } catch {
     return [];

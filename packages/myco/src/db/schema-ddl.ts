@@ -276,6 +276,10 @@ const AGENT_RUNS_TABLE = `
     completed_at   INTEGER,
     tokens_used    INTEGER,
     cost_usd       REAL,
+    actual_cost_usd REAL,
+    estimated_cost_usd REAL,
+    cost_source    TEXT,
+    cost_data      TEXT,
     actions_taken  TEXT,
     error          TEXT
   )`;

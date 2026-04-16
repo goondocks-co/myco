@@ -15,7 +15,7 @@ agent: myco-agent
 isDefault: false
 reasoningLevel: low
 maxTurns: 15
-timeoutSeconds: 120
+timeoutSeconds: 300
 
 prompt: |
   Generate or update session titles and summaries. Budget: ~12 turns.
@@ -28,10 +28,11 @@ prompt: |
 
   **If a target session ID is specified above:**
   Always process it — the user explicitly requested regeneration.
-  Call `vault_sessions` with `include_active: true` to get its current
-  title/summary (the session may still be active). Call `vault_search_fts`
-  with the session ID to find ALL its prompt batches (processed and
-  unprocessed). Do NOT skip even if there are no new unprocessed batches.
+  Call `vault_sessions` with `id: <target session>` and `include_active: true`
+  to get its current title/summary (the session may still be active).
+  Call `vault_batches` with the same session ID to read ALL its prompt batches
+  (processed and unprocessed). Do NOT skip even if there are no new
+  unprocessed batches.
 
   **If no target session specified (automatic run):**
   Call `vault_unprocessed` with `include_active: true` — titles are needed
@@ -45,7 +46,7 @@ prompt: |
   For each session to process:
   1. Read the EXISTING title and summary — context from prior runs.
   2. Read the session's prompt batches — user_prompt + response_summary.
-     For targeted sessions, use `vault_search_fts` results from Phase 1.
+     For targeted sessions, use `vault_batches` results from Phase 1.
      For automatic runs, use `vault_unprocessed` results.
      This is your PRIMARY source — read through the full set to understand
      the complete arc of work.
@@ -81,9 +82,9 @@ prompt: |
 
 toolOverrides:
   - vault_unprocessed
+  - vault_batches
   - vault_sessions
   - vault_spores
-  - vault_search_fts
   - vault_state
   - vault_update_session
   - vault_set_state

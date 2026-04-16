@@ -42,6 +42,50 @@ function truncatePreview(text: string | null, limit: number): string {
   return truncate(text, limit) || '\u2014';
 }
 
+function parseJson<T>(raw: string | null | undefined): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+interface ParsedCostData {
+  source: 'actual' | 'estimated' | 'unavailable';
+  costUsd: number | null;
+  actualCostUsd: number | null;
+  estimatedCostUsd: number | null;
+  pricingVersion?: string | null;
+  message?: string | null;
+  breakdown: {
+    inputTokens: number;
+    cachedInputTokens: number;
+    uncachedInputTokens: number;
+    outputTokens: number;
+    reasoningTokens: number;
+    requestCount: number;
+    inputCostUsd?: number;
+    cachedInputCostUsd?: number;
+    outputCostUsd?: number;
+    reasoningCostUsd?: number;
+    requestCostUsd?: number;
+    totalCostUsd?: number;
+    cacheSavingsUsd?: number;
+  };
+}
+
+interface ParsedUsageData {
+  run?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    reasoningTokens?: number;
+    cachedTokens?: number;
+    requests?: number;
+  };
+}
+
 /* ---------- Sub-components ---------- */
 
 function ReportCard({ report }: { report: ReportRow }) {
@@ -181,6 +225,14 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   const { data: tasksData } = useAgentTasks();
   const resumeMutation = useResumeRun();
   const tasksList = useMemo(() => tasksData?.tasks ?? [], [tasksData]);
+  const parsedCost = useMemo(
+    () => parseJson<ParsedCostData>(runData?.run?.cost_data),
+    [runData?.run?.cost_data],
+  );
+  const parsedUsage = useMemo(
+    () => parseJson<ParsedUsageData>(runData?.run?.usage_data),
+    [runData?.run?.usage_data],
+  );
 
   if (runLoading) {
     return (
@@ -209,19 +261,13 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   const run = runData.run;
   const reports = reportsData?.reports ?? [];
   const turns = turnsData ?? [];
-
-  // Parse run metadata and phase results from actions_taken
-  let phaseResults: PhaseResult[] | null = null;
-  if (run.actions_taken) {
-    try {
-      const parsed = JSON.parse(run.actions_taken) as Record<string, unknown>;
-      if (parsed?.phases && Array.isArray(parsed.phases)) {
-        phaseResults = parsed.phases as PhaseResult[];
-      }
-    } catch {
-      // Malformed JSON -- silently ignore
-    }
-  }
+  const costCardLabel = run.cost_source === 'estimated' ? 'Estimated Cost' : 'Cost';
+  const phaseResults = useMemo(() => {
+    const parsed = parseJson<Record<string, unknown>>(run.actions_taken);
+    return parsed?.phases && Array.isArray(parsed.phases)
+      ? parsed.phases as PhaseResult[]
+      : null;
+  }, [run.actions_taken]);
 
   return (
     <div className="space-y-6">
@@ -238,7 +284,7 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
         <StatCard label="Started" value={formatEpochRelative(run.started_at)} accent="outline" />
         <StatCard label="Duration" value={formatDuration(run.started_at, run.completed_at)} accent="outline" />
         <StatCard label="Tokens" value={formatTokens(run.tokens_used)} accent="ochre" />
-        <StatCard label="Cost" value={formatCost(run.cost_usd)} accent="ochre" />
+        <StatCard label={costCardLabel} value={formatCost(run.cost_usd, run.cost_source)} accent="ochre" />
       </div>
 
       {run.resumable && run.status === 'failed' && (
@@ -275,7 +321,49 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
               Model: <span className="font-mono text-on-surface">{run.model}</span>
             </span>
           )}
+          {run.cost_source && run.cost_source !== 'unavailable' && (
+            <span className="font-sans text-xs text-on-surface-variant">
+              Cost source: <span className="font-mono text-on-surface">{run.cost_source}</span>
+            </span>
+          )}
         </div>
+      )}
+
+      {(parsedCost || parsedUsage?.run) && (
+        <Surface level="low" className="p-4 space-y-3">
+          <h2 className="font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide">
+            Cost Diagnostics
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Input</p>
+              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedCost?.breakdown.inputTokens ?? parsedUsage?.run?.inputTokens ?? null)}</p>
+            </div>
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Cached Input</p>
+              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedCost?.breakdown.cachedInputTokens ?? parsedUsage?.run?.cachedTokens ?? null)}</p>
+            </div>
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Uncached Input</p>
+              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedCost?.breakdown.uncachedInputTokens ?? null)}</p>
+            </div>
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Output</p>
+              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedCost?.breakdown.outputTokens ?? parsedUsage?.run?.outputTokens ?? null)}</p>
+            </div>
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Requests</p>
+              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedCost?.breakdown.requestCount ?? parsedUsage?.run?.requests ?? null)}</p>
+            </div>
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Cache Savings</p>
+              <p className="font-mono text-sm text-on-surface">{formatCost(parsedCost?.breakdown.cacheSavingsUsd ?? null, 'estimated')}</p>
+            </div>
+          </div>
+          {parsedCost?.message && (
+            <p className="font-sans text-xs text-on-surface-variant">{parsedCost.message}</p>
+          )}
+        </Surface>
       )}
 
       {run.error && (
@@ -301,7 +389,9 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
               <div key={phase.name} className="flex items-center justify-between gap-3 rounded-md bg-surface-container-lowest px-3 py-2">
                 <div>
                   <p className="font-sans text-sm text-on-surface">{phase.name}</p>
-                  <p className="font-mono text-xs text-on-surface-variant">{phase.status}</p>
+                  <p className="font-mono text-xs text-on-surface-variant">
+                    {phase.status}{phase.costSource ? ` • ${phase.costSource}` : ''}
+                  </p>
                 </div>
                 <p className="font-mono text-xs text-on-surface-variant">{formatEpochRelative(Math.floor(phase.updatedAt))}</p>
               </div>

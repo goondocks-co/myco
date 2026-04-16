@@ -48,6 +48,10 @@ export interface RunRow {
   completed_at: number | null;
   tokens_used: number | null;
   cost_usd: number | null;
+  actual_cost_usd: number | null;
+  estimated_cost_usd: number | null;
+  cost_source: 'actual' | 'estimated' | 'unavailable' | null;
+  cost_data: string | null;
   actions_taken: string | null;
   error: string | null;
   phase_checkpoints?: Array<{
@@ -56,6 +60,7 @@ export interface RunRow {
     updatedAt: number;
     tokensUsed?: number;
     costUsd?: number;
+    costSource?: 'actual' | 'estimated' | 'unavailable';
   }>;
 }
 
