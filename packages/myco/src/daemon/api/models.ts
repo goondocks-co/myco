@@ -1,8 +1,18 @@
 import { OllamaBackend } from '../../intelligence/ollama.js';
 import { LmStudioBackend } from '../../intelligence/lm-studio.js';
+import {
+  createLocalOpenAIBackend,
+  inferLocalOpenAIBackendKind,
+} from '../../intelligence/local-openai-backends.js';
+import { OPENAI_API_KEY_ENV } from '../../cli/providers/openai-embeddings.js';
+import { OPENROUTER_API_KEY_ENV } from '../../cli/providers/openrouter.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 
 const MODEL_LIST_TIMEOUT_MS = 5000;
+const REMOTE_MODELS_ENDPOINT = '/models';
+const OPENAI_DEFAULT_BASE_URL = 'https://api.openai.com/v1';
+const OPENROUTER_DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
+const REMOTE_PROVIDER_TIMEOUT_MS = 5000;
 
 /** Well-known Anthropic models — no list API available locally.
  *  Sonnet is first because it's the recommended default for all built-in
@@ -34,9 +44,57 @@ export function filterLlmModels(models: string[]): string[] {
   });
 }
 
+type RemoteProviderType = 'openai' | 'openrouter';
+
+const REMOTE_PROVIDER_DEFAULTS: Record<RemoteProviderType, string> = {
+  openai: OPENAI_DEFAULT_BASE_URL,
+  openrouter: OPENROUTER_DEFAULT_BASE_URL,
+};
+
+const REMOTE_PROVIDER_ENV_VARS: Record<RemoteProviderType, string> = {
+  openai: OPENAI_API_KEY_ENV,
+  openrouter: OPENROUTER_API_KEY_ENV,
+};
+
+function getRemoteProviderApiKey(provider: RemoteProviderType): string | undefined {
+  const preferredKey = process.env[REMOTE_PROVIDER_ENV_VARS[provider]];
+  if (preferredKey) return preferredKey;
+  if (provider === 'openai') {
+    return process.env.OPENAI_API_KEY;
+  }
+  return undefined;
+}
+
+async function fetchRemoteProviderModels(
+  provider: RemoteProviderType,
+  baseUrl?: string,
+  timeoutMs = REMOTE_PROVIDER_TIMEOUT_MS,
+): Promise<string[]> {
+  const apiKey = getRemoteProviderApiKey(provider);
+  if (!apiKey) return [];
+
+  const response = await fetch(`${baseUrl ?? REMOTE_PROVIDER_DEFAULTS[provider]}${REMOTE_MODELS_ENDPOINT}`, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+
+  if (!response.ok) {
+    throw new Error(`${provider} models request failed with ${response.status}`);
+  }
+
+  const data = await response.json() as { data?: Array<{ id?: string }> };
+  const modelIds = (data.data ?? [])
+    .map((entry) => entry.id)
+    .filter((id): id is string => typeof id === 'string' && id.length > 0);
+  return filterLlmModels(modelIds);
+}
+
 export async function handleGetModels(req: RouteRequest): Promise<RouteResponse> {
   const provider = req.query.provider;
   const type = req.query.type; // 'llm' | 'embedding' | undefined (all)
+  const localBackend = req.query.local_backend;
 
   if (!provider) {
     return { status: 400, body: { error: 'provider query parameter required' } };
@@ -45,14 +103,18 @@ export async function handleGetModels(req: RouteRequest): Promise<RouteResponse>
   let models: string[] = [];
 
   try {
-    if (provider === 'ollama') {
-      const backend = new OllamaBackend({ base_url: req.query.base_url });
-      models = await backend.listModels(MODEL_LIST_TIMEOUT_MS);
-    } else if (provider === 'lm-studio' || provider === 'openai-compatible') {
-      const backend = new LmStudioBackend({ base_url: req.query.base_url });
+    const localBackendKind = inferLocalOpenAIBackendKind({
+      type: provider === 'lm-studio' ? 'lmstudio' : provider as 'ollama' | 'lmstudio' | 'openai-compatible',
+      localBackend: localBackend as 'ollama' | 'lmstudio' | undefined,
+      baseUrl: req.query.base_url,
+    });
+    if (localBackendKind) {
+      const backend = createLocalOpenAIBackend(localBackendKind, req.query.base_url);
       models = await backend.listModels(MODEL_LIST_TIMEOUT_MS);
     } else if (provider === 'anthropic') {
       models = ANTHROPIC_MODELS;
+    } else if (provider === 'openai' || provider === 'openrouter') {
+      models = await fetchRemoteProviderModels(provider, req.query.base_url, MODEL_LIST_TIMEOUT_MS);
     }
   } catch {
     // Provider unreachable — return empty list
@@ -67,3 +129,8 @@ export async function handleGetModels(req: RouteRequest): Promise<RouteResponse>
 
   return { body: { provider, models } };
 }
+
+export {
+  getRemoteProviderApiKey,
+  fetchRemoteProviderModels,
+};

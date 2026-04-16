@@ -10,7 +10,7 @@ prompt: >-
   The instruction contains the candidate metadata and pre-assembled
   source material. Stage the skill, validate it, then finalize it.
 isDefault: false
-model: claude-sonnet-4-6
+reasoningLevel: default
 maxTurns: 30
 timeoutSeconds: 900
 schedule:

@@ -15,21 +15,34 @@ import { SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
 /** Current schema version for task config structures. */
 export const CURRENT_TASK_SCHEMA_VERSION = 1;
 
+export const RuntimeIdSchema = z.enum(['claude-sdk', 'openai-agents']);
+export const ReasoningLevelSchema = z.enum(['low', 'default', 'high']);
+
 // ---------------------------------------------------------------------------
 // Shared sub-schemas
 // ---------------------------------------------------------------------------
 
 /** Schema for API provider configuration. */
 export const ProviderConfigSchema = z.object({
-  type: z.enum(['anthropic', 'ollama', 'lmstudio']),
+  runtime: RuntimeIdSchema.optional(),
+  type: z.enum(['anthropic', 'ollama', 'lmstudio', 'openai', 'openrouter', 'openai-compatible']),
+  localBackend: z.enum(['ollama', 'lmstudio']).optional(),
   baseUrl: z.string().optional(),
   apiKey: z.string().optional(),
   model: z.string().optional(),
+  reasoningMap: z.object({
+    low: z.string().optional(),
+    default: z.string().optional(),
+    high: z.string().optional(),
+  }).optional(),
+  contextLength: z.number().optional(),
 });
 
 /** Schema for execution configuration overrides. */
 export const ExecutionConfigSchema = z.object({
+  runtime: RuntimeIdSchema.optional(),
   model: z.string().optional(),
+  reasoningLevel: ReasoningLevelSchema.optional(),
   maxTurns: z.number().optional(),
   timeoutSeconds: z.number().optional(),
   provider: ProviderConfigSchema.optional(),
@@ -68,6 +81,7 @@ export const AgentDefinitionSchema = z.object({
 export const OrchestratorConfigSchema = z.object({
   enabled: z.boolean(),
   model: z.string().optional(),
+  reasoningLevel: ReasoningLevelSchema.optional(),
   maxTurns: z.number().optional(),
 });
 
@@ -98,6 +112,7 @@ export const PhaseDefinitionSchema = z.object({
   tools: z.array(z.string()),
   maxTurns: z.number(),
   model: z.string().optional(),
+  reasoningLevel: ReasoningLevelSchema.optional(),
   required: z.boolean(),
   dependsOn: z.array(z.string()).optional(),
   provider: ProviderConfigSchema.optional(),
@@ -115,6 +130,7 @@ export const AgentTaskSchema = z.object({
   isDefault: z.boolean(),
   toolOverrides: z.array(z.string()).optional(),
   model: z.string().optional(),
+  reasoningLevel: ReasoningLevelSchema.optional(),
   maxTurns: z.number().optional(),
   timeoutSeconds: z.number().optional(),
   phases: z.array(PhaseDefinitionSchema).optional(),

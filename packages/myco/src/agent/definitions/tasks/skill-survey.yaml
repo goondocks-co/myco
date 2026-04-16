@@ -9,7 +9,7 @@ prompt: >-
   Survey the vault knowledge graph for procedural domain candidates.
   The instruction contains pre-assembled vault context.
 isDefault: false
-model: claude-sonnet-4-6
+reasoningLevel: default
 maxTurns: 35
 timeoutSeconds: 1800
 schedule:
@@ -99,7 +99,7 @@ phases:
     readOnly: true
 
   - name: synthesize-evaluate
-    model: claude-sonnet-4-6
+    reasoningLevel: default
     prompt: |
       The explore phase identified procedural domain clusters from
       the vault. Now evaluate each and create candidates for domains

@@ -85,6 +85,20 @@ describe('withTaskConfig', () => {
     expect(result.agent.tasks?.['title-summary']?.provider?.model).toBe('granite4:small-h');
   });
 
+  it('preserves openai-compatible local_backend on task provider overrides', () => {
+    const result = withTaskConfig(baseConfig(), 'title-summary', {
+      provider: {
+        type: 'openai-compatible',
+        local_backend: 'lmstudio',
+        base_url: 'http://localhost:1234',
+        model: 'google/gemma-4-26b-a4b',
+      },
+    });
+    expect(result.agent.tasks?.['title-summary']?.provider?.type).toBe('openai-compatible');
+    expect(result.agent.tasks?.['title-summary']?.provider?.local_backend).toBe('lmstudio');
+    expect(result.agent.tasks?.['title-summary']?.provider?.base_url).toBe('http://localhost:1234');
+  });
+
   it('sets model and maxTurns', () => {
     const result = withTaskConfig(baseConfig(), 'title-summary', {
       model: 'granite4:small-h',

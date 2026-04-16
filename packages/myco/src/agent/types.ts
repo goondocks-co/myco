@@ -6,6 +6,8 @@
  * database overrides.
  */
 
+import type { CostResolution, CostSource } from '@myco/agent/cost/types.js';
+
 // ---------------------------------------------------------------------------
 // YAML-sourced definitions (read from src/agent/definitions/)
 // ---------------------------------------------------------------------------
@@ -36,6 +38,7 @@ export interface PhaseDefinition {
   tools: string[];
   maxTurns: number;
   model?: string;
+  reasoningLevel?: ReasoningLevel;
   required: boolean;
   /** Phase names this phase depends on. Phases with no dependencies are roots (wave 0). */
   dependsOn?: string[];
@@ -54,7 +57,11 @@ export interface PhaseResult {
   turnsUsed: number;
   tokensUsed: number;
   costUsd: number;
+  costSource?: CostSource;
+  costData?: CostResolution;
   summary: string; // last assistant message or error
+  usage?: RuntimeUsage;
+  sessionRef?: string;
 }
 
 /** Context query that runs before task execution to gather vault state. */
@@ -66,19 +73,48 @@ export interface ContextQuery {
   required: boolean;
 }
 
+export type RuntimeId = 'claude-sdk' | 'openai-agents';
+export type ReasoningLevel = 'low' | 'default' | 'high';
+
+export type ProviderType =
+  | 'anthropic'
+  | 'ollama'
+  | 'lmstudio'
+  | 'openai'
+  | 'openrouter'
+  | 'openai-compatible';
+
 /** API provider configuration for task execution. */
 export interface ProviderConfig {
-  type: 'anthropic' | 'ollama' | 'lmstudio';
+  runtime?: RuntimeId;
+  type: ProviderType;
+  localBackend?: 'ollama' | 'lmstudio';
   baseUrl?: string;
   apiKey?: string;
   model?: string;
+  reasoningMap?: Partial<Record<ReasoningLevel, string>>;
   /** Context window size for local models (Ollama num_ctx, LM Studio context_length). */
   contextLength?: number;
 }
 
+export interface RuntimeUsage {
+  requests?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  reasoningTokens?: number;
+  cachedTokens?: number;
+  durationMs?: number;
+  costUsd?: number | null;
+  requestUsageEntries?: Array<Record<string, unknown>>;
+  providerData?: Record<string, unknown>;
+}
+
 /** Execution configuration overrides for a task. */
 export interface ExecutionConfig {
+  runtime?: RuntimeId;
   model?: string;
+  reasoningLevel?: ReasoningLevel;
   maxTurns?: number;
   timeoutSeconds?: number;
   provider?: ProviderConfig;
@@ -114,6 +150,7 @@ export interface OrchestratorPlan {
 export interface OrchestratorConfig {
   enabled: boolean;
   model?: string;
+  reasoningLevel?: ReasoningLevel;
   maxTurns?: number;
 }
 
@@ -135,6 +172,7 @@ export interface AgentTask {
   isDefault: boolean;
   toolOverrides?: string[]; // add/remove tools
   model?: string; // override model for this task
+  reasoningLevel?: ReasoningLevel; // preferred reasoning tier for this task
   maxTurns?: number; // override max turns for this task
   timeoutSeconds?: number; // override timeout for this task
   phases?: PhaseDefinition[]; // phased execution pipeline (opt-in)
@@ -160,7 +198,9 @@ export interface AgentTask {
  */
 export interface EffectiveConfig {
   agentId: string;
+  runtime: RuntimeId;
   model: string;
+  reasoningLevel?: ReasoningLevel;
   maxTurns: number;
   timeoutSeconds: number;
   systemPromptPath: string;
@@ -196,6 +236,7 @@ export interface RunOptions {
   runContext?: {
     candidate_id?: string;
   };
+  resumeMode?: 'manual' | 'scheduled';
 }
 
 /** Result of a single agent run. */
@@ -204,7 +245,12 @@ export interface AgentRunResult {
   status: 'completed' | 'failed' | 'skipped';
   reason?: string;
   tokensUsed?: number;
-  costUsd?: number;
+  costUsd?: number | null;
+  costSource?: CostSource;
+  costData?: CostResolution;
   error?: string;
   phases?: PhaseResult[];
+  runtime?: RuntimeId;
+  provider?: ProviderType;
+  model?: string;
 }

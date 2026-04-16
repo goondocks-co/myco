@@ -4,9 +4,11 @@ import { TASK_SOURCE_USER } from '../../lib/constants';
 import type { TaskRow } from '../../hooks/use-agent';
 
 /** Format a USD cost value for display. */
-export function formatCost(cost: number | null): string {
+export function formatCost(cost: number | null, source?: 'actual' | 'estimated' | 'unavailable' | null): string {
+  if (source === 'unavailable') return '\u2014';
   if (cost === null) return '\u2014';
-  return `$${cost.toFixed(4)}`;
+  const prefix = source === 'estimated' ? '~' : '';
+  return `${prefix}$${cost.toFixed(4)}`;
 }
 
 /** Format a token count for display. */

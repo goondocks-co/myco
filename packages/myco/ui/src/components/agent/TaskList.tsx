@@ -66,9 +66,9 @@ function TaskCard({ task, onClick }: { task: TaskRow; onClick: () => void }) {
           <span className="font-mono text-xs">{formatPhaseCount(task)}</span>
         </div>
 
-        {task.model && (
+        {task.reasoningLevel && (
           <span className="font-mono text-xs text-on-surface-variant/70 truncate max-w-[160px]">
-            {task.model}
+            reasoning {task.reasoningLevel}
           </span>
         )}
 

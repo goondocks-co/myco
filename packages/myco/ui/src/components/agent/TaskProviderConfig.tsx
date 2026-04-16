@@ -5,19 +5,35 @@ import { Input } from '../ui/input';
 import { Surface } from '../ui/surface';
 import { Badge } from '../ui/badge';
 import { Switch } from '../ui/switch';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../ui/select';
+import { SearchableSelect } from '../ui/searchable-select';
 import { ProviderModelSelector } from '../providers/ProviderModelSelector';
 import {
+  defaultBaseUrlForProvider,
   useProviders,
   useTaskConfig,
   useTestProvider,
   useUpdateTaskConfig,
-  seedDraftFromProviderType,
+  maybeInferRuntimeFromProviderType,
+  resolveReasoningModel,
   type ProviderConfig,
   type ProviderInfo,
   type PhaseOverride,
   type ScheduleOverride,
 } from '../../hooks/use-providers';
 import type { PhaseDefinition } from '../../hooks/use-agent';
+import { useModels } from '../../hooks/use-models';
+import {
+  draftToNormalizedProviderConfig,
+  providerDraftFromSource,
+  useProviderConfigDraft,
+} from '../../hooks/use-provider-config-draft';
 
 /* ---------- Types ---------- */
 
@@ -31,7 +47,18 @@ interface ScheduleDefaults {
 interface TaskProviderConfigProps {
   taskId: string;
   phases?: PhaseDefinition[];
-  defaults?: { model?: string; maxTurns?: number; timeoutSeconds?: number };
+  defaults?: {
+    runtime?: string;
+    providerType?: string;
+    localBackend?: 'ollama' | 'lmstudio';
+    reasoningLevel?: 'low' | 'default' | 'high';
+    reasoningMap?: Partial<Record<'low' | 'default' | 'high', string>>;
+    model?: string;
+    baseUrl?: string;
+    contextLength?: number;
+    maxTurns?: number;
+    timeoutSeconds?: number;
+  };
   schedule?: ScheduleDefaults;
   params?: Record<string, string | number | boolean>;
 }
@@ -42,20 +69,35 @@ interface TaskProviderConfigProps {
 function PhaseConfigRow({
   phase,
   override,
+  taskRuntime,
+  taskProviderType,
   taskModel,
+  taskReasoningMap,
   providers,
   isLoadingProviders,
   onChange,
 }: {
   phase: PhaseDefinition;
   override: PhaseOverride;
+  taskRuntime: string;
+  taskProviderType: string;
   taskModel: string;
+  taskReasoningMap?: Partial<Record<'low' | 'default' | 'high', string>>;
   providers: ProviderInfo[];
   isLoadingProviders: boolean;
   onChange: (update: PhaseOverride | null) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const hasOverride = override.provider !== undefined || override.model !== undefined || override.maxTurns !== undefined;
+  const modelPlaceholder = phase.model
+    ?? resolveReasoningModel(
+      phase.reasoningLevel,
+      {
+        model: taskModel || undefined,
+        reasoning_map: taskReasoningMap,
+      },
+      taskModel,
+    );
 
   return (
     <div className="border border-[var(--ghost-border)] rounded-md">
@@ -73,21 +115,33 @@ function PhaseConfigRow({
         <div className="px-3 pb-3 space-y-3 border-t border-[var(--ghost-border)]">
           <div className="pt-3">
             <ProviderModelSelector
-              providerType={override.provider?.type ?? 'anthropic'}
+              runtime={override.provider?.runtime ?? taskRuntime}
+              providerType={override.provider?.type ?? taskProviderType}
+              localBackend={override.provider?.local_backend ?? ''}
               model={override.provider?.model ?? override.model ?? ''}
               baseUrl={override.provider?.base_url ?? ''}
               contextLength={override.provider?.context_length != null ? String(override.provider.context_length) : ''}
-              modelPlaceholder={phase.model ?? taskModel}
+              modelPlaceholder={modelPlaceholder}
               providers={providers}
               isLoadingProviders={isLoadingProviders}
+              showRuntimeSelector={false}
+              onRuntimeChange={() => {}}
               onProviderChange={(type) => {
                 const bp = providers.find(p => p.type === type)?.baseUrl;
                 onChange({
                   ...override,
-                  provider: { type: type as ProviderConfig['type'], base_url: bp },
+                  provider: {
+                    runtime: (override.provider?.runtime ?? taskRuntime) as ProviderConfig['runtime'],
+                    type: type as ProviderConfig['type'],
+                    base_url: bp,
+                  },
                   model: undefined,
                 });
               }}
+              onLocalBackendChange={(localBackend) => onChange({
+                ...override,
+                provider: override.provider ? { ...override.provider, local_backend: localBackend || undefined } : undefined,
+              })}
               onModelChange={(m) => onChange({
                 ...override,
                 provider: override.provider ? { ...override.provider, model: m } : undefined,
@@ -136,6 +190,26 @@ const POWER_STATE_LABELS: Record<PowerState, string> = {
   sleep: 'Sleep',
 };
 
+function serializeComparable(value: unknown): string {
+  return JSON.stringify(value ?? null);
+}
+
+function taskConfigSnapshot(config: {
+  maxTurns?: number;
+  timeoutSeconds?: number;
+  phases?: Record<string, PhaseOverride>;
+  schedule?: ScheduleOverride;
+  params?: Record<string, string | number | boolean>;
+} | null | undefined) {
+  return {
+    maxTurns: config?.maxTurns != null ? String(config.maxTurns) : '',
+    timeoutSeconds: config?.timeoutSeconds != null ? String(config.timeoutSeconds) : '',
+    phaseOverrides: config?.phases ?? {},
+    scheduleOverride: config?.schedule ?? {},
+    paramsOverride: config?.params ?? {},
+  };
+}
+
 /* ---------- Component ---------- */
 
 export function TaskProviderConfig({ taskId, phases, defaults, schedule, params }: TaskProviderConfigProps) {
@@ -145,50 +219,88 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
   const updateMutation = useUpdateTaskConfig();
 
   const currentConfig = taskConfigData?.config;
-
-  const [providerType, setProviderType] = useState<string>('anthropic');
-  const [model, setModel] = useState<string>('');
-  const [baseUrl, setBaseUrl] = useState<string>('');
-  const [contextLength, setContextLength] = useState<string>('');
-  const [maxTurns, setMaxTurns] = useState<string>('');
-  const [timeoutSeconds, setTimeoutSeconds] = useState<string>('');
-  const [phaseOverrides, setPhaseOverrides] = useState<Record<string, PhaseOverride>>({});
-  const [scheduleOverride, setScheduleOverride] = useState<ScheduleOverride>({});
-  const [paramsOverride, setParamsOverride] = useState<Record<string, string | number | boolean>>({});
-  const [dirty, setDirty] = useState(false);
+  const initialTaskSnapshot = taskConfigSnapshot(currentConfig);
+  const [maxTurns, setMaxTurns] = useState<string>(initialTaskSnapshot.maxTurns);
+  const [timeoutSeconds, setTimeoutSeconds] = useState<string>(initialTaskSnapshot.timeoutSeconds);
+  const [phaseOverrides, setPhaseOverrides] = useState<Record<string, PhaseOverride>>(initialTaskSnapshot.phaseOverrides);
+  const [scheduleOverride, setScheduleOverride] = useState<ScheduleOverride>(initialTaskSnapshot.scheduleOverride);
+  const [paramsOverride, setParamsOverride] = useState<Record<string, string | number | boolean>>(initialTaskSnapshot.paramsOverride);
+  const [savedTaskSnapshot, setSavedTaskSnapshot] = useState(initialTaskSnapshot);
+  const providers = providersData?.providers ?? [];
+  const providerDraftDefaults = {
+    runtime: defaults?.runtime,
+    providerType: defaults?.providerType,
+    localBackend: defaults?.localBackend,
+    model: defaults?.model,
+    reasoningMap: defaults?.reasoningMap,
+    baseUrl: defaults?.baseUrl,
+    contextLength: defaults?.contextLength,
+  };
+  const {
+    draft,
+    isDirty: isProviderDirty,
+    commitDraft,
+    handleRuntimeChange: handleDraftRuntimeChange,
+    handleProviderChange: handleDraftProviderChange,
+    handleModelChange: handleDraftModelChange,
+    handleLocalBackendChange: handleDraftLocalBackendChange,
+    handleReasoningChange: handleDraftReasoningChange,
+    handleBaseUrlChange: handleDraftBaseUrlChange,
+    handleContextLengthChange: handleDraftContextLengthChange,
+  } = useProviderConfigDraft({
+    source: {
+      runtime: currentConfig?.runtime,
+      provider: currentConfig?.provider,
+      model: currentConfig?.model,
+    },
+    defaults: providerDraftDefaults,
+    providers,
+  });
+  const runtime = draft.runtime;
+  const providerType = draft.type;
+  const model = draft.model;
+  const reasoningLow = draft.reasoningLow;
+  const reasoningDefault = draft.reasoningDefault;
+  const reasoningHigh = draft.reasoningHigh;
+  const baseUrl = draft.baseUrl;
+  const contextLength = draft.contextLength;
+  const resolvedTaskBaseUrl = baseUrl || defaultBaseUrlForProvider(providerType, draft.localBackend);
+  const reasoningModelsQuery = useModels(providerType || null, resolvedTaskBaseUrl || undefined, 'llm', draft.localBackend || null);
+  const reasoningModels = reasoningModelsQuery.data?.models ?? providers.find((provider) => provider.type === providerType)?.models ?? [];
+  const effectiveRuntime = runtime
+    || maybeInferRuntimeFromProviderType(providerType)
+    || defaults?.runtime
+    || maybeInferRuntimeFromProviderType(defaults?.providerType)
+    || 'claude-sdk';
+  const isDirty = isProviderDirty
+    || maxTurns !== savedTaskSnapshot.maxTurns
+    || timeoutSeconds !== savedTaskSnapshot.timeoutSeconds
+    || serializeComparable(phaseOverrides) !== serializeComparable(savedTaskSnapshot.phaseOverrides)
+    || serializeComparable(scheduleOverride) !== serializeComparable(savedTaskSnapshot.scheduleOverride)
+    || serializeComparable(paramsOverride) !== serializeComparable(savedTaskSnapshot.paramsOverride);
 
   // Sync from myco.yaml config when it loads
   useEffect(() => {
-    if (currentConfig) {
-      setProviderType(currentConfig.provider?.type ?? 'anthropic');
-      setModel(currentConfig.provider?.model ?? currentConfig.model ?? '');
-      setBaseUrl(currentConfig.provider?.base_url ?? '');
-      setContextLength(currentConfig.provider?.context_length != null ? String(currentConfig.provider.context_length) : '');
-      setMaxTurns(currentConfig.maxTurns != null ? String(currentConfig.maxTurns) : '');
-      setTimeoutSeconds(currentConfig.timeoutSeconds != null ? String(currentConfig.timeoutSeconds) : '');
-      setPhaseOverrides(currentConfig.phases ?? {});
-      setScheduleOverride(currentConfig.schedule ?? {});
-      setParamsOverride(currentConfig.params ?? {});
-      setDirty(false);
-    }
-  }, [currentConfig]);
+    if (!taskConfigData) return;
+    const snapshot = taskConfigSnapshot(currentConfig);
+    setMaxTurns(snapshot.maxTurns);
+    setTimeoutSeconds(snapshot.timeoutSeconds);
+    setPhaseOverrides(snapshot.phaseOverrides);
+    setScheduleOverride(snapshot.scheduleOverride);
+    setParamsOverride(snapshot.paramsOverride);
+    setSavedTaskSnapshot(snapshot);
+  }, [
+    currentConfig,
+    taskConfigData,
+    defaults?.maxTurns,
+    defaults?.timeoutSeconds,
+  ]);
 
   // Effective schedule values: user override merged over YAML defaults
   const effectiveScheduleEnabled = scheduleOverride.enabled ?? schedule?.enabled ?? false;
   const effectiveRunIn = scheduleOverride.runIn ?? schedule?.runIn ?? [];
-
-  const providers = providersData?.providers ?? [];
-
   function handleProviderChange(type: string) {
-    // Default to the first available model so the dropdown never shows a
-    // stale value from the previous provider (Radix Select renders the prior
-    // value instead of the placeholder when value='' is passed).
-    const draft = seedDraftFromProviderType(type, providers);
-    setProviderType(type);
-    setModel(draft.model);
-    setBaseUrl(draft.baseUrl);
-    setContextLength(draft.contextLength);
-    setDirty(true);
+    handleDraftProviderChange(type);
     testMutation.reset();
   }
 
@@ -202,17 +314,16 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       }
       return next;
     });
-    setDirty(true);
   }
 
   function handleSave() {
-    const isLocal = providerType === 'ollama' || providerType === 'lmstudio';
-    const provider: ProviderConfig = {
-      type: providerType as ProviderConfig['type'],
-      ...(model ? { model } : {}),
-      ...(isLocal && baseUrl ? { base_url: baseUrl } : {}),
-      ...(isLocal && contextLength ? { context_length: Number(contextLength) } : {}),
-    };
+    const provider = draftToNormalizedProviderConfig(
+      { ...draft, runtime: effectiveRuntime as ProviderConfig['runtime'] },
+      reasoningModels,
+    );
+    if (!provider) {
+      return;
+    }
 
     // Build schedule payload: only include fields the user has overridden
     const schedulePayload = schedule
@@ -228,6 +339,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       {
         taskId,
         config: {
+          runtime: effectiveRuntime as 'claude-sdk' | 'openai-agents',
           provider,
           ...(maxTurns ? { maxTurns: Number(maxTurns) } : { maxTurns: null as unknown as number }),
           ...(timeoutSeconds ? { timeoutSeconds: Number(timeoutSeconds) } : { timeoutSeconds: null as unknown as number }),
@@ -236,7 +348,21 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
           ...paramsPayload,
         },
       },
-      { onSuccess: () => setDirty(false) },
+      {
+        onSuccess: () => {
+          commitDraft(providerDraftFromSource(
+            { runtime: effectiveRuntime, provider },
+            providerDraftDefaults,
+          ));
+          setSavedTaskSnapshot({
+            maxTurns,
+            timeoutSeconds,
+            phaseOverrides,
+            scheduleOverride,
+            paramsOverride,
+          });
+        },
+      },
     );
   }
 
@@ -245,6 +371,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       {
         taskId,
         config: {
+          runtime: null as unknown as 'claude-sdk' | 'openai-agents',
           provider: null as unknown as ProviderConfig,
           model: null as unknown as string,
           maxTurns: null as unknown as number,
@@ -256,25 +383,25 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       },
       {
         onSuccess: () => {
-          setProviderType('anthropic');
-          setModel('');
-          setBaseUrl('');
-          setContextLength('');
-          setMaxTurns('');
-          setTimeoutSeconds('');
-          setPhaseOverrides({});
-          setScheduleOverride({});
-          setParamsOverride({});
-          setDirty(false);
+          const clearedSnapshot = taskConfigSnapshot(null);
+          commitDraft(providerDraftFromSource(null, providerDraftDefaults));
+          setMaxTurns(clearedSnapshot.maxTurns);
+          setTimeoutSeconds(clearedSnapshot.timeoutSeconds);
+          setPhaseOverrides(clearedSnapshot.phaseOverrides);
+          setScheduleOverride(clearedSnapshot.scheduleOverride);
+          setParamsOverride(clearedSnapshot.paramsOverride);
+          setSavedTaskSnapshot(clearedSnapshot);
         },
       },
     );
   }
 
   function handleTest() {
-    const isLocal = providerType === 'ollama' || providerType === 'lmstudio';
+    const isLocal = providerType === 'ollama' || providerType === 'lmstudio' || providerType === 'openai-compatible';
     const config: ProviderConfig = {
+      runtime: effectiveRuntime as ProviderConfig['runtime'],
       type: providerType as ProviderConfig['type'],
+      ...(providerType === 'openai-compatible' && draft.localBackend ? { local_backend: draft.localBackend } : {}),
       ...(isLocal && baseUrl ? { base_url: baseUrl } : {}),
     };
     testMutation.mutate(config);
@@ -295,18 +422,80 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
 
       {/* Task-level provider/model */}
       <ProviderModelSelector
+        runtime={effectiveRuntime}
         providerType={providerType}
+        localBackend={draft.localBackend}
         model={model}
         baseUrl={baseUrl}
         contextLength={contextLength}
         modelPlaceholder={defaults?.model}
         providers={providers}
         isLoadingProviders={isLoadingProviders}
+        onRuntimeChange={(nextRuntime) => {
+          handleDraftRuntimeChange(nextRuntime);
+        }}
         onProviderChange={handleProviderChange}
-        onModelChange={(m) => { setModel(m); setDirty(true); }}
-        onBaseUrlChange={(url) => { setBaseUrl(url); setDirty(true); }}
-        onContextLengthChange={(ctx) => { setContextLength(ctx); setDirty(true); }}
+        onLocalBackendChange={handleDraftLocalBackendChange}
+        onModelChange={handleDraftModelChange}
+        onBaseUrlChange={handleDraftBaseUrlChange}
+        onContextLengthChange={handleDraftContextLengthChange}
       />
+
+      {providerType !== '' && (
+        <div className="space-y-3 rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest p-3">
+          <div>
+            <p className="font-sans text-xs text-on-surface-variant uppercase tracking-wide">Reasoning Profiles</p>
+            <p className="font-sans text-xs text-on-surface-variant/80 mt-1">
+              Built-in task reasoning levels resolve through these task-level model mappings before falling back to the inherited defaults.
+            </p>
+          </div>
+          {([
+            ['low', 'Reasoning Low', reasoningLow],
+            ['default', 'Reasoning Default', reasoningDefault],
+            ['high', 'Reasoning High', reasoningHigh],
+          ] as const).map(([level, label, value]) => {
+            const placeholder = resolveReasoningModel(
+              level,
+              {
+                model: model || undefined,
+                reasoning_map: {
+                  ...(reasoningLow ? { low: reasoningLow } : {}),
+                  ...(reasoningDefault ? { default: reasoningDefault } : {}),
+                  ...(reasoningHigh ? { high: reasoningHigh } : {}),
+                },
+              },
+              defaults?.reasoningMap?.[level] ?? defaults?.model,
+            );
+
+            return (
+              <div key={level} className="space-y-1">
+                <label className="font-sans text-xs text-on-surface-variant">{label}</label>
+                {reasoningModels.length > 0 ? (
+                  <SearchableSelect
+                    value={value}
+                    onValueChange={(next) => { handleDraftReasoningChange(level, next); }}
+                    placeholder={placeholder || 'Use inherited model'}
+                    searchPlaceholder="Search models..."
+                    emptyMessage="No models match that search."
+                    options={reasoningModels.map((candidate) => ({
+                      value: candidate,
+                      label: candidate,
+                    }))}
+                    sortOptions
+                    monospace
+                  />
+                ) : (
+                  <Input
+                    value={value}
+                    onChange={(e) => { handleDraftReasoningChange(level, e.target.value); }}
+                    placeholder={placeholder || 'Use inherited model'}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Task-level maxTurns + timeout */}
       <div className="grid grid-cols-2 gap-3">
@@ -315,7 +504,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
           <Input
             type="number"
             value={maxTurns}
-            onChange={(e) => { setMaxTurns(e.target.value); setDirty(true); }}
+            onChange={(e) => { setMaxTurns(e.target.value); }}
             placeholder={defaults?.maxTurns != null ? String(defaults.maxTurns) : '—'}
           />
         </div>
@@ -324,7 +513,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
           <Input
             type="number"
             value={timeoutSeconds}
-            onChange={(e) => { setTimeoutSeconds(e.target.value); setDirty(true); }}
+            onChange={(e) => { setTimeoutSeconds(e.target.value); }}
             placeholder={defaults?.timeoutSeconds != null ? String(defaults.timeoutSeconds) : '—'}
           />
         </div>
@@ -368,7 +557,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
         <Button
           size="sm"
           onClick={handleSave}
-          disabled={!dirty || updateMutation.isPending}
+          disabled={!isDirty || updateMutation.isPending}
           className="gap-1.5"
         >
           {updateMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
@@ -404,7 +593,6 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
               checked={effectiveScheduleEnabled}
               onCheckedChange={(checked) => {
                 setScheduleOverride((prev) => ({ ...prev, enabled: checked }));
-                setDirty(true);
               }}
             />
           </div>
@@ -427,7 +615,6 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
                       ...prev,
                       intervalSeconds: val ? Number(val) : undefined,
                     }));
-                    setDirty(true);
                   }}
                   placeholder={schedule.intervalSeconds != null ? String(schedule.intervalSeconds) : '300'}
                 />
@@ -450,7 +637,6 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
                             : [...effectiveRunIn, state];
                           // Only set override if different from YAML default
                           setScheduleOverride((prev) => ({ ...prev, runIn: next.length > 0 ? next : undefined }));
-                          setDirty(true);
                         }}
                         className={`
                           rounded-md border px-3 py-1.5 font-sans text-xs font-medium transition-colors
@@ -488,7 +674,6 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
                     checked={effectiveValue as boolean}
                     onCheckedChange={(v) => {
                       setParamsOverride(prev => ({ ...prev, [key]: v }));
-                      setDirty(true);
                     }}
                   />
                 </div>
@@ -516,7 +701,6 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
                       } else {
                         setParamsOverride(prev => ({ ...prev, [key]: val }));
                       }
-                      setDirty(true);
                     }}
                     className="w-40 font-mono"
                   />
@@ -541,7 +725,15 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
               key={phase.name}
               phase={phase}
               override={phaseOverrides[phase.name] ?? {}}
-              taskModel={model || 'claude-sonnet-4-6'}
+              taskRuntime={effectiveRuntime}
+              taskProviderType={providerType}
+              taskModel={model || defaults?.model || ''}
+              taskReasoningMap={{
+                ...(defaults?.reasoningMap ?? {}),
+                ...(reasoningLow ? { low: reasoningLow } : {}),
+                ...(reasoningDefault ? { default: reasoningDefault } : {}),
+                ...(reasoningHigh ? { high: reasoningHigh } : {}),
+              }}
               providers={providers}
               isLoadingProviders={isLoadingProviders}
               onChange={(update) => handlePhaseChange(phase.name, update)}

@@ -9,6 +9,8 @@
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { handleGetProviders, handleTestProvider } from '@myco/daemon/api/providers';
+import { OPENAI_API_KEY_ENV } from '@myco/cli/providers/openai-embeddings.js';
+import { OPENROUTER_API_KEY_ENV } from '@myco/cli/providers/openrouter.js';
 
 // ---------------------------------------------------------------------------
 // Mock: intelligence backends (avoid real network calls)
@@ -18,6 +20,7 @@ let ollamaAvailable = false;
 let ollamaModels: string[] = [];
 let lmStudioAvailable = false;
 let lmStudioModels: string[] = [];
+const fetchMock = vi.fn();
 
 vi.mock('@myco/intelligence/ollama.js', () => ({
   OllamaBackend: class {
@@ -35,11 +38,14 @@ vi.mock('@myco/intelligence/lm-studio.js', () => ({
   },
 }));
 
+global.fetch = fetchMock as unknown as typeof fetch;
+
 afterEach(() => {
   ollamaAvailable = false;
   ollamaModels = [];
   lmStudioAvailable = false;
   lmStudioModels = [];
+  fetchMock.mockReset();
   vi.unstubAllEnvs();
 });
 
@@ -55,7 +61,7 @@ describe('handleGetProviders', () => {
     expect(result.body).toHaveProperty('providers');
     const providers = (result.body as { providers: unknown[] }).providers;
     expect(Array.isArray(providers)).toBe(true);
-    expect(providers.length).toBe(3);
+    expect(providers.length).toBe(6);
   });
 
   it('each provider has type, available, and models fields', async () => {
@@ -92,6 +98,36 @@ describe('handleGetProviders', () => {
     expect(anthropic!.available).toBe(true);
     expect((anthropic!.models as string[]).length).toBeGreaterThan(0);
   });
+
+  it('marks OpenAI as needing auth when no key is configured', async () => {
+    const result = await handleGetProviders();
+    const providers = (result.body as { providers: Array<Record<string, unknown>> }).providers;
+    const openai = providers.find((p) => p.type === 'openai');
+
+    expect(openai).toBeDefined();
+    expect(openai!.available).toBe(false);
+    expect(openai!.authConfigured).toBe(false);
+    expect(openai!.models).toEqual([]);
+  });
+
+  it('loads OpenAI models dynamically when a key is configured', async () => {
+    vi.stubEnv(OPENAI_API_KEY_ENV, 'sk-test');
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ id: 'gpt-5.4' }, { id: 'text-embedding-3-small' }],
+      }),
+    });
+
+    const result = await handleGetProviders();
+    const providers = (result.body as { providers: Array<Record<string, unknown>> }).providers;
+    const openai = providers.find((p) => p.type === 'openai');
+
+    expect(openai).toBeDefined();
+    expect(openai!.available).toBe(true);
+    expect(openai!.authConfigured).toBe(true);
+    expect(openai!.models).toEqual(['gpt-5.4']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -113,7 +149,7 @@ describe('handleTestProvider — validation', () => {
 
   it('returns 400 for invalid provider type', async () => {
     const result = await handleTestProvider({
-      body: { type: 'openai' },
+      body: { type: 'cloud' },
       query: {},
       params: {},
       pathname: '/api/providers/test',
@@ -189,6 +225,41 @@ describe('handleTestProvider — connectivity', () => {
   it('tests anthropic provider always returns ok', async () => {
     const result = await handleTestProvider({
       body: { type: 'anthropic' },
+      query: {},
+      params: {},
+      pathname: '/api/providers/test',
+    });
+
+    expect(result.status).toBe(200);
+    const body = result.body as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+  });
+
+  it('tests OpenAI provider fails cleanly when key is missing', async () => {
+    const result = await handleTestProvider({
+      body: { type: 'openai' },
+      query: {},
+      params: {},
+      pathname: '/api/providers/test',
+    });
+
+    expect(result.status).toBe(200);
+    const body = result.body as Record<string, unknown>;
+    expect(body.ok).toBe(false);
+    expect(body.error).toMatch(/API key/);
+  });
+
+  it('tests OpenRouter provider by calling the remote models endpoint', async () => {
+    vi.stubEnv(OPENROUTER_API_KEY_ENV, 'sk-or-test');
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ id: 'openai/gpt-5.4' }],
+      }),
+    });
+
+    const result = await handleTestProvider({
+      body: { type: 'openrouter' },
       query: {},
       params: {},
       pathname: '/api/providers/test',

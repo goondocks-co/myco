@@ -190,6 +190,25 @@ describe('vault tools', () => {
     });
   });
 
+  describe('vault_batches', () => {
+    it('returns batches for the requested session in prompt order', async () => {
+      insertBatch(makeBatch(sessionId, { prompt_number: 2 }));
+      insertBatch(makeBatch(sessionId, { prompt_number: 1 }));
+
+      const otherSession = makeSession({ id: 'sess-other', status: 'completed' });
+      upsertSession(otherSession);
+      insertBatch(makeBatch(otherSession.id, { prompt_number: 1 }));
+
+      const t = findTool(tools, 'vault_batches');
+      const result = await t.handler({ session_id: sessionId }, undefined);
+      const data = parseResult(result) as Array<{ session_id: string; prompt_number: number }>;
+
+      expect(data).toHaveLength(2);
+      expect(data.map((row) => row.session_id)).toEqual([sessionId, sessionId]);
+      expect(data.map((row) => row.prompt_number)).toEqual([1, 2]);
+    });
+  });
+
   describe('vault_spores', () => {
     it('returns empty array when no spores exist', async () => {
       const t = findTool(tools, 'vault_spores');
@@ -267,6 +286,18 @@ describe('vault tools', () => {
       const result = await t.handler({ status: 'completed' }, undefined);
       const data = parseResult(result) as unknown[];
       expect(data).toEqual([]);
+    });
+
+    it('fetches an exact session by id', async () => {
+      const completed = makeSession({ id: 'sess-completed', status: 'completed' });
+      upsertSession(completed);
+
+      const t = findTool(tools, 'vault_sessions');
+      const result = await t.handler({ id: completed.id }, undefined);
+      const data = parseResult(result) as Array<{ id: string; status: string }>;
+
+      expect(data).toHaveLength(1);
+      expect(data[0]).toMatchObject({ id: completed.id, status: 'completed' });
     });
   });
 

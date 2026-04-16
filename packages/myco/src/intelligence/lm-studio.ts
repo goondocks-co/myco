@@ -223,6 +223,10 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
     }
   }
 
+  getLoadedInstanceId(): string | null {
+    return this.instanceId;
+  }
+
   /**
    * Query the LM Studio native API for loaded instances of this model.
    * Returns an empty array if the API is unavailable or the model has no loaded instances.
