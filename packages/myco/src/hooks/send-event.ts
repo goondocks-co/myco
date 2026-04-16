@@ -34,15 +34,17 @@ export async function sendEvent(
     const input = normalizeHookInput(rawInput);
 
     const event = buildEvent(input);
+    const eventWithContext = {
+      ...event,
+      transcript_path: input.transcriptPath,
+    };
 
     const client = new DaemonClient(VAULT_DIR);
-    const result = await client.post('/events', { ...event, session_id: input.sessionId, agent: input.agent });
+    const result = await client.post('/events', { ...eventWithContext, session_id: input.sessionId, agent: input.agent });
 
     if (!result.ok) {
       const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), input.sessionId);
-      // Strip session_id from buffer entry — it's in the filename
-      const { session_id: _, ...bufferPayload } = event;
-      buffer.append(bufferPayload);
+      buffer.append(eventWithContext);
     }
   } catch (error) {
     process.stderr.write(`[myco] ${hookName} error: ${(error as Error).message}\n`);

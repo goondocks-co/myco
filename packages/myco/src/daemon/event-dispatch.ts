@@ -33,6 +33,9 @@ import { upsertSession, reactivateSessionIfCompleted } from '@myco/db/queries/se
 import { captureBatchImages, type CapturedImage } from './capture-images.js';
 import { epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import { evaluateSessionCaptureRules } from '@myco/hooks/capture-rules.js';
+import { readTranscriptMeta } from '@myco/hooks/transcript-meta.js';
+import { loadManifests } from '@myco/symbionts/detect.js';
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -78,6 +81,20 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
   } = deps;
 
   const projectRoot = process.cwd();
+  const manifests = loadManifests();
+
+  function evaluateAutoRegistration(event: Record<string, unknown>): { action: 'pass' } | { action: 'drop'; reason?: string } {
+    const transcriptPath = typeof event.transcript_path === 'string' && event.transcript_path.length > 0
+      ? event.transcript_path
+      : undefined;
+    const transcriptMeta = transcriptPath ? readTranscriptMeta(transcriptPath) ?? undefined : undefined;
+    const detectedAgent = typeof event.agent === 'string' ? event.agent : 'claude-code';
+
+    return evaluateSessionCaptureRules(manifests, detectedAgent, {
+      transcriptPath,
+      transcriptMeta,
+    });
+  }
 
   return async (req) => {
     const validated = EventBody.parse(req.body);
@@ -90,6 +107,16 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
 
     // Ensure session is registered (idempotent — handles daemon restarts mid-session)
     if (!registry.getSession(event.session_id)) {
+      const decision = evaluateAutoRegistration(event);
+      if (decision.action === 'drop') {
+        logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Ignored event that failed session capture rules', {
+          session_id: event.session_id,
+          type: event.type,
+          reason: decision.reason ?? 'rule',
+        });
+        return { body: { ok: true, ignored: decision.reason ?? 'rule' } };
+      }
+
       registry.register(event.session_id, { started_at: event.timestamp });
       logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from event', { session_id: event.session_id });
 
