@@ -10,7 +10,7 @@ prompt: >-
   overlap. The instruction contains pre-filtered skills with their
   content, new spore IDs, and pre-computed similarity analysis.
 isDefault: false
-model: claude-sonnet-4-6
+reasoningLevel: default
 maxTurns: 48
 timeoutSeconds: 1800
 schedule:
@@ -25,7 +25,7 @@ params:
   max_skills_per_run: 8
 phases:
   - name: inventory
-    model: claude-haiku-4-5-20251001
+    reasoningLevel: low
     prompt: |
       The instruction contains pre-computed structural analysis of
       all active skills. Two mechanical signals are provided:
@@ -82,7 +82,7 @@ phases:
     readOnly: true
 
   - name: assess
-    model: claude-sonnet-4-6
+    reasoningLevel: default
     prompt: |
       Read the inventory analysis from vault_state
       (key: skill-evolve-inventory).
@@ -157,7 +157,7 @@ phases:
       - inventory
 
   - name: act
-    model: claude-haiku-4-5-20251001
+    reasoningLevel: low
     prompt: |
       Read classifications from vault_state
       (key: skill-evolve-classifications). Parse the JSON.

@@ -112,6 +112,11 @@ import {
   handleUpdateTaskConfig,
 } from './api/agent-tasks.js';
 import { handleGetProviders, handleTestProvider } from './api/providers.js';
+import {
+  handleDeleteProviderSecret,
+  handleGetProviderSecrets,
+  handlePutProviderSecret,
+} from './api/provider-secrets.js';
 import { registerScheduledTasks } from './task-scheduling.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
@@ -120,6 +125,7 @@ import { createMcpProxyHandlers } from './api/mcp-proxy.js';
 import { createAgentRunHandlers } from './api/agent-runs.js';
 import { createAttachmentHandler } from './api/attachments.js';
 import { reconcileLogBuffer } from './log-reconcile.js';
+import { markRunningRunsInterrupted } from '../db/queries/runs.js';
 import {
   POWER_IDLE_THRESHOLD_MS,
   POWER_SLEEP_THRESHOLD_MS,
@@ -282,6 +288,12 @@ export async function main(): Promise<void> {
   const db = initDatabase(vaultDbPath(vaultDir));
   createSchema(db, machineId);
   registerBuiltinDomains();
+  const interruptedRuns = markRunningRunsInterrupted('Daemon restarted before the run completed');
+  if (interruptedRuns > 0) {
+    logger.warn(LOG_KINDS.AGENT_RUN, 'Marked stale running runs as resumable after daemon restart', {
+      count: interruptedRuns,
+    });
+  }
 
   logger.info(LOG_KINDS.DAEMON_START, 'SQLite initialized', { vault: vaultDir });
 
@@ -685,6 +697,7 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/agent/run', agentRunHandlers.handleRun);
   server.registerRoute('GET', '/api/agent/runs', agentRunHandlers.handleListRuns);
   server.registerRoute('GET', '/api/agent/runs/:id', agentRunHandlers.handleGetRun);
+  server.registerRoute('POST', '/api/agent/runs/:id/resume', agentRunHandlers.handleResumeRun);
   server.registerRoute('GET', '/api/agent/runs/:id/reports', agentRunHandlers.handleGetRunReports);
   server.registerRoute('GET', '/api/agent/runs/:id/turns', agentRunHandlers.handleGetRunTurns);
 
@@ -731,6 +744,9 @@ export async function main(): Promise<void> {
   // --- Provider detection & testing ---
   server.registerRoute('GET', '/api/providers', async () => handleGetProviders());
   server.registerRoute('POST', '/api/providers/test', async (req) => handleTestProvider(req));
+  server.registerRoute('GET', '/api/providers/secrets', async () => handleGetProviderSecrets(vaultDir));
+  server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(vaultDir, req));
+  server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(vaultDir, req));
 
   // --- MCP proxy routes ---
   // These routes exist so the MCP server can proxy tool calls through the

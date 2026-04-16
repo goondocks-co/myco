@@ -1,14 +1,15 @@
 /**
  * Read-only vault tools.
  *
- * 8 tools: vault_unprocessed, vault_spores, vault_sessions, vault_search_fts,
- * vault_search_semantic, vault_state, vault_entities, vault_edges
+ * 9 tools: vault_unprocessed, vault_batches, vault_spores, vault_sessions,
+ * vault_search_fts, vault_search_semantic, vault_state, vault_entities,
+ * vault_edges
  */
 
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { SEARCH_SIMILARITY_THRESHOLD, TEAM_SOURCE_PREFIX } from '@myco/constants.js';
-import { getUnprocessedBatches } from '@myco/db/queries/batches.js';
+import { getUnprocessedBatches, listBatchesBySession } from '@myco/db/queries/batches.js';
 import { getSpore, listSpores } from '@myco/db/queries/spores.js';
 import { listSessions, getActiveSessionIds } from '@myco/db/queries/sessions.js';
 import { getStatesForAgent } from '@myco/db/queries/agent-state.js';
@@ -65,6 +66,24 @@ export function createReadTools(deps: VaultToolDeps) {
     { annotations: { readOnlyHint: true } },
   );
 
+  const vaultBatches = tool(
+    'vault_batches',
+    'List prompt batches for one session, ordered by prompt_number ASC. Use this when you already know the session ID and need the full session arc rather than only unprocessed batches.',
+    {
+      session_id: z.string().describe('Session ID whose batches should be returned'),
+      limit: z.number().optional().describe('Maximum number of batches to return'),
+      offset: z.number().optional().describe('Number of batches to skip from the start'),
+    },
+    async (args) => {
+      const batches = listBatchesBySession(args.session_id, {
+        limit: args.limit,
+        offset: args.offset,
+      });
+      return textResult(batches);
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const vaultSpores = tool(
     'vault_spores',
     'List spores with optional filters (agent, observation type, status, session), or fetch exact spores by id for full-content inspection after a semantic shortlist. Spores from in-flight sessions are excluded by default; passing a specific session_id or ids bypasses this filter. Pass include_active=true to bulk-read live work.',
@@ -99,14 +118,16 @@ export function createReadTools(deps: VaultToolDeps) {
 
   const vaultSessions = tool(
     'vault_sessions',
-    'List sessions with optional status filter, ordered by created_at DESC. In-flight sessions are excluded by default; pass include_active=true or an explicit status to see them.',
+    'List sessions with optional status filter, or fetch one exact session by id. In-flight sessions are excluded by default; pass include_active=true or an explicit status to see them.',
     {
+      id: z.string().optional().describe('Exact session ID to fetch'),
       limit: z.number().optional().describe('Maximum number of sessions to return'),
       status: z.string().optional().describe('Filter by status (active, completed)'),
       include_active: z.boolean().optional().describe('Include sessions still in active status (default: false)'),
     },
     async (args) => {
       const sessions = listSessions({
+        id: args.id,
         limit: args.limit ?? DEFAULT_SESSIONS_LIMIT,
         status: args.status,
         includeActive: args.include_active === true,
@@ -272,6 +293,7 @@ export function createReadTools(deps: VaultToolDeps) {
 
   return [
     vaultUnprocessed,
+    vaultBatches,
     vaultSpores,
     vaultSessions,
     vaultSearchFts,

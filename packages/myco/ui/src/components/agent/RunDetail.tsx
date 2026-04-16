@@ -5,7 +5,7 @@ import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
 import { StatCard } from '../ui/stat-card';
 import { MarkdownContent } from '../ui/markdown-content';
-import { useAgentRun, useAgentReports, useAgentTurns, useAgentTasks, type ReportRow, type TurnRow } from '../../hooks/use-agent';
+import { useAgentRun, useAgentReports, useAgentTurns, useAgentTasks, useResumeRun, type ReportRow, type TurnRow } from '../../hooks/use-agent';
 import { cn } from '../../lib/cn';
 import { formatEpochRelative, truncate, capitalize } from '../../lib/format';
 import { formatCost, formatTokens, formatDuration, resolveTaskName } from './helpers';
@@ -40,6 +40,50 @@ function formatEpochAbsoluteTime(epoch: number | null): string {
 function truncatePreview(text: string | null, limit: number): string {
   if (!text) return '\u2014';
   return truncate(text, limit) || '\u2014';
+}
+
+function parseJson<T>(raw: string | null | undefined): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+interface ParsedCostData {
+  source: 'actual' | 'estimated' | 'unavailable';
+  costUsd: number | null;
+  actualCostUsd: number | null;
+  estimatedCostUsd: number | null;
+  pricingVersion?: string | null;
+  message?: string | null;
+  breakdown: {
+    inputTokens: number;
+    cachedInputTokens: number;
+    uncachedInputTokens: number;
+    outputTokens: number;
+    reasoningTokens: number;
+    requestCount: number;
+    inputCostUsd?: number;
+    cachedInputCostUsd?: number;
+    outputCostUsd?: number;
+    reasoningCostUsd?: number;
+    requestCostUsd?: number;
+    totalCostUsd?: number;
+    cacheSavingsUsd?: number;
+  };
+}
+
+interface ParsedUsageData {
+  run?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    reasoningTokens?: number;
+    cachedTokens?: number;
+    requests?: number;
+  };
 }
 
 /* ---------- Sub-components ---------- */
@@ -179,7 +223,22 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   const { data: reportsData, isLoading: reportsLoading } = useAgentReports(runId, runStatus);
   const { data: turnsData, isLoading: turnsLoading } = useAgentTurns(showAudit ? runId : undefined, runStatus);
   const { data: tasksData } = useAgentTasks();
+  const resumeMutation = useResumeRun();
   const tasksList = useMemo(() => tasksData?.tasks ?? [], [tasksData]);
+  const parsedCost = useMemo(
+    () => parseJson<ParsedCostData>(runData?.run?.cost_data),
+    [runData?.run?.cost_data],
+  );
+  const parsedUsage = useMemo(
+    () => parseJson<ParsedUsageData>(runData?.run?.usage_data),
+    [runData?.run?.usage_data],
+  );
+  const phaseResults = useMemo(() => {
+    const parsed = parseJson<Record<string, unknown>>(runData?.run?.actions_taken);
+    return parsed?.phases && Array.isArray(parsed.phases)
+      ? parsed.phases as PhaseResult[]
+      : null;
+  }, [runData?.run?.actions_taken]);
 
   if (runLoading) {
     return (
@@ -208,23 +267,7 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   const run = runData.run;
   const reports = reportsData?.reports ?? [];
   const turns = turnsData ?? [];
-
-  // Parse run metadata and phase results from actions_taken
-  let phaseResults: PhaseResult[] | null = null;
-  let runModel: string | undefined;
-  let runProvider: string | undefined;
-  if (run.actions_taken) {
-    try {
-      const parsed = JSON.parse(run.actions_taken) as Record<string, unknown>;
-      if (parsed?.phases && Array.isArray(parsed.phases)) {
-        phaseResults = parsed.phases as PhaseResult[];
-      }
-      if (typeof parsed?.model === 'string') runModel = parsed.model as string;
-      if (typeof parsed?.provider === 'string') runProvider = parsed.provider as string;
-    } catch {
-      // Malformed JSON -- silently ignore
-    }
-  }
+  const costCardLabel = run.cost_source === 'estimated' ? 'Estimated Cost' : 'Cost';
 
   return (
     <div className="space-y-6">
@@ -241,23 +284,86 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
         <StatCard label="Started" value={formatEpochRelative(run.started_at)} accent="outline" />
         <StatCard label="Duration" value={formatDuration(run.started_at, run.completed_at)} accent="outline" />
         <StatCard label="Tokens" value={formatTokens(run.tokens_used)} accent="ochre" />
-        <StatCard label="Cost" value={formatCost(run.cost_usd)} accent="ochre" />
+        <StatCard label={costCardLabel} value={formatCost(run.cost_usd, run.cost_source)} accent="ochre" />
       </div>
 
+      {run.resumable && run.status === 'failed' && (
+        <div className="flex items-center gap-3">
+          <Button
+            size="sm"
+            onClick={() => resumeMutation.mutate({ runId: run.id, mode: 'manual' })}
+            disabled={resumeMutation.isPending}
+          >
+            {resumeMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+            Resume Run
+          </Button>
+          <span className="font-sans text-xs text-on-surface-variant">
+            Resume status: {run.resume_status ?? 'ready'}
+          </span>
+        </div>
+      )}
+
       {/* Model / Provider info */}
-      {(runModel || runProvider) && (
+      {(run.runtime || run.provider || run.model) && (
         <div className="flex items-center gap-4 px-1">
-          {runProvider && (
+          {run.runtime && (
             <span className="font-sans text-xs text-on-surface-variant">
-              Provider: <span className="font-mono text-on-surface">{runProvider}</span>
+              Runtime: <span className="font-mono text-on-surface">{run.runtime}</span>
             </span>
           )}
-          {runModel && (
+          {run.provider && (
             <span className="font-sans text-xs text-on-surface-variant">
-              Model: <span className="font-mono text-on-surface">{runModel}</span>
+              Provider: <span className="font-mono text-on-surface">{run.provider}</span>
+            </span>
+          )}
+          {run.model && (
+            <span className="font-sans text-xs text-on-surface-variant">
+              Model: <span className="font-mono text-on-surface">{run.model}</span>
+            </span>
+          )}
+          {run.cost_source && run.cost_source !== 'unavailable' && (
+            <span className="font-sans text-xs text-on-surface-variant">
+              Cost source: <span className="font-mono text-on-surface">{run.cost_source}</span>
             </span>
           )}
         </div>
+      )}
+
+      {(parsedCost || parsedUsage?.run) && (
+        <Surface level="low" className="p-4 space-y-3">
+          <h2 className="font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide">
+            Cost Diagnostics
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Input</p>
+              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedCost?.breakdown.inputTokens ?? parsedUsage?.run?.inputTokens ?? null)}</p>
+            </div>
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Cached Input</p>
+              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedCost?.breakdown.cachedInputTokens ?? parsedUsage?.run?.cachedTokens ?? null)}</p>
+            </div>
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Uncached Input</p>
+              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedCost?.breakdown.uncachedInputTokens ?? null)}</p>
+            </div>
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Output</p>
+              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedCost?.breakdown.outputTokens ?? parsedUsage?.run?.outputTokens ?? null)}</p>
+            </div>
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Requests</p>
+              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedCost?.breakdown.requestCount ?? parsedUsage?.run?.requests ?? null)}</p>
+            </div>
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Cache Savings</p>
+              <p className="font-mono text-sm text-on-surface">{formatCost(parsedCost?.breakdown.cacheSavingsUsd ?? null, 'estimated')}</p>
+            </div>
+          </div>
+          {parsedCost?.message && (
+            <p className="font-sans text-xs text-on-surface-variant">{parsedCost.message}</p>
+          )}
+        </Surface>
       )}
 
       {run.error && (
@@ -270,6 +376,27 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
       {phaseResults && phaseResults.length > 0 && (
         <Surface level="low" className="p-4">
           <PhaseTimeline phases={phaseResults} />
+        </Surface>
+      )}
+
+      {run.phase_checkpoints && run.phase_checkpoints.length > 0 && (
+        <Surface level="low" className="p-4 space-y-2">
+          <h2 className="font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide">
+            Checkpoints
+          </h2>
+          <div className="space-y-2">
+            {run.phase_checkpoints.map((phase) => (
+              <div key={phase.name} className="flex items-center justify-between gap-3 rounded-md bg-surface-container-lowest px-3 py-2">
+                <div>
+                  <p className="font-sans text-sm text-on-surface">{phase.name}</p>
+                  <p className="font-mono text-xs text-on-surface-variant">
+                    {phase.status}{phase.costSource ? ` • ${phase.costSource}` : ''}
+                  </p>
+                </div>
+                <p className="font-mono text-xs text-on-surface-variant">{formatEpochRelative(Math.floor(phase.updatedAt))}</p>
+              </div>
+            ))}
+          </div>
         </Surface>
       )}
 

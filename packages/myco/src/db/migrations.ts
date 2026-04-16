@@ -40,6 +40,8 @@ export const MIGRATIONS: Migration[] = [
   { version: 10, migrate: (db) => migrateV9ToV10(db) },
   { version: 11, migrate: (db) => migrateV10ToV11(db) },
   { version: 12, migrate: (db) => migrateV11ToV12(db) },
+  { version: 13, migrate: (db) => migrateV12ToV13(db) },
+  { version: 14, migrate: (db) => migrateV13ToV14(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -227,6 +229,95 @@ function migrateV3ToV4(db: Database, machineId: string): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`
     ).run(4, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
+ * Migrate a version-12 database to version-13.
+ *
+ * Version 13 adds first-class agent runtime/checkpoint fields so runs can be
+ * resumed without overloading actions_taken JSON.
+ */
+function migrateV12ToV13(db: Database): void {
+  db.exec('BEGIN');
+  try {
+    const alterStatements = [
+      `ALTER TABLE agent_runs ADD COLUMN runtime TEXT`,
+      `ALTER TABLE agent_runs ADD COLUMN provider TEXT`,
+      `ALTER TABLE agent_runs ADD COLUMN model TEXT`,
+      `ALTER TABLE agent_runs ADD COLUMN session_ref TEXT`,
+      `ALTER TABLE agent_runs ADD COLUMN resumable INTEGER DEFAULT 0`,
+      `ALTER TABLE agent_runs ADD COLUMN resume_status TEXT`,
+      `ALTER TABLE agent_runs ADD COLUMN resume_mode TEXT`,
+      `ALTER TABLE agent_runs ADD COLUMN resumed_at INTEGER`,
+      `ALTER TABLE agent_runs ADD COLUMN checkpoints TEXT`,
+      `ALTER TABLE agent_runs ADD COLUMN usage_data TEXT`,
+    ];
+
+    for (const stmt of alterStatements) {
+      try {
+        db.exec(stmt);
+      } catch {
+        // Column already exists -- safe to ignore on re-run
+      }
+    }
+
+    const newIndexes = [
+      `CREATE INDEX IF NOT EXISTS idx_agent_runs_task_status_started_at ON agent_runs (task, status, started_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_agent_runs_resumable_task ON agent_runs (task, resumable, completed_at)`,
+    ];
+    for (const idx of newIndexes) {
+      db.exec(idx);
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(13, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
+ * Migrate a version-13 database to version-14.
+ *
+ * Version 14 adds richer local-only cost accounting metadata for agent runs.
+ * These columns intentionally stay on the local SQLite vault only and are not
+ * part of team sync / outbox payloads.
+ */
+function migrateV13ToV14(db: Database): void {
+  db.exec('BEGIN');
+  try {
+    const alterStatements = [
+      `ALTER TABLE agent_runs ADD COLUMN actual_cost_usd REAL`,
+      `ALTER TABLE agent_runs ADD COLUMN estimated_cost_usd REAL`,
+      `ALTER TABLE agent_runs ADD COLUMN cost_source TEXT`,
+      `ALTER TABLE agent_runs ADD COLUMN cost_data TEXT`,
+    ];
+
+    for (const statement of alterStatements) {
+      try {
+        db.exec(statement);
+      } catch {
+        // Column already exists -- safe to ignore on re-run
+      }
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`
+    ).run(14, epochSeconds());
 
     db.exec('COMMIT');
   } catch (err) {

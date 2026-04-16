@@ -57,7 +57,7 @@ describe('harness properties', () => {
 
     it('read tools are annotated readOnlyHint: true', () => {
       const readToolNames = [
-        'vault_unprocessed', 'vault_spores', 'vault_sessions',
+        'vault_unprocessed', 'vault_batches', 'vault_spores', 'vault_sessions',
         'vault_search_fts', 'vault_search_semantic', 'vault_state',
         'vault_entities', 'vault_edges', 'vault_read_digest',
       ];

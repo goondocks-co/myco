@@ -9,8 +9,10 @@ const PROVIDERS_STALE_TIME = 30_000;
 /* ---------- Types ---------- */
 
 export interface ProviderInfo {
-  type: 'anthropic' | 'ollama' | 'lmstudio';
+  type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible';
+  runtime: 'claude-sdk' | 'openai-agents';
   available: boolean;
+  authConfigured?: boolean;
   baseUrl?: string;
   models: string[];
 }
@@ -20,8 +22,11 @@ export interface ProvidersResponse {
 }
 
 export interface ProviderConfig {
-  type: 'anthropic' | 'ollama' | 'lmstudio';
+  runtime?: 'claude-sdk' | 'openai-agents';
+  type: ProviderInfo['type'];
+  local_backend?: 'ollama' | 'lmstudio';
   model?: string;
+  reasoning_map?: Partial<Record<'low' | 'default' | 'high', string>>;
   base_url?: string;
   context_length?: number;
 }
@@ -40,6 +45,7 @@ export interface ScheduleOverride {
 }
 
 export interface TaskConfigOverride {
+  runtime?: 'claude-sdk' | 'openai-agents';
   provider?: ProviderConfig;
   model?: string;
   maxTurns?: number;
@@ -54,10 +60,86 @@ export interface TaskConfigOverride {
  *  flicker. Used by both the global Agent Provider card and per-task
  *  TaskProviderConfig. */
 export interface ProviderDraft {
+  runtime: ProviderConfig['runtime'] | '';
   type: ProviderConfig['type'] | '';
+  localBackend: ProviderConfig['local_backend'] | '';
   model: string;
+  reasoningLow: string;
+  reasoningDefault: string;
+  reasoningHigh: string;
   baseUrl: string;
   contextLength: string;
+}
+
+export const LOCAL_BACKEND_DEFAULT_BASE_URLS = {
+  ollama: 'http://localhost:11434',
+  lmstudio: 'http://localhost:1234',
+} as const;
+
+export function defaultBaseUrlForProvider(
+  type: ProviderDraft['type'] | undefined,
+  localBackend: ProviderDraft['localBackend'] | undefined,
+  fallbackBaseUrl?: string,
+): string {
+  if (type === 'openai-compatible' && localBackend) {
+    return LOCAL_BACKEND_DEFAULT_BASE_URLS[localBackend];
+  }
+  return fallbackBaseUrl ?? '';
+}
+
+const PROVIDER_RUNTIME_BY_TYPE: Record<ProviderInfo['type'], ProviderInfo['runtime']> = {
+  anthropic: 'claude-sdk',
+  ollama: 'claude-sdk',
+  lmstudio: 'claude-sdk',
+  openai: 'openai-agents',
+  openrouter: 'openai-agents',
+  'openai-compatible': 'openai-agents',
+};
+
+export function inferRuntimeFromProviderType(
+  type: ProviderDraft['type'] | undefined,
+): ProviderDraft['runtime'] | '' {
+  if (!type) return '';
+  return PROVIDER_RUNTIME_BY_TYPE[type];
+}
+
+export function maybeInferRuntimeFromProviderType(
+  type: ProviderDraft['type'] | undefined,
+): ProviderDraft['runtime'] | undefined {
+  const runtime = inferRuntimeFromProviderType(type);
+  return runtime || undefined;
+}
+
+const PROVIDER_RUNTIME_SUPPORT: Record<ProviderInfo['type'], Array<ProviderInfo['runtime']>> = {
+  anthropic: ['claude-sdk'],
+  ollama: ['claude-sdk', 'openai-agents'],
+  lmstudio: ['claude-sdk', 'openai-agents'],
+  openai: ['openai-agents'],
+  openrouter: ['openai-agents'],
+  'openai-compatible': ['openai-agents'],
+};
+
+export function providerSupportsRuntime(
+  type: ProviderDraft['type'] | undefined,
+  runtime: ProviderDraft['runtime'] | '' | undefined,
+): boolean {
+  if (!type || !runtime) return false;
+  return PROVIDER_RUNTIME_SUPPORT[type]?.includes(runtime) ?? false;
+}
+
+export function resolveReasoningModel(
+  reasoningLevel: 'low' | 'default' | 'high' | undefined,
+  provider: {
+    model?: string;
+    reasoning_map?: Partial<Record<'low' | 'default' | 'high', string>>;
+  } | undefined,
+  fallbackModel: string | undefined,
+): string {
+  const level = reasoningLevel ?? 'default';
+  return provider?.reasoning_map?.[level]
+    ?? provider?.model
+    ?? fallbackModel
+    ?? '';
 }
 
 /** Seed a draft from a freshly-selected provider type — picks the first
@@ -67,11 +149,43 @@ export interface ProviderDraft {
 export function seedDraftFromProviderType(
   type: string,
   providers: ProviderInfo[],
+  runtimeOverride?: ProviderDraft['runtime'],
 ): ProviderDraft {
   const info = providers.find((p) => p.type === type);
+  const modelSet = new Set(info?.models ?? []);
+  const defaultModel = info?.models?.[0] ?? '';
+  const pick = (...patterns: string[]) =>
+    info?.models?.find((model) => patterns.some((pattern) => model.includes(pattern))) ?? '';
+  const pickExact = (candidate: string) =>
+    info?.models?.find((model) => model === candidate) ?? '';
   return {
+    runtime: runtimeOverride && providerSupportsRuntime(type as ProviderDraft['type'], runtimeOverride)
+      ? runtimeOverride
+      : info?.runtime ?? inferRuntimeFromProviderType(type as ProviderDraft['type']),
     type: type as ProviderConfig['type'],
-    model: info?.models?.[0] ?? '',
+    localBackend: '',
+    model: defaultModel,
+    reasoningLow: modelSet.size > 0
+      ? (
+        (type === 'anthropic' ? pick('haiku')
+          : type === 'openai' ? pick('nano')
+          : defaultModel)
+      )
+      : '',
+    reasoningDefault: modelSet.size > 0
+      ? (
+        (type === 'anthropic' ? pick('sonnet')
+          : type === 'openai' ? pick('mini')
+          : defaultModel)
+      ) || defaultModel
+      : '',
+    reasoningHigh: modelSet.size > 0
+      ? (
+        (type === 'anthropic' ? pick('opus')
+          : type === 'openai' ? pickExact('gpt-5.4')
+          : '')
+      )
+      : '',
     baseUrl: info?.baseUrl ?? '',
     contextLength: '',
   };
@@ -81,10 +195,18 @@ export function seedDraftFromProviderType(
  *  fields and only includes base_url/context_length for local providers. */
 export function draftToProviderConfig(draft: ProviderDraft): ProviderConfig | undefined {
   if (draft.type === '') return undefined;
-  const isLocal = draft.type === 'ollama' || draft.type === 'lmstudio';
+  const isLocal = draft.type === 'ollama' || draft.type === 'lmstudio' || draft.type === 'openai-compatible';
+  const reasoningMap = {
+    ...(draft.reasoningLow ? { low: draft.reasoningLow } : {}),
+    ...(draft.reasoningDefault ? { default: draft.reasoningDefault } : {}),
+    ...(draft.reasoningHigh ? { high: draft.reasoningHigh } : {}),
+  };
   return {
+    ...(draft.runtime ? { runtime: draft.runtime } : {}),
     type: draft.type,
+    ...(draft.type === 'openai-compatible' && draft.localBackend ? { local_backend: draft.localBackend } : {}),
     ...(draft.model ? { model: draft.model } : {}),
+    ...(Object.keys(reasoningMap).length > 0 ? { reasoning_map: reasoningMap } : {}),
     ...(isLocal && draft.baseUrl ? { base_url: draft.baseUrl } : {}),
     ...(isLocal && draft.contextLength ? { context_length: Number(draft.contextLength) } : {}),
   };

@@ -1,10 +1,11 @@
 /**
  * Vault MCP tool server for the agent.
  *
- * Creates 21 tools that expose SQLite query helpers to the agent
+ * Creates vault tools that expose SQLite query helpers to the agent
  * via the Claude Agent SDK. Tools are grouped into:
- * - Read tools (8): vault_unprocessed, vault_spores, vault_sessions, vault_search_fts,
- *                    vault_search_semantic, vault_state, vault_entities, vault_edges
+ * - Read tools (9): vault_unprocessed, vault_batches, vault_spores, vault_sessions,
+ *                   vault_search_fts, vault_search_semantic, vault_state,
+ *                   vault_entities, vault_edges
  * - Write tools (9): vault_create_spore, vault_create_entity, vault_create_edge,
  *                     vault_resolve_spore, vault_update_session, vault_set_state,
  *                     vault_read_digest, vault_write_digest, vault_mark_processed
@@ -53,7 +54,7 @@ export interface VaultToolOptions {
 // ---------------------------------------------------------------------------
 
 const READ_TOOL_NAMES = new Set([
-  'vault_unprocessed', 'vault_spores', 'vault_sessions', 'vault_search_fts',
+  'vault_unprocessed', 'vault_batches', 'vault_spores', 'vault_sessions', 'vault_search_fts',
   'vault_search_semantic', 'vault_state', 'vault_entities', 'vault_edges',
 ]);
 

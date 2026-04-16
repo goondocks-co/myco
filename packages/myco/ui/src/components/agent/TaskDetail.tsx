@@ -1,9 +1,12 @@
+import { useMemo } from 'react';
 import { ArrowLeft, AlertCircle } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
 import { MarkdownContent } from '../ui/markdown-content';
 import { useTask, type PhaseDefinition } from '../../hooks/use-agent';
+import { useScopedConfig } from '../../hooks/use-scoped-config';
+import { maybeInferRuntimeFromProviderType, resolveReasoningModel } from '../../hooks/use-providers';
 import { capitalize } from '../../lib/format';
 import { sourceBadgeVariant } from './helpers';
 import { TaskActions } from './TaskActions';
@@ -27,9 +30,86 @@ interface TaskDetailProps {
 /* ---------- Helpers ---------- */
 
 /** Resolve effective execution config from task fields. */
-function getExecution(task: { execution?: { model?: string; maxTurns?: number; timeoutSeconds?: number }; model?: string; maxTurns?: number; timeoutSeconds?: number }) {
+function getExecution(task: {
+  execution?: {
+    runtime?: string;
+    provider?: { type?: string };
+    model?: string;
+    reasoningLevel?: 'low' | 'default' | 'high';
+    maxTurns?: number;
+    timeoutSeconds?: number;
+  };
+  model?: string;
+  reasoningLevel?: 'low' | 'default' | 'high';
+  maxTurns?: number;
+  timeoutSeconds?: number;
+}) {
   return {
+    runtime: task.execution?.runtime,
+    provider: task.execution?.provider?.type,
     model: task.execution?.model ?? task.model,
+    reasoningLevel: task.execution?.reasoningLevel ?? task.reasoningLevel,
+    maxTurns: task.execution?.maxTurns ?? task.maxTurns,
+    timeoutSeconds: task.execution?.timeoutSeconds ?? task.timeoutSeconds,
+  };
+}
+
+function getInheritedExecution(
+  task: {
+    execution?: {
+      runtime?: string;
+      provider?: {
+        runtime?: string;
+        type?: string;
+        local_backend?: 'ollama' | 'lmstudio';
+        model?: string;
+        reasoning_map?: Partial<Record<'low' | 'default' | 'high', string>>;
+        base_url?: string;
+        context_length?: number;
+      };
+      model?: string;
+      reasoningLevel?: 'low' | 'default' | 'high';
+      maxTurns?: number;
+      timeoutSeconds?: number;
+    };
+    model?: string;
+    reasoningLevel?: 'low' | 'default' | 'high';
+    maxTurns?: number;
+    timeoutSeconds?: number;
+  },
+  config: {
+    agent?: {
+      runtime?: string;
+      provider?: {
+        runtime?: string;
+        type?: string;
+        local_backend?: 'ollama' | 'lmstudio';
+        model?: string;
+        reasoning_map?: Partial<Record<'low' | 'default' | 'high', string>>;
+        base_url?: string;
+        context_length?: number;
+      };
+    };
+  } | undefined,
+) {
+  const globalProvider = config?.agent?.provider;
+  const taskProvider = task.execution?.provider;
+  const reasoningLevel = task.execution?.reasoningLevel ?? task.reasoningLevel;
+  const fallbackModel = task.execution?.model ?? task.model ?? globalProvider?.model;
+  return {
+    runtime: task.execution?.runtime
+      ?? taskProvider?.runtime
+      ?? maybeInferRuntimeFromProviderType(taskProvider?.type)
+      ?? globalProvider?.runtime
+      ?? maybeInferRuntimeFromProviderType(globalProvider?.type)
+      ?? config?.agent?.runtime,
+    providerType: taskProvider?.type ?? globalProvider?.type,
+    localBackend: taskProvider?.local_backend ?? globalProvider?.local_backend,
+    reasoningLevel,
+    model: resolveReasoningModel(reasoningLevel, taskProvider ?? globalProvider, fallbackModel),
+    reasoningMap: taskProvider?.reasoning_map ?? globalProvider?.reasoning_map,
+    baseUrl: taskProvider?.base_url ?? globalProvider?.base_url,
+    contextLength: taskProvider?.context_length ?? globalProvider?.context_length,
     maxTurns: task.execution?.maxTurns ?? task.maxTurns,
     timeoutSeconds: task.execution?.timeoutSeconds ?? task.timeoutSeconds,
   };
@@ -73,6 +153,12 @@ function PhaseCard({ phase, index }: { phase: PhaseDefinition; index: number }) 
         </span>
       </div>
 
+      {phase.reasoningLevel && (
+        <div className="flex items-center gap-2">
+          <Badge variant="secondary">reasoning {phase.reasoningLevel}</Badge>
+        </div>
+      )}
+
       {phase.tools.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {phase.tools.map((tool) => (
@@ -97,6 +183,34 @@ function PhaseCard({ phase, index }: { phase: PhaseDefinition; index: number }) 
 
 export function TaskDetail({ taskId, onBack, onNavigate, onRunTriggered }: TaskDetailProps) {
   const { data, isPending, isError } = useTask(taskId);
+  const { effective } = useScopedConfig();
+  const task = data?.task;
+  const phases: PhaseDefinition[] = task?.phases ?? [];
+  const execution = task ? getExecution(task) : {};
+  const inheritedExecution = task ? getInheritedExecution(task, effective) : {};
+  const taskConfigDefaults = useMemo(() => ({
+    runtime: inheritedExecution.runtime,
+    providerType: inheritedExecution.providerType,
+    localBackend: inheritedExecution.localBackend,
+    reasoningLevel: inheritedExecution.reasoningLevel,
+    reasoningMap: inheritedExecution.reasoningMap,
+    model: inheritedExecution.model,
+    baseUrl: inheritedExecution.baseUrl,
+    contextLength: inheritedExecution.contextLength,
+    maxTurns: inheritedExecution.maxTurns,
+    timeoutSeconds: inheritedExecution.timeoutSeconds,
+  }), [
+    inheritedExecution.runtime,
+    inheritedExecution.providerType,
+    inheritedExecution.localBackend,
+    inheritedExecution.reasoningLevel,
+    inheritedExecution.reasoningMap,
+    inheritedExecution.model,
+    inheritedExecution.baseUrl,
+    inheritedExecution.contextLength,
+    inheritedExecution.maxTurns,
+    inheritedExecution.timeoutSeconds,
+  ]);
 
   if (isPending) {
     return <SkeletonDetail />;
@@ -116,10 +230,6 @@ export function TaskDetail({ taskId, onBack, onNavigate, onRunTriggered }: TaskD
       </div>
     );
   }
-
-  const task = data.task;
-  const phases: PhaseDefinition[] = task.phases ?? [];
-  const execution = getExecution(task);
 
   return (
     <div className="space-y-6">
@@ -158,22 +268,40 @@ export function TaskDetail({ taskId, onBack, onNavigate, onRunTriggered }: TaskD
       <TaskProviderConfig
         taskId={taskId}
         phases={phases}
-        defaults={{ model: execution.model, maxTurns: execution.maxTurns, timeoutSeconds: execution.timeoutSeconds }}
+        defaults={taskConfigDefaults}
         schedule={task.schedule}
         params={task.params}
       />
 
-      {/* Execution config */}
-      {(execution.model !== undefined || execution.maxTurns !== undefined || execution.timeoutSeconds !== undefined) && (
+      {/* Definition defaults */}
+      {(execution.model !== undefined || execution.reasoningLevel !== undefined || execution.maxTurns !== undefined || execution.timeoutSeconds !== undefined) && (
         <Surface level="low" className="p-4 space-y-3">
           <h2 className="font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide">
-            Execution Config
+            Task Definition
           </h2>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {execution.runtime !== undefined && (
+              <div>
+                <p className="font-sans text-xs text-on-surface-variant">Runtime</p>
+                <p className="font-mono text-sm text-on-surface mt-0.5">{execution.runtime}</p>
+              </div>
+            )}
+            {execution.provider !== undefined && (
+              <div>
+                <p className="font-sans text-xs text-on-surface-variant">Provider</p>
+                <p className="font-mono text-sm text-on-surface mt-0.5">{execution.provider}</p>
+              </div>
+            )}
             {execution.model !== undefined && (
               <div>
                 <p className="font-sans text-xs text-on-surface-variant">Model</p>
                 <p className="font-mono text-sm text-on-surface mt-0.5">{execution.model}</p>
+              </div>
+            )}
+            {execution.reasoningLevel !== undefined && (
+              <div>
+                <p className="font-sans text-xs text-on-surface-variant">Reasoning</p>
+                <p className="font-mono text-sm text-on-surface mt-0.5">{execution.reasoningLevel}</p>
               </div>
             )}
             {execution.maxTurns !== undefined && (

@@ -6,6 +6,7 @@
  * instance with the full schema.
  */
 
+import crypto from 'node:crypto';
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
 import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
@@ -15,6 +16,7 @@ import { insertRun, getRun } from '@myco/db/queries/runs.js';
 import { epochSeconds } from '@myco/constants.js';
 import { composeTaskPrompt, composePhasePrompt } from '@myco/agent/executor.js';
 import type { PhaseDefinition, ExecutionConfig, OrchestratorConfig } from '@myco/agent/types.js';
+import type { ReportRow } from '@myco/db/queries/reports.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -61,6 +63,8 @@ const DEFAULT_RESULT_TEXT = 'Agent run complete.';
  * of using num_turns from the SDK result.
  */
 let mockAssistantCount = 0;
+let mockToolCallCounts: Record<string, number> = {};
+let mockRunReports: ReportRow[] = [];
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => {
   return {
@@ -171,6 +175,9 @@ let mockExecution: ExecutionConfig | undefined;
 /** Orchestrator config to return from the registry mock. Set per-test. */
 let mockOrchestratorConfig: OrchestratorConfig | undefined;
 
+/** Top-level task reasoning level from the registry mock. Set per-test. */
+let mockTaskReasoningLevel: 'low' | 'default' | 'high' | undefined;
+
 vi.mock('@myco/agent/loader.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('@myco/agent/loader.js')>();
   return {
@@ -220,16 +227,17 @@ vi.mock('@myco/agent/loader.js', async (importOriginal) => {
 vi.mock('@myco/agent/registry.js', () => ({
   loadAllTasks: (_definitionsDir: string, _vaultDir?: string) => {
     const tasks = new Map();
-    const task = {
-      name: TEST_TASK_NAME,
-      displayName: 'Full Intelligence',
-      description: 'Run full intelligence pipeline',
-      agent: 'myco-agent',
-      prompt: mockYamlPhases ? 'Phased pipeline overview.' : TEST_TASK_PROMPT,
-      isDefault: true,
-      ...(mockYamlPhases ? { phases: mockYamlPhases } : {}),
-      ...(mockExecution ? { execution: mockExecution } : {}),
-      ...(mockOrchestratorConfig ? { orchestrator: mockOrchestratorConfig } : {}),
+      const task = {
+        name: TEST_TASK_NAME,
+        displayName: 'Full Intelligence',
+        description: 'Run full intelligence pipeline',
+        agent: 'myco-agent',
+        prompt: mockYamlPhases ? 'Phased pipeline overview.' : TEST_TASK_PROMPT,
+        isDefault: true,
+        ...(mockTaskReasoningLevel ? { reasoningLevel: mockTaskReasoningLevel } : {}),
+        ...(mockYamlPhases ? { phases: mockYamlPhases } : {}),
+        ...(mockExecution ? { execution: mockExecution } : {}),
+        ...(mockOrchestratorConfig ? { orchestrator: mockOrchestratorConfig } : {}),
     };
     tasks.set(TEST_TASK_NAME, task);
     return tasks;
@@ -267,6 +275,22 @@ vi.mock('@myco/agent/tools.js', () => ({
   },
 }));
 
+vi.mock('@myco/db/queries/turns.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@myco/db/queries/turns.js')>();
+  return {
+    ...original,
+    countToolCallsByRun: () => mockToolCallCounts,
+  };
+});
+
+vi.mock('@myco/db/queries/reports.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@myco/db/queries/reports.js')>();
+  return {
+    ...original,
+    listReports: () => mockRunReports,
+  };
+});
+
 // ---------------------------------------------------------------------------
 // Mock: initDatabaseForVault (we manage DB ourselves in tests)
 // ---------------------------------------------------------------------------
@@ -283,15 +307,18 @@ vi.mock('@myco/db/client.js', async (importOriginal) => {
 // Mock: config loader (avoid filesystem reads for myco.yaml)
 // ---------------------------------------------------------------------------
 
+let mockMergedConfig: any = {
+  version: 3,
+  config_version: 0,
+  embedding: { provider: 'ollama', model: 'bge-m3' },
+  daemon: { port: null, log_level: 'info' },
+  capture: { transcript_paths: [], artifact_watch: [], artifact_extensions: [], buffer_max_events: 500 },
+  agent: { summary_batch_interval: 5 },
+};
+
 vi.mock('@myco/config/loader.js', () => ({
-  loadConfig: () => ({
-    version: 3,
-    config_version: 0,
-    embedding: { provider: 'ollama', model: 'bge-m3' },
-    daemon: { port: null, log_level: 'info' },
-    capture: { transcript_paths: [], artifact_watch: [], artifact_extensions: [], buffer_max_events: 500 },
-    agent: { summary_batch_interval: 5 },
-  }),
+  loadConfig: () => mockMergedConfig,
+  loadMergedConfig: () => mockMergedConfig,
 }));
 
 // ---------------------------------------------------------------------------
@@ -322,6 +349,20 @@ async function createTestTask(): Promise<void> {
   });
 }
 
+async function createTask(taskId: string, prompt = TEST_TASK_PROMPT): Promise<void> {
+  const now = epochSeconds();
+  upsertTask({
+    id: taskId,
+    agent_id: TEST_AGENT_ID,
+    prompt,
+    display_name: taskId,
+    description: `Run ${taskId}`,
+    is_default: 0,
+    created_at: now,
+    updated_at: now,
+  });
+}
+
 /** Resets all mock state between tests. */
 function resetMockState(): void {
   capturedQueryArgs = null;
@@ -334,7 +375,18 @@ function resetMockState(): void {
   mockYamlPhases = undefined;
   mockExecution = undefined;
   mockOrchestratorConfig = undefined;
+  mockTaskReasoningLevel = undefined;
   mockAssistantCount = 0;
+  mockToolCallCounts = {};
+  mockRunReports = [];
+  mockMergedConfig = {
+    version: 3,
+    config_version: 0,
+    embedding: { provider: 'ollama', model: 'bge-m3' },
+    daemon: { port: null, log_level: 'info' },
+    capture: { transcript_paths: [], artifact_watch: [], artifact_extensions: [], buffer_max_events: 500 },
+    agent: { summary_batch_interval: 5 },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -466,12 +518,17 @@ describe('runAgent', () => {
     expect(result.runId).toBeDefined();
     expect(result.tokensUsed).toBe(1850);
     expect(result.costUsd).toBe(0.0042);
+    expect(result.costSource).toBe('actual');
 
     const run = getRun(result.runId);
     expect(run).not.toBeNull();
     expect(run!.status).toBe('completed');
     expect(run!.tokens_used).toBe(1850);
     expect(run!.cost_usd).toBe(0.0042);
+    expect(run!.actual_cost_usd).toBe(0.0042);
+    expect(run!.estimated_cost_usd).toBeNull();
+    expect(run!.cost_source).toBe('actual');
+    expect(run!.cost_data).toBeTruthy();
     expect(run!.task).toBe(TEST_TASK_NAME);
     expect(run!.agent_id).toBe(TEST_AGENT_ID);
     expect(run!.started_at).toBeGreaterThan(0);
@@ -528,6 +585,44 @@ describe('runAgent', () => {
     expect(run!.status).toBe('failed');
     expect(run!.error).toContain('API rate limit exceeded');
     expect(run!.completed_at).toBeGreaterThan(0);
+  });
+
+  it('resets started_at to the resume attempt time when resuming a failed run', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const existingRunId = crypto.randomUUID();
+    const originalStartedAt = epochSeconds() - 120;
+    const originalCompletedAt = epochSeconds() - 60;
+    insertRun({
+      id: existingRunId,
+      agent_id: TEST_AGENT_ID,
+      task: TEST_TASK_NAME,
+      status: 'failed',
+      instruction: 'Retry this run',
+      runtime: 'claude-sdk',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      resumable: 1,
+      resume_status: 'ready',
+      checkpoints: JSON.stringify({ runtime: 'claude-sdk', phases: {} }),
+      started_at: originalStartedAt,
+      completed_at: originalCompletedAt,
+      error: 'boom',
+    });
+
+    const result = await runAgent(TEST_VAULT_DIR, {
+      task: TEST_TASK_NAME,
+      instruction: 'Retry this run',
+      resumeRunId: existingRunId,
+      resumeMode: 'manual',
+    });
+
+    expect(result.status).toBe('completed');
+    const run = getRun(existingRunId);
+    expect(run).not.toBeNull();
+    expect(run!.started_at).toBeGreaterThan(originalStartedAt);
+    expect(run!.started_at).toBeGreaterThanOrEqual(run!.resumed_at ?? 0);
+    expect(run!.completed_at).toBeGreaterThanOrEqual(run!.started_at ?? 0);
   });
 
   it('stores user instruction in run record and prompt', async () => {
@@ -623,6 +718,58 @@ describe('runAgent', () => {
     expect(opts.abortController).toBeDefined();
     expect(opts.abortController).toBeInstanceOf(AbortController);
   });
+
+  it('fails title-summary when no report or session update side effect occurred', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+    await createTask('title-summary', 'Generate or update session titles and summaries.');
+
+    const result = await runAgent(TEST_VAULT_DIR, { task: 'title-summary' });
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('title-summary');
+    const run = getRun(result.runId);
+    expect(run?.status).toBe('failed');
+    expect(run?.error).toContain('title-summary');
+  });
+
+  it('allows title-summary to complete when it reports a skip', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+    await createTask('title-summary', 'Generate or update session titles and summaries.');
+
+    mockRunReports = [{
+      id: 1,
+      run_id: 'unused',
+      agent_id: TEST_AGENT_ID,
+      action: 'skip',
+      summary: 'No update needed',
+      details: null,
+      created_at: epochSeconds(),
+    }];
+
+    const result = await runAgent(TEST_VAULT_DIR, { task: 'title-summary' });
+
+    expect(result.status).toBe('completed');
+  });
+
+  it('allows title-summary to complete when it updates the session and reports', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+    await createTask('title-summary', 'Generate or update session titles and summaries.');
+
+    mockToolCallCounts = { vault_update_session: 1 };
+    mockRunReports = [{
+      id: 1,
+      run_id: 'unused',
+      agent_id: TEST_AGENT_ID,
+      action: 'summary',
+      summary: 'Sessions updated: 1',
+      details: null,
+      created_at: epochSeconds(),
+    }];
+
+    const result = await runAgent(TEST_VAULT_DIR, { task: 'title-summary' });
+
+    expect(result.status).toBe('completed');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -696,6 +843,7 @@ describe('runAgent — phased execution', () => {
     expect(result.phases![0].status).toBe('completed');
     expect(result.phases![0].tokensUsed).toBe(1850);
     expect(result.phases![0].costUsd).toBe(0.0042);
+    expect(result.phases![0].costSource).toBe('actual');
     expect(result.phases![0].turnsUsed).toBe(3);
 
     expect(result.phases![1].name).toBe('extract');
@@ -841,6 +989,54 @@ describe('runAgent — phased execution', () => {
     expect((allQueryCalls[1].options as Record<string, unknown>).model).toBe('claude-sonnet-4-20250514');
   });
 
+  it('uses task-level reasoningLevel for single-query tasks', async () => {
+    mockYamlPhases = undefined;
+    mockTaskReasoningLevel = 'low';
+    mockExecution = {
+      provider: {
+        type: 'anthropic',
+        reasoningMap: {
+          low: 'claude-haiku-4-5',
+          default: 'claude-sonnet-4-6',
+        },
+      },
+    };
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    await runAgent(TEST_VAULT_DIR);
+
+    expect(allQueryCalls).toHaveLength(1);
+    expect((allQueryCalls[0].options as Record<string, unknown>).model).toBe('claude-haiku-4-5');
+  });
+
+  it('uses myco.yaml per-phase model overrides when present', async () => {
+    mockYamlPhases = [
+      { name: 'extract', prompt: 'Extract.', tools: ['vault_unprocessed'], maxTurns: 20, required: true },
+      { name: 'graph', prompt: 'Build graph.', tools: ['vault_create_entity'], maxTurns: 10, required: true, dependsOn: ['extract'] },
+    ];
+    mockMergedConfig = {
+      ...mockMergedConfig,
+      agent: {
+        ...mockMergedConfig.agent,
+        tasks: {
+          [TEST_TASK_NAME]: {
+            phases: {
+              extract: { model: 'claude-opus-4-6' },
+            },
+          },
+        },
+      },
+    };
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    await runAgent(TEST_VAULT_DIR);
+
+    expect(allQueryCalls).toHaveLength(2);
+    expect((allQueryCalls[0].options as Record<string, unknown>).model).toBe('claude-opus-4-6');
+  });
+
   it('records correct aggregate tokens and cost', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
@@ -854,6 +1050,8 @@ describe('runAgent — phased execution', () => {
     const run = getRun(result.runId);
     expect(run!.tokens_used).toBe(5550);
     expect(run!.cost_usd).toBeCloseTo(0.0126);
+    expect(run!.actual_cost_usd).toBeCloseTo(0.0126);
+    expect(run!.cost_source).toBe('actual');
   });
 
   // ---------------------------------------------------------------------------

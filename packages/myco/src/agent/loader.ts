@@ -138,6 +138,7 @@ export function taskFromParsed(parsed: AgentTask): AgentTask {
     isDefault: parsed.isDefault,
     ...(parsed.toolOverrides ? { toolOverrides: parsed.toolOverrides } : {}),
     ...(parsed.model ? { model: parsed.model } : {}),
+    ...(parsed.reasoningLevel ? { reasoningLevel: parsed.reasoningLevel } : {}),
     ...(parsed.maxTurns ? { maxTurns: parsed.maxTurns } : {}),
     ...(parsed.timeoutSeconds ? { timeoutSeconds: parsed.timeoutSeconds } : {}),
     ...(parsed.phases ? { phases: parsed.phases } : {}),
@@ -185,8 +186,10 @@ export function resolveEffectiveConfig(
   agentOverrides?: AgentRow | null,
   taskOverrides?: AgentTask,
 ): EffectiveConfig {
+  let runtime = taskOverrides?.execution?.runtime ?? taskOverrides?.execution?.provider?.runtime ?? 'claude-sdk';
   // Start with definition defaults
   let model = definition.model;
+  let reasoningLevel = taskOverrides?.reasoningLevel;
   let maxTurns = definition.maxTurns;
   let timeoutSeconds = definition.timeoutSeconds;
   let tools = [...definition.tools];
@@ -209,6 +212,7 @@ export function resolveEffectiveConfig(
 
   // Apply task overrides (model, turns, timeout, tool list)
   if (taskOverrides?.model) model = taskOverrides.model;
+  if (taskOverrides?.reasoningLevel) reasoningLevel = taskOverrides.reasoningLevel;
   if (taskOverrides?.maxTurns) maxTurns = taskOverrides.maxTurns;
   if (taskOverrides?.timeoutSeconds) timeoutSeconds = taskOverrides.timeoutSeconds;
   if (taskOverrides?.toolOverrides) {
@@ -219,6 +223,7 @@ export function resolveEffectiveConfig(
   // Precedence: execution.model > task.model > agent.model
   if (taskOverrides?.execution) {
     if (taskOverrides.execution.model) model = taskOverrides.execution.model;
+    if (taskOverrides.execution.reasoningLevel) reasoningLevel = taskOverrides.execution.reasoningLevel;
     if (taskOverrides.execution.maxTurns) maxTurns = taskOverrides.execution.maxTurns;
     if (taskOverrides.execution.timeoutSeconds) timeoutSeconds = taskOverrides.execution.timeoutSeconds;
   }
@@ -230,7 +235,9 @@ export function resolveEffectiveConfig(
 
   return {
     agentId,
+    runtime,
     model,
+    ...(reasoningLevel ? { reasoningLevel } : {}),
     maxTurns,
     timeoutSeconds,
     systemPromptPath: definition.systemPromptPath,

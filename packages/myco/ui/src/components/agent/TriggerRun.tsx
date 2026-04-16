@@ -17,6 +17,8 @@ import {
   SelectValue,
 } from '../ui/select';
 import { useAgentTasks, useTriggerRun, type TaskRow } from '../../hooks/use-agent';
+import { useScopedConfig } from '../../hooks/use-scoped-config';
+import { maybeInferRuntimeFromProviderType, resolveReasoningModel, useTaskConfig } from '../../hooks/use-providers';
 
 /* ---------- Helpers ---------- */
 
@@ -35,6 +37,7 @@ export interface TriggerRunProps {
 export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps) {
   const [selectedTask, setSelectedTask] = useState<string | undefined>(undefined);
   const [instruction, setInstruction] = useState('');
+  const { effective } = useScopedConfig();
 
   const { data: tasksData, isLoading: tasksLoading } = useAgentTasks();
   const { mutate: triggerRun, isPending, error } = useTriggerRun();
@@ -43,6 +46,34 @@ export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps)
   const availableTasks: TaskRow[] = tasksData?.tasks ?? [];
   const defaultTask = availableTasks.find((t: TaskRow) => t.isDefault);
   const effectiveSelection = selectedTask ?? defaultTask?.name ?? availableTasks[0]?.name ?? '';
+  const selectedTaskRow = availableTasks.find((task) => task.name === effectiveSelection);
+  const { data: taskConfigData } = useTaskConfig(effectiveSelection || undefined);
+  const taskConfig = taskConfigData?.config;
+  const execution = selectedTaskRow?.execution;
+  const globalProvider = effective?.agent?.provider;
+  const effectiveRuntime = taskConfig?.runtime
+    ?? taskConfig?.provider?.runtime
+    ?? maybeInferRuntimeFromProviderType(taskConfig?.provider?.type)
+    ?? execution?.runtime
+    ?? execution?.provider?.runtime
+    ?? maybeInferRuntimeFromProviderType(execution?.provider?.type)
+    ?? globalProvider?.runtime
+    ?? maybeInferRuntimeFromProviderType(globalProvider?.type)
+    ?? effective?.agent?.runtime
+    ?? 'claude-sdk';
+  const effectiveProvider = taskConfig?.provider?.type
+    ?? execution?.provider?.type
+    ?? globalProvider?.type
+    ?? 'anthropic';
+  const effectiveModel = resolveReasoningModel(
+    execution?.reasoningLevel ?? selectedTaskRow?.reasoningLevel,
+    taskConfig?.provider ?? execution?.provider ?? globalProvider,
+    taskConfig?.provider?.model
+      ?? taskConfig?.model
+      ?? execution?.model
+      ?? selectedTaskRow?.model
+      ?? globalProvider?.model,
+  );
 
   function handleRun() {
     const payload = {
@@ -97,6 +128,17 @@ export function TriggerRun({ open, onOpenChange, onTriggered }: TriggerRunProps)
               </Select>
             )}
           </div>
+
+          {selectedTaskRow && (
+            <div className="rounded-md bg-surface-container-low p-3">
+              <p className="font-sans text-xs text-on-surface-variant">Effective execution</p>
+              <div className="mt-1 flex flex-wrap gap-4 font-mono text-xs text-on-surface">
+                <span>runtime: {effectiveRuntime}</span>
+                <span>provider: {effectiveProvider}</span>
+                {effectiveModel && <span>model: {effectiveModel}</span>}
+              </div>
+            </div>
+          )}
 
           {/* Instruction field */}
           <div className="space-y-1.5">

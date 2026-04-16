@@ -10,6 +10,8 @@ const ENV_ANTHROPIC_API_KEY = 'ANTHROPIC_API_KEY';
 const ENV_OLLAMA_NUM_CTX = 'OLLAMA_NUM_CTX';
 const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
 const DEFAULT_LMSTUDIO_URL = 'http://localhost:1234';
+const DEFAULT_OPENAI_URL = 'https://api.openai.com/v1';
+const DEFAULT_OPENROUTER_URL = 'https://openrouter.ai/api/v1';
 const OLLAMA_AUTH_TOKEN = 'ollama';
 const LMSTUDIO_AUTH_TOKEN = 'lmstudio';
 
@@ -25,7 +27,15 @@ const LMSTUDIO_AUTH_TOKEN = 'lmstudio';
  * avoiding unnecessary copies of the full process.env.
  */
 export function buildPhaseEnv(provider?: ProviderConfig): Record<string, string | undefined> | undefined {
-  if (!provider || provider.type === 'anthropic') return undefined;
+  if (
+    !provider ||
+    provider.type === 'anthropic' ||
+    provider.type === 'openai' ||
+    provider.type === 'openrouter' ||
+    provider.type === 'openai-compatible'
+  ) {
+    return undefined;
+  }
   return { ...process.env, ...getProviderEnvVars(provider) };
 }
 
@@ -48,6 +58,21 @@ export function getProviderEnvVars(provider: ProviderConfig): Record<string, str
         [ENV_ANTHROPIC_BASE_URL]: provider.baseUrl ?? DEFAULT_LMSTUDIO_URL,
         [ENV_ANTHROPIC_AUTH_TOKEN]: provider.apiKey ?? LMSTUDIO_AUTH_TOKEN,
         [ENV_ANTHROPIC_API_KEY]: '',
+      };
+    case 'openai':
+      return {
+        OPENAI_BASE_URL: provider.baseUrl ?? DEFAULT_OPENAI_URL,
+        ...(provider.apiKey ? { OPENAI_API_KEY: provider.apiKey } : {}),
+      };
+    case 'openrouter':
+      return {
+        OPENAI_BASE_URL: provider.baseUrl ?? DEFAULT_OPENROUTER_URL,
+        ...(provider.apiKey ? { OPENAI_API_KEY: provider.apiKey } : {}),
+      };
+    case 'openai-compatible':
+      return {
+        ...(provider.baseUrl ? { OPENAI_BASE_URL: provider.baseUrl } : {}),
+        ...(provider.apiKey ? { OPENAI_API_KEY: provider.apiKey } : {}),
       };
     default:
       return {};

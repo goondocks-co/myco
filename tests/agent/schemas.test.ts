@@ -44,7 +44,7 @@ describe('ProviderConfigSchema', () => {
   });
 
   it('validates all valid provider types', () => {
-    for (const type of ['anthropic', 'ollama', 'lmstudio'] as const) {
+    for (const type of ['anthropic', 'ollama', 'lmstudio', 'openai', 'openrouter', 'openai-compatible'] as const) {
       const result = ProviderConfigSchema.parse({ type });
       expect(result.type).toBe(type);
     }
@@ -65,7 +65,6 @@ describe('ProviderConfigSchema', () => {
   });
 
   it('rejects invalid provider type', () => {
-    expect(() => ProviderConfigSchema.parse({ type: 'openai' })).toThrow();
     expect(() => ProviderConfigSchema.parse({ type: 'cloud' })).toThrow();
     expect(() => ProviderConfigSchema.parse({ type: '' })).toThrow();
   });
@@ -368,7 +367,7 @@ describe('AgentTaskSchema — with execution overrides', () => {
       prompt: 'Run.',
       isDefault: false,
       execution: {
-        provider: { type: 'openai' }, // not a valid enum value
+        provider: { type: 'cloud' }, // not a valid enum value
       },
     })).toThrow();
   });

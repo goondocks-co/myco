@@ -23,8 +23,10 @@ import {
 import { countSkillRecords } from '@myco/db/queries/skill-records.js';
 import { countCandidates } from '@myco/db/queries/skill-candidates.js';
 import { getDatabase } from '@myco/db/client.js';
+import { getLatestResumableRunForTask } from '@myco/db/queries/runs.js';
 import { notify } from '@myco/notifications/notify.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 
 const SCHEDULED_JOB_PREFIX = 'scheduled:';
 
@@ -115,6 +117,21 @@ export async function registerScheduledTasks(
       if (!enabled) return;
 
       const { runAgent } = await import('@myco/agent/executor.js');
+      const resumableRun = getLatestResumableRunForTask(DEFAULT_AGENT_ID, taskName);
+      if (resumableRun) {
+        const resumed = await runAgent(vaultDir, {
+          agentId: DEFAULT_AGENT_ID,
+          task: taskName,
+          resumeRunId: resumableRun.id,
+          resumeMode: 'scheduled',
+          embeddingManager,
+        });
+        logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} resumed`, {
+          status: resumed.status,
+          runId: resumed.runId,
+        });
+        return;
+      }
 
       const taskConfig = config.agent.tasks?.[taskName];
       const projectRoot = resolve(vaultDir, '..');

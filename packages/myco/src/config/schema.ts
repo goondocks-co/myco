@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
+import { ReasoningLevelSchema, RuntimeIdSchema } from '@myco/agent/schemas.js';
 
 const EmbeddingProviderSchema = z.object({
   provider: z.enum(['ollama', 'openai-compatible', 'openrouter', 'openai']).default('ollama'),
@@ -30,9 +31,16 @@ const CaptureSchema = z.object({
 
 /** Provider config shape used in both task-level and phase-level overrides. */
 const ProviderOverrideSchema = z.object({
-  type: z.enum(['anthropic', 'ollama', 'lmstudio']),
+  runtime: RuntimeIdSchema.optional(),
+  type: z.enum(['anthropic', 'ollama', 'lmstudio', 'openai', 'openrouter', 'openai-compatible']),
+  local_backend: z.enum(['ollama', 'lmstudio']).optional(),
   base_url: z.string().optional(),
   model: z.string().optional(),
+  reasoning_map: z.object({
+    low: z.string().optional(),
+    default: z.string().optional(),
+    high: z.string().optional(),
+  }).optional(),
   /** Context window size for local models (Ollama num_ctx, LM Studio context_length). */
   context_length: z.number().int().positive().optional(),
 });
@@ -55,6 +63,7 @@ const ScheduleOverrideSchema = z.object({
 /** Per-task config override — stored in myco.yaml under agent.tasks. */
 const TaskProviderOverrideSchema = z.object({
   provider: ProviderOverrideSchema.optional(),
+  runtime: RuntimeIdSchema.optional(),
   model: z.string().optional(),
   maxTurns: z.number().int().positive().optional(),
   timeoutSeconds: z.number().int().positive().optional(),
@@ -82,6 +91,8 @@ const AgentSchema = z.object({
   event_tasks_enabled: z.boolean().default(true),
   /** Global default provider — applies to all tasks unless overridden per-task. */
   provider: ProviderOverrideSchema.optional(),
+  /** Global default runtime — applies to all tasks unless overridden per-task. */
+  runtime: RuntimeIdSchema.optional(),
   /** Global default model — applies to all tasks unless overridden per-task. */
   model: z.string().optional(),
   /** Per-task overrides keyed by task name. */

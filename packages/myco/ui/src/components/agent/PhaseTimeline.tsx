@@ -15,6 +15,7 @@ export interface PhaseResult {
   turnsUsed: number;
   tokensUsed: number;
   costUsd: number;
+  costSource?: 'actual' | 'estimated' | 'unavailable';
   summary: string;
 }
 
@@ -67,7 +68,7 @@ export function PhaseTimeline({ phases }: PhaseTimelineProps) {
               <div className="flex gap-3 font-mono text-xs text-on-surface-variant">
                 <span>{phase.turnsUsed} turns</span>
                 <span>{formatTokens(phase.tokensUsed)}</span>
-                <span>{formatCost(phase.costUsd)}</span>
+                <span>{formatCost(phase.costUsd, phase.costSource ?? null)}</span>
               </div>
             </div>
             {phase.summary && <PhaseSummary text={phase.summary} />}

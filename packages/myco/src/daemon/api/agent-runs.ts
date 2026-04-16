@@ -18,6 +18,7 @@ import { notify } from '@myco/notifications/notify.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
+import type { RunRow } from '@myco/db/queries/runs.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -36,6 +37,10 @@ const AgentRunBody = z.object({
   agentId: z.string().optional(),
 });
 
+const ResumeRunBody = z.object({
+  mode: z.enum(['manual', 'scheduled']).optional(),
+});
+
 // Re-export for backward compatibility
 export { buildTaskInstruction, SKILL_GENERATE_TASK, SKILL_EVOLVE_TASK, SKILL_SURVEY_TASK } from '@myco/agent/instruction-builders.js';
 
@@ -47,6 +52,42 @@ export interface AgentRunDeps {
   vaultDir: string;
   embeddingManager: EmbeddingManager;
   logger: DaemonLogger;
+}
+
+interface PhaseCheckpointSummary {
+  name: string;
+  status: string;
+  updatedAt: number;
+  tokensUsed?: number;
+  costUsd?: number;
+  costSource?: string;
+}
+
+function buildPhaseCheckpointSummary(checkpointsRaw: string | null): PhaseCheckpointSummary[] {
+  if (!checkpointsRaw) return [];
+  try {
+    const parsed = JSON.parse(checkpointsRaw) as {
+      phases?: Record<string, { name?: string; status?: string; updatedAt?: number; tokensUsed?: number; costUsd?: number; costSource?: string }>;
+    };
+    return Object.entries(parsed.phases ?? {}).map(([name, phase]) => ({
+      name: phase.name ?? name,
+      status: phase.status ?? 'pending',
+      updatedAt: phase.updatedAt ?? 0,
+      ...(phase.tokensUsed !== undefined ? { tokensUsed: phase.tokensUsed } : {}),
+      ...(phase.costUsd !== undefined ? { costUsd: phase.costUsd } : {}),
+      ...(phase.costSource !== undefined ? { costSource: phase.costSource } : {}),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function serializeRun(run: RunRow) {
+  return {
+    ...run,
+    resumable: run.resumable === 1,
+    phase_checkpoints: buildPhaseCheckpointSummary(run.checkpoints),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -175,7 +216,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     const runs = listRuns({ ...filterOpts, limit, offset });
     const total = countRuns(filterOpts);
 
-    return { body: { runs, total, offset, limit } };
+    return { body: { runs: runs.map(serializeRun), total, offset, limit } };
   }
 
   /** GET /api/agent/runs/:id — get a single run. */
@@ -184,7 +225,48 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     if (!run) {
       return { status: 404, body: { error: 'Run not found' } };
     }
-    return { body: { run } };
+    return { body: { run: serializeRun(run) } };
+  }
+
+  /** POST /api/agent/runs/:id/resume — resume a failed/interrupted run. */
+  async function handleResumeRun(req: RouteRequest): Promise<RouteResponse> {
+    const run = getRun(req.params.id);
+    if (!run) {
+      return { status: 404, body: { error: 'Run not found' } };
+    }
+    if (run.resumable !== 1 || run.status !== 'failed') {
+      return { status: 400, body: { error: 'Run is not resumable' } };
+    }
+
+    const { mode } = ResumeRunBody.parse(req.body ?? {});
+    const { runAgent } = await import('@myco/agent/executor.js');
+    const resultPromise = runAgent(vaultDir, {
+      agentId: run.agent_id,
+      task: run.task ?? undefined,
+      instruction: run.instruction ?? undefined,
+      resumeRunId: run.id,
+      resumeMode: mode ?? 'manual',
+      embeddingManager,
+    });
+
+    resultPromise
+      .then((result) => {
+        logger.info(LOG_KINDS.AGENT_RUN, 'Agent run resumed', {
+          runId: result.runId,
+          status: result.status,
+          runtime: result.runtime,
+          provider: result.provider,
+          model: result.model,
+        });
+      })
+      .catch((err) => {
+        logger.error(LOG_KINDS.AGENT_ERROR, 'Agent run resume threw unhandled error', {
+          runId: run.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+
+    return { body: { ok: true, message: 'Agent resume started', runId: run.id } };
   }
 
   /** GET /api/agent/runs/:id/reports — list reports for a run. */
@@ -203,6 +285,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     handleRun,
     handleListRuns,
     handleGetRun,
+    handleResumeRun,
     handleGetRunReports,
     handleGetRunTurns,
   };

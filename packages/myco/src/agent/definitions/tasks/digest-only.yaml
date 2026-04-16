@@ -13,7 +13,7 @@ description: >
   to spores or graph data.
 agent: myco-agent
 isDefault: false
-model: claude-sonnet-4-6
+reasoningLevel: default
 maxTurns: 28
 timeoutSeconds: 1800
 
