@@ -12,6 +12,20 @@ import type { PhaseResult, ProviderConfig, RuntimeId, RuntimeTokenBudget, Runtim
 const TOKEN_BUDGET_WARNING_PERCENT = 75;
 const TOKEN_BUDGET_CRITICAL_PERCENT = 90;
 
+/**
+ * Compute the elapsed duration of a run in milliseconds. Returns `null`
+ * unless both timestamps are populated. Started/completed timestamps on
+ * `agent_runs` are stored in seconds; this helper converts to ms for UI
+ * consumers that expect millisecond precision.
+ */
+export function runDurationMs(run: {
+  started_at: number | null;
+  completed_at: number | null;
+}): number | null {
+  if (run.started_at === null || run.completed_at === null) return null;
+  return (run.completed_at - run.started_at) * 1000;
+}
+
 function toRequestTokenNumber(
   entry: Record<string, unknown>,
   key: 'inputTokens' | 'outputTokens' | 'totalTokens',
