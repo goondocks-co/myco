@@ -49,6 +49,16 @@ export const MIGRATIONS: Migration[] = [
 // ---------------------------------------------------------------------------
 
 /**
+ * Return the set of column names on a table, via PRAGMA table_info.
+ * Used to make ADD COLUMN migrations idempotent without wrapping each
+ * statement in a try/catch inside a transaction (which poisons the txn).
+ */
+function getTableColumnSet(db: Database, tableName: string): Set<string> {
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+  return new Set(rows.map((r) => r.name));
+}
+
+/**
  * Migrate a version-1 database to version-2.
  *
  * Version 2 adds:
@@ -244,27 +254,25 @@ function migrateV3ToV4(db: Database, machineId: string): void {
  * resumed without overloading actions_taken JSON.
  */
 function migrateV12ToV13(db: Database): void {
+  const existing = getTableColumnSet(db, 'agent_runs');
+  const columnAdds: Array<[string, string]> = [
+    ['runtime', 'TEXT'],
+    ['provider', 'TEXT'],
+    ['model', 'TEXT'],
+    ['session_ref', 'TEXT'],
+    ['resumable', 'INTEGER DEFAULT 0'],
+    ['resume_status', 'TEXT'],
+    ['resume_mode', 'TEXT'],
+    ['resumed_at', 'INTEGER'],
+    ['checkpoints', 'TEXT'],
+    ['usage_data', 'TEXT'],
+  ];
+  const pendingAdds = columnAdds.filter(([name]) => !existing.has(name));
+
   db.exec('BEGIN');
   try {
-    const alterStatements = [
-      `ALTER TABLE agent_runs ADD COLUMN runtime TEXT`,
-      `ALTER TABLE agent_runs ADD COLUMN provider TEXT`,
-      `ALTER TABLE agent_runs ADD COLUMN model TEXT`,
-      `ALTER TABLE agent_runs ADD COLUMN session_ref TEXT`,
-      `ALTER TABLE agent_runs ADD COLUMN resumable INTEGER DEFAULT 0`,
-      `ALTER TABLE agent_runs ADD COLUMN resume_status TEXT`,
-      `ALTER TABLE agent_runs ADD COLUMN resume_mode TEXT`,
-      `ALTER TABLE agent_runs ADD COLUMN resumed_at INTEGER`,
-      `ALTER TABLE agent_runs ADD COLUMN checkpoints TEXT`,
-      `ALTER TABLE agent_runs ADD COLUMN usage_data TEXT`,
-    ];
-
-    for (const stmt of alterStatements) {
-      try {
-        db.exec(stmt);
-      } catch {
-        // Column already exists -- safe to ignore on re-run
-      }
+    for (const [name, decl] of pendingAdds) {
+      db.exec(`ALTER TABLE agent_runs ADD COLUMN ${name} ${decl}`);
     }
 
     const newIndexes = [
@@ -296,21 +304,19 @@ function migrateV12ToV13(db: Database): void {
  * part of team sync / outbox payloads.
  */
 function migrateV13ToV14(db: Database): void {
+  const existing = getTableColumnSet(db, 'agent_runs');
+  const columnAdds: Array<[string, string]> = [
+    ['actual_cost_usd', 'REAL'],
+    ['estimated_cost_usd', 'REAL'],
+    ['cost_source', 'TEXT'],
+    ['cost_data', 'TEXT'],
+  ];
+  const pendingAdds = columnAdds.filter(([name]) => !existing.has(name));
+
   db.exec('BEGIN');
   try {
-    const alterStatements = [
-      `ALTER TABLE agent_runs ADD COLUMN actual_cost_usd REAL`,
-      `ALTER TABLE agent_runs ADD COLUMN estimated_cost_usd REAL`,
-      `ALTER TABLE agent_runs ADD COLUMN cost_source TEXT`,
-      `ALTER TABLE agent_runs ADD COLUMN cost_data TEXT`,
-    ];
-
-    for (const statement of alterStatements) {
-      try {
-        db.exec(statement);
-      } catch {
-        // Column already exists -- safe to ignore on re-run
-      }
+    for (const [name, decl] of pendingAdds) {
+      db.exec(`ALTER TABLE agent_runs ADD COLUMN ${name} ${decl}`);
     }
 
     db.prepare(

@@ -4,11 +4,7 @@ import type { ProviderConfig, RuntimeId, RuntimeUsage } from '@myco/agent/types.
 
 export type RuntimeCapability =
   | 'supportsSessionResume'
-  | 'supportsMcp'
-  | 'supportsNativeTools'
-  | 'supportsHostedTools'
-  | 'supportsHandoffs'
-  | 'supportsReasoningUsageBreakdown';
+  | 'supportsMcp';
 
 export interface RuntimeToolSurface {
   agentId: string;

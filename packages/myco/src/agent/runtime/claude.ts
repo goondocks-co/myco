@@ -1,31 +1,9 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { RuntimeExecuteInput, RuntimeExecuteResult, AgentRuntime, RuntimeCapability } from './types.js';
 import { createScopedVaultToolServer, createVaultToolServer } from '@myco/agent/tools.js';
 import { buildPhaseEnv } from '@myco/agent/provider.js';
 
 const MCP_SERVER_NAME = 'myco-vault';
-const PERSIST_SESSION = true;
-
-interface ClaudeAssistantMessage {
-  type: 'assistant';
-  message?: { content?: Array<{ type: string; name?: string; input?: unknown }> };
-}
-
-interface ClaudeUserMessage {
-  type: 'user';
-  message?: { content?: Array<{ type: string; content?: unknown; is_error?: boolean }> };
-}
-
-interface ClaudeResultMessage {
-  type: 'result';
-  usage: {
-    input_tokens?: number;
-    output_tokens?: number;
-  };
-  total_cost_usd?: number;
-  num_turns?: number;
-  result?: string;
-}
 
 function buildToolServer(input: RuntimeExecuteInput) {
   const { toolSurface } = input;
@@ -57,8 +35,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
   readonly id = 'claude-sdk' as const;
 
   supports(capability: RuntimeCapability): boolean {
-    return capability === 'supportsSessionResume'
-      || capability === 'supportsMcp';
+    return capability === 'supportsSessionResume' || capability === 'supportsMcp';
   }
 
   async execute(input: RuntimeExecuteInput): Promise<RuntimeExecuteResult> {
@@ -73,38 +50,36 @@ export class ClaudeSdkRuntime implements AgentRuntime {
     let costUsd = 0;
     let assistantMessages = 0;
 
-    for await (const message of query({
+    const messageStream: AsyncIterable<SDKMessage> = query({
       prompt: input.prompt,
       options: {
         model: input.model,
         systemPrompt: input.systemPrompt,
-        ...(toolServer ? {
-          mcpServers: { [MCP_SERVER_NAME]: toolServer },
-          strictMcpConfig: true,
-        } : { tools: [] }),
-        ...(toolServer ? { tools: [] } : {}),
+        tools: [],
+        ...(toolServer
+          ? { mcpServers: { [MCP_SERVER_NAME]: toolServer }, strictMcpConfig: true }
+          : {}),
         maxTurns: input.maxTurns,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
-        persistSession: PERSIST_SESSION,
+        persistSession: true,
         env,
         ...(input.sessionRef ? { sessionId: input.sessionRef } : {}),
         ...(input.abortController ? { abortController: input.abortController } : {}),
       },
-    })) {
-      if ((message as ClaudeAssistantMessage).type === 'assistant') {
+    });
+
+    for await (const message of messageStream) {
+      if (message.type === 'assistant') {
         assistantMessages += 1;
-      }
-      if ((message as ClaudeUserMessage).type === 'user') {
         continue;
       }
-      if ((message as ClaudeResultMessage).type === 'result') {
-        const resultMessage = message as ClaudeResultMessage;
-        finalText = typeof resultMessage.result === 'string' ? resultMessage.result : '';
-        turnsUsed = resultMessage.num_turns ?? assistantMessages;
-        inputTokens = resultMessage.usage.input_tokens ?? 0;
-        outputTokens = resultMessage.usage.output_tokens ?? 0;
-        costUsd = resultMessage.total_cost_usd ?? 0;
+      if (message.type === 'result' && message.subtype === 'success') {
+        finalText = message.result;
+        turnsUsed = message.num_turns ?? assistantMessages;
+        inputTokens = message.usage.input_tokens ?? 0;
+        outputTokens = message.usage.output_tokens ?? 0;
+        costUsd = message.total_cost_usd ?? 0;
       }
     }
 

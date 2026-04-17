@@ -61,18 +61,17 @@ export function analyzeRuntimeTokenBudget(
           (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
         ),
       }];
-  const peakRequestInputTokens = requestEntries.reduce(
-    (max, entry) => Math.max(max, toRequestTokenNumber(entry, 'inputTokens')),
-    0,
-  );
-  const peakRequestOutputTokens = requestEntries.reduce(
-    (max, entry) => Math.max(max, toRequestTokenNumber(entry, 'outputTokens')),
-    0,
-  );
-  const peakRequestTotalTokens = requestEntries.reduce(
-    (max, entry) => Math.max(max, toRequestTokenNumber(entry, 'totalTokens')),
-    0,
-  );
+  let peakRequestInputTokens = 0;
+  let peakRequestOutputTokens = 0;
+  let peakRequestTotalTokens = 0;
+  for (const entry of requestEntries) {
+    const input = toRequestTokenNumber(entry, 'inputTokens');
+    const output = toRequestTokenNumber(entry, 'outputTokens');
+    const total = toRequestTokenNumber(entry, 'totalTokens');
+    if (input > peakRequestInputTokens) peakRequestInputTokens = input;
+    if (output > peakRequestOutputTokens) peakRequestOutputTokens = output;
+    if (total > peakRequestTotalTokens) peakRequestTotalTokens = total;
+  }
   const { tokens: contextWindowTokens, source: contextWindowSource } = resolveContextWindow(provider, usage);
 
   if (!contextWindowTokens) {
@@ -97,11 +96,17 @@ export function analyzeRuntimeTokenBudget(
     : utilizationPercent >= TOKEN_BUDGET_WARNING_PERCENT
       ? 'warning'
       : 'ok';
-  const message = status === 'critical'
+  const statusMessage = status === 'critical'
     ? 'Run operated near the model context limit.'
     : status === 'warning'
       ? 'Run used a large share of the model context window.'
       : undefined;
+  const isInferredWindow = contextWindowSource === 'provider-default';
+  const message = isInferredWindow
+    ? (statusMessage
+        ? `${statusMessage} Using inferred provider default context window.`
+        : 'Using inferred provider default context window.')
+    : statusMessage;
 
   return {
     contextWindowTokens,
@@ -113,9 +118,6 @@ export function analyzeRuntimeTokenBudget(
     headroomTokens,
     status,
     ...(message ? { message } : {}),
-    ...(contextWindowSource === 'provider-default'
-      ? { message: message ? `${message} Using inferred provider default context window.` : 'Using inferred provider default context window.' }
-      : {}),
   };
 }
 
