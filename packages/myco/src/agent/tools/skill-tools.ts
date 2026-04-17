@@ -54,14 +54,14 @@ import {
   cleanupStagedSkill,
   type StagedManifest,
 } from './skill-staging.js';
-import { textResult, type VaultToolDeps } from './types.js';
+import { textResult, dryRunResult, type VaultToolDeps } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
 export function createSkillTools(deps: VaultToolDeps) {
-  const { agentId, machineId, projectRoot, vaultDir, embeddingManager } = deps;
+  const { agentId, machineId, projectRoot, vaultDir, embeddingManager, dryRun } = deps;
 
   /**
    * Find the best-matching existing candidate (if any) whose topic
@@ -927,6 +927,19 @@ export function createSkillTools(deps: VaultToolDeps) {
       candidate_id: z.string().describe('Candidate ID whose staged skill should be promoted. Must match a previous vault_stage_skill call.'),
     },
     async (args) => {
+      // Dry-run block: finalize promotes a real skill (writes SKILL.md,
+      // inserts skill_records, flips the candidate to 'generated'). None
+      // of that can be meaningfully stubbed — the staged dir may not
+      // even exist in a dry-run where vault_stage_skill ran for real
+      // (staging IS allowed in dry-run) but downstream disk/DB promotion
+      // must not happen. Short-circuit with a positive-signal ack.
+      if (dryRun) {
+        return dryRunResult('vault_finalize_skill', {
+          reason: 'finalize blocked in dry-run',
+          candidate_id: args.candidate_id,
+        });
+      }
+
       if (!vaultDir) {
         return textResult({
           error: 'vault_finalize_skill requires vaultDir on the tool deps',

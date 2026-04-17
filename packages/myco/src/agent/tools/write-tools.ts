@@ -19,7 +19,7 @@ import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
 import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
-import { textResult, type VaultToolDeps } from './types.js';
+import { textResult, dryRunResult, type VaultToolDeps } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -207,6 +207,9 @@ export function createWriteTools(deps: VaultToolDeps) {
         embeddingManager?.onContentWritten('sessions', args.session_id, args.summary, {}).catch(() => {});
       }
 
+      if (!session) {
+        return textResult({ error: `Session not found: ${args.session_id}` });
+      }
       return textResult(session);
     },
     { annotations: { idempotentHint: true } },
@@ -263,6 +266,11 @@ export function createWriteTools(deps: VaultToolDeps) {
     async (args) => {
       const now = epochSeconds();
 
+      // `upsertDigestExtract` returns `null` when called in dry-run mode.
+      // Task 1 does not plumb dryRun here yet — Task 2 will — but we must
+      // null-guard now so the contract stays honest: returning `textResult(null)`
+      // would serialize as the string "null" and lie to the agent about
+      // whether the digest was written.
       const extract = upsertDigestExtract({
         agent_id: agentId,
         tier: args.tier,
@@ -270,6 +278,12 @@ export function createWriteTools(deps: VaultToolDeps) {
         generated_at: now,
       });
 
+      if (!extract) {
+        return dryRunResult('vault_write_digest', {
+          tier: args.tier,
+          reason: 'dry-run mode active; no digest written',
+        });
+      }
       return textResult(extract);
     },
     { annotations: { idempotentHint: true } },
@@ -284,6 +298,9 @@ export function createWriteTools(deps: VaultToolDeps) {
     async (args) => {
       const batch = markBatchProcessed(args.batch_id);
 
+      if (!batch) {
+        return textResult({ error: `Prompt batch not found: ${args.batch_id}` });
+      }
       return textResult(batch);
     },
     { annotations: { destructiveHint: true } },

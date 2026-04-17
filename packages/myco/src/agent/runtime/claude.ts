@@ -21,6 +21,7 @@ function buildToolServer(input: RuntimeExecuteInput) {
         vaultDir: toolSurface.vaultDir,
         embeddingManager: toolSurface.embeddingManager,
         readOnly: toolSurface.readOnly,
+        dryRun: toolSurface.dryRun,
       },
     );
   }
@@ -28,6 +29,7 @@ function buildToolServer(input: RuntimeExecuteInput) {
   return createVaultToolServer(toolSurface.agentId, toolSurface.runId, {
     embeddingManager: toolSurface.embeddingManager,
     vaultDir: toolSurface.vaultDir,
+    dryRun: toolSurface.dryRun,
   });
 }
 

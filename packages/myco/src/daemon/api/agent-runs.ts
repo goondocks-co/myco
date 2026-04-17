@@ -10,15 +10,19 @@ import { z } from 'zod';
 import { listRuns, countRuns, getRun, getLatestRunId } from '@myco/db/queries/runs.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
+import { listWriteIntents, countWriteIntentsByTool } from '@myco/db/queries/write-intents.js';
+import { runDurationMs } from '@myco/agent/run-accounting.js';
 import { buildTaskInstruction, isInstructionRequiredTask } from '@myco/agent/instruction-builders.js';
 import { hasConfiguredProvider } from '@myco/agent/config-resolver.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { notify } from '@myco/notifications/notify.js';
+import { buildPhaseAudit } from '@myco/services/phase-audit.js';
+import { ExecutionOverrideBody } from './schemas/execution-overrides.js';
+import { serializeRun } from './run-serializer.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
-import type { RunRow } from '@myco/db/queries/runs.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -31,10 +35,28 @@ export const AGENT_RUNS_DEFAULT_LIMIT = 50;
 // Schemas
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-run execution overrides. Clients (eval CLI, RunTaskDialog, etc.) use
+ * these to pin runtime/provider/reasoning/model/phase-config without touching
+ * the task YAML. Shape mirrors `RunOptions.executionOverrides` in
+ * `@myco/agent/types.ts`. The canonical zod schemas live in
+ * `./schemas/execution-overrides.ts` and are reused by the evaluation
+ * handler — keep changes in the shared module.
+ */
+
 const AgentRunBody = z.object({
   task: z.string().optional(),
   instruction: z.string().optional(),
   agentId: z.string().optional(),
+  /**
+   * Run in dry-run mode — writes intercepted by the tool surface and
+   * recorded to `agent_run_write_intents` instead of mutating the vault.
+   */
+  dryRun: z.boolean().optional(),
+  /** Evaluation matrix this run belongs to, if any. */
+  evaluationId: z.string().nullable().optional(),
+  /** Per-run runtime/reasoning/model overrides; also per-phase overrides. */
+  executionOverrides: ExecutionOverrideBody,
 });
 
 const ResumeRunBody = z.object({
@@ -54,65 +76,6 @@ export interface AgentRunDeps {
   logger: DaemonLogger;
 }
 
-interface PhaseCheckpointSummary {
-  name: string;
-  status: string;
-  updatedAt: number;
-  tokensUsed?: number;
-  costUsd?: number;
-  costSource?: string;
-}
-
-function buildPhaseCheckpointSummary(checkpointsRaw: string | null): PhaseCheckpointSummary[] {
-  if (!checkpointsRaw) return [];
-  try {
-    const parsed = JSON.parse(checkpointsRaw) as {
-      phases?: Record<string, { name?: string; status?: string; updatedAt?: number; tokensUsed?: number; costUsd?: number; costSource?: string }>;
-    };
-    return Object.entries(parsed.phases ?? {}).map(([name, phase]) => ({
-      name: phase.name ?? name,
-      status: phase.status ?? 'pending',
-      updatedAt: phase.updatedAt ?? 0,
-      ...(phase.tokensUsed !== undefined ? { tokensUsed: phase.tokensUsed } : {}),
-      ...(phase.costUsd !== undefined ? { costUsd: phase.costUsd } : {}),
-      ...(phase.costSource !== undefined ? { costSource: phase.costSource } : {}),
-    }));
-  } catch {
-    return [];
-  }
-}
-
-function serializeRun(run: RunRow) {
-  return {
-    id: run.id,
-    agent_id: run.agent_id,
-    task: run.task,
-    instruction: run.instruction,
-    status: run.status,
-    runtime: run.runtime,
-    provider: run.provider,
-    model: run.model,
-    session_ref: run.session_ref,
-    resumable: run.resumable === 1,
-    resume_status: run.resume_status,
-    resume_mode: run.resume_mode,
-    resumed_at: run.resumed_at,
-    checkpoints: run.checkpoints,
-    usage_data: run.usage_data,
-    started_at: run.started_at,
-    completed_at: run.completed_at,
-    tokens_used: run.tokens_used,
-    cost_usd: run.cost_usd,
-    actual_cost_usd: run.actual_cost_usd,
-    estimated_cost_usd: run.estimated_cost_usd,
-    cost_source: run.cost_source,
-    cost_data: run.cost_data,
-    actions_taken: run.actions_taken,
-    error: run.error,
-    phase_checkpoints: buildPhaseCheckpointSummary(run.checkpoints),
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -122,7 +85,14 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
 
   /** POST /api/agent/run — trigger an agent run. */
   async function handleRun(req: RouteRequest): Promise<RouteResponse> {
-    const { task, instruction: rawInstruction, agentId } = AgentRunBody.parse(req.body);
+    const {
+      task,
+      instruction: rawInstruction,
+      agentId,
+      dryRun,
+      evaluationId,
+      executionOverrides,
+    } = AgentRunBody.parse(req.body);
 
     // Guard: ensure a provider is configured before allowing a run.
     // Uses the same per-task-over-global precedence as the executor's resolver.
@@ -176,6 +146,9 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       agentId,
       embeddingManager,
       runContext,
+      dryRun,
+      evaluationId,
+      executionOverrides,
     });
 
     // runAgent inserts the run row synchronously before the first await.
@@ -239,16 +212,32 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     const runs = listRuns({ ...filterOpts, limit, offset });
     const total = countRuns(filterOpts);
 
-    return { body: { runs: runs.map(serializeRun), total, offset, limit } };
+    return { body: { runs: runs.map((run) => serializeRun(run)), total, offset, limit } };
   }
 
-  /** GET /api/agent/runs/:id — get a single run. */
+  /**
+   * GET /api/agent/runs/:id — get a single run.
+   *
+   * Emits the same richer shape the evaluation-detail handler uses
+   * (`write_intents` + `duration_ms`) so the Comparisons UI can render an
+   * ad-hoc comparison over arbitrary runs by fetching them in parallel
+   * through this endpoint.
+   */
   async function handleGetRun(req: RouteRequest): Promise<RouteResponse> {
     const run = getRun(req.params.id);
     if (!run) {
       return { status: 404, body: { error: 'Run not found' } };
     }
-    return { body: { run: serializeRun(run) } };
+    const byTool = countWriteIntentsByTool(run.id);
+    const total = Object.values(byTool).reduce((acc, n) => acc + n, 0);
+    return {
+      body: {
+        run: serializeRun(run, {
+          writeIntents: { total, by_tool: byTool },
+          duration_ms: runDurationMs(run),
+        }),
+      },
+    };
   }
 
   /** POST /api/agent/runs/:id/resume — resume a failed/interrupted run. */
@@ -304,6 +293,31 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     return { body: turns };
   }
 
+  /**
+   * GET /api/agent/runs/:id/write-intents — list the writes a dry-run agent
+   * would have performed. Parsed JSON is returned in `tool_input` and
+   * `synthetic_output` (see write-intents query helper).
+   */
+  async function handleGetRunWriteIntents(req: RouteRequest): Promise<RouteResponse> {
+    const intents = listWriteIntents(req.params.id);
+    return { body: { intents, count: intents.length } };
+  }
+
+  /**
+   * GET /api/agent/runs/:id/audit
+   *
+   * Returns a joined per-phase audit view over agent_runs, agent_reports,
+   * agent_turns, usage_data JSON, checkpoints JSON, and (for dry runs)
+   * agent_run_write_intents. No writes are performed.
+   */
+  async function handleGetRunAudit(req: RouteRequest): Promise<RouteResponse> {
+    const audit = buildPhaseAudit(req.params.id);
+    if (!audit) {
+      return { status: 404, body: { error: 'Run not found' } };
+    }
+    return { body: { audit } };
+  }
+
   return {
     handleRun,
     handleListRuns,
@@ -311,5 +325,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     handleResumeRun,
     handleGetRunReports,
     handleGetRunTurns,
+    handleGetRunWriteIntents,
+    handleGetRunAudit,
   };
 }

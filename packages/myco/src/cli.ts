@@ -24,6 +24,7 @@ Commands:
   setup-llm [options]      Configure LLM and embedding providers
   setup-digest [options]   Configure digest and capture settings
   agent [options]          Run the intelligence agent
+  agent eval [options]    Run an evaluation matrix across runtime/reasoning/model variants
   task <subcommand>        Manage agent task definitions
   team <init|upgrade>      Provision or upgrade team sync infrastructure
   doctor [--fix]          Check vault health and repair issues
@@ -98,7 +99,12 @@ async function main(): Promise<void> {
     case 'session': return (await import('./cli/session.js')).run(args, vaultDir);
     case 'setup-llm': return (await import('./cli/setup-llm.js')).run(args, vaultDir);
     case 'setup-digest': return (await import('./cli/setup-digest.js')).run(args, vaultDir);
-    case 'agent': return (await import('./cli/agent-run.js')).run(args, vaultDir);
+    case 'agent': {
+      if (args[0] === 'eval') {
+        return (await import('./cli/agent-eval.js')).run(args.slice(1), vaultDir);
+      }
+      return (await import('./cli/agent-run.js')).run(args, vaultDir);
+    }
     case 'task': return (await import('./cli/agent-tasks.js')).run(args, vaultDir);
     case 'team': {
       const sub = args[0];

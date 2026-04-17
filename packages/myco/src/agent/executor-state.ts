@@ -150,6 +150,7 @@ export function buildUsageData(
     phases: phaseResults?.map((phase) => ({
       name: phase.name,
       usage: phase.usage ?? null,
+      turnsUsed: phase.turnsUsed,
       tokensUsed: phase.tokensUsed,
       costUsd: phase.costUsd,
       costSource: phase.costSource ?? null,

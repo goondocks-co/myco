@@ -17,6 +17,9 @@ import {
   SKILL_LINEAGE_TABLE,
   SKILL_USAGE_TABLE,
   NOTIFICATIONS_TABLE,
+  AGENT_RUN_WRITE_INTENTS_TABLE,
+  DIGEST_EXTRACT_REVISIONS_TABLE,
+  AGENT_RUN_EVALUATIONS_TABLE,
 } from './schema-ddl.js';
 
 // ---------------------------------------------------------------------------
@@ -42,6 +45,9 @@ export const MIGRATIONS: Migration[] = [
   { version: 12, migrate: (db) => migrateV11ToV12(db) },
   { version: 13, migrate: (db) => migrateV12ToV13(db) },
   { version: 14, migrate: (db) => migrateV13ToV14(db) },
+  { version: 15, migrate: (db) => migrateV14ToV15(db) },
+  { version: 16, migrate: (db) => migrateV15ToV16(db) },
+  { version: 17, migrate: (db) => migrateV16ToV17(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -741,6 +747,133 @@ function migrateV11ToV12(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(12, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
+ * Version 15 adds the evaluation / dry-run harness storage:
+ *   - agent_run_write_intents — append-only log of dry-run attempted writes
+ *   - digest_extract_revisions — append-only history of digest_extracts rows
+ *   - agent_run_evaluations — matrix grouping record
+ *   - agent_runs.dry_run INTEGER NOT NULL DEFAULT 0
+ *   - agent_runs.evaluation_id TEXT (nullable, no FK)
+ *
+ * Each ALTER uses the standard idempotency guard. Table creation uses
+ * `CREATE TABLE IF NOT EXISTS`.
+ */
+/**
+ * Version 16 persists the reasoning level and full execution override packet
+ * used for each run, so downstream consumers (eval comparison, RunTaskDialog
+ * override editor, phase-level override execution) can reconstruct exactly
+ * what configuration produced a run independent of the current task definition.
+ *
+ *   - agent_runs.reasoning_level TEXT (nullable) -- 'low' | 'default' | 'high'
+ *   - agent_runs.execution_overrides TEXT (nullable) -- JSON of RunOptions.executionOverrides
+ *
+ * Each ALTER uses the standard idempotency guard; NULL is the expected value
+ * for runs that used the task default config throughout.
+ */
+function migrateV15ToV16(db: Database): void {
+  const existing = getTableColumnSet(db, 'agent_runs');
+  const columnAdds: Array<[string, string]> = [
+    ['reasoning_level', 'TEXT'],
+    ['execution_overrides', 'TEXT'],
+  ];
+  const pendingAdds = columnAdds.filter(([name]) => !existing.has(name));
+
+  db.exec('BEGIN');
+  try {
+    for (const [name, decl] of pendingAdds) {
+      db.exec(`ALTER TABLE agent_runs ADD COLUMN ${name} ${decl}`);
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(16, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
+ * Version 17 adds a composite index on agent_run_write_intents to speed up
+ * the per-evaluation batched tool-count query:
+ *
+ *   SELECT wi.run_id, wi.tool_name, COUNT(*)
+ *   FROM agent_run_write_intents wi
+ *   JOIN agent_runs r ON r.id = wi.run_id
+ *   WHERE r.evaluation_id = ?
+ *   GROUP BY wi.run_id, wi.tool_name
+ *
+ * The existing `idx_write_intents_run_id` already serves the equality
+ * filter, but the composite index lets SQLite resolve the GROUP BY
+ * directly from the index without a separate sort pass.
+ *
+ * Fully idempotent: `IF NOT EXISTS` on the index, no DDL on the base
+ * table.
+ */
+function migrateV16ToV17(db: Database): void {
+  db.exec('BEGIN');
+  try {
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_write_intents_run_id_tool ON agent_run_write_intents (run_id, tool_name)',
+    );
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(17, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function migrateV14ToV15(db: Database): void {
+  const existing = getTableColumnSet(db, 'agent_runs');
+  const columnAdds: Array<[string, string]> = [
+    ['dry_run', 'INTEGER NOT NULL DEFAULT 0'],
+    ['evaluation_id', 'TEXT'],
+  ];
+  const pendingAdds = columnAdds.filter(([name]) => !existing.has(name));
+
+  db.exec('BEGIN');
+  try {
+    db.exec(AGENT_RUN_WRITE_INTENTS_TABLE);
+    db.exec(DIGEST_EXTRACT_REVISIONS_TABLE);
+    db.exec(AGENT_RUN_EVALUATIONS_TABLE);
+
+    for (const [name, decl] of pendingAdds) {
+      db.exec(`ALTER TABLE agent_runs ADD COLUMN ${name} ${decl}`);
+    }
+
+    const newIndexes = [
+      'CREATE INDEX IF NOT EXISTS idx_write_intents_run_id ON agent_run_write_intents (run_id)',
+      'CREATE INDEX IF NOT EXISTS idx_digest_revisions_agent_tier ON digest_extract_revisions (agent_id, tier, created_at DESC)',
+      'CREATE INDEX IF NOT EXISTS idx_agent_runs_evaluation_id ON agent_runs (evaluation_id)',
+    ];
+    for (const idx of newIndexes) {
+      db.exec(idx);
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(15, epochSeconds());
 
     db.exec('COMMIT');
   } catch (err) {

@@ -14,8 +14,8 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertTask } from '@myco/db/queries/tasks.js';
 import { insertRun, getRun } from '@myco/db/queries/runs.js';
 import { epochSeconds } from '@myco/constants.js';
-import { composeTaskPrompt, composePhasePrompt } from '@myco/agent/executor.js';
-import type { PhaseDefinition, ExecutionConfig, OrchestratorConfig } from '@myco/agent/types.js';
+import { composeTaskPrompt, composePhasePrompt, resolvePhaseExecution } from '@myco/agent/executor.js';
+import type { PhaseDefinition, ExecutionConfig, OrchestratorConfig, EffectiveConfig, RunOptions, ProviderConfig } from '@myco/agent/types.js';
 import type { ReportRow } from '@myco/db/queries/reports.js';
 
 // ---------------------------------------------------------------------------
@@ -492,6 +492,308 @@ describe('composePhasePrompt', () => {
 
     expect(result).toContain('## User Instruction');
     expect(result).toContain('Focus on security issues.');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: resolvePhaseExecution (pure precedence helper)
+// ---------------------------------------------------------------------------
+
+describe('resolvePhaseExecution', () => {
+  const baseProvider: ProviderConfig = {
+    type: 'anthropic',
+    reasoningMap: {
+      low: 'model-low',
+      default: 'model-default',
+      high: 'model-high',
+    },
+  };
+
+  const baseConfig: EffectiveConfig = {
+    agentId: 'myco-agent',
+    runtime: 'claude-sdk',
+    model: 'model-task-default',
+    reasoningLevel: 'default',
+    maxTurns: 10,
+    timeoutSeconds: 300,
+    systemPromptPath: 'prompts/system.md',
+    tools: [],
+    taskName: 'full-intelligence',
+    taskDisplayName: 'Full Intelligence',
+    taskPrompt: 'overview',
+  };
+
+  function phase(partial: Partial<PhaseDefinition> = {}): PhaseDefinition {
+    return {
+      name: 'phaseA',
+      prompt: 'do.',
+      tools: [],
+      maxTurns: 5,
+      required: true,
+      ...partial,
+    };
+  }
+
+  it('falls back to task config when nothing is set', () => {
+    const result = resolvePhaseExecution(phase(), undefined, baseConfig, baseProvider);
+    // config.reasoningLevel=default → maps to model-default via provider
+    expect(result.reasoningLevel).toBe('default');
+    expect(result.model).toBe('model-default');
+  });
+
+  it('top-level executionOverrides beats task default', () => {
+    const opts: RunOptions = { executionOverrides: { reasoningLevel: 'low' } };
+    const result = resolvePhaseExecution(phase(), opts, baseConfig, baseProvider);
+    expect(result.reasoningLevel).toBe('low');
+    expect(result.model).toBe('model-low');
+  });
+
+  it('phase YAML beats top-level executionOverrides', () => {
+    const opts: RunOptions = { executionOverrides: { reasoningLevel: 'low' } };
+    const result = resolvePhaseExecution(
+      phase({ reasoningLevel: 'high' }),
+      opts,
+      baseConfig,
+      baseProvider,
+    );
+    expect(result.reasoningLevel).toBe('high');
+    expect(result.model).toBe('model-high');
+  });
+
+  it('per-phase executionOverrides beats phase YAML', () => {
+    const opts: RunOptions = {
+      executionOverrides: {
+        reasoningLevel: 'low',
+        phases: { phaseA: { reasoningLevel: 'high' } },
+      },
+    };
+    const result = resolvePhaseExecution(
+      phase({ reasoningLevel: 'default' }),
+      opts,
+      baseConfig,
+      baseProvider,
+    );
+    expect(result.reasoningLevel).toBe('high');
+    expect(result.model).toBe('model-high');
+  });
+
+  it('per-phase model override takes precedence over reasoning mapping', () => {
+    const opts: RunOptions = {
+      executionOverrides: {
+        phases: { phaseA: { model: 'custom-phase-model' } },
+      },
+    };
+    const result = resolvePhaseExecution(phase(), opts, baseConfig, baseProvider);
+    expect(result.model).toBe('custom-phase-model');
+  });
+
+  it('different phases receive independent overrides', () => {
+    const opts: RunOptions = {
+      executionOverrides: {
+        phases: {
+          phaseA: { reasoningLevel: 'low' },
+          phaseB: { reasoningLevel: 'high' },
+        },
+      },
+    };
+    const a = resolvePhaseExecution(phase({ name: 'phaseA' }), opts, baseConfig, baseProvider);
+    const b = resolvePhaseExecution(phase({ name: 'phaseB' }), opts, baseConfig, baseProvider);
+    expect(a.model).toBe('model-low');
+    expect(b.model).toBe('model-high');
+  });
+
+  it('uses phase.model as fallback when no override and no provider match', () => {
+    const result = resolvePhaseExecution(
+      phase({ model: 'phase-yaml-model' }),
+      undefined,
+      baseConfig,
+      undefined, // no provider → no reasoningMap
+    );
+    expect(result.model).toBe('phase-yaml-model');
+  });
+
+  // -------------------------------------------------------------------------
+  // Provider precedence (added in Task F: richer overrides)
+  // -------------------------------------------------------------------------
+
+  it('per-phase provider override wins over top-level override, phase YAML, and task default', () => {
+    const taskProvider: ProviderConfig = { type: 'anthropic', model: 'task-default-model' };
+    const topOverrideProvider: ProviderConfig = { type: 'lmstudio', model: 'lmstudio-model' };
+    const phaseYamlProvider: ProviderConfig = { type: 'ollama', model: 'ollama-model' };
+    const phaseOverrideProvider: ProviderConfig = { type: 'openai', model: 'openai-model' };
+
+    const opts: RunOptions = {
+      executionOverrides: {
+        provider: topOverrideProvider,
+        phases: {
+          phaseA: { provider: phaseOverrideProvider },
+        },
+      },
+    };
+    const result = resolvePhaseExecution(
+      phase({ provider: phaseYamlProvider }),
+      opts,
+      baseConfig,
+      taskProvider,
+    );
+    expect(result.provider).toEqual(phaseOverrideProvider);
+  });
+
+  it('phase YAML provider wins over top-level provider override', () => {
+    const phaseYamlProvider: ProviderConfig = { type: 'ollama', model: 'ollama-model' };
+    const topOverrideProvider: ProviderConfig = { type: 'lmstudio', model: 'lmstudio-model' };
+    const opts: RunOptions = {
+      executionOverrides: { provider: topOverrideProvider },
+    };
+    const result = resolvePhaseExecution(
+      phase({ provider: phaseYamlProvider }),
+      opts,
+      baseConfig,
+      { type: 'anthropic' },
+    );
+    expect(result.provider).toEqual(phaseYamlProvider);
+  });
+
+  it('top-level provider override wins over task default when no phase-level provider set', () => {
+    const topOverrideProvider: ProviderConfig = { type: 'lmstudio', model: 'lmstudio-model' };
+    const opts: RunOptions = {
+      executionOverrides: { provider: topOverrideProvider },
+    };
+    const result = resolvePhaseExecution(
+      phase(),
+      opts,
+      baseConfig,
+      { type: 'anthropic' },
+    );
+    expect(result.provider).toEqual(topOverrideProvider);
+  });
+
+  // -------------------------------------------------------------------------
+  // maxTurns precedence
+  // -------------------------------------------------------------------------
+
+  it('returns the phase YAML maxTurns when no override is provided', () => {
+    const result = resolvePhaseExecution(
+      phase({ maxTurns: 8 }),
+      undefined,
+      baseConfig,
+      baseProvider,
+    );
+    expect(result.maxTurns).toBe(8);
+  });
+
+  it('per-phase executionOverrides.maxTurns beats phase YAML', () => {
+    const opts: RunOptions = {
+      executionOverrides: {
+        phases: { phaseA: { maxTurns: 25 } },
+      },
+    };
+    const result = resolvePhaseExecution(
+      phase({ maxTurns: 8 }),
+      opts,
+      baseConfig,
+      baseProvider,
+    );
+    expect(result.maxTurns).toBe(25);
+  });
+
+  // -------------------------------------------------------------------------
+  // myco.yaml per-phase overrides (new precedence layer)
+  // -------------------------------------------------------------------------
+
+  it('myco.yaml per-phase provider override beats top-level run override', () => {
+    const mycoYamlProvider: ProviderConfig = { type: 'ollama', model: 'ollama-model' };
+    const topRunProvider: ProviderConfig = { type: 'lmstudio', model: 'lmstudio-model' };
+    const opts: RunOptions = { executionOverrides: { provider: topRunProvider } };
+    const result = resolvePhaseExecution(
+      phase(),
+      opts,
+      baseConfig,
+      { type: 'anthropic' },
+      { phaseA: { provider: mycoYamlProvider } },
+    );
+    expect(result.provider).toEqual(mycoYamlProvider);
+  });
+
+  it('phase YAML provider still wins over myco.yaml per-phase override', () => {
+    const phaseYamlProvider: ProviderConfig = { type: 'anthropic', model: 'phase-yaml' };
+    const mycoYamlProvider: ProviderConfig = { type: 'ollama', model: 'ollama-model' };
+    const result = resolvePhaseExecution(
+      phase({ provider: phaseYamlProvider }),
+      undefined,
+      baseConfig,
+      { type: 'anthropic' },
+      { phaseA: { provider: mycoYamlProvider } },
+    );
+    expect(result.provider).toEqual(phaseYamlProvider);
+  });
+
+  it('run-level per-phase provider override beats myco.yaml per-phase', () => {
+    const mycoYamlProvider: ProviderConfig = { type: 'ollama', model: 'ollama-model' };
+    const runPhaseProvider: ProviderConfig = { type: 'openai', model: 'openai-model' };
+    const opts: RunOptions = {
+      executionOverrides: {
+        phases: { phaseA: { provider: runPhaseProvider } },
+      },
+    };
+    const result = resolvePhaseExecution(
+      phase(),
+      opts,
+      baseConfig,
+      { type: 'anthropic' },
+      { phaseA: { provider: mycoYamlProvider } },
+    );
+    expect(result.provider).toEqual(runPhaseProvider);
+  });
+
+  it('myco.yaml per-phase model override beats provider reasoning map', () => {
+    const result = resolvePhaseExecution(
+      phase(),
+      undefined,
+      baseConfig,
+      baseProvider,
+      { phaseA: { model: 'myco-yaml-model' } },
+    );
+    expect(result.model).toBe('myco-yaml-model');
+  });
+
+  it('run-level per-phase model override beats myco.yaml per-phase model', () => {
+    const opts: RunOptions = {
+      executionOverrides: { phases: { phaseA: { model: 'run-level-model' } } },
+    };
+    const result = resolvePhaseExecution(
+      phase(),
+      opts,
+      baseConfig,
+      baseProvider,
+      { phaseA: { model: 'myco-yaml-model' } },
+    );
+    expect(result.model).toBe('run-level-model');
+  });
+
+  it('myco.yaml per-phase maxTurns beats phase YAML maxTurns', () => {
+    const result = resolvePhaseExecution(
+      phase({ maxTurns: 8 }),
+      undefined,
+      baseConfig,
+      baseProvider,
+      { phaseA: { maxTurns: 20 } },
+    );
+    expect(result.maxTurns).toBe(20);
+  });
+
+  it('run-level per-phase maxTurns beats myco.yaml per-phase maxTurns', () => {
+    const opts: RunOptions = {
+      executionOverrides: { phases: { phaseA: { maxTurns: 50 } } },
+    };
+    const result = resolvePhaseExecution(
+      phase({ maxTurns: 8 }),
+      opts,
+      baseConfig,
+      baseProvider,
+      { phaseA: { maxTurns: 20 } },
+    );
+    expect(result.maxTurns).toBe(50);
   });
 });
 
@@ -1035,6 +1337,194 @@ describe('runAgent — phased execution', () => {
 
     expect(allQueryCalls).toHaveLength(2);
     expect((allQueryCalls[0].options as Record<string, unknown>).model).toBe('claude-opus-4-6');
+  });
+
+  it('applies RunOptions.executionOverrides.phases per-phase model/reasoning', async () => {
+    mockYamlPhases = [
+      { name: 'phaseA', prompt: 'Extract.', tools: ['vault_unprocessed'], maxTurns: 5, required: true },
+      { name: 'phaseB', prompt: 'Build graph.', tools: ['vault_create_entity'], maxTurns: 5, required: true, dependsOn: ['phaseA'] },
+    ];
+    mockExecution = {
+      provider: {
+        type: 'anthropic',
+        reasoningMap: {
+          low: 'claude-haiku-4-5',
+          default: 'claude-sonnet-4-6',
+          high: 'claude-opus-4-6',
+        },
+      },
+    };
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    await runAgent(TEST_VAULT_DIR, {
+      executionOverrides: {
+        phases: {
+          phaseA: { reasoningLevel: 'low' },
+          phaseB: { reasoningLevel: 'high' },
+        },
+      },
+    });
+
+    expect(allQueryCalls).toHaveLength(2);
+    // Phase A maps 'low' → haiku via the provider reasoningMap
+    expect((allQueryCalls[0].options as Record<string, unknown>).model).toBe('claude-haiku-4-5');
+    // Phase B maps 'high' → opus
+    expect((allQueryCalls[1].options as Record<string, unknown>).model).toBe('claude-opus-4-6');
+  });
+
+  it('per-phase model override beats both myco.yaml phase override and reasoning mapping', async () => {
+    mockYamlPhases = [
+      { name: 'phaseA', prompt: 'Extract.', tools: ['vault_unprocessed'], maxTurns: 5, required: true, model: 'phase-yaml-model' },
+    ];
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    await runAgent(TEST_VAULT_DIR, {
+      executionOverrides: {
+        phases: {
+          phaseA: { model: 'run-option-model' },
+        },
+      },
+    });
+
+    expect(allQueryCalls).toHaveLength(1);
+    expect((allQueryCalls[0].options as Record<string, unknown>).model).toBe('run-option-model');
+  });
+
+  it('per-phase provider override routes the phase through the chosen provider/model', async () => {
+    mockYamlPhases = [
+      { name: 'phaseA', prompt: 'Extract.', tools: ['vault_unprocessed'], maxTurns: 5, required: true },
+      { name: 'phaseB', prompt: 'Build graph.', tools: ['vault_create_entity'], maxTurns: 5, required: true, dependsOn: ['phaseA'] },
+    ];
+    mockExecution = {
+      provider: {
+        type: 'anthropic',
+        model: 'claude-sonnet-default',
+      },
+    };
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    // Use lmstudio (not ollama) so the ollama variant resolver is a no-op.
+    await runAgent(TEST_VAULT_DIR, {
+      executionOverrides: {
+        phases: {
+          phaseA: {
+            provider: {
+              type: 'lmstudio',
+              model: 'qwen3-30b',
+              baseUrl: 'http://localhost:1234',
+            },
+          },
+        },
+      },
+    });
+
+    expect(allQueryCalls).toHaveLength(2);
+    // Phase A: overridden to LM Studio / qwen3-30b
+    expect((allQueryCalls[0].options as Record<string, unknown>).model).toBe('qwen3-30b');
+    // Phase B: falls back to the task default (Anthropic / claude-sonnet-default)
+    expect((allQueryCalls[1].options as Record<string, unknown>).model).toBe('claude-sonnet-default');
+  });
+
+  it('top-level provider override flows to all phases unless a phase overrides it again', async () => {
+    mockYamlPhases = [
+      { name: 'phaseA', prompt: 'Extract.', tools: [], maxTurns: 5, required: true },
+      { name: 'phaseB', prompt: 'Synth.', tools: [], maxTurns: 5, required: true, dependsOn: ['phaseA'] },
+    ];
+    mockExecution = {
+      provider: { type: 'anthropic', model: 'claude-sonnet-default' },
+    };
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    // Use lmstudio (not ollama) to avoid the ollama-variant resolver making
+    // real network calls to create Modelfile variants.
+    await runAgent(TEST_VAULT_DIR, {
+      executionOverrides: {
+        provider: { type: 'lmstudio', model: 'qwen3-30b', baseUrl: 'http://localhost:1234' },
+      },
+    });
+
+    expect(allQueryCalls).toHaveLength(2);
+    expect((allQueryCalls[0].options as Record<string, unknown>).model).toBe('qwen3-30b');
+    expect((allQueryCalls[1].options as Record<string, unknown>).model).toBe('qwen3-30b');
+  });
+
+  it('per-phase maxTurns override is applied when the phase executes', async () => {
+    mockYamlPhases = [
+      { name: 'phaseA', prompt: 'Extract.', tools: [], maxTurns: 5, required: true },
+    ];
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    await runAgent(TEST_VAULT_DIR, {
+      executionOverrides: {
+        phases: {
+          phaseA: { maxTurns: 25 },
+        },
+      },
+    });
+
+    expect(allQueryCalls).toHaveLength(1);
+    expect((allQueryCalls[0].options as Record<string, unknown>).maxTurns).toBe(25);
+  });
+
+  it('logs a warning once when executionOverrides.phases contains unknown keys', async () => {
+    mockYamlPhases = [
+      { name: 'phaseA', prompt: 'p.', tools: [], maxTurns: 3, required: true },
+    ];
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { runAgent } = await import('@myco/agent/executor.js');
+      const result = await runAgent(TEST_VAULT_DIR, {
+        executionOverrides: {
+          phases: {
+            phaseA: { reasoningLevel: 'low' },
+            bogusPhase: { reasoningLevel: 'high' },
+          },
+        },
+      });
+
+      expect(result.status).toBe('completed');
+      const unknownCalls = warnSpy.mock.calls.filter((args) =>
+        typeof args[0] === 'string' && args[0].includes('Unknown phase override keys'),
+      );
+      expect(unknownCalls).toHaveLength(1);
+      expect(unknownCalls[0][0]).toContain('bogusPhase');
+      expect(unknownCalls[0][0]).toContain('task phases: phaseA');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('non-phased task + executionOverrides.phases: warns, does not throw, uses task default', async () => {
+    mockYamlPhases = undefined; // single-query (non-phased) path
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { runAgent } = await import('@myco/agent/executor.js');
+      const result = await runAgent(TEST_VAULT_DIR, {
+        executionOverrides: {
+          phases: {
+            extract: { reasoningLevel: 'high' },
+          },
+        },
+      });
+
+      expect(result.status).toBe('completed');
+      expect(allQueryCalls).toHaveLength(1);
+      // Single-query path still uses the task/agent default model.
+      expect((allQueryCalls[0].options as Record<string, unknown>).model).toBe('claude-sonnet-4-20250514');
+      const unknownCalls = warnSpy.mock.calls.filter((args) =>
+        typeof args[0] === 'string' && args[0].includes('Unknown phase override keys'),
+      );
+      expect(unknownCalls).toHaveLength(1);
+      expect(unknownCalls[0][0]).toContain('extract');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('records correct aggregate tokens and cost', async () => {
