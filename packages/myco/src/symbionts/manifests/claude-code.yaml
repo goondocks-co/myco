@@ -16,6 +16,10 @@ capture:
     # user-committed plans in the repo.
     - ~/.claude/plans/
     - .claude/plans/
+  planTags:
+    # Ultraplan sends the approved cloud plan back to the terminal by injecting
+    # it into the next user prompt as <ultraplan>...</ultraplan>.
+    - ultraplan
 registration:
   hooksTarget: .claude/settings.json
   mcpTarget: .mcp.json

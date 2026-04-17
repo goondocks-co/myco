@@ -16,7 +16,12 @@ import { PowerManager } from './power.js';
 import { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { PlanWatchConfig } from './plan-capture.js';
-import { isPlanWriteEvent, capturePlan } from './plan-capture.js';
+import {
+  isPlanWriteEvent,
+  capturePlan,
+  extractTaggedPlans,
+  TRANSCRIPT_SOURCE_PREFIX,
+} from './plan-capture.js';
 import {
   isSystemMessage,
   handleUserPrompt,
@@ -31,7 +36,7 @@ import {
 import { getLatestBatch } from '@myco/db/queries/batches.js';
 import { upsertSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
 import { captureBatchImages, type CapturedImage } from './capture-images.js';
-import { epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
+import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { evaluateSessionCaptureRules } from '@myco/hooks/capture-rules.js';
 import { readTranscriptMeta } from '@myco/hooks/transcript-meta.js';
@@ -86,6 +91,9 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
 
   const projectRoot = process.cwd();
   const manifests = loadManifests();
+  const planTagsByAgent = new Map(
+    manifests.map((manifest) => [manifest.name, manifest.capture?.planTags ?? []] as const),
+  );
 
   // Cache drop decisions by session_id so a rejected session that keeps firing
   // events doesn't re-open + re-read (up to 128 KB) its transcript every time.
@@ -106,12 +114,17 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       ? event.transcript_path
       : undefined;
     const transcriptMeta = transcriptPath ? readTranscriptMeta(transcriptPath) ?? undefined : undefined;
-    const detectedAgent = typeof event.agent === 'string' ? event.agent : 'claude-code';
+    const detectedAgent = typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME;
 
     return evaluateSessionCaptureRules(manifests, detectedAgent, {
       transcriptPath,
       transcriptMeta,
     });
+  }
+
+  function getPlanTagsForAgent(agent: unknown): string[] {
+    const agentName = typeof agent === 'string' && agent.length > 0 ? agent : DEFAULT_SYMBIONT_NAME;
+    return planTagsByAgent.get(agentName) ?? [];
   }
 
   return async (req) => {
@@ -154,7 +167,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       const startedEpoch = Math.floor(new Date(event.timestamp).getTime() / 1000);
       upsertSession({
         id: event.session_id,
-        agent: (event as Record<string, unknown>).agent as string ?? 'claude-code',
+        agent: (event as Record<string, unknown>).agent as string ?? DEFAULT_SYMBIONT_NAME,
         status: 'active',
         started_at: startedEpoch,
         created_at: now,
@@ -203,6 +216,31 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         try {
           const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined);
           logger.debug(LOG_KINDS.CAPTURE_BATCH, 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });
+
+          const taggedPlans = extractTaggedPlans(promptText, getPlanTagsForAgent(event.agent));
+          for (const { tag, content } of taggedPlans) {
+            try {
+              // Reuse the tag-derived source key used by transcript extraction so
+              // prompt-injected and transcript-derived copies upsert rather than duplicate.
+              capturePlan({
+                sourcePath: `${TRANSCRIPT_SOURCE_PREFIX}${tag}`,
+                content,
+                sessionId: event.session_id,
+                promptBatchId: batchId,
+              });
+              logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan captured from prompt tag', {
+                session_id: event.session_id,
+                tag,
+                content_length: content.length,
+              });
+            } catch (err) {
+              logger.warn(LOG_KINDS.CAPTURE_PLAN, 'Failed to capture plan from prompt tag', {
+                session_id: event.session_id,
+                tag,
+                error: (err as Error).message,
+              });
+            }
+          }
 
           // Plugin-based symbionts (opencode) ship image attachments in the
           // user_prompt event payload rather than in an on-disk transcript.

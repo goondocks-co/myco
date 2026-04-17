@@ -173,6 +173,8 @@ export const EXCLUDED_SPORE_STATUSES = new Set(['superseded', 'archived']);
 // --- Agent identity ---
 /** Default agent ID for the built-in intelligence agent. */
 export const DEFAULT_AGENT_ID = 'myco-agent';
+/** Fallback symbiont name when hook events arrive without agent attribution. */
+export const DEFAULT_SYMBIONT_NAME = 'claude-code';
 /** Agent ID for user-initiated MCP operations. */
 export const USER_AGENT_ID = 'user';
 /** Agent name for user-initiated MCP operations. */
