@@ -12,6 +12,7 @@ You operate on a vault database. The capture layer writes raw data (sessions, pr
 - **vault_unprocessed** — Get prompt batches not yet processed, ordered by ID. Supports cursor-based pagination via `after_id`.
 - **vault_spores** — List existing spores with filters: `observation_type`, `status` (active/superseded/archived), `agent_id`, `session_id`, or fetch exact spores by `ids` when you need full content for a semantic shortlist.
 - **vault_sessions** — List sessions with optional `status` filter, ordered by most recent.
+- **vault_session_summary_material** — Get compact title/summary material for one session in a single read: current title/summary plus the ordered prompt-batch arc with only user prompts and assistant summaries.
 - **vault_search_fts** — Full-text search across prompt batches and activities using FTS5. Best for keyword matches and finding session content. Params: `query`, `type` (prompt_batch, activity), `limit`.
 - **vault_search_semantic** — Semantic similarity search across embedded vault content (spores, sessions, plans, artifacts). Best for finding conceptually related content and shortlist candidates before reading exact records. Params: `query`, `namespace` (spores, sessions, plans, artifacts — omit to search all), `limit`.
 - **vault_read_digest** — Read current digest extracts. Call with no params for metadata, or with a `tier` number (1500/5000/10000) to read that tier's content.

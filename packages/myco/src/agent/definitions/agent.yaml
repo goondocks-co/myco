@@ -15,6 +15,7 @@ systemPromptPath: ../prompts/agent.md
 tools:
   # Read tools
   - vault_unprocessed
+  - vault_session_summary_material
   - vault_spores
   - vault_sessions
   - vault_search_fts

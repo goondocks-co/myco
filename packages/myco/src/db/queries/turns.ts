@@ -189,3 +189,18 @@ export function countToolCallsByRun(
   }
   return result;
 }
+
+/** Count exact tool calls for a run by tool name and serialized input payload. */
+export function countExactToolCallsByRun(
+  runId: string,
+  toolName: string,
+  toolInput: string,
+): number {
+  const db = getDatabase();
+  const row = db.prepare(
+    `SELECT COUNT(*) as count
+     FROM agent_turns
+     WHERE run_id = ? AND tool_name = ? AND tool_input = ?`,
+  ).get(runId, toolName, toolInput) as { count: number };
+  return row.count;
+}

@@ -42,6 +42,20 @@ function truncatePreview(text: string | null, limit: number): string {
   return truncate(text, limit) || '\u2014';
 }
 
+function formatBudgetSource(source: ParsedUsageData['runBudget']['contextWindowSource']): string {
+  if (!source) return '\u2014';
+  switch (source) {
+    case 'provider-config':
+      return 'provider config';
+    case 'provider-metadata':
+      return 'provider metadata';
+    case 'provider-default':
+      return 'inferred provider default';
+    default:
+      return source;
+  }
+}
+
 function parseJson<T>(raw: string | null | undefined): T | null {
   if (!raw) return null;
   try {
@@ -83,6 +97,17 @@ interface ParsedUsageData {
     reasoningTokens?: number;
     cachedTokens?: number;
     requests?: number;
+  };
+  runBudget?: {
+    contextWindowTokens: number | null;
+    contextWindowSource?: 'provider-config' | 'provider-metadata' | 'provider-default';
+    peakRequestInputTokens: number | null;
+    peakRequestOutputTokens: number | null;
+    peakRequestTotalTokens: number | null;
+    utilizationPercent: number | null;
+    headroomTokens: number | null;
+    status: 'unknown' | 'ok' | 'warning' | 'critical';
+    message?: string;
   };
 }
 
@@ -362,6 +387,53 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
           </div>
           {parsedCost?.message && (
             <p className="font-sans text-xs text-on-surface-variant">{parsedCost.message}</p>
+          )}
+        </Surface>
+      )}
+
+      {parsedUsage?.runBudget && (
+        <Surface level="low" className="p-4 space-y-3">
+          <h2 className="font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide">
+            Token Budget
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Context Window</p>
+              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedUsage.runBudget.contextWindowTokens)}</p>
+            </div>
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Peak Request</p>
+              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedUsage.runBudget.peakRequestTotalTokens)}</p>
+            </div>
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Peak Input</p>
+              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedUsage.runBudget.peakRequestInputTokens)}</p>
+            </div>
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Peak Output</p>
+              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedUsage.runBudget.peakRequestOutputTokens)}</p>
+            </div>
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Budget Used</p>
+              <p className="font-mono text-sm text-on-surface">
+                {parsedUsage.runBudget.utilizationPercent != null ? `${parsedUsage.runBudget.utilizationPercent}%` : '\u2014'}
+              </p>
+            </div>
+            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Headroom</p>
+              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedUsage.runBudget.headroomTokens)}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 px-1">
+            <span className="font-sans text-xs text-on-surface-variant">
+              Budget status: <span className="font-mono text-on-surface">{parsedUsage.runBudget.status}</span>
+            </span>
+            <span className="font-sans text-xs text-on-surface-variant">
+              Context source: <span className="font-mono text-on-surface">{formatBudgetSource(parsedUsage.runBudget.contextWindowSource)}</span>
+            </span>
+          </div>
+          {parsedUsage.runBudget.message && (
+            <p className="font-sans text-xs text-on-surface-variant">{parsedUsage.runBudget.message}</p>
           )}
         </Surface>
       )}

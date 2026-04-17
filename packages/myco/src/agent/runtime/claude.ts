@@ -117,6 +117,13 @@ export class ClaudeSdkRuntime implements AgentRuntime {
         outputTokens,
         totalTokens: inputTokens + outputTokens,
         costUsd,
+        requestUsageEntries: turnsUsed > 0
+          ? [{
+              inputTokens,
+              outputTokens,
+              totalTokens: inputTokens + outputTokens,
+            }]
+          : [],
       },
       sessionRef: input.sessionRef,
     };
