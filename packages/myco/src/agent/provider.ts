@@ -8,10 +8,10 @@ const ENV_ANTHROPIC_BASE_URL = 'ANTHROPIC_BASE_URL';
 const ENV_ANTHROPIC_AUTH_TOKEN = 'ANTHROPIC_AUTH_TOKEN';
 const ENV_ANTHROPIC_API_KEY = 'ANTHROPIC_API_KEY';
 const ENV_OLLAMA_NUM_CTX = 'OLLAMA_NUM_CTX';
-const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
-const DEFAULT_LMSTUDIO_URL = 'http://localhost:1234';
-const DEFAULT_OPENAI_URL = 'https://api.openai.com/v1';
-const DEFAULT_OPENROUTER_URL = 'https://openrouter.ai/api/v1';
+export const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
+export const DEFAULT_LMSTUDIO_URL = 'http://localhost:1234';
+export const DEFAULT_OPENAI_URL = 'https://api.openai.com/v1';
+export const DEFAULT_OPENROUTER_URL = 'https://openrouter.ai/api/v1';
 const OLLAMA_AUTH_TOKEN = 'ollama';
 const LMSTUDIO_AUTH_TOKEN = 'lmstudio';
 

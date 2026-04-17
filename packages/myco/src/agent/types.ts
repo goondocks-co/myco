@@ -76,13 +76,20 @@ export interface ContextQuery {
 export type RuntimeId = 'claude-sdk' | 'openai-agents';
 export type ReasoningLevel = 'low' | 'default' | 'high';
 
-export type ProviderType =
-  | 'anthropic'
-  | 'ollama'
-  | 'lmstudio'
-  | 'openai'
-  | 'openrouter'
-  | 'openai-compatible';
+export const PROVIDER_TYPES = [
+  'anthropic',
+  'ollama',
+  'lmstudio',
+  'openai',
+  'openrouter',
+  'openai-compatible',
+] as const;
+
+export type ProviderType = typeof PROVIDER_TYPES[number];
+
+export function isProviderType(value: unknown): value is ProviderType {
+  return typeof value === 'string' && (PROVIDER_TYPES as readonly string[]).includes(value);
+}
 
 /** API provider configuration for task execution. */
 export interface ProviderConfig {

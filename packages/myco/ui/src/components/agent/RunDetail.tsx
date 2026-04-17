@@ -10,6 +10,8 @@ import { cn } from '../../lib/cn';
 import { formatEpochRelative, truncate, capitalize } from '../../lib/format';
 import { formatCost, formatTokens, formatDuration, resolveTaskName } from './helpers';
 import { PhaseTimeline, type PhaseResult } from './PhaseTimeline';
+import type { CostResolution } from '@myco/agent/cost/types';
+import type { RuntimeTokenBudget } from '@myco/agent/types';
 
 /* ---------- Constants ---------- */
 
@@ -42,7 +44,7 @@ function truncatePreview(text: string | null, limit: number): string {
   return truncate(text, limit) || '\u2014';
 }
 
-function formatBudgetSource(source: ParsedUsageData['runBudget']['contextWindowSource']): string {
+function formatBudgetSource(source: RuntimeTokenBudget['contextWindowSource'] | undefined): string {
   if (!source) return '\u2014';
   switch (source) {
     case 'provider-config':
@@ -65,29 +67,7 @@ function parseJson<T>(raw: string | null | undefined): T | null {
   }
 }
 
-interface ParsedCostData {
-  source: 'actual' | 'estimated' | 'unavailable';
-  costUsd: number | null;
-  actualCostUsd: number | null;
-  estimatedCostUsd: number | null;
-  pricingVersion?: string | null;
-  message?: string | null;
-  breakdown: {
-    inputTokens: number;
-    cachedInputTokens: number;
-    uncachedInputTokens: number;
-    outputTokens: number;
-    reasoningTokens: number;
-    requestCount: number;
-    inputCostUsd?: number;
-    cachedInputCostUsd?: number;
-    outputCostUsd?: number;
-    reasoningCostUsd?: number;
-    requestCostUsd?: number;
-    totalCostUsd?: number;
-    cacheSavingsUsd?: number;
-  };
-}
+type ParsedCostData = CostResolution;
 
 interface ParsedUsageData {
   run?: {
@@ -98,17 +78,16 @@ interface ParsedUsageData {
     cachedTokens?: number;
     requests?: number;
   };
-  runBudget?: {
-    contextWindowTokens: number | null;
-    contextWindowSource?: 'provider-config' | 'provider-metadata' | 'provider-default';
-    peakRequestInputTokens: number | null;
-    peakRequestOutputTokens: number | null;
-    peakRequestTotalTokens: number | null;
-    utilizationPercent: number | null;
-    headroomTokens: number | null;
-    status: 'unknown' | 'ok' | 'warning' | 'critical';
-    message?: string;
-  };
+  runBudget?: RuntimeTokenBudget;
+}
+
+function StatTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md bg-surface-container-lowest px-3 py-2">
+      <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">{label}</p>
+      <p className="font-mono text-sm text-on-surface">{value}</p>
+    </div>
+  );
 }
 
 /* ---------- Sub-components ---------- */
@@ -360,30 +339,12 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
             Cost Diagnostics
           </h2>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
-              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Input</p>
-              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedCost?.breakdown.inputTokens ?? parsedUsage?.run?.inputTokens ?? null)}</p>
-            </div>
-            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
-              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Cached Input</p>
-              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedCost?.breakdown.cachedInputTokens ?? parsedUsage?.run?.cachedTokens ?? null)}</p>
-            </div>
-            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
-              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Uncached Input</p>
-              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedCost?.breakdown.uncachedInputTokens ?? null)}</p>
-            </div>
-            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
-              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Output</p>
-              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedCost?.breakdown.outputTokens ?? parsedUsage?.run?.outputTokens ?? null)}</p>
-            </div>
-            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
-              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Requests</p>
-              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedCost?.breakdown.requestCount ?? parsedUsage?.run?.requests ?? null)}</p>
-            </div>
-            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
-              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Cache Savings</p>
-              <p className="font-mono text-sm text-on-surface">{formatCost(parsedCost?.breakdown.cacheSavingsUsd ?? null, 'estimated')}</p>
-            </div>
+            <StatTile label="Input" value={formatTokens(parsedCost?.breakdown.inputTokens ?? parsedUsage?.run?.inputTokens ?? null)} />
+            <StatTile label="Cached Input" value={formatTokens(parsedCost?.breakdown.cachedInputTokens ?? parsedUsage?.run?.cachedTokens ?? null)} />
+            <StatTile label="Uncached Input" value={formatTokens(parsedCost?.breakdown.uncachedInputTokens ?? null)} />
+            <StatTile label="Output" value={formatTokens(parsedCost?.breakdown.outputTokens ?? parsedUsage?.run?.outputTokens ?? null)} />
+            <StatTile label="Requests" value={formatTokens(parsedCost?.breakdown.requestCount ?? parsedUsage?.run?.requests ?? null)} />
+            <StatTile label="Cache Savings" value={formatCost(parsedCost?.breakdown.cacheSavingsUsd ?? null, 'estimated')} />
           </div>
           {parsedCost?.message && (
             <p className="font-sans text-xs text-on-surface-variant">{parsedCost.message}</p>
@@ -397,32 +358,12 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
             Token Budget
           </h2>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
-              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Context Window</p>
-              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedUsage.runBudget.contextWindowTokens)}</p>
-            </div>
-            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
-              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Peak Request</p>
-              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedUsage.runBudget.peakRequestTotalTokens)}</p>
-            </div>
-            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
-              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Peak Input</p>
-              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedUsage.runBudget.peakRequestInputTokens)}</p>
-            </div>
-            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
-              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Peak Output</p>
-              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedUsage.runBudget.peakRequestOutputTokens)}</p>
-            </div>
-            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
-              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Budget Used</p>
-              <p className="font-mono text-sm text-on-surface">
-                {parsedUsage.runBudget.utilizationPercent != null ? `${parsedUsage.runBudget.utilizationPercent}%` : '\u2014'}
-              </p>
-            </div>
-            <div className="rounded-md bg-surface-container-lowest px-3 py-2">
-              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">Headroom</p>
-              <p className="font-mono text-sm text-on-surface">{formatTokens(parsedUsage.runBudget.headroomTokens)}</p>
-            </div>
+            <StatTile label="Context Window" value={formatTokens(parsedUsage.runBudget.contextWindowTokens)} />
+            <StatTile label="Peak Request" value={formatTokens(parsedUsage.runBudget.peakRequestTotalTokens)} />
+            <StatTile label="Peak Input" value={formatTokens(parsedUsage.runBudget.peakRequestInputTokens)} />
+            <StatTile label="Peak Output" value={formatTokens(parsedUsage.runBudget.peakRequestOutputTokens)} />
+            <StatTile label="Budget Used" value={parsedUsage.runBudget.utilizationPercent != null ? `${parsedUsage.runBudget.utilizationPercent}%` : '\u2014'} />
+            <StatTile label="Headroom" value={formatTokens(parsedUsage.runBudget.headroomTokens)} />
           </div>
           <div className="flex items-center gap-3 px-1">
             <span className="font-sans text-xs text-on-surface-variant">

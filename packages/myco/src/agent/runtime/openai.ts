@@ -17,11 +17,11 @@ import { LmStudioBackend } from '@myco/intelligence/lm-studio.js';
 import {
   getLocalOpenAIBackendDefaultBaseUrl,
   inferLocalOpenAIBackendKind,
+  tryParseUrl,
   type LocalOpenAIBackendKind,
 } from '@myco/intelligence/local-openai-backends.js';
+import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider.js';
 
-const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
-const DEFAULT_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 const OPENAI_COMPATIBLE_PLACEHOLDER_API_KEY = 'myco-local-openai-compatible';
 const OPENAI_API_PATH = '/v1';
 
@@ -97,28 +97,30 @@ type OpenAIClientConfig = {
   baseURL?: string;
 };
 
+const PLACEHOLDER = OPENAI_COMPATIBLE_PLACEHOLDER_API_KEY;
+
 const PROVIDER_CLIENT_CONFIG_RESOLVERS: Record<ProviderConfig['type'], (provider?: ProviderConfig) => OpenAIClientConfig> = {
   anthropic: () => ({
-    apiKey: process.env.OPENAI_API_KEY ?? OPENAI_COMPATIBLE_PLACEHOLDER_API_KEY,
+    apiKey: process.env.OPENAI_API_KEY ?? PLACEHOLDER,
   }),
   ollama: (provider) => ({
-    apiKey: provider?.apiKey ?? OPENAI_COMPATIBLE_PLACEHOLDER_API_KEY,
+    apiKey: provider?.apiKey ?? PLACEHOLDER,
     baseURL: provider?.baseUrl ?? toOpenAIBaseUrl(getLocalOpenAIBackendDefaultBaseUrl('ollama')),
   }),
   lmstudio: (provider) => ({
-    apiKey: provider?.apiKey ?? OPENAI_COMPATIBLE_PLACEHOLDER_API_KEY,
+    apiKey: provider?.apiKey ?? PLACEHOLDER,
     baseURL: provider?.baseUrl ?? toOpenAIBaseUrl(getLocalOpenAIBackendDefaultBaseUrl('lmstudio')),
   }),
   openai: (provider) => ({
     apiKey: provider?.apiKey ?? process.env[OPENAI_API_KEY_ENV] ?? process.env.OPENAI_API_KEY,
-    baseURL: provider?.baseUrl ?? DEFAULT_OPENAI_BASE_URL,
+    baseURL: provider?.baseUrl ?? DEFAULT_OPENAI_URL,
   }),
   openrouter: (provider) => ({
     apiKey: provider?.apiKey ?? process.env[OPENROUTER_API_KEY_ENV],
-    baseURL: provider?.baseUrl ?? DEFAULT_OPENROUTER_BASE_URL,
+    baseURL: provider?.baseUrl ?? DEFAULT_OPENROUTER_URL,
   }),
   'openai-compatible': (provider) => ({
-    apiKey: provider?.apiKey ?? OPENAI_COMPATIBLE_PLACEHOLDER_API_KEY,
+    apiKey: provider?.apiKey ?? PLACEHOLDER,
     ...(provider?.baseUrl ? { baseURL: provider.baseUrl } : {}),
   }),
 };
@@ -133,14 +135,6 @@ export function shouldUseResponsesApi(provider?: ProviderConfig): boolean {
   return provider?.type !== 'openai-compatible'
     && provider?.type !== 'ollama'
     && provider?.type !== 'lmstudio';
-}
-
-function tryParseUrl(value: string): URL | null {
-  try {
-    return new URL(value);
-  } catch {
-    return null;
-  }
 }
 
 function toOpenAIBaseUrl(baseUrl: string): string {
@@ -251,9 +245,7 @@ export class OpenAIAgentsRuntime implements AgentRuntime {
   constructor(private readonly context: RuntimeFactoryContext) {}
 
   supports(capability: RuntimeCapability): boolean {
-    return capability === 'supportsSessionResume'
-      || capability === 'supportsMcp'
-      || capability === 'supportsReasoningUsageBreakdown';
+    return capability === 'supportsSessionResume' || capability === 'supportsMcp';
   }
 
   async execute(input: RuntimeExecuteInput): Promise<RuntimeExecuteResult> {

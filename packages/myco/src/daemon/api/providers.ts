@@ -23,7 +23,8 @@ import {
   getRemoteProviderApiKey,
 } from './models.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
-import type { RuntimeId, ProviderType } from '@myco/agent/types.js';
+import { PROVIDER_TYPES, isProviderType, type RuntimeId, type ProviderType } from '@myco/agent/types.js';
+import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider.js';
 
 /** Timeout for the live Anthropic model list query (short -- fall back fast). */
 const ANTHROPIC_MODELS_TIMEOUT_MS = 5000;
@@ -85,12 +86,12 @@ export async function handleGetProviders(): Promise<RouteResponse> {
       fallback: { type: 'lmstudio', runtime: 'claude-sdk', available: false, baseUrl: LmStudioBackend.DEFAULT_BASE_URL, models: [] },
     },
     {
-      detect: () => detectRemoteProviderInfo('openai', 'https://api.openai.com/v1'),
-      fallback: { type: 'openai', runtime: 'openai-agents', available: false, authConfigured: false, baseUrl: 'https://api.openai.com/v1', models: [] },
+      detect: () => detectRemoteProviderInfo('openai', DEFAULT_OPENAI_URL),
+      fallback: { type: 'openai', runtime: 'openai-agents', available: false, authConfigured: false, baseUrl: DEFAULT_OPENAI_URL, models: [] },
     },
     {
-      detect: () => detectRemoteProviderInfo('openrouter', 'https://openrouter.ai/api/v1'),
-      fallback: { type: 'openrouter', runtime: 'openai-agents', available: false, authConfigured: false, baseUrl: 'https://openrouter.ai/api/v1', models: [] },
+      detect: () => detectRemoteProviderInfo('openrouter', DEFAULT_OPENROUTER_URL),
+      fallback: { type: 'openrouter', runtime: 'openai-agents', available: false, authConfigured: false, baseUrl: DEFAULT_OPENROUTER_URL, models: [] },
     },
     {
       detect: () => detectLocalProviderInfo('openai-compatible', LmStudioBackend.DEFAULT_BASE_URL),
@@ -116,10 +117,10 @@ export async function handleTestProvider(req: RouteRequest): Promise<RouteRespon
   const body = req.body as Record<string, unknown> | undefined;
   const type = body?.type as string | undefined;
 
-  if (!type || !['anthropic', 'ollama', 'lmstudio', 'openai', 'openrouter', 'openai-compatible'].includes(type)) {
+  if (!type || !isProviderType(type)) {
     return {
       status: HTTP_BAD_REQUEST,
-      body: { error: 'type is required and must be one of: anthropic, ollama, lmstudio, openai, openrouter, openai-compatible' },
+      body: { error: `type is required and must be one of: ${PROVIDER_TYPES.join(', ')}` },
     };
   }
 

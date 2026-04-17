@@ -1,16 +1,4 @@
-/**
- * Agent executor.
- *
- * Orchestrates a single agent run:
- *   1. Initializes the database for the vault.
- *   2. Resolves effective config (definition + agent DB overrides + task).
- *   3. Guards against concurrent runs for the same task.
- *   4. Creates or resumes a run record in the database.
- *   5. Builds the task prompt (vault context + task + optional instruction).
- *   6. Executes the selected runtime adapter — single call for flat tasks,
- *      wave-based parallel execution for phased tasks.
- *   7. Persists checkpoint, usage, and resume metadata as the run progresses.
- */
+/** Agent executor — orchestrates a single agent run end to end. */
 
 import crypto from 'node:crypto';
 import { resolve } from 'node:path';
@@ -23,6 +11,7 @@ import {
   insertRun,
   updateRunStatus,
   updateRun,
+  applyRunUpdate,
   getRun,
   getRunningRunForTask,
   RESUME_STATUS_READY,
@@ -409,7 +398,6 @@ async function executePhasedQuery(
   let effectivePhases = [...phases];
 
   if (config.orchestrator?.enabled) {
-    // 1. Run context queries (if any)
     const contextQueries = config.contextQueries
       ? Object.values(config.contextQueries).flat()
       : [];
@@ -417,7 +405,6 @@ async function executePhasedQuery(
       ? await executeContextQueries(agentId, contextQueries)
       : [];
 
-    // 2. Compose orchestrator prompt
     const orchestratorPrompt = composeOrchestratorPrompt(vaultContext, phases, contextResults);
     const orchestratorModel = config.orchestrator.model ?? resolveReasoningModel(
       config.orchestrator.reasoningLevel ?? config.execution?.reasoningLevel ?? config.reasoningLevel,
@@ -441,7 +428,6 @@ async function executePhasedQuery(
       abortController,
     });
 
-    // 4. Parse plan and apply directives
     const plan = parseOrchestratorPlan(planResponse.finalText, phases);
     effectivePhases = applyDirectives(phases, plan.phases);
   }
@@ -640,7 +626,6 @@ export async function runAgent(
   vaultDir: string,
   options?: RunOptions,
 ): Promise<AgentRunResult> {
-  // 1. Init DB (idempotent — returns existing instance if already open)
   const db = initDatabase(vaultDbPath(vaultDir));
   createSchema(db);
 
@@ -654,9 +639,7 @@ export async function runAgent(
     };
   }
 
-  // 2. Concurrency guard — block duplicate runs of the SAME task, not all tasks.
-  // Different tasks (e.g., full-intelligence and skill-generate) can run concurrently.
-  // When no task is specified, resolve the effective task name first so the guard applies.
+  // Block duplicate runs of the SAME task — different tasks may run concurrently.
   const requestedTask = options?.task ?? resumedRun?.task ?? undefined;
   {
     const effectiveTask = requestedTask
@@ -673,7 +656,6 @@ export async function runAgent(
     }
   }
 
-  // 3. Resolve config from all sources
   const {
     config,
     definitionsDir,
@@ -686,7 +668,6 @@ export async function runAgent(
   let taskProviderOverride = resolvedTaskProvider;
   let phaseProviderOverrides = resolvedPhaseOverrides;
 
-  // 4. Create run record
   const runId = options?.resumeRunId ?? crypto.randomUUID();
   const now = epochSeconds();
   let runtimeId = config.runtime;
@@ -728,33 +709,32 @@ export async function runAgent(
     checkpointState.model = checkpointState.model ?? effectiveModel;
   }
 
+  const runStart = {
+    status: STATUS_RUNNING,
+    runtime: runtimeId,
+    model: effectiveModel,
+    checkpoints: serializeCheckpointState(checkpointState),
+    started_at: now,
+  } as const;
   if (!resumedRun) {
     insertRun({
       id: runId,
       agent_id: agentId,
       task: config.taskName,
       instruction: options?.instruction ?? null,
-      status: STATUS_RUNNING,
-      runtime: runtimeId,
+      ...runStart,
       provider: effectiveProvider?.type ?? null,
-      model: effectiveModel,
-      checkpoints: serializeCheckpointState(checkpointState),
       usage_data: buildUsageData({}),
-      started_at: now,
     });
   } else {
-    updateRun(runId, {
-      status: STATUS_RUNNING,
-      runtime: runtimeId,
+    applyRunUpdate(runId, {
+      ...runStart,
       provider: effectiveProvider?.type ?? resumedRun.provider ?? null,
-      model: effectiveModel,
-      started_at: now,
       completed_at: null,
       resumable: 0,
       resume_status: null,
       resume_mode: options?.resumeMode ?? resumedRun.resume_mode ?? null,
       resumed_at: now,
-      checkpoints: serializeCheckpointState(checkpointState),
       usage_data: resumedRun.usage_data,
       cost_usd: resumedRun.cost_usd,
       actual_cost_usd: resumedRun.actual_cost_usd,
@@ -765,15 +745,13 @@ export async function runAgent(
     });
   }
 
-  // 5. Build prompt components
   const systemPrompt = loadSystemPrompt(definitionsDir, config.systemPromptPath);
   const vaultContext = buildVaultContext(agentId);
 
-  // 7. Resolve Ollama context variants across task + phase scopes.
-  //    Applies DEFAULT_OLLAMA_CONTEXT_LENGTH when no value is set, and
-  //    reconciles same-model-different-context conflicts to one variant
-  //    per model (max wins) so Ollama loads each model at most once.
-  //    Non-ollama providers are passed through unchanged.
+  // Resolve Ollama context variants across task + phase scopes. Applies
+  // DEFAULT_OLLAMA_CONTEXT_LENGTH when no value is set, and reconciles
+  // same-model-different-context conflicts (max wins) so Ollama loads
+  // each model at most once. Non-ollama providers pass through unchanged.
   {
     const resolved = await resolveOllamaContextVariants(
       taskProviderOverride,
@@ -791,8 +769,7 @@ export async function runAgent(
     }
   }
 
-  // 8. Execute — phased or single query
-  // Create abort controller for task-level timeout enforcement
+  // Task-level timeout enforcement — phased or single query executes below.
   const taskAbortController = new AbortController();
   const timeoutMs = config.timeoutSeconds * MS_PER_SECOND;
   const timeoutId = setTimeout(() => {
@@ -815,16 +792,14 @@ export async function runAgent(
       currentUsage: RuntimeUsage = aggregateUsage(currentPhaseResults.map((phase) => phase.usage)),
       currentCost: CostResolution = summarizePhaseCosts(currentPhaseResults),
     ) => {
-      await Promise.resolve(updateRun(runId, {
-        ...buildRunAccountingUpdate({
-          runtime: runtimeId,
-          provider: effectiveProvider,
-          model: effectiveModel,
-          checkpointState: currentCheckpointState,
-          usage: currentUsage,
-          costData: currentCost,
-          phaseResults: currentPhaseResults,
-        }),
+      applyRunUpdate(runId, buildRunAccountingUpdate({
+        runtime: runtimeId,
+        provider: effectiveProvider,
+        model: effectiveModel,
+        checkpointState: currentCheckpointState,
+        usage: currentUsage,
+        costData: currentCost,
+        phaseResults: currentPhaseResults,
       }));
     };
 
@@ -895,7 +870,6 @@ export async function runAgent(
       checkpointState.sessionRef = result.sessionRef;
       checkpointState.sessionData = result.sessionData;
       await persistRuntimeState(checkpointState, undefined, usage, costData);
-      logTokenBudgetPressure(config.taskName, usage, singleProvider);
 
       const postconditionError = validateTaskPostconditions({
         runId,
@@ -940,8 +914,8 @@ export async function runAgent(
     };
   } catch (err) {
     clearTimeout(timeoutId);
-    // 7. Error handling — mark run as failed, preserve phase results
-    // Aggressively extract error info — the SDK may throw non-Error objects
+    // Mark run as failed, preserving phase results. The SDK may throw
+    // non-Error objects, so extract a best-effort message.
     let errorMessage: string;
     if (err instanceof Error) {
       errorMessage = err.message || err.constructor.name || 'Error (no message)';

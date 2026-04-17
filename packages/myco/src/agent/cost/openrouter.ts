@@ -62,6 +62,12 @@ function resolveBaseUrl(baseUrl?: string): string {
   return baseUrl ?? OPENROUTER_DEFAULT_BASE_URL;
 }
 
+function pruneExpiredCatalogEntries(now: number): void {
+  for (const [key, entry] of catalogCache) {
+    if (entry.expiresAt <= now) catalogCache.delete(key);
+  }
+}
+
 async function fetchPricingCatalog(baseUrl?: string): Promise<Map<string, OpenRouterPricing>> {
   const resolvedBaseUrl = resolveBaseUrl(baseUrl);
   const now = Date.now();
@@ -69,6 +75,7 @@ async function fetchPricingCatalog(baseUrl?: string): Promise<Map<string, OpenRo
   if (cached && cached.expiresAt > now) {
     return cached.pricingByModel;
   }
+  pruneExpiredCatalogEntries(now);
 
   const apiKey = resolveOpenRouterApiKey();
   if (!apiKey) {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   defaultBaseUrlForProvider,
   draftToProviderConfig,
@@ -186,10 +186,15 @@ export function useProviderConfigDraft({
   );
   const [savedDraft, setSavedDraft] = useState<ProviderDraft>(sourceDraft);
   const [draft, setDraft] = useState<ProviderDraft>(sourceDraft);
+  const savedDraftRef = useRef(savedDraft);
+  savedDraftRef.current = savedDraft;
 
   useEffect(() => {
     setSavedDraft(sourceDraft);
-    setDraft(sourceDraft);
+    // Only overwrite the user's working draft if they haven't made edits since
+    // the last sync. Otherwise a parent refetch would silently wipe in-flight
+    // field changes.
+    setDraft((prev) => providerDraftsEqual(prev, savedDraftRef.current) ? sourceDraft : prev);
   }, [sourceDraft]);
 
   const isDirty = !providerDraftsEqual(draft, savedDraft);

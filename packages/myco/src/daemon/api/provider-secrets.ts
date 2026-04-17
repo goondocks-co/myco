@@ -31,9 +31,11 @@ function maskSecret(secret: string): string {
   return `${secret.slice(0, SECRET_PREVIEW_PREFIX_CHARS)}${'*'.repeat(secret.length - SECRET_PREVIEW_PREFIX_CHARS - SECRET_PREVIEW_SUFFIX_CHARS)}${secret.slice(-SECRET_PREVIEW_SUFFIX_CHARS)}`;
 }
 
-function getSecretInfo(vaultDir: string, provider: SecretProvider): SecretInfo {
+function buildSecretInfo(
+  provider: SecretProvider,
+  storedSecrets: Record<string, string>,
+): SecretInfo {
   const envKey = SECRET_ENV_BY_PROVIDER[provider];
-  const storedSecrets = readSecrets(vaultDir);
   const storedValue = storedSecrets[envKey];
   const envValue = process.env[envKey];
   const effectiveValue = storedValue ?? envValue;
@@ -46,12 +48,17 @@ function getSecretInfo(vaultDir: string, provider: SecretProvider): SecretInfo {
   };
 }
 
+function getSecretInfo(vaultDir: string, provider: SecretProvider): SecretInfo {
+  return buildSecretInfo(provider, readSecrets(vaultDir));
+}
+
 export async function handleGetProviderSecrets(vaultDir: string): Promise<RouteResponse> {
+  const storedSecrets = readSecrets(vaultDir);
   return {
     body: {
       secrets: {
-        openai: getSecretInfo(vaultDir, 'openai'),
-        openrouter: getSecretInfo(vaultDir, 'openrouter'),
+        openai: buildSecretInfo('openai', storedSecrets),
+        openrouter: buildSecretInfo('openrouter', storedSecrets),
       },
     },
   };

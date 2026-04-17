@@ -233,41 +233,39 @@ function buildRunsWhere(
   };
 }
 
-function buildUpdateClauses(update: RunUpdate): { setClauses: string[]; params: unknown[] } {
-  const mappings: Array<{ key: keyof RunUpdate; column: string }> = [
-    { key: 'status', column: 'status' },
-    { key: 'runtime', column: 'runtime' },
-    { key: 'provider', column: 'provider' },
-    { key: 'model', column: 'model' },
-    { key: 'session_ref', column: 'session_ref' },
-    { key: 'started_at', column: 'started_at' },
-    { key: 'resumable', column: 'resumable' },
-    { key: 'resume_status', column: 'resume_status' },
-    { key: 'resume_mode', column: 'resume_mode' },
-    { key: 'resumed_at', column: 'resumed_at' },
-    { key: 'checkpoints', column: 'checkpoints' },
-    { key: 'usage_data', column: 'usage_data' },
-    { key: 'completed_at', column: 'completed_at' },
-    { key: 'tokens_used', column: 'tokens_used' },
-    { key: 'cost_usd', column: 'cost_usd' },
-    { key: 'actual_cost_usd', column: 'actual_cost_usd' },
-    { key: 'estimated_cost_usd', column: 'estimated_cost_usd' },
-    { key: 'cost_source', column: 'cost_source' },
-    { key: 'cost_data', column: 'cost_data' },
-    { key: 'actions_taken', column: 'actions_taken' },
-    { key: 'error', column: 'error' },
-  ];
+const UPDATE_COLUMNS: readonly (keyof RunUpdate)[] = [
+  'status',
+  'runtime',
+  'provider',
+  'model',
+  'session_ref',
+  'started_at',
+  'resumable',
+  'resume_status',
+  'resume_mode',
+  'resumed_at',
+  'checkpoints',
+  'usage_data',
+  'completed_at',
+  'tokens_used',
+  'cost_usd',
+  'actual_cost_usd',
+  'estimated_cost_usd',
+  'cost_source',
+  'cost_data',
+  'actions_taken',
+  'error',
+];
 
+function buildUpdateClauses(update: RunUpdate): { setClauses: string[]; params: unknown[] } {
   const setClauses: string[] = [];
   const params: unknown[] = [];
-
-  for (const { key, column } of mappings) {
-    if (key in update) {
+  for (const column of UPDATE_COLUMNS) {
+    if (column in update) {
       setClauses.push(`${column} = ?`);
-      params.push(update[key]);
+      params.push(update[column]);
     }
   }
-
   return { setClauses, params };
 }
 
@@ -362,19 +360,28 @@ export function countRuns(
   return row.count;
 }
 
-export function updateRun(id: string, update: RunUpdate): RunRow | null {
-  const db = getDatabase();
+/**
+ * Apply a run update without re-SELECTing the row. Returns the number of
+ * changed rows. Use this in hot write paths (checkpoint persistence,
+ * in-run cost updates) where the caller does not need the updated row.
+ */
+export function applyRunUpdate(id: string, update: RunUpdate): number {
   const { setClauses, params } = buildUpdateClauses(update);
-  if (setClauses.length === 0) return getRun(id);
-
+  if (setClauses.length === 0) return 0;
   params.push(id);
-  const info = db.prepare(
+  const info = getDatabase().prepare(
     `UPDATE agent_runs
      SET ${setClauses.join(', ')}
      WHERE id = ?`,
   ).run(...params);
+  return info.changes;
+}
 
-  if (info.changes === 0) return null;
+export function updateRun(id: string, update: RunUpdate): RunRow | null {
+  const { setClauses } = buildUpdateClauses(update);
+  if (setClauses.length === 0) return getRun(id);
+  const changes = applyRunUpdate(id, update);
+  if (changes === 0) return null;
   return getRun(id);
 }
 
