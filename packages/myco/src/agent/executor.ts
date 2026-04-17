@@ -53,6 +53,7 @@ import {
   type RunCheckpointState,
 } from './executor-state.js';
 import {
+  analyzeRuntimeTokenBudget,
   buildRunAccountingUpdate,
   summarizePhaseCosts,
 } from './run-accounting.js';
@@ -96,6 +97,21 @@ const PROMPT_SECTION_PRIOR_PHASES = '## Prior Phase Results';
 
 /** Header for the current phase in phased prompts. */
 const PROMPT_SECTION_CURRENT_PHASE = '## Current Phase: ';
+const TOKEN_BUDGET_PRESSURE_STATUSES = new Set(['warning', 'critical']);
+
+function logTokenBudgetPressure(
+  taskName: string,
+  usage: RuntimeUsage,
+  provider?: ProviderConfig,
+): void {
+  const budget = analyzeRuntimeTokenBudget(usage, provider);
+  if (!TOKEN_BUDGET_PRESSURE_STATUSES.has(budget.status)) return;
+  console.warn(
+    `[agent] ${taskName} token budget ${budget.status}: ` +
+    `${budget.utilizationPercent}% of ${budget.contextWindowTokens} tokens ` +
+    `at peak request (${budget.peakRequestTotalTokens} tokens)`,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Prompt composition
@@ -879,6 +895,7 @@ export async function runAgent(
       checkpointState.sessionRef = result.sessionRef;
       checkpointState.sessionData = result.sessionData;
       await persistRuntimeState(checkpointState, undefined, usage, costData);
+      logTokenBudgetPressure(config.taskName, usage, singleProvider);
 
       const postconditionError = validateTaskPostconditions({
         runId,
@@ -890,6 +907,7 @@ export async function runAgent(
     }
 
     clearTimeout(timeoutId);
+    logTokenBudgetPressure(config.taskName, usage, effectiveProvider);
     const completedAt = epochSeconds();
     updateRunStatus(runId, STATUS_COMPLETED, {
       resumable: 0,
@@ -940,6 +958,7 @@ export async function runAgent(
 
     try {
       const usage = aggregateUsage(phaseResults?.map((phase) => phase.usage) ?? []);
+      logTokenBudgetPressure(config.taskName, usage, effectiveProvider);
       const costData = phaseResults ? summarizePhaseCosts(phaseResults) : await resolveCost({
         runtime: runtimeId,
         provider: effectiveProvider,

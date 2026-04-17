@@ -12,6 +12,11 @@ import { getUnprocessedBatches } from '@myco/db/queries/batches.js';
 import { listSpores } from '@myco/db/queries/spores.js';
 import { listSessions } from '@myco/db/queries/sessions.js';
 import { getStatesForAgent } from '@myco/db/queries/agent-state.js';
+import {
+  projectBatchForAgent,
+  projectSessionForAgent,
+  projectSporeForAgent,
+} from './tools/read-projections.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -133,13 +138,14 @@ async function executeQuery(
     case 'vault_unprocessed':
       // Agent pre-planning context should only see settled work — a task
       // planning against in-flight batches is working from partial signal.
-      return getUnprocessedBatches({ limit, includeActive: false });
+      return getUnprocessedBatches({ limit, includeActive: false }).map(projectBatchForAgent);
 
     case 'vault_spores':
-      return listSpores({ agent_id: agentId, limit, includeActive: false });
+      return listSpores({ agent_id: agentId, limit, includeActive: false })
+        .map((spore) => projectSporeForAgent(spore, { exact: false }));
 
     case 'vault_sessions':
-      return listSessions({ limit, includeActive: false });
+      return listSessions({ limit, includeActive: false }).map(projectSessionForAgent);
 
     case 'vault_state':
       return getStatesForAgent(agentId);

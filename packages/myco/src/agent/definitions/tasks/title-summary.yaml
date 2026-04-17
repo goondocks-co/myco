@@ -28,28 +28,24 @@ prompt: |
 
   **If a target session ID is specified above:**
   Always process it — the user explicitly requested regeneration.
-  Call `vault_sessions` with `id: <target session>` and `include_active: true`
-  to get its current title/summary (the session may still be active).
-  Call `vault_batches` with the same session ID to read ALL its prompt batches
-  (processed and unprocessed). Do NOT skip even if there are no new
-  unprocessed batches.
+  Call `vault_session_summary_material` with `session_id: <target session>`
+  to get the current title/summary plus the compact ordered prompt-batch arc.
+  Do NOT skip even if there are no new unprocessed batches.
 
   **If no target session specified (automatic run):**
   Call `vault_unprocessed` with `include_active: true` — titles are needed
   mid-flight, not just after a session completes. Group by session_id —
-  each session with unprocessed batches needs its summary updated. Call
-  `vault_sessions` with `include_active: true` for those sessions. If no
-  sessions have unprocessed batches, report "skip" and finish.
+  each session with unprocessed batches needs its summary updated. For each
+  session, call `vault_session_summary_material`. If no sessions have
+  unprocessed batches, report "skip" and finish.
 
   ## Phase 2 — Update Each Session (budget: 8 turns)
 
   For each session to process:
   1. Read the EXISTING title and summary — context from prior runs.
-  2. Read the session's prompt batches — user_prompt + response_summary.
-     For targeted sessions, use `vault_batches` results from Phase 1.
-     For automatic runs, use `vault_unprocessed` results.
-     This is your PRIMARY source — read through the full set to understand
-     the complete arc of work.
+  2. Read the session's compact prompt-batch arc — user_prompt +
+     response_summary. This is your PRIMARY source — read through the full
+     set to understand the complete arc of work.
   3. Generate a title and summary from the full session content.
   4. Call `vault_update_session` with BOTH title and summary.
 
@@ -82,10 +78,6 @@ prompt: |
 
 toolOverrides:
   - vault_unprocessed
-  - vault_batches
-  - vault_sessions
-  - vault_spores
-  - vault_state
+  - vault_session_summary_material
   - vault_update_session
-  - vault_set_state
   - vault_report

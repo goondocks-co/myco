@@ -3,14 +3,15 @@
  *
  * Creates vault tools that expose SQLite query helpers to the agent
  * via the Claude Agent SDK. Tools are grouped into:
- * - Read tools (9): vault_unprocessed, vault_batches, vault_spores, vault_sessions,
- *                   vault_search_fts, vault_search_semantic, vault_state,
- *                   vault_entities, vault_edges
+ * - Read tools (10): vault_unprocessed, vault_batches, vault_session_summary_material,
+ *                    vault_spores, vault_sessions, vault_search_fts,
+ *                    vault_search_semantic, vault_state, vault_entities, vault_edges
  * - Write tools (9): vault_create_spore, vault_create_entity, vault_create_edge,
  *                     vault_resolve_spore, vault_update_session, vault_set_state,
  *                     vault_read_digest, vault_write_digest, vault_mark_processed
  * - Observability (1): vault_report
- * - Skill tools (3): vault_skill_candidates, vault_skill_records, vault_write_skill
+ * - Skill tools (5): vault_skill_candidates, vault_skill_records, vault_write_skill,
+ *                    vault_stage_skill, vault_finalize_skill
  *
  * `agentId` and `runId` are captured in closures — tools inject them
  * automatically so the agent cannot impersonate another agent.
@@ -54,8 +55,9 @@ export interface VaultToolOptions {
 // ---------------------------------------------------------------------------
 
 const READ_TOOL_NAMES = new Set([
-  'vault_unprocessed', 'vault_batches', 'vault_spores', 'vault_sessions', 'vault_search_fts',
-  'vault_search_semantic', 'vault_state', 'vault_entities', 'vault_edges',
+  'vault_unprocessed', 'vault_batches', 'vault_session_summary_material', 'vault_spores',
+  'vault_sessions', 'vault_search_fts', 'vault_search_semantic', 'vault_state',
+  'vault_entities', 'vault_edges',
 ]);
 
 const WRITE_TOOL_NAMES = new Set([
@@ -73,6 +75,20 @@ const SKILL_TOOL_NAMES = new Set([
 
 /** Max chars stored from a tool response in the run audit trail. */
 const TOOL_OUTPUT_SUMMARY_LIMIT = 240;
+/** Read tools that can explode context if the agent loops on identical payloads. */
+const LOOP_GUARDED_READ_TOOL_NAMES = new Set([
+  'vault_unprocessed',
+  'vault_batches',
+  'vault_session_summary_material',
+  'vault_spores',
+  'vault_sessions',
+  'vault_entities',
+  'vault_edges',
+]);
+/** On the third identical guarded read, stop resending the large payload and tell the agent to reuse prior context. */
+const REPEATED_READ_SUPPRESSION_THRESHOLD = 2;
+/** On the fifth identical guarded read, fail fast — the run is not making progress. */
+const REPEATED_READ_FAILURE_THRESHOLD = 4;
 
 /**
  * Total number of vault tools defined. Derived from the union of the
@@ -114,11 +130,32 @@ function summarizeToolError(error: unknown): string {
   return truncateSummary(String(error)) ?? 'Tool failed';
 }
 
+function buildRepeatedReadSuppressionResult(
+  toolName: string,
+  repeatedCalls: number,
+): { content: Array<{ type: 'text'; text: string }> } {
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        message: `Repeated identical ${toolName} read suppressed.`,
+        repeated_calls: repeatedCalls,
+        reuse_prior_result: true,
+        next_step: 'Use the prior tool result already in context and continue with analysis, write, or report.',
+      }),
+    }],
+  };
+}
+
+function shouldGuardRepeatedRead(toolDef: SdkMcpToolDefinition<any>): boolean {
+  return toolDef.annotations?.readOnlyHint === true && LOOP_GUARDED_READ_TOOL_NAMES.has(toolDef.name);
+}
+
 /**
  * Create vault tool definitions for the agent.
  *
  * When `onlyNames` is provided, only tool groups that contain at least one
- * requested name are instantiated — avoids building all 21 closures when
+ * requested name are instantiated — avoids building all tool closures when
  * a phase only needs 2-3 tools.
  *
  * Exposed for testing (call handler directly) and for the MCP server factory.
@@ -128,6 +165,8 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
 
   /** Turn number counter — incremented per tool call (read and write) within a run. */
   let turnCounter = turnOffset;
+  /** Exact-read loop counters for the current tool server instance. */
+  const repeatedReadCounts = new Map<string, number>();
 
   /**
    * Record a turn in the audit trail.
@@ -179,9 +218,47 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     return {
       ...toolDef,
       handler: async (args, extra) => {
+        const serializedArgs = JSON.stringify(args);
+        const repeatedReadKey = shouldGuardRepeatedRead(toolDef)
+          ? `${toolDef.name}\u0000${serializedArgs}`
+          : null;
+        const priorIdenticalCalls = repeatedReadKey
+          ? (repeatedReadCounts.get(repeatedReadKey) ?? 0)
+          : 0;
         const turnId = recordTurn(toolDef.name, args);
         try {
+          if (priorIdenticalCalls >= REPEATED_READ_FAILURE_THRESHOLD) {
+            throw new Error(
+              `Repeated identical ${toolDef.name} reads detected (${priorIdenticalCalls + 1} calls). ` +
+              'Reuse the prior result already in context and proceed to a write, report, or different query.',
+            );
+          }
+
+          if (priorIdenticalCalls >= REPEATED_READ_SUPPRESSION_THRESHOLD) {
+            if (repeatedReadKey) {
+              repeatedReadCounts.set(repeatedReadKey, priorIdenticalCalls + 1);
+            }
+            const result = buildRepeatedReadSuppressionResult(toolDef.name, priorIdenticalCalls + 1);
+            if (turnId !== null) {
+              try {
+                updateTurn(turnId, {
+                  tool_output_summary: summarizeToolResult(result),
+                  completed_at: epochSeconds(),
+                });
+              } catch {
+                /* audit trail is best-effort */
+              }
+            }
+            return result;
+          }
+
           const result = await originalHandler(args, extra);
+          if (repeatedReadKey) {
+            repeatedReadCounts.set(repeatedReadKey, priorIdenticalCalls + 1);
+          }
+          if (toolDef.annotations?.readOnlyHint !== true) {
+            repeatedReadCounts.clear();
+          }
           if (turnId !== null) {
             try {
               updateTurn(turnId, {
@@ -216,7 +293,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
 // ---------------------------------------------------------------------------
 
 /**
- * Create a vault MCP tool server with 21 tools for the agent.
+ * Create a vault MCP tool server with the full vault tool surface for the agent.
  *
  * Wraps `createVaultTools()` with `createSdkMcpServer()` from the
  * Claude Agent SDK.

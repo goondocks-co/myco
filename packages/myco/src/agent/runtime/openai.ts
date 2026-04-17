@@ -9,7 +9,8 @@ import {
 } from '@openai/agents';
 import type { AgentRuntime, RuntimeCapability, RuntimeExecuteInput, RuntimeExecuteResult, RuntimeFactoryContext } from './types.js';
 import type { ProviderConfig, RuntimeUsage } from '@myco/agent/types.js';
-import { ensureOllamaContextVariant, DEFAULT_OLLAMA_CONTEXT_LENGTH } from '@myco/agent/ollama-context.js';
+import { DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS } from '@myco/agent/context-windows.js';
+import { ensureOllamaContextVariant } from '@myco/agent/ollama-context.js';
 import { OPENAI_API_KEY_ENV } from '@myco/cli/providers/openai-embeddings.js';
 import { OPENROUTER_API_KEY_ENV } from '@myco/cli/providers/openrouter.js';
 import { LmStudioBackend } from '@myco/intelligence/lm-studio.js';
@@ -164,7 +165,7 @@ function toLocalControlBaseUrl(baseUrl: string): string {
 }
 
 function resolveLocalContextLength(provider?: ProviderConfig): number {
-  return provider?.contextLength ?? DEFAULT_OLLAMA_CONTEXT_LENGTH;
+  return provider?.contextLength ?? DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS;
 }
 
 function normalizeProviderForOpenAIClient(provider?: ProviderConfig): ProviderConfig | undefined {
