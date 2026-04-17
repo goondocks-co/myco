@@ -1,18 +1,43 @@
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { loadMergedConfig, getEnabledSymbiontNames } from '../../config/loader.js';
 import type { RouteResponse } from '../router.js';
+import { detectSymbiontInjectionSupport } from '@myco/symbionts/injection-support.js';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 /** Public manifest fields exposed via the API (no internal hook config). */
-interface SymbiontInfo {
+export interface SymbiontInfo {
   name: string;
   displayName: string;
   binary: string;
   enabled: boolean;
   resumeCommand?: string;
+  supportsSessionStartInjection: boolean;
+  supportsPromptSubmitInjection: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+export function listSymbiontInfos(vaultDir: string): SymbiontInfo[] {
+  const manifests = loadManifests();
+
+  let enabledNames: Set<string> | null = null;
+  try {
+    enabledNames = getEnabledSymbiontNames(loadMergedConfig(vaultDir));
+  } catch { /* config not loadable */ }
+
+  return manifests.map((manifest) => ({
+    name: manifest.name,
+    displayName: manifest.displayName,
+    binary: manifest.binary,
+    enabled: enabledNames ? enabledNames.has(manifest.name) : true,
+    ...(manifest.resumeCommand ? { resumeCommand: manifest.resumeCommand } : {}),
+    ...detectSymbiontInjectionSupport(manifest),
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -28,20 +53,5 @@ interface SymbiontInfo {
  * all manifests default to `enabled: true`.
  */
 export async function handleListSymbionts(vaultDir: string): Promise<RouteResponse> {
-  const manifests = loadManifests();
-
-  let enabledNames: Set<string> | null = null;
-  try {
-    enabledNames = getEnabledSymbiontNames(loadMergedConfig(vaultDir));
-  } catch { /* config not loadable */ }
-
-  const symbionts: SymbiontInfo[] = manifests.map((m) => ({
-    name: m.name,
-    displayName: m.displayName,
-    binary: m.binary,
-    enabled: enabledNames ? enabledNames.has(m.name) : true,
-    ...(m.resumeCommand ? { resumeCommand: m.resumeCommand } : {}),
-  }));
-
-  return { body: { symbionts } };
+  return { body: { symbionts: listSymbiontInfos(vaultDir) } };
 }

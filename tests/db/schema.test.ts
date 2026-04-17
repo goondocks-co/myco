@@ -39,7 +39,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(17);
+      expect(SCHEMA_VERSION).toBe(18);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -89,7 +89,22 @@ describe('Database schema', () => {
         expect(getColumnNames(db, 'agent_runs')).toEqual(expect.arrayContaining(['dry_run', 'evaluation_id']));
       });
 
-      it('creates v16 reasoning/override columns on agent_runs', () => {
+      it('creates cortex_instructions on fresh install', () => {
+        createSchema(db);
+        expect(tableExists(db, 'cortex_instructions')).toBe(true);
+        expect(getColumnNames(db, 'cortex_instructions')).toEqual(
+          expect.arrayContaining([
+            'agent_id',
+            'content',
+            'input_hash',
+            'source_run_id',
+            'generated_at',
+          ]),
+        );
+        expect(indexExists(db, 'idx_cortex_instructions_agent_id')).toBe(true);
+      });
+
+      it('creates reasoning/override columns on agent_runs', () => {
         createSchema(db);
         expect(getColumnNames(db, 'agent_runs'))
           .toEqual(expect.arrayContaining(['reasoning_level', 'execution_overrides']));

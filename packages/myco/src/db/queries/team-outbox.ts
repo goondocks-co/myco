@@ -305,6 +305,7 @@ const BACKFILL_TABLES = [
   'plans',
   'artifacts',
   'digest_extracts',
+  'cortex_instructions',
   'skill_candidates',
   'skill_records',
 ] as const;
@@ -389,4 +390,3 @@ export function backfillUnsynced(machineId: string): number {
 
   return total;
 }
-

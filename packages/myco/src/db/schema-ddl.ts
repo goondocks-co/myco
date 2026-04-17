@@ -253,6 +253,18 @@ const DIGEST_EXTRACTS_TABLE = `
     UNIQUE (agent_id, tier)
   )`;
 
+export const CORTEX_INSTRUCTIONS_TABLE = `
+  CREATE TABLE IF NOT EXISTS cortex_instructions (
+    id            TEXT PRIMARY KEY,
+    agent_id      TEXT NOT NULL,
+    content       TEXT NOT NULL,
+    input_hash    TEXT NOT NULL,
+    source_run_id TEXT,
+    generated_at  INTEGER NOT NULL,
+    machine_id    TEXT NOT NULL DEFAULT 'local',
+    synced_at     INTEGER
+  )`;
+
 // -- Agent State Layer ------------------------------------------------------
 
 const AGENT_RUNS_TABLE = `
@@ -620,6 +632,7 @@ export const SECONDARY_INDEXES = [
 
   // Digest extracts
   'CREATE INDEX IF NOT EXISTS idx_digest_extracts_agent_id ON digest_extracts (agent_id)',
+  'CREATE INDEX IF NOT EXISTS idx_cortex_instructions_agent_id ON cortex_instructions (agent_id)',
 
   // Agent runs
   'CREATE INDEX IF NOT EXISTS idx_agent_runs_agent_id ON agent_runs (agent_id)',
@@ -716,6 +729,7 @@ export const TABLE_DDLS = [
   ENTITY_MENTIONS_TABLE,
   RESOLUTION_EVENTS_TABLE,
   DIGEST_EXTRACTS_TABLE,
+  CORTEX_INSTRUCTIONS_TABLE,
   // Agent state layer
   AGENT_RUNS_TABLE,
   AGENT_REPORTS_TABLE,

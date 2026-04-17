@@ -70,6 +70,7 @@ import {
 } from './api/mycelium.js';
 import { createSearchHandler } from './api/search.js';
 import { createSessionContextHandler, createPromptContextHandler, createResumeContextHandler } from './api/context.js';
+import { createCortexHandlers } from './api/cortex.js';
 import { handleGetFeed } from './api/feed.js';
 import { handleListSymbionts } from './api/symbionts.js';
 import {
@@ -514,8 +515,15 @@ export async function main(): Promise<void> {
 
   server.registerRoute('POST', '/events/stop', stopProcessor.handleStopRoute);
 
-  // --- Context injection (digest + semantic spore search) ---
-  const contextDeps = { embeddingManager, liveConfig, logger };
+  // --- Context injection (operating brief + semantic spore search) ---
+  let teamSync!: ReturnType<typeof initTeamSync>;
+  const contextDeps = {
+    vaultDir,
+    embeddingManager,
+    liveConfig,
+    logger,
+    getTeamClient: () => teamSync.getTeamClient(),
+  };
   server.registerRoute('POST', '/context', createSessionContextHandler(contextDeps));
   server.registerRoute('POST', '/context/resume', createResumeContextHandler(contextDeps));
   server.registerRoute('POST', '/context/prompt', createPromptContextHandler(contextDeps));
@@ -523,9 +531,16 @@ export async function main(): Promise<void> {
   // --- Dashboard API routes ---
   const progressTracker = new ProgressTracker();
   let configHash = computeConfigHash(vaultDir);
+  const cortexHandlers = createCortexHandlers(vaultDir, {
+    liveConfig,
+    getTeamClient: () => teamSync.getTeamClient(),
+  });
 
   server.registerRoute('GET', '/api/config', async () => handleGetConfig(vaultDir));
   server.registerRoute('GET', '/api/symbionts', async () => handleListSymbionts(vaultDir));
+  server.registerRoute('GET', '/api/cortex/instructions', cortexHandlers.handleGetInstructions);
+  server.registerRoute('POST', '/api/cortex/instructions/refresh', cortexHandlers.handleRefreshInstructions);
+  server.registerRoute('POST', '/api/cortex/prompt-builder', cortexHandlers.handleBuildPrompt);
 
   server.registerRoute('GET', '/api/config/merged', async () => handleGetMergedConfig(vaultDir));
   server.registerRoute('GET', '/api/config/local', async () => handleGetLocalConfig(vaultDir));
@@ -790,7 +805,7 @@ export async function main(): Promise<void> {
   });
 
   // --- Team sync ---
-  const teamSync = initTeamSync({ liveConfig, machineId, logger, vaultDir, serverVersion: server.version });
+  teamSync = initTeamSync({ liveConfig, machineId, logger, vaultDir, serverVersion: server.version });
   reactions.on(['team'], async () => {
     await teamSync.reconcileClient();
   });

@@ -57,8 +57,8 @@ export async function main() {
       const contextResult = await client.post('/context', { session_id: sessionId, branch });
 
       if (contextResult.ok && contextResult.data?.text) {
-        if (contextResult.data.source === 'digest') {
-          process.stderr.write(`[myco] Injecting digest extract (tier ${contextResult.data.tier})\n`);
+        if (contextResult.data.source === 'cortex') {
+          process.stderr.write('[myco] Injecting Myco Cortex instructions\n');
         }
         process.stdout.write(contextResult.data.text);
         return;

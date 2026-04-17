@@ -74,8 +74,16 @@ const TaskProviderOverrideSchema = z.object({
 });
 
 const ContextSchema = z.object({
-  /** Which digest tier to inject at session start. */
+  /** Preferred digest tier when a user or agent explicitly requests Myco context. */
   digest_tier: z.number().int().default(5000),
+  /** Master switch for Cortex session-start instruction injection. */
+  operating_brief_enabled: z.boolean().default(true),
+  /** Hook phases where Cortex instructions should be injected automatically. */
+  operating_brief_inject_on: z.array(
+    z.enum(['session_start']),
+  ).default(['session_start']),
+  /** Token budget for stored Cortex session-start instructions. */
+  operating_brief_max_tokens: z.number().int().min(50).max(1000).default(250),
   /** Enable semantic spore search on each user prompt. */
   prompt_search: z.boolean().default(true),
   /** Max spores to inject per prompt (0-10). */

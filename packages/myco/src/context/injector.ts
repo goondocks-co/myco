@@ -1,50 +1,7 @@
-/**
- * Context injector — assembles context from SQLite for hook injection.
- *
- * Queries sessions and spores from SQLite. For prompt-submit context,
- * semantic search is deferred to Phase 2 (requires daemon vector store).
- * If no data exists (zero-config), returns empty context gracefully.
- */
-
-import { getDatabase } from '@myco/db/client.js';
-import { listSessions } from '@myco/db/queries/sessions.js';
-import { listSpores } from '@myco/db/queries/spores.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import {
-  estimateTokens,
-  CONTEXT_SESSION_PREVIEW_CHARS,
-  CONTEXT_SPORE_PREVIEW_CHARS,
-  PROMPT_CONTEXT_MIN_LENGTH,
-  EXCLUDED_SPORE_STATUSES,
-} from '@myco/constants.js';
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Max recent sessions to include in context. */
-const CONTEXT_SESSION_LIMIT = 10;
-
-/** Max sessions displayed after scoring. */
-const CONTEXT_SESSION_DISPLAY_LIMIT = 5;
-
-/** Max spores to fetch for scoring. */
-const CONTEXT_SPORE_FETCH_LIMIT = 20;
-
-/** Max spores displayed after scoring. */
-const CONTEXT_SPORE_DISPLAY_LIMIT = 5;
-
-/** Default token budget for sessions layer. */
-const DEFAULT_SESSIONS_BUDGET = 500;
-
-/** Default token budget for spores layer. */
-const DEFAULT_SPORES_BUDGET = 300;
-
-/** Default token budget for team layer. */
-const DEFAULT_TEAM_BUDGET = 200;
-
-/** Default total context max tokens. */
-const DEFAULT_CONTEXT_MAX_TOKENS = 1200;
+import { estimateTokens, DEFAULT_AGENT_ID } from '@myco/constants.js';
+import { getCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
+import { shouldInjectOperatingBrief } from './operating-brief.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,11 +14,7 @@ interface InjectionContext {
 interface InjectedContext {
   text: string;
   tokenEstimate: number;
-  layers: {
-    sessions: string;
-    spores: string;
-    team: string;
-  };
+  brief: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,76 +22,26 @@ interface InjectedContext {
 // ---------------------------------------------------------------------------
 
 /**
- * Build injected context from SQLite data.
+ * Build the degraded-path session-start context.
  *
- * Returns empty context gracefully when no data exists (zero-config behavior).
+ * The normal session-start path goes through the daemon. If the daemon is
+ * unavailable, read the last stored Cortex instructions locally so degraded
+ * mode matches daemon semantics instead of regenerating ad hoc text.
  */
 export async function buildInjectedContext(
-  _config: MycoConfig,
-  context: InjectionContext,
+  config: MycoConfig,
+  _context: InjectionContext,
 ): Promise<InjectedContext> {
-  // Verify database is available — return empty if not
-  try {
-    getDatabase();
-  } catch {
+  if (!shouldInjectOperatingBrief(config.context, 'session_start')) {
     return emptyContext();
   }
 
-  // Fetch sessions and spores in parallel
-  const [sessions, spores] = await Promise.all([
-    listSessions({ limit: CONTEXT_SESSION_LIMIT }),
-    listSpores({ limit: CONTEXT_SPORE_FETCH_LIMIT, status: 'active' }),
-  ]);
-
-  // Layer 1: Recent sessions
-  const sessionsText = formatLayer(
-    'Recent Sessions',
-    sessions.slice(0, CONTEXT_SESSION_DISPLAY_LIMIT).map((s) => {
-      const title = s.title ?? s.id;
-      const summary = (s.summary ?? '').slice(0, CONTEXT_SESSION_PREVIEW_CHARS);
-      const branchLabel = s.branch === context.branch ? ' (same branch)' : '';
-      return `- **${title}**: ${summary}${branchLabel}`;
-    }),
-    DEFAULT_SESSIONS_BUDGET,
-  );
-
-  // Layer 2: Relevant spores (exclude superseded/archived)
-  const filteredSpores = spores.filter((s) =>
-    !EXCLUDED_SPORE_STATUSES.has(s.status),
-  );
-  const sporesText = formatLayer(
-    'Relevant Spores',
-    filteredSpores.slice(0, CONTEXT_SPORE_DISPLAY_LIMIT).map((s) =>
-      `- **${s.id}** (${s.observation_type}): ${s.content.slice(0, CONTEXT_SPORE_PREVIEW_CHARS)}`,
-    ),
-    DEFAULT_SPORES_BUDGET,
-  );
-
-  // Layer 3: Team activity (placeholder — populated in Phase 2)
-  const teamText = formatLayer('Team Activity', [], DEFAULT_TEAM_BUDGET);
-
-  // Enforce total max_tokens budget
-  const allLayers = [sessionsText, sporesText, teamText].filter(Boolean);
-  const parts: string[] = [];
-  let totalTokens = 0;
-
-  for (const layer of allLayers) {
-    const layerTokens = estimateTokens(layer);
-    if (totalTokens + layerTokens > DEFAULT_CONTEXT_MAX_TOKENS) break;
-    parts.push(layer);
-    totalTokens += layerTokens;
-  }
-
-  const fullText = parts.join('\n\n');
+  const brief = getCortexInstructions(DEFAULT_AGENT_ID)?.content ?? '';
 
   return {
-    text: fullText,
-    tokenEstimate: totalTokens,
-    layers: {
-      sessions: sessionsText,
-      spores: sporesText,
-      team: teamText,
-    },
+    text: brief,
+    tokenEstimate: estimateTokens(brief),
+    brief,
   };
 }
 
@@ -151,14 +54,9 @@ export async function buildInjectedContext(
  * vector search when ready.
  */
 export async function buildPromptContext(
-  prompt: string,
+  _prompt: string,
   _config: MycoConfig,
 ): Promise<InjectedContext> {
-  if (prompt.length < PROMPT_CONTEXT_MIN_LENGTH) {
-    return emptyContext();
-  }
-
-  // Per-prompt semantic search deferred to Phase 2 (requires daemon vector store)
   return emptyContext();
 }
 
@@ -170,22 +68,6 @@ function emptyContext(): InjectedContext {
   return {
     text: '',
     tokenEstimate: 0,
-    layers: { sessions: '', spores: '', team: '' },
+    brief: '',
   };
-}
-
-function formatLayer(heading: string, items: string[], budget: number): string {
-  if (items.length === 0) return '';
-
-  let text = `### ${heading}\n`;
-  let currentTokens = estimateTokens(text);
-
-  for (const item of items) {
-    const itemTokens = estimateTokens(item);
-    if (currentTokens + itemTokens > budget) break;
-    text += item + '\n';
-    currentTokens += itemTokens;
-  }
-
-  return text.trim();
 }

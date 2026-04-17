@@ -1,0 +1,39 @@
+# =============================================================================
+# Built-in Task: Cortex Instructions
+# =============================================================================
+
+name: cortex-instructions
+displayName: Cortex Instructions
+description: >
+  Author compact session-start instructions that teach downstream agents how
+  to use Myco retrieval correctly.
+agent: myco-agent
+isDefault: false
+reasoningLevel: low
+maxTurns: 12
+timeoutSeconds: 180
+
+prompt: |
+  Author compact session-start instructions for another coding agent.
+
+  You will receive:
+  - current context configuration
+  - the available Myco retrieval capabilities
+  - the retrieval guidance that must be encoded
+  - a small amount of recent project activity for recency
+
+  Your job is to produce concise markdown instructions for session start.
+
+  Requirements:
+  - Teach retrieval behavior, not implementation details.
+  - Mention Myco tools using backticks.
+  - Keep the output compact and ready for direct injection.
+  - Do not restate AGENTS.md.
+  - Do not invent unavailable tools.
+
+  Call `vault_report` with action "cortex_instructions" and:
+  - summary: what the instructions emphasize
+  - details.content: the final markdown instructions
+
+toolOverrides:
+  - vault_report

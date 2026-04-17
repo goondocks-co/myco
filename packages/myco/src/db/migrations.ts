@@ -20,6 +20,7 @@ import {
   AGENT_RUN_WRITE_INTENTS_TABLE,
   DIGEST_EXTRACT_REVISIONS_TABLE,
   AGENT_RUN_EVALUATIONS_TABLE,
+  CORTEX_INSTRUCTIONS_TABLE,
 } from './schema-ddl.js';
 
 // ---------------------------------------------------------------------------
@@ -48,6 +49,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 15, migrate: (db) => migrateV14ToV15(db) },
   { version: 16, migrate: (db) => migrateV15ToV16(db) },
   { version: 17, migrate: (db) => migrateV16ToV17(db) },
+  { version: 18, migrate: (db) => migrateV17ToV18(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -245,6 +247,27 @@ function migrateV3ToV4(db: Database, machineId: string): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`
     ).run(4, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function migrateV17ToV18(db: Database): void {
+  db.exec('BEGIN');
+  try {
+    db.exec(CORTEX_INSTRUCTIONS_TABLE);
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_cortex_instructions_agent_id ON cortex_instructions (agent_id)',
+    );
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(18, epochSeconds());
 
     db.exec('COMMIT');
   } catch (err) {
