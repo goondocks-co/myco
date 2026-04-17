@@ -2,7 +2,7 @@ import { getSession, listSessions, countSessions, deleteSessionCascade, getSessi
 import { listBatchesBySession, countBatchesBySession } from '@myco/db/queries/batches.js';
 import { listActivitiesByBatch, countActivities } from '@myco/db/queries/activities.js';
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
-import { listPlansBySession } from '@myco/db/queries/plans.js';
+import { deletePlan, listPlansBySession } from '@myco/db/queries/plans.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { epochSeconds } from '@myco/constants.js';
 import { cleanupAfterSessionCascade } from '../jobs/session-cleanup.js';
@@ -148,5 +148,27 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
     return { body: impact };
   }
 
-  return { handleDeleteSession, handleCompleteSession, handleGetSessionImpact };
+  /** DELETE /api/plans/:id — remove a captured plan and its vector. */
+  async function handleDeletePlan(req: RouteRequest): Promise<RouteResponse> {
+    const deleted = deletePlan(req.params.id);
+    if (!deleted) return { status: 404, body: { error: 'Plan not found' } };
+
+    embeddingManager.onRemoved('plans', deleted.id);
+
+    logger.info(LOG_KINDS.API_SESSION_DELETE, 'Plan deleted', {
+      plan_id: deleted.id,
+      session_id: deleted.session_id,
+      logical_key: deleted.logical_key,
+    });
+
+    return {
+      body: {
+        ok: true,
+        id: deleted.id,
+        session_id: deleted.session_id,
+      },
+    };
+  }
+
+  return { handleDeleteSession, handleCompleteSession, handleGetSessionImpact, handleDeletePlan };
 }

@@ -14,6 +14,7 @@ export const TOOL_SEARCH = 'myco_search';
 export const TOOL_RECALL = 'myco_recall';
 export const TOOL_REMEMBER = 'myco_remember';
 export const TOOL_PLANS = 'myco_plans';
+export const TOOL_SAVE_PLAN = 'myco_save_plan';
 export const TOOL_SESSIONS = 'myco_sessions';
 export const TOOL_TEAM = 'myco_team';
 export const TOOL_GRAPH = 'myco_graph';
@@ -79,6 +80,27 @@ export const TOOL_DEFINITIONS = [
         status: { type: 'string', enum: PLAN_STATUS_FILTER, description: 'Filter by status (default: all statuses)' },
         id: { type: 'string', description: 'Get a specific plan by ID' },
       },
+    },
+  },
+  {
+    name: TOOL_SAVE_PLAN,
+    description: 'Persist a plan directly into Myco for a session. Use this when you generated or revised a plan and want it captured reliably. If the plan is also being written to disk, pass the same source_path so direct persistence and file capture reconcile to one logical plan.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        session_id: { type: 'string', description: 'Session id the plan belongs to' },
+        content: { type: 'string', description: 'Markdown plan content to persist' },
+        source_path: { type: 'string', description: 'Path to the plan file when the plan is also written to disk' },
+        plan_key: { type: 'string', description: 'Stable key for non-file-backed plans (for example: primary)' },
+        title: { type: 'string', description: 'Optional explicit title. Defaults to the first Markdown H1, then file name or humanized plan_key.' },
+        status: { type: 'string', enum: PLAN_STATUSES, description: `Plan status: ${PLAN_STATUSES.join(', ')}` },
+        tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
+      },
+      required: ['session_id', 'content'],
+      oneOf: [
+        { required: ['source_path'] },
+        { required: ['plan_key'] },
+      ],
     },
   },
   {

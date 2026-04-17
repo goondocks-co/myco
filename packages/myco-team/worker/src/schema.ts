@@ -116,6 +116,7 @@ const PLANS_TABLE = `
   CREATE TABLE IF NOT EXISTS plans (
     id               TEXT NOT NULL,
     machine_id       TEXT NOT NULL,
+    logical_key      TEXT,
     status           TEXT DEFAULT 'active',
     author           TEXT,
     title            TEXT,
@@ -300,6 +301,7 @@ export async function initD1Schema(db: D1Database): Promise<void> {
 
   // Migrations for existing tables (safe to re-run — silently ignored if column exists)
   const migrations = [
+    'ALTER TABLE plans ADD COLUMN logical_key TEXT',
     'ALTER TABLE skill_usage ADD COLUMN synced_at INTEGER',
     'ALTER TABLE skill_candidates ADD COLUMN approved_at INTEGER',
     'ALTER TABLE skill_candidates ADD COLUMN supersedes TEXT',
@@ -311,6 +313,10 @@ export async function initD1Schema(db: D1Database): Promise<void> {
       // Column already exists — expected after first run
     }
   }
+
+  await db.prepare(
+    'CREATE INDEX IF NOT EXISTS idx_plans_logical_key ON plans (logical_key)',
+  ).run();
 
   // Backfill approved_at for already-synced historical rows so remote D1
   // mirrors the local SQLite v10 migration semantics. Idempotent via the

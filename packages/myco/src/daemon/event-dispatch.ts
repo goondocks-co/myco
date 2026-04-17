@@ -19,8 +19,8 @@ import type { PlanWatchConfig } from './plan-capture.js';
 import {
   isPlanWriteEvent,
   capturePlan,
+  captureTaggedPlan,
   extractTaggedPlans,
-  TRANSCRIPT_SOURCE_PREFIX,
 } from './plan-capture.js';
 import {
   isSystemMessage,
@@ -220,10 +220,8 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           const taggedPlans = extractTaggedPlans(promptText, getPlanTagsForAgent(event.agent));
           for (const { tag, content } of taggedPlans) {
             try {
-              // Reuse the tag-derived source key used by transcript extraction so
-              // prompt-injected and transcript-derived copies upsert rather than duplicate.
-              capturePlan({
-                sourcePath: `${TRANSCRIPT_SOURCE_PREFIX}${tag}`,
+              captureTaggedPlan({
+                tag,
                 content,
                 sessionId: event.session_id,
                 promptBatchId: batchId,
@@ -287,7 +285,8 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         fs.promises.readFile(planFilePath, 'utf-8').then((planContent) => {
           const latestBatch = getLatestBatch(captureSessionId);
           capturePlan({
-            sourcePath: path.relative(projectRoot, planFilePath),
+            sourcePath: planFilePath,
+            projectRoot,
             content: planContent,
             sessionId: captureSessionId,
             promptBatchId: latestBatch?.id ?? null,

@@ -9,6 +9,8 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import os from 'node:os';
+import path from 'node:path';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { getPlan, listPlansBySession } from '@myco/db/queries/plans.js';
@@ -19,9 +21,13 @@ import {
   isPlanWriteEvent,
   parsePlanTitle,
   capturePlan,
+  captureTaggedPlan,
+  persistPlan,
+  resolvePlanWatchDir,
   extractTaggedPlans,
   type PlanWatchConfig,
 } from '@myco/daemon/plan-capture.js';
+import { buildPathPlanLogicalKey } from '@myco/plans/identity.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -66,6 +72,12 @@ describe('isInPlanDirectory', () => {
   it('uses an absolute path for the watch dir itself', () => {
     const absDirs = ['/home/user/myproject/docs/plans'];
     expect(isInPlanDirectory('/home/user/myproject/docs/plans/sprint.md', absDirs, projectRoot)).toBe(true);
+  });
+});
+
+describe('resolvePlanWatchDir', () => {
+  it('expands home-relative watch dirs', () => {
+    expect(resolvePlanWatchDir('~/plans', '/tmp/project')).toBe(path.join(os.homedir(), 'plans'));
   });
 });
 
@@ -275,6 +287,7 @@ describe('capturePlan', () => {
     });
 
     expect(result.id).toHaveLength(16);
+    expect(result.logical_key).toBe('path:/home/user/myproject/docs/plans/sprint.md');
     expect(result.title).toBe('Sprint Plan');
     expect(result.content).toBe('# Sprint Plan\n\nThis is the plan.');
     expect(result.source_path).toBe('/home/user/myproject/docs/plans/sprint.md');
@@ -457,6 +470,47 @@ describe('capturePlan', () => {
     });
 
     expect(result.title).toBe('roadmap.md');
+  });
+
+  it('captures transcript tags as session-scoped logical keys', () => {
+    const sessionId = 'test-capture-plan-010';
+    const now = epochNow();
+
+    upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
+
+    const result = captureTaggedPlan({
+      tag: 'proposed_plan',
+      content: 'No heading, just content.',
+      sessionId,
+    });
+
+    expect(result.source_path).toBe('transcript:proposed_plan');
+    expect(result.logical_key).toBe(`session:${sessionId}:tag:proposed_plan`);
+    expect(result.title).toBe('Proposed Plan');
+  });
+
+  it('preserves an explicit non-active status across file recapture', () => {
+    const sessionId = 'test-capture-plan-011';
+    const now = epochNow();
+    const sourcePath = '/home/user/myproject/docs/plans/sprint.md';
+
+    upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
+
+    persistPlan({
+      sessionId,
+      content: '# Sprint\n\nInitial content.',
+      logicalKey: buildPathPlanLogicalKey(sourcePath),
+      sourcePath,
+      status: 'completed',
+    });
+
+    const recaptured = capturePlan({
+      sourcePath,
+      content: '# Sprint\n\nUpdated content.',
+      sessionId,
+    });
+
+    expect(recaptured.status).toBe('completed');
   });
 });
 

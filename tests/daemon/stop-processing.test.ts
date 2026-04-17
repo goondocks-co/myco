@@ -7,6 +7,7 @@ import { createStopProcessor } from '@myco/daemon/stop-processing.js';
 import { SessionRegistry } from '@myco/daemon/lifecycle.js';
 import { getSession, upsertSession } from '@myco/db/queries/sessions.js';
 import { insertBatch, listBatchesBySession } from '@myco/db/queries/batches.js';
+import { listPlansBySession } from '@myco/db/queries/plans.js';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
 
@@ -67,11 +68,13 @@ function writeCodexExecTranscript(sessionId: string): string {
   return transcriptPath;
 }
 
-function makeStopProcessor(vaultDir: string) {
+function makeStopProcessor(vaultDir: string, options?: { planWatchConfig?: { watchDirs: string[]; projectRoot: string; extensions?: string[] } }) {
   return createStopProcessor({
     registry: new SessionRegistry({ gracePeriod: 1, onEmpty: () => {} }),
     sessionBuffers: new Map(),
-    transcriptMiner: { getAllTurnsWithSource: vi.fn() } as never,
+    transcriptMiner: {
+      getAllTurnsWithSource: vi.fn(() => ({ turns: [], source: 'transcript' })),
+    } as never,
     embeddingManager: { onRemoved: vi.fn() } as never,
     logger: {
       debug: vi.fn(),
@@ -82,6 +85,7 @@ function makeStopProcessor(vaultDir: string) {
     liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
     vaultDir,
     planTags: [],
+    planWatchConfig: options?.planWatchConfig ?? { watchDirs: [], projectRoot: vaultDir },
   });
 }
 
@@ -191,4 +195,115 @@ describe('createStopProcessor session capture rules', () => {
     expect(getSession(sessionId)).toBeNull();
     expect(listBatchesBySession(sessionId)).toHaveLength(0);
   });
+
+  it('reconciles a plan-dir file written outside the fast-path tool gate', async () => {
+    const sessionId = 'claude-plan-reconcile-001';
+    const now = epochNow();
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plan-reconcile-'));
+    const transcriptPath = path.join(projectRoot, `${sessionId}.jsonl`);
+    const specDir = path.join(projectRoot, 'docs/superpowers/specs');
+    const specPath = path.join(specDir, 'reconciled.md');
+    fs.mkdirSync(specDir, { recursive: true });
+    fs.writeFileSync(transcriptPath, '', 'utf-8');
+    fs.writeFileSync(specPath, '# Reconciled Spec\n\nCaptured at stop.', 'utf-8');
+
+    upsertSession({
+      id: sessionId,
+      agent: 'claude-code',
+      status: 'active',
+      started_at: now - 60,
+      created_at: now - 60,
+    });
+
+    const stopProcessor = makeStopProcessor(vaultDir, {
+      planWatchConfig: {
+        watchDirs: ['docs/superpowers/specs'],
+        projectRoot,
+        extensions: ['.md'],
+      },
+    });
+
+    const res = await stopProcessor.handleStopRoute({
+      body: {
+        session_id: sessionId,
+        agent: 'claude-code',
+        transcript_path: transcriptPath,
+        last_assistant_message: 'done',
+      },
+    } as never);
+
+    expect(res.body).toEqual({ ok: true });
+    await stopProcessor.getActiveProcessing();
+
+    const plans = listPlansBySession(sessionId);
+    expect(plans).toHaveLength(1);
+    expect(plans[0].title).toBe('Reconciled Spec');
+    expect(plans[0].source_path).toBe('docs/superpowers/specs/reconciled.md');
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  it('reconciliation assigns the batch that matches the file mtime instead of the latest batch', async () => {
+    const sessionId = 'claude-plan-reconcile-002';
+    const now = epochNow();
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plan-batch-'));
+    const transcriptPath = path.join(projectRoot, `${sessionId}.jsonl`);
+    const specDir = path.join(projectRoot, 'docs/superpowers/specs');
+    const specPath = path.join(specDir, 'batch-mapped.md');
+    fs.mkdirSync(specDir, { recursive: true });
+    fs.writeFileSync(transcriptPath, '', 'utf-8');
+    fs.writeFileSync(specPath, '# Batch Mapped\n\nCaptured at stop.', 'utf-8');
+
+    upsertSession({
+      id: sessionId,
+      agent: 'claude-code',
+      status: 'active',
+      started_at: now - 120,
+      created_at: now - 120,
+    });
+    const firstBatch = insertBatch({
+      session_id: sessionId,
+      prompt_number: 1,
+      user_prompt: 'Create the first plan',
+      started_at: now - 90,
+      created_at: now - 90,
+      status: 'completed',
+    });
+    insertBatch({
+      session_id: sessionId,
+      prompt_number: 2,
+      user_prompt: 'A later prompt',
+      started_at: now - 10,
+      created_at: now - 10,
+      status: 'active',
+    });
+    fs.utimesSync(specPath, new Date((now - 60) * 1000), new Date((now - 60) * 1000));
+
+    const stopProcessor = makeStopProcessor(vaultDir, {
+      planWatchConfig: {
+        watchDirs: ['docs/superpowers/specs'],
+        projectRoot,
+        extensions: ['.md'],
+      },
+    });
+
+    const res = await stopProcessor.handleStopRoute({
+      body: {
+        session_id: sessionId,
+        agent: 'claude-code',
+        transcript_path: transcriptPath,
+        last_assistant_message: 'done',
+      },
+    } as never);
+
+    expect(res.body).toEqual({ ok: true });
+    await stopProcessor.getActiveProcessing();
+
+    const plans = listPlansBySession(sessionId);
+    expect(plans).toHaveLength(1);
+    expect(plans[0].prompt_batch_id).toBe(firstBatch.id);
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
 });

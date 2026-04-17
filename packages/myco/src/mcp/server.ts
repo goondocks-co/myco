@@ -11,6 +11,7 @@ import { handleMycoSearch } from './tools/search.js';
 import { handleMycoRecall } from './tools/recall.js';
 import { handleMycoRemember } from './tools/remember.js';
 import { handleMycoPlans } from './tools/plans.js';
+import { handleMycoSavePlan } from './tools/save-plan.js';
 import { handleMycoSessions } from './tools/sessions.js';
 import { handleMycoTeam } from './tools/team.js';
 import { handleMycoGraph } from './tools/graph.js';
@@ -25,7 +26,7 @@ import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 
 import {
   TOOL_DEFINITIONS,
-  TOOL_SEARCH, TOOL_RECALL, TOOL_REMEMBER, TOOL_PLANS, TOOL_SESSIONS,
+  TOOL_SEARCH, TOOL_RECALL, TOOL_REMEMBER, TOOL_PLANS, TOOL_SAVE_PLAN, TOOL_SESSIONS,
   TOOL_TEAM, TOOL_GRAPH, TOOL_SUPERSEDE, TOOL_CONSOLIDATE,
   TOOL_CONTEXT, TOOL_SKILLS, TOOL_SKILL_CANDIDATES,
   TOOL_COLLECTIVE_SEARCH, TOOL_COLLECTIVE_PROJECTS, TOOL_COLLECTIVE_PROJECT,
@@ -109,9 +110,28 @@ export function createMycoServer(vaultDir: string, client: DaemonClient): MycoSe
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_PLANS: {
-        const plansInput = input as { status?: string; limit?: number };
+        const plansInput = input as { id?: string; status?: string; limit?: number };
         const result = await handleMycoPlans(plansInput, client);
         logActivity(TOOL_PLANS, { count: result.length, duration_ms: Date.now() - start });
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+      case TOOL_SAVE_PLAN: {
+        const savePlanInput = input as {
+          session_id: string;
+          content: string;
+          source_path?: string;
+          plan_key?: string;
+          title?: string;
+          status?: string;
+          tags?: string[];
+        };
+        const result = await handleMycoSavePlan(savePlanInput, client);
+        logActivity(TOOL_SAVE_PLAN, {
+          session_id: savePlanInput.session_id,
+          source_path: savePlanInput.source_path,
+          plan_key: savePlanInput.plan_key,
+          duration_ms: Date.now() - start,
+        });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_SESSIONS: {

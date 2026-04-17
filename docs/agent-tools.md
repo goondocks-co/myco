@@ -13,7 +13,7 @@ See the [Lifecycle docs](lifecycle.md) for more on how this works.
 
 ## Local MCP tools
 
-12 tools exposed through the local daemon over stdio. Available to any agent Myco has been installed into.
+13 tools exposed through the local daemon over stdio. Available to any agent Myco has been installed into.
 
 ### Search & recall
 
@@ -28,6 +28,7 @@ See the [Lifecycle docs](lifecycle.md) for more on how this works.
 | Tool | Purpose |
 |------|---------|
 | `myco_remember` | Save an observation as a spore. Types: `gotcha`, `decision`, `discovery`, `trade_off`, `bug_fix`. |
+| `myco_save_plan` | Persist a plan directly to a session. Pass `source_path` when the plan is also written to disk; use `plan_key` for non-file-backed plans. |
 | `myco_supersede` | Mark an older spore as replaced by a newer one. Lineage is preserved; the old spore is hidden from search. |
 | `myco_consolidate` | Merge related spores into a single wisdom note. |
 

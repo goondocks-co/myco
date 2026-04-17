@@ -23,8 +23,8 @@ const ATTACHMENTS_STALE_TIME = 60_000;
 /** Cache TTL for session impact counts (10 seconds — stable between dialog opens). */
 const IMPACT_STALE_TIME = 10_000;
 
-/** Cache TTL for session plans (60 seconds — rarely changes mid-session). */
-const PLANS_STALE_TIME = 60_000;
+/** Poll interval for session plans. */
+const PLANS_POLL_INTERVAL = POLL_INTERVALS.STATS;
 
 /* ---------- Types ---------- */
 
@@ -234,11 +234,23 @@ export function useSessionImpact(sessionId: string | null) {
 }
 
 export function useSessionPlans(sessionId: string | undefined) {
-  return useQuery({
+  return usePowerQuery<SessionPlanRow[]>({
     queryKey: ['session-plans', sessionId],
     queryFn: ({ signal }) =>
       fetchJson<SessionPlanRow[]>(`/sessions/${sessionId}/plans`, { signal }),
     enabled: !!sessionId,
-    staleTime: PLANS_STALE_TIME,
+    pollCategory: 'standard',
+    refetchInterval: PLANS_POLL_INTERVAL,
+  });
+}
+
+export function useDeletePlan(sessionId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (planId: string) =>
+      deleteJson<{ ok: boolean; id: string; session_id: string | null }>(`/plans/${planId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['session-plans', sessionId] });
+    },
   });
 }
