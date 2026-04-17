@@ -121,6 +121,7 @@ describe('agent loader', () => {
       expect(def.tools).toContain('vault_unprocessed');
       expect(def.tools).toContain('vault_spores');
       expect(def.tools).toContain('vault_sessions');
+      expect(def.tools).toContain('vault_session_summary_material');
       expect(def.tools).toContain('vault_search_fts');
       expect(def.tools).toContain('vault_search_semantic');
       expect(def.tools).toContain('vault_state');

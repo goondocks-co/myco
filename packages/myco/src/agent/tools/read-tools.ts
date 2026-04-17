@@ -1,9 +1,9 @@
 /**
  * Read-only vault tools.
  *
- * 9 tools: vault_unprocessed, vault_batches, vault_spores, vault_sessions,
- * vault_search_fts, vault_search_semantic, vault_state, vault_entities,
- * vault_edges
+ * 10 tools: vault_unprocessed, vault_batches, vault_session_summary_material,
+ * vault_spores, vault_sessions, vault_search_fts, vault_search_semantic,
+ * vault_state, vault_entities, vault_edges
  */
 
 import { z } from 'zod/v4';
@@ -11,12 +11,20 @@ import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { SEARCH_SIMILARITY_THRESHOLD, TEAM_SOURCE_PREFIX } from '@myco/constants.js';
 import { getUnprocessedBatches, listBatchesBySession } from '@myco/db/queries/batches.js';
 import { getSpore, listSpores } from '@myco/db/queries/spores.js';
-import { listSessions, getActiveSessionIds } from '@myco/db/queries/sessions.js';
+import { getSession, listSessions, getActiveSessionIds } from '@myco/db/queries/sessions.js';
 import { getStatesForAgent } from '@myco/db/queries/agent-state.js';
 import { fullTextSearch, hydrateSearchResults } from '@myco/db/queries/search.js';
 import { listEntities } from '@myco/db/queries/entities.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
 import { textResult, type VaultToolDeps } from './types.js';
+import {
+  projectBatchForAgent,
+  projectBatchForSessionSummary,
+  projectEdgeForAgent,
+  projectEntityForAgent,
+  projectSessionForAgent,
+  projectSporeForAgent,
+} from './read-projections.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -39,6 +47,18 @@ const DEFAULT_ENTITIES_LIMIT = 50;
 
 /** Default limit for edge listing. */
 const DEFAULT_EDGES_LIMIT = 50;
+/** Default projection mode for read tools. */
+const DEFAULT_INCLUDE_METADATA = false;
+
+function projectToolRows<T>(
+  rows: T[],
+  includeMetadata: boolean,
+  project: (row: T) => Record<string, unknown>,
+): ReturnType<typeof textResult> {
+  return includeMetadata
+    ? textResult(rows)
+    : textResult(rows.map(project));
+}
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -54,6 +74,7 @@ export function createReadTools(deps: VaultToolDeps) {
       after_id: z.number().optional().describe('Return batches with id greater than this'),
       limit: z.number().optional().describe('Maximum number of batches to return'),
       include_active: z.boolean().optional().describe('Include batches from sessions still in active status (default: false)'),
+      include_metadata: z.boolean().optional().describe('Return full batch metadata instead of the compact task-oriented projection'),
     },
     async (args) => {
       const batches = getUnprocessedBatches({
@@ -61,7 +82,11 @@ export function createReadTools(deps: VaultToolDeps) {
         limit: args.limit ?? DEFAULT_UNPROCESSED_LIMIT,
         includeActive: args.include_active === true,
       });
-      return textResult(batches);
+      return projectToolRows(
+        batches,
+        args.include_metadata ?? DEFAULT_INCLUDE_METADATA,
+        projectBatchForAgent,
+      );
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -73,13 +98,47 @@ export function createReadTools(deps: VaultToolDeps) {
       session_id: z.string().describe('Session ID whose batches should be returned'),
       limit: z.number().optional().describe('Maximum number of batches to return'),
       offset: z.number().optional().describe('Number of batches to skip from the start'),
+      include_metadata: z.boolean().optional().describe('Return full batch metadata instead of the compact task-oriented projection'),
     },
     async (args) => {
       const batches = listBatchesBySession(args.session_id, {
         limit: args.limit,
         offset: args.offset,
       });
-      return textResult(batches);
+      return projectToolRows(
+        batches,
+        args.include_metadata ?? DEFAULT_INCLUDE_METADATA,
+        projectBatchForAgent,
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const vaultSessionSummaryMaterial = tool(
+    'vault_session_summary_material',
+    'Get compact title-and-summary material for one session in a single read: current title/summary plus an ordered prompt-batch arc with only user prompts and assistant summaries.',
+    {
+      session_id: z.string().describe('Session ID whose summary material should be returned'),
+      include_active: z.boolean().optional().describe('Allow active sessions (default: true for exact session reads)'),
+    },
+    async (args) => {
+      const session = getSession(args.session_id);
+      if (!session) {
+        return textResult({ session_id: args.session_id, found: false, batches: [] });
+      }
+      if (args.include_active === false && session.status === 'active') {
+        return textResult({ session_id: args.session_id, found: false, message: 'Session is still active' });
+      }
+      const batches = listBatchesBySession(args.session_id);
+      return textResult({
+        session_id: session.id,
+        status: session.status,
+        ...(session.title ? { current_title: session.title } : {}),
+        ...(session.summary ? { current_summary: session.summary } : {}),
+        prompt_count: session.prompt_count,
+        batch_count: batches.length,
+        batches: batches.map(projectBatchForSessionSummary),
+      });
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -95,13 +154,19 @@ export function createReadTools(deps: VaultToolDeps) {
       session_id: z.string().optional().describe('Filter by session ID (bypasses active-session gating)'),
       limit: z.number().optional().describe('Maximum number of spores to return'),
       include_active: z.boolean().optional().describe('Include spores from sessions still in active status (default: false)'),
+      include_metadata: z.boolean().optional().describe('Return full spore metadata instead of the compact task-oriented projection'),
     },
     async (args) => {
+      const includeMetadata = args.include_metadata ?? DEFAULT_INCLUDE_METADATA;
       if (args.ids && args.ids.length > 0) {
         const spores = args.ids
           .map((id) => getSpore(id))
           .filter((spore): spore is NonNullable<typeof spore> => spore !== null);
-        return textResult(spores);
+        return projectToolRows(
+          spores,
+          includeMetadata,
+          (spore) => projectSporeForAgent(spore, { exact: true }),
+        );
       }
       const spores = listSpores({
         agent_id: args.agent_id,
@@ -111,7 +176,11 @@ export function createReadTools(deps: VaultToolDeps) {
         limit: args.limit ?? DEFAULT_SPORES_LIMIT,
         includeActive: args.include_active === true,
       });
-      return textResult(spores);
+      return projectToolRows(
+        spores,
+        includeMetadata,
+        (spore) => projectSporeForAgent(spore, { exact: false }),
+      );
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -124,6 +193,7 @@ export function createReadTools(deps: VaultToolDeps) {
       limit: z.number().optional().describe('Maximum number of sessions to return'),
       status: z.string().optional().describe('Filter by status (active, completed)'),
       include_active: z.boolean().optional().describe('Include sessions still in active status (default: false)'),
+      include_metadata: z.boolean().optional().describe('Return full session metadata instead of the compact task-oriented projection'),
     },
     async (args) => {
       const sessions = listSessions({
@@ -132,7 +202,11 @@ export function createReadTools(deps: VaultToolDeps) {
         status: args.status,
         includeActive: args.include_active === true,
       });
-      return textResult(sessions);
+      return projectToolRows(
+        sessions,
+        args.include_metadata ?? DEFAULT_INCLUDE_METADATA,
+        projectSessionForAgent,
+      );
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -256,6 +330,7 @@ export function createReadTools(deps: VaultToolDeps) {
       type: z.enum(['component', 'concept', 'person']).optional().describe('Filter by entity type'),
       name: z.string().optional().describe('Filter by entity name (exact match)'),
       limit: z.number().optional().describe('Maximum entities to return'),
+      include_metadata: z.boolean().optional().describe('Return full entity metadata instead of the compact task-oriented projection'),
     },
     async (args) => {
       const entities = listEntities({
@@ -264,7 +339,11 @@ export function createReadTools(deps: VaultToolDeps) {
         name: args.name,
         limit: args.limit ?? DEFAULT_ENTITIES_LIMIT,
       });
-      return textResult(entities);
+      return projectToolRows(
+        entities,
+        args.include_metadata ?? DEFAULT_INCLUDE_METADATA,
+        projectEntityForAgent,
+      );
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -277,6 +356,7 @@ export function createReadTools(deps: VaultToolDeps) {
       target_id: z.string().optional().describe('Filter by target node ID'),
       type: z.string().optional().describe('Filter by edge type (REFERENCES, DEPENDS_ON, AFFECTS, etc.)'),
       limit: z.number().optional().describe('Maximum edges to return'),
+      include_metadata: z.boolean().optional().describe('Return full edge metadata instead of the compact task-oriented projection'),
     },
     async (args) => {
       const edges = listGraphEdges({
@@ -286,7 +366,11 @@ export function createReadTools(deps: VaultToolDeps) {
         agentId: agentId,
         limit: args.limit ?? DEFAULT_EDGES_LIMIT,
       });
-      return textResult(edges);
+      return projectToolRows(
+        edges,
+        args.include_metadata ?? DEFAULT_INCLUDE_METADATA,
+        projectEdgeForAgent,
+      );
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -294,6 +378,7 @@ export function createReadTools(deps: VaultToolDeps) {
   return [
     vaultUnprocessed,
     vaultBatches,
+    vaultSessionSummaryMaterial,
     vaultSpores,
     vaultSessions,
     vaultSearchFts,

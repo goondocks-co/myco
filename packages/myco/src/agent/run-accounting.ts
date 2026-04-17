@@ -6,7 +6,118 @@ import {
   serializeCheckpointState,
   type RunCheckpointState,
 } from './executor-state.js';
-import type { PhaseResult, ProviderConfig, RuntimeId, RuntimeUsage } from './types.js';
+import { inferDefaultContextWindowFromProviderType } from './provider-runtime.js';
+import type { PhaseResult, ProviderConfig, RuntimeId, RuntimeTokenBudget, RuntimeUsage } from './types.js';
+
+const TOKEN_BUDGET_WARNING_PERCENT = 75;
+const TOKEN_BUDGET_CRITICAL_PERCENT = 90;
+
+function toRequestTokenNumber(
+  entry: Record<string, unknown>,
+  key: 'inputTokens' | 'outputTokens' | 'totalTokens',
+): number {
+  const value = entry[key];
+  return typeof value === 'number' ? value : 0;
+}
+
+function resolveContextWindow(
+  provider: ProviderConfig | undefined,
+  usage: RuntimeUsage,
+): { tokens: number | null; source?: RuntimeTokenBudget['contextWindowSource'] } {
+  if (provider?.contextLength) {
+    return { tokens: provider.contextLength, source: 'provider-config' };
+  }
+  const providerData = usage.providerData;
+  if (providerData) {
+    const candidates = [
+      providerData.contextWindowTokens,
+      providerData.context_window,
+      providerData.maxContextTokens,
+      providerData.max_context_tokens,
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'number' && candidate > 0) {
+        return { tokens: candidate, source: 'provider-metadata' };
+      }
+    }
+  }
+  const providerDefault = inferDefaultContextWindowFromProviderType(provider?.type);
+  if (providerDefault) {
+    return { tokens: providerDefault, source: 'provider-default' };
+  }
+  return { tokens: null };
+}
+
+export function analyzeRuntimeTokenBudget(
+  usage: RuntimeUsage,
+  provider?: ProviderConfig,
+): RuntimeTokenBudget {
+  const requestEntries = usage.requestUsageEntries && usage.requestUsageEntries.length > 0
+    ? usage.requestUsageEntries
+    : [{
+        inputTokens: usage.inputTokens ?? 0,
+        outputTokens: usage.outputTokens ?? 0,
+        totalTokens: usage.totalTokens ?? (
+          (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
+        ),
+      }];
+  const peakRequestInputTokens = requestEntries.reduce(
+    (max, entry) => Math.max(max, toRequestTokenNumber(entry, 'inputTokens')),
+    0,
+  );
+  const peakRequestOutputTokens = requestEntries.reduce(
+    (max, entry) => Math.max(max, toRequestTokenNumber(entry, 'outputTokens')),
+    0,
+  );
+  const peakRequestTotalTokens = requestEntries.reduce(
+    (max, entry) => Math.max(max, toRequestTokenNumber(entry, 'totalTokens')),
+    0,
+  );
+  const { tokens: contextWindowTokens, source: contextWindowSource } = resolveContextWindow(provider, usage);
+
+  if (!contextWindowTokens) {
+    return {
+      contextWindowTokens: null,
+      peakRequestInputTokens: peakRequestInputTokens || null,
+      peakRequestOutputTokens: peakRequestOutputTokens || null,
+      peakRequestTotalTokens: peakRequestTotalTokens || null,
+      utilizationPercent: null,
+      headroomTokens: null,
+      status: 'unknown',
+      message: 'Context window unavailable for this provider/model.',
+    };
+  }
+
+  const utilizationPercent = peakRequestTotalTokens > 0
+    ? Math.round((peakRequestTotalTokens / contextWindowTokens) * 100)
+    : 0;
+  const headroomTokens = Math.max(0, contextWindowTokens - peakRequestTotalTokens);
+  const status = utilizationPercent >= TOKEN_BUDGET_CRITICAL_PERCENT
+    ? 'critical'
+    : utilizationPercent >= TOKEN_BUDGET_WARNING_PERCENT
+      ? 'warning'
+      : 'ok';
+  const message = status === 'critical'
+    ? 'Run operated near the model context limit.'
+    : status === 'warning'
+      ? 'Run used a large share of the model context window.'
+      : undefined;
+
+  return {
+    contextWindowTokens,
+    ...(contextWindowSource ? { contextWindowSource } : {}),
+    peakRequestInputTokens: peakRequestInputTokens || null,
+    peakRequestOutputTokens: peakRequestOutputTokens || null,
+    peakRequestTotalTokens: peakRequestTotalTokens || null,
+    utilizationPercent,
+    headroomTokens,
+    status,
+    ...(message ? { message } : {}),
+    ...(contextWindowSource === 'provider-default'
+      ? { message: message ? `${message} Using inferred provider default context window.` : 'Using inferred provider default context window.' }
+      : {}),
+  };
+}
 
 export function serializeCostData(cost: CostResolution | undefined): string | null {
   return cost ? JSON.stringify(cost) : null;
@@ -120,13 +231,14 @@ interface RunAccountingUpdateFields extends Pick<
 }
 
 export function buildRunAccountingUpdate(input: RunAccountingUpdateInput): RunAccountingUpdateFields {
+  const tokenBudget = analyzeRuntimeTokenBudget(input.usage, input.provider);
   return {
     runtime: input.runtime,
     provider: input.provider?.type ?? null,
     model: input.model,
     session_ref: input.sessionRef ?? input.checkpointState.sessionRef ?? null,
     checkpoints: serializeCheckpointState(input.checkpointState),
-    usage_data: buildUsageData(input.usage, input.costData, input.phaseResults),
+    usage_data: buildUsageData(input.usage, input.costData, input.phaseResults, tokenBudget),
     cost_usd: input.costData.costUsd ?? null,
     actual_cost_usd: input.costData.actualCostUsd,
     estimated_cost_usd: input.costData.estimatedCostUsd,

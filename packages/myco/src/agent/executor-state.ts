@@ -6,6 +6,7 @@ import type {
   ProviderConfig,
   ProviderType,
   RuntimeId,
+  RuntimeTokenBudget,
   RuntimeUsage,
 } from './types.js';
 
@@ -140,10 +141,12 @@ export function buildUsageData(
   runUsage: RuntimeUsage,
   runCost?: CostResolution,
   phaseResults?: PhaseResult[],
+  runBudget?: RuntimeTokenBudget,
 ): string {
   return JSON.stringify({
     run: runUsage,
     runCost: runCost ?? null,
+    runBudget: runBudget ?? null,
     phases: phaseResults?.map((phase) => ({
       name: phase.name,
       usage: phase.usage ?? null,

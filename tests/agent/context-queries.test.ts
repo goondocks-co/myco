@@ -48,13 +48,34 @@ const TEST_AGENT_ID = 'myco-agent';
 const DEFAULT_CONTEXT_QUERY_LIMIT = 10;
 
 /** Sample batch row shape (only fields relevant to assertions). */
-const MOCK_BATCH = { id: 1, session_id: 'sess-abc', processed: 0 };
+const MOCK_BATCH = {
+  id: 1,
+  session_id: 'sess-abc',
+  prompt_number: 1,
+  user_prompt: 'Inspect the failing harness run',
+  response_summary: 'Added budget diagnostics',
+  processed: 0,
+};
 
 /** Sample spore row shape (only fields relevant to assertions). */
-const MOCK_SPORE = { id: 'spore-1', agent_id: TEST_AGENT_ID, observation_type: 'gotcha' };
+const MOCK_SPORE = {
+  id: 'spore-1',
+  agent_id: TEST_AGENT_ID,
+  observation_type: 'gotcha',
+  content: 'Prompt compaction can hide follow-up work',
+  created_at: 1000,
+};
 
 /** Sample session row shape. */
-const MOCK_SESSION = { id: 'sess-abc', agent: 'claude-code', status: 'active' };
+const MOCK_SESSION = {
+  id: 'sess-abc',
+  agent: 'claude-code',
+  status: 'active',
+  title: 'Tighten harness telemetry',
+  summary: 'Added compact read payloads',
+  prompt_count: 3,
+  started_at: 1000,
+};
 
 /** Sample agent state row. */
 const MOCK_STATE = { agent_id: TEST_AGENT_ID, key: 'cursor', value: '42', updated_at: 1000 };
@@ -90,7 +111,7 @@ beforeEach(() => {
 describe('executeContextQueries', () => {
   describe('vault_unprocessed', () => {
     it('executes query and returns data', async () => {
-      vi.mocked(getUnprocessedBatches).mockResolvedValue([MOCK_BATCH] as never);
+      vi.mocked(getUnprocessedBatches).mockReturnValue([MOCK_BATCH] as never);
 
       const results = await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_unprocessed', purpose: 'check backlog' }),
@@ -99,12 +120,18 @@ describe('executeContextQueries', () => {
       expect(results).toHaveLength(1);
       expect(results[0].tool).toBe('vault_unprocessed');
       expect(results[0].purpose).toBe('check backlog');
-      expect(results[0].data).toEqual([MOCK_BATCH]);
+      expect(results[0].data).toEqual([{
+        id: 1,
+        session_id: 'sess-abc',
+        prompt_number: 1,
+        user_prompt: 'Inspect the failing harness run',
+        response_summary: 'Added budget diagnostics',
+      }]);
       expect(results[0].error).toBeUndefined();
     });
 
     it('passes limit to getUnprocessedBatches', async () => {
-      vi.mocked(getUnprocessedBatches).mockResolvedValue([]);
+      vi.mocked(getUnprocessedBatches).mockReturnValue([]);
 
       await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_unprocessed', limit: 5 }),
@@ -116,7 +143,7 @@ describe('executeContextQueries', () => {
 
   describe('vault_spores', () => {
     it('executes query with agent_id filter and returns data', async () => {
-      vi.mocked(listSpores).mockResolvedValue([MOCK_SPORE] as never);
+      vi.mocked(listSpores).mockReturnValue([MOCK_SPORE] as never);
 
       const results = await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_spores', purpose: 'review spores' }),
@@ -124,7 +151,12 @@ describe('executeContextQueries', () => {
 
       expect(results).toHaveLength(1);
       expect(results[0].tool).toBe('vault_spores');
-      expect(results[0].data).toEqual([MOCK_SPORE]);
+      expect(results[0].data).toEqual([{
+        id: 'spore-1',
+        observation_type: 'gotcha',
+        content_preview: 'Prompt compaction can hide follow-up work',
+        created_at: 1000,
+      }]);
       expect(listSpores).toHaveBeenCalledWith({
         agent_id: TEST_AGENT_ID,
         limit: DEFAULT_CONTEXT_QUERY_LIMIT,
@@ -133,7 +165,7 @@ describe('executeContextQueries', () => {
     });
 
     it('passes custom limit to listSpores', async () => {
-      vi.mocked(listSpores).mockResolvedValue([]);
+      vi.mocked(listSpores).mockReturnValue([]);
 
       await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_spores', limit: 20 }),
@@ -149,7 +181,7 @@ describe('executeContextQueries', () => {
 
   describe('vault_sessions', () => {
     it('executes query and returns data', async () => {
-      vi.mocked(listSessions).mockResolvedValue([MOCK_SESSION] as never);
+      vi.mocked(listSessions).mockReturnValue([MOCK_SESSION] as never);
 
       const results = await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_sessions', purpose: 'list recent sessions' }),
@@ -157,14 +189,22 @@ describe('executeContextQueries', () => {
 
       expect(results).toHaveLength(1);
       expect(results[0].tool).toBe('vault_sessions');
-      expect(results[0].data).toEqual([MOCK_SESSION]);
+      expect(results[0].data).toEqual([{
+        id: 'sess-abc',
+        agent: 'claude-code',
+        status: 'active',
+        title: 'Tighten harness telemetry',
+        summary: 'Added compact read payloads',
+        prompt_count: 3,
+        started_at: 1000,
+      }]);
       expect(listSessions).toHaveBeenCalledWith({ limit: DEFAULT_CONTEXT_QUERY_LIMIT, includeActive: false });
     });
   });
 
   describe('vault_state', () => {
     it('executes query with agent_id and returns data', async () => {
-      vi.mocked(getStatesForAgent).mockResolvedValue([MOCK_STATE]);
+      vi.mocked(getStatesForAgent).mockReturnValue([MOCK_STATE]);
 
       const results = await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_state', purpose: 'read cursor position' }),
@@ -179,7 +219,9 @@ describe('executeContextQueries', () => {
 
   describe('error handling', () => {
     it('returns error field for failed non-required query (does not throw)', async () => {
-      vi.mocked(getUnprocessedBatches).mockRejectedValue(new Error('DB unavailable'));
+      vi.mocked(getUnprocessedBatches).mockImplementation(() => {
+        throw new Error('DB unavailable');
+      });
 
       const results = await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_unprocessed', required: false }),
@@ -191,7 +233,9 @@ describe('executeContextQueries', () => {
     });
 
     it('throws on failed required query', async () => {
-      vi.mocked(listSpores).mockRejectedValue(new Error('Connection lost'));
+      vi.mocked(listSpores).mockImplementation(() => {
+        throw new Error('Connection lost');
+      });
 
       await expect(
         executeContextQueries(TEST_AGENT_ID, [
@@ -219,7 +263,7 @@ describe('executeContextQueries', () => {
 
   describe('limit handling', () => {
     it('uses default limit when query.limit not specified', async () => {
-      vi.mocked(getUnprocessedBatches).mockResolvedValue([]);
+      vi.mocked(getUnprocessedBatches).mockReturnValue([]);
 
       // Build query directly without specifying limit to use the type default
       const query: ContextQuery = {
@@ -239,7 +283,7 @@ describe('executeContextQueries', () => {
     });
 
     it('uses custom limit when specified', async () => {
-      vi.mocked(listSessions).mockResolvedValue([]);
+      vi.mocked(listSessions).mockReturnValue([]);
 
       await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_sessions', limit: 50 }),
@@ -251,8 +295,8 @@ describe('executeContextQueries', () => {
 
   describe('multiple queries', () => {
     it('executes multiple queries and returns results in order', async () => {
-      vi.mocked(getUnprocessedBatches).mockResolvedValue([MOCK_BATCH] as never);
-      vi.mocked(getStatesForAgent).mockResolvedValue([MOCK_STATE]);
+      vi.mocked(getUnprocessedBatches).mockReturnValue([MOCK_BATCH] as never);
+      vi.mocked(getStatesForAgent).mockReturnValue([MOCK_STATE]);
 
       const results = await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_unprocessed', purpose: 'backlog' }),
@@ -265,8 +309,10 @@ describe('executeContextQueries', () => {
     });
 
     it('continues executing after a non-required failure', async () => {
-      vi.mocked(getUnprocessedBatches).mockRejectedValue(new Error('DB down'));
-      vi.mocked(getStatesForAgent).mockResolvedValue([MOCK_STATE]);
+      vi.mocked(getUnprocessedBatches).mockImplementation(() => {
+        throw new Error('DB down');
+      });
+      vi.mocked(getStatesForAgent).mockReturnValue([MOCK_STATE]);
 
       const results = await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_unprocessed', required: false }),

@@ -18,7 +18,9 @@ import { upsertSession, type SessionInsert } from '@myco/db/queries/sessions.js'
 import { insertBatch, type BatchInsert } from '@myco/db/queries/batches.js';
 import { insertRun, type RunInsert } from '@myco/db/queries/runs.js';
 import { insertSpore, type SporeInsert } from '@myco/db/queries/spores.js';
+import { insertEntity } from '@myco/db/queries/entities.js';
 import { setState } from '@myco/db/queries/agent-state.js';
+import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
 import { createVaultTools, VAULT_TOOL_COUNT } from '@myco/agent/tools.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 
@@ -188,6 +190,41 @@ describe('vault tools', () => {
       const data = parseResult(result) as unknown[];
       expect(data).toHaveLength(1);
     });
+
+    it('returns a compact projection by default', async () => {
+      insertBatch(makeBatch(sessionId, {
+        prompt_number: 1,
+        response_summary: 'Summary text',
+        status: 'completed',
+        activity_count: 42,
+      }));
+
+      const t = findTool(tools, 'vault_unprocessed');
+      const result = await t.handler({ include_active: true }, undefined);
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data[0].id).toBeDefined();
+      expect(data[0].session_id).toBe(sessionId);
+      expect(data[0].response_summary).toBe('Summary text');
+      expect(data[0].status).toBeUndefined();
+      expect(data[0].activity_count).toBeUndefined();
+    });
+
+    it('returns full batch metadata when include_metadata=true', async () => {
+      insertBatch(makeBatch(sessionId, {
+        prompt_number: 1,
+        response_summary: 'Summary text',
+        status: 'completed',
+        activity_count: 42,
+      }));
+
+      const t = findTool(tools, 'vault_unprocessed');
+      const result = await t.handler({ include_active: true, include_metadata: true }, undefined);
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data[0].status).toBe('completed');
+      expect(data[0].activity_count).toBe(42);
+    });
   });
 
   describe('vault_batches', () => {
@@ -206,6 +243,132 @@ describe('vault tools', () => {
       expect(data).toHaveLength(2);
       expect(data.map((row) => row.session_id)).toEqual([sessionId, sessionId]);
       expect(data.map((row) => row.prompt_number)).toEqual([1, 2]);
+    });
+
+    it('returns a compact task-oriented projection by default', async () => {
+      insertBatch(makeBatch(sessionId, {
+        prompt_number: 1,
+        response_summary: 'Summary text',
+        classification: 'analysis',
+        status: 'completed',
+        activity_count: 42,
+      }));
+
+      const t = findTool(tools, 'vault_batches');
+      const result = await t.handler({ session_id: sessionId }, undefined);
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data[0].id).toBeDefined();
+      expect(data[0].user_prompt).toBe('Test prompt');
+      expect(data[0].response_summary).toBe('Summary text');
+      expect(data[0].classification).toBe('analysis');
+      expect(data[0].status).toBeUndefined();
+      expect(data[0].activity_count).toBeUndefined();
+      expect(data[0].processed).toBeUndefined();
+    });
+
+    it('returns full metadata when include_metadata=true', async () => {
+      insertBatch(makeBatch(sessionId, {
+        prompt_number: 1,
+        response_summary: 'Summary text',
+        status: 'completed',
+        activity_count: 42,
+      }));
+
+      const t = findTool(tools, 'vault_batches');
+      const result = await t.handler({ session_id: sessionId, include_metadata: true }, undefined);
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data[0].status).toBe('completed');
+      expect(data[0].activity_count).toBe(42);
+      expect(data[0].processed).toBeDefined();
+    });
+
+    it('suppresses repeated identical reads before they balloon context', async () => {
+      insertBatch(makeBatch(sessionId, { prompt_number: 1 }));
+
+      const t = findTool(tools, 'vault_batches');
+      await t.handler({ session_id: sessionId }, undefined);
+      await t.handler({ session_id: sessionId }, undefined);
+      const result = await t.handler({ session_id: sessionId }, undefined);
+      const data = parseResult(result) as {
+        message: string;
+        repeated_calls: number;
+        reuse_prior_result: boolean;
+      };
+
+      expect(data.message).toContain('Repeated identical vault_batches read suppressed');
+      expect(data.repeated_calls).toBe(3);
+      expect(data.reuse_prior_result).toBe(true);
+    });
+
+    it('fails fast after too many identical repeated reads', async () => {
+      insertBatch(makeBatch(sessionId, { prompt_number: 1 }));
+
+      const t = findTool(tools, 'vault_batches');
+      await t.handler({ session_id: sessionId }, undefined);
+      await t.handler({ session_id: sessionId }, undefined);
+      await t.handler({ session_id: sessionId }, undefined);
+      await t.handler({ session_id: sessionId }, undefined);
+
+      await expect(
+        t.handler({ session_id: sessionId }, undefined),
+      ).rejects.toThrow('Repeated identical vault_batches reads detected');
+    });
+  });
+
+  describe('vault_session_summary_material', () => {
+    it('returns compact session summary material in a single read', async () => {
+      upsertSession(makeSession({
+        id: 'sess-summary-material',
+        status: 'active',
+        title: 'Existing title',
+        summary: 'Existing summary',
+        prompt_count: 2,
+      }));
+      insertBatch(makeBatch('sess-summary-material', {
+        prompt_number: 1,
+        user_prompt: 'First prompt',
+        response_summary: 'First summary',
+      }));
+      insertBatch(makeBatch('sess-summary-material', {
+        prompt_number: 2,
+        user_prompt: 'Second prompt',
+        response_summary: 'Second summary',
+      }));
+
+      const t = findTool(tools, 'vault_session_summary_material');
+      const result = await t.handler({ session_id: 'sess-summary-material' }, undefined);
+      const data = parseResult(result) as {
+        session_id: string;
+        current_title: string;
+        current_summary: string;
+        prompt_count: number;
+        batch_count: number;
+        batches: Array<Record<string, unknown>>;
+      };
+
+      expect(data.session_id).toBe('sess-summary-material');
+      expect(data.current_title).toBe('Existing title');
+      expect(data.current_summary).toBe('Existing summary');
+      expect(data.prompt_count).toBe(2);
+      expect(data.batch_count).toBe(2);
+      expect(data.batches).toEqual([
+        { prompt_number: 1, user_prompt: 'First prompt', response_summary: 'First summary' },
+        { prompt_number: 2, user_prompt: 'Second prompt', response_summary: 'Second summary' },
+      ]);
+    });
+
+    it('returns not-found payload for missing sessions', async () => {
+      const t = findTool(tools, 'vault_session_summary_material');
+      const result = await t.handler({ session_id: 'missing-session' }, undefined);
+      const data = parseResult(result) as { session_id: string; found: boolean; batches: unknown[] };
+
+      expect(data).toEqual({
+        session_id: 'missing-session',
+        found: false,
+        batches: [],
+      });
     });
   });
 
@@ -235,9 +398,56 @@ describe('vault tools', () => {
 
       const t = findTool(tools, 'vault_spores');
       const result = await t.handler({ observation_type: 'gotcha' }, undefined);
-      const data = parseResult(result) as Array<{ observation_type: string }>;
+      const data = parseResult(result) as Array<{ observation_type: string; content_preview: string }>;
       expect(data).toHaveLength(1);
       expect(data[0].observation_type).toBe('gotcha');
+      expect(data[0].content_preview).toBe('A gotcha');
+    });
+
+    it('returns a compact projection by default', async () => {
+      insertSpore({
+        id: 'spore-compact',
+        agent_id: TEST_AGENT_ID,
+        session_id: sessionId,
+        observation_type: 'decision',
+        content: 'Compact content',
+        context: 'Verbose context that should not flow by default',
+        importance: 8,
+        created_at: epochNow(),
+      });
+
+      const t = findTool(tools, 'vault_spores');
+      const result = await t.handler({ include_active: true }, undefined);
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data).toHaveLength(1);
+      expect(data[0].id).toBe('spore-compact');
+      expect(data[0].content_preview).toBe('Compact content');
+      expect(data[0].importance).toBe(8);
+      expect(data[0].context).toBeUndefined();
+      expect(data[0].properties).toBeUndefined();
+    });
+
+    it('returns full spore metadata when include_metadata=true', async () => {
+      insertSpore({
+        id: 'spore-full',
+        agent_id: TEST_AGENT_ID,
+        session_id: sessionId,
+        observation_type: 'decision',
+        content: 'Full content',
+        context: 'Stored context',
+        properties: JSON.stringify({ foo: 'bar' }),
+        created_at: epochNow(),
+      });
+
+      const t = findTool(tools, 'vault_spores');
+      const result = await t.handler({ include_active: true, include_metadata: true }, undefined);
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data).toHaveLength(1);
+      expect(data[0].content).toBe('Full content');
+      expect(data[0].context).toBe('Stored context');
+      expect(data[0].properties).toBe(JSON.stringify({ foo: 'bar' }));
     });
 
     it('returns exact spores by id in the requested order', async () => {
@@ -261,6 +471,51 @@ describe('vault tools', () => {
       const data = parseResult(result) as Array<{ id: string; content: string }>;
       expect(data.map((row) => row.id)).toEqual(['spore-b', 'spore-a']);
       expect(data.map((row) => row.content)).toEqual(['Beta', 'Alpha']);
+    });
+  });
+
+  describe('vault_sessions', () => {
+    it('returns a compact projection by default', async () => {
+      upsertSession(makeSession({
+        id: 'sess-compact',
+        status: 'completed',
+        title: 'Compact title',
+        summary: 'Compact summary',
+        prompt_count: 12,
+        tool_count: 900,
+      }));
+
+      const t = findTool(tools, 'vault_sessions');
+      const result = await t.handler({ id: 'sess-compact', include_active: true }, undefined);
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data).toHaveLength(1);
+      expect(data[0].id).toBe('sess-compact');
+      expect(data[0].title).toBe('Compact title');
+      expect(data[0].summary).toBe('Compact summary');
+      expect(data[0].prompt_count).toBe(12);
+      expect(data[0].tool_count).toBeUndefined();
+      expect(data[0].transcript_path).toBeUndefined();
+    });
+
+    it('returns full session metadata when include_metadata=true', async () => {
+      upsertSession(makeSession({
+        id: 'sess-full',
+        status: 'completed',
+        title: 'Full title',
+        summary: 'Full summary',
+        prompt_count: 12,
+        tool_count: 900,
+        transcript_path: '/tmp/transcript.jsonl',
+      }));
+
+      const t = findTool(tools, 'vault_sessions');
+      const result = await t.handler({ id: 'sess-full', include_active: true, include_metadata: true }, undefined);
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data).toHaveLength(1);
+      expect(data[0].tool_count).toBe(900);
+      expect(data[0].transcript_path).toBe('/tmp/transcript.jsonl');
     });
   });
 
@@ -393,6 +648,125 @@ describe('vault tools', () => {
       expect(data).toHaveLength(2);
       const keys = data.map((s) => s.key).sort();
       expect(keys).toEqual(['cursor', 'mode']);
+    });
+
+    it('resets identical-read suppression after a successful write', async () => {
+      const sessionsTool = findTool(tools, 'vault_sessions');
+      const updateSessionTool = findTool(tools, 'vault_update_session');
+
+      await sessionsTool.handler({ id: sessionId, include_active: true }, undefined);
+      await sessionsTool.handler({ id: sessionId, include_active: true }, undefined);
+      const suppressed = await sessionsTool.handler({ id: sessionId, include_active: true }, undefined);
+      expect(parseResult(suppressed)).toMatchObject({
+        reuse_prior_result: true,
+        repeated_calls: 3,
+      });
+
+      await updateSessionTool.handler({ session_id: sessionId, title: 'Updated title' }, undefined);
+      const refreshed = await sessionsTool.handler({ id: sessionId, include_active: true }, undefined);
+      const data = parseResult(refreshed) as Array<{ id: string; title: string }>;
+      expect(data).toEqual([{
+        id: sessionId,
+        agent: 'claude-code',
+        status: 'active',
+        title: 'Updated title',
+        prompt_count: 0,
+        started_at: expect.any(Number),
+      }]);
+    });
+  });
+
+  describe('vault_entities', () => {
+    it('returns a compact projection by default', async () => {
+      insertEntity({
+        id: 'entity-compact',
+        agent_id: TEST_AGENT_ID,
+        type: 'component',
+        name: 'AuthModule',
+        properties: JSON.stringify({ language: 'TypeScript' }),
+        first_seen: epochNow() - 10,
+        last_seen: epochNow(),
+      });
+
+      const t = findTool(tools, 'vault_entities');
+      const result = await t.handler({ name: 'AuthModule' }, undefined);
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data).toHaveLength(1);
+      expect(data[0].name).toBe('AuthModule');
+      expect(data[0].type).toBe('component');
+      expect(data[0].properties).toBeUndefined();
+      expect(data[0].agent_id).toBeUndefined();
+    });
+
+    it('returns full entity metadata when include_metadata=true', async () => {
+      insertEntity({
+        id: 'entity-full',
+        agent_id: TEST_AGENT_ID,
+        type: 'component',
+        name: 'BillingModule',
+        properties: JSON.stringify({ owner: 'payments' }),
+        first_seen: epochNow() - 10,
+        last_seen: epochNow(),
+      });
+
+      const t = findTool(tools, 'vault_entities');
+      const result = await t.handler({ name: 'BillingModule', include_metadata: true }, undefined);
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data).toHaveLength(1);
+      expect(data[0].properties).toBe(JSON.stringify({ owner: 'payments' }));
+      expect(data[0].agent_id).toBe(TEST_AGENT_ID);
+    });
+  });
+
+  describe('vault_edges', () => {
+    it('returns a compact projection by default', async () => {
+      insertGraphEdge({
+        agent_id: TEST_AGENT_ID,
+        source_id: 'session-a',
+        source_type: 'session',
+        target_id: 'spore-a',
+        target_type: 'spore',
+        type: 'REFERENCES',
+        confidence: 0.8,
+        session_id: sessionId,
+        created_at: epochNow(),
+        properties: JSON.stringify({ rationale: 'linked during audit' }),
+      });
+
+      const t = findTool(tools, 'vault_edges');
+      const result = await t.handler({ source_id: 'session-a' }, undefined);
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data).toHaveLength(1);
+      expect(data[0].source_id).toBe('session-a');
+      expect(data[0].target_id).toBe('spore-a');
+      expect(data[0].properties).toBeUndefined();
+      expect(data[0].agent_id).toBeUndefined();
+    });
+
+    it('returns full edge metadata when include_metadata=true', async () => {
+      insertGraphEdge({
+        agent_id: TEST_AGENT_ID,
+        source_id: 'session-b',
+        source_type: 'session',
+        target_id: 'spore-b',
+        target_type: 'spore',
+        type: 'AFFECTS',
+        confidence: 0.9,
+        session_id: sessionId,
+        created_at: epochNow(),
+        properties: JSON.stringify({ rationale: 'full metadata' }),
+      });
+
+      const t = findTool(tools, 'vault_edges');
+      const result = await t.handler({ source_id: 'session-b', include_metadata: true }, undefined);
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data).toHaveLength(1);
+      expect(data[0].properties).toBe(JSON.stringify({ rationale: 'full metadata' }));
+      expect(data[0].agent_id).toBe(TEST_AGENT_ID);
     });
   });
 

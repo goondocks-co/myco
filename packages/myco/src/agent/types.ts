@@ -110,6 +110,18 @@ export interface RuntimeUsage {
   providerData?: Record<string, unknown>;
 }
 
+export interface RuntimeTokenBudget {
+  contextWindowTokens: number | null;
+  contextWindowSource?: 'provider-config' | 'provider-metadata' | 'provider-default';
+  peakRequestInputTokens: number | null;
+  peakRequestOutputTokens: number | null;
+  peakRequestTotalTokens: number | null;
+  utilizationPercent: number | null;
+  headroomTokens: number | null;
+  status: 'unknown' | 'ok' | 'warning' | 'critical';
+  message?: string;
+}
+
 /** Execution configuration overrides for a task. */
 export interface ExecutionConfig {
   runtime?: RuntimeId;

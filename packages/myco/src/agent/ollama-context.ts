@@ -7,6 +7,7 @@ import { writeFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProviderConfig } from './types.js';
+import { DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS } from './context-windows.js';
 
 /** Timeout for Ollama model pre-load request (ms). */
 const OLLAMA_PRELOAD_TIMEOUT_MS = 30_000;
@@ -23,7 +24,7 @@ const OLLAMA_PRELOAD_TIMEOUT_MS = 30_000;
  * globally, per-task, or per-phase (all scopes are reconciled to a single
  * variant per model — see `resolveOllamaContextVariants`).
  */
-export const DEFAULT_OLLAMA_CONTEXT_LENGTH = 32768;
+export const DEFAULT_OLLAMA_CONTEXT_LENGTH = DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS;
 
 /**
  * Ensure an Ollama model variant exists with the desired context length.

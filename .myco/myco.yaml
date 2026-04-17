@@ -26,23 +26,6 @@ agent:
     type: anthropic
     model: claude-sonnet-4-6
   tasks:
-    full-intelligence:
-      provider:
-        type: anthropic
-        model: claude-sonnet-4-6
-      phases:
-        read-state:
-          maxTurns: 20
-        extract:
-          maxTurns: 35
-      schedule:
-        enabled: true
-        intervalSeconds: 1800
-    title-summary:
-      provider:
-        type: anthropic
-        model: claude-sonnet-4-6
-      timeoutSeconds: 180
     title-summary-custom:
       provider:
         type: ollama
@@ -78,6 +61,19 @@ agent:
       schedule:
         enabled: false
         intervalSeconds: 1800
+    title-summary:
+      provider:
+        runtime: openai-agents
+        type: lmstudio
+        base_url: http://localhost:1234
+        model: google/gemma-4-26b-a4b
+        reasoning_map:
+          low: google/gemma-4-26b-a4b
+          default: google/gemma-4-26b-a4b
+          high: openai/gpt-oss-120b
+      runtime: openai-agents
+      maxTurns: 50
+      timeoutSeconds: 600
 context:
   digest_tier: 5000
   prompt_search: true
