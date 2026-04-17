@@ -49,9 +49,16 @@ export function ReasoningProfiles({
       </div>
       {LEVELS.map(([level, label]) => {
         const value = values[level];
+        // Precedence for placeholder:
+        //   this scope's reasoning_map[level]  (values[level], held in reasoningMap)
+        //     -> inherited per-level fallback  (fallbackReasoningMap[level])
+        //       -> generic fallback model      (fallbackModel)
+        // Do NOT pass `model: fallbackModel` into the provider — that would
+        // short-circuit the per-level fallback since resolveReasoningModel
+        // prefers provider.model over its fallbackModel argument.
         const placeholder = resolveReasoningModel(
           level,
-          { model: fallbackModel || undefined, reasoning_map: reasoningMap },
+          { reasoning_map: reasoningMap },
           fallbackReasoningMap?.[level] ?? fallbackModel,
         );
         const resolvedPlaceholder = placeholder || placeholderWhenEmpty;
