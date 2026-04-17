@@ -271,6 +271,12 @@ describe('symbiont manifests', () => {
     expect(manifest.capture?.planTags).toEqual(['proposed_plan']);
   });
 
+  it('claude-code manifest has planTags with ultraplan', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'claude-code.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.capture?.planTags).toEqual(['ultraplan']);
+  });
+
   it('defaults mcpFormat to json when not specified', () => {
     const manifest = SymbiontManifestSchema.parse({
       name: 'test-agent',

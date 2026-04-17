@@ -9,6 +9,8 @@ import { PowerManager } from '@myco/daemon/power.js';
 import { DaemonLogger } from '@myco/daemon/logger.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import { countActivities } from '@myco/db/queries/activities.js';
+import { listBatchesBySession } from '@myco/db/queries/batches.js';
+import { listPlansBySession } from '@myco/db/queries/plans.js';
 
 function makeHandler() {
   const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-event-dispatch-'));
@@ -34,7 +36,7 @@ function makeHandler() {
     liveConfig: { current: { agent: { summary_batch_interval: 20 } } as never },
     vaultDir,
     reconcileSession: () => {},
-    planWatchConfig: { enabled: false, planDirs: [] },
+    planWatchConfig: { watchDirs: [], projectRoot: vaultDir },
     triggerTitleSummary: async () => {},
   });
 
@@ -103,6 +105,54 @@ describe('createEventDispatcher', () => {
     expect(registry.getSession(sessionId)).toBeDefined();
     expect(getSession(sessionId)?.agent).toBe('codex');
     expect(countActivities(sessionId)).toBe(1);
+
+    logger.close();
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    fs.rmSync(transcriptDir, { recursive: true, force: true });
+  });
+
+  it('captures a Claude Ultraplan prompt tag into the session plans table', async () => {
+    const { handler, logger, vaultDir } = makeHandler();
+    const sessionId = 'claude-ultraplan-prompt-001';
+    const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-claude-ultraplan-'));
+    const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+    const prompt = [
+      'Ultraplan approved in browser. Here is the plan:',
+      '',
+      '<ultraplan>',
+      '# Full-Intelligence Efficiency & Tuning Harness',
+      '',
+      '## Steps',
+      '1. Add dry-run harness',
+      '2. Add eval matrix',
+      '</ultraplan>',
+    ].join('\n');
+
+    const res = await handler({
+      body: {
+        type: 'user_prompt',
+        session_id: sessionId,
+        agent: 'claude-code',
+        transcript_path: transcriptPath,
+        prompt,
+      },
+      query: {},
+      params: {},
+      pathname: '/events',
+    });
+
+    expect(res.body).toEqual({ ok: true });
+
+    const batches = listBatchesBySession(sessionId);
+    expect(batches).toHaveLength(1);
+    expect(batches[0].user_prompt).toBe(prompt);
+
+    const plans = listPlansBySession(sessionId);
+    expect(plans).toHaveLength(1);
+    expect(plans[0].title).toBe('Full-Intelligence Efficiency & Tuning Harness');
+    expect(plans[0].prompt_batch_id).toBe(batches[0].id);
+    expect(plans[0].source_path).toBe('transcript:ultraplan');
+    expect(plans[0].content).toContain('Add dry-run harness');
 
     logger.close();
     fs.rmSync(vaultDir, { recursive: true, force: true });
