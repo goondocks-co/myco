@@ -1,9 +1,10 @@
-import { useMemo } from 'react';
-import { Bot, AlertCircle, Play } from 'lucide-react';
+import { memo, useCallback, useMemo, useState } from 'react';
+import { Bot, AlertCircle, GitCompare, Play, RotateCcw, X } from 'lucide-react';
 import { Button } from '../ui/button';
 import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
 import { Pagination } from '../ui/pagination';
 import { useAgentRuns, useAgentTasks, type RunRow } from '../../hooks/use-agent';
+import { RunTaskDialog } from './RunTaskDialog';
 import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { cn } from '../../lib/cn';
@@ -42,24 +43,40 @@ function RunStatusBadge({ status }: { status: string }) {
 function SkeletonRow() {
   return (
     <tr className="border-b border-outline-variant/20">
-      {[200, 80, 100, 80, 80].map((w, i) => (
+      <td className="px-4 py-3">
+        <div className="h-4 w-4 animate-pulse rounded bg-surface-container" />
+      </td>
+      {[200, 80, 100, 80, 80, 80].map((w, i) => (
         <td key={i} className="px-4 py-3">
           <div className={cn('h-4 animate-pulse rounded bg-surface-container')} style={{ width: w }} />
         </td>
       ))}
+      <td className="px-2 py-3 w-10">
+        <div className="h-4 w-4 animate-pulse rounded bg-surface-container" />
+      </td>
     </tr>
   );
 }
 
-function RunRowItem({
-  run,
-  onClick,
-  taskNameMap,
-}: {
+interface RunRowItemProps {
   run: RunRow;
-  onClick: () => void;
+  /** Called with the run id so callers don't allocate a new closure per row. */
+  onSelectRun: (id: string) => void;
   taskNameMap: Map<string, string>;
-}) {
+  selected: boolean;
+  onToggleSelected: (id: string) => void;
+  onRerun: (run: RunRow) => void;
+}
+
+const RunRowItem = memo(function RunRowItem({
+  run,
+  onSelectRun,
+  taskNameMap,
+  selected,
+  onToggleSelected,
+  onRerun,
+}: RunRowItemProps) {
+  const onClick = useCallback(() => onSelectRun(run.id), [onSelectRun, run.id]);
   const taskLabel = run.task ? taskNameMap.get(run.task) ?? run.task : UNKNOWN_TASK_LABEL;
 
   return (
@@ -76,12 +93,36 @@ function RunRowItem({
       role="row"
       aria-label={`Agent run: ${taskLabel}, status ${run.status}`}
     >
+      <td
+        className="px-4 py-3"
+        onClick={(e) => {
+          // Stop row-click from firing when clicking the checkbox or its <td>.
+          e.stopPropagation();
+        }}
+      >
+        <input
+          type="checkbox"
+          aria-label={`Select run ${run.id.slice(0, 8)}`}
+          checked={selected}
+          onChange={() => onToggleSelected(run.id)}
+          onClick={(e) => e.stopPropagation()}
+          className="h-4 w-4 rounded accent-primary cursor-pointer"
+        />
+      </td>
       <td className="px-4 py-3">
         <div className="flex items-center gap-2">
           <Bot className="h-3.5 w-3.5 shrink-0 text-on-surface-variant" />
           <span className="text-sm font-medium text-on-surface truncate max-w-xs">
             {taskLabel}
           </span>
+          {run.dry_run && (
+            <span
+              className="inline-flex items-center rounded-sm bg-secondary/15 px-1.5 py-0.5 font-sans text-[10px] uppercase tracking-wide text-secondary"
+              title="Dry run — writes were intercepted, no vault mutations"
+            >
+              Dry
+            </span>
+          )}
         </div>
       </td>
       <td className="px-4 py-3">
@@ -109,21 +150,66 @@ function RunRowItem({
           )}
         </div>
       </td>
+      <td
+        className="px-2 py-3 w-10"
+        onClick={(e) => {
+          // Stop row-click from firing — rerun opens a confirmation dialog,
+          // not the run detail.
+          e.stopPropagation();
+        }}
+      >
+        <Button
+          size="icon"
+          variant="ghost"
+          className="h-7 w-7 text-on-surface-variant hover:text-on-surface"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRerun(run);
+          }}
+          title="Rerun with same settings"
+          aria-label={`Rerun ${run.id.slice(0, 8)} with same settings`}
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+        </Button>
+      </td>
     </tr>
   );
-}
+});
 
 /* ---------- Component ---------- */
 
 export interface RunListProps {
   onSelectRun: (id: string) => void;
   onTriggerRun: () => void;
+  /** Navigates to an ad-hoc comparison over the selected run ids. */
+  onCompareRuns: (ids: string[]) => void;
 }
 
-export function RunList({ onSelectRun, onTriggerRun }: RunListProps) {
+export function RunList({ onSelectRun, onTriggerRun, onCompareRuns }: RunListProps) {
   const { searchInput, debouncedSearch, filterValues, offset, setOffset, handleSearchChange, handleFilterChange, activeFilter } = useListFilters({
     initialFilters: { status: FILTER_ALL, task: FILTER_ALL },
   });
+
+  // Run-selection state for multi-run compare. Selection is transient —
+  // scoped to this mount of the RunList. Leaving the list (navigating to a
+  // run detail, the comparison view, etc.) unmounts the component and wipes
+  // selection, matching the plan's "selection clears when the user leaves"
+  // behavior without any extra lifecycle wiring.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const toggleSelected = useCallback((id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const clearSelection = useCallback(() => setSelected(new Set()), []);
+
+  // "Rerun with same settings" state. When non-null, RunTaskDialog opens
+  // pre-filled from this run so the operator can review and edit before
+  // submitting a NEW run. The source run itself is never mutated.
+  const [rerunSource, setRerunSource] = useState<RunRow | null>(null);
 
   const { data: tasksData } = useAgentTasks();
   const taskNameMap = useMemo(() => {
@@ -175,12 +261,18 @@ export function RunList({ onSelectRun, onTriggerRun }: RunListProps) {
   const tableHeader = (
     <thead>
       <tr className="border-b border-outline-variant/20 bg-surface-container/50">
+        <th className="px-4 py-3 text-left text-xs font-medium text-on-surface-variant uppercase tracking-widest font-sans w-10" aria-label="Select">
+          <span className="sr-only">Select</span>
+        </th>
         <th className="px-4 py-3 text-left text-xs font-medium text-on-surface-variant uppercase tracking-widest font-sans">Task</th>
         <th className="px-4 py-3 text-left text-xs font-medium text-on-surface-variant uppercase tracking-widest font-sans">Status</th>
         <th className="px-4 py-3 text-left text-xs font-medium text-on-surface-variant uppercase tracking-widest font-sans">Started</th>
         <th className="px-4 py-3 text-left text-xs font-medium text-on-surface-variant uppercase tracking-widest font-sans">Duration</th>
         <th className="px-4 py-3 text-left text-xs font-medium text-on-surface-variant uppercase tracking-widest font-sans">Tokens</th>
         <th className="px-4 py-3 text-left text-xs font-medium text-on-surface-variant uppercase tracking-widest font-sans">Cost</th>
+        <th className="px-2 py-3 w-10" aria-label="Rerun">
+          <span className="sr-only">Rerun</span>
+        </th>
       </tr>
     </thead>
   );
@@ -239,7 +331,15 @@ export function RunList({ onSelectRun, onTriggerRun }: RunListProps) {
             {tableHeader}
             <tbody>
               {runs.map((run) => (
-                <RunRowItem key={run.id} run={run} taskNameMap={taskNameMap} onClick={() => onSelectRun(run.id)} />
+                <RunRowItem
+                  key={run.id}
+                  run={run}
+                  taskNameMap={taskNameMap}
+                  selected={selected.has(run.id)}
+                  onToggleSelected={toggleSelected}
+                  onSelectRun={onSelectRun}
+                  onRerun={setRerunSource}
+                />
               ))}
             </tbody>
           </table>
@@ -252,6 +352,49 @@ export function RunList({ onSelectRun, onTriggerRun }: RunListProps) {
         limit={DEFAULT_PAGE_SIZE}
         onPageChange={setOffset}
       />
+
+      {selected.size > 0 && (
+        <div
+          role="region"
+          aria-label="Run selection"
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 rounded-full bg-surface-container-high px-4 py-2 shadow-lg border border-outline-variant/30"
+        >
+          <span className="font-sans text-sm text-on-surface">
+            {selected.size} selected
+          </span>
+          <Button
+            size="sm"
+            variant="default"
+            className="gap-2"
+            disabled={selected.size < 2}
+            onClick={() => onCompareRuns([...selected])}
+          >
+            <GitCompare className="h-3.5 w-3.5" />
+            Compare {selected.size} {selected.size === 1 ? 'run' : 'runs'}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="gap-2 text-on-surface-variant"
+            onClick={clearSelection}
+          >
+            <X className="h-3.5 w-3.5" />
+            Clear selection
+          </Button>
+        </div>
+      )}
+
+      {/* "Rerun with same settings" dialog — opens pre-filled from rerunSource.
+          Conditionally mounted so the dialog's hook subscriptions
+          (useAgentTasks, useProviders, useScopedConfig, etc.) only run when
+          the operator actually triggers a rerun. */}
+      {rerunSource !== null && (
+        <RunTaskDialog
+          open
+          onOpenChange={(next) => { if (!next) setRerunSource(null); }}
+          sourceRun={rerunSource}
+        />
+      )}
     </div>
   );
 }
