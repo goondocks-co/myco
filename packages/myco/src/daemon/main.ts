@@ -123,6 +123,8 @@ import { createSchema } from '../db/schema.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
 import { createMcpProxyHandlers } from './api/mcp-proxy.js';
 import { createAgentRunHandlers } from './api/agent-runs.js';
+import { createAgentEvaluationHandlers } from './api/agent-evaluations.js';
+import { createDigestRevisionHandlers } from './api/digest-revisions.js';
 import { createAttachmentHandler } from './api/attachments.js';
 import { reconcileLogBuffer } from './log-reconcile.js';
 import { markRunningRunsInterrupted } from '../db/queries/runs.js';
@@ -700,6 +702,17 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/agent/runs/:id/resume', agentRunHandlers.handleResumeRun);
   server.registerRoute('GET', '/api/agent/runs/:id/reports', agentRunHandlers.handleGetRunReports);
   server.registerRoute('GET', '/api/agent/runs/:id/turns', agentRunHandlers.handleGetRunTurns);
+  server.registerRoute('GET', '/api/agent/runs/:id/write-intents', agentRunHandlers.handleGetRunWriteIntents);
+  server.registerRoute('GET', '/api/agent/runs/:id/audit', agentRunHandlers.handleGetRunAudit);
+
+  const agentEvalHandlers = createAgentEvaluationHandlers({ vaultDir, embeddingManager, logger });
+  server.registerRoute('POST', '/api/agent/evaluations', agentEvalHandlers.handleCreate);
+  server.registerRoute('GET', '/api/agent/evaluations', agentEvalHandlers.handleList);
+  server.registerRoute('GET', '/api/agent/evaluations/:id', agentEvalHandlers.handleGet);
+
+  const digestRevisionHandlers = createDigestRevisionHandlers({ vaultDir, logger });
+  server.registerRoute('GET', '/api/digest/revisions', digestRevisionHandlers.handleList);
+  server.registerRoute('POST', '/api/digest/revisions/:id/restore', digestRevisionHandlers.handleRestore);
 
   server.registerRoute('GET', '/api/agent/tasks', async (req) => handleListTasks(req, vaultDir));
   server.registerRoute('GET', '/api/agent/tasks/:id', async (req) => handleGetTask(req, vaultDir));
