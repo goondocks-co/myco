@@ -66,6 +66,10 @@ export interface EventDispatchDeps {
 // Factory
 // ---------------------------------------------------------------------------
 
+// Cap dropped-session cache to bound memory. Dropped sessions are rarely
+// revisited; FIFO eviction via Map ordering is sufficient.
+const DROP_DECISION_CACHE_MAX = 1024;
+
 export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
   const {
     registry,
@@ -82,6 +86,20 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
 
   const projectRoot = process.cwd();
   const manifests = loadManifests();
+
+  // Cache drop decisions by session_id so a rejected session that keeps firing
+  // events doesn't re-open + re-read (up to 128 KB) its transcript every time.
+  // Transcript first-line metadata doesn't change once written, so session_id
+  // is a stable cache key.
+  const droppedSessions = new Map<string, string | undefined>();
+
+  function rememberDropped(sessionId: string, reason: string | undefined): void {
+    if (droppedSessions.size >= DROP_DECISION_CACHE_MAX) {
+      const oldest = droppedSessions.keys().next().value;
+      if (oldest !== undefined) droppedSessions.delete(oldest);
+    }
+    droppedSessions.set(sessionId, reason);
+  }
 
   function evaluateAutoRegistration(event: Record<string, unknown>): { action: 'pass' } | { action: 'drop'; reason?: string } {
     const transcriptPath = typeof event.transcript_path === 'string' && event.transcript_path.length > 0
@@ -107,8 +125,18 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
 
     // Ensure session is registered (idempotent — handles daemon restarts mid-session)
     if (!registry.getSession(event.session_id)) {
+      if (droppedSessions.has(event.session_id)) {
+        const reason = droppedSessions.get(event.session_id) ?? 'rule';
+        logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Ignored event for previously-dropped session', {
+          session_id: event.session_id,
+          type: event.type,
+          reason,
+        });
+        return { body: { ok: true, ignored: reason } };
+      }
       const decision = evaluateAutoRegistration(event);
       if (decision.action === 'drop') {
+        rememberDropped(event.session_id, decision.reason);
         logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Ignored event that failed session capture rules', {
           session_id: event.session_id,
           type: event.type,

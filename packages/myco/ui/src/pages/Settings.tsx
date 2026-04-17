@@ -47,6 +47,7 @@ import { RestartGateProvider, RestartBanner } from '../components/config/restart
 import { useScopedConfig } from '../hooks/use-scoped-config';
 import { NotificationSettings } from '../components/notifications/NotificationSettings';
 import { ProviderModelSelector } from '../components/providers/ProviderModelSelector';
+import { ReasoningProfiles } from '../components/providers/ReasoningProfiles';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 type Provider = 'ollama' | 'openai-compatible';
@@ -317,60 +318,18 @@ function AgentProviderCard() {
       />
 
       {supportsReasoningMap && (
-        <div className="space-y-3 rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest p-3">
-          <div>
-            <p className="font-sans text-xs text-on-surface-variant uppercase tracking-wide">Reasoning Profiles</p>
-            <p className="font-sans text-xs text-on-surface-variant/80 mt-1">
-              Built-in tasks resolve `low`, `default`, and `high` reasoning phases through these model mappings.
-            </p>
-          </div>
-          {([
-            ['low', 'Reasoning Low'],
-            ['default', 'Reasoning Default'],
-            ['high', 'Reasoning High'],
-          ] as const).map(([level, label]) => {
-            const value = level === 'low'
-              ? draft.reasoningLow
-              : level === 'default'
-                ? draft.reasoningDefault
-                : draft.reasoningHigh;
-            const setValue = (next: string) => handleReasoningChange(level, next);
-            const placeholder = resolveReasoningModel(level, {
-              model: draft.model || undefined,
-              reasoning_map: {
-                ...(draft.reasoningLow ? { low: draft.reasoningLow } : {}),
-                ...(draft.reasoningDefault ? { default: draft.reasoningDefault } : {}),
-                ...(draft.reasoningHigh ? { high: draft.reasoningHigh } : {}),
-              },
-            }, draft.model);
-            return (
-              <div key={level} className="space-y-1">
-                <label className="font-sans text-xs text-on-surface-variant">{label}</label>
-                {reasoningModels.length > 0 ? (
-                  <SearchableSelect
-                    value={value}
-                    onValueChange={setValue}
-                    placeholder={placeholder || 'Use default model'}
-                    searchPlaceholder="Search models..."
-                    emptyMessage="No models match that search."
-                    options={reasoningModels.map((candidate) => ({
-                      value: candidate,
-                      label: candidate,
-                    }))}
-                    sortOptions
-                    monospace
-                  />
-                ) : (
-                  <Input
-                    value={value}
-                    onChange={(e) => setValue(e.target.value)}
-                    placeholder={placeholder || 'Use default model'}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
+        <ReasoningProfiles
+          description="Built-in tasks resolve `low`, `default`, and `high` reasoning phases through these model mappings."
+          values={{
+            low: draft.reasoningLow,
+            default: draft.reasoningDefault,
+            high: draft.reasoningHigh,
+          }}
+          onChange={handleReasoningChange}
+          models={reasoningModels}
+          fallbackModel={draft.model}
+          placeholderWhenEmpty="Use default model"
+        />
       )}
 
       {secretProvider && (

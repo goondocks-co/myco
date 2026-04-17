@@ -14,6 +14,7 @@ import {
 } from '../ui/select';
 import { SearchableSelect } from '../ui/searchable-select';
 import { ProviderModelSelector } from '../providers/ProviderModelSelector';
+import { ReasoningProfiles } from '../providers/ReasoningProfiles';
 import {
   defaultBaseUrlForProvider,
   useProviders,
@@ -327,7 +328,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
 
     // Build schedule payload: only include fields the user has overridden
     const schedulePayload = schedule
-      ? (Object.keys(scheduleOverride).length > 0 ? { schedule: scheduleOverride } : { schedule: null as unknown as ScheduleOverride })
+      ? (Object.keys(scheduleOverride).length > 0 ? { schedule: scheduleOverride } : { schedule: null })
       : {};
 
     // Build params payload: only include if task declares params
@@ -341,9 +342,9 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
         config: {
           runtime: effectiveRuntime as 'claude-sdk' | 'openai-agents',
           provider,
-          ...(maxTurns ? { maxTurns: Number(maxTurns) } : { maxTurns: null as unknown as number }),
-          ...(timeoutSeconds ? { timeoutSeconds: Number(timeoutSeconds) } : { timeoutSeconds: null as unknown as number }),
-          ...(Object.keys(phaseOverrides).length > 0 ? { phases: phaseOverrides } : { phases: null as unknown as Record<string, PhaseOverride> }),
+          maxTurns: maxTurns ? Number(maxTurns) : null,
+          timeoutSeconds: timeoutSeconds ? Number(timeoutSeconds) : null,
+          phases: Object.keys(phaseOverrides).length > 0 ? phaseOverrides : null,
           ...schedulePayload,
           ...paramsPayload,
         },
@@ -371,14 +372,14 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       {
         taskId,
         config: {
-          runtime: null as unknown as 'claude-sdk' | 'openai-agents',
-          provider: null as unknown as ProviderConfig,
-          model: null as unknown as string,
-          maxTurns: null as unknown as number,
-          timeoutSeconds: null as unknown as number,
-          phases: null as unknown as Record<string, PhaseOverride>,
-          schedule: null as unknown as ScheduleOverride,
-          params: null as unknown as Record<string, string | number | boolean>,
+          runtime: null,
+          provider: null,
+          model: null,
+          maxTurns: null,
+          timeoutSeconds: null,
+          phases: null,
+          schedule: null,
+          params: null,
         },
       },
       {
@@ -442,59 +443,19 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       />
 
       {providerType !== '' && (
-        <div className="space-y-3 rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest p-3">
-          <div>
-            <p className="font-sans text-xs text-on-surface-variant uppercase tracking-wide">Reasoning Profiles</p>
-            <p className="font-sans text-xs text-on-surface-variant/80 mt-1">
-              Built-in task reasoning levels resolve through these task-level model mappings before falling back to the inherited defaults.
-            </p>
-          </div>
-          {([
-            ['low', 'Reasoning Low', reasoningLow],
-            ['default', 'Reasoning Default', reasoningDefault],
-            ['high', 'Reasoning High', reasoningHigh],
-          ] as const).map(([level, label, value]) => {
-            const placeholder = resolveReasoningModel(
-              level,
-              {
-                model: model || undefined,
-                reasoning_map: {
-                  ...(reasoningLow ? { low: reasoningLow } : {}),
-                  ...(reasoningDefault ? { default: reasoningDefault } : {}),
-                  ...(reasoningHigh ? { high: reasoningHigh } : {}),
-                },
-              },
-              defaults?.reasoningMap?.[level] ?? defaults?.model,
-            );
-
-            return (
-              <div key={level} className="space-y-1">
-                <label className="font-sans text-xs text-on-surface-variant">{label}</label>
-                {reasoningModels.length > 0 ? (
-                  <SearchableSelect
-                    value={value}
-                    onValueChange={(next) => { handleDraftReasoningChange(level, next); }}
-                    placeholder={placeholder || 'Use inherited model'}
-                    searchPlaceholder="Search models..."
-                    emptyMessage="No models match that search."
-                    options={reasoningModels.map((candidate) => ({
-                      value: candidate,
-                      label: candidate,
-                    }))}
-                    sortOptions
-                    monospace
-                  />
-                ) : (
-                  <Input
-                    value={value}
-                    onChange={(e) => { handleDraftReasoningChange(level, e.target.value); }}
-                    placeholder={placeholder || 'Use inherited model'}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
+        <ReasoningProfiles
+          description="Built-in task reasoning levels resolve through these task-level model mappings before falling back to the inherited defaults."
+          values={{
+            low: reasoningLow,
+            default: reasoningDefault,
+            high: reasoningHigh,
+          }}
+          onChange={handleDraftReasoningChange}
+          models={reasoningModels}
+          fallbackModel={model || defaults?.model}
+          fallbackReasoningMap={defaults?.reasoningMap}
+          placeholderWhenEmpty="Use inherited model"
+        />
       )}
 
       {/* Task-level maxTurns + timeout */}

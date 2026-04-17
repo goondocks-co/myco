@@ -60,7 +60,7 @@ const LOCAL_BACKEND_DEFINITIONS: Record<LocalOpenAIBackendKind, LocalBackendDefi
   },
 };
 
-function tryParseUrl(value: string | undefined): URL | null {
+export function tryParseUrl(value: string | undefined): URL | null {
   if (!value) return null;
   try {
     return new URL(value);

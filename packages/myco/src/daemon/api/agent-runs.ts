@@ -84,8 +84,31 @@ function buildPhaseCheckpointSummary(checkpointsRaw: string | null): PhaseCheckp
 
 function serializeRun(run: RunRow) {
   return {
-    ...run,
+    id: run.id,
+    agent_id: run.agent_id,
+    task: run.task,
+    instruction: run.instruction,
+    status: run.status,
+    runtime: run.runtime,
+    provider: run.provider,
+    model: run.model,
+    session_ref: run.session_ref,
     resumable: run.resumable === 1,
+    resume_status: run.resume_status,
+    resume_mode: run.resume_mode,
+    resumed_at: run.resumed_at,
+    checkpoints: run.checkpoints,
+    usage_data: run.usage_data,
+    started_at: run.started_at,
+    completed_at: run.completed_at,
+    tokens_used: run.tokens_used,
+    cost_usd: run.cost_usd,
+    actual_cost_usd: run.actual_cost_usd,
+    estimated_cost_usd: run.estimated_cost_usd,
+    cost_source: run.cost_source,
+    cost_data: run.cost_data,
+    actions_taken: run.actions_taken,
+    error: run.error,
     phase_checkpoints: buildPhaseCheckpointSummary(run.checkpoints),
   };
 }

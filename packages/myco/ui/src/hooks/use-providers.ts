@@ -71,6 +71,10 @@ export interface ProviderDraft {
   contextLength: string;
 }
 
+// Canonical defaults live server-side (OllamaBackend.DEFAULT_BASE_URL,
+// LmStudioBackend.DEFAULT_BASE_URL). Mirrored here so the UI can suggest
+// a default without waiting for the /providers round trip when the user
+// switches local_backend. Keep in sync with the server constants.
 export const LOCAL_BACKEND_DEFAULT_BASE_URLS = {
   ollama: 'http://localhost:11434',
   lmstudio: 'http://localhost:1234',
@@ -223,9 +227,14 @@ export interface TestProviderResponse {
   error?: string;
 }
 
+/** Patch shape: each field is optional and may be `null` to clear the override. */
+export type TaskConfigPatch = {
+  [K in keyof TaskConfigOverride]?: TaskConfigOverride[K] | null;
+};
+
 export interface UpdateTaskConfigPayload {
   taskId: string;
-  config: Partial<TaskConfigOverride> & { [key: string]: unknown };
+  config: TaskConfigPatch;
 }
 
 /* ---------- Hooks ---------- */

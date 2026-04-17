@@ -569,6 +569,8 @@ export const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs (status)',
   'CREATE INDEX IF NOT EXISTS idx_agent_runs_agent_status ON agent_runs (agent_id, status)',
   'CREATE INDEX IF NOT EXISTS idx_agent_runs_task_completed ON agent_runs (task, status, completed_at)',
+  'CREATE INDEX IF NOT EXISTS idx_agent_runs_task_status_started_at ON agent_runs (task, status, started_at)',
+  'CREATE INDEX IF NOT EXISTS idx_agent_runs_resumable_task ON agent_runs (task, resumable, completed_at)',
 
   // Agent reports
   'CREATE INDEX IF NOT EXISTS idx_agent_reports_run_id ON agent_reports (run_id)',
