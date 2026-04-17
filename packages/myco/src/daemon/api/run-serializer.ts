@@ -1,0 +1,132 @@
+/**
+ * Shared serializer for agent_runs rows exposed via API.
+ *
+ * The list/detail handlers in `agent-runs.ts` and the evaluation detail
+ * handler in `agent-evaluations.ts` both need to turn a `RunRow` into a
+ * JSON-safe payload. This module centralizes that logic so both call sites
+ * agree on field naming, optional field inclusion, and the embedded
+ * phase-checkpoint projection.
+ */
+
+import type { RunRow } from '@myco/db/queries/runs.js';
+
+export interface PhaseCheckpointSummary {
+  name: string;
+  status: string;
+  updatedAt: number;
+  tokensUsed?: number;
+  costUsd?: number;
+  costSource?: string;
+}
+
+/**
+ * Parse the run's `checkpoints` JSON blob and project a flat list of
+ * phase summaries. Corruption degrades to an empty array.
+ */
+export function buildPhaseCheckpointSummary(
+  checkpointsRaw: string | null,
+): PhaseCheckpointSummary[] {
+  if (!checkpointsRaw) return [];
+  try {
+    const parsed = JSON.parse(checkpointsRaw) as {
+      phases?: Record<string, {
+        name?: string;
+        status?: string;
+        updatedAt?: number;
+        tokensUsed?: number;
+        costUsd?: number;
+        costSource?: string;
+      }>;
+    };
+    return Object.entries(parsed.phases ?? {}).map(([name, phase]) => ({
+      name: phase.name ?? name,
+      status: phase.status ?? 'pending',
+      updatedAt: phase.updatedAt ?? 0,
+      ...(phase.tokensUsed !== undefined ? { tokensUsed: phase.tokensUsed } : {}),
+      ...(phase.costUsd !== undefined ? { costUsd: phase.costUsd } : {}),
+      ...(phase.costSource !== undefined ? { costSource: phase.costSource } : {}),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export interface SerializeRunOptions {
+  /** Include resume-related fields (resumable/resume_status/resume_mode/resumed_at). Default true. */
+  includeResumeFields?: boolean;
+  /** Include the embedded `phase_checkpoints` projection. Default true. */
+  includePhaseCheckpoints?: boolean;
+  /**
+   * Per-tool write-intent summary to embed as `write_intents`. Pass `null`
+   * (or omit entirely) to skip the field — evaluation child rows populate
+   * it, plain run list rows do not.
+   */
+  writeIntents?: { total: number; by_tool: Record<string, number> } | null;
+  /**
+   * Duration (milliseconds) to embed as `duration_ms`. Omit entirely to
+   * skip; evaluation child rows attach it, plain run rows do not.
+   */
+  duration_ms?: number | null;
+}
+
+/**
+ * Serialize a run row to the shape expected by all API consumers. Options
+ * toggle the resume/checkpoint fields that only the primary runs endpoint
+ * needs, and add the evaluation-only `write_intents` / `duration_ms`
+ * fields on demand.
+ */
+export function serializeRun(run: RunRow, opts: SerializeRunOptions = {}) {
+  const {
+    includeResumeFields = true,
+    includePhaseCheckpoints = true,
+    writeIntents,
+    duration_ms,
+  } = opts;
+
+  const base = {
+    id: run.id,
+    agent_id: run.agent_id,
+    task: run.task,
+    instruction: run.instruction,
+    status: run.status,
+    runtime: run.runtime,
+    provider: run.provider,
+    model: run.model,
+    session_ref: run.session_ref,
+    started_at: run.started_at,
+    completed_at: run.completed_at,
+    tokens_used: run.tokens_used,
+    cost_usd: run.cost_usd,
+    actual_cost_usd: run.actual_cost_usd,
+    estimated_cost_usd: run.estimated_cost_usd,
+    cost_source: run.cost_source,
+    cost_data: run.cost_data,
+    actions_taken: run.actions_taken,
+    usage_data: run.usage_data,
+    error: run.error,
+    dry_run: run.dry_run,
+    evaluation_id: run.evaluation_id,
+    reasoning_level: run.reasoning_level,
+    execution_overrides: run.execution_overrides,
+  };
+
+  return {
+    ...base,
+    ...(includeResumeFields
+      ? {
+          resumable: run.resumable === 1,
+          resume_status: run.resume_status,
+          resume_mode: run.resume_mode,
+          resumed_at: run.resumed_at,
+          checkpoints: run.checkpoints,
+        }
+      : {}),
+    ...(includePhaseCheckpoints
+      ? { phase_checkpoints: buildPhaseCheckpointSummary(run.checkpoints) }
+      : {}),
+    ...(writeIntents !== undefined && writeIntents !== null
+      ? { write_intents: writeIntents }
+      : {}),
+    ...(duration_ms !== undefined ? { duration_ms } : {}),
+  };
+}

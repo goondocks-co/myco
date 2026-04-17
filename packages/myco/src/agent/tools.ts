@@ -17,10 +17,12 @@
  * automatically so the agent cannot impersonate another agent.
  */
 
+import crypto from 'node:crypto';
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { epochSeconds } from '@myco/constants.js';
 import { getPluginVersion } from '@myco/version.js';
 import { insertTurn, updateTurn } from '@myco/db/queries/turns.js';
+import { insertWriteIntent } from '@myco/db/queries/write-intents.js';
 import { createReadTools } from './tools/read-tools.js';
 import { createWriteTools } from './tools/write-tools.js';
 import { createObservabilityTools } from './tools/observability-tools.js';
@@ -44,7 +46,110 @@ export interface VaultToolOptions {
   machineId?: string;
   projectRoot?: string;
   vaultDir?: string;
+  /**
+   * When true, every vault-mutating tool (except the documented
+   * exceptions below) is wrapped in a dry-run interceptor that records
+   * the write intent to `agent_run_write_intents` and returns a
+   * synthetic success payload instead of performing the real write.
+   *
+   * Exceptions (still run for real in dry-run):
+   *   - vault_report — observability, not a vault mutation
+   *   - vault_stage_skill — writes to .myco/staging/ only, which is
+   *     already safe and sweepable
+   *
+   * Blocked entirely in dry-run (returns a dryRunResult ack without
+   * running the handler or recording an intent row here — skill-tools
+   * handles it in-handler):
+   *   - vault_finalize_skill — promotion is a no-op under dry-run
+   */
+  dryRun?: boolean;
 }
+
+/**
+ * Tool names that MUST NOT be intercepted by the central dry-run wrapper.
+ *
+ *  - vault_report: observability. We want real report rows so operators
+ *    can read the dry-run's self-narration after the fact.
+ *  - vault_stage_skill: writes to .myco/staging/skills/<id>/ only. The
+ *    staging dir is already designed to be sweepable and is never
+ *    promoted unless vault_finalize_skill runs — which is itself blocked
+ *    in dry-run.
+ *  - vault_finalize_skill: blocked inside the handler via `deps.dryRun`
+ *    in skill-tools.ts (returns a dryRunResult without promoting). The
+ *    handler owns this because promotion is a multi-step cross-cutting
+ *    operation (disk + DB + symlinks + notifications) that can't be
+ *    expressed by the generic interceptor's synthetic-payload shape.
+ *    Exempting it here lets the in-handler short-circuit run.
+ */
+const DRY_RUN_EXEMPT_TOOLS = new Set<string>([
+  'vault_report',
+  'vault_stage_skill',
+  'vault_finalize_skill',
+]);
+
+/**
+ * Tools that mint an id when they write to the live tables. In dry-run
+ * the interceptor creates a synthetic `dry-run:<uuid>` id, records it
+ * in a per-closure stub map, and stitches it into the synthetic output
+ * so downstream tool calls that reference the id keep working.
+ *
+ * `buildSynthetic` receives the validated args plus `agentId` + `now`
+ * (epoch seconds) and returns the object that will be JSON-serialised
+ * as the tool response payload. The shape MUST match what the real
+ * handler would have returned on success.
+ */
+interface StubToolSpec {
+  /** Arg name on the input side that (if set) should be recorded as the
+   * "referring" stub — only used by `vault_resolve_spore` right now. */
+  stubLookupField?: string;
+  buildSynthetic: (args: Record<string, unknown>, stubId: string, agentId: string, now: number) => object;
+}
+
+const DRY_RUN_STUB_TOOLS = new Map<string, StubToolSpec>([
+  ['vault_create_spore', {
+    buildSynthetic: (args, stubId, agentId, now) => ({
+      id: stubId,
+      agent_id: agentId,
+      observation_type: args.observation_type,
+      content: args.content,
+      session_id: args.session_id ?? null,
+      prompt_batch_id: args.prompt_batch_id ?? null,
+      importance: args.importance ?? 5,
+      tags: args.tags ? JSON.stringify(args.tags) : null,
+      context: args.context ?? null,
+      file_path: args.file_path ?? null,
+      properties: args.properties ?? null,
+      status: 'active',
+      created_at: now,
+    }),
+  }],
+  ['vault_create_entity', {
+    buildSynthetic: (args, stubId, agentId, now) => ({
+      id: stubId,
+      agent_id: agentId,
+      type: args.type,
+      name: args.name,
+      properties: args.properties ? JSON.stringify(args.properties) : null,
+      first_seen: now,
+      last_seen: now,
+    }),
+  }],
+  ['vault_create_edge', {
+    buildSynthetic: (args, stubId, agentId, now) => ({
+      id: stubId,
+      agent_id: agentId,
+      source_id: args.source_id,
+      source_type: args.source_type,
+      target_id: args.target_id,
+      target_type: args.target_type,
+      type: args.type,
+      session_id: args.session_id ?? null,
+      confidence: args.confidence ?? 1.0,
+      properties: args.properties ? JSON.stringify(args.properties) : null,
+      created_at: now,
+    }),
+  }],
+]);
 
 // ---------------------------------------------------------------------------
 // Tool definitions factory
@@ -161,12 +266,32 @@ function shouldGuardRepeatedRead(toolDef: SdkMcpToolDefinition<any>): boolean {
  * Exposed for testing (call handler directly) and for the MCP server factory.
  */
 export function createVaultTools(agentId: string, runId: string, options?: VaultToolOptions & { onlyNames?: Set<string> }) {
-  const { turnOffset = 0, embeddingManager, teamClient, machineId, projectRoot, vaultDir, onlyNames } = options ?? {};
+  const { turnOffset = 0, embeddingManager, teamClient, machineId, projectRoot, vaultDir, dryRun, onlyNames } = options ?? {};
 
   /** Turn number counter — incremented per tool call (read and write) within a run. */
   let turnCounter = turnOffset;
   /** Exact-read loop counters for the current tool server instance. */
   const repeatedReadCounts = new Map<string, number>();
+  /**
+   * In-memory stub-id map for dry-run mode. Every time the interceptor
+   * mints a `dry-run:<uuid>` id, it records the synthetic row keyed by
+   * the stub id. Downstream tools that reference ids (today only
+   * `vault_resolve_spore` via `spore_id`) look up the map first so the
+   * dry-run remains coherent across a chain of tool calls.
+   *
+   * Lives in the closure alongside `turnCounter` — identical lifetime.
+   *
+   * KNOWN LIMITATION — per-phase only: this map is scoped to a single
+   * `createVaultTools` call, which means it's recreated for every phase
+   * (see `createScopedVaultToolServer`). A stub id minted in phase A
+   * cannot be resolved in phase B — the phase-B closure starts with an
+   * empty map and any lookup falls through to the "stub miss" generic
+   * ack path in `vault_resolve_spore`. Cross-phase stub resolution would
+   * require lifting the map to a module-level run-keyed registry with
+   * explicit cleanup on run end; not done today because phase A writes
+   * are rarely referenced by phase B reads/writes in practice.
+   */
+  const dryRunStubs = new Map<string, { tool: string; args: unknown; syntheticRow: unknown }>();
 
   /**
    * Record a turn in the audit trail.
@@ -199,6 +324,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     machineId,
     projectRoot,
     vaultDir,
+    dryRun,
     recordTurn,
   };
 
@@ -211,16 +337,141 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     ...(needsAll || setsOverlap(onlyNames!, SKILL_TOOL_NAMES) ? createSkillTools(deps) : []),
   ];
 
-  return tools.map((toolDef) => wrapToolWithAudit(toolDef as SdkMcpToolDefinition<any>)) as typeof tools;
+  return tools.map((toolDef) => {
+    const typed = toolDef as SdkMcpToolDefinition<any>;
+    // Dry-run interceptor is applied FIRST (replacing the handler),
+    // THEN the audit wrapper wraps on top. This way the audit trail
+    // still records a turn for every intercepted call — the audit
+    // wrapper calls our dry-run handler as its "original" and captures
+    // the synthetic payload just like any other response.
+    //
+    // A tool qualifies for interception when dryRun is on, it is not
+    // a read (readOnlyHint !== true), and it is not on the exception
+    // list (DRY_RUN_EXEMPT_TOOLS).
+    const shouldIntercept = Boolean(dryRun)
+      && typed.annotations?.readOnlyHint !== true
+      && !DRY_RUN_EXEMPT_TOOLS.has(typed.name);
+    const inner = shouldIntercept ? wrapToolWithDryRun(typed) : typed;
+    return wrapToolWithAudit(inner);
+  }) as typeof tools;
+
+  /**
+   * Outer wrapper applied only when `dryRun === true` and the tool is a
+   * non-exempt write. Intercepts the call, records the intent, mints a
+   * stub id for id-producing tools, and returns a synthetic MCP payload
+   * WITHOUT calling the original handler.
+   *
+   * The interceptor never throws from its own bookkeeping (intent insert
+   * failures are swallowed, same pattern as recordTurn) — a broken
+   * write-intent log must not cascade into tool failures that confuse
+   * the dry-run agent.
+   */
+  function wrapToolWithDryRun(toolDef: SdkMcpToolDefinition<any>): SdkMcpToolDefinition<any> {
+    return {
+      ...toolDef,
+      handler: async (args) => {
+        const now = epochSeconds();
+        const stubSpec = DRY_RUN_STUB_TOOLS.get(toolDef.name);
+
+        let stubId: string | null = null;
+        let syntheticPayload: object;
+
+        if (stubSpec) {
+          stubId = `dry-run:${crypto.randomUUID()}`;
+          const syntheticRow = stubSpec.buildSynthetic(
+            (args ?? {}) as Record<string, unknown>,
+            stubId,
+            agentId,
+            now,
+          );
+          dryRunStubs.set(stubId, { tool: toolDef.name, args, syntheticRow });
+          syntheticPayload = syntheticRow;
+        } else if (toolDef.name === 'vault_resolve_spore') {
+          // Resolve is a write that doesn't mint an id on its own, but
+          // it references a spore_id that MAY be a previously-minted
+          // stub. Two cases:
+          //   (a) stub hit — return a plausible resolution-event record
+          //       with the stubbed spore attached.
+          //   (b) stub miss — the agent may be resolving a real live
+          //       spore (reads remain live in dry-run), so we still
+          //       record the intent and return a generic ack. No throw.
+          const sporeIdRaw = (args as { spore_id?: unknown } | undefined)?.spore_id;
+          const sporeId = typeof sporeIdRaw === 'string' ? sporeIdRaw : undefined;
+          const match = sporeId ? dryRunStubs.get(sporeId) : undefined;
+          const eventStubId = `dry-run:${crypto.randomUUID()}`;
+          if (match) {
+            syntheticPayload = {
+              spore: match.syntheticRow,
+              resolution_event_id: eventStubId,
+            };
+          } else {
+            syntheticPayload = {
+              dryRun: true,
+              skipped: true,
+              tool: toolDef.name,
+              resolution_event_id: eventStubId,
+              spore_id: sporeId ?? null,
+              note: 'spore_id did not match a dry-run stub; intent recorded against the live id',
+            };
+          }
+          stubId = eventStubId;
+        } else {
+          // Generic write with no id to mint: return the positive-signal
+          // dry-run ack payload. Echoes args so the agent can reason
+          // about what it "wrote".
+          syntheticPayload = {
+            dryRun: true,
+            skipped: true,
+            tool: toolDef.name,
+            intercepted: true,
+            args_echo: args,
+          };
+        }
+
+        // Serialize once, reuse for both the MCP response and the
+        // write-intent row. Prior to this optimization, the synthetic
+        // payload and args were each stringified twice per intercepted
+        // call (once for the response, once for the intent row).
+        const serializedPayload = JSON.stringify(syntheticPayload);
+        const serializedArgs = JSON.stringify(args ?? {});
+
+        const response = {
+          content: [{
+            type: 'text' as const,
+            text: serializedPayload,
+          }],
+        };
+
+        try {
+          insertWriteIntent({
+            runId,
+            phaseId: null,
+            toolName: toolDef.name,
+            toolInput: serializedArgs,
+            syntheticOutput: serializedPayload,
+            stubId,
+          });
+        } catch {
+          /* write-intent log is best-effort, same as recordTurn */
+        }
+
+        return response;
+      },
+    };
+  }
 
   function wrapToolWithAudit(toolDef: SdkMcpToolDefinition<any>): SdkMcpToolDefinition<any> {
     const originalHandler = toolDef.handler;
     return {
       ...toolDef,
       handler: async (args, extra) => {
-        const serializedArgs = JSON.stringify(args);
+        // Only serialize args when we actually need the key — guarded
+        // reads use it to detect identical-payload loops. For all other
+        // tool calls (writes, non-guarded reads) the serialization is
+        // pure waste since `recordTurn` does its own stringify inside
+        // `insertTurn`.
         const repeatedReadKey = shouldGuardRepeatedRead(toolDef)
-          ? `${toolDef.name}\u0000${serializedArgs}`
+          ? `${toolDef.name}\u0000${JSON.stringify(args)}`
           : null;
         const priorIdenticalCalls = repeatedReadKey
           ? (repeatedReadCounts.get(repeatedReadKey) ?? 0)
@@ -302,7 +553,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
  * @param runId — the current agent run ID, injected into reports and turns.
  * @returns an MCP server config with instance, suitable for the SDK.
  */
-export function createVaultToolServer(agentId: string, runId: string, options?: Pick<VaultToolOptions, 'embeddingManager' | 'vaultDir'>) {
+export function createVaultToolServer(agentId: string, runId: string, options?: Pick<VaultToolOptions, 'embeddingManager' | 'vaultDir' | 'dryRun'>) {
   const tools = createVaultTools(agentId, runId, options);
 
   return createSdkMcpServer({
@@ -327,7 +578,7 @@ export function createScopedVaultToolServer(
   agentId: string,
   runId: string,
   toolNames: string[],
-  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir'> & { readOnly?: boolean },
+  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'dryRun'> & { readOnly?: boolean },
 ) {
   const nameSet = new Set(toolNames);
   const allTools = createVaultTools(agentId, runId, { ...options, onlyNames: nameSet });

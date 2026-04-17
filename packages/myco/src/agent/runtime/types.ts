@@ -15,6 +15,12 @@ export interface RuntimeToolSurface {
   vaultDir?: string;
   readOnly?: boolean;
   embeddingManager?: EmbeddingManager;
+  /**
+   * If true, the scoped tool server wraps write-annotated tools to record
+   * intents instead of mutating the vault. Set by the executor from
+   * RunOptions.dryRun.
+   */
+  dryRun?: boolean;
 }
 
 export interface RuntimeExecuteInput {

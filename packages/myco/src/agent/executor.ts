@@ -56,6 +56,7 @@ import type {
   EffectiveConfig,
   PhaseDefinition,
   PhaseResult,
+  ReasoningLevel,
   RuntimeUsage,
 } from './types.js';
 
@@ -99,6 +100,121 @@ function logTokenBudgetPressure(
     `[agent] ${taskName} token budget ${budget.status}: ` +
     `${budget.utilizationPercent}% of ${budget.contextWindowTokens} tokens ` +
     `at peak request (${budget.peakRequestTotalTokens} tokens)`,
+  );
+}
+
+/**
+ * myco.yaml-sourced per-phase provider / model / maxTurns overrides, keyed
+ * by phase name. Passed through `resolveRunConfig` alongside the
+ * task-level provider override.
+ */
+export interface MycoYamlPhaseOverrides {
+  [phaseName: string]: {
+    provider?: ProviderConfig;
+    model?: string;
+    maxTurns?: number;
+  };
+}
+
+/**
+ * Compute the effective `{ reasoningLevel, model, provider, maxTurns }` for
+ * a single phase by reconciling all layered sources. Extracted for
+ * unit-testability — the wave loop calls this helper directly.
+ *
+ * Provider precedence (highest → lowest):
+ *   1. `options.executionOverrides.phases[name].provider` — run override
+ *   2. `phase.provider` — task YAML
+ *   3. `phaseProviderOverrides[name].provider` — myco.yaml per-phase override
+ *   4. `options.executionOverrides.provider` — top-level run override
+ *   5. `provider` parameter — task default / task override from myco.yaml
+ *
+ * Model precedence (highest → lowest):
+ *   1. `options.executionOverrides.phases[name].model`
+ *   2. `phaseProviderOverrides[name].model` (myco.yaml)
+ *   3. `resolveReasoningModel(effectiveReasoning, provider, fallback)`
+ *      where `fallback = phase.model ?? options.executionOverrides.model
+ *      ?? config.model`
+ *
+ * Reasoning precedence (highest → lowest):
+ *   1. `options.executionOverrides.phases[name].reasoningLevel`
+ *   2. `phase.reasoningLevel` (task YAML)
+ *   3. `options.executionOverrides.reasoningLevel`
+ *   4. `config.execution.reasoningLevel`
+ *   5. `config.reasoningLevel`
+ *
+ * maxTurns precedence (highest → lowest):
+ *   1. `options.executionOverrides.phases[name].maxTurns`
+ *   2. `phaseProviderOverrides[name].maxTurns` (myco.yaml)
+ *   3. `phase.maxTurns` (task YAML)
+ */
+export function resolvePhaseExecution(
+  phase: PhaseDefinition,
+  options: RunOptions | undefined,
+  config: EffectiveConfig,
+  provider: ProviderConfig | undefined,
+  phaseProviderOverrides?: MycoYamlPhaseOverrides,
+): { reasoningLevel: ReasoningLevel | undefined; model: string; maxTurns: number; provider: ProviderConfig | undefined } {
+  const runPhaseOverride = options?.executionOverrides?.phases?.[phase.name];
+  const topOverride = options?.executionOverrides;
+  const mycoYamlPhase = phaseProviderOverrides?.[phase.name];
+
+  const effectiveProvider: ProviderConfig | undefined =
+    runPhaseOverride?.provider
+    ?? phase.provider
+    ?? mycoYamlPhase?.provider
+    ?? topOverride?.provider
+    ?? provider;
+
+  const effectiveReasoning: ReasoningLevel | undefined =
+    runPhaseOverride?.reasoningLevel
+    ?? phase.reasoningLevel
+    ?? topOverride?.reasoningLevel
+    ?? config.execution?.reasoningLevel
+    ?? config.reasoningLevel;
+
+  const fallbackModel =
+    phase.model
+    ?? topOverride?.model
+    ?? config.model;
+
+  const effectiveModel =
+    runPhaseOverride?.model
+    ?? mycoYamlPhase?.model
+    ?? resolveReasoningModel(effectiveReasoning, effectiveProvider, fallbackModel);
+
+  const effectiveMaxTurns =
+    runPhaseOverride?.maxTurns
+    ?? mycoYamlPhase?.maxTurns
+    ?? phase.maxTurns;
+
+  return {
+    reasoningLevel: effectiveReasoning,
+    model: effectiveModel,
+    maxTurns: effectiveMaxTurns,
+    provider: effectiveProvider,
+  };
+}
+
+/**
+ * Warn once per run when `executionOverrides.phases` contains keys that do
+ * not match any phase in the task. The warning lists the unknown keys and
+ * the task's actual phase names so callers can correct their payload.
+ */
+function warnUnknownPhaseOverrides(
+  options: RunOptions | undefined,
+  taskPhases: readonly PhaseDefinition[] | undefined,
+): void {
+  const overridePhases = options?.executionOverrides?.phases;
+  if (!overridePhases) return;
+  const keys = Object.keys(overridePhases);
+  if (keys.length === 0) return;
+  const known = new Set((taskPhases ?? []).map((p) => p.name));
+  const unknown = keys.filter((k) => !known.has(k));
+  if (unknown.length === 0) return;
+  const taskPhaseNames = (taskPhases ?? []).map((p) => p.name);
+  console.warn(
+    `[agent] Unknown phase override keys: ${unknown.join(', ')} ` +
+    `(task phases: ${taskPhaseNames.join(', ') || '<none>'})`,
   );
 }
 
@@ -203,6 +319,7 @@ async function executePhase(
     vaultDir?: string;
     readOnly?: boolean;
     embeddingManager?: RunOptions['embeddingManager'];
+    dryRun?: boolean;
   },
   provider?: ProviderConfig,
   sessionId?: string,
@@ -323,6 +440,7 @@ async function executeSingleQuery(
       runId,
       vaultDir,
       embeddingManager,
+      dryRun: config.dryRun ?? false,
     },
   });
   const costData = await resolveCost({
@@ -375,6 +493,7 @@ async function executePhasedQuery(
   vaultDir?: string,
   checkpointState?: RunCheckpointState,
   persistCheckpoints?: (state: RunCheckpointState, phases: PhaseResult[]) => Promise<void>,
+  options?: RunOptions,
 ): Promise<{ tokensUsed: number; costUsd: number | null; costData: CostResolution; usage: RuntimeUsage; phases: PhaseResult[] }> {
   const phases = config.phases!;
   const state = checkpointState ?? {
@@ -424,6 +543,7 @@ async function executePhasedQuery(
         runId,
         toolNames: [],
         vaultDir,
+        dryRun: config.dryRun ?? false,
       },
       abortController,
     });
@@ -457,14 +577,20 @@ async function executePhasedQuery(
         instruction,
       );
 
-      const phaseOverride = phaseProviderOverrides?.[phase.name];
-      const effectiveMaxTurns = phaseOverride?.maxTurns ?? phase.maxTurns;
-      const phaseModel = phaseOverride?.model ?? phase.model ?? resolveReasoningModel(
-        phase.reasoningLevel ?? config.execution?.reasoningLevel ?? config.reasoningLevel,
-        phase.provider ?? phaseOverride?.provider ?? taskProviderOverride ?? config.execution?.provider,
-        config.model,
+      // Single canonical precedence resolution — covers run overrides,
+      // phase YAML, myco.yaml per-phase overrides, top-level run override,
+      // and the task default. See `resolvePhaseExecution` JSDoc for the
+      // full precedence table.
+      const resolved = resolvePhaseExecution(
+        phase,
+        options,
+        config,
+        taskProviderOverride ?? config.execution?.provider,
+        phaseProviderOverrides,
       );
-      const phaseProvider = phase.provider ?? phaseOverride?.provider ?? taskProviderOverride ?? config.execution?.provider;
+      const phaseProvider = resolved.provider;
+      const effectiveMaxTurns = resolved.maxTurns;
+      const phaseModel = resolved.model;
       const existingCheckpoint = state.phases[phase.name];
       const sessionId = existingCheckpoint?.sessionRef ?? phaseSessionId(runId, phase.name);
       const effectivePhase = effectiveMaxTurns !== phase.maxTurns
@@ -503,6 +629,7 @@ async function executePhasedQuery(
           vaultDir,
           readOnly: phase.readOnly,
           embeddingManager,
+          dryRun: config.dryRun ?? false,
         },
       };
     });
@@ -657,21 +784,68 @@ export async function runAgent(
   }
 
   const {
-    config,
+    config: resolvedConfig,
     definitionsDir,
     taskProviderOverride: resolvedTaskProvider,
     phaseProviderOverrides: resolvedPhaseOverrides,
   } = resolveRunConfig(agentId, requestedTask, vaultDir);
 
+  // Build an effective config for this run by layering per-run overrides
+  // on top of the resolved config WITHOUT mutating the resolveRunConfig
+  // return value. Each cell in an evaluation matrix reuses the task's
+  // resolved config and varies one or more of runtime / reasoning / model —
+  // downstream code (provider selection, model routing, runtime dispatch)
+  // reads from these fields, so we produce a fresh EffectiveConfig here.
+  const overrideRuntime = options?.executionOverrides?.runtime;
+  const overrideReasoning = options?.executionOverrides?.reasoningLevel;
+  const overrideModel = options?.executionOverrides?.model;
+  const config: EffectiveConfig = {
+    ...resolvedConfig,
+    dryRun: options?.dryRun ?? false,
+    ...(overrideRuntime ? { runtime: overrideRuntime } : {}),
+    ...(overrideReasoning ? { reasoningLevel: overrideReasoning } : {}),
+    ...(overrideModel ? { model: overrideModel } : {}),
+    ...(overrideReasoning && resolvedConfig.execution
+      ? { execution: { ...resolvedConfig.execution, reasoningLevel: overrideReasoning } }
+      : {}),
+    ...(overrideModel && resolvedConfig.execution?.provider
+      ? {
+          execution: {
+            ...(resolvedConfig.execution ?? {}),
+            ...(overrideReasoning ? { reasoningLevel: overrideReasoning } : {}),
+            provider: {
+              ...resolvedConfig.execution.provider,
+              model: overrideModel,
+            },
+          },
+        }
+      : {}),
+  };
+
+  // Emit a single run-startup warning (not per-phase) when the caller passed
+  // `executionOverrides.phases` with keys that don't match this task's
+  // phases — including the non-phased case, where any phases key is dead.
+  warnUnknownPhaseOverrides(options, config.phases);
+
   // Both are mutated by the Ollama variant resolver below — it rewrites
   // provider.model to the variant name and may reconcile context conflicts.
-  let taskProviderOverride = resolvedTaskProvider;
+  // If a top-level provider override was supplied via RunOptions, treat it as
+  // the task-level provider for this run so phased + single-query paths see
+  // it uniformly. Phase-level overrides still win at the phase boundary.
+  let taskProviderOverride = options?.executionOverrides?.provider ?? resolvedTaskProvider;
   let phaseProviderOverrides = resolvedPhaseOverrides;
 
   const runId = options?.resumeRunId ?? crypto.randomUUID();
   const now = epochSeconds();
   let runtimeId = config.runtime;
-  const baseProvider = taskProviderOverride ?? config.execution?.provider;
+  // Top-level provider override from RunOptions.executionOverrides wins over
+  // both the myco.yaml task override AND the task YAML execution provider.
+  // This lets an operator (RunTaskDialog / eval matrix) swap provider/base URL/
+  // context length for a single run without modifying any persistent config.
+  const baseProvider =
+    options?.executionOverrides?.provider
+    ?? taskProviderOverride
+    ?? config.execution?.provider;
   let effectiveModel = resolveReasoningModel(
     config.execution?.reasoningLevel ?? config.reasoningLevel,
     baseProvider,
@@ -725,6 +899,14 @@ export async function runAgent(
       ...runStart,
       provider: effectiveProvider?.type ?? null,
       usage_data: buildUsageData({}),
+      dryRun: options?.dryRun ?? false,
+      evaluationId: options?.evaluationId ?? null,
+      reasoningLevel:
+        options?.executionOverrides?.reasoningLevel
+        ?? config.reasoningLevel
+        ?? config.execution?.reasoningLevel
+        ?? null,
+      executionOverrides: options?.executionOverrides ?? null,
     });
   } else {
     applyRunUpdate(runId, {
@@ -820,6 +1002,7 @@ export async function runAgent(
         vaultDir,
         checkpointState,
         persistRuntimeState,
+        options,
       );
       tokensUsed = result.tokensUsed;
       costUsd = result.costUsd;
@@ -871,12 +1054,15 @@ export async function runAgent(
       checkpointState.sessionData = result.sessionData;
       await persistRuntimeState(checkpointState, undefined, usage, costData);
 
-      const postconditionError = validateTaskPostconditions({
-        runId,
-        taskName: config.taskName,
-      });
-      if (postconditionError) {
-        throw new Error(postconditionError);
+      // dry-run: postconditions verify real writes landed; no writes happened, so nothing to validate.
+      if (!options?.dryRun) {
+        const postconditionError = validateTaskPostconditions({
+          runId,
+          taskName: config.taskName,
+        });
+        if (postconditionError) {
+          throw new Error(postconditionError);
+        }
       }
     }
 

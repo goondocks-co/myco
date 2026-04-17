@@ -140,6 +140,29 @@ export interface ExecutionConfig {
 }
 
 /**
+ * Describes the cartesian variants an evaluation run explores.
+ * Serialized into `agent_run_evaluations.matrix_json` and used by the
+ * CLI / daemon to enumerate cells.
+ *
+ * Every cell in the matrix executes the same task; the matrix dimensions
+ * vary across runs so output can be compared side-by-side.
+ *
+ * All fields optional. Missing dimension = "use the task's default for that dimension".
+ */
+export interface EvaluationMatrix {
+  /** Runtimes to vary. Typical: ['claude-sdk', 'openai-agents']. */
+  runtimes?: RuntimeId[];
+  /** Reasoning tiers to vary. Typical: ['low', 'default', 'high']. */
+  reasoningLevels?: ReasoningLevel[];
+  /** Models to vary. Provider-specific strings. */
+  models?: string[];
+  /** If true, every cell runs with dryRun enabled (the common case for tuning). */
+  dryRun?: boolean;
+  /** Optional notes to persist with the evaluation record. */
+  notes?: string;
+}
+
+/**
  * Extended config stored as JSON in the agent_tasks.config column.
  * Structural data that doesn't fit in flat columns.
  */
@@ -233,6 +256,11 @@ export interface EffectiveConfig {
   execution?: ExecutionConfig;
   /** Resolved task params — YAML defaults merged with myco.yaml overrides. */
   taskParams?: Record<string, string | number | boolean>;
+  /**
+   * Propagated from RunOptions.dryRun by the executor when building the
+   * effective config for this run. Passed through to the tool surface.
+   */
+  dryRun?: boolean;
 }
 
 /** Options passed to an agent run. */
@@ -256,6 +284,62 @@ export interface RunOptions {
     candidate_id?: string;
   };
   resumeMode?: 'manual' | 'scheduled';
+  /**
+   * If true, all vault writes are intercepted by the scoped tool server and
+   * recorded to `agent_run_write_intents` instead of mutating the DB. The
+   * agent still reads live state. Used for tuning/eval runs where we want to
+   * measure what the agent would do without corrupting the vault.
+   */
+  dryRun?: boolean;
+  /**
+   * If set, this run is a cell in an evaluation matrix (see `agent_run_evaluations`).
+   * Persisted onto `agent_runs.evaluation_id`.
+   */
+  evaluationId?: string | null;
+  /**
+   * Per-cell overrides for evaluation matrix runs. When set, these overwrite
+   * the corresponding fields on the resolved EffectiveConfig before the
+   * executor enters the phase loop. Use cases: A/B testing runtimes,
+   * reasoning tiers, or models against the same task & vault snapshot.
+   */
+  executionOverrides?: {
+    runtime?: RuntimeId;
+    reasoningLevel?: ReasoningLevel;
+    model?: string;
+    /**
+     * Full top-level provider override for this run. Wins over the task's
+     * resolved provider (myco.yaml per-task override → global agent provider →
+     * task YAML `execution.provider`). Use this when an operator wants to swap
+     * provider/base URL/reasoning map/context length for a single run without
+     * persisting to config.
+     */
+    provider?: ProviderConfig;
+    /**
+     * Per-phase overrides. Key is the phase name from the task definition.
+     * When a phase name matches, its fields take precedence over the task's
+     * phase default AND the top-level `executionOverrides` fields.
+     *
+     * Precedence for each phase, highest to lowest:
+     *   1. `executionOverrides.phases[phase.name].{field}`   — most specific
+     *   2. `phase.{field}` from the task YAML                — phase default
+     *   3. `executionOverrides.{field}` (top-level)          — run override
+     *   4. `config.{field}` from `resolveRunConfig`          — task default
+     *
+     * `provider` follows the same ladder: phase override → phase YAML
+     * provider → top-level override → task default. `maxTurns` overrides the
+     * phase's declared turn budget for this run only.
+     *
+     * Unknown phase names are ignored (the executor logs a one-shot warning
+     * at run startup listing both the unknown keys and the real phase names).
+     * Has no effect on non-phased (single-query) tasks.
+     */
+    phases?: Record<string, {
+      reasoningLevel?: ReasoningLevel;
+      model?: string;
+      provider?: ProviderConfig;
+      maxTurns?: number;
+    }>;
+  };
 }
 
 /** Result of a single agent run. */

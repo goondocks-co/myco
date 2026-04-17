@@ -6,7 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import type { ProviderType, RuntimeId } from '@myco/agent/types.js';
+import type { ProviderType, ReasoningLevel, RuntimeId } from '@myco/agent/types.js';
 import type { CostSource } from '@myco/agent/cost/types.js';
 
 // ---------------------------------------------------------------------------
@@ -61,6 +61,21 @@ export interface RunInsert {
   cost_data?: string | null;
   actions_taken?: string | null;
   error?: string | null;
+  /** Whether this run was executed in dry-run mode (intercepted writes). */
+  dryRun?: boolean;
+  /** Evaluation matrix grouping id, if this run is part of a matrix. */
+  evaluationId?: string | null;
+  /**
+   * Reasoning level actually applied to this run (from override or resolved
+   * config). Null when no explicit level was set.
+   */
+  reasoningLevel?: ReasoningLevel | null;
+  /**
+   * Raw RunOptions.executionOverrides packet that produced this run. Stored
+   * as JSON; accepts null, undefined, or a plain object (serialized via
+   * JSON.stringify). Null when the run used task-default config throughout.
+   */
+  executionOverrides?: Record<string, unknown> | null;
 }
 
 export interface RunRow {
@@ -89,6 +104,17 @@ export interface RunRow {
   cost_data: string | null;
   actions_taken: string | null;
   error: string | null;
+  /** True when the run was executed in dry-run mode. */
+  dry_run: boolean;
+  /** Evaluation matrix this run belongs to, if any. */
+  evaluation_id: string | null;
+  /** Reasoning level applied to this run, or null if unset. */
+  reasoning_level: ReasoningLevel | null;
+  /**
+   * Parsed executionOverrides packet. Null when absent, unparseable, or not
+   * set. JSON.parse errors are swallowed (corruption tolerance).
+   */
+  execution_overrides: Record<string, unknown> | null;
 }
 
 export interface RunUpdate {
@@ -113,6 +139,10 @@ export interface RunUpdate {
   cost_data?: string | null;
   actions_taken?: string | null;
   error?: string | null;
+  dryRun?: boolean;
+  evaluationId?: string | null;
+  reasoningLevel?: ReasoningLevel | null;
+  executionOverrides?: Record<string, unknown> | null;
 }
 
 export interface RunCompletion extends RunUpdate {
@@ -166,6 +196,10 @@ const RUN_COLUMNS = [
   'cost_data',
   'actions_taken',
   'error',
+  'dry_run',
+  'evaluation_id',
+  'reasoning_level',
+  'execution_overrides',
 ] as const;
 
 const SELECT_COLUMNS = RUN_COLUMNS.join(', ');
@@ -173,6 +207,42 @@ const SELECT_COLUMNS = RUN_COLUMNS.join(', ');
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Parse a JSON column value tolerantly. Returns null for null/undefined inputs
+ * and for any JSON.parse failure (tolerates corruption without throwing). Only
+ * object (non-array) payloads are returned; other shapes become null.
+ */
+function parseJsonObjectColumn(value: unknown): Record<string, unknown> | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Serialize an executionOverrides payload for insert/update. Accepts null,
+ * undefined, or a plain object — all other shapes round-trip as NULL in the
+ * column. JSON.stringify failures also degrade to NULL.
+ */
+function serializeExecutionOverrides(
+  value: Record<string, unknown> | null | undefined,
+): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) return null;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return null;
+  }
+}
 
 function toRunRow(row: Record<string, unknown>): RunRow {
   return {
@@ -201,6 +271,10 @@ function toRunRow(row: Record<string, unknown>): RunRow {
     cost_data: (row.cost_data as string) ?? null,
     actions_taken: (row.actions_taken as string) ?? null,
     error: (row.error as string) ?? null,
+    dry_run: Boolean(Number(row.dry_run ?? 0)),
+    evaluation_id: (row.evaluation_id as string) ?? null,
+    reasoning_level: (row.reasoning_level as ReasoningLevel) ?? null,
+    execution_overrides: parseJsonObjectColumn(row.execution_overrides),
   };
 }
 
@@ -233,6 +307,13 @@ function buildRunsWhere(
   };
 }
 
+/**
+ * Columns in RunUpdate that map 1:1 to a column name. Camel-cased keys
+ * (`dryRun`, `evaluationId`, `reasoningLevel`, `executionOverrides`) are
+ * handled separately below because their column names differ, `dryRun`
+ * needs boolean->integer coercion, and `executionOverrides` serializes
+ * to JSON.
+ */
 const UPDATE_COLUMNS: readonly (keyof RunUpdate)[] = [
   'status',
   'runtime',
@@ -266,6 +347,22 @@ function buildUpdateClauses(update: RunUpdate): { setClauses: string[]; params: 
       params.push(update[column]);
     }
   }
+  if ('dryRun' in update) {
+    setClauses.push('dry_run = ?');
+    params.push(update.dryRun ? 1 : 0);
+  }
+  if ('evaluationId' in update) {
+    setClauses.push('evaluation_id = ?');
+    params.push(update.evaluationId ?? null);
+  }
+  if ('reasoningLevel' in update) {
+    setClauses.push('reasoning_level = ?');
+    params.push(update.reasoningLevel ?? null);
+  }
+  if ('executionOverrides' in update) {
+    setClauses.push('execution_overrides = ?');
+    params.push(serializeExecutionOverrides(update.executionOverrides));
+  }
   return { setClauses, params };
 }
 
@@ -283,11 +380,13 @@ export function insertRun(data: RunInsert): RunRow {
        resume_status, resume_mode, resumed_at, checkpoints, usage_data,
        started_at, completed_at, tokens_used, cost_usd,
        actual_cost_usd, estimated_cost_usd, cost_source, cost_data,
-       actions_taken, error
+       actions_taken, error, dry_run, evaluation_id,
+       reasoning_level, execution_overrides
      ) VALUES (
        ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?,
+       ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?
@@ -318,6 +417,10 @@ export function insertRun(data: RunInsert): RunRow {
     data.cost_data ?? null,
     data.actions_taken ?? null,
     data.error ?? null,
+    data.dryRun ? 1 : 0,
+    data.evaluationId ?? null,
+    data.reasoningLevel ?? null,
+    serializeExecutionOverrides(data.executionOverrides),
   );
 
   return getRun(data.id)!;
@@ -459,6 +562,24 @@ export function getLatestResumableRunForTask(
      LIMIT 1`,
   ).get(agentId, taskName, STATUS_FAILED) as Record<string, unknown> | undefined;
   return row ? toRunRow(row) : null;
+}
+
+/**
+ * Runs attached to a given evaluation, newest first. This lives in
+ * `runs.ts` (rather than `evaluations.ts`) because it's fundamentally an
+ * `agent_runs` query — which keeps the SELECT_COLUMNS + toRunRow
+ * machinery local and breaks what would otherwise be a circular import
+ * between the two query modules.
+ */
+export function listRunsForEvaluation(evaluationId: string): RunRow[] {
+  const db = getDatabase();
+  const rows = db.prepare(
+    `SELECT ${SELECT_COLUMNS}
+     FROM agent_runs
+     WHERE evaluation_id = ?
+     ORDER BY started_at DESC NULLS LAST, id DESC`,
+  ).all(evaluationId) as Record<string, unknown>[];
+  return rows.map(toRunRow);
 }
 
 export function markRunningRunsInterrupted(message: string): number {

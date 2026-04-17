@@ -39,7 +39,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(14);
+      expect(SCHEMA_VERSION).toBe(17);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -63,6 +63,36 @@ describe('Database schema', () => {
         expect(result).toBeDefined();
         expect(result.version).toBe(SCHEMA_VERSION);
         expect(typeof result.applied_at).toBe('number');
+      });
+
+      it('reports the current SCHEMA_VERSION after createSchema on a fresh DB', () => {
+        createSchema(db);
+        const result = db.prepare(
+          'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1',
+        ).get() as { version: number };
+        expect(result.version).toBe(SCHEMA_VERSION);
+      });
+
+      it('creates eval harness tables with expected columns', () => {
+        createSchema(db);
+        expect(tableExists(db, 'agent_run_write_intents')).toBe(true);
+        expect(tableExists(db, 'digest_extract_revisions')).toBe(true);
+        expect(tableExists(db, 'agent_run_evaluations')).toBe(true);
+
+        expect(getColumnNames(db, 'agent_run_write_intents'))
+          .toEqual(expect.arrayContaining(['run_id', 'phase_id', 'tool_name', 'tool_input', 'synthetic_output', 'stub_id', 'recorded_at']));
+        expect(getColumnNames(db, 'digest_extract_revisions'))
+          .toEqual(expect.arrayContaining(['agent_id', 'tier', 'content', 'metadata', 'run_id', 'parent_revision_id', 'created_at']));
+        expect(getColumnNames(db, 'agent_run_evaluations'))
+          .toEqual(expect.arrayContaining(['task_id', 'matrix_json', 'notes', 'status', 'created_at', 'completed_at']));
+
+        expect(getColumnNames(db, 'agent_runs')).toEqual(expect.arrayContaining(['dry_run', 'evaluation_id']));
+      });
+
+      it('creates v16 reasoning/override columns on agent_runs', () => {
+        createSchema(db);
+        expect(getColumnNames(db, 'agent_runs'))
+          .toEqual(expect.arrayContaining(['reasoning_level', 'execution_overrides']));
       });
 
       it('does not insert duplicate version rows on re-run', () => {
@@ -740,6 +770,67 @@ describe('Database schema', () => {
           `SELECT approved_at FROM skill_candidates WHERE id = 'c-approved'`,
         ).get() as { approved_at: number };
         expect(second.approved_at).toBe(first.approved_at);
+      });
+    });
+
+    describe('v15 to v16: agent_runs reasoning_level + execution_overrides', () => {
+      /**
+       * Build a minimal pre-v16 agent_runs shape — only the columns the
+       * migration cares about need to be present. Matches the layout after
+       * v15 but without the v16 columns.
+       */
+      function buildV15AgentRunsDb(target: Database) {
+        target.prepare(
+          `CREATE TABLE schema_version (
+             version    INTEGER PRIMARY KEY,
+             applied_at INTEGER NOT NULL
+           )`,
+        ).run();
+        target.prepare(
+          `CREATE TABLE agent_runs (
+             id             TEXT PRIMARY KEY,
+             agent_id       TEXT NOT NULL,
+             task           TEXT,
+             status         TEXT,
+             dry_run        INTEGER NOT NULL DEFAULT 0,
+             evaluation_id  TEXT
+           )`,
+        ).run();
+        target.prepare(
+          `INSERT INTO schema_version (version, applied_at) VALUES (15, 1000)`,
+        ).run();
+      }
+
+      it('adds reasoning_level and execution_overrides columns', () => {
+        buildV15AgentRunsDb(db);
+        expect(getColumnNames(db, 'agent_runs')).not.toContain('reasoning_level');
+        expect(getColumnNames(db, 'agent_runs')).not.toContain('execution_overrides');
+
+        const migration = MIGRATIONS.find((m) => m.version === 16);
+        expect(migration).toBeDefined();
+        migration!.migrate(db, 'local');
+
+        const cols = getColumnNames(db, 'agent_runs');
+        expect(cols).toContain('reasoning_level');
+        expect(cols).toContain('execution_overrides');
+      });
+
+      it('records schema_version row 16 after migration', () => {
+        buildV15AgentRunsDb(db);
+        const migration = MIGRATIONS.find((m) => m.version === 16)!;
+        migration.migrate(db, 'local');
+
+        const row = db.prepare(
+          'SELECT version FROM schema_version WHERE version = 16',
+        ).get() as { version: number } | undefined;
+        expect(row?.version).toBe(16);
+      });
+
+      it('is idempotent — running twice does not throw', () => {
+        buildV15AgentRunsDb(db);
+        const migration = MIGRATIONS.find((m) => m.version === 16)!;
+        migration.migrate(db, 'local');
+        expect(() => migration.migrate(db, 'local')).not.toThrow();
       });
     });
   });

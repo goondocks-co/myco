@@ -104,14 +104,13 @@ describe('smoke: skill staging pipeline (real on-disk SQLite)', () => {
   // Schema lands at the current version on a fresh install against a real on-disk file
   // --------------------------------------------------------------------------
 
-  it('fresh install records schema v14 and exposes approved_at on skill_candidates', () => {
+  it('fresh install records the current schema version and exposes approved_at on skill_candidates', () => {
     const db = getDatabase();
 
     const row = db
       .prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1')
       .get() as { version: number };
     expect(row.version).toBe(SCHEMA_VERSION);
-    expect(row.version).toBe(14);
 
     const cols = db
       .prepare('PRAGMA table_info(skill_candidates)')

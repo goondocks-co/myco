@@ -13,6 +13,7 @@ import {
   getRun,
   listRuns,
   countRuns,
+  updateRun,
   updateRunStatus,
   getRunningRun,
 } from '@myco/db/queries/runs.js';
@@ -367,6 +368,122 @@ describe('run query helpers', () => {
       const running = getRunningRun(TEST_AGENT_ID);
       expect(running).not.toBeNull();
       expect(running!.id).toBe('run-new');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // dry_run + evaluation_id round-trip (I4)
+  // ---------------------------------------------------------------------------
+
+  describe('dryRun + evaluationId columns', () => {
+    it('defaults dry_run to false and evaluation_id to null when omitted', () => {
+      const row = insertRun(makeRun({ id: 'run-default' }));
+      expect(row.dry_run).toBe(false);
+      expect(row.evaluation_id).toBeNull();
+
+      const fetched = getRun('run-default')!;
+      expect(fetched.dry_run).toBe(false);
+      expect(fetched.evaluation_id).toBeNull();
+    });
+
+    it('round-trips dryRun:true to dry_run === true on read', () => {
+      const row = insertRun(makeRun({ id: 'run-dry', dryRun: true }));
+      expect(row.dry_run).toBe(true);
+
+      const fetched = getRun('run-dry')!;
+      expect(fetched.dry_run).toBe(true);
+    });
+
+    it('round-trips evaluationId', () => {
+      const row = insertRun(makeRun({ id: 'run-eval', evaluationId: 'eval-abc' }));
+      expect(row.evaluation_id).toBe('eval-abc');
+    });
+
+    it('allows updating dryRun and evaluationId via updateRun', () => {
+      insertRun(makeRun({ id: 'run-u' }));
+      const updated = updateRun('run-u', { dryRun: true, evaluationId: 'eval-xyz' });
+      expect(updated!.dry_run).toBe(true);
+      expect(updated!.evaluation_id).toBe('eval-xyz');
+    });
+
+    it('can clear evaluationId by passing null', () => {
+      insertRun(makeRun({ id: 'run-clear', evaluationId: 'eval-old' }));
+      const cleared = updateRun('run-clear', { evaluationId: null });
+      expect(cleared!.evaluation_id).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // reasoning_level + execution_overrides round-trip (v16)
+  // ---------------------------------------------------------------------------
+
+  describe('reasoningLevel + executionOverrides columns', () => {
+    it('defaults reasoning_level and execution_overrides to null when omitted', () => {
+      const row = insertRun(makeRun({ id: 'run-default-reasoning' }));
+      expect(row.reasoning_level).toBeNull();
+      expect(row.execution_overrides).toBeNull();
+
+      const fetched = getRun('run-default-reasoning')!;
+      expect(fetched.reasoning_level).toBeNull();
+      expect(fetched.execution_overrides).toBeNull();
+    });
+
+    it('round-trips reasoningLevel and executionOverrides with phase overrides', () => {
+      const overrides = {
+        reasoningLevel: 'high',
+        phases: { extract: { reasoningLevel: 'low' } },
+      };
+      const row = insertRun(makeRun({
+        id: 'run-high',
+        reasoningLevel: 'high',
+        executionOverrides: overrides,
+      }));
+      expect(row.reasoning_level).toBe('high');
+      expect(row.execution_overrides).toEqual(overrides);
+
+      const fetched = getRun('run-high')!;
+      expect(fetched.reasoning_level).toBe('high');
+      expect(fetched.execution_overrides).toEqual(overrides);
+    });
+
+    it('allows updating reasoningLevel via updateRun', () => {
+      insertRun(makeRun({ id: 'run-update-reasoning', reasoningLevel: 'low' }));
+      const updated = updateRun('run-update-reasoning', { reasoningLevel: 'high' });
+      expect(updated!.reasoning_level).toBe('high');
+    });
+
+    it('allows updating executionOverrides via updateRun', () => {
+      insertRun(makeRun({ id: 'run-update-overrides' }));
+      const nextOverrides = { runtime: 'claude-sdk', reasoningLevel: 'default' };
+      const updated = updateRun('run-update-overrides', { executionOverrides: nextOverrides });
+      expect(updated!.execution_overrides).toEqual(nextOverrides);
+    });
+
+    it('can clear reasoningLevel and executionOverrides by passing null', () => {
+      insertRun(makeRun({
+        id: 'run-clear-v16',
+        reasoningLevel: 'high',
+        executionOverrides: { reasoningLevel: 'high' },
+      }));
+      const cleared = updateRun('run-clear-v16', {
+        reasoningLevel: null,
+        executionOverrides: null,
+      });
+      expect(cleared!.reasoning_level).toBeNull();
+      expect(cleared!.execution_overrides).toBeNull();
+    });
+
+    it('tolerates bogus JSON in execution_overrides column on read', async () => {
+      // Seed a bogus value directly via the DB to simulate corruption.
+      const { getDatabase } = await import('@myco/db/client.js');
+      insertRun(makeRun({ id: 'run-corrupt' }));
+      getDatabase().prepare(
+        `UPDATE agent_runs SET execution_overrides = ? WHERE id = ?`,
+      ).run('not-valid-json{', 'run-corrupt');
+
+      const fetched = getRun('run-corrupt');
+      expect(fetched).not.toBeNull();
+      expect(fetched!.execution_overrides).toBeNull();
     });
   });
 });
