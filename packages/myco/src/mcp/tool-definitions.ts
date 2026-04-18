@@ -28,10 +28,32 @@ export interface ToolCortexMetadata {
   requiresCollective?: boolean;
 }
 
+/**
+ * MCP tool annotations. These follow the MCP spec's `annotations` envelope
+ * so clients can show the right UI affordances (confirm-before-run for
+ * destructive tools, quiet auto-run for read-only ones, etc.). Bundle D
+ * makes these mandatory for every Myco-registered tool.
+ */
+export interface ToolAnnotations {
+  /** True if the tool never mutates state. */
+  readOnlyHint: boolean;
+  /**
+   * True if the tool can destroy data or start work that's hard to undo.
+   * For multi-op tools, set true if ANY op is destructive and describe
+   * the op matrix in the tool description.
+   */
+  destructiveHint: boolean;
+  /** True if calling the tool twice with the same input is safe. */
+  idempotentHint: boolean;
+  /** True if the tool reaches outside the local vault (network, other machines). */
+  openWorldHint: boolean;
+}
+
 export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema: ToolInputSchema;
+  annotations?: ToolAnnotations;
   cortex?: ToolCortexMetadata;
 }
 
@@ -56,6 +78,8 @@ export const TOOL_SKILL_CANDIDATES = 'myco_skill_candidates';
 export const TOOL_COLLECTIVE_SEARCH = 'collective_search';
 export const TOOL_COLLECTIVE_PROJECTS = 'collective_projects';
 export const TOOL_COLLECTIVE_PROJECT = 'collective_project';
+export const TOOL_CORTEX = 'myco_cortex';
+export const TOOL_RUNS = 'myco_runs';
 
 // --- Shared property descriptions (used by multiple tools) ---
 const PROP_BRANCH = 'Git branch name to find related sessions and plans';
@@ -115,16 +139,28 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: TOOL_PLANS,
-    description: 'List active implementation plans and their status. Use to check what work is in flight before starting new tasks.',
+    description: 'List or delete implementation plans. op: "list" (default) returns plan summaries — filter by status, session, or a single id. op: "delete" removes a plan by id; cross-machine rows require force_remote: true. Use list to check what work is in flight before starting new tasks; use delete when retiring obsolete plans.',
+    annotations: {
+      // Destructive because op: "delete" removes a plan and enqueues a tombstone.
+      // Consumers should confirm before running this tool with op: "delete".
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     cortex: {
-      guidance: 'Use before implementation when approved plans or specs may already exist.',
+      guidance: 'Use op: "list" before implementation when approved plans or specs may already exist; pass session to scope to the current work, or id to fetch a single plan with content.',
       priority: 50,
     },
     inputSchema: {
       type: 'object' as const,
       properties: {
-        status: { type: 'string', enum: PLAN_STATUS_FILTER, description: 'Filter by status (default: all statuses)' },
-        id: { type: 'string', description: 'Get a specific plan by ID' },
+        op: { type: 'string', enum: ['list', 'delete'], description: 'Operation (default: "list")' },
+        status: { type: 'string', enum: PLAN_STATUS_FILTER, description: 'Filter by status (default: all statuses); ignored for op: "delete"' },
+        id: { type: 'string', description: 'Plan id. Required for op: "delete". For op: "list" returns that plan with content.' },
+        session: { type: 'string', description: 'Filter list to plans belonging to this session; mutually exclusive with id.' },
+        limit: { type: 'number', description: 'Max results for op: "list"' },
+        force_remote: { type: 'boolean', description: 'Allow op: "delete" to remove a plan belonging to another machine. Enqueues a tombstone for team sync.' },
       },
     },
   },
@@ -274,6 +310,57 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         action: { type: 'string', enum: ['list', 'approve', 'dismiss'], description: "Action to perform (default: 'list')" },
         status: { type: 'string', description: 'Filter by status: identified, approved, generated, dismissed' },
         limit: { type: 'number', description: `Max results (default: ${MCP_SKILLS_DEFAULT_LIMIT})` },
+      },
+    },
+  },
+  {
+    name: TOOL_CORTEX,
+    description: 'Cortex instruction + prompt-builder surface. op: "get" returns the current session-start instructions snapshot. op: "refresh" triggers the cortex-instructions task to regenerate them. op: "build_prompt" starts the cortex-prompt-builder task for a goal (required) and optional symbiont. op: "get_prompt_result" polls a prompt-builder run by run_id. Refresh and build_prompt are not read-only — they start background runs.',
+    annotations: {
+      // Mixed: get/get_prompt_result are read-only, refresh/build_prompt kick
+      // off background work. Mark conservatively — consumers should not silently
+      // auto-run this tool.
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    cortex: {
+      guidance: 'Use op: "get" to read your own session-start Cortex instructions; use op: "build_prompt" + "get_prompt_result" when you need the prompt-builder to draft a prompt for a specific goal.',
+      priority: 95,
+    },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        op: { type: 'string', enum: ['get', 'refresh', 'build_prompt', 'get_prompt_result'], description: 'Cortex operation' },
+        run_id: { type: 'string', description: 'Required for op: "get_prompt_result"' },
+        goal: { type: 'string', description: 'Required for op: "build_prompt" — the task the prompt will be built for' },
+        symbiont: { type: 'string', description: 'Optional symbiont/agent name the prompt should be tuned for; defaults to the first enabled symbiont' },
+      },
+      required: ['op'],
+    },
+  },
+  {
+    name: TOOL_RUNS,
+    description: 'Read agent run history. op: "list" (default) returns recent runs with runtime/provider/model/token/cost/reasoning fields — filter by task, agent_id, limit. op: "get" with id returns a single run including write_intents totals and duration_ms. Use after a run completes to check your own token budget, cost, and reasoning level — particularly useful when debugging a run that exhausted context.',
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    cortex: {
+      guidance: 'Use op: "get" with your run id to check your own token budget, cost, and reasoning level — especially after a run that exhausted context or failed. Use op: "list" to browse recent runs for a task.',
+      priority: 85,
+    },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        op: { type: 'string', enum: ['list', 'get'], description: 'Operation (default: "list")' },
+        id: { type: 'string', description: 'Required for op: "get" — the run id' },
+        task: { type: 'string', description: 'Filter op: "list" by task name' },
+        agent_id: { type: 'string', description: 'Filter op: "list" by agent id' },
+        limit: { type: 'number', description: 'Max results for op: "list" (default: 50)' },
       },
     },
   },

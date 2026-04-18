@@ -20,6 +20,8 @@ import { handleMycoConsolidate } from './tools/consolidate.js';
 import { handleMycoContext } from './tools/context.js';
 import { handleMycoSkills, handleMycoSkillCandidates } from './tools/skills.js';
 import { handleCollectiveProject, handleCollectiveProjects, handleCollectiveSearch } from './tools/collective.js';
+import { handleMycoCortex } from './tools/cortex.js';
+import { handleMycoRuns } from './tools/runs.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { DaemonClient } from '../hooks/client.js';
 import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
@@ -30,6 +32,7 @@ import {
   TOOL_TEAM, TOOL_GRAPH, TOOL_SUPERSEDE, TOOL_CONSOLIDATE,
   TOOL_CONTEXT, TOOL_SKILLS, TOOL_SKILL_CANDIDATES,
   TOOL_COLLECTIVE_SEARCH, TOOL_COLLECTIVE_PROJECTS, TOOL_COLLECTIVE_PROJECT,
+  TOOL_CORTEX, TOOL_RUNS,
   COLLECTIVE_TOOL_DEFINITIONS,
 } from './tool-definitions.js';
 
@@ -110,9 +113,23 @@ export function createMycoServer(vaultDir: string, client: DaemonClient): MycoSe
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_PLANS: {
-        const plansInput = input as { id?: string; status?: string; limit?: number };
+        const plansInput = input as {
+          op?: 'list' | 'delete';
+          id?: string;
+          session?: string;
+          status?: string;
+          limit?: number;
+          force_remote?: boolean;
+        };
         const result = await handleMycoPlans(plansInput, client);
-        logActivity(TOOL_PLANS, { count: result.length, duration_ms: Date.now() - start });
+        const count = Array.isArray(result) ? result.length : undefined;
+        logActivity(TOOL_PLANS, {
+          op: plansInput.op ?? 'list',
+          id: plansInput.id,
+          session: plansInput.session,
+          count,
+          duration_ms: Date.now() - start,
+        });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_SAVE_PLAN: {
@@ -211,6 +228,39 @@ export function createMycoServer(vaultDir: string, client: DaemonClient): MycoSe
         const collectiveInput = input as { project: string; include_digest?: boolean };
         const result = await handleCollectiveProject(collectiveInput, client);
         logActivity(TOOL_COLLECTIVE_PROJECT, { project: collectiveInput.project, duration_ms: Date.now() - start });
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+      case TOOL_CORTEX: {
+        const cortexInput = input as {
+          op: 'get' | 'refresh' | 'build_prompt' | 'get_prompt_result';
+          run_id?: string;
+          goal?: string;
+          symbiont?: string;
+        };
+        const result = await handleMycoCortex(cortexInput, client);
+        logActivity(TOOL_CORTEX, {
+          op: cortexInput.op,
+          run_id: cortexInput.run_id,
+          ok: result.ok,
+          duration_ms: Date.now() - start,
+        });
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+      case TOOL_RUNS: {
+        const runsInput = input as {
+          op?: 'list' | 'get';
+          id?: string;
+          task?: string;
+          agent_id?: string;
+          limit?: number;
+        };
+        const result = await handleMycoRuns(runsInput, client);
+        logActivity(TOOL_RUNS, {
+          op: runsInput.op ?? 'list',
+          id: runsInput.id,
+          ok: result.ok,
+          duration_ms: Date.now() - start,
+        });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       default:

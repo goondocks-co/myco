@@ -117,6 +117,60 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
       expect(tool.name).toMatch(/^(myco_|collective_)/);
     }
   });
+
+  // Bundle D harness-properties discipline: every Bundle D tool (and any tool
+  // that carries annotations) must set all four MCP annotation fields so
+  // clients can render the correct confirmation UI. Missing any one of these
+  // is a regression.
+  it('Bundle D tools declare full MCP annotations', () => {
+    const required = ['myco_cortex', 'myco_plans', 'myco_runs'];
+    for (const name of required) {
+      const tool = TOOL_DEFINITIONS.find((t) => t.name === name);
+      expect(tool, `Tool ${name} missing from TOOL_DEFINITIONS`).toBeDefined();
+      expect(tool!.annotations, `Tool ${name} missing annotations`).toBeDefined();
+      expect(typeof tool!.annotations!.readOnlyHint).toBe('boolean');
+      expect(typeof tool!.annotations!.destructiveHint).toBe('boolean');
+      expect(typeof tool!.annotations!.idempotentHint).toBe('boolean');
+      expect(typeof tool!.annotations!.openWorldHint).toBe('boolean');
+    }
+  });
+
+  // Pin every annotation VALUE for every Bundle D tool. The shape-only check
+  // above would pass even if someone silently flipped an annotation (e.g.
+  // set destructiveHint: false on myco_plans, suppressing the confirmation
+  // UI). These assertions freeze the intended semantics.
+  it('myco_cortex annotations are pinned (mixed read/mutating ops — conservative)', () => {
+    const cortex = TOOL_DEFINITIONS.find((t) => t.name === 'myco_cortex');
+    // Conservative single set covering all ops: refresh/build_prompt kick off
+    // background runs, so readOnlyHint must stay false. None of the ops
+    // destroy data, so destructiveHint is false. The set is not idempotent
+    // because repeated build_prompt calls produce distinct runs. Everything
+    // is local-only, so openWorldHint is false.
+    expect(cortex?.annotations?.readOnlyHint).toBe(false);
+    expect(cortex?.annotations?.destructiveHint).toBe(false);
+    expect(cortex?.annotations?.idempotentHint).toBe(false);
+    expect(cortex?.annotations?.openWorldHint).toBe(false);
+  });
+
+  it('myco_runs annotations are pinned (fully read-only, idempotent, local)', () => {
+    const runs = TOOL_DEFINITIONS.find((t) => t.name === 'myco_runs');
+    expect(runs?.annotations?.readOnlyHint).toBe(true);
+    expect(runs?.annotations?.destructiveHint).toBe(false);
+    expect(runs?.annotations?.idempotentHint).toBe(true);
+    expect(runs?.annotations?.openWorldHint).toBe(false);
+  });
+
+  it('myco_plans annotations are pinned (destructive via op: "delete", idempotent, local)', () => {
+    const plans = TOOL_DEFINITIONS.find((t) => t.name === 'myco_plans');
+    // op: "delete" mutates and removes data, so readOnlyHint must be false
+    // and destructiveHint true. Deleting an already-deleted plan is a no-op
+    // (returns 404), so idempotentHint is true. Tombstones for remote
+    // deletes are still local-only state, so openWorldHint is false.
+    expect(plans?.annotations?.readOnlyHint).toBe(false);
+    expect(plans?.annotations?.destructiveHint).toBe(true);
+    expect(plans?.annotations?.idempotentHint).toBe(true);
+    expect(plans?.annotations?.openWorldHint).toBe(false);
+  });
 });
 
 /**

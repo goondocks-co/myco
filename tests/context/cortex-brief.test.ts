@@ -35,4 +35,28 @@ describe('RETRIEVAL_GUIDANCE', () => {
       'myco_recall',
     ]);
   });
+
+  // Anti-drift for Bundle D (pre-0.21.0 MCP parity).
+  // If someone removes one of these tools from TOOL_DEFINITIONS or strips
+  // its `cortex` entry, the brief would silently stop advertising the new
+  // parity surfaces and agents would lose the session-start guidance.
+  it('includes the Bundle D must-ship tools so the Cortex brief advertises them', () => {
+    const names = RETRIEVAL_GUIDANCE.map((entry) => entry.tool);
+    expect(names).toContain('myco_cortex');
+    expect(names).toContain('myco_runs');
+    // myco_plans has always been in the brief, but Bundle D extended its
+    // schema. Keep a presence check so a future refactor can't drop it.
+    expect(names).toContain('myco_plans');
+  });
+
+  it('injects Bundle D tool guidance into the brief body', () => {
+    const lines = buildRetrievalGuidanceLines({
+      teamEnabled: false,
+      collectiveConnected: false,
+      collectiveCapabilities: [],
+    });
+    const body = lines.join('\n');
+    expect(body).toContain('`myco_cortex`');
+    expect(body).toContain('`myco_runs`');
+  });
 });
