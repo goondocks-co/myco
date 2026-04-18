@@ -236,6 +236,56 @@ describe('TeamSyncClient', () => {
     });
   });
 
+  describe('request timeout', () => {
+    it('attaches an AbortSignal to every request() call', async () => {
+      const mockFetch = vi.fn(async () => new Response(JSON.stringify({ config: {}, sync_protocol_version: 1 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })) as unknown as typeof globalThis.fetch;
+
+      const client = new TeamSyncClient({ ...baseOptions, fetch: mockFetch });
+      await client.getConfig();
+
+      const initArg = (mockFetch as ReturnType<typeof vi.fn>).mock.calls[0][1] as RequestInit;
+      expect(initArg.signal).toBeInstanceOf(AbortSignal);
+      expect((initArg.signal as AbortSignal).aborted).toBe(false);
+    });
+
+    it('aborts a stalled request via the internal deadline', async () => {
+      // Capture the signal from the fetch() call and await its abort event.
+      // We use fake timers so the real 15s default timeout fires within
+      // the test budget.
+      vi.useFakeTimers();
+      try {
+        let capturedSignal: AbortSignal | undefined;
+        const mockFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+          capturedSignal = init?.signal as AbortSignal | undefined;
+          return await new Promise<Response>((_resolve, reject) => {
+            capturedSignal?.addEventListener('abort', () => {
+              const err = new Error('aborted');
+              err.name = 'AbortError';
+              reject(err);
+            });
+          });
+        }) as unknown as typeof globalThis.fetch;
+
+        const client = new TeamSyncClient({ ...baseOptions, fetch: mockFetch });
+        const pending = client.getConfig();
+        // Silence the rejection while we advance the clock.
+        const expectation = expect(pending).rejects.toThrow(/aborted/i);
+
+        // Advance past TEAM_REQUEST_TIMEOUT_MS (15s) to trigger the internal
+        // controller.abort().
+        await vi.advanceTimersByTimeAsync(16_000);
+
+        await expectation;
+        expect(capturedSignal?.aborted).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe('URL normalization', () => {
     it('strips trailing slash from worker URL', async () => {
       const mockFetch = createMockFetch({

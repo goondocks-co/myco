@@ -110,4 +110,42 @@ describe('triggerCortexInstructions', () => {
     });
     expect(logger.warn).not.toHaveBeenCalled();
   });
+
+  it('returns startup-failed with a log when buildCortexInstructionsInput throws', async () => {
+    const logger = makeLogger();
+    buildCortexInstructionsInput.mockRejectedValueOnce(new Error('DB unavailable'));
+
+    const result = await triggerCortexInstructions({
+      vaultDir: '/tmp/myco',
+      embeddingManager: makeEmbeddingManagerStub() as never,
+      liveConfig: { current: makeConfig() },
+      logger: logger as never,
+    });
+
+    expect(result.started).toBe(false);
+    expect(result.reason).toBe('startup-failed');
+    expect(result.error).toContain('DB unavailable');
+    expect(logger.warn).toHaveBeenCalledWith(
+      'agent.error',
+      'Failed to start cortex-instructions task',
+      expect.objectContaining({ error: expect.stringContaining('DB unavailable') }),
+    );
+  });
+
+  it('registers the fire-and-forget promise with registerInflightRun when provided', async () => {
+    const logger = makeLogger();
+    const registerInflightRun = vi.fn();
+
+    const result = await triggerCortexInstructions({
+      vaultDir: '/tmp/myco',
+      embeddingManager: makeEmbeddingManagerStub() as never,
+      liveConfig: { current: makeConfig() },
+      logger: logger as never,
+      registerInflightRun,
+    });
+
+    expect(result.started).toBe(true);
+    expect(registerInflightRun).toHaveBeenCalledTimes(1);
+    expect(registerInflightRun.mock.calls[0][0]).toBeInstanceOf(Promise);
+  });
 });

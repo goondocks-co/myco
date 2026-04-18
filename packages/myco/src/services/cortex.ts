@@ -1,9 +1,11 @@
 import { runAgent } from '@myco/agent/executor.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { getCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { listReports, type ReportRow } from '@myco/db/queries/reports.js';
 import { getLatestRunId, getRun } from '@myco/db/queries/runs.js';
+import type { DaemonLogger } from '@myco/daemon/logger.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 import { resolveInstructionDelivery } from '@myco/context/cortex-brief.js';
@@ -17,6 +19,9 @@ interface CortexServicesDeps {
   config: MycoConfig;
   embeddingManager?: EmbeddingManager;
   getTeamClient?: () => TeamSyncClient | null;
+  logger: DaemonLogger;
+  /** Optional registry that tracks the fire-and-forget run so daemon shutdown can await it. */
+  registerInflightRun?: (promise: Promise<unknown>) => void;
 }
 
 export interface CortexInstructionsSnapshot {
@@ -135,7 +140,13 @@ export async function buildCortexPrompt(
     embeddingManager: deps.embeddingManager,
   });
   const runId = getLatestRunId(DEFAULT_AGENT_ID, CORTEX_PROMPT_BUILDER_TASK);
-  void resultPromise.catch(() => {});
+  const tracked = resultPromise.catch((err) => {
+    deps.logger.warn(LOG_KINDS.AGENT_ERROR, 'cortex-prompt-builder task failed', {
+      run_id: runId ?? undefined,
+      error: String(err),
+    });
+  });
+  deps.registerInflightRun?.(tracked);
 
   return {
     started: true,
