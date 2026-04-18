@@ -1,24 +1,24 @@
 # =============================================================================
 # Built-in Task: Review Session
 # =============================================================================
-# Targeted end-to-end pass over a single session: extract spores, build
-# graph entities and edges, run supersession checks, update title/summary.
+# Targeted end-to-end pass over a single session: extract spores, run
+# supersession checks, update title/summary.
 # =============================================================================
 
 name: review-session
 displayName: Review Session
 description: >
   Process a single session end-to-end. Extracts spores from all prompt
-  batches in the session, builds graph entities and edges, runs supersession
-  checks, and generates the session title and summary.
+  batches in the session, runs supersession checks, and generates the
+  session title and summary.
 agent: myco-agent
 isDefault: false
 reasoningLevel: default
-maxTurns: 40
+maxTurns: 30
 timeoutSeconds: 480
 
 prompt: |
-  Review the specified session end-to-end. Budget: ~35 turns.
+  Review the specified session end-to-end. Budget: ~25 turns.
 
   Target session: {{session_id}}
 
@@ -57,31 +57,7 @@ prompt: |
   After processing all batches: call `vault_mark_processed` for each batch,
   then call `vault_set_state` to update the cursor.
 
-  ## Phase 3 — Graph (budget: 10 turns)
-
-  Build entities and semantic edges for knowledge discovered in this session.
-
-  1. Call `vault_spores` to review the spores just created plus existing ones
-  2. Call `vault_entities` and `vault_edges` to see what already exists
-  3. Check `vault_spores` for cross-session references before creating entities.
-     Only create entities referenced in 2+ sessions. For a single-session review,
-     this means the entity must also appear in spores from OTHER sessions.
-  4. For valid entity candidates:
-     - Call `vault_create_entity` with type: component | concept | person
-     - Good: "DaemonClient", "cursor-based pagination" — specific named things
-     - Bad: "testing phase", "code quality" — abstract categories
-  5. For each entity (new and existing relevant ones):
-     - Call `vault_search_semantic` with the entity name to find related spores
-     - Before creating, call `vault_edges` with source_id and target_id to
-       check if the edge already exists
-     - Call `vault_create_edge` with type REFERENCES, source_type spore,
-       target_type entity for each relevant spore
-  6. Create structural edges: DEPENDS_ON (entity→entity), AFFECTS (spore→entity)
-
-  Always include source_type and target_type on every edge.
-  Do NOT create lineage edges (FROM_SESSION, EXTRACTED_FROM, etc.).
-
-  ## Phase 4 — Supersession Check (budget: 3 turns)
+  ## Phase 3 — Supersession Check (budget: 3 turns)
 
   Scan active spores for newly introduced redundancy:
   1. Call `vault_spores` with status "active" to see the current set
@@ -90,7 +66,7 @@ prompt: |
   3. Only supersede when the new information genuinely replaces the old;
      when in doubt, keep both
 
-  ## Phase 5 — Title & Summary (budget: 3 turns)
+  ## Phase 4 — Title & Summary (budget: 3 turns)
 
   1. Call `vault_sessions` to check the current title and summary
   2. Review the prompt batches you processed in Phase 2 — use user_prompt
@@ -104,14 +80,13 @@ prompt: |
   Bad: "/git-worktree", "Help me fix the bug in..."
   Summary: 2-4 sentences on key work done + outcomes.
 
-  ## Phase 6 — Report (budget: 1 turn)
+  ## Phase 5 — Report (budget: 1 turn)
 
   Call `vault_report` with action "complete":
   - Session reviewed: {{session_id}}
   - Batches processed: N
   - Spores created: N (by type)
   - Spores superseded: N
-  - Entities created: N, edges created: N
   - Title/summary updated: yes/no
 
 toolOverrides:
@@ -120,12 +95,8 @@ toolOverrides:
   - vault_sessions
   - vault_search_fts
   - vault_search_semantic
-  - vault_entities
-  - vault_edges
   - vault_create_spore
   - vault_resolve_spore
-  - vault_create_entity
-  - vault_create_edge
   - vault_update_session
   - vault_mark_processed
   - vault_set_state

@@ -56,6 +56,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 18, migrate: (db) => migrateV17ToV18(db) },
   { version: 19, migrate: (db) => migrateV18ToV19(db) },
   { version: 20, migrate: (db, machineId) => migrateV19ToV20(db, machineId) },
+  { version: 21, migrate: (db) => migrateV20ToV21(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1187,4 +1188,46 @@ function migrateV14ToV15(db: Database): void {
     db.exec('ROLLBACK');
     throw err;
   }
+}
+
+/**
+ * Migrate v20 → v21: retire the semantic knowledge graph.
+ *
+ * Prunes agent-created entities, entity mentions, and semantic-typed edges.
+ * Lineage edges remain (daemon-created). Tables preserved for reversibility.
+ */
+function migrateV20ToV21(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    // Guard each DELETE — the v13 migration-chain test scaffold omits these tables.
+    if (tableExists(db, 'graph_edges')) {
+      db.prepare(
+        `DELETE FROM graph_edges WHERE type IN ('REFERENCES', 'AFFECTS', 'DEPENDS_ON', 'RELATES_TO')`,
+      ).run();
+    }
+    if (tableExists(db, 'entity_mentions')) {
+      db.prepare(`DELETE FROM entity_mentions`).run();
+    }
+    if (tableExists(db, 'entities')) {
+      db.prepare(`DELETE FROM entities`).run();
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(21, epochSeconds());
+
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+function tableExists(db: Database, name: string): boolean {
+  const row = db.prepare(
+    `SELECT count(*) AS c FROM sqlite_master WHERE type = 'table' AND name = ?`,
+  ).get(name) as { c: number };
+  return row.c > 0;
 }

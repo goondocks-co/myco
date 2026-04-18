@@ -1,9 +1,8 @@
 /**
  * Write vault tools.
  *
- * 9 tools: vault_create_spore, vault_create_entity, vault_create_edge,
- * vault_resolve_spore, vault_update_session, vault_set_state,
- * vault_read_digest, vault_write_digest, vault_mark_processed
+ * 7 tools: vault_create_spore, vault_resolve_spore, vault_update_session,
+ * vault_set_state, vault_read_digest, vault_write_digest, vault_mark_processed
  */
 
 import crypto from 'node:crypto';
@@ -14,8 +13,6 @@ import { insertSpore, updateSporeStatus, DEFAULT_IMPORTANCE } from '@myco/db/que
 import { updateSession } from '@myco/db/queries/sessions.js';
 import { setState } from '@myco/db/queries/agent-state.js';
 import { markBatchProcessed } from '@myco/db/queries/batches.js';
-import { insertEntity } from '@myco/db/queries/entities.js';
-import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
 import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
@@ -74,71 +71,6 @@ export function createWriteTools(deps: VaultToolDeps) {
       return textResult(spore);
     },
     { annotations: { openWorldHint: true } },
-  );
-
-  const vaultCreateEntity = tool(
-    'vault_create_entity',
-    'Create or update an entity in the knowledge graph. Uses UPSERT on (agent_id, type, name).',
-    {
-      type: z.enum(['component', 'concept', 'person']).describe('Entity type'),
-      name: z.string().describe('Entity name (unique within agent + type)'),
-      properties: z.record(z.string(), z.unknown()).optional().describe('Additional properties as key-value pairs'),
-    },
-    async (args) => {
-      const id = crypto.randomUUID();
-      const now = epochSeconds();
-      const props = args.properties ? JSON.stringify(args.properties) : null;
-
-      const entity = insertEntity({
-        id,
-        agent_id: agentId,
-        machine_id: machineId,
-        type: args.type,
-        name: args.name,
-        properties: props,
-        first_seen: now,
-        last_seen: now,
-      });
-
-      return textResult(entity);
-    },
-    { annotations: { idempotentHint: true } },
-  );
-
-  const vaultCreateEdge = tool(
-    'vault_create_edge',
-    'Create a semantic edge in the knowledge graph. Lineage edges (FROM_SESSION, EXTRACTED_FROM, HAS_BATCH, DERIVED_FROM) are created automatically — do NOT create those.',
-    {
-      source_id: z.string().describe('Source node ID'),
-      source_type: z.enum(['session', 'batch', 'spore', 'entity']).describe('Source node type'),
-      target_id: z.string().describe('Target node ID'),
-      target_type: z.enum(['session', 'batch', 'spore', 'entity']).describe('Target node type'),
-      type: z.enum(['RELATES_TO', 'SUPERSEDED_BY', 'REFERENCES', 'DEPENDS_ON', 'AFFECTS']).describe('Semantic edge type'),
-      session_id: z.string().optional().describe('Session where this relationship was observed'),
-      confidence: z.number().optional().describe('Confidence score 0-1 (default 1.0)'),
-      properties: z.record(z.string(), z.unknown()).optional().describe('Additional properties as key-value pairs'),
-    },
-    async (args) => {
-      const now = epochSeconds();
-      const props = args.properties ? JSON.stringify(args.properties) : undefined;
-
-      const edge = insertGraphEdge({
-        agent_id: agentId,
-        machine_id: machineId,
-        source_id: args.source_id,
-        source_type: args.source_type,
-        target_id: args.target_id,
-        target_type: args.target_type,
-        type: args.type,
-        session_id: args.session_id,
-        confidence: args.confidence,
-        properties: props,
-        created_at: now,
-      });
-
-      return textResult(edge);
-    },
-    { annotations: { idempotentHint: true } },
   );
 
   const vaultResolveSpore = tool(
@@ -308,8 +240,6 @@ export function createWriteTools(deps: VaultToolDeps) {
 
   return [
     vaultCreateSpore,
-    vaultCreateEntity,
-    vaultCreateEdge,
     vaultResolveSpore,
     vaultUpdateSession,
     vaultSetState,

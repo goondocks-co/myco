@@ -1,5 +1,5 @@
 import { listSpores, countSpores, getSpore } from '@myco/db/queries/spores.js';
-import { listEntities, getEntity } from '@myco/db/queries/entities.js';
+import { listEntities } from '@myco/db/queries/entities.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import { listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import { getGraphForNode } from '@myco/db/queries/graph-edges.js';
@@ -27,7 +27,6 @@ const MAX_GRAPH_DEPTH = 3;
 const SPORE_NAME_PREVIEW_CHARS = 60;
 
 /** Seed counts for focused graph startup. */
-const GRAPH_SEED_ENTITY_LIMIT = 4;
 const GRAPH_SEED_SPORE_LIMIT = 4;
 const GRAPH_SEED_SESSION_LIMIT = 4;
 
@@ -108,16 +107,6 @@ export async function handleGetGraphSeeds(_req: RouteRequest): Promise<RouteResp
      LIMIT ?`,
   ).all(GRAPH_SEED_SESSION_LIMIT) as Array<Record<string, unknown>>;
 
-  const entityRows = db.prepare(
-    `SELECT e.id, e.type, e.name, e.status, e.first_seen as created_at, COUNT(em.entity_id) as mention_count
-     FROM entities e
-     LEFT JOIN entity_mentions em ON em.entity_id = e.id
-     WHERE e.agent_id = ? AND e.status = 'active'
-     GROUP BY e.id
-     ORDER BY mention_count DESC, e.last_seen DESC
-     LIMIT ?`,
-  ).all(DEFAULT_AGENT_ID, GRAPH_SEED_ENTITY_LIMIT) as Array<Record<string, unknown>>;
-
   const sporeSeeds = sporeRows.map((row) => ({
       id: row.id as string,
       name: ((row.content as string) ?? '').slice(0, SPORE_NAME_PREVIEW_CHARS),
@@ -135,23 +124,13 @@ export async function handleGetGraphSeeds(_req: RouteRequest): Promise<RouteResp
       created_at: row.created_at as number | undefined,
       content: (row.summary as string) ?? undefined,
     }));
-  const entitySeeds = entityRows.map((row) => ({
-      id: row.id as string,
-      name: row.name as string,
-      type: row.type as string,
-      status: (row.status as string) ?? undefined,
-      created_at: row.created_at as number | undefined,
-      mention_count: Number(row.mention_count) || 0,
-    }));
 
   const seeds = [
-    ...entitySeeds,
     ...sessionSeeds,
     ...sporeSeeds,
   ];
 
-  const recommendedId = entitySeeds[0]?.id
-    ?? sessionSeeds[0]?.id
+  const recommendedId = sessionSeeds[0]?.id
     ?? sporeSeeds[0]?.id
     ?? null;
 
@@ -171,31 +150,16 @@ export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> 
   const depth = Math.min(Number(req.query.depth) || DEFAULT_GRAPH_DEPTH, MAX_GRAPH_DEPTH);
   const id = req.params.id;
 
-  // Verify center node exists in any of the primary tables
-  let centerNode: any = null;
-  let centerType: 'entity' | 'spore' | 'session' = 'entity';
-
-  const entity = getEntity(id);
-  if (entity) {
-    centerNode = entity;
-    centerType = 'entity';
+  // Resolve center node — spore or session (entity layer retired in schema v21).
+  let centerType: 'spore' | 'session';
+  if (getSpore(id)) {
+    centerType = 'spore';
+  } else if (getSession(id)) {
+    centerType = 'session';
   } else {
-    const spore = getSpore(id);
-    if (spore) {
-      centerNode = spore;
-      centerType = 'spore';
-    } else {
-      const session = getSession(id);
-      if (session) {
-        centerNode = session;
-        centerType = 'session';
-      }
-    }
+    return { status: 404, body: { error: 'not_found' } };
   }
 
-  if (!centerNode) return { status: 404, body: { error: 'not_found' } };
-
-  // Use graph_edges for BFS traversal
   const graph = getGraphForNode(id, centerType, { depth });
 
   // Filter out batch-related edges (too granular for visualization)
@@ -205,8 +169,6 @@ export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> 
 
   const graphDb = getDatabase();
 
-  // Collect ALL unique node IDs from filtered edges, grouped by type
-  const entityIds = new Set<string>();
   const sporeIds = new Set<string>();
   const sessionIds = new Set<string>();
 
@@ -215,77 +177,32 @@ export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> 
       [edge.source_id, edge.source_type],
       [edge.target_id, edge.target_type],
     ] as [string, string][]) {
-      switch (type) {
-        case 'entity': entityIds.add(nodeId); break;
-        case 'spore': sporeIds.add(nodeId); break;
-        case 'session': sessionIds.add(nodeId); break;
-        // batch nodes are intentionally excluded
-      }
+      if (type === 'spore') sporeIds.add(nodeId);
+      else if (type === 'session') sessionIds.add(nodeId);
+      // batch nodes intentionally excluded
     }
   }
-  
-  // Center node is always included in the appropriate set
-  if (centerType === 'entity') entityIds.add(id);
+
   if (centerType === 'spore') sporeIds.add(id);
-  if (centerType === 'session') sessionIds.add(id);
+  else sessionIds.add(id);
 
-  // --- Batch-fetch entity nodes ---
-  const entityIdArray = Array.from(entityIds);
-  let entityNodes: Array<Record<string, unknown>> = [];
-  if (entityIdArray.length > 0) {
-    const placeholders = entityIdArray.map(() => '?').join(', ');
-    entityNodes = graphDb.prepare(
-      `SELECT id, type, name, properties, status, first_seen as created_at
-       FROM entities WHERE id IN (${placeholders})`,
-    ).all(...entityIdArray) as Array<Record<string, unknown>>;
-  }
-
-  // --- Batch-fetch spore nodes ---
   const sporeIdArray = Array.from(sporeIds);
-  let sporeNodes: Array<Record<string, unknown>> = [];
-  if (sporeIdArray.length > 0) {
-    const placeholders = sporeIdArray.map(() => '?').join(', ');
-    sporeNodes = graphDb.prepare(
-      `SELECT id, observation_type, status, content, properties, created_at
-       FROM spores WHERE id IN (${placeholders})`,
-    ).all(...sporeIdArray) as Array<Record<string, unknown>>;
-  }
+  const sporeNodes = sporeIdArray.length > 0
+    ? (graphDb.prepare(
+        `SELECT id, observation_type, status, content, properties, created_at
+         FROM spores WHERE id IN (${sporeIdArray.map(() => '?').join(', ')})`,
+      ).all(...sporeIdArray) as Array<Record<string, unknown>>)
+    : [];
 
-  // --- Batch-fetch session nodes ---
   const sessionIdArray = Array.from(sessionIds);
-  let sessionNodes: Array<Record<string, unknown>> = [];
-  if (sessionIdArray.length > 0) {
-    const placeholders = sessionIdArray.map(() => '?').join(', ');
-    sessionNodes = graphDb.prepare(
-      `SELECT id, title, summary, status, started_at as created_at
-       FROM sessions WHERE id IN (${placeholders})`,
-    ).all(...sessionIdArray) as Array<Record<string, unknown>>;
-  }
+  const sessionNodes = sessionIdArray.length > 0
+    ? (graphDb.prepare(
+        `SELECT id, title, summary, status, started_at as created_at
+         FROM sessions WHERE id IN (${sessionIdArray.map(() => '?').join(', ')})`,
+      ).all(...sessionIdArray) as Array<Record<string, unknown>>)
+    : [];
 
-  // --- Batch-fetch mention counts for entity nodes ---
-  const mentionCounts = new Map<string, number>();
-  if (entityIdArray.length > 0) {
-    const placeholders = entityIdArray.map(() => '?').join(', ');
-    const mentionRows = graphDb.prepare(
-      `SELECT entity_id, COUNT(*) as count FROM entity_mentions
-       WHERE entity_id IN (${placeholders}) GROUP BY entity_id`,
-    ).all(...entityIdArray) as Array<Record<string, unknown>>;
-    for (const row of mentionRows) {
-      mentionCounts.set(row.entity_id as string, Number(row.count));
-    }
-  }
-
-  // --- Build unified nodes array ---
   const allNodes = [
-    ...entityNodes.map((n) => ({
-      id: n.id as string,
-      name: n.name as string,
-      type: n.type as string,
-      status: (n.status as string) ?? undefined,
-      created_at: n.created_at as number | undefined,
-      properties: (n.properties as string) ?? undefined,
-      mention_count: mentionCounts.get(n.id as string) ?? 0,
-    })),
     ...sporeNodes.map((n) => ({
       id: n.id as string,
       name: ((n.content as string) ?? '').slice(0, SPORE_NAME_PREVIEW_CHARS),
@@ -336,12 +253,6 @@ const FULL_GRAPH_NODE_LIMIT = 500;
 export async function handleGetFullGraph(_req: RouteRequest): Promise<RouteResponse> {
   const db = getDatabase();
 
-  // Fetch all entities
-  const entityRows = db.prepare(
-    `SELECT id, type, name, properties, status, first_seen as created_at
-     FROM entities WHERE agent_id = ? LIMIT ?`,
-  ).all(DEFAULT_AGENT_ID, FULL_GRAPH_NODE_LIMIT) as Array<Record<string, unknown>>;
-
   // Fetch active spores (skip superseded)
   const sporeRows = db.prepare(
     `SELECT id, observation_type, status, content, properties, created_at
@@ -356,7 +267,7 @@ export async function handleGetFullGraph(_req: RouteRequest): Promise<RouteRespo
 
   // Collect all node IDs for edge filtering
   const allIds = new Set<string>();
-  for (const r of [...entityRows, ...sporeRows, ...sessionRows]) {
+  for (const r of [...sporeRows, ...sessionRows]) {
     allIds.add(r.id as string);
   }
 
@@ -364,42 +275,19 @@ export async function handleGetFullGraph(_req: RouteRequest): Promise<RouteRespo
   const excludedTypes = Array.from(EXCLUDED_GRAPH_EDGE_TYPES).map(() => '?').join(', ');
   const allIdsList = Array.from(allIds);
   const idPlaceholders = allIdsList.map(() => '?').join(', ');
-  const edgeRows = db.prepare(
-    `SELECT source_id, source_type, target_id, target_type, type, confidence
-     FROM graph_edges
-     WHERE agent_id = ?
-       AND type NOT IN (${excludedTypes})
-       AND source_id IN (${idPlaceholders})
-       AND target_id IN (${idPlaceholders})`,
-  ).all(DEFAULT_AGENT_ID, ...Array.from(EXCLUDED_GRAPH_EDGE_TYPES), ...allIdsList, ...allIdsList) as Array<Record<string, unknown>>;
-
-  const filteredEdges = edgeRows;
-
-  // Mention counts for entity sizing
-  const mentionCounts = new Map<string, number>();
-  const entityIdArray = entityRows.map((r) => r.id as string);
-  if (entityIdArray.length > 0) {
-    const placeholders = entityIdArray.map(() => '?').join(', ');
-    const mentionRows = db.prepare(
-      `SELECT entity_id, COUNT(*) as count FROM entity_mentions
-       WHERE entity_id IN (${placeholders}) GROUP BY entity_id`,
-    ).all(...entityIdArray) as Array<Record<string, unknown>>;
-    for (const row of mentionRows) {
-      mentionCounts.set(row.entity_id as string, Number(row.count));
-    }
-  }
+  const edgeRows = allIdsList.length > 0
+    ? (db.prepare(
+        `SELECT source_id, source_type, target_id, target_type, type, confidence
+         FROM graph_edges
+         WHERE agent_id = ?
+           AND type NOT IN (${excludedTypes})
+           AND source_id IN (${idPlaceholders})
+           AND target_id IN (${idPlaceholders})`,
+      ).all(DEFAULT_AGENT_ID, ...Array.from(EXCLUDED_GRAPH_EDGE_TYPES), ...allIdsList, ...allIdsList) as Array<Record<string, unknown>>)
+    : [];
 
   // Build nodes
   const nodes = [
-    ...entityRows.map((n) => ({
-      id: n.id as string,
-      name: n.name as string,
-      type: n.type as string,
-      status: (n.status as string) ?? undefined,
-      created_at: n.created_at as number | undefined,
-      properties: (n.properties as string) ?? undefined,
-      mention_count: mentionCounts.get(n.id as string) ?? 0,
-    })),
     ...sporeRows.map((n) => ({
       id: n.id as string,
       name: ((n.content as string) ?? '').slice(0, SPORE_NAME_PREVIEW_CHARS),
@@ -420,7 +308,7 @@ export async function handleGetFullGraph(_req: RouteRequest): Promise<RouteRespo
     })),
   ];
 
-  const edges = filteredEdges.map((e) => ({
+  const edges = edgeRows.map((e) => ({
     source_id: e.source_id as string,
     target_id: e.target_id as string,
     label: e.type as string,

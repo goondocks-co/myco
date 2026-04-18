@@ -676,50 +676,6 @@ describe('vault tools', () => {
     });
   });
 
-  describe('vault_entities', () => {
-    it('returns a compact projection by default', async () => {
-      insertEntity({
-        id: 'entity-compact',
-        agent_id: TEST_AGENT_ID,
-        type: 'component',
-        name: 'AuthModule',
-        properties: JSON.stringify({ language: 'TypeScript' }),
-        first_seen: epochNow() - 10,
-        last_seen: epochNow(),
-      });
-
-      const t = findTool(tools, 'vault_entities');
-      const result = await t.handler({ name: 'AuthModule' }, undefined);
-      const data = parseResult(result) as Array<Record<string, unknown>>;
-
-      expect(data).toHaveLength(1);
-      expect(data[0].name).toBe('AuthModule');
-      expect(data[0].type).toBe('component');
-      expect(data[0].properties).toBeUndefined();
-      expect(data[0].agent_id).toBeUndefined();
-    });
-
-    it('returns full entity metadata when include_metadata=true', async () => {
-      insertEntity({
-        id: 'entity-full',
-        agent_id: TEST_AGENT_ID,
-        type: 'component',
-        name: 'BillingModule',
-        properties: JSON.stringify({ owner: 'payments' }),
-        first_seen: epochNow() - 10,
-        last_seen: epochNow(),
-      });
-
-      const t = findTool(tools, 'vault_entities');
-      const result = await t.handler({ name: 'BillingModule', include_metadata: true }, undefined);
-      const data = parseResult(result) as Array<Record<string, unknown>>;
-
-      expect(data).toHaveLength(1);
-      expect(data[0].properties).toBe(JSON.stringify({ owner: 'payments' }));
-      expect(data[0].agent_id).toBe(TEST_AGENT_ID);
-    });
-  });
-
   describe('vault_edges', () => {
     it('returns a compact projection by default', async () => {
       insertGraphEdge({
@@ -728,7 +684,7 @@ describe('vault tools', () => {
         source_type: 'session',
         target_id: 'spore-a',
         target_type: 'spore',
-        type: 'REFERENCES',
+        type: 'FROM_SESSION',
         confidence: 0.8,
         session_id: sessionId,
         created_at: epochNow(),
@@ -753,7 +709,7 @@ describe('vault tools', () => {
         source_type: 'session',
         target_id: 'spore-b',
         target_type: 'spore',
-        type: 'AFFECTS',
+        type: 'FROM_SESSION',
         confidence: 0.9,
         session_id: sessionId,
         created_at: epochNow(),
@@ -823,90 +779,6 @@ describe('vault tools', () => {
         `SELECT * FROM agent_turns WHERE run_id = ?`,
       ).all(TEST_RUN_ID);
       expect(turns.length).toBeGreaterThanOrEqual(1);
-    });
-  });
-
-  describe('vault_create_entity', () => {
-    it('creates an entity with agent_id injected', async () => {
-      const t = findTool(tools, 'vault_create_entity');
-      const result = await t.handler(
-        {
-          type: 'component',
-          name: 'AuthModule',
-          properties: { language: 'TypeScript' },
-        },
-        undefined,
-      );
-      const entity = parseResult(result) as { agent_id: string; type: string; name: string; properties: string };
-      expect(entity.agent_id).toBe(TEST_AGENT_ID);
-      expect(entity.type).toBe('component');
-      expect(entity.name).toBe('AuthModule');
-      expect(JSON.parse(entity.properties)).toEqual({ language: 'TypeScript' });
-    });
-
-    it('upserts on conflict (same agent, type, name)', async () => {
-      const t = findTool(tools, 'vault_create_entity');
-      await t.handler(
-        { type: 'component', name: 'AuthModule' },
-        undefined,
-      );
-      const result = await t.handler(
-        { type: 'component', name: 'AuthModule', properties: { version: 2 } },
-        undefined,
-      );
-      const entity = parseResult(result) as { properties: string };
-      expect(JSON.parse(entity.properties)).toEqual({ version: 2 });
-
-      // Verify only one entity exists
-      const db = getDatabase();
-      const row = db.prepare(
-        `SELECT count(*) AS count FROM entities WHERE name = 'AuthModule'`,
-      ).get() as { count: number };
-      expect(row.count).toBe(1);
-    });
-  });
-
-  describe('vault_create_edge', () => {
-    it('creates a semantic edge in graph_edges', async () => {
-      // Create two entities first
-      const db = getDatabase();
-      const now = epochNow();
-      db.prepare(
-        `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run('entity-a', TEST_AGENT_ID, 'component', 'CompA', now, now);
-      db.prepare(
-        `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run('entity-b', TEST_AGENT_ID, 'component', 'CompB', now, now);
-
-      const t = findTool(tools, 'vault_create_edge');
-      const result = await t.handler(
-        {
-          source_id: 'entity-a',
-          source_type: 'entity',
-          target_id: 'entity-b',
-          target_type: 'entity',
-          type: 'DEPENDS_ON',
-          confidence: 0.9,
-        },
-        undefined,
-      );
-      const edge = parseResult(result) as {
-        agent_id: string; type: string; confidence: number;
-        source_type: string; target_type: string;
-      };
-      expect(edge.agent_id).toBe(TEST_AGENT_ID);
-      expect(edge.type).toBe('DEPENDS_ON');
-      expect(edge.confidence).toBe(0.9);
-      expect(edge.source_type).toBe('entity');
-      expect(edge.target_type).toBe('entity');
-
-      // Verify it's stored in graph_edges
-      const graphEdges = db.prepare(
-        `SELECT * FROM graph_edges WHERE type = 'DEPENDS_ON'`,
-      ).all();
-      expect(graphEdges).toHaveLength(1);
     });
   });
 
