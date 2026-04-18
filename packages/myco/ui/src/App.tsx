@@ -3,6 +3,7 @@ import { Routes, Route } from 'react-router-dom';
 import Layout from './layout/Layout';
 import Dashboard from './pages/Dashboard';
 import Sessions from './pages/Sessions';
+import Cortex from './pages/Cortex';
 import Mycelium from './pages/Mycelium';
 import Agent from './pages/Agent';
 import Skills from './pages/Skills';
@@ -33,6 +34,7 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/sessions" element={<Sessions />} />
         <Route path="/sessions/:id" element={<Sessions />} />
+        <Route path="/cortex" element={<Cortex />} />
         <Route path="/mycelium" element={<Mycelium />} />
         <Route path="/agent" element={<Agent />} />
         <Route path="/skills" element={<Skills />} />

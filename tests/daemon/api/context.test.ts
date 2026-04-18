@@ -2,21 +2,21 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vites
 import { MycoConfigSchema } from '@myco/config/schema';
 import type { MycoConfig } from '@myco/config/schema';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
-import { upsertDigestExtract } from '@myco/db/queries/digest-extracts';
 import { insertSpore } from '@myco/db/queries/spores';
 import { registerAgent } from '@myco/db/queries/agents';
 import { upsertSession } from '@myco/db/queries/sessions';
-import { createSessionContextHandler, createPromptContextHandler, createResumeContextHandler } from '@myco/daemon/api/context';
+import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions';
+import { upsertDigestExtract } from '@myco/db/queries/digest-extracts';
+import {
+  createSessionContextHandler,
+  createPromptContextHandler,
+  createResumeContextHandler,
+} from '@myco/daemon/api/context';
 import type { ContextDeps } from '@myco/daemon/api/context';
 import type { RouteRequest } from '@myco/daemon/router';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager';
 import type { DaemonLogger } from '@myco/daemon/logger';
 import { DEFAULT_AGENT_ID } from '@myco/constants';
-import { getDatabase } from '@myco/db/client';
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function makeReq(body: unknown): RouteRequest {
   return { params: {}, query: {}, body, pathname: '/context' };
@@ -40,10 +40,9 @@ function mockEmbeddingManager(overrides: Record<string, unknown> = {}): Embeddin
 }
 
 function makeDeps(overrides: Partial<ContextDeps> & { config?: MycoConfig } = {}): ContextDeps {
-  // Legacy tests pass `config` directly; translate into the liveConfig holder
-  // that the handler now reads from at call time.
   const { config, liveConfig, ...rest } = overrides;
   return {
+    vaultDir: '/tmp/myco-test-vault',
     embeddingManager: mockEmbeddingManager(),
     logger: mockLogger(),
     liveConfig: liveConfig ?? { current: config ?? MycoConfigSchema.parse({ version: 3 }) },
@@ -60,91 +59,88 @@ function makeConfig(overrides: Partial<MycoConfig['context']> = {}): MycoConfig 
 
 const NOW = Math.floor(Date.now() / 1000);
 
-// ---------------------------------------------------------------------------
-// Session context handler
-// ---------------------------------------------------------------------------
-
 describe('createSessionContextHandler', () => {
   beforeAll(() => {
     setupTestDb();
-    registerAgent({ id: DEFAULT_AGENT_ID, name: 'myco-agent', created_at: NOW });
   });
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => {
-    getDatabase().prepare('DELETE FROM digest_extracts').run();
-    getDatabase().prepare('DELETE FROM sessions').run();
+    cleanTestDb();
   });
 
-  it('returns basic context when no digest extract exists', async () => {
+  it('returns stored Cortex instructions with branch and session metadata', async () => {
+    upsertCortexInstructions({
+      agent_id: DEFAULT_AGENT_ID,
+      content: 'Use `myco_context` before major changes.',
+      input_hash: 'hash-session',
+      generated_at: NOW,
+    });
     const handler = createSessionContextHandler(makeDeps());
     const result = await handler(makeReq({ session_id: 'sess-1', branch: 'main' }));
     const body = result.body as { text: string; source: string };
 
-    expect(body.source).toBe('basic');
+    expect(body.source).toBe('cortex');
+    expect(body.text).toContain('myco_context');
     expect(body.text).toContain('Branch:: `main`');
     expect(body.text).toContain('Session:: `sess-1`');
   });
 
-  it('injects digest when extract exists', async () => {
-    upsertDigestExtract({
-      agent_id: DEFAULT_AGENT_ID,
-      tier: 5000,
-      content: '# Project Intelligence\nThis is the digest content.',
-      generated_at: NOW,
-    });
-
+  it('returns empty when no stored Cortex instructions exist', async () => {
     const handler = createSessionContextHandler(makeDeps());
-    const result = await handler(makeReq({ session_id: 'sess-2', branch: 'main' }));
-    const body = result.body as { text: string; source: string; tier?: number };
+    const result = await handler(makeReq({ session_id: 'sess-2' }));
+    const body = result.body as { text: string };
 
-    expect(body.source).toBe('digest');
-    expect(body.tier).toBe(5000);
-    expect(body.text).toContain('# Project Intelligence');
-    expect(body.text).toContain('Session:: `sess-2`');
+    expect(body.text).toBe('');
   });
 
-  it('uses configured tier', async () => {
-    upsertDigestExtract({
+  it('returns empty when session-start injection is disabled', async () => {
+    const handler = createSessionContextHandler(makeDeps({
+      config: makeConfig({ cortex_enabled: false }),
+    }));
+    const result = await handler(makeReq({ session_id: 'sess-3', branch: 'feat' }));
+
+    expect((result.body as { text: string }).text).toBe('');
+  });
+
+  it('appends the preferred digest when digest injection is enabled', async () => {
+    registerAgent({
+      id: DEFAULT_AGENT_ID,
+      name: 'myco-agent',
+      created_at: NOW,
+    });
+    upsertCortexInstructions({
       agent_id: DEFAULT_AGENT_ID,
-      tier: 10000,
-      content: '# Tier 10000 digest',
+      content: 'Use `myco_context` before major changes.',
+      input_hash: 'hash-session-digest',
       generated_at: NOW,
     });
-
-    const handler = createSessionContextHandler(makeDeps({ config: makeConfig({ digest_tier: 10000 }) }));
-    const result = await handler(makeReq({ session_id: 'sess-3' }));
-    const body = result.body as { text: string; source: string; tier?: number };
-
-    expect(body.source).toBe('digest');
-    expect(body.tier).toBe(10000);
-    expect(body.text).toContain('# Tier 10000 digest');
-  });
-
-  it('falls back to basic when configured tier has no extract', async () => {
     upsertDigestExtract({
       agent_id: DEFAULT_AGENT_ID,
       tier: 5000,
-      content: '# Wrong tier',
+      content: 'Digest extract for current project work.',
       generated_at: NOW,
     });
+    const handler = createSessionContextHandler(makeDeps({
+      config: makeConfig({ session_start_digest_enabled: true }),
+    }));
 
-    const handler = createSessionContextHandler(makeDeps({ config: makeConfig({ digest_tier: 1500 }) }));
-    const result = await handler(makeReq({ session_id: 'sess-4', branch: 'feat' }));
+    const result = await handler(makeReq({ session_id: 'sess-digest', branch: 'main' }));
     const body = result.body as { text: string; source: string };
 
-    expect(body.source).toBe('basic');
-    expect(body.text).not.toContain('# Wrong tier');
+    expect(body.source).toBe('cortex+digest:5000');
+    expect(body.text).toContain('Use `myco_context` before major changes.');
+    expect(body.text).toContain('## Preferred Digest (Tier 5000)');
+    expect(body.text).toContain('Digest extract for current project work.');
   });
 });
 
 describe('createResumeContextHandler', () => {
   beforeAll(() => {
     setupTestDb();
-    registerAgent({ id: DEFAULT_AGENT_ID, name: 'myco-agent', created_at: NOW });
   });
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => {
-    getDatabase().prepare('DELETE FROM sessions').run();
+    cleanTestDb();
   });
 
   it('returns empty when no parent session exists', async () => {
@@ -178,26 +174,30 @@ describe('createResumeContextHandler', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Prompt context handler
-// ---------------------------------------------------------------------------
-
 describe('createPromptContextHandler', () => {
-  it('returns empty when prompt_search disabled', async () => {
+  beforeAll(() => {
+    setupTestDb();
+  });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => {
+    cleanTestDb();
+  });
+
+  it('returns empty text when prompt_search is disabled', async () => {
     const handler = createPromptContextHandler(makeDeps({ config: makeConfig({ prompt_search: false }) }));
     const result = await handler(makeReq({ prompt: 'How should I handle auth?', session_id: 's-1' }));
 
     expect((result.body as { text: string }).text).toBe('');
   });
 
-  it('returns empty for short prompts', async () => {
+  it('returns empty text for short prompts', async () => {
     const handler = createPromptContextHandler(makeDeps());
     const result = await handler(makeReq({ prompt: 'hi', session_id: 's-2' }));
 
     expect((result.body as { text: string }).text).toBe('');
   });
 
-  it('returns empty when embedding provider unavailable', async () => {
+  it('returns empty text when embedding provider is unavailable', async () => {
     const handler = createPromptContextHandler(makeDeps({
       embeddingManager: mockEmbeddingManager({ embedQuery: vi.fn().mockResolvedValue(null) }),
     }));
@@ -206,7 +206,7 @@ describe('createPromptContextHandler', () => {
     expect((result.body as { text: string }).text).toBe('');
   });
 
-  it('returns empty when no search results', async () => {
+  it('returns empty text when no search results exist', async () => {
     const handler = createPromptContextHandler(makeDeps({
       embeddingManager: mockEmbeddingManager({ searchVectors: vi.fn().mockReturnValue([]) }),
     }));
@@ -215,14 +215,14 @@ describe('createPromptContextHandler', () => {
     expect((result.body as { text: string }).text).toBe('');
   });
 
-  it('returns empty when max_spores is 0', async () => {
+  it('returns empty text when max_spores is 0', async () => {
     const handler = createPromptContextHandler(makeDeps({ config: makeConfig({ prompt_max_spores: 0 }) }));
     const result = await handler(makeReq({ prompt: 'How should I handle authentication?', session_id: 's-5' }));
 
     expect((result.body as { text: string }).text).toBe('');
   });
 
-  it('excludes superseded spores from results', async () => {
+  it('returns empty text when all spores are excluded by status', async () => {
     const handler = createPromptContextHandler(makeDeps({
       embeddingManager: mockEmbeddingManager({
         searchVectors: vi.fn().mockReturnValue([
@@ -232,13 +232,14 @@ describe('createPromptContextHandler', () => {
       }),
     }));
     const result = await handler(makeReq({ prompt: 'How should I handle authentication?', session_id: 's-6' }));
+    const text = (result.body as { text: string }).text;
 
-    expect((result.body as { text: string }).text).toBe('');
+    expect(text).toBe('');
   });
 
   describe('with hydrated spore data', () => {
-    beforeAll(() => {
-      setupTestDb();
+    beforeEach(() => {
+      cleanTestDb();
       registerAgent({ id: 'agent-fmt', name: 'test', created_at: NOW });
       insertSpore({ id: 'spore-a', agent_id: 'agent-fmt', observation_type: 'gotcha', content: 'Always validate JWT expiry', created_at: NOW, status: 'active' });
       insertSpore({ id: 'spore-b', agent_id: 'agent-fmt', observation_type: 'decision', content: 'Use session ID as durable key', created_at: NOW, status: 'active' });
@@ -246,9 +247,8 @@ describe('createPromptContextHandler', () => {
         insertSpore({ id: `spore-lim-${i}`, agent_id: 'agent-fmt', observation_type: 'gotcha', content: `Observation number ${i}`, created_at: NOW, status: 'active' });
       }
     });
-    afterAll(() => { teardownTestDb(); });
 
-    it('returns formatted spores when results found', async () => {
+    it('returns formatted spores when results are found', async () => {
       const handler = createPromptContextHandler(makeDeps({
         embeddingManager: mockEmbeddingManager({
           searchVectors: vi.fn().mockReturnValue([
@@ -281,7 +281,7 @@ describe('createPromptContextHandler', () => {
       const result = await handler(makeReq({ prompt: 'How should I handle authentication?', session_id: 's-8' }));
       const text = (result.body as { text: string }).text;
 
-      const lines = text.split('\n').filter((l: string) => l.startsWith('- ('));
+      const lines = text.split('\n').filter((line: string) => line.startsWith('- ('));
       expect(lines).toHaveLength(2);
     });
   });

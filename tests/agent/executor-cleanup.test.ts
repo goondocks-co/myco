@@ -14,14 +14,23 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
-import { cleanupOnTaskFailure } from '@myco/agent/executor.js';
-import { SKILL_GENERATE_TASK } from '@myco/agent/instruction-builders.js';
+import { cleanupOnTaskFailure, finalizeOnTaskSuccess } from '@myco/agent/executor.js';
+import { CORTEX_INSTRUCTIONS_TASK, SKILL_GENERATE_TASK } from '@myco/agent/instruction-builders.js';
+import { CONTENT_HASH_ALGORITHM, DEFAULT_AGENT_ID } from '@myco/constants.js';
+import { registerAgent } from '@myco/db/queries/agents.js';
+import { getCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
+import { insertReport } from '@myco/db/queries/reports.js';
+import { insertRun } from '@myco/db/queries/runs.js';
 import {
   writeStagedSkill,
   stagingPath,
   stagingRoot,
 } from '@myco/agent/tools/skill-staging.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
+
+const NOW = Math.floor(Date.now() / 1000);
 
 describe('cleanupOnTaskFailure', () => {
   let tmpDir: string;
@@ -126,5 +135,103 @@ describe('cleanupOnTaskFailure', () => {
         runContext: { candidate_id: 'cand-never-staged' },
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('finalizeOnTaskSuccess', () => {
+  beforeEach(() => {
+    setupTestDb();
+    cleanTestDb();
+    registerAgent({
+      id: DEFAULT_AGENT_ID,
+      name: 'myco-agent',
+      created_at: NOW,
+    });
+  });
+
+  afterEach(() => {
+    teardownTestDb();
+  });
+
+  it('materializes completed Cortex instructions reports into stored instructions', async () => {
+    insertRun({
+      id: 'run-cortex-finalize',
+      agent_id: DEFAULT_AGENT_ID,
+      task: CORTEX_INSTRUCTIONS_TASK,
+      status: 'completed',
+      started_at: NOW,
+      completed_at: NOW,
+    });
+    insertReport({
+      run_id: 'run-cortex-finalize',
+      agent_id: DEFAULT_AGENT_ID,
+      action: 'cortex_instructions',
+      summary: 'stored new instructions',
+      details: JSON.stringify({
+        content: '## Myco-Enabled Project\n\nMyco provides project memory for this repository.',
+      }),
+      created_at: NOW,
+    });
+
+    await finalizeOnTaskSuccess({
+      taskName: CORTEX_INSTRUCTIONS_TASK,
+      agentId: DEFAULT_AGENT_ID,
+      runId: 'run-cortex-finalize',
+      runContext: { cortex_instruction_input_hash: 'hash-cortex-1' },
+    });
+
+    expect(getCortexInstructions(DEFAULT_AGENT_ID)).toMatchObject({
+      agent_id: DEFAULT_AGENT_ID,
+      content: '## Myco-Enabled Project\n\nMyco provides project memory for this repository.',
+      input_hash: 'hash-cortex-1',
+      source_run_id: 'run-cortex-finalize',
+      generated_at: NOW,
+    });
+  });
+
+  it('falls back to hashing the instruction text when the run context hash is missing', async () => {
+    insertRun({
+      id: 'run-cortex-fallback',
+      agent_id: DEFAULT_AGENT_ID,
+      task: CORTEX_INSTRUCTIONS_TASK,
+      status: 'completed',
+      started_at: NOW,
+      completed_at: NOW,
+    });
+    insertReport({
+      run_id: 'run-cortex-fallback',
+      agent_id: DEFAULT_AGENT_ID,
+      action: 'cortex_instructions',
+      summary: 'stored new instructions',
+      details: JSON.stringify({
+        content: '## Myco-Enabled Project\n\nStored from fallback hash.',
+      }),
+      created_at: NOW,
+    });
+
+    await finalizeOnTaskSuccess({
+      taskName: CORTEX_INSTRUCTIONS_TASK,
+      agentId: DEFAULT_AGENT_ID,
+      runId: 'run-cortex-fallback',
+      runContext: undefined,
+      instruction: 'instruction-body',
+    });
+
+    expect(getCortexInstructions(DEFAULT_AGENT_ID)?.input_hash).toBe(
+      crypto.createHash(CONTENT_HASH_ALGORITHM).update('instruction-body').digest('hex'),
+    );
+  });
+
+  it('is a no-op for unrelated tasks', async () => {
+    await expect(
+      finalizeOnTaskSuccess({
+        taskName: 'full-intelligence',
+        agentId: DEFAULT_AGENT_ID,
+        runId: 'run-unrelated',
+        runContext: undefined,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(getCortexInstructions(DEFAULT_AGENT_ID)).toBeNull();
   });
 });

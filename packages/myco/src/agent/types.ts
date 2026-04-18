@@ -282,6 +282,7 @@ export interface RunOptions {
    */
   runContext?: {
     candidate_id?: string;
+    cortex_instruction_input_hash?: string;
   };
   resumeMode?: 'manual' | 'scheduled';
   /**

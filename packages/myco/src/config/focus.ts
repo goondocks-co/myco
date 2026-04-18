@@ -1,13 +1,16 @@
 export const CONFIG_FOCUS_SECTION_PARAM = 'configSection';
 export const CONFIG_FOCUS_FIELD_PARAM = 'configField';
+export const CONFIG_FOCUS_TAB_PARAM = 'tab';
 
 const FIELD_ID_PREFIX = 'config-field-';
 
 export const CONFIG_SECTION_IDS = {
   appearance: 'config-section-appearance',
+  cortexInstructions: 'config-section-cortex-instructions',
+  cortexBuilder: 'config-section-cortex-builder',
+  cortexDigest: 'config-section-cortex-digest',
   settingsAgent: 'config-section-settings-agent',
   settingsEmbedding: 'config-section-settings-embedding',
-  settingsContextInjection: 'config-section-settings-context-injection',
   settingsNotifications: 'config-section-settings-notifications',
   settingsPlanCapture: 'config-section-settings-plan-capture',
   settingsProject: 'config-section-settings-project',
@@ -16,7 +19,7 @@ export const CONFIG_SECTION_IDS = {
   operationsBackup: 'config-section-operations-backup',
 } as const;
 
-type ConfigPagePath = '/settings' | '/agent' | '/operations';
+type ConfigPagePath = '/settings' | '/agent' | '/operations' | '/cortex';
 
 interface ConfigSectionTarget {
   page: ConfigPagePath;
@@ -54,10 +57,29 @@ const SECTION_RULES: PrefixRule[] = [
     sectionLabel: 'Embedding',
   },
   {
+    prefix: 'context.digest_tier',
+    page: '/cortex',
+    sectionId: CONFIG_SECTION_IDS.cortexDigest,
+    sectionLabel: 'Digest',
+    searchParams: { [CONFIG_FOCUS_TAB_PARAM]: 'digest' },
+  },
+  {
+    prefix: 'context.cortex',
+    page: '/cortex',
+    sectionId: CONFIG_SECTION_IDS.cortexInstructions,
+    sectionLabel: 'Instructions',
+  },
+  {
+    prefix: 'context.prompt',
+    page: '/cortex',
+    sectionId: CONFIG_SECTION_IDS.cortexInstructions,
+    sectionLabel: 'Instructions',
+  },
+  {
     prefix: 'context',
-    page: '/settings',
-    sectionId: CONFIG_SECTION_IDS.settingsContextInjection,
-    sectionLabel: 'Context Injection',
+    page: '/cortex',
+    sectionId: CONFIG_SECTION_IDS.cortexInstructions,
+    sectionLabel: 'Instructions',
   },
   {
     prefix: 'notifications',
@@ -125,7 +147,9 @@ const EXACT_FIELD_LABELS: Record<string, string> = {
   'embedding.provider': 'Provider',
   'embedding.model': 'Model',
   'embedding.base_url': 'Base URL',
-  'context.digest_tier': 'Digest Tier',
+  'context.digest_tier': 'Preferred Digest Tier',
+  'context.session_start_digest_enabled': 'Session-Start Digest',
+  'context.cortex_enabled': 'Session-Start Instructions',
   'context.prompt_search': 'Prompt Search',
   'context.prompt_max_spores': 'Max Spores per Prompt',
   'notifications.enabled': 'Notifications',

@@ -1,0 +1,93 @@
+# =============================================================================
+# Built-in Task: Cortex Instructions
+# =============================================================================
+
+name: cortex-instructions
+displayName: Cortex Instructions
+description: >
+  Author compact session-start instructions that teach downstream agents how
+  to use Myco retrieval correctly.
+agent: myco-agent
+isDefault: false
+reasoningLevel: low
+maxTurns: 12
+timeoutSeconds: 180
+schedule:
+  enabled: true
+  intervalSeconds: 3600
+  runIn:
+    - idle
+    - sleep
+
+prompt: |
+  Author compact session-start instructions for another coding agent.
+
+  You will receive:
+  - current context configuration
+  - the available Myco retrieval capabilities
+  - retrieval guidance that must be encoded
+  - a digest excerpt plus recent sessions, spores, and plans
+  - authoring requirements that constrain the final output
+
+  Your job is to produce concise markdown instructions for session start.
+
+  Requirements:
+  - Start with the heading `## Myco-Enabled Project`.
+  - Immediately follow with one brief sentence explaining that Myco provides project memory, prior decisions, plans, and retrieval tools for this project.
+  - Teach retrieval behavior, not implementation details.
+  - Mention Myco tools using backticks.
+  - Use the recent vault context to make the instructions feel current when it adds signal.
+  - Keep the heading and intro brief so most tokens go to retrieval guidance.
+  - Keep the output compact and ready for direct injection.
+  - Do not restate AGENTS.md.
+  - Do not invent unavailable tools.
+  - Do not tell the agent to call `myco_skills`; project and Myco skills are already registered separately.
+
+  Call `vault_report` with action "cortex_instructions" and:
+  - summary: what the instructions emphasize
+  - details.content: the final markdown instructions
+
+phases:
+  - name: research
+    prompt: |
+      Review the provided digest excerpt and recent vault activity first.
+
+      Then use vault tools selectively to confirm what is current and high-signal
+      enough to deserve mention in the session-start instructions. Prefer the
+      smallest number of reads that sharpen the instructions.
+
+      Focus on:
+      - which Myco MCP tools matter most right now
+      - which current project hotspots or active workstreams are worth naming
+      - whether recent sessions or spores reveal a better retrieval hint
+
+      Do not spend time enumerating every note. Gather only what improves the
+      final session-start instructions.
+    tools:
+      - vault_read_digest
+      - vault_sessions
+      - vault_session_summary_material
+      - vault_spores
+      - vault_search_fts
+      - vault_search_semantic
+    maxTurns: 10
+    required: true
+    readOnly: true
+
+  - name: author
+    dependsOn: [research]
+    prompt: |
+      Write the final session-start instructions.
+
+      The output should:
+      - open with the heading `## Myco-Enabled Project` and one brief sentence of context
+      - teach the agent how to retrieve the right Myco knowledge on demand
+      - mention the most relevant current project activity when it adds value
+      - avoid generic boilerplate
+      - avoid telling the agent to call `myco_skills`
+
+      Report the final markdown via `vault_report`.
+    tools:
+      - vault_report
+    maxTurns: 4
+    required: true

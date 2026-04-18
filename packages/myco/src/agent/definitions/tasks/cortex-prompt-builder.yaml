@@ -1,0 +1,67 @@
+# =============================================================================
+# Built-in Task: Cortex Prompt Builder
+# =============================================================================
+
+name: cortex-prompt-builder
+displayName: Cortex Prompt Builder
+description: >
+  Build a high-quality, Myco-informed prompt for a target symbiont while
+  respecting whether session-start instructions will be injected separately.
+agent: myco-agent
+isDefault: false
+reasoningLevel: default
+maxTurns: 24
+timeoutSeconds: 300
+
+prompt: |
+  Build a strong, pasteable prompt for a target coding agent.
+
+  The instruction payload gives you:
+  - the user's goal
+  - the target symbiont and whether session-start instructions will be injected
+  - the current Cortex instructions when they must be inlined
+
+  Use the vault tools to gather the most relevant project context:
+  - digest for broad orientation
+  - spores for prior decisions, gotchas, and bug fixes
+  - sessions and plan-related search results for recent or approved work
+  - skill records for repeatable project procedures
+  - search tools when you need targeted follow-up
+
+  Output requirements:
+  - Produce one final prompt suitable for direct paste into the target agent.
+  - If the instruction payload says to inline Cortex instructions, include them.
+  - If the instruction payload says session-start injection is supported, omit the
+    Cortex instructions from the final prompt.
+  - Prefer concise, high-signal context over long dumps.
+  - Include concrete validations when the task implies implementation work.
+
+  Call `vault_report` with action "cortex_prompt_builder" and:
+  - summary: short description of the brief you produced
+  - details.prompt: the final prompt text
+
+phases:
+  - name: build
+    prompt: |
+      Gather the smallest set of relevant Myco context for this build request,
+      then write the final prompt and report it via `vault_report`.
+
+      Use digest, search, sessions, plans, spores, and skills selectively.
+      Avoid exhaustive searching; gather what you need to write the prompt.
+
+      The final output must be a single prompt suitable for direct paste into
+      the target agent. Respect the delivery contract from the instruction
+      payload when deciding whether to inline the current Cortex instructions.
+
+      Before finishing, call `vault_report` with action `cortex_prompt_builder`
+      and put the final prompt in `details.prompt`.
+    tools:
+      - vault_read_digest
+      - vault_sessions
+      - vault_spores
+      - vault_skill_records
+      - vault_search_fts
+      - vault_search_semantic
+      - vault_report
+    maxTurns: 18
+    required: true
