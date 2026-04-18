@@ -85,9 +85,21 @@ export class DaemonServer {
     const match = this.router.match(req.method!, req.url!);
 
     if (match) {
+      // CSRF defense: the daemon listens only on 127.0.0.1 but any web page
+      // the user visits can still POST cross-origin. Reject requests whose
+      // Host or Origin headers disagree with the loopback listener; block
+      // non-JSON mutating bodies so text/plain CSRF cannot slip JSON through.
+      const rejection = validateLoopbackRequest(req, this.port);
+      if (rejection) {
+        res.writeHead(rejection.status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: rejection.error }));
+        return;
+      }
+
       this.onRequest?.();
       try {
-        const body = (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') ? await readBody(req) : undefined;
+        const needsBody = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE';
+        const body = needsBody ? await readBody(req) : undefined;
         const result = await match.handler({
           body,
           query: match.query,
@@ -220,4 +232,75 @@ function readBody(req: http.IncomingMessage): Promise<unknown> {
     });
     req.on('error', reject);
   });
+}
+
+// ---------------------------------------------------------------------------
+// CSRF / Origin / Content-Type gate
+// ---------------------------------------------------------------------------
+
+interface Rejection {
+  status: number;
+  error: string;
+}
+
+/**
+ * Reject cross-origin / non-JSON mutating requests before they reach a route
+ * handler. Keeps the daemon's stored API keys and write operations out of
+ * reach of any webpage the user happens to visit.
+ *
+ * - Host header must identify the loopback listener (or be absent).
+ * - Origin header, when present, must point to the same loopback listener.
+ * - Mutating methods with a non-empty body must declare application/json.
+ */
+export function validateLoopbackRequest(
+  req: http.IncomingMessage,
+  port: number,
+): Rejection | null {
+  const host = req.headers.host;
+  if (host && !isLoopbackHost(host, port)) {
+    return { status: 403, error: 'forbidden_host' };
+  }
+
+  const origin = req.headers.origin;
+  if (origin && !isLoopbackOrigin(origin, port)) {
+    return { status: 403, error: 'forbidden_origin' };
+  }
+
+  const method = (req.method ?? '').toUpperCase();
+  const isMutating = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
+  if (!isMutating) return null;
+
+  // DELETE with an empty body is the common case (e.g. /api/plans/:id) and
+  // is allowed without Content-Type. For any non-empty body on a mutating
+  // route, require JSON so text/plain CSRF cannot smuggle parsed JSON in.
+  const contentLengthHeader = req.headers['content-length'];
+  const contentLength = contentLengthHeader ? Number(contentLengthHeader) : NaN;
+  const hasBody = Number.isFinite(contentLength) ? contentLength > 0 : (req.headers['transfer-encoding'] ?? '').length > 0;
+  if (!hasBody) return null;
+
+  const contentType = (req.headers['content-type'] ?? '').toLowerCase();
+  if (!contentType.includes('application/json')) {
+    return { status: 415, error: 'unsupported_media_type' };
+  }
+
+  return null;
+}
+
+// Node passes the listening host verbatim; some clients omit the port
+// entirely on default ports. The daemon never uses port 80, so require
+// an explicit port match. Keep the two-form allowlist tight.
+function isLoopbackHost(host: string, port: number): boolean {
+  const portStr = String(port);
+  return (
+    host === `127.0.0.1:${portStr}` ||
+    host === `localhost:${portStr}`
+  );
+}
+
+function isLoopbackOrigin(origin: string, port: number): boolean {
+  const portStr = String(port);
+  return (
+    origin === `http://127.0.0.1:${portStr}` ||
+    origin === `http://localhost:${portStr}`
+  );
 }

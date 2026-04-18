@@ -19,6 +19,7 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { notify } from '@myco/notifications/notify.js';
 import { buildPhaseAudit } from '@myco/services/phase-audit.js';
 import { ExecutionOverrideBody } from './schemas/execution-overrides.js';
+import { transformProviderOverrides } from './schemas/execution-overrides-traversal.js';
 import { serializeRun } from './run-serializer.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
@@ -44,6 +45,39 @@ export const AGENT_RUNS_DEFAULT_LIMIT = 50;
  * `./schemas/execution-overrides.ts` and are reused by the evaluation
  * handler — keep changes in the shared module.
  */
+
+/**
+ * Strip caller-supplied `baseUrl` from remote-provider overrides so the
+ * daemon's stored OpenAI/OpenRouter key can never be sent to an
+ * attacker-controlled host. Local providers (ollama, lmstudio,
+ * openai-compatible) legitimately need custom base URLs.
+ */
+const REMOTE_PROVIDER_TYPES = new Set(['openai', 'openrouter']);
+
+function stripBaseUrlForRemoteProviders(
+  provider: Record<string, unknown>,
+): Record<string, unknown> {
+  const type = provider.type;
+  if (typeof type === 'string' && REMOTE_PROVIDER_TYPES.has(type)) {
+    const { baseUrl: _dropped, ...rest } = provider;
+    return rest;
+  }
+  return provider;
+}
+
+function sanitizeExecutionOverrides(
+  overrides: z.infer<typeof ExecutionOverrideBody>,
+): z.infer<typeof ExecutionOverrideBody> {
+  if (!overrides) return overrides;
+  // Delegates structural traversal (top-level provider + phases) to the
+  // shared helper so adding future override fields is a one-line change
+  // per transform, not a parallel rewrite here and in run-serializer.
+  const result = transformProviderOverrides(
+    overrides as unknown as Record<string, unknown>,
+    stripBaseUrlForRemoteProviders,
+  );
+  return result as unknown as z.infer<typeof ExecutionOverrideBody>;
+}
 
 const AgentRunBody = z.object({
   task: z.string().optional(),
@@ -93,8 +127,12 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       agentId,
       dryRun,
       evaluationId,
-      executionOverrides,
+      executionOverrides: rawExecutionOverrides,
     } = AgentRunBody.parse(req.body);
+
+    // SSRF defense: strip caller-supplied baseUrl from any remote-provider
+    // override. The daemon's bearer key cannot follow a redirected URL.
+    const executionOverrides = sanitizeExecutionOverrides(rawExecutionOverrides);
 
     // Guard: ensure a provider is configured before allowing a run.
     // Uses the same per-task-over-global precedence as the executor's resolver.
