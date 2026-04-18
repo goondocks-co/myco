@@ -111,13 +111,17 @@ const PROVIDER_CLIENT_CONFIG_RESOLVERS: Record<ProviderConfig['type'], (provider
     apiKey: provider?.apiKey ?? PLACEHOLDER,
     baseURL: provider?.baseUrl ?? toOpenAIBaseUrl(getLocalOpenAIBackendDefaultBaseUrl('lmstudio')),
   }),
-  openai: (provider) => ({
-    apiKey: provider?.apiKey ?? process.env[OPENAI_API_KEY_ENV] ?? process.env.OPENAI_API_KEY,
-    baseURL: provider?.baseUrl ?? DEFAULT_OPENAI_URL,
+  // Remote providers: the API key must come from the daemon's env (loaded
+  // from .myco/secrets.env), never from a ProviderConfig. The baseURL is
+  // locked to the hardcoded default so the bearer key cannot follow a
+  // caller-supplied redirect.
+  openai: () => ({
+    apiKey: process.env[OPENAI_API_KEY_ENV] ?? process.env.OPENAI_API_KEY,
+    baseURL: DEFAULT_OPENAI_URL,
   }),
-  openrouter: (provider) => ({
-    apiKey: provider?.apiKey ?? process.env[OPENROUTER_API_KEY_ENV],
-    baseURL: provider?.baseUrl ?? DEFAULT_OPENROUTER_URL,
+  openrouter: () => ({
+    apiKey: process.env[OPENROUTER_API_KEY_ENV],
+    baseURL: DEFAULT_OPENROUTER_URL,
   }),
   'openai-compatible': (provider) => ({
     apiKey: provider?.apiKey ?? PLACEHOLDER,

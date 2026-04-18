@@ -9,6 +9,7 @@
  */
 
 import type { RunRow } from '@myco/db/queries/runs.js';
+import { transformProviderOverrides } from './schemas/execution-overrides-traversal.js';
 
 export interface PhaseCheckpointSummary {
   name: string;
@@ -49,6 +50,33 @@ export function buildPhaseCheckpointSummary(
   } catch {
     return [];
   }
+}
+
+// TODO(post-v0.22): remove once no historical agent_runs rows predate the apiKey drop in v0.21. See docs/superpowers/plans/2026-04-18-pre-0.21.0-quality-pass.md Bundle A.
+/**
+ * Defensive mask for historical execution_overrides rows. Removes any
+ * `apiKey` field nested under `provider` (top-level or per-phase) so the
+ * stored overrides column cannot echo a pre-patch secret back to the UI.
+ *
+ * Top-level `apiKey` — if a legacy row somehow stored one — is also
+ * stripped as belt-and-braces defense.
+ *
+ * Structural traversal is delegated to `transformProviderOverrides`; this
+ * function only encodes the per-provider transform (delete apiKey).
+ */
+function scrubExecutionOverrides(
+  overrides: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!overrides || typeof overrides !== 'object') return overrides;
+  const topLevelStripped: Record<string, unknown> = { ...overrides };
+  if ('apiKey' in topLevelStripped) delete topLevelStripped.apiKey;
+  return transformProviderOverrides(topLevelStripped, stripApiKey);
+}
+
+function stripApiKey(provider: Record<string, unknown>): Record<string, unknown> {
+  const cloned = { ...provider };
+  if ('apiKey' in cloned) delete cloned.apiKey;
+  return cloned;
 }
 
 export interface SerializeRunOptions {
@@ -107,7 +135,9 @@ export function serializeRun(run: RunRow, opts: SerializeRunOptions = {}) {
     dry_run: run.dry_run,
     evaluation_id: run.evaluation_id,
     reasoning_level: run.reasoning_level,
-    execution_overrides: run.execution_overrides,
+    // Strip `apiKey` from historical rows defensively — before this PR the
+    // API accepted apiKey in executionOverrides and stored it unmasked.
+    execution_overrides: scrubExecutionOverrides(run.execution_overrides),
   };
 
   return {

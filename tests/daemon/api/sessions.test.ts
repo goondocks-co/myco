@@ -7,6 +7,7 @@ import { createSchema } from '@myco/db/schema';
 import { upsertSession, getSession } from '@myco/db/queries/sessions';
 import { upsertPlan, getPlan } from '@myco/db/queries/plans';
 import { createSessionMutationHandlers } from '@myco/daemon/api/sessions';
+import { initTeamContext, resetTeamContext } from '@myco/daemon/team-context';
 import type { RouteRequest } from '@myco/daemon/router';
 
 /**
@@ -178,5 +179,77 @@ describe('handleDeletePlan', () => {
 
     expect(res.status).toBe(404);
     expect((res.body as { error: string }).error).toBe('Plan not found');
+  });
+});
+
+describe('handleDeletePlan — machine_id ownership', () => {
+  let tmpDir: string;
+  let embeddingManager: { onRemoved: ReturnType<typeof vi.fn> };
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plans-ownership-'));
+    const dbPath = path.join(tmpDir, 'myco.db');
+    const db = initDatabase(dbPath);
+    createSchema(db);
+    embeddingManager = { onRemoved: vi.fn() };
+    // Simulate a team-sync-enabled daemon on a known local machine id.
+    initTeamContext(false, 'local-machine-a');
+  });
+
+  afterEach(() => {
+    closeDatabase();
+    resetTeamContext();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function makeHandlers() {
+    return createSessionMutationHandlers({
+      embeddingManager: embeddingManager as never,
+      vaultDir: tmpDir,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
+      liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
+    });
+  }
+
+  function seedPlan(machineId: string) {
+    const now = Math.floor(Date.now() / 1000);
+    upsertSession({ id: 'sess-own', agent: 'a', started_at: now, created_at: now });
+    upsertPlan({
+      id: 'plan-owned',
+      logical_key: 'session:sess-own:key:primary',
+      session_id: 'sess-own',
+      title: 't', content: 'c',
+      created_at: now,
+      machine_id: machineId,
+    });
+  }
+
+  it('rejects DELETE for a plan owned by another machine (no force_remote)', async () => {
+    seedPlan('some-other-machine');
+    const { handleDeletePlan } = makeHandlers();
+    const res = await handleDeletePlan(makeRequest({ params: { id: 'plan-owned' } }));
+    expect(res.status).toBe(403);
+    expect(getPlan('plan-owned')).not.toBeNull();
+    expect(embeddingManager.onRemoved).not.toHaveBeenCalled();
+  });
+
+  it('allows DELETE for a remote-owned plan when force_remote=true', async () => {
+    seedPlan('some-other-machine');
+    const { handleDeletePlan } = makeHandlers();
+    const res = await handleDeletePlan(makeRequest({
+      params: { id: 'plan-owned' },
+      body: { force_remote: true },
+    }));
+    expect(res.status === undefined || res.status < 400).toBe(true);
+    expect(getPlan('plan-owned')).toBeNull();
+    expect(embeddingManager.onRemoved).toHaveBeenCalledWith('plans', 'plan-owned');
+  });
+
+  it('allows DELETE for a locally-owned plan without force_remote', async () => {
+    seedPlan('local-machine-a');
+    const { handleDeletePlan } = makeHandlers();
+    const res = await handleDeletePlan(makeRequest({ params: { id: 'plan-owned' } }));
+    expect(res.status === undefined || res.status < 400).toBe(true);
+    expect(getPlan('plan-owned')).toBeNull();
   });
 });

@@ -2,7 +2,8 @@ import { getSession, listSessions, countSessions, deleteSessionCascade, getSessi
 import { listBatchesBySession, countBatchesBySession } from '@myco/db/queries/batches.js';
 import { listActivitiesByBatch, countActivities } from '@myco/db/queries/activities.js';
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
-import { deletePlan, listPlansBySession } from '@myco/db/queries/plans.js';
+import { deletePlan, getPlan, listPlansBySession } from '@myco/db/queries/plans.js';
+import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { epochSeconds } from '@myco/constants.js';
 import { cleanupAfterSessionCascade } from '../jobs/session-cleanup.js';
@@ -148,8 +149,34 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
     return { body: impact };
   }
 
-  /** DELETE /api/plans/:id — remove a captured plan and its vector. */
+  /** DELETE /api/plans/:id — remove a captured plan and its vector.
+   *
+   *  Ownership check: deleting a plan that belongs to another machine
+   *  propagates a tombstone across the team. Require an explicit
+   *  `{force_remote: true}` opt-in before deleting someone else's row. */
   async function handleDeletePlan(req: RouteRequest): Promise<RouteResponse> {
+    const existing = getPlan(req.params.id);
+    if (!existing) return { status: 404, body: { error: 'Plan not found' } };
+
+    const localMachineId = getTeamMachineId();
+    const body = req.body as { force_remote?: boolean } | undefined;
+    const forceRemote = body?.force_remote === true;
+    if (existing.machine_id !== localMachineId && !forceRemote) {
+      logger.warn(LOG_KINDS.API_SESSION_DELETE, 'Cross-machine plan delete rejected', {
+        plan_id: existing.id,
+        plan_machine_id: existing.machine_id,
+        local_machine_id: localMachineId,
+      });
+      return { status: 403, body: { error: 'Plan belongs to another machine; pass {"force_remote": true} to delete.' } };
+    }
+    if (existing.machine_id !== localMachineId && forceRemote) {
+      logger.warn(LOG_KINDS.API_SESSION_DELETE, 'Cross-machine plan delete allowed by force_remote', {
+        plan_id: existing.id,
+        plan_machine_id: existing.machine_id,
+        local_machine_id: localMachineId,
+      });
+    }
+
     const deleted = deletePlan(req.params.id);
     if (!deleted) return { status: 404, body: { error: 'Plan not found' } };
 

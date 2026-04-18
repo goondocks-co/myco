@@ -8,6 +8,9 @@ const OPENROUTER_MODELS_ENDPOINT = '/models';
 const OPENROUTER_CATALOG_CACHE_TTL_MS = 5 * 60 * 1000;
 const OPENROUTER_MODELS_TIMEOUT_MS = 5_000;
 const OPENROUTER_PRICING_VERSION = 'openrouter-model-catalog-live';
+/** Hard cap on catalog entries — prevents cache poisoning / OOM if the
+ *  upstream returns a hostile or corrupt response. */
+const OPENROUTER_CATALOG_MAX_ENTRIES = 10_000;
 
 interface OpenRouterPricing {
   inputUsdPerToken?: number;
@@ -92,9 +95,16 @@ async function fetchPricingCatalog(baseUrl?: string): Promise<Map<string, OpenRo
     throw new Error(`OpenRouter models request failed with ${response.status}`);
   }
 
-  const data = await response.json() as { data?: OpenRouterCatalogEntry[] };
+  const parsed = await response.json() as unknown;
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { data?: unknown }).data)) {
+    throw new Error('OpenRouter catalog response missing data array');
+  }
+  const entries = (parsed as { data: OpenRouterCatalogEntry[] }).data;
+  if (entries.length > OPENROUTER_CATALOG_MAX_ENTRIES) {
+    throw new Error(`OpenRouter catalog exceeded ${OPENROUTER_CATALOG_MAX_ENTRIES} entries`);
+  }
   const pricingByModel = new Map<string, OpenRouterPricing>();
-  for (const entry of data.data ?? []) {
+  for (const entry of entries) {
     if (!entry.id || !entry.pricing) continue;
     pricingByModel.set(entry.id, {
       inputUsdPerToken: parseRate(entry.pricing.prompt),
