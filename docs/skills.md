@@ -64,7 +64,7 @@ A validation gate enforces these conventions. Skills that fail validation are re
 
 ## How skills reach agents
 
-Skills are written to `.agents/skills/<name>/SKILL.md` — the emerging cross-agent standard directory. Agents that use `.agents/skills/` natively (Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode) pick them up directly. For Claude Code and Cursor, `myco init` and `myco update` create symlinks from the agent's native skills directory to the canonical location.
+Skills are written to `.agents/skills/<name>/SKILL.md` — the emerging cross-agent standard directory. Agents that use `.agents/skills/` natively (Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode, Pi) pick them up directly. For Claude Code and Cursor, `myco init` and `myco update` create symlinks from the agent's native skills directory to the canonical location.
 
 Run `myco update` after new skills are generated to refresh the symlinks.
 
