@@ -142,6 +142,7 @@ import { RESTART_REASON_FILENAME } from '../constants/update.js';
 import { buildScopedConfigSaveNotification } from '../config/focus.js';
 import { notify } from '../notifications/notify.js';
 import { PowerManager } from './power.js';
+import { InflightRunRegistry } from './inflight-runs.js';
 import { registerPowerJobs } from './power-jobs.js';
 import {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
@@ -446,6 +447,12 @@ export async function main(): Promise<void> {
     logger,
   });
 
+  // Tracks fire-and-forget Cortex runs so daemon shutdown can await them
+  // before exiting. Without this, SIGTERM orphans in-flight runs — leaving
+  // non-terminal agent_runs rows and costing real money on reasoning-heavy
+  // providers.
+  const inflightRuns = new InflightRunRegistry();
+
   const server = new DaemonServer({
     vaultDir,
     logger,
@@ -537,6 +544,7 @@ export async function main(): Promise<void> {
     embeddingManager,
     logger,
     getTeamClient: () => teamSync.getTeamClient(),
+    registerInflightRun: (p) => inflightRuns.register(p),
   });
 
   server.registerRoute('GET', '/api/config', async () => handleGetConfig(vaultDir));
@@ -796,7 +804,7 @@ export async function main(): Promise<void> {
   // --- MCP proxy routes ---
   // These routes exist so the MCP server can proxy tool calls through the
   // daemon instead of opening its own SQLite connection.
-  const mcpProxy = createMcpProxyHandlers({ machineId, embeddingManager, projectRoot });
+  const mcpProxy = createMcpProxyHandlers({ machineId, embeddingManager, projectRoot, logger });
   server.registerRoute('POST', '/api/mcp/remember', mcpProxy.handleRemember);
   server.registerRoute('POST', '/api/mcp/supersede', mcpProxy.handleSupersede);
   server.registerRoute('POST', '/api/mcp/consolidate', mcpProxy.handleConsolidate);
@@ -948,6 +956,20 @@ export async function main(): Promise<void> {
     if (activeStopProcessing) {
       logger.info(LOG_KINDS.DAEMON_START, 'Waiting for active stop processing to complete...');
       await activeStopProcessing;
+    }
+    // Drain fire-and-forget Cortex runs so we don't orphan non-terminal
+    // agent_runs rows or abandon reasoning-token spend. Bounded by a 30s
+    // default — longer runs continue in the background but we still exit.
+    if (inflightRuns.size > 0) {
+      logger.info(LOG_KINDS.DAEMON_START, 'Draining in-flight agent runs before shutdown...', {
+        inflight_count: inflightRuns.size,
+      });
+      const outcome = await inflightRuns.drain();
+      if (!outcome.settled) {
+        logger.warn(LOG_KINDS.DAEMON_START, 'Some in-flight runs did not settle before shutdown timeout', {
+          remaining: outcome.remaining,
+        });
+      }
     }
     registry.destroy();
     await server.stop();

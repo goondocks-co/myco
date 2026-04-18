@@ -22,12 +22,19 @@ export interface TriggerCortexInstructionsDeps {
   liveConfig: { current: MycoConfig };
   logger: DaemonLogger;
   getTeamClient?: () => TeamSyncClient | null;
+  /** Optional registry that tracks the fire-and-forget run so daemon shutdown can await it. */
+  registerInflightRun?: (promise: Promise<unknown>) => void;
 }
 
 export interface TriggerCortexInstructionsResult {
   started: boolean;
-  reason?: 'event-tasks-disabled' | 'provider-not-configured' | 'agent-module-unavailable';
+  reason?:
+    | 'event-tasks-disabled'
+    | 'provider-not-configured'
+    | 'agent-module-unavailable'
+    | 'startup-failed';
   runId?: string | null;
+  error?: string;
 }
 
 export async function triggerCortexInstructions(
@@ -43,10 +50,23 @@ export async function triggerCortexInstructions(
     return { started: false, reason: 'provider-not-configured' };
   }
 
+  let runAgentFn: typeof import('../agent/executor.js').runAgent;
   try {
-    const { runAgent } = await import('../agent/executor.js');
+    ({ runAgent: runAgentFn } = await import('../agent/executor.js'));
+  } catch (err) {
+    logger.warn(LOG_KINDS.AGENT_ERROR, 'cortex-instructions: agent module unavailable', {
+      error: String(err),
+    });
+    return {
+      started: false,
+      reason: 'agent-module-unavailable',
+      error: String(err),
+    };
+  }
+
+  try {
     const built = await buildCortexInstructionsInput(config, getTeamClient);
-    const resultPromise = runAgent(vaultDir, {
+    const resultPromise = runAgentFn(vaultDir, {
       task: 'cortex-instructions',
       agentId: DEFAULT_AGENT_ID,
       instruction: built.instruction,
@@ -55,15 +75,23 @@ export async function triggerCortexInstructions(
     });
     const runId = getLatestRunId(DEFAULT_AGENT_ID, 'cortex-instructions');
 
-    resultPromise.catch((err) => {
+    const tracked = resultPromise.catch((err) => {
       logger.warn(LOG_KINDS.AGENT_ERROR, 'Cortex instructions task failed', {
         error: String(err),
         run_id: runId ?? undefined,
       });
     });
+    deps.registerInflightRun?.(tracked);
 
     return { started: true, runId };
-  } catch {
-    return { started: false, reason: 'agent-module-unavailable' };
+  } catch (err) {
+    logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to start cortex-instructions task', {
+      error: String(err),
+    });
+    return {
+      started: false,
+      reason: 'startup-failed',
+      error: String(err),
+    };
   }
 }

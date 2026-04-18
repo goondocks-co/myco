@@ -11,8 +11,10 @@ import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { CONTENT_HASH_ALGORITHM } from '@myco/constants.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { getPlanByLogicalKey, upsertPlan } from '@myco/db/queries/plans.js';
 import type { PlanRow } from '@myco/db/queries/plans.js';
+import type { Logger } from './logger.js';
 import {
   buildPathPlanLogicalKey,
   buildPlanId,
@@ -186,8 +188,24 @@ export interface PersistPlanInput {
   planKey?: string | null;
   createdAt?: number;
   updatedAt?: number | null;
+  /** Optional logger for warn-level cross-channel overwrite detection. */
+  logger?: Logger;
 }
 
+/**
+ * Persist a plan, comparing content against the existing row on the same
+ * logical_key.
+ *
+ * Behavior:
+ *   - If an existing row matches the incoming content AND title, short-circuit
+ *     and return the existing row unchanged. This avoids a redundant write and
+ *     the accompanying team-sync enqueue when two channels (MCP + file
+ *     reconciler) converge on the same logical_key with identical content.
+ *   - If the content differs, the write proceeds (last-write-wins — same as
+ *     before). When a logger is supplied and the source_path changed, emit a
+ *     warn log so operators have forensic signal that two channels clobbered
+ *     each other. A revisions table is a follow-up; this is the cheap guard.
+ */
 export function persistPlan(input: PersistPlanInput): PlanRow {
   const createdAt = input.createdAt ?? Math.floor(Date.now() / 1000);
   const updatedAt = input.updatedAt ?? createdAt;
@@ -197,16 +215,40 @@ export function persistPlan(input: PersistPlanInput): PlanRow {
   const promptBatchId = input.promptBatchId === undefined
     ? (existingPlan?.prompt_batch_id ?? null)
     : input.promptBatchId;
+  const resolvedTitle = resolvePlanTitle({
+    content: input.content,
+    title: input.title,
+    sourcePath: input.sourcePath,
+    planKey: input.planKey,
+  });
+
+  if (
+    existingPlan
+    && existingPlan.content_hash === contentHash
+    && existingPlan.title === resolvedTitle
+    && existingPlan.status === status
+  ) {
+    return existingPlan;
+  }
+
+  if (existingPlan && existingPlan.content_hash !== contentHash) {
+    const priorSource = existingPlan.source_path ?? null;
+    const newSource = input.sourcePath ?? null;
+    if (priorSource !== newSource) {
+      input.logger?.warn(LOG_KINDS.CAPTURE_PLAN, 'Plan overwritten mid-session', {
+        logical_key: input.logicalKey,
+        session_id: input.sessionId,
+        prior_source: priorSource,
+        new_source: newSource,
+        prior_updated_at: existingPlan.updated_at,
+      });
+    }
+  }
 
   return upsertPlan({
     id: buildPlanId(input.logicalKey),
     logical_key: input.logicalKey,
-    title: resolvePlanTitle({
-      content: input.content,
-      title: input.title,
-      sourcePath: input.sourcePath,
-      planKey: input.planKey,
-    }),
+    title: resolvedTitle,
     content: input.content,
     source_path: input.sourcePath ?? null,
     tags: normalizePlanTags(input.tags),
@@ -231,6 +273,8 @@ export interface CapturePlanInput {
   sessionId: string;
   /** Optional prompt batch ID at the time of capture. */
   promptBatchId?: number | null;
+  /** Optional logger forwarded to persistPlan for cross-channel overwrite detection. */
+  logger?: Logger;
 }
 
 /**
@@ -252,6 +296,7 @@ export function capturePlan(input: CapturePlanInput): PlanRow {
     logicalKey: buildPathPlanLogicalKey(normalizedSourcePath),
     sourcePath: normalizedSourcePath,
     promptBatchId: input.promptBatchId,
+    logger: input.logger,
   });
 }
 
@@ -260,6 +305,7 @@ export interface CaptureTaggedPlanInput {
   content: string;
   sessionId: string;
   promptBatchId?: number | null;
+  logger?: Logger;
 }
 
 export function captureTaggedPlan(input: CaptureTaggedPlanInput): PlanRow {
@@ -270,5 +316,6 @@ export function captureTaggedPlan(input: CaptureTaggedPlanInput): PlanRow {
     sourcePath: `${TRANSCRIPT_SOURCE_PREFIX}${input.tag}`,
     promptBatchId: input.promptBatchId,
     planKey: input.tag,
+    logger: input.logger,
   });
 }

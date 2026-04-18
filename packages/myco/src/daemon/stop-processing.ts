@@ -357,6 +357,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
               content,
               sessionId,
               promptBatchId: latestBatch?.id ?? null,
+              logger,
             });
             logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan captured from transcript tag', {
               session_id: sessionId,
@@ -409,6 +410,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
             content,
             sessionId,
             promptBatchId,
+            logger,
           });
           logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan reconciled from configured plan dir', {
             session_id: sessionId,

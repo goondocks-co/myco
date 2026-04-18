@@ -61,14 +61,17 @@ class PersistedSession implements Session {
   }
 }
 
+// Local OpenAI-compatible providers (Ollama, LM Studio, llama.cpp) commonly
+// omit the *Details arrays entirely. Mark them optional so the compiler
+// enforces the `?? []` guard at every call site.
 function toOpenAIUsage(rawResponses: Array<{
   usage: {
     requests: number;
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
-    inputTokensDetails: Array<Record<string, number>>;
-    outputTokensDetails: Array<Record<string, number>>;
+    inputTokensDetails?: Array<Record<string, number>>;
+    outputTokensDetails?: Array<Record<string, number>>;
   };
 }>): RuntimeUsage {
   const usage = rawResponses.reduce(
@@ -77,8 +80,8 @@ function toOpenAIUsage(rawResponses: Array<{
       acc.inputTokens += response.usage.inputTokens;
       acc.outputTokens += response.usage.outputTokens;
       acc.totalTokens += response.usage.totalTokens;
-      acc.reasoningTokens += response.usage.outputTokensDetails.reduce((sum, detail) => sum + (detail.reasoning_tokens ?? 0), 0);
-      acc.cachedTokens += response.usage.inputTokensDetails.reduce((sum, detail) => sum + (detail.cached_tokens ?? 0), 0);
+      acc.reasoningTokens += (response.usage.outputTokensDetails ?? []).reduce((sum, detail) => sum + (detail.reasoning_tokens ?? 0), 0);
+      acc.cachedTokens += (response.usage.inputTokensDetails ?? []).reduce((sum, detail) => sum + (detail.cached_tokens ?? 0), 0);
       return acc;
     },
     { requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, reasoningTokens: 0, cachedTokens: 0 },

@@ -116,10 +116,23 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     const transcriptMeta = transcriptPath ? readTranscriptMeta(transcriptPath) ?? undefined : undefined;
     const detectedAgent = typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME;
 
-    return evaluateSessionCaptureRules(manifests, detectedAgent, {
-      transcriptPath,
-      transcriptMeta,
-    });
+    // Fail open: a manifest with a bad regex or schema error must not
+    // wedge the dispatcher and drop every subsequent event. The individual
+    // data-preservation contract is "capture by default" — keeping a noisy
+    // session is recoverable; dropping every event until restart is not.
+    try {
+      return evaluateSessionCaptureRules(manifests, detectedAgent, {
+        transcriptPath,
+        transcriptMeta,
+      });
+    } catch (err) {
+      logger.error(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Capture-rules evaluator threw', {
+        error: String(err),
+        session_id: typeof event.session_id === 'string' ? event.session_id : undefined,
+        agent: detectedAgent,
+      });
+      return { action: 'pass' };
+    }
   }
 
   function getPlanTagsForAgent(agent: unknown): string[] {
@@ -225,6 +238,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
                 content,
                 sessionId: event.session_id,
                 promptBatchId: batchId,
+                logger,
               });
               logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan captured from prompt tag', {
                 session_id: event.session_id,
@@ -290,6 +304,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
             content: planContent,
             sessionId: captureSessionId,
             promptBatchId: latestBatch?.id ?? null,
+            logger,
           });
           logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan captured', {
             session_id: captureSessionId,
