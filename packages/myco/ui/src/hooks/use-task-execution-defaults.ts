@@ -16,6 +16,7 @@ import type { ProviderDraftDefaults, ProviderDraftSource } from './use-provider-
 import type { TaskRow } from './use-agent';
 import {
   maybeInferRuntimeFromProviderType,
+  parseProviderType,
   resolveReasoningModel,
   useTaskConfig,
   type ProviderConfig,
@@ -62,13 +63,17 @@ export function useTaskExecutionDefaults(
 
   const { effective } = useScopedConfig();
   const globalProvider = effective?.agent?.provider;
-  const globalProviderType = globalProvider?.type as ProviderConfig['type'] | undefined;
+  const globalProviderType = globalProvider?.type
+    ? parseProviderType(globalProvider.type) || undefined
+    : undefined;
   const globalRuntime = globalProvider?.runtime;
 
   const { data: taskConfigData } = useTaskConfig(taskName);
   const taskConfig = taskConfigData?.config;
   const execution = taskRow?.execution;
-  const executionProviderType = execution?.provider?.type as ProviderConfig['type'] | undefined;
+  const executionProviderType = execution?.provider?.type
+    ? parseProviderType(execution.provider.type) || undefined
+    : undefined;
 
   const runtime: RuntimeId = (taskConfig?.runtime
     ?? taskConfig?.provider?.runtime

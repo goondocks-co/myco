@@ -218,9 +218,13 @@ function shortenToolName(name: string): string {
  * needs to read the raw JSON the daemon hands back without a round-trip
  * through the audit endpoint.
  */
+function isObjectWithPhases(value: unknown): value is { phases?: unknown } {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 export function sumPhaseTurns(usageData: string | null): number | null {
-  const parsed = tryParseJson<{ phases?: Array<{ turnsUsed?: number }> }>(usageData);
-  const phases = parsed?.phases;
+  const parsed = tryParseJson(usageData, isObjectWithPhases);
+  const phases = parsed?.phases as Array<{ turnsUsed?: number }> | undefined;
   if (!Array.isArray(phases) || phases.length === 0) return null;
   let sum = 0;
   let sawTurn = false;
@@ -437,7 +441,7 @@ interface UsagePhase {
 }
 
 function parseUsagePhases(usageData: string | null): UsagePhase[] {
-  const parsed = tryParseJson<{ phases?: UsagePhase[] }>(usageData);
+  const parsed = tryParseJson(usageData, isObjectWithPhases);
   const phases = parsed?.phases;
   if (!Array.isArray(phases)) return [];
   // Guard against entries missing a name (malformed persistence).

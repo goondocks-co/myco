@@ -32,6 +32,8 @@ import {
   useProviderConfigDraft,
 } from '../../hooks/use-provider-config-draft';
 import {
+  parseProviderType,
+  parseRuntimeId,
   resolveReasoningModel,
   useProviders,
   type PhaseOverride,
@@ -214,8 +216,8 @@ export function RunTaskDialog({
     // but points at the source run's provider shape.
     if (prefill.provider) {
       setProviderDraft({
-        runtime: (prefill.runtime ?? prefill.provider.runtime ?? providerDraftDefaults.runtime ?? 'claude-sdk') as 'claude-sdk' | 'openai-agents' | '',
-        type: prefill.provider.type as ProviderConfig['type'] | '',
+        runtime: parseRuntimeId(prefill.runtime ?? prefill.provider.runtime ?? providerDraftDefaults.runtime ?? 'claude-sdk') || 'claude-sdk',
+        type: parseProviderType(prefill.provider.type),
         localBackend: prefill.provider.local_backend ?? '',
         model: prefill.provider.model ?? '',
         reasoningLow: prefill.provider.reasoning_map?.low ?? '',
@@ -565,8 +567,8 @@ export function RunTaskDialog({
                         setReasoning(undefined);
                         setPhaseOverrides({});
                         setProviderDraft({
-                          runtime: (providerDraftDefaults.runtime ?? 'claude-sdk') as 'claude-sdk' | 'openai-agents' | '',
-                          type: (providerDraftDefaults.providerType ?? '') as ProviderConfig['type'] | '',
+                          runtime: parseRuntimeId(providerDraftDefaults.runtime ?? 'claude-sdk') || 'claude-sdk',
+                          type: parseProviderType(providerDraftDefaults.providerType ?? ''),
                           localBackend: providerDraftDefaults.localBackend ?? '',
                           model: providerDraftDefaults.model ?? '',
                           reasoningLow: providerDraftDefaults.reasoningMap?.low ?? '',

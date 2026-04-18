@@ -1,0 +1,65 @@
+/**
+ * Shared builder for session-start context text — used by BOTH the daemon's
+ * `/context` route and the degraded-path `buildInjectedContext()` in
+ * `injector.ts`. Keeping the heading format and join string here ensures the
+ * two paths emit identical strings; if they diverge, consumers see different
+ * session-start payloads depending on whether the daemon is up.
+ */
+
+import type { MycoConfig } from '@myco/config/schema.js';
+import { shouldInjectCortex } from './cortex-brief.js';
+import { getSessionStartDigestPayload, shouldInjectSessionStartDigest } from './session-start-digest.js';
+
+export interface SessionStartContextPart {
+  kind: 'cortex' | 'digest';
+  /** The rendered text chunk (without the inter-part separator). */
+  text: string;
+  /** Digest tier the content came from, when applicable. */
+  tier?: number;
+}
+
+export interface ComposedSessionStartContext {
+  /** Individual parts preserved so callers can log which sources contributed. */
+  parts: SessionStartContextPart[];
+  /** Whether cortex injection is enabled for this config. */
+  cortexEnabled: boolean;
+  /** Whether digest injection is enabled for this config. */
+  digestEnabled: boolean;
+}
+
+/**
+ * Compose the cortex + digest parts for a session-start context based on the
+ * live config. The daemon path supplies its own cortex content (via the
+ * signed snapshot), so it passes `cortexContent` explicitly; the degraded
+ * path reads the cortex content itself and passes it in the same way.
+ *
+ * Callers are responsible for:
+ *   - joining with `\n\n`
+ *   - appending per-session metadata (branch, session_id) after the parts
+ *   - logging source attribution
+ */
+export function composeSessionStartContext(
+  config: MycoConfig,
+  cortexContent: string,
+): ComposedSessionStartContext {
+  const cortexEnabled = shouldInjectCortex(config.context);
+  const digestEnabled = shouldInjectSessionStartDigest(config.context);
+  const parts: SessionStartContextPart[] = [];
+
+  if (cortexEnabled && cortexContent) {
+    parts.push({ kind: 'cortex', text: cortexContent });
+  }
+  if (digestEnabled) {
+    const digest = getSessionStartDigestPayload(config.context);
+    if (digest.content) {
+      const tier = digest.tier ?? config.context.digest_tier;
+      parts.push({
+        kind: 'digest',
+        text: `## Preferred Digest (Tier ${tier})\n${digest.content}`,
+        tier,
+      });
+    }
+  }
+
+  return { parts, cortexEnabled, digestEnabled };
+}

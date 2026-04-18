@@ -1,12 +1,13 @@
 import type { MCPServer } from '@openai/agents';
 import { z } from 'zod/v4';
+import type { ZodRawShape } from 'zod';
 import { createVaultTools } from '@myco/agent/tools.js';
 import type { RuntimeToolSurface } from './types.js';
 
 interface LocalMcpTool {
   name: string;
   description?: string;
-  inputSchema?: Record<string, unknown>;
+  inputSchema?: ZodRawShape;
   handler: (args: Record<string, unknown>, extra?: unknown) => Promise<{ content: Array<{ type: 'text'; text: string }> }>;
 }
 
@@ -64,22 +65,13 @@ class LocalVaultMcpServer implements MCPServer {
   }
 }
 
-function normalizeInputSchema(schema: Record<string, unknown> | undefined) {
+function normalizeInputSchema(schema: ZodRawShape | undefined) {
   if (!schema) {
     return {
       type: 'object' as const,
       properties: {},
       required: [],
       additionalProperties: false,
-    };
-  }
-
-  if (schema.type === 'object' && typeof schema.properties === 'object' && schema.properties !== null) {
-    return {
-      type: 'object' as const,
-      properties: schema.properties as Record<string, unknown>,
-      required: Array.isArray(schema.required) ? (schema.required as string[]) : [],
-      additionalProperties: schema.additionalProperties === true,
     };
   }
 

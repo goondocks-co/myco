@@ -34,10 +34,18 @@ describe('tryParseJson', () => {
     expect(tryParseJson([])).toBeNull();
   });
 
-  it('narrows via generic type parameter when caller specifies a type', () => {
+  it('narrows via validator predicate when caller supplies one', () => {
     interface Shape { foo: number }
-    const parsed = tryParseJson<Shape>('{"foo":7}');
-    // If parsed is non-null, TS treats it as Shape — runtime-check the value
+    const isShape = (v: unknown): v is Shape =>
+      typeof v === 'object' && v !== null && typeof (v as Shape).foo === 'number';
+    const parsed = tryParseJson('{"foo":7}', isShape);
     expect(parsed?.foo).toBe(7);
+  });
+
+  it('returns null when the validator rejects the parsed value', () => {
+    interface Shape { foo: number }
+    const isShape = (v: unknown): v is Shape =>
+      typeof v === 'object' && v !== null && typeof (v as Shape).foo === 'number';
+    expect(tryParseJson('{"foo":"not-a-number"}', isShape)).toBeNull();
   });
 });

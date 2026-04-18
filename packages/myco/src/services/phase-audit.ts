@@ -45,13 +45,13 @@
 import { getRun } from '@myco/db/queries/runs.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
-import { listWriteIntents } from '@myco/db/queries/write-intents.js';
+import { listWriteIntentTools } from '@myco/db/queries/write-intents.js';
 import { parseCheckpointState } from '@myco/agent/executor-state.js';
 import { runDurationMs } from '@myco/agent/run-accounting.js';
 import { tryParseJson } from '@myco/utils/json.js';
 import type { ReportRow } from '@myco/db/queries/reports.js';
 import type { TurnRow } from '@myco/db/queries/turns.js';
-import type { WriteIntentRow } from '@myco/db/queries/write-intents.js';
+import type { WriteIntentToolRow } from '@myco/db/queries/write-intents.js';
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -147,8 +147,12 @@ interface StoredUsageData {
 // Parsing helpers
 // ---------------------------------------------------------------------------
 
+function isStoredUsageData(value: unknown): value is StoredUsageData {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function parseUsageData(raw: string | null | undefined): StoredUsageData {
-  return tryParseJson<StoredUsageData>(raw) ?? {};
+  return tryParseJson(raw, isStoredUsageData) ?? {};
 }
 
 function normalizeStatus(
@@ -191,7 +195,7 @@ interface WriteIntentSummary {
   totalByTool: Record<string, number>;              // run total by tool
 }
 
-function aggregateWriteIntents(intents: WriteIntentRow[]): WriteIntentSummary {
+function aggregateWriteIntents(intents: WriteIntentToolRow[]): WriteIntentSummary {
   const byPhase: Record<string, Record<string, number>> = {};
   const unattributedByTool: Record<string, number> = {};
   const totalByTool: Record<string, number> = {};
@@ -291,7 +295,7 @@ export function buildPhaseAudit(runId: string): PhaseAudit | null {
   // Write intents (only loaded for dry runs)
   let intentSummary: WriteIntentSummary | null = null;
   if (dryRun) {
-    const intents = listWriteIntents(runId);
+    const intents = listWriteIntentTools(runId);
     intentSummary = aggregateWriteIntents(intents);
   }
 

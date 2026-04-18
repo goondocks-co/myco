@@ -89,7 +89,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
       finalText,
       turnsUsed,
       usage: {
-        requests: turnsUsed > 0 ? 1 : 0,
+        requests: turnsUsed,
         inputTokens,
         outputTokens,
         totalTokens: inputTokens + outputTokens,

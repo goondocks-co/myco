@@ -7,7 +7,8 @@ import {
   type AgentInputItem,
   type Session,
 } from '@openai/agents';
-import type { AgentRuntime, RuntimeCapability, RuntimeExecuteInput, RuntimeExecuteResult, RuntimeFactoryContext } from './types.js';
+import type { AgentRuntime, RuntimeCapability, RuntimeExecuteInput, RuntimeExecuteResult } from './types.js';
+import { createLocalVaultMcpServer } from './openai-local-mcp.js';
 import type { ProviderConfig, RuntimeUsage } from '@myco/agent/types.js';
 import { DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS } from '@myco/agent/context-windows.js';
 import { ensureOllamaContextVariant } from '@myco/agent/ollama-context.js';
@@ -249,8 +250,6 @@ function createProvider(input: RuntimeExecuteInput): OpenAIProvider {
 export class OpenAIAgentsRuntime implements AgentRuntime {
   readonly id = 'openai-agents' as const;
 
-  constructor(private readonly context: RuntimeFactoryContext) {}
-
   supports(capability: RuntimeCapability): boolean {
     return capability === 'supportsSessionResume' || capability === 'supportsMcp';
   }
@@ -264,7 +263,7 @@ export class OpenAIAgentsRuntime implements AgentRuntime {
     const session = new PersistedSession(sessionRef, persistedItems, (items) => {
       persistedItems = [...items];
     });
-    const mcpServer = this.context.createOpenAIMcpServer(input.toolSurface);
+    const mcpServer = createLocalVaultMcpServer(input.toolSurface);
     await mcpServer.connect();
 
     try {

@@ -88,6 +88,15 @@ export function loadConfig(vaultDir: string): MycoConfig {
     process.stderr.write(`[myco migration] ${msg}\n`);
   });
 
+  // Deprecation warning for legacy context.operating_brief_enabled →
+  // context.cortex_enabled (rewrite happens inside ContextSchema.preprocess).
+  const ctx = parsed.context as Record<string, unknown> | undefined;
+  if (ctx && 'operating_brief_enabled' in ctx && !('cortex_enabled' in ctx)) {
+    process.stderr.write(
+      '[myco config] context.operating_brief_enabled is deprecated; rename to context.cortex_enabled\n',
+    );
+  }
+
   // Parse with Zod to fill in defaults for new config sections
   const config = MycoConfigSchema.parse(parsed);
 

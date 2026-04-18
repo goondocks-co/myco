@@ -73,7 +73,21 @@ const TaskProviderOverrideSchema = z.object({
   params: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
 });
 
-const ContextSchema = z.object({
+/**
+ * Raw context shape inside zod preprocess — accepts the legacy
+ * `operating_brief_enabled` key and rewrites it to `cortex_enabled`.
+ * Loader emits a deprecation warning once per load (see `loader.ts`).
+ */
+const ContextSchema = z.preprocess((raw) => {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const input = raw as Record<string, unknown>;
+    if ('operating_brief_enabled' in input && !('cortex_enabled' in input)) {
+      const { operating_brief_enabled, ...rest } = input;
+      return { ...rest, cortex_enabled: operating_brief_enabled };
+    }
+  }
+  return raw;
+}, z.object({
   /** Preferred digest tier when a user or agent explicitly requests Myco context. */
   digest_tier: z.number().int().default(5000),
   /** Append the preferred digest extract at session start after Cortex instructions. */
@@ -84,7 +98,7 @@ const ContextSchema = z.object({
   prompt_search: z.boolean().default(true),
   /** Max spores to inject per prompt (0-10). */
   prompt_max_spores: z.number().int().min(0).max(10).default(3),
-});
+}));
 
 const AgentSchema = z.object({
   /** Number of batches between event-driven summary triggers (0 to disable). */

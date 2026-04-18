@@ -17,6 +17,36 @@ export interface ProviderInfo {
   models: string[];
 }
 
+export type RuntimeIdUi = ProviderInfo['runtime'];
+export type ProviderTypeUi = ProviderInfo['type'];
+
+const RUNTIME_IDS: readonly RuntimeIdUi[] = ['claude-sdk', 'openai-agents'];
+const PROVIDER_TYPES_UI: readonly ProviderTypeUi[] = [
+  'anthropic',
+  'ollama',
+  'lmstudio',
+  'openai',
+  'openrouter',
+  'openai-compatible',
+];
+
+/**
+ * Narrow an arbitrary string to RuntimeIdUi. Returns '' when the input
+ * isn't a known runtime id — callers can then treat '' as "no runtime
+ * selected" without blanket casting.
+ */
+export function parseRuntimeId(value: string): RuntimeIdUi | '' {
+  return (RUNTIME_IDS as readonly string[]).includes(value) ? (value as RuntimeIdUi) : '';
+}
+
+/**
+ * Narrow an arbitrary string to ProviderTypeUi. Returns '' when the input
+ * isn't a known provider type.
+ */
+export function parseProviderType(value: string): ProviderTypeUi | '' {
+  return (PROVIDER_TYPES_UI as readonly string[]).includes(value) ? (value as ProviderTypeUi) : '';
+}
+
 export interface ProvidersResponse {
   providers: ProviderInfo[];
 }

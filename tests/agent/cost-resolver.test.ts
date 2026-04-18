@@ -8,7 +8,7 @@ afterEach(() => {
 });
 
 describe('resolveCost', () => {
-  it('exposes provider capabilities through the registry', () => {
+  it('returns the correct resolver for known provider types', () => {
     const openRouterProvider = getCostProvider({
       runtime: 'openai-agents',
       model: 'openrouter/auto',
@@ -22,16 +22,8 @@ describe('resolveCost', () => {
       usage: {},
     });
 
-    expect(openRouterProvider?.capabilities).toEqual({
-      estimateFromUsage: true,
-      fetchActualRunCost: true,
-      fetchCatalogPricing: true,
-    });
-    expect(localProvider?.capabilities).toEqual({
-      estimateFromUsage: false,
-      fetchActualRunCost: false,
-      fetchCatalogPricing: false,
-    });
+    expect(openRouterProvider?.id).toBe('openrouter');
+    expect(localProvider?.id).toBe('generic-configured');
   });
 
   it('prefers actual cost reported by the runtime', async () => {

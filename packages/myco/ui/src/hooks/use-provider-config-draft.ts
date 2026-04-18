@@ -3,6 +3,8 @@ import {
   defaultBaseUrlForProvider,
   draftToProviderConfig,
   maybeInferRuntimeFromProviderType,
+  parseProviderType,
+  parseRuntimeId,
   providerSupportsRuntime,
   seedDraftFromProviderType,
   type ProviderConfig,
@@ -54,19 +56,27 @@ function runtimeFromSource(
   source: ProviderDraftSource | null | undefined,
   defaults?: ProviderDraftDefaults,
 ): ProviderDraft['runtime'] | '' {
-  return (source?.runtime as ProviderDraft['runtime'] | undefined)
-    ?? (source?.provider?.runtime as ProviderDraft['runtime'] | undefined)
-    ?? maybeInferRuntimeFromProviderType(source?.provider?.type as ProviderDraft['type'] | undefined)
-    ?? (defaults?.runtime as ProviderDraft['runtime'] | undefined)
-    ?? maybeInferRuntimeFromProviderType(defaults?.providerType as ProviderDraft['type'] | undefined)
-    ?? '';
+  const sourceRuntime = source?.runtime ? parseRuntimeId(source.runtime) : '';
+  if (sourceRuntime) return sourceRuntime;
+  const providerRuntime = source?.provider?.runtime ? parseRuntimeId(source.provider.runtime) : '';
+  if (providerRuntime) return providerRuntime;
+  const inferredFromSourceType = source?.provider?.type
+    ? maybeInferRuntimeFromProviderType(parseProviderType(source.provider.type) || undefined)
+    : undefined;
+  if (inferredFromSourceType) return inferredFromSourceType;
+  const defaultRuntime = defaults?.runtime ? parseRuntimeId(defaults.runtime) : '';
+  if (defaultRuntime) return defaultRuntime;
+  const inferredFromDefaults = defaults?.providerType
+    ? maybeInferRuntimeFromProviderType(parseProviderType(defaults.providerType) || undefined)
+    : undefined;
+  return inferredFromDefaults ?? '';
 }
 
 export function providerDraftFromSource(
   source: ProviderDraftSource | null | undefined,
   defaults?: ProviderDraftDefaults,
 ): ProviderDraft {
-  const providerType = (source?.provider?.type as ProviderDraft['type'] | undefined) ?? '';
+  const providerType = source?.provider?.type ? parseProviderType(source.provider.type) : '';
   if (providerType !== '') {
     return {
       runtime: runtimeFromSource(source, defaults),
@@ -86,7 +96,7 @@ export function providerDraftFromSource(
 
   return {
     runtime: runtimeFromSource(source, defaults),
-    type: (defaults?.providerType as ProviderDraft['type'] | undefined) ?? '',
+    type: defaults?.providerType ? parseProviderType(defaults.providerType) : '',
     localBackend: defaults?.localBackend ?? '',
     model: source?.model ?? defaults?.model ?? '',
     reasoningLow: defaults?.reasoningMap?.low ?? '',
@@ -138,13 +148,14 @@ function isDefaultLocalBaseUrl(value: string): boolean {
 }
 
 function nextDraftForRuntime(runtime: string, providers: ProviderInfo[]): ProviderDraft {
-  const firstProvider = providers.find((provider) => providerSupportsRuntime(provider.type, runtime as ProviderDraft['runtime']));
+  const parsedRuntime = parseRuntimeId(runtime);
+  const firstProvider = providers.find((provider) => providerSupportsRuntime(provider.type, parsedRuntime));
   if (firstProvider) {
-    return seedDraftFromProviderType(firstProvider.type, providers, runtime as ProviderDraft['runtime']);
+    return seedDraftFromProviderType(firstProvider.type, providers, parsedRuntime || undefined);
   }
   return {
     ...emptyProviderDraft(),
-    runtime: runtime as ProviderDraft['runtime'],
+    runtime: parsedRuntime,
   };
 }
 
@@ -200,19 +211,21 @@ export function useProviderConfigDraft({
   const isDirty = !providerDraftsEqual(draft, savedDraft);
 
   const handleRuntimeChange = useCallback((runtime: string) => {
+    const parsedRuntime = parseRuntimeId(runtime);
     setDraft((prev) => {
-      if (providerSupportsRuntime(prev.type, runtime as ProviderDraft['runtime'])) {
-        return { ...prev, runtime: runtime as ProviderDraft['runtime'] };
+      if (providerSupportsRuntime(prev.type, parsedRuntime)) {
+        return { ...prev, runtime: parsedRuntime };
       }
       return nextDraftForRuntime(runtime, providers);
     });
   }, [providers]);
 
   const handleProviderChange = useCallback((type: string) => {
+    const parsedType = parseProviderType(type);
     setDraft((prev) => seedDraftFromProviderType(
       type,
       providers,
-      providerSupportsRuntime(type as ProviderDraft['type'], prev.runtime) ? prev.runtime : undefined,
+      providerSupportsRuntime(parsedType, prev.runtime) ? prev.runtime : undefined,
     ));
   }, [providers]);
 

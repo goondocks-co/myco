@@ -9,11 +9,14 @@
  * Finding #10 of the pre-0.21 runtime review.
  */
 
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildSessionPlanLogicalKey,
   buildSessionTagPlanLogicalKey,
   buildPathPlanLogicalKey,
+  humanizePlanToken,
+  normalizePlanSourcePath,
 } from '@myco/plans/identity.js';
 
 describe('plan logical-key namespaces', () => {
@@ -42,5 +45,37 @@ describe('plan logical-key namespaces', () => {
       .not.toBe(buildSessionTagPlanLogicalKey('sess-b', 'primary'));
     expect(buildSessionPlanLogicalKey('sess-a', 'primary'))
       .not.toBe(buildSessionPlanLogicalKey('sess-b', 'primary'));
+  });
+});
+
+describe('normalizePlanSourcePath', () => {
+  it('rewrites Windows-style separators to POSIX in the normalized output', () => {
+    const result = normalizePlanSourcePath('docs\\plans\\alpha.md', '/tmp/project');
+    expect(result).toBe('docs/plans/alpha.md');
+  });
+
+  it('returns a normalized absolute path when the input escapes the project root', () => {
+    const outside = path.resolve('/tmp/outside/plan.md');
+    const result = normalizePlanSourcePath(outside, '/tmp/project');
+    expect(path.isAbsolute(result)).toBe(true);
+    expect(result.includes('outside')).toBe(true);
+    // Forward slashes in result (POSIX normalization).
+    expect(result.includes('\\')).toBe(false);
+  });
+
+  it('passes through transcript:-prefixed sources unchanged', () => {
+    expect(normalizePlanSourcePath('transcript:abc123')).toBe('transcript:abc123');
+  });
+});
+
+describe('humanizePlanToken', () => {
+  it('converts camelCase to Title Case', () => {
+    expect(humanizePlanToken('primaryPlan')).toBe('Primary Plan');
+    expect(humanizePlanToken('multiWordCamelCase')).toBe('Multi Word Camel Case');
+  });
+
+  it('converts hyphen / underscore separators to spaces with each word capitalized', () => {
+    expect(humanizePlanToken('primary-plan')).toBe('Primary Plan');
+    expect(humanizePlanToken('rollout_phase_one')).toBe('Rollout Phase One');
   });
 });

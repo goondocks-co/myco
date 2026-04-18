@@ -1,4 +1,3 @@
-import { createLocalVaultMcpServer } from './openai-local-mcp.js';
 import { ClaudeSdkRuntime } from './claude.js';
 import { OpenAIAgentsRuntime } from './openai.js';
 import type { AgentRuntime } from './types.js';
@@ -7,10 +6,14 @@ import type { RuntimeId } from '@myco/agent/types.js';
 export * from './types.js';
 
 export function getAgentRuntime(runtimeId: RuntimeId): AgentRuntime {
-  if (runtimeId === 'openai-agents') {
-    return new OpenAIAgentsRuntime({
-      createOpenAIMcpServer: (toolSurface) => createLocalVaultMcpServer(toolSurface),
-    });
+  switch (runtimeId) {
+    case 'claude-sdk':
+      return new ClaudeSdkRuntime();
+    case 'openai-agents':
+      return new OpenAIAgentsRuntime();
+    default: {
+      const exhaustive: never = runtimeId;
+      throw new Error(`Unknown runtime id: ${String(exhaustive)}`);
+    }
   }
-  return new ClaudeSdkRuntime();
 }

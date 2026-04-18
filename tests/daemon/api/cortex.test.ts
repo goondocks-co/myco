@@ -89,6 +89,23 @@ describe('createCortexHandlers', () => {
     expect(getCortexInstructionsSnapshot).not.toHaveBeenCalled();
   });
 
+  it('returns 400 when refresh is rejected for misconfig reasons', async () => {
+    triggerCortexInstructions.mockResolvedValue({
+      started: false,
+      reason: 'provider-not-configured',
+    });
+    const handlers = makeHandlers();
+
+    const response = await handlers.handleRefreshInstructions();
+
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({
+      error: { code: 'provider-not-configured' },
+      started: false,
+      reason: 'provider-not-configured',
+    });
+  });
+
   it('passes builder requests through to the prompt builder service', async () => {
     buildCortexPrompt.mockResolvedValue({
       started: true,

@@ -13,6 +13,7 @@ import {
   rollbackDigestExtract,
 } from '@myco/db/queries/digest-extracts.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
 
@@ -20,7 +21,6 @@ import type { DaemonLogger } from '../logger.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_AGENT_ID = 'myco-agent';
 const DEFAULT_LIMIT = 50;
 
 // ---------------------------------------------------------------------------

@@ -40,6 +40,11 @@ interface OpenRouterCatalogCacheEntry {
 }
 
 const catalogCache = new Map<string, OpenRouterCatalogCacheEntry>();
+/**
+ * Coalesces concurrent cold-cache fetches for the same baseUrl so N callers
+ * don't spawn N parallel HTTP requests when the cache is empty or expired.
+ */
+const inflightFetches = new Map<string, Promise<Map<string, OpenRouterPricing>>>();
 
 function parseRate(rate: string | undefined): number | undefined {
   if (!rate) return undefined;
@@ -78,6 +83,21 @@ async function fetchPricingCatalog(baseUrl?: string): Promise<Map<string, OpenRo
   if (cached && cached.expiresAt > now) {
     return cached.pricingByModel;
   }
+  const inflight = inflightFetches.get(resolvedBaseUrl);
+  if (inflight) {
+    return inflight;
+  }
+  const fetchPromise = fetchPricingCatalogUncached(resolvedBaseUrl, now).finally(() => {
+    inflightFetches.delete(resolvedBaseUrl);
+  });
+  inflightFetches.set(resolvedBaseUrl, fetchPromise);
+  return fetchPromise;
+}
+
+async function fetchPricingCatalogUncached(
+  resolvedBaseUrl: string,
+  now: number,
+): Promise<Map<string, OpenRouterPricing>> {
   pruneExpiredCatalogEntries(now);
 
   const apiKey = resolveOpenRouterApiKey();

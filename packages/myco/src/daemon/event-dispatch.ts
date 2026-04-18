@@ -38,9 +38,8 @@ import { upsertSession, reactivateSessionIfCompleted } from '@myco/db/queries/se
 import { captureBatchImages, type CapturedImage } from './capture-images.js';
 import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
-import { evaluateSessionCaptureRules } from '@myco/hooks/capture-rules.js';
-import { readTranscriptMeta } from '@myco/hooks/transcript-meta.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
+import { gateEventByCaptureRules } from './capture-gating.js';
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -97,23 +96,27 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
 
   // Cache drop decisions by session_id so a rejected session that keeps firing
   // events doesn't re-open + re-read (up to 128 KB) its transcript every time.
-  // Transcript first-line metadata doesn't change once written, so session_id
-  // is a stable cache key.
-  const droppedSessions = new Map<string, string | undefined>();
+  // Cache: sessionId → { reason, hadTranscriptMeta }. When an incoming event
+  // newly supplies a transcript_path but the cached decision was made with
+  // `transcriptMeta: undefined`, we re-evaluate once — a transcript showing
+  // up mid-session can flip the capture rules in the "accept" direction.
+  const droppedSessions = new Map<string, { reason: string | undefined; hadTranscriptMeta: boolean }>();
 
-  function rememberDropped(sessionId: string, reason: string | undefined): void {
+  function rememberDropped(sessionId: string, reason: string | undefined, hadTranscriptMeta: boolean): void {
     if (droppedSessions.size >= DROP_DECISION_CACHE_MAX) {
       const oldest = droppedSessions.keys().next().value;
       if (oldest !== undefined) droppedSessions.delete(oldest);
     }
-    droppedSessions.set(sessionId, reason);
+    droppedSessions.set(sessionId, { reason, hadTranscriptMeta });
   }
 
-  function evaluateAutoRegistration(event: Record<string, unknown>): { action: 'pass' } | { action: 'drop'; reason?: string } {
+  function evaluateAutoRegistration(event: Record<string, unknown>): {
+    decision: { action: 'pass' } | { action: 'drop'; reason?: string };
+    hadTranscriptMeta: boolean;
+  } {
     const transcriptPath = typeof event.transcript_path === 'string' && event.transcript_path.length > 0
       ? event.transcript_path
       : undefined;
-    const transcriptMeta = transcriptPath ? readTranscriptMeta(transcriptPath) ?? undefined : undefined;
     const detectedAgent = typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME;
 
     // Fail open: a manifest with a bad regex or schema error must not
@@ -121,17 +124,17 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     // data-preservation contract is "capture by default" — keeping a noisy
     // session is recoverable; dropping every event until restart is not.
     try {
-      return evaluateSessionCaptureRules(manifests, detectedAgent, {
-        transcriptPath,
-        transcriptMeta,
-      });
+      return gateEventByCaptureRules(
+        { agent: detectedAgent, transcriptPath },
+        { manifests },
+      );
     } catch (err) {
       logger.error(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Capture-rules evaluator threw', {
         error: String(err),
         session_id: typeof event.session_id === 'string' ? event.session_id : undefined,
         agent: detectedAgent,
       });
-      return { action: 'pass' };
+      return { decision: { action: 'pass' }, hadTranscriptMeta: false };
     }
   }
 
@@ -151,8 +154,13 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
 
     // Ensure session is registered (idempotent — handles daemon restarts mid-session)
     if (!registry.getSession(event.session_id)) {
-      if (droppedSessions.has(event.session_id)) {
-        const reason = droppedSessions.get(event.session_id) ?? 'rule';
+      const cached = droppedSessions.get(event.session_id);
+      const hasTranscriptNow = typeof event.transcript_path === 'string' && event.transcript_path.length > 0;
+      // Re-evaluate when a previously-unattended session newly supplies a
+      // transcript_path — the earlier drop was made without transcript meta.
+      const shouldReevaluate = cached && !cached.hadTranscriptMeta && hasTranscriptNow;
+      if (cached && !shouldReevaluate) {
+        const reason = cached.reason ?? 'rule';
         logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Ignored event for previously-dropped session', {
           session_id: event.session_id,
           type: event.type,
@@ -160,9 +168,12 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         });
         return { body: { ok: true, ignored: reason } };
       }
-      const decision = evaluateAutoRegistration(event);
+      if (shouldReevaluate) {
+        droppedSessions.delete(event.session_id);
+      }
+      const { decision, hadTranscriptMeta } = evaluateAutoRegistration(event);
       if (decision.action === 'drop') {
-        rememberDropped(event.session_id, decision.reason);
+        rememberDropped(event.session_id, decision.reason, hadTranscriptMeta);
         logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Ignored event that failed session capture rules', {
           session_id: event.session_id,
           type: event.type,

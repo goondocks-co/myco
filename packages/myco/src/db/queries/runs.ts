@@ -119,6 +119,8 @@ export interface RunRow {
 
 export interface RunUpdate {
   status?: string;
+  task?: string | null;
+  instruction?: string | null;
   runtime?: RuntimeId | null;
   provider?: ProviderType | null;
   model?: string | null;
@@ -143,18 +145,6 @@ export interface RunUpdate {
   evaluationId?: string | null;
   reasoningLevel?: ReasoningLevel | null;
   executionOverrides?: Record<string, unknown> | null;
-}
-
-export interface RunCompletion extends RunUpdate {
-  completed_at?: number;
-  tokens_used?: number;
-  cost_usd?: number | null;
-  actual_cost_usd?: number | null;
-  estimated_cost_usd?: number | null;
-  cost_source?: CostSource | null;
-  cost_data?: string | null;
-  actions_taken?: string;
-  error?: string;
 }
 
 export interface ListRunsOptions {
@@ -244,6 +234,21 @@ function serializeExecutionOverrides(
   }
 }
 
+const COST_SOURCES: readonly CostSource[] = ['actual', 'estimated', 'unavailable'];
+const REASONING_LEVELS: readonly ReasoningLevel[] = ['low', 'default', 'high'];
+
+function toCostSourceOrNull(value: unknown): CostSource | null {
+  return typeof value === 'string' && (COST_SOURCES as readonly string[]).includes(value)
+    ? (value as CostSource)
+    : null;
+}
+
+function toReasoningLevelOrNull(value: unknown): ReasoningLevel | null {
+  return typeof value === 'string' && (REASONING_LEVELS as readonly string[]).includes(value)
+    ? (value as ReasoningLevel)
+    : null;
+}
+
 function toRunRow(row: Record<string, unknown>): RunRow {
   return {
     id: row.id as string,
@@ -267,13 +272,13 @@ function toRunRow(row: Record<string, unknown>): RunRow {
     cost_usd: (row.cost_usd as number) ?? null,
     actual_cost_usd: (row.actual_cost_usd as number) ?? null,
     estimated_cost_usd: (row.estimated_cost_usd as number) ?? null,
-    cost_source: (row.cost_source as CostSource) ?? null,
+    cost_source: toCostSourceOrNull(row.cost_source),
     cost_data: (row.cost_data as string) ?? null,
     actions_taken: (row.actions_taken as string) ?? null,
     error: (row.error as string) ?? null,
     dry_run: Boolean(Number(row.dry_run ?? 0)),
     evaluation_id: (row.evaluation_id as string) ?? null,
-    reasoning_level: (row.reasoning_level as ReasoningLevel) ?? null,
+    reasoning_level: toReasoningLevelOrNull(row.reasoning_level),
     execution_overrides: parseJsonObjectColumn(row.execution_overrides),
   };
 }
@@ -316,6 +321,8 @@ function buildRunsWhere(
  */
 const UPDATE_COLUMNS: readonly (keyof RunUpdate)[] = [
   'status',
+  'task',
+  'instruction',
   'runtime',
   'provider',
   'model',
@@ -491,7 +498,7 @@ export function updateRun(id: string, update: RunUpdate): RunRow | null {
 export function updateRunStatus(
   id: string,
   status: string,
-  completion?: RunCompletion,
+  completion?: RunUpdate,
 ): RunRow | null {
   return updateRun(id, { status, ...completion });
 }

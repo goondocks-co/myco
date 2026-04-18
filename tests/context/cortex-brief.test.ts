@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { buildRetrievalGuidanceLines, RETRIEVAL_GUIDANCE } from '@myco/context/cortex-brief.js';
+import {
+  buildRetrievalGuidanceLines,
+  RETRIEVAL_GUIDANCE,
+  resolveCortexCapabilities,
+  resolveInstructionDelivery,
+} from '@myco/context/cortex-brief.js';
+import { MycoConfigSchema } from '@myco/config/schema.js';
 
 describe('buildRetrievalGuidanceLines', () => {
   it('does not encode myco_skills guidance into Cortex instructions', () => {
@@ -58,5 +64,68 @@ describe('RETRIEVAL_GUIDANCE', () => {
     const body = lines.join('\n');
     expect(body).toContain('`myco_cortex`');
     expect(body).toContain('`myco_runs`');
+  });
+});
+
+describe('resolveInstructionDelivery', () => {
+  const enabledContext = MycoConfigSchema.parse({ version: 3 }).context;
+  const disabledContext = MycoConfigSchema.parse({
+    version: 3,
+    context: { cortex_enabled: false },
+  }).context;
+
+  const cases: Array<{
+    label: string;
+    context: typeof enabledContext;
+    symbiont: { supportsSessionStartInjection: boolean } | null;
+    expected: ReturnType<typeof resolveInstructionDelivery>;
+  }> = [
+    {
+      label: 'null symbiont → inline with missing-symbiont reason',
+      context: enabledContext,
+      symbiont: null,
+      expected: { inlineInstructions: true, reason: 'missing-symbiont' },
+    },
+    {
+      label: 'cortex disabled → inline regardless of symbiont support',
+      context: disabledContext,
+      symbiont: { supportsSessionStartInjection: true },
+      expected: { inlineInstructions: true, reason: 'session-start-disabled' },
+    },
+    {
+      label: 'symbiont supports injection → NOT inline',
+      context: enabledContext,
+      symbiont: { supportsSessionStartInjection: true },
+      expected: { inlineInstructions: false, reason: 'session-start-supported' },
+    },
+    {
+      label: 'symbiont lacks injection support → inline with no-session-start',
+      context: enabledContext,
+      symbiont: { supportsSessionStartInjection: false },
+      expected: { inlineInstructions: true, reason: 'no-session-start' },
+    },
+  ];
+
+  for (const testCase of cases) {
+    it(testCase.label, () => {
+      expect(resolveInstructionDelivery(testCase.context, testCase.symbiont))
+        .toEqual(testCase.expected);
+    });
+  }
+});
+
+describe('resolveCortexCapabilities', () => {
+  it('returns collectiveConnected=false and empty capabilities when the team client throws', async () => {
+    const config = { team: { enabled: true } } as const;
+    const throwingClient = {
+      getCollectiveStatus: () => { throw new Error('team sync offline'); },
+    };
+    const result = await resolveCortexCapabilities(
+      config as never,
+      () => throwingClient as never,
+    );
+    expect(result.teamEnabled).toBe(true);
+    expect(result.collectiveConnected).toBe(false);
+    expect(result.collectiveCapabilities).toEqual([]);
   });
 });
