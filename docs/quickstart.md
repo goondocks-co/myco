@@ -5,7 +5,7 @@ Myco is a collective agent intelligence plugin that captures session knowledge �
 ## Requirements
 
 - **Node.js 22+**
-- **At least one supported coding agent** — Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, or OpenCode
+- **At least one supported coding agent** — Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode, or Pi
 
 Provider configuration (Myco Agent and embedding) is **optional** at install time — Myco works in data-collection mode out of the box, with full-text search over captured sessions. To enable the intelligence pipeline (spores, digest, skill lifecycle), configure providers in the dashboard after init.
 
@@ -57,7 +57,7 @@ myco init
 
 `myco init` is a fast bootstrap. It:
 
-1. **Detects coding agents** — finds Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, or OpenCode and lets you pick which to register
+1. **Detects coding agents** — finds Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode, or Pi and lets you pick which to register
 2. **Installs hooks, MCP entries, and skills** for each selected agent
 3. **Starts the daemon** in the background
 4. **Opens the dashboard** to the Settings page so you can configure providers when ready

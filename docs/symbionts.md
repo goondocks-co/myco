@@ -99,6 +99,17 @@ The first plugin-based symbiont. OpenCode has no JSON hook file — hooks are de
 
 **Plan mode note:** OpenCode's Plan mode only allows `edit` on existing files under `.opencode/plans/*.md`. To author a new plan in Plan mode, create the file first in Build mode (`touch .opencode/plans/my-plan.md`) before switching to Plan mode.
 
+### Pi
+
+A plugin-based symbiont like OpenCode. Pi has no JSON hook file or native MCP — hooks and Myco tools are delivered as a TypeScript extension that pi's runtime loads at startup.
+
+| Component | Location |
+|-----------|----------|
+| Extension | `.pi/extensions/myco/index.ts` |
+| MCP tools | Registered via `pi.registerTool()` (no separate MCP config) |
+| Skills | `.agents/skills/` (native) |
+| Plans | `.pi/plans/` |
+
 ## Removing Myco
 
 ```bash
