@@ -121,9 +121,14 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
   // Bundle D harness-properties discipline: every Bundle D tool (and any tool
   // that carries annotations) must set all four MCP annotation fields so
   // clients can render the correct confirmation UI. Missing any one of these
-  // is a regression.
-  it('Bundle D tools declare full MCP annotations', () => {
-    const required = ['myco_cortex', 'myco_plans', 'myco_runs'];
+  // is a regression. Bundle G extended the list with five new tools; they
+  // share the same discipline.
+  it('Bundle D + G tools declare full MCP annotations', () => {
+    const required = [
+      'myco_cortex', 'myco_plans', 'myco_runs',
+      'myco_evaluations', 'myco_write_intents', 'myco_phase_audit',
+      'myco_resume_run', 'myco_digest_revisions',
+    ];
     for (const name of required) {
       const tool = TOOL_DEFINITIONS.find((t) => t.name === name);
       expect(tool, `Tool ${name} missing from TOOL_DEFINITIONS`).toBeDefined();
@@ -170,6 +175,55 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
     expect(plans?.annotations?.destructiveHint).toBe(true);
     expect(plans?.annotations?.idempotentHint).toBe(true);
     expect(plans?.annotations?.openWorldHint).toBe(false);
+  });
+
+  // Bundle G tools — 5 new MCP surfaces. Each annotation set is pinned
+  // so a silent flip (e.g. someone marking op: "create" as read-only)
+  // would fail the suite.
+  it('myco_evaluations annotations are pinned (mixed ops — conservative)', () => {
+    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'myco_evaluations');
+    // list/get are read-only, create starts background runs — mark
+    // conservatively so clients confirm before auto-running create.
+    expect(tool?.annotations?.readOnlyHint).toBe(false);
+    expect(tool?.annotations?.destructiveHint).toBe(false);
+    expect(tool?.annotations?.idempotentHint).toBe(false);
+    expect(tool?.annotations?.openWorldHint).toBe(false);
+  });
+
+  it('myco_write_intents annotations are pinned (read-only, idempotent, local)', () => {
+    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'myco_write_intents');
+    expect(tool?.annotations?.readOnlyHint).toBe(true);
+    expect(tool?.annotations?.destructiveHint).toBe(false);
+    expect(tool?.annotations?.idempotentHint).toBe(true);
+    expect(tool?.annotations?.openWorldHint).toBe(false);
+  });
+
+  it('myco_phase_audit annotations are pinned (read-only, idempotent, local)', () => {
+    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'myco_phase_audit');
+    expect(tool?.annotations?.readOnlyHint).toBe(true);
+    expect(tool?.annotations?.destructiveHint).toBe(false);
+    expect(tool?.annotations?.idempotentHint).toBe(true);
+    expect(tool?.annotations?.openWorldHint).toBe(false);
+  });
+
+  it('myco_resume_run annotations are pinned (mutating, non-idempotent, local)', () => {
+    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'myco_resume_run');
+    // Starts a new background phase; not destructive (no data removed)
+    // but also not read-only. Each call starts a fresh phase if the run
+    // is still resumable, so idempotentHint is false.
+    expect(tool?.annotations?.readOnlyHint).toBe(false);
+    expect(tool?.annotations?.destructiveHint).toBe(false);
+    expect(tool?.annotations?.idempotentHint).toBe(false);
+    expect(tool?.annotations?.openWorldHint).toBe(false);
+  });
+
+  it('myco_digest_revisions annotations are pinned (read-only, idempotent, local)', () => {
+    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'myco_digest_revisions');
+    // List-only MCP surface — restore stays UI-only per policy.
+    expect(tool?.annotations?.readOnlyHint).toBe(true);
+    expect(tool?.annotations?.destructiveHint).toBe(false);
+    expect(tool?.annotations?.idempotentHint).toBe(true);
+    expect(tool?.annotations?.openWorldHint).toBe(false);
   });
 });
 

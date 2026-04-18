@@ -28,6 +28,20 @@ interface ClientResult {
   data?: any;
 }
 
+/**
+ * Attempt to parse a non-ok response body as JSON so callers can surface
+ * the daemon's structured error envelope (e.g. `{error: {code, message}}`).
+ * Returns `undefined` if the body is empty, not JSON, or otherwise fails to
+ * parse — callers that ignore `data` on failure still work unchanged.
+ */
+async function parseErrorBody(res: Response): Promise<unknown> {
+  try {
+    return await res.json();
+  } catch {
+    return undefined;
+  }
+}
+
 export class DaemonClient {
   private vaultDir: string;
 
@@ -47,7 +61,7 @@ export class DaemonClient {
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
 
-      if (!res.ok) return { ok: false };
+      if (!res.ok) return { ok: false, data: await parseErrorBody(res) };
       const data = await res.json();
       return { ok: true, data };
     } catch {
@@ -67,7 +81,7 @@ export class DaemonClient {
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
 
-      if (!res.ok) return { ok: false };
+      if (!res.ok) return { ok: false, data: await parseErrorBody(res) };
       const data = await res.json();
       return { ok: true, data };
     } catch {
@@ -84,7 +98,7 @@ export class DaemonClient {
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
 
-      if (!res.ok) return { ok: false };
+      if (!res.ok) return { ok: false, data: await parseErrorBody(res) };
       const data = await res.json();
       return { ok: true, data };
     } catch {
@@ -108,15 +122,7 @@ export class DaemonClient {
 
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, init);
 
-      if (!res.ok) {
-        // Attempt to parse JSON error body so callers (e.g. the myco_plans
-        // delete path) can surface daemon guidance like the force_remote hint.
-        // post/put/get currently discard error bodies — see note on the DELETE
-        // flow in packages/myco/src/mcp/tools/plans.ts. Expanding the pattern
-        // to those methods is a separate follow-up.
-        const body = await res.json().catch(() => undefined);
-        return { ok: false, data: body };
-      }
+      if (!res.ok) return { ok: false, data: await parseErrorBody(res) };
       const data = await res.json();
       return { ok: true, data };
     } catch {

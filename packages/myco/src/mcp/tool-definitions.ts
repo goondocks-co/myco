@@ -80,6 +80,11 @@ export const TOOL_COLLECTIVE_PROJECTS = 'collective_projects';
 export const TOOL_COLLECTIVE_PROJECT = 'collective_project';
 export const TOOL_CORTEX = 'myco_cortex';
 export const TOOL_RUNS = 'myco_runs';
+export const TOOL_EVALUATIONS = 'myco_evaluations';
+export const TOOL_WRITE_INTENTS = 'myco_write_intents';
+export const TOOL_PHASE_AUDIT = 'myco_phase_audit';
+export const TOOL_RESUME_RUN = 'myco_resume_run';
+export const TOOL_DIGEST_REVISIONS = 'myco_digest_revisions';
 
 // --- Shared property descriptions (used by multiple tools) ---
 const PROP_BRANCH = 'Git branch name to find related sessions and plans';
@@ -362,6 +367,129 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         agent_id: { type: 'string', description: 'Filter op: "list" by agent id' },
         limit: { type: 'number', description: 'Max results for op: "list" (default: 50)' },
       },
+    },
+  },
+  {
+    name: TOOL_EVALUATIONS,
+    description: 'Create, list, or fetch agent evaluations. An evaluation fans out a single task across a cartesian product of (runtime × reasoning × model) cells so outputs can be compared side by side. op: "list" (default) returns newest-first summaries with an optional limit. op: "get" with id returns the evaluation + child runs + aggregate stats. op: "create" requires task_id and matrix; cells execute sequentially in the background — the response returns the evaluationId + cellCount. op: "create" is NOT read-only; it starts background runs.',
+    annotations: {
+      // Mixed ops: list/get are read-only, create kicks off background runs.
+      // Mark conservatively so clients confirm before auto-running with op: "create".
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    cortex: {
+      guidance: 'Use op: "list" to see recent matrix evaluations, op: "get" to inspect cells + aggregate stats, and op: "create" to fan a task out across runtime/reasoning/model cells for side-by-side comparison.',
+      priority: 88,
+    },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        op: { type: 'string', enum: ['list', 'get', 'create'], description: 'Operation (default: "list")' },
+        status: { type: 'string', description: 'Filter op: "list" by status (reserved; currently ignored by the route)' },
+        limit: { type: 'number', description: 'Max results for op: "list" (default: 50)' },
+        id: { type: 'string', description: 'Required for op: "get" — the evaluation id' },
+        task_id: { type: 'string', description: 'Required for op: "create" — id of the agent task to evaluate' },
+        matrix: {
+          type: 'object',
+          description: 'Required for op: "create". Matrix payload: { runtimes?, reasoningLevels?, models?, dryRun?, notes?, phases? }. Empty arrays expand to defaults. See /api/agent/evaluations POST body for full shape.',
+        },
+        notes: { type: 'string', description: 'Optional notes stored alongside the evaluation row (op: "create" only)' },
+      },
+    },
+  },
+  {
+    name: TOOL_WRITE_INTENTS,
+    description: 'Inspect the write-intents recorded during a dry-run — what the agent would have done (tool_name, tool_input, synthetic_output) without actually writing. Paginated via limit (default 500, max 5000) and offset. Use with myco_runs to verify safety before re-running the same task without dry_run.',
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    cortex: {
+      guidance: 'Use after a dry-run to inspect what writes the agent would have performed — close the "dry-run → verify → real-run" loop before repeating the task without dry_run.',
+      priority: 86,
+    },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        run_id: { type: 'string', description: 'The run id whose write-intents you want to inspect' },
+        limit: { type: 'number', description: 'Max results (default: 500, max: 5000)' },
+        offset: { type: 'number', description: 'Pagination offset (default: 0)' },
+      },
+      required: ['run_id'],
+    },
+  },
+  {
+    name: TOOL_PHASE_AUDIT,
+    description: 'Read the per-phase audit trail for an agent run — what each phase did, its cost, tool-call counts, reasoning level, and any write intents. Returns a joined view over agent_runs, agent_reports, agent_turns, usage_data, checkpoints, and (for dry runs) agent_run_write_intents. Essential for debugging a failed or mis-executing run.',
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    cortex: {
+      guidance: 'Use when debugging a failed or mis-executing run — returns the per-phase cost, tool counts, reasoning level, and write intents in one payload.',
+      priority: 87,
+    },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        run_id: { type: 'string', description: 'The run id whose phase audit you want to inspect' },
+      },
+      required: ['run_id'],
+    },
+  },
+  {
+    name: TOOL_RESUME_RUN,
+    description: 'Resume a paused or interrupted agent run. The run must be in a resumable state (resumable=1 AND status="failed" per the route) — check status via myco_runs first. The resume starts a new background phase and returns immediately with {ok, message, runId}. NOT idempotent: each successful call starts a fresh phase.',
+    annotations: {
+      // Starts a new background phase; mark as mutating + non-idempotent so
+      // clients confirm before repeating. Not "destructive" (no data is
+      // removed) but also not "read-only".
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    cortex: {
+      guidance: 'Use to resume a paused or interrupted agent run after verifying (via myco_runs) that its resumable flag is set and its status is "failed".',
+      priority: 89,
+    },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        id: { type: 'string', description: 'The run id to resume' },
+        mode: { type: 'string', enum: ['manual', 'scheduled'], description: 'Resume mode (default: "manual"). Scheduled is reserved for the daemon scheduler.' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: TOOL_DIGEST_REVISIONS,
+    description: 'List historical digest revisions for the given (agent_id, tier). Revisions are append-only, so this surface shows how the project\'s digest has evolved over time. tier is required; agent_id defaults to the primary agent on the daemon side. Restore (rolling a past revision back into the live digest) is intentionally UI-only and is NOT exposed via MCP.',
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    cortex: {
+      guidance: 'Use to see how the project digest has evolved for a given tier — restore is UI-only.',
+      priority: 92,
+    },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        agent_id: { type: 'string', description: 'Optional — defaults to the primary agent on the daemon side' },
+        tier: { type: 'number', description: 'Required — the digest tier (for example 1500, 5000, 10000)' },
+        limit: { type: 'number', description: 'Max results (default: 50)' },
+      },
+      required: ['tier'],
     },
   },
 ];
