@@ -66,3 +66,118 @@ describe('DaemonClient', () => {
     expect(result.ok).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Error-body propagation — parseErrorBody helper applied to all four methods.
+// ---------------------------------------------------------------------------
+
+type ErrorBodyMode =
+  | { kind: 'json'; payload: unknown; status?: number }
+  | { kind: 'empty'; status?: number }
+  | { kind: 'invalid-json'; text: string; status?: number }
+  | { kind: 'text-plain'; text: string; status?: number };
+
+describe('DaemonClient error-body propagation', () => {
+  let vaultDir: string;
+  let mockServer: http.Server;
+  let mode: ErrorBodyMode;
+
+  beforeEach(async () => {
+    vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-err-'));
+    mode = { kind: 'json', payload: { error: { code: 'boom', message: 'test' } } };
+
+    mockServer = http.createServer((_req, res) => {
+      const status = ('status' in mode && mode.status) || 500;
+      if (mode.kind === 'json') {
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(mode.payload));
+      } else if (mode.kind === 'empty') {
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end();
+      } else if (mode.kind === 'invalid-json') {
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(mode.text);
+      } else if (mode.kind === 'text-plain') {
+        res.writeHead(status, { 'Content-Type': 'text/plain' });
+        res.end(mode.text);
+      }
+    });
+
+    await new Promise<void>((resolve) => {
+      mockServer.listen(0, '127.0.0.1', () => {
+        const port = (mockServer.address() as { port: number }).port;
+        fs.writeFileSync(
+          path.join(vaultDir, 'daemon.json'),
+          JSON.stringify({ pid: process.pid, port }),
+        );
+        resolve();
+      });
+    });
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((r) => mockServer.close(() => r()));
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+  });
+
+  it('returns parsed JSON body on non-ok for post/put/get/delete', async () => {
+    const payload = { error: { code: 'plan-remote', message: 'force_remote required' } };
+    mode = { kind: 'json', payload };
+
+    const client = new DaemonClient(vaultDir);
+    const post = await client.post('/api/x', {});
+    const put = await client.put('/api/x', {});
+    const get = await client.get('/api/x');
+    const del = await client.delete('/api/x');
+
+    for (const r of [post, put, get, del]) {
+      expect(r.ok).toBe(false);
+      expect(r.data).toEqual(payload);
+    }
+  });
+
+  it('returns data: undefined on empty non-ok body for all four methods', async () => {
+    mode = { kind: 'empty' };
+    const client = new DaemonClient(vaultDir);
+
+    const post = await client.post('/api/x', {});
+    const put = await client.put('/api/x', {});
+    const get = await client.get('/api/x');
+    const del = await client.delete('/api/x');
+
+    for (const r of [post, put, get, del]) {
+      expect(r.ok).toBe(false);
+      expect(r.data).toBeUndefined();
+    }
+  });
+
+  it('returns data: undefined when the non-ok body is invalid JSON', async () => {
+    mode = { kind: 'invalid-json', text: '<<<not json>>>' };
+    const client = new DaemonClient(vaultDir);
+
+    const post = await client.post('/api/x', {});
+    const put = await client.put('/api/x', {});
+    const get = await client.get('/api/x');
+    const del = await client.delete('/api/x');
+
+    for (const r of [post, put, get, del]) {
+      expect(r.ok).toBe(false);
+      expect(r.data).toBeUndefined();
+    }
+  });
+
+  it('returns data: undefined when the non-ok body is text/plain (non-JSON)', async () => {
+    mode = { kind: 'text-plain', text: 'internal server error' };
+    const client = new DaemonClient(vaultDir);
+
+    const post = await client.post('/api/x', {});
+    const put = await client.put('/api/x', {});
+    const get = await client.get('/api/x');
+    const del = await client.delete('/api/x');
+
+    for (const r of [post, put, get, del]) {
+      expect(r.ok).toBe(false);
+      expect(r.data).toBeUndefined();
+    }
+  });
+});
