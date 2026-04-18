@@ -36,15 +36,8 @@ export interface CostResolutionInput {
   provider?: ProviderConfig;
 }
 
-export interface CostProviderCapabilities {
-  estimateFromUsage: boolean;
-  fetchActualRunCost: boolean;
-  fetchCatalogPricing: boolean;
-}
-
 export interface CostProviderResolver {
   id: string;
-  capabilities: CostProviderCapabilities;
   matches: (input: CostResolutionInput) => boolean;
   resolve: (input: CostResolutionInput) => Promise<CostResolution>;
 }

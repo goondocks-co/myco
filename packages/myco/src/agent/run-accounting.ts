@@ -106,11 +106,11 @@ export function analyzeRuntimeTokenBudget(
     : 0;
   const headroomTokens = Math.max(0, contextWindowTokens - peakRequestTotalTokens);
   const status = utilizationPercent >= TOKEN_BUDGET_CRITICAL_PERCENT
-    ? 'critical'
+    ? 'post_run_pressure'
     : utilizationPercent >= TOKEN_BUDGET_WARNING_PERCENT
       ? 'warning'
       : 'ok';
-  const statusMessage = status === 'critical'
+  const statusMessage = status === 'post_run_pressure'
     ? 'Run operated near the model context limit.'
     : status === 'warning'
       ? 'Run used a large share of the model context window.'
@@ -140,7 +140,10 @@ export function serializeCostData(cost: CostResolution | undefined): string | nu
 }
 
 export function summarizePhaseCosts(phaseResults: PhaseResult[]): CostResolution {
-  const costedPhases = phaseResults.filter((phase) => phase.costData && phase.costData.costUsd !== null);
+  const costedPhases = phaseResults.filter(
+    (phase): phase is PhaseResult & { costData: CostResolution } =>
+      phase.costData !== undefined && phase.costData !== null && phase.costData.costUsd !== null,
+  );
   if (costedPhases.length === 0) {
     return {
       source: 'unavailable',
@@ -160,7 +163,7 @@ export function summarizePhaseCosts(phaseResults: PhaseResult[]): CostResolution
     };
   }
 
-  const firstCost = costedPhases[0].costData!;
+  const firstCost = costedPhases[0].costData;
   const aggregate = {
     costUsd: 0,
     actualCostUsd: 0,
@@ -183,7 +186,7 @@ export function summarizePhaseCosts(phaseResults: PhaseResult[]): CostResolution
   };
 
   for (const phase of costedPhases) {
-    const cost = phase.costData!;
+    const cost = phase.costData;
     const breakdown = cost.breakdown;
     aggregate.costUsd += cost.costUsd ?? 0;
     aggregate.actualCostUsd += cost.actualCostUsd ?? 0;

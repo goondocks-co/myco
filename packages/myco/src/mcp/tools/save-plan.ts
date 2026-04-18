@@ -16,7 +16,8 @@ interface SavePlanInput {
   tags?: string[];
 }
 
-interface SavePlanResult {
+interface SavePlanSuccess {
+  ok: true;
   id: string;
   logical_key: string;
   title: string | null;
@@ -29,10 +30,17 @@ interface SavePlanResult {
   updated_at: number | null;
 }
 
+interface SavePlanFailure {
+  ok: false;
+  error: string;
+}
+
+export type SavePlanResult = SavePlanSuccess | SavePlanFailure;
+
 export async function handleMycoSavePlan(
   input: SavePlanInput,
   client: DaemonClient,
-): Promise<SavePlanResult | null> {
+): Promise<SavePlanResult> {
   const result = await client.post('/api/mcp/plans', {
     session_id: input.session_id,
     content: input.content,
@@ -43,6 +51,14 @@ export async function handleMycoSavePlan(
     tags: input.tags,
   });
 
-  if (!result.ok || !result.data) return null;
-  return result.data as SavePlanResult;
+  if (!result.ok || !result.data) {
+    const errorMessage = typeof result.data === 'object'
+      && result.data !== null
+      && 'error' in result.data
+      && typeof (result.data as { error: unknown }).error === 'string'
+      ? (result.data as { error: string }).error
+      : 'unknown';
+    return { ok: false, error: errorMessage };
+  }
+  return { ok: true, ...(result.data as Omit<SavePlanSuccess, 'ok'>) };
 }

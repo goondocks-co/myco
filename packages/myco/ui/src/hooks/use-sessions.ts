@@ -236,8 +236,13 @@ export function useSessionImpact(sessionId: string | null) {
 export function useSessionPlans(sessionId: string | undefined) {
   return usePowerQuery<SessionPlanRow[]>({
     queryKey: ['session-plans', sessionId],
-    queryFn: ({ signal }) =>
-      fetchJson<SessionPlanRow[]>(`/sessions/${sessionId}/plans`, { signal }),
+    queryFn: async ({ signal }) => {
+      const response = await fetchJson<{ plans: SessionPlanRow[] }>(
+        `/sessions/${sessionId}/plans`,
+        { signal },
+      );
+      return response.plans;
+    },
     enabled: !!sessionId,
     pollCategory: 'standard',
     refetchInterval: PLANS_POLL_INTERVAL,

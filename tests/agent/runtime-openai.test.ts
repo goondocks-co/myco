@@ -99,6 +99,23 @@ vi.mock('@myco/intelligence/lm-studio.js', () => ({
 }));
 
 // ---------------------------------------------------------------------------
+// Mock local MCP server — captures forwarded toolSurface
+// ---------------------------------------------------------------------------
+
+const mcpServerCalls: Array<Record<string, unknown>> = [];
+let mockMcpServer: { connect: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> } = {
+  connect: vi.fn(async () => {}),
+  close: vi.fn(async () => {}),
+};
+
+vi.mock('@myco/agent/runtime/openai-local-mcp.js', () => ({
+  createLocalVaultMcpServer: (toolSurface: Record<string, unknown>) => {
+    mcpServerCalls.push(toolSurface);
+    return mockMcpServer;
+  },
+}));
+
+// ---------------------------------------------------------------------------
 // Test fixtures
 // ---------------------------------------------------------------------------
 
@@ -108,16 +125,12 @@ async function loadRuntime() {
 }
 
 function makeMcpServer() {
-  return {
+  const server = {
     connect: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
   };
-}
-
-function makeContext(mcpServer: ReturnType<typeof makeMcpServer>) {
-  return {
-    createOpenAIMcpServer: vi.fn(() => mcpServer),
-  } as unknown as import('@myco/agent/runtime/types.js').RuntimeFactoryContext;
+  mockMcpServer = server;
+  return server;
 }
 
 function makeInput(overrides: Partial<import('@myco/agent/runtime/types.js').RuntimeExecuteInput> = {}) {
@@ -138,6 +151,7 @@ function makeInput(overrides: Partial<import('@myco/agent/runtime/types.js').Run
 describe('OpenAIAgentsRuntime.execute', () => {
   beforeEach(() => {
     runnerCalls.length = 0;
+    mcpServerCalls.length = 0;
     mockRunBehavior = 'success';
     mockRunResult = {
       finalOutput: 'done',
@@ -171,7 +185,7 @@ describe('OpenAIAgentsRuntime.execute', () => {
   it('persists session items into sessionData when the run appends new turns', async () => {
     const Runtime = await loadRuntime();
     const mcp = makeMcpServer();
-    const runtime = new Runtime(makeContext(mcp));
+    const runtime = new Runtime();
 
     mockRunResult.appendItems = [{ type: 'user', content: 'hi' }];
 
@@ -184,7 +198,7 @@ describe('OpenAIAgentsRuntime.execute', () => {
   it('hydrates prior sessionData into the Session passed to the Runner', async () => {
     const Runtime = await loadRuntime();
     const mcp = makeMcpServer();
-    const runtime = new Runtime(makeContext(mcp));
+    const runtime = new Runtime();
 
     const priorItems = [{ type: 'user', content: 'previous turn' }];
     await runtime.execute(makeInput({ sessionRef: 'sess-resume', sessionData: priorItems }));
@@ -197,7 +211,7 @@ describe('OpenAIAgentsRuntime.execute', () => {
   it('calls mcpServer.close() on the successful path', async () => {
     const Runtime = await loadRuntime();
     const mcp = makeMcpServer();
-    const runtime = new Runtime(makeContext(mcp));
+    const runtime = new Runtime();
 
     await runtime.execute(makeInput());
 
@@ -207,7 +221,7 @@ describe('OpenAIAgentsRuntime.execute', () => {
   it('calls mcpServer.close() even when the Runner throws', async () => {
     const Runtime = await loadRuntime();
     const mcp = makeMcpServer();
-    const runtime = new Runtime(makeContext(mcp));
+    const runtime = new Runtime();
     mockRunBehavior = 'throw';
 
     await expect(runtime.execute(makeInput())).rejects.toThrow('Runner blew up');
@@ -217,7 +231,7 @@ describe('OpenAIAgentsRuntime.execute', () => {
   it('forwards the abortController.signal to Runner.run when provided', async () => {
     const Runtime = await loadRuntime();
     const mcp = makeMcpServer();
-    const runtime = new Runtime(makeContext(mcp));
+    const runtime = new Runtime();
 
     const controller = new AbortController();
     await runtime.execute(makeInput({ abortController: controller }));
@@ -228,7 +242,7 @@ describe('OpenAIAgentsRuntime.execute', () => {
   it('omits signal when no abortController is supplied', async () => {
     const Runtime = await loadRuntime();
     const mcp = makeMcpServer();
-    const runtime = new Runtime(makeContext(mcp));
+    const runtime = new Runtime();
 
     await runtime.execute(makeInput());
 
@@ -238,7 +252,7 @@ describe('OpenAIAgentsRuntime.execute', () => {
   it('aggregates usage across rawResponses', async () => {
     const Runtime = await loadRuntime();
     const mcp = makeMcpServer();
-    const runtime = new Runtime(makeContext(mcp));
+    const runtime = new Runtime();
 
     const result = await runtime.execute(makeInput());
 
@@ -252,25 +266,23 @@ describe('OpenAIAgentsRuntime.execute', () => {
     expect(result.rawRuntimeMetadata?.lastResponseId).toBe('resp_ok');
   });
 
-  it('passes dryRun through toolSurface to createOpenAIMcpServer', async () => {
+  it('passes dryRun through toolSurface to createLocalVaultMcpServer', async () => {
     const Runtime = await loadRuntime();
-    const mcp = makeMcpServer();
-    const ctx = makeContext(mcp);
-    const runtime = new Runtime(ctx);
+    makeMcpServer();
+    const runtime = new Runtime();
 
     await runtime.execute(makeInput({
       toolSurface: { agentId: 'a', runId: 'r', dryRun: true },
     }));
 
-    expect(ctx.createOpenAIMcpServer).toHaveBeenCalledTimes(1);
-    const forwarded = (ctx.createOpenAIMcpServer as unknown as { mock: { calls: Array<Array<Record<string, unknown>>> } }).mock.calls[0][0];
-    expect(forwarded.dryRun).toBe(true);
+    expect(mcpServerCalls).toHaveLength(1);
+    expect(mcpServerCalls[0].dryRun).toBe(true);
   });
 
   it('round-trips lastResponseId into rawRuntimeMetadata for resume flow', async () => {
     const Runtime = await loadRuntime();
     const mcp = makeMcpServer();
-    const runtime = new Runtime(makeContext(mcp));
+    const runtime = new Runtime();
 
     // Simulate a resumed session where the prior run produced lastResponseId='resp_abc'
     mockRunResult.lastResponseId = 'resp_abc_next';
@@ -291,7 +303,7 @@ describe('OpenAIAgentsRuntime.execute', () => {
   it('tolerates responses without inputTokensDetails/outputTokensDetails arrays (local backends)', async () => {
     const Runtime = await loadRuntime();
     const mcp = makeMcpServer();
-    const runtime = new Runtime(makeContext(mcp));
+    const runtime = new Runtime();
     mockRunResult.rawResponses = [
       {
         usage: {

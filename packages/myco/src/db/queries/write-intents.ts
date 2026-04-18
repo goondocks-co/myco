@@ -115,16 +115,76 @@ export function insertWriteIntent(data: WriteIntentInsert): number {
 
 /**
  * List every write intent for a run, ordered by id (= insert order).
+ * Optional `limit` / `offset` for HTTP pagination; omit both for
+ * backward-compatible "return everything" behavior.
  */
-export function listWriteIntents(runId: string): WriteIntentRow[] {
+export function listWriteIntents(
+  runId: string,
+  options: { limit?: number; offset?: number } = {},
+): WriteIntentRow[] {
   const db = getDatabase();
+  const clauses = [`WHERE run_id = ?`];
+  const params: unknown[] = [runId];
+  let tail = 'ORDER BY id ASC';
+  if (options.limit !== undefined) {
+    tail += ' LIMIT ?';
+    params.push(options.limit);
+    if (options.offset !== undefined) {
+      tail += ' OFFSET ?';
+      params.push(options.offset);
+    }
+  }
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_run_write_intents
+     ${clauses.join(' ')}
+     ${tail}`,
+  ).all(...params) as Record<string, unknown>[];
+  return rows.map(toWriteIntentRow);
+}
+
+/**
+ * Row shape returned by {@link listWriteIntentTools} — id + metadata columns
+ * only, no JSON payloads. Used by phase-audit where tool counts are all the
+ * caller needs.
+ */
+export interface WriteIntentToolRow {
+  id: number;
+  run_id: string;
+  phase_id: string | null;
+  tool_name: string;
+}
+
+/**
+ * Lightweight listing of write intents for a run: metadata columns only,
+ * no JSON payload parsing. Preferred over {@link listWriteIntents} when
+ * the caller only needs tool names / phase grouping.
+ */
+export function listWriteIntentTools(runId: string): WriteIntentToolRow[] {
+  const db = getDatabase();
+  const rows = db.prepare(
+    `SELECT id, run_id, phase_id, tool_name
+     FROM agent_run_write_intents
      WHERE run_id = ?
      ORDER BY id ASC`,
-  ).all(runId) as Record<string, unknown>[];
-  return rows.map(toWriteIntentRow);
+  ).all(runId) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    id: row.id as number,
+    run_id: row.run_id as string,
+    phase_id: (row.phase_id as string) ?? null,
+    tool_name: row.tool_name as string,
+  }));
+}
+
+/** Return the total number of write intents for a run. */
+export function countWriteIntents(runId: string): number {
+  const db = getDatabase();
+  const row = db.prepare(
+    `SELECT COUNT(*) AS count
+     FROM agent_run_write_intents
+     WHERE run_id = ?`,
+  ).get(runId) as { count: number };
+  return Number(row.count);
 }
 
 /**

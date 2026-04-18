@@ -178,7 +178,7 @@ describe('handleDeletePlan', () => {
     const res = await handleDeletePlan(makeRequest({ params: { id: 'missing-plan' } }));
 
     expect(res.status).toBe(404);
-    expect((res.body as { error: string }).error).toBe('Plan not found');
+    expect(res.body).toMatchObject({ error: { code: 'plan-not-found' } });
   });
 });
 

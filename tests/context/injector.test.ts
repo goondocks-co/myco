@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
-import { buildInjectedContext, buildPromptContext } from '@myco/context/injector';
+import { buildInjectedContext } from '@myco/context/injector';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { upsertSession } from '@myco/db/queries/sessions';
 import { insertSpore } from '@myco/db/queries/spores';
@@ -26,7 +26,6 @@ describe('buildInjectedContext', () => {
     const result = await buildInjectedContext(config, {});
 
     expect(result.text).toBe('');
-    expect(result.brief).toBe('');
     expect(result.tokenEstimate).toBe(0);
   });
 
@@ -120,24 +119,3 @@ describe('buildInjectedContext', () => {
   });
 });
 
-describe('buildPromptContext', () => {
-  const config = MycoConfigSchema.parse({
-    version: 3,
-  });
-
-  beforeAll(() => { setupTestDb(); });
-  afterAll(() => { teardownTestDb(); });
-  beforeEach(() => { cleanTestDb(); });
-
-  it('returns empty context for short prompts', async () => {
-    const result = await buildPromptContext('hi', config);
-    expect(result.text).toBe('');
-    expect(result.tokenEstimate).toBe(0);
-  });
-
-  it('returns empty context when no embedding provider is available', async () => {
-    const result = await buildPromptContext('How should I handle authentication middleware?', config);
-    expect(result.text).toBe('');
-    expect(result.tokenEstimate).toBe(0);
-  });
-});

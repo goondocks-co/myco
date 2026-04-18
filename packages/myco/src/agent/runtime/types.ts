@@ -1,4 +1,3 @@
-import type { MCPServer } from '@openai/agents';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
 import type { ProviderConfig, RuntimeId, RuntimeUsage } from '@myco/agent/types.js';
 
@@ -42,10 +41,6 @@ export interface RuntimeExecuteResult {
   sessionRef?: string;
   sessionData?: unknown;
   rawRuntimeMetadata?: Record<string, unknown>;
-}
-
-export interface RuntimeFactoryContext {
-  createOpenAIMcpServer: (toolSurface: RuntimeToolSurface) => MCPServer;
 }
 
 export interface AgentRuntime {

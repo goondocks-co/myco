@@ -32,6 +32,7 @@ import {
   normalizePlanSourcePath,
 } from '@myco/plans/identity.js';
 import { persistPlan } from '../plan-capture.js';
+import { errorBody } from './error-envelope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -284,7 +285,7 @@ export function createMcpProxyHandlers(deps: McpProxyDeps) {
   async function handleSavePlan(req: RouteRequest): Promise<RouteResponse> {
     const { session_id, content, source_path, plan_key, title, status, tags } = SavePlanBody.parse(req.body);
     const session = getSession(session_id);
-    if (!session) return { status: 404, body: { error: 'session_not_found' } };
+    if (!session) return { status: 404, body: errorBody('session-not-found', 'Session not found') };
 
     const openBatch = getLatestOpenBatch(session_id);
     const normalizedSourcePath = source_path
@@ -337,7 +338,7 @@ export function createMcpProxyHandlers(deps: McpProxyDeps) {
     const session = typeof req.query.session === 'string' ? req.query.session : undefined;
 
     if (id && session) {
-      return { status: 400, body: { error: 'Pass either id or session, not both' } };
+      return { status: 400, body: errorBody('mutually-exclusive-query', 'Pass either id or session, not both') };
     }
 
     if (id) {

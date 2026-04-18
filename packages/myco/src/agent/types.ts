@@ -125,7 +125,14 @@ export interface RuntimeTokenBudget {
   peakRequestTotalTokens: number | null;
   utilizationPercent: number | null;
   headroomTokens: number | null;
-  status: 'unknown' | 'ok' | 'warning' | 'critical';
+  /**
+   * Budget status is observability-only. `post_run_pressure` (formerly
+   * `critical`) means this run hit the upper utilization band but was NOT
+   * aborted — naming it `critical` misled callers into assuming it signalled
+   * a pre-flight abort, which the runtime never performed. A future feature
+   * may add true pre-flight abort behavior behind a separate flag.
+   */
+  status: 'unknown' | 'ok' | 'warning' | 'post_run_pressure';
   message?: string;
 }
 

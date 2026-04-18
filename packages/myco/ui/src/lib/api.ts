@@ -2,6 +2,24 @@ import type { AppearanceValues as AppearanceConfig } from '@myco/config/appearan
 
 const API_BASE = '/api';
 
+// Injected by Vite's `define` at build time — see vite.config.ts.
+declare const __MYCO_UI_VERSION__: string;
+const UI_VERSION: string = typeof __MYCO_UI_VERSION__ === 'string' ? __MYCO_UI_VERSION__ : 'dev';
+
+/** Track once-per-session so we don't spam the console on every fetch. */
+let versionMismatchWarned = false;
+function checkApiVersion(response: Response): void {
+  if (versionMismatchWarned) return;
+  const apiVersion = response.headers.get('X-Myco-Api-Version');
+  if (apiVersion && apiVersion !== UI_VERSION) {
+    versionMismatchWarned = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[myco] UI version ${UI_VERSION} is talking to daemon ${apiVersion} — reload to pick up the new UI build.`,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Appearance / scoped-config types
 // ---------------------------------------------------------------------------
@@ -25,6 +43,7 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
     ...init,
     headers,
   });
+  checkApiVersion(res);
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new ApiError(res.status, body);

@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { listRuns, countRuns, getRun, getLatestRunId } from '@myco/db/queries/runs.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
-import { listWriteIntents, countWriteIntentsByTool } from '@myco/db/queries/write-intents.js';
+import { listWriteIntents, countWriteIntents, countWriteIntentsByTool } from '@myco/db/queries/write-intents.js';
 import { runDurationMs } from '@myco/agent/run-accounting.js';
 import { buildTaskInstruction, isInstructionRequiredTask } from '@myco/agent/instruction-builders.js';
 import { hasConfiguredProvider } from '@myco/agent/config-resolver.js';
@@ -342,8 +342,17 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
    * `synthetic_output` (see write-intents query helper).
    */
   async function handleGetRunWriteIntents(req: RouteRequest): Promise<RouteResponse> {
-    const intents = listWriteIntents(req.params.id);
-    return { body: { intents, count: intents.length } };
+    const rawLimit = req.query.limit ? Number(req.query.limit) : undefined;
+    const rawOffset = req.query.offset ? Number(req.query.offset) : undefined;
+    const limit = Number.isFinite(rawLimit) && rawLimit !== undefined && rawLimit > 0
+      ? Math.min(rawLimit, 5000)
+      : 500;
+    const offset = Number.isFinite(rawOffset) && rawOffset !== undefined && rawOffset >= 0
+      ? rawOffset
+      : 0;
+    const intents = listWriteIntents(req.params.id, { limit, offset });
+    const total = countWriteIntents(req.params.id);
+    return { body: { intents, count: intents.length, total } };
   }
 
   /**

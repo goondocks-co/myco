@@ -19,10 +19,8 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import {
   shouldInjectCortex,
 } from '@myco/context/cortex-brief.js';
-import {
-  getSessionStartDigestPayload,
-  shouldInjectSessionStartDigest,
-} from '@myco/context/session-start-digest.js';
+import { shouldInjectSessionStartDigest } from '@myco/context/session-start-digest.js';
+import { composeSessionStartContext } from '@myco/context/session-start-context.js';
 import { getCortexInstructionsSnapshot } from '@myco/services/cortex.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
@@ -81,22 +79,19 @@ export function createSessionContextHandler(deps: ContextDeps) {
     logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Session context query', { session_id });
 
     try {
-      const includeBrief = shouldInjectCortex(config.context);
-      const includeDigest = shouldInjectSessionStartDigest(config.context);
-      if (!includeBrief && !includeDigest) {
+      const cortexEnabled = shouldInjectCortex(config.context);
+      const digestEnabled = shouldInjectSessionStartDigest(config.context);
+      if (!cortexEnabled && !digestEnabled) {
         logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Session-start context disabled', { session_id });
         return { body: { text: '' } };
       }
 
-      const parts: string[] = [];
-      const sourceParts: string[] = [];
       let sourceRunId: string | null = null;
-
-      if (includeBrief) {
+      let cortexContent = '';
+      if (cortexEnabled) {
         const snapshot = getCortexInstructionsSnapshot(config);
         if (snapshot.content) {
-          parts.push(snapshot.content);
-          sourceParts.push('cortex');
+          cortexContent = snapshot.content;
           sourceRunId = snapshot.sourceRunId;
         } else {
           logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No stored Cortex instructions available for session start', {
@@ -105,30 +100,30 @@ export function createSessionContextHandler(deps: ContextDeps) {
         }
       }
 
-      if (includeDigest) {
-        const digest = getSessionStartDigestPayload(config.context);
-        if (digest.content) {
-          parts.push(`## Preferred Digest (Tier ${digest.tier ?? config.context.digest_tier})\n${digest.content}`);
-          sourceParts.push(`digest:${digest.tier ?? config.context.digest_tier}`);
-        } else {
-          logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No preferred digest extract available for session start', {
-            session_id,
-            preferred_tier: config.context.digest_tier,
-          });
-        }
+      const composed = composeSessionStartContext(config, cortexContent);
+      const textParts: string[] = composed.parts.map((p) => p.text);
+      const sourceParts: string[] = composed.parts.map((p) =>
+        p.kind === 'cortex' ? 'cortex' : `digest:${p.tier ?? config.context.digest_tier}`,
+      );
+
+      if (digestEnabled && !composed.parts.some((p) => p.kind === 'digest')) {
+        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No preferred digest extract available for session start', {
+          session_id,
+          preferred_tier: config.context.digest_tier,
+        });
       }
 
-      if (parts.length === 0) {
+      if (textParts.length === 0) {
         return { body: { text: '' } };
       }
 
       if (branch) {
-        parts.push(`Branch:: \`${branch}\``);
+        textParts.push(`Branch:: \`${branch}\``);
       }
-      parts.push(`Session:: \`${session_id}\``);
+      textParts.push(`Session:: \`${session_id}\``);
 
       const source = sourceParts.join('+') || 'cortex';
-      const contextText = parts.join('\n\n');
+      const contextText = textParts.join('\n\n');
       const estimatedTokens = estimateTokens(contextText);
       logger.info(
         LOG_KINDS.CONTEXT_SESSION,
