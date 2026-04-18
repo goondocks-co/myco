@@ -9,6 +9,7 @@
  */
 
 import type { DaemonClient } from '@myco/hooks/client.js';
+import { extractErrorMessage } from './error.js';
 import { buildEndpoint } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -68,13 +69,7 @@ export async function handleMycoPlans(
     const body = input.force_remote ? { force_remote: true } : undefined;
     const result = await client.delete(`/api/plans/${encodeURIComponent(input.id)}`, body);
     if (!result.ok) {
-      const rawError = result.data?.error;
-      const message = typeof rawError === 'string'
-        ? rawError
-        : typeof rawError === 'object' && rawError !== null && 'message' in rawError
-          ? String((rawError as { message: unknown }).message)
-          : 'delete_failed';
-      return { ok: false, error: message };
+      return { ok: false, error: extractErrorMessage(result.data, 'delete_failed') };
     }
     return {
       ok: Boolean(result.data?.ok),

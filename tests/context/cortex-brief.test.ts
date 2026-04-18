@@ -65,6 +65,33 @@ describe('RETRIEVAL_GUIDANCE', () => {
     expect(body).toContain('`myco_cortex`');
     expect(body).toContain('`myco_runs`');
   });
+
+  // Anti-drift for Bundle G (post-0.21 follow-ups). Every new MCP surface
+  // must show up in the Cortex brief by name — if a future refactor strips
+  // any tool's `cortex` entry, agents would silently lose the session-start
+  // guidance that tells them what the tool is for.
+  it('includes every Bundle G tool by name', () => {
+    const names = RETRIEVAL_GUIDANCE.map((entry) => entry.tool);
+    expect(names).toContain('myco_evaluations');
+    expect(names).toContain('myco_write_intents');
+    expect(names).toContain('myco_phase_audit');
+    expect(names).toContain('myco_resume_run');
+    expect(names).toContain('myco_digest_revisions');
+  });
+
+  it('injects Bundle G tool guidance into the brief body', () => {
+    const lines = buildRetrievalGuidanceLines({
+      teamEnabled: false,
+      collectiveConnected: false,
+      collectiveCapabilities: [],
+    });
+    const body = lines.join('\n');
+    expect(body).toContain('`myco_evaluations`');
+    expect(body).toContain('`myco_write_intents`');
+    expect(body).toContain('`myco_phase_audit`');
+    expect(body).toContain('`myco_resume_run`');
+    expect(body).toContain('`myco_digest_revisions`');
+  });
 });
 
 describe('resolveInstructionDelivery', () => {
