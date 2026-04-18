@@ -6,6 +6,7 @@ import { insertSpore } from '@myco/db/queries/spores';
 import { registerAgent } from '@myco/db/queries/agents';
 import { upsertSession } from '@myco/db/queries/sessions';
 import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions';
+import { upsertDigestExtract } from '@myco/db/queries/digest-extracts';
 import {
   createSessionContextHandler,
   createPromptContextHandler,
@@ -99,6 +100,37 @@ describe('createSessionContextHandler', () => {
     const result = await handler(makeReq({ session_id: 'sess-3', branch: 'feat' }));
 
     expect((result.body as { text: string }).text).toBe('');
+  });
+
+  it('appends the preferred digest when digest injection is enabled', async () => {
+    registerAgent({
+      id: DEFAULT_AGENT_ID,
+      name: 'myco-agent',
+      created_at: NOW,
+    });
+    upsertCortexInstructions({
+      agent_id: DEFAULT_AGENT_ID,
+      content: 'Use `myco_context` before major changes.',
+      input_hash: 'hash-session-digest',
+      generated_at: NOW,
+    });
+    upsertDigestExtract({
+      agent_id: DEFAULT_AGENT_ID,
+      tier: 5000,
+      content: 'Digest extract for current project work.',
+      generated_at: NOW,
+    });
+    const handler = createSessionContextHandler(makeDeps({
+      config: makeConfig({ session_start_digest_enabled: true }),
+    }));
+
+    const result = await handler(makeReq({ session_id: 'sess-digest', branch: 'main' }));
+    const body = result.body as { text: string; source: string };
+
+    expect(body.source).toBe('cortex+digest:5000');
+    expect(body.text).toContain('Use `myco_context` before major changes.');
+    expect(body.text).toContain('## Preferred Digest (Tier 5000)');
+    expect(body.text).toContain('Digest extract for current project work.');
   });
 });
 

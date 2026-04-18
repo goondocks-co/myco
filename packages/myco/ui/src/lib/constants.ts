@@ -33,9 +33,6 @@ export const DEFAULT_SUMMARY_BATCH_INTERVAL = 5;
 /** Default preferred digest tier for explicit Myco context retrieval. */
 export const DEFAULT_DIGEST_TIER = 5000;
 
-/** Default max token budget for Cortex session-start instructions. */
-export const DEFAULT_OPERATING_BRIEF_MAX_TOKENS = 250;
-
 /** Default max spores injected per prompt. */
 export const DEFAULT_MAX_SPORES = 3;
 

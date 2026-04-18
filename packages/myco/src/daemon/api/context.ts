@@ -19,6 +19,10 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import {
   shouldInjectOperatingBrief,
 } from '@myco/context/operating-brief.js';
+import {
+  getSessionStartDigestPayload,
+  shouldInjectSessionStartDigest,
+} from '@myco/context/session-start-digest.js';
 import { getCortexInstructionsSnapshot } from '@myco/services/cortex.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
@@ -77,29 +81,56 @@ export function createSessionContextHandler(deps: ContextDeps) {
     logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Session context query', { session_id });
 
     try {
-      if (!shouldInjectOperatingBrief(config.context, 'session_start')) {
-        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Session-start operating brief disabled', { session_id });
+      const includeBrief = shouldInjectOperatingBrief(config.context, 'session_start');
+      const includeDigest = shouldInjectSessionStartDigest(config.context);
+      if (!includeBrief && !includeDigest) {
+        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Session-start context disabled', { session_id });
         return { body: { text: '' } };
       }
 
-      const snapshot = await getCortexInstructionsSnapshot(deps.vaultDir, {
-        config,
-        getTeamClient: deps.getTeamClient,
-      });
-      if (!snapshot.content) {
-        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No stored Cortex instructions available for session start', {
-          session_id,
+      const parts: string[] = [];
+      const sourceParts: string[] = [];
+      let sourceRunId: string | null = null;
+
+      if (includeBrief) {
+        const snapshot = await getCortexInstructionsSnapshot(deps.vaultDir, {
+          config,
+          getTeamClient: deps.getTeamClient,
         });
+        if (snapshot.content) {
+          parts.push(snapshot.content);
+          sourceParts.push('cortex');
+          sourceRunId = snapshot.sourceRunId;
+        } else {
+          logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No stored Cortex instructions available for session start', {
+            session_id,
+          });
+        }
+      }
+
+      if (includeDigest) {
+        const digest = getSessionStartDigestPayload(config.context);
+        if (digest.content) {
+          parts.push(`## Preferred Digest (Tier ${digest.tier ?? config.context.digest_tier})\n${digest.content}`);
+          sourceParts.push(`digest:${digest.tier ?? config.context.digest_tier}`);
+        } else {
+          logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No preferred digest extract available for session start', {
+            session_id,
+            preferred_tier: config.context.digest_tier,
+          });
+        }
+      }
+
+      if (parts.length === 0) {
         return { body: { text: '' } };
       }
 
-      const parts = [snapshot.content];
       if (branch) {
         parts.push(`Branch:: \`${branch}\``);
       }
       parts.push(`Session:: \`${session_id}\``);
 
-      const source = 'cortex';
+      const source = sourceParts.join('+') || 'cortex';
       const contextText = parts.join('\n\n');
       const estimatedTokens = estimateTokens(contextText);
       logger.info(
@@ -109,7 +140,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
           session_id,
           source,
           branch,
-          source_run_id: snapshot.sourceRunId,
+          source_run_id: sourceRunId,
           text_length: contextText.length,
           estimated_tokens: estimatedTokens,
           injected_text: contextText,

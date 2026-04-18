@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Bot, Brain, Database, Sparkles } from 'lucide-react';
+import { Brain, Check, Copy, Database, Sparkles } from 'lucide-react';
 import { CONFIG_FOCUS_TAB_PARAM, CONFIG_SECTION_IDS } from '@myco/config/focus';
+import { useAgentRuns } from '../hooks/use-agent';
 import { useScopedConfig } from '../hooks/use-scoped-config';
 import { useSymbionts, type SymbiontInfo } from '../hooks/use-symbionts';
 import { PageHeader } from '../components/ui/page-header';
@@ -22,12 +23,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../components/ui/select';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '../components/ui/dialog';
 import { fetchJson, postJson } from '../lib/api';
 import {
   DEFAULT_DIGEST_TIER,
   DEFAULT_MAX_SPORES,
-  DEFAULT_OPERATING_BRIEF_MAX_TOKENS,
+  POLL_INTERVALS,
 } from '../lib/constants';
+import { formatDuration, formatEpochAbsolute, formatEpochRelative, shortSession, truncate } from '../lib/format';
 
 type ActiveTab = 'instructions' | 'builder' | 'digest';
 
@@ -43,14 +52,33 @@ interface CortexBuilderResponse {
   runId: string;
   status: string;
   prompt: string;
-  inlineInstructions: boolean;
-  targetSymbiont: SymbiontInfo | null;
   reports: Array<{
     id: number;
     action: string;
     summary: string;
     created_at: number;
   }>;
+  error?: string | null;
+}
+
+interface CortexBuilderStartResponse {
+  started: boolean;
+  runId: string | null;
+  inlineInstructions: boolean;
+  targetSymbiont: SymbiontInfo | null;
+}
+
+interface CortexRefreshResponse {
+  started: boolean;
+  reason?: string;
+  runId?: string | null;
+}
+
+interface ParsedBuilderInstruction {
+  goal: string;
+  targetSymbiontName: string | null;
+  targetSymbiontDisplayName: string | null;
+  inlineInstructions: boolean | null;
 }
 
 const CORTEX_TABS = [
@@ -59,6 +87,9 @@ const CORTEX_TABS = [
   { id: 'digest', label: 'Digest' },
 ] as const;
 const VALID_TABS = new Set<ActiveTab>(['instructions', 'builder', 'digest']);
+const CORTEX_TERMINAL_STATUSES = new Set(['completed', 'failed', 'skipped']);
+const CORTEX_BUILDER_HISTORY_LIMIT = 12;
+const CORTEX_BUILDER_GOAL_PREVIEW_CHARS = 140;
 const DIGEST_TIERS = [
   { value: '1500', label: '1.5K - Executive briefing' },
   { value: '5000', label: '5K - Deep onboarding' },
@@ -89,11 +120,97 @@ function formatTimestamp(epochSeconds: number | null): string {
   return new Date(epochSeconds * 1000).toLocaleString();
 }
 
+function formatRefreshReason(reason?: string): string {
+  switch (reason) {
+    case 'event-tasks-disabled':
+      return 'event-driven tasks are disabled';
+    case 'provider-not-configured':
+      return 'no provider is configured for Cortex instructions';
+    case 'agent-module-unavailable':
+      return 'the agent runtime is unavailable';
+    default:
+      return reason ?? 'unknown reason';
+  }
+}
+
+function parseJsonSection<T>(instruction: string, sectionTitle: string): T | null {
+  const escapedTitle = sectionTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = instruction.match(new RegExp(`## ${escapedTitle}\\n([\\s\\S]*?)\\n\\n## `));
+  if (!match?.[1]) return null;
+  try {
+    return JSON.parse(match[1]) as T;
+  } catch {
+    return null;
+  }
+}
+
+function parseBuilderInstruction(instruction: string | null): ParsedBuilderInstruction {
+  if (!instruction) {
+    return {
+      goal: '',
+      targetSymbiontName: null,
+      targetSymbiontDisplayName: null,
+      inlineInstructions: null,
+    };
+  }
+
+  const goalMatch = instruction.match(/^Goal:\n([\s\S]*?)\n\n## Target symbiont\n/);
+  const targetSymbiont = parseJsonSection<{
+    name?: string;
+    displayName?: string;
+  } | null>(instruction, 'Target symbiont');
+  const deliveryContract = parseJsonSection<{
+    inline_instructions?: boolean;
+  }>(instruction, 'Delivery contract');
+
+  return {
+    goal: goalMatch?.[1]?.trim() ?? '',
+    targetSymbiontName: targetSymbiont?.name ?? null,
+    targetSymbiontDisplayName: targetSymbiont?.displayName ?? null,
+    inlineInstructions: typeof deliveryContract?.inline_instructions === 'boolean'
+      ? deliveryContract.inline_instructions
+      : null,
+  };
+}
+
+function statusBadgeVariant(status: string | undefined): 'default' | 'secondary' | 'warning' | 'destructive' {
+  switch (status) {
+    case 'completed':
+      return 'default';
+    case 'failed':
+      return 'destructive';
+    case 'running':
+      return 'warning';
+    default:
+      return 'secondary';
+  }
+}
+
+function deliveryModeLabel(inlineInstructions: boolean | null): string | null {
+  if (inlineInstructions === null) return null;
+  return inlineInstructions ? 'Instructions included in prompt' : 'Uses session-start instructions';
+}
+
 function useCortexInstructions() {
   return useQuery<CortexInstructionsResponse>({
     queryKey: ['cortex-instructions'],
     queryFn: ({ signal }) => fetchJson<CortexInstructionsResponse>('/cortex/instructions', { signal }),
     staleTime: 5_000,
+  });
+}
+
+function useCortexBuilderResult(runId: string | null) {
+  return useQuery<CortexBuilderResponse>({
+    queryKey: ['cortex-prompt-builder', runId],
+    queryFn: ({ signal }) => fetchJson<CortexBuilderResponse>(`/cortex/prompt-builder/${runId}`, { signal }),
+    enabled: Boolean(runId),
+    staleTime: 0,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status && CORTEX_TERMINAL_STATUSES.has(status)
+        ? false
+        : POLL_INTERVALS.PROGRESS;
+    },
   });
 }
 
@@ -109,7 +226,7 @@ export default function OperatingSystem() {
     <div className="p-6">
       <PageHeader
         title="Cortex"
-        subtitle="Apply Myco intelligence through session-start instructions, prompt building, and digest retrieval."
+        subtitle="Manage session-start context, prompt building, and digest access for connected symbionts."
         tabs={CORTEX_TABS.map((tab) => ({ id: tab.id, label: tab.label }))}
         activeTab={activeTab}
         onTabChange={handleTabChange}
@@ -124,11 +241,14 @@ function InstructionsTab() {
   const { effective, isLoading } = useScopedConfig();
   const instructionsQuery = useCortexInstructions();
   const [refreshing, setRefreshing] = useState(false);
+  const [instructionsExpanded, setInstructionsExpanded] = useState(false);
+  const [refreshState, setRefreshState] = useState<CortexRefreshResponse | null>(null);
 
   const refreshInstructions = useCallback(async () => {
     setRefreshing(true);
     try {
-      await postJson<CortexInstructionsResponse>('/cortex/instructions/refresh', {});
+      const result = await postJson<CortexRefreshResponse>('/cortex/instructions/refresh', {});
+      setRefreshState(result);
       await instructionsQuery.refetch();
     } finally {
       setRefreshing(false);
@@ -150,12 +270,11 @@ function InstructionsTab() {
           </div>
           <div className="space-y-1">
             <p className="font-sans text-sm font-medium text-on-surface">
-              Cortex replaces automatic digest injection at session start.
+              Session-start instructions for Myco-enabled symbionts.
             </p>
             <p className="max-w-3xl font-sans text-sm text-on-surface-variant">
-              Myco now injects task-authored session-start instructions that teach agents how to
-              retrieve the right knowledge on demand. The digest remains available below as an
-              on-demand retrieval surface.
+              Review the stored instructions, control whether they inject alongside the digest, and
+              refresh the stored guidance when project context changes.
             </p>
           </div>
         </div>
@@ -180,18 +299,12 @@ function InstructionsTab() {
           </ScopedField>
 
           <ScopedField
-            path="context.operating_brief_max_tokens"
-            label="Instructions token budget"
+            path="context.session_start_digest_enabled"
+            label="Inject preferred digest"
             defaultScope="project"
           >
             {({ value, onChange }) => (
-              <Input
-                type="number"
-                min={50}
-                max={1000}
-                value={String(value ?? DEFAULT_OPERATING_BRIEF_MAX_TOKENS)}
-                onChange={(event) => onChange(Number(event.target.value))}
-              />
+              <Switch checked={value ?? false} onCheckedChange={onChange} />
             )}
           </ScopedField>
         </div>
@@ -232,9 +345,16 @@ function InstructionsTab() {
             <p className="font-sans text-sm text-on-surface-variant">
               Stored Markdown generated by the Myco agent for session-start injection.
             </p>
+            {refreshState ? (
+              <p className="mt-2 font-sans text-sm text-on-surface-variant">
+                {refreshState.started
+                  ? `Refresh started${refreshState.runId ? ` — run ${refreshState.runId}` : ''}. The stored artifact updates when that run completes.`
+                  : `Refresh did not start${refreshState.reason ? ` — ${formatRefreshReason(refreshState.reason)}` : ''}.`}
+              </p>
+            ) : null}
           </div>
           <Button onClick={() => void refreshInstructions()} disabled={refreshing}>
-            {refreshing ? 'Refreshing...' : 'Refresh'}
+            {refreshing ? 'Starting...' : 'Refresh'}
           </Button>
         </div>
 
@@ -254,7 +374,26 @@ function InstructionsTab() {
           {instructionsQuery.isLoading ? (
             <p className="font-sans text-sm text-on-surface-variant">Loading instructions...</p>
           ) : instructions?.content ? (
-            <MarkdownContent content={instructions.content} />
+            <div className="space-y-3">
+              <div className="flex items-center justify-end">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setInstructionsExpanded((current) => !current)}
+                >
+                  {instructionsExpanded ? 'Collapse' : 'Expand'}
+                </Button>
+              </div>
+              <div
+                className={
+                  instructionsExpanded
+                    ? 'max-h-[70vh] overflow-auto pr-2'
+                    : 'max-h-[28rem] overflow-auto pr-2'
+                }
+              >
+                <MarkdownContent content={instructions.content} />
+              </div>
+            </div>
           ) : (
             <p className="font-sans text-sm text-on-surface-variant">
               No Cortex instructions are stored yet. Refresh to generate them.
@@ -267,6 +406,10 @@ function InstructionsTab() {
 }
 
 function BuilderTab() {
+  const builderRunsQuery = useAgentRuns({
+    task: 'cortex-prompt-builder',
+    limit: CORTEX_BUILDER_HISTORY_LIMIT,
+  });
   const { data: symbiontsData } = useSymbionts();
   const enabledSymbionts = useMemo(
     () => (symbiontsData?.symbionts ?? []).filter((symbiont) => symbiont.enabled),
@@ -274,8 +417,22 @@ function BuilderTab() {
   );
   const [goal, setGoal] = useState('');
   const [symbiont, setSymbiont] = useState<string>(enabledSymbionts[0]?.name ?? '');
-  const [result, setResult] = useState<CortexBuilderResponse | null>(null);
+  const [buildStart, setBuildStart] = useState<CortexBuilderStartResponse | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const latestRunResultQuery = useCortexBuilderResult(buildStart?.runId ?? null);
+  const selectedRunResultQuery = useCortexBuilderResult(selectedRunId);
+
+  const builderRuns = useMemo(() => {
+    return (builderRunsQuery.data?.runs ?? []).map((run) => ({
+      run,
+      parsed: parseBuilderInstruction(run.instruction),
+    }));
+  }, [builderRunsQuery.data?.runs]);
+  const selectedRunEntry = useMemo(
+    () => builderRuns.find(({ run }) => run.id === selectedRunId) ?? null,
+    [builderRuns, selectedRunId],
+  );
 
   useEffect(() => {
     if (enabledSymbionts.length === 0) {
@@ -291,15 +448,16 @@ function BuilderTab() {
   const buildPrompt = useCallback(async () => {
     setLoading(true);
     try {
-      const next = await postJson<CortexBuilderResponse>('/cortex/prompt-builder', {
+      const next = await postJson<CortexBuilderStartResponse>('/cortex/prompt-builder', {
         goal,
         ...(symbiont ? { symbiont } : {}),
       });
-      setResult(next);
+      setBuildStart(next);
+      void builderRunsQuery.refetch();
     } finally {
       setLoading(false);
     }
-  }, [goal, symbiont]);
+  }, [builderRunsQuery, goal, symbiont]);
 
   const canBuild = goal.trim().length > 0;
 
@@ -317,9 +475,9 @@ function BuilderTab() {
           <div className="space-y-1">
             <SectionHeader>Prompt Builder</SectionHeader>
             <p className="max-w-3xl font-sans text-sm text-on-surface-variant">
-              Tell Myco what you want to build and which symbiont you are targeting. Cortex runs a
-              task through the Myco agent harness and returns a high-signal prompt you can paste
-              into that agent.
+              Tell Myco what you want to build and which enabled symbiont you are targeting.
+              Cortex runs a task through the Myco agent harness and returns a high-signal prompt
+              you can paste into that agent.
             </p>
           </div>
         </div>
@@ -327,10 +485,12 @@ function BuilderTab() {
         <div className="space-y-3">
           <label className="block space-y-2">
             <span className="font-sans text-sm font-medium text-on-surface">What do you want to build?</span>
-            <Input
+            <textarea
               value={goal}
               onChange={(event) => setGoal(event.target.value)}
               placeholder="Build a migration workflow for ..."
+              rows={5}
+              className="w-full rounded-md bg-surface-container-lowest px-3 py-2 font-sans text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-50 resize-y"
             />
           </label>
 
@@ -348,42 +508,274 @@ function BuilderTab() {
                 ))}
               </SelectContent>
             </Select>
+            <p className="font-sans text-xs text-on-surface-variant">
+              This list comes from the symbionts enabled for this project.
+            </p>
           </label>
 
           <Button onClick={() => void buildPrompt()} disabled={!canBuild || loading}>
-            {loading ? 'Building...' : 'Build Prompt'}
+            {loading ? 'Starting...' : 'Build Prompt'}
           </Button>
         </div>
       </Surface>
 
-      {result ? (
+      {buildStart ? (
         <Surface level="low" className="rounded-lg border border-outline-variant/20 p-6 space-y-4">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="default">{result.status}</Badge>
-            <Badge variant="secondary">
-              {result.inlineInstructions ? 'Instructions inlined' : 'Session-start injection expected'}
+            <Badge variant={statusBadgeVariant(latestRunResultQuery.data?.status ?? 'running')}>
+              {latestRunResultQuery.data?.status ?? 'running'}
             </Badge>
-            {result.targetSymbiont ? (
-              <Badge variant="secondary">{result.targetSymbiont.displayName}</Badge>
+            {deliveryModeLabel(buildStart.inlineInstructions) ? (
+              <Badge variant="secondary">{deliveryModeLabel(buildStart.inlineInstructions)}</Badge>
+            ) : null}
+            {buildStart.targetSymbiont ? (
+              <Badge variant="secondary">{buildStart.targetSymbiont.displayName}</Badge>
             ) : null}
           </div>
 
-          <Surface level="base" className="rounded-lg border border-outline-variant/20 p-5">
-            <pre className="whitespace-pre-wrap font-mono text-sm text-on-surface">{result.prompt}</pre>
-          </Surface>
-
-          <div className="space-y-2">
-            <p className="font-sans text-sm font-medium text-on-surface">Task reports</p>
-            <div className="space-y-2">
-              {result.reports.map((report) => (
-                <div key={report.id} className="rounded-md border border-outline-variant/20 px-3 py-2">
-                  <p className="font-sans text-sm font-medium text-on-surface">
-                    {report.action}
-                  </p>
-                  <p className="font-sans text-sm text-on-surface-variant">{report.summary}</p>
-                </div>
-              ))}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="font-sans text-sm text-on-surface-variant">
+              {latestRunResultQuery.data?.status && CORTEX_TERMINAL_STATUSES.has(latestRunResultQuery.data.status)
+                ? `Run ${buildStart.runId ?? 'pending'} finished.`
+                : `Run ${buildStart.runId ?? 'pending'} is in progress. Cortex checks for the prompt automatically.`}
+            </p>
+            <div className="flex items-center gap-2">
+              {buildStart.runId ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setSelectedRunId(buildStart.runId)}
+                >
+                  View Details
+                </Button>
+              ) : null}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  void latestRunResultQuery.refetch();
+                  void builderRunsQuery.refetch();
+                }}
+                disabled={latestRunResultQuery.isFetching || builderRunsQuery.isFetching}
+              >
+                {latestRunResultQuery.isFetching || builderRunsQuery.isFetching ? 'Refreshing...' : 'Refresh'}
+              </Button>
             </div>
+          </div>
+        </Surface>
+      ) : null}
+
+      <Surface level="low" className="rounded-lg border border-outline-variant/20 p-6 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <SectionHeader>Recent Builds</SectionHeader>
+            <p className="font-sans text-sm text-on-surface-variant">
+              Each run captures the original build request, the generated prompt, and a direct link to the underlying agent run.
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void builderRunsQuery.refetch()}
+            disabled={builderRunsQuery.isFetching}
+          >
+            {builderRunsQuery.isFetching ? 'Refreshing...' : 'Refresh'}
+          </Button>
+        </div>
+
+        {builderRunsQuery.isLoading ? (
+          <p className="font-sans text-sm text-on-surface-variant">Loading recent builds...</p>
+        ) : builderRuns.length === 0 ? (
+          <Surface level="base" className="rounded-lg border border-outline-variant/20 p-5">
+            <p className="font-sans text-sm text-on-surface-variant">
+              No builder runs yet. Start one above and Cortex will keep the prompt artifact here.
+            </p>
+          </Surface>
+        ) : (
+          <div className="space-y-3">
+            {builderRuns.map(({ run, parsed }) => (
+              <Surface key={run.id} level="base" className="rounded-lg border border-outline-variant/20 p-4 space-y-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant={statusBadgeVariant(run.status)}>{run.status}</Badge>
+                      {deliveryModeLabel(parsed.inlineInstructions) ? (
+                        <Badge variant="secondary">{deliveryModeLabel(parsed.inlineInstructions)}</Badge>
+                      ) : null}
+                      {parsed.targetSymbiontDisplayName ? (
+                        <Badge variant="secondary">{parsed.targetSymbiontDisplayName}</Badge>
+                      ) : null}
+                    </div>
+                    <p className="font-sans text-sm font-medium text-on-surface">
+                      {truncate(parsed.goal || 'Untitled build request', CORTEX_BUILDER_GOAL_PREVIEW_CHARS)}
+                    </p>
+                    <div className="flex flex-wrap items-center gap-3 font-sans text-xs text-on-surface-variant">
+                      <span>Started {formatEpochRelative(run.started_at)}</span>
+                      <span>Run {shortSession(run.id)}</span>
+                      {run.completed_at ? (
+                        <span>Duration {formatDuration(run.started_at, run.completed_at)}</span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSelectedRunId(run.id)}
+                    >
+                      View Details
+                    </Button>
+                    <a
+                      href={`/agent?run=${run.id}`}
+                      className="inline-flex h-8 items-center justify-center rounded-md border border-[var(--ghost-border)] px-3 font-sans text-xs font-medium text-on-surface transition-all hover:bg-surface-container-high"
+                    >
+                      Open Run
+                    </a>
+                  </div>
+                </div>
+              </Surface>
+            ))}
+          </div>
+        )}
+      </Surface>
+
+      <Dialog open={selectedRunId !== null} onOpenChange={(open) => {
+        if (!open) setSelectedRunId(null);
+      }}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Prompt Build Details</DialogTitle>
+            <DialogDescription>
+              Review the generated prompt, task reports, and jump to the full agent run when you need deeper diagnostics.
+            </DialogDescription>
+          </DialogHeader>
+
+          {selectedRunId ? (
+            <BuilderRunDetail
+              runId={selectedRunId}
+              runInstruction={selectedRunEntry?.run.instruction ?? null}
+              result={selectedRunResultQuery.data}
+              isLoading={selectedRunResultQuery.isLoading}
+              isFetching={selectedRunResultQuery.isFetching}
+              onRefresh={() => void selectedRunResultQuery.refetch()}
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+interface BuilderRunDetailProps {
+  runId: string;
+  runInstruction: string | null;
+  result: CortexBuilderResponse | undefined;
+  isLoading: boolean;
+  isFetching: boolean;
+  onRefresh: () => void;
+}
+
+function BuilderRunDetail({
+  runId,
+  runInstruction,
+  result,
+  isLoading,
+  isFetching,
+  onRefresh,
+}: BuilderRunDetailProps) {
+  const parsed = useMemo(() => parseBuilderInstruction(runInstruction), [runInstruction]);
+  const [copied, setCopied] = useState(false);
+
+  const copyPrompt = useCallback(async () => {
+    if (!result?.prompt) return;
+    if (!navigator.clipboard?.writeText) return;
+    await navigator.clipboard.writeText(result.prompt);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  }, [result?.prompt]);
+
+  if (isLoading && !result) {
+    return <p className="font-sans text-sm text-on-surface-variant">Loading build details...</p>;
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={statusBadgeVariant(result?.status)}>{result?.status ?? 'loading'}</Badge>
+            <Badge variant="secondary">Run {shortSession(runId)}</Badge>
+            {parsed.targetSymbiontDisplayName ? (
+              <Badge variant="secondary">{parsed.targetSymbiontDisplayName}</Badge>
+            ) : null}
+          </div>
+          {parsed.goal ? (
+            <p className="font-sans text-sm font-medium text-on-surface">{parsed.goal}</p>
+          ) : null}
+          {deliveryModeLabel(parsed.inlineInstructions) ? (
+            <p className="font-sans text-xs text-on-surface-variant">
+              {parsed.inlineInstructions
+                ? 'This build embeds the current Cortex instructions directly into the generated prompt.'
+                : 'This build expects the target symbiont to receive Cortex instructions at session start.'}
+            </p>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-2">
+          {result?.prompt ? (
+            <Button variant="outline" size="sm" onClick={() => void copyPrompt()}>
+              {copied ? (
+                <>
+                  <Check className="mr-1.5 h-3.5 w-3.5" />
+                  Copied
+                </>
+              ) : (
+                <>
+                  <Copy className="mr-1.5 h-3.5 w-3.5" />
+                  Copy Prompt
+                </>
+              )}
+            </Button>
+          ) : null}
+          <a
+            href={`/agent?run=${runId}`}
+            className="inline-flex h-8 items-center justify-center rounded-md border border-[var(--ghost-border)] px-3 font-sans text-xs font-medium text-on-surface transition-all hover:bg-surface-container-high"
+          >
+            Open Full Run
+          </a>
+          <Button variant="outline" size="sm" onClick={onRefresh} disabled={isFetching}>
+            {isFetching ? 'Refreshing...' : 'Refresh'}
+          </Button>
+        </div>
+      </div>
+
+      <Surface level="base" className="rounded-lg border border-outline-variant/20 p-5 space-y-2">
+        <p className="font-sans text-sm font-medium text-on-surface">Generated Prompt</p>
+        {result?.prompt ? (
+          <pre className="whitespace-pre-wrap font-mono text-sm text-on-surface">{result.prompt}</pre>
+        ) : (
+          <p className="font-sans text-sm text-on-surface-variant">
+            {result?.status === 'failed'
+              ? result.error || 'The prompt builder run failed before producing a prompt.'
+              : 'Waiting for the Myco agent to produce the prompt...'}
+          </p>
+        )}
+      </Surface>
+
+      {result?.reports?.length ? (
+        <Surface level="base" className="rounded-lg border border-outline-variant/20 p-5 space-y-3">
+          <p className="font-sans text-sm font-medium text-on-surface">Task Reports</p>
+          <div className="space-y-2">
+            {result.reports.map((report) => (
+              <div key={report.id} className="rounded-md border border-outline-variant/20 px-3 py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-sans text-sm font-medium text-on-surface">{report.action}</p>
+                  <span className="font-sans text-xs text-on-surface-variant">
+                    {formatEpochAbsolute(report.created_at)}
+                  </span>
+                </div>
+                <p className="font-sans text-sm text-on-surface-variant">{report.summary}</p>
+              </div>
+            ))}
           </div>
         </Surface>
       ) : null}
@@ -406,8 +798,8 @@ function DigestTab() {
           <div className="space-y-1">
             <SectionHeader>Digest</SectionHeader>
             <p className="max-w-3xl font-sans text-sm text-on-surface-variant">
-              The digest is still maintained by Myco and remains available for on-demand retrieval.
-              Cortex teaches agents when to request it instead of injecting it automatically.
+              Choose which digest tier Cortex should use when digest injection is enabled, and
+              review the maintained extracts below for on-demand retrieval.
             </p>
           </div>
         </div>

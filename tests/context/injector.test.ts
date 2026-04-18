@@ -4,6 +4,7 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { upsertSession } from '@myco/db/queries/sessions';
 import { insertSpore } from '@myco/db/queries/spores';
 import { registerAgent } from '@myco/db/queries/agents';
+import { upsertDigestExtract } from '@myco/db/queries/digest-extracts';
 import { MycoConfigSchema } from '@myco/config/schema';
 import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions';
 import { DEFAULT_AGENT_ID } from '@myco/constants';
@@ -83,6 +84,39 @@ describe('buildInjectedContext', () => {
 
     const result = await buildInjectedContext(disabledConfig, {});
     expect(result.text).toBe('');
+  });
+
+  it('appends the preferred digest when session-start digest injection is enabled', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    registerAgent({
+      id: DEFAULT_AGENT_ID,
+      name: 'myco-agent',
+      created_at: now,
+    });
+    upsertCortexInstructions({
+      agent_id: DEFAULT_AGENT_ID,
+      content: 'Use `myco_context` before major changes.',
+      input_hash: 'hash-digest',
+      generated_at: now,
+    });
+    upsertDigestExtract({
+      agent_id: DEFAULT_AGENT_ID,
+      tier: 5000,
+      content: 'Digest extract for active project work.',
+      generated_at: now,
+    });
+    const digestConfig = MycoConfigSchema.parse({
+      version: 3,
+      context: {
+        session_start_digest_enabled: true,
+      },
+    });
+
+    const result = await buildInjectedContext(digestConfig, {});
+
+    expect(result.text).toContain('Use `myco_context` before major changes.');
+    expect(result.text).toContain('## Preferred Digest (Tier 5000)');
+    expect(result.text).toContain('Digest extract for active project work.');
   });
 });
 

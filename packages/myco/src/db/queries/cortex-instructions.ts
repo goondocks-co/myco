@@ -1,6 +1,5 @@
 import { getDatabase } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
-import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 const CORTEX_INSTRUCTION_COLUMNS = [
   'id',
@@ -79,7 +78,6 @@ export function upsertCortexInstructions(input: CortexInstructionsUpsert): Corte
   const row = toCortexInstructionsRow(
     db.prepare(`SELECT ${SELECT_COLUMNS} FROM cortex_instructions WHERE id = ?`).get(id) as Record<string, unknown>,
   );
-  syncRow('cortex_instructions', row);
   return row;
 }
 

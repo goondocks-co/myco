@@ -50,6 +50,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 16, migrate: (db) => migrateV15ToV16(db) },
   { version: 17, migrate: (db) => migrateV16ToV17(db) },
   { version: 18, migrate: (db) => migrateV17ToV18(db) },
+  { version: 19, migrate: (db) => migrateV18ToV19(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -268,6 +269,34 @@ function migrateV17ToV18(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(18, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
+ * Version 19 removes Cortex instructions from the team-sync surface.
+ *
+ * Cortex instructions are local operating guidance, not shared team
+ * knowledge. Older builds may have enqueued `cortex_instructions`
+ * outbox rows before this boundary was clarified, so this migration
+ * drops any queued/sent rows for that table to stop futile retries.
+ */
+function migrateV18ToV19(db: Database): void {
+  db.exec('BEGIN');
+  try {
+    db.prepare(
+      'DELETE FROM team_outbox WHERE table_name = ?',
+    ).run('cortex_instructions');
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(19, epochSeconds());
 
     db.exec('COMMIT');
   } catch (err) {

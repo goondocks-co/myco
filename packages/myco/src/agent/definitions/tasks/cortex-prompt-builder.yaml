@@ -41,12 +41,20 @@ prompt: |
   - details.prompt: the final prompt text
 
 phases:
-  - name: research
+  - name: build
     prompt: |
-      Gather the smallest set of relevant Myco context for this build request.
+      Gather the smallest set of relevant Myco context for this build request,
+      then write the final prompt and report it via `vault_report`.
 
       Use digest, search, sessions, plans, spores, and skills selectively.
       Avoid exhaustive searching; gather what you need to write the prompt.
+
+      The final output must be a single prompt suitable for direct paste into
+      the target agent. Respect the delivery contract from the instruction
+      payload when deciding whether to inline the current Cortex instructions.
+
+      Before finishing, call `vault_report` with action `cortex_prompt_builder`
+      and put the final prompt in `details.prompt`.
     tools:
       - vault_read_digest
       - vault_sessions
@@ -54,18 +62,6 @@ phases:
       - vault_skill_records
       - vault_search_fts
       - vault_search_semantic
-    maxTurns: 16
-    required: true
-    readOnly: true
-
-  - name: author
-    dependsOn: [research]
-    prompt: |
-      Write the final prompt using the research you gathered and the delivery
-      contract from the instruction payload.
-
-      Report the final prompt via `vault_report`.
-    tools:
       - vault_report
-    maxTurns: 8
+    maxTurns: 18
     required: true

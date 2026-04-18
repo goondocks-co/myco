@@ -1,11 +1,9 @@
 import type { MycoConfig } from '@myco/config/schema.js';
-import { estimateTokens } from '@myco/constants.js';
 import type { TeamSyncClient } from '../daemon/team-sync.js';
 import {
   TOOL_CONTEXT,
   TOOL_SEARCH,
   TOOL_RECALL,
-  TOOL_SKILLS,
   TOOL_SESSIONS,
   TOOL_PLANS,
   TOOL_TEAM,
@@ -22,7 +20,6 @@ import {
 export const OPERATING_BRIEF_INJECTION_POINTS = ['session_start'] as const;
 export type OperatingBriefInjectionPoint = (typeof OPERATING_BRIEF_INJECTION_POINTS)[number];
 
-const DEFAULT_OPERATING_BRIEF_MAX_TOKENS = 250;
 const MAX_COLLECTIVE_CAPABILITY_LABELS = 4;
 
 export interface OperatingBriefCapabilities {
@@ -56,10 +53,6 @@ export const RETRIEVAL_GUIDANCE: RetrievalGuidance[] = [
   {
     tool: TOOL_RECALL,
     guidance: 'Use after search finds a promising result and you need the full note.',
-  },
-  {
-    tool: TOOL_SKILLS,
-    guidance: 'Use when the task may match a repeatable workflow or project-specific procedure.',
   },
   {
     tool: TOOL_SESSIONS,
@@ -168,7 +161,7 @@ export function buildCapabilitySummary(capabilities: OperatingBriefCapabilities)
       : capabilities.teamEnabled
         ? 'Myco can retrieve local and shared team knowledge in this project.'
         : 'Myco can retrieve local project knowledge in this project.',
-    `Registered retrieval tools: ${capabilities.registeredTools.join(', ') || 'none'}.`,
+    'Use only the currently available Myco MCP tools described below, and omit any surfaces that are offline.',
   ];
 
   if (capabilities.collectiveConnected && capabilities.collectiveCapabilities.length > 0) {
@@ -196,41 +189,4 @@ export function buildRetrievalGuidanceLines(capabilities: OperatingBriefCapabili
   }
 
   return lines;
-}
-
-export function trimOperatingBriefText(
-  text: string,
-  maxTokens: number = DEFAULT_OPERATING_BRIEF_MAX_TOKENS,
-): string {
-  const trimmed = text.trim();
-  if (!trimmed) return '';
-  if (estimateTokens(trimmed) <= maxTokens) return trimmed;
-
-  const lines = trimmed.split('\n').map((line) => line.trimEnd());
-  const accepted: string[] = [];
-
-  for (const line of lines) {
-    const nextText = accepted.length === 0 ? line : `${accepted.join('\n')}\n${line}`;
-    if (estimateTokens(nextText) > maxTokens) break;
-    accepted.push(line);
-  }
-
-  if (accepted.length > 0) {
-    return accepted.join('\n').trim();
-  }
-
-  let end = trimmed.length;
-  while (end > 0) {
-    const candidate = trimmed.slice(0, end).trimEnd();
-    if (estimateTokens(candidate) <= maxTokens) {
-      return candidate;
-    }
-    end -= 1;
-  }
-
-  return '';
-}
-
-export function resolveOperatingBriefTokenBudget(config: MycoConfig['context']): number {
-  return config.operating_brief_max_tokens || DEFAULT_OPERATING_BRIEF_MAX_TOKENS;
 }

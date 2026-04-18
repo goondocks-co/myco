@@ -42,6 +42,7 @@ export interface TaskSchedulingDeps {
   // Holder so the run-time gate below sees toggle flips
   // (agent.scheduled_tasks_enabled) without a daemon restart.
   liveConfig: { current: MycoConfig };
+  getTeamClient?: () => import('./team-sync.js').TeamSyncClient | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -52,7 +53,7 @@ export async function registerScheduledTasks(
   powerManager: PowerManager,
   deps: TaskSchedulingDeps,
 ): Promise<void> {
-  const { definitionsDir, vaultDir, embeddingManager, logger, liveConfig } = deps;
+  const { definitionsDir, vaultDir, embeddingManager, logger, liveConfig, getTeamClient } = deps;
   const runningTasks = new Set<string>();
 
   if (!definitionsDir) {
@@ -135,7 +136,15 @@ export async function registerScheduledTasks(
 
       const taskConfig = config.agent.tasks?.[taskName];
       const projectRoot = resolve(vaultDir, '..');
-      const built = buildTaskInstruction(taskName, taskConfig?.params, taskAgentMap.get(taskName), projectRoot, embeddingManager);
+      const built = await buildTaskInstruction(
+        taskName,
+        taskConfig?.params,
+        taskAgentMap.get(taskName),
+        projectRoot,
+        embeddingManager,
+        config,
+        getTeamClient,
+      );
 
       // Short-circuit: instruction-required tasks must not dispatch
       // the agent when there's no work. For skill-generate this means

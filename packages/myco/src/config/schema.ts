@@ -76,14 +76,14 @@ const TaskProviderOverrideSchema = z.object({
 const ContextSchema = z.object({
   /** Preferred digest tier when a user or agent explicitly requests Myco context. */
   digest_tier: z.number().int().default(5000),
+  /** Append the preferred digest extract at session start after Cortex instructions. */
+  session_start_digest_enabled: z.boolean().default(false),
   /** Master switch for Cortex session-start instruction injection. */
   operating_brief_enabled: z.boolean().default(true),
   /** Hook phases where Cortex instructions should be injected automatically. */
   operating_brief_inject_on: z.array(
     z.enum(['session_start']),
   ).default(['session_start']),
-  /** Token budget for stored Cortex session-start instructions. */
-  operating_brief_max_tokens: z.number().int().min(50).max(1000).default(250),
   /** Enable semantic spore search on each user prompt. */
   prompt_search: z.boolean().default(true),
   /** Max spores to inject per prompt (0-10). */
@@ -95,7 +95,7 @@ const AgentSchema = z.object({
   summary_batch_interval: z.number().int().min(0).default(5),
   /** Global toggle for PowerManager-scheduled agent tasks. */
   scheduled_tasks_enabled: z.boolean().default(true),
-  /** Global toggle for event-driven agent tasks (title-summary). */
+  /** Global toggle for event-driven agent tasks (title-summary, Cortex refresh). */
   event_tasks_enabled: z.boolean().default(true),
   /** Global default provider — applies to all tasks unless overridden per-task. */
   provider: ProviderOverrideSchema.optional(),

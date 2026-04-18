@@ -533,6 +533,8 @@ export async function main(): Promise<void> {
   let configHash = computeConfigHash(vaultDir);
   const cortexHandlers = createCortexHandlers(vaultDir, {
     liveConfig,
+    embeddingManager,
+    logger,
     getTeamClient: () => teamSync.getTeamClient(),
   });
 
@@ -541,6 +543,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/cortex/instructions', cortexHandlers.handleGetInstructions);
   server.registerRoute('POST', '/api/cortex/instructions/refresh', cortexHandlers.handleRefreshInstructions);
   server.registerRoute('POST', '/api/cortex/prompt-builder', cortexHandlers.handleBuildPrompt);
+  server.registerRoute('GET', '/api/cortex/prompt-builder/:runId', cortexHandlers.handleGetPromptResult);
 
   server.registerRoute('GET', '/api/config/merged', async () => handleGetMergedConfig(vaultDir));
   server.registerRoute('GET', '/api/config/local', async () => handleGetLocalConfig(vaultDir));
@@ -590,7 +593,14 @@ export async function main(): Promise<void> {
   });
 
   async function syncScheduledTasks() {
-    await registerScheduledTasks(powerManager, { definitionsDir, vaultDir, embeddingManager, logger, liveConfig });
+    await registerScheduledTasks(powerManager, {
+      definitionsDir,
+      vaultDir,
+      embeddingManager,
+      logger,
+      liveConfig,
+      getTeamClient: () => teamSync.getTeamClient(),
+    });
   }
 
   reactions.on(['agent.tasks'], async () => {
@@ -710,7 +720,12 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/attachments/:filename', attachments.handleGetAttachment);
 
   // --- Agent API routes ---
-  const agentRunHandlers = createAgentRunHandlers({ vaultDir, embeddingManager, logger });
+  const agentRunHandlers = createAgentRunHandlers({
+    vaultDir,
+    embeddingManager,
+    logger,
+    getTeamClient: () => teamSync.getTeamClient(),
+  });
   server.registerRoute('POST', '/api/agent/run', agentRunHandlers.handleRun);
   server.registerRoute('GET', '/api/agent/runs', agentRunHandlers.handleListRuns);
   server.registerRoute('GET', '/api/agent/runs/:id', agentRunHandlers.handleGetRun);
@@ -815,7 +830,7 @@ export async function main(): Promise<void> {
     vaultDir,
     machineId,
     logger,
-    getTeamClient: teamSync.getTeamClient,
+    getTeamClient: () => teamSync.getTeamClient(),
     setTeamClient: teamSync.setTeamClient,
   });
   server.registerRoute('POST', '/api/team/connect', async (req) => {
@@ -839,7 +854,7 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/team/rotate-mcp-token', teamHandlers.handleRotateMcpToken);
 
   const collectiveHandlers = createCollectiveHandlers({
-    getTeamClient: teamSync.getTeamClient,
+    getTeamClient: () => teamSync.getTeamClient(),
   });
   server.registerRoute('GET', '/api/collective/status', collectiveHandlers.handleStatus);
   server.registerRoute('GET', '/api/collective/search', collectiveHandlers.handleSearch);
@@ -849,7 +864,7 @@ export async function main(): Promise<void> {
 
   // --- Search, activity feed, and embedding status ---
 
-  server.registerRoute('GET', '/api/search', createSearchHandler({ embeddingManager, getTeamClient: teamSync.getTeamClient, machineId }));
+  server.registerRoute('GET', '/api/search', createSearchHandler({ embeddingManager, getTeamClient: () => teamSync.getTeamClient(), machineId }));
   server.registerRoute('GET', '/api/activity', handleGetFeed);
   server.registerRoute('GET', '/api/embedding/status', async () => handleGetEmbeddingStatus(vaultDir));
   server.registerRoute('GET', '/api/embedding/details', async () => handleEmbeddingDetails(embeddingManager));
@@ -896,11 +911,27 @@ export async function main(): Promise<void> {
   }
 
   // --- Register power-managed jobs ---
-  registerPowerJobs(powerManager, { embeddingManager, registry, logger, liveConfig, db, machineId, vaultDir, databaseManager });
+  registerPowerJobs(powerManager, {
+    embeddingManager,
+    registry,
+    logger,
+    liveConfig,
+    db,
+    machineId,
+    vaultDir,
+    databaseManager,
+  });
   teamSync.registerFlushJob(powerManager);
 
   // -- Dynamic task scheduling --
-  await registerScheduledTasks(powerManager, { definitionsDir, vaultDir, embeddingManager, logger, liveConfig });
+  await registerScheduledTasks(powerManager, {
+    definitionsDir,
+    vaultDir,
+    embeddingManager,
+    logger,
+    liveConfig,
+    getTeamClient: () => teamSync.getTeamClient(),
+  });
 
   powerManager.start();
 

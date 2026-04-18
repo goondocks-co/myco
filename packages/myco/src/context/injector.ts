@@ -2,6 +2,7 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import { estimateTokens, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { shouldInjectOperatingBrief } from './operating-brief.js';
+import { getSessionStartDigestPayload, shouldInjectSessionStartDigest } from './session-start-digest.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -32,15 +33,27 @@ export async function buildInjectedContext(
   config: MycoConfig,
   _context: InjectionContext,
 ): Promise<InjectedContext> {
-  if (!shouldInjectOperatingBrief(config.context, 'session_start')) {
+  const includeBrief = shouldInjectOperatingBrief(config.context, 'session_start');
+  const includeDigest = shouldInjectSessionStartDigest(config.context);
+  if (!includeBrief && !includeDigest) {
     return emptyContext();
   }
 
-  const brief = getCortexInstructions(DEFAULT_AGENT_ID)?.content ?? '';
+  const brief = includeBrief ? getCortexInstructions(DEFAULT_AGENT_ID)?.content ?? '' : '';
+  const digest = includeDigest ? getSessionStartDigestPayload(config.context) : { content: '', tier: null };
+  const parts: string[] = [];
+
+  if (brief) {
+    parts.push(brief);
+  }
+  if (digest.content) {
+    parts.push(`## Preferred Digest (Tier ${digest.tier ?? config.context.digest_tier})\n${digest.content}`);
+  }
+  const text = parts.join('\n\n');
 
   return {
-    text: brief,
-    tokenEstimate: estimateTokens(brief),
+    text,
+    tokenEstimate: estimateTokens(text),
     brief,
   };
 }
