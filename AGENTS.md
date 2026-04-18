@@ -1,6 +1,6 @@
 # Myco — Collective Agent Intelligence
 
-Captures session knowledge (events, observations, summaries) into a SQLite-backed intelligence graph and serves it back via MCP tools. Supports Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, and OpenCode.
+Captures session knowledge (events, observations, summaries) into a SQLite-backed intelligence graph and serves it back via MCP tools. Supports Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode, and Pi.
 
 ## Dogfooding
 
@@ -198,7 +198,7 @@ Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO da
 | **Lineage edge** | Automatic graph connection created by daemon on insert: FROM_SESSION, EXTRACTED_FROM, HAS_BATCH, DERIVED_FROM. No LLM needed. |
 | **Semantic edge** | Intelligence graph connection created by agent: RELATES_TO, SUPERSEDED_BY, REFERENCES, DEPENDS_ON, AFFECTS. LLM-driven. |
 | **Graph edge** | Stored in `graph_edges` table. Supports cross-type references between session, batch, spore, and entity nodes. |
-| **Symbiont** | External coding agent that Myco integrates with (Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode). Named for the mycorrhizal symbiotic relationship. Declared via YAML manifests in `src/symbionts/manifests/`. |
+| **Symbiont** | External coding agent that Myco integrates with (Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode, Pi). Named for the mycorrhizal symbiotic relationship. Declared via YAML manifests in `src/symbionts/manifests/`. |
 | **Wave** | Group of phases whose dependencies are all satisfied, executing in parallel via `Promise.allSettled()`. The executor computes waves from the phase `dependsOn` DAG using topological sort. |
 | **Phase dependency** | DAG edge between phases declared via `dependsOn` in task YAML. Phases depend on named predecessors; the executor resolves these into execution waves. |
 
@@ -288,7 +288,7 @@ make build
 1. Create manifest at `src/symbionts/manifests/<name>.yaml` with registration targets. `loadManifests()` auto-discovers any YAML in this directory — no code change needed to register the manifest itself.
 2. Create templates at `src/symbionts/templates/<name>/`:
    - **JSON hooks (default):** `hooks.json`, `mcp.json`, `settings.json` — merged into the agent's config files.
-   - **Plugin-file hooks (opencode):** `plugin.ts` + `package.json` + `mcp.json` + `settings.json`. Declare `hooksFormat: plugin-file` in the manifest and point `hooksTarget` at the plugin file path (e.g., `.opencode/plugins/myco.ts`). Also set `pluginPackageTarget` to write the plugin's deps manifest.
+   - **Plugin-file hooks (opencode, pi):** `plugin.ts` + `package.json` + optional `mcp.json` + `settings.json`. Declare `hooksFormat: plugin-file` in the manifest and point `hooksTarget` at the plugin file path (e.g., `.opencode/plugins/myco.ts`, `.pi/extensions/myco/index.ts`). Also set `pluginPackageTarget` to write the plugin's deps manifest.
    - **Non-standard MCP keys:** if the agent stores MCP servers under a key other than `mcpServers` (opencode uses `mcp`), set `mcpServersKey` in the manifest. Any downstream code that reads MCP state must resolve the key via the manifest, not hardcode `mcpServers`.
 3. **Optional** — implement a transcript adapter in `src/symbionts/<name>.ts` (NOT `src/symbionts/adapters/<name>.ts` — that subdirectory does not exist). Skip this step for agents that don't expose on-disk transcript files; Myco will reconstruct turns from the buffered hook events.
 4. If you implemented an adapter, register it in `src/symbionts/registry.ts` `ALL_ADAPTERS`.

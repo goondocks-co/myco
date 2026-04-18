@@ -4,7 +4,7 @@ Myco runs a long-lived background daemon that captures session activity, process
 
 ## Session capture
 
-When you start a session in any configured agent (Claude Code, Cursor, Codex, etc.), the symbiont's hooks register the session with the daemon and begin capturing events:
+When you start a session in any configured agent (Claude Code, Cursor, Codex, Pi, etc.), the symbiont's hooks register the session with the daemon and begin capturing events:
 
 - **User prompts** — every message you send the agent
 - **Tool uses** — every file read, bash command, edit, or search the agent runs
