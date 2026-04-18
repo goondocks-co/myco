@@ -1,21 +1,14 @@
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { TeamSyncClient } from '../daemon/team-sync.js';
 import {
-  TOOL_CONTEXT,
-  TOOL_SEARCH,
-  TOOL_RECALL,
-  TOOL_SESSIONS,
-  TOOL_PLANS,
-  TOOL_TEAM,
-  TOOL_REMEMBER,
-  TOOL_SUPERSEDE,
-  TOOL_CONSOLIDATE,
-  TOOL_COLLECTIVE_SEARCH,
-  TOOL_COLLECTIVE_PROJECTS,
-  TOOL_COLLECTIVE_PROJECT,
+  TOOL_DEFINITIONS,
+  COLLECTIVE_TOOL_DEFINITIONS,
+  getToolCortexPriority,
+  type ToolDefinition,
 } from '../mcp/tool-definitions.js';
 
 const MAX_COLLECTIVE_CAPABILITY_LABELS = 4;
+const ALL_CORTEX_TOOL_DEFINITIONS = [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS];
 
 export interface CortexCapabilities {
   teamEnabled: boolean;
@@ -23,11 +16,12 @@ export interface CortexCapabilities {
   collectiveCapabilities: string[];
 }
 
-export interface RetrievalGuidance {
+export interface CortexToolGuidance {
   tool: string;
   guidance: string;
   requiresTeam?: boolean;
   requiresCollective?: boolean;
+  priority: number;
 }
 
 export interface DeliveryDecision {
@@ -35,60 +29,24 @@ export interface DeliveryDecision {
   reason: 'missing-symbiont' | 'session-start-supported' | 'session-start-disabled' | 'no-session-start';
 }
 
-export const RETRIEVAL_GUIDANCE: RetrievalGuidance[] = [
-  {
-    tool: TOOL_CONTEXT,
-    guidance: 'Use for broad project orientation or when you want the current digest before planning changes.',
-  },
-  {
-    tool: TOOL_SEARCH,
-    guidance: 'Use for prior decisions, bugs, and rationale when you know the topic but not the exact note.',
-  },
-  {
-    tool: TOOL_RECALL,
-    guidance: 'Use after search finds a promising result and you need the full note.',
-  },
-  {
-    tool: TOOL_SESSIONS,
-    guidance: 'Use when continuing related work or recovering recent implementation context.',
-  },
-  {
-    tool: TOOL_PLANS,
-    guidance: 'Use before implementation when approved plans or specs may already exist.',
-  },
-  {
-    tool: TOOL_TEAM,
-    guidance: 'Use for current team topology and shared project context.',
-    requiresTeam: true,
-  },
-  {
-    tool: TOOL_COLLECTIVE_SEARCH,
-    guidance: 'Use for cross-project knowledge across the connected collective.',
-    requiresCollective: true,
-  },
-  {
-    tool: TOOL_COLLECTIVE_PROJECTS,
-    guidance: 'Use to discover relevant collective projects before drilling deeper.',
-    requiresCollective: true,
-  },
-  {
-    tool: TOOL_COLLECTIVE_PROJECT,
-    guidance: 'Use when you know the collective project and need its focused context.',
-    requiresCollective: true,
-  },
-  {
-    tool: TOOL_REMEMBER,
-    guidance: 'Use to save durable decisions, gotchas, discoveries, or bug fixes from this work.',
-  },
-  {
-    tool: TOOL_SUPERSEDE,
-    guidance: 'Use when existing knowledge is outdated and should stop guiding future runs.',
-  },
-  {
-    tool: TOOL_CONSOLIDATE,
-    guidance: 'Use when several related learnings should become one durable wisdom artifact.',
-  },
-] as const;
+function toCortexToolGuidance(
+  tool: Pick<ToolDefinition, 'name' | 'cortex'>,
+): CortexToolGuidance | null {
+  const cortex = tool.cortex;
+  if (!cortex) return null;
+  return {
+    tool: tool.name,
+    guidance: cortex.guidance,
+    requiresTeam: cortex.requiresTeam,
+    requiresCollective: cortex.requiresCollective,
+    priority: getToolCortexPriority(tool),
+  };
+}
+
+export const RETRIEVAL_GUIDANCE: CortexToolGuidance[] = ALL_CORTEX_TOOL_DEFINITIONS
+  .map(toCortexToolGuidance)
+  .filter((entry): entry is CortexToolGuidance => entry !== null)
+  .sort((left, right) => left.priority - right.priority);
 
 export async function resolveCortexCapabilities(
   config: Pick<MycoConfig, 'team'>,

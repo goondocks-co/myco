@@ -438,9 +438,9 @@ describe('session query helpers', () => {
     const db = getDatabase();
     const now = epochNow();
     db.prepare(
-      `INSERT INTO plans (id, session_id, prompt_batch_id, title, content, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(planId, sessionId, promptBatchId ?? null, 'test plan', 'plan content', now);
+      `INSERT INTO plans (id, logical_key, session_id, prompt_batch_id, title, content, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(planId, `session-plan:${planId}`, sessionId, promptBatchId ?? null, 'test plan', 'plan content', now);
   }
 
   /** Insert a skill_record + skill_usage row — exercises skill_usage.session_id FK. */

@@ -5,6 +5,7 @@ import os from 'node:os';
 import { initDatabase, closeDatabase } from '@myco/db/client';
 import { createSchema } from '@myco/db/schema';
 import { upsertSession, getSession } from '@myco/db/queries/sessions';
+import { upsertPlan, getPlan } from '@myco/db/queries/plans';
 import { createSessionMutationHandlers } from '@myco/daemon/api/sessions';
 import type { RouteRequest } from '@myco/daemon/router';
 
@@ -13,7 +14,7 @@ import type { RouteRequest } from '@myco/daemon/router';
  * path doesn't touch it, so a stub with the interface shape is enough.
  */
 function makeEmbeddingManagerStub(): unknown {
-  return { remove: vi.fn(), reconcile: vi.fn() };
+  return { remove: vi.fn(), reconcile: vi.fn(), onRemoved: vi.fn() };
 }
 
 function makeLogger() {
@@ -117,5 +118,65 @@ describe('handleCompleteSession', () => {
     const res = await handleCompleteSession(makeRequest({ params: { id: 'missing' } }));
     expect(res.status).toBe(404);
     expect((res.body as { error: string }).error).toBe('Session not found');
+  });
+});
+
+describe('handleDeletePlan', () => {
+  let tmpDir: string;
+  let embeddingManager: { onRemoved: ReturnType<typeof vi.fn> };
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plans-api-'));
+    const dbPath = path.join(tmpDir, 'myco.db');
+    const db = initDatabase(dbPath);
+    createSchema(db);
+    embeddingManager = { onRemoved: vi.fn() };
+  });
+
+  afterEach(() => {
+    closeDatabase();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function makeHandlers() {
+    return createSessionMutationHandlers({
+      embeddingManager: embeddingManager as never,
+      vaultDir: tmpDir,
+      logger: makeLogger() as never,
+      liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
+    });
+  }
+
+  it('deletes the plan row and removes its embedding', async () => {
+    const now = epochNow();
+    upsertSession({
+      id: 'sess-plan-delete',
+      agent: 'test-agent',
+      started_at: now,
+      created_at: now,
+    });
+    upsertPlan({
+      id: 'plan-delete',
+      logical_key: 'session:sess-plan-delete:key:primary',
+      session_id: 'sess-plan-delete',
+      title: 'Delete me',
+      content: '# Delete me',
+      created_at: now,
+    });
+
+    const { handleDeletePlan } = makeHandlers();
+    const res = await handleDeletePlan(makeRequest({ params: { id: 'plan-delete' } }));
+
+    expect(res.status === undefined || res.status < 400).toBe(true);
+    expect(getPlan('plan-delete')).toBeNull();
+    expect(embeddingManager.onRemoved).toHaveBeenCalledWith('plans', 'plan-delete');
+  });
+
+  it('returns 404 when the plan does not exist', async () => {
+    const { handleDeletePlan } = makeHandlers();
+    const res = await handleDeletePlan(makeRequest({ params: { id: 'missing-plan' } }));
+
+    expect(res.status).toBe(404);
+    expect((res.body as { error: string }).error).toBe('Plan not found');
   });
 });

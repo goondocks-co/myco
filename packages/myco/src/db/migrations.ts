@@ -22,6 +22,10 @@ import {
   AGENT_RUN_EVALUATIONS_TABLE,
   CORTEX_INSTRUCTIONS_TABLE,
 } from './schema-ddl.js';
+import {
+  buildPlanId,
+  deriveStoredPlanLogicalKey,
+} from '@myco/plans/identity.js';
 
 // ---------------------------------------------------------------------------
 // Migration interface + registry
@@ -51,6 +55,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 17, migrate: (db) => migrateV16ToV17(db) },
   { version: 18, migrate: (db) => migrateV17ToV18(db) },
   { version: 19, migrate: (db) => migrateV18ToV19(db) },
+  { version: 20, migrate: (db, machineId) => migrateV19ToV20(db, machineId) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -382,6 +387,111 @@ function migrateV13ToV14(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`
     ).run(14, epochSeconds());
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
+ * Version 20 adds plans.logical_key and backfills plan identity so capture
+ * channels can converge on one last-write-wins row per logical plan.
+ *
+ * This is intentionally a forward migration on top of the shipped v19 schema
+ * chain from main. Earlier versions keep their original meaning; logical-key
+ * plan identity is introduced only once the vault reaches v20.
+ */
+function migrateV19ToV20(db: Database, machineId: string): void {
+  db.exec('BEGIN');
+  try {
+    const planColumns = getTableColumnSet(db, 'plans');
+    if (!planColumns.has('logical_key')) {
+      db.exec(`ALTER TABLE plans ADD COLUMN logical_key TEXT NOT NULL DEFAULT ''`);
+    }
+
+    const rows = db.prepare(
+      `SELECT *
+       FROM plans
+       ORDER BY created_at ASC, id ASC`,
+    ).all() as Array<{
+      id: string;
+      logical_key?: string;
+      status: string | null;
+      author: string | null;
+      title: string | null;
+      content: string | null;
+      source_path: string | null;
+      tags: string | null;
+      session_id: string | null;
+      prompt_batch_id: number | null;
+      content_hash: string | null;
+      processed: number | null;
+      created_at: number;
+      updated_at: number | null;
+      embedded: number | null;
+      machine_id: string | null;
+      synced_at: number | null;
+    }>;
+
+    const seenLogicalKeys = new Set<string>();
+    const updatePlanIdentity = db.prepare(
+      `UPDATE plans
+       SET id = ?, logical_key = ?, embedded = ?, synced_at = NULL
+       WHERE id = ?`,
+    );
+    const deleteOutboxEntries = db.prepare(
+      `DELETE FROM team_outbox
+       WHERE table_name = 'plans' AND row_id IN (?, ?)`,
+    );
+    const enqueueOutbox = db.prepare(
+      `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
+       VALUES ('plans', ?, ?, ?, ?, ?)`,
+    );
+    const now = epochSeconds();
+
+    for (const row of rows) {
+      const derivedLogicalKey = deriveStoredPlanLogicalKey(row);
+      const logicalKey = seenLogicalKeys.has(derivedLogicalKey)
+        ? `${row.session_id ? `session:${row.session_id}:` : ''}legacy:${row.id}`
+        : derivedLogicalKey;
+      seenLogicalKeys.add(logicalKey);
+      const nextId = buildPlanId(logicalKey);
+      const embedded = nextId === row.id ? (row.embedded ?? 0) : 0;
+
+      updatePlanIdentity.run(nextId, logicalKey, embedded, row.id);
+      deleteOutboxEntries.run(row.id, nextId);
+
+      if (nextId !== row.id) {
+        enqueueOutbox.run(
+          row.id,
+          'delete',
+          JSON.stringify({ id: row.id }),
+          row.machine_id ?? machineId,
+          now,
+        );
+      }
+
+      const fresh = db.prepare(`SELECT * FROM plans WHERE id = ?`).get(nextId) as Record<string, unknown> | undefined;
+      if (fresh) {
+        enqueueOutbox.run(
+          nextId,
+          'upsert',
+          JSON.stringify(fresh),
+          (fresh.machine_id as string | null) ?? machineId,
+          now,
+        );
+      }
+    }
+
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_logical_key ON plans (logical_key)`);
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(20, epochSeconds());
 
     db.exec('COMMIT');
   } catch (err) {

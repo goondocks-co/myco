@@ -485,6 +485,7 @@ export async function main(): Promise<void> {
     liveConfig,
     vaultDir,
     planTags: symbiontPlanTags,
+    planWatchConfig,
   });
 
   // --- Session routes ---
@@ -693,6 +694,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/sessions/:id/impact', sessionMutations.handleGetSessionImpact);
   server.registerRoute('POST', '/api/sessions/:id/complete', sessionMutations.handleCompleteSession);
   server.registerRoute('DELETE', '/api/sessions/:id', sessionMutations.handleDeleteSession);
+  server.registerRoute('DELETE', '/api/plans/:id', sessionMutations.handleDeletePlan);
   server.registerRoute('GET', '/api/sessions/:id/batches', handleGetSessionBatches);
   server.registerRoute('GET', '/api/batches/:id/activities', handleGetBatchActivities);
   server.registerRoute('GET', '/api/sessions/:id/attachments', handleGetSessionAttachments);
@@ -794,11 +796,12 @@ export async function main(): Promise<void> {
   // --- MCP proxy routes ---
   // These routes exist so the MCP server can proxy tool calls through the
   // daemon instead of opening its own SQLite connection.
-  const mcpProxy = createMcpProxyHandlers({ machineId, embeddingManager });
+  const mcpProxy = createMcpProxyHandlers({ machineId, embeddingManager, projectRoot });
   server.registerRoute('POST', '/api/mcp/remember', mcpProxy.handleRemember);
   server.registerRoute('POST', '/api/mcp/supersede', mcpProxy.handleSupersede);
   server.registerRoute('POST', '/api/mcp/consolidate', mcpProxy.handleConsolidate);
   server.registerRoute('GET', '/api/mcp/plans', mcpProxy.handlePlans);
+  server.registerRoute('POST', '/api/mcp/plans', mcpProxy.handleSavePlan);
   server.registerRoute('GET', '/api/mcp/sessions', mcpProxy.handleSessions);
   server.registerRoute('GET', '/api/mcp/team', mcpProxy.handleTeam);
 

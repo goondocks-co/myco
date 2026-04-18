@@ -21,8 +21,10 @@ import {
   TOOL_DEFINITIONS,
   COLLECTIVE_TOOL_DEFINITIONS,
 } from '@myco/mcp/tool-definitions.js';
+import { RETRIEVAL_GUIDANCE } from '@myco/context/cortex-brief.js';
 import { handleMycoPlans } from '@myco/mcp/tools/plans.js';
 import { handleMycoRemember } from '@myco/mcp/tools/remember.js';
+import { handleMycoSavePlan } from '@myco/mcp/tools/save-plan.js';
 import { handleMycoSupersede } from '@myco/mcp/tools/supersede.js';
 import { handleMycoConsolidate } from '@myco/mcp/tools/consolidate.js';
 import { handleMycoSearch } from '@myco/mcp/tools/search.js';
@@ -79,6 +81,35 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
       expect(tool.inputSchema.type).toBe('object');
       expect(tool.inputSchema.properties).toBeDefined();
     }
+  });
+
+  it('every Cortex-guided tool appears in generated retrieval guidance', () => {
+    const cortexToolNames = [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS]
+      .filter((tool) => Boolean(tool.cortex))
+      .map((tool) => tool.name)
+      .sort();
+    const retrievalGuidanceNames = RETRIEVAL_GUIDANCE.map((entry) => entry.tool).sort();
+
+    expect(retrievalGuidanceNames).toEqual(cortexToolNames);
+  });
+
+  it('keeps non-guided tools out of Cortex retrieval guidance', () => {
+    const skillsTool = TOOL_DEFINITIONS.find((tool) => tool.name === 'myco_skills');
+    const skillCandidatesTool = TOOL_DEFINITIONS.find((tool) => tool.name === 'myco_skill_candidates');
+
+    expect(skillsTool?.cortex).toBeUndefined();
+    expect(skillCandidatesTool?.cortex).toBeUndefined();
+    expect(RETRIEVAL_GUIDANCE.some((entry) => entry.tool === 'myco_skills')).toBe(false);
+    expect(RETRIEVAL_GUIDANCE.some((entry) => entry.tool === 'myco_skill_candidates')).toBe(false);
+  });
+
+  it('myco_save_plan documents source_path xor plan_key', () => {
+    const savePlan = TOOL_DEFINITIONS.find((tool) => tool.name === 'myco_save_plan');
+    expect(savePlan?.inputSchema.oneOf).toEqual([
+      { required: ['source_path'] },
+      { required: ['plan_key'] },
+    ]);
+    expect(savePlan?.inputSchema).not.toHaveProperty('anyOf');
   });
 
   it('every tool name starts with myco_ or collective_', () => {
@@ -140,6 +171,38 @@ describe('handler forwards every documented schema property', () => {
       content: 'x',
       type: 'gotcha',
       tags: ['t1', 't2'],
+    });
+  });
+
+  it('myco_save_plan forwards session_id, content, source_path/plan_key, title, status, tags via POST body', async () => {
+    const client = mockClient({
+      id: 'plan-1',
+      logical_key: 'session:s1:key:primary',
+      title: 'Plan',
+      status: 'active',
+      source_path: null,
+      session_id: 's1',
+      prompt_batch_id: 3,
+      tags: ['planning'],
+      created_at: 1,
+      updated_at: 1,
+    });
+    await handleMycoSavePlan({
+      session_id: 's1',
+      content: '# Plan',
+      plan_key: 'primary',
+      title: 'Plan',
+      status: 'active',
+      tags: ['planning'],
+    }, client);
+    expect(client.post).toHaveBeenCalledWith('/api/mcp/plans', {
+      session_id: 's1',
+      content: '# Plan',
+      source_path: undefined,
+      plan_key: 'primary',
+      title: 'Plan',
+      status: 'active',
+      tags: ['planning'],
     });
   });
 

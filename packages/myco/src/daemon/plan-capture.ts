@@ -1,9 +1,8 @@
 /**
- * Event-driven plan capture module.
+ * Plan capture and persistence helpers.
  *
- * Provides pure detection and storage functions for capturing plan files
- * written to watched directories. Called by the daemon's event handler
- * (Task 6) when a tool event targets a plan directory.
+ * Provides pure detection and storage functions for capturing plans from
+ * watched files, transcript tags, and direct daemon/MCP writes.
  *
  * All functions are stateless — no file I/O, no event handling.
  */
@@ -12,8 +11,16 @@ import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { CONTENT_HASH_ALGORITHM } from '@myco/constants.js';
-import { upsertPlan } from '@myco/db/queries/plans.js';
+import { getPlanByLogicalKey, upsertPlan } from '@myco/db/queries/plans.js';
 import type { PlanRow } from '@myco/db/queries/plans.js';
+import {
+  buildPathPlanLogicalKey,
+  buildPlanId,
+  buildSessionTagPlanLogicalKey,
+  humanizePlanToken,
+  normalizePlanSourcePath,
+  TRANSCRIPT_SOURCE_PREFIX,
+} from '@myco/plans/identity.js';
 
 // ---------------------------------------------------------------------------
 // Transcript-based plan extraction
@@ -47,12 +54,6 @@ export function extractTaggedPlans(
 // ---------------------------------------------------------------------------
 
 /**
- * Source path prefix for plans extracted from transcript tags.
- * Used to build deterministic plan IDs: `transcript:<tagName>`.
- */
-export const TRANSCRIPT_SOURCE_PREFIX = 'transcript:';
-
-/**
  * Tool names that constitute a file write operation.
  * Includes both PascalCase (Claude Code, Cursor, Codex, Windsurf, Gemini) and
  * lowercase (opencode) variants. `patch` is opencode's unified-diff tool.
@@ -65,12 +66,18 @@ const FILE_WRITE_TOOLS = new Set([
 /** Regex matching a top-level markdown heading (# Title). */
 const HEADING_REGEX = /^#\s+(.+)$/m;
 
-/** Number of hex chars to use from the MD5 hash for plan IDs. */
-const PLAN_ID_HASH_LENGTH = 16;
+const TRANSCRIPT_SOURCE_TITLE_PREFIX = `${TRANSCRIPT_SOURCE_PREFIX}`;
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+export function resolvePlanWatchDir(watchDir: string, projectRoot: string): string {
+  const expanded = watchDir.startsWith('~/')
+    ? path.join(os.homedir(), watchDir.slice(2))
+    : watchDir;
+  return path.isAbsolute(expanded) ? expanded : path.resolve(projectRoot, expanded);
+}
 
 /**
  * Check if a file path falls inside any watched plan directory.
@@ -85,9 +92,7 @@ export function isInPlanDirectory(
 ): boolean {
   const abs = path.isAbsolute(filePath) ? filePath : path.resolve(projectRoot, filePath);
   return watchDirs.some((dir) => {
-    // Expand ~ to home directory (manifests use ~/... for global plan dirs)
-    const expanded = dir.startsWith('~/') ? path.join(os.homedir(), dir.slice(2)) : dir;
-    const absDir = path.isAbsolute(expanded) ? expanded : path.resolve(projectRoot, expanded);
+    const absDir = resolvePlanWatchDir(dir, projectRoot);
     // Ensure we match a directory boundary, not a prefix of a sibling dir name.
     // e.g. absDir = /foo/plans must NOT match /foo/plans-extra
     const prefix = absDir.endsWith(path.sep) ? absDir : absDir + path.sep;
@@ -139,10 +144,87 @@ export function parsePlanTitle(content: string, filename?: string): string | nul
   return filename ?? null;
 }
 
+function normalizePlanTags(tags?: string[] | string | null): string | null {
+  if (tags === undefined || tags === null) return null;
+  return Array.isArray(tags) ? tags.join(', ') : tags;
+}
+
+function fileTitleFromSourcePath(sourcePath?: string | null): string | null {
+  if (!sourcePath || sourcePath.startsWith(TRANSCRIPT_SOURCE_TITLE_PREFIX)) return null;
+  return path.basename(sourcePath);
+}
+
+export interface ResolvePlanTitleInput {
+  content: string;
+  title?: string | null;
+  sourcePath?: string | null;
+  planKey?: string | null;
+}
+
+export function resolvePlanTitle(input: ResolvePlanTitleInput): string | null {
+  const explicitTitle = input.title?.trim();
+  if (explicitTitle) return explicitTitle;
+
+  const headingTitle = parsePlanTitle(input.content);
+  if (headingTitle) return headingTitle;
+
+  const sourcePathTitle = fileTitleFromSourcePath(input.sourcePath);
+  if (sourcePathTitle) return sourcePathTitle;
+
+  return input.planKey ? humanizePlanToken(input.planKey) : null;
+}
+
+export interface PersistPlanInput {
+  sessionId: string;
+  content: string;
+  logicalKey: string;
+  sourcePath?: string | null;
+  promptBatchId?: number | null;
+  title?: string | null;
+  status?: string;
+  tags?: string[] | string | null;
+  planKey?: string | null;
+  createdAt?: number;
+  updatedAt?: number | null;
+}
+
+export function persistPlan(input: PersistPlanInput): PlanRow {
+  const createdAt = input.createdAt ?? Math.floor(Date.now() / 1000);
+  const updatedAt = input.updatedAt ?? createdAt;
+  const contentHash = createHash(CONTENT_HASH_ALGORITHM).update(input.content).digest('hex');
+  const existingPlan = getPlanByLogicalKey(input.logicalKey);
+  const status = input.status ?? existingPlan?.status ?? 'active';
+  const promptBatchId = input.promptBatchId === undefined
+    ? (existingPlan?.prompt_batch_id ?? null)
+    : input.promptBatchId;
+
+  return upsertPlan({
+    id: buildPlanId(input.logicalKey),
+    logical_key: input.logicalKey,
+    title: resolvePlanTitle({
+      content: input.content,
+      title: input.title,
+      sourcePath: input.sourcePath,
+      planKey: input.planKey,
+    }),
+    content: input.content,
+    source_path: input.sourcePath ?? null,
+    tags: normalizePlanTags(input.tags),
+    session_id: input.sessionId,
+    prompt_batch_id: promptBatchId,
+    content_hash: contentHash,
+    status,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  });
+}
+
 /** Input to capturePlan. */
 export interface CapturePlanInput {
   /** Absolute or relative path to the source plan file. */
   sourcePath: string;
+  /** Project root used to canonicalize relative-vs-absolute file capture. */
+  projectRoot?: string;
   /** Full markdown content of the plan file. */
   content: string;
   /** Session ID that triggered the write event. */
@@ -163,21 +245,30 @@ export interface CapturePlanInput {
  * preserved.
  */
 export function capturePlan(input: CapturePlanInput): PlanRow {
-  const now = Math.floor(Date.now() / 1000);
-  const contentHash = createHash(CONTENT_HASH_ALGORITHM).update(input.content).digest('hex');
-  const id = createHash('md5').update(input.sourcePath).digest('hex').slice(0, PLAN_ID_HASH_LENGTH);
-  const title = parsePlanTitle(input.content, path.basename(input.sourcePath));
-
-  return upsertPlan({
-    id,
-    title,
+  const normalizedSourcePath = normalizePlanSourcePath(input.sourcePath, input.projectRoot);
+  return persistPlan({
+    sessionId: input.sessionId,
     content: input.content,
-    source_path: input.sourcePath,
-    session_id: input.sessionId,
-    prompt_batch_id: input.promptBatchId ?? null,
-    content_hash: contentHash,
-    status: 'active',
-    created_at: now,
-    updated_at: now,
+    logicalKey: buildPathPlanLogicalKey(normalizedSourcePath),
+    sourcePath: normalizedSourcePath,
+    promptBatchId: input.promptBatchId,
+  });
+}
+
+export interface CaptureTaggedPlanInput {
+  tag: string;
+  content: string;
+  sessionId: string;
+  promptBatchId?: number | null;
+}
+
+export function captureTaggedPlan(input: CaptureTaggedPlanInput): PlanRow {
+  return persistPlan({
+    sessionId: input.sessionId,
+    content: input.content,
+    logicalKey: buildSessionTagPlanLogicalKey(input.sessionId, input.tag),
+    sourcePath: `${TRANSCRIPT_SOURCE_PREFIX}${input.tag}`,
+    promptBatchId: input.promptBatchId,
+    planKey: input.tag,
   });
 }
