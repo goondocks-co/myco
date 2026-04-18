@@ -515,6 +515,121 @@ describe('capturePlan', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Cross-channel overwrite detection (Finding #11)
+// ---------------------------------------------------------------------------
+
+describe('persistPlan cross-channel overwrite detection', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => { cleanTestDb(); });
+
+  function makeLogger() {
+    return {
+      debug: () => {},
+      info: () => {},
+      warn: (...args: unknown[]) => { warnCalls.push(args); },
+      error: () => {},
+      warnCalls: [] as unknown[][],
+    };
+  }
+  let warnCalls: unknown[][] = [];
+
+  it('short-circuits as a no-op when the same content+title is written twice on the same logical_key', () => {
+    const sessionId = 'test-overwrite-noop';
+    const now = epochNow();
+    const sourcePath = '/home/user/myproject/docs/plans/sprint.md';
+
+    upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
+
+    const first = persistPlan({
+      sessionId,
+      content: '# Sprint\n\nSame content.',
+      logicalKey: buildPathPlanLogicalKey(sourcePath),
+      sourcePath,
+    });
+    const firstUpdatedAt = first.updated_at;
+
+    // Sleep a beat so updated_at would change if the write did run.
+    const second = persistPlan({
+      sessionId,
+      content: '# Sprint\n\nSame content.',
+      logicalKey: buildPathPlanLogicalKey(sourcePath),
+      sourcePath,
+      updatedAt: (firstUpdatedAt ?? now) + 10,
+    });
+
+    // No-op: the second call returns the existing row (same updated_at).
+    expect(second.updated_at).toBe(firstUpdatedAt);
+    expect(second.content_hash).toBe(first.content_hash);
+  });
+
+  it('warn-logs when the same logical_key is overwritten by a different source_path', () => {
+    warnCalls = [];
+    const logger = makeLogger();
+    const sessionId = 'test-overwrite-warn';
+    const now = epochNow();
+    const logicalKey = `session:${sessionId}:key:primary`;
+
+    upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
+
+    // First write: via MCP save_plan — no source_path (plan_key only)
+    persistPlan({
+      sessionId,
+      content: 'Version A of the plan.',
+      logicalKey,
+      sourcePath: null,
+      planKey: 'primary',
+      logger: logger as never,
+    });
+
+    // Second write: same logical_key, different content AND different source_path
+    persistPlan({
+      sessionId,
+      content: 'Version B of the plan — completely different.',
+      logicalKey,
+      sourcePath: '/docs/plans/primary.md',
+      planKey: 'primary',
+      logger: logger as never,
+    });
+
+    expect(warnCalls.length).toBeGreaterThanOrEqual(1);
+    const firstWarn = warnCalls[0];
+    expect(firstWarn[1]).toBe('Plan overwritten mid-session');
+    const warnPayload = firstWarn[2] as Record<string, unknown>;
+    expect(warnPayload.logical_key).toBe(logicalKey);
+    expect(warnPayload.prior_source).toBeNull();
+    expect(warnPayload.new_source).toBe('/docs/plans/primary.md');
+  });
+
+  it('does not warn when content changes but source_path is unchanged (normal edit)', () => {
+    warnCalls = [];
+    const logger = makeLogger();
+    const sessionId = 'test-overwrite-sameroute';
+    const now = epochNow();
+    const sourcePath = '/docs/plans/primary.md';
+
+    upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
+
+    persistPlan({
+      sessionId,
+      content: 'Original.',
+      logicalKey: buildPathPlanLogicalKey(sourcePath),
+      sourcePath,
+      logger: logger as never,
+    });
+    persistPlan({
+      sessionId,
+      content: 'Updated content.',
+      logicalKey: buildPathPlanLogicalKey(sourcePath),
+      sourcePath,
+      logger: logger as never,
+    });
+
+    expect(warnCalls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // extractTaggedPlans
 // ---------------------------------------------------------------------------
 

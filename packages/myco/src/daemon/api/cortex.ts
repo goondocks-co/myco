@@ -16,6 +16,8 @@ export interface CortexDeps {
   getTeamClient?: () => TeamSyncClient | null;
   embeddingManager: EmbeddingManager;
   logger: DaemonLogger;
+  /** Optional registry that tracks fire-and-forget runs so daemon shutdown can await them. */
+  registerInflightRun?: (promise: Promise<unknown>) => void;
 }
 
 const PromptBuilderBody = z.object({
@@ -39,6 +41,7 @@ export function createCortexHandlers(vaultDir: string, deps: CortexDeps) {
       liveConfig: deps.liveConfig,
       logger: deps.logger,
       getTeamClient: deps.getTeamClient,
+      registerInflightRun: deps.registerInflightRun,
     });
     return { body: result };
   }
@@ -51,6 +54,8 @@ export function createCortexHandlers(vaultDir: string, deps: CortexDeps) {
         config: deps.liveConfig.current,
         embeddingManager: deps.embeddingManager,
         getTeamClient: deps.getTeamClient,
+        logger: deps.logger,
+        registerInflightRun: deps.registerInflightRun,
       },
       goal,
       symbiont,

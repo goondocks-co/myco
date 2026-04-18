@@ -6,7 +6,12 @@
  */
 
 import type { OutboxRow } from '@myco/db/queries/team-outbox.js';
-import { TEAM_SEARCH_TIMEOUT_MS, TEAM_HEALTH_TIMEOUT_MS } from '@myco/constants.js';
+import {
+  TEAM_SEARCH_TIMEOUT_MS,
+  TEAM_HEALTH_TIMEOUT_MS,
+  TEAM_REQUEST_TIMEOUT_MS,
+  TEAM_SYNC_TIMEOUT_MS,
+} from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -147,7 +152,7 @@ export class TeamSyncClient {
           content_hash: data.content_hash ?? null,
         };
       }),
-    });
+    }, { timeoutMs: TEAM_SYNC_TIMEOUT_MS });
     return res as { synced: number; skipped: number; errors: Array<{ id: string; table: string; error: string }> };
   }
 
@@ -276,18 +281,32 @@ export class TeamSyncClient {
     };
   }
 
-  private async request(method: string, path: string, body?: unknown): Promise<unknown> {
-    const res = await this.fetchFn(`${this.workerUrl}${path}`, {
-      method,
-      headers: this.headers(),
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+  private async request(
+    method: string,
+    path: string,
+    body?: unknown,
+    options: { timeoutMs?: number } = {},
+  ): Promise<unknown> {
+    const timeoutMs = options.timeoutMs ?? TEAM_REQUEST_TIMEOUT_MS;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Team sync request ${method} ${path} failed: ${res.status} ${text}`);
+    try {
+      const res = await this.fetchFn(`${this.workerUrl}${path}`, {
+        method,
+        headers: this.headers(),
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`Team sync request ${method} ${path} failed: ${res.status} ${text}`);
+      }
+
+      return res.json();
+    } finally {
+      clearTimeout(timer);
     }
-
-    return res.json();
   }
 }

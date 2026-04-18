@@ -379,6 +379,17 @@ export const TEAM_SOURCE_PREFIX = 'team:';
 export const TEAM_SEARCH_TIMEOUT_MS = 3000;
 /** Timeout for team health check requests (ms). */
 export const TEAM_HEALTH_TIMEOUT_MS = 5000;
+/**
+ * Default timeout for generic team sync JSON requests (ms).
+ *
+ * Covers connect, getConfig, collective status/settings/query, rotate, and
+ * any other request() path that isn't already bounded by TEAM_SEARCH_TIMEOUT_MS
+ * or TEAM_HEALTH_TIMEOUT_MS. Callers making heavier requests (e.g. pushBatch
+ * during sync) can override per call.
+ */
+export const TEAM_REQUEST_TIMEOUT_MS = 15_000;
+/** Timeout for team sync pushBatch requests (ms). Larger than generic because payloads may be large. */
+export const TEAM_SYNC_TIMEOUT_MS = 30_000;
 /** Secrets key for the team API key in secrets.env. */
 export const TEAM_API_KEY_SECRET = 'MYCO_TEAM_API_KEY';
 /** Secrets key for the team MCP token in secrets.env. */

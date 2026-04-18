@@ -23,6 +23,7 @@ import { getSession, listSessions } from '@myco/db/queries/sessions.js';
 import { listTeamMembers } from '@myco/db/queries/team-members.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
+import type { DaemonLogger } from '../logger.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import { PLAN_STATUSES } from '@myco/vault/types.js';
 import {
@@ -114,6 +115,7 @@ export interface McpProxyDeps {
   machineId: string;
   embeddingManager: EmbeddingManager;
   projectRoot: string;
+  logger?: DaemonLogger;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,7 +123,7 @@ export interface McpProxyDeps {
 // ---------------------------------------------------------------------------
 
 export function createMcpProxyHandlers(deps: McpProxyDeps) {
-  const { machineId, embeddingManager, projectRoot } = deps;
+  const { machineId, embeddingManager, projectRoot, logger } = deps;
 
   function toPlanSummary(row: {
     id: string;
@@ -302,6 +304,7 @@ export function createMcpProxyHandlers(deps: McpProxyDeps) {
       status,
       tags,
       planKey: plan_key ?? null,
+      logger,
     });
 
     return {
