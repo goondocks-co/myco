@@ -18,7 +18,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { getLatestOpenBatch } from '@myco/db/queries/batches.js';
 import { insertSpore, updateSporeStatus } from '@myco/db/queries/spores.js';
-import { getPlan, listPlans } from '@myco/db/queries/plans.js';
+import { getPlan, listPlans, listPlansBySession } from '@myco/db/queries/plans.js';
 import { getSession, listSessions } from '@myco/db/queries/sessions.js';
 import { listTeamMembers } from '@myco/db/queries/team-members.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
@@ -320,9 +320,22 @@ export function createMcpProxyHandlers(deps: McpProxyDeps) {
     };
   }
 
-  /** GET /api/mcp/plans — list plans, or return a single plan with content when id is set. */
+  /** GET /api/mcp/plans — list plans, or return a single plan with content when id is set.
+   *
+   * Supports:
+   *   - id: single plan lookup (returns plan with content)
+   *   - session: filter plans for a given session (mirrors /api/sessions/:id/plans)
+   *   - status/limit: list filters
+   *
+   * `id` and `session` are mutually exclusive; passing both yields a 400.
+   */
   async function handlePlans(req: RouteRequest): Promise<RouteResponse> {
     const id = typeof req.query.id === 'string' ? req.query.id : undefined;
+    const session = typeof req.query.session === 'string' ? req.query.session : undefined;
+
+    if (id && session) {
+      return { status: 400, body: { error: 'Pass either id or session, not both' } };
+    }
 
     if (id) {
       const row = getPlan(id);
@@ -335,6 +348,12 @@ export function createMcpProxyHandlers(deps: McpProxyDeps) {
           }],
         },
       };
+    }
+
+    if (session) {
+      const rows = listPlansBySession(session);
+      const plans = rows.map(toPlanSummary);
+      return { body: { plans } };
     }
 
     const statusFilter = req.query.status === 'all' ? undefined : req.query.status;

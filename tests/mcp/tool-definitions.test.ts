@@ -117,6 +117,34 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
       expect(tool.name).toMatch(/^(myco_|collective_)/);
     }
   });
+
+  // Bundle D harness-properties discipline: every Bundle D tool (and any tool
+  // that carries annotations) must set all four MCP annotation fields so
+  // clients can render the correct confirmation UI. Missing any one of these
+  // is a regression.
+  it('Bundle D tools declare full MCP annotations', () => {
+    const required = ['myco_cortex', 'myco_plans', 'myco_runs'];
+    for (const name of required) {
+      const tool = TOOL_DEFINITIONS.find((t) => t.name === name);
+      expect(tool, `Tool ${name} missing from TOOL_DEFINITIONS`).toBeDefined();
+      expect(tool!.annotations, `Tool ${name} missing annotations`).toBeDefined();
+      expect(typeof tool!.annotations!.readOnlyHint).toBe('boolean');
+      expect(typeof tool!.annotations!.destructiveHint).toBe('boolean');
+      expect(typeof tool!.annotations!.idempotentHint).toBe('boolean');
+      expect(typeof tool!.annotations!.openWorldHint).toBe('boolean');
+    }
+  });
+
+  it('myco_runs is annotated as fully read-only', () => {
+    const runs = TOOL_DEFINITIONS.find((t) => t.name === 'myco_runs');
+    expect(runs?.annotations?.readOnlyHint).toBe(true);
+    expect(runs?.annotations?.destructiveHint).toBe(false);
+  });
+
+  it('myco_plans declares destructive: true because op: delete removes plans', () => {
+    const plans = TOOL_DEFINITIONS.find((t) => t.name === 'myco_plans');
+    expect(plans?.annotations?.destructiveHint).toBe(true);
+  });
 });
 
 /**

@@ -92,15 +92,21 @@ export class DaemonClient {
     }
   }
 
-  async delete(endpoint: string): Promise<ClientResult> {
+  async delete(endpoint: string, body?: unknown): Promise<ClientResult> {
     try {
       const info = this.readDaemonJson();
       if (!info) return { ok: false };
 
-      const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
+      const init: RequestInit = {
         method: 'DELETE',
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
-      });
+      };
+      if (body !== undefined) {
+        init.headers = { 'Content-Type': 'application/json' };
+        init.body = JSON.stringify(body);
+      }
+
+      const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, init);
 
       if (!res.ok) return { ok: false };
       const data = await res.json();
