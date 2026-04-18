@@ -13,10 +13,15 @@ const {
 }));
 
 vi.mock('@myco/agent/executor.js', () => ({ runAgent }));
-vi.mock('@myco/cortex/instructions-input.js', () => ({ buildCortexInstructionsInput }));
+vi.mock('@myco/context/cortex-brief.js', async () => {
+  const actual = await vi.importActual<typeof import('@myco/context/cortex-brief.js')>(
+    '@myco/context/cortex-brief.js',
+  );
+  return { ...actual, buildCortexInstructionsInput };
+});
 vi.mock('@myco/db/queries/runs.js', () => ({ getLatestRunId }));
 
-import { triggerCortexInstructions } from '@myco/daemon/trigger-cortex-instructions';
+import { triggerCortexInstructions } from '@myco/daemon/cortex';
 
 function makeLogger() {
   return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
