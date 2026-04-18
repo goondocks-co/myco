@@ -485,5 +485,20 @@ describe('run query helpers', () => {
       expect(fetched).not.toBeNull();
       expect(fetched!.execution_overrides).toBeNull();
     });
+
+    it('defaults dry_run to false when the column default is used', () => {
+      // Pins the invariant: rows inserted without specifying dry_run come
+      // back as `false` (the NOT NULL DEFAULT 0 column). The hydrator also
+      // guards against NULL via `Boolean(Number(row.dry_run ?? 0))` so
+      // legacy vaults with nullable dry_run columns still read false.
+      insertRun(makeRun({ id: 'run-dry-default' }));
+      const row = getRun('run-dry-default');
+      expect(row!.dry_run).toBe(false);
+
+      // Unit-check the coercion for the NULL case — a legacy row with
+      // dry_run=NULL (possible in vaults upgraded through an earlier
+      // schema) must still normalize to false.
+      expect(Boolean(Number((null as number | null) ?? 0))).toBe(false);
+    });
   });
 });

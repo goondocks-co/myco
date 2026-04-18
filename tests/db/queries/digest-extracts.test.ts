@@ -97,6 +97,32 @@ describe('digest extract revision helpers', () => {
       expect(listDigestRevisions({ agentId: TEST_AGENT_ID, tier: 1500 })).toEqual([]);
     });
 
+    it('rolls back the revision and the live-row write atomically on FK failure', async () => {
+      // Seed an existing live row so the upsert triggers a revision write.
+      upsertDigestExtract({
+        agent_id: TEST_AGENT_ID,
+        tier: 1500,
+        content: 'original',
+        generated_at: 100,
+      });
+
+      // Passing a non-existent runId makes the revision INSERT fail on the
+      // FK to agent_runs. The whole transaction must abort: the live row
+      // stays at 'original' AND no orphan revision gets committed.
+      expect(() =>
+        upsertDigestExtract(
+          { agent_id: TEST_AGENT_ID, tier: 1500, content: 'would-be-new', generated_at: 200 },
+          { runId: 'run-does-not-exist' },
+        ),
+      ).toThrow();
+
+      const live = getDigestExtract(TEST_AGENT_ID, 1500);
+      expect(live!.content).toBe('original');
+
+      const revs = listDigestRevisions({ agentId: TEST_AGENT_ID, tier: 1500 });
+      expect(revs).toEqual([]);
+    });
+
     it('isolates revisions per tier', () => {
       upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 1500, content: 'a1', generated_at: 1 });
       upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 1500, content: 'a2', generated_at: 2 });

@@ -984,6 +984,269 @@ describe('Database schema', () => {
           { row_id: row.id, operation: 'upsert', machine_id: 'machine-a' },
         ]);
       });
+
+      it('surfaces a descriptive error when staged plan ids collide (#23)', async () => {
+        buildV19Db(db);
+        const { resolveV20PlanIdentityCollisionsForTest } = await import('@myco/db/migrations.js');
+
+        // Simulate a post-staging state where two rows already share the
+        // same id_next but have different logical_key_next — the exact
+        // situation an MD5 collision would produce. The legacy-fallback
+        // only rewrites dup logical keys, so this case exercises the
+        // final-guard throw.
+        db.exec(`ALTER TABLE plans ADD COLUMN logical_key TEXT NOT NULL DEFAULT ''`);
+        db.exec(`ALTER TABLE plans ADD COLUMN id_next TEXT`);
+        db.exec(`ALTER TABLE plans ADD COLUMN logical_key_next TEXT NOT NULL DEFAULT ''`);
+
+        db.prepare(
+          `INSERT INTO plans (id, source_path, title, content, created_at, id_next, logical_key_next)
+           VALUES ('r-a', 'p/a.md', 'A', '# A', 1000, 'dup0000000000000', 'path:p/a.md')`,
+        ).run();
+        db.prepare(
+          `INSERT INTO plans (id, source_path, title, content, created_at, id_next, logical_key_next)
+           VALUES ('r-b', 'p/b.md', 'B', '# B', 1001, 'dup0000000000000', 'path:p/b.md')`,
+        ).run();
+
+        expect(() => resolveV20PlanIdentityCollisionsForTest(db))
+          .toThrow(/plan id collisions after legacy fallback/);
+      });
+
+      it('skips redundant outbox re-enqueue when identity is unchanged (#39)', async () => {
+        buildV19Db(db);
+        const { buildPathPlanLogicalKey, buildPlanId } = await import('@myco/plans/identity.js');
+        const logicalKey = buildPathPlanLogicalKey('docs/plans/a.md');
+        const computedId = buildPlanId(logicalKey);
+
+        db.prepare(
+          `INSERT INTO plans (id, source_path, title, content, created_at, machine_id)
+           VALUES (?, 'docs/plans/a.md', 'A', '# A', 1000, 'machine-a')`,
+        ).run(computedId);
+
+        const migration = MIGRATIONS.find((m) => m.version === 20)!;
+        migration.migrate(db, 'machine-a');
+
+        const planRow = db.prepare(`SELECT id, logical_key FROM plans`).get() as { id: string; logical_key: string };
+        expect(planRow.id).toBe(computedId);
+        expect(planRow.logical_key).toBe(logicalKey);
+
+        const outboxRows = db.prepare(
+          `SELECT row_id, operation FROM team_outbox WHERE table_name = 'plans'`,
+        ).all() as Array<{ row_id: string; operation: string }>;
+        // identity (id) didn't change -> no delete enqueued.
+        expect(outboxRows.some((r) => r.operation === 'delete')).toBe(false);
+      });
+    });
+
+    describe('createSchema fresh-install detection (#6)', () => {
+      it('propagates migration errors instead of masking as fresh install', () => {
+        db.prepare(
+          `CREATE TABLE schema_version (
+             version    INTEGER PRIMARY KEY,
+             applied_at INTEGER NOT NULL
+           )`,
+        ).run();
+        db.prepare(
+          `INSERT INTO schema_version (version, applied_at) VALUES (19, 1000)`,
+        ).run();
+
+        const v20 = MIGRATIONS.find((m) => m.version === 20)!;
+        const original = v20.migrate;
+        v20.migrate = () => {
+          throw new Error('simulated migration failure');
+        };
+
+        try {
+          expect(() => createSchema(db)).toThrow(/simulated migration failure/);
+
+          const row = db.prepare(
+            `SELECT MAX(version) AS v FROM schema_version`,
+          ).get() as { v: number };
+          expect(row.v).toBe(19);
+        } finally {
+          v20.migrate = original;
+        }
+      });
+
+      it('still performs fresh-install on a completely empty database', () => {
+        createSchema(db);
+        const row = db.prepare(
+          `SELECT MAX(version) AS v FROM schema_version`,
+        ).get() as { v: number };
+        expect(row.v).toBe(SCHEMA_VERSION);
+      });
+    });
+
+    describe('upgrade chain v13 -> v20 (idempotency + replay)', () => {
+      function buildV13Db(target: Database) {
+        const ddl = [
+          `CREATE TABLE schema_version (
+             version    INTEGER PRIMARY KEY,
+             applied_at INTEGER NOT NULL
+           )`,
+          `CREATE TABLE agents (
+             id         TEXT PRIMARY KEY,
+             name       TEXT NOT NULL,
+             created_at INTEGER NOT NULL
+           )`,
+          `CREATE TABLE sessions (
+             id         TEXT PRIMARY KEY,
+             agent      TEXT NOT NULL,
+             started_at INTEGER NOT NULL,
+             created_at INTEGER NOT NULL
+           )`,
+          `CREATE TABLE agent_runs (
+             id             TEXT PRIMARY KEY,
+             agent_id       TEXT NOT NULL,
+             task           TEXT,
+             status         TEXT,
+             started_at     INTEGER,
+             completed_at   INTEGER,
+             runtime        TEXT,
+             provider       TEXT,
+             model          TEXT,
+             session_ref    TEXT,
+             resumable      INTEGER DEFAULT 0,
+             resume_status  TEXT,
+             resume_mode    TEXT,
+             resumed_at     INTEGER,
+             checkpoints    TEXT,
+             usage_data     TEXT
+           )`,
+          `CREATE TABLE plans (
+             id               TEXT PRIMARY KEY,
+             status           TEXT DEFAULT 'active',
+             author           TEXT,
+             title            TEXT,
+             content          TEXT,
+             source_path      TEXT,
+             tags             TEXT,
+             session_id       TEXT REFERENCES sessions(id),
+             prompt_batch_id  INTEGER,
+             content_hash     TEXT,
+             processed        INTEGER DEFAULT 0,
+             created_at       INTEGER NOT NULL,
+             updated_at       INTEGER,
+             embedded         INTEGER DEFAULT 0,
+             machine_id       TEXT NOT NULL DEFAULT 'local',
+             synced_at        INTEGER
+           )`,
+          `CREATE TABLE team_outbox (
+             id              INTEGER PRIMARY KEY AUTOINCREMENT,
+             table_name      TEXT NOT NULL,
+             row_id          TEXT NOT NULL,
+             operation       TEXT NOT NULL DEFAULT 'upsert',
+             payload         TEXT NOT NULL,
+             machine_id      TEXT NOT NULL,
+             created_at      INTEGER NOT NULL,
+             sent_at         INTEGER,
+             retry_count     INTEGER NOT NULL DEFAULT 0,
+             last_attempt_at INTEGER
+           )`,
+        ];
+        for (const stmt of ddl) target.prepare(stmt).run();
+        target.prepare(
+          `INSERT INTO schema_version (version, applied_at) VALUES (13, 1000)`,
+        ).run();
+      }
+
+      function runMigration(target: Database, version: number) {
+        const m = MIGRATIONS.find((mm) => mm.version === version);
+        expect(m, `migration v${version} registered`).toBeDefined();
+        m!.migrate(target, 'local');
+      }
+
+      it('v14: adds cost accounting columns and is idempotent', () => {
+        buildV13Db(db);
+        runMigration(db, 14);
+
+        const cols = getColumnNames(db, 'agent_runs');
+        expect(cols).toEqual(expect.arrayContaining([
+          'actual_cost_usd', 'estimated_cost_usd', 'cost_source', 'cost_data',
+        ]));
+
+        expect(() => runMigration(db, 14)).not.toThrow();
+        const versionRows = db.prepare(
+          `SELECT COUNT(*) AS n FROM schema_version WHERE version = 14`,
+        ).get() as { n: number };
+        expect(versionRows.n).toBe(1);
+      });
+
+      it('v15: adds eval harness tables + agent_runs.dry_run column', () => {
+        buildV13Db(db);
+        runMigration(db, 14);
+        runMigration(db, 15);
+
+        expect(tableExists(db, 'agent_run_write_intents')).toBe(true);
+        expect(tableExists(db, 'digest_extract_revisions')).toBe(true);
+        expect(tableExists(db, 'agent_run_evaluations')).toBe(true);
+
+        const cols = getColumnNames(db, 'agent_runs');
+        expect(cols).toEqual(expect.arrayContaining(['dry_run', 'evaluation_id']));
+
+        expect(() => runMigration(db, 15)).not.toThrow();
+      });
+
+      it('v17: adds composite write-intents index, idempotent', () => {
+        buildV13Db(db);
+        runMigration(db, 14);
+        runMigration(db, 15);
+        runMigration(db, 16);
+        runMigration(db, 17);
+
+        expect(indexExists(db, 'idx_write_intents_run_id_tool')).toBe(true);
+        expect(() => runMigration(db, 17)).not.toThrow();
+      });
+
+      it('v18: creates cortex_instructions table, idempotent', () => {
+        buildV13Db(db);
+        for (const v of [14, 15, 16, 17, 18]) runMigration(db, v);
+
+        expect(tableExists(db, 'cortex_instructions')).toBe(true);
+        expect(indexExists(db, 'idx_cortex_instructions_agent_id')).toBe(true);
+
+        expect(() => runMigration(db, 18)).not.toThrow();
+      });
+
+      it('v19: scope test — deletes only cortex_instructions outbox rows', () => {
+        buildV13Db(db);
+        for (const v of [14, 15, 16, 17, 18]) runMigration(db, v);
+
+        const stmt = db.prepare(
+          `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
+           VALUES (?, ?, 'upsert', ?, 'machine-a', 1000)`,
+        );
+        stmt.run('cortex_instructions', 'c1', '{"id":"c1"}');
+        stmt.run('cortex_instructions', 'c2', '{"id":"c2"}');
+        stmt.run('spores', 's1', '{"id":"s1"}');
+        stmt.run('plans', 'p1', '{"id":"p1"}');
+
+        runMigration(db, 19);
+
+        const remaining = db.prepare(
+          `SELECT table_name, row_id FROM team_outbox ORDER BY id ASC`,
+        ).all() as Array<{ table_name: string; row_id: string }>;
+        expect(remaining).toEqual([
+          { table_name: 'spores', row_id: 's1' },
+          { table_name: 'plans', row_id: 'p1' },
+        ]);
+
+        expect(() => runMigration(db, 19)).not.toThrow();
+      });
+
+      it('full v13 -> v20 chain reaches SCHEMA_VERSION and is replay-safe', () => {
+        buildV13Db(db);
+        for (const v of [14, 15, 16, 17, 18, 19, 20]) runMigration(db, v);
+
+        const row = db.prepare(
+          `SELECT MAX(version) AS v FROM schema_version`,
+        ).get() as { v: number };
+        expect(row.v).toBe(SCHEMA_VERSION);
+
+        for (const v of [14, 15, 16, 17, 18, 19, 20]) {
+          expect(() => runMigration(db, v), `v${v} replay`).not.toThrow();
+        }
+      });
     });
   });
 });
+

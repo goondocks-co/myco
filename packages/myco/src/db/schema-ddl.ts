@@ -466,6 +466,12 @@ export const NOTIFICATIONS_TABLE = `
  * Append-only log of every write a dry-run attempted. Each row captures the
  * tool that was called, the JSON-encoded arguments, the synthetic payload we
  * returned to the agent, and any stub id we minted for a synthetic resource.
+ *
+ * Append-only invariant: enforced at the query layer — no UPDATE or DELETE
+ * helper is exposed. The ON DELETE CASCADE on `run_id` is intentional so a
+ * future purge of `agent_runs` (e.g. retention job) also removes the
+ * corresponding intents in a single atomic step. Rows must never be deleted
+ * except as a side effect of a parent `agent_runs` delete.
  */
 export const AGENT_RUN_WRITE_INTENTS_TABLE = `
   CREATE TABLE IF NOT EXISTS agent_run_write_intents (

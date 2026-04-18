@@ -38,6 +38,24 @@ function getCurrentVersion(db: Database): number {
   return row?.version ?? 0;
 }
 
+/**
+ * Detect whether the `schema_version` table exists.
+ *
+ * Used to distinguish a truly fresh database (no schema at all) from one
+ * that has a `schema_version` row but is mid-upgrade. We read
+ * `sqlite_master` directly instead of catching exceptions from the version
+ * query, so actual errors during migration propagate instead of silently
+ * falling through to the fresh-install path.
+ */
+function hasSchemaVersionTable(db: Database): boolean {
+  const row = db.prepare(
+    `SELECT 1 AS present FROM sqlite_master
+       WHERE type = 'table' AND name = 'schema_version'
+       LIMIT 1`,
+  ).get() as { present: number } | undefined;
+  return row?.present === 1;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -48,17 +66,22 @@ function getCurrentVersion(db: Database): number {
  * Fully idempotent -- safe to call on every startup. Uses `IF NOT EXISTS`
  * for all DDL and `ON CONFLICT DO NOTHING` for the version row.
  *
+ * Fresh-install detection reads `sqlite_master` directly; we do NOT use
+ * throw-as-control-flow here. If a migration raises, the error propagates
+ * so a partially-upgraded vault surfaces the failure instead of being
+ * silently stamped at SCHEMA_VERSION.
+ *
  * @param db -- better-sqlite3 Database instance.
  * @param machineId -- machine identifier for backfilling existing rows during
  *   v3->v4 and v6->v7 migrations. Defaults to `'local'` (tests, init).
  */
 export function createSchema(db: Database, machineId: string = DEFAULT_MACHINE_ID): void {
-  // Fast-path: skip if already at current version
-  try {
+  if (hasSchemaVersionTable(db)) {
     const currentVersion = getCurrentVersion(db);
     if (currentVersion === SCHEMA_VERSION) return;
 
-    // Run pending migrations in order
+    // Run pending migrations in order. Errors propagate intentionally so
+    // partial upgrade failures are visible to the caller.
     for (const migration of MIGRATIONS) {
       const version = getCurrentVersion(db);
       if (version < migration.version) {
@@ -66,8 +89,6 @@ export function createSchema(db: Database, machineId: string = DEFAULT_MACHINE_I
       }
     }
     return;
-  } catch {
-    // Table doesn't exist yet -- first run
   }
 
   // Fresh install: create all tables, FTS, indexes

@@ -74,6 +74,12 @@ describe('team outbox query helpers', () => {
       const row2 = enqueueOutbox(makeOutbox());
       expect(row2.id).toBeGreaterThan(row1.id);
     });
+
+    it('rejects local-only table names (#58)', () => {
+      expect(() =>
+        enqueueOutbox(makeOutbox({ table_name: 'cortex_instructions' })),
+      ).toThrow(/local-only and must not be synced/);
+    });
   });
 
   // ---------------------------------------------------------------------------
