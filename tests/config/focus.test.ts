@@ -8,13 +8,13 @@ import {
 } from '@myco/config/focus';
 
 describe('config focus helpers', () => {
-  it('resolves context.prompt_search to the settings context section', () => {
+  it('resolves context.prompt_search to the Cortex instructions section', () => {
     const target = resolveConfigFocusTarget('context.prompt_search');
 
     expect(target).toEqual({
-      page: '/settings',
-      sectionId: CONFIG_SECTION_IDS.settingsContextInjection,
-      sectionLabel: 'Context Injection',
+      page: '/cortex',
+      sectionId: CONFIG_SECTION_IDS.cortexInstructions,
+      sectionLabel: 'Instructions',
       fieldPath: 'context.prompt_search',
       fieldLabel: 'Prompt Search',
     });
@@ -24,7 +24,7 @@ describe('config focus helpers', () => {
     const target = resolveConfigFocusTarget('context.prompt_search');
     expect(target).not.toBeNull();
     expect(buildConfigFocusLink(target!)).toBe(
-      `/settings?configSection=${CONFIG_SECTION_IDS.settingsContextInjection}&configField=context.prompt_search`,
+      `/cortex?configSection=${CONFIG_SECTION_IDS.cortexInstructions}&configField=context.prompt_search`,
     );
   });
 
@@ -32,13 +32,13 @@ describe('config focus helpers', () => {
     const summary = buildScopedConfigSaveNotification('project', ['context.prompt_search']);
 
     expect(summary.title).toBe('Prompt Search saved');
-    expect(summary.message).toBe('Context Injection · Prompt Search · Project');
+    expect(summary.message).toBe('Instructions · Prompt Search · Project');
     expect(summary.link).toBe(
-      `/settings?configSection=${CONFIG_SECTION_IDS.settingsContextInjection}&configField=context.prompt_search`,
+      `/cortex?configSection=${CONFIG_SECTION_IDS.cortexInstructions}&configField=context.prompt_search`,
     );
     expect(summary.metadata.focus_target).toEqual({
-      page: '/settings',
-      section_id: CONFIG_SECTION_IDS.settingsContextInjection,
+      page: '/cortex',
+      section_id: CONFIG_SECTION_IDS.cortexInstructions,
       field_path: 'context.prompt_search',
       field_label: 'Prompt Search',
     });

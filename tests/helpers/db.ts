@@ -28,6 +28,7 @@ const DELETE_TABLES = [
   'graph_edges',
   'entities',
   'digest_extracts',
+  'cortex_instructions',
   'attachments',
   'activities',
   'spores',

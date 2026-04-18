@@ -25,7 +25,6 @@ import {
 } from '../hooks/use-provider-secrets';
 import { useModels } from '../hooks/use-models';
 import { fetchJson } from '../lib/api';
-import { DEFAULT_DIGEST_TIER, DEFAULT_MAX_SPORES } from '../lib/constants';
 import { Surface } from '../components/ui/surface';
 import { PageHeader } from '../components/ui/page-header';
 import { SectionHeader } from '../components/ui/section-header';
@@ -56,12 +55,6 @@ const LOG_LEVELS: LogLevel[] = ['debug', 'info', 'warn', 'error'];
 const PROVIDERS: { value: Provider; label: string }[] = [
   { value: 'ollama', label: 'Ollama' },
   { value: 'openai-compatible', label: 'OpenAI-compatible' },
-];
-
-const DIGEST_TIERS: { value: string; label: string }[] = [
-  { value: '1500', label: '1.5K — Executive briefing' },
-  { value: '5000', label: '5K — Deep onboarding' },
-  { value: '10000', label: '10K — Full institutional' },
 ];
 
 type TestState = 'idle' | 'testing' | 'success' | 'error';
@@ -98,9 +91,6 @@ export default function Settings() {
         {/* ---- Embedding section ---- */}
         <EmbeddingCard />
         </div>{/* end top row grid */}
-
-        {/* ---- Context Injection section ---- */}
-        <ContextInjectionCard />
 
         {/* ---- Notifications section ---- */}
         <NotificationSettings />
@@ -576,76 +566,6 @@ function EmbeddingCard() {
             </span>
           )}
         </div>
-      </div>
-    </Surface>
-  );
-}
-
-/** Context Injection — project-default fields shape the intelligence
- *  pipeline's input budget, so they should be consistent across the team
- *  by default. Still overridable per-machine via the Personal pill. */
-function ContextInjectionCard() {
-  return (
-    <Surface
-      id={CONFIG_SECTION_IDS.settingsContextInjection}
-      level="low"
-      className="rounded-lg p-6 space-y-5 border-t-2 border-t-ochre transition-all duration-300"
-    >
-      <SectionHeader>Context Injection</SectionHeader>
-
-      <div className="space-y-4">
-        <ScopedField
-          path="context.digest_tier"
-          label="Digest Tier"
-          defaultScope="project"
-          hint="token budget for session-start digest"
-        >
-          {({ value, onChange }) => (
-            <Select value={String(value ?? DEFAULT_DIGEST_TIER)} onValueChange={(v) => onChange(Number(v))}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {DIGEST_TIERS.map((tier) => (
-                  <SelectItem key={tier.value} value={tier.value}>
-                    {tier.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-        </ScopedField>
-
-        <ScopedField
-          path="context.prompt_search"
-          label="Prompt Search"
-          defaultScope="project"
-          hint="search vault for observations on each prompt"
-        >
-          {({ value, onChange }) => (
-            <Switch checked={value ?? true} onCheckedChange={onChange} />
-          )}
-        </ScopedField>
-
-        <ScopedField
-          path="context.prompt_max_spores"
-          label="Max Spores per Prompt"
-          defaultScope="project"
-          commitOn="blur"
-          hint="0–10; lower = leaner context"
-        >
-          {({ value, onChange, onBlur }) => (
-            <Input
-              type="number"
-              min="0"
-              max="10"
-              placeholder={String(DEFAULT_MAX_SPORES)}
-              value={value ?? ''}
-              onChange={(e) => onChange(Number(e.target.value))}
-              onBlur={onBlur}
-            />
-          )}
-        </ScopedField>
       </div>
     </Surface>
   );

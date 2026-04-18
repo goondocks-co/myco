@@ -4,7 +4,6 @@ import { GraphCanvas } from '../components/mycelium/GraphCanvas';
 import { Inspector } from '../components/mycelium/Inspector';
 import { SporeList } from '../components/mycelium/SporeList';
 import { SporeDetail } from '../components/mycelium/SporeDetail';
-import { DigestView } from '../components/mycelium/DigestView';
 import { PageHeader } from '../components/ui/page-header';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -30,14 +29,13 @@ const GRAPH_CANVAS_HEIGHT_CLASS = 'h-[calc(100vh-285px)]';
 
 /* ---------- Types ---------- */
 
-type ActiveTab = 'graph' | 'spores' | 'digest';
+type ActiveTab = 'graph' | 'spores';
 type ViewMode = 'global' | 'focus';
 
 /** Tab definitions for the PageHeader TabSwitcher. */
 const MYCELIUM_TABS: Tab[] = [
   { id: 'graph', label: 'Graph' },
   { id: 'spores', label: 'Spores' },
-  { id: 'digest', label: 'Digest' },
 ];
 
 /* ---------- URL state helpers ---------- */
@@ -47,7 +45,7 @@ const PARAM_TAB = 'tab';
 const PARAM_SPORE = 'spore';
 
 /** Valid tab values for URL parsing. */
-const VALID_TABS = new Set<ActiveTab>(['graph', 'spores', 'digest']);
+const VALID_TABS = new Set<ActiveTab>(['graph', 'spores']);
 
 /** Read initial state from URL search params. */
 function readUrlState(): { tab: ActiveTab; sporeId?: string } {
@@ -481,8 +479,6 @@ export default function Mycelium() {
           />
         )
       )}
-
-      {activeTab === 'digest' && <DigestView />}
     </div>
   );
 }

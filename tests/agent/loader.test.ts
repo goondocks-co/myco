@@ -29,7 +29,7 @@ import type { AgentDefinition, AgentTask } from '@myco/agent/types.js';
 // ---------------------------------------------------------------------------
 
 /** Number of built-in task YAML files. */
-const EXPECTED_TASK_COUNT = 10;
+const EXPECTED_TASK_COUNT = 12;
 
 /** Built-in agent name from agent.yaml. */
 const BUILT_IN_AGENT_NAME = 'myco-agent';
@@ -159,7 +159,7 @@ describe('agent loader', () => {
   // -------------------------------------------------------------------------
 
   describe('loadAgentTasks', () => {
-    it('loads all 10 task files', () => {
+    it('loads all built-in task files', () => {
       const tasks = loadAgentTasks(DEFINITIONS_DIR);
       expect(tasks).toHaveLength(EXPECTED_TASK_COUNT);
     });

@@ -17,13 +17,17 @@ import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
 import { insertSpore } from '@myco/db/queries/spores.js';
 import { insertCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
+import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
-import { epochSeconds } from '@myco/constants.js';
+import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
+import { MycoConfigSchema } from '@myco/config/schema.js';
+import { buildCortexInstructionsInput } from '@myco/cortex/instructions-input.js';
 import {
   buildSkillEvolveInstruction,
   buildSkillGenerateInstruction,
   buildSkillSurveyInstruction,
   buildTaskInstruction,
+  CORTEX_INSTRUCTIONS_TASK,
   getSkillSurveyEligibility,
   isInstructionRequiredTask,
   SKILL_GENERATE_TASK,
@@ -445,28 +449,28 @@ describe('buildTaskInstruction', () => {
     createAgent(TEST_AGENT_ID);
   });
 
-  it('returns undefined for tasks that do not use pre-assembled instructions', () => {
-    expect(buildTaskInstruction('full-intelligence')).toBeUndefined();
-    expect(buildTaskInstruction('skill-survey')).toBeUndefined();
+  it('returns undefined for tasks that do not use pre-assembled instructions', async () => {
+    await expect(buildTaskInstruction('full-intelligence')).resolves.toBeUndefined();
+    await expect(buildTaskInstruction('skill-survey')).resolves.toBeUndefined();
   });
 
-  it('returns undefined for skill-generate when no approved candidates exist', () => {
-    expect(buildTaskInstruction(SKILL_GENERATE_TASK)).toBeUndefined();
+  it('returns undefined for skill-generate when no approved candidates exist', async () => {
+    await expect(buildTaskInstruction(SKILL_GENERATE_TASK)).resolves.toBeUndefined();
   });
 
-  it('returns undefined for skill-survey when no settled survey corpus exists', () => {
-    expect(buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID)).toBeUndefined();
+  it('returns undefined for skill-survey when no settled survey corpus exists', async () => {
+    await expect(buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID)).resolves.toBeUndefined();
   });
 
-  it('returns bundle for skill-survey when settled survey corpus exists', () => {
+  it('returns bundle for skill-survey when settled survey corpus exists', async () => {
     createSettledSurveyCorpus();
 
-    const result = buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID);
+    const result = await buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID);
     expect(result).toBeDefined();
     expect(result!.instruction).toContain('project-specific procedural domains');
   });
 
-  it('returns bundle for skill-generate when an approved candidate exists', () => {
+  it('returns bundle for skill-generate when an approved candidate exists', async () => {
     const now = epochSeconds();
     insertCandidate({
       id: 'ready-to-generate',
@@ -478,9 +482,25 @@ describe('buildTaskInstruction', () => {
     });
     updateCandidate('ready-to-generate', { status: CANDIDATE_STATUS.APPROVED, updated_at: now });
 
-    const result = buildTaskInstruction(SKILL_GENERATE_TASK);
+    const result = await buildTaskInstruction(SKILL_GENERATE_TASK);
     expect(result).toBeDefined();
     expect(result!.instruction).toContain('Ready topic');
     expect(result!.context?.candidate_id).toBe('ready-to-generate');
+  });
+
+  it('returns undefined for cortex-instructions when stored input is already current', async () => {
+    createAgent(DEFAULT_AGENT_ID);
+    const config = MycoConfigSchema.parse({ version: 3 });
+    const built = await buildCortexInstructionsInput(config);
+
+    upsertCortexInstructions({
+      agent_id: DEFAULT_AGENT_ID,
+      content: 'Stored Cortex instructions',
+      input_hash: built.inputHash,
+      generated_at: epochSeconds(),
+    });
+
+    const result = await buildTaskInstruction(CORTEX_INSTRUCTIONS_TASK, undefined, undefined, undefined, undefined, config);
+    expect(result).toBeUndefined();
   });
 });

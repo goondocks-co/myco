@@ -22,6 +22,7 @@ import {
   X,
   Sparkles,
   Bell,
+  Brain,
 } from 'lucide-react';
 import { useUpdateStatus } from '../hooks/use-update-status';
 import { useDaemon } from '../hooks/use-daemon';
@@ -40,6 +41,7 @@ import { AppearanceSection } from './AppearanceSection';
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/sessions', label: 'Sessions', icon: MessageSquare },
+  { to: '/cortex', label: 'Cortex', icon: Brain },
   { to: '/mycelium', label: 'Mycelium', icon: Network },
   { to: '/skills', label: 'Skills', icon: Sparkles },
   { to: '/agent', label: 'Agent', icon: Bot },

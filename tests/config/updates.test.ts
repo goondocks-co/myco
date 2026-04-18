@@ -213,6 +213,11 @@ describe('withContext', () => {
     expect(result.context.digest_tier).toBe(10000);
   });
 
+  it('sets session_start_digest_enabled', () => {
+    const result = withContext(baseConfig(), { session_start_digest_enabled: true });
+    expect(result.context.session_start_digest_enabled).toBe(true);
+  });
+
   it('sets prompt_search', () => {
     const result = withContext(baseConfig(), { prompt_search: false });
     expect(result.context.prompt_search).toBe(false);

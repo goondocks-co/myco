@@ -23,6 +23,7 @@ import { serializeRun } from './run-serializer.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
+import type { TeamSyncClient } from '../team-sync.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -74,6 +75,7 @@ export interface AgentRunDeps {
   vaultDir: string;
   embeddingManager: EmbeddingManager;
   logger: DaemonLogger;
+  getTeamClient?: () => TeamSyncClient | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,7 +83,7 @@ export interface AgentRunDeps {
 // ---------------------------------------------------------------------------
 
 export function createAgentRunHandlers(deps: AgentRunDeps) {
-  const { vaultDir, embeddingManager, logger } = deps;
+  const { vaultDir, embeddingManager, logger, getTeamClient } = deps;
 
   /** POST /api/agent/run — trigger an agent run. */
   async function handleRun(req: RouteRequest): Promise<RouteResponse> {
@@ -108,16 +110,19 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     }
 
     let instruction = rawInstruction;
-    let runContext: { candidate_id?: string } | undefined;
+    let runContext: {
+      candidate_id?: string;
+      cortex_instruction_input_hash?: string;
+    } | undefined;
     if (task && !instruction) {
       let built;
       try {
         const taskParams = mycoConfig.agent.tasks?.[task]?.params;
         const projectRoot = resolve(vaultDir, '..');
-        built = buildTaskInstruction(task, taskParams, agentId, projectRoot, embeddingManager);
+        built = await buildTaskInstruction(task, taskParams, agentId, projectRoot, embeddingManager, mycoConfig, getTeamClient);
       } catch {
         const projectRoot = resolve(vaultDir, '..');
-        built = buildTaskInstruction(task, undefined, agentId, projectRoot, embeddingManager);
+        built = await buildTaskInstruction(task, undefined, agentId, projectRoot, embeddingManager, mycoConfig, getTeamClient);
       }
       instruction = built?.instruction;
       runContext = built?.context;

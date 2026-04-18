@@ -1,16 +1,12 @@
 /**
- * Context injection API handlers — digest at session start, semantic spore search per prompt.
- *
- * - POST /context: Injects digest extract + branch/session metadata at session start
- * - POST /context/prompt: Searches spore embeddings for relevant observations per prompt
+ * Context injection API handlers — Cortex session-start instructions, semantic
+ * spore search per prompt, and resume summaries for resumed sessions.
  */
 
 import { z } from 'zod';
-import { getDigestExtract } from '@myco/db/queries/digest-extracts.js';
 import { hydrateSearchResults } from '@myco/db/queries/search.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import {
-  DEFAULT_AGENT_ID,
   EXCLUDED_SPORE_STATUSES,
   PROMPT_CONTEXT_MIN_LENGTH,
   PROMPT_CONTEXT_MIN_SIMILARITY,
@@ -20,9 +16,18 @@ import {
 } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import {
+  shouldInjectCortex,
+} from '@myco/context/cortex-brief.js';
+import {
+  getSessionStartDigestPayload,
+  shouldInjectSessionStartDigest,
+} from '@myco/context/session-start-digest.js';
+import { getCortexInstructionsSnapshot } from '@myco/services/cortex.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
+import type { TeamSyncClient } from '../team-sync.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,11 +35,13 @@ import type { DaemonLogger } from '../logger.js';
 
 /** Dependencies injected by the daemon when registering context routes. */
 export interface ContextDeps {
+  vaultDir: string;
   embeddingManager: EmbeddingManager;
   logger: DaemonLogger;
+  getTeamClient?: () => TeamSyncClient | null;
   // Holder so each request reads the current merged config — a user can
-  // flip `context.prompt_search` or bump `context.digest_tier` and the
-  // very next request sees the change without a daemon restart.
+  // update context knobs and the very next request sees the change without
+  // a daemon restart.
   liveConfig: { current: MycoConfig };
 }
 
@@ -63,10 +70,7 @@ const PromptContextBody = z.object({
 // ---------------------------------------------------------------------------
 
 /**
- * Create a handler that injects digest extract + metadata at session start.
- *
- * Reads the configured digest tier from digest_extracts. If an extract exists,
- * it becomes the primary context payload. Branch and session ID are always included.
+ * Create a handler that injects stored Cortex instructions at session start.
  */
 export function createSessionContextHandler(deps: ContextDeps) {
   return async function handleSessionContext(req: RouteRequest): Promise<RouteResponse> {
@@ -77,46 +81,65 @@ export function createSessionContextHandler(deps: ContextDeps) {
     logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Session context query', { session_id });
 
     try {
-      const parts: string[] = [];
-
-      // Digest extract — the primary session context payload
-      const tier = config.context.digest_tier;
-      const extract = getDigestExtract(DEFAULT_AGENT_ID, tier);
-
-      if (extract) {
-        parts.push(extract.content);
-        logger.info(LOG_KINDS.CONTEXT_DIGEST, 'Digest extract found', {
-          session_id,
-          tier,
-          content_length: extract.content.length,
-          generated_at: extract.generated_at,
-        });
-      } else {
-        logger.debug(LOG_KINDS.CONTEXT_DIGEST, 'No digest extract available', { session_id, tier });
+      const includeBrief = shouldInjectCortex(config.context);
+      const includeDigest = shouldInjectSessionStartDigest(config.context);
+      if (!includeBrief && !includeDigest) {
+        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Session-start context disabled', { session_id });
+        return { body: { text: '' } };
       }
 
-      // Branch info
+      const parts: string[] = [];
+      const sourceParts: string[] = [];
+      let sourceRunId: string | null = null;
+
+      if (includeBrief) {
+        const snapshot = getCortexInstructionsSnapshot(config);
+        if (snapshot.content) {
+          parts.push(snapshot.content);
+          sourceParts.push('cortex');
+          sourceRunId = snapshot.sourceRunId;
+        } else {
+          logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No stored Cortex instructions available for session start', {
+            session_id,
+          });
+        }
+      }
+
+      if (includeDigest) {
+        const digest = getSessionStartDigestPayload(config.context);
+        if (digest.content) {
+          parts.push(`## Preferred Digest (Tier ${digest.tier ?? config.context.digest_tier})\n${digest.content}`);
+          sourceParts.push(`digest:${digest.tier ?? config.context.digest_tier}`);
+        } else {
+          logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No preferred digest extract available for session start', {
+            session_id,
+            preferred_tier: config.context.digest_tier,
+          });
+        }
+      }
+
+      if (parts.length === 0) {
+        return { body: { text: '' } };
+      }
+
       if (branch) {
         parts.push(`Branch:: \`${branch}\``);
       }
-
-      // Session ID — always included
       parts.push(`Session:: \`${session_id}\``);
 
-      const source = extract ? 'digest' : 'basic';
+      const source = sourceParts.join('+') || 'cortex';
       const contextText = parts.join('\n\n');
-
       const estimatedTokens = estimateTokens(contextText);
       logger.info(
         LOG_KINDS.CONTEXT_SESSION,
-        `Session context: ${estimatedTokens} est. tokens, source=${source}${extract ? `, tier=${tier}` : ''}`,
+        `Session context: ${estimatedTokens} est. tokens, source=${source}`,
         {
           session_id,
           source,
-          tier: extract ? tier : undefined,
+          branch,
+          source_run_id: sourceRunId,
           text_length: contextText.length,
           estimated_tokens: estimatedTokens,
-          generated_at: extract?.generated_at,
           injected_text: contextText,
         },
       );
@@ -125,7 +148,6 @@ export function createSessionContextHandler(deps: ContextDeps) {
         body: {
           text: contextText,
           source,
-          ...(extract ? { tier } : {}),
         },
       };
     } catch (error) {
@@ -221,24 +243,18 @@ export function createResumeContextHandler(deps: ContextDeps) {
 // ---------------------------------------------------------------------------
 
 /**
- * Create a handler that searches spore embeddings for observations relevant to the prompt.
- *
- * Embeds the prompt, searches the 'spores' namespace via vector similarity,
- * post-filters by status, and returns formatted spore context.
+ * Create a handler that searches spore embeddings for prompt-relevant observations.
  */
 export function createPromptContextHandler(deps: ContextDeps) {
   return async function handlePromptContext(req: RouteRequest): Promise<RouteResponse> {
     const { prompt, session_id } = PromptContextBody.parse(req.body);
     const { logger, liveConfig, embeddingManager } = deps;
     const config = liveConfig.current;
-
-    // Guard: prompt search disabled
     if (!config.context.prompt_search) {
       logger.debug(LOG_KINDS.CONTEXT_PROMPT, 'Prompt search disabled by config', { session_id });
       return { body: { text: '' } };
     }
 
-    // Guard: prompt too short
     if (prompt.length < PROMPT_CONTEXT_MIN_LENGTH) {
       logger.debug(LOG_KINDS.CONTEXT_PROMPT, 'Prompt too short for search', {
         session_id,
@@ -248,14 +264,12 @@ export function createPromptContextHandler(deps: ContextDeps) {
       return { body: { text: '' } };
     }
 
-    // Guard: max spores is 0 (disabled)
     const maxSpores = config.context.prompt_max_spores;
     if (maxSpores === 0) {
       logger.debug(LOG_KINDS.CONTEXT_PROMPT, 'Prompt spore injection disabled (max_spores=0)', { session_id });
       return { body: { text: '' } };
     }
 
-    // Embed the prompt
     const queryVector = await embeddingManager.embedQuery(prompt);
     if (!queryVector) {
       logger.debug(LOG_KINDS.CONTEXT_EMBED, 'Embedding provider unavailable for prompt search', { session_id });
@@ -275,11 +289,8 @@ export function createPromptContextHandler(deps: ContextDeps) {
       top_similarity: vectorResults[0]?.similarity,
     });
 
-    if (vectorResults.length === 0) {
-      return { body: { text: '' } };
-    }
+    if (vectorResults.length === 0) return { body: { text: '' } };
 
-    // Post-filter: exclude superseded/archived spores via domain_metadata
     const eligible = vectorResults.filter(
       (r) => !EXCLUDED_SPORE_STATUSES.has(r.metadata.status as string),
     );
@@ -289,32 +300,28 @@ export function createPromptContextHandler(deps: ContextDeps) {
       return { body: { text: '' } };
     }
 
-    // Take top N and hydrate with full record data
     const topResults = eligible.slice(0, maxSpores);
     const hydrated = hydrateSearchResults(topResults);
     const spores = hydrated.filter((r) => r.type === 'spore');
 
-    if (spores.length === 0) {
-      return { body: { text: '' } };
-    }
+    if (spores.length === 0) return { body: { text: '' } };
 
-    // Format spore context with token budget enforcement
     const text = formatSporeContext(spores);
 
     const promptTokens = estimateTokens(text);
     const titles = spores.map((s) => s.title);
-    // Single log line: summary in the message, full injected text in the data
-    // blob so the log detail panel shows exactly what the model received.
-    // No separate debug line — debug mode shouldn't hide information, and
-    // splitting summary vs. detail across two rows just doubles clicks.
-    logger.info(LOG_KINDS.CONTEXT_PROMPT, `Prompt context: ${spores.length} spores [${titles.join(', ')}] (~${promptTokens} tokens)`, {
-      session_id,
-      spore_count: spores.length,
-      spore_titles: titles,
-      scores: spores.map((s) => s.score.toFixed(3)),
-      estimated_tokens: promptTokens,
-      injected_text: text,
-    });
+    logger.info(
+      LOG_KINDS.CONTEXT_PROMPT,
+      `Prompt context: ${spores.length} spores [${titles.join(', ')}] (~${promptTokens} tokens)`,
+      {
+        session_id,
+        spore_count: spores.length,
+        spore_titles: titles,
+        scores: spores.map((s) => s.score.toFixed(3)),
+        estimated_tokens: promptTokens,
+        injected_text: text,
+      },
+    );
 
     return { body: { text } };
   };

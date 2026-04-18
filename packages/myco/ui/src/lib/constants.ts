@@ -30,7 +30,7 @@ export const DEFAULT_PAGE_SIZE = 50;
 /** Default summary batch interval (0 = disabled). */
 export const DEFAULT_SUMMARY_BATCH_INTERVAL = 5;
 
-/** Default digest tier for context injection. */
+/** Default preferred digest tier for explicit Myco context retrieval. */
 export const DEFAULT_DIGEST_TIER = 5000;
 
 /** Default max spores injected per prompt. */

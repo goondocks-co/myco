@@ -75,6 +75,7 @@ describe('MycoConfigSchema v3', () => {
   it('applies context injection defaults', () => {
     const config = MycoConfigSchema.parse({ version: 3 });
     expect(config.context.digest_tier).toBe(5000);
+    expect(config.context.session_start_digest_enabled).toBe(false);
     expect(config.context.prompt_search).toBe(true);
     expect(config.context.prompt_max_spores).toBe(3);
   });
@@ -84,11 +85,13 @@ describe('MycoConfigSchema v3', () => {
       version: 3,
       context: {
         digest_tier: 10000,
+        session_start_digest_enabled: true,
         prompt_search: false,
         prompt_max_spores: 5,
       },
     });
     expect(config.context.digest_tier).toBe(10000);
+    expect(config.context.session_start_digest_enabled).toBe(true);
     expect(config.context.prompt_search).toBe(false);
     expect(config.context.prompt_max_spores).toBe(5);
   });

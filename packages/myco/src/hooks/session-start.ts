@@ -47,18 +47,19 @@ export async function main() {
     } catch { /* not a git repo */ }
 
     if (healthy) {
-      await client.post('/sessions/register', {
-        session_id: sessionId,
-        agent,
-        branch,
-        started_at: new Date().toISOString(),
-      });
-
-      const contextResult = await client.post('/context', { session_id: sessionId, branch });
+      const [, contextResult] = await Promise.all([
+        client.post('/sessions/register', {
+          session_id: sessionId,
+          agent,
+          branch,
+          started_at: new Date().toISOString(),
+        }),
+        client.post('/context', { session_id: sessionId, branch }),
+      ]);
 
       if (contextResult.ok && contextResult.data?.text) {
-        if (contextResult.data.source === 'digest') {
-          process.stderr.write(`[myco] Injecting digest extract (tier ${contextResult.data.tier})\n`);
+        if (contextResult.data.source === 'cortex') {
+          process.stderr.write('[myco] Injecting Myco Cortex instructions\n');
         }
         process.stdout.write(contextResult.data.text);
         return;

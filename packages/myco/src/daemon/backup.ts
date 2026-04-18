@@ -26,6 +26,7 @@ export const BACKUP_TABLES = [
   'plans',
   'artifacts',
   'digest_extracts',
+  'cortex_instructions',
   'team_members',
 ] as const;
 

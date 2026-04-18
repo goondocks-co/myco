@@ -11,7 +11,10 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { MycoConfig } from '@myco/config/schema.js';
+import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 import { listCandidates } from '@myco/db/queries/skill-candidates.js';
+import { buildScheduledCortexInstruction } from '@myco/cortex/instructions-input.js';
 import { countSpores, getSpore, listSporeIdsSince, listSpores } from '@myco/db/queries/spores.js';
 import { countSessions, getSession, listSessions } from '@myco/db/queries/sessions.js';
 import { listSkillRecords } from '@myco/db/queries/skill-records.js';
@@ -38,6 +41,7 @@ export const SKILL_GENERATE_TASK = 'skill-generate';
  */
 export interface TaskRunContext {
   candidate_id?: string;
+  cortex_instruction_input_hash?: string;
 }
 
 /**
@@ -56,6 +60,8 @@ export const SKILL_EVOLVE_TASK = 'skill-evolve';
 
 /** Task name for the skill-survey pipeline step. */
 export const SKILL_SURVEY_TASK = 'skill-survey';
+/** Task name for the Cortex session-start instructions pipeline step. */
+export const CORTEX_INSTRUCTIONS_TASK = 'cortex-instructions';
 
 /** Caps for pre-assembled survey context. */
 const SURVEY_MAX_WISDOM_SPORES = 30;
@@ -597,13 +603,15 @@ export function buildSkillEvolveInstruction(
  *
  * Single dispatch point used by both the scheduler and the API handler.
  */
-export function buildTaskInstruction(
+export async function buildTaskInstruction(
   taskName: string,
   taskParams?: Record<string, string | number | boolean>,
   agentId?: string,
   projectRoot?: string,
   similarityProvider?: SkillSimilarityProvider,
-): BuiltTaskInstruction | undefined {
+  config?: MycoConfig,
+  getTeamClient?: () => TeamSyncClient | null,
+): Promise<BuiltTaskInstruction | undefined> {
   switch (taskName) {
     case SKILL_GENERATE_TASK:
       return buildSkillGenerateInstruction();
@@ -612,6 +620,16 @@ export function buildTaskInstruction(
     case SKILL_EVOLVE_TASK: {
       const instruction = buildSkillEvolveInstruction(taskParams, projectRoot, similarityProvider);
       return instruction ? { instruction } : undefined;
+    }
+    case CORTEX_INSTRUCTIONS_TASK: {
+      if (!config) return undefined;
+      const built = await buildScheduledCortexInstruction(config, getTeamClient);
+      return built
+        ? {
+            instruction: built.instruction,
+            context: { cortex_instruction_input_hash: built.inputHash },
+          }
+        : undefined;
     }
     default:
       return undefined;
@@ -632,5 +650,6 @@ export function buildTaskInstruction(
 export function isInstructionRequiredTask(taskName: string): boolean {
   return taskName === SKILL_GENERATE_TASK
     || taskName === SKILL_EVOLVE_TASK
-    || taskName === SKILL_SURVEY_TASK;
+    || taskName === SKILL_SURVEY_TASK
+    || taskName === CORTEX_INSTRUCTIONS_TASK;
 }

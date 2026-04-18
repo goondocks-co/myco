@@ -14,6 +14,8 @@ export interface SymbiontInfo {
   binary: string;
   enabled: boolean;
   resumeCommand?: string;
+  supportsSessionStartInjection: boolean;
+  supportsPromptSubmitInjection: boolean;
 }
 
 interface SymbiontsResponse {

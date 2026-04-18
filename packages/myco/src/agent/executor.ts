@@ -2,10 +2,19 @@
 
 import crypto from 'node:crypto';
 import { resolve } from 'node:path';
-import { epochSeconds, DEFAULT_AGENT_ID, MS_PER_SECOND, PHASE_SUMMARY_MAX_CHARS } from '@myco/constants.js';
+import {
+  epochSeconds,
+  DEFAULT_AGENT_ID,
+  MS_PER_SECOND,
+  PHASE_SUMMARY_MAX_CHARS,
+  CONTENT_HASH_ALGORITHM,
+} from '@myco/constants.js';
 import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
+import { tryParseJson } from '@myco/utils/json.js';
 import { initDatabase, vaultDbPath } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
+import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
+import { listReports } from '@myco/db/queries/reports.js';
 import { getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
   insertRun,
@@ -28,7 +37,7 @@ import { resolveOllamaContextVariants } from './ollama-context.js';
 import { resolveReasoningModel } from './reasoning-levels.js';
 import { validateTaskPostconditions } from './task-postconditions.js';
 import { computeWaves, phaseSessionId } from './wave-computation.js';
-import { SKILL_GENERATE_TASK } from './instruction-builders.js';
+import { CORTEX_INSTRUCTIONS_TASK, SKILL_GENERATE_TASK } from './instruction-builders.js';
 import { resolveCost } from './cost/index.js';
 import {
   aggregateUsage,
@@ -78,6 +87,12 @@ const PROMPT_SECTION_TASK = '## Task: ';
 
 /** Section header for user instruction in the composed prompt. */
 const PROMPT_SECTION_INSTRUCTION = '## User Instruction';
+
+/** Report action emitted by the Cortex instructions task. */
+const CORTEX_INSTRUCTIONS_REPORT_ACTION = 'cortex_instructions';
+
+/** Details key storing the final markdown content in the Cortex report. */
+const CORTEX_INSTRUCTIONS_CONTENT_KEY = 'content';
 
 /** Separator between prompt sections. */
 const PROMPT_SECTION_SEPARATOR = '\n\n';
@@ -1068,6 +1083,13 @@ export async function runAgent(
 
     clearTimeout(timeoutId);
     logTokenBudgetPressure(config.taskName, usage, effectiveProvider);
+    await finalizeOnTaskSuccess({
+      taskName: config.taskName,
+      agentId,
+      runId,
+      runContext: options?.runContext,
+      instruction: options?.instruction,
+    });
     const completedAt = epochSeconds();
     updateRunStatus(runId, STATUS_COMPLETED, {
       resumable: 0,
@@ -1198,4 +1220,56 @@ export async function cleanupOnTaskFailure(args: {
       cleanupErr instanceof Error ? cleanupErr.message : cleanupErr,
     );
   }
+}
+
+/**
+ * Task-specific success hooks fired after a run completes cleanly.
+ *
+ * cortex-instructions: the agent writes the final markdown via `vault_report`.
+ * The stored artifact read by the Cortex page and session-start injection lives
+ * in `cortex_instructions`, so the report must be materialized into that table
+ * once the run succeeds.
+ */
+export async function finalizeOnTaskSuccess(args: {
+  taskName: string | undefined;
+  agentId: string;
+  runId: string;
+  runContext: RunOptions['runContext'];
+  instruction?: string;
+}): Promise<void> {
+  if (args.taskName !== CORTEX_INSTRUCTIONS_TASK) return;
+
+  const reports = listReports(args.runId);
+  let report: typeof reports[number] | undefined;
+  for (let i = reports.length - 1; i >= 0; i -= 1) {
+    if (reports[i]?.action === CORTEX_INSTRUCTIONS_REPORT_ACTION) {
+      report = reports[i];
+      break;
+    }
+  }
+  if (!report) {
+    throw new Error('cortex-instructions completed without a cortex_instructions report');
+  }
+
+  const details = tryParseJson<Record<string, unknown>>(report.details);
+  const rawContent = details?.[CORTEX_INSTRUCTIONS_CONTENT_KEY];
+  const content = typeof rawContent === 'string' ? rawContent : null;
+  if (!content) {
+    throw new Error('cortex-instructions completed without report details.content');
+  }
+
+  upsertCortexInstructions({
+    agent_id: args.agentId,
+    content,
+    input_hash: args.runContext?.cortex_instruction_input_hash ?? fallbackInstructionHash(args.instruction),
+    source_run_id: args.runId,
+    generated_at: report.created_at,
+  });
+}
+
+function fallbackInstructionHash(instruction: string | undefined): string {
+  return crypto
+    .createHash(CONTENT_HASH_ALGORITHM)
+    .update(instruction ?? '')
+    .digest('hex');
 }

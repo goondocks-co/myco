@@ -1,15 +1,17 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { buildInjectedContext, buildPromptContext } from '@myco/context/injector';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
-
-// Mock tryEmbed to return null immediately — no real embedding provider in tests
-vi.mock('@myco/intelligence/embed-query.js', () => ({
-  tryEmbed: async () => null,
-}));
 import { upsertSession } from '@myco/db/queries/sessions';
 import { insertSpore } from '@myco/db/queries/spores';
 import { registerAgent } from '@myco/db/queries/agents';
+import { upsertDigestExtract } from '@myco/db/queries/digest-extracts';
 import { MycoConfigSchema } from '@myco/config/schema';
+import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions';
+import { DEFAULT_AGENT_ID } from '@myco/constants';
+
+vi.mock('@myco/intelligence/embed-query.js', () => ({
+  tryEmbed: async () => null,
+}));
 
 describe('buildInjectedContext', () => {
   const config = MycoConfigSchema.parse({
@@ -20,14 +22,22 @@ describe('buildInjectedContext', () => {
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => { cleanTestDb(); });
 
-  it('returns empty text when DB has no data', async () => {
+  it('returns empty context when no stored Cortex instructions exist', async () => {
     const result = await buildInjectedContext(config, {});
+
     expect(result.text).toBe('');
+    expect(result.brief).toBe('');
     expect(result.tokenEstimate).toBe(0);
   });
 
-  it('returns session-based context when sessions exist', async () => {
+  it('reads the stored Cortex instructions in degraded mode', async () => {
     const now = Math.floor(Date.now() / 1000);
+    upsertCortexInstructions({
+      agent_id: DEFAULT_AGENT_ID,
+      content: 'Use `myco_context` before major changes.',
+      input_hash: 'hash-1',
+      generated_at: now,
+    });
     upsertSession({
       id: 'sess-001',
       agent: 'claude-code',
@@ -37,14 +47,6 @@ describe('buildInjectedContext', () => {
       summary: 'Refactored the auth middleware to use JWT tokens',
       status: 'completed',
     });
-
-    const result = await buildInjectedContext(config, {});
-    expect(result.layers.sessions).toContain('Auth Middleware Refactor');
-    expect(result.tokenEstimate).toBeGreaterThan(0);
-  });
-
-  it('includes active spores in context', async () => {
-    const now = Math.floor(Date.now() / 1000);
     registerAgent({
       id: 'agent-1',
       name: 'test-agent',
@@ -60,47 +62,61 @@ describe('buildInjectedContext', () => {
     });
 
     const result = await buildInjectedContext(config, {});
-    expect(result.layers.spores).toContain('gotcha');
-    expect(result.layers.spores).toContain('Always validate JWT');
+
+    expect(result.text).toContain('Use `myco_context` before major changes.');
+    expect(result.text).not.toContain('Auth Middleware Refactor');
+    expect(result.text).not.toContain('Always validate JWT expiry');
   });
 
-  it('excludes superseded spores', async () => {
+  it('returns empty when session-start instructions are disabled', async () => {
+    const disabledConfig = MycoConfigSchema.parse({
+      version: 3,
+      context: {
+        cortex_enabled: false,
+      },
+    });
+    upsertCortexInstructions({
+      agent_id: DEFAULT_AGENT_ID,
+      content: 'Use `myco_context` before major changes.',
+      input_hash: 'hash-disabled',
+      generated_at: Math.floor(Date.now() / 1000),
+    });
+
+    const result = await buildInjectedContext(disabledConfig, {});
+    expect(result.text).toBe('');
+  });
+
+  it('appends the preferred digest when session-start digest injection is enabled', async () => {
     const now = Math.floor(Date.now() / 1000);
     registerAgent({
-      id: 'agent-1',
-      name: 'test-agent',
+      id: DEFAULT_AGENT_ID,
+      name: 'myco-agent',
       created_at: now,
     });
-    insertSpore({
-      id: 'spore-old',
-      agent_id: 'agent-1',
-      observation_type: 'gotcha',
-      content: 'Old stale observation',
-      created_at: now,
-      status: 'superseded',
+    upsertCortexInstructions({
+      agent_id: DEFAULT_AGENT_ID,
+      content: 'Use `myco_context` before major changes.',
+      input_hash: 'hash-digest',
+      generated_at: now,
+    });
+    upsertDigestExtract({
+      agent_id: DEFAULT_AGENT_ID,
+      tier: 5000,
+      content: 'Digest extract for active project work.',
+      generated_at: now,
+    });
+    const digestConfig = MycoConfigSchema.parse({
+      version: 3,
+      context: {
+        session_start_digest_enabled: true,
+      },
     });
 
-    const result = await buildInjectedContext(config, {});
-    expect(result.layers.spores).toBe('');
-  });
+    const result = await buildInjectedContext(digestConfig, {});
 
-  it('respects total max_tokens budget', async () => {
-    const now = Math.floor(Date.now() / 1000);
-    // Add many sessions to potentially exceed budget
-    for (let i = 0; i < 20; i++) {
-      upsertSession({
-        id: `sess-${i.toString().padStart(3, '0')}`,
-        agent: 'claude-code',
-        started_at: now - i,
-        created_at: now - i,
-        title: `Session ${i}`,
-        summary: 'A'.repeat(500),
-      });
-    }
-
-    const result = await buildInjectedContext(config, {});
-    // Token estimate should be reasonable (within default budget + tolerance)
-    expect(result.tokenEstimate).toBeLessThanOrEqual(1250);
+    expect(result.text).toContain('Use `myco_context` before major changes.');
+    expect(result.text).toContain('## Preferred Digest (Tier 5000)');
+    expect(result.text).toContain('Digest extract for active project work.');
   });
 });
 
@@ -119,8 +135,7 @@ describe('buildPromptContext', () => {
     expect(result.tokenEstimate).toBe(0);
   });
 
-  it('returns empty context when no embedding provider available', async () => {
-    // No provider configured in test env — tryEmbed returns null
+  it('returns empty context when no embedding provider is available', async () => {
     const result = await buildPromptContext('How should I handle authentication middleware?', config);
     expect(result.text).toBe('');
     expect(result.tokenEstimate).toBe(0);
