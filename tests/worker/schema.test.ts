@@ -43,6 +43,11 @@ describe('initD1Schema', () => {
     await initD1Schema(fake.db as never);
 
     expect(fake.runs).toContainEqual({
+      sql: 'ALTER TABLE plans ADD COLUMN logical_key TEXT',
+      values: [],
+    });
+
+    expect(fake.runs).toContainEqual({
       sql: 'ALTER TABLE skill_candidates ADD COLUMN approved_at INTEGER',
       values: [],
     });

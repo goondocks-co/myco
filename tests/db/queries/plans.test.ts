@@ -9,6 +9,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import {
   upsertPlan,
+  deletePlan,
   getPlan,
   listPlans,
   listPlansBySession,
@@ -16,6 +17,7 @@ import {
 import type { PlanInsert } from '@myco/db/queries/plans.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';
+import { buildPlanId } from '@myco/plans/identity.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -23,8 +25,10 @@ const epochNow = () => Math.floor(Date.now() / 1000);
 /** Factory for minimal valid plan data. */
 function makePlan(overrides: Partial<PlanInsert> = {}): PlanInsert {
   const now = epochNow();
+  const logicalKey = overrides.logical_key ?? `test:${overrides.id ?? Math.random().toString(36).slice(2, 8)}`;
   return {
-    id: `plan-${Math.random().toString(36).slice(2, 8)}`,
+    id: overrides.id ?? buildPlanId(logicalKey),
+    logical_key: logicalKey,
     created_at: now,
     ...overrides,
   };
@@ -85,6 +89,21 @@ describe('plan query helpers', () => {
       expect(row.status).toBe('draft');
     });
 
+    it('stores logical_key and upserts on logical-key conflict', async () => {
+      const logicalKey = 'path:plans/roadmap.md';
+      const first = makePlan({ id: 'plan-a', logical_key: logicalKey, title: 'Original' });
+      const second = makePlan({ id: 'plan-b', logical_key: logicalKey, title: 'Updated' });
+
+      upsertPlan(first);
+      const row = upsertPlan(second);
+
+      expect(row.logical_key).toBe(logicalKey);
+      expect(row.id).toBe('plan-b');
+      expect(listPlans()).toHaveLength(1);
+      expect(getPlan('plan-b')?.title).toBe('Updated');
+      expect(getPlan('plan-a')).toBeNull();
+    });
+
     it('is idempotent — second upsert updates without error', async () => {
       const data = makePlan({ title: 'Original' });
       upsertPlan(data);
@@ -126,6 +145,22 @@ describe('plan query helpers', () => {
     it('returns null for non-existent id', async () => {
       const row = getPlan('does-not-exist');
       expect(row).toBeNull();
+    });
+  });
+
+  describe('deletePlan', () => {
+    it('deletes a plan row by id', () => {
+      const data = makePlan({ title: 'Delete me' });
+      upsertPlan(data);
+
+      const deleted = deletePlan(data.id);
+
+      expect(deleted?.id).toBe(data.id);
+      expect(getPlan(data.id)).toBeNull();
+    });
+
+    it('returns null when the plan does not exist', () => {
+      expect(deletePlan('missing-plan')).toBeNull();
     });
   });
 

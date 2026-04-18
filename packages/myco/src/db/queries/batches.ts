@@ -477,6 +477,24 @@ export function getLatestBatch(
   return toBatchRow(row);
 }
 
+/**
+ * Get the most recent active batch for a session (by id DESC).
+ */
+export function getLatestOpenBatch(
+  sessionId: string,
+): BatchRow | null {
+  const db = getDatabase();
+
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM prompt_batches
+     WHERE session_id = ? AND status = ?
+     ORDER BY id DESC LIMIT 1`,
+  ).get(sessionId, DEFAULT_STATUS) as Record<string, unknown> | undefined;
+
+  if (!row) return null;
+  return toBatchRow(row);
+}
+
 export function listBatchesBySession(
   sessionId: string,
   options: ListBatchesBySessionOptions = {},

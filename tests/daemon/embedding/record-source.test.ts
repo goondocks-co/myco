@@ -15,6 +15,7 @@ import type { SessionInsert } from '@myco/db/queries/sessions.js';
 import type { SporeInsert } from '@myco/db/queries/spores.js';
 import type { PlanInsert } from '@myco/db/queries/plans.js';
 import { SqliteRecordSource } from '@myco/daemon/embedding/record-source';
+import { buildPlanId } from '@myco/plans/identity.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -50,8 +51,10 @@ function makeSpore(overrides: Partial<SporeInsert> = {}): SporeInsert {
 
 function makePlan(overrides: Partial<PlanInsert> = {}): PlanInsert {
   const now = epochNow();
+  const logicalKey = overrides.logical_key ?? `test:${overrides.id ?? Math.random().toString(36).slice(2, 8)}`;
   return {
-    id: `plan-${Math.random().toString(36).slice(2, 8)}`,
+    id: overrides.id ?? buildPlanId(logicalKey),
+    logical_key: logicalKey,
     created_at: now,
     ...overrides,
   };

@@ -18,13 +18,14 @@ describe('MCP Server', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('registers all 12 core tools', () => {
+  it('registers all 13 core tools', () => {
     const server = createMycoServer(tmpDir, client);
     const tools = server.getRegisteredTools();
     expect(tools).toContain('myco_search');
     expect(tools).toContain('myco_recall');
     expect(tools).toContain('myco_remember');
     expect(tools).toContain('myco_plans');
+    expect(tools).toContain('myco_save_plan');
     expect(tools).toContain('myco_sessions');
     expect(tools).toContain('myco_team');
     expect(tools).toContain('myco_graph');
@@ -33,7 +34,7 @@ describe('MCP Server', () => {
     expect(tools).toContain('myco_context');
     expect(tools).toContain('myco_skills');
     expect(tools).toContain('myco_skill_candidates');
-    expect(tools).toHaveLength(12);
+    expect(tools).toHaveLength(13);
   });
 
   it('does not leak collective tools into the core registration', () => {

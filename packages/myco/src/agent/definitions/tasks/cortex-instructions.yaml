@@ -6,7 +6,7 @@ name: cortex-instructions
 displayName: Cortex Instructions
 description: >
   Author compact session-start instructions that teach downstream agents how
-  to use Myco retrieval correctly.
+  to use Myco tool behavior correctly, especially retrieval and plan persistence.
 agent: myco-agent
 isDefault: false
 reasoningLevel: low
@@ -24,8 +24,8 @@ prompt: |
 
   You will receive:
   - current context configuration
-  - the available Myco retrieval capabilities
-  - retrieval guidance that must be encoded
+  - the available Myco tool capabilities
+  - tool guidance that must be encoded
   - a digest excerpt plus recent sessions, spores, and plans
   - authoring requirements that constrain the final output
 
@@ -34,7 +34,7 @@ prompt: |
   Requirements:
   - Start with the heading `## Myco-Enabled Project`.
   - Immediately follow with one brief sentence explaining that Myco provides project memory, prior decisions, plans, and retrieval tools for this project.
-  - Teach retrieval behavior, not implementation details.
+  - Teach the most useful Myco tool behavior, not implementation details.
   - Mention Myco tools using backticks.
   - Use the recent vault context to make the instructions feel current when it adds signal.
   - Keep the heading and intro brief so most tokens go to retrieval guidance.
@@ -59,7 +59,7 @@ phases:
       Focus on:
       - which Myco MCP tools matter most right now
       - which current project hotspots or active workstreams are worth naming
-      - whether recent sessions or spores reveal a better retrieval hint
+      - whether recent sessions, spores, or active plans reveal a better tool-use hint
 
       Do not spend time enumerating every note. Gather only what improves the
       final session-start instructions.
@@ -81,7 +81,7 @@ phases:
 
       The output should:
       - open with the heading `## Myco-Enabled Project` and one brief sentence of context
-      - teach the agent how to retrieve the right Myco knowledge on demand
+      - teach the agent how to retrieve the right Myco knowledge on demand and persist plans when appropriate
       - mention the most relevant current project activity when it adds value
       - avoid generic boilerplate
       - avoid telling the agent to call `myco_skills`

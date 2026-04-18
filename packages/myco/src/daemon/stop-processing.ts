@@ -8,11 +8,17 @@
 
 import { z } from 'zod';
 import fs from 'node:fs';
+import path from 'node:path';
 import { TranscriptMiner, extractTurnsFromBuffer } from '@myco/capture/transcript-miner.js';
 import type { TranscriptTurn } from '@myco/symbionts/adapter.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { captureBatchImages } from './capture-images.js';
-import { extractTaggedPlans, capturePlan, TRANSCRIPT_SOURCE_PREFIX } from './plan-capture.js';
+import {
+  extractTaggedPlans,
+  capturePlan,
+  captureTaggedPlan,
+  resolvePlanWatchDir,
+} from './plan-capture.js';
 import {
   getLatestBatch,
   setResponseSummary,
@@ -20,6 +26,7 @@ import {
   closeOpenBatches,
   listBatchesBySession,
   findBatchByPromptPrefix,
+  type BatchRow,
 } from '@myco/db/queries/batches.js';
 import { deleteSessionCascade, getSession, updateSession } from '@myco/db/queries/sessions.js';
 import { detectSkillUsage, SKILL_USAGE_DETECTION_ENABLED } from './skill-usage.js';
@@ -37,6 +44,7 @@ import type { RegisteredSession } from './lifecycle.js';
 import { evaluateSessionCaptureRules } from '@myco/hooks/capture-rules.js';
 import { readTranscriptMeta } from '@myco/hooks/transcript-meta.js';
 import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
+import type { PlanWatchConfig } from './plan-capture.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,6 +60,58 @@ export interface StopProcessorDeps {
   vaultDir: string;
   /** Plan tag names to extract from transcript responses. Merged from all symbiont manifests. */
   planTags: string[];
+  planWatchConfig: PlanWatchConfig;
+}
+
+const MILLISECONDS_PER_SECOND = 1000;
+
+function isEligiblePlanExtension(filePath: string, extensions?: string[]): boolean {
+  if (!extensions || extensions.length === 0) return true;
+  const extension = path.extname(filePath).toLowerCase();
+  return extensions.includes(extension);
+}
+
+function collectPlanFiles(rootDir: string, extensions?: string[]): string[] {
+  const files: string[] = [];
+  const stack = [rootDir];
+
+  while (stack.length > 0) {
+    const currentDir = stack.pop();
+    if (!currentDir) continue;
+
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const absolutePath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(absolutePath);
+        continue;
+      }
+      if (entry.isFile() && isEligiblePlanExtension(absolutePath, extensions)) {
+        files.push(absolutePath);
+      }
+    }
+  }
+
+  return files;
+}
+
+function resolvePromptBatchIdForPlanWrite(
+  batches: BatchRow[],
+  modifiedAtSeconds: number,
+): number | undefined {
+  for (let index = batches.length - 1; index >= 0; index--) {
+    const startedAt = batches[index].started_at;
+    if (startedAt !== null && startedAt <= modifiedAtSeconds) {
+      return batches[index].id;
+    }
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +160,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
   getActiveProcessing: () => Promise<void> | null;
   triggerTitleSummary: (sessionId: string) => Promise<void>;
 } {
-  const { registry, sessionBuffers, transcriptMiner, embeddingManager, logger, liveConfig, vaultDir } = deps;
+  const { registry, sessionBuffers, transcriptMiner, embeddingManager, logger, liveConfig, vaultDir, planWatchConfig } = deps;
 
   // Internal state
   let activeStopProcessing: Promise<void> | null = null;
@@ -292,8 +352,8 @@ export function createStopProcessor(deps: StopProcessorDeps): {
         const taggedPlans = extractTaggedPlans(turn.aiResponse, deps.planTags);
         for (const { tag, content } of taggedPlans) {
           try {
-            capturePlan({
-              sourcePath: `${TRANSCRIPT_SOURCE_PREFIX}${tag}`,
+            captureTaggedPlan({
+              tag,
               content,
               sessionId,
               promptBatchId: latestBatch?.id ?? null,
@@ -310,6 +370,56 @@ export function createStopProcessor(deps: StopProcessorDeps): {
               error: (err as Error).message,
             });
           }
+        }
+      }
+    }
+
+    const sessionStartedAt = currentSession?.started_at
+      ?? (sessionMeta?.started_at
+        ? Math.floor(new Date(sessionMeta.started_at).getTime() / MILLISECONDS_PER_SECOND)
+        : epochSeconds());
+    const sessionStopMs = Date.now();
+    const sessionBatches = listBatchesBySession(sessionId);
+
+    for (const watchDir of planWatchConfig.watchDirs) {
+      const absoluteWatchDir = resolvePlanWatchDir(watchDir, planWatchConfig.projectRoot);
+      if (!fs.existsSync(absoluteWatchDir)) continue;
+
+      const planFiles = collectPlanFiles(absoluteWatchDir, planWatchConfig.extensions);
+      for (const planFile of planFiles) {
+        let stats: fs.Stats;
+        try {
+          stats = fs.statSync(planFile);
+        } catch {
+          continue;
+        }
+        if (stats.mtimeMs < sessionStartedAt * MILLISECONDS_PER_SECOND || stats.mtimeMs > sessionStopMs) {
+          continue;
+        }
+
+        try {
+          const content = fs.readFileSync(planFile, 'utf-8');
+          const promptBatchId = resolvePromptBatchIdForPlanWrite(
+            sessionBatches,
+            Math.floor(stats.mtimeMs / MILLISECONDS_PER_SECOND),
+          );
+          capturePlan({
+            sourcePath: planFile,
+            projectRoot: planWatchConfig.projectRoot,
+            content,
+            sessionId,
+            promptBatchId,
+          });
+          logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan reconciled from configured plan dir', {
+            session_id: sessionId,
+            source_path: planFile,
+          });
+        } catch (err) {
+          logger.warn(LOG_KINDS.CAPTURE_PLAN, 'Failed to reconcile plan from configured plan dir', {
+            session_id: sessionId,
+            source_path: planFile,
+            error: (err as Error).message,
+          });
         }
       }
     }

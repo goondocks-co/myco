@@ -84,6 +84,7 @@ const ACTIVITIES_TABLE = `
 const PLANS_TABLE = `
   CREATE TABLE IF NOT EXISTS plans (
     id               TEXT PRIMARY KEY,
+    logical_key      TEXT NOT NULL,
     status           TEXT DEFAULT 'active',
     author           TEXT,
     title            TEXT,
@@ -652,6 +653,7 @@ export const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_agent_tasks_agent_id ON agent_tasks (agent_id)',
 
   // Plans
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_logical_key ON plans (logical_key)',
   'CREATE INDEX IF NOT EXISTS idx_plans_session_id ON plans (session_id)',
   'CREATE INDEX IF NOT EXISTS idx_plans_source_path ON plans (source_path)',
   'CREATE INDEX IF NOT EXISTS idx_plans_content_hash ON plans (content_hash)',

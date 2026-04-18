@@ -39,7 +39,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(19);
+      expect(SCHEMA_VERSION).toBe(20);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -202,6 +202,7 @@ describe('Database schema', () => {
         createSchema(db);
         const colNames = getColumnNames(db, 'plans');
         expect(colNames).toContain('id');
+        expect(colNames).toContain('logical_key');
         expect(colNames).toContain('status');
         expect(colNames).toContain('author');
         expect(colNames).toContain('title');
@@ -648,6 +649,7 @@ describe('Database schema', () => {
         expect(indexExists(db, 'idx_sessions_processed')).toBe(true);
         expect(indexExists(db, 'idx_prompt_batches_session_id')).toBe(true);
         expect(indexExists(db, 'idx_activities_session_id')).toBe(true);
+        expect(indexExists(db, 'idx_plans_logical_key')).toBe(true);
         expect(indexExists(db, 'idx_spores_agent_id')).toBe(true);
         expect(indexExists(db, 'idx_spores_status')).toBe(true);
         expect(indexExists(db, 'idx_entities_agent_id')).toBe(true);
@@ -846,6 +848,141 @@ describe('Database schema', () => {
         const migration = MIGRATIONS.find((m) => m.version === 16)!;
         migration.migrate(db, 'local');
         expect(() => migration.migrate(db, 'local')).not.toThrow();
+      });
+    });
+
+    describe('v19 to v20: plans.logical_key with backfill', () => {
+      function buildV19Db(target: Database) {
+        const ddl = [
+          `CREATE TABLE schema_version (
+            version    INTEGER PRIMARY KEY,
+            applied_at INTEGER NOT NULL
+          )`,
+          `CREATE TABLE sessions (
+            id         TEXT PRIMARY KEY,
+            agent      TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+          )`,
+          `CREATE TABLE plans (
+            id               TEXT PRIMARY KEY,
+            status           TEXT DEFAULT 'active',
+            author           TEXT,
+            title            TEXT,
+            content          TEXT,
+            source_path      TEXT,
+            tags             TEXT,
+            session_id       TEXT REFERENCES sessions(id),
+            prompt_batch_id  INTEGER,
+            content_hash     TEXT,
+            processed        INTEGER DEFAULT 0,
+            created_at       INTEGER NOT NULL,
+            updated_at       INTEGER,
+            embedded         INTEGER DEFAULT 0,
+            machine_id       TEXT NOT NULL DEFAULT 'local',
+            synced_at        INTEGER
+          )`,
+          `CREATE TABLE team_outbox (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            table_name      TEXT NOT NULL,
+            row_id          TEXT NOT NULL,
+            operation       TEXT NOT NULL DEFAULT 'upsert',
+            payload         TEXT NOT NULL,
+            machine_id      TEXT NOT NULL,
+            created_at      INTEGER NOT NULL,
+            sent_at         INTEGER,
+            retry_count     INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at INTEGER
+          )`,
+        ];
+
+        for (const stmt of ddl) target.prepare(stmt).run();
+        target.prepare(
+          `INSERT INTO schema_version (version, applied_at) VALUES (19, 1000)`,
+        ).run();
+      }
+
+      it('adds logical_key to plans and backfills file-backed rows', () => {
+        buildV19Db(db);
+        db.prepare(
+          `INSERT INTO plans (id, source_path, title, content, created_at)
+           VALUES ('old-plan', 'docs/plans/roadmap.md', 'Roadmap', '# Roadmap', 1000)`,
+        ).run();
+
+        const migration = MIGRATIONS.find((m) => m.version === 20)!;
+        migration.migrate(db, 'local');
+
+        const row = db.prepare(
+          `SELECT logical_key FROM plans WHERE title = 'Roadmap'`,
+        ).get() as { logical_key: string };
+        expect(row.logical_key).toBe('path:docs/plans/roadmap.md');
+      });
+
+      it('backfills transcript-tag rows as session-scoped logical keys', () => {
+        buildV19Db(db);
+        db.prepare(
+          `INSERT INTO sessions (id, agent, started_at, created_at)
+           VALUES ('sess-1', 'claude-code', 1000, 1000)`,
+        ).run();
+        db.prepare(
+          `INSERT INTO plans (id, source_path, session_id, title, content, created_at)
+           VALUES ('tagged-plan', 'transcript:proposed_plan', 'sess-1', 'Tagged', '# Tagged', 1000)`,
+        ).run();
+
+        const migration = MIGRATIONS.find((m) => m.version === 20)!;
+        migration.migrate(db, 'local');
+
+        const row = db.prepare(
+          `SELECT logical_key FROM plans WHERE session_id = 'sess-1'`,
+        ).get() as { logical_key: string };
+        expect(row.logical_key).toBe('session:sess-1:tag:proposed_plan');
+      });
+
+      it('falls back to legacy logical keys when no source_path exists', () => {
+        buildV19Db(db);
+        db.prepare(
+          `INSERT INTO plans (id, title, content, created_at)
+           VALUES ('legacy-plan', 'Legacy', '# Legacy', 1000)`,
+        ).run();
+
+        const migration = MIGRATIONS.find((m) => m.version === 20)!;
+        migration.migrate(db, 'local');
+
+        const row = db.prepare(
+          `SELECT logical_key FROM plans WHERE title = 'Legacy'`,
+        ).get() as { logical_key: string };
+        expect(row.logical_key).toBe('legacy:legacy-plan');
+      });
+
+      it('requeues migrated plans for embedding and team sync', () => {
+        buildV19Db(db);
+        db.prepare(
+          `INSERT INTO plans (id, source_path, title, content, embedded, synced_at, machine_id, created_at)
+           VALUES ('old-plan', 'docs/plans/roadmap.md', 'Roadmap', '# Roadmap', 1, 1234, 'machine-a', 1000)`,
+        ).run();
+        db.prepare(
+          `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
+           VALUES ('plans', 'old-plan', 'upsert', '{"id":"old-plan"}', 'machine-a', 1000)`,
+        ).run();
+
+        const migration = MIGRATIONS.find((m) => m.version === 20)!;
+        migration.migrate(db, 'machine-a');
+
+        const row = db.prepare(
+          `SELECT id, embedded, synced_at, logical_key FROM plans WHERE title = 'Roadmap'`,
+        ).get() as { id: string; embedded: number; synced_at: number | null; logical_key: string };
+        expect(row.id).not.toBe('old-plan');
+        expect(row.embedded).toBe(0);
+        expect(row.synced_at).toBeNull();
+        expect(row.logical_key).toBe('path:docs/plans/roadmap.md');
+
+        const outboxRows = db.prepare(
+          `SELECT row_id, operation, machine_id FROM team_outbox WHERE table_name = 'plans' ORDER BY id ASC`,
+        ).all() as Array<{ row_id: string; operation: string; machine_id: string }>;
+        expect(outboxRows).toEqual([
+          { row_id: 'old-plan', operation: 'delete', machine_id: 'machine-a' },
+          { row_id: row.id, operation: 'upsert', machine_id: 'machine-a' },
+        ]);
       });
     });
   });

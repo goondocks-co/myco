@@ -77,6 +77,7 @@ function seedPlan(id: string, machineId: string) {
   const now = epochNow();
   upsertPlan({
     id,
+    logical_key: `backup:${id}`,
     title: `Test plan ${id}`,
     content: 'Plan content here',
     created_at: now,

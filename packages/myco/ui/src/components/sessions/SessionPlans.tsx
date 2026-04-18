@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { cn } from '../../lib/cn';
 import { MarkdownContent } from '../ui/markdown-content';
-import { useSessionPlans, SessionPlanRow } from '../../hooks/use-sessions';
+import { useDeletePlan, useSessionPlans, SessionPlanRow } from '../../hooks/use-sessions';
 import { formatEpochAgo, formatEpochAbsolute } from '../../lib/format';
 
 /* ---------- Constants ---------- */
@@ -46,9 +46,11 @@ function PlanStatusBadge({ status }: { status: string }) {
 interface PlanCardProps {
   plan: SessionPlanRow;
   initialExpanded?: boolean;
+  isDeleting?: boolean;
+  onDelete?: (planId: string) => void;
 }
 
-function PlanCard({ plan, initialExpanded = false }: PlanCardProps) {
+function PlanCard({ plan, initialExpanded = false, isDeleting = false, onDelete }: PlanCardProps) {
   const [expanded, setExpanded] = useState(initialExpanded);
 
   const checklist = useMemo(
@@ -105,14 +107,28 @@ function PlanCard({ plan, initialExpanded = false }: PlanCardProps) {
         </div>
 
         {/* Expand toggle */}
-        {plan.content && (
-          <button
-            onClick={() => setExpanded(v => !v)}
-            className="shrink-0 mt-0.5 text-xs text-muted-foreground hover:text-on-surface transition-colors cursor-pointer"
-            aria-label={expanded ? 'Collapse plan' : 'Expand plan'}
-          >
-            {expanded ? ARROW_UP : ARROW_DOWN}
-          </button>
+        {(plan.content || onDelete) && (
+          <div className="flex shrink-0 items-center gap-2">
+            {onDelete && (
+              <button
+                onClick={() => onDelete(plan.id)}
+                className="text-xs text-muted-foreground hover:text-destructive transition-colors cursor-pointer disabled:opacity-50"
+                disabled={isDeleting}
+                aria-label="Delete plan"
+              >
+                {isDeleting ? 'Deleting...' : 'Delete'}
+              </button>
+            )}
+            {plan.content && (
+              <button
+                onClick={() => setExpanded(v => !v)}
+                className="mt-0.5 text-xs text-muted-foreground hover:text-on-surface transition-colors cursor-pointer"
+                aria-label={expanded ? 'Collapse plan' : 'Expand plan'}
+              >
+                {expanded ? ARROW_UP : ARROW_DOWN}
+              </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -135,6 +151,18 @@ export interface SessionPlansProps {
 
 export function SessionPlans({ sessionId, expandedPlanId }: SessionPlansProps) {
   const { data: plans, isLoading, isError } = useSessionPlans(sessionId);
+  const deletePlan = useDeletePlan(sessionId);
+  const [deletingPlanId, setDeletingPlanId] = useState<string | null>(null);
+
+  async function handleDelete(planId: string): Promise<void> {
+    if (!window.confirm('Delete this captured plan from the session?')) return;
+    setDeletingPlanId(planId);
+    try {
+      await deletePlan.mutateAsync(planId);
+    } finally {
+      setDeletingPlanId(null);
+    }
+  }
 
   if (isLoading) {
     return (
@@ -162,8 +190,19 @@ export function SessionPlans({ sessionId, expandedPlanId }: SessionPlansProps) {
 
   return (
     <div className="space-y-3">
+      {deletePlan.isError && (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 font-sans text-sm text-destructive">
+          Failed to delete plan.
+        </div>
+      )}
       {plans.map(plan => (
-        <PlanCard key={plan.id} plan={plan} initialExpanded={String(plan.id) === expandedPlanId} />
+        <PlanCard
+          key={plan.id}
+          plan={plan}
+          initialExpanded={String(plan.id) === expandedPlanId}
+          isDeleting={deletingPlanId === plan.id}
+          onDelete={handleDelete}
+        />
       ))}
     </div>
   );

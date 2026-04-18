@@ -6,7 +6,9 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { getTeamMachineId } from '@myco/daemon/team-context.js';
+import { epochSeconds } from '@myco/constants.js';
+import { getTeamMachineId, isTeamSyncEnabled } from '@myco/daemon/team-context.js';
+import { enqueueOutbox } from '@myco/db/queries/team-outbox.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
@@ -29,6 +31,7 @@ const DEFAULT_PROCESSED = 0;
 /** Fields required (or optional) when inserting/upserting a plan. */
 export interface PlanInsert {
   id: string;
+  logical_key: string;
   created_at: number;
   status?: string;
   author?: string | null;
@@ -47,6 +50,7 @@ export interface PlanInsert {
 /** Row shape returned from plan queries. */
 export interface PlanRow {
   id: string;
+  logical_key: string;
   status: string;
   author: string | null;
   title: string | null;
@@ -76,6 +80,7 @@ export interface ListPlansOptions {
 
 const PLAN_COLUMNS = [
   'id',
+  'logical_key',
   'status',
   'author',
   'title',
@@ -103,6 +108,7 @@ const SELECT_COLUMNS = PLAN_COLUMNS.join(', ');
 function toPlanRow(row: Record<string, unknown>): PlanRow {
   return {
     id: row.id as string,
+    logical_key: row.logical_key as string,
     status: row.status as string,
     author: (row.author as string) ?? null,
     title: (row.title as string) ?? null,
@@ -135,15 +141,16 @@ export function upsertPlan(data: PlanInsert): PlanRow {
 
   db.prepare(
     `INSERT INTO plans (
-       id, status, author, title, content,
+       id, logical_key, status, author, title, content,
        source_path, tags, session_id, prompt_batch_id, content_hash,
        processed, created_at, updated_at, machine_id
      ) VALUES (
-       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?,
        ?, ?, ?, ?
      )
-     ON CONFLICT (id) DO UPDATE SET
+     ON CONFLICT (logical_key) DO UPDATE SET
+       id              = EXCLUDED.id,
        status          = EXCLUDED.status,
        author          = EXCLUDED.author,
        title           = EXCLUDED.title,
@@ -161,6 +168,7 @@ export function upsertPlan(data: PlanInsert): PlanRow {
        END`,
   ).run(
     data.id,
+    data.logical_key,
     data.status ?? DEFAULT_STATUS,
     data.author ?? null,
     data.title ?? null,
@@ -177,7 +185,7 @@ export function upsertPlan(data: PlanInsert): PlanRow {
   );
 
   const row = toPlanRow(
-    db.prepare(`SELECT ${SELECT_COLUMNS} FROM plans WHERE id = ?`).get(data.id) as Record<string, unknown>,
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM plans WHERE logical_key = ?`).get(data.logical_key) as Record<string, unknown>,
   );
 
   syncRow('plans', row);
@@ -199,6 +207,53 @@ export function getPlan(id: string): PlanRow | null {
 
   if (!row) return null;
   return toPlanRow(row);
+}
+
+/**
+ * Retrieve a single plan by logical key.
+ *
+ * @returns the plan row, or null if not found.
+ */
+export function getPlanByLogicalKey(logicalKey: string): PlanRow | null {
+  const db = getDatabase();
+
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM plans WHERE logical_key = ?`,
+  ).get(logicalKey) as Record<string, unknown> | undefined;
+
+  if (!row) return null;
+  return toPlanRow(row);
+}
+
+/**
+ * Delete a single plan by id and enqueue a team-sync tombstone when enabled.
+ *
+ * @returns the deleted plan row, or null if not found.
+ */
+export function deletePlan(id: string): PlanRow | null {
+  const db = getDatabase();
+  const row = getPlan(id);
+  if (!row) return null;
+
+  const info = db.prepare(`DELETE FROM plans WHERE id = ?`).run(id);
+  if (info.changes === 0) return null;
+
+  if (isTeamSyncEnabled()) {
+    enqueueOutbox({
+      table_name: 'plans',
+      row_id: row.id,
+      operation: 'delete',
+      payload: JSON.stringify({
+        id: row.id,
+        logical_key: row.logical_key,
+        title: row.title,
+      }),
+      machine_id: getTeamMachineId(),
+      created_at: epochSeconds(),
+    });
+  }
+
+  return row;
 }
 
 /**

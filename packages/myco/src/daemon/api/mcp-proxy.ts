@@ -16,13 +16,21 @@ import {
 } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
+import { getLatestOpenBatch } from '@myco/db/queries/batches.js';
 import { insertSpore, updateSporeStatus } from '@myco/db/queries/spores.js';
 import { getPlan, listPlans } from '@myco/db/queries/plans.js';
-import { listSessions } from '@myco/db/queries/sessions.js';
+import { getSession, listSessions } from '@myco/db/queries/sessions.js';
 import { listTeamMembers } from '@myco/db/queries/team-members.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
+import { PLAN_STATUSES } from '@myco/vault/types.js';
+import {
+  buildPathPlanLogicalKey,
+  buildSessionPlanLogicalKey,
+  normalizePlanSourcePath,
+} from '@myco/plans/identity.js';
+import { persistPlan } from '../plan-capture.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -85,6 +93,19 @@ const ConsolidateBody = z.object({
   reason: z.string().optional(),
 });
 
+const SavePlanBody = z.object({
+  session_id: z.string(),
+  content: z.string().min(1),
+  source_path: z.string().min(1).optional(),
+  plan_key: z.string().min(1).optional(),
+  title: z.string().min(1).optional(),
+  status: z.enum(PLAN_STATUSES).optional(),
+  tags: z.array(z.string()).optional(),
+}).refine(
+  (value) => Boolean(value.source_path) !== Boolean(value.plan_key),
+  { message: 'Provide exactly one of source_path or plan_key' },
+);
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -92,6 +113,7 @@ const ConsolidateBody = z.object({
 export interface McpProxyDeps {
   machineId: string;
   embeddingManager: EmbeddingManager;
+  projectRoot: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +121,7 @@ export interface McpProxyDeps {
 // ---------------------------------------------------------------------------
 
 export function createMcpProxyHandlers(deps: McpProxyDeps) {
-  const { machineId, embeddingManager } = deps;
+  const { machineId, embeddingManager, projectRoot } = deps;
 
   function toPlanSummary(row: {
     id: string;
@@ -256,6 +278,48 @@ export function createMcpProxyHandlers(deps: McpProxyDeps) {
     };
   }
 
+  /** POST /api/mcp/plans — persist a plan directly into the current session. */
+  async function handleSavePlan(req: RouteRequest): Promise<RouteResponse> {
+    const { session_id, content, source_path, plan_key, title, status, tags } = SavePlanBody.parse(req.body);
+    const session = getSession(session_id);
+    if (!session) return { status: 404, body: { error: 'session_not_found' } };
+
+    const openBatch = getLatestOpenBatch(session_id);
+    const normalizedSourcePath = source_path
+      ? normalizePlanSourcePath(source_path, projectRoot)
+      : null;
+    const logicalKey = normalizedSourcePath
+      ? buildPathPlanLogicalKey(normalizedSourcePath)
+      : buildSessionPlanLogicalKey(session_id, plan_key!);
+
+    const row = persistPlan({
+      sessionId: session_id,
+      content,
+      logicalKey,
+      sourcePath: normalizedSourcePath,
+      promptBatchId: openBatch?.id,
+      title,
+      status,
+      tags,
+      planKey: plan_key ?? null,
+    });
+
+    return {
+      body: {
+        id: row.id,
+        logical_key: row.logical_key,
+        title: row.title,
+        status: row.status,
+        source_path: row.source_path,
+        session_id: row.session_id,
+        prompt_batch_id: row.prompt_batch_id,
+        tags: toPlanTags(row.tags),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+      },
+    };
+  }
+
   /** GET /api/mcp/plans — list plans, or return a single plan with content when id is set. */
   async function handlePlans(req: RouteRequest): Promise<RouteResponse> {
     const id = typeof req.query.id === 'string' ? req.query.id : undefined;
@@ -343,6 +407,7 @@ export function createMcpProxyHandlers(deps: McpProxyDeps) {
     handleSupersede,
     handleConsolidate,
     handlePlans,
+    handleSavePlan,
     handleSessions,
     handleTeam,
   };

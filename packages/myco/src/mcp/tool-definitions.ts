@@ -8,12 +8,43 @@ import { MCP_SEARCH_DEFAULT_LIMIT, MCP_SESSIONS_DEFAULT_LIMIT, MCP_SKILLS_DEFAUL
 
 /** Plan statuses plus 'all' for filtering. */
 const PLAN_STATUS_FILTER = [...PLAN_STATUSES, 'all'] as const;
+const DEFAULT_CORTEX_PRIORITY = 100;
+
+interface ToolOneOfRequirement {
+  required: string[];
+}
+
+interface ToolInputSchema {
+  type: 'object';
+  properties: Record<string, unknown>;
+  required?: string[];
+  oneOf?: ToolOneOfRequirement[];
+}
+
+export interface ToolCortexMetadata {
+  guidance: string;
+  priority?: number;
+  requiresTeam?: boolean;
+  requiresCollective?: boolean;
+}
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: ToolInputSchema;
+  cortex?: ToolCortexMetadata;
+}
+
+export function getToolCortexPriority(tool: Pick<ToolDefinition, 'cortex'>): number {
+  return tool.cortex?.priority ?? DEFAULT_CORTEX_PRIORITY;
+}
 
 // --- Tool names ---
 export const TOOL_SEARCH = 'myco_search';
 export const TOOL_RECALL = 'myco_recall';
 export const TOOL_REMEMBER = 'myco_remember';
 export const TOOL_PLANS = 'myco_plans';
+export const TOOL_SAVE_PLAN = 'myco_save_plan';
 export const TOOL_SESSIONS = 'myco_sessions';
 export const TOOL_TEAM = 'myco_team';
 export const TOOL_GRAPH = 'myco_graph';
@@ -32,10 +63,14 @@ const PROP_SINCE = 'ISO timestamp — entries after this date';
 const PROP_TAGS = 'Tags for discoverability — component names, technologies, concepts';
 
 // --- Tool definitions ---
-export const TOOL_DEFINITIONS = [
+export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: TOOL_SEARCH,
     description: 'Search the vault for prior sessions, spores, plans, and artifacts. Use before making design decisions, when debugging non-obvious issues, or when wondering why code is structured a certain way.',
+    cortex: {
+      guidance: 'Use for prior decisions, bugs, and rationale when you know the topic but not the exact note.',
+      priority: 20,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -49,6 +84,10 @@ export const TOOL_DEFINITIONS = [
   {
     name: TOOL_RECALL,
     description: 'Look up a specific vault note by ID — returns the full content of a session, spore, or plan. Use when you have a note ID from search results or graph traversal and need the complete details.',
+    cortex: {
+      guidance: 'Use after search finds a promising result and you need the full note.',
+      priority: 30,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -60,6 +99,10 @@ export const TOOL_DEFINITIONS = [
   {
     name: TOOL_REMEMBER,
     description: 'Save a decision, gotcha, bug fix, discovery, or trade-off as a permanent spore. Use after making a key decision, fixing a tricky bug, discovering something non-obvious, or encountering a gotcha. Session association is derived by the daemon — the MCP client does not pass it.',
+    cortex: {
+      guidance: 'Use to save durable decisions, gotchas, discoveries, or bug fixes from this work.',
+      priority: 90,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -73,6 +116,10 @@ export const TOOL_DEFINITIONS = [
   {
     name: TOOL_PLANS,
     description: 'List active implementation plans and their status. Use to check what work is in flight before starting new tasks.',
+    cortex: {
+      guidance: 'Use before implementation when approved plans or specs may already exist.',
+      priority: 50,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -82,8 +129,37 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: TOOL_SAVE_PLAN,
+    description: 'Persist a plan directly into Myco for a session. Use this when you generated or revised a plan and want it captured reliably. If the plan is also being written to disk, pass the same source_path so direct persistence and file capture reconcile to one logical plan.',
+    cortex: {
+      guidance: 'Use when you create or materially revise a plan and want it persisted to Myco. Pass `source_path` when the plan is also written to disk; otherwise use a stable `plan_key`.',
+      priority: 60,
+    },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        session_id: { type: 'string', description: 'Session id the plan belongs to' },
+        content: { type: 'string', description: 'Markdown plan content to persist' },
+        source_path: { type: 'string', description: 'Path to the plan file when the plan is also written to disk' },
+        plan_key: { type: 'string', description: 'Stable key for non-file-backed plans (for example: primary)' },
+        title: { type: 'string', description: 'Optional explicit title. Defaults to the first Markdown H1, then file name or humanized plan_key.' },
+        status: { type: 'string', enum: PLAN_STATUSES, description: `Plan status: ${PLAN_STATUSES.join(', ')}` },
+        tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
+      },
+      required: ['session_id', 'content'],
+      oneOf: [
+        { required: ['source_path'] },
+        { required: ['plan_key'] },
+      ],
+    },
+  },
+  {
     name: TOOL_SESSIONS,
     description: 'Browse past coding sessions with summaries, tools used, and linked spores. Use to understand what work has been done on a feature or branch.',
+    cortex: {
+      guidance: 'Use when continuing related work or recovering recent implementation context.',
+      priority: 40,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -99,6 +175,11 @@ export const TOOL_DEFINITIONS = [
   {
     name: TOOL_TEAM,
     description: 'List team members registered in the vault. Returns id, user, role, joined, and tags per member. Phase-1 scope: no filters.',
+    cortex: {
+      guidance: 'Use for current team topology and shared project context.',
+      priority: 70,
+      requiresTeam: true,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {},
@@ -120,6 +201,10 @@ export const TOOL_DEFINITIONS = [
   {
     name: TOOL_SUPERSEDE,
     description: 'Mark a spore as outdated and replaced by a newer one. Use when a decision was reversed, a gotcha was fixed, a discovery was wrong, or the codebase changed and an observation no longer applies. The old spore is preserved but marked superseded.',
+    cortex: {
+      guidance: 'Use when existing knowledge is outdated and should stop guiding future runs.',
+      priority: 100,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -133,6 +218,10 @@ export const TOOL_DEFINITIONS = [
   {
     name: TOOL_CONSOLIDATE,
     description: 'Merge 2+ related spores into a single comprehensive wisdom note. Inserts a new spore with the consolidated content; each source spore is marked superseded with a resolution_events row linking it to the new wisdom spore. Use when multiple observations describe aspects of the same insight, share a root cause, or would be more useful as one reference.',
+    cortex: {
+      guidance: 'Use when several related learnings should become one durable wisdom artifact.',
+      priority: 110,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -148,6 +237,10 @@ export const TOOL_DEFINITIONS = [
   {
     name: TOOL_CONTEXT,
     description: "Retrieve Myco's pre-computed project digest — a rich, always-current synthesis of project history, decisions, patterns, active work, and institutional knowledge. Call this at the start of a new task or session to orient yourself on the project before taking action; call it again after long interruptions or when switching contexts. This is NOT a search — it's the project's accumulated understanding, served instantly. Available tiers: 1500 (executive briefing, one-screen overview), 5000 (deep onboarding, default), 10000 (comprehensive institutional knowledge). Prefer this over myco_search when you need broad project orientation; use myco_search when you need to find specific prior decisions or bug fixes.",
+    cortex: {
+      guidance: 'Use for broad project orientation or when you want the current digest before planning changes.',
+      priority: 10,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -186,10 +279,15 @@ export const TOOL_DEFINITIONS = [
   },
 ];
 
-export const COLLECTIVE_TOOL_DEFINITIONS = [
+export const COLLECTIVE_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: TOOL_COLLECTIVE_SEARCH,
     description: 'Search across connected projects in the active Myco Collective. Results include project attribution.',
+    cortex: {
+      guidance: 'Use for cross-project knowledge across the connected collective.',
+      priority: 80,
+      requiresCollective: true,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -203,6 +301,11 @@ export const COLLECTIVE_TOOL_DEFINITIONS = [
   {
     name: TOOL_COLLECTIVE_PROJECTS,
     description: 'List the projects connected to the active Myco Collective.',
+    cortex: {
+      guidance: 'Use to discover relevant collective projects before drilling deeper.',
+      priority: 81,
+      requiresCollective: true,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {},
@@ -211,6 +314,11 @@ export const COLLECTIVE_TOOL_DEFINITIONS = [
   {
     name: TOOL_COLLECTIVE_PROJECT,
     description: 'Get metadata for a single project connected to the active Myco Collective.',
+    cortex: {
+      guidance: 'Use when you know the collective project and need its focused context.',
+      priority: 82,
+      requiresCollective: true,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {

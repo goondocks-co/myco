@@ -37,7 +37,7 @@ For reconfiguration, status checks, and ongoing management, use the CLI commands
 
 ## MCP Tools Reference
 
-The local Myco MCP server registers 12 core tools. When the project is connected to a Myco Collective, 3 additional `collective_*` tools are also registered. Tools are defined in `packages/myco/src/mcp/tool-definitions.ts` — that file is the source of truth.
+The local Myco MCP server registers 13 core tools. When the project is connected to a Myco Collective, 3 additional `collective_*` tools are also registered. Tools are defined in `packages/myco/src/mcp/tool-definitions.ts` — that file is the source of truth.
 
 ### myco_context — Get the project digest
 
@@ -103,6 +103,20 @@ List plans and their progress, or retrieve a single plan's full content by ID.
 ```
 
 When `id` is set, the response includes the plan's `content` field. Otherwise the list shape contains summary metadata only.
+
+### myco_save_plan — Persist a plan directly into Myco
+
+Save a plan directly to the current Myco session when you generated or materially revised it in the conversation.
+
+```json
+{ "session_id": "sess-123", "content": "# Primary Plan", "plan_key": "primary" }
+```
+
+```json
+{ "session_id": "sess-123", "content": "# Plan", "source_path": "docs/plans/feature-x.md" }
+```
+
+If the plan is also being written to disk, pass that same `source_path` so direct persistence and file capture reconcile to one logical plan. Use `plan_key` only for plans that do not have a durable file path.
 
 ### myco_sessions — Browse session history
 
@@ -229,6 +243,7 @@ The vault should get sharper over time, not just bigger. Every session should le
 1. `myco_recall` with your branch and key files
 2. `myco_sessions` filtered by branch to see prior session summaries
 3. `myco_plans` to check if there's an active plan
+4. `myco_save_plan` after generating or revising a plan that should persist in Myco
 
 ### After fixing a tricky bug
 

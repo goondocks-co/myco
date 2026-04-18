@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { CodexJsonlParser } from '@myco/symbionts/parsers/codex-jsonl.js';
-import { extractTaggedPlans, capturePlan } from '@myco/daemon/plan-capture.js';
+import { extractTaggedPlans, captureTaggedPlan } from '@myco/daemon/plan-capture.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertBatch } from '@myco/db/queries/batches.js';
 import { listPlansBySession } from '@myco/db/queries/plans.js';
@@ -76,8 +76,8 @@ describe('Codex plan capture integration', () => {
 
       // Step 3: Capture each plan
       for (const { tag, content } of taggedPlans) {
-        capturePlan({
-          sourcePath: `transcript:${tag}`,
+        captureTaggedPlan({
+          tag,
           content,
           sessionId,
           promptBatchId: batch.id,
@@ -101,15 +101,15 @@ describe('Codex plan capture integration', () => {
     upsertSession({ id: sessionId, agent: 'codex', started_at: now, created_at: now });
 
     // Capture original
-    const original = capturePlan({
-      sourcePath: 'transcript:proposed_plan',
+    const original = captureTaggedPlan({
+      tag: 'proposed_plan',
       content: '# Original Plan\n\nFirst version.',
       sessionId,
     });
 
     // Capture revision (same source path)
-    const revised = capturePlan({
-      sourcePath: 'transcript:proposed_plan',
+    const revised = captureTaggedPlan({
+      tag: 'proposed_plan',
       content: '# Revised Plan\n\nSecond version.',
       sessionId,
     });
