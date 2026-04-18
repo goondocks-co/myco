@@ -224,7 +224,9 @@ async function detectRemoteProviderInfo(
 
   if (authConfigured) {
     try {
-      models = await fetchRemoteProviderModels(type, baseUrl, ANTHROPIC_MODELS_TIMEOUT_MS);
+      // baseUrl is intentionally ignored by fetchRemoteProviderModels for remote
+      // providers (always uses the hardcoded default); see SSRF lockdown.
+      models = await fetchRemoteProviderModels(type, undefined, ANTHROPIC_MODELS_TIMEOUT_MS);
       available = true;
     } catch {
       available = false;
