@@ -114,6 +114,12 @@ describe('backup engine', () => {
       expect(BACKUP_TABLES).not.toContain('agents');
       expect(BACKUP_TABLES).not.toContain('agent_runs');
     });
+
+    it('excludes cortex_instructions (local-only per v19) (#56)', () => {
+      // cortex_instructions is operating guidance specific to the local
+      // machine; restoreBackup on another machine must NEVER ingest it.
+      expect(BACKUP_TABLES).not.toContain('cortex_instructions');
+    });
   });
 
   describe('createBackup()', () => {

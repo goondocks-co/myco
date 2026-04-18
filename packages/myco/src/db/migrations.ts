@@ -286,9 +286,12 @@ function migrateV17ToV18(db: Database): void {
  * Version 19 removes Cortex instructions from the team-sync surface.
  *
  * Cortex instructions are local operating guidance, not shared team
- * knowledge. Older builds may have enqueued `cortex_instructions`
- * outbox rows before this boundary was clarified, so this migration
- * drops any queued/sent rows for that table to stop futile retries.
+ * knowledge. No current call site enqueues `cortex_instructions` outbox
+ * rows, so this DELETE is a safety net — the real invariant is enforced
+ * in `enqueueOutbox` via LOCAL_ONLY_OUTBOX_TABLES. Any rows that slipped
+ * in from an older build are cleared here so they don't linger as
+ * futile retries; new inserts for this table name are rejected at the
+ * enqueue layer.
  */
 function migrateV18ToV19(db: Database): void {
   db.exec('BEGIN');
@@ -396,12 +399,96 @@ function migrateV13ToV14(db: Database): void {
 }
 
 /**
+ * Test-only re-export of the v20 collision resolver. The migration itself is
+ * internal; tests need this entry point to assert the collision guard.
+ */
+export function resolveV20PlanIdentityCollisionsForTest(db: Database): void {
+  resolveV20PlanIdentityCollisions(db);
+}
+
+/**
+ * Resolve any logical-key collisions in the v20 plan migration staging pass.
+ *
+ * Used after the first pass populates id_next / logical_key_next on every
+ * plan row. Rows whose derived logical key was already taken by an earlier
+ * row get moved onto a per-row legacy key so no two rows end up with the
+ * same plan id after the swap.
+ *
+ * Throws a descriptive error if a collision would remain even after the
+ * legacy-key fallback -- the caller is expected to fail the migration and
+ * surface the conflicting keys to the operator.
+ */
+function resolveV20PlanIdentityCollisions(db: Database): void {
+  const dupes = db.prepare(
+    `SELECT logical_key_next, COUNT(*) AS n
+       FROM plans
+       WHERE logical_key_next <> ''
+       GROUP BY logical_key_next
+       HAVING n > 1`,
+  ).all() as Array<{ logical_key_next: string; n: number }>;
+
+  if (dupes.length > 0) {
+    const rowsForKey = db.prepare(
+      `SELECT id, session_id
+         FROM plans
+         WHERE logical_key_next = ?
+         ORDER BY created_at ASC, id ASC`,
+    );
+    const updateStaging = db.prepare(
+      `UPDATE plans
+          SET logical_key_next = ?, id_next = ?
+        WHERE id = ?`,
+    );
+
+    for (const dupe of dupes) {
+      const conflicting = rowsForKey.all(dupe.logical_key_next) as Array<{ id: string; session_id: string | null }>;
+      for (let i = 1; i < conflicting.length; i += 1) {
+        const row = conflicting[i];
+        const legacyKey = row.session_id
+          ? `session:${row.session_id}:legacy:${row.id}`
+          : `legacy:${row.id}`;
+        updateStaging.run(legacyKey, buildPlanId(legacyKey), row.id);
+      }
+    }
+  }
+
+  // Final guard: ensure the staging pass is collision-free. If a collision
+  // still exists after the legacy fallback, surface a descriptive error
+  // listing the offending keys rather than letting the swap hit a UNIQUE
+  // constraint violation.
+  const remaining = db.prepare(
+    `SELECT id_next, GROUP_CONCAT(id, ',') AS ids
+       FROM plans
+       WHERE id_next IS NOT NULL
+       GROUP BY id_next
+       HAVING COUNT(*) > 1`,
+  ).all() as Array<{ id_next: string; ids: string }>;
+
+  if (remaining.length > 0) {
+    const detail = remaining
+      .map((r) => `${r.id_next} <= [${r.ids}]`)
+      .join('; ');
+    throw new Error(
+      `v20 plan migration: plan id collisions after legacy fallback: ${detail}`,
+    );
+  }
+}
+
+/**
  * Version 20 adds plans.logical_key and backfills plan identity so capture
  * channels can converge on one last-write-wins row per logical plan.
  *
  * This is intentionally a forward migration on top of the shipped v19 schema
  * chain from main. Earlier versions keep their original meaning; logical-key
  * plan identity is introduced only once the vault reaches v20.
+ *
+ * Identity swap is performed in two passes:
+ *   1. Populate `id_next` / `logical_key_next` staging columns with the
+ *      computed values for every row, and resolve any collisions before
+ *      touching the primary key.
+ *   2. Swap `id` / `logical_key` from the staging columns in a single
+ *      UPDATE. This guarantees we never attempt an UPDATE that would fail
+ *      with a UNIQUE violation mid-loop and leave the vault stuck at v19.
  */
 function migrateV19ToV20(db: Database, machineId: string): void {
   db.exec('BEGIN');
@@ -409,6 +496,13 @@ function migrateV19ToV20(db: Database, machineId: string): void {
     const planColumns = getTableColumnSet(db, 'plans');
     if (!planColumns.has('logical_key')) {
       db.exec(`ALTER TABLE plans ADD COLUMN logical_key TEXT NOT NULL DEFAULT ''`);
+    }
+    // Staging columns for the two-pass identity swap. Dropped before COMMIT.
+    if (!planColumns.has('id_next')) {
+      db.exec(`ALTER TABLE plans ADD COLUMN id_next TEXT`);
+    }
+    if (!planColumns.has('logical_key_next')) {
+      db.exec(`ALTER TABLE plans ADD COLUMN logical_key_next TEXT NOT NULL DEFAULT ''`);
     }
 
     const rows = db.prepare(
@@ -435,12 +529,52 @@ function migrateV19ToV20(db: Database, machineId: string): void {
       synced_at: number | null;
     }>;
 
-    const seenLogicalKeys = new Set<string>();
-    const updatePlanIdentity = db.prepare(
+    // Pass 1: populate staging columns with derived identities.
+    const writeStaging = db.prepare(
       `UPDATE plans
-       SET id = ?, logical_key = ?, embedded = ?, synced_at = NULL
-       WHERE id = ?`,
+          SET id_next = ?, logical_key_next = ?
+        WHERE id = ?`,
     );
+    for (const row of rows) {
+      const derivedLogicalKey = deriveStoredPlanLogicalKey(row);
+      writeStaging.run(buildPlanId(derivedLogicalKey), derivedLogicalKey, row.id);
+    }
+
+    // Pass 1b: reassign any colliding rows onto per-row legacy keys and
+    // verify the staging pass is collision-free before the swap.
+    resolveV20PlanIdentityCollisions(db);
+
+    // Build a map of each row's previous logical_key (pre-swap) so the
+    // outbox re-enqueue step can detect whether identity actually changed.
+    const previousLogicalKeyByOldId = new Map<string, string>();
+    const previousIdNextByOldId = new Map<string, string>();
+    const staged = db.prepare(
+      `SELECT id, id_next, logical_key, logical_key_next FROM plans`,
+    ).all() as Array<{ id: string; id_next: string | null; logical_key: string | null; logical_key_next: string }>;
+    for (const row of staged) {
+      previousLogicalKeyByOldId.set(row.id, row.logical_key ?? '');
+      if (row.id_next) previousIdNextByOldId.set(row.id, row.id_next);
+    }
+
+    // Pass 2: swap identity columns in place. Because the staging columns
+    // are collision-free, the final id update cannot violate UNIQUE.
+    db.prepare(
+      `UPDATE plans
+          SET embedded = CASE WHEN id = id_next THEN embedded ELSE 0 END,
+              synced_at = CASE WHEN id = id_next THEN synced_at ELSE NULL END
+        WHERE id_next IS NOT NULL`,
+    ).run();
+    db.prepare(
+      `UPDATE plans
+          SET id = id_next,
+              logical_key = logical_key_next
+        WHERE id_next IS NOT NULL`,
+    ).run();
+
+    // Finalize: enqueue outbox operations for rows whose identity changed.
+    // Skip enqueuing upserts for rows whose id AND logical_key match their
+    // prior values -- those rows retain their existing outbox state.
+    // (Finding #39)
     const deleteOutboxEntries = db.prepare(
       `DELETE FROM team_outbox
        WHERE table_name = 'plans' AND row_id IN (?, ?)`,
@@ -452,18 +586,20 @@ function migrateV19ToV20(db: Database, machineId: string): void {
     const now = epochSeconds();
 
     for (const row of rows) {
-      const derivedLogicalKey = deriveStoredPlanLogicalKey(row);
-      const logicalKey = seenLogicalKeys.has(derivedLogicalKey)
-        ? `${row.session_id ? `session:${row.session_id}:` : ''}legacy:${row.id}`
-        : derivedLogicalKey;
-      seenLogicalKeys.add(logicalKey);
-      const nextId = buildPlanId(logicalKey);
-      const embedded = nextId === row.id ? (row.embedded ?? 0) : 0;
+      const nextId = previousIdNextByOldId.get(row.id) ?? row.id;
+      const fresh = db.prepare(`SELECT * FROM plans WHERE id = ?`).get(nextId) as Record<string, unknown> | undefined;
 
-      updatePlanIdentity.run(nextId, logicalKey, embedded, row.id);
+      const identityChanged = nextId !== row.id;
+      const previousLogicalKey = previousLogicalKeyByOldId.get(row.id) ?? '';
+      const currentLogicalKey = (fresh?.logical_key as string | undefined) ?? '';
+      const logicalKeyChanged = previousLogicalKey !== currentLogicalKey;
+      const needsResync = identityChanged || logicalKeyChanged;
+
+      if (!needsResync) continue;
+
       deleteOutboxEntries.run(row.id, nextId);
 
-      if (nextId !== row.id) {
+      if (identityChanged) {
         enqueueOutbox.run(
           row.id,
           'delete',
@@ -473,12 +609,12 @@ function migrateV19ToV20(db: Database, machineId: string): void {
         );
       }
 
-      const fresh = db.prepare(`SELECT * FROM plans WHERE id = ?`).get(nextId) as Record<string, unknown> | undefined;
       if (fresh) {
+        const { id_next: _idNext, logical_key_next: _lkNext, ...publishable } = fresh;
         enqueueOutbox.run(
           nextId,
           'upsert',
-          JSON.stringify(fresh),
+          JSON.stringify(publishable),
           (fresh.machine_id as string | null) ?? machineId,
           now,
         );
@@ -486,6 +622,11 @@ function migrateV19ToV20(db: Database, machineId: string): void {
     }
 
     db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_logical_key ON plans (logical_key)`);
+
+    // Drop staging columns now that the swap is committed. SQLite supports
+    // DROP COLUMN since 3.35; our minimum version is newer.
+    db.exec(`ALTER TABLE plans DROP COLUMN id_next`);
+    db.exec(`ALTER TABLE plans DROP COLUMN logical_key_next`);
 
     db.prepare(
       `INSERT INTO schema_version (version, applied_at)
@@ -927,6 +1068,10 @@ function migrateV11ToV12(db: Database): void {
  *
  * Each ALTER uses the standard idempotency guard. Table creation uses
  * `CREATE TABLE IF NOT EXISTS`.
+ *
+ * Note on write_intents: the table is append-only from the query layer
+ * (no UPDATE/DELETE helper exposed). ON DELETE CASCADE on run_id is
+ * intentional so parent-row purges still cleanly cascade.
  */
 /**
  * Version 16 persists the reasoning level and full execution override packet
