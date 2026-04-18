@@ -21,6 +21,7 @@ import {
   TOOL_DEFINITIONS,
   COLLECTIVE_TOOL_DEFINITIONS,
 } from '@myco/mcp/tool-definitions.js';
+import { RETRIEVAL_GUIDANCE } from '@myco/context/cortex-brief.js';
 import { handleMycoPlans } from '@myco/mcp/tools/plans.js';
 import { handleMycoRemember } from '@myco/mcp/tools/remember.js';
 import { handleMycoSavePlan } from '@myco/mcp/tools/save-plan.js';
@@ -80,6 +81,26 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
       expect(tool.inputSchema.type).toBe('object');
       expect(tool.inputSchema.properties).toBeDefined();
     }
+  });
+
+  it('every Cortex-guided tool appears in generated retrieval guidance', () => {
+    const cortexToolNames = [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS]
+      .filter((tool) => Boolean(tool.cortex))
+      .map((tool) => tool.name)
+      .sort();
+    const retrievalGuidanceNames = RETRIEVAL_GUIDANCE.map((entry) => entry.tool).sort();
+
+    expect(retrievalGuidanceNames).toEqual(cortexToolNames);
+  });
+
+  it('keeps non-guided tools out of Cortex retrieval guidance', () => {
+    const skillsTool = TOOL_DEFINITIONS.find((tool) => tool.name === 'myco_skills');
+    const skillCandidatesTool = TOOL_DEFINITIONS.find((tool) => tool.name === 'myco_skill_candidates');
+
+    expect(skillsTool?.cortex).toBeUndefined();
+    expect(skillCandidatesTool?.cortex).toBeUndefined();
+    expect(RETRIEVAL_GUIDANCE.some((entry) => entry.tool === 'myco_skills')).toBe(false);
+    expect(RETRIEVAL_GUIDANCE.some((entry) => entry.tool === 'myco_skill_candidates')).toBe(false);
   });
 
   it('myco_save_plan documents source_path xor plan_key', () => {

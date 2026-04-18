@@ -8,6 +8,7 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertSpore } from '@myco/db/queries/spores.js';
 import { buildCortexInstructionsInput } from '@myco/cortex/instructions-input.js';
+import { buildPlanId } from '@myco/plans/identity.js';
 
 const NOW = Math.floor(Date.now() / 1000);
 
@@ -68,7 +69,8 @@ describe('buildCortexInstructionsInput', () => {
     });
 
     upsertPlan({
-      id: 'plan-cortex-1',
+      id: buildPlanId('session:sess-cortex-1:key:primary'),
+      logical_key: 'session:sess-cortex-1:key:primary',
       created_at: NOW,
       status: 'active',
       title: 'Finish Cortex instruction refresh',
@@ -86,6 +88,8 @@ describe('buildCortexInstructionsInput', () => {
     expect(result.instruction).toContain('static retrieval boilerplate');
     expect(result.instruction).toContain('## Active plans');
     expect(result.instruction).toContain('Finish Cortex instruction refresh');
+    expect(result.instruction).toContain('`myco_save_plan`');
+    expect(result.instruction).toContain('Pass `source_path` when the plan is also written to disk');
     expect(result.instruction).toContain('do not instruct it to call `myco_skills`');
   });
 });
