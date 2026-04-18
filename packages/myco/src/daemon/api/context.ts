@@ -21,7 +21,7 @@ import {
 } from '@myco/context/cortex-brief.js';
 import { shouldInjectSessionStartDigest } from '@myco/context/session-start-digest.js';
 import { composeSessionStartContext } from '@myco/context/session-start-context.js';
-import { getCortexInstructionsSnapshot } from '@myco/services/cortex.js';
+import { getCortexInstructionsSnapshot } from '../cortex.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';

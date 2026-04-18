@@ -21,7 +21,7 @@ import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.j
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { MycoConfigSchema } from '@myco/config/schema.js';
-import { buildCortexInstructionsInput } from '@myco/cortex/instructions-input.js';
+import { buildCortexInstructionsInput } from '@myco/context/cortex-brief.js';
 import {
   buildSkillEvolveInstruction,
   buildSkillGenerateInstruction,

@@ -18,7 +18,7 @@ describe('MCP Server', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('registers all 15 core tools', () => {
+  it('registers all 20 core tools', () => {
     const server = createMycoServer(tmpDir, client);
     const tools = server.getRegisteredTools();
     expect(tools).toContain('myco_search');
@@ -37,7 +37,13 @@ describe('MCP Server', () => {
     // Bundle D additions (pre-0.21.0 agent-native MCP parity).
     expect(tools).toContain('myco_cortex');
     expect(tools).toContain('myco_runs');
-    expect(tools).toHaveLength(15);
+    // Bundle G additions (post-0.21.0 follow-ups — #95..#99).
+    expect(tools).toContain('myco_evaluations');
+    expect(tools).toContain('myco_write_intents');
+    expect(tools).toContain('myco_phase_audit');
+    expect(tools).toContain('myco_resume_run');
+    expect(tools).toContain('myco_digest_revisions');
+    expect(tools).toHaveLength(20);
   });
 
   it('does not leak collective tools into the core registration', () => {
