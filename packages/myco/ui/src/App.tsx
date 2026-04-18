@@ -3,7 +3,7 @@ import { Routes, Route } from 'react-router-dom';
 import Layout from './layout/Layout';
 import Dashboard from './pages/Dashboard';
 import Sessions from './pages/Sessions';
-import Cortex from './pages/OperatingSystem';
+import Cortex from './pages/Cortex';
 import Mycelium from './pages/Mycelium';
 import Agent from './pages/Agent';
 import Skills from './pages/Skills';

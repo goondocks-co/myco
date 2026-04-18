@@ -1,7 +1,7 @@
 import type { MycoConfig } from '@myco/config/schema.js';
 import { estimateTokens, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
-import { shouldInjectOperatingBrief } from './operating-brief.js';
+import { shouldInjectCortex } from './cortex-brief.js';
 import { getSessionStartDigestPayload, shouldInjectSessionStartDigest } from './session-start-digest.js';
 
 // ---------------------------------------------------------------------------
@@ -33,7 +33,7 @@ export async function buildInjectedContext(
   config: MycoConfig,
   _context: InjectionContext,
 ): Promise<InjectedContext> {
-  const includeBrief = shouldInjectOperatingBrief(config.context, 'session_start');
+  const includeBrief = shouldInjectCortex(config.context);
   const includeDigest = shouldInjectSessionStartDigest(config.context);
   if (!includeBrief && !includeDigest) {
     return emptyContext();

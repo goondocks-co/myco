@@ -73,7 +73,7 @@ describe('database-optimize power job', () => {
           daemon: { log_retention_days: 30 },
           backup: {},
           maintenance: { auto_optimize: true, auto_optimize_interval_hours: 24 },
-          context: { operating_brief_enabled: true },
+          context: { cortex_enabled: true },
           ...overrides,
         },
       } as never,
@@ -153,7 +153,7 @@ function buildStagingDeps(vaultDir: string): PowerJobDeps {
         daemon: { log_retention_days: 30 },
         backup: {},
         maintenance: { auto_optimize: false, auto_optimize_interval_hours: 24 },
-        context: { operating_brief_enabled: true },
+        context: { cortex_enabled: true },
       },
     } as any,
     db: {} as any,
@@ -260,7 +260,7 @@ describe('log-retention power job', () => {
         daemon: { log_retention_days: 7 },
         backup: {},
         maintenance: { auto_optimize: false, auto_optimize_interval_hours: 24 },
-        context: { operating_brief_enabled: true },
+        context: { cortex_enabled: true },
       } as never,
     };
     return {

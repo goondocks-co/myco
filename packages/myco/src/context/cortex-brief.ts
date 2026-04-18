@@ -13,20 +13,14 @@ import {
   TOOL_COLLECTIVE_SEARCH,
   TOOL_COLLECTIVE_PROJECTS,
   TOOL_COLLECTIVE_PROJECT,
-  TOOL_DEFINITIONS,
-  COLLECTIVE_TOOL_DEFINITIONS,
 } from '../mcp/tool-definitions.js';
-
-export const OPERATING_BRIEF_INJECTION_POINTS = ['session_start'] as const;
-export type OperatingBriefInjectionPoint = (typeof OPERATING_BRIEF_INJECTION_POINTS)[number];
 
 const MAX_COLLECTIVE_CAPABILITY_LABELS = 4;
 
-export interface OperatingBriefCapabilities {
+export interface CortexCapabilities {
   teamEnabled: boolean;
   collectiveConnected: boolean;
   collectiveCapabilities: string[];
-  registeredTools: string[];
 }
 
 export interface RetrievalGuidance {
@@ -96,10 +90,10 @@ export const RETRIEVAL_GUIDANCE: RetrievalGuidance[] = [
   },
 ] as const;
 
-export async function resolveOperatingBriefCapabilities(
+export async function resolveCortexCapabilities(
   config: Pick<MycoConfig, 'team'>,
   getTeamClient?: () => TeamSyncClient | null,
-): Promise<OperatingBriefCapabilities> {
+): Promise<CortexCapabilities> {
   const teamClient = getTeamClient?.() ?? null;
   const teamEnabled = Boolean(config.team.enabled && teamClient);
   let collectiveConnected = false;
@@ -116,24 +110,17 @@ export async function resolveOperatingBriefCapabilities(
     }
   }
 
-  const registeredTools = TOOL_DEFINITIONS.map((tool) => tool.name);
-  if (collectiveConnected) {
-    registeredTools.push(...COLLECTIVE_TOOL_DEFINITIONS.map((tool) => tool.name));
-  }
-
   return {
     teamEnabled,
     collectiveConnected,
     collectiveCapabilities,
-    registeredTools,
   };
 }
 
-export function shouldInjectOperatingBrief(
+export function shouldInjectCortex(
   config: MycoConfig['context'],
-  injectionPoint: OperatingBriefInjectionPoint,
 ): boolean {
-  return config.operating_brief_enabled && config.operating_brief_inject_on.includes(injectionPoint);
+  return config.cortex_enabled;
 }
 
 export function resolveInstructionDelivery(
@@ -145,7 +132,7 @@ export function resolveInstructionDelivery(
   if (!symbiont) {
     return { inlineInstructions: true, reason: 'missing-symbiont' };
   }
-  if (!config.operating_brief_enabled) {
+  if (!config.cortex_enabled) {
     return { inlineInstructions: true, reason: 'session-start-disabled' };
   }
   if (symbiont.supportsSessionStartInjection) {
@@ -154,7 +141,7 @@ export function resolveInstructionDelivery(
   return { inlineInstructions: true, reason: 'no-session-start' };
 }
 
-export function buildCapabilitySummary(capabilities: OperatingBriefCapabilities): string[] {
+export function buildCapabilitySummary(capabilities: CortexCapabilities): string[] {
   const summary = [
     capabilities.collectiveConnected
       ? 'Myco can retrieve local, team, and collective knowledge in this project.'
@@ -177,12 +164,10 @@ export function buildCapabilitySummary(capabilities: OperatingBriefCapabilities)
   return summary;
 }
 
-export function buildRetrievalGuidanceLines(capabilities: OperatingBriefCapabilities): string[] {
-  const registeredTools = new Set(capabilities.registeredTools);
+export function buildRetrievalGuidanceLines(capabilities: CortexCapabilities): string[] {
   const lines: string[] = [];
 
   for (const entry of RETRIEVAL_GUIDANCE) {
-    if (!registeredTools.has(entry.tool)) continue;
     if (entry.requiresTeam && !capabilities.teamEnabled) continue;
     if (entry.requiresCollective && !capabilities.collectiveConnected) continue;
     lines.push(`- \`${entry.tool}\`: ${entry.guidance}`);

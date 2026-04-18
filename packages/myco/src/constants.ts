@@ -198,6 +198,8 @@ export const FEED_DEFAULT_LIMIT = 50;
 /** Available token-budget tiers for digest synthesis. */
 export const DIGEST_TIERS = [1500, 5000, 10000] as const;
 export type DigestTier = (typeof DIGEST_TIERS)[number];
+/** Smallest tier — used as the fallback when the preferred tier has no extract yet. */
+export const DIGEST_FALLBACK_TIER: DigestTier = DIGEST_TIERS[0];
 
 // --- Digest — Context window minimums per tier ---
 /** Minimum context window (tokens) required to run a digest at a given tier. */

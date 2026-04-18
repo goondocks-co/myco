@@ -28,10 +28,7 @@ const PromptBuilderStatusParams = z.object({
 
 export function createCortexHandlers(vaultDir: string, deps: CortexDeps) {
   async function handleGetInstructions(): Promise<RouteResponse> {
-    const snapshot = await getCortexInstructionsSnapshot(vaultDir, {
-      config: deps.liveConfig.current,
-      getTeamClient: deps.getTeamClient,
-    });
+    const snapshot = getCortexInstructionsSnapshot(deps.liveConfig.current);
     return { body: snapshot };
   }
 

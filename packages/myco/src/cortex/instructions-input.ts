@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { MycoConfig } from '@myco/config/schema.js';
-import { CONTENT_HASH_ALGORITHM, DEFAULT_AGENT_ID } from '@myco/constants.js';
+import { CONTENT_HASH_ALGORITHM, DEFAULT_AGENT_ID, DIGEST_FALLBACK_TIER } from '@myco/constants.js';
 import { getDigestExtract } from '@myco/db/queries/digest-extracts.js';
 import { getCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { listPlans } from '@myco/db/queries/plans.js';
@@ -10,15 +10,14 @@ import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 import {
   buildCapabilitySummary,
   buildRetrievalGuidanceLines,
-  resolveOperatingBriefCapabilities,
-} from '@myco/context/operating-brief.js';
+  resolveCortexCapabilities,
+} from '@myco/context/cortex-brief.js';
 
 const RECENT_SESSION_LIMIT = 3;
 const RECENT_SPORE_LIMIT = 4;
 const RECENT_PLAN_LIMIT = 3;
 const CONTENT_PREVIEW_MAX_CHARS = 240;
 const DIGEST_EXCERPT_MAX_CHARS = 900;
-const DIGEST_FALLBACK_TIER = 1500;
 const JSON_INDENT = 2;
 
 export const CORTEX_SKILLS_NOTE = 'Project and Myco skills are already registered with the agent separately. Tell the agent to use those skills directly when relevant, and do not instruct it to call `myco_skills`.';
@@ -109,7 +108,7 @@ export async function buildCortexInstructionsInput(
   config: MycoConfig,
   getTeamClient?: () => TeamSyncClient | null,
 ): Promise<CortexInstructionPayload> {
-  const capabilities = await resolveOperatingBriefCapabilities(config, getTeamClient);
+  const capabilities = await resolveCortexCapabilities(config, getTeamClient);
   const capabilitySummary = buildCapabilitySummary(capabilities);
   const retrievalGuidance = buildRetrievalGuidanceLines(capabilities);
   const recentSessions = formatRecentSessions();
@@ -119,7 +118,7 @@ export async function buildCortexInstructionsInput(
   const input = {
     context: {
       digest_tier: config.context.digest_tier,
-      operating_brief_enabled: config.context.operating_brief_enabled,
+      cortex_enabled: config.context.cortex_enabled,
       prompt_search: config.context.prompt_search,
       prompt_max_spores: config.context.prompt_max_spores,
     },

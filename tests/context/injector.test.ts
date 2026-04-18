@@ -72,7 +72,7 @@ describe('buildInjectedContext', () => {
     const disabledConfig = MycoConfigSchema.parse({
       version: 3,
       context: {
-        operating_brief_enabled: false,
+        cortex_enabled: false,
       },
     });
     upsertCortexInstructions({

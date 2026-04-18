@@ -515,7 +515,7 @@ export async function main(): Promise<void> {
 
   server.registerRoute('POST', '/events/stop', stopProcessor.handleStopRoute);
 
-  // --- Context injection (operating brief + semantic spore search) ---
+  // --- Context injection (cortex brief + semantic spore search) ---
   let teamSync!: ReturnType<typeof initTeamSync>;
   const contextDeps = {
     vaultDir,

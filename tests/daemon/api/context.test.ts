@@ -95,7 +95,7 @@ describe('createSessionContextHandler', () => {
 
   it('returns empty when session-start injection is disabled', async () => {
     const handler = createSessionContextHandler(makeDeps({
-      config: makeConfig({ operating_brief_enabled: false }),
+      config: makeConfig({ cortex_enabled: false }),
     }));
     const result = await handler(makeReq({ session_id: 'sess-3', branch: 'feat' }));
 

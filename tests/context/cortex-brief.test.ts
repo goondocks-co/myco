@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildRetrievalGuidanceLines } from '@myco/context/operating-brief.js';
+import { buildRetrievalGuidanceLines } from '@myco/context/cortex-brief.js';
 
 describe('buildRetrievalGuidanceLines', () => {
   it('does not encode myco_skills guidance into Cortex instructions', () => {
@@ -7,15 +7,6 @@ describe('buildRetrievalGuidanceLines', () => {
       teamEnabled: false,
       collectiveConnected: false,
       collectiveCapabilities: [],
-      registeredTools: [
-        'myco_context',
-        'myco_search',
-        'myco_recall',
-        'myco_skills',
-        'myco_sessions',
-        'myco_plans',
-        'myco_remember',
-      ],
     });
 
     expect(lines.join('\n')).toContain('`myco_context`');

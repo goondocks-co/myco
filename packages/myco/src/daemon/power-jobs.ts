@@ -30,6 +30,7 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
  * that failed to clean up via the executor hook has long since gone.
  */
 const STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------

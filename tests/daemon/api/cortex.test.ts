@@ -50,7 +50,7 @@ describe('createCortexHandlers', () => {
   }
 
   it('returns the stored Cortex snapshot without triggering a task run', async () => {
-    getCortexInstructionsSnapshot.mockResolvedValue({
+    getCortexInstructionsSnapshot.mockReturnValue({
       content: 'Stored instructions',
       generatedAt: 123,
       sourceRunId: 'run-1',

@@ -10,6 +10,7 @@ import {
   CONTENT_HASH_ALGORITHM,
 } from '@myco/constants.js';
 import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
+import { tryParseJson } from '@myco/utils/json.js';
 import { initDatabase, vaultDbPath } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
@@ -1239,40 +1240,31 @@ export async function finalizeOnTaskSuccess(args: {
   if (args.taskName !== CORTEX_INSTRUCTIONS_TASK) return;
 
   const reports = listReports(args.runId);
-  for (let index = reports.length - 1; index >= 0; index -= 1) {
-    const report = reports[index];
-    if (report?.action !== CORTEX_INSTRUCTIONS_REPORT_ACTION) continue;
-
-    const details = parseJsonRecord(report.details);
-    const content = typeof details?.[CORTEX_INSTRUCTIONS_CONTENT_KEY] === 'string'
-      ? details[CORTEX_INSTRUCTIONS_CONTENT_KEY] as string
-      : null;
-    if (!content) {
-      throw new Error('cortex-instructions completed without report details.content');
+  let report: typeof reports[number] | undefined;
+  for (let i = reports.length - 1; i >= 0; i -= 1) {
+    if (reports[i]?.action === CORTEX_INSTRUCTIONS_REPORT_ACTION) {
+      report = reports[i];
+      break;
     }
-
-    upsertCortexInstructions({
-      agent_id: args.agentId,
-      content,
-      input_hash: args.runContext?.cortex_instruction_input_hash ?? fallbackInstructionHash(args.instruction),
-      source_run_id: args.runId,
-      generated_at: report.created_at,
-    });
-    return;
+  }
+  if (!report) {
+    throw new Error('cortex-instructions completed without a cortex_instructions report');
   }
 
-  throw new Error('cortex-instructions completed without a cortex_instructions report');
-}
-function parseJsonRecord(value: string | null): Record<string, unknown> | null {
-  if (!value) return null;
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : null;
-  } catch {
-    return null;
+  const details = tryParseJson<Record<string, unknown>>(report.details);
+  const rawContent = details?.[CORTEX_INSTRUCTIONS_CONTENT_KEY];
+  const content = typeof rawContent === 'string' ? rawContent : null;
+  if (!content) {
+    throw new Error('cortex-instructions completed without report details.content');
   }
+
+  upsertCortexInstructions({
+    agent_id: args.agentId,
+    content,
+    input_hash: args.runContext?.cortex_instruction_input_hash ?? fallbackInstructionHash(args.instruction),
+    source_run_id: args.runId,
+    generated_at: report.created_at,
+  });
 }
 
 function fallbackInstructionHash(instruction: string | undefined): string {

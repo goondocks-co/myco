@@ -64,7 +64,7 @@ const SECTION_RULES: PrefixRule[] = [
     searchParams: { [CONFIG_FOCUS_TAB_PARAM]: 'digest' },
   },
   {
-    prefix: 'context.operating_brief',
+    prefix: 'context.cortex',
     page: '/cortex',
     sectionId: CONFIG_SECTION_IDS.cortexInstructions,
     sectionLabel: 'Instructions',
@@ -149,8 +149,7 @@ const EXACT_FIELD_LABELS: Record<string, string> = {
   'embedding.base_url': 'Base URL',
   'context.digest_tier': 'Preferred Digest Tier',
   'context.session_start_digest_enabled': 'Session-Start Digest',
-  'context.operating_brief_enabled': 'Session-Start Instructions',
-  'context.operating_brief_inject_on': 'Inject On',
+  'context.cortex_enabled': 'Session-Start Instructions',
   'context.prompt_search': 'Prompt Search',
   'context.prompt_max_spores': 'Max Spores per Prompt',
   'notifications.enabled': 'Notifications',

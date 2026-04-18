@@ -53,7 +53,7 @@ export function upsertCortexInstructions(input: CortexInstructionsUpsert): Corte
   const db = getDatabase();
   const id = input.id ?? `${input.agent_id}:${DEFAULT_CORTEX_INSTRUCTIONS_ID}`;
 
-  db.prepare(
+  const row = db.prepare(
     `INSERT INTO cortex_instructions (
        id, agent_id, content, input_hash, source_run_id, generated_at, machine_id
      ) VALUES (
@@ -64,8 +64,9 @@ export function upsertCortexInstructions(input: CortexInstructionsUpsert): Corte
        input_hash = EXCLUDED.input_hash,
        source_run_id = EXCLUDED.source_run_id,
        generated_at = EXCLUDED.generated_at,
-       machine_id = EXCLUDED.machine_id`,
-  ).run(
+       machine_id = EXCLUDED.machine_id
+     RETURNING ${SELECT_COLUMNS}`,
+  ).get(
     id,
     input.agent_id,
     input.content,
@@ -73,12 +74,9 @@ export function upsertCortexInstructions(input: CortexInstructionsUpsert): Corte
     input.source_run_id ?? null,
     input.generated_at,
     input.machine_id ?? getTeamMachineId(),
-  );
+  ) as Record<string, unknown>;
 
-  const row = toCortexInstructionsRow(
-    db.prepare(`SELECT ${SELECT_COLUMNS} FROM cortex_instructions WHERE id = ?`).get(id) as Record<string, unknown>,
-  );
-  return row;
+  return toCortexInstructionsRow(row);
 }
 
 export function getCortexInstructions(agentId: string): CortexInstructionsRow | null {

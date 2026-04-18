@@ -1,8 +1,6 @@
 import type { MycoConfig } from '@myco/config/schema.js';
-import { DEFAULT_AGENT_ID } from '@myco/constants.js';
+import { DEFAULT_AGENT_ID, DIGEST_FALLBACK_TIER } from '@myco/constants.js';
 import { getDigestExtract } from '@myco/db/queries/digest-extracts.js';
-
-const DIGEST_FALLBACK_TIER = 1500;
 
 export interface SessionStartDigestPayload {
   content: string;

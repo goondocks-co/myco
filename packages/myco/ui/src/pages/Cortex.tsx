@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Brain, Check, Copy, Database, Sparkles } from 'lucide-react';
 import { CONFIG_FOCUS_TAB_PARAM, CONFIG_SECTION_IDS } from '@myco/config/focus';
@@ -86,7 +86,7 @@ const CORTEX_TABS = [
   { id: 'builder', label: 'Builder' },
   { id: 'digest', label: 'Digest' },
 ] as const;
-const VALID_TABS = new Set<ActiveTab>(['instructions', 'builder', 'digest']);
+const VALID_TABS = new Set<ActiveTab>(CORTEX_TABS.map((tab) => tab.id));
 const CORTEX_TERMINAL_STATUSES = new Set(['completed', 'failed', 'skipped']);
 const CORTEX_BUILDER_HISTORY_LIMIT = 12;
 const CORTEX_BUILDER_GOAL_PREVIEW_CHARS = 140;
@@ -100,19 +100,6 @@ function resolveActiveTab(search: string): ActiveTab {
   const params = new URLSearchParams(search);
   const raw = params.get(CONFIG_FOCUS_TAB_PARAM);
   return raw && VALID_TABS.has(raw as ActiveTab) ? (raw as ActiveTab) : 'instructions';
-}
-
-function writeSearchParam(name: string, value: string | null): void {
-  const params = new URLSearchParams(window.location.search);
-  if (value === null) {
-    params.delete(name);
-  } else {
-    params.set(name, value);
-  }
-  const search = params.toString();
-  const nextUrl = search ? `${window.location.pathname}?${search}` : window.location.pathname;
-  window.history.pushState(null, '', nextUrl);
-  window.dispatchEvent(new PopStateEvent('popstate'));
 }
 
 function formatTimestamp(epochSeconds: number | null): string {
@@ -195,7 +182,7 @@ function useCortexInstructions() {
   return useQuery<CortexInstructionsResponse>({
     queryKey: ['cortex-instructions'],
     queryFn: ({ signal }) => fetchJson<CortexInstructionsResponse>('/cortex/instructions', { signal }),
-    staleTime: 5_000,
+    staleTime: 60_000,
   });
 }
 
@@ -214,13 +201,21 @@ function useCortexBuilderResult(runId: string | null) {
   });
 }
 
-export default function OperatingSystem() {
+export default function Cortex() {
   const location = useLocation();
+  const navigate = useNavigate();
   const activeTab = resolveActiveTab(location.search);
   const handleTabChange = useCallback((tabId: string) => {
     if (!VALID_TABS.has(tabId as ActiveTab)) return;
-    writeSearchParam(CONFIG_FOCUS_TAB_PARAM, tabId === 'instructions' ? null : tabId);
-  }, []);
+    const params = new URLSearchParams(location.search);
+    if (tabId === 'instructions') {
+      params.delete(CONFIG_FOCUS_TAB_PARAM);
+    } else {
+      params.set(CONFIG_FOCUS_TAB_PARAM, tabId);
+    }
+    const search = params.toString();
+    navigate({ pathname: location.pathname, search: search ? `?${search}` : '' }, { replace: true });
+  }, [location.pathname, location.search, navigate]);
 
   return (
     <div className="p-6">
@@ -289,7 +284,7 @@ function InstructionsTab() {
 
         <div className="grid gap-4 lg:grid-cols-2">
           <ScopedField
-            path="context.operating_brief_enabled"
+            path="context.cortex_enabled"
             label="Inject session-start instructions"
             defaultScope="project"
           >

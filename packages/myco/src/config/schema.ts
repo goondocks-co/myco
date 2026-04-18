@@ -79,11 +79,7 @@ const ContextSchema = z.object({
   /** Append the preferred digest extract at session start after Cortex instructions. */
   session_start_digest_enabled: z.boolean().default(false),
   /** Master switch for Cortex session-start instruction injection. */
-  operating_brief_enabled: z.boolean().default(true),
-  /** Hook phases where Cortex instructions should be injected automatically. */
-  operating_brief_inject_on: z.array(
-    z.enum(['session_start']),
-  ).default(['session_start']),
+  cortex_enabled: z.boolean().default(true),
   /** Enable semantic spore search on each user prompt. */
   prompt_search: z.boolean().default(true),
   /** Max spores to inject per prompt (0-10). */

@@ -6,8 +6,9 @@ import { listReports, type ReportRow } from '@myco/db/queries/reports.js';
 import { getLatestRunId, getRun } from '@myco/db/queries/runs.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
-import { resolveInstructionDelivery } from '@myco/context/operating-brief.js';
+import { resolveInstructionDelivery } from '@myco/context/cortex-brief.js';
 import { listSymbiontInfos, type SymbiontInfo } from '@myco/daemon/api/symbionts.js';
+import { tryParseJson } from '@myco/utils/json.js';
 
 export const CORTEX_PROMPT_BUILDER_TASK = 'cortex-prompt-builder';
 const JSON_INDENT = 2;
@@ -50,36 +51,24 @@ interface CortexPromptBuilderDetails {
   prompt?: string;
 }
 
-function parseReportDetails<T>(report: ReportRow | undefined): T | null {
-  if (!report?.details) return null;
-  try {
-    return JSON.parse(report.details) as T;
-  } catch {
-    return null;
-  }
-}
-
 function getLatestReportForAction(runId: string, action: string): ReportRow | undefined {
   const reports = listReports(runId);
-  for (let index = reports.length - 1; index >= 0; index -= 1) {
-    if (reports[index]?.action === action) {
-      return reports[index];
-    }
+  for (let i = reports.length - 1; i >= 0; i -= 1) {
+    if (reports[i]?.action === action) return reports[i];
   }
   return undefined;
 }
 
-export async function getCortexInstructionsSnapshot(
-  _vaultDir: string,
-  deps: CortexServicesDeps,
-): Promise<CortexInstructionsSnapshot> {
+export function getCortexInstructionsSnapshot(
+  config: Pick<MycoConfig, 'context'>,
+): CortexInstructionsSnapshot {
   const row = getCortexInstructions(DEFAULT_AGENT_ID);
 
   return {
     content: row?.content ?? '',
     generatedAt: row?.generated_at ?? null,
     sourceRunId: row?.source_run_id ?? null,
-    enabled: deps.config.context.operating_brief_enabled,
+    enabled: config.context.cortex_enabled,
     stored: Boolean(row),
   };
 }
@@ -162,7 +151,7 @@ export function getCortexPromptResult(runId: string): CortexPromptBuilderResult 
 
   const reports = listReports(runId);
   const promptReport = getLatestReportForAction(runId, 'cortex_prompt_builder');
-  const details = parseReportDetails<CortexPromptBuilderDetails>(promptReport);
+  const details = tryParseJson<CortexPromptBuilderDetails>(promptReport?.details);
 
   return {
     runId,

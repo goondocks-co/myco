@@ -17,8 +17,8 @@ import {
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import {
-  shouldInjectOperatingBrief,
-} from '@myco/context/operating-brief.js';
+  shouldInjectCortex,
+} from '@myco/context/cortex-brief.js';
 import {
   getSessionStartDigestPayload,
   shouldInjectSessionStartDigest,
@@ -81,7 +81,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
     logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Session context query', { session_id });
 
     try {
-      const includeBrief = shouldInjectOperatingBrief(config.context, 'session_start');
+      const includeBrief = shouldInjectCortex(config.context);
       const includeDigest = shouldInjectSessionStartDigest(config.context);
       if (!includeBrief && !includeDigest) {
         logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Session-start context disabled', { session_id });
@@ -93,10 +93,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
       let sourceRunId: string | null = null;
 
       if (includeBrief) {
-        const snapshot = await getCortexInstructionsSnapshot(deps.vaultDir, {
-          config,
-          getTeamClient: deps.getTeamClient,
-        });
+        const snapshot = getCortexInstructionsSnapshot(config);
         if (snapshot.content) {
           parts.push(snapshot.content);
           sourceParts.push('cortex');

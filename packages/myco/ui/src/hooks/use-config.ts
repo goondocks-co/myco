@@ -56,8 +56,7 @@ export interface MycoConfig {
   context: {
     digest_tier: number;
     session_start_digest_enabled: boolean;
-    operating_brief_enabled: boolean;
-    operating_brief_inject_on: Array<'session_start'>;
+    cortex_enabled: boolean;
     prompt_search: boolean;
     prompt_max_spores: number;
     [key: string]: unknown;
