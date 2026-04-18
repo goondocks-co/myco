@@ -45,6 +45,43 @@ export const AGENT_RUNS_DEFAULT_LIMIT = 50;
  * handler — keep changes in the shared module.
  */
 
+/**
+ * Strip caller-supplied `baseUrl` from remote-provider overrides so the
+ * daemon's stored OpenAI/OpenRouter key can never be sent to an
+ * attacker-controlled host. Local providers (ollama, lmstudio,
+ * openai-compatible) legitimately need custom base URLs.
+ */
+const REMOTE_PROVIDER_TYPES = new Set(['openai', 'openrouter']);
+
+function sanitizeProviderOverride<T extends { type?: string; baseUrl?: string } | undefined>(
+  override: T,
+): T {
+  if (!override) return override;
+  if (override.type && REMOTE_PROVIDER_TYPES.has(override.type)) {
+    const { baseUrl: _dropped, ...rest } = override;
+    return rest as T;
+  }
+  return override;
+}
+
+function sanitizeExecutionOverrides(
+  overrides: z.infer<typeof ExecutionOverrideBody>,
+): z.infer<typeof ExecutionOverrideBody> {
+  if (!overrides) return overrides;
+  const next = { ...overrides };
+  if (next.provider) next.provider = sanitizeProviderOverride(next.provider);
+  if (next.phases) {
+    const nextPhases: Record<string, typeof next.phases[string]> = {};
+    for (const [name, phase] of Object.entries(next.phases)) {
+      nextPhases[name] = phase.provider
+        ? { ...phase, provider: sanitizeProviderOverride(phase.provider) }
+        : phase;
+    }
+    next.phases = nextPhases;
+  }
+  return next;
+}
+
 const AgentRunBody = z.object({
   task: z.string().optional(),
   instruction: z.string().optional(),
@@ -93,8 +130,12 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       agentId,
       dryRun,
       evaluationId,
-      executionOverrides,
+      executionOverrides: rawExecutionOverrides,
     } = AgentRunBody.parse(req.body);
+
+    // SSRF defense: strip caller-supplied baseUrl from any remote-provider
+    // override. The daemon's bearer key cannot follow a redirected URL.
+    const executionOverrides = sanitizeExecutionOverrides(rawExecutionOverrides);
 
     // Guard: ensure a provider is configured before allowing a run.
     // Uses the same per-task-over-global precedence as the executor's resolver.

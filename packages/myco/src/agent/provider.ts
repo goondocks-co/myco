@@ -60,14 +60,14 @@ export function getProviderEnvVars(provider: ProviderConfig): Record<string, str
         [ENV_ANTHROPIC_API_KEY]: '',
       };
     case 'openai':
+      // Remote providers: baseUrl is hardcoded so the daemon's API key
+      // cannot be sent to a caller-supplied host. Key flows from env only.
       return {
-        OPENAI_BASE_URL: provider.baseUrl ?? DEFAULT_OPENAI_URL,
-        ...(provider.apiKey ? { OPENAI_API_KEY: provider.apiKey } : {}),
+        OPENAI_BASE_URL: DEFAULT_OPENAI_URL,
       };
     case 'openrouter':
       return {
-        OPENAI_BASE_URL: provider.baseUrl ?? DEFAULT_OPENROUTER_URL,
-        ...(provider.apiKey ? { OPENAI_API_KEY: provider.apiKey } : {}),
+        OPENAI_BASE_URL: DEFAULT_OPENROUTER_URL,
       };
     case 'openai-compatible':
       return {

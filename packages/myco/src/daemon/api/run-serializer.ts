@@ -51,6 +51,43 @@ export function buildPhaseCheckpointSummary(
   }
 }
 
+/**
+ * Defensive mask for historical execution_overrides rows. Removes any
+ * `apiKey` field (top-level or nested under `provider` / per-phase
+ * `provider`) so the stored overrides column cannot echo a pre-patch
+ * secret back to the UI.
+ */
+function scrubExecutionOverrides(
+  overrides: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!overrides || typeof overrides !== 'object') return overrides;
+  const cloned: Record<string, unknown> = { ...overrides };
+  if ('apiKey' in cloned) delete cloned.apiKey;
+  cloned.provider = scrubProviderOverride(cloned.provider);
+  if (cloned.phases && typeof cloned.phases === 'object') {
+    const phases: Record<string, unknown> = {};
+    for (const [name, phase] of Object.entries(cloned.phases as Record<string, unknown>)) {
+      if (phase && typeof phase === 'object') {
+        const clonedPhase: Record<string, unknown> = { ...(phase as Record<string, unknown>) };
+        if ('apiKey' in clonedPhase) delete clonedPhase.apiKey;
+        clonedPhase.provider = scrubProviderOverride(clonedPhase.provider);
+        phases[name] = clonedPhase;
+      } else {
+        phases[name] = phase;
+      }
+    }
+    cloned.phases = phases;
+  }
+  return cloned;
+}
+
+function scrubProviderOverride(provider: unknown): unknown {
+  if (!provider || typeof provider !== 'object') return provider;
+  const cloned: Record<string, unknown> = { ...(provider as Record<string, unknown>) };
+  if ('apiKey' in cloned) delete cloned.apiKey;
+  return cloned;
+}
+
 export interface SerializeRunOptions {
   /** Include resume-related fields (resumable/resume_status/resume_mode/resumed_at). Default true. */
   includeResumeFields?: boolean;
@@ -107,7 +144,9 @@ export function serializeRun(run: RunRow, opts: SerializeRunOptions = {}) {
     dry_run: run.dry_run,
     evaluation_id: run.evaluation_id,
     reasoning_level: run.reasoning_level,
-    execution_overrides: run.execution_overrides,
+    // Strip `apiKey` from historical rows defensively — before this PR the
+    // API accepted apiKey in executionOverrides and stored it unmasked.
+    execution_overrides: scrubExecutionOverrides(run.execution_overrides),
   };
 
   return {

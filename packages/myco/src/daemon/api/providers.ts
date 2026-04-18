@@ -137,9 +137,11 @@ export async function handleTestProvider(req: RouteRequest): Promise<RouteRespon
     } else if (type === 'openai-compatible') {
       result = await testResolvedLocalProvider('openai-compatible', baseUrl, localBackend);
     } else if (type === 'openai') {
-      result = await testRemoteProvider('openai', 'OpenAI', baseUrl);
+      // baseUrl deliberately dropped — remote providers always use the
+      // hardcoded default to prevent SSRF via the daemon's bearer token.
+      result = await testRemoteProvider('openai', 'OpenAI');
     } else if (type === 'openrouter') {
-      result = await testRemoteProvider('openrouter', 'OpenRouter', baseUrl);
+      result = await testRemoteProvider('openrouter', 'OpenRouter');
     } else {
       result = testAnthropic();
     }
@@ -282,13 +284,12 @@ function testAnthropic(): TestResult {
 async function testRemoteProvider(
   provider: 'openai' | 'openrouter',
   label: string,
-  baseUrl?: string,
 ): Promise<TestResult> {
   if (!getRemoteProviderApiKey(provider)) {
     return { ok: false, error: `${label} API key not configured in daemon secrets or environment` };
   }
   try {
-    await fetchRemoteProviderModels(provider, baseUrl);
+    await fetchRemoteProviderModels(provider);
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : `${label} connection failed` };

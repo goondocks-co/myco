@@ -27,12 +27,21 @@ export const ProviderTypeEnum = z.enum([
   'openai-compatible',
 ]);
 
+/**
+ * Provider override wire shape.
+ *
+ * `apiKey` is intentionally not accepted here — secrets must flow through
+ * `.myco/secrets.env` and provider-specific env vars, never through an API
+ * body (feedback_secrets_not_in_yaml). `baseUrl` is parsed for all provider
+ * types but is stripped by the run handler for `openai` and `openrouter`
+ * before it can reach the runtime, so the daemon's bearer key cannot be
+ * redirected to an attacker-controlled host.
+ */
 export const ProviderOverrideWireSchema = z.object({
   runtime: RuntimeIdEnum.optional(),
   type: ProviderTypeEnum,
   localBackend: z.enum(['ollama', 'lmstudio']).optional(),
   baseUrl: z.string().optional(),
-  apiKey: z.string().optional(),
   model: z.string().optional(),
   reasoningMap: z.object({
     low: z.string().optional(),
