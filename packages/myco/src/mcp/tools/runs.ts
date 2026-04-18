@@ -31,8 +31,6 @@ export interface RunsHandlerResult {
   error?: string;
 }
 
-const DEFAULT_LIMIT = 50;
-
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
@@ -56,11 +54,12 @@ export async function handleMycoRuns(
     return { ok: true, op, data: result.data };
   }
 
-  // op === 'list'
+  // op === 'list' — defer the default limit to the HTTP route so the two
+  // defaults can't drift. Only forward `limit` when the caller sets it.
   const endpoint = buildEndpoint('/api/agent/runs', {
     task: input.task,
     agentId: input.agent_id,
-    limit: input.limit ?? DEFAULT_LIMIT,
+    limit: input.limit,
   });
   const result = await client.get(endpoint);
   if (!result.ok) {

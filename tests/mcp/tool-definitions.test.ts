@@ -135,15 +135,41 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
     }
   });
 
-  it('myco_runs is annotated as fully read-only', () => {
+  // Pin every annotation VALUE for every Bundle D tool. The shape-only check
+  // above would pass even if someone silently flipped an annotation (e.g.
+  // set destructiveHint: false on myco_plans, suppressing the confirmation
+  // UI). These assertions freeze the intended semantics.
+  it('myco_cortex annotations are pinned (mixed read/mutating ops — conservative)', () => {
+    const cortex = TOOL_DEFINITIONS.find((t) => t.name === 'myco_cortex');
+    // Conservative single set covering all ops: refresh/build_prompt kick off
+    // background runs, so readOnlyHint must stay false. None of the ops
+    // destroy data, so destructiveHint is false. The set is not idempotent
+    // because repeated build_prompt calls produce distinct runs. Everything
+    // is local-only, so openWorldHint is false.
+    expect(cortex?.annotations?.readOnlyHint).toBe(false);
+    expect(cortex?.annotations?.destructiveHint).toBe(false);
+    expect(cortex?.annotations?.idempotentHint).toBe(false);
+    expect(cortex?.annotations?.openWorldHint).toBe(false);
+  });
+
+  it('myco_runs annotations are pinned (fully read-only, idempotent, local)', () => {
     const runs = TOOL_DEFINITIONS.find((t) => t.name === 'myco_runs');
     expect(runs?.annotations?.readOnlyHint).toBe(true);
     expect(runs?.annotations?.destructiveHint).toBe(false);
+    expect(runs?.annotations?.idempotentHint).toBe(true);
+    expect(runs?.annotations?.openWorldHint).toBe(false);
   });
 
-  it('myco_plans declares destructive: true because op: delete removes plans', () => {
+  it('myco_plans annotations are pinned (destructive via op: "delete", idempotent, local)', () => {
     const plans = TOOL_DEFINITIONS.find((t) => t.name === 'myco_plans');
+    // op: "delete" mutates and removes data, so readOnlyHint must be false
+    // and destructiveHint true. Deleting an already-deleted plan is a no-op
+    // (returns 404), so idempotentHint is true. Tombstones for remote
+    // deletes are still local-only state, so openWorldHint is false.
+    expect(plans?.annotations?.readOnlyHint).toBe(false);
     expect(plans?.annotations?.destructiveHint).toBe(true);
+    expect(plans?.annotations?.idempotentHint).toBe(true);
+    expect(plans?.annotations?.openWorldHint).toBe(false);
   });
 });
 

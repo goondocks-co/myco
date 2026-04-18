@@ -108,7 +108,15 @@ export class DaemonClient {
 
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, init);
 
-      if (!res.ok) return { ok: false };
+      if (!res.ok) {
+        // Attempt to parse JSON error body so callers (e.g. the myco_plans
+        // delete path) can surface daemon guidance like the force_remote hint.
+        // post/put/get currently discard error bodies — see note on the DELETE
+        // flow in packages/myco/src/mcp/tools/plans.ts. Expanding the pattern
+        // to those methods is a separate follow-up.
+        const body = await res.json().catch(() => undefined);
+        return { ok: false, data: body };
+      }
       const data = await res.json();
       return { ok: true, data };
     } catch {

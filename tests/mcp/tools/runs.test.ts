@@ -19,7 +19,7 @@ function mockClient(data: unknown = null, ok = true): DaemonClient {
 }
 
 describe('myco_runs op: list (default)', () => {
-  it('lists runs from /api/agent/runs with a default limit', async () => {
+  it('lists runs from /api/agent/runs and defers the default limit to the HTTP route', async () => {
     const payload = { runs: [{ id: 'run-1', agent_id: 'myco-agent', tokens_used: 100 }], total: 1, offset: 0, limit: 50 };
     const client = mockClient(payload);
     const result = await handleMycoRuns({}, client);
@@ -27,7 +27,9 @@ describe('myco_runs op: list (default)', () => {
     expect(result.data).toEqual(payload);
     const url = (client.get as unknown as { mock: { calls: string[][] } }).mock.calls[0][0];
     expect(url).toContain('/api/agent/runs');
-    expect(url).toContain('limit=50');
+    // When the caller omits `limit`, the MCP tool must NOT forward one —
+    // the HTTP route owns the default (AGENT_RUNS_DEFAULT_LIMIT).
+    expect(url).not.toContain('limit=');
   });
 
   it('forwards task, agent_id, and limit', async () => {

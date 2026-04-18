@@ -42,7 +42,14 @@ export interface PlanDeleteResult {
   error?: string;
 }
 
-export type PlansResult = PlanSummary[] | PlanDeleteResult;
+/** Error shape returned from op: "list" when input validation fails
+ *  (e.g. both `id` and `session` supplied). Matches the daemon's 400 body. */
+export interface PlansListError {
+  ok: false;
+  error: string;
+}
+
+export type PlansResult = PlanSummary[] | PlanDeleteResult | PlansListError;
 
 // ---------------------------------------------------------------------------
 // Handler
@@ -75,8 +82,9 @@ export async function handleMycoPlans(
 
   // op === 'list' (default)
   if (input.id && input.session) {
-    // Defensive: the daemon also rejects this, but fail fast here for clarity.
-    return [];
+    // Match the daemon's /api/mcp/plans 400 behavior — surface the rejection
+    // as a structured error instead of silently returning [].
+    return { ok: false, error: 'Pass either id or session, not both' };
   }
 
   const endpoint = buildEndpoint('/api/mcp/plans', {
