@@ -286,15 +286,14 @@ export function validateLoopbackRequest(
   return null;
 }
 
+// Node passes the listening host verbatim; some clients omit the port
+// entirely on default ports. The daemon never uses port 80, so require
+// an explicit port match. Keep the two-form allowlist tight.
 function isLoopbackHost(host: string, port: number): boolean {
   const portStr = String(port);
   return (
     host === `127.0.0.1:${portStr}` ||
-    host === `localhost:${portStr}` ||
-    // Node passes the listening host verbatim; some clients omit the port
-    // entirely on default ports. The daemon never uses port 80, so require
-    // an explicit port match. Keep the two-form allowlist tight.
-    false
+    host === `localhost:${portStr}`
   );
 }
 

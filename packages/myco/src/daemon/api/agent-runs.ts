@@ -19,6 +19,7 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { notify } from '@myco/notifications/notify.js';
 import { buildPhaseAudit } from '@myco/services/phase-audit.js';
 import { ExecutionOverrideBody } from './schemas/execution-overrides.js';
+import { transformProviderOverrides } from './schemas/execution-overrides-traversal.js';
 import { serializeRun } from './run-serializer.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
@@ -53,33 +54,29 @@ export const AGENT_RUNS_DEFAULT_LIMIT = 50;
  */
 const REMOTE_PROVIDER_TYPES = new Set(['openai', 'openrouter']);
 
-function sanitizeProviderOverride<T extends { type?: string; baseUrl?: string } | undefined>(
-  override: T,
-): T {
-  if (!override) return override;
-  if (override.type && REMOTE_PROVIDER_TYPES.has(override.type)) {
-    const { baseUrl: _dropped, ...rest } = override;
-    return rest as T;
+function stripBaseUrlForRemoteProviders(
+  provider: Record<string, unknown>,
+): Record<string, unknown> {
+  const type = provider.type;
+  if (typeof type === 'string' && REMOTE_PROVIDER_TYPES.has(type)) {
+    const { baseUrl: _dropped, ...rest } = provider;
+    return rest;
   }
-  return override;
+  return provider;
 }
 
 function sanitizeExecutionOverrides(
   overrides: z.infer<typeof ExecutionOverrideBody>,
 ): z.infer<typeof ExecutionOverrideBody> {
   if (!overrides) return overrides;
-  const next = { ...overrides };
-  if (next.provider) next.provider = sanitizeProviderOverride(next.provider);
-  if (next.phases) {
-    const nextPhases: Record<string, typeof next.phases[string]> = {};
-    for (const [name, phase] of Object.entries(next.phases)) {
-      nextPhases[name] = phase.provider
-        ? { ...phase, provider: sanitizeProviderOverride(phase.provider) }
-        : phase;
-    }
-    next.phases = nextPhases;
-  }
-  return next;
+  // Delegates structural traversal (top-level provider + phases) to the
+  // shared helper so adding future override fields is a one-line change
+  // per transform, not a parallel rewrite here and in run-serializer.
+  const result = transformProviderOverrides(
+    overrides as unknown as Record<string, unknown>,
+    stripBaseUrlForRemoteProviders,
+  );
+  return result as unknown as z.infer<typeof ExecutionOverrideBody>;
 }
 
 const AgentRunBody = z.object({

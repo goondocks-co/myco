@@ -118,7 +118,10 @@ export async function handleGetModels(req: RouteRequest): Promise<RouteResponse>
     } else if (provider === 'anthropic') {
       models = ANTHROPIC_MODELS;
     } else if (provider === 'openai' || provider === 'openrouter') {
-      models = await fetchRemoteProviderModels(provider, req.query.base_url, MODEL_LIST_TIMEOUT_MS);
+      // fetchRemoteProviderModels ignores caller-supplied baseUrl (SSRF
+      // defense — see its implementation). Pass undefined explicitly so
+      // readers don't think `req.query.base_url` reaches the fetch.
+      models = await fetchRemoteProviderModels(provider, undefined, MODEL_LIST_TIMEOUT_MS);
     }
   } catch {
     // Provider unreachable — return empty list
