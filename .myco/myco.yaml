@@ -76,6 +76,8 @@ agent:
       timeoutSeconds: 600
 context:
   digest_tier: 5000
+  session_start_digest_enabled: false
+  cortex_enabled: true
   prompt_search: true
   prompt_max_spores: 3
 backup:
@@ -120,6 +122,8 @@ symbionts:
   gemini:
     enabled: true
   opencode:
+    enabled: true
+  pi:
     enabled: true
   vscode-copilot:
     enabled: true
