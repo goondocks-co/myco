@@ -10,6 +10,7 @@ import {
   getCortexInstructionsSnapshot,
 } from '@myco/services/cortex.js';
 import { triggerCortexInstructions } from '../trigger-cortex-instructions.js';
+import { errorBody } from './error-envelope.js';
 
 export interface CortexDeps {
   liveConfig: { current: MycoConfig };
@@ -43,6 +44,21 @@ export function createCortexHandlers(vaultDir: string, deps: CortexDeps) {
       getTeamClient: deps.getTeamClient,
       registerInflightRun: deps.registerInflightRun,
     });
+    if (!result.started && (result.reason === 'provider-not-configured' || result.reason === 'event-tasks-disabled')) {
+      return {
+        status: 400,
+        body: {
+          ...errorBody(
+            result.reason,
+            result.reason === 'provider-not-configured'
+              ? 'No agent provider configured. Configure one in Settings.'
+              : 'Event-driven tasks are disabled. Enable them in Settings.',
+          ),
+          started: false,
+          reason: result.reason,
+        },
+      };
+    }
     return { body: result };
   }
 
@@ -67,7 +83,7 @@ export function createCortexHandlers(vaultDir: string, deps: CortexDeps) {
     const { runId } = PromptBuilderStatusParams.parse(req.params);
     const result = getCortexPromptResult(runId);
     if (!result) {
-      return { status: 404, body: { error: 'Run not found' } };
+      return { status: 404, body: errorBody('run-not-found', 'Run not found') };
     }
     return { body: result };
   }

@@ -12,6 +12,7 @@ import path from 'node:path';
 import { TranscriptMiner, extractTurnsFromBuffer } from '@myco/capture/transcript-miner.js';
 import type { TranscriptTurn } from '@myco/symbionts/adapter.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
+import { gateEventByCaptureRules } from './capture-gating.js';
 import { captureBatchImages } from './capture-images.js';
 import {
   extractTaggedPlans,
@@ -41,8 +42,6 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { triggerTitleSummary as sharedTriggerTitleSummary } from './trigger-title-summary.js';
 import type { RouteHandler } from './router.js';
 import type { RegisteredSession } from './lifecycle.js';
-import { evaluateSessionCaptureRules } from '@myco/hooks/capture-rules.js';
-import { readTranscriptMeta } from '@myco/hooks/transcript-meta.js';
 import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 
@@ -487,12 +486,11 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     } = StopBody.parse(req.body);
 
     if (hookTranscriptPath) {
-      const transcriptMeta = readTranscriptMeta(hookTranscriptPath) ?? undefined;
       const detectedAgent = agent ?? getSession(sessionId)?.agent ?? 'claude-code';
-      const decision = evaluateSessionCaptureRules(loadManifests(), detectedAgent, {
-        transcriptPath: hookTranscriptPath,
-        transcriptMeta,
-      });
+      const { decision } = gateEventByCaptureRules(
+        { agent: detectedAgent, transcriptPath: hookTranscriptPath },
+        { manifests: loadManifests() },
+      );
       if (decision.action === 'drop') {
         const deleted = cleanupInvalidCapturedSession(sessionId);
         logger.info(LOG_KINDS.HOOKS_STOP, 'Stop ignored — invalid captured session', {

@@ -269,7 +269,7 @@ export function listDigestRevisions(
     `SELECT ${REVISION_SELECT}
      FROM digest_extract_revisions
      WHERE agent_id = ? AND tier = ?
-     ORDER BY id DESC
+     ORDER BY created_at DESC, id DESC
      LIMIT ?`,
   ).all(options.agentId, options.tier, limit) as Record<string, unknown>[];
   return rows.map(toRevisionRow);

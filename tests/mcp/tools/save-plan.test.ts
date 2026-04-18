@@ -44,11 +44,25 @@ describe('myco_save_plan', () => {
       status: undefined,
       tags: ['planning'],
     });
-    expect(result?.id).toBe('plan-1234');
-    expect(result?.logical_key).toBe('session:sess-1:key:primary');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.id).toBe('plan-1234');
+      expect(result.logical_key).toBe('session:sess-1:key:primary');
+    }
   });
 
-  it('returns null when the daemon save fails', async () => {
+  it('returns a structured error when the daemon save fails', async () => {
+    const client = mockClient({ error: 'save-failed' }, false);
+    const result = await handleMycoSavePlan({
+      session_id: 'sess-1',
+      content: '# Plan',
+      plan_key: 'primary',
+    }, client);
+
+    expect(result).toEqual({ ok: false, error: 'save-failed' });
+  });
+
+  it('falls back to "unknown" when the failure payload lacks an error string', async () => {
     const client = mockClient(null, false);
     const result = await handleMycoSavePlan({
       session_id: 'sess-1',
@@ -56,6 +70,6 @@ describe('myco_save_plan', () => {
       plan_key: 'primary',
     }, client);
 
-    expect(result).toBeNull();
+    expect(result).toEqual({ ok: false, error: 'unknown' });
   });
 });

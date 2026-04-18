@@ -56,6 +56,10 @@ interface CortexPromptBuilderDetails {
   prompt?: string;
 }
 
+function isCortexPromptBuilderDetails(value: unknown): value is CortexPromptBuilderDetails {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function getLatestReportForAction(runId: string, action: string): ReportRow | undefined {
   const reports = listReports(runId);
   for (let i = reports.length - 1; i >= 0; i -= 1) {
@@ -162,7 +166,7 @@ export function getCortexPromptResult(runId: string): CortexPromptBuilderResult 
 
   const reports = listReports(runId);
   const promptReport = getLatestReportForAction(runId, 'cortex_prompt_builder');
-  const details = tryParseJson<CortexPromptBuilderDetails>(promptReport?.details);
+  const details = tryParseJson(promptReport?.details, isCortexPromptBuilderDetails);
 
   return {
     runId,

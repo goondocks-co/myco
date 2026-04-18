@@ -78,6 +78,9 @@ export class DaemonServer {
         uptime: process.uptime(),
       },
     }));
+    this.registerRoute('GET', '/api/version', async () => ({
+      body: { version: this.version },
+    }));
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -97,6 +100,7 @@ export class DaemonServer {
       }
 
       this.onRequest?.();
+      const versionHeader = { 'X-Myco-Api-Version': this.version };
       try {
         const needsBody = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE';
         const body = needsBody ? await readBody(req) : undefined;
@@ -108,11 +112,11 @@ export class DaemonServer {
         });
         const status = result.status ?? DEFAULT_STATUS;
         if (Buffer.isBuffer(result.body)) {
-          res.writeHead(status, result.headers ?? {});
+          res.writeHead(status, { ...versionHeader, ...result.headers });
           res.end(result.body);
           return;
         }
-        const headers = { 'Content-Type': 'application/json', ...result.headers };
+        const headers = { 'Content-Type': 'application/json', ...versionHeader, ...result.headers };
         res.writeHead(status, headers);
         res.end(JSON.stringify(result.body));
       } catch (error) {
@@ -120,7 +124,7 @@ export class DaemonServer {
           path: req.url,
           error: (error as Error).message,
         });
-        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.writeHead(500, { 'Content-Type': 'application/json', ...versionHeader });
         res.end(JSON.stringify({ error: (error as Error).message }));
       }
       return;

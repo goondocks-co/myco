@@ -6,7 +6,6 @@ import {
   epochSeconds,
   DEFAULT_AGENT_ID,
   MS_PER_SECOND,
-  PHASE_SUMMARY_MAX_CHARS,
   CONTENT_HASH_ALGORITHM,
 } from '@myco/constants.js';
 import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
@@ -56,6 +55,8 @@ import {
   summarizePhaseCosts,
 } from './run-accounting.js';
 import { getAgentRuntime } from './runtime/index.js';
+import { composeTaskPrompt, composePhasePrompt } from './prompt-composition.js';
+export { composeTaskPrompt, composePhasePrompt };
 import type { CostResolution } from './cost/types.js';
 import type { ContextQueryResult } from './context-queries.js';
 import type { ProviderConfig } from './types.js';
@@ -82,27 +83,13 @@ const STATUS_SKIPPED = 'skipped';
 /** Reason string when skipping due to concurrency guard. */
 const SKIP_REASON_ALREADY_RUNNING = 'already_running';
 
-/** Section header for vault context in the composed prompt. */
-const PROMPT_SECTION_TASK = '## Task: ';
-
-/** Section header for user instruction in the composed prompt. */
-const PROMPT_SECTION_INSTRUCTION = '## User Instruction';
-
 /** Report action emitted by the Cortex instructions task. */
 const CORTEX_INSTRUCTIONS_REPORT_ACTION = 'cortex_instructions';
 
 /** Details key storing the final markdown content in the Cortex report. */
 const CORTEX_INSTRUCTIONS_CONTENT_KEY = 'content';
 
-/** Separator between prompt sections. */
-const PROMPT_SECTION_SEPARATOR = '\n\n';
-
-/** Header for prior phase context in phased prompts. */
-const PROMPT_SECTION_PRIOR_PHASES = '## Prior Phase Results';
-
-/** Header for the current phase in phased prompts. */
-const PROMPT_SECTION_CURRENT_PHASE = '## Current Phase: ';
-const TOKEN_BUDGET_PRESSURE_STATUSES = new Set(['warning', 'critical']);
+const TOKEN_BUDGET_PRESSURE_STATUSES = new Set(['warning', 'post_run_pressure']);
 
 function logTokenBudgetPressure(
   taskName: string,
@@ -162,6 +149,19 @@ export interface MycoYamlPhaseOverrides {
  *   2. `phaseProviderOverrides[name].maxTurns` (myco.yaml)
  *   3. `phase.maxTurns` (task YAML)
  */
+/**
+ * Walk an ordered list of lookups and return the first defined value. Keeps
+ * precedence chains declarative so unit tests can exercise each source
+ * individually without re-running the entire resolver.
+ */
+function firstDefined<T>(lookups: Array<() => T | undefined>): T | undefined {
+  for (const lookup of lookups) {
+    const value = lookup();
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
 export function resolvePhaseExecution(
   phase: PhaseDefinition,
   options: RunOptions | undefined,
@@ -173,32 +173,35 @@ export function resolvePhaseExecution(
   const topOverride = options?.executionOverrides;
   const mycoYamlPhase = phaseProviderOverrides?.[phase.name];
 
-  const effectiveProvider: ProviderConfig | undefined =
-    runPhaseOverride?.provider
-    ?? phase.provider
-    ?? mycoYamlPhase?.provider
-    ?? topOverride?.provider
-    ?? provider;
+  const effectiveProvider = firstDefined<ProviderConfig>([
+    () => runPhaseOverride?.provider,
+    () => phase.provider,
+    () => mycoYamlPhase?.provider,
+    () => topOverride?.provider,
+    () => provider,
+  ]);
 
-  const effectiveReasoning: ReasoningLevel | undefined =
-    runPhaseOverride?.reasoningLevel
-    ?? phase.reasoningLevel
-    ?? topOverride?.reasoningLevel
-    ?? config.execution?.reasoningLevel
-    ?? config.reasoningLevel;
+  const effectiveReasoning = firstDefined<ReasoningLevel>([
+    () => runPhaseOverride?.reasoningLevel,
+    () => phase.reasoningLevel,
+    () => topOverride?.reasoningLevel,
+    () => config.execution?.reasoningLevel,
+    () => config.reasoningLevel,
+  ]);
 
-  const fallbackModel =
-    phase.model
-    ?? topOverride?.model
-    ?? config.model;
+  const fallbackModel = firstDefined<string>([
+    () => phase.model,
+    () => topOverride?.model,
+    () => config.model,
+  ]);
 
-  const effectiveModel =
-    runPhaseOverride?.model
-    ?? mycoYamlPhase?.model
-    ?? resolveReasoningModel(effectiveReasoning, effectiveProvider, fallbackModel);
+  const effectiveModel = firstDefined<string>([
+    () => runPhaseOverride?.model,
+    () => mycoYamlPhase?.model,
+    () => resolveReasoningModel(effectiveReasoning, effectiveProvider, fallbackModel ?? ''),
+  ]) ?? '';
 
-  const effectiveMaxTurns =
-    runPhaseOverride?.maxTurns
+  const effectiveMaxTurns = runPhaseOverride?.maxTurns
     ?? mycoYamlPhase?.maxTurns
     ?? phase.maxTurns;
 
@@ -237,80 +240,6 @@ function warnUnknownPhaseOverrides(
 // Prompt composition
 // ---------------------------------------------------------------------------
 
-/**
- * Build the full task prompt from vault context, task definition, and
- * optional user instruction.
- *
- * Task prompts support template variables:
- * - `{{session_id}}` — replaced with the session ID from instruction (if present)
- * - `{{instruction}}` — the raw user instruction text
- */
-export function composeTaskPrompt(
-  vaultContext: string,
-  taskDisplayName: string,
-  taskPrompt: string,
-  instruction?: string,
-): string {
-  // Extract session_id from instruction if it contains one (UUID pattern)
-  const sessionIdMatch = instruction?.match(/\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i);
-  const sessionId = sessionIdMatch?.[1] ?? '';
-
-  // Template variable substitution in task prompt
-  let resolvedPrompt = taskPrompt;
-  resolvedPrompt = resolvedPrompt.replace(/\{\{session_id\}\}/g, sessionId);
-  resolvedPrompt = resolvedPrompt.replace(/\{\{instruction\}\}/g, instruction ?? '');
-
-  const parts = [
-    vaultContext,
-    `${PROMPT_SECTION_TASK}${taskDisplayName}\n${resolvedPrompt}`,
-  ];
-
-  if (instruction) {
-    parts.push(`${PROMPT_SECTION_INSTRUCTION}\n${instruction}`);
-  }
-
-  return parts.join(PROMPT_SECTION_SEPARATOR);
-}
-
-/**
- * Build the prompt for a single phase in a phased execution.
- *
- * Includes vault context, the task overview, prior phase summaries,
- * and the current phase instructions.
- */
-export function composePhasePrompt(
-  vaultContext: string,
-  taskDisplayName: string,
-  taskOverview: string,
-  phase: PhaseDefinition,
-  priorPhaseResults: PhaseResult[],
-  instruction?: string,
-): string {
-  const parts = [
-    vaultContext,
-    `${PROMPT_SECTION_TASK}${taskDisplayName}\n${taskOverview}`,
-  ];
-
-  if (instruction) {
-    parts.push(`${PROMPT_SECTION_INSTRUCTION}\n${instruction}`);
-  }
-
-  // Include prior phase results as context (unless the phase opts out)
-  if (priorPhaseResults.length > 0 && !phase.skipPriorContext) {
-    const summaries = priorPhaseResults.map((pr) => {
-      const truncated = pr.summary.length > PHASE_SUMMARY_MAX_CHARS
-        ? pr.summary.slice(0, PHASE_SUMMARY_MAX_CHARS) + '...'
-        : pr.summary;
-      return `### ${pr.name} (${pr.status})\n${truncated}`;
-    });
-    parts.push(`${PROMPT_SECTION_PRIOR_PHASES}\n${summaries.join('\n\n')}`);
-  }
-
-  // Current phase instructions
-  parts.push(`${PROMPT_SECTION_CURRENT_PHASE}${phase.name}\n${phase.prompt}`);
-
-  return parts.join(PROMPT_SECTION_SEPARATOR);
-}
 
 // ---------------------------------------------------------------------------
 // Single-phase execution helper
@@ -1251,7 +1180,10 @@ export async function finalizeOnTaskSuccess(args: {
     throw new Error('cortex-instructions completed without a cortex_instructions report');
   }
 
-  const details = tryParseJson<Record<string, unknown>>(report.details);
+  const parsedDetails = tryParseJson(report.details);
+  const details = (parsedDetails && typeof parsedDetails === 'object' && !Array.isArray(parsedDetails))
+    ? (parsedDetails as Record<string, unknown>)
+    : null;
   const rawContent = details?.[CORTEX_INSTRUCTIONS_CONTENT_KEY];
   const content = typeof rawContent === 'string' ? rawContent : null;
   if (!content) {

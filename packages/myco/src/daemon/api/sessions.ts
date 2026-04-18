@@ -12,6 +12,7 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import { errorBody } from './error-envelope.js';
 
 const DEFAULT_LIST_LIMIT = 50;
 const DEFAULT_LIST_OFFSET = 0;
@@ -72,7 +73,7 @@ export async function handleGetSessionAttachments(req: RouteRequest): Promise<Ro
 
 export async function handleGetSessionPlans(req: RouteRequest): Promise<RouteResponse> {
   const plans = listPlansBySession(req.params.id);
-  return { body: plans };
+  return { body: { plans } };
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +157,7 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
    *  `{force_remote: true}` opt-in before deleting someone else's row. */
   async function handleDeletePlan(req: RouteRequest): Promise<RouteResponse> {
     const existing = getPlan(req.params.id);
-    if (!existing) return { status: 404, body: { error: 'Plan not found' } };
+    if (!existing) return { status: 404, body: errorBody('plan-not-found', 'Plan not found') };
 
     const localMachineId = getTeamMachineId();
     const body = req.body as { force_remote?: boolean } | undefined;
@@ -167,7 +168,13 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
         plan_machine_id: existing.machine_id,
         local_machine_id: localMachineId,
       });
-      return { status: 403, body: { error: 'Plan belongs to another machine; pass {"force_remote": true} to delete.' } };
+      return {
+        status: 403,
+        body: errorBody(
+          'cross-machine-delete',
+          'Plan belongs to another machine; pass {"force_remote": true} to delete.',
+        ),
+      };
     }
     if (existing.machine_id !== localMachineId && forceRemote) {
       logger.warn(LOG_KINDS.API_SESSION_DELETE, 'Cross-machine plan delete allowed by force_remote', {
@@ -178,7 +185,7 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
     }
 
     const deleted = deletePlan(req.params.id);
-    if (!deleted) return { status: 404, body: { error: 'Plan not found' } };
+    if (!deleted) return { status: 404, body: errorBody('plan-not-found', 'Plan not found') };
 
     embeddingManager.onRemoved('plans', deleted.id);
 

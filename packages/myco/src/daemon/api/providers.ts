@@ -6,6 +6,7 @@
  *   POST /api/providers/test  — test connectivity to a specific provider
  */
 
+import { z } from 'zod';
 import Anthropic from '@anthropic-ai/sdk';
 import { checkLocalProvider } from '../../intelligence/provider-check.js';
 import {
@@ -23,7 +24,7 @@ import {
   getRemoteProviderApiKey,
 } from './models.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
-import { PROVIDER_TYPES, isProviderType, type RuntimeId, type ProviderType } from '@myco/agent/types.js';
+import { PROVIDER_TYPES, type RuntimeId, type ProviderType } from '@myco/agent/types.js';
 import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider.js';
 
 /** Timeout for the live Anthropic model list query (short -- fall back fast). */
@@ -113,19 +114,35 @@ export async function handleGetProviders(): Promise<RouteResponse> {
  * Accepts: { type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible', baseUrl?: string, local_backend?: 'ollama' | 'lmstudio', model?: string }
  * Returns: { ok: boolean, latency_ms?: number, error?: string }
  */
-export async function handleTestProvider(req: RouteRequest): Promise<RouteResponse> {
-  const body = req.body as Record<string, unknown> | undefined;
-  const type = body?.type as string | undefined;
+const ProviderTestBody = z.object({
+  type: z.enum(PROVIDER_TYPES),
+  baseUrl: z.string().optional(),
+  /**
+   * Deprecated: `base_url` is the legacy snake_case key. Accepted for one
+   * release and then removed. Use `baseUrl` going forward.
+   */
+  base_url: z.string().optional(),
+  local_backend: z.enum(['ollama', 'lmstudio']).optional(),
+  model: z.string().optional(),
+});
 
-  if (!type || !isProviderType(type)) {
+export async function handleTestProvider(req: RouteRequest): Promise<RouteResponse> {
+  const parse = ProviderTestBody.safeParse(req.body);
+  if (!parse.success) {
     return {
       status: HTTP_BAD_REQUEST,
       body: { error: `type is required and must be one of: ${PROVIDER_TYPES.join(', ')}` },
     };
   }
-
-  const baseUrl = (body?.baseUrl as string | undefined) ?? (body?.base_url as string | undefined);
-  const localBackend = (body?.local_backend as 'ollama' | 'lmstudio' | undefined);
+  const parsed = parse.data;
+  if (parsed.base_url !== undefined && parsed.baseUrl === undefined) {
+    process.stderr.write(
+      '[myco providers] POST /api/providers/test: base_url is deprecated; use baseUrl\n',
+    );
+  }
+  const type = parsed.type;
+  const baseUrl = parsed.baseUrl ?? parsed.base_url;
+  const localBackend = parsed.local_backend;
   const start = performance.now();
   let result: TestResult;
 

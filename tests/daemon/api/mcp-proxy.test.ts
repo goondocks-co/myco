@@ -112,6 +112,6 @@ describe('createMcpProxyHandlers handleSavePlan', () => {
     }));
 
     expect(res.status).toBe(404);
-    expect((res.body as { error: string }).error).toBe('session_not_found');
+    expect(res.body).toMatchObject({ error: { code: 'session-not-found' } });
   });
 });

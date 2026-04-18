@@ -145,7 +145,7 @@ describe('analyzeRuntimeTokenBudget', () => {
     expect(budget.peakRequestTotalTokens).toBe(192_000);
     expect(budget.contextWindowTokens).toBe(200_000);
     expect(budget.utilizationPercent).toBe(96);
-    expect(budget.status).toBe('critical');
+    expect(budget.status).toBe('post_run_pressure');
   });
 });
 

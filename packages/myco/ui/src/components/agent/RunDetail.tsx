@@ -89,6 +89,18 @@ interface ParsedUsageData {
   runBudget?: RuntimeTokenBudget;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isParsedCostData(value: unknown): value is ParsedCostData {
+  return isPlainObject(value);
+}
+
+function isParsedUsageData(value: unknown): value is ParsedUsageData {
+  return isPlainObject(value);
+}
+
 function StatTile({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md bg-surface-container-lowest px-3 py-2">
@@ -107,7 +119,7 @@ function ReportCard({ report }: { report: ReportRow }) {
   const isLongSummary = report.summary.length > 200 || report.summary.includes('\n');
 
   const parsedDetails: unknown = hasDetails
-    ? tryParseJson<unknown>(report.details) ?? report.details
+    ? tryParseJson(report.details) ?? report.details
     : null;
 
   return (
@@ -163,7 +175,7 @@ function TurnCard({ turn }: { turn: TurnRow }) {
   const [expanded, setExpanded] = useState(false);
 
   const parsedInput: unknown = turn.tool_input
-    ? tryParseJson<unknown>(turn.tool_input) ?? turn.tool_input
+    ? tryParseJson(turn.tool_input) ?? turn.tool_input
     : null;
 
   const inputPreview = turn.tool_input
@@ -583,15 +595,15 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   const resumeMutation = useResumeRun();
   const tasksList = useMemo(() => tasksData?.tasks ?? [], [tasksData]);
   const parsedCost = useMemo(
-    () => tryParseJson<ParsedCostData>(runData?.run?.cost_data),
+    () => tryParseJson(runData?.run?.cost_data, isParsedCostData),
     [runData?.run?.cost_data],
   );
   const parsedUsage = useMemo(
-    () => tryParseJson<ParsedUsageData>(runData?.run?.usage_data),
+    () => tryParseJson(runData?.run?.usage_data, isParsedUsageData),
     [runData?.run?.usage_data],
   );
   const phaseResults = useMemo(() => {
-    const parsed = tryParseJson<Record<string, unknown>>(runData?.run?.actions_taken);
+    const parsed = tryParseJson(runData?.run?.actions_taken, isPlainObject);
     return parsed?.phases && Array.isArray(parsed.phases)
       ? parsed.phases as PhaseResult[]
       : null;
