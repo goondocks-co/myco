@@ -52,13 +52,13 @@ export async function handleMycoSavePlan(
   });
 
   if (!result.ok || !result.data) {
-    const errorMessage = typeof result.data === 'object'
-      && result.data !== null
-      && 'error' in result.data
-      && typeof (result.data as { error: unknown }).error === 'string'
-      ? (result.data as { error: string }).error
-      : 'unknown';
-    return { ok: false, error: errorMessage };
+    const rawError = (result.data as { error?: unknown } | null | undefined)?.error;
+    const message = typeof rawError === 'string'
+      ? rawError
+      : typeof rawError === 'object' && rawError !== null && 'message' in rawError
+        ? String((rawError as { message: unknown }).message)
+        : 'unknown';
+    return { ok: false, error: message };
   }
   return { ok: true, ...(result.data as Omit<SavePlanSuccess, 'ok'>) };
 }

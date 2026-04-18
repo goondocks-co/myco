@@ -122,7 +122,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
       }
       textParts.push(`Session:: \`${session_id}\``);
 
-      const source = sourceParts.join('+') || 'cortex';
+      const source = sourceParts.join('+');
       const contextText = textParts.join('\n\n');
       const estimatedTokens = estimateTokens(contextText);
       logger.info(

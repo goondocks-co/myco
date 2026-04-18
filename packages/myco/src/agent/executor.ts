@@ -195,17 +195,15 @@ export function resolvePhaseExecution(
     () => config.model,
   ]);
 
-  const effectiveModel = (firstDefined<string>([
+  const effectiveModel = firstDefined<string>([
     () => runPhaseOverride?.model,
     () => mycoYamlPhase?.model,
     () => resolveReasoningModel(effectiveReasoning, effectiveProvider, fallbackModel ?? ''),
-  ]) ?? '') as string;
+  ]) ?? '';
 
-  const effectiveMaxTurns = firstDefined<number>([
-    () => runPhaseOverride?.maxTurns,
-    () => mycoYamlPhase?.maxTurns,
-    () => phase.maxTurns,
-  ]) as number;
+  const effectiveMaxTurns = runPhaseOverride?.maxTurns
+    ?? mycoYamlPhase?.maxTurns
+    ?? phase.maxTurns;
 
   return {
     reasoningLevel: effectiveReasoning,
