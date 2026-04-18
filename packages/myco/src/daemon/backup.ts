@@ -14,7 +14,13 @@ import { SYNC_PROTOCOL_VERSION, epochSeconds } from '@myco/constants.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Tables included in backup dumps (all synced tables). */
+/**
+ * Tables included in backup dumps (all synced tables).
+ *
+ * `cortex_instructions` is intentionally excluded: it's local-only
+ * operating guidance (see schema v19 migration + LOCAL_ONLY_OUTBOX_TABLES)
+ * and must not move across machines via backup/restore.
+ */
 export const BACKUP_TABLES = [
   'sessions',
   'prompt_batches',
@@ -26,7 +32,6 @@ export const BACKUP_TABLES = [
   'plans',
   'artifacts',
   'digest_extracts',
-  'cortex_instructions',
   'team_members',
 ] as const;
 

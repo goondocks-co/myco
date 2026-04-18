@@ -485,5 +485,14 @@ describe('run query helpers', () => {
       expect(fetched).not.toBeNull();
       expect(fetched!.execution_overrides).toBeNull();
     });
+
+    it('defaults dry_run to false when the column default is used', () => {
+      // Rows inserted without specifying dry_run come back as `false` (the
+      // NOT NULL DEFAULT 0 column). The hydrator uses `Boolean(Number(row.dry_run ?? 0))`
+      // to also normalize legacy rows with nullable dry_run columns to false.
+      insertRun(makeRun({ id: 'run-dry-default' }));
+      const row = getRun('run-dry-default');
+      expect(row!.dry_run).toBe(false);
+    });
   });
 });

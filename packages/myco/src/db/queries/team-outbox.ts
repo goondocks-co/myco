@@ -27,6 +27,23 @@ export const MAX_OUTBOX_RETRIES = 10;
 /** Milliseconds-per-second multiplier for epoch math. */
 const MS_PER_SECOND = 1000;
 
+/**
+ * Tables that are intentionally *local-only* and must never be enqueued for
+ * team sync. Attempting to enqueue one of these is a programming error and
+ * throws so the bug surfaces at the call site instead of silently syncing
+ * private state to the team.
+ *
+ * Add future local-only tables here (e.g. transient operational caches,
+ * per-machine skill lookup indexes) alongside a comment describing why the
+ * table is local-only.
+ */
+export const LOCAL_ONLY_OUTBOX_TABLES = new Set<string>([
+  // Cortex instructions: per-machine operating guidance generated from local
+  // digest substrate. Removed from team sync at schema v19. See
+  // migrateV18ToV19 for the corresponding safety-net DELETE.
+  'cortex_instructions',
+]);
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -122,9 +139,17 @@ export function syncRow(tableName: string, row: { id: string | number; created_a
 /**
  * Enqueue a record into the team outbox for later sync.
  *
- * Inserted with `sent_at = NULL` (pending).
+ * Inserted with `sent_at = NULL` (pending). Rejects attempts to enqueue
+ * tables listed in `LOCAL_ONLY_OUTBOX_TABLES` so private per-machine data
+ * can never leak into team sync via a stray call site. Finding #58.
  */
 export function enqueueOutbox(data: OutboxInsert): OutboxRow {
+  if (LOCAL_ONLY_OUTBOX_TABLES.has(data.table_name)) {
+    throw new Error(
+      `enqueueOutbox: table '${data.table_name}' is local-only and must not be synced`,
+    );
+  }
+
   const db = getDatabase();
 
   const info = db.prepare(
