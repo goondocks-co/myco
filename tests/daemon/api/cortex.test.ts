@@ -14,12 +14,10 @@ const {
   triggerCortexInstructions: vi.fn(),
 }));
 
-vi.mock('@myco/services/cortex.js', () => ({
+vi.mock('@myco/daemon/cortex.js', () => ({
   getCortexInstructionsSnapshot,
   buildCortexPrompt,
   getCortexPromptResult,
-}));
-vi.mock('@myco/daemon/trigger-cortex-instructions.js', () => ({
   triggerCortexInstructions,
 }));
 

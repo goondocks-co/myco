@@ -8,8 +8,8 @@ import {
   buildCortexPrompt,
   getCortexPromptResult,
   getCortexInstructionsSnapshot,
-} from '@myco/services/cortex.js';
-import { triggerCortexInstructions } from '../trigger-cortex-instructions.js';
+  triggerCortexInstructions,
+} from '../cortex.js';
 import { errorBody } from './error-envelope.js';
 
 export interface CortexDeps {

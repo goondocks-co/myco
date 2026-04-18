@@ -14,7 +14,7 @@ import { resolve } from 'node:path';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 import { listCandidates } from '@myco/db/queries/skill-candidates.js';
-import { buildScheduledCortexInstruction } from '@myco/cortex/instructions-input.js';
+import { buildScheduledCortexInstruction } from '@myco/context/cortex-brief.js';
 import { countSpores, getSpore, listSporeIdsSince, listSpores } from '@myco/db/queries/spores.js';
 import { countSessions, getSession, listSessions } from '@myco/db/queries/sessions.js';
 import { listSkillRecords } from '@myco/db/queries/skill-records.js';
