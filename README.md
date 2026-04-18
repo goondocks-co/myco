@@ -12,7 +12,7 @@
   <a href="https://www.npmjs.com/package/@goondocks/myco"><img src="https://img.shields.io/npm/v/@goondocks/myco?label=npm&color=22c55e" alt="npm"></a>
   <a href="https://github.com/goondocks-co/myco/blob/main/LICENSE"><img src="https://img.shields.io/github/license/goondocks-co/myco?color=22c55e" alt="License"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D22-22c55e" alt="Node 22+">
-  <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Cursor%20%7C%20Codex%20%7C%20VS%20Code%20%7C%20Gemini%20%7C%20Windsurf%20%7C%20OpenCode-22c55e" alt="Claude Code | Cursor | Codex | VS Code | Gemini | Windsurf | OpenCode">
+  <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Cursor%20%7C%20Codex%20%7C%20VS%20Code%20%7C%20Gemini%20%7C%20Windsurf%20%7C%20OpenCode%20%7C%20Pi-22c55e" alt="Claude Code | Cursor | Codex | VS Code | Gemini | Windsurf | OpenCode | Pi">
 </p>
 
 ```bash
@@ -25,7 +25,7 @@ cd your-project
 myco init
 ```
 
-`myco init` detects your coding agents, installs hooks, starts the daemon, and opens the dashboard. Pick the agent and embedding providers from the Settings page when you're ready — data capture starts immediately, intelligence is opt-in. Works with Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, and OpenCode.
+`myco init` detects your coding agents, installs hooks, starts the daemon, and opens the dashboard. Pick the agent and embedding providers from the Settings page when you're ready — data capture starts immediately, intelligence is opt-in. Works with Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode, and Pi.
 
 ## Upgrade path
 
@@ -118,8 +118,9 @@ Myco integrates with coding agents through **symbionts** — named for the mycor
 | [Gemini CLI](https://geminicli.com) | `.gemini/settings.json` | `.gemini/settings.json` | `.agents/skills/` | `coreTools` | `.gemini/plans/` |
 | [Windsurf](https://windsurf.com) | `.windsurf/hooks.json` | — | `.agents/skills/` | `cascadeCommandsAllowList` | `~/.windsurf/plans/` |
 | [OpenCode](https://opencode.ai) | `.opencode/plugins/myco.ts` (plugin) | `opencode.json` (`mcp` key) | `.agents/skills/` | `permission.bash` | `.opencode/plans/` |
+| [Pi](https://github.com/badlogic/pi-mono) | `.pi/extensions/myco/index.ts` (extension) | via `pi.registerTool()` | `.agents/skills/` | — | `.pi/plans/` |
 
-Skills are installed once to `.agents/skills/` (the emerging cross-agent standard) and symlinked to each agent's native skills directory. Adding a new agent requires only a YAML manifest and templates — no code changes for JSON-hook agents, and a small manifest extension for plugin-based agents like OpenCode.
+Skills are installed once to `.agents/skills/` (the emerging cross-agent standard) and symlinked to each agent's native skills directory. Adding a new agent requires only a YAML manifest and templates — no code changes for JSON-hook agents, and a small manifest extension for plugin-based agents like OpenCode and Pi.
 
 See the [Symbiont docs](docs/symbionts.md) for detailed setup information per agent.
 
