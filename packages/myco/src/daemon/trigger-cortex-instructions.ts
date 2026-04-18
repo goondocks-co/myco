@@ -24,6 +24,12 @@ export interface TriggerCortexInstructionsDeps {
   getTeamClient?: () => TeamSyncClient | null;
   /** Optional registry that tracks the fire-and-forget run so daemon shutdown can await it. */
   registerInflightRun?: (promise: Promise<unknown>) => void;
+  /**
+   * Dynamic import seam for the agent executor. Defaults to the real import
+   * so tests can force the module-unavailable branch without monkey-patching
+   * the module system.
+   */
+  loadExecutor?: () => Promise<typeof import('../agent/executor.js')>;
 }
 
 export interface TriggerCortexInstructionsResult {
@@ -41,6 +47,7 @@ export async function triggerCortexInstructions(
   deps: TriggerCortexInstructionsDeps,
 ): Promise<TriggerCortexInstructionsResult> {
   const { vaultDir, embeddingManager, liveConfig, logger, getTeamClient } = deps;
+  const loadExecutor = deps.loadExecutor ?? (() => import('../agent/executor.js'));
   const config = liveConfig.current;
 
   if (config.agent.event_tasks_enabled === false) {
@@ -52,7 +59,7 @@ export async function triggerCortexInstructions(
 
   let runAgentFn: typeof import('../agent/executor.js').runAgent;
   try {
-    ({ runAgent: runAgentFn } = await import('../agent/executor.js'));
+    ({ runAgent: runAgentFn } = await loadExecutor());
   } catch (err) {
     logger.warn(LOG_KINDS.AGENT_ERROR, 'cortex-instructions: agent module unavailable', {
       error: String(err),

@@ -132,6 +132,52 @@ describe('triggerCortexInstructions', () => {
     );
   });
 
+  it('returns agent-module-unavailable when loadExecutor throws (module-not-found path)', async () => {
+    const logger = makeLogger();
+    const loadExecutor = vi.fn(async () => {
+      throw new Error("Cannot find module '../agent/executor.js'");
+    });
+
+    const result = await triggerCortexInstructions({
+      vaultDir: '/tmp/myco',
+      embeddingManager: makeEmbeddingManagerStub() as never,
+      liveConfig: { current: makeConfig() },
+      logger: logger as never,
+      loadExecutor: loadExecutor as never,
+    });
+
+    expect(result.started).toBe(false);
+    expect(result.reason).toBe('agent-module-unavailable');
+    expect(result.error).toContain('Cannot find module');
+    expect(loadExecutor).toHaveBeenCalledTimes(1);
+    expect(buildCortexInstructionsInput).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      'agent.error',
+      'cortex-instructions: agent module unavailable',
+      expect.objectContaining({ error: expect.stringContaining('Cannot find module') }),
+    );
+  });
+
+  it('uses the default loadExecutor (real dynamic import) when the seam is not injected', async () => {
+    // Happy path already mocks @myco/agent/executor.js at the vi.mock level;
+    // this assertion confirms the default code path is still exercised when
+    // no loadExecutor override is passed (sanity check that the seam is
+    // opt-in and backward-compatible).
+    const logger = makeLogger();
+
+    const result = await triggerCortexInstructions({
+      vaultDir: '/tmp/myco',
+      embeddingManager: makeEmbeddingManagerStub() as never,
+      liveConfig: { current: makeConfig() },
+      logger: logger as never,
+    });
+
+    expect(result.started).toBe(true);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
   it('registers the fire-and-forget promise with registerInflightRun when provided', async () => {
     const logger = makeLogger();
     const registerInflightRun = vi.fn();
