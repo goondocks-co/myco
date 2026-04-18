@@ -28,6 +28,7 @@ import {
   type PlanWatchConfig,
 } from '@myco/daemon/plan-capture.js';
 import { buildPathPlanLogicalKey } from '@myco/plans/identity.js';
+import type { Logger } from '@myco/daemon/logger.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -523,13 +524,14 @@ describe('persistPlan cross-channel overwrite detection', () => {
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => { cleanTestDb(); });
 
-  function makeLogger() {
+  function makeLogger(): Logger {
     return {
       debug: () => {},
       info: () => {},
-      warn: (...args: unknown[]) => { warnCalls.push(args); },
+      warn: (_kind: string, _message: string, data?: Record<string, unknown>) => {
+        warnCalls.push([_kind, _message, data]);
+      },
       error: () => {},
-      warnCalls: [] as unknown[][],
     };
   }
   let warnCalls: unknown[][] = [];
@@ -549,6 +551,15 @@ describe('persistPlan cross-channel overwrite detection', () => {
     });
     const firstUpdatedAt = first.updated_at;
 
+    const db = getDatabase();
+    const countOutboxRows = (): number => {
+      const row = db
+        .prepare("SELECT COUNT(*) AS n FROM team_outbox WHERE table_name = 'plans' AND row_id = ?")
+        .get(first.id) as { n: number };
+      return row.n;
+    };
+    const outboxBefore = countOutboxRows();
+
     // Sleep a beat so updated_at would change if the write did run.
     const second = persistPlan({
       sessionId,
@@ -561,6 +572,8 @@ describe('persistPlan cross-channel overwrite detection', () => {
     // No-op: the second call returns the existing row (same updated_at).
     expect(second.updated_at).toBe(firstUpdatedAt);
     expect(second.content_hash).toBe(first.content_hash);
+    // And the no-op MUST NOT enqueue a new outbox row.
+    expect(countOutboxRows()).toBe(outboxBefore);
   });
 
   it('warn-logs when the same logical_key is overwritten by a different source_path', () => {
@@ -579,7 +592,7 @@ describe('persistPlan cross-channel overwrite detection', () => {
       logicalKey,
       sourcePath: null,
       planKey: 'primary',
-      logger: logger as never,
+      logger,
     });
 
     // Second write: same logical_key, different content AND different source_path
@@ -589,7 +602,7 @@ describe('persistPlan cross-channel overwrite detection', () => {
       logicalKey,
       sourcePath: '/docs/plans/primary.md',
       planKey: 'primary',
-      logger: logger as never,
+      logger,
     });
 
     expect(warnCalls.length).toBeGreaterThanOrEqual(1);
@@ -615,14 +628,14 @@ describe('persistPlan cross-channel overwrite detection', () => {
       content: 'Original.',
       logicalKey: buildPathPlanLogicalKey(sourcePath),
       sourcePath,
-      logger: logger as never,
+      logger,
     });
     persistPlan({
       sessionId,
       content: 'Updated content.',
       logicalKey: buildPathPlanLogicalKey(sourcePath),
       sourcePath,
-      logger: logger as never,
+      logger,
     });
 
     expect(warnCalls).toHaveLength(0);

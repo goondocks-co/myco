@@ -19,7 +19,7 @@ interface CortexServicesDeps {
   config: MycoConfig;
   embeddingManager?: EmbeddingManager;
   getTeamClient?: () => TeamSyncClient | null;
-  logger?: DaemonLogger;
+  logger: DaemonLogger;
   /** Optional registry that tracks the fire-and-forget run so daemon shutdown can await it. */
   registerInflightRun?: (promise: Promise<unknown>) => void;
 }
@@ -141,7 +141,7 @@ export async function buildCortexPrompt(
   });
   const runId = getLatestRunId(DEFAULT_AGENT_ID, CORTEX_PROMPT_BUILDER_TASK);
   const tracked = resultPromise.catch((err) => {
-    deps.logger?.warn(LOG_KINDS.AGENT_ERROR, 'cortex-prompt-builder task failed', {
+    deps.logger.warn(LOG_KINDS.AGENT_ERROR, 'cortex-prompt-builder task failed', {
       run_id: runId ?? undefined,
       error: String(err),
     });

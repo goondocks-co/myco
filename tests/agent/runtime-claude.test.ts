@@ -173,6 +173,20 @@ describe('ClaudeSdkRuntime.execute', () => {
     expect(fullServerCalls).toHaveLength(0);
   });
 
+  it('constructs the full vault tool server when toolNames is omitted', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1' },
+    }));
+
+    expect(fullServerCalls).toHaveLength(1);
+    expect(fullServerCalls[0].agentId).toBe('a1');
+    expect(fullServerCalls[0].runId).toBe('r1');
+    expect(scopedServerCalls).toHaveLength(0);
+  });
+
   it('skips the MCP server entirely when toolNames is an empty list', async () => {
     const Runtime = await loadRuntime();
     const runtime = new Runtime();

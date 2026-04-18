@@ -14,7 +14,7 @@ import { CONTENT_HASH_ALGORITHM } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { getPlanByLogicalKey, upsertPlan } from '@myco/db/queries/plans.js';
 import type { PlanRow } from '@myco/db/queries/plans.js';
-import type { DaemonLogger } from './logger.js';
+import type { Logger } from './logger.js';
 import {
   buildPathPlanLogicalKey,
   buildPlanId,
@@ -189,7 +189,7 @@ export interface PersistPlanInput {
   createdAt?: number;
   updatedAt?: number | null;
   /** Optional logger for warn-level cross-channel overwrite detection. */
-  logger?: DaemonLogger;
+  logger?: Logger;
 }
 
 /**
@@ -274,7 +274,7 @@ export interface CapturePlanInput {
   /** Optional prompt batch ID at the time of capture. */
   promptBatchId?: number | null;
   /** Optional logger forwarded to persistPlan for cross-channel overwrite detection. */
-  logger?: DaemonLogger;
+  logger?: Logger;
 }
 
 /**
@@ -305,7 +305,7 @@ export interface CaptureTaggedPlanInput {
   content: string;
   sessionId: string;
   promptBatchId?: number | null;
-  logger?: DaemonLogger;
+  logger?: Logger;
 }
 
 export function captureTaggedPlan(input: CaptureTaggedPlanInput): PlanRow {
