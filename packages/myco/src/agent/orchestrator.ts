@@ -142,6 +142,7 @@ export function composeOrchestratorPrompt(
 export function parseOrchestratorPlan(
   response: string,
   phases: PhaseDefinition[],
+  logger?: import('./types.js').RunLogger,
 ): OrchestratorPlan {
   const trimmed = response.trim();
 
@@ -162,7 +163,10 @@ export function parseOrchestratorPlan(
     const truncated = detail.length > ORCHESTRATOR_PARSE_ERROR_PREVIEW_CHARS
       ? `${detail.slice(0, ORCHESTRATOR_PARSE_ERROR_PREVIEW_CHARS)}…`
       : detail;
-    console.warn(`[agent] Orchestrator plan parse failed: ${detail}`);
+    logger?.warn('agent.orchestrator.parse-failed', 'Orchestrator plan parse failed', {
+      error: detail,
+      responsePreview: trimmed.slice(0, 200),
+    });
     return buildRunAllPlan(phases, `${FALLBACK_REASONING_PARSE_ERROR} (${truncated})`);
   }
 }

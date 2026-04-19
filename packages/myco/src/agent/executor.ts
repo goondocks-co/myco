@@ -88,15 +88,18 @@ const TOKEN_BUDGET_PRESSURE_STATUSES = new Set(['warning', 'post_run_pressure'])
 function logTokenBudgetPressure(
   taskName: string,
   usage: RuntimeUsage,
-  provider?: ProviderConfig,
+  provider: ProviderConfig | undefined,
+  logger: RunOptions['logger'],
 ): void {
   const budget = analyzeRuntimeTokenBudget(usage, provider);
   if (!TOKEN_BUDGET_PRESSURE_STATUSES.has(budget.status)) return;
-  console.warn(
-    `[agent] ${taskName} token budget ${budget.status}: ` +
-    `${budget.utilizationPercent}% of ${budget.contextWindowTokens} tokens ` +
-    `at peak request (${budget.peakRequestTotalTokens} tokens)`,
-  );
+  logger?.warn('agent.token-budget-pressure', `${taskName} token budget ${budget.status}`, {
+    task: taskName,
+    status: budget.status,
+    utilizationPercent: budget.utilizationPercent,
+    contextWindowTokens: budget.contextWindowTokens,
+    peakRequestTotalTokens: budget.peakRequestTotalTokens,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -307,11 +310,14 @@ export async function runAgent(
     taskProviderOverride = resolved.taskProvider;
     phaseProviderOverrides = resolved.phaseOverrides;
     for (const conflict of resolved.conflicts) {
-      console.warn(
-        `[agent] Ollama model "${conflict.model}" referenced with conflicting ` +
-        `context_length values [${conflict.values.join(', ')}] — reconciled to ` +
-        `${conflict.resolved} to avoid loading multiple variants. Configure one ` +
-        `value per model to silence this warning.`,
+      options?.logger?.warn(
+        'agent.ollama.context-variant-conflict',
+        `Ollama model "${conflict.model}" referenced with conflicting context_length values — reconciled to ${conflict.resolved}`,
+        {
+          model: conflict.model,
+          values: conflict.values,
+          resolved: conflict.resolved,
+        },
       );
     }
   }
@@ -320,7 +326,11 @@ export async function runAgent(
   const taskAbortController = new AbortController();
   const timeoutMs = config.timeoutSeconds * MS_PER_SECOND;
   const timeoutId = setTimeout(() => {
-    console.warn(`[agent] Run ${runId} exceeded timeout (${config.timeoutSeconds}s), aborting`);
+    options?.logger?.warn('agent.run.timeout', `Run ${runId} exceeded timeout, aborting`, {
+      runId,
+      taskName: config.taskName,
+      timeoutSeconds: config.timeoutSeconds,
+    });
     taskAbortController.abort(new Error(`Agent run timed out after ${config.timeoutSeconds} seconds`));
   }, timeoutMs);
   timeoutId.unref?.();
@@ -432,7 +442,7 @@ export async function runAgent(
     }
 
     clearTimeout(timeoutId);
-    logTokenBudgetPressure(config.taskName, usage, effectiveProvider);
+    logTokenBudgetPressure(config.taskName, usage, effectiveProvider, options?.logger);
     await finalizeOnTaskSuccess({
       taskName: config.taskName,
       agentId,
@@ -485,12 +495,15 @@ export async function runAgent(
     }
     const failedAt = epochSeconds();
 
-    // Log to stderr (daemon may capture) and to structured log
-    console.error(`[agent] Run ${runId} failed: ${errorMessage}`);
+    options?.logger?.error('agent.run.failed', `Run ${runId} failed`, {
+      runId,
+      taskName: config.taskName,
+      error: errorMessage,
+    });
 
     try {
       const usage = aggregateUsage(phaseResults?.map((phase) => phase.usage) ?? []);
-      logTokenBudgetPressure(config.taskName, usage, effectiveProvider);
+      logTokenBudgetPressure(config.taskName, usage, effectiveProvider, options?.logger);
       const costData = phaseResults ? summarizePhaseCosts(phaseResults) : await resolveCost({
         runtime: runtimeId,
         provider: effectiveProvider,
@@ -538,7 +551,10 @@ export async function runAgent(
       });
     } catch (dbErr) {
       // DB failure in error path — log it but don't mask the original error
-      console.error(`[agent] Failed to save error to DB:`, dbErr);
+      options?.logger?.error('agent.run.db-save-failed', `Failed to save error to DB for run ${runId}`, {
+        runId,
+        error: dbErr instanceof Error ? dbErr.message : String(dbErr),
+      });
     }
 
     await cleanupOnTaskFailure({

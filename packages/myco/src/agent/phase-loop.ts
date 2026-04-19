@@ -122,7 +122,17 @@ export async function executePhase(
   input: ExecutePhaseInput,
 ): Promise<PhaseResult & { sessionData?: unknown }> {
   const { ctx, phasePrompt, phaseModel, phase, toolSurface, provider, sessionId, sessionData } = input;
+  const logger = ctx.options?.logger;
   const runtime = getAgentRuntime(ctx.config.runtime);
+  logger?.debug('agent.phase.start', `Phase ${phase.name} starting`, {
+    runId: ctx.runId,
+    phase: phase.name,
+    model: phaseModel,
+    maxTurns: phase.maxTurns,
+    required: phase.required ?? false,
+    toolNames: toolSurface.toolNames ?? null,
+    sessionRef: sessionId ?? null,
+  });
   try {
     let result;
     try {
@@ -136,7 +146,7 @@ export async function executePhase(
         sessionData,
         abortController: ctx.abortController,
         toolSurface,
-        logger: ctx.options?.logger,
+        logger,
       });
     } catch (error) {
       if (
@@ -146,7 +156,12 @@ export async function executePhase(
       ) {
         throw error;
       }
-      console.warn(`[agent] Resuming phase "${phase.name}" session failed, retrying without prior session`);
+      logger?.info('agent.phase.session-retry', `Phase ${phase.name} session failed, retrying without prior session`, {
+        runId: ctx.runId,
+        phase: phase.name,
+        priorSession: sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       result = await runtime.execute({
         prompt: phasePrompt,
         model: phaseModel,
@@ -155,16 +170,25 @@ export async function executePhase(
         provider,
         abortController: ctx.abortController,
         toolSurface,
-        logger: ctx.options?.logger,
+        logger,
       });
     }
 
-    if (phase.maxTurns && result.turnsUsed > 0) {
-      console.log(`[agent] Phase "${phase.name}": num_turns=${result.turnsUsed}, budget=${phase.maxTurns}`);
-    }
+    logger?.debug('agent.phase.end', `Phase ${phase.name} finished`, {
+      runId: ctx.runId,
+      phase: phase.name,
+      status: 'completed',
+      turnsUsed: result.turnsUsed,
+      maxTurns: phase.maxTurns ?? null,
+      tokensUsed: result.usage.totalTokens ?? 0,
+      costUsd: result.usage.costUsd ?? null,
+    });
 
     if (phase.required && result.turnsUsed === 0) {
-      console.warn(`[agent] Required phase "${phase.name}" produced 0 turns`);
+      logger?.warn('agent.phase.zero-turns', `Required phase ${phase.name} produced 0 turns`, {
+        runId: ctx.runId,
+        phase: phase.name,
+      });
     }
 
     const costData = await resolveCost({
@@ -194,6 +218,15 @@ export async function executePhase(
           usage: telemetry.usage,
         })
       : undefined;
+    logger?.debug('agent.phase.end', `Phase ${phase.name} failed`, {
+      runId: ctx.runId,
+      phase: phase.name,
+      status: 'failed',
+      turnsUsed: telemetry?.usage.requests ?? 0,
+      tokensUsed: telemetry?.usage.totalTokens ?? 0,
+      costUsd: telemetry?.usage.costUsd ?? null,
+      error: abortReason ?? toErrorMessage(err),
+    });
     return buildPhaseResult({
       name: phase.name,
       status: 'failed',
@@ -266,7 +299,15 @@ export async function executeSingleQuery(
     ) {
       throw err;
     }
-    console.warn('[agent] Single-query session failed, retrying without prior session');
+    ctx.options?.logger?.info(
+      'agent.single-query.session-retry',
+      'Single-query session failed, retrying without prior session',
+      {
+        runId: ctx.runId,
+        priorSession: sessionRef,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
     result = await runtime.execute(baseInput);
   }
   const costData = await resolveCost({
@@ -359,8 +400,14 @@ export async function executePhasedQuery(
       logger: ctx.options?.logger,
     });
 
-    const plan = parseOrchestratorPlan(planResponse.finalText, phases);
+    const plan = parseOrchestratorPlan(planResponse.finalText, phases, ctx.options?.logger);
     effectivePhases = applyDirectives(phases, plan.phases);
+    ctx.options?.logger?.debug('agent.orchestrator.plan', 'Orchestrator plan applied', {
+      runId,
+      reasoning: plan.reasoning,
+      effectivePhases: effectivePhases.map((p) => p.name),
+      skippedPhases: plan.phases.filter((d) => d.skip).map((d) => d.name),
+    });
   }
 
   // -------------------------------------------------------------------------
