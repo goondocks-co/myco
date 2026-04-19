@@ -270,6 +270,19 @@ export interface EffectiveConfig {
   dryRun?: boolean;
 }
 
+/**
+ * Minimal logger shape accepted by the agent runtime for diagnostic output.
+ * Structurally compatible with `DaemonLogger` so the daemon can pass its
+ * logger straight in; kept here as a narrow interface so agent code never
+ * imports daemon modules (that direction of dependency is inverted).
+ */
+export interface RunLogger {
+  debug(kind: string, message: string, data?: Record<string, unknown>): void;
+  info(kind: string, message: string, data?: Record<string, unknown>): void;
+  warn(kind: string, message: string, data?: Record<string, unknown>): void;
+  error(kind: string, message: string, data?: Record<string, unknown>): void;
+}
+
 /** Options passed to an agent run. */
 export interface RunOptions {
   agentId?: string;
@@ -279,6 +292,12 @@ export interface RunOptions {
   resumeRunId?: string;
   /** Embedding manager for immediate vector operations during agent tool calls. */
   embeddingManager?: import('@myco/daemon/embedding/manager.js').EmbeddingManager;
+  /**
+   * Optional logger. When provided (the daemon always provides one),
+   * runtime diagnostics are emitted at `debug` level — visible once
+   * `daemon.log_level` is set to `debug`, otherwise filtered out.
+   */
+  logger?: RunLogger;
   /**
    * Structured metadata about the run. Populated by the dispatcher (e.g.
    * instruction-builders.ts) alongside the free-form `instruction` string

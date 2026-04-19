@@ -92,6 +92,25 @@ export class ClaudeSdkRuntime implements AgentRuntime {
         process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR ?? getIsolatedPluginCacheDir(),
     };
 
+    // Debug-level record of the per-request tool surface. Filtered out
+    // unless daemon.log_level is set to 'debug' — when it is, operators
+    // can grep the log viewer for `agent.runtime.request` to see what
+    // tools each phase actually sent, which is how you catch a plugin
+    // leak before it blows up a real run with a 400 tool-schema error.
+    if (input.logger) {
+      const mcpToolNames = input.toolSurface.toolNames
+        ?? (toolServer ? ['<full-vault-surface>'] : []);
+      input.logger.debug('agent.runtime.request', 'Agent runtime request', {
+        runId: input.toolSurface.runId,
+        agentId: input.toolSurface.agentId,
+        model: input.model,
+        mcpToolCount: mcpToolNames.length,
+        mcpTools: mcpToolNames,
+        pluginCacheDir: env.CLAUDE_CODE_PLUGIN_CACHE_DIR,
+        sessionRef: input.sessionRef ?? null,
+      });
+    }
+
     let finalText = '';
     let turnsUsed = 0;
     let inputTokens = 0;

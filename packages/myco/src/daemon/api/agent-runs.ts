@@ -192,6 +192,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       dryRun,
       evaluationId,
       executionOverrides,
+      logger,
     });
 
     // runAgent inserts the run row synchronously before the first await.
@@ -303,6 +304,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       resumeRunId: run.id,
       resumeMode: mode ?? 'manual',
       embeddingManager,
+      logger,
     });
 
     resultPromise

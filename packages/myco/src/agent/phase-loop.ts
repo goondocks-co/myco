@@ -136,6 +136,7 @@ export async function executePhase(
         sessionData,
         abortController: ctx.abortController,
         toolSurface,
+        logger: ctx.options?.logger,
       });
     } catch (error) {
       if (
@@ -154,6 +155,7 @@ export async function executePhase(
         provider,
         abortController: ctx.abortController,
         toolSurface,
+        logger: ctx.options?.logger,
       });
     }
 
@@ -246,6 +248,7 @@ export async function executeSingleQuery(
     provider,
     abortController: ctx.abortController,
     toolSurface,
+    logger: ctx.options?.logger,
   };
   let result;
   try {
@@ -353,6 +356,7 @@ export async function executePhasedQuery(
         dryRun: config.dryRun ?? false,
       },
       abortController: ctx.abortController,
+      logger: ctx.options?.logger,
     });
 
     const plan = parseOrchestratorPlan(planResponse.finalText, phases);

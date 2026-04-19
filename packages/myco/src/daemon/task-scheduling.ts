@@ -126,6 +126,7 @@ export async function registerScheduledTasks(
           resumeRunId: resumableRun.id,
           resumeMode: 'scheduled',
           embeddingManager,
+          logger,
         });
         logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} resumed`, {
           status: resumed.status,
@@ -164,6 +165,7 @@ export async function registerScheduledTasks(
         instruction: built?.instruction,
         runContext: built?.context,
         embeddingManager,
+        logger,
       });
       logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} completed`, {
         status: result.status,
