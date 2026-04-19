@@ -103,9 +103,15 @@ describe('mycelium API handlers', () => {
     }
 
     const result = await handleGetGraphSeeds(makeReq('/graph/seeds'));
-    const body = result.body as { recommended_id: string | null };
+    const body = result.body as {
+      seeds: Array<{ id: string; type: string }>;
+      recommended_id: string | null;
+    };
 
     expect(body.recommended_id).toBe('sess-rich-hub');
+    // UI relies on recommended_id being present in the seeds list; verify.
+    expect(body.seeds.map((s) => s.id)).toContain('sess-rich-hub');
+    expect(body.seeds[0]?.id).toBe('sess-rich-hub');
   });
 
   it('falls back to seed order when no edges exist', async () => {

@@ -125,11 +125,6 @@ export async function handleGetGraphSeeds(_req: RouteRequest): Promise<RouteResp
       content: (row.summary as string) ?? undefined,
     }));
 
-  const seeds = [
-    ...sessionSeeds,
-    ...sporeSeeds,
-  ];
-
   // Recommend the most-connected node in the visible lineage graph so the
   // default focus lands on a rich neighborhood instead of a freshly-completed
   // session that has not had spores extracted yet. Batch edges are excluded
@@ -155,7 +150,50 @@ export async function handleGetGraphSeeds(_req: RouteRequest): Promise<RouteResp
      LIMIT 1`,
   ).get(DEFAULT_AGENT_ID, DEFAULT_AGENT_ID) as { node_id: string } | undefined;
 
-  const recommendedId = topConnectedRow?.node_id
+  // Materialize the top-connected node as a seed so the UI's
+  // `seeds.find(s => s.id === recommended_id)` lookup succeeds.
+  let topSeed: Record<string, unknown> | null = null;
+  if (topConnectedRow?.node_id) {
+    const topId = topConnectedRow.node_id;
+    const sporeHit = db.prepare(
+      `SELECT id, observation_type, status, content, created_at
+         FROM spores WHERE id = ?`,
+    ).get(topId) as Record<string, unknown> | undefined;
+    if (sporeHit) {
+      topSeed = {
+        id: sporeHit.id as string,
+        name: ((sporeHit.content as string) ?? '').slice(0, SPORE_NAME_PREVIEW_CHARS),
+        type: 'spore' as const,
+        status: (sporeHit.status as string) ?? undefined,
+        created_at: sporeHit.created_at as number | undefined,
+        content: sporeHit.content as string | undefined,
+        observation_type: sporeHit.observation_type as string | undefined,
+      };
+    } else {
+      const sessionHit = db.prepare(
+        `SELECT id, title, summary, status, started_at as created_at
+           FROM sessions WHERE id = ?`,
+      ).get(topId) as Record<string, unknown> | undefined;
+      if (sessionHit) {
+        topSeed = {
+          id: sessionHit.id as string,
+          name: (sessionHit.title as string) ?? `Session ${(sessionHit.id as string).slice(-6)}`,
+          type: 'session' as const,
+          status: (sessionHit.status as string) ?? undefined,
+          created_at: sessionHit.created_at as number | undefined,
+          content: (sessionHit.summary as string) ?? undefined,
+        };
+      }
+    }
+  }
+
+  const seeds = [
+    ...(topSeed ? [topSeed] : []),
+    ...sessionSeeds.filter((s) => s.id !== topSeed?.id),
+    ...sporeSeeds.filter((s) => s.id !== topSeed?.id),
+  ];
+
+  const recommendedId = topSeed?.id as string | undefined
     ?? sessionSeeds[0]?.id
     ?? sporeSeeds[0]?.id
     ?? null;
