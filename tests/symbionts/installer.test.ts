@@ -1016,20 +1016,14 @@ describe('installMcp (TOML)', () => {
     expect(content).not.toContain('old-command');
   });
 
-  it('resolves mcpCwd placeholders through the manifest-owned installer path', () => {
+  it('writes mcpCwd verbatim into the installed MCP entry', () => {
     fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
-    const installer = new SymbiontInstaller({
-      ...CODEX_MANIFEST,
-      registration: {
-        ...CODEX_MANIFEST.registration!,
-        mcpCwd: '{projectRoot}',
-      },
-    }, projectRoot, packageRoot);
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
 
     installer.installMcp();
 
     const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
-    expect(content).toContain(`cwd = "${projectRoot}"`);
+    expect(content).toContain('cwd = "."');
   });
 });
 

@@ -1,34 +1,33 @@
-import { describe, expect, it } from 'vitest';
-import {
-  MYCO_PROJECT_ROOT_ENV,
-  MYCO_VAULT_DIR_ENV,
-  resolveVaultDir,
-} from '@myco/vault/resolve.js';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { resolveVaultDir } from '@myco/vault/resolve.js';
+
+let tmpDir: string;
+
+beforeEach(() => {
+  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-resolve-')));
+});
+
+afterEach(() => {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
 
 describe('resolveVaultDir', () => {
-  it('prefers explicit vault dir env over cwd discovery', () => {
-    const result = resolveVaultDir('/', {
-      [MYCO_VAULT_DIR_ENV]: '/tmp/custom-vault',
-      [MYCO_PROJECT_ROOT_ENV]: '/tmp/project-root',
-    });
+  it('resolves to <git-root>/.myco when cwd is inside a git repo', () => {
+    execFileSync('git', ['init', '-q'], { cwd: tmpDir });
+    const subdir = path.join(tmpDir, 'pkg', 'src');
+    fs.mkdirSync(subdir, { recursive: true });
 
-    expect(result).toBe('/tmp/custom-vault');
+    const result = resolveVaultDir(subdir);
+
+    expect(result).toBe(path.join(tmpDir, '.myco'));
   });
 
-  it('derives vault dir from explicit project root env when present', () => {
-    const result = resolveVaultDir('/', {
-      [MYCO_PROJECT_ROOT_ENV]: '/tmp/project-root',
-    });
-
-    expect(result).toBe('/tmp/project-root/.myco');
-  });
-
-  it('ignores non-absolute env values and falls back to cwd resolution', () => {
-    const result = resolveVaultDir('/tmp/project-root', {
-      [MYCO_PROJECT_ROOT_ENV]: 'relative-root',
-      [MYCO_VAULT_DIR_ENV]: '.myco',
-    });
-
-    expect(result).toBe('/tmp/project-root/.myco');
+  it('falls back to <cwd>/.myco when cwd is not inside a git repo', () => {
+    const result = resolveVaultDir(tmpDir);
+    expect(result).toBe(path.join(tmpDir, '.myco'));
   });
 });

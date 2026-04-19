@@ -51,13 +51,6 @@ const CANONICAL_SKILLS_DIR = '.agents/skills';
 
 /** MCP server name used by Myco in all symbiont configurations. */
 export const MYCO_MCP_SERVER_NAME = 'myco';
-const MCP_ENV_PROJECT_ROOT_TOKEN = '{projectRoot}';
-const MCP_ENV_VAULT_DIR_TOKEN = '{vaultDir}';
-
-interface McpLaunchOverrides {
-  cwd?: string;
-  env: Record<string, string>;
-}
 
 /**
  * Marker substring written into plugin-file hook templates (e.g., opencode's plugin.ts).
@@ -878,56 +871,15 @@ export class SymbiontInstaller {
   ): Record<string, unknown> | null {
     if (!template) return null;
 
-    const overrides = this.resolveMcpLaunchOverrides();
-    if (!overrides.cwd && Object.keys(overrides.env).length === 0) return template;
+    const cwd = this.manifest.registration?.mcpCwd;
+    if (!cwd) return template;
 
     return Object.fromEntries(
       Object.entries(template).map(([name, def]) => {
         if (!def || typeof def !== 'object' || Array.isArray(def)) return [name, def];
-        const server = def as Record<string, unknown>;
-        const mergedEnv = {
-          ...(
-            server.env && typeof server.env === 'object' && !Array.isArray(server.env)
-              ? server.env
-              : {}
-          ),
-          ...overrides.env,
-        } as Record<string, unknown>;
-        return [
-          name,
-          {
-            ...server,
-            ...(overrides.cwd ? { cwd: overrides.cwd } : {}),
-            ...(Object.keys(mergedEnv).length > 0 ? { env: mergedEnv } : {}),
-          },
-        ];
+        return [name, { ...(def as Record<string, unknown>), cwd }];
       }),
     );
-  }
-
-  private resolveMcpLaunchOverrides(): McpLaunchOverrides {
-    const vaultDir = path.join(this.projectRoot, '.myco');
-    const registration = this.manifest.registration;
-    const envEntries = Object.entries(registration?.mcpEnv ?? {});
-    return {
-      cwd: this.resolveMcpPlaceholderValue(registration?.mcpCwd, vaultDir),
-      env: Object.fromEntries(
-        envEntries.flatMap(([key, value]) => {
-          const resolved = this.resolveMcpPlaceholderValue(value, vaultDir);
-          return resolved ? [[key, resolved] as const] : [];
-        }),
-      ),
-    };
-  }
-
-  private resolveMcpPlaceholderValue(
-    value: string | undefined,
-    vaultDir: string,
-  ): string | undefined {
-    if (!value) return value;
-    return value
-      .replaceAll(MCP_ENV_PROJECT_ROOT_TOKEN, this.projectRoot)
-      .replaceAll(MCP_ENV_VAULT_DIR_TOKEN, vaultDir);
   }
 
   /**
