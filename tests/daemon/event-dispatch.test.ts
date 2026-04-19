@@ -158,4 +158,85 @@ describe('createEventDispatcher', () => {
     fs.rmSync(vaultDir, { recursive: true, force: true });
     fs.rmSync(transcriptDir, { recursive: true, force: true });
   });
+
+  describe('DB-backed registry rehydration after daemon restart', () => {
+    // Regression: an opencode session registered before a daemon restart used
+    // to lose every post-restart event because the in-memory SessionRegistry
+    // was empty and the capture gate then dropped the event as an
+    // ephemeral-sub-invocation (codex's any_agent transcript_path_missing
+    // rule). Events for sessions already persisted in SQLite must bypass the
+    // gate — it's a first-sight filter only.
+
+    it('rehydrates registry from DB and captures an opencode event with no transcript_path', async () => {
+      const { handler, registry, logger, vaultDir } = makeHandler();
+      const sessionId = 'opencode-rehydrate-001';
+
+      // Simulate: session exists in SQLite (registered before daemon restart)
+      // but NOT in the in-memory registry (registry was wiped on restart).
+      const { upsertSession } = await import('@myco/db/queries/sessions.js');
+      upsertSession({
+        id: sessionId,
+        agent: 'opencode',
+        status: 'active',
+        started_at: Math.floor(Date.now() / 1000) - 60,
+        created_at: Math.floor(Date.now() / 1000) - 60,
+        machine_id: 'local',
+      });
+      expect(registry.getSession(sessionId)).toBeUndefined();
+
+      // Opencode events never carry transcript_path. Before the fix this
+      // would get dropped by codex's any_agent rule via the capture gate.
+      const res = await handler({
+        body: {
+          type: 'user_prompt',
+          session_id: sessionId,
+          agent: 'opencode',
+          prompt: 'a real prompt that arrived after the daemon restarted',
+        },
+        query: {},
+        headers: {},
+        params: {},
+        pathname: '/events',
+      });
+
+      expect(res.body).toEqual({ ok: true });
+      expect(registry.getSession(sessionId)).toBeDefined();
+
+      const batches = listBatchesBySession(sessionId);
+      expect(batches).toHaveLength(1);
+      expect(batches[0].user_prompt).toBe('a real prompt that arrived after the daemon restarted');
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    });
+
+    it('still gates truly new sessions (no DB row) through capture rules', async () => {
+      const { handler, sessionBuffers, logger, vaultDir } = makeHandler();
+      const sessionId = 'codex-phantom-new-001';
+
+      // First-sight codex event with no transcript_path — the phantom case
+      // the codex manifest rule was written for. Must still drop.
+      const res = await handler({
+        body: {
+          type: 'tool_use',
+          session_id: sessionId,
+          agent: 'codex',
+          tool_name: 'Bash',
+          tool_input: {},
+          output_preview: '',
+        },
+        query: {},
+        headers: {},
+        params: {},
+        pathname: '/events',
+      });
+
+      expect(res.body).toEqual({ ok: true, ignored: 'ephemeral-sub-invocation' });
+      expect(getSession(sessionId)).toBeNull();
+      expect(sessionBuffers.has(sessionId)).toBe(false);
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    });
+  });
 });

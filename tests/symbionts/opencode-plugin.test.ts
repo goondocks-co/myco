@@ -230,4 +230,89 @@ describe('opencode plugin runtime hooks', () => {
       '## Myco — Project Context (preserved across compaction)\n\nCompaction context',
     ]);
   });
+
+  describe('server-side drop buffering', () => {
+    // Regression: before the fix, the plugin treated HTTP 200 as success
+    // regardless of body. The daemon could return `{ ok: true, ignored: "..."}`
+    // to silently drop events, and the plugin would never route them to the
+    // on-disk buffer. That's how a stale capture rule erased every event of a
+    // live opencode session across a daemon restart. An ignored response must
+    // trigger the same buffer write as a transport failure would.
+
+    function bufferLinesFor(directory: string, sessionId: string): string[] {
+      const bufferPath = path.join(directory, '.myco', 'buffer', `${sessionId}.jsonl`);
+      if (!fs.existsSync(bufferPath)) return [];
+      return fs.readFileSync(bufferPath, 'utf-8').trim().split('\n').filter(Boolean);
+    }
+
+    it('buffers a chat.message event when daemon returns 200 with ignored field', async () => {
+      const directory = createProjectDir();
+      const fetchMock = vi.fn(async () =>
+        new Response(JSON.stringify({ ok: true, ignored: 'ephemeral-sub-invocation' }), { status: 200 }),
+      );
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      const client = { app: { log: vi.fn().mockResolvedValue(undefined) }, session: { messages: vi.fn() } };
+      const plugin = await MycoPlugin({ client, directory, worktree: directory });
+
+      await plugin['chat.message'](
+        { sessionID: 'ses-silent-drop-1' },
+        { parts: [{ type: 'text', text: 'a real user prompt' }] },
+      );
+
+      const lines = bufferLinesFor(directory, 'ses-silent-drop-1');
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0])).toMatchObject({
+        type: 'user_prompt',
+        agent: 'opencode',
+        prompt: 'a real user prompt',
+      });
+
+      fs.rmSync(directory, { recursive: true, force: true });
+    });
+
+    it('does NOT buffer when daemon returns 200 without ignored field', async () => {
+      const directory = createProjectDir();
+      const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      const client = { app: { log: vi.fn().mockResolvedValue(undefined) }, session: { messages: vi.fn() } };
+      const plugin = await MycoPlugin({ client, directory, worktree: directory });
+
+      await plugin['chat.message'](
+        { sessionID: 'ses-silent-drop-2' },
+        { parts: [{ type: 'text', text: 'happy path prompt' }] },
+      );
+
+      expect(bufferLinesFor(directory, 'ses-silent-drop-2')).toEqual([]);
+
+      fs.rmSync(directory, { recursive: true, force: true });
+    });
+
+    it('buffers a tool.execute.after event when daemon returns 200 with ignored', async () => {
+      const directory = createProjectDir();
+      const fetchMock = vi.fn(async () =>
+        new Response(JSON.stringify({ ok: true, ignored: 'rule' }), { status: 200 }),
+      );
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      const client = { app: { log: vi.fn().mockResolvedValue(undefined) }, session: { messages: vi.fn() } };
+      const plugin = await MycoPlugin({ client, directory, worktree: directory });
+
+      await plugin['tool.execute.after'](
+        { sessionID: 'ses-silent-drop-3', tool: 'read', args: { file_path: '/a/b.ts' } },
+        { output: 'file contents', metadata: {} },
+      );
+
+      const lines = bufferLinesFor(directory, 'ses-silent-drop-3');
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0])).toMatchObject({
+        type: 'tool_use',
+        agent: 'opencode',
+        tool_name: 'read',
+      });
+
+      fs.rmSync(directory, { recursive: true, force: true });
+    });
+  });
 });

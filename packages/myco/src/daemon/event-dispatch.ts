@@ -34,7 +34,7 @@ import {
   handleCompact,
 } from './event-handlers.js';
 import { getLatestBatch } from '@myco/db/queries/batches.js';
-import { upsertSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
+import { getSession, upsertSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
 import { captureBatchImages, type CapturedImage } from './capture-images.js';
 import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -154,52 +154,68 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
 
     // Ensure session is registered (idempotent — handles daemon restarts mid-session)
     if (!registry.getSession(event.session_id)) {
-      const cached = droppedSessions.get(event.session_id);
-      const hasTranscriptNow = typeof event.transcript_path === 'string' && event.transcript_path.length > 0;
-      // Re-evaluate when a previously-unattended session newly supplies a
-      // transcript_path — the earlier drop was made without transcript meta.
-      const shouldReevaluate = cached && !cached.hadTranscriptMeta && hasTranscriptNow;
-      if (cached && !shouldReevaluate) {
-        const reason = cached.reason ?? 'rule';
-        logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Ignored event for previously-dropped session', {
+      // Rehydrate from SQLite before running capture rules. A session row
+      // means we already admitted this session (on a prior run or earlier in
+      // this run); re-gating it risks applying phantom-detection rules to a
+      // legitimate mid-flight session whose in-memory registry was lost on
+      // daemon restart. The capture gate is for first-sight sessions only.
+      const existingRow = getSession(event.session_id);
+      if (existingRow) {
+        registry.register(event.session_id, { started_at: event.timestamp });
+        logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Rehydrated registry from DB', {
           session_id: event.session_id,
+          agent: existingRow.agent,
           type: event.type,
-          reason,
         });
-        return { body: { ok: true, ignored: reason } };
-      }
-      if (shouldReevaluate) {
-        droppedSessions.delete(event.session_id);
-      }
-      const { decision, hadTranscriptMeta } = evaluateAutoRegistration(event);
-      if (decision.action === 'drop') {
-        rememberDropped(event.session_id, decision.reason, hadTranscriptMeta);
-        logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Ignored event that failed session capture rules', {
-          session_id: event.session_id,
-          type: event.type,
-          reason: decision.reason ?? 'rule',
+        reconcileSession(event.session_id);
+      } else {
+        const cached = droppedSessions.get(event.session_id);
+        const hasTranscriptNow = typeof event.transcript_path === 'string' && event.transcript_path.length > 0;
+        // Re-evaluate when a previously-unattended session newly supplies a
+        // transcript_path — the earlier drop was made without transcript meta.
+        const shouldReevaluate = cached && !cached.hadTranscriptMeta && hasTranscriptNow;
+        if (cached && !shouldReevaluate) {
+          const reason = cached.reason ?? 'rule';
+          logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Ignored event for previously-dropped session', {
+            session_id: event.session_id,
+            type: event.type,
+            reason,
+          });
+          return { body: { ok: true, ignored: reason } };
+        }
+        if (shouldReevaluate) {
+          droppedSessions.delete(event.session_id);
+        }
+        const { decision, hadTranscriptMeta } = evaluateAutoRegistration(event);
+        if (decision.action === 'drop') {
+          rememberDropped(event.session_id, decision.reason, hadTranscriptMeta);
+          logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Ignored event that failed session capture rules', {
+            session_id: event.session_id,
+            type: event.type,
+            reason: decision.reason ?? 'rule',
+          });
+          return { body: { ok: true, ignored: decision.reason ?? 'rule' } };
+        }
+
+        registry.register(event.session_id, { started_at: event.timestamp });
+        logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from event', { session_id: event.session_id });
+
+        // Ensure SQLite session exists — explicitly set status='active' so
+        // resumed sessions (previously 'completed') get reopened.
+        const now = epochSeconds();
+        const startedEpoch = Math.floor(new Date(event.timestamp).getTime() / 1000);
+        upsertSession({
+          id: event.session_id,
+          agent: (event as Record<string, unknown>).agent as string ?? DEFAULT_SYMBIONT_NAME,
+          status: 'active',
+          started_at: startedEpoch,
+          created_at: now,
+          machine_id: machineId,
         });
-        return { body: { ok: true, ignored: decision.reason ?? 'rule' } };
+
+        // Reconcile buffer against DB — recover any prompts lost during downtime.
+        reconcileSession(event.session_id);
       }
-
-      registry.register(event.session_id, { started_at: event.timestamp });
-      logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from event', { session_id: event.session_id });
-
-      // Ensure SQLite session exists — explicitly set status='active' so
-      // resumed sessions (previously 'completed') get reopened.
-      const now = epochSeconds();
-      const startedEpoch = Math.floor(new Date(event.timestamp).getTime() / 1000);
-      upsertSession({
-        id: event.session_id,
-        agent: (event as Record<string, unknown>).agent as string ?? DEFAULT_SYMBIONT_NAME,
-        status: 'active',
-        started_at: startedEpoch,
-        created_at: now,
-        machine_id: machineId,
-      });
-
-      // Reconcile buffer against DB — recover any prompts lost during downtime.
-      reconcileSession(event.session_id);
     }
 
     // Persist to disk so events survive daemon restarts

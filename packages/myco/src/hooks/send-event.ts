@@ -6,7 +6,7 @@
  * skeleton so each hook is a one-liner mapping input fields to event fields.
  */
 
-import { DaemonClient } from './client.js';
+import { DaemonClient, isIgnoredEventResponse } from './client.js';
 import { readStdin } from './read-stdin.js';
 import { normalizeHookInput, type NormalizedHookInput } from './normalize.js';
 import { EventBuffer } from '../capture/buffer.js';
@@ -42,7 +42,11 @@ export async function sendEvent(
     const client = new DaemonClient(VAULT_DIR);
     const result = await client.post('/events', { ...eventWithContext, session_id: input.sessionId, agent: input.agent });
 
-    if (!result.ok) {
+    // Two buffer paths: transport failure (daemon unreachable) and server-side
+    // drop (HTTP 200 with `{ ignored: reason }`). The second case catches
+    // capture-rule misfires that would otherwise silently discard live session
+    // events — `reconcileBufferBatches` replays the buffer on next startup.
+    if (!result.ok || isIgnoredEventResponse(result.data)) {
       const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), input.sessionId);
       buffer.append(eventWithContext);
     }

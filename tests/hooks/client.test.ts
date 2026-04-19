@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { DaemonClient } from '@myco/hooks/client';
+import { DaemonClient, isIgnoredEventResponse } from '@myco/hooks/client';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -179,5 +179,29 @@ describe('DaemonClient error-body propagation', () => {
       expect(r.ok).toBe(false);
       expect(r.data).toBeUndefined();
     }
+  });
+});
+
+describe('isIgnoredEventResponse', () => {
+  it('returns true when body carries a non-empty ignored string', () => {
+    expect(isIgnoredEventResponse({ ok: true, ignored: 'ephemeral-sub-invocation' })).toBe(true);
+    expect(isIgnoredEventResponse({ ignored: 'rule' })).toBe(true);
+  });
+
+  it('returns false for happy-path 200 responses with no ignored field', () => {
+    expect(isIgnoredEventResponse({ ok: true })).toBe(false);
+    expect(isIgnoredEventResponse({})).toBe(false);
+  });
+
+  it('returns false for nullish or non-object bodies', () => {
+    expect(isIgnoredEventResponse(undefined)).toBe(false);
+    expect(isIgnoredEventResponse(null)).toBe(false);
+    expect(isIgnoredEventResponse('200 OK')).toBe(false);
+  });
+
+  it('returns false when ignored is present but empty or non-string', () => {
+    expect(isIgnoredEventResponse({ ignored: '' })).toBe(false);
+    expect(isIgnoredEventResponse({ ignored: null })).toBe(false);
+    expect(isIgnoredEventResponse({ ignored: 42 })).toBe(false);
   });
 });
