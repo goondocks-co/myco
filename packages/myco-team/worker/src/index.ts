@@ -11,7 +11,7 @@ import { validateAuth } from './auth';
 import { createMcpHandler } from 'agents/mcp';
 import { createMcpServerInstance } from './mcp/server';
 import { authenticateMcpRequest, ensureMcpToken, rotateMcpToken, getMcpTokenHash, MCP_TOKEN_KEY } from './mcp/auth';
-import { embedText, hydrateVectorMatches } from './search-helpers';
+import { searchKnowledge, embedText, type TeamVectorMetadata } from './search-helpers';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -86,6 +86,12 @@ interface SearchResult {
   data: Record<string, unknown>;
 }
 
+interface VectorReindexCursor {
+  created_at: number;
+  id: string;
+  machine_id: string;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -104,6 +110,8 @@ const COLLECTIVE_STALE_AFTER_SECONDS = COLLECTIVE_HEARTBEAT_INTERVAL_SECONDS * 3
 const DEFAULT_TEAM_PACKAGE_VERSION = '0.1.0';
 const TEAM_COLLECTIVE_CAPABILITIES = ['search', 'digest', 'collective_proxy'] as const;
 const TEAM_COLLECTIVE_QUERY_TOOLS = new Set(['collective_search', 'collective_projects', 'collective_project']);
+const VECTOR_REINDEX_DEFAULT_BATCH = 100;
+const VECTOR_REINDEX_MAX_BATCH = 250;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -124,8 +132,19 @@ function epochSeconds(): number {
 /**
  * Build a Vectorize namespace ID for a record: `{table}:{id}:{machine_id}`.
  */
-function vectorId(table: string, id: string, machineId: string): string {
+function legacyVectorId(table: string, id: string, machineId: string): string {
   return `${table}:${id}:${machineId}`;
+}
+
+async function vectorId(table: string, id: string, machineId: string): Promise<string> {
+  const payload = new TextEncoder().encode(`${table}:${id}:${machineId}`);
+  const digest = await crypto.subtle.digest('SHA-256', payload);
+  const bytes = new Uint8Array(digest).slice(0, 16);
+  const encoded = btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+  return `v1:${encoded}`;
 }
 
 async function readTeamConfig(env: Env): Promise<Record<string, string>> {
@@ -449,14 +468,10 @@ async function handleSync(request: Request, env: Env): Promise<Response> {
         const textContent = record.data[embeddableField] as string | undefined;
         if (textContent) {
           const { table, id, machine_id } = record;
-          if (table === 'spores' && record.data.status === 'superseded') {
+          if (table === 'spores' && record.data.status !== 'active') {
             embeddingTasks.push(() => deleteVector(env, table, id, machine_id));
           } else {
-            // Include domain-specific metadata for richer search results
-            const extra: Record<string, string> = {};
-            if (table === 'skill_records' && record.data.name) extra.name = record.data.name as string;
-            if (table === 'spores' && record.data.observation_type) extra.observation_type = record.data.observation_type as string;
-            embeddingTasks.push(() => embedAndUpsert(env, table, id, machine_id, textContent, extra));
+            embeddingTasks.push(() => embedAndUpsert(env, table, id, machine_id, textContent, buildVectorMetadata(table, record.data)));
           }
         }
       }
@@ -498,10 +513,18 @@ async function embedAndUpsert(
   id: string,
   machineId: string,
   text: string,
-  extra?: Record<string, string>,
+  extra?: Partial<TeamVectorMetadata>,
 ): Promise<void> {
   const vector = await embedText(env.AI, text);
-  const vid = vectorId(table, id, machineId);
+  const vid = await vectorId(table, id, machineId);
+  const legacyId = legacyVectorId(table, id, machineId);
+  if (legacyId !== vid) {
+    try {
+      await env.MYCO_TEAM_VECTORS.deleteByIds([legacyId]);
+    } catch {
+      // Legacy vector may not exist — safe to ignore.
+    }
+  }
   await env.MYCO_TEAM_VECTORS.upsert([
     {
       id: vid,
@@ -511,10 +534,211 @@ async function embedAndUpsert(
   ]);
 }
 
-async function deleteVector(env: Env, table: string, id: string, machineId: string): Promise<void> {
-  const vid = vectorId(table, id, machineId);
+function buildVectorMetadata(table: string, data: Record<string, unknown>): Partial<TeamVectorMetadata> {
+  const metadata: Partial<TeamVectorMetadata> = {};
+
+  const maybeString = (key: keyof TeamVectorMetadata, value: unknown) => {
+    if (typeof value === 'string' && value.length > 0) metadata[key] = value as never;
+  };
+  const maybeNumber = (key: keyof TeamVectorMetadata, value: unknown) => {
+    if (typeof value === 'number' && Number.isFinite(value)) metadata[key] = value as never;
+  };
+
+  switch (table) {
+    case 'spores':
+      maybeString('status', data.status);
+      maybeString('observation_type', data.observation_type);
+      maybeString('session_id', data.session_id);
+      maybeNumber('created_at', data.created_at);
+      break;
+    case 'sessions':
+      maybeString('status', data.status);
+      maybeString('project_root', data.project_root);
+      maybeNumber('created_at', data.created_at);
+      break;
+    case 'plans':
+      maybeString('status', data.status);
+      maybeString('session_id', data.session_id);
+      maybeString('source_path', data.source_path);
+      maybeNumber('created_at', data.created_at);
+      break;
+    case 'artifacts':
+      maybeString('source_path', data.source_path);
+      maybeNumber('created_at', data.created_at);
+      break;
+    case 'skill_records':
+      maybeString('status', data.status);
+      maybeString('name', data.name);
+      maybeNumber('created_at', data.created_at);
+      break;
+  }
+
+  return metadata;
+}
+
+function parseCsvParam(value: string | null): string[] | undefined {
+  if (!value) return undefined;
+  const parts = value.split(',').map((part) => part.trim()).filter(Boolean);
+  return parts.length > 0 ? parts : undefined;
+}
+
+function parseNumberParam(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function encodeReindexCursor(cursor: VectorReindexCursor | null): string | null {
+  return cursor ? JSON.stringify(cursor) : null;
+}
+
+function decodeReindexCursor(value: unknown): VectorReindexCursor | null {
+  if (!value || typeof value !== 'string') return null;
   try {
-    await env.MYCO_TEAM_VECTORS.deleteByIds([vid]);
+    const parsed = JSON.parse(value) as Partial<VectorReindexCursor>;
+    if (
+      typeof parsed.created_at === 'number' &&
+      typeof parsed.id === 'string' &&
+      typeof parsed.machine_id === 'string'
+    ) {
+      return {
+        created_at: parsed.created_at,
+        id: parsed.id,
+        machine_id: parsed.machine_id,
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function listReindexRows(
+  env: Env,
+  table: keyof typeof EMBEDDABLE_TABLES,
+  limit: number,
+  cursor: VectorReindexCursor | null,
+): Promise<Array<{ id: string; machine_id: string; text: string; data: Record<string, unknown> }>> {
+  const textField = EMBEDDABLE_TABLES[table];
+  const params: unknown[] = [];
+  let whereClause = '';
+  if (cursor) {
+    whereClause = `
+      WHERE (
+        created_at > ?
+        OR (created_at = ? AND id > ?)
+        OR (created_at = ? AND id = ? AND machine_id > ?)
+      )`;
+    params.push(cursor.created_at, cursor.created_at, cursor.id, cursor.created_at, cursor.id, cursor.machine_id);
+  }
+
+  const sql = `
+    SELECT *
+    FROM ${table}
+    ${whereClause}
+    ORDER BY created_at ASC, id ASC, machine_id ASC
+    LIMIT ?
+  `;
+  params.push(limit);
+  const { results } = await env.MYCO_TEAM_DB.prepare(sql).bind(...params).all<Record<string, unknown>>();
+
+  return (results ?? [])
+    .map((row) => {
+      const text = row[textField];
+      if (typeof row.id !== 'string' || typeof row.machine_id !== 'string' || typeof text !== 'string' || text.length === 0) {
+        return null;
+      }
+      return {
+        id: row.id,
+        machine_id: row.machine_id,
+        text,
+        data: row,
+      };
+    })
+    .filter((row): row is { id: string; machine_id: string; text: string; data: Record<string, unknown> } => row !== null);
+}
+
+async function handleVectorReindex(request: Request, env: Env): Promise<Response> {
+  const body = await request.json() as {
+    table?: keyof typeof EMBEDDABLE_TABLES;
+    limit?: number;
+    cursor?: string | null;
+  };
+  const table = body.table;
+  if (!table || !(table in EMBEDDABLE_TABLES)) {
+    return errorResponse('table must be one of spores, sessions, plans, artifacts, skill_records', 400);
+  }
+
+  const limit = Math.min(Math.max(body.limit ?? VECTOR_REINDEX_DEFAULT_BATCH, 1), VECTOR_REINDEX_MAX_BATCH);
+  const cursor = decodeReindexCursor(body.cursor ?? null);
+  const rows = await listReindexRows(env, table, limit, cursor);
+  const startedAt = epochSeconds();
+
+  await writeTeamConfig(env, {
+    vector_reindex_status: 'running',
+    vector_reindex_last_table: table,
+    vector_reindex_last_run_at: String(startedAt),
+    vector_reindex_last_error: '',
+  });
+
+  try {
+    let reindexed = 0;
+    let deleted = 0;
+    for (const row of rows) {
+      if (table === 'spores' && row.data.status !== 'active') {
+        await deleteVector(env, table, row.id, row.machine_id);
+        deleted += 1;
+        continue;
+      }
+      await embedAndUpsert(env, table, row.id, row.machine_id, row.text, buildVectorMetadata(table, row.data));
+      reindexed += 1;
+    }
+
+    const next = rows.length === limit
+      ? rows[rows.length - 1]
+      : null;
+
+    await writeTeamConfig(env, {
+      vector_reindex_status: next ? 'running' : 'ok',
+      vector_reindex_last_table: table,
+      vector_reindex_last_run_at: String(epochSeconds()),
+      vector_reindex_last_processed: String(rows.length),
+      vector_reindex_last_reindexed: String(reindexed),
+      vector_reindex_last_deleted: String(deleted),
+      vector_reindex_last_error: '',
+    });
+
+    return jsonResponse({
+      table,
+      processed: rows.length,
+      reindexed,
+      deleted,
+      next_cursor: next
+        ? encodeReindexCursor({
+            created_at: Number(next.data.created_at ?? 0),
+            id: next.id,
+            machine_id: next.machine_id,
+          })
+        : null,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await writeTeamConfig(env, {
+      vector_reindex_status: 'error',
+      vector_reindex_last_table: table,
+      vector_reindex_last_run_at: String(epochSeconds()),
+      vector_reindex_last_error: message,
+    });
+    throw error;
+  }
+}
+
+async function deleteVector(env: Env, table: string, id: string, machineId: string): Promise<void> {
+  const vid = await vectorId(table, id, machineId);
+  const legacyId = legacyVectorId(table, id, machineId);
+  try {
+    const ids = legacyId === vid ? [vid] : [vid, legacyId];
+    await env.MYCO_TEAM_VECTORS.deleteByIds(ids);
   } catch {
     // Vector may not exist — safe to ignore
   }
@@ -529,14 +753,18 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
 
   const topK = Math.min(parseInt(url.searchParams.get('top_k') ?? String(DEFAULT_TOP_K), 10), MAX_TOP_K);
 
-  const queryVector = await embedText(env.AI, query);
-  const matches = await env.MYCO_TEAM_VECTORS.query(queryVector, { topK, returnMetadata: 'all' });
-
-  const validMatches = matches.matches
-    .filter((m) => m.metadata)
-    .map((m) => ({ metadata: m.metadata as { table: string; id: string; machine_id: string }, score: m.score }));
-
-  const results = await hydrateVectorMatches(env.MYCO_TEAM_DB, validMatches);
+  const results = await searchKnowledge(env.MYCO_TEAM_DB, env.MYCO_TEAM_VECTORS, env.AI, {
+    query,
+    limit: topK,
+    types: parseCsvParam(url.searchParams.get('types')) ?? parseCsvParam(url.searchParams.get('tables')),
+    status: url.searchParams.get('status') ?? undefined,
+    observation_type: url.searchParams.get('observation_type') ?? undefined,
+    since: parseNumberParam(url.searchParams.get('since')),
+    until: parseNumberParam(url.searchParams.get('until')),
+    session_id: url.searchParams.get('session_id') ?? undefined,
+    source_path: url.searchParams.get('source_path') ?? undefined,
+    name: url.searchParams.get('name') ?? undefined,
+  });
 
   return jsonResponse({ results: results.map((r) => ({ table: r.type, ...r })) });
 }
@@ -724,6 +952,9 @@ export default {
       }
       if (method === 'GET' && path === '/search') {
         return await handleSearch(request, env);
+      }
+      if (method === 'POST' && path === '/vectors/reindex') {
+        return await handleVectorReindex(request, env);
       }
       if (method === 'GET' && path === '/config') {
         return await handleGetConfig(env);

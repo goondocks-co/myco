@@ -25,7 +25,7 @@ schedule:
   preCondition: has-active-skills
 params:
   assess_interval_hours: 24
-  max_skills_per_run: 8
+  max_skills_per_run: 3
 phases:
   - name: inventory
     reasoningLevel: low
@@ -96,15 +96,15 @@ phases:
       ## Selection
 
       List active skills via vault_skill_records (action: list,
-      status: active). Prioritize up to 3 skills with the OLDEST
+      status: active). Prioritize up to 2 skills with the OLDEST
       `last_verified_at` in properties (missing/zero counts as oldest,
-      so never-verified skills sort to the front). If fewer than 3
+      so never-verified skills sort to the front). If fewer than 2
       active skills exist, verify them all. This watermark is
       independent of `last_assessed_at` — it rotates verify coverage
       even when assess never touches the skill, which is the whole
       point: skills that never get new spores still need to be
       fact-checked for silent refactor drift. Full rotation time
-      scales with the active skill count divided by 3, so a larger
+      scales with the active skill count divided by 2, so a larger
       skill inventory naturally stretches the verify cadence.
 
       Skills flagged by the inventory phase (merge_candidates or

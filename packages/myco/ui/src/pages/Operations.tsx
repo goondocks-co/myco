@@ -468,8 +468,11 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
   async function handleReembedStale() {
     setActionResult(null);
     try {
-      const result = await postJson<{ reembedded: number }>('/embedding/reembed-stale');
-      setActionResult({ type: 'success', text: `Re-embedded ${result.reembedded} stale vectors` });
+      const result = await postJson<{ reembedded: number; passes: number; batch_size: number }>('/embedding/reembed-stale');
+      setActionResult({
+        type: 'success',
+        text: `Re-embedded ${result.reembedded} stale vectors in ${result.passes} pass${result.passes !== 1 ? 'es' : ''} (batch ${result.batch_size})`,
+      });
       queryClient.invalidateQueries({ queryKey: ['embedding-details'] });
     } catch (err) {
       setActionResult({ type: 'error', text: `Error: ${(err as Error).message}` });
@@ -480,8 +483,18 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
     if (!confirm('This will re-embed all vectors. Continue?')) return;
     setActionResult(null);
     try {
-      const result = await postJson<{ queued: number }>('/embedding/rebuild');
-      setActionResult({ type: 'success', text: `Rebuild queued: ${result.queued} vectors to re-embed` });
+      const result = await postJson<{
+        queued: number;
+        embedded: number;
+        stale_reembedded: number;
+        passes: number;
+        batch_size: number;
+        remaining_queue_depth: number;
+      }>('/embedding/rebuild');
+      setActionResult({
+        type: 'success',
+        text: `Rebuild cleared ${result.queued} vectors and re-embedded ${result.embedded} records in ${result.passes} pass${result.passes !== 1 ? 'es' : ''} (batch ${result.batch_size}, remaining ${result.remaining_queue_depth})`,
+      });
       queryClient.invalidateQueries({ queryKey: ['embedding-details'] });
     } catch (err) {
       setActionResult({ type: 'error', text: `Error: ${(err as Error).message}` });
@@ -502,12 +515,12 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
   async function handleReconcile() {
     setActionResult(null);
     try {
-      const result = await postJson<{ embedded: number; orphans_cleaned: number; duration_ms: number }>(
+      const result = await postJson<{ embedded: number; orphans_cleaned: number; duration_ms: number; batch_size: number }>(
         '/embedding/reconcile',
       );
       setActionResult({
         type: 'success',
-        text: `Reconcile complete: ${result.embedded} embedded, ${result.orphans_cleaned} orphans cleaned (${result.duration_ms}ms)`,
+        text: `Reconcile complete: ${result.embedded} embedded, ${result.orphans_cleaned} orphans cleaned (${result.duration_ms}ms, batch ${result.batch_size})`,
       });
       queryClient.invalidateQueries({ queryKey: ['embedding-details'] });
     } catch (err) {

@@ -36,11 +36,21 @@ export async function searchAcrossProjects(
   query: string,
   projectFilter?: string,
   limit = DEFAULT_LIMIT,
+  filters?: {
+    types?: string[];
+    status?: string;
+    observation_type?: string;
+    since?: number;
+    until?: number;
+    session_id?: string;
+    source_path?: string;
+    name?: string;
+  },
 ): Promise<{ results: Array<Record<string, unknown>>; errors: FanoutErrorRecord[] }> {
   const boundedLimit = Math.min(Math.max(limit, 1), MAX_LIMIT);
   const targetProjects = projects.filter((project) => projectMatches(project, projectFilter));
   const responses = await Promise.all(targetProjects.map((project) =>
-    searchProject(env, project, query, boundedLimit),
+    searchProject(env, project, query, boundedLimit, filters),
   ));
 
   const merged = responses.flatMap((response) => response.results);
@@ -57,6 +67,16 @@ async function searchProject(
   project: ProjectRecord,
   query: string,
   limit: number,
+  filters?: {
+    types?: string[];
+    status?: string;
+    observation_type?: string;
+    since?: number;
+    until?: number;
+    session_id?: string;
+    source_path?: string;
+    name?: string;
+  },
 ): Promise<FanoutProjectResult> {
   if (!project.capabilities.includes('search')) {
     return { results: [], errors: [] };
@@ -71,6 +91,14 @@ async function searchProject(
   }
 
   const params = new URLSearchParams({ q: query, top_k: String(limit) });
+  if (filters?.types && filters.types.length > 0) params.set('types', filters.types.join(','));
+  if (filters?.status) params.set('status', filters.status);
+  if (filters?.observation_type) params.set('observation_type', filters.observation_type);
+  if (filters?.since !== undefined) params.set('since', String(filters.since));
+  if (filters?.until !== undefined) params.set('until', String(filters.until));
+  if (filters?.session_id) params.set('session_id', filters.session_id);
+  if (filters?.source_path) params.set('source_path', filters.source_path);
+  if (filters?.name) params.set('name', filters.name);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FANOUT_REQUEST_TIMEOUT_MS);
 

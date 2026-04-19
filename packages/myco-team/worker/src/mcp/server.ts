@@ -16,6 +16,13 @@ export function createMcpServerInstance(env: Env): McpServer {
     query: z.string().describe('The search query'),
     types: z.array(z.string()).optional().describe('Filter to content types: spores, sessions, plans, artifacts'),
     limit: z.number().min(1).max(50).default(10).describe('Maximum results'),
+    status: z.string().optional().describe('Optional metadata filter for record status'),
+    observation_type: z.string().optional().describe('Optional spore observation type filter'),
+    since: z.number().optional().describe('Optional created_at lower bound in epoch seconds'),
+    until: z.number().optional().describe('Optional created_at upper bound in epoch seconds'),
+    session_id: z.string().optional().describe('Optional session id metadata filter'),
+    source_path: z.string().optional().describe('Optional source path metadata filter'),
+    name: z.string().optional().describe('Optional name metadata filter'),
   }, async (args) => handleSearch(args, env));
 
   server.tool('myco_context', 'Pre-synthesized project digest. Start here to understand the project. Three tiers: 1500 (executive), 5000 (deep onboarding), 10000 (comprehensive).', {

@@ -41,8 +41,9 @@ export function createFakeD1() {
 export function createFakeVectorize(
   matches: Array<{ id: string; score: number; metadata: Record<string, unknown> }> = [],
 ) {
+  const query = async () => ({ matches, count: matches.length });
   return {
-    query: async () => ({ matches, count: matches.length }),
+    query,
   } as unknown as VectorizeIndex;
 }
 

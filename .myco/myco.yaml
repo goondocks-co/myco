@@ -37,29 +37,35 @@ agent:
         model: claude-sonnet-4-6
     skill-survey:
       provider:
+        runtime: claude-sdk
         type: anthropic
+      runtime: claude-sdk
       schedule:
-        enabled: false
+        enabled: true
         runIn:
           - idle
     skill-generate:
       provider:
+        runtime: claude-sdk
         type: anthropic
+      runtime: claude-sdk
       phases:
         validate:
           maxTurns: 30
       schedule:
-        enabled: false
+        enabled: true
         runIn:
           - idle
     skill-evolve:
       provider:
+        runtime: claude-sdk
         type: anthropic
+      runtime: claude-sdk
       phases:
         assess:
           maxTurns: 30
       schedule:
-        enabled: false
+        enabled: true
         intervalSeconds: 1800
     title-summary:
       provider:

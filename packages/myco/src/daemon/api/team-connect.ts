@@ -161,6 +161,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     }
 
     let collectiveStatus: Awaited<ReturnType<TeamSyncClient['getCollectiveStatus']>> | null = null;
+    let teamConfig: Awaited<ReturnType<TeamSyncClient['getConfig']>> | null = null;
     if (client && config.team.enabled) {
       try {
         collectiveStatus = await client.getCollectiveStatus();
@@ -169,7 +170,29 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         logger.warn('team-sync.collective.status-failed', 'Collective status unavailable', { error: detail });
         collectiveStatus = null;
       }
+
+      try {
+        teamConfig = await client.getConfig();
+      } catch (err) {
+        const detail = errorMessage(err);
+        logger.warn('team-sync.config.status-failed', 'Team config unavailable', { error: detail });
+        teamConfig = null;
+      }
     }
+
+    const remoteConfig = (teamConfig?.config ?? {}) as Record<string, unknown>;
+    const vectorReindexLastRun = typeof remoteConfig.vector_reindex_last_run_at === 'string'
+      ? Number(remoteConfig.vector_reindex_last_run_at)
+      : null;
+    const vectorReindexLastProcessed = typeof remoteConfig.vector_reindex_last_processed === 'string'
+      ? Number(remoteConfig.vector_reindex_last_processed)
+      : null;
+    const vectorReindexLastReindexed = typeof remoteConfig.vector_reindex_last_reindexed === 'string'
+      ? Number(remoteConfig.vector_reindex_last_reindexed)
+      : null;
+    const vectorReindexLastDeleted = typeof remoteConfig.vector_reindex_last_deleted === 'string'
+      ? Number(remoteConfig.vector_reindex_last_deleted)
+      : null;
 
     return {
       body: {
@@ -198,6 +221,13 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         collective_last_heartbeat: collectiveStatus?.last_heartbeat ?? null,
         collective_capabilities: collectiveStatus?.capabilities ?? [],
         collective_settings: collectiveStatus?.settings ?? {},
+        vector_reindex_status: typeof remoteConfig.vector_reindex_status === 'string' ? remoteConfig.vector_reindex_status : null,
+        vector_reindex_last_table: typeof remoteConfig.vector_reindex_last_table === 'string' ? remoteConfig.vector_reindex_last_table : null,
+        vector_reindex_last_error: typeof remoteConfig.vector_reindex_last_error === 'string' && remoteConfig.vector_reindex_last_error.length > 0 ? remoteConfig.vector_reindex_last_error : null,
+        vector_reindex_last_run_at: Number.isFinite(vectorReindexLastRun) ? vectorReindexLastRun : null,
+        vector_reindex_last_processed: Number.isFinite(vectorReindexLastProcessed) ? vectorReindexLastProcessed : null,
+        vector_reindex_last_reindexed: Number.isFinite(vectorReindexLastReindexed) ? vectorReindexLastReindexed : null,
+        vector_reindex_last_deleted: Number.isFinite(vectorReindexLastDeleted) ? vectorReindexLastDeleted : null,
         schema_version: SCHEMA_VERSION,
         sync_protocol_version: SYNC_PROTOCOL_VERSION,
         mcp_token: client?.getMcpToken() ?? null,

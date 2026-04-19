@@ -168,6 +168,7 @@ export function createMcpProxyHandlers(deps: McpProxyDeps) {
     embeddingManager.onContentWritten('spores', spore.id, content, {
       status: 'active',
       observation_type: observationType,
+      created_at: now,
     }).catch(() => {});
 
     return {
@@ -266,6 +267,7 @@ export function createMcpProxyHandlers(deps: McpProxyDeps) {
     embeddingManager.onContentWritten('spores', wisdom.id, consolidated_content, {
       status: 'active',
       observation_type,
+      created_at: now,
     }).catch(() => {});
     for (const sourceId of sourcesSuperseded) {
       try { embeddingManager.onStatusChanged('spores', sourceId, 'superseded'); } catch { /* best-effort */ }

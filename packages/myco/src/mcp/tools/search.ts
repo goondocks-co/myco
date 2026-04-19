@@ -17,6 +17,10 @@ interface SearchInput {
   query: string;
   type?: string;
   limit?: number;
+  observation_type?: string;
+  status?: string;
+  since?: number;
+  until?: number;
 }
 
 interface SearchResult {
@@ -27,6 +31,13 @@ interface SearchResult {
   observation_type?: string;
   status?: string;
   tags?: string;
+}
+
+function requiresSemanticMode(input: SearchInput): boolean {
+  return input.observation_type !== undefined
+    || input.status !== undefined
+    || input.since !== undefined
+    || input.until !== undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -42,7 +53,12 @@ export async function handleMycoSearch(
   const endpoint = buildEndpoint('/api/search', {
     q: input.query,
     limit,
+    mode: requiresSemanticMode(input) ? 'semantic' : undefined,
     type: input.type,
+    observation_type: input.observation_type,
+    status: input.status,
+    since: input.since,
+    until: input.until,
   });
   const result = await client.get(endpoint);
   if (!result.ok || !result.data?.results) return [];

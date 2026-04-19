@@ -22,6 +22,13 @@ export interface TeamStatusResponse {
   collective_last_heartbeat: number | null;
   collective_capabilities: string[];
   collective_settings: Record<string, unknown>;
+  vector_reindex_status: string | null;
+  vector_reindex_last_table: string | null;
+  vector_reindex_last_error: string | null;
+  vector_reindex_last_run_at: number | null;
+  vector_reindex_last_processed: number | null;
+  vector_reindex_last_reindexed: number | null;
+  vector_reindex_last_deleted: number | null;
   machine_id: string;
   package_version: string;
   schema_version: number;

@@ -23,6 +23,7 @@ describe('handleSearch', () => {
     expect(parsed.results[0].type).toBe('spores');
     expect(parsed.results[0].score).toBe(0.95);
     expect(parsed.results[0].data.content).toBe('test spore');
+    expect(parsed.results[0].metadata.observation_type).toBeUndefined();
   });
 
   it('filters by types when specified', async () => {
@@ -102,6 +103,87 @@ describe('handleSearch', () => {
 
     const parsed = parseToolResult(result);
     expect(parsed.results).toHaveLength(0);
+  });
+
+  it('filters by semantic metadata and returns metadata in results', async () => {
+    const fake = createFakeD1();
+    const vectorize = createFakeVectorize([
+      {
+        id: 'spores:sp1:m1',
+        score: 0.95,
+        metadata: {
+          table: 'spores',
+          id: 'sp1',
+          machine_id: 'm1',
+          status: 'active',
+          observation_type: 'decision',
+          created_at: 100,
+          session_id: 'sess-1',
+        },
+      },
+      {
+        id: 'spores:sp2:m1',
+        score: 0.98,
+        metadata: {
+          table: 'spores',
+          id: 'sp2',
+          machine_id: 'm1',
+          status: 'superseded',
+          observation_type: 'gotcha',
+          created_at: 50,
+          session_id: 'sess-2',
+        },
+      },
+    ]);
+    const ai = createFakeAI();
+
+    fake.addResult([{ id: 'sp1', machine_id: 'm1', content: 'decision spore' }]);
+
+    const result = await handleSearch(
+      {
+        query: 'test query',
+        status: 'active',
+        observation_type: 'decision',
+        since: 90,
+        session_id: 'sess-1',
+      },
+      { MYCO_TEAM_DB: fake.db, MYCO_TEAM_VECTORS: vectorize, AI: ai },
+    );
+
+    const parsed = parseToolResult(result);
+    expect(parsed.results).toHaveLength(1);
+    expect(parsed.results[0].id).toBe('sp1');
+    expect(parsed.results[0].metadata).toEqual(expect.objectContaining({
+      status: 'active',
+      observation_type: 'decision',
+      created_at: 100,
+      session_id: 'sess-1',
+    }));
+  });
+
+  it('uses overfetch so filtered searches can still fill the requested limit', async () => {
+    const fake = createFakeD1();
+    const query = async (_vector: number[], options?: { topK?: number }) => ({
+      matches: [
+        { id: 'spores:drop:m1', score: 0.99, metadata: { table: 'spores', id: 'drop', machine_id: 'm1', status: 'superseded' } },
+        { id: 'spores:keep:m1', score: 0.98, metadata: { table: 'spores', id: 'keep', machine_id: 'm1', status: 'active' } },
+      ],
+      count: 2,
+      observedTopK: options?.topK,
+    });
+    const vectorize = { query } as unknown as VectorizeIndex;
+    const ai = createFakeAI();
+
+    fake.addResult([{ id: 'keep', machine_id: 'm1', content: 'kept spore' }]);
+
+    const result = await handleSearch(
+      { query: 'test query', limit: 1, status: 'active' },
+      { MYCO_TEAM_DB: fake.db, MYCO_TEAM_VECTORS: vectorize, AI: ai },
+    );
+
+    const parsed = parseToolResult(result);
+    expect(parsed.results).toHaveLength(1);
+    expect(parsed.results[0].id).toBe('keep');
   });
 
   it('clamps limit to range [1, 50]', async () => {

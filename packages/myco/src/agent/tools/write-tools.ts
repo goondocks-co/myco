@@ -66,6 +66,7 @@ export function createWriteTools(deps: VaultToolDeps) {
         status: 'active',
         observation_type: args.observation_type,
         session_id: args.session_id,
+        created_at: now,
       }).catch(() => {});
 
       return textResult(spore);
