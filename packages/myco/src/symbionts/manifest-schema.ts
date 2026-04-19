@@ -120,18 +120,11 @@ const RegistrationSchema = z.object({
   mcpTarget: z.string().optional(),
   mcpFormat: z.enum(['json', 'toml']).default('json'),
   /**
-   * Optional working directory injected into the Myco MCP server entry. Values
-   * may use `{projectRoot}` and `{vaultDir}` placeholders, or remain relative
-   * (for example `.` in a project-local config file) when the host agent
-   * resolves paths against the config file location.
+   * Optional working directory injected verbatim into the Myco MCP server entry.
+   * Used by symbionts (for example Codex with `.`) whose MCP child would
+   * otherwise launch with a cwd that breaks vault discovery.
    */
   mcpCwd: z.string().optional(),
-  /**
-   * Optional env vars injected into the Myco MCP server entry. Values may use
-   * `{projectRoot}` and `{vaultDir}` placeholders so symbionts whose MCP child
-   * starts outside the repo can still anchor Myco to the correct project.
-   */
-  mcpEnv: z.record(z.string(), z.string()).default({}),
   /**
    * JSON key under which MCP server entries are stored in the MCP config file.
    * Defaults to 'mcpServers' (used by Claude Code, Cursor, etc.). opencode uses 'mcp'.

@@ -79,17 +79,9 @@ All four layers must be present.
 
 ---
 
-## Env Var Propagation and Priority Ordering
+## Vault Location Resolution
 
-Environment variables for vault location resolution follow a priority order in `src/hooks/resolve.ts`. When a hook needs to locate the vault:
-
-1. **Explicit args** (command-line arguments like `--vault-dir`) — highest priority
-2. **`MYCO_VAULT_DIR`** — if set, use this path directly (absolute)
-3. **`MYCO_PROJECT_ROOT`** — if set, resolve vault as `$MYCO_PROJECT_ROOT/.myco`
-4. **Hook guard cwd pinning** — use pinned cwd from `.agents/myco-hook.cjs` as fallback
-5. **Process cwd** — lowest priority, used only if all others are missing
-
-Claude Code injects env vars from `settings.json` into hook processes, but **not** from `settings.user.json`. Any env var required by a hook must live in `settings.json`. Always set `MYCO_PROJECT_ROOT` in `settings.json` for explicit, portable vault location resolution.
+The vault is always `<git-repo-root>/.myco/`. There are no env var overrides — `resolveVaultDir()` walks up to the git common dir and appends `.myco`. If a symbiont's MCP child or hook would otherwise launch with a cwd that breaks discovery, fix it at the launch surface (e.g. set `registration.mcpCwd` in the manifest), not by injecting `MYCO_VAULT_DIR` or `MYCO_PROJECT_ROOT` — those env vars are no longer honored.
 
 ---
 
@@ -130,5 +122,3 @@ Verify: stop the daemon, trigger a drop condition (e.g., null transcript_path, o
 **registration.mcpCwd is mandatory for portable MCP** — Without this field, MCP servers spawned from hooks run with agent-context `cwd`, breaking file resolution. Always set this in the manifest and expand to absolute path at install time.
 
 **source==exec filter must be in capture rules config** — `source` is an environment-variable-based filter evaluated by the rules engine. Ensure the filter is present in the YAML manifest, not hardcoded in the hook.
-
-**MYCO_VAULT_DIR/MYCO_PROJECT_ROOT priority ordering** — Environment variable resolution follows a 5-step priority in `src/hooks/resolve.ts`. Always set `MYCO_PROJECT_ROOT` in `settings.json` for explicit, portable vault location. Do not rely on process `cwd`.
