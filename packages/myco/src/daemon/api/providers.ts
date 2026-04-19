@@ -163,7 +163,10 @@ export async function handleTestProvider(req: RouteRequest): Promise<RouteRespon
       result = testAnthropic();
     }
   } catch (err) {
-    result = { ok: false, error: String(err) };
+    result = {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 
   if (result.ok) {
@@ -224,8 +227,13 @@ async function detectAnthropic(): Promise<ProviderInfo> {
     if (liveModels.length > 0) {
       models = liveModels;
     }
-  } catch {
-    // Fall through to hardcoded ANTHROPIC_MODELS
+  } catch (err) {
+    // Fall through to the hardcoded ANTHROPIC_MODELS list so the dropdown
+    // is never empty, but surface why the live list was unreachable so an
+    // operator can diagnose a missing key / network block without SDK
+    // debug logs.
+    const detail = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[providers] Anthropic model list unavailable: ${detail}\n`);
   }
   anthropicModelsCache = { ts: now, models };
   return { type: 'anthropic', runtime: 'claude-sdk', available: true, models };
@@ -245,8 +253,10 @@ async function detectRemoteProviderInfo(
       // providers (always uses the hardcoded default); see SSRF lockdown.
       models = await fetchRemoteProviderModels(type, undefined, ANTHROPIC_MODELS_TIMEOUT_MS);
       available = true;
-    } catch {
+    } catch (err) {
       available = false;
+      const detail = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[providers] ${type} model list unavailable: ${detail}\n`);
     }
   }
 

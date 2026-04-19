@@ -152,15 +152,20 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     try {
       pendingCount = countPending();
       deadLetterCount = countDeadLettered();
-    } catch {
-      // DB may not have the table yet
+    } catch (err) {
+      // DB may not have the table yet — log so we don't silently report
+      // "0 pending" when the team-outbox queries are actually broken.
+      const detail = err instanceof Error ? err.message : String(err);
+      logger.warn('team-sync.outbox.count-failed', 'team-outbox counts unavailable', { error: detail });
     }
 
     let collectiveStatus: Awaited<ReturnType<TeamSyncClient['getCollectiveStatus']>> | null = null;
     if (client && config.team.enabled) {
       try {
         collectiveStatus = await client.getCollectiveStatus();
-      } catch {
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        logger.warn('team-sync.collective.status-failed', 'Collective status unavailable', { error: detail });
         collectiveStatus = null;
       }
     }

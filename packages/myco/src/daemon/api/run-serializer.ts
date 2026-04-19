@@ -47,7 +47,12 @@ export function buildPhaseCheckpointSummary(
       ...(phase.costUsd !== undefined ? { costUsd: phase.costUsd } : {}),
       ...(phase.costSource !== undefined ? { costSource: phase.costSource } : {}),
     }));
-  } catch {
+  } catch (err) {
+    // Corrupt checkpoints JSON — degrade to an empty phase list so the run
+    // detail still renders, but surface the parse error so an operator can
+    // distinguish "no phases yet" from "blob was truncated mid-write".
+    const detail = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[run-serializer] checkpoints JSON parse failed: ${detail}\n`);
     return [];
   }
 }

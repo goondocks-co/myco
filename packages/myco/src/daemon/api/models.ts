@@ -105,6 +105,7 @@ export async function handleGetModels(req: RouteRequest): Promise<RouteResponse>
   }
 
   let models: string[] = [];
+  let fetchError: string | undefined;
 
   try {
     const localBackendKind = inferLocalOpenAIBackendKind({
@@ -123,8 +124,12 @@ export async function handleGetModels(req: RouteRequest): Promise<RouteResponse>
       // readers don't think `req.query.base_url` reaches the fetch.
       models = await fetchRemoteProviderModels(provider, undefined, MODEL_LIST_TIMEOUT_MS);
     }
-  } catch {
-    // Provider unreachable — return empty list
+  } catch (err) {
+    // Return the empty list so the UI still renders, but surface the
+    // underlying reason so the caller can show "connection refused" /
+    // "API key rejected" instead of an unexplained empty dropdown.
+    fetchError = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[models] ${provider} model list unavailable: ${fetchError}\n`);
   }
 
   // Filter by type if requested
@@ -134,7 +139,13 @@ export async function handleGetModels(req: RouteRequest): Promise<RouteResponse>
     models = filterLlmModels(models);
   }
 
-  return { body: { provider, models } };
+  return {
+    body: {
+      provider,
+      models,
+      ...(fetchError ? { error: fetchError } : {}),
+    },
+  };
 }
 
 export {

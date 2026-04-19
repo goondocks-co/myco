@@ -204,8 +204,13 @@ export function resolveEffectiveConfig(
       try {
         const parsed = JSON.parse(agentOverrides.tool_access);
         if (Array.isArray(parsed)) tools = parsed as string[];
-      } catch {
-        // Invalid JSON in tool_access — keep definition defaults
+      } catch (err) {
+        // Keep definition defaults but surface the error so operators can
+        // tell why their per-agent tool override isn't taking effect.
+        const detail = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[agent] Ignoring malformed tool_access JSON for agent "${agentId}": ${detail}`,
+        );
       }
     }
   }

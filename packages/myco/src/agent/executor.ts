@@ -21,6 +21,7 @@ import {
   getRun,
   getRunningRunForTask,
   RESUME_STATUS_READY,
+  RESUME_STATUS_SESSION_EXPIRED,
   STATUS_RUNNING,
   STATUS_COMPLETED,
   STATUS_FAILED,
@@ -36,6 +37,7 @@ import { resolveCost } from './cost/index.js';
 import {
   aggregateUsage,
   buildUsageData,
+  isExpiredSessionError,
   parseCheckpointState,
   resolveProviderForResume,
   serializeCheckpointState,
@@ -495,21 +497,44 @@ export async function runAgent(
         model: effectiveModel,
         usage,
       });
+
+      // Detect the "expired SDK session" zombie-run pattern: we were
+      // resuming a run whose checkpoint carried a sessionRef, the runtime
+      // crashed without producing any turns, and the error message looks
+      // like an expired/missing session. Marking it `resumable=1, ready`
+      // here would re-enqueue it next scheduler tick and loop forever
+      // (37 zombies accumulated in issue #118). Terminal-mark it instead
+      // and null the checkpoint so nothing else tries to reuse the dead
+      // session id.
+      const hadPriorSession = Boolean(checkpointState.sessionRef)
+        || Object.values(checkpointState.phases).some((phase) => Boolean(phase.sessionRef));
+      const recordedAnyTurns = (usage.requests ?? 0) > 0
+        || (phaseResults?.some((phase) => phase.turnsUsed > 0) ?? false);
+      const sessionExpired = Boolean(options?.resumeRunId)
+        && hadPriorSession
+        && !recordedAnyTurns
+        && isExpiredSessionError(err);
+
+      const accountingUpdate = buildRunAccountingUpdate({
+        runtime: runtimeId,
+        provider: effectiveProvider,
+        model: effectiveModel,
+        checkpointState,
+        usage,
+        costData,
+        phaseResults,
+      });
+      if (sessionExpired) {
+        accountingUpdate.checkpoints = null;
+      }
+
       updateRunStatus(runId, STATUS_FAILED, {
-        resumable: 1,
-        resume_status: RESUME_STATUS_READY,
+        resumable: sessionExpired ? 0 : 1,
+        resume_status: sessionExpired ? RESUME_STATUS_SESSION_EXPIRED : RESUME_STATUS_READY,
         completed_at: failedAt,
         tokens_used: usage.totalTokens ?? phaseResults?.reduce((sum, phase) => sum + phase.tokensUsed, 0) ?? undefined,
         error: errorMessage,
-        ...buildRunAccountingUpdate({
-          runtime: runtimeId,
-          provider: effectiveProvider,
-          model: effectiveModel,
-          checkpointState,
-          usage,
-          costData,
-          phaseResults,
-        }),
+        ...accountingUpdate,
       });
     } catch (dbErr) {
       // DB failure in error path — log it but don't mask the original error

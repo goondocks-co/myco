@@ -30,6 +30,7 @@ import {
   abortReasonMessage,
   buildPhaseResult,
   checkpointResultsForResume,
+  isExpiredSessionError,
   isSessionResumeFailure,
   type RunCheckpointState,
 } from './executor-state.js';
@@ -137,7 +138,11 @@ export async function executePhase(
         toolSurface,
       });
     } catch (error) {
-      if (!sessionId || !runtime.supports('supportsSessionResume') || !isSessionResumeFailure(error)) {
+      if (
+        !sessionId
+        || !runtime.supports('supportsSessionResume')
+        || (!isSessionResumeFailure(error) && !isExpiredSessionError(error))
+      ) {
         throw error;
       }
       console.warn(`[agent] Resuming phase "${phase.name}" session failed, retrying without prior session`);
@@ -226,23 +231,41 @@ export async function executeSingleQuery(
     provider,
     ctx.config.model,
   );
-  const result = await runtime.execute({
+  const toolSurface = {
+    agentId: ctx.agentId,
+    runId: ctx.runId,
+    vaultDir: ctx.vaultDir,
+    embeddingManager: ctx.embeddingManager,
+    dryRun: ctx.config.dryRun ?? false,
+  };
+  const baseInput = {
     prompt: taskPrompt,
     model: effectiveModel,
     maxTurns: ctx.config.maxTurns,
     systemPrompt: ctx.systemPrompt,
     provider,
     abortController: ctx.abortController,
-    sessionRef,
-    sessionData,
-    toolSurface: {
-      agentId: ctx.agentId,
-      runId: ctx.runId,
-      vaultDir: ctx.vaultDir,
-      embeddingManager: ctx.embeddingManager,
-      dryRun: ctx.config.dryRun ?? false,
-    },
-  });
+    toolSurface,
+  };
+  let result;
+  try {
+    result = await runtime.execute({ ...baseInput, sessionRef, sessionData });
+  } catch (err) {
+    // Mirror executePhase's retry: if we had a sessionRef and the runtime
+    // supports resume, try once more with a fresh session. Without this,
+    // single-query tasks (title-summary, review-session) loop forever in
+    // the scheduler whenever their SDK session TTLs out — the caller sees
+    // "exited with code 1" and has no way to recover.
+    if (
+      !sessionRef
+      || !runtime.supports('supportsSessionResume')
+      || (!isSessionResumeFailure(err) && !isExpiredSessionError(err))
+    ) {
+      throw err;
+    }
+    console.warn('[agent] Single-query session failed, retrying without prior session');
+    result = await runtime.execute(baseInput);
+  }
   const costData = await resolveCost({
     runtime: ctx.config.runtime,
     provider,

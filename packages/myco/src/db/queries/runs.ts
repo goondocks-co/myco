@@ -31,6 +31,16 @@ export const STATUS_FAILED = 'failed';
 /** Resume status used when a failed/interrupted run can be resumed. */
 export const RESUME_STATUS_READY = 'ready';
 
+/**
+ * Resume status used when a run's underlying SDK session has expired
+ * (Claude Agent SDK sessions TTL out after hours/days on Anthropic's side).
+ * Without this terminal state the scheduler would pick the run up every
+ * tick, re-attach to the dead session, crash within ~100s on 0 turns, and
+ * loop forever. `resumable=0` stops the loop; the status tells operators
+ * why the run is final.
+ */
+export const RESUME_STATUS_SESSION_EXPIRED = 'session_expired';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------

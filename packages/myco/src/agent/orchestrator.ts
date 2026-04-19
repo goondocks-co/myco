@@ -41,6 +41,9 @@ const FALLBACK_REASONING_PARSE_ERROR = 'Orchestrator response could not be parse
 /** Fallback reasoning string used when the parsed plan has no phases array. */
 const FALLBACK_REASONING_MISSING_PHASES = 'Orchestrator plan missing phases array — running all phases with defaults.';
 
+/** Max chars of the underlying parser error we surface into the fallback reasoning. */
+const ORCHESTRATOR_PARSE_ERROR_PREVIEW_CHARS = 200;
+
 // ---------------------------------------------------------------------------
 // Template placeholder names
 // ---------------------------------------------------------------------------
@@ -154,8 +157,13 @@ export function parseOrchestratorPlan(
     }
 
     return parsed;
-  } catch {
-    return buildRunAllPlan(phases, FALLBACK_REASONING_PARSE_ERROR);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    const truncated = detail.length > ORCHESTRATOR_PARSE_ERROR_PREVIEW_CHARS
+      ? `${detail.slice(0, ORCHESTRATOR_PARSE_ERROR_PREVIEW_CHARS)}…`
+      : detail;
+    console.warn(`[agent] Orchestrator plan parse failed: ${detail}`);
+    return buildRunAllPlan(phases, `${FALLBACK_REASONING_PARSE_ERROR} (${truncated})`);
   }
 }
 

@@ -889,6 +889,96 @@ describe('runAgent', () => {
     expect(run!.completed_at).toBeGreaterThan(0);
   });
 
+  it('terminal-marks a resume attempt whose SDK session has expired so it stops re-enqueueing', async () => {
+    // Regression for issue #118: when the Claude SDK subprocess exits 1
+    // because its session TTLed out, runAgent's catch was re-flagging the
+    // run as resumable=1/ready, so the scheduler would pick it up every
+    // tick and loop forever. The expired-session detector should redirect
+    // to resumable=0/session_expired and null the checkpoint.
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const existingRunId = crypto.randomUUID();
+    insertRun({
+      id: existingRunId,
+      agent_id: TEST_AGENT_ID,
+      task: TEST_TASK_NAME,
+      status: 'failed',
+      runtime: 'claude-sdk',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      resumable: 1,
+      resume_status: 'ready',
+      session_ref: 'stale-session-id',
+      checkpoints: JSON.stringify({
+        runtime: 'claude-sdk',
+        sessionRef: 'stale-session-id',
+        phases: {},
+      }),
+      started_at: epochSeconds() - 600,
+      completed_at: epochSeconds() - 300,
+      error: 'Claude Code process exited with code 1',
+    });
+
+    mockQueryBehavior = 'error';
+    mockErrorMessage = 'Claude Code process exited with code 1';
+
+    const result = await runAgent(TEST_VAULT_DIR, {
+      task: TEST_TASK_NAME,
+      resumeRunId: existingRunId,
+      resumeMode: 'scheduled',
+    });
+
+    expect(result.status).toBe('failed');
+    const run = getRun(existingRunId);
+    expect(run).not.toBeNull();
+    expect(run!.resumable).toBe(0);
+    expect(run!.resume_status).toBe('session_expired');
+    expect(run!.checkpoints).toBeNull();
+  });
+
+  it('leaves non-expired resume failures as resumable=ready', async () => {
+    // Counterpart to the session-expired test — a garden-variety SDK crash
+    // on resume should still be retryable. Otherwise one bad run would
+    // become permanently abandoned on a transient failure.
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const existingRunId = crypto.randomUUID();
+    insertRun({
+      id: existingRunId,
+      agent_id: TEST_AGENT_ID,
+      task: TEST_TASK_NAME,
+      status: 'failed',
+      runtime: 'claude-sdk',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      resumable: 1,
+      resume_status: 'ready',
+      session_ref: 'session-id',
+      checkpoints: JSON.stringify({
+        runtime: 'claude-sdk',
+        sessionRef: 'session-id',
+        phases: {},
+      }),
+      started_at: epochSeconds() - 120,
+      completed_at: epochSeconds() - 60,
+      error: 'boom',
+    });
+
+    mockQueryBehavior = 'error';
+    mockErrorMessage = 'Upstream 500 from model provider';
+
+    const result = await runAgent(TEST_VAULT_DIR, {
+      task: TEST_TASK_NAME,
+      resumeRunId: existingRunId,
+      resumeMode: 'scheduled',
+    });
+
+    expect(result.status).toBe('failed');
+    const run = getRun(existingRunId);
+    expect(run!.resumable).toBe(1);
+    expect(run!.resume_status).toBe('ready');
+  });
+
   it('resets started_at to the resume attempt time when resuming a failed run', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
