@@ -229,8 +229,8 @@ export function resolveEffectiveConfig(
   }
 
   // Task prompt and display info (fall back to a generic prompt)
-  const taskName = taskOverrides?.name ?? 'full-intelligence';
-  const taskDisplayName = taskOverrides?.displayName ?? 'Full Intelligence';
+  const taskName = taskOverrides?.name ?? 'vault-evolve';
+  const taskDisplayName = taskOverrides?.displayName ?? 'Vault Evolve';
   const taskPrompt = taskOverrides?.prompt ?? '';
 
   return {

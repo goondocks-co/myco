@@ -319,7 +319,7 @@ Runs the intelligence agent to process unprocessed session data, extract observa
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--task <name>` | string | Which task to run (e.g., `full-intelligence`, `extract-only`) |
+| `--task <name>` | string | Which task to run (e.g., `vault-evolve`, `extract-only`) |
 | `--instruction <text>` | string | Free-text instruction to guide the agent's focus |
 | `--dry-run` | boolean | Run LLM evaluation but print results without writing |
 

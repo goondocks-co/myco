@@ -301,12 +301,12 @@ describe('executor dry-run threading', () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
     // Use a task without a postcondition to avoid the run failing for other reasons
-    const noPostconditionTask = 'full-intelligence';
+    const noPostconditionTask = 'vault-evolve';
     upsertTask({
       id: noPostconditionTask,
       agent_id: TEST_AGENT_ID,
       prompt: 'Run full intelligence pipeline.',
-      display_name: 'Full Intelligence',
+      display_name: 'Vault Evolve',
       description: 'Full intelligence pipeline',
       is_default: 0,
       created_at: epochSeconds(),
@@ -315,7 +315,7 @@ describe('executor dry-run threading', () => {
 
     const result = await runAgent(TEST_VAULT_DIR, { task: noPostconditionTask });
 
-    // full-intelligence has no postcondition rule, so it completes.
+    // vault-evolve has no postcondition rule, so it completes.
     const run = getRun(result.runId);
     expect(run).not.toBeNull();
     expect(run!.dry_run).toBe(false);

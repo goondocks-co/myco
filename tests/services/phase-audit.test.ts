@@ -131,7 +131,7 @@ describe('buildPhaseAudit', () => {
     insertRun({
       id: 'run-a',
       agent_id: 'myco-agent',
-      task: 'full-intelligence',
+      task: 'vault-evolve',
       usage_data: buildUsageDataJson([
         { name: 'draft', tokensUsed: 1000, costUsd: 0.01, costSource: 'actual' },
         { name: 'review', tokensUsed: 500, costUsd: 0.005, costSource: 'actual' },
@@ -173,7 +173,7 @@ describe('buildPhaseAudit', () => {
 
     expect(audit).not.toBeNull();
     expect(audit!.runId).toBe('run-a');
-    expect(audit!.taskName).toBe('full-intelligence');
+    expect(audit!.taskName).toBe('vault-evolve');
     expect(audit!.dryRun).toBe(false);
     expect(audit!.phases).toHaveLength(2);
 
@@ -219,7 +219,7 @@ describe('buildPhaseAudit', () => {
     insertRun({
       id: 'run-dry',
       agent_id: 'myco-agent',
-      task: 'full-intelligence',
+      task: 'vault-evolve',
       dryRun: true,
       usage_data: buildUsageDataJson([
         { name: 'draft', tokensUsed: 800 },
@@ -420,7 +420,7 @@ describe('handleGetRunAudit', () => {
     insertRun({
       id: 'run-handler',
       agent_id: 'myco-agent',
-      task: 'full-intelligence',
+      task: 'vault-evolve',
       usage_data: buildUsageDataJson([{ name: 'draft', tokensUsed: 100 }]),
       checkpoints: buildCheckpointsJson([{ name: 'draft', status: 'completed', turnsUsed: 1 }]),
     });

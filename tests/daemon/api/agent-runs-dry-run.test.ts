@@ -59,7 +59,7 @@ describe('agent-runs API dry-run + write-intents', () => {
       const { handleRun } = makeHandlers();
       await handleRun(makeRequest({
         body: {
-          task: 'full-intelligence',
+          task: 'vault-evolve',
           instruction: 'do the thing',
           agentId: 'myco-agent',
           dryRun: true,
@@ -76,7 +76,7 @@ describe('agent-runs API dry-run + write-intents', () => {
     it('defaults dryRun / evaluationId to undefined when omitted', async () => {
       const { handleRun } = makeHandlers();
       await handleRun(makeRequest({
-        body: { task: 'full-intelligence', instruction: 'go', agentId: 'myco-agent' },
+        body: { task: 'vault-evolve', instruction: 'go', agentId: 'myco-agent' },
       }));
       const [, opts] = runAgentSpy.mock.calls[0] as [string, { dryRun?: boolean; evaluationId?: string | null }];
       expect(opts.dryRun).toBeUndefined();
@@ -87,7 +87,7 @@ describe('agent-runs API dry-run + write-intents', () => {
       const { handleRun } = makeHandlers();
       await handleRun(makeRequest({
         body: {
-          task: 'full-intelligence',
+          task: 'vault-evolve',
           instruction: 'go',
           agentId: 'myco-agent',
           executionOverrides: {
@@ -121,7 +121,7 @@ describe('agent-runs API dry-run + write-intents', () => {
       await expect(
         handleRun(makeRequest({
           body: {
-            task: 'full-intelligence',
+            task: 'vault-evolve',
             instruction: 'go',
             agentId: 'myco-agent',
             executionOverrides: { reasoningLevel: 'medium' },

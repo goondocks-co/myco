@@ -181,18 +181,18 @@ describe('executePhase', () => {
   it('returns a completed PhaseResult on runtime success', async () => {
     const ctx = baseContext();
     const p = phase('draft');
-    const result = await executePhase(
+    const result = await executePhase({
       ctx,
-      'PROMPT',
-      'claude-sonnet-4',
-      p,
-      {
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: p,
+      toolSurface: {
         agentId: ctx.agentId,
         runId: ctx.runId,
         toolNames: [],
         turnOffset: 0,
       },
-    );
+    });
     expect(result.status).toBe('completed');
     expect(result.name).toBe('draft');
     expect(result.turnsUsed).toBe(1);
@@ -203,13 +203,13 @@ describe('executePhase', () => {
   it('returns a failed PhaseResult when runtime throws', async () => {
     defaultRuntimeBehavior = { kind: 'error', message: 'boom' };
     const ctx = baseContext();
-    const result = await executePhase(
+    const result = await executePhase({
       ctx,
-      'PROMPT',
-      'claude-sonnet-4',
-      phase('draft'),
-      { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
-    );
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('draft'),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
     expect(result.status).toBe('failed');
     expect(result.summary).toContain('boom');
   });
@@ -217,13 +217,13 @@ describe('executePhase', () => {
   it('reports abort reason when the run is aborted mid-execution', async () => {
     defaultRuntimeBehavior = { kind: 'abort' };
     const ctx = baseContext();
-    const result = await executePhase(
+    const result = await executePhase({
       ctx,
-      'PROMPT',
-      'claude-sonnet-4',
-      phase('draft'),
-      { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
-    );
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('draft'),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
     expect(result.status).toBe('failed');
     expect(result.summary).toContain('aborted');
     expect(ctx.abortController!.signal.aborted).toBe(true);
@@ -234,15 +234,14 @@ describe('executePhase', () => {
     runtimeBehaviors = [{ kind: 'error', message: 'unable to resume session' }];
     // Default success for the retry
     const ctx = baseContext();
-    const result = await executePhase(
+    const result = await executePhase({
       ctx,
-      'PROMPT',
-      'claude-sonnet-4',
-      phase('draft'),
-      { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
-      undefined,
-      'prior-session',
-    );
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('draft'),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+      sessionId: 'prior-session',
+    });
     expect(result.status).toBe('completed');
     // Two execute calls: first with sessionRef, retry without.
     expect(capturedExecuteInputs).toHaveLength(2);

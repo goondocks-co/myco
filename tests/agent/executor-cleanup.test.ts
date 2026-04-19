@@ -77,7 +77,7 @@ describe('cleanupOnTaskFailure', () => {
     writeStagedSkill(vaultDir, 'cand-unrelated', 'content');
 
     await cleanupOnTaskFailure({
-      taskName: 'full-intelligence',
+      taskName: 'vault-evolve',
       vaultDir,
       runContext: { candidate_id: 'cand-unrelated' },
     });
@@ -225,7 +225,7 @@ describe('finalizeOnTaskSuccess', () => {
   it('is a no-op for unrelated tasks', async () => {
     await expect(
       finalizeOnTaskSuccess({
-        taskName: 'full-intelligence',
+        taskName: 'vault-evolve',
         agentId: DEFAULT_AGENT_ID,
         runId: 'run-unrelated',
         runContext: undefined,

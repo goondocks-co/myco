@@ -391,12 +391,12 @@ export async function runAgent(
       }
     } else {
       // Single-query execution (backward compatible)
-      const taskPrompt = composeTaskPrompt(
+      const taskPrompt = composeTaskPrompt({
         vaultContext,
-        config.taskDisplayName,
-        config.taskPrompt,
-        options?.instruction,
-      );
+        taskDisplayName: config.taskDisplayName,
+        taskPrompt: config.taskPrompt,
+        instruction: options?.instruction,
+      });
 
       // Provider priority for single-query: myco.yaml task override → task execution config → default
       const singleProvider = taskProviderOverride ?? config.execution?.provider;

@@ -127,7 +127,7 @@ describe('withTaskConfig', () => {
   });
 
   it('sets phase-level overrides', () => {
-    const result = withTaskConfig(baseConfig(), 'full-intelligence', {
+    const result = withTaskConfig(baseConfig(), 'vault-evolve', {
       phases: {
         extraction: {
           provider: { type: 'ollama', model: 'granite4:small-h' },
@@ -135,23 +135,23 @@ describe('withTaskConfig', () => {
         },
       },
     });
-    const phase = result.agent.tasks?.['full-intelligence']?.phases?.extraction;
+    const phase = result.agent.tasks?.['vault-evolve']?.phases?.extraction;
     expect(phase?.provider?.type).toBe('ollama');
     expect(phase?.maxTurns).toBe(3);
   });
 
   it('null phase removes a specific phase', () => {
-    let config = withTaskConfig(baseConfig(), 'full-intelligence', {
+    let config = withTaskConfig(baseConfig(), 'vault-evolve', {
       phases: {
         extraction: { provider: { type: 'ollama' } },
         linking: { provider: { type: 'anthropic' } },
       },
     });
-    config = withTaskConfig(config, 'full-intelligence', {
+    config = withTaskConfig(config, 'vault-evolve', {
       phases: { extraction: null },
     });
-    expect(config.agent.tasks?.['full-intelligence']?.phases?.extraction).toBeUndefined();
-    expect(config.agent.tasks?.['full-intelligence']?.phases?.linking).toBeDefined();
+    expect(config.agent.tasks?.['vault-evolve']?.phases?.extraction).toBeUndefined();
+    expect(config.agent.tasks?.['vault-evolve']?.phases?.linking).toBeDefined();
   });
 
   it('removes empty task entries', () => {

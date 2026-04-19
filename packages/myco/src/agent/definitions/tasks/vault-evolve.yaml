@@ -1,5 +1,5 @@
 # =============================================================================
-# Built-in Task: Full Intelligence (Phased)
+# Built-in Task: Vault Evolve (Phased)
 # =============================================================================
 # Default task for: myco-agent
 #
@@ -8,13 +8,13 @@
 # controls the loop — the LLM cannot skip phases.
 # =============================================================================
 
-name: full-intelligence
-displayName: Full Intelligence
+name: vault-evolve
+displayName: Vault Evolve
 description: >
   Complete intelligence pass over all unprocessed session data. Extracts
   observations as spores, updates session summaries, consolidates related
-  spores into wisdom, builds knowledge graph entities and edges, and
-  regenerates digest extracts.
+  spores into wisdom, and regenerates digest extracts. Runs automatically
+  on a schedule once sessions have settled.
 agent: myco-agent
 isDefault: true
 maxTurns: 150

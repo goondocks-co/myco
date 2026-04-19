@@ -1,5 +1,6 @@
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { RuntimeExecuteInput, RuntimeExecuteResult, AgentRuntime, RuntimeCapability } from './types.js';
+import { RuntimeExecutionError } from './types.js';
 import { createScopedVaultToolServer, createVaultToolServer } from '@myco/agent/tools.js';
 import { buildPhaseEnv } from '@myco/agent/provider.js';
 
@@ -71,37 +72,54 @@ export class ClaudeSdkRuntime implements AgentRuntime {
       },
     });
 
-    for await (const message of messageStream) {
-      if (message.type === 'assistant') {
-        assistantMessages += 1;
-        continue;
+    const buildUsage = () => ({
+      requests: turnsUsed,
+      inputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      costUsd,
+      requestUsageEntries: turnsUsed > 0
+        ? [{
+            inputTokens,
+            outputTokens,
+            totalTokens: inputTokens + outputTokens,
+          }]
+        : [],
+    });
+
+    try {
+      for await (const message of messageStream) {
+        if (message.type === 'assistant') {
+          assistantMessages += 1;
+          continue;
+        }
+        if (message.type === 'result') {
+          // Capture usage on any subtype — error variants still burn tokens.
+          // finalText only exists on a successful result.
+          turnsUsed = message.num_turns ?? assistantMessages;
+          inputTokens = message.usage?.input_tokens ?? 0;
+          outputTokens = message.usage?.output_tokens ?? 0;
+          costUsd = message.total_cost_usd ?? 0;
+          if (message.subtype === 'success') {
+            finalText = message.result;
+          }
+        }
       }
-      if (message.type === 'result' && message.subtype === 'success') {
-        finalText = message.result;
-        turnsUsed = message.num_turns ?? assistantMessages;
-        inputTokens = message.usage.input_tokens ?? 0;
-        outputTokens = message.usage.output_tokens ?? 0;
-        costUsd = message.total_cost_usd ?? 0;
+    } catch (err) {
+      if (turnsUsed > 0 || inputTokens > 0 || outputTokens > 0) {
+        throw new RuntimeExecutionError(
+          err instanceof Error ? err.message : String(err),
+          { usage: buildUsage(), sessionRef: input.sessionRef },
+          { cause: err },
+        );
       }
+      throw err;
     }
 
     return {
       finalText,
       turnsUsed,
-      usage: {
-        requests: turnsUsed,
-        inputTokens,
-        outputTokens,
-        totalTokens: inputTokens + outputTokens,
-        costUsd,
-        requestUsageEntries: turnsUsed > 0
-          ? [{
-              inputTokens,
-              outputTokens,
-              totalTokens: inputTokens + outputTokens,
-            }]
-          : [],
-      },
+      usage: buildUsage(),
       sessionRef: input.sessionRef,
     };
   }

@@ -70,17 +70,17 @@ describe('P1 #2: Concurrency guard query helpers', () => {
 
   it('getRunningRunForTask returns running task ID', () => {
     insertRun({
-      id: 'run-1', agent_id: AGENT_ID, task: 'full-intelligence',
+      id: 'run-1', agent_id: AGENT_ID, task: 'vault-evolve',
       status: STATUS_RUNNING, started_at: now, created_at: now,
     });
 
-    const result = getRunningRunForTask(AGENT_ID, 'full-intelligence');
+    const result = getRunningRunForTask(AGENT_ID, 'vault-evolve');
     expect(result).toBe('run-1');
   });
 
   it('getRunningRunForTask returns null for different task', () => {
     insertRun({
-      id: 'run-1', agent_id: AGENT_ID, task: 'full-intelligence',
+      id: 'run-1', agent_id: AGENT_ID, task: 'vault-evolve',
       status: STATUS_RUNNING, started_at: now, created_at: now,
     });
 
@@ -360,8 +360,8 @@ describe('MCP tools: myco_skills and myco_skill_candidates', () => {
 // VAULT_TOOL_COUNT consistency
 // ---------------------------------------------------------------------------
 describe('VAULT_TOOL_COUNT', () => {
-  it('matches expected count (22)', () => {
-    expect(VAULT_TOOL_COUNT).toBe(22);
+  it('matches expected count (26)', () => {
+    expect(VAULT_TOOL_COUNT).toBe(26);
   });
 });
 
