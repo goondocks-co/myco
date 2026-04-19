@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { RuntimeExecuteInput, RuntimeExecuteResult, AgentRuntime, RuntimeCapability } from './types.js';
 import { RuntimeExecutionError } from './types.js';
@@ -5,6 +8,27 @@ import { createScopedVaultToolServer, createVaultToolServer } from '@myco/agent/
 import { buildPhaseEnv } from '@myco/agent/provider.js';
 
 const MCP_SERVER_NAME = 'myco-vault';
+
+/**
+ * Per-process isolated plugin cache directory for agent runs. The Claude
+ * SDK reads `~/.claude/plugins/installed_plugins.json` by default, which
+ * pulls in every plugin the user has installed in their developer Claude
+ * Code — dozens of extra tools we didn't register, some with schemas
+ * Anthropic's API now rejects (top-level `oneOf`/`allOf`/`anyOf`). Setting
+ * `CLAUDE_CODE_PLUGIN_CACHE_DIR` to an empty directory gives the agent a
+ * clean, deterministic tool surface: only our MCP vault tools.
+ *
+ * Created once per daemon process and reused across runs.
+ */
+let isolatedPluginCacheDir: string | undefined;
+
+function getIsolatedPluginCacheDir(): string {
+  if (isolatedPluginCacheDir) return isolatedPluginCacheDir;
+  const dir = path.join(os.tmpdir(), `myco-agent-plugin-cache-${process.pid}`);
+  fs.mkdirSync(dir, { recursive: true });
+  isolatedPluginCacheDir = dir;
+  return dir;
+}
 
 function buildToolServer(input: RuntimeExecuteInput) {
   const { toolSurface } = input;
@@ -44,7 +68,15 @@ export class ClaudeSdkRuntime implements AgentRuntime {
   async execute(input: RuntimeExecuteInput): Promise<RuntimeExecuteResult> {
     const toolServer = buildToolServer(input);
     const baseEnv = buildPhaseEnv(input.provider);
-    const env = { ...(baseEnv ?? process.env), MYCO_AGENT_SESSION: '1' };
+    const env = {
+      ...(baseEnv ?? process.env),
+      MYCO_AGENT_SESSION: '1',
+      // Isolate from the user's Claude Code plugin registry — see
+      // `getIsolatedPluginCacheDir()` docs above. Only honored when the
+      // user hasn't explicitly overridden the cache dir themselves.
+      CLAUDE_CODE_PLUGIN_CACHE_DIR:
+        process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR ?? getIsolatedPluginCacheDir(),
+    };
 
     let finalText = '';
     let turnsUsed = 0;
