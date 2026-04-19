@@ -628,6 +628,68 @@ describe('vault tools', () => {
       expect(data.results[0].type).toBe('spore');
       expect(data.results[0].preview).toContain('Completed session spore');
     });
+
+    it('passes metadata filters to semantic search and filters hydrated results', async () => {
+      const completedSession = makeSession({ id: 'sess-filtered', status: 'completed' });
+      upsertSession(completedSession);
+
+      insertSpore({
+        id: 'spore-decision',
+        agent_id: TEST_AGENT_ID,
+        session_id: completedSession.id,
+        observation_type: 'decision',
+        content: 'Decision spore',
+        created_at: epochNow() - 100,
+      });
+      insertSpore({
+        id: 'spore-gotcha',
+        agent_id: TEST_AGENT_ID,
+        session_id: completedSession.id,
+        observation_type: 'gotcha',
+        content: 'Gotcha spore',
+        created_at: epochNow() - 50,
+      });
+
+      const searchVectors = vi.fn(() => [
+        {
+          id: 'spore-decision',
+          namespace: 'spores',
+          similarity: 0.95,
+          metadata: { session_id: completedSession.id, observation_type: 'decision', status: 'active', created_at: epochNow() - 100 },
+        },
+        {
+          id: 'spore-gotcha',
+          namespace: 'spores',
+          similarity: 0.9,
+          metadata: { session_id: completedSession.id, observation_type: 'gotcha', status: 'active', created_at: epochNow() - 50 },
+        },
+      ]);
+
+      const embeddingManager = {
+        embedQuery: async () => [0.1, 0.2],
+        searchVectors,
+      } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
+
+      const semanticTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { embeddingManager });
+      const t = findTool(semanticTools, 'vault_search_semantic');
+      const since = epochNow() - 120;
+      const result = await t.handler({
+        query: 'decision',
+        namespace: 'spores',
+        observation_type: 'decision',
+        since,
+      }, undefined);
+      const data = parseResult(result) as { results: Array<{ id: string }> };
+
+      expect(searchVectors).toHaveBeenCalledWith([0.1, 0.2], expect.objectContaining({
+        namespace: 'spores',
+        filters: {
+          observation_type: 'decision',
+          created_at_gte: since,
+        },
+      }));
+      expect(data.results.map((row) => row.id)).toEqual(['spore-decision']);
+    });
   });
 
   describe('vault_state', () => {

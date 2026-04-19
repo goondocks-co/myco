@@ -50,7 +50,12 @@ function createAgent(id: string): void {
   db.prepare('INSERT INTO agents (id, name, created_at) VALUES (?, ?, ?)').run(id, id, epochSeconds());
 }
 
-function createSkillWithWatermark(name: string, watermark: number, lastAssessedAt?: number): string {
+function createSkillWithWatermark(
+  name: string,
+  watermark: number,
+  lastAssessedAt?: number,
+  description?: string,
+): string {
   const id = `skill-${name}`;
   const now = epochSeconds();
   insertSkillRecord({
@@ -58,7 +63,7 @@ function createSkillWithWatermark(name: string, watermark: number, lastAssessedA
     agent_id: TEST_AGENT_ID,
     name,
     display_name: name,
-    description: `Test skill ${name}`,
+    description: description ?? `Test skill ${name}`,
     source_ids: '[]',
     path: `.agents/skills/${name}/SKILL.md`,
     created_at: now,
@@ -80,13 +85,13 @@ function createSkillWithWatermark(name: string, watermark: number, lastAssessedA
   return id;
 }
 
-function createSpore(createdAt: number): string {
+function createSpore(createdAt: number, content: string = 'Test spore content'): string {
   const id = `spore-${Math.random().toString(36).slice(2, 8)}`;
   insertSpore({
     id,
     agent_id: TEST_AGENT_ID,
     observation_type: 'discovery',
-    content: 'Test spore content',
+    content,
     importance: 5,
     created_at: createdAt,
   });
@@ -158,35 +163,35 @@ describe('buildSkillEvolveInstruction', () => {
     createAgent(TEST_AGENT_ID);
   });
 
-  it('returns skip message when no skills exist', () => {
-    const result = buildSkillEvolveInstruction();
+  it('returns skip message when no skills exist', async () => {
+    const result = await buildSkillEvolveInstruction();
     expect(result).toContain('No skills need assessment');
   });
 
-  it('returns skip message when no new spores since watermark', () => {
+  it('returns skip message when no new spores since watermark', async () => {
     const now = epochSeconds();
     // Watermark is in the future — no spores can be newer
     createSkillWithWatermark('no-spores-skill', now + 1000);
     // Create a spore before the watermark
     createSpore(now - 100);
 
-    const result = buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction();
     expect(result).toContain('No skills need assessment');
   });
 
-  it('includes skill when new spores exist since watermark', () => {
+  it('includes skill when new spores exist since watermark', async () => {
     const now = epochSeconds();
     const watermark = now - 500;
     createSkillWithWatermark('active-skill', watermark);
     // Spore created after the watermark
     createSpore(now - 100);
 
-    const result = buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction();
     expect(result).not.toContain('No skills need assessment');
     expect(result).toContain('active-skill');
   });
 
-  it('skips skills assessed within throttle interval', () => {
+  it('skips skills assessed within throttle interval', async () => {
     const now = epochSeconds();
     const watermark = now - 10000;
     // Last assessed only 1 hour ago — well within the default 24h interval
@@ -195,11 +200,11 @@ describe('buildSkillEvolveInstruction', () => {
     // Spore exists after watermark
     createSpore(now - 100);
 
-    const result = buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction();
     expect(result).toContain('No skills need assessment');
   });
 
-  it('respects max_skills_per_run param', () => {
+  it('respects max_skills_per_run param', async () => {
     const now = epochSeconds();
     const watermark = now - 10000;
     // Create 3 skills, all needing assessment
@@ -209,7 +214,7 @@ describe('buildSkillEvolveInstruction', () => {
     // Spore after all watermarks
     createSpore(now - 100);
 
-    const result = buildSkillEvolveInstruction({ max_skills_per_run: 2 });
+    const result = await buildSkillEvolveInstruction({ max_skills_per_run: 2, assess_interval_hours: 1 });
     expect(result).not.toContain('No skills need assessment');
     expect(result).toContain('max_skills_per_run: 2');
     // Should contain exactly 2 skill sections
@@ -217,7 +222,20 @@ describe('buildSkillEvolveInstruction', () => {
     expect(skillMatches).toHaveLength(2);
   });
 
-  it('respects custom assess_interval_hours param', () => {
+  it('prioritizes the oldest last_assessed_at values first', async () => {
+    const now = epochSeconds();
+    const watermark = now - 10000;
+    createSkillWithWatermark('never-assessed', watermark, 0);
+    createSkillWithWatermark('oldest-assessed', watermark, now - 7200);
+    createSkillWithWatermark('recently-assessed', watermark, now - 60);
+    createSpore(now - 100);
+
+    const result = await buildSkillEvolveInstruction({ max_skills_per_run: 2, assess_interval_hours: 1 });
+    const selectedNames = [...result.matchAll(/^## Skill: ([^(]+)/gm)].map(match => match[1].trim());
+    expect(selectedNames).toEqual(['never-assessed', 'oldest-assessed']);
+  });
+
+  it('respects custom assess_interval_hours param', async () => {
     const now = epochSeconds();
     const watermark = now - 10000;
     // Last assessed 2 hours ago
@@ -226,30 +244,117 @@ describe('buildSkillEvolveInstruction', () => {
     createSkillWithWatermark('stale-enough', watermark, lastAssessedAt);
     createSpore(now - 100);
 
-    const result = buildSkillEvolveInstruction({ assess_interval_hours: 1 });
+    const result = await buildSkillEvolveInstruction({ assess_interval_hours: 1 });
     expect(result).not.toContain('No skills need assessment');
     expect(result).toContain('stale-enough');
   });
 
-  it('does not include full content in instruction (read on-demand via tool)', () => {
+  it('does not include full content in instruction (read on-demand via tool)', async () => {
     const now = epochSeconds();
     const watermark = now - 10000;
     createSkillWithWatermark('content-check', watermark);
     createSpore(now - 100);
 
-    const result = buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction();
     expect(result).not.toContain('### Current Content');
     expect(result).toContain('content-check'); // skill name still present in metadata
   });
 
-  it('includes new spore IDs in the instruction', () => {
+  it('includes new spore IDs in the instruction', async () => {
     const now = epochSeconds();
     const watermark = now - 10000;
     createSkillWithWatermark('spore-id-check', watermark);
     const sporeId = createSpore(now - 100);
 
-    const result = buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction();
     expect(result).toContain(sporeId);
+  });
+
+  it('selects skill-relevant spore IDs instead of reusing the same global recent spores', async () => {
+    const now = epochSeconds();
+    const watermark = now - 10000;
+    createSkillWithWatermark(
+      'sqlite-query-patterns',
+      watermark,
+      0,
+      'Apply this skill when writing or reviewing SQLite queries in the Myco vault codebase.',
+    );
+    createSkillWithWatermark(
+      'daemon-ui-development',
+      watermark,
+      0,
+      'Use when building, extending, or reviewing any page or component in the Myco daemon web UI.',
+    );
+
+    const sqliteSporeId = createSpore(now - 100, 'SQLite hydration queries should use json_each for variable-length filters.');
+    const uiSporeId = createSpore(now - 90, 'Daemon UI theme token regression affected SectionSaveRow layout.');
+    const unrelatedSporeId = createSpore(now - 80, 'Cloudflare worker cron fanout timeout needs a tighter safety bound.');
+
+    const result = await buildSkillEvolveInstruction({ max_skills_per_run: 2, assess_interval_hours: 1 });
+
+    const sqliteSection = result.match(/## Skill: sqlite-query-patterns[\s\S]*?new_spore_ids: (\[[^\n]+\])/);
+    const uiSection = result.match(/## Skill: daemon-ui-development[\s\S]*?new_spore_ids: (\[[^\n]+\])/);
+
+    expect(sqliteSection?.[1]).toContain(sqliteSporeId);
+    expect(sqliteSection?.[1]).not.toContain(uiSporeId);
+    expect(sqliteSection?.[1]).not.toContain(unrelatedSporeId);
+
+    expect(uiSection?.[1]).toContain(uiSporeId);
+    expect(uiSection?.[1]).not.toContain(sqliteSporeId);
+    expect(uiSection?.[1]).not.toContain(unrelatedSporeId);
+  });
+
+  it('uses semantic shortlisting when a retrieval provider is available', async () => {
+    const now = epochSeconds();
+    const watermark = now - 10000;
+    createSkillWithWatermark(
+      'sqlite-query-patterns',
+      watermark,
+      0,
+      'Apply this skill when writing or reviewing SQLite queries in the Myco vault codebase.',
+    );
+    createSkillWithWatermark(
+      'daemon-ui-development',
+      watermark,
+      0,
+      'Use when building, extending, or reviewing any page or component in the Myco daemon web UI.',
+    );
+
+    const sqliteSporeId = createSpore(now - 100, 'generic semantic only note one');
+    const uiSporeId = createSpore(now - 90, 'generic semantic only note two');
+
+    const provider = {
+      embedQuery: vi.fn(async (query: string) => query.includes('sqlite') ? [1] : [2]),
+      searchVectors: vi.fn((query: number[]) => {
+        if (query[0] === 1) {
+          return [
+            { id: sqliteSporeId, namespace: 'spores', similarity: 0.92, metadata: { status: 'active', created_at: now - 100 } },
+            { id: uiSporeId, namespace: 'spores', similarity: 0.21, metadata: { status: 'active', created_at: now - 90 } },
+          ];
+        }
+        return [
+          { id: uiSporeId, namespace: 'spores', similarity: 0.95, metadata: { status: 'active', created_at: now - 90 } },
+          { id: sqliteSporeId, namespace: 'spores', similarity: 0.22, metadata: { status: 'active', created_at: now - 100 } },
+        ];
+      }),
+      pairwiseSimilarity: vi.fn(() => []),
+    };
+
+    const result = await buildSkillEvolveInstruction(
+      { max_skills_per_run: 2, assess_interval_hours: 1 },
+      undefined,
+      provider,
+    );
+
+    const sqliteSection = result.match(/## Skill: sqlite-query-patterns[\s\S]*?new_spore_ids: (\[[^\n]+\])/);
+    const uiSection = result.match(/## Skill: daemon-ui-development[\s\S]*?new_spore_ids: (\[[^\n]+\])/);
+    const sqliteIds = JSON.parse(sqliteSection?.[1] ?? '[]') as string[];
+    const uiIds = JSON.parse(uiSection?.[1] ?? '[]') as string[];
+
+    expect(sqliteIds[0]).toBe(sqliteSporeId);
+    expect(uiIds[0]).toBe(uiSporeId);
+    expect(provider.embedQuery).toHaveBeenCalled();
+    expect(provider.searchVectors).toHaveBeenCalled();
   });
 });
 

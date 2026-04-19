@@ -29,6 +29,7 @@ const ACTIVE_STATUS = 'active';
 function sessionMetadata(row: Record<string, unknown>): DomainMetadata {
   return {
     ...(row.project_root != null ? { project_root: row.project_root as string } : {}),
+    ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
   };
 }
 
@@ -38,6 +39,7 @@ function sporeMetadata(row: Record<string, unknown>): DomainMetadata {
     ...(row.status != null ? { status: row.status as string } : {}),
     ...(row.session_id != null ? { session_id: row.session_id as string } : {}),
     ...(row.observation_type != null ? { observation_type: row.observation_type as string } : {}),
+    ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
   };
 }
 
@@ -51,6 +53,7 @@ function planMetadata(row: Record<string, unknown>): DomainMetadata {
   return {
     ...(row.session_id != null ? { session_id: row.session_id as string } : {}),
     ...(row.source_path != null ? { source_path: row.source_path as string } : {}),
+    ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
   };
 }
 
@@ -59,6 +62,7 @@ function skillRecordMetadata(row: Record<string, unknown>): DomainMetadata {
   return {
     ...(row.status != null ? { status: row.status as string } : {}),
     ...(row.name != null ? { name: row.name as string } : {}),
+    ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
   };
 }
 

@@ -250,7 +250,7 @@ packages/
       fanout.ts       # project heartbeat fanout
     dist/
       ui/             # pre-built UI assets — ship this, NOT src/ui/
-    wrangler.toml
+    wrangler.toml     # may need creation if missing
 ```
 
 ### Bootstrap (first deploy)
@@ -260,8 +260,30 @@ packages/
 1. Generates admin token
 2. Runs `ensureKvNamespace('myco-collective-tokens')`
 3. Provisions D1 database
-4. Writes config to `~/.myco-collective/<name>/config.json` (home-scoped)
-5. Runs `npm install && wrangler deploy`
+4. **Creates wrangler.toml if missing** with basic Worker configuration
+5. Writes config to `~/.myco-collective/<name>/config.json` (home-scoped)
+6. Runs `npm install && wrangler deploy`
+
+**Critical bootstrap step**: Check if `packages/myco-collective/wrangler.toml` exists. If missing, create it with:
+
+```toml
+name = "myco-collective"
+main = "src/worker.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "myco-collective-db"
+database_id = "<id-from-create>"
+
+[[kv_namespaces]]
+binding = "COLLECTIVE_TOKENS"
+id = "<namespace-id>"
+
+[triggers]
+crons = ["*/5 * * * *"]
+```
 
 **Config scoping rule**: Collective operator config MUST be home-scoped (`~/.myco-collective/<name>/config.json`), not project-scoped. The Collective serves multiple projects — storing its config under any one project's `.myco/` makes it invisible to every other project on the machine. Team operator config stays project-scoped (`.myco/team/config.json`) because it belongs to that project.
 
@@ -485,3 +507,4 @@ A missing flag causes runtime errors on the first request, not at deploy time. A
 | 11 | Semantic graph tables in D1 migrations after retirement | Remove semantic graph CREATE TABLE statements from new D1 migrations |
 | 12 | `make build` not run before Collective upgrade → stale UI deploys | Always run `make build` immediately before `wrangler deploy` |
 | 13 | Generic collective name in verify endpoint → branding not configured | Set `COLLECTIVE_NAME` environment variable via `wrangler secret put` |
+| 14 | Missing `wrangler.toml` in packages/myco-collective/ → deployment failure | Create wrangler.toml with basic Worker config during bootstrap if missing |

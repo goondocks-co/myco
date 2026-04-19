@@ -36,7 +36,19 @@ export function createCollectiveHandlers(deps: CollectiveHandlerDeps) {
       const project = req.query.project;
       const limit = req.query.limit ? Number(req.query.limit) : undefined;
       return {
-        body: await client.collectiveQuery('collective_search', { query, project, limit }),
+        body: await client.collectiveQuery('collective_search', {
+          query,
+          project,
+          limit,
+          types: req.query.types ? req.query.types.split(',').map((value) => value.trim()).filter(Boolean) : undefined,
+          status: req.query.status || undefined,
+          observation_type: req.query.observation_type || undefined,
+          since: req.query.since ? Number(req.query.since) : undefined,
+          until: req.query.until ? Number(req.query.until) : undefined,
+          session_id: req.query.session_id || undefined,
+          source_path: req.query.source_path || undefined,
+          name: req.query.name || undefined,
+        }),
       };
     } catch (error) {
       return {

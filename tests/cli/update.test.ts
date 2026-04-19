@@ -31,6 +31,15 @@ vi.mock('@myco/symbionts/installer.js', () => ({
   MYCO_MCP_SERVER_NAME: 'myco',
 }));
 
+const postMock = vi.fn();
+vi.mock('@myco/cli/shared.js', async () => {
+  const actual = await vi.importActual<typeof import('@myco/cli/shared.js')>('@myco/cli/shared.js');
+  return {
+    ...actual,
+    connectToDaemon: vi.fn(async () => ({ post: postMock })),
+  };
+});
+
 describe('myco update', () => {
   let testDir: string;
   let vaultDir: string;
@@ -40,6 +49,8 @@ describe('myco update', () => {
     vaultDir = path.join(testDir, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
     vi.clearAllMocks();
+    postMock.mockReset();
+    postMock.mockResolvedValue({ ok: true, data: { embedded: 12, remaining_queue_depth: 4 } });
   });
 
   afterEach(() => {
@@ -163,5 +174,36 @@ describe('myco update', () => {
     expect(fs.existsSync(stampPath)).toBe(true);
     const stamp = fs.readFileSync(stampPath, 'utf-8').trim();
     expect(stamp).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  it('triggers an embedding rebuild when crossing the vector metadata rebuild version', async () => {
+    const config = {
+      version: 3, config_version: 0,
+      symbionts: { 'claude-code': { enabled: true } },
+    };
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), YAML.stringify(config));
+    fs.mkdirSync(path.join(testDir, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, 'last-update-version'), '0.21.0', 'utf-8');
+
+    const { run } = await import('@myco/cli/update.js');
+    await run(['--project', testDir]);
+
+    expect(postMock).toHaveBeenCalledWith('/embedding/rebuild', {});
+  });
+
+  it('keeps the old update stamp when the embedding rebuild trigger fails', async () => {
+    const config = {
+      version: 3, config_version: 0,
+      symbionts: { 'claude-code': { enabled: true } },
+    };
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), YAML.stringify(config));
+    fs.mkdirSync(path.join(testDir, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, 'last-update-version'), '0.21.0', 'utf-8');
+    postMock.mockResolvedValueOnce({ ok: false, data: undefined });
+
+    const { run } = await import('@myco/cli/update.js');
+    await run(['--project', testDir]);
+
+    expect(fs.readFileSync(path.join(vaultDir, 'last-update-version'), 'utf-8').trim()).toBe('0.21.0');
   });
 });

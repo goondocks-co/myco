@@ -32,6 +32,30 @@ describe('collective_search', () => {
     expect(client.get).toHaveBeenCalledWith(expect.stringContaining('limit=3'));
   });
 
+  it('forwards semantic filter params to the daemon', async () => {
+    const client = mockClient({ results: [] });
+    await handleCollectiveSearch({
+      query: 'auth',
+      types: ['spores'],
+      status: 'active',
+      observation_type: 'decision',
+      since: 10,
+      until: 20,
+      session_id: 'sess-1',
+      source_path: '/tmp/plan.md',
+      name: 'sqlite-query-patterns',
+    }, client);
+    const url = (client.get as unknown as { mock: { calls: string[][] } }).mock.calls[0][0];
+    expect(url).toContain('types=spores');
+    expect(url).toContain('status=active');
+    expect(url).toContain('observation_type=decision');
+    expect(url).toContain('since=10');
+    expect(url).toContain('until=20');
+    expect(url).toContain('session_id=sess-1');
+    expect(url).toContain('source_path=%2Ftmp%2Fplan.md');
+    expect(url).toContain('name=sqlite-query-patterns');
+  });
+
   it('returns empty array on daemon failure', async () => {
     const client = mockClient(null, false);
     const result = await handleCollectiveSearch({ query: 'x' }, client);

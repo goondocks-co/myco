@@ -101,7 +101,15 @@ export function createMycoServer(vaultDir: string, client: DaemonClient): MycoSe
 
     switch (name) {
       case TOOL_SEARCH: {
-        const searchInput = input as { query: string; type?: string; limit?: number };
+        const searchInput = input as {
+          query: string;
+          type?: string;
+          limit?: number;
+          observation_type?: string;
+          status?: string;
+          since?: number;
+          until?: number;
+        };
         const result = await handleMycoSearch(searchInput, client);
         logActivity(TOOL_SEARCH, { query: searchInput.query, matches: result.length, duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
@@ -220,7 +228,19 @@ export function createMycoServer(vaultDir: string, client: DaemonClient): MycoSe
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_COLLECTIVE_SEARCH: {
-        const collectiveInput = input as { query: string; project?: string; limit?: number };
+        const collectiveInput = input as {
+          query: string;
+          project?: string;
+          limit?: number;
+          types?: string[];
+          status?: string;
+          observation_type?: string;
+          since?: number;
+          until?: number;
+          session_id?: string;
+          source_path?: string;
+          name?: string;
+        };
         const result = await handleCollectiveSearch(collectiveInput, client);
         logActivity(TOOL_COLLECTIVE_SEARCH, { query: collectiveInput.query, duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };

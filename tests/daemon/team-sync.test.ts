@@ -209,6 +209,31 @@ describe('TeamSyncClient', () => {
       expect(calledUrl).toContain('tables=spores%2Csessions');
     });
 
+    it('passes semantic metadata filters including session_id', async () => {
+      const mockFetch = createMockFetch({
+        '/search': {
+          status: 200,
+          body: { results: [], machine_ids: [] },
+        },
+      });
+
+      const client = new TeamSyncClient({ ...baseOptions, fetch: mockFetch });
+      await client.search('test', {
+        status: 'active',
+        observation_type: 'decision',
+        since: 10,
+        until: 20,
+        session_id: 'sess-1',
+      });
+
+      const calledUrl = (mockFetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+      expect(calledUrl).toContain('status=active');
+      expect(calledUrl).toContain('observation_type=decision');
+      expect(calledUrl).toContain('since=10');
+      expect(calledUrl).toContain('until=20');
+      expect(calledUrl).toContain('session_id=sess-1');
+    });
+
     it('throws on non-ok response', async () => {
       const mockFetch = createMockFetch({
         '/search': { status: 500, body: { error: 'internal' } },

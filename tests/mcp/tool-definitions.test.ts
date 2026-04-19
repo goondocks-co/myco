@@ -356,13 +356,27 @@ describe('handler forwards every documented schema property', () => {
     });
   });
 
-  it('collective_search forwards query, project, limit', async () => {
+  it('collective_search forwards query, project, limit, and semantic filters', async () => {
     const client = mockClient({ results: [] });
-    await handleCollectiveSearch({ query: 'q', project: 'p', limit: 2 }, client);
+    await handleCollectiveSearch({
+      query: 'q',
+      project: 'p',
+      limit: 2,
+      types: ['spores'],
+      status: 'active',
+      observation_type: 'decision',
+      since: 10,
+      until: 20,
+    }, client);
     const url = (client.get as unknown as { mock: { calls: string[][] } }).mock.calls[0][0];
     expect(url).toContain('q=q');
     expect(url).toContain('project=p');
     expect(url).toContain('limit=2');
+    expect(url).toContain('types=spores');
+    expect(url).toContain('status=active');
+    expect(url).toContain('observation_type=decision');
+    expect(url).toContain('since=10');
+    expect(url).toContain('until=20');
   });
 
   it('collective_project forwards project and include_digest', async () => {

@@ -540,6 +540,29 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
         activeOpencodeSessions.add(sessionId);
 
         const parentSessionId = info.parentID || undefined;
+
+        // Diagnostic: log the full session.created payload when a parent is
+        // present so we can tell sub-agent spawns apart from user-initiated
+        // forks. Sub-agents pollute the session list as phantom user sessions;
+        // filtering them needs a structural signal we don't have yet. Capture
+        // live payloads from both paths (skill invocation vs. TUI fork) and
+        // compare. Drop this block once the signal is known.
+        if (parentSessionId) {
+          try {
+            await client.app.log({
+              service: "myco",
+              level: "info",
+              message: "session.created with parentID",
+              extra: {
+                session_id: sessionId,
+                parent_session_id: parentSessionId,
+                info: JSON.stringify(info),
+              },
+            });
+          } catch {
+            // Diagnostic only — never block registration.
+          }
+        }
         const contextPromise = parentSessionId
           ? (resumeInjectedSessions.has(sessionId)
             ? Promise.resolve(null)

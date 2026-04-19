@@ -13,6 +13,87 @@ const EMBEDDING_STATUS_IDLE = 'idle';
 
 /** Status when items are waiting to be embedded. */
 const EMBEDDING_STATUS_PENDING = 'pending';
+const FOREGROUND_EMBEDDING_BATCH_SIZE = 50;
+const FOREGROUND_RECONCILE_MAX_PASSES = 25;
+const FOREGROUND_REEMBED_MAX_PASSES = 25;
+
+function readQueueDepthSafely(): number {
+  try {
+    return getEmbeddingQueueDepth().queue_depth;
+  } catch {
+    return 0;
+  }
+}
+
+async function drainForegroundReconcile(manager: EmbeddingManager): Promise<{
+  embedded: number;
+  stale_reembedded: number;
+  orphans_cleaned: number;
+  duration_ms: number;
+  passes: number;
+  remaining_queue_depth: number;
+}> {
+  const startedAt = Date.now();
+  let embedded = 0;
+  let stale_reembedded = 0;
+  let orphans_cleaned = 0;
+  let passes = 0;
+
+  for (; passes < FOREGROUND_RECONCILE_MAX_PASSES; passes++) {
+    const result = await manager.reconcile(FOREGROUND_EMBEDDING_BATCH_SIZE);
+    embedded += result.embedded;
+    stale_reembedded += result.stale_reembedded;
+    orphans_cleaned += result.orphans_cleaned;
+
+    const queueDepth = readQueueDepthSafely();
+    if (queueDepth === 0) {
+      return {
+        embedded,
+        stale_reembedded,
+        orphans_cleaned,
+        duration_ms: Date.now() - startedAt,
+        passes: passes + 1,
+        remaining_queue_depth: 0,
+      };
+    }
+
+    if (result.embedded === 0 && result.stale_reembedded === 0 && result.orphans_cleaned === 0) {
+      return {
+        embedded,
+        stale_reembedded,
+        orphans_cleaned,
+        duration_ms: Date.now() - startedAt,
+        passes: passes + 1,
+        remaining_queue_depth: queueDepth,
+      };
+    }
+  }
+
+  return {
+    embedded,
+    stale_reembedded,
+    orphans_cleaned,
+    duration_ms: Date.now() - startedAt,
+    passes,
+    remaining_queue_depth: readQueueDepthSafely(),
+  };
+}
+
+async function drainForegroundReembedStale(manager: EmbeddingManager): Promise<{
+  reembedded: number;
+  passes: number;
+}> {
+  let reembedded = 0;
+  let passes = 0;
+
+  for (; passes < FOREGROUND_REEMBED_MAX_PASSES; passes++) {
+    const result = await manager.reembedStale(FOREGROUND_EMBEDDING_BATCH_SIZE);
+    reembedded += result.reembedded;
+    if (result.reembedded === 0) break;
+  }
+
+  return { reembedded, passes };
+}
 
 // ---------------------------------------------------------------------------
 // Handlers
@@ -40,14 +121,21 @@ export function handleEmbeddingDetails(manager: EmbeddingManager): RouteResponse
   return { body: details };
 }
 
-export function handleEmbeddingRebuild(manager: EmbeddingManager): RouteResponse {
+export async function handleEmbeddingRebuild(manager: EmbeddingManager): Promise<RouteResponse> {
   const result = manager.rebuildAll();
-  return { body: result };
+  const drained = await drainForegroundReconcile(manager);
+  return {
+    body: {
+      ...result,
+      ...drained,
+      batch_size: FOREGROUND_EMBEDDING_BATCH_SIZE,
+    },
+  };
 }
 
 export async function handleEmbeddingReconcile(manager: EmbeddingManager): Promise<RouteResponse> {
-  const result = await manager.reconcile(EMBEDDING_BATCH_SIZE);
-  return { body: result };
+  const result = await manager.reconcile(FOREGROUND_EMBEDDING_BATCH_SIZE);
+  return { body: { ...result, batch_size: FOREGROUND_EMBEDDING_BATCH_SIZE } };
 }
 
 export function handleEmbeddingCleanOrphans(manager: EmbeddingManager): RouteResponse {
@@ -56,6 +144,6 @@ export function handleEmbeddingCleanOrphans(manager: EmbeddingManager): RouteRes
 }
 
 export async function handleEmbeddingReembedStale(manager: EmbeddingManager): Promise<RouteResponse> {
-  const result = await manager.reembedStale(EMBEDDING_BATCH_SIZE);
-  return { body: result };
+  const result = await drainForegroundReembedStale(manager);
+  return { body: { ...result, batch_size: FOREGROUND_EMBEDDING_BATCH_SIZE } };
 }

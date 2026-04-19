@@ -38,6 +38,13 @@ describe('myco_search', () => {
     expect(client.get).toHaveBeenCalledWith(expect.stringContaining('type=spore'));
   });
 
+  it('forces semantic mode when semantic-only filters are present', async () => {
+    const client = mockClient({ mode: 'semantic', results: [] });
+    await handleMycoSearch({ query: 'auth', observation_type: 'decision' }, client);
+    expect(client.get).toHaveBeenCalledWith(expect.stringContaining('mode=semantic'));
+    expect(client.get).toHaveBeenCalledWith(expect.stringContaining('observation_type=decision'));
+  });
+
   it('returns results from daemon response', async () => {
     const mockResults = [
       { id: 'spore-1', type: 'spores', content: 'test', score: 0.9 },

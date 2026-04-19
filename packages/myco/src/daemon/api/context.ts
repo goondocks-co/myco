@@ -276,6 +276,9 @@ export function createPromptContextHandler(deps: ContextDeps) {
       namespace: 'spores',
       limit: maxSpores * PROMPT_VECTOR_OVER_FETCH,
       threshold: PROMPT_CONTEXT_MIN_SIMILARITY,
+      filters: {
+        status: 'active',
+      },
     });
 
     logger.debug(LOG_KINDS.CONTEXT_SEARCH, 'Prompt vector search completed', {

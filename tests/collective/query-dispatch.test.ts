@@ -94,11 +94,17 @@ describe('collective query dispatch', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.startsWith('https://project-one.example.workers.dev/search')) {
+        expect(url).toContain('types=spores');
+        expect(url).toContain('status=active');
+        expect(url).toContain('observation_type=decision');
         return new Response(JSON.stringify({
           results: [{ id: 'alpha-session', table: 'sessions', score: 0.9 }],
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (url.startsWith('https://beta.example.workers.dev/search')) {
+        expect(url).toContain('types=spores');
+        expect(url).toContain('status=active');
+        expect(url).toContain('observation_type=decision');
         return new Response(JSON.stringify({
           results: [{ id: 'beta-session', table: 'sessions', score: 0.8 }],
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -116,7 +122,7 @@ describe('collective query dispatch', () => {
 
     const response = await dispatchApiQuery(env, {
       tool: 'collective_search',
-      args: { query: 'collective', limit: 10 },
+      args: { query: 'collective', limit: 10, types: ['spores'], status: 'active', observation_type: 'decision' },
     });
     const body = await response.json() as {
       results: Array<{ id: string; project?: { name: string } }>;

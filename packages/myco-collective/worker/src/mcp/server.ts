@@ -10,6 +10,14 @@ export function createMcpServerInstance(env: Env): McpServer {
     query: z.string(),
     project: z.string().optional(),
     limit: z.number().min(1).max(50).optional(),
+    types: z.array(z.string()).optional(),
+    status: z.string().optional(),
+    observation_type: z.string().optional(),
+    since: z.number().optional(),
+    until: z.number().optional(),
+    session_id: z.string().optional(),
+    source_path: z.string().optional(),
+    name: z.string().optional(),
   }, async (args) => handleCollectiveSearch(env, args));
 
   server.tool('collective_projects', 'List connected projects in the Collective.', {}, async () => handleCollectiveProjects(env));

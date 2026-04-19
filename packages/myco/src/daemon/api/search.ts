@@ -13,6 +13,7 @@ import {
   SEARCH_SIMILARITY_THRESHOLD,
   TEAM_SOURCE_PREFIX,
 } from '@myco/constants.js';
+import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { TeamSyncClient, TeamSearchResult } from '../team-sync.js';
@@ -74,6 +75,14 @@ export function createSearchHandler(deps: SearchDeps) {
     const type = req.query.type;
     const limit = Number(req.query.limit) || SEARCH_RESULTS_DEFAULT_LIMIT;
     const namespace = req.query.namespace;
+    const metadataFilters = {
+      ...(req.query.status ? { status: req.query.status } : {}),
+      ...(req.query.session_id ? { session_id: req.query.session_id } : {}),
+      ...(req.query.observation_type ? { observation_type: req.query.observation_type } : {}),
+      ...(req.query.since ? { created_at_gte: Number(req.query.since) } : {}),
+      ...(req.query.until ? { created_at_lte: Number(req.query.until) } : {}),
+    };
+    const vectorFilters = hasSemanticSearchFilters(metadataFilters) ? metadataFilters : undefined;
 
     const sanitized = sanitizeFtsQuery(query);
 
@@ -126,10 +135,15 @@ export function createSearchHandler(deps: SearchDeps) {
       namespace: searchNamespace,
       limit,
       threshold: SEARCH_SIMILARITY_THRESHOLD,
+      filters: vectorFilters,
     });
 
+    const filteredVectorResults = vectorFilters
+      ? vectorResults.filter((result) => matchesSemanticSearchFilters(result.metadata, metadataFilters))
+      : vectorResults;
+
     // Hydrate local vector results into full SearchResults
-    const localResults = hydrateSearchResults(vectorResults).map((r) => ({
+    const localResults = hydrateSearchResults(filteredVectorResults).map((r) => ({
       ...r,
       source: 'local',
     }));
@@ -139,7 +153,15 @@ export function createSearchHandler(deps: SearchDeps) {
     let teamResults: Array<TeamSearchResult & { source: string }> = [];
     if (teamClient) {
       try {
-        const teamResponse = await teamClient.search(query, { limit });
+        const teamResponse = await teamClient.search(query, {
+          limit,
+          tables: searchNamespace ? [searchNamespace] : undefined,
+          status: req.query.status || undefined,
+          observation_type: req.query.observation_type || undefined,
+          since: req.query.since ? Number(req.query.since) : undefined,
+          until: req.query.until ? Number(req.query.until) : undefined,
+          session_id: req.query.session_id || undefined,
+        });
         teamResults = teamResponse.results.map((r) => ({
           ...r,
           source: `${TEAM_SOURCE_PREFIX}${r.machine_id}`,
@@ -154,8 +176,15 @@ export function createSearchHandler(deps: SearchDeps) {
       ? teamResults.filter((r) => r.machine_id !== deps.machineId)
       : teamResults;
 
+    const filteredTeam = vectorFilters
+      ? dedupedTeam.filter((r) => matchesSemanticSearchFilters(
+          (r as { metadata?: Record<string, unknown> }).metadata,
+          metadataFilters,
+        ))
+      : dedupedTeam;
+
     // Merge by score (highest first), slice to limit
-    const merged = [...localResults, ...dedupedTeam]
+    const merged = [...localResults, ...filteredTeam]
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
       .slice(0, limit);
 

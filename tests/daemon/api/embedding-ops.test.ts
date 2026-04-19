@@ -6,7 +6,6 @@ import {
   handleEmbeddingCleanOrphans,
   handleEmbeddingReembedStale,
 } from '@myco/daemon/api/embedding';
-import { EMBEDDING_BATCH_SIZE } from '@myco/constants';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager';
 
 // ---------------------------------------------------------------------------
@@ -57,23 +56,26 @@ describe('embedding operations API', () => {
     });
   });
 
-  it('handleEmbeddingRebuild delegates to manager.rebuildAll()', () => {
+  it('handleEmbeddingRebuild delegates to manager.rebuildAll()', async () => {
     const manager = createMockManager();
-    const result = handleEmbeddingRebuild(manager as unknown as EmbeddingManager);
+    manager.reconcile.mockResolvedValue({ embedded: 0, stale_reembedded: 0, orphans_cleaned: 0, duration_ms: 123 });
+    const result = await handleEmbeddingRebuild(manager as unknown as EmbeddingManager);
 
     expect(manager.rebuildAll).toHaveBeenCalledOnce();
-    expect(result.body).toEqual({ queued: 42 });
+    expect(manager.reconcile).toHaveBeenCalledWith(50);
+    expect(result.body).toEqual(expect.objectContaining({ queued: 42, batch_size: 50 }));
   });
 
-  it('handleEmbeddingReconcile delegates to manager.reconcile() with EMBEDDING_BATCH_SIZE', async () => {
+  it('handleEmbeddingReconcile delegates to manager.reconcile() with foreground batch size', async () => {
     const manager = createMockManager();
     const result = await handleEmbeddingReconcile(manager as unknown as EmbeddingManager);
 
-    expect(manager.reconcile).toHaveBeenCalledWith(EMBEDDING_BATCH_SIZE);
+    expect(manager.reconcile).toHaveBeenCalledWith(50);
     expect(result.body).toEqual({
       embedded: 5,
       orphans_cleaned: 1,
       duration_ms: 123,
+      batch_size: 50,
     });
   });
 
@@ -85,11 +87,14 @@ describe('embedding operations API', () => {
     expect(result.body).toEqual({ orphans_cleaned: 3 });
   });
 
-  it('handleEmbeddingReembedStale delegates to manager.reembedStale() with EMBEDDING_BATCH_SIZE', async () => {
+  it('handleEmbeddingReembedStale drains stale vectors with foreground batch size', async () => {
     const manager = createMockManager();
+    manager.reembedStale
+      .mockResolvedValueOnce({ reembedded: 7 })
+      .mockResolvedValueOnce({ reembedded: 0 });
     const result = await handleEmbeddingReembedStale(manager as unknown as EmbeddingManager);
 
-    expect(manager.reembedStale).toHaveBeenCalledWith(EMBEDDING_BATCH_SIZE);
-    expect(result.body).toEqual({ reembedded: 7 });
+    expect(manager.reembedStale).toHaveBeenCalledWith(50);
+    expect(result.body).toEqual({ reembedded: 7, passes: 1, batch_size: 50 });
   });
 });

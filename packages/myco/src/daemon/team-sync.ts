@@ -29,6 +29,13 @@ export interface TeamSyncClientOptions {
 export interface TeamSearchOptions {
   limit?: number;
   tables?: string[];
+  status?: string;
+  observation_type?: string;
+  since?: number;
+  until?: number;
+  session_id?: string;
+  source_path?: string;
+  name?: string;
   timeoutMs?: number;
 }
 
@@ -170,6 +177,13 @@ export class TeamSyncClient {
       const params = new URLSearchParams({ q: query });
       if (options.limit) params.set('limit', String(options.limit));
       if (options.tables) params.set('tables', options.tables.join(','));
+      if (options.status) params.set('status', options.status);
+      if (options.observation_type) params.set('observation_type', options.observation_type);
+      if (options.since !== undefined) params.set('since', String(options.since));
+      if (options.until !== undefined) params.set('until', String(options.until));
+      if (options.session_id) params.set('session_id', options.session_id);
+      if (options.source_path) params.set('source_path', options.source_path);
+      if (options.name) params.set('name', options.name);
 
       const res = await this.fetchFn(`${this.workerUrl}/search?${params}`, {
         method: 'GET',
