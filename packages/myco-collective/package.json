@@ -1,6 +1,6 @@
 {
   "name": "@goondocks/myco-collective",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Myco Collective worker, admin UI, and deployment CLI",
   "type": "module",
   "bin": {
