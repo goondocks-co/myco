@@ -17,7 +17,7 @@ import { formatGraphLabel } from '../lib/graph-labels';
 
 /* ---------- Constants ---------- */
 
-const ALL_NODE_TYPES = new Set(['concept', 'component', 'bug', 'tool', 'file', 'spore', 'session', 'other']);
+const ALL_NODE_TYPES = new Set(['spore', 'session', 'other']);
 
 /** Maximum nodes before suggesting focus mode */
 const LARGE_GRAPH_THRESHOLD = 200;

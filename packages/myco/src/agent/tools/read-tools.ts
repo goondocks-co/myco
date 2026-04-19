@@ -1,9 +1,9 @@
 /**
  * Read-only vault tools.
  *
- * 10 tools: vault_unprocessed, vault_batches, vault_session_summary_material,
+ * 9 tools: vault_unprocessed, vault_batches, vault_session_summary_material,
  * vault_spores, vault_sessions, vault_search_fts, vault_search_semantic,
- * vault_state, vault_entities, vault_edges
+ * vault_state, vault_edges
  */
 
 import { z } from 'zod/v4';
@@ -14,14 +14,12 @@ import { getSpore, listSpores } from '@myco/db/queries/spores.js';
 import { getSession, listSessions, getActiveSessionIds } from '@myco/db/queries/sessions.js';
 import { getStatesForAgent } from '@myco/db/queries/agent-state.js';
 import { fullTextSearch, hydrateSearchResults } from '@myco/db/queries/search.js';
-import { listEntities } from '@myco/db/queries/entities.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
 import { textResult, type VaultToolDeps } from './types.js';
 import {
   projectBatchForAgent,
   projectBatchForSessionSummary,
   projectEdgeForAgent,
-  projectEntityForAgent,
   projectSessionForAgent,
   projectSporeForAgent,
 } from './read-projections.js';
@@ -41,9 +39,6 @@ const DEFAULT_SESSIONS_LIMIT = 20;
 
 /** Default limit for similarity search results. */
 const DEFAULT_SEARCH_LIMIT = 10;
-
-/** Default limit for entity listing. */
-const DEFAULT_ENTITIES_LIMIT = 50;
 
 /** Default limit for edge listing. */
 const DEFAULT_EDGES_LIMIT = 50;
@@ -323,38 +318,13 @@ export function createReadTools(deps: VaultToolDeps) {
     { annotations: { readOnlyHint: true } },
   );
 
-  const vaultEntities = tool(
-    'vault_entities',
-    'List knowledge graph entities with optional filters.',
-    {
-      type: z.enum(['component', 'concept', 'person']).optional().describe('Filter by entity type'),
-      name: z.string().optional().describe('Filter by entity name (exact match)'),
-      limit: z.number().optional().describe('Maximum entities to return'),
-      include_metadata: z.boolean().optional().describe('Return full entity metadata instead of the compact task-oriented projection'),
-    },
-    async (args) => {
-      const entities = listEntities({
-        agent_id: agentId,
-        type: args.type,
-        name: args.name,
-        limit: args.limit ?? DEFAULT_ENTITIES_LIMIT,
-      });
-      return projectToolRows(
-        entities,
-        args.include_metadata ?? DEFAULT_INCLUDE_METADATA,
-        projectEntityForAgent,
-      );
-    },
-    { annotations: { readOnlyHint: true } },
-  );
-
   const vaultEdges = tool(
     'vault_edges',
-    'List knowledge graph edges with optional filters. Use to check existing relationships before creating new ones.',
+    'List lineage edges between sessions, prompt batches, and spores. Useful for walking provenance: FROM_SESSION (spore→session), EXTRACTED_FROM (spore→batch), HAS_BATCH (session→batch), DERIVED_FROM (wisdom→source spores), SUPERSEDED_BY (spore→spore).',
     {
       source_id: z.string().optional().describe('Filter by source node ID'),
       target_id: z.string().optional().describe('Filter by target node ID'),
-      type: z.string().optional().describe('Filter by edge type (REFERENCES, DEPENDS_ON, AFFECTS, etc.)'),
+      type: z.string().optional().describe('Filter by edge type (FROM_SESSION, EXTRACTED_FROM, HAS_BATCH, DERIVED_FROM, SUPERSEDED_BY)'),
       limit: z.number().optional().describe('Maximum edges to return'),
       include_metadata: z.boolean().optional().describe('Return full edge metadata instead of the compact task-oriented projection'),
     },
@@ -384,7 +354,6 @@ export function createReadTools(deps: VaultToolDeps) {
     vaultSearchFts,
     vaultSearchSemantic,
     vaultState,
-    vaultEntities,
     vaultEdges,
   ];
 }

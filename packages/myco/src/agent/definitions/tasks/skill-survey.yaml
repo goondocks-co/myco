@@ -72,8 +72,6 @@ phases:
            a domain you spotted in the digest
          - vault_spores to read full content of high-signal spores
            summarized in the baseline
-         - vault_entities for components with high mention counts
-           that might anchor a domain
 
          Do NOT exhaustively paginate or search every keyword.
          You have ~12 tool calls — use them purposefully.
@@ -89,8 +87,6 @@ phases:
       Store your domain clusters in working notes for the next phase.
     tools:
       - vault_spores
-      - vault_entities
-      - vault_edges
       - vault_sessions
       - vault_search_fts
       - vault_search_semantic

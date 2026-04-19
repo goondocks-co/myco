@@ -43,7 +43,7 @@ If you want direct worker administration commands from the terminal, install the
 npm install -g @goondocks/myco-team
 ```
 
-That adds `myco-team status`, `myco-team rotate-tokens`, and `myco-team destroy`.
+That adds `myco-team install` (same as `myco team init`), `myco-team upgrade`, `myco-team status`, `myco-team rotate-tokens`, and `myco-team destroy`.
 
 ### 3. Connect teammates
 

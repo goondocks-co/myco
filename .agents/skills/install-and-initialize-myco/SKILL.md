@@ -99,18 +99,18 @@ Doctor flags agents whose config directory (`.claude/`, `.cursor/`, etc.) exists
 
 **Note:** Doctor warns (rather than errors) when LLM or embedding providers are unconfigured. Data-collection mode is a valid post-init state — unconfigured providers mean the agent pipeline won't run, but session capture continues normally. These warnings are expected immediately after `myco init`.
 
-### 4. Start the Daemon
+### 4. Verify the Daemon
 
-`myco init` starts the daemon automatically on first init. For subsequent restarts after the daemon has stopped:
+`myco init` starts the daemon automatically. It also spawns on each session start. For manual restarts:
 
 ```bash
-myco start
+myco restart
 ```
 
 The daemon runs in the background and handles session capture, agent task scheduling, and team sync. Verify it's running:
 
 ```bash
-myco status
+myco stats
 ```
 
 ### 5. Configure Myco Agent (Optional)

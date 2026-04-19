@@ -3,12 +3,12 @@
  *
  * Creates vault tools that expose SQLite query helpers to the agent
  * via the Claude Agent SDK. Tools are grouped into:
- * - Read tools (10): vault_unprocessed, vault_batches, vault_session_summary_material,
- *                    vault_spores, vault_sessions, vault_search_fts,
- *                    vault_search_semantic, vault_state, vault_entities, vault_edges
- * - Write tools (9): vault_create_spore, vault_create_entity, vault_create_edge,
- *                     vault_resolve_spore, vault_update_session, vault_set_state,
- *                     vault_read_digest, vault_write_digest, vault_mark_processed
+ * - Read tools (9): vault_unprocessed, vault_batches, vault_session_summary_material,
+ *                   vault_spores, vault_sessions, vault_search_fts,
+ *                   vault_search_semantic, vault_state, vault_edges
+ * - Write tools (7): vault_create_spore, vault_resolve_spore, vault_update_session,
+ *                    vault_set_state, vault_read_digest, vault_write_digest,
+ *                    vault_mark_processed
  * - Observability (1): vault_report
  * - Skill tools (5): vault_skill_candidates, vault_skill_records, vault_write_skill,
  *                    vault_stage_skill, vault_finalize_skill
@@ -162,12 +162,11 @@ const DRY_RUN_STUB_TOOLS = new Map<string, StubToolSpec>([
 const READ_TOOL_NAMES = new Set([
   'vault_unprocessed', 'vault_batches', 'vault_session_summary_material', 'vault_spores',
   'vault_sessions', 'vault_search_fts', 'vault_search_semantic', 'vault_state',
-  'vault_entities', 'vault_edges',
+  'vault_edges',
 ]);
 
 const WRITE_TOOL_NAMES = new Set([
-  'vault_create_spore', 'vault_create_entity', 'vault_create_edge',
-  'vault_resolve_spore', 'vault_update_session', 'vault_set_state',
+  'vault_create_spore', 'vault_resolve_spore', 'vault_update_session', 'vault_set_state',
   'vault_read_digest', 'vault_write_digest', 'vault_mark_processed',
 ]);
 
@@ -187,7 +186,6 @@ const LOOP_GUARDED_READ_TOOL_NAMES = new Set([
   'vault_session_summary_material',
   'vault_spores',
   'vault_sessions',
-  'vault_entities',
   'vault_edges',
 ]);
 /** On the third identical guarded read, stop resending the large payload and tell the agent to reuse prior context. */

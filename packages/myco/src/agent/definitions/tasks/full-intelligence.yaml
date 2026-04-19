@@ -254,70 +254,6 @@ phases:
     maxTurns: 25
     required: false
 
-  - name: graph
-    reasoningLevel: default
-    dependsOn: [extract]
-    prompt: |
-      Build the knowledge graph: create entities, then link spores to them.
-
-      New graph work may still be warranted even when extract skipped, because
-      spores and entities can be created by coding agents or manual curation.
-      Focus on recent or high-signal active spores and obvious entity gaps.
-      If a quick review shows no meaningful new graph work, report "skip".
-
-      The graph has two layers:
-      - Lineage (automatic): spore→session, spore→batch — already done
-      - Semantic (your job): spore→entity, entity→entity — you create these
-
-      ## Step 1: Review spores and existing entities (2 turns)
-
-      1. Call `vault_spores` with status "active" to see current spores
-      2. Call `vault_entities` to see existing graph entities
-      3. Call `vault_edges` to see existing relationships
-
-      ## Step 2: Create entities (budget: 6 turns)
-
-      For components/concepts/people that appear across multiple spores:
-      - Call `vault_create_entity` with type: component | concept | person
-      - Focus on entities that help understand the system architecture
-      - Prefer fewer well-defined entities over many vague ones
-
-      ## Step 3: Link spores to entities (budget: 12 turns) — CRITICAL
-
-      For EACH entity (newly created AND existing unlinked ones):
-      1. Call `vault_search_semantic` with the entity name to find related spores
-      2. Before creating an edge, call `vault_edges` with `source_id` and
-         `target_id` to verify it does not already exist
-      3. For each relevant search result, call `vault_create_edge`:
-         - type: REFERENCES
-         - source_id: the spore ID, source_type: spore
-         - target_id: the entity ID, target_type: entity
-      4. Entities without edges are invisible — always link after creating
-
-      ## Step 4: Structural edges between entities (remaining turns)
-
-      For architectural dependencies between entities:
-      - DEPENDS_ON (entity→entity): "daemon" depends on "SQLite"
-      - AFFECTS (spore→entity): a gotcha that impacts a component
-
-      Do NOT create lineage edges (FROM_SESSION, EXTRACTED_FROM, etc.)
-
-      Call `vault_report` with action "graph" reporting:
-      - Entities created: N
-      - Spore→entity REFERENCES edges: N
-      - Entity→entity structural edges: N
-    tools:
-      - vault_spores
-      - vault_sessions
-      - vault_search_semantic
-      - vault_entities
-      - vault_edges
-      - vault_create_entity
-      - vault_create_edge
-      - vault_report
-    maxTurns: 35
-    required: false
-
   # ---- Digest: assess + 3 parallel tier writes ----
   # The assess phase gathers context, then each tier runs independently
   # in the same wave via Promise.allSettled().
@@ -500,7 +436,7 @@ phases:
 
   - name: report
     reasoningLevel: low
-    dependsOn: [extract, summarize, consolidate, graph, digest-assess, digest-10000, digest-5000, digest-1500]
+    dependsOn: [extract, summarize, consolidate, digest-assess, digest-10000, digest-5000, digest-1500]
     prompt: |
       Summarize what was done across all phases.
 
@@ -509,7 +445,6 @@ phases:
       - Spores created: N (by type)
       - Sessions updated: N
       - Wisdom created: N
-      - Entities created: N, edges created: N
       - Digest tiers written: N
 
       This report MUST be the last tool call of the run.
