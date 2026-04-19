@@ -487,6 +487,41 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
         )}
       </Surface>
 
+      <Surface level="low" ghostBorder className="p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <SectionHeader>Remote Vector Index</SectionHeader>
+          <Badge variant={status.vector_reindex_status === 'error' ? 'destructive' : status.vector_reindex_status === 'running' ? 'outline' : 'default'}>
+            {status.vector_reindex_status ?? 'unknown'}
+          </Badge>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1">
+            <span className="text-xs text-on-surface-variant">Last table</span>
+            <p className="text-sm text-on-surface">{status.vector_reindex_last_table ?? 'None'}</p>
+          </div>
+          <div className="space-y-1">
+            <span className="text-xs text-on-surface-variant">Last run</span>
+            <p className="text-sm text-on-surface">
+              {status.vector_reindex_last_run_at ? new Date(status.vector_reindex_last_run_at * 1000).toLocaleString() : 'Never'}
+            </p>
+          </div>
+          <div className="space-y-1">
+            <span className="text-xs text-on-surface-variant">Processed</span>
+            <p className="text-sm text-on-surface">{status.vector_reindex_last_processed ?? 0}</p>
+          </div>
+          <div className="space-y-1">
+            <span className="text-xs text-on-surface-variant">Updated / deleted</span>
+            <p className="text-sm text-on-surface">{status.vector_reindex_last_reindexed ?? 0} / {status.vector_reindex_last_deleted ?? 0}</p>
+          </div>
+        </div>
+        {status.vector_reindex_last_error && (
+          <div className="space-y-1 border-t border-outline-variant/10 pt-3">
+            <span className="text-xs text-on-surface-variant">Last error</span>
+            <p className="text-xs text-tertiary break-words">{status.vector_reindex_last_error}</p>
+          </div>
+        )}
+      </Surface>
+
       {/* Disconnect */}
       <div className="flex justify-end">
         <Button

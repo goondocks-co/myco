@@ -288,7 +288,7 @@ Resource location: remote
     expect(npmInstallIndex).toBeLessThan(wranglerDeployIndex);
   });
 
-  it('teamUpgrade triggers remote vector reindex after deploy', async () => {
+  it('teamUpgrade does not trigger remote vector reindex by default', async () => {
     execHandlers.push(
       () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
       () => '',
@@ -299,9 +299,72 @@ Resource location: remote
     const { teamUpgrade } = await importTeamCli();
     await teamUpgrade(vaultDir);
 
+    expect(vi.mocked(fetch)).not.toHaveBeenCalledWith(
+      'https://myco-team-abc12345.test.workers.dev/vectors/reindex',
+    );
+  });
+
+  it('teamUpgrade triggers remote vector reindex when explicitly requested', async () => {
+    execHandlers.push(
+      () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
+      () => '',
+      () => '',
+      () => 'https://myco-team-abc12345.test.workers.dev\n',
+    );
+
+    const { teamUpgrade } = await importTeamCli();
+    await teamUpgrade(vaultDir, { reindexVectors: true });
+
     expect(vi.mocked(fetch)).toHaveBeenCalledWith(
       'https://myco-team-abc12345.test.workers.dev/vectors/reindex',
-      expect.objectContaining({ method: 'POST' }),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ table: 'spores', limit: 20, cursor: null }),
+      }),
     );
+  });
+
+  it('retries remote vector reindex when the new route is not ready immediately after deploy', async () => {
+    execHandlers.push(
+      () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
+      () => '',
+      () => '',
+      () => 'https://myco-team-abc12345.test.workers.dev\n',
+    );
+
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(new Response('{"error":"Not found"}', { status: 404, headers: { 'Content-Type': 'application/json' } }))
+      .mockImplementation(async () => new Response(JSON.stringify({ processed: 0, reindexed: 0, deleted: 0, next_cursor: null }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+
+    const { teamUpgrade } = await importTeamCli();
+    await teamUpgrade(vaultDir, { reindexVectors: true });
+
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it('retries remote vector reindex when a batch request times out', async () => {
+    execHandlers.push(
+      () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
+      () => '',
+      () => '',
+      () => 'https://myco-team-abc12345.test.workers.dev\n',
+    );
+
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockRejectedValueOnce(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))
+      .mockImplementation(async () => new Response(JSON.stringify({ processed: 0, reindexed: 0, deleted: 0, next_cursor: null }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+
+    const { teamUpgrade } = await importTeamCli();
+    await teamUpgrade(vaultDir, { reindexVectors: true });
+
+    expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 });

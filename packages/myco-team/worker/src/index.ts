@@ -132,8 +132,19 @@ function epochSeconds(): number {
 /**
  * Build a Vectorize namespace ID for a record: `{table}:{id}:{machine_id}`.
  */
-function vectorId(table: string, id: string, machineId: string): string {
+function legacyVectorId(table: string, id: string, machineId: string): string {
   return `${table}:${id}:${machineId}`;
+}
+
+async function vectorId(table: string, id: string, machineId: string): Promise<string> {
+  const payload = new TextEncoder().encode(`${table}:${id}:${machineId}`);
+  const digest = await crypto.subtle.digest('SHA-256', payload);
+  const bytes = new Uint8Array(digest).slice(0, 16);
+  const encoded = btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+  return `v1:${encoded}`;
 }
 
 async function readTeamConfig(env: Env): Promise<Record<string, string>> {
@@ -505,7 +516,15 @@ async function embedAndUpsert(
   extra?: Partial<TeamVectorMetadata>,
 ): Promise<void> {
   const vector = await embedText(env.AI, text);
-  const vid = vectorId(table, id, machineId);
+  const vid = await vectorId(table, id, machineId);
+  const legacyId = legacyVectorId(table, id, machineId);
+  if (legacyId !== vid) {
+    try {
+      await env.MYCO_TEAM_VECTORS.deleteByIds([legacyId]);
+    } catch {
+      // Legacy vector may not exist — safe to ignore.
+    }
+  }
   await env.MYCO_TEAM_VECTORS.upsert([
     {
       id: vid,
@@ -653,42 +672,73 @@ async function handleVectorReindex(request: Request, env: Env): Promise<Response
   const limit = Math.min(Math.max(body.limit ?? VECTOR_REINDEX_DEFAULT_BATCH, 1), VECTOR_REINDEX_MAX_BATCH);
   const cursor = decodeReindexCursor(body.cursor ?? null);
   const rows = await listReindexRows(env, table, limit, cursor);
+  const startedAt = epochSeconds();
 
-  let reindexed = 0;
-  let deleted = 0;
-  for (const row of rows) {
-    if (table === 'spores' && row.data.status !== 'active') {
-      await deleteVector(env, table, row.id, row.machine_id);
-      deleted += 1;
-      continue;
-    }
-    await embedAndUpsert(env, table, row.id, row.machine_id, row.text, buildVectorMetadata(table, row.data));
-    reindexed += 1;
-  }
-
-  const next = rows.length === limit
-    ? rows[rows.length - 1]
-    : null;
-
-  return jsonResponse({
-    table,
-    processed: rows.length,
-    reindexed,
-    deleted,
-    next_cursor: next
-      ? encodeReindexCursor({
-          created_at: Number(next.data.created_at ?? 0),
-          id: next.id,
-          machine_id: next.machine_id,
-        })
-      : null,
+  await writeTeamConfig(env, {
+    vector_reindex_status: 'running',
+    vector_reindex_last_table: table,
+    vector_reindex_last_run_at: String(startedAt),
+    vector_reindex_last_error: '',
   });
+
+  try {
+    let reindexed = 0;
+    let deleted = 0;
+    for (const row of rows) {
+      if (table === 'spores' && row.data.status !== 'active') {
+        await deleteVector(env, table, row.id, row.machine_id);
+        deleted += 1;
+        continue;
+      }
+      await embedAndUpsert(env, table, row.id, row.machine_id, row.text, buildVectorMetadata(table, row.data));
+      reindexed += 1;
+    }
+
+    const next = rows.length === limit
+      ? rows[rows.length - 1]
+      : null;
+
+    await writeTeamConfig(env, {
+      vector_reindex_status: next ? 'running' : 'ok',
+      vector_reindex_last_table: table,
+      vector_reindex_last_run_at: String(epochSeconds()),
+      vector_reindex_last_processed: String(rows.length),
+      vector_reindex_last_reindexed: String(reindexed),
+      vector_reindex_last_deleted: String(deleted),
+      vector_reindex_last_error: '',
+    });
+
+    return jsonResponse({
+      table,
+      processed: rows.length,
+      reindexed,
+      deleted,
+      next_cursor: next
+        ? encodeReindexCursor({
+            created_at: Number(next.data.created_at ?? 0),
+            id: next.id,
+            machine_id: next.machine_id,
+          })
+        : null,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await writeTeamConfig(env, {
+      vector_reindex_status: 'error',
+      vector_reindex_last_table: table,
+      vector_reindex_last_run_at: String(epochSeconds()),
+      vector_reindex_last_error: message,
+    });
+    throw error;
+  }
 }
 
 async function deleteVector(env: Env, table: string, id: string, machineId: string): Promise<void> {
-  const vid = vectorId(table, id, machineId);
+  const vid = await vectorId(table, id, machineId);
+  const legacyId = legacyVectorId(table, id, machineId);
   try {
-    await env.MYCO_TEAM_VECTORS.deleteByIds([vid]);
+    const ids = legacyId === vid ? [vid] : [vid, legacyId];
+    await env.MYCO_TEAM_VECTORS.deleteByIds(ids);
   } catch {
     // Vector may not exist — safe to ignore
   }

@@ -10,7 +10,7 @@ function showHelp(): void {
 
 Commands:
   install [project_dir]
-  upgrade [project_dir]
+  upgrade [project_dir] [--reindex-vectors]
   status [project_dir]
   rotate-tokens [api|mcp|all] [project_dir]
   reindex-vectors [project_dir]
@@ -18,9 +18,21 @@ Commands:
 `);
 }
 
+function parseUpgradeArgs(commandArgs: string[]): { vaultDir: string; reindexVectors: boolean } {
+  const reindexVectors = commandArgs.includes('--reindex-vectors');
+  const projectArg = commandArgs.find((arg) => arg !== '--reindex-vectors');
+  return {
+    vaultDir: resolveVaultDir(projectArg ?? process.cwd()),
+    reindexVectors,
+  };
+}
+
 const COMMAND_HANDLERS: Record<string, CommandHandler> = {
   install: async (commandArgs) => teamInit(resolveVaultDir(commandArgs[0] ?? process.cwd())),
-  upgrade: async (commandArgs) => teamUpgrade(resolveVaultDir(commandArgs[0] ?? process.cwd())),
+  upgrade: async (commandArgs) => {
+    const parsed = parseUpgradeArgs(commandArgs);
+    await teamUpgrade(parsed.vaultDir, { reindexVectors: parsed.reindexVectors });
+  },
   status: async (commandArgs) => teamStatus(resolveVaultDir(commandArgs[0] ?? process.cwd())),
   'rotate-tokens': async (commandArgs) => teamRotateTokens(
     resolveVaultDir(commandArgs[1] ?? process.cwd()),

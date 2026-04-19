@@ -5,6 +5,7 @@
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
 const SEARCH_OVERFETCH_MULTIPLIER = 4;
+const MAX_EMBEDDING_TEXT_CHARS = 8000;
 
 export interface TeamVectorMetadata {
   table: string;
@@ -36,7 +37,12 @@ export interface SemanticSearchArgs {
  * Embed text via Workers AI (bge-m3) and return the vector.
  */
 export async function embedText(ai: Ai, text: string): Promise<number[]> {
-  const result = await ai.run('@cf/baai/bge-m3', { text: [text] }) as { data: number[][] };
+  const preparedText = text.length > MAX_EMBEDDING_TEXT_CHARS
+    ? `${text.slice(0, MAX_EMBEDDING_TEXT_CHARS)}
+
+[truncated for embedding]`
+    : text;
+  const result = await ai.run('@cf/baai/bge-m3', { text: [preparedText] }) as { data: number[][] };
   return result.data[0];
 }
 

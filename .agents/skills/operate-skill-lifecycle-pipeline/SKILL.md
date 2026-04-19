@@ -16,6 +16,16 @@ allowed-tools:
 
 Hands-on reference for managing skill candidates, skill records, and SKILL.md files using Myco's agent tools and Skills dashboard.
 
+## Pipeline Architecture and Scheduling
+
+**Asymmetric scheduling defaults** reflect a deliberate progressive disclosure model:
+- `skill-survey` is `enabled: true` (auto-runs during idle, discovers candidates without user intervention)
+- `skill-generate` and `skill-evolve` are `enabled: false` (require explicit opt-in)
+
+This prevents runaway generation costs while ensuring candidate discovery happens automatically.
+
+**Survey quality transformation:** The survey pipeline now runs cluster-first (grouping related spores before proposing candidates), producing 5 domain-scoped candidates vs the old pipeline's 102 candidates with 74.5% dismissed. This dramatically improves signal-to-noise ratio.
+
 ## Tool Reference
 
 ### vault_skill_candidates
@@ -37,6 +47,8 @@ vault_skill_candidates(action: "create", topic: "...", rationale: "...")
 
 Status lifecycle: `identified` → `approved` → `generated`. Dismiss with `status: "dismissed"`.
 
+**UI Labels:** In the Skills dashboard, "Approved" status is labeled "Awaiting generation" for clarity. Use the combined "Approved & generated" filter to see the full pipeline progress.
+
 ### vault_skill_records
 Manages materialized skill records (the DB representation of files on disk).
 
@@ -52,7 +64,7 @@ vault_skill_records(action: "update", id: "<uuid>", status: "retired")
 ```
 
 ### vault_write_skill
-Writes a SKILL.md file to disk and creates/updates the skill record.
+**Staging-based workflow:** `vault_write_skill` now writes to `.myco/staging/skills/<candidate_id>/SKILL.md` as a provisional draft. The skill remains in staging until promoted via `vault_finalize_skill` (human approval required).
 
 ```
 vault_write_skill(
@@ -61,7 +73,8 @@ vault_write_skill(
   description: "triggering description",
   content: "<full SKILL.md with frontmatter>",
   source_ids: "id1,id2",             // optional: comma-separated spore IDs
-  rationale: "what changed"          // optional: written into lineage
+  rationale: "what changed",         // optional: written into lineage
+  candidate_id: "<uuid>"             // required for staging workflow
 )
 ```
 
@@ -73,14 +86,26 @@ vault_write_skill(
 - `allowed-tools` containing **Claude Code tool names only** — vault_* names are rejected
 - ≤500 lines total
 
+**Security enforcement:** Agents cannot self-promote skills from staging to live. The `vault_finalize_skill` tool requires human review and explicit approval.
+
+### vault_finalize_skill
+Promotes a staged skill draft to the live `.agents/skills/` directory and creates the corresponding skill record.
+
+```
+vault_finalize_skill(candidate_id: "<uuid>")
+```
+
+This tool is human-only — agents cannot call it directly. It provides the final quality gate and audit trail via `approved_at` timestamps.
+
 ## Producing a SKILL.md File
 
-### From an approved candidate
+### From an approved candidate (staging workflow)
 
 1. Get the candidate: `vault_skill_candidates(action: "get", id: "<uuid>")`
 2. Search for related spores: `vault_search_semantic(query: "<topic>", limit: 10)`
-3. Write the skill with correct frontmatter — see Frontmatter Requirements below
-4. Pass `candidate_id` and `source_ids` to vault_write_skill for lineage
+3. Write to staging: use `vault_write_skill` with `candidate_id` parameter
+4. **Human review required:** The skill remains in `.myco/staging/` until promoted
+5. After promotion, the candidate status automatically updates to `generated`
 
 ### Updating an existing skill
 
@@ -88,6 +113,7 @@ vault_write_skill(
 2. Read the file at the `path` field to see current content
 3. Identify what changed — update only the affected sections
 4. Write with `rationale` describing what was updated
+5. **Direct write to live:** Skill updates bypass staging and write directly to `.agents/skills/`
 
 **Critical when updating:** Check `allowed-tools` in the existing frontmatter **before** carrying it forward. If it contains vault_* names (vault_create_spore, vault_search_semantic, vault_write_skill, etc.), replace them with Claude Code tools. The gate will reject the write otherwise. See Contamination section below.
 
@@ -144,6 +170,16 @@ The vault_write_skill gate was added specifically because of a silent propagatio
 
 **How to fix a contaminated skill:** Read the current `allowed-tools` in the file, replace any vault_* names with `Read, Edit, Write, Bash, Grep, Glob`, and rewrite via vault_write_skill.
 
+## Structural Enforcement vs Prompt Rules
+
+**Security hardening pattern:** The pipeline now uses structural gates instead of advisory prompt rules. Three coordinated bug fixes closed gaps between prompt suggestions and actual enforcement:
+
+1. **Agent self-promotion blocked:** Agents cannot call `vault_finalize_skill` directly
+2. **Quality gates enforced at write-time:** Invalid frontmatter is rejected, not just warned about
+3. **Audit trail required:** `approved_at` timestamps track human approval events
+
+This follows the principle: **Enforce constraints in tools, not prompts.** Prompts are suggestions; tools are gates.
+
 ## Debugging Why a Skill Wasn't Triggered
 
 Skills are loaded by Claude Code when the frontmatter `description` matches the current session context. Diagnosis checklist:
@@ -153,6 +189,7 @@ Skills are loaded by Claude Code when the frontmatter `description` matches the 
 3. **Description broad enough?** The description is the only matching signal. Too narrow = fewer matches. Compare it to the actual task context.
 4. **Description degraded?** Check if the skill was recently evolved — the rewrite may have shortened the description (see Over-Evolution section below). Compare with the previous generation.
 5. **allowed-tools correct?** Confirm `allowed-tools` lists Claude Code tools only
+6. **Still in staging?** Check if the skill is stuck in `.myco/staging/` awaiting promotion
 
 ## Diagnosing skill-evolve Over-Evolution
 

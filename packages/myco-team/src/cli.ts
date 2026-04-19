@@ -62,7 +62,10 @@ const LEGACY_TEAM_DEPLOY_DIR = '.team-worker';
 const TEAM_CONFIG_VERSION = 1;
 const TEAM_MCP_ROTATION_RETRY_ATTEMPTS = 10;
 const TEAM_MCP_ROTATION_RETRY_DELAY_MS = 1500;
-const TEAM_VECTOR_REINDEX_BATCH_SIZE = 100;
+const TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS = 10;
+const TEAM_VECTOR_REINDEX_RETRY_DELAY_MS = 1500;
+const TEAM_VECTOR_REINDEX_BATCH_SIZE = 20;
+const TEAM_VECTOR_REINDEX_REQUEST_TIMEOUT_MS = WRANGLER_COMMAND_TIMEOUT_MS * 6;
 const TEAM_VECTOR_REINDEX_TABLES = ['spores', 'sessions', 'plans', 'artifacts', 'skill_records'] as const;
 
 /** Regex to match wrangler.toml name field. */
@@ -260,19 +263,48 @@ async function reindexWorkerVectors(vaultDir: string, workerUrlOverride?: string
     let deleted = 0;
 
     while (true) {
-      const response = await fetch(`${workerUrl.replace(/\/+$/, '')}/vectors/reindex`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({ table, limit: TEAM_VECTOR_REINDEX_BATCH_SIZE, cursor }),
-        signal: AbortSignal.timeout(WRANGLER_COMMAND_TIMEOUT_MS),
-      });
+      let response: Response | null = null;
+      let retryableError: Error | null = null;
 
-      if (!response.ok) {
+      for (let attempt = 1; attempt <= TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS; attempt += 1) {
+        try {
+          response = await fetch(`${workerUrl.replace(/\/+$/, '')}/vectors/reindex`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({ table, limit: TEAM_VECTOR_REINDEX_BATCH_SIZE, cursor }),
+            signal: AbortSignal.timeout(TEAM_VECTOR_REINDEX_REQUEST_TIMEOUT_MS),
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const isTimeout = message.includes('timeout');
+          if (!isTimeout || attempt >= TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS) {
+            throw error;
+          }
+          retryableError = new Error(`Worker vector reindex timed out for ${table} (attempt ${attempt}/${TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS})`);
+          await delay(TEAM_VECTOR_REINDEX_RETRY_DELAY_MS);
+          continue;
+        }
+
+        if (response.ok) {
+          retryableError = null;
+          break;
+        }
+
         const body = await response.text();
-        throw new Error(`Worker vector reindex failed for ${table}: ${response.status} ${body}`);
+        const isRetryable = response.status === 404 && body.includes('Not found') && attempt < TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS;
+        if (!isRetryable) {
+          throw new Error(`Worker vector reindex failed for ${table}: ${response.status} ${body}`);
+        }
+
+        retryableError = new Error(`Worker vector reindex route not ready for ${table} yet (attempt ${attempt}/${TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS})`);
+        await delay(TEAM_VECTOR_REINDEX_RETRY_DELAY_MS);
+      }
+
+      if (!response?.ok) {
+        throw retryableError ?? new Error(`Worker vector reindex failed for ${table}`);
       }
 
       const body = await response.json() as {
@@ -668,7 +700,7 @@ export function upgradeWorker(vaultDir: string): UpgradeResult {
 // CLI wrapper
 // ---------------------------------------------------------------------------
 
-export async function teamUpgrade(vaultDir: string): Promise<void> {
+export async function teamUpgrade(vaultDir: string, options: { reindexVectors?: boolean } = {}): Promise<void> {
   console.log('Upgrading team sync worker...\n');
   const result = upgradeWorker(vaultDir);
   if (!result.success) {
@@ -677,8 +709,10 @@ export async function teamUpgrade(vaultDir: string): Promise<void> {
   }
   console.log(`Worker deployed: ${result.worker_url}`);
   console.log(`Version: ${result.version}`);
-  console.log('Refreshing remote Vectorize metadata...');
-  await reindexWorkerVectors(vaultDir, result.worker_url);
+  if (options.reindexVectors) {
+    console.log('Refreshing remote Vectorize metadata...');
+    await reindexWorkerVectors(vaultDir, result.worker_url);
+  }
   console.log('\nUpgrade complete.');
 }
 
