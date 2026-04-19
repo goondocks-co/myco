@@ -78,7 +78,10 @@ function hasSchemaVersionTable(db: Database): boolean {
 export function createSchema(db: Database, machineId: string = DEFAULT_MACHINE_ID): void {
   if (hasSchemaVersionTable(db)) {
     const currentVersion = getCurrentVersion(db);
-    if (currentVersion === SCHEMA_VERSION) return;
+    if (currentVersion === SCHEMA_VERSION) {
+      reapplyCurrentSchemaDdl(db);
+      return;
+    }
 
     // Run pending migrations in order. Errors propagate intentionally so
     // partial upgrade failures are visible to the caller.
@@ -88,6 +91,7 @@ export function createSchema(db: Database, machineId: string = DEFAULT_MACHINE_I
         migration.migrate(db, machineId);
       }
     }
+    reapplyCurrentSchemaDdl(db);
     return;
   }
 
@@ -101,4 +105,69 @@ export function createSchema(db: Database, machineId: string = DEFAULT_MACHINE_I
      VALUES (?, ?)
      ON CONFLICT (version) DO NOTHING`
   ).run(SCHEMA_VERSION, epochSeconds());
+}
+
+// ---------------------------------------------------------------------------
+// Schema-drift reconciliation
+//
+// createSchema installs everything on fresh install and each migration
+// adds its own delta, but existing DBs at the current schema version
+// skip all that — so if any schema object goes missing after the fact
+// (restore from a partial dump, manual DROP, an aborted beta build), the
+// version gate lets the drift ride until somebody notices the symptom.
+// Observed 2026-04: a vault at v21 had the log_entries FTS sync triggers
+// silently dropped, so 141k log entries piled up with an empty FTS index
+// and search returned zero hits.
+//
+// Rather than proliferate one reconcile-X helper per schema-object class
+// (triggers, indexes, tables, FTS virtual tables), this reapplies ALL
+// current-schema DDL on every createSchema() call. Every CREATE uses
+// IF NOT EXISTS, so replay is idempotent and costs microseconds. The
+// only non-DDL step is rebuilding an FTS index when its sync trigger
+// was just reinstalled — the DDL reinstalls the trigger but doesn't
+// repopulate writes it missed while absent.
+//
+// Known gap: column drift (someone dropping a column) is not covered —
+// SQLite's ALTER TABLE ADD COLUMN isn't IF NOT EXISTS-aware, and today's
+// migrations don't re-run past ALTERs either. We haven't seen this in
+// the wild; defer until we do.
+// ---------------------------------------------------------------------------
+
+interface FtsTriggerGroup {
+  ftsTable: string;
+  baseTable: string;
+  triggers: readonly string[];
+}
+
+const FTS_TRIGGER_GROUPS: readonly FtsTriggerGroup[] = [
+  { ftsTable: 'log_entries_fts',    baseTable: 'log_entries',    triggers: ['log_entries_ai', 'log_entries_ad'] },
+  { ftsTable: 'prompt_batches_fts', baseTable: 'prompt_batches', triggers: ['prompt_batches_fts_ai', 'prompt_batches_fts_au', 'prompt_batches_fts_ad'] },
+  { ftsTable: 'activities_fts',     baseTable: 'activities',     triggers: ['activities_fts_ai', 'activities_fts_au', 'activities_fts_ad'] },
+  { ftsTable: 'spores_fts',         baseTable: 'spores',         triggers: ['spores_fts_ai', 'spores_fts_au', 'spores_fts_ad'] },
+  { ftsTable: 'sessions_fts',       baseTable: 'sessions',       triggers: ['sessions_fts_ai', 'sessions_fts_au', 'sessions_fts_ad'] },
+];
+
+function reapplyCurrentSchemaDdl(db: Database): void {
+  const triggersBefore = new Set(
+    (db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'").all() as Array<{ name: string }>)
+      .map((row) => row.name),
+  );
+
+  for (const ddl of TABLE_DDLS) { db.exec(ddl); }
+  for (const ddl of FTS_TABLES) { db.exec(ddl); }
+  for (const idx of SECONDARY_INDEXES) { db.exec(idx); }
+
+  let rebuiltAny = false;
+  for (const group of FTS_TRIGGER_GROUPS) {
+    const wasMissing = group.triggers.some((name) => !triggersBefore.has(name));
+    if (!wasMissing) continue;
+    const baseCount = (db.prepare(`SELECT COUNT(*) AS n FROM ${group.baseTable}`).get() as { n: number }).n;
+    if (baseCount === 0) continue;
+    db.prepare(`INSERT INTO ${group.ftsTable}(${group.ftsTable}) VALUES('rebuild')`).run();
+    rebuiltAny = true;
+  }
+
+  if (rebuiltAny) {
+    process.stderr.write('[schema] Rebuilt one or more FTS indexes after detecting missing sync triggers\n');
+  }
 }
