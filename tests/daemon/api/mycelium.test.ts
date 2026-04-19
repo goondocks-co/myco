@@ -57,6 +57,74 @@ describe('mycelium API handlers', () => {
     expect(body.seeds.map((seed) => seed.type)).toEqual(expect.arrayContaining(['spore', 'session']));
   });
 
+  it('recommends the most-connected node over a freshly-completed orphan session', async () => {
+    // Fresh session with no spores extracted yet — the kind of empty-canvas
+    // default the old "newest completed session" heuristic landed on.
+    upsertSession({
+      id: 'sess-fresh-orphan',
+      agent: 'claude-code',
+      created_at: NOW - 1,
+      started_at: NOW - 1,
+      ended_at: NOW,
+      status: 'completed',
+      title: 'Just finished, nothing extracted',
+    });
+
+    // Older session with three spores linked via FROM_SESSION — a well-connected
+    // hub the new heuristic should prefer.
+    upsertSession({
+      id: 'sess-rich-hub',
+      agent: 'claude-code',
+      created_at: NOW - 1000,
+      started_at: NOW - 1000,
+      ended_at: NOW - 900,
+      status: 'completed',
+      title: 'Old but well-connected',
+    });
+    for (const sporeId of ['spore-a', 'spore-b', 'spore-c']) {
+      insertSpore({
+        id: sporeId,
+        agent_id: DEFAULT_AGENT_ID,
+        observation_type: 'decision',
+        content: `decision ${sporeId}`,
+        session_id: 'sess-rich-hub',
+        created_at: NOW - 500,
+        status: 'active',
+      });
+      insertGraphEdge({
+        agent_id: DEFAULT_AGENT_ID,
+        source_id: sporeId,
+        source_type: 'spore',
+        target_id: 'sess-rich-hub',
+        target_type: 'session',
+        type: 'FROM_SESSION',
+        created_at: NOW - 500,
+      });
+    }
+
+    const result = await handleGetGraphSeeds(makeReq('/graph/seeds'));
+    const body = result.body as { recommended_id: string | null };
+
+    expect(body.recommended_id).toBe('sess-rich-hub');
+  });
+
+  it('falls back to seed order when no edges exist', async () => {
+    upsertSession({
+      id: 'sess-empty',
+      agent: 'claude-code',
+      created_at: NOW - 10,
+      started_at: NOW - 10,
+      ended_at: NOW - 5,
+      status: 'completed',
+      title: 'No edges yet',
+    });
+
+    const result = await handleGetGraphSeeds(makeReq('/graph/seeds'));
+    const body = result.body as { recommended_id: string | null };
+
+    expect(body.recommended_id).toBe('sess-empty');
+  });
+
   it('returns a centered session neighborhood with lineage edges', async () => {
     upsertSession({
       id: 'sess-graph',

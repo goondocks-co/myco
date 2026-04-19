@@ -130,7 +130,33 @@ export async function handleGetGraphSeeds(_req: RouteRequest): Promise<RouteResp
     ...sporeSeeds,
   ];
 
-  const recommendedId = sessionSeeds[0]?.id
+  // Recommend the most-connected node in the visible lineage graph so the
+  // default focus lands on a rich neighborhood instead of a freshly-completed
+  // session that has not had spores extracted yet. Batch edges are excluded
+  // from the count to match what the visualization actually renders.
+  const topConnectedRow = db.prepare(
+    `SELECT node_id FROM (
+       SELECT source_id AS node_id, COUNT(*) AS cnt
+         FROM graph_edges
+        WHERE agent_id = ?
+          AND type NOT IN ('HAS_BATCH', 'EXTRACTED_FROM')
+          AND source_type IN ('spore', 'session')
+        GROUP BY source_id
+       UNION ALL
+       SELECT target_id, COUNT(*)
+         FROM graph_edges
+        WHERE agent_id = ?
+          AND type NOT IN ('HAS_BATCH', 'EXTRACTED_FROM')
+          AND target_type IN ('spore', 'session')
+        GROUP BY target_id
+     )
+     GROUP BY node_id
+     ORDER BY SUM(cnt) DESC
+     LIMIT 1`,
+  ).get(DEFAULT_AGENT_ID, DEFAULT_AGENT_ID) as { node_id: string } | undefined;
+
+  const recommendedId = topConnectedRow?.node_id
+    ?? sessionSeeds[0]?.id
     ?? sporeSeeds[0]?.id
     ?? null;
 
