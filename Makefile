@@ -77,6 +77,16 @@ dev-link:
 	@echo "✓ myco-run symlinked to $(PWD)/packages/myco/bin/myco-run"
 	@echo "✓ .myco/runtime.command set to myco-dev"
 	@echo "  (the hook guard at .agents/myco-run.cjs reads this file)"
+	@# Regenerate symbiont configs so any that opt into
+	@# `substituteRuntimeCommand` (opencode today) get the runtime.command
+	@# alias baked into their MCP command. Symbionts that rely on
+	@# `bin/myco-run` to read runtime.command at spawn time are unaffected
+	@# — `myco update` is a no-op for them.
+	@if command -v myco-dev >/dev/null 2>&1; then \
+		myco-dev update || echo "⚠ 'myco-dev update' failed — symbiont configs may not reflect runtime.command=myco-dev"; \
+	else \
+		echo "⚠ myco-dev not on PATH — skipping symbiont config refresh"; \
+	fi
 
 dev-unlink:
 	@rm -f $(HOME)/.local/bin/myco-dev
@@ -89,3 +99,12 @@ dev-unlink:
 	@echo "✓ myco-collective-dev symlink removed"
 	@echo "✓ myco-run symlink removed"
 	@echo "✓ .myco/runtime.command removed — hook guard falls back to default 'myco'"
+	@# Regenerate symbiont configs using prod myco so any
+	@# `substituteRuntimeCommand` opt-ins revert their MCP command from
+	@# the dev alias back to `myco-run`. Soft-fail when prod myco isn't
+	@# installed — the user can run `myco update` manually later.
+	@if command -v myco >/dev/null 2>&1; then \
+		myco update || echo "⚠ 'myco update' failed — run it manually to restore symbiont configs"; \
+	else \
+		echo "⚠ myco not on PATH — run 'myco update' manually after installing prod myco"; \
+	fi

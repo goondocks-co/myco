@@ -21,8 +21,7 @@ test-results/
 
 # Myco managed (machine-specific)
 .agents/skills/myco
-.agents/skills/myco-curate
-.agents/skills/rules
+.agents/skills/myco-rules
 docs/superpowers/specs/
 docs/superpowers/plans/
 docs/design/

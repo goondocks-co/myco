@@ -1,6 +1,6 @@
 # Rules File — Good Example
 
-This is an example of a well-structured, enforceable CLAUDE.md. Use it as a reference when auditing or writing rules files.
+This is an example of a well-structured, enforceable `AGENTS.md`. Use it as a reference when auditing or writing rules files.
 
 ---
 

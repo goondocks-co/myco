@@ -21,6 +21,13 @@ registration:
   # opencode.json hosts MCP + permissions under non-standard keys
   mcpTarget: opencode.json
   mcpServersKey: mcp
+  # Opencode prepends /opt/homebrew/bin ahead of ~/.local/bin in the env it
+  # gives MCP children, so `myco-run` resolves to the prod shim regardless
+  # of the user's shell PATH. Bake the runtime.command alias into the MCP
+  # command at install time so the spawn skips PATH resolution entirely.
+  # Every other symbiont resolves `myco-run` via PATH and then uses the
+  # shim's runtime.command walk-up — no install-time substitution needed.
+  substituteRuntimeCommand: true
   settingsTarget: opencode.json
   skillsTarget: .agents/skills
   # No instructionsFile — opencode reads AGENTS.md natively

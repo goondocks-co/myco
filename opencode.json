@@ -4,7 +4,7 @@
     "myco": {
       "type": "local",
       "command": [
-        "myco-run",
+        "myco-dev",
         "mcp"
       ]
     }
