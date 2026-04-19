@@ -216,6 +216,7 @@ export async function buildCortexPrompt(
     agentId: DEFAULT_AGENT_ID,
     instruction: builderInstruction,
     embeddingManager: deps.embeddingManager,
+    logger: deps.logger,
   });
   const runId = getLatestRunId(DEFAULT_AGENT_ID, CORTEX_PROMPT_BUILDER_TASK);
   const tracked = resultPromise.catch((err) => {

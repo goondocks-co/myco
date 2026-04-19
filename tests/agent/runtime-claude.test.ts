@@ -187,6 +187,22 @@ describe('ClaudeSdkRuntime.execute', () => {
     expect(scopedServerCalls).toHaveLength(0);
   });
 
+  it('isolates the agent from user settings via settingSources: []', async () => {
+    // Regression: the SDK's plugin-sync path reads `enabledPlugins` from
+    // ~/.claude/settings.json / project .claude/settings.json when
+    // settingSources is unset, and hydrates the "isolated" plugin cache
+    // with every enabled developer plugin (observed 21 plugins leaking
+    // through on a dev machine 2026-04-19). Per the SDK docs:
+    // "When omitted or empty, no filesystem settings are loaded (SDK
+    // isolation mode)."
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput());
+
+    expect(queryCalls[0].options.settingSources).toEqual([]);
+  });
+
   it('passes an empty mcpServers + strictMcpConfig when toolNames is an empty list', async () => {
     // Even when the phase wants no vault tools (e.g., the orchestrator
     // planner with toolNames: []), we MUST still pass strictMcpConfig:
@@ -204,6 +220,27 @@ describe('ClaudeSdkRuntime.execute', () => {
     expect(queryCalls[0].options.strictMcpConfig).toBe(true);
     expect(scopedServerCalls).toHaveLength(0);
     expect(fullServerCalls).toHaveLength(0);
+  });
+
+  it('pre-seeds the isolated plugin cache dir with an empty manifest', async () => {
+    // Regression: CLAUDE_CODE_PLUGIN_CACHE_DIR isolates the directory but
+    // the SDK otherwise populates it from ~/.claude/plugins on first use,
+    // re-introducing user plugins whose tool schemas Anthropic's API
+    // rejects (top-level oneOf/allOf/anyOf). Writing an empty manifest
+    // before the SDK starts short-circuits the sync.
+    const fs = await import('node:fs');
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput());
+
+    const cacheDir = queryCalls[0].options.env as Record<string, string>;
+    const dir = cacheDir.CLAUDE_CODE_PLUGIN_CACHE_DIR;
+    expect(dir).toBeTruthy();
+    const manifestPath = `${dir}/installed_plugins.json`;
+    expect(fs.existsSync(manifestPath)).toBe(true);
+    const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    expect(parsed.plugins).toEqual({});
   });
 
   it('aggregates usage from the final result message', async () => {

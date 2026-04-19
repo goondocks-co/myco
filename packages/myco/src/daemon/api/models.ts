@@ -7,6 +7,8 @@ import {
 import { OPENAI_API_KEY_ENV } from '../../cli/providers/openai-embeddings.js';
 import { OPENROUTER_API_KEY_ENV } from '../../cli/providers/openrouter.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
+import type { DaemonLogger } from '../logger.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 
 const MODEL_LIST_TIMEOUT_MS = 5000;
 const REMOTE_MODELS_ENDPOINT = '/models';
@@ -95,7 +97,7 @@ async function fetchRemoteProviderModels(
   return filterLlmModels(modelIds);
 }
 
-export async function handleGetModels(req: RouteRequest): Promise<RouteResponse> {
+export async function handleGetModels(req: RouteRequest, logger?: DaemonLogger): Promise<RouteResponse> {
   const provider = req.query.provider;
   const type = req.query.type; // 'llm' | 'embedding' | undefined (all)
   const localBackend = req.query.local_backend;
@@ -105,6 +107,7 @@ export async function handleGetModels(req: RouteRequest): Promise<RouteResponse>
   }
 
   let models: string[] = [];
+  let fetchError: string | undefined;
 
   try {
     const localBackendKind = inferLocalOpenAIBackendKind({
@@ -123,8 +126,12 @@ export async function handleGetModels(req: RouteRequest): Promise<RouteResponse>
       // readers don't think `req.query.base_url` reaches the fetch.
       models = await fetchRemoteProviderModels(provider, undefined, MODEL_LIST_TIMEOUT_MS);
     }
-  } catch {
-    // Provider unreachable — return empty list
+  } catch (err) {
+    // Return the empty list so the UI still renders, but surface the
+    // underlying reason so the caller can show "connection refused" /
+    // "API key rejected" instead of an unexplained empty dropdown.
+    fetchError = errorMessage(err);
+    logger?.warn(`models.${provider}.list-unavailable`, `${provider} model list unavailable`, { error: fetchError });
   }
 
   // Filter by type if requested
@@ -134,7 +141,13 @@ export async function handleGetModels(req: RouteRequest): Promise<RouteResponse>
     models = filterLlmModels(models);
   }
 
-  return { body: { provider, models } };
+  return {
+    body: {
+      provider,
+      models,
+      ...(fetchError ? { error: fetchError } : {}),
+    },
+  };
 }
 
 export {

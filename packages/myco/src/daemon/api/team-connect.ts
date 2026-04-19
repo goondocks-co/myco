@@ -12,6 +12,7 @@ import { readJsonConfig, resolveVaultConfigPath } from '@myco-deploy/index.js';
 import { getTeamPackageVersion } from '@myco/cli/team.js';
 import { TeamSyncClient } from '../team-sync.js';
 import { SYNC_PROTOCOL_VERSION, TEAM_API_KEY_SECRET } from '@myco/constants.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 import { getPluginVersion } from '@myco/version.js';
 import { SCHEMA_VERSION } from '@myco/db/schema.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -152,15 +153,20 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     try {
       pendingCount = countPending();
       deadLetterCount = countDeadLettered();
-    } catch {
-      // DB may not have the table yet
+    } catch (err) {
+      // DB may not have the table yet — log so we don't silently report
+      // "0 pending" when the team-outbox queries are actually broken.
+      const detail = errorMessage(err);
+      logger.warn('team-sync.outbox.count-failed', 'team-outbox counts unavailable', { error: detail });
     }
 
     let collectiveStatus: Awaited<ReturnType<TeamSyncClient['getCollectiveStatus']>> | null = null;
     if (client && config.team.enabled) {
       try {
         collectiveStatus = await client.getCollectiveStatus();
-      } catch {
+      } catch (err) {
+        const detail = errorMessage(err);
+        logger.warn('team-sync.collective.status-failed', 'Collective status unavailable', { error: detail });
         collectiveStatus = null;
       }
     }
@@ -255,7 +261,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
       logger.info('team-sync.mcp-token.rotated', 'MCP access token rotated');
       return { body: { token } };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorMessage(err);
       logger.error('team-sync.mcp-token.rotate-failed', 'MCP token rotation failed', { error: message });
       return {
         status: 500,

@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findPackageRoot } from '@myco/utils/find-package-root.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 import { extractJson } from '@myco/intelligence/response.js';
 import type { PhaseDefinition, OrchestratorPlan, OrchestratorPhaseDirective } from './types.js';
 import type { ContextQueryResult } from './context-queries.js';
@@ -40,6 +41,9 @@ const FALLBACK_REASONING_PARSE_ERROR = 'Orchestrator response could not be parse
 
 /** Fallback reasoning string used when the parsed plan has no phases array. */
 const FALLBACK_REASONING_MISSING_PHASES = 'Orchestrator plan missing phases array — running all phases with defaults.';
+
+/** Max chars of the underlying parser error we surface into the fallback reasoning. */
+const ORCHESTRATOR_PARSE_ERROR_PREVIEW_CHARS = 200;
 
 // ---------------------------------------------------------------------------
 // Template placeholder names
@@ -139,6 +143,7 @@ export function composeOrchestratorPrompt(
 export function parseOrchestratorPlan(
   response: string,
   phases: PhaseDefinition[],
+  logger?: import('./types.js').RunLogger,
 ): OrchestratorPlan {
   const trimmed = response.trim();
 
@@ -154,8 +159,16 @@ export function parseOrchestratorPlan(
     }
 
     return parsed;
-  } catch {
-    return buildRunAllPlan(phases, FALLBACK_REASONING_PARSE_ERROR);
+  } catch (err) {
+    const detail = errorMessage(err);
+    const truncated = detail.length > ORCHESTRATOR_PARSE_ERROR_PREVIEW_CHARS
+      ? `${detail.slice(0, ORCHESTRATOR_PARSE_ERROR_PREVIEW_CHARS)}…`
+      : detail;
+    logger?.warn('agent.orchestrator.parse-failed', 'Orchestrator plan parse failed', {
+      error: detail,
+      responsePreview: trimmed.slice(0, 200),
+    });
+    return buildRunAllPlan(phases, `${FALLBACK_REASONING_PARSE_ERROR} (${truncated})`);
   }
 }
 

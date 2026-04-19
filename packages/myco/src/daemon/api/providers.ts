@@ -24,8 +24,10 @@ import {
   getRemoteProviderApiKey,
 } from './models.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
+import type { DaemonLogger } from '../logger.js';
 import { PROVIDER_TYPES, type RuntimeId, type ProviderType } from '@myco/agent/types.js';
 import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 
 /** Timeout for the live Anthropic model list query (short -- fall back fast). */
 const ANTHROPIC_MODELS_TIMEOUT_MS = 5000;
@@ -69,13 +71,13 @@ interface TestResult {
  * Uses Promise.allSettled for parallel detection with timeouts so one
  * slow/unavailable provider doesn't block the others.
  */
-export async function handleGetProviders(): Promise<RouteResponse> {
+export async function handleGetProviders(logger?: DaemonLogger): Promise<RouteResponse> {
   const detectionPlan: Array<{
     detect: () => Promise<ProviderInfo>;
     fallback: ProviderInfo;
   }> = [
     {
-      detect: () => detectAnthropic(),
+      detect: () => detectAnthropic(logger),
       fallback: { type: 'anthropic', runtime: 'claude-sdk', available: false, models: [] },
     },
     {
@@ -87,11 +89,11 @@ export async function handleGetProviders(): Promise<RouteResponse> {
       fallback: { type: 'lmstudio', runtime: 'claude-sdk', available: false, baseUrl: LmStudioBackend.DEFAULT_BASE_URL, models: [] },
     },
     {
-      detect: () => detectRemoteProviderInfo('openai', DEFAULT_OPENAI_URL),
+      detect: () => detectRemoteProviderInfo('openai', DEFAULT_OPENAI_URL, logger),
       fallback: { type: 'openai', runtime: 'openai-agents', available: false, authConfigured: false, baseUrl: DEFAULT_OPENAI_URL, models: [] },
     },
     {
-      detect: () => detectRemoteProviderInfo('openrouter', DEFAULT_OPENROUTER_URL),
+      detect: () => detectRemoteProviderInfo('openrouter', DEFAULT_OPENROUTER_URL, logger),
       fallback: { type: 'openrouter', runtime: 'openai-agents', available: false, authConfigured: false, baseUrl: DEFAULT_OPENROUTER_URL, models: [] },
     },
     {
@@ -163,7 +165,10 @@ export async function handleTestProvider(req: RouteRequest): Promise<RouteRespon
       result = testAnthropic();
     }
   } catch (err) {
-    result = { ok: false, error: String(err) };
+    result = {
+      ok: false,
+      error: errorMessage(err),
+    };
   }
 
   if (result.ok) {
@@ -197,7 +202,7 @@ async function detectLocalProviderInfo(
   };
 }
 
-async function detectAnthropic(): Promise<ProviderInfo> {
+async function detectAnthropic(logger?: DaemonLogger): Promise<ProviderInfo> {
   // Anthropic is always available — the SDK handles auth internally via OAuth,
   // API key, Bedrock, Vertex, or Foundry. The daemon can't reliably detect
   // which method is in use since env vars aren't always inherited.
@@ -224,8 +229,13 @@ async function detectAnthropic(): Promise<ProviderInfo> {
     if (liveModels.length > 0) {
       models = liveModels;
     }
-  } catch {
-    // Fall through to hardcoded ANTHROPIC_MODELS
+  } catch (err) {
+    // Fall through to the hardcoded ANTHROPIC_MODELS list so the dropdown
+    // is never empty, but surface why the live list was unreachable so an
+    // operator can diagnose a missing key / network block without SDK
+    // debug logs.
+    const detail = errorMessage(err);
+    logger?.warn('providers.anthropic.models-unavailable', 'Anthropic model list unavailable', { error: detail });
   }
   anthropicModelsCache = { ts: now, models };
   return { type: 'anthropic', runtime: 'claude-sdk', available: true, models };
@@ -234,6 +244,7 @@ async function detectAnthropic(): Promise<ProviderInfo> {
 async function detectRemoteProviderInfo(
   type: 'openai' | 'openrouter',
   baseUrl: string,
+  logger?: DaemonLogger,
 ): Promise<ProviderInfo> {
   const authConfigured = Boolean(getRemoteProviderApiKey(type));
   let models: string[] = [];
@@ -245,8 +256,10 @@ async function detectRemoteProviderInfo(
       // providers (always uses the hardcoded default); see SSRF lockdown.
       models = await fetchRemoteProviderModels(type, undefined, ANTHROPIC_MODELS_TIMEOUT_MS);
       available = true;
-    } catch {
+    } catch (err) {
       available = false;
+      const detail = errorMessage(err);
+      logger?.warn(`providers.${type}.models-unavailable`, `${type} model list unavailable`, { error: detail });
     }
   }
 

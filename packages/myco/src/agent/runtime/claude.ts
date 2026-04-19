@@ -6,6 +6,7 @@ import type { RuntimeExecuteInput, RuntimeExecuteResult, AgentRuntime, RuntimeCa
 import { RuntimeExecutionError } from './types.js';
 import { createScopedVaultToolServer, createVaultToolServer } from '@myco/agent/tools.js';
 import { buildPhaseEnv } from '@myco/agent/provider.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 
 const MCP_SERVER_NAME = 'myco-vault';
 
@@ -18,6 +19,13 @@ const MCP_SERVER_NAME = 'myco-vault';
  * `CLAUDE_CODE_PLUGIN_CACHE_DIR` to an empty directory gives the agent a
  * clean, deterministic tool surface: only our MCP vault tools.
  *
+ * Empty isn't enough, though: when the SDK boots against an empty cache
+ * dir it *populates* it from the user's global
+ * `~/.claude/plugins/installed_plugins.json` on first use, re-introducing
+ * every plugin we meant to exclude. Pre-seeding the dir with an explicit
+ * empty manifest short-circuits that sync — the SDK sees a valid-but-
+ * empty plugins list and loads none.
+ *
  * Created once per daemon process and reused across runs.
  */
 let isolatedPluginCacheDir: string | undefined;
@@ -26,6 +34,13 @@ function getIsolatedPluginCacheDir(): string {
   if (isolatedPluginCacheDir) return isolatedPluginCacheDir;
   const dir = path.join(os.tmpdir(), `myco-agent-plugin-cache-${process.pid}`);
   fs.mkdirSync(dir, { recursive: true });
+  const manifestPath = path.join(dir, 'installed_plugins.json');
+  if (!fs.existsSync(manifestPath)) {
+    fs.writeFileSync(
+      manifestPath,
+      JSON.stringify({ version: 2, plugins: {} }),
+    );
+  }
   isolatedPluginCacheDir = dir;
   return dir;
 }
@@ -78,6 +93,25 @@ export class ClaudeSdkRuntime implements AgentRuntime {
         process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR ?? getIsolatedPluginCacheDir(),
     };
 
+    // Debug-level record of the per-request tool surface. Filtered out
+    // unless daemon.log_level is set to 'debug' — when it is, operators
+    // can grep the log viewer for `agent.runtime.request` to see what
+    // tools each phase actually sent, which is how you catch a plugin
+    // leak before it blows up a real run with a 400 tool-schema error.
+    if (input.logger) {
+      const mcpToolNames = input.toolSurface.toolNames
+        ?? (toolServer ? ['<full-vault-surface>'] : []);
+      input.logger.debug('agent.runtime.request', 'Agent runtime request', {
+        runId: input.toolSurface.runId,
+        agentId: input.toolSurface.agentId,
+        model: input.model,
+        mcpToolCount: mcpToolNames.length,
+        mcpTools: mcpToolNames,
+        pluginCacheDir: env.CLAUDE_CODE_PLUGIN_CACHE_DIR,
+        sessionRef: input.sessionRef ?? null,
+      });
+    }
+
     let finalText = '';
     let turnsUsed = 0;
     let inputTokens = 0;
@@ -92,6 +126,13 @@ export class ClaudeSdkRuntime implements AgentRuntime {
     // every installed plugin — 130+ unrelated tools leak into the agent's
     // tool surface, inflating context and occasionally triggering API
     // schema rejections (Anthropic's 400 on top-level oneOf/allOf/anyOf).
+    //
+    // `settingSources: []` completes the isolation: the SDK's plugin-sync
+    // path reads `enabledPlugins` from `~/.claude/settings.json` / project
+    // settings and syncs them into our "isolated" plugin cache dir,
+    // re-introducing every developer plugin we meant to exclude. Per the
+    // SDK docs: "When omitted or empty, no filesystem settings are
+    // loaded (SDK isolation mode)."
     const messageStream: AsyncIterable<SDKMessage> = query({
       prompt: input.prompt,
       options: {
@@ -100,6 +141,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
         tools: [],
         mcpServers: toolServer ? { [MCP_SERVER_NAME]: toolServer } : {},
         strictMcpConfig: true,
+        settingSources: [],
         maxTurns: input.maxTurns,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
@@ -146,7 +188,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
     } catch (err) {
       if (turnsUsed > 0 || inputTokens > 0 || outputTokens > 0) {
         throw new RuntimeExecutionError(
-          err instanceof Error ? err.message : String(err),
+          errorMessage(err),
           { usage: buildUsage(), sessionRef: input.sessionRef },
           { cause: err },
         );
