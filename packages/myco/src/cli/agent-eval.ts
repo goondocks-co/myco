@@ -109,9 +109,9 @@ Options:
   --help, -h                  Show this help message
 
 Examples:
-  myco agent eval --task full-intelligence --dry-run --no-wait
-  myco agent eval --task full-intelligence --runtimes claude-sdk,openai-agents --dry-run
-  myco agent eval --task full-intelligence --reasoning low,high --models claude-opus-4-5
+  myco agent eval --task vault-evolve --dry-run --no-wait
+  myco agent eval --task vault-evolve --runtimes claude-sdk,openai-agents --dry-run
+  myco agent eval --task vault-evolve --reasoning low,high --models claude-opus-4-5
 `;
 
 // ---------------------------------------------------------------------------

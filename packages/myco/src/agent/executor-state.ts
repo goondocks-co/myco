@@ -85,18 +85,61 @@ export function checkpointResultsForResume(
   return Object.values(checkpointState.phases)
     .filter((phase) => phase.status === 'completed')
     .sort((a, b) => (order.get(a.name) ?? 0) - (order.get(b.name) ?? 0))
-    .map((phase) => ({
+    .map((phase) => buildPhaseResult({
       name: phase.name,
       status: 'completed',
-      turnsUsed: phase.turnsUsed ?? 0,
-      tokensUsed: phase.tokensUsed ?? 0,
-      costUsd: phase.costUsd ?? 0,
+      summary: phase.summary ?? '',
+      turnsUsed: phase.turnsUsed,
+      tokensUsed: phase.tokensUsed,
+      costUsd: phase.costUsd,
       costSource: phase.costSource,
       costData: phase.costData,
-      summary: phase.summary ?? '',
       usage: phase.usage,
       sessionRef: phase.sessionRef,
     }));
+}
+
+/**
+ * Construct a `PhaseResult` from whatever telemetry is available.
+ *
+ * Three callers hit this: (1) executePhase's success path has a full
+ * `RuntimeUsage` + `CostResolution`; (2) executePhase's failure path has
+ * partial telemetry attached to a `RuntimeExecutionError`; (3)
+ * `checkpointResultsForResume` has pre-computed scalar fields from a
+ * persisted checkpoint. Each caller passes what it has — the helper
+ * derives `turnsUsed`/`tokensUsed`/`costUsd` from `usage` + `costData`
+ * when available, and falls back to the direct scalar fields when not.
+ */
+export function buildPhaseResult(input: {
+  name: string;
+  status: PhaseResult['status'];
+  summary: string;
+  usage?: RuntimeUsage;
+  costData?: CostResolution;
+  turnsUsed?: number;
+  tokensUsed?: number;
+  costUsd?: number;
+  costSource?: CostSource;
+  sessionRef?: string;
+  sessionData?: unknown;
+}): PhaseResult & { sessionData?: unknown } {
+  const {
+    name, status, summary, usage, costData,
+    turnsUsed, tokensUsed, costUsd, costSource,
+    sessionRef, sessionData,
+  } = input;
+  return {
+    name,
+    status,
+    turnsUsed: turnsUsed ?? usage?.requests ?? 0,
+    tokensUsed: tokensUsed ?? usage?.totalTokens ?? 0,
+    costUsd: costUsd ?? costData?.costUsd ?? 0,
+    ...(costData ? { costSource: costData.source, costData } : costSource ? { costSource } : {}),
+    ...(usage ? { usage } : {}),
+    ...(sessionRef ? { sessionRef } : {}),
+    ...(sessionData !== undefined ? { sessionData } : {}),
+    summary,
+  };
 }
 
 export function serializeCheckpointState(state: RunCheckpointState): string {

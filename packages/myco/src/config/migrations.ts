@@ -218,6 +218,29 @@ export const MIGRATIONS: Migration[] = [
       if (!('mode' in settings)) settings.mode = 'banner';
     },
   },
+  {
+    version: 6,
+    name: 'rename-full-intelligence-to-vault-evolve',
+    migrate(doc: Record<string, unknown>, _vaultDir: string): void {
+      // The built-in task `full-intelligence` was renamed to `vault-evolve`.
+      // Move any user overrides stored under the old task key so their
+      // schedule, model, and phase settings keep applying.
+      const agent = doc.agent as Record<string, unknown> | undefined;
+      if (!agent) return;
+      const tasks = agent.tasks as Record<string, unknown> | undefined;
+      if (!tasks || !('full-intelligence' in tasks)) return;
+
+      const legacy = tasks['full-intelligence'];
+      const existing = tasks['vault-evolve'];
+
+      // If a user somehow has both (e.g., hand-edited config), keep the
+      // newer key and drop the legacy one rather than clobbering.
+      if (!existing) {
+        tasks['vault-evolve'] = legacy;
+      }
+      delete tasks['full-intelligence'];
+    },
+  },
 ];
 
 /** Current migration version — the highest version in MIGRATIONS. */

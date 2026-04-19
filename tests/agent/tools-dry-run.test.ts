@@ -2,7 +2,7 @@
  * Tests for the dry-run interceptor in createVaultTools.
  *
  * Dry-run is the mechanism the eval harness uses to re-run
- * `full-intelligence` against a live vault snapshot without corrupting
+ * `vault-evolve` against a live vault snapshot without corrupting
  * state. Reads stay live, writes get intercepted: the intent is
  * recorded to `agent_run_write_intents`, a synthetic shape-compatible
  * payload is returned, and downstream tool calls that reference

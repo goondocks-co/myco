@@ -211,7 +211,7 @@ export interface TaskSchedule {
   preCondition?: 'has-unprocessed-batches' | 'has-active-skills' | 'has-approved-candidates' | 'has-skill-survey-evidence';
 }
 
-/** Shape of each task YAML file (e.g., `tasks/full-intelligence.yaml`). */
+/** Shape of each task YAML file (e.g., `tasks/vault-evolve.yaml`). */
 export interface AgentTask {
   name: string;
   displayName: string;

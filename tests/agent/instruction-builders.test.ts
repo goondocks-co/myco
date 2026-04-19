@@ -425,8 +425,8 @@ describe('isInstructionRequiredTask', () => {
     expect(isInstructionRequiredTask(SKILL_EVOLVE_TASK)).toBe(true);
   });
 
-  it('returns false for generic tasks like full-intelligence', () => {
-    expect(isInstructionRequiredTask('full-intelligence')).toBe(false);
+  it('returns false for generic tasks like vault-evolve', () => {
+    expect(isInstructionRequiredTask('vault-evolve')).toBe(false);
     expect(isInstructionRequiredTask('skill-survey')).toBe(true);
   });
 });
@@ -450,7 +450,7 @@ describe('buildTaskInstruction', () => {
   });
 
   it('returns undefined for tasks that do not use pre-assembled instructions', async () => {
-    await expect(buildTaskInstruction('full-intelligence')).resolves.toBeUndefined();
+    await expect(buildTaskInstruction('vault-evolve')).resolves.toBeUndefined();
     await expect(buildTaskInstruction('skill-survey')).resolves.toBeUndefined();
   });
 

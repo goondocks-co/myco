@@ -24,8 +24,8 @@ describe('parseArgs', () => {
   });
 
   it('parses required --task flag', () => {
-    const result = parseArgs(['--task', 'full-intelligence']);
-    expect(result.taskId).toBe('full-intelligence');
+    const result = parseArgs(['--task', 'vault-evolve']);
+    expect(result.taskId).toBe('vault-evolve');
   });
 
   it('parses --runtimes comma-separated', () => {

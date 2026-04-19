@@ -1,0 +1,370 @@
+# =============================================================================
+# Built-in Task: Vault Seed (Phased)
+# =============================================================================
+# Manual-only task for: myco-agent
+#
+# One-shot seeding pass for brownfield codebases. Unlike vault-evolve,
+# which processes session transcripts, vault-seed infers knowledge
+# directly from source files using filesystem + grep tools. Intended to
+# be run when adopting Myco on an existing repo — fills the vault with
+# an initial spore set and digest so the assistant has useful context
+# from day one.
+# =============================================================================
+
+name: vault-seed
+displayName: Vault Seed
+description: >
+  One-shot seeding pass for a brownfield codebase. Explores the project
+  with filesystem and grep tools, identifies architectural patterns,
+  conventions, and gotchas, then populates the vault with an initial
+  spore set and a starter digest. Manual trigger only — no session data
+  required.
+agent: myco-agent
+isDefault: false
+maxTurns: 300
+timeoutSeconds: 3600
+reasoningLevel: default
+
+# No schedule — always manual. Running automatically would re-seed an
+# already-populated vault.
+
+prompt: >
+  You are running a one-shot seeding pass over a brownfield codebase.
+  There are no session transcripts to process — infer knowledge directly
+  from source. Focus on architectural patterns, conventions, trade-offs,
+  and gotchas that a new developer or agent onboarding to this code
+  would benefit from. Quality over quantity — one precise observation is
+  worth more than ten vague ones.
+
+  IMPORTANT: the pipeline is phased, and each phase has a different
+  tool surface. Early phases explore source with filesystem tools;
+  later phases write observations to the vault using vault_* tools.
+  Each phase's prompt lists the tools it has. Trust that list and call
+  those tools directly. Do not rationalize that a declared tool is
+  "unavailable" based on what earlier phases used.
+
+phases:
+  - name: orient
+    reasoningLevel: default
+    readOnly: true
+    prompt: |
+      **Your ONLY job this phase: produce a 3-8 item theme list from
+      surface signals.** You are NOT verifying themes, NOT reading
+      implementation, and NOT building a comprehensive understanding.
+      That work belongs to the next phase (explore-themes), which has
+      a much larger budget and is designed for it.
+
+      **Hard turn budget: {{max_turns}}.** Each tool call costs one
+      turn. If you exhaust the budget before calling `vault_report`
+      with the theme list, this phase fails and blocks the rest of
+      the pipeline. Treat the budget as a constraint, not a suggestion
+      — finish well under it.
+
+      **Scope guard:** if you find yourself opening a file under
+      `packages/*/src/**`, `src/**`, `lib/**`, or any implementation
+      directory, STOP. That is explore-themes's job. Orient reads
+      top-level metadata and docs only.
+
+      ## Exact tool plan (budget: ~8 tool calls total)
+
+      Call ONLY these tools, in this order. Do NOT add calls.
+
+      1. `fs_tree` at `.` with depth=1 — 1 call, 1 turn.
+      2. `fs_read` the README (no line window) — 1 call, 1 turn.
+      3. `fs_read` the primary manifest (package.json / pyproject.toml /
+         Cargo.toml / go.mod / Gemfile / pom.xml — pick the one that
+         exists, skip if unclear) — 0 or 1 call.
+      4. `fs_list` at `.` — 1 call, 1 turn. After this call you have
+         seen every top-level tooling signal. DO NOT list additional
+         directories in this phase; recursive layout exploration is
+         explore-themes's job.
+      5. (Optional) `fs_list` on `docs/` — 0 or 1 call. If you do, then
+         `fs_read` AT MOST 2 files that clearly look like architecture
+         or overview docs — max 2 more calls.
+      6. `vault_report` with action "orient" and the theme list — 1
+         call. This is your last tool call. The phase ends here.
+
+      Skipping steps is fine. Adding steps is not. If you are tempted
+      to list a subdirectory to "see what's inside it," resist —
+      explore-themes will do that with more budget.
+
+      **Frugality:** every tool response comes back as tokens on your
+      next turn's input. Narrow calls keep the budget healthy.
+
+      ## Output: theme outline
+
+      From those surface signals alone, name 3-8 themes worth deeper
+      exploration in the next phase. Name them confidently even if you
+      don't have full evidence yet — the next phase will verify them.
+      Good themes:
+      - major architectural layers ("agent harness", "daemon", "UI")
+      - cross-cutting domain concepts ("team sync", "session lifecycle")
+      - notable integration points ("MCP server", "SQLite vault")
+      - conventions worth surfacing (testing style, error handling)
+
+      Avoid generic themes like "TypeScript code" or "tests exist".
+
+      Call `vault_report` with action "orient" and the structured theme
+      list. This is your final tool call for this phase.
+    tools:
+      - fs_tree
+      - fs_list
+      - fs_read
+      - vault_report
+    maxTurns: 25
+    required: true
+
+  - name: explore-themes
+    reasoningLevel: default
+    readOnly: true
+    dependsOn: [orient]
+    prompt: |
+      For each theme identified in the orient phase, drill down with
+      `code_grep` and targeted `fs_read` calls. Collect specific,
+      concrete observations that would survive the code evolving.
+
+      ## Strategy (budget: 4-6 turns per theme)
+
+      For each theme:
+      1. `code_grep` for signature patterns — class/interface names,
+         distinctive function names, keywords. Use a `glob` filter when
+         the language is known (e.g., `*.ts`, `*.py`).
+      2. `fs_read` the 2-4 most informative files you find. Prefer
+         cross-cutting modules over leaf files.
+      3. Note 3-6 concrete observations for the theme. Anchor each to
+         file paths or function names.
+
+      ## What makes a good observation
+
+      - Anchored to specific file paths, function names, or patterns
+      - Captures trade-offs, gotchas, or non-obvious invariants
+      - Explains WHY when the reasoning is evident from the code
+      - Would be useful to an agent or developer onboarding
+
+      ## What to skip
+
+      - Boilerplate (standard manifest fields, generated code)
+      - Implementation details that change frequently
+      - Things obvious from the README
+      - Generic advice ("use TypeScript") — only observations specific to
+        THIS codebase belong in the vault
+
+      ## Output
+
+      Produce a structured summary grouped by theme, focused on
+      OBSERVATIONS (the conclusions) rather than a log of what you did.
+      Write the summary as if a separate agent will read it cold and
+      turn each observation into a durable note. Avoid phrases like
+      "I ran fs_tree on…" or "I read the README" — name the observation
+      and anchor it to specific paths. The seed-spores phase runs with
+      a different tool surface and should not be primed to expect
+      filesystem access.
+
+      Call `vault_report` with action "explore" and the structured result.
+    tools:
+      - fs_tree
+      - fs_list
+      - fs_read
+      - code_grep
+      - vault_report
+    maxTurns: 120
+    required: true
+
+  - name: seed-spores
+    reasoningLevel: default
+    dependsOn: [explore-themes]
+    prompt: |
+      Create spores for the observations from the explore phase.
+
+      **Hard turn budget: {{max_turns}}.** Each tool call costs one
+      turn. Every observation needs one `vault_create_spore` call;
+      budget your work accordingly.
+
+      ## Your tools this phase
+
+      You have these tools and ONLY these tools: {{phase_tools}}.
+      They are registered and available. Call them directly. Do NOT
+      verify or second-guess. Filesystem tools from earlier phases
+      are not needed here — the explore-themes summary in your
+      context contains everything you need to create spores.
+
+      ## Step 1: Re-seed check (1 tool call)
+
+      This phase runs on cold vaults AND on vaults that have been
+      seeded before. Call `vault_search_semantic` ONCE with a broad
+      query derived from the strongest theme (e.g. the name of the
+      highest-signal architectural layer from the explore summary).
+
+      - If the search returns several high-similarity results (many
+        scores > 0.85), the vault is already populated. Call
+        `vault_report` with action "skip" and reason "vault already
+        populated" and STOP. Do not create duplicate spores.
+      - If the search returns nothing or only low-similarity results
+        (typical for a cold vault with no embeddings, or a vault with
+        unrelated prior content), proceed to Step 2.
+
+      Do NOT run per-observation similarity searches — dedup across
+      existing spores is the job of the separate consolidation task,
+      not seed-spores. One broad re-seed check is enough.
+
+      ## Step 2: Create spores (the bulk of your budget)
+
+      For each observation in the explore summary, call
+      `vault_create_spore` with:
+      - observation_type: "decision", "pattern", "wisdom", "gotcha",
+        or "architecture" based on what the observation captures
+      - content: the full observation — concrete and specific
+      - importance: 1-10 (10 = load-bearing architectural invariant,
+        3 = minor stylistic preference)
+      - tags: 2-4 tags covering theme and domain
+      - file_path: the primary source file when the observation
+        anchors to one specific location
+      - session_id: null (no session provenance — this is seed data)
+      - prompt_batch_id: null
+      - context: "Seeded from vault-seed exploration pass"
+
+      ## Quality rules
+
+      - One observation per spore — specific, not vague
+      - Prefer fewer, higher-signal spores over many low-signal ones
+      - Target: 10-40 spores per seed run. If the exploration produced
+        far more candidates, prioritize by importance and drop the rest
+        rather than creating everything
+      - Observations anchored to specific file paths are stronger than
+        abstract statements
+    tools:
+      - vault_search_semantic
+      - vault_create_spore
+      - vault_report
+    maxTurns: 80
+    required: true
+
+  # ---- Digest tiers (parallel after seed-spores) ----
+  # Mirrors the vault-evolve pattern: three tiers writing in the same
+  # wave after seeding completes.
+
+  - name: digest-10000
+    reasoningLevel: default
+    dependsOn: [seed-spores]
+    prompt: |
+      Write digest tier 10000 — Full institutional knowledge (~10k tokens).
+
+      ## Your tools this phase
+
+      You have these tools and ONLY these tools:
+      `vault_spores`, `vault_search_semantic`, `vault_read_digest`,
+      `vault_write_digest`, `vault_report`. They are registered and
+      available. Call them directly. Filesystem tools from earlier
+      phases are NOT in scope here — the spores created in seed-spores
+      contain everything you need.
+
+      If the seed-spores phase short-circuited with "vault already populated",
+      call `vault_report` with action "skip" for tier 10000 and finish.
+
+      1. Call `vault_read_digest` with tier 10000 to see any existing content.
+         If this is a first seed run, it will be empty.
+      2. Call `vault_spores` with status "active" to read the freshly seeded
+         observations.
+      3. Organize the digest around the themes from the explore phase.
+         Include concrete file paths and function names. A reader should
+         come away with a thorough picture of the architecture, key
+         decisions, and gotchas.
+      4. Call `vault_write_digest` with tier 10000.
+
+      If the existing digest already contains comparable content (re-seed
+      case), integrate rather than overwrite — preserve well-crafted text.
+    tools:
+      - vault_spores
+      - vault_search_semantic
+      - vault_read_digest
+      - vault_write_digest
+      - vault_report
+    maxTurns: 15
+    required: false
+
+  - name: digest-5000
+    reasoningLevel: default
+    dependsOn: [seed-spores]
+    prompt: |
+      Write digest tier 5000 — Deep onboarding (~5k tokens).
+
+      ## Your tools this phase
+
+      You have these tools and ONLY these tools:
+      `vault_spores`, `vault_read_digest`, `vault_write_digest`,
+      `vault_report`. They are registered and available. Call them
+      directly. Filesystem tools from earlier phases are NOT in scope.
+
+      If the seed-spores phase short-circuited, call `vault_report` with
+      action "skip" for tier 5000 and finish.
+
+      This tier focuses on trade-offs and patterns — what a developer
+      needs after the README but before diving into code.
+
+      1. Call `vault_read_digest` with tier 5000 for the baseline.
+      2. Call `vault_spores` as the primary source (digest-10000 may still
+         be in-flight — don't depend on it).
+      3. Call `vault_write_digest` with tier 5000. Trim and synthesize;
+         this tier is a compression of tier 10000's material.
+    tools:
+      - vault_spores
+      - vault_read_digest
+      - vault_write_digest
+      - vault_report
+    maxTurns: 12
+    required: false
+
+  - name: digest-1500
+    reasoningLevel: default
+    dependsOn: [seed-spores]
+    prompt: |
+      Write digest tier 1500 — Executive briefing (~1.5k tokens).
+
+      ## Your tools this phase
+
+      You have these tools and ONLY these tools:
+      `vault_spores`, `vault_read_digest`, `vault_write_digest`,
+      `vault_report`. They are registered and available. Call them
+      directly. Filesystem tools from earlier phases are NOT in scope.
+
+      If the seed-spores phase short-circuited, call `vault_report` with
+      action "skip" for tier 1500 and finish.
+
+      The tightest tier: what someone needs to know in 2 minutes.
+      Architectural overview in 1-2 sentences, 2-3 load-bearing decisions,
+      the critical gotchas. Ruthlessly selective.
+
+      1. Call `vault_spores` filtered to importance >= 8 to find the
+         top-signal observations.
+      2. Call `vault_write_digest` with tier 1500.
+    tools:
+      - vault_spores
+      - vault_read_digest
+      - vault_write_digest
+      - vault_report
+    maxTurns: 8
+    required: false
+
+  - name: report
+    reasoningLevel: low
+    dependsOn: [seed-spores, digest-10000, digest-5000, digest-1500]
+    prompt: |
+      Summarize the seeding pass.
+
+      Your only tool this phase is `vault_report`. Call it — it is
+      registered and available.
+
+      Call `vault_report` with action "complete" and these details:
+      - Themes explored: N
+      - Spores created: N (by type)
+      - Spores superseded: N
+      - Digest tiers written: [list]
+      - Thin coverage: any themes where the exploration surfaced fewer than
+        3 observations — surface these so the user can follow up with a
+        targeted review-session or additional manual curation
+
+      This report MUST be the last tool call of the run.
+    tools:
+      - vault_report
+    maxTurns: 5
+    required: true

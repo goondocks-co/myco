@@ -14,7 +14,7 @@ This skill triggers an intelligence agent run via the daemon API. The intelligen
 ## Arguments
 
 The user may provide:
-- **task name** — which intelligence task to run (e.g., "full-intelligence", "extraction-only")
+- **task name** — which intelligence task to run (e.g., "vault-evolve", "extract-only")
 - **instruction** — free-text instruction to guide the agent's focus
 
 Parse the user's message for these. Both are optional.

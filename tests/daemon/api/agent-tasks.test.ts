@@ -95,7 +95,7 @@ describe('handleListTasks', () => {
   });
 
   it('returns both built-in and user tasks', async () => {
-    const builtIn = makeTask({ name: 'full-intelligence', isDefault: true });
+    const builtIn = makeTask({ name: 'vault-evolve', isDefault: true });
     vi.mocked(loadAgentTasks).mockReturnValue([builtIn]);
 
     const vaultDir = makeTempDir();
@@ -108,7 +108,7 @@ describe('handleListTasks', () => {
       const tasks = (result.body as { tasks: AgentTask[] }).tasks;
       expect(tasks.length).toBe(2);
       const names = tasks.map((t) => t.name);
-      expect(names).toContain('full-intelligence');
+      expect(names).toContain('vault-evolve');
       expect(names).toContain('my-custom-task');
     } finally {
       removeTempDir(vaultDir);
@@ -299,14 +299,14 @@ describe('handleCreateTask', () => {
   });
 
   it('allows creating task with same name as built-in (override)', async () => {
-    const builtIn = makeTask({ name: 'full-intelligence', isDefault: true });
+    const builtIn = makeTask({ name: 'vault-evolve', isDefault: true });
     vi.mocked(loadAgentTasks).mockReturnValue([builtIn]);
 
     const vaultDir = makeTempDir();
     try {
       const body = {
-        name: 'full-intelligence',
-        displayName: 'My Full Intelligence',
+        name: 'vault-evolve',
+        displayName: 'My Vault Evolve',
         description: 'Override the built-in',
         agent: 'myco-agent',
         prompt: 'Custom prompt.',
@@ -331,19 +331,19 @@ describe('handleCopyTask', () => {
   });
 
   it('creates user copy with -custom suffix', async () => {
-    const builtIn = makeTask({ name: 'full-intelligence', isDefault: true });
+    const builtIn = makeTask({ name: 'vault-evolve', isDefault: true });
     vi.mocked(loadAgentTasks).mockReturnValue([builtIn]);
 
     const vaultDir = makeTempDir();
     try {
       const result = await handleCopyTask(
-        makeReq({ params: { id: 'full-intelligence' } }),
+        makeReq({ params: { id: 'vault-evolve' } }),
         vaultDir,
       );
 
       expect(result.status).toBe(201);
       const copy = (result.body as { task: AgentTask }).task;
-      expect(copy.name).toBe('full-intelligence-custom');
+      expect(copy.name).toBe('vault-evolve-custom');
       expect(copy.isDefault).toBe(false);
       expect(copy.source).toBe('user');
     } finally {
@@ -416,13 +416,13 @@ describe('handleDeleteTask', () => {
   });
 
   it('returns 403 when attempting to delete a built-in task', async () => {
-    const builtIn = makeTask({ name: 'full-intelligence', isDefault: true });
+    const builtIn = makeTask({ name: 'vault-evolve', isDefault: true });
     vi.mocked(loadAgentTasks).mockReturnValue([builtIn]);
 
     const vaultDir = makeTempDir();
     try {
       const result = await handleDeleteTask(
-        makeReq({ params: { id: 'full-intelligence' } }),
+        makeReq({ params: { id: 'vault-evolve' } }),
         vaultDir,
       );
 

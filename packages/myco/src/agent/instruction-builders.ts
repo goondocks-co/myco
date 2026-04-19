@@ -644,7 +644,7 @@ export async function buildTaskInstruction(
  * dispatcher must skip the run rather than falling through to the
  * bare default prompt.
  *
- * Generic tasks like full-intelligence never call buildTaskInstruction,
+ * Generic tasks like vault-evolve never call buildTaskInstruction,
  * so this returns false for them.
  */
 export function isInstructionRequiredTask(taskName: string): boolean {

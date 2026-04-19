@@ -24,7 +24,7 @@ function makeRun(over: Partial<RunRow> = {}): RunRow {
   return {
     id: 'abcdef12-3456-7890-abcd-ef1234567890',
     agent_id: 'agent-default',
-    task: 'full-intelligence',
+    task: 'vault-evolve',
     instruction: null,
     status: 'completed',
     runtime: null,
@@ -57,7 +57,7 @@ function makeRun(over: Partial<RunRow> = {}): RunRow {
 
 function makeTask(over: Partial<TaskRow> = {}): TaskRow {
   return {
-    name: 'full-intelligence',
+    name: 'vault-evolve',
     displayName: 'Full intelligence',
     description: 'Full intelligence pass',
     agent: 'myco',
@@ -71,7 +71,7 @@ describe('buildRerunPrefill', () => {
   it('copies task, instruction, dry_run with no overrides', () => {
     const run = makeRun({ instruction: 'plain reminder', dry_run: true });
     const prefill = buildRerunPrefill(run, [makeTask()]);
-    expect(prefill.taskName).toBe('full-intelligence');
+    expect(prefill.taskName).toBe('vault-evolve');
     expect(prefill.instruction).toBe('plain reminder');
     expect(prefill.dryRun).toBe(true);
     expect(prefill.hasAnyOverride).toBe(false);
@@ -156,7 +156,7 @@ describe('buildRerunPrefill', () => {
 
   it('flags taskMissing when the source task is not in the task list', () => {
     const run = makeRun({ task: 'removed-task' });
-    const prefill = buildRerunPrefill(run, [makeTask({ name: 'full-intelligence' })]);
+    const prefill = buildRerunPrefill(run, [makeTask({ name: 'vault-evolve' })]);
     expect(prefill.taskMissing).toBe(true);
     expect(prefill.taskName).toBe('removed-task');
   });

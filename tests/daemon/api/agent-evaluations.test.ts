@@ -88,7 +88,7 @@ describe('agent-evaluations API', () => {
 
       const res = await handleCreate(makeRequest({
         body: {
-          taskId: 'full-intelligence',
+          taskId: 'vault-evolve',
           matrix: {
             runtimes: ['claude-sdk', 'openai-agents'],
             reasoningLevels: ['low', 'high'],
@@ -107,7 +107,7 @@ describe('agent-evaluations API', () => {
       const { handleCreate } = makeHandlers();
 
       const res = await handleCreate(makeRequest({
-        body: { taskId: 'full-intelligence', matrix: {} },
+        body: { taskId: 'vault-evolve', matrix: {} },
       }));
       expect((res.body as { cellCount: number }).cellCount).toBe(1);
     });
@@ -132,7 +132,7 @@ describe('agent-evaluations API', () => {
 
       const { handleCreate } = makeHandlers();
       const created = await handleCreate(makeRequest({
-        body: { taskId: 'full-intelligence', matrix: {} },
+        body: { taskId: 'vault-evolve', matrix: {} },
       }));
       const { evaluationId } = created.body as { evaluationId: string };
 
@@ -157,7 +157,7 @@ describe('agent-evaluations API', () => {
       const { handleCreate } = makeHandlers();
       await handleCreate(makeRequest({
         body: {
-          taskId: 'full-intelligence',
+          taskId: 'vault-evolve',
           matrix: {
             runtimes: ['claude-sdk'],
             reasoningLevels: ['low', 'high'],
@@ -184,7 +184,7 @@ describe('agent-evaluations API', () => {
       const { handleCreate } = makeHandlers();
       await handleCreate(makeRequest({
         body: {
-          taskId: 'full-intelligence',
+          taskId: 'vault-evolve',
           matrix: {
             runtimes: ['claude-sdk'],
             reasoningLevels: ['low', 'high'],
@@ -224,7 +224,7 @@ describe('agent-evaluations API', () => {
 
       const created = await handleCreate(makeRequest({
         body: {
-          taskId: 'full-intelligence',
+          taskId: 'vault-evolve',
           matrix: { runtimes: ['claude-sdk', 'openai-agents'], dryRun: true },
         },
       }));
@@ -248,7 +248,7 @@ describe('agent-evaluations API', () => {
         aggregate: { total: number; completed: number; failed: number; totalTokens: number; totalCostUsd: number };
       };
       expect(body.evaluation.id).toBe(evaluationId);
-      expect(body.evaluation.taskId).toBe('full-intelligence');
+      expect(body.evaluation.taskId).toBe('vault-evolve');
       expect(body.runs).toHaveLength(2);
       expect(body.aggregate.total).toBe(2);
       expect(body.aggregate.completed).toBe(1);
@@ -263,7 +263,7 @@ describe('agent-evaluations API', () => {
 
       const created = await handleCreate(makeRequest({
         body: {
-          taskId: 'full-intelligence',
+          taskId: 'vault-evolve',
           matrix: { runtimes: ['claude-sdk'], dryRun: true },
         },
       }));
@@ -324,7 +324,7 @@ describe('agent-evaluations API', () => {
 
       const created = await handleCreate(makeRequest({
         body: {
-          taskId: 'full-intelligence',
+          taskId: 'vault-evolve',
           matrix: {
             runtimes: ['claude-sdk'],
             phases: { extract: { reasoningLevel: 'low' } },

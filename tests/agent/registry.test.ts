@@ -76,15 +76,15 @@ describe('loadAllTasks', () => {
   });
 
   it('discovers built-in tasks from definitions dir', () => {
-    const builtIn = makeTask({ name: 'full-intelligence', isDefault: true });
+    const builtIn = makeTask({ name: 'vault-evolve', isDefault: true });
     vi.mocked(loadAgentTasks).mockReturnValue([builtIn]);
 
     const tasks = loadAllTasks('/fake/definitions');
 
     expect(tasks.size).toBe(1);
-    expect(tasks.has('full-intelligence')).toBe(true);
-    expect(tasks.get('full-intelligence')!.source).toBe('built-in');
-    expect(tasks.get('full-intelligence')!.isBuiltin).toBe(true);
+    expect(tasks.has('vault-evolve')).toBe(true);
+    expect(tasks.get('vault-evolve')!.source).toBe('built-in');
+    expect(tasks.get('vault-evolve')!.isBuiltin).toBe(true);
   });
 
   it('discovers user tasks from vault tasks dir', () => {
@@ -291,18 +291,18 @@ describe('copyTaskToUser', () => {
   });
 
   it('creates user copy with -custom suffix', () => {
-    const builtIn = makeTask({ name: 'full-intelligence', displayName: 'Full Intelligence' });
+    const builtIn = makeTask({ name: 'vault-evolve', displayName: 'Vault Evolve' });
     vi.mocked(loadAgentTasks).mockReturnValue([builtIn]);
 
     const vaultDir = makeTempDir();
     try {
-      const copy = copyTaskToUser('/fake/definitions', vaultDir, 'full-intelligence');
+      const copy = copyTaskToUser('/fake/definitions', vaultDir, 'vault-evolve');
 
-      expect(copy.name).toBe('full-intelligence-custom');
+      expect(copy.name).toBe('vault-evolve-custom');
       expect(copy.isDefault).toBe(false);
       expect(copy.isBuiltin).toBe(false);
       expect(copy.source).toBe('user');
-      expect(fs.existsSync(path.join(vaultDir, 'tasks', 'full-intelligence-custom.yaml'))).toBe(true);
+      expect(fs.existsSync(path.join(vaultDir, 'tasks', 'vault-evolve-custom.yaml'))).toBe(true);
     } finally {
       removeTempDir(vaultDir);
     }

@@ -29,7 +29,7 @@ import type { AgentDefinition, AgentTask } from '@myco/agent/types.js';
 // ---------------------------------------------------------------------------
 
 /** Number of built-in task YAML files. */
-const EXPECTED_TASK_COUNT = 11;
+const EXPECTED_TASK_COUNT = 12;
 
 /** Built-in agent name from agent.yaml. */
 const BUILT_IN_AGENT_NAME = 'myco-agent';
@@ -180,14 +180,15 @@ describe('agent loader', () => {
       const tasks = loadAgentTasks(DEFINITIONS_DIR);
       const defaults = tasks.filter((t) => t.isDefault);
       expect(defaults).toHaveLength(1);
-      expect(defaults[0].name).toBe('full-intelligence');
+      expect(defaults[0].name).toBe('vault-evolve');
     });
 
     it('loads expected task names', () => {
       const tasks = loadAgentTasks(DEFINITIONS_DIR);
       const names = tasks.map((t) => t.name).sort();
 
-      expect(names).toContain('full-intelligence');
+      expect(names).toContain('vault-evolve');
+      expect(names).toContain('vault-seed');
       expect(names).toContain('digest-only');
       expect(names).toContain('review-session');
       expect(names).toContain('extract-only');
@@ -213,9 +214,9 @@ describe('agent loader', () => {
       expect(tasks).toEqual([]);
     });
 
-    it('loads schedule from full-intelligence task', () => {
+    it('loads schedule from vault-evolve task', () => {
       const tasks = loadAgentTasks(DEFINITIONS_DIR);
-      const fi = tasks.find((t) => t.name === 'full-intelligence');
+      const fi = tasks.find((t) => t.name === 'vault-evolve');
       expect(fi?.schedule).toBeDefined();
       expect(fi!.schedule!.enabled).toBe(true);
       expect(fi!.schedule!.intervalSeconds).toBe(300);
@@ -277,8 +278,8 @@ describe('agent loader', () => {
       expect(config.timeoutSeconds).toBe(300);
       expect(config.tools).toEqual(def.tools);
       expect(config.systemPromptPath).toBe('../prompts/agent.md');
-      expect(config.taskName).toBe('full-intelligence');
-      expect(config.taskDisplayName).toBe('Full Intelligence');
+      expect(config.taskName).toBe('vault-evolve');
+      expect(config.taskDisplayName).toBe('Vault Evolve');
     });
 
     it('applies agent DB overrides for model', () => {
@@ -402,7 +403,8 @@ describe('agent loader', () => {
       expect(tasks).toHaveLength(EXPECTED_TASK_COUNT);
 
       const names = tasks.map((t) => t.id).sort();
-      expect(names).toContain('full-intelligence');
+      expect(names).toContain('vault-evolve');
+      expect(names).toContain('vault-seed');
       expect(names).toContain('digest-only');
       expect(names).toContain('review-session');
       expect(names).toContain('extract-only');
@@ -413,12 +415,12 @@ describe('agent loader', () => {
       expect(names).toContain('skill-evolve');
     });
 
-    it('marks full-intelligence as the default task', async () => {
+    it('marks vault-evolve as the default task', async () => {
       registerBuiltInAgentsAndTasks(DEFINITIONS_DIR);
 
       const defaultTask = getDefaultTask(BUILT_IN_AGENT_NAME);
       expect(defaultTask).not.toBeNull();
-      expect(defaultTask!.id).toBe('full-intelligence');
+      expect(defaultTask!.id).toBe('vault-evolve');
       expect(defaultTask!.is_default).toBe(1);
     });
 

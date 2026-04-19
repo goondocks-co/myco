@@ -474,17 +474,17 @@ describe('AgentTaskSchema — backward compatibility', () => {
     expect(result.contextQueries).toBeUndefined();
   });
 
-  it('parses a task shaped like the existing full-intelligence YAML', () => {
+  it('parses a task shaped like the existing vault-evolve YAML', () => {
     const result = AgentTaskSchema.parse({
-      name: 'full-intelligence',
-      displayName: 'Full Intelligence',
+      name: 'vault-evolve',
+      displayName: 'Vault Evolve',
       description: 'Complete intelligence pipeline.',
       agent: 'myco-agent',
       prompt: 'Run full intelligence pipeline.',
       isDefault: true,
     });
 
-    expect(result.name).toBe('full-intelligence');
+    expect(result.name).toBe('vault-evolve');
     expect(result.isDefault).toBe(true);
     expect(result.toolOverrides).toBeUndefined();
   });

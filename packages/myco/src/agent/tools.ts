@@ -27,6 +27,7 @@ import { createReadTools } from './tools/read-tools.js';
 import { createWriteTools } from './tools/write-tools.js';
 import { createObservabilityTools } from './tools/observability-tools.js';
 import { createSkillTools } from './tools/skill-tools.js';
+import { createExplorationTools } from './tools/exploration-tools.js';
 import type { SdkMcpToolDefinition, VaultToolDeps } from './tools/types.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
@@ -177,6 +178,10 @@ const SKILL_TOOL_NAMES = new Set([
   'vault_stage_skill', 'vault_finalize_skill',
 ]);
 
+const EXPLORATION_TOOL_NAMES = new Set([
+  'fs_read', 'fs_list', 'fs_tree', 'code_grep',
+]);
+
 /** Max chars stored from a tool response in the run audit trail. */
 const TOOL_OUTPUT_SUMMARY_LIMIT = 240;
 /** Read tools that can explode context if the agent loops on identical payloads. */
@@ -203,7 +208,8 @@ export const VAULT_TOOL_COUNT =
   READ_TOOL_NAMES.size +
   WRITE_TOOL_NAMES.size +
   OBSERVABILITY_TOOL_NAMES.size +
-  SKILL_TOOL_NAMES.size;
+  SKILL_TOOL_NAMES.size +
+  EXPLORATION_TOOL_NAMES.size;
 
 function setsOverlap(a: Set<string>, b: Set<string>): boolean {
   for (const item of a) { if (b.has(item)) return true; }
@@ -333,6 +339,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     ...(needsAll || setsOverlap(onlyNames!, WRITE_TOOL_NAMES) ? createWriteTools(deps) : []),
     ...(needsAll || setsOverlap(onlyNames!, OBSERVABILITY_TOOL_NAMES) ? createObservabilityTools(deps) : []),
     ...(needsAll || setsOverlap(onlyNames!, SKILL_TOOL_NAMES) ? createSkillTools(deps) : []),
+    ...(needsAll || setsOverlap(onlyNames!, EXPLORATION_TOOL_NAMES) ? createExplorationTools(deps) : []),
   ];
 
   return tools.map((toolDef) => {

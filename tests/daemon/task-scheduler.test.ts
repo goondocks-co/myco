@@ -54,10 +54,10 @@ describe('buildScheduledJobs', () => {
 
   it('respects config override to disable an enabled task', () => {
     const tasks = [
-      makeTask('full-intelligence', { enabled: true, intervalSeconds: 300, runIn: ['active', 'idle'] }),
+      makeTask('vault-evolve', { enabled: true, intervalSeconds: 300, runIn: ['active', 'idle'] }),
     ];
     const overrides = {
-      'full-intelligence': { schedule: { enabled: false } },
+      'vault-evolve': { schedule: { enabled: false } },
     };
 
     const jobs = buildScheduledJobs(tasks, overrides);

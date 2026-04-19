@@ -27,7 +27,7 @@ function fakeRun(over: Partial<EvaluationRunSummary>): EvaluationRunSummary {
   return {
     id: 'run-x',
     agent_id: 'myco-agent',
-    task: 'full-intelligence',
+    task: 'vault-evolve',
     instruction: null,
     status: 'completed',
     runtime: null,
