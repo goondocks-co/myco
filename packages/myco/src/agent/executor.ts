@@ -9,6 +9,7 @@ import {
   CONTENT_HASH_ALGORITHM,
 } from '@myco/constants.js';
 import { tryParseJson } from '@myco/utils/json.js';
+import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
 import { initDatabase, vaultDbPath } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
@@ -553,7 +554,7 @@ export async function runAgent(
       // DB failure in error path — log it but don't mask the original error
       options?.logger?.error('agent.run.db-save-failed', `Failed to save error to DB for run ${runId}`, {
         runId,
-        error: dbErr instanceof Error ? dbErr.message : String(dbErr),
+        error: toErrorMessage(dbErr),
       });
     }
 

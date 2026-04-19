@@ -6,6 +6,7 @@ import type { RuntimeExecuteInput, RuntimeExecuteResult, AgentRuntime, RuntimeCa
 import { RuntimeExecutionError } from './types.js';
 import { createScopedVaultToolServer, createVaultToolServer } from '@myco/agent/tools.js';
 import { buildPhaseEnv } from '@myco/agent/provider.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 
 const MCP_SERVER_NAME = 'myco-vault';
 
@@ -18,12 +19,12 @@ const MCP_SERVER_NAME = 'myco-vault';
  * `CLAUDE_CODE_PLUGIN_CACHE_DIR` to an empty directory gives the agent a
  * clean, deterministic tool surface: only our MCP vault tools.
  *
- * Empty isn't enough, though: observed 2026-04-19 (issue #118 follow-up),
- * when the SDK boots against an empty cache dir it *populates* it from
- * the user's global `~/.claude/plugins/installed_plugins.json` on first
- * use, re-introducing every plugin we meant to exclude. Pre-seeding the
- * dir with an explicit empty manifest short-circuits that sync — the SDK
- * sees a valid-but-empty plugins list and loads none.
+ * Empty isn't enough, though: when the SDK boots against an empty cache
+ * dir it *populates* it from the user's global
+ * `~/.claude/plugins/installed_plugins.json` on first use, re-introducing
+ * every plugin we meant to exclude. Pre-seeding the dir with an explicit
+ * empty manifest short-circuits that sync — the SDK sees a valid-but-
+ * empty plugins list and loads none.
  *
  * Created once per daemon process and reused across runs.
  */
@@ -126,13 +127,12 @@ export class ClaudeSdkRuntime implements AgentRuntime {
     // tool surface, inflating context and occasionally triggering API
     // schema rejections (Anthropic's 400 on top-level oneOf/allOf/anyOf).
     //
-    // `settingSources: []` completes the isolation: the SDK's P_7() path
-    // reads `enabledPlugins` from `~/.claude/settings.json` / project
+    // `settingSources: []` completes the isolation: the SDK's plugin-sync
+    // path reads `enabledPlugins` from `~/.claude/settings.json` / project
     // settings and syncs them into our "isolated" plugin cache dir,
-    // re-introducing every developer plugin we meant to exclude
-    // (observed 2026-04-19 on a dev machine with 21 enabled plugins).
-    // Per the SDK docs: "When omitted or empty, no filesystem settings
-    // are loaded (SDK isolation mode)."
+    // re-introducing every developer plugin we meant to exclude. Per the
+    // SDK docs: "When omitted or empty, no filesystem settings are
+    // loaded (SDK isolation mode)."
     const messageStream: AsyncIterable<SDKMessage> = query({
       prompt: input.prompt,
       options: {
@@ -188,7 +188,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
     } catch (err) {
       if (turnsUsed > 0 || inputTokens > 0 || outputTokens > 0) {
         throw new RuntimeExecutionError(
-          err instanceof Error ? err.message : String(err),
+          errorMessage(err),
           { usage: buildUsage(), sessionRef: input.sessionRef },
           { cause: err },
         );

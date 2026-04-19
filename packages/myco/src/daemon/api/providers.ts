@@ -27,6 +27,7 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
 import { PROVIDER_TYPES, type RuntimeId, type ProviderType } from '@myco/agent/types.js';
 import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 
 /** Timeout for the live Anthropic model list query (short -- fall back fast). */
 const ANTHROPIC_MODELS_TIMEOUT_MS = 5000;
@@ -166,7 +167,7 @@ export async function handleTestProvider(req: RouteRequest): Promise<RouteRespon
   } catch (err) {
     result = {
       ok: false,
-      error: err instanceof Error ? err.message : String(err),
+      error: errorMessage(err),
     };
   }
 
@@ -233,7 +234,7 @@ async function detectAnthropic(logger?: DaemonLogger): Promise<ProviderInfo> {
     // is never empty, but surface why the live list was unreachable so an
     // operator can diagnose a missing key / network block without SDK
     // debug logs.
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = errorMessage(err);
     logger?.warn('providers.anthropic.models-unavailable', 'Anthropic model list unavailable', { error: detail });
   }
   anthropicModelsCache = { ts: now, models };
@@ -257,7 +258,7 @@ async function detectRemoteProviderInfo(
       available = true;
     } catch (err) {
       available = false;
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorMessage(err);
       logger?.warn(`providers.${type}.models-unavailable`, `${type} model list unavailable`, { error: detail });
     }
   }

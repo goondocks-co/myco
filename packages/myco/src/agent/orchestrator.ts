@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findPackageRoot } from '@myco/utils/find-package-root.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 import { extractJson } from '@myco/intelligence/response.js';
 import type { PhaseDefinition, OrchestratorPlan, OrchestratorPhaseDirective } from './types.js';
 import type { ContextQueryResult } from './context-queries.js';
@@ -159,7 +160,7 @@ export function parseOrchestratorPlan(
 
     return parsed;
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = errorMessage(err);
     const truncated = detail.length > ORCHESTRATOR_PARSE_ERROR_PREVIEW_CHARS
       ? `${detail.slice(0, ORCHESTRATOR_PARSE_ERROR_PREVIEW_CHARS)}…`
       : detail;

@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findPackageRoot } from '@myco/utils/find-package-root.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 import { parse as parseYaml } from 'yaml';
 import { epochSeconds, DEFAULT_AGENT_ID, BUILT_IN_SOURCE, USER_TASK_SOURCE } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -207,7 +208,7 @@ export function resolveEffectiveConfig(
       } catch (err) {
         // Keep definition defaults but surface the error so operators can
         // tell why their per-agent tool override isn't taking effect.
-        const detail = err instanceof Error ? err.message : String(err);
+        const detail = errorMessage(err);
         console.warn(
           `[agent] Ignoring malformed tool_access JSON for agent "${agentId}": ${detail}`,
         );

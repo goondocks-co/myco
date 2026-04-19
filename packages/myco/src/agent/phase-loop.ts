@@ -160,7 +160,7 @@ export async function executePhase(
         runId: ctx.runId,
         phase: phase.name,
         priorSession: sessionId,
-        error: error instanceof Error ? error.message : String(error),
+        error: toErrorMessage(error),
       });
       result = await runtime.execute({
         prompt: phasePrompt,
@@ -305,7 +305,7 @@ export async function executeSingleQuery(
       {
         runId: ctx.runId,
         priorSession: sessionRef,
-        error: err instanceof Error ? err.message : String(err),
+        error: toErrorMessage(err),
       },
     );
     result = await runtime.execute(baseInput);

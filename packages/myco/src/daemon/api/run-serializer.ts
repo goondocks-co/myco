@@ -10,6 +10,7 @@
 
 import type { RunRow } from '@myco/db/queries/runs.js';
 import type { DaemonLogger } from '../logger.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 import { transformProviderOverrides } from './schemas/execution-overrides-traversal.js';
 
 export interface PhaseCheckpointSummary {
@@ -53,7 +54,7 @@ export function buildPhaseCheckpointSummary(
     // Corrupt checkpoints JSON — degrade to an empty phase list so the run
     // detail still renders, but surface the parse error so an operator can
     // distinguish "no phases yet" from "blob was truncated mid-write".
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = errorMessage(err);
     logger?.warn('run-serializer.checkpoints-parse-failed', 'checkpoints JSON parse failed', { error: detail });
     return [];
   }
