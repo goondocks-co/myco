@@ -187,7 +187,12 @@ describe('ClaudeSdkRuntime.execute', () => {
     expect(scopedServerCalls).toHaveLength(0);
   });
 
-  it('skips the MCP server entirely when toolNames is an empty list', async () => {
+  it('passes an empty mcpServers + strictMcpConfig when toolNames is an empty list', async () => {
+    // Even when the phase wants no vault tools (e.g., the orchestrator
+    // planner with toolNames: []), we MUST still pass strictMcpConfig:
+    // true with an empty mcpServers map — otherwise the SDK falls back
+    // to loading every MCP server the user has configured in
+    // ~/.claude/mcp.json and every installed plugin (130+ tools leak).
     const Runtime = await loadRuntime();
     const runtime = new Runtime();
 
@@ -195,7 +200,8 @@ describe('ClaudeSdkRuntime.execute', () => {
       toolSurface: { agentId: 'a1', runId: 'r1', toolNames: [] },
     }));
 
-    expect(queryCalls[0].options.mcpServers).toBeUndefined();
+    expect(queryCalls[0].options.mcpServers).toEqual({});
+    expect(queryCalls[0].options.strictMcpConfig).toBe(true);
     expect(scopedServerCalls).toHaveLength(0);
     expect(fullServerCalls).toHaveLength(0);
   });

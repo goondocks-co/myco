@@ -85,15 +85,21 @@ export class ClaudeSdkRuntime implements AgentRuntime {
     let costUsd = 0;
     let assistantMessages = 0;
 
+    // Always pass `strictMcpConfig: true`, even when the phase wants no
+    // MCP tools (e.g., the orchestrator planner with `toolNames: []`).
+    // Without strict mode, the SDK falls back to loading every MCP server
+    // the user has configured in ~/.claude/mcp.json, ~/.claude.json, and
+    // every installed plugin — 130+ unrelated tools leak into the agent's
+    // tool surface, inflating context and occasionally triggering API
+    // schema rejections (Anthropic's 400 on top-level oneOf/allOf/anyOf).
     const messageStream: AsyncIterable<SDKMessage> = query({
       prompt: input.prompt,
       options: {
         model: input.model,
         systemPrompt: input.systemPrompt,
         tools: [],
-        ...(toolServer
-          ? { mcpServers: { [MCP_SERVER_NAME]: toolServer }, strictMcpConfig: true }
-          : {}),
+        mcpServers: toolServer ? { [MCP_SERVER_NAME]: toolServer } : {},
+        strictMcpConfig: true,
         maxTurns: input.maxTurns,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,

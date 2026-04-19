@@ -1583,9 +1583,12 @@ describe('runAgent — phased execution', () => {
     expect(result.status).toBe('completed');
     // 1 orchestrator planning call + 3 phase calls = 4 total
     expect(allQueryCalls.length).toBe(4);
-    // Orchestrator call uses no mcpServers (planning only)
+    // Orchestrator call uses an empty mcpServers map with strictMcpConfig
+    // — planning needs no vault tools, but we still lock down the surface
+    // so the SDK doesn't fall back to loading the user's MCP registry.
     const orchestratorCall = allQueryCalls[0];
-    expect((orchestratorCall.options as Record<string, unknown>).mcpServers).toBeUndefined();
+    expect((orchestratorCall.options as Record<string, unknown>).mcpServers).toEqual({});
+    expect((orchestratorCall.options as Record<string, unknown>).strictMcpConfig).toBe(true);
     expect((orchestratorCall.options as Record<string, unknown>).tools).toEqual([]);
     // All 3 phases should have run
     expect(result.phases!.length).toBe(3);
