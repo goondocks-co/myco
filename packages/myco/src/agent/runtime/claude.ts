@@ -18,6 +18,13 @@ const MCP_SERVER_NAME = 'myco-vault';
  * `CLAUDE_CODE_PLUGIN_CACHE_DIR` to an empty directory gives the agent a
  * clean, deterministic tool surface: only our MCP vault tools.
  *
+ * Empty isn't enough, though: observed 2026-04-19 (issue #118 follow-up),
+ * when the SDK boots against an empty cache dir it *populates* it from
+ * the user's global `~/.claude/plugins/installed_plugins.json` on first
+ * use, re-introducing every plugin we meant to exclude. Pre-seeding the
+ * dir with an explicit empty manifest short-circuits that sync — the SDK
+ * sees a valid-but-empty plugins list and loads none.
+ *
  * Created once per daemon process and reused across runs.
  */
 let isolatedPluginCacheDir: string | undefined;
@@ -26,6 +33,13 @@ function getIsolatedPluginCacheDir(): string {
   if (isolatedPluginCacheDir) return isolatedPluginCacheDir;
   const dir = path.join(os.tmpdir(), `myco-agent-plugin-cache-${process.pid}`);
   fs.mkdirSync(dir, { recursive: true });
+  const manifestPath = path.join(dir, 'installed_plugins.json');
+  if (!fs.existsSync(manifestPath)) {
+    fs.writeFileSync(
+      manifestPath,
+      JSON.stringify({ version: 2, plugins: {} }),
+    );
+  }
   isolatedPluginCacheDir = dir;
   return dir;
 }
@@ -92,6 +106,14 @@ export class ClaudeSdkRuntime implements AgentRuntime {
     // every installed plugin — 130+ unrelated tools leak into the agent's
     // tool surface, inflating context and occasionally triggering API
     // schema rejections (Anthropic's 400 on top-level oneOf/allOf/anyOf).
+    //
+    // `settingSources: []` completes the isolation: the SDK's P_7() path
+    // reads `enabledPlugins` from `~/.claude/settings.json` / project
+    // settings and syncs them into our "isolated" plugin cache dir,
+    // re-introducing every developer plugin we meant to exclude
+    // (observed 2026-04-19 on a dev machine with 21 enabled plugins).
+    // Per the SDK docs: "When omitted or empty, no filesystem settings
+    // are loaded (SDK isolation mode)."
     const messageStream: AsyncIterable<SDKMessage> = query({
       prompt: input.prompt,
       options: {
@@ -100,6 +122,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
         tools: [],
         mcpServers: toolServer ? { [MCP_SERVER_NAME]: toolServer } : {},
         strictMcpConfig: true,
+        settingSources: [],
         maxTurns: input.maxTurns,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
