@@ -33,3 +33,9 @@ tools:
   - vault_write_digest
   - vault_set_state
   - vault_report
+  # Code exploration tools — used by vault-seed to infer knowledge from
+  # source when no session data exists yet.
+  - fs_read
+  - fs_list
+  - fs_tree
+  - code_grep

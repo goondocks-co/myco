@@ -29,8 +29,8 @@ surfaces, and debugging when things go wrong.
 ## Prerequisites
 
 - Daemon is running and `agent.enabled: true` in `myco.yaml`.
-- You have read at least one existing task (`src/agent/tasks/full-intelligence.ts`
-  or `src/agent/tasks/skill-survey.ts`) to understand the config shape.
+- You have read at least one existing task YAML (`src/agent/definitions/tasks/vault-evolve.yaml`
+  or `src/agent/definitions/tasks/skill-survey.yaml`) to understand the config shape.
 - You can describe the new task's purpose in one sentence and identify which
   vault state it reads and writes.
 
@@ -145,7 +145,7 @@ After creating the task file, add it to `src/agent/tasks/index.ts`:
 export { myNewTask } from './my-new-task';
 
 export const ALL_TASKS = [
-  fullIntelligenceTask,
+  vaultEvolveTask,
   skillSurveyTask,
   // ...
   myNewTask,  // ← add here

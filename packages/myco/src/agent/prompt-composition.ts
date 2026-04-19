@@ -8,78 +8,98 @@
  */
 
 import { PHASE_SUMMARY_MAX_CHARS } from '@myco/constants.js';
+import { interpolate } from '@myco/utils/interpolate.js';
 import type { PhaseDefinition, PhaseResult } from './types.js';
 
-/** Section header for vault context in the composed prompt. */
 const PROMPT_SECTION_TASK = '## Task: ';
-/** Section header for user instruction in the composed prompt. */
 const PROMPT_SECTION_INSTRUCTION = '## User Instruction';
-/** Separator between prompt sections. */
 const PROMPT_SECTION_SEPARATOR = '\n\n';
-/** Header for prior phase context in phased prompts. */
 const PROMPT_SECTION_PRIOR_PHASES = '## Prior Phase Results';
-/** Header for the current phase in phased prompts. */
 const PROMPT_SECTION_CURRENT_PHASE = '## Current Phase: ';
+
+const UUID_PATTERN = /\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i;
+
+// ---------------------------------------------------------------------------
+// Task prompts
+// ---------------------------------------------------------------------------
+
+export interface TaskPromptInput {
+  vaultContext: string;
+  taskDisplayName: string;
+  taskPrompt: string;
+  instruction?: string;
+}
 
 /**
  * Build the full task prompt from vault context, task definition, and
  * optional user instruction.
  *
- * Task prompts support template variables:
+ * Task prompts support:
  * - `{{session_id}}` — replaced with the session ID from instruction (if present)
  * - `{{instruction}}` — the raw user instruction text
  */
-export function composeTaskPrompt(
-  vaultContext: string,
-  taskDisplayName: string,
-  taskPrompt: string,
-  instruction?: string,
-): string {
-  // Extract session_id from instruction if it contains one (UUID pattern)
-  const sessionIdMatch = instruction?.match(/\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i);
-  const sessionId = sessionIdMatch?.[1] ?? '';
+export function composeTaskPrompt(input: TaskPromptInput): string {
+  const { vaultContext, taskDisplayName, taskPrompt, instruction } = input;
 
-  // Template variable substitution in task prompt
-  let resolvedPrompt = taskPrompt;
-  resolvedPrompt = resolvedPrompt.replace(/\{\{session_id\}\}/g, sessionId);
-  resolvedPrompt = resolvedPrompt.replace(/\{\{instruction\}\}/g, instruction ?? '');
+  const sessionId = instruction?.match(UUID_PATTERN)?.[1] ?? '';
+  const resolvedPrompt = interpolate(taskPrompt, {
+    session_id: sessionId,
+    instruction: instruction ?? '',
+  });
 
   const parts = [
     vaultContext,
     `${PROMPT_SECTION_TASK}${taskDisplayName}\n${resolvedPrompt}`,
   ];
-
   if (instruction) {
     parts.push(`${PROMPT_SECTION_INSTRUCTION}\n${instruction}`);
   }
-
   return parts.join(PROMPT_SECTION_SEPARATOR);
+}
+
+// ---------------------------------------------------------------------------
+// Phase prompts
+// ---------------------------------------------------------------------------
+
+export interface PhasePromptInput {
+  vaultContext: string;
+  taskDisplayName: string;
+  taskOverview: string;
+  phase: PhaseDefinition;
+  priorPhaseResults: PhaseResult[];
+  instruction?: string;
+  /** Resolved `maxTurns` after applying myco.yaml + run overrides. */
+  effectiveMaxTurns?: number;
 }
 
 /**
  * Build the prompt for a single phase in a phased execution.
  *
- * Includes vault context, the task overview, prior phase summaries,
- * and the current phase instructions.
+ * Includes vault context, the task overview, prior phase summaries, and
+ * the current phase instructions.
+ *
+ * Phase prompts support, resolved against the effective phase config:
+ * - `{{max_turns}}` — the phase's resolved turn budget (number)
+ * - `{{phase_name}}` — the phase's name
+ * - `{{phase_tools}}` — comma-separated list of tool names for this phase
+ *
+ * Authors should prefer these variables over hard-coded numbers or tool
+ * lists; users can override `maxTurns` (and other fields) in `myco.yaml`
+ * per-task or per-phase.
  */
-export function composePhasePrompt(
-  vaultContext: string,
-  taskDisplayName: string,
-  taskOverview: string,
-  phase: PhaseDefinition,
-  priorPhaseResults: PhaseResult[],
-  instruction?: string,
-): string {
+export function composePhasePrompt(input: PhasePromptInput): string {
+  const {
+    vaultContext, taskDisplayName, taskOverview, phase,
+    priorPhaseResults, instruction, effectiveMaxTurns,
+  } = input;
+
   const parts = [
     vaultContext,
     `${PROMPT_SECTION_TASK}${taskDisplayName}\n${taskOverview}`,
   ];
-
   if (instruction) {
     parts.push(`${PROMPT_SECTION_INSTRUCTION}\n${instruction}`);
   }
-
-  // Include prior phase results as context (unless the phase opts out)
   if (priorPhaseResults.length > 0 && !phase.skipPriorContext) {
     const summaries = priorPhaseResults.map((pr) => {
       const truncated = pr.summary.length > PHASE_SUMMARY_MAX_CHARS
@@ -90,8 +110,20 @@ export function composePhasePrompt(
     parts.push(`${PROMPT_SECTION_PRIOR_PHASES}\n${summaries.join('\n\n')}`);
   }
 
-  // Current phase instructions
-  parts.push(`${PROMPT_SECTION_CURRENT_PHASE}${phase.name}\n${phase.prompt}`);
+  const resolvedPhasePrompt = substitutePhaseVariables(phase, effectiveMaxTurns);
+  parts.push(`${PROMPT_SECTION_CURRENT_PHASE}${phase.name}\n${resolvedPhasePrompt}`);
 
   return parts.join(PROMPT_SECTION_SEPARATOR);
+}
+
+function substitutePhaseVariables(
+  phase: PhaseDefinition,
+  effectiveMaxTurns: number | undefined,
+): string {
+  const maxTurns = effectiveMaxTurns ?? phase.maxTurns;
+  return interpolate(phase.prompt, {
+    max_turns: maxTurns !== undefined ? String(maxTurns) : 'the configured budget',
+    phase_name: phase.name,
+    phase_tools: (phase.tools ?? []).join(', '),
+  });
 }

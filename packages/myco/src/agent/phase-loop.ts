@@ -28,11 +28,13 @@ import { computeWaves, phaseSessionId } from './wave-computation.js';
 import { resolveCost } from './cost/index.js';
 import {
   abortReasonMessage,
+  buildPhaseResult,
   checkpointResultsForResume,
   isSessionResumeFailure,
   type RunCheckpointState,
 } from './executor-state.js';
 import { getAgentRuntime } from './runtime/index.js';
+import { RuntimeExecutionError, type RuntimeToolSurface } from './runtime/types.js';
 import { composePhasePrompt } from './prompt-composition.js';
 import { resolvePhaseExecution, type MycoYamlPhaseOverrides } from './phase-resolver.js';
 import type { CostResolution } from './cost/types.js';
@@ -104,26 +106,21 @@ export interface PhaseLoopContext {
  * `Promise.allSettled`. Emits a runtime retry when session-resume fails
  * against an adapter that advertises `supportsSessionResume`.
  */
+export interface ExecutePhaseInput {
+  ctx: PhaseLoopContext;
+  phasePrompt: string;
+  phaseModel: string;
+  phase: PhaseDefinition;
+  toolSurface: RuntimeToolSurface;
+  provider?: ProviderConfig;
+  sessionId?: string;
+  sessionData?: unknown;
+}
+
 export async function executePhase(
-  ctx: PhaseLoopContext,
-  phasePrompt: string,
-  phaseModel: string,
-  phase: PhaseDefinition,
-  toolSurface: {
-    agentId: string;
-    runId: string;
-    toolNames: string[];
-    turnOffset: number;
-    projectRoot?: string;
-    vaultDir?: string;
-    readOnly?: boolean;
-    embeddingManager?: RunOptions['embeddingManager'];
-    dryRun?: boolean;
-  },
-  provider?: ProviderConfig,
-  sessionId?: string,
-  sessionData?: unknown,
+  input: ExecutePhaseInput,
 ): Promise<PhaseResult & { sessionData?: unknown }> {
+  const { ctx, phasePrompt, phaseModel, phase, toolSurface, provider, sessionId, sessionData } = input;
   const runtime = getAgentRuntime(ctx.config.runtime);
   try {
     let result;
@@ -170,29 +167,34 @@ export async function executePhase(
       usage: result.usage,
     });
 
-    return {
+    return buildPhaseResult({
       name: phase.name,
       status: 'completed',
-      turnsUsed: result.turnsUsed,
-      tokensUsed: result.usage.totalTokens ?? 0,
-      costUsd: costData.costUsd ?? 0,
-      costSource: costData.source,
-      costData,
       summary: result.finalText,
       usage: result.usage,
+      costData,
       sessionRef: result.sessionRef,
       sessionData: result.sessionData,
-    };
+    });
   } catch (err) {
     const abortReason = abortReasonMessage(ctx.abortController);
-    return {
+    const telemetry = err instanceof RuntimeExecutionError ? err.telemetry : undefined;
+    const costData = telemetry
+      ? await resolveCost({
+          runtime: ctx.config.runtime,
+          provider,
+          model: phaseModel,
+          usage: telemetry.usage,
+        })
+      : undefined;
+    return buildPhaseResult({
       name: phase.name,
       status: 'failed',
-      turnsUsed: 0,
-      tokensUsed: 0,
-      costUsd: 0,
       summary: abortReason ? `Error: ${abortReason}` : `Error: ${toErrorMessage(err)}`,
-    };
+      usage: telemetry?.usage,
+      costData,
+      sessionRef: telemetry?.sessionRef,
+    });
   }
 }
 
@@ -350,19 +352,12 @@ export async function executePhasedQuery(
     }
 
     const waveInputs = runnableWave.map((phase, indexInWave) => {
-      const phasePrompt = composePhasePrompt(
-        vaultContext,
-        config.taskDisplayName,
-        config.taskPrompt,
-        phase,
-        phaseResults,
-        ctx.instruction,
-      );
-
-      // Single canonical precedence resolution — covers run overrides,
-      // phase YAML, myco.yaml per-phase overrides, top-level run override,
-      // and the task default. See `resolvePhaseExecution` JSDoc for the
-      // full precedence table.
+      // Resolve execution config FIRST so the prompt can be templated
+      // with the resolved `maxTurns` (and future per-phase runtime
+      // knobs). Single canonical precedence resolution — covers run
+      // overrides, phase YAML, myco.yaml per-phase overrides, top-level
+      // run override, and the task default. See `resolvePhaseExecution`
+      // JSDoc for the full precedence table.
       const resolved = resolvePhaseExecution(
         phase,
         ctx.options,
@@ -373,6 +368,16 @@ export async function executePhasedQuery(
       const phaseProvider = resolved.provider;
       const effectiveMaxTurns = resolved.maxTurns;
       const phaseModel = resolved.model;
+
+      const phasePrompt = composePhasePrompt({
+        vaultContext,
+        taskDisplayName: config.taskDisplayName,
+        taskOverview: config.taskPrompt,
+        phase,
+        priorPhaseResults: phaseResults,
+        instruction: ctx.instruction,
+        effectiveMaxTurns,
+      });
       const existingCheckpoint = state.phases[phase.name];
       // If the prior attempt failed without producing any turns, its sessionRef
       // points at a poisoned/never-initialized SDK session. Re-attaching to it
@@ -429,17 +434,17 @@ export async function executePhasedQuery(
     }
 
     const settled = await Promise.allSettled(
-      waveInputs.map((input) =>
-        executePhase(
+      waveInputs.map((waveInput) =>
+        executePhase({
           ctx,
-          input.phasePrompt,
-          input.phaseModel,
-          input.effectivePhase,
-          input.toolSurface,
-          input.phaseProvider,
-          input.sessionId,
-          input.sessionData,
-        ),
+          phasePrompt: waveInput.phasePrompt,
+          phaseModel: waveInput.phaseModel,
+          phase: waveInput.effectivePhase,
+          toolSurface: waveInput.toolSurface,
+          provider: waveInput.phaseProvider,
+          sessionId: waveInput.sessionId,
+          sessionData: waveInput.sessionData,
+        }),
       ),
     );
 

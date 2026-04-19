@@ -165,7 +165,7 @@ describe('harness properties', () => {
 
   describe('scheduled task preConditions', () => {
     const UNCONDITIONAL_ALLOWLIST = [
-      'full-intelligence',
+      'vault-evolve',
       'skill-survey',
       // Self-gated by buildScheduledCortexInstruction(), which compares the
       // stored input hash against the newly assembled payload before dispatch.

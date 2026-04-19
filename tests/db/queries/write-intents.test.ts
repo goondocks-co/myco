@@ -24,7 +24,7 @@ function seedRun(id: string) {
   insertRun({
     id,
     agent_id: TEST_AGENT_ID,
-    task: 'full-intelligence',
+    task: 'vault-evolve',
     started_at: epochNow(),
   });
 }
@@ -155,14 +155,14 @@ describe('write intents query helpers', () => {
       insertRun({
         id: runId,
         agent_id: TEST_AGENT_ID,
-        task: 'full-intelligence',
+        task: 'vault-evolve',
         started_at: epochNow(),
         evaluationId,
       });
     }
 
     it('groups counts by run_id and tool_name across all runs in an evaluation', () => {
-      insertEvaluation({ id: 'eval-batch', taskId: 'full-intelligence', matrix: {} });
+      insertEvaluation({ id: 'eval-batch', taskId: 'vault-evolve', matrix: {} });
       seedRunInEval('eval-batch-run-1', 'eval-batch');
       seedRunInEval('eval-batch-run-2', 'eval-batch');
 
@@ -180,8 +180,8 @@ describe('write intents query helpers', () => {
     });
 
     it('excludes runs that belong to other evaluations', () => {
-      insertEvaluation({ id: 'eval-iso-a', taskId: 'full-intelligence', matrix: {} });
-      insertEvaluation({ id: 'eval-iso-b', taskId: 'full-intelligence', matrix: {} });
+      insertEvaluation({ id: 'eval-iso-a', taskId: 'vault-evolve', matrix: {} });
+      insertEvaluation({ id: 'eval-iso-b', taskId: 'vault-evolve', matrix: {} });
       seedRunInEval('iso-run-a', 'eval-iso-a');
       seedRunInEval('iso-run-b', 'eval-iso-b');
 
@@ -194,12 +194,12 @@ describe('write intents query helpers', () => {
     });
 
     it('returns an empty object for an evaluation with no child runs', () => {
-      insertEvaluation({ id: 'eval-no-runs', taskId: 'full-intelligence', matrix: {} });
+      insertEvaluation({ id: 'eval-no-runs', taskId: 'vault-evolve', matrix: {} });
       expect(countWriteIntentsByToolForEvaluation('eval-no-runs')).toEqual({});
     });
 
     it('omits runs that have no intents', () => {
-      insertEvaluation({ id: 'eval-mixed', taskId: 'full-intelligence', matrix: {} });
+      insertEvaluation({ id: 'eval-mixed', taskId: 'vault-evolve', matrix: {} });
       seedRunInEval('mixed-run-1', 'eval-mixed');
       seedRunInEval('mixed-run-2', 'eval-mixed');
       insertWriteIntent({ runId: 'mixed-run-1', toolName: 't', toolInput: '{}', syntheticOutput: '{}' });

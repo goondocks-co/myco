@@ -458,7 +458,7 @@ function PhaseAuditSection({ runId }: { runId: string }) {
 
 /* ---------- Digest revisions section ---------- */
 
-/** Default digest tier to surface in the revisions panel (matches full-intelligence writes). */
+/** Default digest tier to surface in the revisions panel (matches vault-evolve writes). */
 const DEFAULT_DIGEST_TIER = 5000;
 
 function DigestRevisionRowView({
@@ -640,9 +640,9 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   const isDryRun = run.dry_run === true;
   // Detect whether this run produced digest writes so we know whether to
   // render the revisions section. turns is empty until the audit trail is
-  // opened; fall back to task name ('full-intelligence' always writes a
+  // opened; fall back to task name ('vault-evolve' always writes a
   // digest) to avoid hiding the section on initial page load.
-  const hasDigestActivity = !isDryRun && (run.task === 'full-intelligence' || hasDigestWrites(turns));
+  const hasDigestActivity = !isDryRun && (run.task === 'vault-evolve' || hasDigestWrites(turns));
 
   return (
     <div className="space-y-6">

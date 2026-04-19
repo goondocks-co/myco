@@ -14,7 +14,7 @@ const DaemonSchema = z.object({
   log_retention_days: z.number().int().min(1).max(365).default(30),
   /**
    * Time without new prompts before an active session is auto-completed (ms).
-   * Intelligence tasks (full-intelligence, skill-survey, etc.) only process
+   * Intelligence tasks (vault-evolve, skill-survey, etc.) only process
    * settled sessions, so this threshold directly controls how fresh their
    * inputs are. Defaults to 1 hour.
    */

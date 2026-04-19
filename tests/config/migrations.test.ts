@@ -219,8 +219,63 @@ describe('Migration v4: rename-cloud-provider-to-anthropic', () => {
 });
 
 describe('CURRENT_MIGRATION_VERSION', () => {
-  it('is 5', () => {
-    expect(CURRENT_MIGRATION_VERSION).toBe(5);
+  it('is 6', () => {
+    expect(CURRENT_MIGRATION_VERSION).toBe(6);
+  });
+});
+
+const v6 = MIGRATIONS.find((m) => m.version === 6)!;
+
+describe('Migration v6: rename-full-intelligence-to-vault-evolve', () => {
+  it('renames agent.tasks["full-intelligence"] to agent.tasks["vault-evolve"]', () => {
+    const doc: Record<string, unknown> = {
+      agent: {
+        tasks: {
+          'full-intelligence': {
+            schedule: { enabled: true, intervalSeconds: 600 },
+            model: 'claude-sonnet-4-6',
+          },
+        },
+      },
+    };
+    v6.migrate(doc, '/tmp');
+
+    const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
+    expect(tasks['full-intelligence']).toBeUndefined();
+    expect(tasks['vault-evolve']).toEqual({
+      schedule: { enabled: true, intervalSeconds: 600 },
+      model: 'claude-sonnet-4-6',
+    });
+  });
+
+  it('keeps the existing vault-evolve entry when both keys are present', () => {
+    const doc: Record<string, unknown> = {
+      agent: {
+        tasks: {
+          'full-intelligence': { model: 'legacy' },
+          'vault-evolve': { model: 'already-there' },
+        },
+      },
+    };
+    v6.migrate(doc, '/tmp');
+
+    const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
+    expect(tasks['full-intelligence']).toBeUndefined();
+    expect(tasks['vault-evolve']).toEqual({ model: 'already-there' });
+  });
+
+  it('is a no-op when no full-intelligence key exists', () => {
+    const doc: Record<string, unknown> = {
+      agent: { tasks: { 'skill-survey': { schedule: { enabled: true } } } },
+    };
+    expect(() => v6.migrate(doc, '/tmp')).not.toThrow();
+    const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, unknown>;
+    expect(tasks['vault-evolve']).toBeUndefined();
+  });
+
+  it('is a no-op when there is no agent section', () => {
+    const doc: Record<string, unknown> = { embedding: { provider: 'ollama' } };
+    expect(() => v6.migrate(doc, '/tmp')).not.toThrow();
   });
 });
 
@@ -266,18 +321,20 @@ describe('Migration v5: seed-settings-notification-domain-default', () => {
 });
 
 describe('runMigrations', () => {
-  it('runs v3 when config_version is 2', () => {
+  it('runs v3 through v6 when config_version is 2', () => {
     const doc: Record<string, unknown> = {
       config_version: 2,
       agent: { auto_run: true, interval_seconds: 300 },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(5);
+    expect(doc.config_version).toBe(6);
 
     const agent = doc.agent as Record<string, unknown>;
     const tasks = agent.tasks as Record<string, Record<string, unknown>>;
-    expect(tasks['full-intelligence'].schedule).toBeDefined();
+    // v3 creates the schedule under the legacy key; v6 renames it.
+    expect(tasks['full-intelligence']).toBeUndefined();
+    expect(tasks['vault-evolve'].schedule).toBeDefined();
     const notifications = doc.notifications as Record<string, unknown>;
     const domains = notifications.domains as Record<string, Record<string, unknown>>;
     expect(domains.settings).toEqual({
@@ -286,19 +343,19 @@ describe('runMigrations', () => {
     });
   });
 
-  it('runs v4 when config_version is 3', () => {
+  it('runs v4 onward when config_version is 3', () => {
     const doc: Record<string, unknown> = {
       config_version: 3,
       agent: { provider: { type: 'cloud' } },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(5);
+    expect(doc.config_version).toBe(6);
     const agent = doc.agent as Record<string, unknown>;
     expect((agent.provider as Record<string, unknown>).type).toBe('anthropic');
   });
 
-  it('runs v5 when config_version is 4', () => {
+  it('runs v5 onward when config_version is 4', () => {
     const doc: Record<string, unknown> = {
       config_version: 4,
       notifications: {
@@ -307,7 +364,7 @@ describe('runMigrations', () => {
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(5);
+    expect(doc.config_version).toBe(6);
 
     const notifications = doc.notifications as Record<string, unknown>;
     const domains = notifications.domains as Record<string, Record<string, unknown>>;
@@ -317,9 +374,22 @@ describe('runMigrations', () => {
     });
   });
 
-  it('skips all migrations when config_version is already 5', () => {
+  it('runs only v6 when config_version is 5', () => {
     const doc: Record<string, unknown> = {
       config_version: 5,
+      agent: { tasks: { 'full-intelligence': { model: 'claude-sonnet-4-6' } } },
+    };
+    const ran = runMigrations(doc, '/tmp');
+    expect(ran).toBe(true);
+    expect(doc.config_version).toBe(6);
+    const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
+    expect(tasks['full-intelligence']).toBeUndefined();
+    expect(tasks['vault-evolve']).toEqual({ model: 'claude-sonnet-4-6' });
+  });
+
+  it('skips all migrations when config_version is already 6', () => {
+    const doc: Record<string, unknown> = {
+      config_version: 6,
       agent: { auto_run: true, provider: { type: 'cloud' } },
     };
     const ran = runMigrations(doc, '/tmp');

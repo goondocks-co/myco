@@ -1,5 +1,5 @@
 version: 3
-config_version: 5
+config_version: 6
 embedding:
   provider: ollama
   model: bge-m3:latest

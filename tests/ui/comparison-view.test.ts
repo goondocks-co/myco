@@ -28,7 +28,7 @@ function fakeRun(over: Partial<EvaluationRunSummary>): EvaluationRunSummary {
   return {
     id: 'run-x',
     agent_id: 'myco-agent',
-    task: 'full-intelligence',
+    task: 'vault-evolve',
     instruction: null,
     status: 'completed',
     runtime: null,
@@ -119,8 +119,8 @@ describe('detectDrift', () => {
   it('does not fire when runs span less than the threshold and share a task', () => {
     const base = 1_700_000_000;
     const drift = detectDrift([
-      fakeRun({ id: 'a', task: 'full-intelligence', started_at: base }),
-      fakeRun({ id: 'b', task: 'full-intelligence', started_at: base + 60 }),
+      fakeRun({ id: 'a', task: 'vault-evolve', started_at: base }),
+      fakeRun({ id: 'b', task: 'vault-evolve', started_at: base + 60 }),
     ]);
     expect(drift.show).toBe(false);
     expect(drift.differentTasks).toBe(false);
@@ -130,8 +130,8 @@ describe('detectDrift', () => {
   it('fires when the span exceeds the threshold', () => {
     const base = 1_700_000_000;
     const drift = detectDrift([
-      fakeRun({ id: 'a', task: 'full-intelligence', started_at: base }),
-      fakeRun({ id: 'b', task: 'full-intelligence', started_at: base + (DRIFT_THRESHOLD_MINUTES + 1) * 60 }),
+      fakeRun({ id: 'a', task: 'vault-evolve', started_at: base }),
+      fakeRun({ id: 'b', task: 'vault-evolve', started_at: base + (DRIFT_THRESHOLD_MINUTES + 1) * 60 }),
     ]);
     expect(drift.show).toBe(true);
     expect(drift.differentTasks).toBe(false);
@@ -141,7 +141,7 @@ describe('detectDrift', () => {
   it('fires when tasks differ, even with small spans', () => {
     const base = 1_700_000_000;
     const drift = detectDrift([
-      fakeRun({ id: 'a', task: 'full-intelligence', started_at: base }),
+      fakeRun({ id: 'a', task: 'vault-evolve', started_at: base }),
       fakeRun({ id: 'b', task: 'skill-survey', started_at: base + 30 }),
     ]);
     expect(drift.show).toBe(true);

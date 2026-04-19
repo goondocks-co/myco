@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findPackageRoot } from '../utils/find-package-root.js';
+import { interpolate } from '../utils/interpolate.js';
 
 /**
  * Resolve the templates directory. Same strategy as prompts loader.
@@ -36,10 +37,5 @@ export function loadTemplate(name: string, vars: Record<string, string> = {}): s
     raw = fs.readFileSync(path.join(TEMPLATES_DIR, `${name}.md`), 'utf-8');
     templateCache.set(name, raw);
   }
-
-  let result = raw;
-  for (const [key, value] of Object.entries(vars)) {
-    result = result.replaceAll(`{{${key}}}`, value);
-  }
-  return result;
+  return interpolate(raw, vars);
 }

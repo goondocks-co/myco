@@ -118,11 +118,70 @@ Config data loss from the `formToConfig()` bug is silent at the UI layer — the
 
 ---
 
+## Patch-Based Settings API — Modern Granular Updates
+
+### Why patch endpoints?
+
+The Settings UI redesign introduces dedicated PATCH endpoints (`/api/settings/scoped` and `/api/settings/operations`) that replace the monolithic PUT `/api/config` pattern. This enables granular field-level updates without requiring clients to manage the full configuration object. The ScopedField React component automatically handles the patch semantics and scope resolution.
+
+### Steps
+
+1. **Use ScopedField components for settings UI:**
+   ```tsx
+   import { ScopedField } from '../components/ScopedField';
+
+   // The component automatically handles patch-based updates
+   <ScopedField 
+     path="embedding.model" 
+     scope="personal" 
+     label="Embedding Model" 
+   />
+   ```
+
+2. **ScopedField automatically patches via the correct endpoint:**
+   - Personal-scoped settings → `/api/settings/scoped` 
+   - Operations settings → `/api/settings/operations`
+   - Handles the patch semantics internally
+
+3. **When building custom settings forms, use patch endpoints directly:**
+   ```ts
+   // For personal/team scoped settings
+   await fetch('/api/settings/scoped', {
+     method: 'PATCH',
+     body: JSON.stringify({
+       path: 'embedding.model',
+       value: 'text-embedding-3-large',
+       scope: 'personal'
+     })
+   });
+
+   // For operations settings
+   await fetch('/api/settings/operations', {
+     method: 'PATCH', 
+     body: JSON.stringify({
+       field: 'auto_run',
+       value: true
+     })
+   });
+   ```
+
+4. **Legacy full-config PUT is retired.** New settings UI should use patch-based endpoints exclusively. The `/api/config` PUT endpoint remains for compatibility but is not the primary pattern.
+
+### Benefits over monolithic updates
+
+- **Eliminates config reconstruction bugs** — no need to manage the full config object in forms
+- **Automatic scope resolution** — ScopedField handles personal vs team scope assignment  
+- **Field-level granularity** — only the specific setting being changed is updated
+- **No spread-before-overlay complexity** — the patch semantics handle preservation automatically
+
+---
+
 ## Checklist Before Submitting a Config Change
 
 - [ ] YAML write goes through `updateConfig()` (or a named helper that uses it)
 - [ ] Every partial update spreads sibling keys at each level
-- [ ] `formToConfig()` accepts and spreads the original config
+- [ ] `formToConfig()` accepts and spreads the original config (legacy forms only)
 - [ ] Settings page only sets fields it owns — no pass-through of other pages' sections
+- [ ] Modern settings UI uses ScopedField components or patch endpoints directly
 - [ ] If touching daemon-behavior fields, reload signal is sent
 - [ ] Manual verification: inspect `myco.yaml` after a test save to confirm no data loss

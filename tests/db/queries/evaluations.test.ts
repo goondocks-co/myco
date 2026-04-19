@@ -38,13 +38,13 @@ describe('evaluation query helpers', () => {
 
       const inserted = insertEvaluation({
         id: 'eval-1',
-        taskId: 'full-intelligence',
+        taskId: 'vault-evolve',
         matrix,
         notes: 'quick A/B',
       });
 
       expect(inserted.id).toBe('eval-1');
-      expect(inserted.task_id).toBe('full-intelligence');
+      expect(inserted.task_id).toBe('vault-evolve');
       expect(inserted.matrix).toEqual(matrix);
       expect(inserted.notes).toBe('quick A/B');
       expect(inserted.status).toBe('pending');
@@ -118,7 +118,7 @@ describe('evaluation query helpers', () => {
 
   describe('listRunsForEvaluation', () => {
     it('returns all runs linked to an evaluation, newest first', () => {
-      insertEvaluation({ id: 'eval-runs', taskId: 'full-intelligence', matrix: {} });
+      insertEvaluation({ id: 'eval-runs', taskId: 'vault-evolve', matrix: {} });
 
       insertRun({
         id: 'run-1',

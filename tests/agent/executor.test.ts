@@ -24,7 +24,7 @@ import type { ReportRow } from '@myco/db/queries/reports.js';
 
 const TEST_AGENT_ID = 'myco-agent';
 const TEST_VAULT_DIR = '/tmp/test-vault';
-const TEST_TASK_NAME = 'full-intelligence';
+const TEST_TASK_NAME = 'vault-evolve';
 const TEST_TASK_PROMPT = 'Run full intelligence pipeline.';
 const TEST_SYSTEM_PROMPT = 'You are a vault agent.';
 
@@ -198,7 +198,7 @@ vi.mock('@myco/agent/loader.js', async (importOriginal) => {
       if (mockYamlPhases) {
         return [{
           name: TEST_TASK_NAME,
-          displayName: 'Full Intelligence',
+          displayName: 'Vault Evolve',
           description: 'Run full intelligence pipeline',
           agent: 'myco-agent',
           prompt: 'Phased pipeline overview.',
@@ -208,7 +208,7 @@ vi.mock('@myco/agent/loader.js', async (importOriginal) => {
       }
       return [{
         name: TEST_TASK_NAME,
-        displayName: 'Full Intelligence',
+        displayName: 'Vault Evolve',
         description: 'Run full intelligence pipeline',
         agent: 'myco-agent',
         prompt: TEST_TASK_PROMPT,
@@ -229,7 +229,7 @@ vi.mock('@myco/agent/registry.js', () => ({
     const tasks = new Map();
       const task = {
         name: TEST_TASK_NAME,
-        displayName: 'Full Intelligence',
+        displayName: 'Vault Evolve',
         description: 'Run full intelligence pipeline',
         agent: 'myco-agent',
         prompt: mockYamlPhases ? 'Phased pipeline overview.' : TEST_TASK_PROMPT,
@@ -341,7 +341,7 @@ async function createTestTask(): Promise<void> {
     id: TEST_TASK_NAME,
     agent_id: TEST_AGENT_ID,
     prompt: TEST_TASK_PROMPT,
-    display_name: 'Full Intelligence',
+    display_name: 'Vault Evolve',
     description: 'Run full intelligence pipeline',
     is_default: 1,
     created_at: now,
@@ -395,26 +395,26 @@ function resetMockState(): void {
 
 describe('composeTaskPrompt', () => {
   it('composes vault context + task without instruction', () => {
-    const result = composeTaskPrompt(
-      '## Vault State\nspores: 10',
-      'Full Intelligence',
-      'Run full intelligence.',
-    );
+    const result = composeTaskPrompt({
+      vaultContext: '## Vault State\nspores: 10',
+      taskDisplayName: 'Vault Evolve',
+      taskPrompt: 'Run full intelligence.',
+    });
 
     expect(result).toContain('## Vault State');
     expect(result).toContain('spores: 10');
-    expect(result).toContain('## Task: Full Intelligence');
+    expect(result).toContain('## Task: Vault Evolve');
     expect(result).toContain('Run full intelligence.');
     expect(result).not.toContain('## User Instruction');
   });
 
   it('appends user instruction when provided', () => {
-    const result = composeTaskPrompt(
-      '## Vault State',
-      'Full Intelligence',
-      'Run full intelligence.',
-      'Focus on gotchas only.',
-    );
+    const result = composeTaskPrompt({
+      vaultContext: '## Vault State',
+      taskDisplayName: 'Vault Evolve',
+      taskPrompt: 'Run full intelligence.',
+      instruction: 'Focus on gotchas only.',
+    });
 
     expect(result).toContain('## User Instruction');
     expect(result).toContain('Focus on gotchas only.');
@@ -427,20 +427,20 @@ describe('composeTaskPrompt', () => {
 
 describe('composePhasePrompt', () => {
   const vaultContext = '## Vault State\nspores: 10';
-  const taskName = 'Full Intelligence';
+  const taskName = 'Vault Evolve';
   const taskOverview = 'Complete intelligence pipeline.';
 
   it('composes vault context + task overview + phase prompt', () => {
-    const result = composePhasePrompt(
+    const result = composePhasePrompt({
       vaultContext,
-      taskName,
+      taskDisplayName: taskName,
       taskOverview,
-      { name: 'extract', prompt: 'Extract spores from batches.', tools: [], maxTurns: 5, required: true },
-      [],
-    );
+      phase: { name: 'extract', prompt: 'Extract spores from batches.', tools: [], maxTurns: 5, required: true },
+      priorPhaseResults: [],
+    });
 
     expect(result).toContain('## Vault State');
-    expect(result).toContain('## Task: Full Intelligence');
+    expect(result).toContain('## Task: Vault Evolve');
     expect(result).toContain('Complete intelligence pipeline.');
     expect(result).toContain('## Current Phase: extract');
     expect(result).toContain('Extract spores from batches.');
@@ -448,16 +448,16 @@ describe('composePhasePrompt', () => {
   });
 
   it('includes prior phase results when available', () => {
-    const result = composePhasePrompt(
+    const result = composePhasePrompt({
       vaultContext,
-      taskName,
+      taskDisplayName: taskName,
       taskOverview,
-      { name: 'consolidate', prompt: 'Consolidate spores.', tools: [], maxTurns: 5, required: true },
-      [
+      phase: { name: 'consolidate', prompt: 'Consolidate spores.', tools: [], maxTurns: 5, required: true },
+      priorPhaseResults: [
         { name: 'extract', status: 'completed', turnsUsed: 3, tokensUsed: 500, costUsd: 0.001, summary: 'Created 5 spores.' },
         { name: 'summarize', status: 'completed', turnsUsed: 2, tokensUsed: 300, costUsd: 0.0005, summary: 'Updated 2 sessions.' },
       ],
-    );
+    });
 
     expect(result).toContain('## Prior Phase Results');
     expect(result).toContain('### extract (completed)');
@@ -468,27 +468,27 @@ describe('composePhasePrompt', () => {
 
   it('truncates long phase summaries', () => {
     const longSummary = 'A'.repeat(5000);
-    const result = composePhasePrompt(
+    const result = composePhasePrompt({
       vaultContext,
-      taskName,
+      taskDisplayName: taskName,
       taskOverview,
-      { name: 'graph', prompt: 'Build graph.', tools: [], maxTurns: 5, required: true },
-      [{ name: 'extract', status: 'completed', turnsUsed: 3, tokensUsed: 500, costUsd: 0.001, summary: longSummary }],
-    );
+      phase: { name: 'graph', prompt: 'Build graph.', tools: [], maxTurns: 5, required: true },
+      priorPhaseResults: [{ name: 'extract', status: 'completed', turnsUsed: 3, tokensUsed: 500, costUsd: 0.001, summary: longSummary }],
+    });
 
     expect(result).toContain('...');
     expect(result.indexOf(longSummary)).toBe(-1);
   });
 
   it('includes user instruction when provided', () => {
-    const result = composePhasePrompt(
+    const result = composePhasePrompt({
       vaultContext,
-      taskName,
+      taskDisplayName: taskName,
       taskOverview,
-      { name: 'extract', prompt: 'Extract spores.', tools: [], maxTurns: 5, required: true },
-      [],
-      'Focus on security issues.',
-    );
+      phase: { name: 'extract', prompt: 'Extract spores.', tools: [], maxTurns: 5, required: true },
+      priorPhaseResults: [],
+      instruction: 'Focus on security issues.',
+    });
 
     expect(result).toContain('## User Instruction');
     expect(result).toContain('Focus on security issues.');
@@ -518,8 +518,8 @@ describe('resolvePhaseExecution', () => {
     timeoutSeconds: 300,
     systemPromptPath: 'prompts/system.md',
     tools: [],
-    taskName: 'full-intelligence',
-    taskDisplayName: 'Full Intelligence',
+    taskName: 'vault-evolve',
+    taskDisplayName: 'Vault Evolve',
     taskPrompt: 'overview',
   };
 
@@ -844,7 +844,7 @@ describe('runAgent', () => {
 
     expect(capturedQueryArgs).not.toBeNull();
     expect(capturedQueryArgs!.prompt).toContain('## Current Vault State');
-    expect(capturedQueryArgs!.prompt).toContain('## Task: Full Intelligence');
+    expect(capturedQueryArgs!.prompt).toContain('## Task: Vault Evolve');
     expect(capturedQueryArgs!.prompt).toContain(TEST_TASK_PROMPT);
     expect(capturedQueryArgs!.options?.systemPrompt).toBe(TEST_SYSTEM_PROMPT);
   });
@@ -856,13 +856,13 @@ describe('runAgent', () => {
     insertRun({
       id: existingRunId,
       agent_id: TEST_AGENT_ID,
-      task: 'full-intelligence',
+      task: 'vault-evolve',
       status: 'running',
       started_at: epochSeconds(),
     });
 
     // Same task running → skipped
-    const result = await runAgent(TEST_VAULT_DIR, { task: 'full-intelligence' });
+    const result = await runAgent(TEST_VAULT_DIR, { task: 'vault-evolve' });
 
     expect(result.status).toBe('skipped');
     expect(result.reason).toBe('already_running');
@@ -1583,9 +1583,12 @@ describe('runAgent — phased execution', () => {
     expect(result.status).toBe('completed');
     // 1 orchestrator planning call + 3 phase calls = 4 total
     expect(allQueryCalls.length).toBe(4);
-    // Orchestrator call uses no mcpServers (planning only)
+    // Orchestrator call uses an empty mcpServers map with strictMcpConfig
+    // — planning needs no vault tools, but we still lock down the surface
+    // so the SDK doesn't fall back to loading the user's MCP registry.
     const orchestratorCall = allQueryCalls[0];
-    expect((orchestratorCall.options as Record<string, unknown>).mcpServers).toBeUndefined();
+    expect((orchestratorCall.options as Record<string, unknown>).mcpServers).toEqual({});
+    expect((orchestratorCall.options as Record<string, unknown>).strictMcpConfig).toBe(true);
     expect((orchestratorCall.options as Record<string, unknown>).tools).toEqual([]);
     // All 3 phases should have run
     expect(result.phases!.length).toBe(3);
@@ -1732,7 +1735,7 @@ describe('computeWaves', () => {
   it('full intelligence DAG: 7 phases → 5 waves', async () => {
     const { computeWaves } = await import('@myco/agent/executor.js');
 
-    // Matches full-intelligence.yaml dependency graph
+    // Matches vault-evolve.yaml dependency graph
     const phases = [
       makePhase('read-state'),
       makePhase('extract', ['read-state']),

@@ -22,7 +22,7 @@ import { epochSeconds } from '@myco/constants.js';
 
 const TEST_AGENT_ID = 'myco-agent';
 const TEST_VAULT_DIR = '/tmp/test-vault-openai-agents';
-const TEST_TASK_NAME = 'full-intelligence'; // no postcondition, easy path
+const TEST_TASK_NAME = 'vault-evolve'; // no postcondition, easy path
 const TEST_TASK_PROMPT = 'Do the thing.';
 const TEST_SYSTEM_PROMPT = 'You are a vault agent.';
 
@@ -141,7 +141,7 @@ vi.mock('@myco/agent/loader.js', async (importOriginal) => {
     }),
     loadAgentTasks: () => [{
       name: TEST_TASK_NAME,
-      displayName: 'Full Intelligence',
+      displayName: 'Vault Evolve',
       description: 'Run full intelligence pipeline.',
       agent: TEST_AGENT_ID,
       prompt: TEST_TASK_PROMPT,
@@ -156,7 +156,7 @@ vi.mock('@myco/agent/registry.js', () => ({
     const tasks = new Map();
     tasks.set(TEST_TASK_NAME, {
       name: TEST_TASK_NAME,
-      displayName: 'Full Intelligence',
+      displayName: 'Vault Evolve',
       description: 'Run full intelligence pipeline.',
       agent: TEST_AGENT_ID,
       prompt: TEST_TASK_PROMPT,
@@ -238,7 +238,7 @@ function createTestTask(): void {
     id: TEST_TASK_NAME,
     agent_id: TEST_AGENT_ID,
     prompt: TEST_TASK_PROMPT,
-    display_name: 'Full Intelligence',
+    display_name: 'Vault Evolve',
     description: 'Run full intelligence pipeline.',
     is_default: 0,
     created_at: now,

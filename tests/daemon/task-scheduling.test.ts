@@ -4,9 +4,9 @@ import type { AgentTask } from '@myco/agent/types.js';
 
 vi.mock('@myco/agent/registry.js', () => ({
   loadAllTasks: () => new Map<string, AgentTask>([
-    ['full-intelligence', {
-      name: 'full-intelligence',
-      displayName: 'Full Intelligence',
+    ['vault-evolve', {
+      name: 'vault-evolve',
+      displayName: 'Vault Evolve',
       description: 'test',
       agent: 'myco-agent',
       prompt: 'test',
@@ -45,7 +45,7 @@ describe('registerScheduledTasks', () => {
         agent: {
           scheduled_tasks_enabled: true,
           tasks: {
-            'full-intelligence': {
+            'vault-evolve': {
               schedule: { enabled: true },
             },
           },
@@ -64,7 +64,7 @@ describe('registerScheduledTasks', () => {
     expect(powerManager.replaceGroup).toHaveBeenLastCalledWith(
       'scheduled:',
       expect.arrayContaining([
-        expect.objectContaining({ name: 'scheduled:full-intelligence' }),
+        expect.objectContaining({ name: 'scheduled:vault-evolve' }),
       ]),
     );
 
@@ -72,7 +72,7 @@ describe('registerScheduledTasks', () => {
       agent: {
         scheduled_tasks_enabled: true,
         tasks: {
-          'full-intelligence': {
+          'vault-evolve': {
             schedule: { enabled: false },
           },
         },
