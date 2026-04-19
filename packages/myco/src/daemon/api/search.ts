@@ -6,7 +6,8 @@
  * - mode=auto (default): Tries semantic first, falls back to FTS if provider unavailable
  */
 
-import { fullTextSearch, hydrateSearchResults } from '@myco/db/queries/search.js';
+import { fullTextSearch, hydrateSearchResults, sanitizeFtsQuery } from '@myco/db/queries/search.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 import {
   SEARCH_RESULTS_DEFAULT_LIMIT,
   SEARCH_SIMILARITY_THRESHOLD,
@@ -74,10 +75,24 @@ export function createSearchHandler(deps: SearchDeps) {
     const limit = Number(req.query.limit) || SEARCH_RESULTS_DEFAULT_LIMIT;
     const namespace = req.query.namespace;
 
+    const sanitized = sanitizeFtsQuery(query);
+
     // --- FTS-only mode ---
     if (mode === 'fts') {
-      const results = fullTextSearch(query, { type, limit });
-      return { body: { mode: 'fts', results } };
+      try {
+        const results = fullTextSearch(sanitized, { type, limit });
+        return { body: { mode: 'fts', results } };
+      } catch (err) {
+        return {
+          status: 500,
+          body: {
+            error: 'fts_query_failed',
+            message: errorMessage(err),
+            query,
+            sanitized_query: sanitized !== query ? sanitized : undefined,
+          },
+        };
+      }
     }
 
     // --- Semantic or auto mode: attempt vector search ---
@@ -86,8 +101,20 @@ export function createSearchHandler(deps: SearchDeps) {
     // If provider unavailable, auto falls back to FTS; semantic returns empty
     if (queryVector === null) {
       if (mode === 'auto') {
-        const results = fullTextSearch(query, { type, limit });
-        return { body: { mode: 'fts', results, fallback: true } };
+        try {
+          const results = fullTextSearch(sanitized, { type, limit });
+          return { body: { mode: 'fts', results, fallback: true } };
+        } catch (err) {
+          return {
+            status: 500,
+            body: {
+              error: 'fts_fallback_failed',
+              message: errorMessage(err),
+              query,
+              sanitized_query: sanitized !== query ? sanitized : undefined,
+            },
+          };
+        }
       }
       // mode === 'semantic' but no provider
       return { body: { mode: 'semantic', results: [], provider_unavailable: true } };

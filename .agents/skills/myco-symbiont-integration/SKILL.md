@@ -8,7 +8,9 @@ description: >-
   hook guard, SymbiontInstaller wiring, installer fixtures, session identity,
   phantom-session defenses, environment-variable injection, transcript
   path parsing failures, registration.mcpCwd field for portable MCP launch,
-  and source==exec capture filter for sub-agent phantom defense.
+  SDK-specific MCP configuration requirements (Claude SDK auto-loading,
+  OpenAI strict function-calling, strictMcpConfig), and source==exec capture 
+  filter for sub-agent phantom defense.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -53,7 +55,47 @@ This ensures portable MCP behavior regardless of where the agent changes directo
 
 ---
 
-## Procedure 4.4: source==exec Filter — 4th Phantom Defense Layer
+## Procedure 2: SDK-Specific MCP Configuration
+
+Different agent SDKs have distinct MCP integration patterns and requirements that affect symbiont design:
+
+### 2.1 Claude SDK Auto-Loading Behavior
+
+**Issue:** The Claude SDK automatically loads all user-configured plugins and MCP servers, including Myco's MCP server. This can create initialization conflicts or duplicate tool registrations if not handled properly.
+
+**Solution:** Ensure Myco's MCP server gracefully handles multiple initialization attempts and doesn't conflict with other user MCP configurations.
+
+### 2.2 OpenAI Strict Function-Calling Incompatibilities
+
+**Issue:** OpenAI agents using strict function-calling mode reject Zod schemas with refinements (`.refine()` calls), causing MCP tool registration failures.
+
+**Solution:** For OpenAI-compatible symbionts, ensure MCP tool schemas use only basic Zod types without refinements:
+
+```ts
+// AVOID for OpenAI strict function-calling
+const schema = z.string().refine(s => s.length > 0);
+
+// USE instead
+const schema = z.string().min(1);
+```
+
+### 2.3 Claude SDK strictMcpConfig Requirement
+
+**Issue:** The Claude SDK requires `strictMcpConfig: true` in its configuration to properly validate MCP server registration and tool schemas.
+
+**Solution:** Ensure Claude SDK-based symbionts pass the `strictMcpConfig` flag:
+
+```ts
+// Required for Claude SDK
+const config = {
+  strictMcpConfig: true,
+  // ... other config
+};
+```
+
+---
+
+## Procedure 3: source==exec Filter — 4th Phantom Defense Layer
 
 **Problem:** Codex spawns sub-agent processes (e.g., to run `node` or `python` commands). These sub-agents also have hooks installed and fire their own `session_start` events. Without filtering, each sub-agent invocation creates phantom sessions.
 
@@ -122,3 +164,5 @@ Verify: stop the daemon, trigger a drop condition (e.g., null transcript_path, o
 **registration.mcpCwd is mandatory for portable MCP** — Without this field, MCP servers spawned from hooks run with agent-context `cwd`, breaking file resolution. Always set this in the manifest and expand to absolute path at install time.
 
 **source==exec filter must be in capture rules config** — `source` is an environment-variable-based filter evaluated by the rules engine. Ensure the filter is present in the YAML manifest, not hardcoded in the hook.
+
+**SDK-specific MCP considerations are critical** — Claude SDK auto-loading, OpenAI strict function-calling limitations, and Claude SDK strictMcpConfig requirements all affect symbiont integration success. Test against target SDK behavior patterns, not just generic MCP specifications.

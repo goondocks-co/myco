@@ -24,6 +24,7 @@ import { resolve } from 'node:path';
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { epochSeconds, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 import { getDatabase } from '@myco/db/client.js';
 import {
   insertCandidate, getCandidate, listCandidates, updateCandidate, deleteCandidate,
@@ -560,14 +561,15 @@ export function createSkillTools(deps: VaultToolDeps) {
 
   const vaultSkillRecords = tool(
     'vault_skill_records',
-    'Read, update, and delete skill records (materialized skills on disk). Supports list, get, update, and delete actions. The get action includes the full SKILL.md file content.',
+    'Read, update, and delete skill records (materialized skills on disk). Supports list, get, update, and delete actions. The get action includes the full SKILL.md file content. For update, at least one mutating field (status, generation, source_ids, description, or properties) is required — calls with only {action, id} are rejected to prevent silent no-op updates.',
     {
       action: z.enum(['list', 'get', 'update', 'delete']).describe('Action to perform'),
       id: z.string().optional().describe('Skill record ID or name (required for get/update/delete)'),
-      status: z.enum(['active', 'stale', 'retired']).optional().describe('Filter by status'),
+      status: z.enum(['active', 'stale', 'retired']).optional().describe('Filter by status or new status (for update)'),
       generation: z.number().optional().describe('New generation number (for update)'),
       source_ids: z.string().optional().describe('JSON array of source IDs (for update)'),
       description: z.string().optional().describe('Updated description (for update)'),
+      properties: z.string().optional().describe('JSON-encoded object of properties to MERGE into the existing properties (for update). Example: \'{"last_verified_at": 1776580022}\'. Existing keys not included in the payload are preserved; included keys overwrite. Used by skill-evolve to persist watermarks like last_assessed_at, knowledge_watermark, last_verified_at, last_classification.'),
       limit: z.number().optional().describe('Maximum records to return (for list)'),
     },
     async (args) => {
@@ -599,9 +601,50 @@ export function createSkillTools(deps: VaultToolDeps) {
 
         case 'update': {
           if (!args.id) return textResult({ error: 'id is required for update action' });
+          // Structural guard: reject no-op updates so silent-success bugs can't
+          // accumulate. Callers that only bump updated_at should not use this path.
+          const hasMutatingField = args.status !== undefined
+            || args.generation !== undefined
+            || args.source_ids !== undefined
+            || args.description !== undefined
+            || args.properties !== undefined;
+          if (!hasMutatingField) {
+            return textResult({
+              error: 'update action requires at least one mutating field (status, generation, source_ids, description, or properties). Calls with only {action, id} are rejected to prevent silent no-op updates.',
+            });
+          }
+
           // Resolve by id or name
           const existing = getSkillRecord(args.id) ?? getSkillRecordByName(args.id);
           if (!existing) return textResult({ error: `Skill record not found: ${args.id}` });
+
+          // Shallow-merge incoming properties into existing so multiple callers
+          // (assess, verify) can each write distinct keys without clobbering.
+          let mergedProperties: string | undefined;
+          if (args.properties !== undefined) {
+            let incoming: Record<string, unknown>;
+            try {
+              const parsed = JSON.parse(args.properties);
+              if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                return textResult({ error: 'properties must be a JSON-encoded object (not null, array, or primitive).' });
+              }
+              incoming = parsed as Record<string, unknown>;
+            } catch (err) {
+              return textResult({ error: `properties is not valid JSON: ${errorMessage(err)}` });
+            }
+            let existingProps: Record<string, unknown> = {};
+            try {
+              const parsedExisting = JSON.parse(existing.properties || '{}');
+              if (parsedExisting && typeof parsedExisting === 'object' && !Array.isArray(parsedExisting)) {
+                existingProps = parsedExisting as Record<string, unknown>;
+              }
+            } catch (err) {
+              // Loud about corrupt stored properties so we don't silently
+              // wipe data on the next merge.
+              console.warn(`[vault_skill_records] Skill ${existing.id} has unparseable properties; treating as empty for merge. Error: ${errorMessage(err)}`);
+            }
+            mergedProperties = JSON.stringify({ ...existingProps, ...incoming });
+          }
 
           const now = epochSeconds();
           const updated = updateSkillRecord(existing.id, {
@@ -609,6 +652,7 @@ export function createSkillTools(deps: VaultToolDeps) {
             ...(args.generation !== undefined ? { generation: args.generation } : {}),
             ...(args.source_ids !== undefined ? { source_ids: args.source_ids } : {}),
             ...(args.description !== undefined ? { description: args.description } : {}),
+            ...(mergedProperties !== undefined ? { properties: mergedProperties } : {}),
             updated_at: now,
           });
           if (!updated) return textResult({ error: `Failed to update skill record: ${existing.id}` });

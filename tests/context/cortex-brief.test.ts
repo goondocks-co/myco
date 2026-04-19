@@ -240,7 +240,7 @@ describe('buildCortexInstructionsInput', () => {
     expect(result.instruction).toContain('Current digest says the Cortex rollout is in progress');
     expect(result.instruction).toContain('## Recent sessions');
     expect(result.instruction).toContain('Cortex instructions follow-up');
-    expect(result.instruction).toContain('## Recent spores');
+    expect(result.instruction).toContain('## Recent decision spores');
     expect(result.instruction).toContain('static retrieval boilerplate');
     expect(result.instruction).toContain('## Active plans');
     expect(result.instruction).toContain('Finish Cortex instruction refresh');

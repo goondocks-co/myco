@@ -9,11 +9,11 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Safely Versioning the Myco Vault SQLite Schema
 
-The Myco vault is a SQLite database at `.myco/vault.db`. Its schema evolves through a numbered migration chain — each version is an incremental step applied on top of the previous one. This matters because vaults are long-lived: users have real sessions, spores, and graph data that must survive every upgrade. Breaking the chain means breaking their data.
+The Myco vault is a SQLite database at `.myco/myco.db`. Its schema evolves through a numbered migration chain — each version is an incremental step applied on top of the previous one. This matters because vaults are long-lived: users have real sessions, spores, and graph data that must survive every upgrade. Breaking the chain means breaking their data.
 
 ## Prerequisites
 
-- Know which schema version is current. Check `SCHEMA_VERSION` in the schema module (usually `packages/daemon/src/vault/schema.ts` or equivalent).
+- Know which schema version is current. Check `SCHEMA_VERSION` in the schema module (`packages/myco/src/db/schema.ts`).
 - Know exactly what you're adding — table name, column names and types, constraints, indexes.
 - Understand whether the change needs a **backfill** (populating existing rows after adding a column) or is append-only.
 
@@ -22,7 +22,7 @@ The Myco vault is a SQLite database at `.myco/vault.db`. Its schema evolves thro
 ### 1. Find the schema file and current version
 
 ```bash
-grep -r "SCHEMA_VERSION" packages/daemon/src --include="*.ts" -l
+grep -r "SCHEMA_VERSION" packages/myco/src --include="*.ts" -l
 ```
 
 Open that file. You'll see:
@@ -113,7 +113,7 @@ Backfills must complete before `currentVersion` advances — never split DDL and
 The migration runner reads and writes `PRAGMA user_version` (or a `meta` table row) to know which version the vault is currently at. Confirm the runner pattern:
 
 ```bash
-grep -r "user_version\|schemaVersion\|meta.*version" packages/daemon/src --include="*.ts"
+grep -r "user_version\|schemaVersion\|meta.*version" packages/myco/src --include="*.ts"
 ```
 
 Most commonly you'll see something like:
@@ -131,15 +131,15 @@ Make sure the final `PRAGMA user_version = N` assignment uses the constant, not 
 Run the daemon against a fresh vault to verify the schema creates correctly from zero:
 
 ```bash
-rm -rf .myco/vault.db && pnpm dev
+rm -rf .myco/myco.db && pnpm dev
 ```
 
 Then test against an existing vault to verify the migration applies cleanly. The easiest way is to temporarily reduce `user_version` in a test vault:
 
 ```bash
-sqlite3 .myco/vault.db "PRAGMA user_version = N-1;"
+sqlite3 .myco/myco.db "PRAGMA user_version = N-1;"
 pnpm dev
-sqlite3 .myco/vault.db "PRAGMA user_version; .schema your_new_table"
+sqlite3 .myco/myco.db "PRAGMA user_version; .schema your_new_table"
 ```
 
 Confirm the version advanced and the new table/column exists.

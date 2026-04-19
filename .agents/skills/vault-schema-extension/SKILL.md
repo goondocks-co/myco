@@ -9,12 +9,12 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Vault Schema and Data Layer Extension
 
-Myco stores all project intelligence in a local SQLite file (`.myco/vault.db`) and mirrors the schema to Cloudflare D1 for team sync. Every new feature that persists data requires a versioned migration block, a query module, and — depending on the feature — an FTS5 index and D1 alignment. Schema versions progress monotonically (v6→v7→v8→v9→…); each version is a self-contained, idempotent block in the migration runner.
+Myco stores all project intelligence in a local SQLite file (`.myco/myco.db`) and mirrors the schema to Cloudflare D1 for team sync. Every new feature that persists data requires a versioned migration block, a query module, and — depending on the feature — an FTS5 index and D1 alignment. Schema versions progress monotonically (v6→v7→v8→v9→…); each version is a self-contained, idempotent block in the migration runner.
 
 ## Prerequisites
 
 - Know what data needs to be stored and how it relates to existing tables (`sessions`, `spores`, `entities`, `edges`, etc.)
-- Identify the current `user_version` — check `src/db/migrations.ts` or run `PRAGMA user_version;` against `.myco/vault.db`
+- Identify the current `user_version` — check `src/db/migrations.ts` or run `PRAGMA user_version;` against `.myco/myco.db`
 - Decide upfront whether the table needs FTS5 (required if the intelligence agent will keyword-search it) and D1 alignment (required if the cloud MCP server queries it)
 
 ## Procedure A: Adding a New Table
@@ -352,7 +352,7 @@ db.exec(`
 After adding an index to production, verify the query plan with `EXPLAIN QUERY PLAN`:
 
 ```bash
-sqlite3 .myco/vault.db "EXPLAIN QUERY PLAN SELECT * FROM sessions ORDER BY created_at DESC LIMIT 50;"
+sqlite3 .myco/myco.db "EXPLAIN QUERY PLAN SELECT * FROM sessions ORDER BY created_at DESC LIMIT 50;"
 # Should show "USING INDEX idx_sessions_created_at", not "SCAN sessions"
 ```
 

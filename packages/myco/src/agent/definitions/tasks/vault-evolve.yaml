@@ -262,67 +262,77 @@ phases:
     reasoningLevel: default
     dependsOn: [consolidate]
     prompt: |
-      Assess current digest state and gather material for tier updates.
-      The 3 digest tier phases run in parallel after you — your summary
-      is their primary input. Be thorough.
+      Gather material for AT MOST ONE digest tier update per run. The
+      rotation decision is made by the `vault_read_digest` tool, not
+      by you — the tool returns which tier needs attention (or tells
+      you to skip). Over 3 runs every tier gets one deep pass.
 
-      ## Step 1: Check current state (budget: 2 turns)
+      Total budget: {{max_turns}} turns.
 
-      Call `vault_read_digest` (no tier param) to see current digest state.
-      Note each tier's `generated_at` timestamp — this tells you how fresh
-      each tier is. Review the prior phase results (in your context):
-      - How many spores were created/superseded?
-      - How many entities/edges were added?
-      - Did consolidate or graph act on externally-created spores or entities?
+      ## Step 1: Get the rotation decision (1 turn)
 
-      If changes are minor (< 3 new spores, 0 entity changes), call
-      `vault_report` with action "skip" and reason explaining why the
-      current digest is still sufficient. STOP.
+      Call `vault_read_digest` with:
+        pick: "rotate_oldest"
+        min_staleness_seconds: 1800
 
-      ## Step 2: Gather new material (budget: 5 turns)
+      The tool returns one of two shapes:
 
-      Search for material relevant to what changed:
-      1. Call `vault_search_semantic` with themes from newly created/superseded
-         spores and new entity names
-      2. Call `vault_spores` to see recently created observations
-      3. Call `vault_sessions` for recent session context
+      **Skip shape** — `{mode:"rotate_oldest", skip:true, reason, all_tiers}`.
+      Every tier was generated within the last 30 minutes. Call
+      `vault_report` with action "skip" passing the reason through.
+      STOP — do not run steps 2-3.
 
-      ## Step 3: Produce detailed findings
+      **Rotate shape** — `{mode:"rotate_oldest", selected_tier,
+      selected_generated_at, selected_content, rotation_reason, all_tiers}`.
+      Proceed to step 2, scoped to `selected_tier`.
 
-      Your final response is critical — the per-tier phases see it as their
-      primary context (they cannot call vault_spores or vault_sessions).
-      Structure your summary as:
+      ## Step 2: Gather material for `selected_tier` (budget: half
+      of remaining)
 
-      **New material to integrate:**
-      - List each new insight, decision, pattern, gotcha with enough detail
-        that a tier writer can incorporate it without re-searching
-      - Include specific spore content, not just "3 new spores were created"
+      Scope the search to what belongs at the selected tier:
+      - **1500 (executive briefing):** only critical decisions,
+        reversals, state-of-system changes.
+      - **5000 (deep onboarding):** trade-offs, patterns, active
+        decisions, unresolved gotchas.
+      - **10000 (full archive):** any new content worth preserving.
 
-      **Themes and connections:**
-      - What overarching themes connect the new material?
-      - What existing digest sections are affected?
+      Use `vault_search_semantic` for themes from new/superseded spores,
+      `vault_spores` for specific content, `vault_sessions` for recent
+      session context. Make each call count — do not repeatedly search
+      for variations of the same theme. Accept "good enough" findings
+      and move on.
 
-      **Per-tier freshness and guidance:**
-      For each tier, state whether it should UPDATE or SKIP based on both
-      the volume of new material AND the tier's `generated_at` freshness:
-      - A tier written < 30 minutes ago with only minor changes → SKIP
-      - A tier written hours ago or with significant changes → UPDATE
-      - Larger tiers (10000) tolerate more frequent updates since
-        they have room for incremental additions
-      - Smaller tiers (1500) should only update for material that
-        genuinely changes the executive picture
+      ## Step 3: Produce findings
 
-      Per-tier directives:
-      - 10000: UPDATE/SKIP + what to add (any new content)
-      - 5000: UPDATE/SKIP + what to add (trade-offs and patterns)
-      - 1500: UPDATE/SKIP + what to add (only critical changes)
+      Your final response is the per-tier phases' primary context
+      (they cannot call vault_spores or vault_sessions). Structure it:
+
+      **Chosen tier for this run: <selected_tier>**
+      Include the rotation_reason verbatim from the tool so readers
+      can audit the decision.
+
+      **New material to integrate (scoped to the chosen tier):**
+      - List each insight with enough detail that the tier writer can
+        incorporate it without re-searching
+      - Include specific spore content, not just spore counts
+
+      **Themes and connections** relevant to the chosen tier.
+
+      **Per-tier directives** — mark exactly the `selected_tier` as
+      UPDATE, the other two as SKIP, and include the tool's
+      rotation_reason in the UPDATE line:
+      - 10000: UPDATE or SKIP + one-line reason
+      - 5000: UPDATE or SKIP + one-line reason
+      - 1500: UPDATE or SKIP + one-line reason
+
+      Tools available: {{phase_tools}}.
     tools:
       - vault_spores
       - vault_sessions
       - vault_search_semantic
       - vault_read_digest
       - vault_report
-    maxTurns: 10
+    maxTurns: 12
     required: true
 
   - name: digest-10000

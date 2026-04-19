@@ -31,7 +31,7 @@ For foundational patterns — form lifecycle triad, `SectionSaveRow`, `useCallba
 
 - Read `daemon-ui-development` for the base form lifecycle triad before adding any new settings section
 - Know the `myco.yaml` config schema for the feature area you're working on
-- Daemon UI source: `packages/daemon/src/ui/`
+- Daemon UI source: `packages/myco/ui/src/`
 - Config schema: `src/config/schema.ts`
 - Config save handler: `src/daemon/routes/config.ts` (or equivalent)
 - ESLint `react-hooks/exhaustive-deps` must be enabled and treated as an error
@@ -166,7 +166,7 @@ Use when a settings section requires the user to select a **provider** and then 
 ### Component Structure
 
 ```tsx
-// packages/daemon/src/ui/components/ProviderModelSelector.tsx
+// packages/myco/ui/src/components/providers/ProviderModelSelector.tsx
 interface ProviderModelSelectorProps {
   providers: Provider[];
   selectedProvider: string;

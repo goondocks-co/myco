@@ -11,7 +11,7 @@ prompt: >-
   source material. Stage the skill, validate it, then finalize it.
 isDefault: false
 reasoningLevel: default
-maxTurns: 30
+maxTurns: 32
 timeoutSeconds: 900
 schedule:
   enabled: false
@@ -177,9 +177,22 @@ phases:
          staging path's dedup gate already ran on your description;
          this is a sanity check on the procedural content itself.
 
-      7. **Accuracy:** Spot-check 2-3 specific claims against the
-         vault. Use vault_search_fts to verify file paths and
-         function names mentioned in the skill.
+      7. **Accuracy (codebase-grounded):** Identify the 3-5 most
+         LOAD-BEARING concrete claims — paths, function/class names,
+         patterns the procedure depends on — and verify each against
+         the actual source:
+         - **Path claim** → `fs_read` (narrow window). ENOENT or
+           unrelated content = FAIL.
+         - **Identifier claim** → `code_grep` with a path+glob filter.
+           Zero hits in the expected location = FAIL.
+         - **Behavior claim** → `code_grep` for signature patterns
+           that would implement it. Zero hits = FAIL.
+         Budget 1-2 tool calls per claim.
+
+         If any load-bearing claim FAILS, treat as a criterion failure
+         and re-stage with corrected content. Do not finalize a skill
+         whose load-bearing paths can't be verified against the
+         current codebase — that's how hallucinated paths ship.
 
       ## If criteria fail
 
@@ -216,9 +229,10 @@ phases:
       - vault_skill_records
       - vault_skill_candidates
       - vault_spores
-      - vault_search_fts
       - vault_report
-    maxTurns: 15
+      - fs_read
+      - code_grep
+    maxTurns: 18
     required: true
     dependsOn:
       - draft

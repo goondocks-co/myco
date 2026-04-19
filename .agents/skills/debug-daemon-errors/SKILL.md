@@ -14,7 +14,7 @@ The Myco daemon is a long-running process that hosts multiple subsystems: a Powe
 ## Prerequisites
 
 - Daemon is running (or you have daemon logs from a failed run)
-- You have access to the SQLite vault at `.myco/vault.db`
+- You have access to the SQLite vault at `.myco/myco.db`
 - You can restart the daemon process to confirm a fix
 
 ---
@@ -90,7 +90,7 @@ SQLite enforces FK constraints at statement time, not transaction commit time. I
 
 **Trace:** Identify the parent–child relationship from the error. Check the schema:
 ```bash
-sqlite3 .myco/vault.db ".schema"
+sqlite3 .myco/myco.db ".schema"
 ```
 
 Look for `REFERENCES parent_table(id)` on the table mentioned in the error.

@@ -54,6 +54,42 @@ export interface SearchOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Query sanitization
+// ---------------------------------------------------------------------------
+
+/**
+ * Sanitize a free-form search string for FTS5 MATCH.
+ *
+ * FTS5 MATCH treats several characters as operators: `-` means NOT, `:` is
+ * a column filter, `"..."` is a literal phrase, `+` means must-match, `(`/`)`
+ * group, `*` is a prefix wildcard, and unquoted hyphens in identifiers
+ * (`skill-evolve-inventory`) or slashes in paths (`packages/myco/src/loader.ts`)
+ * are routinely rejected as syntax errors.
+ *
+ * Natural-language callers (agents querying the vault, users typing in a UI
+ * search box) don't know or care about FTS5 syntax — they expect their
+ * string to "just work." This helper tokenizes on whitespace and wraps any
+ * token containing non-word characters in double quotes, turning it into
+ * a literal phrase search. Plain alphanumeric/underscore tokens are left
+ * unquoted so they AND together with their neighbours normally.
+ *
+ * Examples:
+ *   "packages/myco/src/loader.ts tools"  → "\"packages/myco/src/loader.ts\" tools"
+ *   "skill-evolve merge_candidates"       → "\"skill-evolve\" merge_candidates"
+ *   "plain words"                         → "plain words"
+ *
+ * Callers that DO want FTS5 operator semantics should skip this helper
+ * and pass their own pre-formed MATCH expression to `fullTextSearch`.
+ */
+export function sanitizeFtsQuery(query: string): string {
+  return query
+    .split(/\s+/)
+    .filter((tok) => tok.length > 0)
+    .map((tok) => /^[\w]+$/.test(tok) ? tok : `"${tok.replace(/"/g, '""')}"`)
+    .join(' ');
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 

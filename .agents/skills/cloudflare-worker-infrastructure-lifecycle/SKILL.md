@@ -6,12 +6,14 @@ description: |
   Worker. Covers: initial Worker deployment with KV namespace provisioning
   (idempotency pattern), Wrangler upgrade path engineering (5 documented
   failure modes), MCP auth token lifecycle and rotation via Workers KV,
-  Collective Worker deployment with correct config scoping, and operational
-  safety patterns (cron validation, fanout timeouts, build script integrity,
-  UI package distribution). Activate this skill even if the user doesn't
-  explicitly mention Cloudflare — any task touching wrangler.toml, D1
-  bindings, Workers KV, or packages/myco-team or packages/myco-collective
-  falls in this domain. Supersedes the stale setup-cloudflare-team-sync skill.
+  Collective Worker deployment with correct config scoping, D1 schema
+  synchronization between local vault and Worker deployments, Collective
+  operational procedures (verification protocol, identity checking, UI design
+  system compliance), and operational safety patterns (cron validation, fanout
+  timeouts, build script integrity, UI package distribution). Activate this
+  skill even if the user doesn't explicitly mention Cloudflare — any task
+  touching wrangler.toml, D1 bindings, Workers KV, or packages/myco-team or
+  packages/myco-collective falls in this domain.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -290,7 +292,114 @@ async function ensureUiBuild(workerDir: string) {
 
 Add `src/ui/` to `.npmignore` and ensure `dist/ui/` is NOT in `.gitignore`.
 
-## Procedure E: Operational Safety Patterns
+## Procedure E: D1 Schema Management and Semantic Graph Impact
+
+### Semantic Graph Retirement
+
+As of 2026-04-18, Myco's semantic graph has been retired from the schema. This affects D1 schema synchronization between local vault and Worker deployments:
+
+**Removed tables:**
+- `semantic_entities`
+- `semantic_entity_types`
+- `entity_mentions`
+- `semantic_relationships`
+
+**Impact on Worker deployments:**
+1. **Team-sync Worker**: No longer needs to sync semantic graph tables to D1
+2. **Migration scripts**: Remove semantic graph CREATE TABLE statements from new D1 migrations
+3. **Backfill operations**: Exclude semantic graph tables from BACKFILL_TABLES array
+
+**Schema sync checklist post-retirement:**
+- Verify D1 migration files don't reference semantic graph tables
+- Update `BACKFILL_TABLES` to exclude retired tables (note: `entity_mentions` lacks `id` column so was already excluded)
+- Remove semantic graph indexes from D1 schema files
+- Update Worker-side queries to focus on lineage-only operations
+
+### D1 Schema Synchronization
+
+When deploying Workers that use D1, ensure local vault schema matches Worker D1 schema:
+
+1. **Generate migration file** from local vault schema changes
+2. **Apply to D1** via `wrangler d1 migrations apply`
+3. **Verify schema alignment** via `wrangler d1 execute --command "SELECT name FROM sqlite_master WHERE type='table'"`
+
+**Migration timing**: D1 migrations apply on first request after deploy, not at deploy time. Account for this in health checks and startup procedures.
+
+## Procedure F: Collective Operational Procedures
+
+### Verification Protocol
+
+Run this sequence after every Collective deploy, upgrade, or token change. **CRITICAL:** Run `make build` before any upgrade to ensure the compiled Collective UI bundle and Worker code are fresh.
+
+```bash
+# Step 0: Build the UI and Worker (MUST precede upgrade)
+make build
+
+# Step 1: CLI health check
+myco collective status
+
+# Step 2: HTTP health endpoint
+curl https://<worker-url>/health
+
+# Step 3: Identity verification (critical)
+curl -H "Authorization: Bearer <token>" \
+  https://<worker-url>/api/auth/verify
+```
+
+The `/api/auth/verify` response must include a deployment-specific name:
+
+```json
+{ "collective_name": "OSS Collective" }
+```
+
+If `collective_name` returns the generic `"Myco Collective"`, the Worker is running with default branding. The `COLLECTIVE_NAME` environment variable was not set, or the Worker predates the branding feature and needs an upgrade:
+
+```bash
+# Build first to compile fresh UI and Worker
+make build
+
+# Upgrade cycle
+wrangler deploy
+wrangler secret put COLLECTIVE_NAME   # enter "OSS Collective" (or your name)
+
+# Re-verify — must see deployment-specific name
+curl -H "Authorization: Bearer <token>" https://<worker-url>/api/auth/verify
+```
+
+**Deploy → build → upgrade → verify** is the required cycle. Running verify before the upgrade gives stale results from the cached Worker bundle. Running upgrade without `make build` deploys stale compiled assets.
+
+### MCP Tools and Local Dev Proxy
+
+**collective_* vs org_* MCP tool distinctions:**
+- `collective_*` tools operate on the Collective Worker (cross-project aggregation)
+- `org_*` tools operate on local org-level data structures
+
+**Local dev proxy setup:**
+```bash
+make collective-ui-dev
+```
+
+This starts a Vite dev server proxying to the live Collective Worker for API calls while serving local UI assets for hot-reload development.
+
+**Design system compliance for Collective UI:**
+- Follow the same Tactile Research design system as the main daemon UI
+- Use consistent typography scales (Inter, JetBrains Mono, Fraunces)
+- Maintain color palette alignment (sage, ochre, terracotta)
+- Test responsive behavior across viewport sizes
+
+### V1 Integration Gate Checklist
+
+Before marking any Collective integration as production-ready:
+
+1. **Auth flow verification**: Admin token rotation works end-to-end
+2. **Heartbeat validation**: Cron triggers fire and fanout completes
+3. **UI build integrity**: Pre-built assets ship without dev dependencies
+4. **Identity branding**: `COLLECTIVE_NAME` displays correctly in verify endpoint
+5. **Config scoping**: Home-scoped vs project-scoped config files in correct locations
+6. **MCP tool surface**: All `collective_*` tools respond correctly
+7. **Upgrade path testing**: Full deploy → build → upgrade → verify cycle
+
+## Procedure G: Operational Safety Patterns
 
 ### Fanout timeout
 
@@ -373,3 +482,6 @@ A missing flag causes runtime errors on the first request, not at deploy time. A
 | 8 | Token not threaded through upgrade template renderer → absent post-upgrade | Enumerate all tokens in upgrade checklist; pass each explicitly |
 | 9 | `node` bare binary fails in nested spawns under nvm/volta | Use `process.execPath` or inject node's bin directory into PATH |
 | 10 | Shipping `src/ui/` in npm package → 126 MB install + CI failure | Ship only `dist/ui/`; short-circuit `ensureUiBuild()` on pre-built assets |
+| 11 | Semantic graph tables in D1 migrations after retirement | Remove semantic graph CREATE TABLE statements from new D1 migrations |
+| 12 | `make build` not run before Collective upgrade → stale UI deploys | Always run `make build` immediately before `wrangler deploy` |
+| 13 | Generic collective name in verify endpoint → branding not configured | Set `COLLECTIVE_NAME` environment variable via `wrangler secret put` |
