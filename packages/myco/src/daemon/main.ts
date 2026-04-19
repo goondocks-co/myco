@@ -671,7 +671,7 @@ export async function main(): Promise<void> {
   // External log ingestion: allows MCP server (separate process) to write through the daemon logger
   server.registerRoute('POST', '/api/log', createLogIngestionHandler(logger));
 
-  server.registerRoute('GET', '/api/models', async (req) => handleGetModels(req));
+  server.registerRoute('GET', '/api/models', async (req) => handleGetModels(req, logger));
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir, progressTracker }, req.body));
 
   // --- Update routes ---
@@ -795,7 +795,7 @@ export async function main(): Promise<void> {
   });
 
   // --- Provider detection & testing ---
-  server.registerRoute('GET', '/api/providers', async () => handleGetProviders());
+  server.registerRoute('GET', '/api/providers', async () => handleGetProviders(logger));
   server.registerRoute('POST', '/api/providers/test', async (req) => handleTestProvider(req));
   server.registerRoute('GET', '/api/providers/secrets', async () => handleGetProviderSecrets(vaultDir));
   server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(vaultDir, req));

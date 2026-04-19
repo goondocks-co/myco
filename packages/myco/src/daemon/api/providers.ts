@@ -24,6 +24,7 @@ import {
   getRemoteProviderApiKey,
 } from './models.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
+import type { DaemonLogger } from '../logger.js';
 import { PROVIDER_TYPES, type RuntimeId, type ProviderType } from '@myco/agent/types.js';
 import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider.js';
 
@@ -69,13 +70,13 @@ interface TestResult {
  * Uses Promise.allSettled for parallel detection with timeouts so one
  * slow/unavailable provider doesn't block the others.
  */
-export async function handleGetProviders(): Promise<RouteResponse> {
+export async function handleGetProviders(logger?: DaemonLogger): Promise<RouteResponse> {
   const detectionPlan: Array<{
     detect: () => Promise<ProviderInfo>;
     fallback: ProviderInfo;
   }> = [
     {
-      detect: () => detectAnthropic(),
+      detect: () => detectAnthropic(logger),
       fallback: { type: 'anthropic', runtime: 'claude-sdk', available: false, models: [] },
     },
     {
@@ -87,11 +88,11 @@ export async function handleGetProviders(): Promise<RouteResponse> {
       fallback: { type: 'lmstudio', runtime: 'claude-sdk', available: false, baseUrl: LmStudioBackend.DEFAULT_BASE_URL, models: [] },
     },
     {
-      detect: () => detectRemoteProviderInfo('openai', DEFAULT_OPENAI_URL),
+      detect: () => detectRemoteProviderInfo('openai', DEFAULT_OPENAI_URL, logger),
       fallback: { type: 'openai', runtime: 'openai-agents', available: false, authConfigured: false, baseUrl: DEFAULT_OPENAI_URL, models: [] },
     },
     {
-      detect: () => detectRemoteProviderInfo('openrouter', DEFAULT_OPENROUTER_URL),
+      detect: () => detectRemoteProviderInfo('openrouter', DEFAULT_OPENROUTER_URL, logger),
       fallback: { type: 'openrouter', runtime: 'openai-agents', available: false, authConfigured: false, baseUrl: DEFAULT_OPENROUTER_URL, models: [] },
     },
     {
@@ -200,7 +201,7 @@ async function detectLocalProviderInfo(
   };
 }
 
-async function detectAnthropic(): Promise<ProviderInfo> {
+async function detectAnthropic(logger?: DaemonLogger): Promise<ProviderInfo> {
   // Anthropic is always available — the SDK handles auth internally via OAuth,
   // API key, Bedrock, Vertex, or Foundry. The daemon can't reliably detect
   // which method is in use since env vars aren't always inherited.
@@ -233,7 +234,7 @@ async function detectAnthropic(): Promise<ProviderInfo> {
     // operator can diagnose a missing key / network block without SDK
     // debug logs.
     const detail = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[providers] Anthropic model list unavailable: ${detail}\n`);
+    logger?.warn('providers.anthropic.models-unavailable', 'Anthropic model list unavailable', { error: detail });
   }
   anthropicModelsCache = { ts: now, models };
   return { type: 'anthropic', runtime: 'claude-sdk', available: true, models };
@@ -242,6 +243,7 @@ async function detectAnthropic(): Promise<ProviderInfo> {
 async function detectRemoteProviderInfo(
   type: 'openai' | 'openrouter',
   baseUrl: string,
+  logger?: DaemonLogger,
 ): Promise<ProviderInfo> {
   const authConfigured = Boolean(getRemoteProviderApiKey(type));
   let models: string[] = [];
@@ -256,7 +258,7 @@ async function detectRemoteProviderInfo(
     } catch (err) {
       available = false;
       const detail = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[providers] ${type} model list unavailable: ${detail}\n`);
+      logger?.warn(`providers.${type}.models-unavailable`, `${type} model list unavailable`, { error: detail });
     }
   }
 

@@ -9,6 +9,7 @@
  */
 
 import type { RunRow } from '@myco/db/queries/runs.js';
+import type { DaemonLogger } from '../logger.js';
 import { transformProviderOverrides } from './schemas/execution-overrides-traversal.js';
 
 export interface PhaseCheckpointSummary {
@@ -26,6 +27,7 @@ export interface PhaseCheckpointSummary {
  */
 export function buildPhaseCheckpointSummary(
   checkpointsRaw: string | null,
+  logger?: DaemonLogger,
 ): PhaseCheckpointSummary[] {
   if (!checkpointsRaw) return [];
   try {
@@ -52,7 +54,7 @@ export function buildPhaseCheckpointSummary(
     // detail still renders, but surface the parse error so an operator can
     // distinguish "no phases yet" from "blob was truncated mid-write".
     const detail = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[run-serializer] checkpoints JSON parse failed: ${detail}\n`);
+    logger?.warn('run-serializer.checkpoints-parse-failed', 'checkpoints JSON parse failed', { error: detail });
     return [];
   }
 }
@@ -100,6 +102,12 @@ export interface SerializeRunOptions {
    * skip; evaluation child rows attach it, plain run rows do not.
    */
   duration_ms?: number | null;
+  /**
+   * Daemon logger — when provided, checkpoint JSON corruption is logged
+   * through it instead of being swallowed. Optional so MCP / test call
+   * sites that don't have a logger can still serialize rows.
+   */
+  logger?: DaemonLogger;
 }
 
 /**
@@ -114,6 +122,7 @@ export function serializeRun(run: RunRow, opts: SerializeRunOptions = {}) {
     includePhaseCheckpoints = true,
     writeIntents,
     duration_ms,
+    logger,
   } = opts;
 
   const base = {
@@ -157,7 +166,7 @@ export function serializeRun(run: RunRow, opts: SerializeRunOptions = {}) {
         }
       : {}),
     ...(includePhaseCheckpoints
-      ? { phase_checkpoints: buildPhaseCheckpointSummary(run.checkpoints) }
+      ? { phase_checkpoints: buildPhaseCheckpointSummary(run.checkpoints, logger) }
       : {}),
     ...(writeIntents !== undefined && writeIntents !== null
       ? { write_intents: writeIntents }

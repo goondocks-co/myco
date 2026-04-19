@@ -255,7 +255,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     const runs = listRuns({ ...filterOpts, limit, offset });
     const total = countRuns(filterOpts);
 
-    return { body: { runs: runs.map((run) => serializeRun(run)), total, offset, limit } };
+    return { body: { runs: runs.map((run) => serializeRun(run, { logger })), total, offset, limit } };
   }
 
   /**
@@ -278,6 +278,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
         run: serializeRun(run, {
           writeIntents: { total, by_tool: byTool },
           duration_ms: runDurationMs(run),
+          logger,
         }),
       },
     };
