@@ -13,7 +13,8 @@ import { getUnprocessedBatches, listBatchesBySession } from '@myco/db/queries/ba
 import { getSpore, listSpores } from '@myco/db/queries/spores.js';
 import { getSession, listSessions, getActiveSessionIds } from '@myco/db/queries/sessions.js';
 import { getStatesForAgent } from '@myco/db/queries/agent-state.js';
-import { fullTextSearch, hydrateSearchResults } from '@myco/db/queries/search.js';
+import { fullTextSearch, hydrateSearchResults, sanitizeFtsQuery } from '@myco/db/queries/search.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
 import { textResult, type VaultToolDeps } from './types.js';
 import {
@@ -208,23 +209,36 @@ export function createReadTools(deps: VaultToolDeps) {
 
   const vaultSearchFts = tool(
     'vault_search_fts',
-    'Full-text search across sessions, spores, prompt batches, and activities using FTS5. Best for finding exact keywords, file paths, function names, and specific text. Results from in-flight sessions are hidden by default so intelligence tasks only see settled work; pass include_active=true to bypass.',
+    'Full-text search across sessions, spores, prompt batches, and activities using FTS5. Best for finding exact keywords, file paths, function names, and specific text. You can pass natural-language queries containing hyphens, slashes, dots, etc. — the tool auto-quotes tokens with non-word characters so file paths and hyphenated identifiers (e.g., "skill-evolve-inventory", "packages/myco/src/loader.ts") are treated as literal phrases instead of being rejected by FTS5 MATCH syntax. Plain alphanumeric/underscore tokens are left unquoted so they AND together normally. Results from in-flight sessions are hidden by default so intelligence tasks only see settled work; pass include_active=true to bypass.',
     {
-      query: z.string().describe('Search query text'),
+      query: z.string().describe('Search query text. Special characters (hyphens, slashes, dots, colons) are auto-quoted — no manual escaping needed.'),
       type: z.string().optional().describe('Restrict to a result type (session, spore, prompt_batch, activity)'),
       limit: z.number().optional().describe('Maximum number of results to return'),
       include_active: z.boolean().optional().describe('Include results from sessions still in active status (default: false)'),
     },
     async (args) => {
+      const sanitizedQuery = sanitizeFtsQuery(args.query);
       try {
-        const results = fullTextSearch(args.query, {
+        const results = fullTextSearch(sanitizedQuery, {
           type: args.type,
           limit: args.limit ?? DEFAULT_SEARCH_LIMIT,
           includeActive: args.include_active === true,
         });
-        return textResult({ results });
-      } catch {
-        return textResult({ results: [], message: 'Search unavailable' });
+        return textResult({ results, sanitized_query: sanitizedQuery !== args.query ? sanitizedQuery : undefined });
+      } catch (err) {
+        const message = errorMessage(err);
+        let hint: string | undefined;
+        if (/no such table|no such module: fts5/i.test(message)) {
+          hint = 'FTS index missing — the searched table may not have an FTS5 mirror. Check the type parameter.';
+        } else if (/syntax error|malformed MATCH/i.test(message)) {
+          hint = 'FTS5 query syntax rejected. Quote special characters (e.g., wrap file paths in double quotes: "packages/myco/src/loader.ts").';
+        }
+        return textResult({
+          error: `vault_search_fts failed: ${message}${hint ? ` — ${hint}` : ''}`,
+          results: [],
+          query: args.query,
+          type: args.type ?? null,
+        });
       }
     },
     { annotations: { readOnlyHint: true } },
@@ -300,8 +314,22 @@ export function createReadTools(deps: VaultToolDeps) {
           .slice(0, searchLimit);
 
         return textResult({ results: merged });
-      } catch {
-        return textResult({ results: [], message: 'Semantic search unavailable' });
+      } catch (err) {
+        const message = errorMessage(err);
+        let hint: string | undefined;
+        if (/timeout|ETIMEDOUT|AbortError/i.test(message)) {
+          hint = 'Embedding provider timed out. Retry once or reduce query length.';
+        } else if (/ECONNREFUSED|fetch failed|network/i.test(message)) {
+          hint = 'Embedding provider unreachable. Check that the configured provider (Ollama/LM Studio/Anthropic) is running.';
+        } else if (/no such table|no such column/i.test(message)) {
+          hint = 'Vector table missing or schema mismatch. Run `myco rebuild` or check migrations.';
+        }
+        return textResult({
+          error: `vault_search_semantic failed: ${message}${hint ? ` — ${hint}` : ''}`,
+          results: [],
+          query: args.query,
+          namespace: args.namespace ?? null,
+        });
       }
     },
     { annotations: { readOnlyHint: true, openWorldHint: true } },
