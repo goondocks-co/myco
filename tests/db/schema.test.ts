@@ -26,6 +26,14 @@ function indexExists(db: Database, indexName: string): boolean {
   return row.cnt > 0;
 }
 
+/** Helper: check if a trigger exists. */
+function triggerExists(db: Database, triggerName: string): boolean {
+  const row = db.prepare(
+    `SELECT count(*) AS cnt FROM sqlite_master WHERE type = 'trigger' AND name = ?`,
+  ).get(triggerName) as { cnt: number };
+  return row.cnt > 0;
+}
+
 describe('Database schema', () => {
   let db: Database;
 
@@ -657,6 +665,88 @@ describe('Database schema', () => {
         expect(indexExists(db, 'idx_graph_edges_target')).toBe(true);
         expect(indexExists(db, 'idx_graph_edges_type')).toBe(true);
         expect(indexExists(db, 'idx_graph_edges_agent')).toBe(true);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // Schema-drift reconciliation
+    //
+    // Regression guard for the bug observed 2026-04 on a production vault at
+    // schema v21: the log_entries FTS sync triggers (installed by
+    // migrateV2ToV3) had been lost — likely via restore from a pre-v3 dump —
+    // so 141k log rows existed with an empty FTS index and search returned
+    // zero results. Schema version stayed at SCHEMA_VERSION, so the migration
+    // gate did nothing. createSchema() now replays all current-schema DDL
+    // on every call (CREATE ... IF NOT EXISTS throughout) and rebuilds any
+    // FTS index whose sync trigger was just reinstalled.
+    // -----------------------------------------------------------------------
+    describe('schema-drift reconciliation', () => {
+      it('reinstalls dropped FTS sync triggers on the current-version path', () => {
+        createSchema(db);
+        db.prepare('DROP TRIGGER IF EXISTS log_entries_ai').run();
+        db.prepare('DROP TRIGGER IF EXISTS log_entries_ad').run();
+        expect(triggerExists(db, 'log_entries_ai')).toBe(false);
+        expect(triggerExists(db, 'log_entries_ad')).toBe(false);
+
+        createSchema(db);
+
+        expect(triggerExists(db, 'log_entries_ai')).toBe(true);
+        expect(triggerExists(db, 'log_entries_ad')).toBe(true);
+      });
+
+      it('rebuilds the FTS index when its sync trigger was missing before replay', () => {
+        createSchema(db);
+        db.prepare(
+          `INSERT INTO log_entries (timestamp, level, kind, component, message)
+             VALUES (?, ?, ?, ?, ?)`,
+        ).run(new Date().toISOString(), 'info', 'session.start', 'session', 'searchablexyz');
+        db.prepare('DROP TRIGGER IF EXISTS log_entries_ai').run();
+        db.prepare('DROP TRIGGER IF EXISTS log_entries_ad').run();
+        db.prepare(`INSERT INTO log_entries_fts(log_entries_fts) VALUES('delete-all')`).run();
+
+        const beforeMatch = db.prepare(
+          `SELECT COUNT(*) AS n FROM log_entries_fts WHERE log_entries_fts MATCH ?`,
+        ).get('searchablexyz') as { n: number };
+        expect(beforeMatch.n).toBe(0);
+
+        createSchema(db);
+
+        const afterMatch = db.prepare(
+          `SELECT COUNT(*) AS n FROM log_entries_fts WHERE log_entries_fts MATCH ?`,
+        ).get('searchablexyz') as { n: number };
+        expect(afterMatch.n).toBe(1);
+      });
+
+      it('reinstalls dropped secondary indexes on the current-version path', () => {
+        createSchema(db);
+        expect(indexExists(db, 'idx_log_entries_timestamp')).toBe(true);
+        db.prepare('DROP INDEX idx_log_entries_timestamp').run();
+        expect(indexExists(db, 'idx_log_entries_timestamp')).toBe(false);
+
+        createSchema(db);
+
+        expect(indexExists(db, 'idx_log_entries_timestamp')).toBe(true);
+      });
+
+      it('leaves a healthy DB untouched — no spurious rebuilds or re-creations', () => {
+        createSchema(db);
+        const beforeTriggers = db.prepare(
+          `SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name`,
+        ).all() as Array<{ name: string }>;
+        const beforeIndexes = db.prepare(
+          `SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name`,
+        ).all() as Array<{ name: string }>;
+
+        createSchema(db);
+
+        const afterTriggers = db.prepare(
+          `SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name`,
+        ).all() as Array<{ name: string }>;
+        const afterIndexes = db.prepare(
+          `SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name`,
+        ).all() as Array<{ name: string }>;
+        expect(afterTriggers).toEqual(beforeTriggers);
+        expect(afterIndexes).toEqual(beforeIndexes);
       });
     });
   });

@@ -185,6 +185,18 @@ describe('parseOrchestratorPlan', () => {
     expect(plan.reasoning).toMatch(/could not be parsed/i);
   });
 
+  it('surfaces the underlying parser error in the fallback reasoning', () => {
+    // Regression for issue #118 item 2: the catch used to swallow the
+    // parser error, leaving operators with no way to tell whether the
+    // planner produced malformed JSON, wrong shape, or a typo.
+    const phases = [makePhase({ name: 'extract' })];
+    const plan = parseOrchestratorPlan('{"phases": [invalid}', phases);
+    expect(plan.reasoning).toMatch(/could not be parsed/i);
+    // The parenthetical carries the parser's actual complaint — anything
+    // non-empty is fine; we only care that it's no longer swallowed.
+    expect(plan.reasoning).toMatch(/\(.+\)/);
+  });
+
   it('falls back to run-all plan when phases array is missing', () => {
     const response = JSON.stringify({ reasoning: 'all good' }); // no phases field
     const phases = [makePhase({ name: 'extract' })];

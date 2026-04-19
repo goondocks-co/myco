@@ -9,6 +9,7 @@ import {
   CONTENT_HASH_ALGORITHM,
 } from '@myco/constants.js';
 import { tryParseJson } from '@myco/utils/json.js';
+import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
 import { initDatabase, vaultDbPath } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
@@ -21,6 +22,7 @@ import {
   getRun,
   getRunningRunForTask,
   RESUME_STATUS_READY,
+  RESUME_STATUS_SESSION_EXPIRED,
   STATUS_RUNNING,
   STATUS_COMPLETED,
   STATUS_FAILED,
@@ -36,6 +38,7 @@ import { resolveCost } from './cost/index.js';
 import {
   aggregateUsage,
   buildUsageData,
+  isExpiredSessionError,
   parseCheckpointState,
   resolveProviderForResume,
   serializeCheckpointState,
@@ -86,15 +89,18 @@ const TOKEN_BUDGET_PRESSURE_STATUSES = new Set(['warning', 'post_run_pressure'])
 function logTokenBudgetPressure(
   taskName: string,
   usage: RuntimeUsage,
-  provider?: ProviderConfig,
+  provider: ProviderConfig | undefined,
+  logger: RunOptions['logger'],
 ): void {
   const budget = analyzeRuntimeTokenBudget(usage, provider);
   if (!TOKEN_BUDGET_PRESSURE_STATUSES.has(budget.status)) return;
-  console.warn(
-    `[agent] ${taskName} token budget ${budget.status}: ` +
-    `${budget.utilizationPercent}% of ${budget.contextWindowTokens} tokens ` +
-    `at peak request (${budget.peakRequestTotalTokens} tokens)`,
-  );
+  logger?.warn('agent.token-budget-pressure', `${taskName} token budget ${budget.status}`, {
+    task: taskName,
+    status: budget.status,
+    utilizationPercent: budget.utilizationPercent,
+    contextWindowTokens: budget.contextWindowTokens,
+    peakRequestTotalTokens: budget.peakRequestTotalTokens,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -305,11 +311,14 @@ export async function runAgent(
     taskProviderOverride = resolved.taskProvider;
     phaseProviderOverrides = resolved.phaseOverrides;
     for (const conflict of resolved.conflicts) {
-      console.warn(
-        `[agent] Ollama model "${conflict.model}" referenced with conflicting ` +
-        `context_length values [${conflict.values.join(', ')}] — reconciled to ` +
-        `${conflict.resolved} to avoid loading multiple variants. Configure one ` +
-        `value per model to silence this warning.`,
+      options?.logger?.warn(
+        'agent.ollama.context-variant-conflict',
+        `Ollama model "${conflict.model}" referenced with conflicting context_length values — reconciled to ${conflict.resolved}`,
+        {
+          model: conflict.model,
+          values: conflict.values,
+          resolved: conflict.resolved,
+        },
       );
     }
   }
@@ -318,7 +327,11 @@ export async function runAgent(
   const taskAbortController = new AbortController();
   const timeoutMs = config.timeoutSeconds * MS_PER_SECOND;
   const timeoutId = setTimeout(() => {
-    console.warn(`[agent] Run ${runId} exceeded timeout (${config.timeoutSeconds}s), aborting`);
+    options?.logger?.warn('agent.run.timeout', `Run ${runId} exceeded timeout, aborting`, {
+      runId,
+      taskName: config.taskName,
+      timeoutSeconds: config.timeoutSeconds,
+    });
     taskAbortController.abort(new Error(`Agent run timed out after ${config.timeoutSeconds} seconds`));
   }, timeoutMs);
   timeoutId.unref?.();
@@ -430,7 +443,7 @@ export async function runAgent(
     }
 
     clearTimeout(timeoutId);
-    logTokenBudgetPressure(config.taskName, usage, effectiveProvider);
+    logTokenBudgetPressure(config.taskName, usage, effectiveProvider, options?.logger);
     await finalizeOnTaskSuccess({
       taskName: config.taskName,
       agentId,
@@ -483,37 +496,66 @@ export async function runAgent(
     }
     const failedAt = epochSeconds();
 
-    // Log to stderr (daemon may capture) and to structured log
-    console.error(`[agent] Run ${runId} failed: ${errorMessage}`);
+    options?.logger?.error('agent.run.failed', `Run ${runId} failed`, {
+      runId,
+      taskName: config.taskName,
+      error: errorMessage,
+    });
 
     try {
       const usage = aggregateUsage(phaseResults?.map((phase) => phase.usage) ?? []);
-      logTokenBudgetPressure(config.taskName, usage, effectiveProvider);
+      logTokenBudgetPressure(config.taskName, usage, effectiveProvider, options?.logger);
       const costData = phaseResults ? summarizePhaseCosts(phaseResults) : await resolveCost({
         runtime: runtimeId,
         provider: effectiveProvider,
         model: effectiveModel,
         usage,
       });
+
+      // Detect the "expired SDK session" zombie-run pattern: we were
+      // resuming a run whose checkpoint carried a sessionRef, the runtime
+      // crashed without producing any turns, and the error message looks
+      // like an expired/missing session. Marking it `resumable=1, ready`
+      // here would re-enqueue it next scheduler tick and loop forever
+      // (37 zombies accumulated in issue #118). Terminal-mark it instead
+      // and null the checkpoint so nothing else tries to reuse the dead
+      // session id.
+      const hadPriorSession = Boolean(checkpointState.sessionRef)
+        || Object.values(checkpointState.phases).some((phase) => Boolean(phase.sessionRef));
+      const recordedAnyTurns = (usage.requests ?? 0) > 0
+        || (phaseResults?.some((phase) => phase.turnsUsed > 0) ?? false);
+      const sessionExpired = Boolean(options?.resumeRunId)
+        && hadPriorSession
+        && !recordedAnyTurns
+        && isExpiredSessionError(err);
+
+      const accountingUpdate = buildRunAccountingUpdate({
+        runtime: runtimeId,
+        provider: effectiveProvider,
+        model: effectiveModel,
+        checkpointState,
+        usage,
+        costData,
+        phaseResults,
+      });
+      if (sessionExpired) {
+        accountingUpdate.checkpoints = null;
+      }
+
       updateRunStatus(runId, STATUS_FAILED, {
-        resumable: 1,
-        resume_status: RESUME_STATUS_READY,
+        resumable: sessionExpired ? 0 : 1,
+        resume_status: sessionExpired ? RESUME_STATUS_SESSION_EXPIRED : RESUME_STATUS_READY,
         completed_at: failedAt,
         tokens_used: usage.totalTokens ?? phaseResults?.reduce((sum, phase) => sum + phase.tokensUsed, 0) ?? undefined,
         error: errorMessage,
-        ...buildRunAccountingUpdate({
-          runtime: runtimeId,
-          provider: effectiveProvider,
-          model: effectiveModel,
-          checkpointState,
-          usage,
-          costData,
-          phaseResults,
-        }),
+        ...accountingUpdate,
       });
     } catch (dbErr) {
       // DB failure in error path — log it but don't mask the original error
-      console.error(`[agent] Failed to save error to DB:`, dbErr);
+      options?.logger?.error('agent.run.db-save-failed', `Failed to save error to DB for run ${runId}`, {
+        runId,
+        error: toErrorMessage(dbErr),
+      });
     }
 
     await cleanupOnTaskFailure({

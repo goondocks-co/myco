@@ -18,6 +18,28 @@ const SESSION_RESUME_ERROR_PATTERNS = [
   /conversation/,
 ];
 
+/**
+ * Error patterns that specifically indicate the Claude Agent SDK subprocess
+ * crashed while trying to attach to an expired or missing session.
+ *
+ * The SDK TTLs its sessions on Anthropic's side (hours to days). When the
+ * scheduler resumes a run after that TTL, the `claude` subprocess exits 1
+ * within ~100 seconds with 0 turns recorded — the generic "Claude Code
+ * process exited with code 1" message contains no `session`/`resume`
+ * substring, so `SESSION_RESUME_ERROR_PATTERNS` misses it and the resume
+ * keeps re-queuing forever.
+ *
+ * These patterns are only safe to apply in contexts where a `sessionRef`
+ * was passed to the runtime (see `isExpiredSessionError` callers), since
+ * "exited with code" also fires on unrelated SDK crashes.
+ */
+const EXPIRED_SESSION_ERROR_PATTERNS = [
+  /exited with code/i,
+  /session[\s_-]*not[\s_-]*found/i,
+  /session[\s_-]*expired/i,
+  /session[\s_-]*(is|was)?[\s_-]*(gone|missing|invalid)/i,
+];
+
 export interface PhaseCheckpoint {
   name: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
@@ -54,6 +76,18 @@ export function abortReasonMessage(abortController?: AbortController): string | 
 export function isSessionResumeFailure(error: unknown): boolean {
   const message = toErrorMessage(error).toLowerCase();
   return SESSION_RESUME_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+/**
+ * Matches errors that look like "the Claude SDK session we tried to resume
+ * is no longer alive." Callers MUST gate this on actually having passed a
+ * `sessionRef` — otherwise an unrelated "exited with code" SDK crash would
+ * be falsely classified as expired-session and the run would stop being
+ * retried.
+ */
+export function isExpiredSessionError(error: unknown): boolean {
+  const message = toErrorMessage(error);
+  return EXPIRED_SESSION_ERROR_PATTERNS.some((pattern) => pattern.test(message));
 }
 
 export function parseCheckpointState(raw: string | null | undefined): RunCheckpointState {

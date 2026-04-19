@@ -49,6 +49,7 @@ export async function triggerTitleSummary(
       task: 'title-summary',
       instruction: `Process session ${sessionId} only`,
       embeddingManager,
+      logger,
     }).catch((err) => {
       logger.warn(LOG_KINDS.AGENT_ERROR, 'Title-summary task failed', {
         session_id: sessionId,

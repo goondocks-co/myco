@@ -192,6 +192,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       dryRun,
       evaluationId,
       executionOverrides,
+      logger,
     });
 
     // runAgent inserts the run row synchronously before the first await.
@@ -255,7 +256,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     const runs = listRuns({ ...filterOpts, limit, offset });
     const total = countRuns(filterOpts);
 
-    return { body: { runs: runs.map((run) => serializeRun(run)), total, offset, limit } };
+    return { body: { runs: runs.map((run) => serializeRun(run, { logger })), total, offset, limit } };
   }
 
   /**
@@ -278,6 +279,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
         run: serializeRun(run, {
           writeIntents: { total, by_tool: byTool },
           duration_ms: runDurationMs(run),
+          logger,
         }),
       },
     };
@@ -302,6 +304,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       resumeRunId: run.id,
       resumeMode: mode ?? 'manual',
       embeddingManager,
+      logger,
     });
 
     resultPromise

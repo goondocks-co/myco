@@ -199,6 +199,7 @@ export function createAgentEvaluationHandlers(deps: AgentEvaluationDeps) {
           evaluationId: evalId,
           dryRun,
           embeddingManager,
+          logger,
           executionOverrides: {
             ...(cell.runtime ? { runtime: cell.runtime } : {}),
             ...(cell.reasoningLevel ? { reasoningLevel: cell.reasoningLevel } : {}),

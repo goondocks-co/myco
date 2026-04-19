@@ -1,5 +1,5 @@
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
-import type { ProviderConfig, RuntimeId, RuntimeUsage } from '@myco/agent/types.js';
+import type { ProviderConfig, RunLogger, RuntimeId, RuntimeUsage } from '@myco/agent/types.js';
 
 export type RuntimeCapability =
   | 'supportsSessionResume'
@@ -32,6 +32,8 @@ export interface RuntimeExecuteInput {
   sessionRef?: string;
   sessionData?: unknown;
   abortController?: AbortController;
+  /** Optional logger for runtime-level debug diagnostics. */
+  logger?: RunLogger;
 }
 
 export interface RuntimeExecuteResult {

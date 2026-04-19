@@ -276,6 +276,29 @@ describe('executeSingleQuery', () => {
     const ctx = baseContext();
     await expect(executeSingleQuery(ctx, 'PROMPT')).rejects.toThrow(/sdk_fail/);
   });
+
+  it('retries without sessionRef when the prior session exit-codes out', async () => {
+    // Regression for issue #118 item 1: single-query tasks (title-summary,
+    // review-session) had no retry — an expired Claude SDK session meant
+    // the run looped in the scheduler forever. `isExpiredSessionError`
+    // now matches "exited with code" and the retry path triggers.
+    runtimeSupportsSessionResume = true;
+    runtimeBehaviors = [{ kind: 'error', message: 'Claude Code process exited with code 1' }];
+    const ctx = baseContext();
+    const result = await executeSingleQuery(ctx, 'PROMPT', undefined, 'stale-session');
+    expect(result.tokensUsed).toBe(300);
+    expect(capturedExecuteInputs).toHaveLength(2);
+    expect(capturedExecuteInputs[0].sessionRef).toBe('stale-session');
+    expect(capturedExecuteInputs[1].sessionRef).toBeUndefined();
+  });
+
+  it('does not retry when no sessionRef was supplied', async () => {
+    runtimeSupportsSessionResume = true;
+    runtimeBehaviors = [{ kind: 'error', message: 'Claude Code process exited with code 1' }];
+    const ctx = baseContext();
+    await expect(executeSingleQuery(ctx, 'PROMPT')).rejects.toThrow(/exited with code/);
+    expect(capturedExecuteInputs).toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
