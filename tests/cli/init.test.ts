@@ -27,6 +27,13 @@ vi.mock('@myco/symbionts/detect.js', () => ({
   loadManifests: vi.fn().mockReturnValue([]),
   resolvePackageRoot: vi.fn().mockReturnValue('/tmp'),
 }));
+vi.mock('@myco/hooks/client.js', () => ({
+  DaemonClient: class {
+    async ensureRunning() {
+      return false;
+    }
+  },
+}));
 
 import { run } from '@myco/cli/init.js';
 import { initDatabase, closeDatabase } from '@myco/db/client.js';

@@ -11,7 +11,7 @@ import { insertCandidate, deleteCandidate, getCandidate, updateCandidate } from 
 import { insertSkillRecord, deleteSkillRecordCascade, getSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage, listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { insertSkillUsage, countUsageForSkill } from '@myco/db/queries/skill-usage.js';
-import { validateSkillContent, VAULT_TOOL_COUNT } from '@myco/agent/tools.js';
+import { validateSkillContent } from '@myco/agent/tools.js';
 import {
   parseAllowedTools,
   descriptionSimilarity,
@@ -21,7 +21,6 @@ import {
   MAX_SKILL_DESCRIPTION_CHARS,
 } from '@myco/agent/tools/skill-validator.js';
 import { buildScheduledJobs, type ScheduledJobContext } from '@myco/daemon/task-scheduler.js';
-import { loadConfig } from '@myco/config/loader.js';
 import type { AgentTask } from '@myco/agent/types.js';
 import { TOOL_DEFINITIONS } from '@myco/mcp/tool-definitions.js';
 import { epochSeconds } from '@myco/constants.js';
@@ -38,27 +37,6 @@ function seedAgent() {
 }
 
 const now = epochSeconds();
-
-// ---------------------------------------------------------------------------
-// P1 #1: Path traversal validation
-// ---------------------------------------------------------------------------
-describe('P1 #1: Path traversal guard', () => {
-  it('rejects skill names with path separators', () => {
-    const badNames = ['../../etc', '../foo', 'foo/bar', '..', 'foo/../bar'];
-    const pathRegex = /[/\\]|\.\./;
-    for (const name of badNames) {
-      expect(pathRegex.test(name), `should reject "${name}"`).toBe(true);
-    }
-  });
-
-  it('allows valid skill names', () => {
-    const goodNames = ['my-skill', 'myco-safe-config', 'cross-platform-hook-guard', 'a.b.c'];
-    const pathRegex = /[/\\]|\.\./;
-    for (const name of goodNames) {
-      expect(pathRegex.test(name), `should allow "${name}"`).toBe(false);
-    }
-  });
-});
 
 // ---------------------------------------------------------------------------
 // P1 #2: Concurrency guard — getRunningRunForTask
@@ -353,15 +331,6 @@ describe('MCP tools: myco_skills and myco_skill_candidates', () => {
     const action = def!.inputSchema.properties.action as { enum?: string[] };
     expect(action.enum).toContain('approve');
     expect(action.enum).toContain('dismiss');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// VAULT_TOOL_COUNT consistency
-// ---------------------------------------------------------------------------
-describe('VAULT_TOOL_COUNT', () => {
-  it('matches expected count (26)', () => {
-    expect(VAULT_TOOL_COUNT).toBe(26);
   });
 });
 

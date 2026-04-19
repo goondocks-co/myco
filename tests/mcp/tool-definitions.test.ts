@@ -103,13 +103,22 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
     expect(RETRIEVAL_GUIDANCE.some((entry) => entry.tool === 'myco_skill_candidates')).toBe(false);
   });
 
-  it('myco_save_plan documents source_path xor plan_key', () => {
-    const savePlan = TOOL_DEFINITIONS.find((tool) => tool.name === 'myco_save_plan');
-    expect(savePlan?.inputSchema.oneOf).toEqual([
-      { required: ['source_path'] },
-      { required: ['plan_key'] },
-    ]);
-    expect(savePlan?.inputSchema).not.toHaveProperty('anyOf');
+  // OpenAI's strict tool schema validator rejects schemas that carry
+  // oneOf/anyOf/allOf/enum/not at the top level. Anthropic's API rejects
+  // the same shapes. The xor between source_path and plan_key is enforced
+  // by the daemon handler (zod refine in mcp-proxy.ts), so no top-level
+  // combinator is needed — and adding one crashes provider clients such
+  // as opencode + GPT-5.
+  it('no tool schema has oneOf/anyOf/allOf/not at the top level', () => {
+    const forbidden = ['oneOf', 'anyOf', 'allOf', 'not'] as const;
+    for (const tool of [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS]) {
+      for (const key of forbidden) {
+        expect(
+          (tool.inputSchema as Record<string, unknown>)[key],
+          `Tool ${tool.name} has forbidden top-level schema key '${key}'`,
+        ).toBeUndefined();
+      }
+    }
   });
 
   it('every tool name starts with myco_ or collective_', () => {

@@ -10,15 +10,10 @@ import { MCP_SEARCH_DEFAULT_LIMIT, MCP_SESSIONS_DEFAULT_LIMIT, MCP_SKILLS_DEFAUL
 const PLAN_STATUS_FILTER = [...PLAN_STATUSES, 'all'] as const;
 const DEFAULT_CORTEX_PRIORITY = 100;
 
-interface ToolOneOfRequirement {
-  required: string[];
-}
-
 interface ToolInputSchema {
   type: 'object';
   properties: Record<string, unknown>;
   required?: string[];
-  oneOf?: ToolOneOfRequirement[];
 }
 
 export interface ToolCortexMetadata {
@@ -171,7 +166,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: TOOL_SAVE_PLAN,
-    description: 'Persist a plan directly into Myco for a session. Use this when you generated or revised a plan and want it captured reliably. If the plan is also being written to disk, pass the same source_path so direct persistence and file capture reconcile to one logical plan. Note: plan_key creates a stable namespace (session:<id>:key:<name>) distinct from transcript <tag> capture (session:<id>:tag:<name>) — the two do not merge. Dropping the transcript tag while also calling myco_save_plan with plan_key=tag will produce two separate rows.',
+    description: 'Persist a plan directly into Myco for a session. Use this when you generated or revised a plan and want it captured reliably. Pass exactly one of `source_path` or `plan_key` — `source_path` when the plan is also written to disk (so direct persistence and file capture reconcile to one logical plan), or `plan_key` for non-file-backed plans. The daemon rejects requests that set neither or both. Note: plan_key creates a stable namespace (session:<id>:key:<name>) distinct from transcript <tag> capture (session:<id>:tag:<name>) — the two do not merge. Dropping the transcript tag while also calling myco_save_plan with plan_key=tag will produce two separate rows.',
     cortex: {
       guidance: 'Use when you create or materially revise a plan and want it persisted to Myco. Pass `source_path` when the plan is also written to disk; otherwise use a stable `plan_key`. Note: `plan_key` rows are a separate namespace from transcript `<tag>` capture — reusing the same name in both channels creates two rows, not one.',
       priority: 60,
@@ -181,17 +176,13 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         session_id: { type: 'string', description: 'Session id the plan belongs to' },
         content: { type: 'string', description: 'Markdown plan content to persist' },
-        source_path: { type: 'string', description: 'Path to the plan file when the plan is also written to disk' },
-        plan_key: { type: 'string', description: 'Stable key for non-file-backed plans (for example: primary)' },
+        source_path: { type: 'string', description: 'Path to the plan file when the plan is also written to disk. Pass this OR plan_key, never both.' },
+        plan_key: { type: 'string', description: 'Stable key for non-file-backed plans (for example: primary). Pass this OR source_path, never both.' },
         title: { type: 'string', description: 'Optional explicit title. Defaults to the first Markdown H1, then file name or humanized plan_key.' },
         status: { type: 'string', enum: PLAN_STATUSES, description: `Plan status: ${PLAN_STATUSES.join(', ')}` },
         tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
       },
       required: ['session_id', 'content'],
-      oneOf: [
-        { required: ['source_path'] },
-        { required: ['plan_key'] },
-      ],
     },
   },
   {

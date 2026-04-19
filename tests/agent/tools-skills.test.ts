@@ -475,6 +475,29 @@ describe('vault skill tools', () => {
       expect(record.generation).toBe(1);
     });
 
+    it('rejects names with path separators or dot-dot segments', async () => {
+      const t = findTool(tools, 'vault_write_skill');
+      const liveSkillsDir = path.join(tmpDir, '.agents', 'skills');
+
+      for (const name of ['../../etc', '../foo', 'foo/bar', '..', 'foo/../bar']) {
+        const result = parseResult(
+          await t.handler(
+            {
+              name,
+              display_name: 'Invalid Skill',
+              description: 'Should be rejected before any write occurs',
+              content: validSkillContent(name),
+            },
+            undefined,
+          ),
+        ) as { error?: string };
+
+        expect(result.error).toContain('Invalid skill name');
+      }
+
+      expect(fs.existsSync(liveSkillsDir)).toBe(false);
+    });
+
     it('updates existing skill and bumps generation', async () => {
       const t = findTool(tools, 'vault_write_skill');
 
@@ -887,6 +910,39 @@ describe('vault skill tools', () => {
       const updated = parseResult(getResult) as { status: string; skill_id: string | null };
       expect(updated.status).toBe('approved');
       expect(updated.skill_id).toBeNull();
+    });
+
+    it('rejects invalid skill directory names before writing staging files', async () => {
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Invalid name topic', rationale: 'r' },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+
+      const stageTool = findTool(tools, 'vault_stage_skill');
+      const stagingDir = path.join(vaultDir, 'staging', 'skills');
+
+      for (const name of ['../../etc', '../foo', 'foo/bar', '..', 'foo/../bar']) {
+        const result = parseResult(
+          await stageTool.handler(
+            {
+              candidate_id: candidate.id,
+              name,
+              display_name: 'Invalid Staged Skill',
+              description: 'Should be rejected before staging',
+              content: validSkillContent(name),
+            },
+            undefined,
+          ),
+        ) as { error?: string };
+
+        expect(result.error).toContain('Invalid skill name');
+      }
+
+      expect(fs.existsSync(stagingDir)).toBe(false);
     });
 
     it('overwrites a prior staged version for the same candidate (iterative drafts)', async () => {
