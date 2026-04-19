@@ -8,7 +8,7 @@
 import crypto from 'node:crypto';
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
-import { epochSeconds } from '@myco/constants.js';
+import { epochSeconds, DIGEST_TIERS } from '@myco/constants.js';
 import { insertSpore, updateSporeStatus, DEFAULT_IMPORTANCE } from '@myco/db/queries/spores.js';
 import { updateSession } from '@myco/db/queries/sessions.js';
 import { setState } from '@myco/db/queries/agent-state.js';
@@ -165,12 +165,62 @@ export function createWriteTools(deps: VaultToolDeps) {
 
   const vaultReadDigest = tool(
     'vault_read_digest',
-    'Read current digest extracts. Without a tier parameter, returns a summary of all tiers (content length, generation time). With a tier parameter, returns the full content for that specific tier.',
+    'Read current digest extracts. Three modes: (1) no args → summary metadata for all tiers; (2) tier → full content for that tier; (3) pick: "rotate_oldest" → the digest-rotation decision, returning the tier whose generated_at is oldest plus its full content (or skip:true when all tiers are fresher than min_staleness_seconds). The rotation mode lets callers outsource the "which tier should we update this run" choice to a deterministic tool decision instead of prompting the LLM to compare timestamps.',
     {
-      tier: z.number().optional().describe('Specific tier to read in full (e.g., 1500, 5000, 10000). Omit to get summary of all tiers.'),
+      tier: z.number().optional().describe('Specific tier to read in full (e.g., 1500, 5000, 10000). Omit to get summary of all tiers. Ignored when pick is set.'),
+      pick: z.enum(['rotate_oldest']).optional().describe('Rotation mode. "rotate_oldest" picks the tier with the oldest generated_at (missing tiers count as never-generated and sort first). The response includes the selected tier, its full content, a rotation_reason explaining the choice, and metadata for all tiers so the caller can audit the decision.'),
+      min_staleness_seconds: z.number().optional().describe('Used with pick="rotate_oldest". If every tier\'s generated_at is newer than (now - min_staleness_seconds), the tool returns {skip: true, reason, all_tiers} instead of selecting a tier. Defaults to 0 (never skip).'),
     },
     async (args) => {
       const extracts = listDigestExtracts(agentId);
+
+      if (args.pick === 'rotate_oldest') {
+        const now = epochSeconds();
+        const canonical = DIGEST_TIERS.map((tier) => {
+          const existing = extracts.find((e) => e.tier === tier);
+          return {
+            tier,
+            generated_at: existing?.generated_at ?? 0,
+            content_length: existing?.content.length ?? 0,
+            content: existing?.content ?? null,
+          };
+        });
+
+        const minStale = args.min_staleness_seconds ?? 0;
+        if (minStale > 0) {
+          const allPresent = canonical.every((t) => t.generated_at > 0);
+          const cutoff = now - minStale;
+          const allFresh = canonical.every((t) => t.generated_at > cutoff);
+          if (allPresent && allFresh) {
+            return textResult({
+              mode: 'rotate_oldest',
+              skip: true,
+              reason: `All ${canonical.length} tiers were generated within the last ${minStale} seconds (cutoff=${cutoff}).`,
+              all_tiers: canonical.map((t) => ({ tier: t.tier, generated_at: t.generated_at, content_length: t.content_length })),
+            });
+          }
+        }
+
+        // Tie-break: on a fresh vault with no extracts, seed the largest
+        // tier first so subsequent runs have content to compress down from.
+        const sorted = [...canonical].sort((a, b) => {
+          if (a.generated_at !== b.generated_at) return a.generated_at - b.generated_at;
+          return b.tier - a.tier;
+        });
+        const selected = sorted[0];
+        const reason = selected.generated_at === 0
+          ? `Tier ${selected.tier} has never been generated — seeding.`
+          : `Tier ${selected.tier} has the oldest generated_at (${selected.generated_at}); next oldest is tier ${sorted[1]?.tier} at ${sorted[1]?.generated_at}.`;
+
+        return textResult({
+          mode: 'rotate_oldest',
+          selected_tier: selected.tier,
+          selected_generated_at: selected.generated_at,
+          selected_content: selected.content,
+          rotation_reason: reason,
+          all_tiers: canonical.map((t) => ({ tier: t.tier, generated_at: t.generated_at, content_length: t.content_length })),
+        });
+      }
 
       if (args.tier !== undefined) {
         const extract = extracts.find(e => e.tier === args.tier);

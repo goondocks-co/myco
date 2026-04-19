@@ -10,7 +10,9 @@ description: |
   channels, detached restart flow). Also provides a routing table for choosing
   which extension point(s) to use when adding a new daemon-resident feature —
   background work, agent-callable actions, live UI feedback, and self-upgrade
-  all use different mechanisms that frequently compose together.
+  all use different mechanisms that frequently compose together. Includes agent
+  harness improvements: phase-scoped tools for cost reduction, template
+  variables for budget/tool awareness, and cross-domain transition handling.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -38,6 +40,7 @@ The Myco daemon is a long-running Node.js process that hosts MCP tools, backgrou
 - MCP server: `src/mcp/server.ts`; individual tools: `src/mcp/tools/`
 - Notification registry and types: `src/notifications/`
 - Auto-update logic: `src/daemon/update-checker.ts`, `src/daemon/update-installer.ts`, `src/api/update.ts`
+- Agent harness: `src/harness/` (phased execution, task configs, agent lifecycle)
 
 ---
 
@@ -169,6 +172,49 @@ Verify the tool appears in `list_tools`:
 curl -s http://localhost:<MCP_PORT>/mcp/tools | jq '.tools[].name'
 ```
 
+### Step 3 — Configure Phase-Scoped Tool Access (Cost Optimization)
+
+**Phase-scoped tools reduce costs 15-25%** by restricting expensive or unnecessary tool access during specific phases. Configure this in task YAML files:
+
+```yaml
+# In .myco/tasks/<task-name>.yaml:
+phases:
+  - name: analyze
+    turn_budget: 8
+    tools:
+      # Allow only read-only tools in analysis phase
+      allow:
+        - vault_search_fts
+        - vault_spores
+        - vault_sessions
+      # Explicitly deny write operations
+      deny:
+        - vault_create_spore
+        - vault_write_skill
+  - name: implement
+    turn_budget: 15
+    tools:
+      # Full tool access for implementation
+      allow: "*"
+```
+
+**Tool scoping rules:**
+- `allow: ["*"]` — unrestricted access (default if omitted)
+- `allow: [list]` — only specified tools available
+- `deny: [list]` — specified tools blocked, others allowed
+- `allow` takes precedence over `deny` when both present
+
+**Template variables for budget/tool awareness:**
+```yaml
+phases:
+  - name: "{{phase_name}}"
+    turn_budget: "{{turn_budget}}"
+    tools:
+      allow: "{{allowed_tools}}"
+```
+
+The harness expands these variables at runtime based on task configuration and model capabilities.
+
 ### Cloud vs. local MCP capability split
 
 Some tools are only valid when the daemon runs locally (SQLite access, local file paths, PowerManager). Others are safe in cloud/remote contexts.
@@ -183,11 +229,31 @@ if (!runtimeContext.isLocal) {
 }
 ```
 
+### Cross-Domain Phase Transition Handling
+
+**Cross-domain phase transitions can confuse mid-tier models.** When a task transitions between fundamentally different domains (e.g., analysis → implementation → documentation), provide clear context in the phase prompt template:
+
+```typescript
+// In phase prompt generation:
+const transitionContext = prevPhase ? 
+  `You are transitioning FROM ${prevPhase.domain} TO ${currentPhase.domain}. ` +
+  `Disregard previous phase constraints and focus on ${currentPhase.objective}.` 
+  : '';
+
+const phasePrompt = `${transitionContext}
+${currentPhase.instructions}
+Available tools: ${formatToolList(currentPhase.tools.allow)}`;
+```
+
+**Why this matters**: Mid-tier models may persist constraints or mental models from previous phases, leading to suboptimal tool selection or approach. Explicit transition messaging resets the context.
+
 ### Gotchas
 
 **Two-step registration is required**: Importing the tool file alone is not enough — it must also be added to the tools array. Missing either step means the tool silently doesn't appear in `list_tools`.
 
 **Validate in the handler, not just the schema**: The MCP framework may pass raw JSON. `inputSchema` feeds the LLM's parameter hints; `InputSchema.parse(input)` is your actual runtime guard.
+
+**Phase-scoped tools require YAML configuration**: The harness only enforces tool restrictions if they're declared in the task configuration. Without explicit scoping, all tools remain available throughout all phases.
 
 ---
 
@@ -334,6 +400,30 @@ await installUpdates(updateInfo);
 
 The return value from `checkPackages` is a map of `{ packageName: newVersion }` — only packages with newer versions are included. Empty object `{}` means all installed packages are up-to-date.
 
+### SDK Telemetry and Turn Counting
+
+**Enhanced SDK telemetry** provides better visibility into agent performance and cost tracking:
+
+```typescript
+// Enhanced turn counting for budget management
+const turnMetrics = {
+  phase: currentPhase.name,
+  toolsUsed: currentTurn.tools.length,
+  tokenCount: response.usage?.total_tokens ?? 0,
+  modelId: currentPhase.modelId,
+};
+
+// Telemetry collection for debugging and optimization
+await collectTelemetry({
+  sessionId: context.sessionId,
+  turn: currentTurnIndex,
+  metrics: turnMetrics,
+  phaseTransition: prevPhase ? `${prevPhase.name} → ${currentPhase.name}` : null,
+});
+```
+
+This telemetry powers the harness dashboard and cost optimization features.
+
 ### Null guards on cold cache reads
 
 The update cache is `null` on first daemon start — no check has run yet. Always null-guard before reading:
@@ -403,3 +493,7 @@ The Operations page surfaces: current installed versions (from `update-checker.t
 **Daemon restart clears in-memory state**: Job timers, notification subscriptions, and update caches are all in-memory. All registered jobs are re-registered automatically on restart only if registration happens in `main.ts` — lazy registration is lost.
 
 **`preventsDeepSleep` vs. `runIn` are orthogonal**: `runIn` controls which power states allow a job to start. `preventsDeepSleep` controls whether an already-running job blocks the transition to deep sleep. A job can have `runIn: ['active', 'idle']` (only starts in those states) AND `preventsDeepSleep: true` (if it starts before a deep-sleep transition, deep sleep waits for it to finish).
+
+**Phase-scoped tools require explicit configuration**: Cost optimization through tool restrictions only works when declared in task YAML. The harness doesn't automatically infer tool requirements — they must be explicitly configured.
+
+**Cross-domain transitions need context reset**: Mid-tier models may persist constraints from previous phases. Provide explicit transition context to reset mental models when moving between fundamentally different domains.

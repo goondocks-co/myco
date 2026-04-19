@@ -28,6 +28,8 @@ import { createWriteTools } from './tools/write-tools.js';
 import { createObservabilityTools } from './tools/observability-tools.js';
 import { createSkillTools } from './tools/skill-tools.js';
 import { createExplorationTools } from './tools/exploration-tools.js';
+import { textResult } from './tools/types.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 import type { SdkMcpToolDefinition, VaultToolDeps } from './tools/types.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
@@ -223,20 +225,40 @@ function truncateSummary(text: string | null): string | null {
     : text;
 }
 
+/** Prefix on tool_output_summary rows that represent a tool error — either a
+ *  handler exception or a `textResult({ error })` return. Queryable via
+ *  `WHERE tool_output_summary LIKE '[ERROR]%'` to surface silent no-ops. */
+const TOOL_ERROR_PREFIX = '[ERROR] ';
+
+function isErrorResult(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return false;
+  const content = (result as { content?: unknown }).content;
+  if (!Array.isArray(content) || content.length === 0) return false;
+  const first = content[0] as { type?: unknown; text?: unknown } | undefined;
+  if (!first || first.type !== 'text' || typeof first.text !== 'string') return false;
+  const trimmed = first.text.trimStart();
+  if (!trimmed.startsWith('{')) return false;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return !!parsed && typeof parsed === 'object' && 'error' in parsed && parsed.error !== undefined;
+  } catch {
+    return false;
+  }
+}
+
 function summarizeToolResult(result: unknown): string | null {
   if (!result || typeof result !== 'object') return null;
   const content = (result as { content?: unknown }).content;
   if (!Array.isArray(content) || content.length === 0) return null;
   const first = content[0] as { type?: unknown; text?: unknown } | undefined;
   if (!first || first.type !== 'text' || typeof first.text !== 'string') return null;
-  return truncateSummary(first.text.replace(/\s+/g, ' ').trim());
+  const body = first.text.replace(/\s+/g, ' ').trim();
+  const prefix = isErrorResult(result) ? TOOL_ERROR_PREFIX : '';
+  return truncateSummary(prefix + body);
 }
 
 function summarizeToolError(error: unknown): string {
-  if (error instanceof Error && error.message) {
-    return truncateSummary(error.message) ?? 'Tool failed';
-  }
-  return truncateSummary(String(error)) ?? 'Tool failed';
+  return truncateSummary(TOOL_ERROR_PREFIX + errorMessage(error)) ?? TOOL_ERROR_PREFIX + 'Tool failed';
 }
 
 function buildRepeatedReadSuppressionResult(
@@ -467,6 +489,12 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
 
   function wrapToolWithAudit(toolDef: SdkMcpToolDefinition<any>): SdkMcpToolDefinition<any> {
     const originalHandler = toolDef.handler;
+    // Reject args keys not in the tool's declared schema. Without this,
+    // Zod silently strips unknown keys, which lets a prompt reference a
+    // parameter the tool doesn't accept and silently no-op.
+    const declaredKeys = toolDef.inputSchema && typeof toolDef.inputSchema === 'object'
+      ? new Set(Object.keys(toolDef.inputSchema as Record<string, unknown>))
+      : new Set<string>();
     return {
       ...toolDef,
       handler: async (args, extra) => {
@@ -483,6 +511,33 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
           : 0;
         const turnId = recordTurn(toolDef.name, args);
         try {
+          // Unknown-key guard: fail loud if the caller passed a parameter
+          // the tool doesn't declare. This catches prompt-tool contract
+          // drift at first call time, not months later.
+          if (declaredKeys.size > 0 && args && typeof args === 'object') {
+            const unknown: string[] = [];
+            for (const key of Object.keys(args as Record<string, unknown>)) {
+              if (!declaredKeys.has(key)) unknown.push(key);
+            }
+            if (unknown.length > 0) {
+              const accepted = Array.from(declaredKeys).sort().join(', ');
+              const result = textResult({
+                error: `Unknown parameter(s) for ${toolDef.name}: ${unknown.join(', ')}. Accepted parameters: ${accepted}.`,
+              });
+              if (turnId !== null) {
+                try {
+                  updateTurn(turnId, {
+                    tool_output_summary: summarizeToolResult(result),
+                    completed_at: epochSeconds(),
+                  });
+                } catch {
+                  /* audit trail is best-effort */
+                }
+              }
+              return result;
+            }
+          }
+
           if (priorIdenticalCalls >= REPEATED_READ_FAILURE_THRESHOLD) {
             throw new Error(
               `Repeated identical ${toolDef.name} reads detected (${priorIdenticalCalls + 1} calls). ` +

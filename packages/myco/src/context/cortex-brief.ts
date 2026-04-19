@@ -33,11 +33,13 @@ import {
 const MAX_COLLECTIVE_CAPABILITY_LABELS = 4;
 const ALL_CORTEX_TOOL_DEFINITIONS = [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS];
 
-const RECENT_SESSION_LIMIT = 3;
-const RECENT_SPORE_LIMIT = 4;
+const RECENT_SESSION_LIMIT = 5;
+const RECENT_WISDOM_SPORE_LIMIT = 3;
+const RECENT_DECISION_SPORE_LIMIT = 3;
+const RECENT_DISCOVERY_SPORE_LIMIT = 3;
 const RECENT_PLAN_LIMIT = 3;
-const CONTENT_PREVIEW_MAX_CHARS = 240;
-const DIGEST_EXCERPT_MAX_CHARS = 900;
+const CONTENT_PREVIEW_MAX_CHARS = 360;
+const DIGEST_EXCERPT_MAX_CHARS = 1800;
 const JSON_INDENT = 2;
 
 export const CORTEX_SKILLS_NOTE = 'Project and Myco skills are already registered with the agent separately. Tell the agent to use those skills directly when relevant, and do not instruct it to call `myco_skills`.';
@@ -189,32 +191,33 @@ function truncatePreview(text: string | null, maxChars: number = CONTENT_PREVIEW
 
 function formatRecentSessions(): string {
   const sessions = listSessions({
-    includeActive: true,
+    includeActive: false,
     limit: RECENT_SESSION_LIMIT,
   });
   if (sessions.length === 0) return 'No recent sessions are available.';
 
   return sessions.map((session) => {
-    const parts = [
-      `- ${session.title ?? session.id}`,
-      session.branch ? `branch=${session.branch}` : null,
-      truncatePreview(session.summary),
-    ].filter(Boolean);
-    return parts.join(' — ');
+    const head = `- ${session.title ?? session.id}${session.branch ? ` (branch=${session.branch})` : ''}`;
+    const body = truncatePreview(session.summary);
+    return body ? `${head}\n  ${body}` : head;
   }).join('\n');
 }
 
-function formatRecentSpores(): string {
+function formatSporesOfType(
+  observationType: 'wisdom' | 'decision' | 'discovery',
+  limit: number,
+): string {
   const spores = listSpores({
-    includeActive: true,
+    observation_type: observationType,
+    includeActive: false,
     status: 'active',
-    limit: RECENT_SPORE_LIMIT,
+    limit,
   });
-  if (spores.length === 0) return 'No recent spores are available.';
+  if (spores.length === 0) return `No recent ${observationType} spores are available.`;
 
   return spores.map((spore) => {
     const parts = [
-      `- [${spore.observation_type}] ${truncatePreview(spore.content)}`,
+      `- ${truncatePreview(spore.content)}`,
       spore.session_id ? `session=${spore.session_id}` : null,
     ].filter(Boolean);
     return parts.join(' — ');
@@ -264,7 +267,9 @@ export async function buildCortexInstructionsInput(
   const capabilitySummary = buildCapabilitySummary(capabilities);
   const retrievalGuidance = buildRetrievalGuidanceLines(capabilities);
   const recentSessions = formatRecentSessions();
-  const recentSpores = formatRecentSpores();
+  const recentWisdomSpores = formatSporesOfType('wisdom', RECENT_WISDOM_SPORE_LIMIT);
+  const recentDecisionSpores = formatSporesOfType('decision', RECENT_DECISION_SPORE_LIMIT);
+  const recentDiscoverySpores = formatSporesOfType('discovery', RECENT_DISCOVERY_SPORE_LIMIT);
   const recentPlans = formatRecentPlans();
   const digestExcerpt = formatDigestExcerpt(config);
   const input = {
@@ -277,7 +282,9 @@ export async function buildCortexInstructionsInput(
     capabilities,
     digestExcerpt,
     recentSessions,
-    recentSpores,
+    recentWisdomSpores,
+    recentDecisionSpores,
+    recentDiscoverySpores,
     recentPlans,
     skillsNote: CORTEX_SKILLS_NOTE,
   };
@@ -313,8 +320,14 @@ export async function buildCortexInstructionsInput(
       '## Recent sessions',
       recentSessions,
       '',
-      '## Recent spores',
-      recentSpores,
+      '## Recent wisdom spores',
+      recentWisdomSpores,
+      '',
+      '## Recent decision spores',
+      recentDecisionSpores,
+      '',
+      '## Recent discovery spores',
+      recentDiscoverySpores,
       '',
       '## Active plans',
       recentPlans,
