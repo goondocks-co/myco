@@ -39,7 +39,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(20);
+      expect(SCHEMA_VERSION).toBe(21);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -1233,18 +1233,136 @@ describe('Database schema', () => {
         expect(() => runMigration(db, 19)).not.toThrow();
       });
 
-      it('full v13 -> v20 chain reaches SCHEMA_VERSION and is replay-safe', () => {
+      it('full v13 -> v21 chain reaches SCHEMA_VERSION and is replay-safe', () => {
         buildV13Db(db);
-        for (const v of [14, 15, 16, 17, 18, 19, 20]) runMigration(db, v);
+        for (const v of [14, 15, 16, 17, 18, 19, 20, 21]) runMigration(db, v);
 
         const row = db.prepare(
           `SELECT MAX(version) AS v FROM schema_version`,
         ).get() as { v: number };
         expect(row.v).toBe(SCHEMA_VERSION);
 
-        for (const v of [14, 15, 16, 17, 18, 19, 20]) {
+        for (const v of [14, 15, 16, 17, 18, 19, 20, 21]) {
           expect(() => runMigration(db, v), `v${v} replay`).not.toThrow();
         }
+      });
+    });
+
+    describe('v20 to v21: prune semantic graph data', () => {
+      function runMigration(target: Database, version: number) {
+        const m = MIGRATIONS.find((mm) => mm.version === version);
+        expect(m, `migration v${version} registered`).toBeDefined();
+        m!.migrate(target, 'local');
+      }
+
+      /** Run createSchema first so all tables exist, then stamp back to v20 so v21 runs. */
+      function setupAtV20(target: Database): void {
+        createSchema(target);
+        target.prepare(`DELETE FROM schema_version WHERE version = ?`).run(SCHEMA_VERSION);
+      }
+
+      /** Seed an entity row directly. */
+      function seedEntity(target: Database, id: string, type: string, name: string): void {
+        target.prepare(
+          `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
+           VALUES (?, 'agent-test', ?, ?, 1000, 2000)`,
+        ).run(id, type, name);
+      }
+
+      /** Seed a graph edge row of a given type. */
+      function seedEdge(
+        target: Database,
+        sourceId: string,
+        targetId: string,
+        type: string,
+      ): void {
+        target.prepare(
+          `INSERT INTO graph_edges (agent_id, source_id, source_type, target_id, target_type, type, created_at)
+           VALUES ('agent-test', ?, 'spore', ?, 'entity', ?, 1000)`,
+        ).run(sourceId, targetId, type);
+      }
+
+      /** Seed an entity_mention row. */
+      function seedMention(target: Database, entityId: string, noteId: string): void {
+        target.prepare(
+          `INSERT INTO entity_mentions (entity_id, note_id, note_type, agent_id)
+           VALUES (?, ?, 'spore', 'agent-test')`,
+        ).run(entityId, noteId);
+      }
+
+      it('deletes entities, entity_mentions, and semantic edges', () => {
+        setupAtV20(db);
+        db.prepare(`INSERT INTO agents (id, name, created_at) VALUES ('agent-test', 'Test', 1000)`).run();
+
+        seedEntity(db, 'e1', 'component', 'DaemonClient');
+        seedEntity(db, 'e2', 'concept', 'Supersession');
+        seedMention(db, 'e1', 'spore-1');
+        seedEdge(db, 'spore-1', 'e1', 'REFERENCES');
+        seedEdge(db, 'spore-2', 'e2', 'AFFECTS');
+        seedEdge(db, 'e1', 'e2', 'DEPENDS_ON');
+        seedEdge(db, 'spore-3', 'e2', 'RELATES_TO');
+
+        runMigration(db, 21);
+
+        const entityCount = db.prepare(`SELECT count(*) AS c FROM entities`).get() as { c: number };
+        const mentionCount = db.prepare(`SELECT count(*) AS c FROM entity_mentions`).get() as { c: number };
+        const semanticEdgeCount = db.prepare(
+          `SELECT count(*) AS c FROM graph_edges
+            WHERE type IN ('REFERENCES', 'AFFECTS', 'DEPENDS_ON', 'RELATES_TO')`,
+        ).get() as { c: number };
+
+        expect(entityCount.c).toBe(0);
+        expect(mentionCount.c).toBe(0);
+        expect(semanticEdgeCount.c).toBe(0);
+      });
+
+      it('preserves lineage edges', () => {
+        setupAtV20(db);
+        db.prepare(`INSERT INTO agents (id, name, created_at) VALUES ('agent-test', 'Test', 1000)`).run();
+
+        db.prepare(
+          `INSERT INTO graph_edges (agent_id, source_id, source_type, target_id, target_type, type, created_at)
+           VALUES ('agent-test', ?, ?, ?, ?, ?, 1000)`,
+        ).run('spore-1', 'spore', 'session-1', 'session', 'FROM_SESSION');
+        db.prepare(
+          `INSERT INTO graph_edges (agent_id, source_id, source_type, target_id, target_type, type, created_at)
+           VALUES ('agent-test', ?, ?, ?, ?, ?, 1000)`,
+        ).run('spore-1', 'spore', '42', 'batch', 'EXTRACTED_FROM');
+        db.prepare(
+          `INSERT INTO graph_edges (agent_id, source_id, source_type, target_id, target_type, type, created_at)
+           VALUES ('agent-test', ?, ?, ?, ?, ?, 1000)`,
+        ).run('session-1', 'session', '42', 'batch', 'HAS_BATCH');
+        db.prepare(
+          `INSERT INTO graph_edges (agent_id, source_id, source_type, target_id, target_type, type, created_at)
+           VALUES ('agent-test', ?, ?, ?, ?, ?, 1000)`,
+        ).run('spore-wisdom', 'spore', 'spore-source', 'spore', 'DERIVED_FROM');
+
+        runMigration(db, 21);
+
+        const lineageCount = db.prepare(
+          `SELECT count(*) AS c FROM graph_edges
+            WHERE type IN ('FROM_SESSION', 'EXTRACTED_FROM', 'HAS_BATCH', 'DERIVED_FROM', 'SUPERSEDED_BY')`,
+        ).get() as { c: number };
+        expect(lineageCount.c).toBe(4);
+      });
+
+      it('records schema_version row 21 after migration', () => {
+        setupAtV20(db);
+        runMigration(db, 21);
+        const row = db.prepare(`SELECT version FROM schema_version WHERE version = 21`).get() as
+          | { version: number }
+          | undefined;
+        expect(row?.version).toBe(21);
+      });
+
+      it('is idempotent — running twice does not throw', () => {
+        setupAtV20(db);
+        db.prepare(`INSERT INTO agents (id, name, created_at) VALUES ('agent-test', 'Test', 1000)`).run();
+        seedEntity(db, 'e1', 'component', 'DaemonClient');
+        seedEdge(db, 'spore-1', 'e1', 'REFERENCES');
+
+        runMigration(db, 21);
+        expect(() => runMigration(db, 21)).not.toThrow();
       });
     });
   });

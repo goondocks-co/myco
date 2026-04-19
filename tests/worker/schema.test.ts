@@ -6,13 +6,20 @@ interface RecordedRun {
   values: unknown[];
 }
 
-function createFakeD1() {
+interface RecordedBatch {
+  sqls: string[];
+}
+
+function createFakeD1(options: { markerPresent?: boolean } = {}) {
   const runs: RecordedRun[] = [];
   const batchedSql: string[] = [];
+  const batches: RecordedBatch[] = [];
+  const markerPresent = options.markerPresent ?? false;
 
   return {
     runs,
     batchedSql,
+    batches,
     db: {
       prepare(sql: string) {
         const state = { values: [] as unknown[] };
@@ -26,10 +33,19 @@ function createFakeD1() {
             runs.push({ sql, values: [...state.values] });
             return { success: true };
           },
+          async first<T = unknown>(): Promise<T | null> {
+            const marker = /SELECT value FROM team_config WHERE key = \?/.test(sql)
+              && state.values[0] === 'semantic_graph_pruned';
+            if (marker && markerPresent) {
+              return { value: '1' } as T;
+            }
+            return null;
+          },
         };
       },
       async batch(statements: Array<{ sql: string }>) {
         batchedSql.push(...statements.map((statement) => statement.sql));
+        batches.push({ sqls: statements.map((s) => s.sql) });
         return [];
       },
     },
@@ -59,6 +75,39 @@ describe('initD1Schema', () => {
      WHERE approved_at IS NULL
        AND status IN (?, ?)`,
       values: ['approved', 'generated'],
+    });
+  });
+
+  describe('semantic graph one-shot prune', () => {
+    it('runs the prune batch when the marker is absent', async () => {
+      const fake = createFakeD1({ markerPresent: false });
+
+      await initD1Schema(fake.db as never);
+
+      const pruneBatch = fake.batches.find((b) =>
+        b.sqls.some((s) => s.includes("DELETE FROM graph_edges WHERE type IN")),
+      );
+      expect(pruneBatch, 'expected a prune batch when marker is absent').toBeDefined();
+      expect(pruneBatch!.sqls).toContainEqual(
+        expect.stringContaining("REFERENCES', 'AFFECTS', 'DEPENDS_ON', 'RELATES_TO"),
+      );
+      expect(pruneBatch!.sqls).toContainEqual(
+        expect.stringContaining('DELETE FROM entities'),
+      );
+      expect(pruneBatch!.sqls).toContainEqual(
+        expect.stringContaining('INSERT INTO team_config (key, value)'),
+      );
+    });
+
+    it('skips the prune batch when the marker is already present', async () => {
+      const fake = createFakeD1({ markerPresent: true });
+
+      await initD1Schema(fake.db as never);
+
+      const pruneBatch = fake.batches.find((b) =>
+        b.sqls.some((s) => s.includes("DELETE FROM graph_edges WHERE type IN")),
+      );
+      expect(pruneBatch, 'prune batch should not run when marker is already set').toBeUndefined();
     });
   });
 });

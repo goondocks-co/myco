@@ -1,10 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { registerAgent } from '@myco/db/queries/agents';
-import { insertEntity } from '@myco/db/queries/entities';
 import { insertGraphEdge } from '@myco/db/queries/graph-edges';
 import { upsertSession } from '@myco/db/queries/sessions';
 import { insertSpore } from '@myco/db/queries/spores';
-import { getDatabase } from '@myco/db/client';
 import { DEFAULT_AGENT_ID } from '@myco/constants';
 import { handleGetGraph, handleGetGraphSeeds } from '@myco/daemon/api/mycelium';
 import type { RouteRequest } from '@myco/daemon/router';
@@ -32,20 +30,6 @@ describe('mycelium API handlers', () => {
   });
 
   it('returns lightweight graph seeds with a recommended node', async () => {
-    insertEntity({
-      id: 'entity-1',
-      agent_id: DEFAULT_AGENT_ID,
-      type: 'concept',
-      name: 'Focused Explorer',
-      first_seen: NOW - 100,
-      last_seen: NOW - 10,
-    });
-    getDatabase().prepare('INSERT INTO entity_mentions (entity_id, note_id, note_type, agent_id) VALUES (?, ?, ?, ?)').run(
-      'entity-1',
-      'spore-1',
-      'spore',
-      DEFAULT_AGENT_ID,
-    );
     upsertSession({
       id: 'sess-1',
       agent: 'claude-code',
@@ -70,10 +54,84 @@ describe('mycelium API handlers', () => {
 
     expect(body.seeds.length).toBeGreaterThan(0);
     expect(body.recommended_id).toBe(body.seeds[0]?.id ?? null);
-    expect(body.seeds.map((seed) => seed.type)).toEqual(expect.arrayContaining(['spore', 'session', 'concept']));
+    expect(body.seeds.map((seed) => seed.type)).toEqual(expect.arrayContaining(['spore', 'session']));
   });
 
-  it('returns a centered session neighborhood for focused graph requests', async () => {
+  it('recommends the most-connected node over a freshly-completed orphan session', async () => {
+    // Fresh session with no spores extracted yet — the kind of empty-canvas
+    // default the old "newest completed session" heuristic landed on.
+    upsertSession({
+      id: 'sess-fresh-orphan',
+      agent: 'claude-code',
+      created_at: NOW - 1,
+      started_at: NOW - 1,
+      ended_at: NOW,
+      status: 'completed',
+      title: 'Just finished, nothing extracted',
+    });
+
+    // Older session with three spores linked via FROM_SESSION — a well-connected
+    // hub the new heuristic should prefer.
+    upsertSession({
+      id: 'sess-rich-hub',
+      agent: 'claude-code',
+      created_at: NOW - 1000,
+      started_at: NOW - 1000,
+      ended_at: NOW - 900,
+      status: 'completed',
+      title: 'Old but well-connected',
+    });
+    for (const sporeId of ['spore-a', 'spore-b', 'spore-c']) {
+      insertSpore({
+        id: sporeId,
+        agent_id: DEFAULT_AGENT_ID,
+        observation_type: 'decision',
+        content: `decision ${sporeId}`,
+        session_id: 'sess-rich-hub',
+        created_at: NOW - 500,
+        status: 'active',
+      });
+      insertGraphEdge({
+        agent_id: DEFAULT_AGENT_ID,
+        source_id: sporeId,
+        source_type: 'spore',
+        target_id: 'sess-rich-hub',
+        target_type: 'session',
+        type: 'FROM_SESSION',
+        created_at: NOW - 500,
+      });
+    }
+
+    const result = await handleGetGraphSeeds(makeReq('/graph/seeds'));
+    const body = result.body as {
+      seeds: Array<{ id: string; type: string }>;
+      recommended_id: string | null;
+    };
+
+    expect(body.recommended_id).toBe('sess-rich-hub');
+    // UI relies on recommended_id being present in the seeds list; verify.
+    expect(body.seeds.map((s) => s.id)).toContain('sess-rich-hub');
+    expect(body.seeds[0]?.id).toBe('sess-rich-hub');
+  });
+
+  it('falls back to seed order when no edges exist', async () => {
+    upsertSession({
+      id: 'sess-empty',
+      agent: 'claude-code',
+      created_at: NOW - 10,
+      started_at: NOW - 10,
+      ended_at: NOW - 5,
+      status: 'completed',
+      title: 'No edges yet',
+    });
+
+    const result = await handleGetGraphSeeds(makeReq('/graph/seeds'));
+    const body = result.body as { recommended_id: string | null };
+
+    expect(body.recommended_id).toBe('sess-empty');
+  });
+
+  it('returns a centered session neighborhood with lineage edges', async () => {
     upsertSession({
       id: 'sess-graph',
       agent: 'claude-code',
@@ -84,21 +142,22 @@ describe('mycelium API handlers', () => {
       title: 'Session center',
       summary: 'Centered graph test.',
     });
-    insertEntity({
-      id: 'entity-graph',
+    insertSpore({
+      id: 'spore-lineage',
       agent_id: DEFAULT_AGENT_ID,
-      type: 'component',
-      name: 'Mycelium graph',
-      first_seen: NOW - 40,
-      last_seen: NOW - 10,
+      observation_type: 'decision',
+      content: 'Chose lineage-only visualization over agent-built semantic edges.',
+      session_id: 'sess-graph',
+      created_at: NOW - 5,
+      status: 'active',
     });
     insertGraphEdge({
       agent_id: DEFAULT_AGENT_ID,
-      source_id: 'sess-graph',
-      source_type: 'session',
-      target_id: 'entity-graph',
-      target_type: 'entity',
-      type: 'RELATES_TO',
+      source_id: 'spore-lineage',
+      source_type: 'spore',
+      target_id: 'sess-graph',
+      target_type: 'session',
+      type: 'FROM_SESSION',
       created_at: NOW - 5,
     });
 
@@ -110,7 +169,7 @@ describe('mycelium API handlers', () => {
     };
 
     expect(body.center).toMatchObject({ id: 'sess-graph', type: 'session', name: 'Session center' });
-    expect(body.nodes).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'entity-graph', type: 'component' })]));
-    expect(body.edges).toEqual(expect.arrayContaining([expect.objectContaining({ source_id: 'sess-graph', target_id: 'entity-graph', label: 'RELATES_TO' })]));
+    expect(body.nodes).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'spore-lineage', type: 'spore' })]));
+    expect(body.edges).toEqual(expect.arrayContaining([expect.objectContaining({ source_id: 'spore-lineage', target_id: 'sess-graph', label: 'FROM_SESSION' })]));
   });
 });

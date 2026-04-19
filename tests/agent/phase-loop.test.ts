@@ -339,4 +339,43 @@ describe('executePhasedQuery', () => {
     expect(result.phases[0].status).toBe('failed');
     expect(ctx.abortController!.signal.aborted).toBe(true);
   });
+
+  it('does not reuse sessionRef when prior attempt failed with zero turns', async () => {
+    const phases = [phase('a')];
+    const checkpointState: RunCheckpointState = {
+      runtime: 'claude-sdk',
+      phases: {
+        a: {
+          name: 'a',
+          status: 'failed',
+          turnsUsed: 0,
+          sessionRef: 'poisoned-session',
+          updatedAt: 0,
+        },
+      },
+    };
+    const ctx = baseContext({ config: baseConfig(phases), checkpointState });
+    await executePhasedQuery(ctx);
+    expect(capturedExecuteInputs[0].sessionRef).toBeDefined();
+    expect(capturedExecuteInputs[0].sessionRef).not.toBe('poisoned-session');
+  });
+
+  it('reuses sessionRef when prior attempt failed after producing turns', async () => {
+    const phases = [phase('a')];
+    const checkpointState: RunCheckpointState = {
+      runtime: 'claude-sdk',
+      phases: {
+        a: {
+          name: 'a',
+          status: 'failed',
+          turnsUsed: 4,
+          sessionRef: 'recoverable-session',
+          updatedAt: 0,
+        },
+      },
+    };
+    const ctx = baseContext({ config: baseConfig(phases), checkpointState });
+    await executePhasedQuery(ctx);
+    expect(capturedExecuteInputs[0].sessionRef).toBe('recoverable-session');
+  });
 });

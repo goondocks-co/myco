@@ -6,22 +6,15 @@ import { cn } from '../../lib/cn';
 /* ---------- Constants ---------- */
 
 const ENTITY_TYPES = [
-  { type: 'concept', label: 'Concept', dotColor: 'bg-primary' },
-  { type: 'component', label: 'Component', dotColor: 'bg-secondary' },
-  { type: 'bug', label: 'Bug', dotColor: 'bg-tertiary' },
-  { type: 'tool', label: 'Tool', dotColor: 'bg-outline' },
-  { type: 'file', label: 'File', dotColor: 'bg-outline' },
   { type: 'spore', label: 'Spore', dotColor: 'bg-primary' },
   { type: 'session', label: 'Session', dotColor: 'bg-secondary' },
   { type: 'other', label: 'Other', dotColor: 'bg-on-surface-variant' },
 ] as const;
 
 const EDGE_TYPES = [
-  { type: 'RELATES_TO', label: 'Relates To' },
-  { type: 'DERIVES_FROM', label: 'Derives From' },
-  { type: 'REFERENCES', label: 'References' },
-  { type: 'DEPENDS_ON', label: 'Depends On' },
-  { type: 'AFFECTS', label: 'Affects' },
+  { type: 'FROM_SESSION', label: 'From Session' },
+  { type: 'DERIVED_FROM', label: 'Derived From' },
+  { type: 'SUPERSEDED_BY', label: 'Superseded By' },
 ] as const;
 
 /* ---------- Types ---------- */

@@ -374,7 +374,15 @@ export async function executePhasedQuery(
       const effectiveMaxTurns = resolved.maxTurns;
       const phaseModel = resolved.model;
       const existingCheckpoint = state.phases[phase.name];
-      const sessionId = existingCheckpoint?.sessionRef ?? phaseSessionId(runId, phase.name);
+      // If the prior attempt failed without producing any turns, its sessionRef
+      // points at a poisoned/never-initialized SDK session. Re-attaching to it
+      // makes the Claude Code subprocess exit 1 immediately, looping forever
+      // under scheduled resumes. Generate a fresh session id instead.
+      const reuseSession = existingCheckpoint?.sessionRef
+        && !(existingCheckpoint.status === 'failed' && (existingCheckpoint.turnsUsed ?? 0) === 0);
+      const sessionId = reuseSession
+        ? existingCheckpoint!.sessionRef!
+        : phaseSessionId(runId, phase.name);
       const effectivePhase = effectiveMaxTurns !== phase.maxTurns
         ? { ...phase, maxTurns: effectiveMaxTurns }
         : phase;

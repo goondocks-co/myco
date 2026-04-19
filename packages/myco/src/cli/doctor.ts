@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isProcessAlive } from './shared.js';
 import { MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
+import { isMycoHookGroup } from '../symbionts/install-helpers.js';
 
 // --- Named constants (no magic literals) ---
 
@@ -27,6 +28,9 @@ const NAME_COL_WIDTH = 17;
 
 /** Prefix for indented continuation lines (e.g. multi-line agent output). */
 const CONTINUATION_INDENT = ' '.repeat(NAME_COL_WIDTH);
+
+/** Marker embedded in Myco-managed plugin-file hook targets (Pi, opencode). */
+const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
 
 // --- Types ---
 
@@ -182,15 +186,32 @@ async function checkAgents(vaultDir: string, config: import('../config/schema.js
   }
 }
 
-/** Check if a symbiont has the Myco MCP server registered. */
-function isSymbiontRegistered(
+/** Check if a symbiont has Myco registration artifacts installed. */
+export function isSymbiontRegistered(
   d: import('../symbionts/detect.js').DetectedSymbiont,
   projectRoot: string,
 ): boolean {
-  try {
-    const mcpTarget = d.manifest.registration?.mcpTarget;
-    if (!mcpTarget) return false;
+  const registration = d.manifest.registration;
+  if (!registration) return false;
 
+  // Most symbionts have native MCP registration. For agents like Pi and
+  // Windsurf that intentionally omit mcpTarget, treat their hook/plugin
+  // registration as the source of truth instead of forcing a false warning.
+  if (registration.mcpTarget) {
+    return isMcpRegistered(d, projectRoot, registration.mcpTarget);
+  }
+  if (registration.hooksTarget) {
+    return isHooksRegistered(d, projectRoot, registration.hooksTarget);
+  }
+  return false;
+}
+
+function isMcpRegistered(
+  d: import('../symbionts/detect.js').DetectedSymbiont,
+  projectRoot: string,
+  mcpTarget: string,
+): boolean {
+  try {
     const mcpFile = path.join(projectRoot, mcpTarget);
     const raw = fs.readFileSync(mcpFile, 'utf-8');
 
@@ -206,6 +227,35 @@ function isSymbiontRegistered(
     const serversKey = d.manifest.registration?.mcpServersKey ?? 'mcpServers';
     const servers = config[serversKey] as Record<string, unknown> | undefined;
     return !!servers?.[MYCO_MCP_SERVER_NAME];
+  } catch { /* config missing or malformed */ }
+  return false;
+}
+
+function isHooksRegistered(
+  d: import('../symbionts/detect.js').DetectedSymbiont,
+  projectRoot: string,
+  hooksTarget: string,
+): boolean {
+  try {
+    const hooksFile = path.join(projectRoot, hooksTarget);
+    const raw = fs.readFileSync(hooksFile, 'utf-8');
+
+    if (d.manifest.registration?.hooksFormat === 'plugin-file') {
+      return raw.includes(MYCO_PLUGIN_FILE_MARKER);
+    }
+
+    const config = JSON.parse(raw) as Record<string, unknown>;
+    const hooks = config.hooks as Record<string, unknown[]> | undefined;
+    if (!hooks) return false;
+
+    return Object.values(hooks).some((groups) =>
+      Array.isArray(groups) &&
+      groups.some((group) =>
+        typeof group === 'object' &&
+        group !== null &&
+        isMycoHookGroup(group as Record<string, unknown>),
+      ),
+    );
   } catch { /* config missing or malformed */ }
   return false;
 }

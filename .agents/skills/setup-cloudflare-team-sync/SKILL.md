@@ -20,8 +20,8 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 - Cloudflare account (free tier covers typical Myco volumes)
 - wrangler CLI installed: `npm install -g wrangler`
 - Authenticated with Cloudflare: `wrangler login`
-- Myco installed and daemon running (`myco start`)
-- Node.js ≥18
+- Myco installed and daemon running (starts automatically on session start)
+- Node.js ≥22
 
 ## Overview
 
@@ -37,40 +37,52 @@ The local `.myco/` vault is always the source of truth. The Cloudflare layer is 
 
 ### 1. Initialize team sync infrastructure
 
+One team member runs this once from the project directory. It provisions the D1 database, Vectorize index, KV namespace, generates an API key, and deploys the Cloudflare Worker — all in one command.
+
 ```bash
 myco team init
 ```
 
-This provisions a D1 database (via `wrangler d1 create`) and a Vectorize index. Credentials are saved to `.myco/secrets.env`. The command is **idempotent** — if D1 already exists, it detects it via `wrangler d1 list --json`.
-
-### 2. Deploy the Cloudflare Worker
+Alternatively, if you installed the standalone team CLI (`npm install -g @goondocks/myco-team`):
 
 ```bash
-wrangler deploy
+myco-team install
 ```
 
-Run from the Worker directory in your Myco installation. Verify by checking the Cloudflare dashboard or calling its URL directly.
+Both call the same function. The command is **idempotent** — if D1 or Vectorize already exist, it detects and reuses them.
 
-### 3. Verify secrets
+On completion, the command outputs a **Worker URL** and **API key**. Share these with teammates.
 
-After `myco team init`, `.myco/secrets.env` contains:
+### 2. Verify secrets
+
+After `myco team init`, two secrets are stored in `.myco/secrets.env`:
 
 ```
-CLOUDFLARE_ACCOUNT_ID=<your-account-id>
-CLOUDFLARE_API_TOKEN=<your-token>
-D1_DATABASE_ID=<database-uuid>
-VECTORIZE_INDEX_NAME=<index-name>
+MYCO_TEAM_API_KEY=<hex-api-key>
+MYCO_TEAM_MCP_TOKEN=<mcp-bearer-token>
 ```
 
-Do **not** copy these into `myco.yaml` — secrets stay in `secrets.env` only.
+The Worker URL and enabled flag are stored in `myco.yaml` under `team:`:
 
-### 4. Verify machine identity
+```yaml
+team:
+  enabled: true
+  worker_url: https://myco-team-xxxxxxxx.workers.dev
+```
 
-Each machine has a unique `machine_id` in `.myco/config`. If two machines share the same ID (e.g., after copying a `.myco/` directory), delete `.myco/config` on the new machine to regenerate it.
+Do **not** move secrets into `myco.yaml` — they stay in `secrets.env` only.
+
+### 3. Verify machine identity
+
+Each machine has a unique `machine_id` stored in `.myco/machine_id`. If two machines share the same ID (e.g., after copying a `.myco/` directory), delete `.myco/machine_id` on the new machine to regenerate it.
 
 ```bash
-myco status   # shows machine_id
+myco stats   # shows machine_id
 ```
+
+### 4. Connect teammates
+
+Each teammate opens the **Team** page in their Myco dashboard, pastes the Worker URL and API key, and clicks **Connect**. On first connect, all existing local knowledge is backfilled.
 
 ### 5. Verify sync is working
 
@@ -134,11 +146,11 @@ Cloudflare credentials must live in `.myco/secrets.env`, never in `myco.yaml`.
 
 ### Machine identity collision
 
-Two machines sharing the same `machine_id` will have colliding sync records in D1. Delete `.myco/config` on the duplicate machine.
+Two machines sharing the same `machine_id` will have colliding sync records in D1. Delete `.myco/machine_id` on the duplicate machine to regenerate it.
 
-### wrangler.toml bindings must match secrets.env names
+### wrangler.toml bindings out of sync after manual edits
 
-If `database_name` or `index_name` in `wrangler.toml` differs from `secrets.env`, the Worker binds to a different resource than the daemon is pushing to — producing a silent data split.
+If `database_name` or `index_name` in `wrangler.toml` was manually edited, the Worker may bind to different resources than expected — producing a silent data split. Use `myco team upgrade` (or `myco-team upgrade`) to re-stage the deployment directory from the canonical source, which patches all bindings correctly.
 
 ## Implementation: The `team_outbox` Table (schema v9)
 

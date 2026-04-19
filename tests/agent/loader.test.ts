@@ -29,7 +29,7 @@ import type { AgentDefinition, AgentTask } from '@myco/agent/types.js';
 // ---------------------------------------------------------------------------
 
 /** Number of built-in task YAML files. */
-const EXPECTED_TASK_COUNT = 12;
+const EXPECTED_TASK_COUNT = 11;
 
 /** Built-in agent name from agent.yaml. */
 const BUILT_IN_AGENT_NAME = 'myco-agent';
@@ -125,13 +125,10 @@ describe('agent loader', () => {
       expect(def.tools).toContain('vault_search_fts');
       expect(def.tools).toContain('vault_search_semantic');
       expect(def.tools).toContain('vault_state');
-      expect(def.tools).toContain('vault_entities');
       expect(def.tools).toContain('vault_edges');
 
       // Write tools
       expect(def.tools).toContain('vault_create_spore');
-      expect(def.tools).toContain('vault_create_entity');
-      expect(def.tools).toContain('vault_create_edge');
       expect(def.tools).toContain('vault_resolve_spore');
       expect(def.tools).toContain('vault_update_session');
       expect(def.tools).toContain('vault_mark_processed');
@@ -194,7 +191,6 @@ describe('agent loader', () => {
       expect(names).toContain('digest-only');
       expect(names).toContain('review-session');
       expect(names).toContain('extract-only');
-      expect(names).toContain('graph-maintenance');
       expect(names).toContain('supersession-sweep');
       expect(names).toContain('title-summary');
     });
@@ -410,7 +406,6 @@ describe('agent loader', () => {
       expect(names).toContain('digest-only');
       expect(names).toContain('review-session');
       expect(names).toContain('extract-only');
-      expect(names).toContain('graph-maintenance');
       expect(names).toContain('supersession-sweep');
       expect(names).toContain('title-summary');
       expect(names).toContain('skill-survey');

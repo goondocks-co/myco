@@ -5,7 +5,6 @@
  *   - listBatchesBySession   (batches.ts)
  *   - listActivitiesByBatch  (activities.ts)
  *   - listEntities           (entities.ts — new mentioned_in + offset filters)
- *   - getEntityWithEdges     (entities.ts — BFS graph traversal)
  *   - listDigestExtracts     (digest-extracts.ts)
  *   - listTurnsByRun         (turns.ts)
  *   - listTasksByAgent     (tasks.ts)
@@ -22,11 +21,7 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertBatch, listBatchesBySession } from '@myco/db/queries/batches.js';
 import { insertActivity, listActivitiesByBatch } from '@myco/db/queries/activities.js';
-import {
-  insertEntity,
-  listEntities,
-  getEntityWithEdges,
-} from '@myco/db/queries/entities.js';
+import { insertEntity, listEntities } from '@myco/db/queries/entities.js';
 import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
 import type { GraphEdgeInsert } from '@myco/db/queries/graph-edges.js';
 import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
@@ -370,77 +365,6 @@ describe('extended list-by-parent query helpers', () => {
       for (const row of page2) {
         expect(page1Ids.has(row.id)).toBe(false);
       }
-    });
-  });
-
-  // =========================================================================
-  // getEntityWithEdges
-  // =========================================================================
-
-  describe('getEntityWithEdges', () => {
-    it('returns null for a non-existent entity', () => {
-      const result = getEntityWithEdges('no-such-entity');
-      expect(result).toBeNull();
-    });
-
-    it('returns center with empty nodes/edges when no edges exist', () => {
-      const center = insertEntity(makeEntity({ name: 'isolated' }));
-      const result = getEntityWithEdges(center.id);
-
-      expect(result).not.toBeNull();
-      expect(result!.center.id).toBe(center.id);
-      expect(result!.nodes).toHaveLength(0);
-      expect(result!.edges).toHaveLength(0);
-    });
-
-    it('returns 1-hop neighbours and edges', () => {
-      const center = insertEntity(makeEntity({ name: 'center' }));
-      const neighbour1 = insertEntity(makeEntity({ name: 'n1' }));
-      const neighbour2 = insertEntity(makeEntity({ name: 'n2' }));
-
-      insertGraphEdge(makeGraphEdge(center.id, neighbour1.id));
-      insertGraphEdge(makeGraphEdge(center.id, neighbour2.id));
-
-      const result = getEntityWithEdges(center.id, 1);
-
-      expect(result).not.toBeNull();
-      expect(result!.center.id).toBe(center.id);
-      expect(result!.edges).toHaveLength(2);
-      expect(result!.nodes).toHaveLength(2);
-      const nodeIds = result!.nodes.map(n => n.id);
-      expect(nodeIds).toContain(neighbour1.id);
-      expect(nodeIds).toContain(neighbour2.id);
-    });
-
-    it('handles incoming edges (target → center)', () => {
-      const center = insertEntity(makeEntity({ name: 'center' }));
-      const source = insertEntity(makeEntity({ name: 'src' }));
-
-      insertGraphEdge(makeGraphEdge(source.id, center.id));
-
-      const result = getEntityWithEdges(center.id, 1);
-
-      expect(result!.edges).toHaveLength(1);
-      expect(result!.nodes).toHaveLength(1);
-      expect(result!.nodes[0].id).toBe(source.id);
-    });
-
-    it('deduplicates edges across BFS iterations', () => {
-      // A — B — C  (depth 2 from A would see edge A-B twice if not deduplicated)
-      const a = insertEntity(makeEntity({ name: 'a' }));
-      const b = insertEntity(makeEntity({ name: 'b' }));
-      const c = insertEntity(makeEntity({ name: 'c' }));
-
-      const edgeAB = insertGraphEdge(makeGraphEdge(a.id, b.id));
-      insertGraphEdge(makeGraphEdge(b.id, c.id));
-
-      const result = getEntityWithEdges(a.id, 2);
-
-      // Edge A-B must appear exactly once
-      const abEdges = result!.edges.filter(e => e.id === edgeAB.id);
-      expect(abEdges).toHaveLength(1);
-      // Total: 2 edges (A-B and B-C)
-      expect(result!.edges).toHaveLength(2);
     });
   });
 

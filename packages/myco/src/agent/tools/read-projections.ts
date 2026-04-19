@@ -1,5 +1,4 @@
 import type { BatchRow } from '@myco/db/queries/batches.js';
-import type { EntityRow } from '@myco/db/queries/entities.js';
 import type { GraphEdgeRow } from '@myco/db/queries/graph-edges.js';
 import type { SporeRow } from '@myco/db/queries/spores.js';
 import type { SessionRow } from '@myco/db/queries/sessions.js';
@@ -69,17 +68,6 @@ export function projectSporeForAgent(
       ? { context_preview: truncateProjectionText(spore.context, SPORE_CONTEXT_PREVIEW_CHARS) }
       : {}),
     created_at: spore.created_at,
-  };
-}
-
-export function projectEntityForAgent(entity: EntityRow): Record<string, unknown> {
-  return {
-    id: entity.id,
-    type: entity.type,
-    name: entity.name,
-    status: entity.status,
-    first_seen: entity.first_seen,
-    last_seen: entity.last_seen,
   };
 }
 

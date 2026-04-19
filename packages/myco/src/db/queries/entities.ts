@@ -7,7 +7,6 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
-import { getGraphForNode, type GraphEdgeRow } from '@myco/db/queries/graph-edges.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
@@ -61,13 +60,6 @@ export interface ListEntitiesOptions {
   note_type?: string;
   limit?: number;
   offset?: number;
-}
-
-/** Return type for `getEntityWithEdges`. */
-export interface EntityGraph {
-  center: EntityRow;
-  nodes: EntityRow[];
-  edges: GraphEdgeRow[];
 }
 
 // ---------------------------------------------------------------------------
@@ -237,46 +229,3 @@ export function listEntities(
   return rows.map(toEntityRow);
 }
 
-/**
- * Fetch an entity and its surrounding graph via BFS traversal.
- *
- * Delegates to `getGraphForNode` (graph_edges table) for the BFS,
- * then fetches entity rows for all connected entity nodes.
- *
- * @param entityId - The center entity to expand from.
- * @param depth    - Number of hops to traverse (1-3, default 1).
- * @returns `{ center, nodes, edges }` where nodes are all connected entities
- *          (excluding center) and edges are deduplicated across BFS iterations.
- */
-export function getEntityWithEdges(
-  entityId: string,
-  depth = 1,
-): EntityGraph | null {
-  const db = getDatabase();
-
-  const center = getEntity(entityId);
-  if (center === null) return null;
-
-  const clampedDepth = Math.min(Math.max(depth, 1), 3);
-  const graph = getGraphForNode(entityId, 'entity', { depth: clampedDepth });
-
-  // Collect all entity node IDs from edges (excluding center)
-  const nodeIdSet = new Set<string>();
-  for (const edge of graph.edges) {
-    if (edge.source_type === 'entity' && edge.source_id !== entityId) nodeIdSet.add(edge.source_id);
-    if (edge.target_type === 'entity' && edge.target_id !== entityId) nodeIdSet.add(edge.target_id);
-  }
-
-  // Fetch all connected entity nodes
-  const nodeIds = Array.from(nodeIdSet);
-  let nodes: EntityRow[] = [];
-  if (nodeIds.length > 0) {
-    const placeholders = nodeIds.map(() => `?`).join(', ');
-    const nodeRows = db.prepare(
-      `SELECT ${SELECT_COLUMNS} FROM entities WHERE id IN (${placeholders})`,
-    ).all(...nodeIds) as Record<string, unknown>[];
-    nodes = nodeRows.map(toEntityRow);
-  }
-
-  return { center, nodes, edges: graph.edges };
-}

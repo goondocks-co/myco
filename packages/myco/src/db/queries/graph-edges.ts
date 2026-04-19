@@ -29,16 +29,19 @@ const MAX_BFS_DEPTH = 5;
 // ---------------------------------------------------------------------------
 
 /** Valid node types in the graph. */
-export type GraphNodeType = 'session' | 'batch' | 'spore' | 'entity';
+export type GraphNodeType = 'session' | 'batch' | 'spore';
 
-/** Lineage edge types (auto-created by daemon, no LLM). */
-export type LineageEdgeType = 'FROM_SESSION' | 'EXTRACTED_FROM' | 'DERIVED_FROM' | 'HAS_BATCH';
+/** Lineage edge types (daemon-created, no LLM). */
+export type LineageEdgeType =
+  | 'FROM_SESSION'
+  | 'EXTRACTED_FROM'
+  | 'DERIVED_FROM'
+  | 'HAS_BATCH'
+  | 'SUPERSEDED_BY';
 
-/** Semantic edge types (created by intelligence agent, LLM-driven). */
-export type SemanticEdgeType = 'RELATES_TO' | 'SUPERSEDED_BY' | 'REFERENCES' | 'DEPENDS_ON' | 'AFFECTS';
-
-/** All valid graph edge types. */
-export type GraphEdgeType = LineageEdgeType | SemanticEdgeType;
+/** All valid graph edge types. Only lineage types are produced today;
+ * the semantic layer was retired in schema v21. */
+export type GraphEdgeType = LineageEdgeType;
 
 /** Fields required (or optional) when inserting a graph edge. */
 export interface GraphEdgeInsert {

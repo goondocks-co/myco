@@ -329,4 +329,23 @@ export async function initD1Schema(db: D1Database): Promise<void> {
   )
     .bind(CANDIDATE_STATUS.APPROVED, CANDIDATE_STATUS.GENERATED)
     .run();
+
+  // One-shot prune: mirrors the local v21 migration. Marker-guarded so
+  // repeated Worker invocations no-op after the first successful prune.
+  const marker = await db
+    .prepare(`SELECT value FROM team_config WHERE key = ?`)
+    .bind('semantic_graph_pruned')
+    .first<{ value: string }>();
+
+  if (!marker) {
+    await db.batch([
+      db.prepare(
+        `DELETE FROM graph_edges WHERE type IN ('REFERENCES', 'AFFECTS', 'DEPENDS_ON', 'RELATES_TO')`,
+      ),
+      db.prepare(`DELETE FROM entities`),
+      db
+        .prepare(`INSERT INTO team_config (key, value) VALUES (?, ?)`)
+        .bind('semantic_graph_pruned', '1'),
+    ]);
+  }
 }

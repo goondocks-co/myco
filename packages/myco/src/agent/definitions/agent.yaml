@@ -5,8 +5,8 @@ name: myco-agent
 displayName: Myco Agent
 description: >
   Default intelligence agent that processes captured session data, extracts
-  observations (spores), builds the knowledge graph, manages spore lifecycle,
-  and synthesizes digest extracts.
+  observations (spores), manages spore lifecycle, and synthesizes digest
+  extracts.
 model: claude-sonnet-4-20250514
 maxTurns: 30
 timeoutSeconds: 300
@@ -21,14 +21,11 @@ tools:
   - vault_search_fts
   - vault_search_semantic
   - vault_state
-  - vault_entities
   - vault_edges
   - vault_skill_candidates
   - vault_skill_records
   # Write tools
   - vault_create_spore
-  - vault_create_entity
-  - vault_create_edge
   - vault_resolve_spore
   - vault_update_session
   - vault_mark_processed
