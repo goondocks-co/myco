@@ -16,6 +16,7 @@
 import { createHash } from 'node:crypto';
 import { CONTENT_HASH_ALGORITHM, epochSeconds } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import { batchExecute } from '@myco/intelligence/batch.js';
 import type { Logger } from '../logger.js';
 import {
   EMBEDDABLE_NAMESPACES,
@@ -35,6 +36,7 @@ import {
 
 /** Spore status that qualifies for embedding. */
 const ACTIVE_STATUS = 'active';
+const EMBEDDING_MANAGER_CONCURRENCY = 2;
 
 // ---------------------------------------------------------------------------
 // EmbeddingManager
@@ -54,6 +56,55 @@ export class EmbeddingManager {
 
   private contentHash(text: string): string {
     return createHash(CONTENT_HASH_ALGORITHM).update(text).digest('hex');
+  }
+
+  private totalPendingCount(): number {
+    return EMBEDDABLE_NAMESPACES.reduce(
+      (sum, namespace) => sum + this.recordSource.getPendingCount(namespace),
+      0,
+    );
+  }
+
+  private async embedRecords(
+    namespace: EmbeddableNamespace,
+    records: Array<{ id: string; text: string; metadata: DomainMetadata }>,
+    options: { markEmbedded: boolean },
+  ): Promise<{ processed: number; unavailable: boolean }> {
+    if (records.length === 0) return { processed: 0, unavailable: false };
+
+    const result = await batchExecute(
+      records,
+      async (record) => {
+        const embedding = await this.embeddingProvider.embed(record.text);
+        if (embedding === null) return { unavailable: true } as const;
+
+        this.vectorStore.upsert(namespace, record.id, embedding, {
+          model: this.embeddingProvider.model,
+          provider: this.embeddingProvider.providerName,
+          dimensions: this.embeddingProvider.dimensions,
+          content_hash: this.contentHash(record.text),
+          embedded_at: epochSeconds(),
+          domain_metadata: record.metadata,
+        });
+
+        if (options.markEmbedded) {
+          this.recordSource.markEmbedded(namespace, record.id);
+        }
+
+        return { unavailable: false } as const;
+      },
+      { concurrency: EMBEDDING_MANAGER_CONCURRENCY },
+    );
+
+    let processed = 0;
+    let unavailable = false;
+    for (const entry of result.results) {
+      if (entry.status !== 'fulfilled') continue;
+      if (entry.value.unavailable) unavailable = true;
+      else processed++;
+    }
+
+    return { processed, unavailable };
   }
 
   // -------------------------------------------------------------------------
@@ -169,35 +220,19 @@ export class EmbeddingManager {
     for (const namespace of EMBEDDABLE_NAMESPACES) {
       // Phase 1: Embed missing rows
       const rows = this.recordSource.getEmbeddableRows(namespace, batchSize);
-
-      for (const row of rows) {
-        const embedding = await this.embeddingProvider.embed(row.text);
-        if (embedding === null) {
-          this.logger.warn(LOG_KINDS.EMBEDDING_PROVIDER, 'Provider unavailable during reconcile, returning partial progress', {
-            namespace,
-            embedded,
-          });
-          return {
-            embedded,
-            stale_reembedded,
-            orphans_cleaned,
-            duration_ms: Date.now() - start,
-          };
-        }
-
-        const hash = this.contentHash(row.text);
-
-        this.vectorStore.upsert(namespace, row.id, embedding, {
-          model: currentModel,
-          provider: this.embeddingProvider.providerName,
-          dimensions: this.embeddingProvider.dimensions,
-          content_hash: hash,
-          embedded_at: epochSeconds(),
-          domain_metadata: row.metadata,
+      const embeddedBatch = await this.embedRecords(namespace, rows, { markEmbedded: true });
+      embedded += embeddedBatch.processed;
+      if (embeddedBatch.unavailable) {
+        this.logger.warn(LOG_KINDS.EMBEDDING_PROVIDER, 'Provider unavailable during reconcile, returning partial progress', {
+          namespace,
+          embedded,
         });
-
-        this.recordSource.markEmbedded(namespace, row.id);
-        embedded++;
+        return {
+          embedded,
+          stale_reembedded,
+          orphans_cleaned,
+          duration_ms: Date.now() - start,
+        };
       }
 
       // Phase 2: Re-embed stale vectors (model mismatch)
@@ -206,31 +241,19 @@ export class EmbeddingManager {
         const records = this.recordSource.getRecordContent(namespace, staleIds);
         const foundIds = new Set(records.map((r) => r.id));
 
-        for (const record of records) {
-          const embedding = await this.embeddingProvider.embed(record.text);
-          if (embedding === null) {
-            this.logger.warn(LOG_KINDS.EMBEDDING_PROVIDER, 'Provider unavailable during stale re-embed, returning partial progress', {
-              namespace,
-              stale_reembedded,
-            });
-            return {
-              embedded,
-              stale_reembedded,
-              orphans_cleaned,
-              duration_ms: Date.now() - start,
-            };
-          }
-
-          this.vectorStore.upsert(namespace, record.id, embedding, {
-            model: currentModel,
-            provider: this.embeddingProvider.providerName,
-            dimensions: this.embeddingProvider.dimensions,
-            content_hash: this.contentHash(record.text),
-            embedded_at: epochSeconds(),
-            domain_metadata: record.metadata,
+        const staleBatch = await this.embedRecords(namespace, records, { markEmbedded: false });
+        stale_reembedded += staleBatch.processed;
+        if (staleBatch.unavailable) {
+          this.logger.warn(LOG_KINDS.EMBEDDING_PROVIDER, 'Provider unavailable during stale re-embed, returning partial progress', {
+            namespace,
+            stale_reembedded,
           });
-
-          stale_reembedded++;
+          return {
+            embedded,
+            stale_reembedded,
+            orphans_cleaned,
+            duration_ms: Date.now() - start,
+          };
         }
 
         // Clean stale vectors whose source records no longer exist
@@ -253,12 +276,18 @@ export class EmbeddingManager {
     const duration_ms = Date.now() - start;
 
     if (embedded > 0 || stale_reembedded > 0 || orphans_cleaned > 0) {
-      this.logger.info(LOG_KINDS.EMBEDDING_RECONCILE, 'Reconcile cycle completed', {
-        embedded,
-        stale_reembedded,
-        orphans_cleaned,
-        duration_ms,
-      });
+      this.logger.info(
+        LOG_KINDS.EMBEDDING_RECONCILE,
+        `Reconcile cycle completed: ${embedded} embedded, ${stale_reembedded} stale re-embedded, ${orphans_cleaned} orphan vectors cleaned in ${duration_ms}ms (batch=${batchSize}, concurrency=${EMBEDDING_MANAGER_CONCURRENCY})`,
+        {
+          batch_size: batchSize,
+          concurrency: EMBEDDING_MANAGER_CONCURRENCY,
+          embedded,
+          stale_reembedded,
+          orphans_cleaned,
+          duration_ms,
+        },
+      );
     }
 
     return { embedded, stale_reembedded, orphans_cleaned, duration_ms };
@@ -286,8 +315,13 @@ export class EmbeddingManager {
   rebuildAll(): { queued: number } {
     const { cleared } = this.vectorStore.clear();
     this.recordSource.clearAllEmbedded();
+    const pending = this.totalPendingCount();
 
-    this.logger.info(LOG_KINDS.EMBEDDING_REBUILD, 'Rebuild started', { cleared });
+    this.logger.info(
+      LOG_KINDS.EMBEDDING_REBUILD,
+      `Rebuild started: cleared ${cleared} vectors, ${pending} records pending re-embed`,
+      { cleared, pending, concurrency: EMBEDDING_MANAGER_CONCURRENCY },
+    );
 
     return { queued: cleared };
   }
@@ -305,28 +339,14 @@ export class EmbeddingManager {
 
       const records = this.recordSource.getRecordContent(namespace, staleIds);
 
-      for (const record of records) {
-        const embedding = await this.embeddingProvider.embed(record.text);
-        if (embedding === null) {
-          this.logger.warn(LOG_KINDS.EMBEDDING_PROVIDER, 'Provider unavailable during re-embed', {
-            namespace,
-            reembedded,
-          });
-          return { reembedded };
-        }
-
-        const hash = this.contentHash(record.text);
-
-        this.vectorStore.upsert(namespace, record.id, embedding, {
-          model: currentModel,
-          provider: this.embeddingProvider.providerName,
-          dimensions: this.embeddingProvider.dimensions,
-          content_hash: hash,
-          embedded_at: epochSeconds(),
-          domain_metadata: record.metadata,
+      const staleBatch = await this.embedRecords(namespace, records, { markEmbedded: false });
+      reembedded += staleBatch.processed;
+      if (staleBatch.unavailable) {
+        this.logger.warn(LOG_KINDS.EMBEDDING_PROVIDER, 'Provider unavailable during re-embed', {
+          namespace,
+          reembedded,
         });
-
-        reembedded++;
+        return { reembedded };
       }
     }
 

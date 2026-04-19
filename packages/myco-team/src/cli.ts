@@ -62,6 +62,8 @@ const LEGACY_TEAM_DEPLOY_DIR = '.team-worker';
 const TEAM_CONFIG_VERSION = 1;
 const TEAM_MCP_ROTATION_RETRY_ATTEMPTS = 10;
 const TEAM_MCP_ROTATION_RETRY_DELAY_MS = 1500;
+const TEAM_VECTOR_REINDEX_BATCH_SIZE = 100;
+const TEAM_VECTOR_REINDEX_TABLES = ['spores', 'sessions', 'plans', 'artifacts', 'skill_records'] as const;
 
 /** Regex to match wrangler.toml name field. */
 const TOML_NAME_REGEX = /^name\s*=\s*"[^"]*"/m;
@@ -237,6 +239,57 @@ async function rotateMcpTokenWithRetry(workerUrl: string, apiKey: string): Promi
   }
 
   throw lastError ?? new Error('MCP token rotation failed');
+}
+
+async function reindexWorkerVectors(vaultDir: string, workerUrlOverride?: string): Promise<void> {
+  const config = workerUrlOverride ? null : requireLocalConfig(vaultDir);
+  const secrets = readSecrets(vaultDir);
+  const apiKey = secrets[TEAM_API_KEY_SECRET];
+  if (!apiKey) {
+    throw new Error(`Missing ${TEAM_API_KEY_SECRET} secret in ${vaultDir}`);
+  }
+  const workerUrl = workerUrlOverride ?? config?.worker_url;
+  if (!workerUrl) {
+    throw new Error('No team worker URL configured');
+  }
+
+  for (const table of TEAM_VECTOR_REINDEX_TABLES) {
+    let cursor: string | null = null;
+    let processed = 0;
+    let reindexed = 0;
+    let deleted = 0;
+
+    while (true) {
+      const response = await fetch(`${workerUrl.replace(/\/+$/, '')}/vectors/reindex`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({ table, limit: TEAM_VECTOR_REINDEX_BATCH_SIZE, cursor }),
+        signal: AbortSignal.timeout(WRANGLER_COMMAND_TIMEOUT_MS),
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`Worker vector reindex failed for ${table}: ${response.status} ${body}`);
+      }
+
+      const body = await response.json() as {
+        processed: number;
+        reindexed: number;
+        deleted: number;
+        next_cursor: string | null;
+      };
+      processed += body.processed;
+      reindexed += body.reindexed;
+      deleted += body.deleted;
+      cursor = body.next_cursor;
+      if (!cursor) break;
+    }
+
+    console.log(`  ✓ Reindexed ${table}: ${reindexed} upserted, ${deleted} deleted (${processed} processed)`);
+  }
 }
 
 /** Run a wrangler command and return stdout. Throws on failure, surfacing stderr. */
@@ -624,7 +677,15 @@ export async function teamUpgrade(vaultDir: string): Promise<void> {
   }
   console.log(`Worker deployed: ${result.worker_url}`);
   console.log(`Version: ${result.version}`);
+  console.log('Refreshing remote Vectorize metadata...');
+  await reindexWorkerVectors(vaultDir, result.worker_url);
   console.log('\nUpgrade complete.');
+}
+
+export async function teamReindexVectors(vaultDir: string): Promise<void> {
+  console.log('Reindexing remote team vectors...\n');
+  await reindexWorkerVectors(vaultDir);
+  console.log('\nRemote vector reindex complete.');
 }
 
 export async function teamStatus(vaultDir: string): Promise<void> {

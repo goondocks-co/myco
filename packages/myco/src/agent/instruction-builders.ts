@@ -15,13 +15,14 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 import { listCandidates } from '@myco/db/queries/skill-candidates.js';
 import { buildScheduledCortexInstruction } from '@myco/context/cortex-brief.js';
-import { countSpores, getSpore, listSporeIdsSince, listSpores } from '@myco/db/queries/spores.js';
+import { countSpores, getSpore, listSpores } from '@myco/db/queries/spores.js';
 import { countSessions, getSession, listSessions } from '@myco/db/queries/sessions.js';
 import { listSkillRecords } from '@myco/db/queries/skill-records.js';
 import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import { getState, setState } from '@myco/db/queries/agent-state.js';
 import { epochSeconds } from '@myco/constants.js';
+import { shortlistSemanticIds, type SemanticShortlistProvider } from '@myco/agent/semantic-shortlist.js';
 import {
   descriptionSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
@@ -302,7 +303,13 @@ export function buildSkillSurveyInstruction(
 // ---------------------------------------------------------------------------
 
 export const SKILL_EVOLVE_DEFAULT_ASSESS_INTERVAL_HOURS = 24;
-export const SKILL_EVOLVE_DEFAULT_MAX_SKILLS_PER_RUN = 8;
+export const SKILL_EVOLVE_DEFAULT_MAX_SKILLS_PER_RUN = 3;
+const SKILL_EVOLVE_RECENT_SPORE_SCAN_LIMIT = 40;
+const SKILL_EVOLVE_RELEVANT_SPORE_LIMIT = 10;
+const SKILL_EVOLVE_SEMANTIC_OVERFETCH = 4;
+// Keep semantic shortlist rank-based rather than gated on an absolute
+// similarity cutoff — cosine scores vary across embedding models.
+const SKILL_EVOLVE_SEMANTIC_THRESHOLD = 0;
 
 const SECONDS_PER_HOUR = 3600;
 
@@ -313,6 +320,7 @@ interface SkillAssessmentEntry {
   generation: number;
   description: string;
   newSporeIds: string[];
+  lastAssessedAt: number;
 }
 
 /** Pre-computed overlap between two skills for the inventory phase. */
@@ -331,6 +339,80 @@ interface SkillStructure {
   sectionCount: number;
   headings: string[];
   narrow: boolean;
+}
+
+function normalizeSkillName(name: string): string {
+  return name.replace(/[-_:]+/g, ' ');
+}
+
+function buildSporeSearchText(spore: {
+  observation_type: string;
+  content: string;
+  context: string | null;
+  tags: string | null;
+  file_path: string | null;
+}): string {
+  return [spore.observation_type, spore.content, spore.context, spore.tags, spore.file_path]
+    .filter(Boolean)
+    .join(' ');
+}
+
+function selectRelevantSporeIdsByLexicalOverlap(
+  skill: { name: string; description: string },
+  recentSpores: ReturnType<typeof listSpores>,
+): string[] {
+  if (recentSpores.length === 0) return [];
+
+  const skillName = normalizeSkillName(skill.name);
+  const skillQuery = `${skillName} ${skill.description}`;
+
+  return recentSpores
+    .map((spore) => {
+      const sporeText = buildSporeSearchText(spore);
+      const descriptionScore = descriptionSimilarity(skillQuery, sporeText);
+      const nameScore = descriptionSimilarity(skillName, sporeText);
+      const totalScore = descriptionScore + (nameScore * 1.5);
+      return { id: spore.id, totalScore, createdAt: spore.created_at, importance: spore.importance };
+    })
+    .filter((candidate) => candidate.totalScore > 0)
+    .sort((a, b) => {
+      if (b.totalScore !== a.totalScore) return b.totalScore - a.totalScore;
+      if (b.importance !== a.importance) return b.importance - a.importance;
+      return b.createdAt - a.createdAt;
+    })
+    .slice(0, SKILL_EVOLVE_RELEVANT_SPORE_LIMIT)
+    .map((candidate) => candidate.id);
+}
+
+async function selectRelevantSporeIdsForSkill(
+  skill: { name: string; description: string },
+  sinceEpoch: number,
+  retrievalProvider?: SemanticSearchProvider,
+): Promise<string[]> {
+  const recentSpores = listSpores({
+    status: 'active',
+    since: sinceEpoch,
+    includeActive: false,
+    limit: SKILL_EVOLVE_RECENT_SPORE_SCAN_LIMIT,
+  });
+  if (recentSpores.length === 0) return [];
+
+  const semanticIds = await shortlistSemanticIds({
+    provider: retrievalProvider,
+    namespace: 'spores',
+    query: `${normalizeSkillName(skill.name)} ${skill.description}`,
+    candidateIds: new Set(recentSpores.map(spore => spore.id)),
+    maxResults: SKILL_EVOLVE_RELEVANT_SPORE_LIMIT,
+    overFetch: SKILL_EVOLVE_SEMANTIC_OVERFETCH,
+    threshold: SKILL_EVOLVE_SEMANTIC_THRESHOLD,
+    filters: {
+      status: 'active',
+      created_at_gte: sinceEpoch,
+    },
+  });
+  if (semanticIds.length > 0) return semanticIds;
+
+  return selectRelevantSporeIdsByLexicalOverlap(skill, recentSpores);
 }
 
 /** Minimum H2 section count for a skill to be considered broad enough. */
@@ -400,15 +482,15 @@ function headingOverlap(
  * Optional embedding similarity provider. Decoupled from EmbeddingManager
  * so the instruction builder doesn't depend on the daemon's embedding module.
  */
-export interface SkillSimilarityProvider {
+export interface SemanticSearchProvider extends SemanticShortlistProvider {
   pairwiseSimilarity(namespace: string, threshold?: number): Array<{ idA: string; idB: string; similarity: number }>;
 }
 
-export function buildSkillEvolveInstruction(
+export async function buildSkillEvolveInstruction(
   params?: Record<string, string | number | boolean>,
   projectRoot?: string,
-  similarityProvider?: SkillSimilarityProvider,
-): string {
+  retrievalProvider?: SemanticSearchProvider,
+): Promise<string> {
   const assessIntervalHours = Number(params?.assess_interval_hours ?? SKILL_EVOLVE_DEFAULT_ASSESS_INTERVAL_HOURS);
   const maxSkillsPerRun = Number(params?.max_skills_per_run ?? SKILL_EVOLVE_DEFAULT_MAX_SKILLS_PER_RUN);
 
@@ -431,7 +513,7 @@ export function buildSkillEvolveInstruction(
 
     if (lastAssessedAt > 0 && (now - lastAssessedAt) < intervalSeconds) continue;
 
-    const newSporeIds = listSporeIdsSince(knowledgeWatermark, 10);
+    const newSporeIds = await selectRelevantSporeIdsForSkill(skill, knowledgeWatermark, retrievalProvider);
     if (newSporeIds.length === 0) continue;
 
     needsAssessment.push({
@@ -440,14 +522,14 @@ export function buildSkillEvolveInstruction(
       generation: skill.generation,
       description: skill.description,
       newSporeIds,
+      lastAssessedAt,
     });
-
-    if (needsAssessment.length >= maxSkillsPerRun) {
-      break;
-    }
   }
 
-  if (needsAssessment.length === 0) {
+  needsAssessment.sort((a, b) => a.lastAssessedAt - b.lastAssessedAt);
+  const selectedSkills = needsAssessment.slice(0, maxSkillsPerRun);
+
+  if (selectedSkills.length === 0) {
     return 'No skills need assessment. All active skills are current or were recently assessed. Report skip via vault_report and finish.';
   }
 
@@ -505,12 +587,12 @@ export function buildSkillEvolveInstruction(
   }
 
   const parts: string[] = [
-    `${needsAssessment.length} skill(s) need assessment.`,
+    `${selectedSkills.length} skill(s) need assessment.`,
     `assess_interval_hours: ${assessIntervalHours}`,
     `max_skills_per_run: ${maxSkillsPerRun}`,
   ];
 
-  for (const skill of needsAssessment) {
+  for (const skill of selectedSkills) {
     parts.push('');
     parts.push('---');
     parts.push(`## Skill: ${skill.name} (gen ${skill.generation})`);
@@ -562,12 +644,12 @@ export function buildSkillEvolveInstruction(
   // Semantic similarity from embeddings — strongest signal for overlap detection.
   // Uses cosine similarity on embedded skill descriptions. Catches semantic
   // overlap that token-based methods miss ("adding agent integration" ~= "onboarding a symbiont").
-  if (similarityProvider) {
+  if (retrievalProvider) {
     // Build a name→id lookup for resolving embedding results
     const idToName = new Map(allSkills.map(s => [s.id, s.name]));
 
     try {
-      const semanticPairs = similarityProvider.pairwiseSimilarity('skill_records', 0.65);
+      const semanticPairs = retrievalProvider.pairwiseSimilarity('skill_records', 0.65);
       if (semanticPairs.length > 0) {
         parts.push('');
         parts.push('## Semantic Similarity (embedding cosine distance)');
@@ -608,7 +690,7 @@ export async function buildTaskInstruction(
   taskParams?: Record<string, string | number | boolean>,
   agentId?: string,
   projectRoot?: string,
-  similarityProvider?: SkillSimilarityProvider,
+  retrievalProvider?: SemanticSearchProvider,
   config?: MycoConfig,
   getTeamClient?: () => TeamSyncClient | null,
 ): Promise<BuiltTaskInstruction | undefined> {
@@ -618,7 +700,7 @@ export async function buildTaskInstruction(
     case SKILL_SURVEY_TASK:
       return agentId ? buildSkillSurveyInstruction(agentId) : undefined;
     case SKILL_EVOLVE_TASK: {
-      const instruction = buildSkillEvolveInstruction(taskParams, projectRoot, similarityProvider);
+      const instruction = await buildSkillEvolveInstruction(taskParams, projectRoot, retrievalProvider);
       return instruction ? { instruction } : undefined;
     }
     case CORTEX_INSTRUCTIONS_TASK: {

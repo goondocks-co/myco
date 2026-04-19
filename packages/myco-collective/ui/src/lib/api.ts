@@ -107,6 +107,21 @@ export function upsertSetting(body: {
   return requestJson<Record<string, unknown>>('/settings', { method: 'PUT', body: JSON.stringify(body) });
 }
 
-export function runSearch(body: { tool: 'collective_search'; args: { query: string; project?: string; limit?: number } }): Promise<SearchResponse> {
+export function runSearch(body: {
+  tool: 'collective_search';
+  args: {
+    query: string;
+    project?: string;
+    limit?: number;
+    types?: string[];
+    status?: string;
+    observation_type?: string;
+    since?: number;
+    until?: number;
+    session_id?: string;
+    source_path?: string;
+    name?: string;
+  };
+}): Promise<SearchResponse> {
   return requestJson<SearchResponse>('/query', { method: 'POST', body: JSON.stringify(body) });
 }

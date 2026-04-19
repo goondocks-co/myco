@@ -15,6 +15,7 @@ import { getSession, listSessions, getActiveSessionIds } from '@myco/db/queries/
 import { getStatesForAgent } from '@myco/db/queries/agent-state.js';
 import { fullTextSearch, hydrateSearchResults, sanitizeFtsQuery } from '@myco/db/queries/search.js';
 import { errorMessage } from '@myco/utils/error-message.js';
+import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
 import { textResult, type VaultToolDeps } from './types.js';
 import {
@@ -252,6 +253,11 @@ export function createReadTools(deps: VaultToolDeps) {
       namespace: z.string().optional().describe('Restrict to a content type: spores, sessions, plans, artifacts, skill_records. Omit to search all.'),
       limit: z.number().optional().describe('Maximum results to return'),
       include_active: z.boolean().optional().describe('Include results from sessions still in active status (default: false)'),
+      status: z.string().optional().describe('Optional metadata filter, e.g. active/superseded for spores and skill_records.'),
+      session_id: z.string().optional().describe('Optional metadata filter for a linked session id.'),
+      observation_type: z.string().optional().describe('Optional metadata filter for spore observation type.'),
+      since: z.number().optional().describe('Optional created_at lower bound (epoch seconds).'),
+      until: z.number().optional().describe('Optional created_at upper bound (epoch seconds).'),
     },
     async (args) => {
       if (!embeddingManager) {
@@ -265,6 +271,14 @@ export function createReadTools(deps: VaultToolDeps) {
         const searchLimit = args.limit ?? DEFAULT_SEARCH_LIMIT;
         const excludeActive = args.include_active !== true;
         const activeIds = excludeActive ? getActiveSessionIds() : new Set<string>();
+        const metadataFilters = {
+          ...(args.status !== undefined ? { status: args.status } : {}),
+          ...(args.session_id !== undefined ? { session_id: args.session_id } : {}),
+          ...(args.observation_type !== undefined ? { observation_type: args.observation_type } : {}),
+          ...(args.since !== undefined ? { created_at_gte: args.since } : {}),
+          ...(args.until !== undefined ? { created_at_lte: args.until } : {}),
+        };
+        const vectorFilters = hasSemanticSearchFilters(metadataFilters) ? metadataFilters : undefined;
 
         // Fire local and team search in parallel
         const [rawLocalResults, teamResults] = await Promise.all([
@@ -273,10 +287,19 @@ export function createReadTools(deps: VaultToolDeps) {
               namespace: args.namespace,
               limit: searchLimit,
               threshold: SEARCH_SIMILARITY_THRESHOLD,
+              filters: vectorFilters,
             }).map((r) => ({ ...r, source: 'local' as const })),
           ),
           teamClient
-            ? teamClient.search(args.query, { limit: searchLimit })
+            ? teamClient.search(args.query, {
+                limit: searchLimit,
+                tables: args.namespace ? [args.namespace] : undefined,
+                status: args.status,
+                observation_type: args.observation_type,
+                since: args.since,
+                until: args.until,
+                session_id: args.session_id,
+              })
                 .then((res) => res.results.map((r) => ({ ...r, source: `${TEAM_SOURCE_PREFIX}${r.machine_id}` })))
                 .catch(() => [] as Array<Record<string, unknown>>)
             : Promise.resolve([] as Array<Record<string, unknown>>),
@@ -289,7 +312,11 @@ export function createReadTools(deps: VaultToolDeps) {
             })
           : rawLocalResults;
 
-        const hydratedLocalResults = hydrateSearchResults(localResults).map((r) => ({
+        const filteredLocalResults = vectorFilters
+          ? localResults.filter((r) => matchesSemanticSearchFilters(r.metadata, metadataFilters))
+          : localResults;
+
+        const hydratedLocalResults = hydrateSearchResults(filteredLocalResults).map((r) => ({
           ...r,
           source: 'local' as const,
         }));
@@ -304,6 +331,13 @@ export function createReadTools(deps: VaultToolDeps) {
             const sid = (r as { metadata?: { session_id?: unknown } }).metadata?.session_id;
             return typeof sid !== 'string' || !activeIds.has(sid);
           });
+        }
+
+        if (vectorFilters) {
+          dedupedTeam = dedupedTeam.filter((r) => matchesSemanticSearchFilters(
+            (r as { metadata?: Record<string, unknown> }).metadata,
+            metadataFilters,
+          ));
         }
 
         const merged = [

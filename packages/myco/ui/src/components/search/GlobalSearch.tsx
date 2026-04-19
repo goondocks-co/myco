@@ -3,9 +3,16 @@ import { useNavigate } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
 import { Input } from '../ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../ui/select';
 import { Toggle } from '../ui/toggle';
 import { SearchResults } from './SearchResults';
-import { useSearch, type SearchResult } from '../../hooks/use-search';
+import { useSearch, type SearchResult, type SemanticRecentWindow } from '../../hooks/use-search';
 
 /** Debounce delay (ms) before firing a search query. */
 const SEARCH_DEBOUNCE_MS = 300;
@@ -14,6 +21,34 @@ const SEARCH_DEBOUNCE_MS = 300;
 const SEARCH_RESULTS_LIMIT = 20;
 
 type SearchMode = 'semantic' | 'fts';
+type SemanticNamespace = 'all' | 'spores' | 'sessions' | 'plans' | 'artifacts' | 'skill_records';
+type SporeObservationType = 'all' | 'decision' | 'gotcha' | 'discovery' | 'bug_fix' | 'trade_off' | 'cross-cutting';
+
+const NAMESPACE_OPTIONS: Array<{ value: SemanticNamespace; label: string }> = [
+  { value: 'all', label: 'All types' },
+  { value: 'spores', label: 'Spores' },
+  { value: 'sessions', label: 'Sessions' },
+  { value: 'plans', label: 'Plans' },
+  { value: 'artifacts', label: 'Artifacts' },
+  { value: 'skill_records', label: 'Skills' },
+];
+
+const RECENT_OPTIONS: Array<{ value: SemanticRecentWindow; label: string }> = [
+  { value: 'any', label: 'Any time' },
+  { value: '24h', label: '24 hours' },
+  { value: '7d', label: '7 days' },
+  { value: '30d', label: '30 days' },
+];
+
+const SPORE_OBSERVATION_OPTIONS: Array<{ value: SporeObservationType; label: string }> = [
+  { value: 'all', label: 'All spore types' },
+  { value: 'decision', label: 'Decision' },
+  { value: 'gotcha', label: 'Gotcha' },
+  { value: 'discovery', label: 'Discovery' },
+  { value: 'bug_fix', label: 'Bug fix' },
+  { value: 'trade_off', label: 'Trade-off' },
+  { value: 'cross-cutting', label: 'Cross-cutting' },
+];
 
 function getResultPath(result: SearchResult): string {
   switch (result.type) {
@@ -46,6 +81,9 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
   const [inputValue, setInputValue] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [mode, setMode] = useState<SearchMode>('semantic');
+  const [namespace, setNamespace] = useState<SemanticNamespace>('all');
+  const [observationType, setObservationType] = useState<SporeObservationType>('all');
+  const [recentWindow, setRecentWindow] = useState<SemanticRecentWindow>('any');
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -62,13 +100,24 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
     if (open) {
       setInputValue('');
       setDebouncedQuery('');
+      setNamespace('all');
+      setObservationType('all');
+      setRecentWindow('any');
       setHighlightedIndex(0);
       // Focus input after portal renders
       setTimeout(() => inputRef.current?.focus(), 50);
     }
   }, [open]);
 
-  const { data, isLoading } = useSearch(debouncedQuery, mode);
+  const semanticFilters = mode === 'semantic'
+    ? {
+        namespace,
+        observationType: namespace === 'spores' || namespace === 'all' ? observationType : 'all',
+        recentWindow,
+      }
+    : undefined;
+
+  const { data, isLoading } = useSearch(debouncedQuery, mode, semanticFilters);
 
   const results = (data?.results ?? []).slice(0, SEARCH_RESULTS_LIMIT);
 
@@ -148,6 +197,49 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
             </Toggle>
           </div>
         </div>
+
+        {mode === 'semantic' && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-[var(--ghost-border)] px-4 py-2 bg-surface-container-lowest/30">
+            <div className="w-[132px]">
+              <Select value={namespace} onValueChange={(value) => setNamespace(value as SemanticNamespace)}>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder="Scope" />
+                </SelectTrigger>
+                <SelectContent>
+                  {NAMESPACE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="w-[132px]">
+              <Select value={recentWindow} onValueChange={(value) => setRecentWindow(value as SemanticRecentWindow)}>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder="Recent" />
+                </SelectTrigger>
+                <SelectContent>
+                  {RECENT_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {(namespace === 'all' || namespace === 'spores') && (
+              <div className="w-[156px]">
+                <Select value={observationType} onValueChange={(value) => setObservationType(value as SporeObservationType)}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue placeholder="Spore type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SPORE_OBSERVATION_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Results area */}
         <div className="max-h-96 overflow-y-auto">

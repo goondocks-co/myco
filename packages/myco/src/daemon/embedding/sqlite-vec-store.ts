@@ -41,6 +41,21 @@ const DEFAULT_META_CONTENT_HASH = '';
 
 /** Metadata columns safe to filter on in search queries (prevents SQL injection via key names). */
 const FILTERABLE_COLUMNS = new Set(['model', 'provider', 'namespace']);
+const FILTERABLE_DOMAIN_METADATA_KEYS = new Set([
+  'status',
+  'session_id',
+  'observation_type',
+  'project_root',
+  'name',
+  'source_path',
+  'created_at',
+]);
+const FILTER_SUFFIX_TO_OPERATOR: Record<string, string> = {
+  _gte: '>=',
+  _lte: '<=',
+  _gt: '>',
+  _lt: '<',
+};
 
 /**
  * Convert cosine *distance* (0 = identical, 2 = opposite) to a similarity
@@ -456,6 +471,22 @@ export class SqliteVecVectorStore implements VectorStore {
     for (const [key, value] of Object.entries(filters)) {
       if (FILTERABLE_COLUMNS.has(key)) {
         conditions.push(`em.${key} = ?`);
+        params.push(value);
+        continue;
+      }
+
+      let metadataKey = key;
+      let operator = '=';
+      for (const [suffix, sqlOperator] of Object.entries(FILTER_SUFFIX_TO_OPERATOR)) {
+        if (key.endsWith(suffix)) {
+          metadataKey = key.slice(0, -suffix.length);
+          operator = sqlOperator;
+          break;
+        }
+      }
+
+      if (FILTERABLE_DOMAIN_METADATA_KEYS.has(metadataKey)) {
+        conditions.push(`json_extract(em.domain_metadata, '$.${metadataKey}') ${operator} ?`);
         params.push(value);
       }
     }

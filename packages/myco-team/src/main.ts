@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { resolveVaultDir } from '@myco/vault/resolve.js';
-import { teamDestroy, teamInit, teamRotateTokens, teamStatus, teamUpgrade } from './cli.js';
+import { teamDestroy, teamInit, teamReindexVectors, teamRotateTokens, teamStatus, teamUpgrade } from './cli.js';
 
 const [command, ...args] = process.argv.slice(2);
 type CommandHandler = (args: string[]) => Promise<void>;
@@ -13,6 +13,7 @@ Commands:
   upgrade [project_dir]
   status [project_dir]
   rotate-tokens [api|mcp|all] [project_dir]
+  reindex-vectors [project_dir]
   destroy [project_dir]
 `);
 }
@@ -25,6 +26,7 @@ const COMMAND_HANDLERS: Record<string, CommandHandler> = {
     resolveVaultDir(commandArgs[1] ?? process.cwd()),
     (commandArgs[0] as 'api' | 'mcp' | 'all' | undefined) ?? 'all',
   ),
+  'reindex-vectors': async (commandArgs) => teamReindexVectors(resolveVaultDir(commandArgs[0] ?? process.cwd())),
   destroy: async (commandArgs) => teamDestroy(resolveVaultDir(commandArgs[0] ?? process.cwd())),
 };
 

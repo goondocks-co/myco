@@ -45,9 +45,30 @@ export async function listSettings(env: Env): Promise<Record<string, { value: un
   ]));
 }
 
-export async function handleCollectiveSearch(env: Env, args: { query: string; project?: string; limit?: number }) {
+export async function handleCollectiveSearch(env: Env, args: {
+  query: string;
+  project?: string;
+  limit?: number;
+  types?: string[];
+  status?: string;
+  observation_type?: string;
+  since?: number;
+  until?: number;
+  session_id?: string;
+  source_path?: string;
+  name?: string;
+}) {
   const projects = await listProjects(env);
-  const { results, errors } = await searchAcrossProjects(env, projects, args.query, args.project, args.limit);
+  const { results, errors } = await searchAcrossProjects(env, projects, args.query, args.project, args.limit, {
+    types: args.types,
+    status: args.status,
+    observation_type: args.observation_type,
+    since: args.since,
+    until: args.until,
+    session_id: args.session_id,
+    source_path: args.source_path,
+    name: args.name,
+  });
   return { content: [{ type: 'text' as const, text: JSON.stringify({ results, errors }) }] };
 }
 

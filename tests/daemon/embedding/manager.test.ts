@@ -273,7 +273,7 @@ describe('EmbeddingManager', () => {
       expect(recordSource.markEmbedded).toHaveBeenCalledTimes(2);
       expect(logger.info).toHaveBeenCalledWith(
         'embedding.reconcile',
-        'Reconcile cycle completed',
+        expect.stringContaining('Reconcile cycle completed: 2 embedded'),
         expect.objectContaining({ embedded: 2, stale_reembedded: 0, orphans_cleaned: 0 }),
       );
     });
@@ -360,6 +360,38 @@ describe('EmbeddingManager', () => {
       // Verify model is set to current
       const upsertMeta = vectorStore.upsert.mock.calls[0][3] as Record<string, unknown>;
       expect(upsertMeta.model).toBe(MOCK_MODEL);
+    });
+
+    it('limits bulk embedding concurrency to two in-flight requests', async () => {
+      let inFlight = 0;
+      let maxInFlight = 0;
+      provider.embed.mockImplementation(async () => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        inFlight--;
+        return MOCK_EMBEDDING;
+      });
+
+      recordSource.getEmbeddableRows.mockImplementation((ns: string) => {
+        if (ns === 'sessions') {
+          return [
+            { id: 's1', text: 'session text 1', metadata: {} },
+            { id: 's2', text: 'session text 2', metadata: {} },
+            { id: 's3', text: 'session text 3', metadata: {} },
+            { id: 's4', text: 'session text 4', metadata: {} },
+          ];
+        }
+        return [];
+      });
+      vectorStore.getStaleIds.mockReturnValue([]);
+      vectorStore.getEmbeddedIds.mockReturnValue([]);
+      recordSource.getActiveRecordIds.mockReturnValue([]);
+
+      const result = await manager.reconcile(BATCH_SIZE);
+
+      expect(result.embedded).toBe(4);
+      expect(maxInFlight).toBe(2);
     });
 
     it('cleans stale vectors whose source records no longer exist', async () => {
@@ -491,7 +523,7 @@ describe('EmbeddingManager', () => {
       expect(result.queued).toBe(42);
       expect(logger.info).toHaveBeenCalledWith(
         'embedding.rebuild',
-        'Rebuild started',
+        expect.stringContaining('Rebuild started: cleared 42 vectors'),
         expect.objectContaining({ cleared: 42 }),
       );
     });
@@ -528,6 +560,32 @@ describe('EmbeddingManager', () => {
 
       expect(result.reembedded).toBe(0);
       expect(provider.embed).not.toHaveBeenCalled();
+    });
+
+    it('limits stale re-embed concurrency to two in-flight requests', async () => {
+      let inFlight = 0;
+      let maxInFlight = 0;
+      provider.embed.mockImplementation(async () => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        inFlight--;
+        return MOCK_EMBEDDING;
+      });
+
+      vectorStore.getStaleIds.mockImplementation((ns: string) => {
+        if (ns === 'sessions') return ['s-old1', 's-old2', 's-old3'];
+        return [];
+      });
+      recordSource.getRecordContent.mockImplementation((ns: string, ids: string[]) => {
+        if (ns === 'sessions') return ids.map((id) => ({ id, text: `content for ${id}`, metadata: {} }));
+        return [];
+      });
+
+      const result = await manager.reembedStale(10);
+
+      expect(result.reembedded).toBe(3);
+      expect(maxInFlight).toBe(2);
     });
   });
 

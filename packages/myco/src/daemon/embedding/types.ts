@@ -18,6 +18,8 @@ export interface DomainMetadata {
   observation_type?: string;
   project_root?: string;
   name?: string;
+  source_path?: string;
+  created_at?: number;
 }
 
 /** Full metadata stored per vector in the VectorStore. */
@@ -34,6 +36,8 @@ export interface EmbeddingMetadata {
   observation_type?: string;
   project_root?: string;
   name?: string;
+  source_path?: string;
+  created_at?: number;
 }
 
 /** Result from similarity search. */

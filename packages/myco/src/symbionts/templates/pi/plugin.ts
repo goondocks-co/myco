@@ -501,12 +501,23 @@ export default function (pi: ExtensionAPI) {
     ],
     parameters: Type.Object({
       query: Type.String({ description: "Search query — topic, pattern, or question" }),
+      type: Type.Optional(Type.String({ description: "Optional note type filter: session, plan, spore, or all" })),
+      observation_type: Type.Optional(Type.String({ description: "Optional spore observation type filter" })),
+      status: Type.Optional(Type.String({ description: "Optional semantic status filter" })),
+      since: Type.Optional(Type.Number({ description: "Optional created_at lower bound in epoch seconds" })),
+      until: Type.Optional(Type.Number({ description: "Optional created_at upper bound in epoch seconds" })),
     }),
     async execute(_toolCallId, params) {
       if (!currentSessionId) {
         return { content: [{ type: "text" as const, text: "No active session" }], details: {} };
       }
-      const result = await getJson(currentCwd, `/api/search?q=${encodeURIComponent(params.query)}`);
+      const query = new URLSearchParams({ q: params.query });
+      if (params.type) query.set("type", params.type);
+      if (params.observation_type) query.set("observation_type", params.observation_type);
+      if (params.status) query.set("status", params.status);
+      if (params.since !== undefined) query.set("since", String(params.since));
+      if (params.until !== undefined) query.set("until", String(params.until));
+      const result = await getJson(currentCwd, `/api/search?${query.toString()}`);
       if (!result.ok || !result.data) {
         return { content: [{ type: "text" as const, text: "Search unavailable — Myco daemon may not be running." }], details: {} };
       }
