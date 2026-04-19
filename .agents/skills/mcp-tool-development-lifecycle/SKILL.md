@@ -69,6 +69,46 @@ Define the tool interface in `packages/myco/src/mcp/tool-definitions.ts`:
 
 6. **Configure cortex metadata** — set `requiresCollective: true` for tools that only work when connected to a Collective.
 
+7. **Avoid OpenAI strict mode incompatibilities** — OpenAI's strict JSON Schema mode rejects `oneOf`, `anyOf`, `allOf`, `enum`, and `not` keywords at the top level. Use simple types with clear descriptions instead:
+   ```typescript
+   // BAD: OpenAI strict mode rejects this
+   {
+     param_status: {
+       enum: ['active', 'inactive', 'pending'],
+       description: 'Status value'
+     }
+   }
+   
+   // GOOD: Use string with enum values in description
+   {
+     param_status: {
+       type: 'string',
+       description: 'Status value. Must be one of: active, inactive, pending'
+     }
+   }
+   ```
+
+8. **Avoid Zod refinement-like patterns** — Schema constructs that imply Zod refinements cause silent tool registration failures across runtimes. Never use `.default()`, `.min()`, `.max()`, or `.refine()` patterns in schema definitions:
+   ```typescript
+   // BAD: Implies Zod refinements that cause registration failures
+   {
+     limit: {
+       type: 'number',
+       default: 10,        // Zod .default() - causes registration failure
+       minimum: 1,         // Zod .min() - causes registration failure  
+       maximum: 100        // Zod .max() - causes registration failure
+     }
+   }
+   
+   // GOOD: Use plain schema with behavior described in documentation
+   {
+     limit: {
+       type: 'number', 
+       description: 'Maximum items to return (1-100, defaults to 10 if omitted)'
+     }
+   }
+   ```
+
 ## Procedure B: Handler Implementation
 
 Create the handler in `packages/myco/src/mcp/tools/my-new-tool.ts`:
@@ -278,3 +318,5 @@ Decide whether new tools belong in local or cloud MCP surface:
 **Tool name consistency**: Use `myco_` prefix for standard tools, `collective_` prefix for Collective-dependent tools. Avoid generic names that conflict with other MCP servers.
 
 **Handler signature mismatch**: All handlers must accept `(input, client)` parameters. Missing DaemonClient parameter causes registration failures.
+
+**Cross-runtime schema compatibility**: OpenAI strict mode and Zod refinement patterns cause silent registration failures. Use plain JSON Schema types with descriptive documentation instead of complex validation constructs.
