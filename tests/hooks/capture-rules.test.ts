@@ -132,6 +132,62 @@ describe('evaluateUserPromptRules', () => {
       const result = evaluateUserPromptRules([textRule], 'claude-code', ctx({ prompt: 'hello there' }));
       expect(result).toEqual({ action: 'pass', prompt: 'hello there' });
     });
+
+    describe('any_agent cross-manifest contamination guard', () => {
+      // A codex-owned any_agent rule must not drop events that were explicitly
+      // attributed to a different non-default agent (e.g., opencode). This
+      // regression test locks in the fix for the silent capture-drop bug where
+      // codex's transcript_path_missing any_agent rule was discarding every
+      // opencode event because opencode events legitimately have no
+      // transcript_path.
+      const codexAnyAgentRule = manifestWithRules('codex', [
+        {
+          event: 'user_prompt',
+          scope: 'any_agent',
+          when: { transcript_path_missing: true },
+          action: 'drop',
+          reason: 'ephemeral-sub-invocation',
+          trim: true,
+        },
+      ]);
+
+      it('does NOT fire on an explicit opencode event even when transcript_path is missing', () => {
+        const result = evaluateUserPromptRules([codexAnyAgentRule], 'opencode', ctx({ prompt: 'real user prompt' }));
+        expect(result).toEqual({ action: 'pass', prompt: 'real user prompt' });
+      });
+
+      it('still fires on fallback (claude-code) attribution to catch codex phantoms', () => {
+        const result = evaluateUserPromptRules([codexAnyAgentRule], 'claude-code', ctx({ prompt: 'phantom' }));
+        expect(result).toEqual({ action: 'drop', reason: 'ephemeral-sub-invocation' });
+      });
+
+      it('still fires on codex-attributed events (owning === detected)', () => {
+        const result = evaluateUserPromptRules([codexAnyAgentRule], 'codex', ctx({ prompt: 'phantom' }));
+        expect(result).toEqual({ action: 'drop', reason: 'ephemeral-sub-invocation' });
+      });
+    });
+
+    describe('any_agent cross-manifest contamination guard — session_start rules', () => {
+      const codexSessionStartRule = manifestWithRules('codex', [
+        {
+          event: 'session_start',
+          scope: 'any_agent',
+          when: { transcript_path_missing: true },
+          action: 'drop',
+          reason: 'ephemeral-sub-invocation',
+        },
+      ]);
+
+      it('does NOT fire on opencode session_start without transcript_path', () => {
+        const result = evaluateSessionStartRules([codexSessionStartRule], 'opencode', {});
+        expect(result).toEqual({ action: 'pass' });
+      });
+
+      it('still fires on fallback (claude-code) session_start to catch phantoms', () => {
+        const result = evaluateSessionStartRules([codexSessionStartRule], 'claude-code', {});
+        expect(result).toEqual({ action: 'drop', reason: 'ephemeral-sub-invocation' });
+      });
+    });
   });
 
   describe('rewrite_prompt action (reserved for future structural upgrade)', () => {

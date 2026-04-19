@@ -21,6 +21,7 @@
 
 import type { CaptureRule, SymbiontManifest } from '../symbionts/manifest-schema.js';
 import { getAtPath } from '../utils/dot-path.js';
+import { DEFAULT_SYMBIONT_NAME } from '../constants.js';
 
 /** Structured context a rule can match against at UserPromptSubmit time. */
 export interface UserPromptRuleContext {
@@ -129,9 +130,21 @@ export function evaluateSessionCaptureRules(
   return evaluateSessionStartRules(manifests, detectedAgent, ctx);
 }
 
+/**
+ * `any_agent` scope lets a manifest's rule fire even when its own agent isn't
+ * the detected one — designed for phantom sub-invocations that arrive with
+ * ambiguous attribution. Detection falls back to `DEFAULT_SYMBIONT_NAME` when
+ * it fails (see normalize.ts and event-dispatch.ts), so `any_agent` only
+ * crosses the agent boundary in that exact case. Events carrying a specific
+ * non-default agent (e.g., plugin-delivered `agent: "opencode"`) are trusted
+ * attribution and must not be touched by another manifest's `any_agent` rules
+ * — otherwise codex's phantom-drop rule contaminates opencode, silently
+ * dropping every event for any opencode session whose registry was lost.
+ */
 function scopePermits(rule: CaptureRule, owningAgent: string, detectedAgent: string): boolean {
-  if (rule.scope === 'any_agent') return true;
-  return owningAgent === detectedAgent;
+  if (owningAgent === detectedAgent) return true;
+  if (rule.scope !== 'any_agent') return false;
+  return detectedAgent === DEFAULT_SYMBIONT_NAME;
 }
 
 function whenMatches(rule: CaptureRule, ctx: UserPromptRuleContext): boolean {

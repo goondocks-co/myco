@@ -1,4 +1,4 @@
-import { DaemonClient } from './client.js';
+import { DaemonClient, isIgnoredEventResponse } from './client.js';
 import { readStdin } from './read-stdin.js';
 import { normalizeHookInput } from './normalize.js';
 import { evaluateUserPromptRules } from './capture-rules.js';
@@ -63,8 +63,10 @@ export async function main() {
       transcript_path: input.transcriptPath,
     });
 
-    if (!eventResult.ok) {
-      // Daemon still unreachable — write directly to buffer for later processing
+    // Buffer on transport failure OR server-side drop (200 with `ignored`).
+    // A server-side drop means a capture rule discarded the event; buffering
+    // it lets reconcileBufferBatches recover the prompt once the rule is fixed.
+    if (!eventResult.ok || isIgnoredEventResponse(eventResult.data)) {
       const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
       buffer.append({ type: 'user_prompt', prompt, transcript_path: input.transcriptPath });
     }
