@@ -126,6 +126,18 @@ const RegistrationSchema = z.object({
    */
   mcpCwd: z.string().optional(),
   /**
+   * When true, the installer rewrites any `myco-run` references in this
+   * symbiont's templates to the project's `.myco/runtime.command` alias
+   * (e.g. `myco-dev`) at install time. Opt-in because most symbionts
+   * rely on `bin/myco-run` to read runtime.command at spawn time, which
+   * keeps the alias dynamic — change runtime.command and the next spawn
+   * picks it up with no re-install. Set this only for hosts that reorder
+   * PATH so `~/.local/bin` loses (opencode prepends `/opt/homebrew/bin`,
+   * so it can't reach the dev shim via PATH). Baking the alias at
+   * install time bypasses PATH resolution entirely for those hosts.
+   */
+  substituteRuntimeCommand: z.boolean().optional(),
+  /**
    * JSON key under which MCP server entries are stored in the MCP config file.
    * Defaults to 'mcpServers' (used by Claude Code, Cursor, etc.). opencode uses 'mcp'.
    */

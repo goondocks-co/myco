@@ -54,10 +54,9 @@ A separate, read-only tool surface for cloud agents (Anthropic Managed Agents, N
 
 ## Slash-command skills
 
-Myco ships three slash command skills that provide guided workflows. Type the command in your agent's prompt to activate. Beyond these, Myco **auto-generates project-specific skills** from your vault knowledge — see the [Skills docs](skills.md) for the full curation lifecycle.
+Myco ships two slash command skills that provide guided workflows. Type the command in your agent's prompt to activate. Beyond these, Myco **auto-generates project-specific skills** from your vault knowledge — see the [Skills docs](skills.md) for the full curation lifecycle.
 
 | Command | Purpose |
 |---------|---------|
 | `/myco` | The primary skill for ongoing work. Use when making design decisions, debugging non-obvious issues, encountering gotchas, or needing context about prior work. Provides guidance on when and how to use each MCP tool. |
-| `/myco-curate` | Trigger the intelligence agent to process unprocessed session data, extract observations, and maintain the vault knowledge graph. |
-| `/myco-rules` | Create, audit, or improve project rules files (CLAUDE.md, AGENTS.md). |
+| `/myco-rules` | Keep `AGENTS.md` minimal, durable, and canonical across agents. |

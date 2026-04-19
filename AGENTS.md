@@ -1,341 +1,68 @@
 # Myco — Collective Agent Intelligence
 
-Captures session knowledge (events, observations, summaries) into a SQLite-backed intelligence graph and serves it back via MCP tools. Supports Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode, and Pi.
+Myco captures project memory in a local vault and serves it back through context injection, MCP tools, and skills. This file is intentionally small: keep durable rules here, and let Myco carry dynamic project intelligence.
+
+## Use Myco First
+
+- `AGENTS.md` is for stable project rules, not changing project history.
+- Use Myco context, spores, sessions, and plans for recent work, prior decisions, and dynamic guidance.
+- When a rule depends on current initiative state or recent architecture change, prefer Myco over adding more static prose here.
 
 ## Dogfooding
 
-We develop Myco using Myco. The vault lives at `.myco/` in the project root.
-
-**Implications for development:**
-
-- After changing hook or daemon code, you MUST run `make build` and then `myco-dev restart` for the daemon. Hooks pick up new code on next invocation; the daemon does not.
-- The MCP server reloads on plugin reload, but a full session restart may be needed for connection changes.
-- Session data from your development sessions is real vault data. Be careful with destructive vault operations — you'll lose your own session history.
-
-**How end users install Myco (not how we run it):**
-
-```sh
-curl -fsSL https://myco.sh/install.sh | sh   # Installs Node package globally
-cd your-project
-myco init                                       # Interactive wizard: embedding provider, model, agent registration
-```
-
-`myco init` runs an interactive wizard that guides users through embedding provider selection (Ollama, OpenRouter, OpenAI, or skip), model selection, vault creation, and agent registration. Use `myco doctor` to verify setup health.
-
-**Dev binary setup:**
-
-```sh
-make dev-link    # Creates myco-dev + myco-run symlinks, writes .myco/runtime.command
-make dev-unlink  # Removes the symlinks and .myco/runtime.command
-```
-
-After changing hook or daemon code, run `make build` — the wrapper script picks up the new build automatically.
+- We develop Myco using Myco. The project-local vault lives at `.myco/`.
+- Session data from development sessions is real vault data. Avoid destructive vault operations unless you mean it.
+- After changing hook or daemon code, run `make build` and then `myco-dev restart`. Hooks pick up new code on the next invocation; the daemon does not.
+- `make dev-link` creates `myco-dev` and `myco-run` symlinks and writes `.myco/runtime.command`.
+- `make dev-unlink` removes those symlinks and `.myco/runtime.command`.
 
 ## Non-Goals
 
-- This is NOT a general-purpose knowledge base or note-taking app. Do not add external REST APIs or public-facing web services. The local dashboard is the configuration and operations interface.
-- This is NOT a framework. Do not add plugin systems, extensibility hooks, or abstraction layers for hypothetical consumers.
-- Do not add dependencies on cloud services. All intelligence runs locally (Ollama, LM Studio) or via lightweight API (Anthropic).
+- Myco is not a general-purpose note-taking app or external web service.
+- Myco is not a framework. Do not add plugin systems or abstractions for hypothetical consumers.
+- Do not add mandatory cloud-service dependencies for core local intelligence flows.
 
-## Architecture
+## Core Invariants
 
-```
-src/
-  agent/         # Intelligence pipeline: wave-based DAG executor, task definitions, orchestrator, provider abstraction
-  capture/       # Event buffering (EventBuffer) and buffer-based turn fallback
-  config/        # Vault config loading and Zod schema
-  context/       # Context injection for UserPromptSubmit hook
-  daemon/        # Long-lived HTTP daemon: batch processing, session lifecycle, plan watching, digest
-  hooks/         # Hook entry points (thin — delegate to daemon)
-  index/         # SQLite FTS5 + sqlite-vec vector search
-  intelligence/  # LLM backend abstraction (Ollama, LM Studio, Anthropic)
-  mcp/           # MCP server + tool handlers
-  prompts/       # LLM prompt templates (extraction, summary, title, classification)
-  symbionts/     # Symbiont adapters and manifests for all supported agents
-  vault/         # Reader, writer, Zod schemas for database records
-tests/           # Mirrors src/ structure: tests/<module>.test.ts
-skills/          # Skill markdown files (subdirectory per skill)
-.mcp.json        # Project-level MCP config written by the SymbiontInstaller
-ui/              # React + Tailwind dashboard (Vite build → dist/ui/)
-  src/
-    components/  # UI components (ui/, topology/, config/, operations/)
-    hooks/       # React hooks (use-daemon, use-config, use-power-query, etc.)
-    layout/      # Layout with sidebar navigation
-    lib/         # Utilities (api, cn, constants)
-    pages/       # Dashboard, Configuration, Operations, Logs
-    providers/   # Theme, Font, Power providers
-```
+- `AGENTS.md` is the canonical rules file. Agent-specific instruction files should stay thin and point back here.
+- Hooks in `src/hooks/` must stay thin and delegate to the daemon. Do not put business logic or long-running processing in hook entry points.
+- The daemon is the authority for event processing, session recording, spores, and digest work.
+- Recurring daemon work must go through the PowerManager. Do not add ad hoc polling timers.
+- Session ID is the durable key. Do not tie persistent state to hook lifecycle events.
+- Write paths must be additive and idempotent. Do not overwrite or delete accumulated vault history casually.
+- Maintain one canonical source of truth per concern. Derived files, stubs, and mirrors should stay thin and point back to it.
 
-### Dashboard
+## Working Style
 
-The daemon serves a React SPA at `http://localhost:<port>/` for configuration management and operational triggers.
-
-**Development:** `cd ui && MYCO_DAEMON_PORT=<port> npx vite dev` — Vite dev server proxies API calls to the daemon.
-
-**Build:** `make build` runs both `tsup` (backend) and `vite build` (frontend). Output: `dist/ui/`.
-
-**API routes** are thin handlers in `src/daemon/api/` that delegate to shared services in `src/services/`. The CLI and API use the same code paths — no logic duplication.
-
-### Module Boundaries
-
-- **Hooks MUST be thin.** Hook entry points in `src/hooks/` MUST delegate to the daemon via `DaemonClient`. Hooks MUST NOT contain business logic, LLM calls, or complex processing. If the daemon is unreachable, hooks spawn it via `client.ensureRunning()` and buffer events to disk for later processing.
-- **The daemon is the authority.** All event processing, session recording, spore extraction, and embedding happen in the daemon (`src/daemon/main.ts`). Hooks send events; the daemon decides what to do with them.
-- **Digest is a daemon task.** The digest engine runs inside the daemon process alongside batch processing and plan watching. It is NOT a hook or MCP server — it produces digest extracts that are served by hooks and MCP tools at query time.
-- **Agent phases execute in parallel waves.** The executor topologically sorts phases by their `dependsOn` fields into waves using Kahn's algorithm. Phases in the same wave run in parallel via `Promise.allSettled()`. Each phase gets isolated provider env via `buildPhaseEnv()`, passed to the SDK's `env` option — no `process.env` mutation.
-- **All periodic/polling work MUST use the PowerManager.** Do not use `setInterval` or `setTimeout` for recurring daemon jobs. Register jobs with `powerManager.register()` so they respect the activity-based power states (active → idle → sleep → deep_sleep). The PowerManager is the single authority for when background work executes.
-
-## Data Preservation
-
-**Every write path MUST be additive. Never overwrite or delete accumulated session data.**
-
-This is Myco's core contract. Violations:
-
-- Session records are rebuilt from the agent's authoritative transcript on each stop event. The transcript file (e.g., the agent's `.jsonl`) is the source of truth — all turns are re-parsed and the conversation section is regenerated in full. Data preservation is guaranteed by the transcript being append-only, not by the session record's write logic.
-- The degraded stop path (`src/hooks/stop.ts`) MUST NOT write a session file if one already exists. It returns early; the daemon handles it when it's back.
-- Buffer files (`buffer/<session-id>.jsonl`) MUST NOT be deleted on session unregister. Session reload (SessionEnd → SessionStart) reuses the same session ID. Buffers are cleaned up by age (>24h) on daemon startup only.
-- `observation_type` in spore frontmatter accepts any string (`z.string()`). The LLM prompt guides types; the schema MUST NOT reject unexpected values.
-
-## Session ID Is the Source of Truth
-
-Do not tie state management to hook lifecycle events (SessionEnd, SessionStart). The agent will reload, resume, and trigger these hooks unpredictably. Session ID is the durable identifier — key all persistent state to it. Clean up based on age/staleness, never based on lifecycle transitions.
-
-React to the **content** of hook payloads, not the event type.
-
-## Idempotence by Default
-
-Every write operation MUST be safe to run twice with the same input. No "first-time" vs "subsequent" branching that produces different structures — the output MUST be identical regardless of how many times the operation runs.
-
-Concrete requirements:
-
-- `writeSpore`, `writeArtifact`, `writeSession`, `writePlan`, `writeTeamMember` MUST produce the same file content given the same input, whether or not the file already exists.
-- Startup tasks (migration, buffer cleanup, index rebuild) MUST be idempotent. Running the daemon startup sequence twice in a row MUST NOT move, duplicate, or corrupt data.
-- `indexNote` and `indexAndEmbed` MUST upsert, not insert. Re-indexing an already-indexed note MUST NOT create duplicates.
-
-If an operation cannot be made idempotent, it MUST be guarded by an explicit check (e.g., "skip if already migrated") and that guard MUST be documented in the code.
-
-## Dispatch Tables Over If-Ladders
-
-When the same shape of decision is repeated — "try these options in priority order", "map this kind to that handler", "pick the first non-null field" — encode the rules as **data**, not as a chain of `if`/`else if` statements. Iterate the table; don't branch through it.
-
-**Why:** an if-ladder buries the rule in control flow. Adding a rule means editing logic, and re-ordering priority means moving blocks around. A table puts the rules in one place, ordered top-to-bottom, with each rule self-contained. Adding a new rule is a one-line append. Re-ordering priority is moving a line. Reviewers see the whole decision at a glance.
-
-<Bad>
-```ts
-function dataHint(data: Record<string, unknown> | null): string {
-  if (!data) return '';
-  const toolName = pick('tool_name');
-  if (toolName) return toolName;
-  const type = pick('type');
-  if (type) return type;
-  const agentType = pick('agent_type');
-  if (agentType) return agentType;
-  // ...7 more identical branches
-}
-```
-</Bad>
-
-<Good>
-```ts
-const HINT_RULES: Array<{
-  pick: (d: Record<string, unknown>) => string | null;
-  format?: (v: string) => string;
-}> = [
-  { pick: (d) => str(d.tool_name) },
-  { pick: (d) => str(d.type) },
-  { pick: (d) => str(d.agent_type) },
-  { pick: (d) => str(d.task_subject), format: (s) => truncate(s, 40) },
-  { pick: (d) => str(d.source_path) ?? str(d.path), format: basename },
-];
-
-function dataHint(data: Record<string, unknown> | null): string {
-  if (!data) return '';
-  for (const { pick, format } of HINT_RULES) {
-    const v = pick(data);
-    if (v) return format ? format(v) : v;
-  }
-  return '';
-}
-```
-</Good>
-
-**Applies to:** priority-first-match lookups, kind-to-handler dispatch, field extraction, format routing, validation rule chains, any other place where a repeated branching shape starts to appear.
-
-**Does NOT apply to:** genuinely unique branches (two or three unrelated conditionals are clearer as `if`/`else`), guard clauses at the top of a function, or conditions that share no common shape. Only refactor to a table when the rules are structurally uniform.
-
-## No Magic Literals
-
-Numeric and string constants MUST NOT appear inline in logic. Extract them as named constants at module scope or in a shared constants file.
-
-This applies to:
-
-- **Truncation limits:** Every `.slice(0, N)` MUST reference a named constant (e.g., `EMBEDDING_INPUT_LIMIT`, `PROMPT_PREVIEW_CHARS`, `CANDIDATE_CONTENT_PREVIEW`). The constant name documents the intent; the number alone does not.
-- **Timeouts and thresholds:** Durations (e.g., `24 * 60 * 60 * 1000` for buffer cleanup), retry counts, similarity thresholds — all MUST be named constants.
-- **Token estimates:** The `chars / 4` heuristic MUST use a named constant (`CHARS_PER_TOKEN = 4`) so it can be found and updated in one place.
-- **Config defaults:** Zod `.default()` values are acceptable as-is — the schema IS the documentation. But defaults used outside Zod schemas (e.g., fallback values in constructors) MUST be named constants.
-
-Exceptions: array indices (`[0]`), string operations (`.slice(0, 10)` for ISO date prefix), and loop bounds derived from data (`i < items.length`) are not magic literals.
-
-## Naming Conventions
-
-- **Spore files:** `spores/{normalized_type}/{observation_type}-{session_id_last_6}-{timestamp}.md` (e.g., `spores/gotcha/gotcha-ac5220-1773416089650.md`). The subdirectory name normalizes underscores to hyphens (`bug_fix` → `bug-fix/`).
-- **Session files:** `sessions/{YYYY-MM-DD}/session-{session_id}.md`
-- **Imports:** Use `@myco/*` path aliases mapping to `src/*`
-- **Tests:** `tests/<module>.test.ts` mirroring `src/<module>.ts`
-
-## Glossary
-
-| Term | Definition |
-|------|-----------|
-| **Digest** | Continuous reasoning process that synthesizes vault knowledge into pre-computed context extracts. Runs as a daemon task on an adaptive timer. |
-| **Extract** | Tiered context representation at a specific token budget (1500/3000/5000/10000). Stored in `digest_extracts` table. |
-| **Substrate** | New or updated database records not yet digested. Input to a digest cycle. |
-| **Trace** | Append-only audit chain of digest cycles. Stored in `agent_runs` and `agent_reports` tables. |
-| **Metabolism** | Adaptive processing rate of the digest system. Active → cooling → dormant. |
-| **Dormancy** | Digest timer suspended when no new substrate arrives for an extended period. |
-| **Activation** | Return from dormancy to active metabolism, triggered by new session events. |
-| **Spore** | Discrete observation extracted from session activity (gotcha, decision, discovery, trade-off, bug fix). Stored in `spores` table. |
-| **Wisdom** | Higher-order observation synthesized from 3+ related spores. Stored as spore with `observation_type: 'wisdom'` and `properties.consolidated_from`. |
-| **Lineage edge** | Automatic graph connection created by daemon on insert: FROM_SESSION, EXTRACTED_FROM, HAS_BATCH, DERIVED_FROM. No LLM needed. |
-| **Semantic edge** | Intelligence graph connection created by agent: RELATES_TO, SUPERSEDED_BY, REFERENCES, DEPENDS_ON, AFFECTS. LLM-driven. |
-| **Graph edge** | Stored in `graph_edges` table. Supports cross-type references between session, batch, spore, and entity nodes. |
-| **Symbiont** | External coding agent that Myco integrates with (Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode, Pi). Named for the mycorrhizal symbiotic relationship. Declared via YAML manifests in `src/symbionts/manifests/`. |
-| **Wave** | Group of phases whose dependencies are all satisfied, executing in parallel via `Promise.allSettled()`. The executor computes waves from the phase `dependsOn` DAG using topological sort. |
-| **Phase dependency** | DAG edge between phases declared via `dependsOn` in task YAML. Phases depend on named predecessors; the executor resolves these into execution waves. |
-
-## Vault Structure
-
-```
-.myco/   # Project-local vault
-  myco.yaml          # Vault configuration
-  daemon.json        # Running daemon PID/port
-  myco.db            # Primary SQLite vault DB (sessions, spores, plans, FTS)
-  vectors.db         # sqlite-vec vector embeddings
-  buffer/            # Per-session JSONL event buffers (ephemeral)
-  sessions/          # Session notes by date
-  spores/            # Observation notes (subdirectories by type: gotcha/, decision/, etc.)
-  plans/             # Plan notes
-  artifacts/         # Artifact references
-  attachments/       # Images extracted from session transcripts
-  team/              # Team sync admin state and worker deployment files
-  digest/            # Pre-computed context extracts and digest trace
-  logs/              # Daemon logs
-```
+- Think before coding. Surface assumptions and ambiguities instead of guessing.
+- Prefer the smallest correct change.
+- Make surgical edits. Do not refactor adjacent code without a concrete need.
+- Match the existing style of the code you touch.
+- Prefer extending existing patterns over one-off patches.
+- Keep code DRY. Extract helpers or shared patterns when they remove real duplication.
+- Preserve clear domain ownership. Do not blur module boundaries without a reason.
+- Avoid magic literals for meaningful values. Use named constants or an existing shared pattern.
+- Keep comments lean. Add comments only when they clarify non-obvious code; do not use comments to preserve task history, PR context, or conversational state.
+- Prefer explicit configuration and user choice over heuristic detection when both are viable.
+- When in doubt, ask whether the rule belongs here or should live in Myco context instead.
 
 ## Quality Gates
 
-Before committing:
+- Before finishing a feature, run `make build`.
+- Before finishing a feature, smoke-test the changed behavior.
+- When changing an installed, generated, or user-facing surface, verify it through the real command or runtime path, not only through unit tests.
+- Before committing, run `make check`.
+- Use `make build` when you need the distributable build or when dogfooding hook or daemon changes.
+- For code changes, add or update tests when behavior changes.
 
-```sh
-make check
-```
+## Update Safety
 
-This runs `make lint` (tsc --noEmit) then `make test` (vitest run). Both MUST pass.
+- Migrations and updates should preserve user state when possible. Prefer additive or idempotent reconciliation over destructive rewrites.
 
-To build (which also runs check first):
+## Project Conventions
 
-```sh
-make build
-```
-
-### Available Make targets
-
-| Target | What it does |
-|--------|-------------|
-| `make build` | Runs `check`, then `npm run build` (tsup bundle) |
-| `make check` | Runs `lint` + `test` — the pre-commit gate |
-| `make lint` | `tsc --noEmit` — type checking only, strict mode |
-| `make test` | `vitest run` — all tests |
-| `make watch` | `tsc --watch` for development |
-| `make clean` | Remove `dist/` |
-| `make install` | `npm install` |
-
-- `make check` MUST pass with zero errors before committing.
-- Do NOT skip or disable tests to make the build pass.
-
-## Golden Paths
-
-### Add a new MCP tool
-
-1. Create handler in `src/mcp/tools/<tool-name>.ts`
-2. Add tool definition to `TOOL_DEFINITIONS` array in `src/mcp/server.ts`
-3. Add case to the `CallToolRequestSchema` switch in `src/mcp/server.ts`
-4. Add tests in `tests/mcp/tools/<tool-name>.test.ts`
-
-### Add a new hook
-
-1. Create entry point in `src/hooks/<hook-name>.ts` — keep it thin, export `main()`
-2. Create entry wrapper in `src/entries/<hook-name>.ts` that imports and calls `main()`
-3. Add hook name to the `HOOK_DISPATCH` map in `src/cli.ts`
-4. Add the hook command to the symbiont hook templates in `src/symbionts/templates/<agent>/hooks.json` so the SymbiontInstaller writes it to the project on `myco init`
-5. The hook SHOULD send events to the daemon via `DaemonClient`; only fall back to local processing if the daemon is unreachable
-
-### Add a new daemon route
-
-1. Add `server.registerRoute()` call in `src/daemon/main.ts`
-2. Follow the pattern: validate input → process → write to vault → index → embed
-3. Embedding is fire-and-forget (`.then()/.catch()`) — never block the response on embedding
-
-### Add a new API route (dashboard)
-
-1. Create handler in `src/daemon/api/<name>.ts` — thin handler that delegates to shared services
-2. If the operation needs shared logic with the CLI, put it in `src/services/vault-ops.ts`
-3. Register route in `src/daemon/main.ts` (use `server.registerRoute()` with the new `RouteRequest`/`RouteResponse` types)
-4. Add tests in `tests/daemon/api/<name>.test.ts`
-5. Add the UI in `ui/src/pages/` or `ui/src/components/` as needed
-
-### Add a new symbiont
-
-1. Create manifest at `src/symbionts/manifests/<name>.yaml` with registration targets. `loadManifests()` auto-discovers any YAML in this directory — no code change needed to register the manifest itself.
-2. Create templates at `src/symbionts/templates/<name>/`:
-   - **JSON hooks (default):** `hooks.json`, `mcp.json`, `settings.json` — merged into the agent's config files.
-   - **Plugin-file hooks (opencode, pi):** `plugin.ts` + `package.json` + optional `mcp.json` + `settings.json`. Declare `hooksFormat: plugin-file` in the manifest and point `hooksTarget` at the plugin file path (e.g., `.opencode/plugins/myco.ts`, `.pi/extensions/myco/index.ts`). Also set `pluginPackageTarget` to write the plugin's deps manifest.
-   - **Non-standard MCP keys:** if the agent stores MCP servers under a key other than `mcpServers` (opencode uses `mcp`), set `mcpServersKey` in the manifest. Any downstream code that reads MCP state must resolve the key via the manifest, not hardcode `mcpServers`.
-3. **Optional** — implement a transcript adapter in `src/symbionts/<name>.ts` (NOT `src/symbionts/adapters/<name>.ts` — that subdirectory does not exist). Skip this step for agents that don't expose on-disk transcript files; Myco will reconstruct turns from the buffered hook events.
-4. If you implemented an adapter, register it in `src/symbionts/registry.ts` `ALL_ADAPTERS`.
-
-### Test the vault and embeddings
-
-Use the CLI: `myco <command>` (or `myco-dev` in dogfooding mode)
-
-- `stats` — vault health, index counts, daemon status
-- `search <query>` — semantic search (primary) + FTS (fallback)
-- `vectors <query>` — raw similarity scores for threshold tuning
-- `rebuild` — reindex all records (FTS + vectors)
-- `restart` — kill and respawn the daemon with current code
-
-### Modify digest behavior
-
-1. Prompt templates in `src/prompts/digest-*.md` — change what the LLM focuses on per tier
-2. Substrate formatting in `src/daemon/digest.ts` `formatSubstrate()` — change how notes are presented to the LLM
-3. Metabolism timing in `src/daemon/digest.ts` `Metabolism` class — change active/cooldown/dormancy intervals
-4. Config in `src/config/schema.ts` `DigestSchema` — change defaults or add new options
-
-### Configure a task to use a local model
-
-1. Add to `myco.yaml`:
-   ```yaml
-   agent:
-     tasks:
-       title-summary:
-         provider:
-           type: ollama
-           model: llama3.2
-           base_url: http://localhost:11434
-   ```
-2. Or use the dashboard: Configuration → Agent Tasks → select task → Provider Config
-3. Run `myco verify` to test provider connectivity
-
-Provider priority: phase YAML `provider` > `myco.yaml` `agent.tasks` > task execution `provider` > default Anthropic.
-
-### Restart daemon after code changes
-
-The daemon persists across sessions. After modifying daemon code, you MUST restart it:
-
-```sh
-myco restart     # or myco-dev restart in dogfooding mode
-```
-
-Or manually: kill the PID in `.myco/daemon.json`, then let the next session-start hook spawn a fresh one.
+- Use `@myco/*` path aliases for imports from `src/*`.
+- Mirror source tests at `tests/<module>.test.ts`.
 
 
 <!-- myco:managed:start -->

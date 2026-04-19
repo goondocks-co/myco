@@ -1,6 +1,6 @@
 # Rules File — Bad Example
 
-This is an example of a poorly written CLAUDE.md. Every section contains anti-patterns that cause agents to freestyle, skip rules, or misinterpret intent. Each problem is annotated below.
+This is an example of a poorly written `AGENTS.md`. Every section contains anti-patterns that cause agents to freestyle, skip rules, or misinterpret intent. Each problem is annotated below.
 
 ---
 

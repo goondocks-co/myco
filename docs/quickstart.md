@@ -128,13 +128,12 @@ See [Agent Tools](agent-tools.md) for the full reference.
 
 Myco **auto-generates project-specific skills** from accumulated vault knowledge — repeatable workflows that teach every agent how to work in your codebase. As the intelligence pipeline processes sessions, it identifies procedural patterns with cross-session evidence and surfaces them as candidates. You approve what becomes canon in the Skills dashboard, and Myco writes validated SKILL.md files to `.agents/skills/`. Skills evolve automatically as your code does.
 
-Myco also ships three slash-command skills out of the box:
+Myco also ships two slash-command skills out of the box:
 
 | Command | What it does |
 |---------|-------------|
 | `/myco` | Guidance on using Myco during ongoing work — design decisions, debugging, vault hygiene |
-| `/myco-curate` | Manually trigger the intelligence agent to process unprocessed sessions |
-| `/myco-rules` | Audit or improve project rules files (CLAUDE.md, AGENTS.md) |
+| `/myco-rules` | Keep `AGENTS.md` minimal, durable, and canonical across agents |
 
 See the [Skills docs](skills.md) for the full auto-curation lifecycle.
 

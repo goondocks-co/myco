@@ -641,7 +641,7 @@ describe('installSkills', () => {
 
   it('handles multiple skills', () => {
     // Add a second skill
-    const secondSkill = path.join(packageRoot, 'skills/rules');
+    const secondSkill = path.join(packageRoot, 'skills/myco-rules');
     fs.mkdirSync(secondSkill, { recursive: true });
     fs.writeFileSync(path.join(secondSkill, 'SKILL.md'), '# Rules\n');
 
@@ -649,9 +649,41 @@ describe('installSkills', () => {
     installer.installSkills();
 
     expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco'))).toBe(true);
-    expect(fs.existsSync(path.join(projectRoot, '.agents/skills/rules'))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco-rules'))).toBe(true);
     expect(fs.existsSync(path.join(projectRoot, '.claude/skills/myco'))).toBe(true);
-    expect(fs.existsSync(path.join(projectRoot, '.claude/skills/rules'))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.claude/skills/myco-rules'))).toBe(true);
+  });
+
+  it('removes legacy built-in skill symlinks during install', () => {
+    fs.mkdirSync(path.join(projectRoot, '.agents/skills'), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, '.claude/skills'), { recursive: true });
+
+    fs.symlinkSync('/tmp/old-rules-skill', path.join(projectRoot, '.agents/skills/rules'));
+    fs.symlinkSync('../../.agents/skills/rules', path.join(projectRoot, '.claude/skills/rules'));
+    fs.symlinkSync('/tmp/old-curate-skill', path.join(projectRoot, '.agents/skills/myco-curate'));
+    fs.symlinkSync('../../.agents/skills/myco-curate', path.join(projectRoot, '.claude/skills/myco-curate'));
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installSkills();
+
+    expect(fs.existsSync(path.join(projectRoot, '.agents/skills/rules'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.claude/skills/rules'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco-curate'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.claude/skills/myco-curate'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco'))).toBe(true);
+  });
+
+  it('ignores skill directories that do not contain SKILL.md', () => {
+    fs.mkdirSync(path.join(packageRoot, 'skills/rules'), { recursive: true });
+    fs.mkdirSync(path.join(packageRoot, 'skills/myco-curate'), { recursive: true });
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installSkills();
+
+    expect(fs.existsSync(path.join(projectRoot, '.agents/skills/rules'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco-curate'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco-rules'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco'))).toBe(true);
   });
 });
 
@@ -1024,6 +1056,118 @@ describe('installMcp (TOML)', () => {
 
     const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
     expect(content).toContain('cwd = "."');
+  });
+});
+
+// =====================
+// installMcp — substituteRuntimeCommand
+// =====================
+//
+// Narrow opt-in: symbionts whose host reorders PATH so `myco-run` can't
+// reach `~/.local/bin` (opencode today) set `registration.substituteRuntimeCommand
+// = true`. The installer then rewrites the `myco-run` command in the MCP
+// template to the project's `.myco/runtime.command` alias. Every other
+// symbiont keeps `myco-run` in their config and lets `bin/myco-run` read
+// runtime.command at spawn time — preserving the dynamic alias contract.
+
+describe('installMcp substituteRuntimeCommand', () => {
+  function writeRuntimeCommand(value: string): void {
+    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.command'), value, 'utf-8');
+  }
+
+  const OPT_IN_OPENCODE_MANIFEST: SymbiontManifest = {
+    ...OPENCODE_MANIFEST,
+    registration: { ...OPENCODE_MANIFEST.registration!, substituteRuntimeCommand: true },
+  };
+
+  it('rewrites opencode array-form command from myco-run to the runtime.command alias', () => {
+    writeRuntimeCommand('myco-dev');
+    const installer = new SymbiontInstaller(OPT_IN_OPENCODE_MANIFEST, projectRoot, packageRoot);
+
+    installer.installMcp();
+
+    const config = readJson(path.join(projectRoot, 'opencode.json'));
+    const servers = config.mcp as Record<string, { command: unknown }>;
+    expect(servers.myco.command).toEqual(['myco-dev', 'mcp']);
+  });
+
+  it('rewrites string-form command when the opt-in flag is set', () => {
+    // Use a Claude-style string command to exercise the string branch of
+    // substituteMycoRunCommand. Claude does NOT set the flag in prod, but
+    // we force it here to verify both branches handle the rewrite.
+    writeRuntimeCommand('myco-dev');
+    const installer = new SymbiontInstaller(
+      { ...CLAUDE_MANIFEST, registration: { ...CLAUDE_MANIFEST.registration!, substituteRuntimeCommand: true } },
+      projectRoot,
+      packageRoot,
+    );
+
+    installer.installMcp();
+
+    const config = readJson(path.join(projectRoot, '.mcp.json'));
+    const servers = config.mcpServers as Record<string, { command: unknown; args: unknown }>;
+    expect(servers.myco.command).toBe('myco-dev');
+    expect(servers.myco.args).toEqual(['mcp']);
+  });
+
+  it('leaves command untouched when the symbiont does not opt in', () => {
+    // Claude Code does not set substituteRuntimeCommand; even with a
+    // runtime.command alias present, the MCP entry must continue to say
+    // `myco-run` so the spawn-time shim (bin/myco-run) can read the alias.
+    writeRuntimeCommand('myco-dev');
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+
+    installer.installMcp();
+
+    const config = readJson(path.join(projectRoot, '.mcp.json'));
+    const servers = config.mcpServers as Record<string, { command: unknown }>;
+    expect(servers.myco.command).toBe('myco-run');
+  });
+
+  it('leaves command untouched when the opt-in symbiont has no runtime.command file', () => {
+    // No runtime.command file at all — nothing to substitute. Template
+    // value passes through unchanged even with the flag set.
+    const installer = new SymbiontInstaller(OPT_IN_OPENCODE_MANIFEST, projectRoot, packageRoot);
+
+    installer.installMcp();
+
+    const config = readJson(path.join(projectRoot, 'opencode.json'));
+    const servers = config.mcp as Record<string, { command: unknown }>;
+    expect(servers.myco.command).toEqual(['myco-run', 'mcp']);
+  });
+
+  it('treats runtime.command=myco as no-op (default value, nothing to substitute)', () => {
+    writeRuntimeCommand('myco');
+    const installer = new SymbiontInstaller(OPT_IN_OPENCODE_MANIFEST, projectRoot, packageRoot);
+
+    installer.installMcp();
+
+    const config = readJson(path.join(projectRoot, 'opencode.json'));
+    const servers = config.mcp as Record<string, { command: unknown }>;
+    expect(servers.myco.command).toEqual(['myco-run', 'mcp']);
+  });
+
+  it('trims whitespace around the runtime.command value', () => {
+    writeRuntimeCommand('  myco-dev\n');
+    const installer = new SymbiontInstaller(OPT_IN_OPENCODE_MANIFEST, projectRoot, packageRoot);
+
+    installer.installMcp();
+
+    const config = readJson(path.join(projectRoot, 'opencode.json'));
+    const servers = config.mcp as Record<string, { command: unknown }>;
+    expect(servers.myco.command).toEqual(['myco-dev', 'mcp']);
+  });
+
+  it('treats an empty runtime.command file as absent (no substitution)', () => {
+    writeRuntimeCommand('');
+    const installer = new SymbiontInstaller(OPT_IN_OPENCODE_MANIFEST, projectRoot, packageRoot);
+
+    installer.installMcp();
+
+    const config = readJson(path.join(projectRoot, 'opencode.json'));
+    const servers = config.mcp as Record<string, { command: unknown }>;
+    expect(servers.myco.command).toEqual(['myco-run', 'mcp']);
   });
 });
 

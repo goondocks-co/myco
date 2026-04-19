@@ -49,8 +49,38 @@ const SKILLS_SUBDIR = 'skills';
 /** Canonical cross-agent skills directory. */
 const CANONICAL_SKILLS_DIR = '.agents/skills';
 
+/** Built-in skill names retired from the package but still present in older installs. */
+const LEGACY_BUILTIN_SKILL_NAMES = ['myco-curate', 'rules'];
+
 /** MCP server name used by Myco in all symbiont configurations. */
 export const MYCO_MCP_SERVER_NAME = 'myco';
+
+/**
+ * Replace the `myco-run` launcher with the project's runtime.command alias
+ * (e.g. `myco-dev`) in an MCP server definition. Handles both shapes:
+ *
+ *   - string:  `{ command: "myco-run", args: ["mcp"] }`
+ *             → `{ command: "<alias>",  args: ["mcp"] }`
+ *   - array:   `{ command: ["myco-run", "mcp"] }`
+ *             → `{ command: ["<alias>",  "mcp"] }`
+ *
+ * Only substitutes when the existing command is literally `myco-run`; any
+ * other value is left alone so hand-edited or non-standard entries are
+ * preserved.
+ */
+function substituteMycoRunCommand(
+  server: Record<string, unknown>,
+  alias: string,
+): Record<string, unknown> {
+  const command = server.command;
+  if (command === 'myco-run') {
+    return { ...server, command: alias };
+  }
+  if (Array.isArray(command) && command[0] === 'myco-run') {
+    return { ...server, command: [alias, ...command.slice(1)] };
+  }
+  return server;
+}
 
 /**
  * Marker substring written into plugin-file hook templates (e.g., opencode's plugin.ts).
@@ -661,10 +691,34 @@ export class SymbiontInstaller {
   /** List skill directory names from the package root. Returns empty array if not found. */
   private listSkillDirs(): string[] {
     try {
-      return fs.readdirSync(path.join(this.packageRoot, SKILLS_SUBDIR), { withFileTypes: true })
+      const skillsRoot = path.join(this.packageRoot, SKILLS_SUBDIR);
+      return fs.readdirSync(skillsRoot, { withFileTypes: true })
         .filter((d) => d.isDirectory())
+        .filter((d) => fs.existsSync(path.join(skillsRoot, d.name, 'SKILL.md')))
         .map((d) => d.name);
     } catch { return []; }
+  }
+
+  /** Remove symlinks for retired built-in skills from older installs. */
+  private cleanupLegacySkillSymlinks(currentSkillNames: string[]): void {
+    const reg = this.manifest.registration;
+    if (!reg?.skillsTarget) return;
+
+    const staleSkillNames = LEGACY_BUILTIN_SKILL_NAMES.filter((name) => !currentSkillNames.includes(name));
+    if (staleSkillNames.length === 0) return;
+
+    const canonicalDir = path.join(this.projectRoot, CANONICAL_SKILLS_DIR);
+    for (const name of staleSkillNames) {
+      try { fs.unlinkSync(path.join(canonicalDir, name)); } catch { /* doesn't exist */ }
+      if (reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
+        try { fs.unlinkSync(path.join(this.projectRoot, reg.skillsTarget, name)); } catch { /* doesn't exist */ }
+      }
+    }
+
+    if (reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
+      try { fs.rmdirSync(path.join(this.projectRoot, reg.skillsTarget)); } catch { /* not empty or missing */ }
+    }
+    try { fs.rmdirSync(canonicalDir); } catch { /* not empty or missing */ }
   }
 
   /**
@@ -733,6 +787,12 @@ export class SymbiontInstaller {
       WRANGLER_CACHE_DIR,
     ]);
     for (const name of skillNames) {
+      legacyOwnedLines.add(`${CANONICAL_SKILLS_DIR}/${name}`);
+      if (reg?.skillsTarget && reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
+        legacyOwnedLines.add(`${reg.skillsTarget}/${name}`);
+      }
+    }
+    for (const name of LEGACY_BUILTIN_SKILL_NAMES) {
       legacyOwnedLines.add(`${CANONICAL_SKILLS_DIR}/${name}`);
       if (reg?.skillsTarget && reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
         legacyOwnedLines.add(`${reg.skillsTarget}/${name}`);
@@ -871,15 +931,49 @@ export class SymbiontInstaller {
   ): Record<string, unknown> | null {
     if (!template) return null;
 
-    const cwd = this.manifest.registration?.mcpCwd;
-    if (!cwd) return template;
+    const reg = this.manifest.registration;
+    const cwd = reg?.mcpCwd;
+    const alias = reg?.substituteRuntimeCommand ? this.readRuntimeCommandAlias() : null;
+    if (!cwd && !alias) return template;
 
     return Object.fromEntries(
       Object.entries(template).map(([name, def]) => {
         if (!def || typeof def !== 'object' || Array.isArray(def)) return [name, def];
-        return [name, { ...(def as Record<string, unknown>), cwd }];
+        let next = { ...(def as Record<string, unknown>) };
+        if (cwd) next.cwd = cwd;
+        if (alias) next = substituteMycoRunCommand(next, alias);
+        return [name, next];
       }),
     );
+  }
+
+  /**
+   * Read `.myco/runtime.command` and return the alias (e.g. `myco-dev`).
+   *
+   * Same file the hook guard and the `bin/myco-run` launcher consult to
+   * decide which binary answers for the project. Only symbionts whose
+   * manifest opts in via `registration.substituteRuntimeCommand = true`
+   * reach this path — most symbionts rely on runtime PATH resolution
+   * inside `bin/myco-run` instead, which keeps the alias truly dynamic
+   * (change `runtime.command`, next spawn picks it up, no re-install).
+   * Opt-in is for hosts that reorder PATH so `myco-run` can't be reached
+   * via `~/.local/bin` (opencode, and whatever future host shares that
+   * behavior).
+   *
+   * Returns null when the file is missing, empty, or contains the
+   * default (`myco`) — no substitution is needed in those cases.
+   */
+  private readRuntimeCommandAlias(): string | null {
+    try {
+      const raw = fs.readFileSync(
+        path.join(this.projectRoot, '.myco', 'runtime.command'),
+        'utf-8',
+      ).trim();
+      if (!raw || raw === 'myco') return null;
+      return raw;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -928,6 +1022,8 @@ export class SymbiontInstaller {
 
     const skillNames = this.listSkillDirs();
     if (skillNames.length === 0) return false;
+
+    this.cleanupLegacySkillSymlinks(skillNames);
 
     const skillsSrc = path.join(this.packageRoot, SKILLS_SUBDIR);
 
