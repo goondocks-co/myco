@@ -511,8 +511,13 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // that session_id, so at this point we have no session row and no
     // meaningful Stop to process. Silently no-op rather than auto-
     // registering a row we then have nothing to update.
+    //
+    // A DB row for this session means it was previously registered, so the
+    // Stop is legitimate even when the in-memory registry missed it after a
+    // daemon restart — rehydrate before falling through to the phantom drop.
     const existingSessionMeta = registry.getSession(sessionId);
-    if (!hookTranscriptPath && !existingSessionMeta) {
+    const dbSession = existingSessionMeta ? undefined : getSession(sessionId);
+    if (!hookTranscriptPath && !existingSessionMeta && !dbSession) {
       // Info level so `grep hooks.stop` in the default daemon log confirms
       // the ephemeral-sub-invocation drop pattern is firing without
       // needing to crank the log level. Codex's sub-invocation behavior
@@ -527,7 +532,9 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // Ensure session is registered (handles daemon restarts mid-session)
     if (!existingSessionMeta) {
       registry.register(sessionId, { started_at: new Date().toISOString() });
-      logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from stop event', { session_id: sessionId });
+      logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, dbSession
+        ? 'Rehydrated registry from DB on stop event'
+        : 'Auto-registered session from stop event', { session_id: sessionId });
     }
     const sessionMeta = existingSessionMeta ?? registry.getSession(sessionId);
     logger.info(LOG_KINDS.HOOKS_STOP, 'Stop received', {

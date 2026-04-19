@@ -42,6 +42,19 @@ async function parseErrorBody(res: Response): Promise<unknown> {
   }
 }
 
+/**
+ * True when the daemon returned 200 but its body carries `{ ignored: reason }`.
+ *
+ * Callers that write to the event buffer on failure also buffer on this
+ * signal — otherwise a capture-rule drop discards events silently even though
+ * the HTTP call "succeeded". reconcileBufferBatches replays on next startup.
+ */
+export function isIgnoredEventResponse(data: unknown): boolean {
+  if (typeof data !== 'object' || data === null) return false;
+  const ignored = (data as Record<string, unknown>).ignored;
+  return typeof ignored === 'string' && ignored.length > 0;
+}
+
 export class DaemonClient {
   private vaultDir: string;
 

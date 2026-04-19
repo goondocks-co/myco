@@ -450,6 +450,7 @@ export async function runAgent(
       runId,
       runContext: options?.runContext,
       instruction: options?.instruction,
+      dryRun: options?.dryRun,
     });
     const completedAt = epochSeconds();
     updateRunStatus(runId, STATUS_COMPLETED, {
@@ -626,8 +627,10 @@ export async function finalizeOnTaskSuccess(args: {
   runId: string;
   runContext: RunOptions['runContext'];
   instruction?: string;
+  dryRun?: boolean;
 }): Promise<void> {
   if (args.taskName !== CORTEX_INSTRUCTIONS_TASK) return;
+  if (args.dryRun) return;
 
   const reports = listReports(args.runId);
   let report: typeof reports[number] | undefined;

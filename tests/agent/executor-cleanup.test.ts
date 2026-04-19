@@ -222,6 +222,38 @@ describe('finalizeOnTaskSuccess', () => {
     );
   });
 
+  it('does not materialize Cortex instructions for dry runs', async () => {
+    insertRun({
+      id: 'run-cortex-dry',
+      agent_id: DEFAULT_AGENT_ID,
+      task: CORTEX_INSTRUCTIONS_TASK,
+      status: 'completed',
+      started_at: NOW,
+      completed_at: NOW,
+      dryRun: true,
+    });
+    insertReport({
+      run_id: 'run-cortex-dry',
+      agent_id: DEFAULT_AGENT_ID,
+      action: 'cortex_instructions',
+      summary: 'would store new instructions',
+      details: JSON.stringify({
+        content: '## Myco-Enabled Project\n\nDry-run output should not persist.',
+      }),
+      created_at: NOW,
+    });
+
+    await finalizeOnTaskSuccess({
+      taskName: CORTEX_INSTRUCTIONS_TASK,
+      agentId: DEFAULT_AGENT_ID,
+      runId: 'run-cortex-dry',
+      runContext: { cortex_instruction_input_hash: 'hash-cortex-dry' },
+      dryRun: true,
+    });
+
+    expect(getCortexInstructions(DEFAULT_AGENT_ID)).toBeNull();
+  });
+
   it('is a no-op for unrelated tasks', async () => {
     await expect(
       finalizeOnTaskSuccess({
