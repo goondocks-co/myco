@@ -14,55 +14,61 @@ maxTurns: 12
 timeoutSeconds: 180
 schedule:
   enabled: true
-  intervalSeconds: 3600
+  intervalSeconds: 14400
   runIn:
     - idle
     - sleep
 
 prompt: |
-  Author compact session-start instructions for another coding agent.
+  You are producing session-start instructions for another coding agent
+  working in this project. The final artifact is written in the `author`
+  phase via `vault_report` with action "cortex_instructions". The `research`
+  phase does NOT draft markdown — it produces a compact situation brief
+  that the author phase shapes into prose.
 
   You will receive:
-  - current context configuration
-  - the available Myco tool capabilities
-  - tool guidance that must be encoded
-  - a digest excerpt plus recent sessions, spores, and plans
+  - current context configuration and capability summary
+  - tool guidance that must be encoded in the final instructions
+  - a digest excerpt plus recent sessions, spores (wisdom, decision, discovery),
+    and active plans
   - authoring requirements that constrain the final output
 
-  Your job is to produce concise markdown instructions for session start.
-
-  Requirements:
-  - Start with the heading `## Myco-Enabled Project`.
-  - Immediately follow with one brief sentence explaining that Myco provides project memory, prior decisions, plans, and retrieval tools for this project.
-  - Teach the most useful Myco tool behavior, not implementation details.
-  - Mention Myco tools using backticks.
-  - Use the recent vault context to make the instructions feel current when it adds signal.
-  - Keep the heading and intro brief so most tokens go to retrieval guidance.
-  - Keep the output compact and ready for direct injection.
-  - Do not restate AGENTS.md.
-  - Do not invent unavailable tools.
-  - Do not tell the agent to call `myco_skills`; project and Myco skills are already registered separately.
-
-  Call `vault_report` with action "cortex_instructions" and:
-  - summary: what the instructions emphasize
-  - details.content: the final markdown instructions
+  Do not restate AGENTS.md, installation details, or generic Myco boilerplate.
+  Do not invent unavailable tools. Do not tell the downstream agent to call
+  `myco_skills` — project and Myco skills are registered separately.
 
 phases:
   - name: research
+    reasoningLevel: default
     prompt: |
-      Review the provided digest excerpt and recent vault activity first.
+      Produce a compact situation brief. DO NOT write the final markdown
+      — that is the author phase's job.
 
-      Then use vault tools selectively to confirm what is current and high-signal
-      enough to deserve mention in the session-start instructions. Prefer the
-      smallest number of reads that sharpen the instructions.
+      Output exactly this structure as your phase summary:
 
-      Focus on:
-      - which Myco MCP tools matter most right now
-      - which current project hotspots or active workstreams are worth naming
-      - whether recent sessions, spores, or active plans reveal a better tool-use hint
+      ## Hotspots (2-3)
+      - <named workstream, plan, or branch> — <one sentence on why a new
+        agent working in this repo should know about it>
 
-      Do not spend time enumerating every note. Gather only what improves the
-      final session-start instructions.
+      ## Recent signal
+      - <recent session title or spore worth citing> — <why it matters>
+
+      ## Tool-use hint
+      - <one concrete hint a new agent would benefit from, grounded in
+        the recent activity above — e.g. "check active plans before
+        proposing X because plan Y already covers it">
+
+      Use the pre-assembled input (digest, recent sessions, spores,
+      active plans) as your starting point. Use `vault_search_fts`,
+      `vault_spores`, `vault_session_summary_material`, and
+      `vault_sessions` only to confirm a hotspot is current or to
+      disambiguate. Prefer active plans and the last 3 settled sessions
+      as anchors. If the input names a hotspot, verify it's still live
+      before keeping it — stale hotspots (work that has shipped and
+      moved on) are worse than no hotspot.
+
+      If you cannot identify 2-3 genuine hotspots, emit fewer — never
+      pad with boilerplate.
     tools:
       - vault_read_digest
       - vault_sessions
@@ -77,16 +83,32 @@ phases:
   - name: author
     dependsOn: [research]
     prompt: |
-      Write the final session-start instructions.
+      Write the final session-start markdown from the research brief.
 
-      The output should:
-      - open with the heading `## Myco-Enabled Project` and one brief sentence of context
-      - teach the agent how to retrieve the right Myco knowledge on demand and persist plans when appropriate
-      - mention the most relevant current project activity when it adds value
-      - avoid generic boilerplate
-      - avoid telling the agent to call `myco_skills`
+      Required structure:
+      - `## Myco-Enabled Project` heading, then one sentence explaining
+        that Myco provides project memory, prior decisions, plans, and
+        retrieval tools for this repository.
+      - A retrieval paragraph naming the highest-priority tools from the
+        tool guidance list (typically `myco_search`, `myco_recall`,
+        `myco_context`). Describe when each is useful, not what each
+        argument does.
+      - A plan-persistence paragraph naming `myco_plans` and
+        `myco_save_plan`.
+      - A `### Current workstreams` section that MUST cite at least
+        one active plan or recent session BY TITLE from the research
+        brief. If the research brief contains zero hotspots, write
+        "No active workstreams worth flagging right now." verbatim —
+        do not invent, recycle, or pad with stale items.
+      - A closing paragraph on `myco_remember` for saving discoveries.
 
-      Report the final markdown via `vault_report`.
+      Keep the output compact and ready for direct injection. Do not
+      restate AGENTS.md. Do not mention `myco_skills`.
+
+      Report the final markdown via `vault_report` with:
+      - action: "cortex_instructions"
+      - summary: what the instructions emphasize
+      - details.content: the final markdown
     tools:
       - vault_report
     maxTurns: 4
