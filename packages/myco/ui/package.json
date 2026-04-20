@@ -20,7 +20,7 @@
     "class-variance-authority": "^0.7",
     "clsx": "^2.1",
     "cytoscape": "^3.33.1",
-    "lucide-react": "^0.460",
+    "lucide-react": "^1.8",
     "postcss": "^8.4",
     "react": "^19.0",
     "react-dom": "^19.0",
