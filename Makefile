@@ -16,7 +16,7 @@ check: lint test
 check-fast: lint test-fast
 
 lint:
-	npx tsc --noEmit
+	npm run lint
 
 test:
 	npx vitest run

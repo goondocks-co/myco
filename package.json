@@ -13,11 +13,12 @@
     "build:ui": "npm run build:ui -w @goondocks/myco",
     "build:watch": "tsc --watch",
     "build:types": "tsc",
+    "check:workers": "npm run check --prefix packages/myco-team/worker && npm run check --prefix packages/myco-collective/worker",
     "test": "vitest run",
     "test:fast": "MYCO_TEST_PROFILE=fast vitest run",
     "test:integration": "MYCO_TEST_PROFILE=integration vitest run",
     "test:watch": "vitest",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit && npm run check:workers"
   },
   "repository": {
     "type": "git",
