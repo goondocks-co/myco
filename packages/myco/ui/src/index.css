@@ -1,3 +1,4 @@
+@import "tailwindcss";
 @import './themes/_shared-accents.css';
 @import './themes/sage.css';
 @import './themes/moss.css';
@@ -5,10 +6,8 @@
 @import './themes/dusk.css';
 @import './themes/plum.css';
 @import './themes/slate.css';
-
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@config '../tailwind.config.ts';
+@source './**/*.{ts,tsx}';
 
 /* ---------- Self-hosted variable fonts ---------- */
 
