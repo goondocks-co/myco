@@ -8,11 +8,19 @@ interface GraphCanvasProps {
   onNodeSelect?: (node: GraphNode | null) => void;
   selectedNode?: GraphNode | null;
   centerId?: string | null;
+  centerNodeType?: string | null;
   isLoading?: boolean;
 }
 
-export function GraphCanvas({ nodes, edges, onNodeSelect, centerId, isLoading }: GraphCanvasProps) {
-  const { containerRef, resetView } = useGraphCanvas({ nodes, edges, onNodeSelect, centerId });
+export function GraphCanvas({ nodes, edges, onNodeSelect, selectedNode, centerId, centerNodeType, isLoading }: GraphCanvasProps) {
+  const { containerRef, resetView } = useGraphCanvas({
+    nodes,
+    edges,
+    onNodeSelect,
+    centerId,
+    centerNodeType,
+    selectedNodeId: selectedNode?.id ?? null,
+  });
 
   return (
     <div className="absolute inset-0">
@@ -26,7 +34,7 @@ export function GraphCanvas({ nodes, edges, onNodeSelect, centerId, isLoading }:
         }}
       />
       {/* Cytoscape container */}
-      <div ref={containerRef} className="absolute inset-0 rounded-md" />
+      <div ref={containerRef} className="absolute inset-0 rounded-md" style={{ width: '100%', height: '100%' }} />
       {/* Controls overlay — bottom left next to stats */}
       <div className="absolute bottom-3 left-3 z-10 flex items-center gap-3">
         {nodes.length > 0 && (

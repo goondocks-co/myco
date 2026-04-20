@@ -242,25 +242,31 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
           {(unreadCount > 0 || items.length > 0) && (
             <div className="mt-3 flex items-center justify-end gap-1 border-t border-outline-variant/10 pt-3">
                 {unreadCount > 0 && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => markAllRead.mutate(undefined)}
-                    title="Mark all as read"
-                    className="h-7 gap-1 px-2 text-xs text-on-surface-variant"
-                  >
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    markAllRead.mutate(undefined);
+                  }}
+                  title="Mark all as read"
+                  className="h-7 gap-1 px-2 text-xs text-on-surface-variant"
+                >
                     <MailCheck className="h-3.5 w-3.5" />
                     Mark all read
                   </Button>
                 )}
                 {items.length > 0 && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => dismissAll.mutate(undefined)}
-                    title="Clear all notifications"
-                    className="h-7 gap-1 px-2 text-xs text-on-surface-variant"
-                  >
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    dismissAll.mutate(undefined);
+                  }}
+                  title="Clear all notifications"
+                  className="h-7 gap-1 px-2 text-xs text-on-surface-variant"
+                >
                     <Trash2 className="h-3.5 w-3.5" />
                     Clear
                   </Button>

@@ -3,6 +3,7 @@ import { Surface } from '../ui/surface';
 import { Badge } from '../ui/badge';
 import { SectionHeader } from '../ui/section-header';
 import { MarkdownContent } from '../ui/markdown-content';
+import { Button } from '../ui/button';
 import { formatGraphLabel } from '../../lib/graph-labels';
 
 import { X, ArrowRight, ExternalLink, Loader2 } from 'lucide-react';
@@ -55,6 +56,7 @@ interface InspectorProps {
   connectedSpores?: Array<{ id: string; name: string; type: string }>;
   onClose?: () => void;
   onNodeSelect?: (node: GraphNode, source?: 'canvas' | 'inspector') => void;
+  onFocusNode?: (node: GraphNode) => void;
   onNavigateToSpore?: (id: string) => void;
   isConnectionsLoading?: boolean;
 }
@@ -79,7 +81,7 @@ function getNodeRoute(node: GraphNode): string | null {
   return null;
 }
 
-export function Inspector({ node, edges, nodes, metadata, markdownPreview, connectedSpores, onClose, onNodeSelect, onNavigateToSpore, isConnectionsLoading }: InspectorProps) {
+export function Inspector({ node, edges, nodes, metadata, markdownPreview, connectedSpores, onClose, onNodeSelect, onFocusNode, onNavigateToSpore, isConnectionsLoading }: InspectorProps) {
   const navigate = useNavigate();
   if (!node) return null;
 
@@ -227,29 +229,48 @@ export function Inspector({ node, edges, nodes, metadata, markdownPreview, conne
                 const connTypeKey = conn.nodeType.toLowerCase();
                 const connDot = TYPE_DOT_COLOR[connTypeKey] ?? 'bg-outline';
                 return (
-                  <button
+                  <div
                     key={`${conn.nodeId}-${conn.edgeLabel}-${i}`}
-                    className="group w-full rounded-md border border-transparent px-2 py-2 text-left transition-colors hover:border-outline-variant/10 hover:bg-surface-container-high/50"
-                    onClick={() => {
-                      const existingNode = nodeMap.get(conn.nodeId);
-                      onNodeSelect?.(existingNode ?? { id: conn.nodeId, name: conn.nodeName, type: conn.nodeType, status: conn.status }, 'inspector');
-                    }}
+                    className="group w-full rounded-md border border-transparent px-2 py-2 transition-colors hover:border-outline-variant/10 hover:bg-surface-container-high/50"
                   >
-                    <div className="flex items-start gap-2">
-                      <div className={`mt-1 h-2 w-2 rounded-full ${connDot} shrink-0`} />
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate font-sans text-xs text-on-surface transition-colors group-hover:text-primary">
-                          {formatGraphLabel(conn.nodeName)}
+                    <button
+                      type="button"
+                      className="w-full text-left"
+                      onClick={() => {
+                        const existingNode = nodeMap.get(conn.nodeId);
+                        onNodeSelect?.(existingNode ?? { id: conn.nodeId, name: conn.nodeName, type: conn.nodeType, status: conn.status }, 'inspector');
+                      }}
+                    >
+                      <div className="flex items-start gap-2">
+                        <div className={`mt-1 h-2 w-2 rounded-full ${connDot} shrink-0`} />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-sans text-xs text-on-surface transition-colors group-hover:text-primary">
+                            {formatGraphLabel(conn.nodeName)}
+                          </div>
+                          <div className="mt-0.5 flex items-center gap-1 text-[9px] uppercase tracking-wider text-on-surface-variant/60">
+                            <span>{conn.nodeType}</span>
+                            <span>•</span>
+                            <span>{conn.edgeLabel}</span>
+                          </div>
                         </div>
-                        <div className="mt-0.5 flex items-center gap-1 text-[9px] uppercase tracking-wider text-on-surface-variant/60">
-                          <span>{conn.nodeType}</span>
-                          <span>•</span>
-                          <span>{conn.edgeLabel}</span>
-                        </div>
+                        <ArrowRight className={`mt-0.5 h-3 w-3 shrink-0 text-on-surface-variant/50 ${conn.direction === 'incoming' ? 'rotate-180' : ''}`} />
                       </div>
-                      <ArrowRight className={`mt-0.5 h-3 w-3 shrink-0 text-on-surface-variant/50 ${conn.direction === 'incoming' ? 'rotate-180' : ''}`} />
+                    </button>
+                    <div className="mt-2 flex justify-end">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-[10px] uppercase tracking-wide"
+                        onClick={() => {
+                          const existingNode = nodeMap.get(conn.nodeId);
+                          onFocusNode?.(existingNode ?? { id: conn.nodeId, name: conn.nodeName, type: conn.nodeType, status: conn.status });
+                        }}
+                      >
+                        Focus
+                      </Button>
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
