@@ -1,4 +1,5 @@
 import http from 'node:http';
+import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DaemonLogger } from './logger.js';
@@ -14,6 +15,7 @@ export interface DaemonServerConfig {
   vaultDir: string;
   logger: DaemonLogger;
   uiDir?: string;
+  uiDevProxyTarget?: string;
   onRequest?: () => void;
 }
 
@@ -21,6 +23,7 @@ export class DaemonServer {
   port = 0;
   readonly version: string;
   uiDir: string | null;
+  uiDevProxyTarget: string | null;
   private server: http.Server | null = null;
   private vaultDir: string;
   private logger: DaemonLogger;
@@ -31,6 +34,7 @@ export class DaemonServer {
     this.vaultDir = config.vaultDir;
     this.logger = config.logger;
     this.uiDir = config.uiDir ?? null;
+    this.uiDevProxyTarget = config.uiDevProxyTarget ?? null;
     this.onRequest = config.onRequest ?? null;
     this.version = getPluginVersion();
     this.registerDefaultRoutes();
@@ -43,6 +47,9 @@ export class DaemonServer {
   async start(port: number = 0): Promise<void> {
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => this.handleRequest(req, res));
+      this.server.on('upgrade', (req, socket, head) => {
+        void this.handleUpgrade(req, socket, head);
+      });
       this.server.on('error', reject);
 
       this.server.listen(port, '127.0.0.1', () => {
@@ -130,6 +137,12 @@ export class DaemonServer {
       return;
     }
 
+    // No API route matched — proxy to Vite dev server when configured.
+    if (this.uiDevProxyTarget && req.method === 'GET') {
+      const proxied = await this.proxyUiDevRequest(req, res);
+      if (proxied) return;
+    }
+
     // No API route matched — serve static files (dashboard SPA)
     if (this.uiDir && req.method === 'GET') {
       const pathname = new URL(req.url!, 'http://localhost').pathname;
@@ -152,6 +165,107 @@ export class DaemonServer {
 
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'not found' }));
+  }
+
+  private async proxyUiDevRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> {
+    if (!this.uiDevProxyTarget || !req.url) return false;
+
+    const pathname = new URL(req.url, 'http://localhost').pathname;
+    if (pathname.startsWith('/api/') || pathname === '/health') return false;
+
+    try {
+      const targetUrl = new URL(req.url, this.uiDevProxyTarget).toString();
+      const headers = new Headers();
+      for (const [key, value] of Object.entries(req.headers)) {
+        if (!value || key === 'host' || key === 'connection' || key === 'content-length') continue;
+        if (Array.isArray(value)) {
+          for (const item of value) headers.append(key, item);
+        } else {
+          headers.set(key, value);
+        }
+      }
+
+      const response = await fetch(targetUrl, {
+        method: 'GET',
+        headers,
+        redirect: 'manual',
+      });
+
+      const responseHeaders: Record<string, string | string[]> = {};
+      for (const [key, value] of response.headers.entries()) {
+        if (key === 'connection' || key === 'content-length' || key === 'transfer-encoding') continue;
+        responseHeaders[key] = value;
+      }
+
+      const body = Buffer.from(await response.arrayBuffer());
+      res.writeHead(response.status, responseHeaders);
+      res.end(body);
+      return true;
+    } catch (error) {
+      this.logger.warn(LOG_KINDS.SERVER_ERROR, 'UI dev proxy request failed', {
+        path: req.url,
+        target: this.uiDevProxyTarget,
+        error: (error as Error).message,
+      });
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'ui_dev_proxy_failed' }));
+      return true;
+    }
+  }
+
+  private async handleUpgrade(req: http.IncomingMessage, socket: import('node:stream').Duplex, head: Buffer): Promise<void> {
+    if (!this.uiDevProxyTarget || !req.url) {
+      socket.destroy();
+      return;
+    }
+
+    const pathname = new URL(req.url, 'http://localhost').pathname;
+    if (pathname.startsWith('/api/') || pathname === '/health') {
+      socket.destroy();
+      return;
+    }
+
+    const target = new URL(this.uiDevProxyTarget);
+    const client = target.protocol === 'https:' ? https : http;
+    const proxyReq = client.request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port,
+      method: req.method,
+      path: req.url,
+      headers: {
+        ...req.headers,
+        host: target.host,
+      },
+    });
+
+    proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
+      const statusLine = `HTTP/${proxyRes.httpVersion} 101 Switching Protocols`;
+      const headerLines: string[] = [statusLine];
+      for (const [key, value] of Object.entries(proxyRes.headers)) {
+        if (value === undefined) continue;
+        if (Array.isArray(value)) {
+          for (const item of value) headerLines.push(`${key}: ${item}`);
+        } else {
+          headerLines.push(`${key}: ${value}`);
+        }
+      }
+      socket.write(`${headerLines.join('\r\n')}\r\n\r\n`);
+      if (head.length > 0) proxySocket.write(head);
+      if (proxyHead.length > 0) socket.write(proxyHead);
+      proxySocket.pipe(socket).pipe(proxySocket);
+    });
+
+    proxyReq.on('error', (error) => {
+      this.logger.warn(LOG_KINDS.SERVER_ERROR, 'UI dev proxy upgrade failed', {
+        path: req.url,
+        target: this.uiDevProxyTarget,
+        error: error.message,
+      });
+      socket.destroy();
+    });
+
+    proxyReq.end();
   }
 
   updateDaemonJsonSessions(sessions: string[]): void {

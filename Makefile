@@ -1,4 +1,4 @@
-.PHONY: build build-fast build-only check check-fast test test-fast test-integration lint clean watch install dev-link dev-unlink ui-dev collective-ui-dev
+.PHONY: build build-fast build-only check check-fast test test-fast test-integration lint clean watch install dev-link dev-unlink ui-dev collective-ui-dev daemon-dev dev
 
 build:
 	$(MAKE) -j2 check
@@ -57,6 +57,19 @@ collective-ui-dev:
 		process.stdout.write(config.worker_url)')}; \
 	echo "Proxying Collective UI to $$target (override with COLLECTIVE_UI_PROXY_TARGET=<url> or COLLECTIVE_NAME=<name> make collective-ui-dev)"; \
 	cd packages/myco-collective/ui && COLLECTIVE_UI_PROXY_TARGET="$$target" npx vite dev
+
+daemon-dev:
+	@proxy=$${MYCO_UI_DEV_PROXY_TARGET:-http://127.0.0.1:5173}; \
+	echo "Starting watched daemon with UI dev proxy $$proxy"; \
+	MYCO_UI_DEV_PROXY_TARGET="$$proxy" npx tsx watch packages/myco/src/entries/daemon.ts --vault "$(PWD)/.myco"
+
+dev:
+	@ui_port=$${MYCO_UI_DEV_PORT:-5173}; \
+	proxy=$${MYCO_UI_DEV_PROXY_TARGET:-http://127.0.0.1:$$ui_port}; \
+	echo "Starting Vite UI on $$proxy and watched daemon behind it"; \
+	trap 'kill $$vite_pid 2>/dev/null || true' EXIT INT TERM; \
+	(cd packages/myco/ui && npx vite dev --host 127.0.0.1 --port $$ui_port) & vite_pid=$$!; \
+	MYCO_UI_DEV_PROXY_TARGET="$$proxy" npx tsx watch packages/myco/src/entries/daemon.ts --vault "$(PWD)/.myco"
 
 dev-link:
 	npm run build
