@@ -239,13 +239,8 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
             </Button>
           </div>
 
-          <div className="mt-3 flex items-start justify-between gap-3 border-t border-outline-variant/10 pt-3">
-            <p className="min-w-0 flex-1 text-xs leading-5 text-on-surface-variant">
-              New items stay here until read or dismissed.
-            </p>
-
-            {(unreadCount > 0 || items.length > 0) && (
-              <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+          {(unreadCount > 0 || items.length > 0) && (
+            <div className="mt-3 flex items-center justify-end gap-1 border-t border-outline-variant/10 pt-3">
                 {unreadCount > 0 && (
                   <Button
                     variant="ghost"
@@ -270,9 +265,8 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
                     Clear
                   </Button>
                 )}
-              </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto">
