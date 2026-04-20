@@ -26,6 +26,7 @@ const INSPECTOR_OFFSET_CLASS = 'right-[332px]';
 const SEARCH_MATCH_LIMIT = 6;
 const FOCUS_TRAIL_LIMIT = 3;
 const GRAPH_CANVAS_HEIGHT_CLASS = 'h-[calc(100vh-285px)]';
+type UiGraphEdge = { source_id: string; target_id: string; label: string; weight?: number };
 
 /* ---------- Types ---------- */
 
@@ -84,12 +85,22 @@ function extractGraphNodes(graphData: { center?: GraphNode; nodes?: GraphNode[] 
   return nodes;
 }
 
+
+function pushTrailNode(trail: GraphNode[], node: GraphNode): GraphNode[] {
+  const existingIndex = trail.findIndex((entry) => entry.id === node.id);
+  if (existingIndex >= 0) {
+    return [...trail.slice(0, existingIndex), node].slice(-FOCUS_TRAIL_LIMIT);
+  }
+  const next = [...trail, node];
+  return next.slice(-FOCUS_TRAIL_LIMIT);
+}
+
 /* ---------- Graph Tab ---------- */
 
 function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => void }) {
   const [viewMode, setViewMode] = useState<ViewMode>('focus');
   const [focusId, setFocusId] = useState<string | null>(null);
-  const [focusDepth, setFocusDepth] = useState<number>(2);
+  const [focusDepth, setFocusDepth] = useState<number>(1);
   const [enabledTypes] = useState<Set<string>>(new Set(ALL_NODE_TYPES));
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
@@ -119,11 +130,15 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
 
   useEffect(() => {
     if (!focusId && seedData?.recommended_id) {
-      const recommended = seedData.seeds.find((seed) => seed.id === seedData.recommended_id) ?? seedData.seeds[0];
+      const serverRecommended = seedData.seeds.find((seed) => seed.id === seedData.recommended_id);
+      const preferred = serverRecommended?.type === 'session'
+        ? seedData.seeds.find((seed) => seed.type !== 'session')
+        : null;
+      const recommended = preferred ?? serverRecommended ?? seedData.seeds[0];
       if (recommended) {
         setFocusId(recommended.id);
         setSelectedNode(recommended);
-        setFocusTrail([recommended]);
+        setFocusTrail((trail) => pushTrailNode(trail, recommended));
       }
     }
   }, [focusId, seedData]);
@@ -133,11 +148,7 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
       setSelectedNode(focusGraphData.center);
       setFocusTrail((prev) => {
         if (prev.length === 0) return [focusGraphData.center];
-        const last = prev[prev.length - 1];
-        if (last?.id === focusGraphData.center.id) {
-          return [...prev.slice(0, -1), focusGraphData.center];
-        }
-        return prev;
+        return pushTrailNode(prev, focusGraphData.center);
       });
     }
   }, [focusId, focusGraphData, viewMode]);
@@ -168,23 +179,17 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
     setSelectedNode(node);
     if (!node) return;
 
-    if (viewMode === 'focus') {
-      setFocusId((prev) => {
-        if (prev === node.id) return prev;
-        setFocusTrail((trail) => {
-          const next = [...trail, node];
-          return next.slice(-FOCUS_TRAIL_LIMIT);
-        });
-        return node.id;
-      });
+    if (viewMode === 'focus' && source === 'canvas') {
       return;
     }
-
-    if (source === 'inspector') {
-      setFocusId(node.id);
-      setViewMode('focus');
-    }
   }, [viewMode]);
+
+  const handleFocusNode = useCallback((node: GraphNode) => {
+    setFocusTrail((trail) => pushTrailNode(trail, node));
+    setFocusId(node.id);
+    setSelectedNode(node);
+    setViewMode('focus');
+  }, []);
 
   const handleShowOverview = useCallback(() => {
     setViewMode('global');
@@ -192,7 +197,7 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
 
   const handleShowFocus = useCallback(() => {
     if (!focusId && selectedNode) {
-      setFocusTrail([selectedNode]);
+      setFocusTrail((trail) => pushTrailNode(trail, selectedNode));
       setFocusId(selectedNode.id);
     }
     setViewMode('focus');
@@ -306,7 +311,7 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
               <button
                 key={match.id}
                 type="button"
-                onClick={() => handleNodeSelect(match, 'inspector')}
+                onClick={() => handleFocusNode(match)}
                 className={cn(
                   'max-w-[220px] truncate rounded-full border px-3 py-1 text-[11px] transition-colors',
                   selectedNode?.id === match.id
@@ -372,6 +377,7 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
           onNodeSelect={handleNodeSelect}
           selectedNode={selectedNode}
           centerId={viewMode === 'focus' ? focusId : null}
+          centerNodeType={viewMode === 'focus' ? focusGraphData?.center?.type ?? null : null}
           isLoading={isLoading}
         />
       </div>
@@ -391,15 +397,16 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
         </div>
       )}
 
-      <Inspector
-        node={selectedNode}
-        edges={inspectorEdges}
-        nodes={inspectorNodes}
-        onClose={() => setSelectedNode(null)}
-        onNodeSelect={handleNodeSelect}
-        onNavigateToSpore={onNavigateToSpore}
-        isConnectionsLoading={isInspectorLoading}
-      />
+        <Inspector
+          node={selectedNode}
+          edges={inspectorEdges}
+          nodes={inspectorNodes}
+          onClose={() => { setSelectedNode(null); }}
+          onNodeSelect={handleNodeSelect}
+          onFocusNode={handleFocusNode}
+          onNavigateToSpore={onNavigateToSpore}
+          isConnectionsLoading={isInspectorLoading}
+        />
       </div>
     </div>
   );

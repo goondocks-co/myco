@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useMemo } from 'react';
 import cytoscape, { type Core, type ElementDefinition, type NodeSingular } from 'cytoscape';
 import { formatGraphLabel } from '../lib/graph-labels';
 
@@ -86,6 +86,12 @@ const FOCUS_IDEAL_EDGE_LENGTH = 150;
 /** Focused layout animation duration (ms). */
 const FOCUS_ANIMATION_DURATION = 300;
 
+/** Minimum zoom we allow after focusing a neighborhood. */
+const FOCUS_MIN_ZOOM = 0.95;
+
+/** Spacing factor for concentric focus layout. */
+const FOCUS_SPACING_FACTOR = 1.2;
+
 /** Fit padding (px) used by resetView. */
 const FIT_PADDING = 50;
 
@@ -132,6 +138,8 @@ interface UseGraphCanvasOptions {
   edges: GraphEdge[];
   onNodeSelect?: (node: GraphNode | null) => void;
   centerId?: string | null;
+  centerNodeType?: string | null;
+  selectedNodeId?: string | null;
 }
 
 /* ---------- Helpers ---------- */
@@ -155,34 +163,189 @@ function nodeColor(type: string): string {
   return NODE_COLORS[type?.toLowerCase()] ?? DEFAULT_NODE_COLOR;
 }
 
+function stableAngle(id: string): number {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash) % 360;
+}
+
 /* ---------- Hook ---------- */
 
-export function useGraphCanvas({ nodes, edges, onNodeSelect, centerId }: UseGraphCanvasOptions) {
+function clearGraphSelection(cy: Core): void {
+  cy.elements().removeClass('faded');
+  cy.elements().unselect();
+  cy.edges().style({
+    'line-opacity': EDGE_OPACITY,
+    'text-opacity': 0,
+    width: EDGE_WIDTH,
+  });
+}
+
+function applyGraphSelection(cy: Core, selectedNodeId: string | null): void {
+  if (!selectedNodeId) {
+    clearGraphSelection(cy);
+    return;
+  }
+
+  const node = cy.$id(selectedNodeId);
+  if (node.length === 0) {
+    clearGraphSelection(cy);
+    return;
+  }
+
+  clearGraphSelection(cy);
+  node.select();
+  const neighborhood = node.closedNeighborhood();
+  cy.elements().not(neighborhood).addClass('faded');
+  node.connectedEdges().style({
+    'line-opacity': EDGE_ACTIVE_OPACITY,
+    'text-opacity': 0,
+    width: 2,
+  });
+}
+
+export function useGraphCanvas({ nodes, edges, onNodeSelect, centerId, centerNodeType, selectedNodeId }: UseGraphCanvasOptions) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const prevCenterIdRef = useRef<string | null>(null);
   const onNodeSelectRef = useRef(onNodeSelect);
   onNodeSelectRef.current = onNodeSelect;
 
-  useEffect(() => {
-    if (!containerRef.current || nodes.length === 0) return;
+  const nodeMap = useMemo(() => new Map<string, GraphNode>(nodes.map((n) => [n.id, n])), [nodes]);
 
-    /* Build a lookup map for node selection (pass extended fields through) */
-    const nodeMap = new Map<string, GraphNode>(nodes.map((n) => [n.id, n]));
-
-    /* Build a degree map for sizing */
-    const degreeMap = new Map<string, number>();
-    for (const n of nodes) {
-      degreeMap.set(n.id, 0);
-    }
+  const degreeMap = useMemo(() => {
+    const next = new Map<string, number>();
+    for (const n of nodes) next.set(n.id, 0);
     for (const e of edges) {
-      degreeMap.set(e.source_id, (degreeMap.get(e.source_id) ?? 0) + 1);
-      degreeMap.set(e.target_id, (degreeMap.get(e.target_id) ?? 0) + 1);
+      next.set(e.source_id, (next.get(e.source_id) ?? 0) + 1);
+      next.set(e.target_id, (next.get(e.target_id) ?? 0) + 1);
     }
+    return next;
+  }, [nodes, edges]);
 
-    const elements: ElementDefinition[] = [
+  const style = useMemo(() => ([
+    {
+      selector: 'node',
+      style: {
+        label: 'data(label)',
+        'background-color': (ele: NodeSingular) => nodeColor(ele.data('type')),
+        'background-opacity': 0.9,
+        color: PALETTE.onSurface,
+        'font-size': NODE_LABEL_FONT_SIZE,
+        'font-family': 'Inter, system-ui, sans-serif',
+        'text-valign': 'bottom',
+        'text-margin-y': NODE_LABEL_MARGIN_Y,
+        'text-outline-color': PALETTE.surface,
+        'text-outline-width': 2,
+        'text-outline-opacity': 0.8,
+        'text-wrap': 'wrap',
+        'text-max-width': '120px',
+        width: 'data(nodeSize)',
+        height: 'data(nodeSize)',
+        'border-width': 0,
+        'border-color': PALETTE.sage,
+        'border-opacity': 0,
+        'overlay-opacity': 0,
+      },
+    },
+    {
+      selector: 'node.center',
+      style: {
+        'border-width': 2,
+        'border-color': PALETTE.onSurface,
+        'border-opacity': 0.4,
+        'text-outline-color': PALETTE.surface,
+        'text-outline-width': 3,
+        'font-weight': 'bold',
+      },
+    },
+    {
+      selector: 'node:active',
+      style: {
+        'overlay-opacity': 0.08,
+        'overlay-color': PALETTE.sage,
+      },
+    },
+    {
+      selector: 'node:selected',
+      style: {
+        'border-width': SELECTED_BORDER_WIDTH,
+        'border-color': (ele: NodeSingular) => nodeColor(ele.data('type')),
+        'border-opacity': SELECTED_BORDER_OPACITY,
+        'background-opacity': 1,
+      },
+    },
+    {
+      selector: 'edge',
+      style: {
+        width: EDGE_WIDTH,
+        'line-color': PALETTE.neutral,
+        'line-opacity': EDGE_OPACITY,
+        'curve-style': 'unbundled-bezier',
+        'control-point-distances': [40],
+        'control-point-weights': [0.5],
+        'target-arrow-shape': 'triangle',
+        'target-arrow-color': PALETTE.neutral,
+        'arrow-scale': ARROW_SCALE,
+        label: 'data(label)',
+        'font-size': EDGE_LABEL_FONT_SIZE,
+        'font-family': 'Inter, system-ui, sans-serif',
+        color: PALETTE.neutral,
+        'text-opacity': 0,
+        'text-rotation': 'autorotate',
+        'text-margin-y': -8,
+        'text-outline-color': PALETTE.surface,
+        'text-outline-width': 2,
+        'text-outline-opacity': 0.7,
+      },
+    },
+    {
+      selector: 'edge:active',
+      style: {
+        'text-opacity': 1,
+        'line-opacity': EDGE_ACTIVE_OPACITY,
+      },
+    },
+    {
+      selector: 'node.faded',
+      style: { opacity: 0.3 },
+    },
+    {
+      selector: 'edge.faded',
+      style: { opacity: 0.1 },
+    },
+  ]), []);
+
+  const buildElements = useCallback((existingPositions?: Map<string, { x: number; y: number }>): ElementDefinition[] => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    const fallbackCenter = {
+      x: rect ? rect.width / 2 : 0,
+      y: rect ? rect.height / 2 : 0,
+    };
+
+    return [
       ...nodes.map((n) => {
         const typeLabel = NODE_TYPE_LABELS[n.type?.toLowerCase()] ?? NODE_TYPE_LABELS.other;
         const isCenter = n.id === centerId;
+        let position = existingPositions?.get(n.id);
+
+        if (!position) {
+          const connectedEdge = edges.find((edge) => edge.source_id === n.id || edge.target_id === n.id);
+          const anchorId = connectedEdge
+            ? (connectedEdge.source_id === n.id ? connectedEdge.target_id : connectedEdge.source_id)
+            : centerId;
+          const anchor = (anchorId && existingPositions?.get(anchorId)) ?? fallbackCenter;
+          const angle = (stableAngle(n.id) * Math.PI) / 180;
+          const radius = anchorId === centerId ? 150 : 110;
+          position = {
+            x: anchor.x + Math.cos(angle) * radius,
+            y: anchor.y + Math.sin(angle) * radius,
+          };
+        }
+
         return {
           data: {
             id: n.id,
@@ -193,6 +356,7 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect, centerId }: UseGrap
             degree: degreeMap.get(n.id) ?? 0,
             nodeSize: nodeSizeFromDegree(degreeMap.get(n.id) ?? 0, isCenter),
           },
+          position,
           classes: isCenter ? 'center' : '',
         };
       }),
@@ -206,139 +370,45 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect, centerId }: UseGrap
         },
       })),
     ];
+  }, [centerId, degreeMap, edges, nodes]);
 
-    /* Ensure container has actual dimensions before initializing Cytoscape */
-    const rect = containerRef.current.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return;
+  const runLayout = useCallback((cy: Core, forceRecenter: boolean) => {
+    if (!forceRecenter) {
+      cy.resize();
+      applyGraphSelection(cy, selectedNodeId ?? null);
+      return;
+    }
 
-    const cy = cytoscape({
-      container: containerRef.current,
-      elements,
-      style: [
-        /* ---- Nodes ---- */
-        {
-          selector: 'node',
-          style: {
-            label: 'data(label)',
-            'background-color': (ele: NodeSingular) => nodeColor(ele.data('type')),
-            'background-opacity': 0.9,
-            color: PALETTE.onSurface,
-            'font-size': NODE_LABEL_FONT_SIZE,
-            'font-family': 'Inter, system-ui, sans-serif',
-            'text-valign': 'bottom',
-            'text-margin-y': NODE_LABEL_MARGIN_Y,
-            'text-outline-color': PALETTE.surface,
-            'text-outline-width': 2,
-            'text-outline-opacity': 0.8,
-            'text-wrap': 'wrap',
-            'text-max-width': '120px',
-            width: 'data(nodeSize)',
-            height: 'data(nodeSize)',
-            'border-width': 0,
-            'border-color': PALETTE.sage,
-            'border-opacity': 0,
-            'overlay-opacity': 0,
-          },
-        },
-        /* ---- Center node — extra prominent ---- */
-        {
-          selector: 'node.center',
-          style: {
-            'border-width': 2,
-            'border-color': PALETTE.onSurface,
-            'border-opacity': 0.4,
-            'text-outline-color': PALETTE.surface,
-            'text-outline-width': 3,
-            'font-weight': 'bold',
-          },
-        },
-        /* ---- Node hover ---- */
-        {
-          selector: 'node:active',
-          style: {
-            'overlay-opacity': 0.08,
-            'overlay-color': PALETTE.sage,
-          },
-        },
-        /* ---- Selected node — glowing border ring ---- */
-        {
-          selector: 'node:selected',
-          style: {
-            'border-width': SELECTED_BORDER_WIDTH,
-            'border-color': (ele: NodeSingular) => nodeColor(ele.data('type')),
-            'border-opacity': SELECTED_BORDER_OPACITY,
-            'background-opacity': 1,
-          },
-        },
-        /* ---- Edges — organic bezier curves ---- */
-        {
-          selector: 'edge',
-          style: {
-            width: EDGE_WIDTH,
-            'line-color': PALETTE.neutral,
-            'line-opacity': EDGE_OPACITY,
-            'curve-style': 'unbundled-bezier',
-            'control-point-distances': [40],
-            'control-point-weights': [0.5],
-            'target-arrow-shape': 'triangle',
-            'target-arrow-color': PALETTE.neutral,
-            'arrow-scale': ARROW_SCALE,
-            label: 'data(label)',
-            'font-size': EDGE_LABEL_FONT_SIZE,
-            'font-family': 'Inter, system-ui, sans-serif',
-            color: PALETTE.neutral,
-            'text-opacity': 0,
-            'text-rotation': 'autorotate',
-            'text-margin-y': -8,
-            'text-outline-color': PALETTE.surface,
-            'text-outline-width': 2,
-            'text-outline-opacity': 0.7,
-          },
-        },
-        /* ---- Hovered edges show labels ---- */
-        {
-          selector: 'edge:active',
-          style: {
-            'text-opacity': 1,
-            'line-opacity': EDGE_ACTIVE_OPACITY,
-          },
-        },
-        /* ---- Fade unconnected nodes when one is selected ---- */
-        {
-          selector: 'node.faded',
-          style: {
-            opacity: 0.3,
-          },
-        },
-        {
-          selector: 'edge.faded',
-          style: {
-            opacity: 0.1,
-          },
-        },
-      ],
-      layout: { name: 'preset' }, // start with no layout; we run COSE manually below
-      userZoomingEnabled: true,
-      userPanningEnabled: true,
-      boxSelectionEnabled: false,
-      minZoom: 0.3,
-      maxZoom: 3,
-    });
-
-    /* Use an organic layout in both modes; focus mode just fits the neighborhood
-       instead of forcing a zoomed center lock. */
-    const layout = centerId
+    const layout = centerId && centerNodeType === 'session'
       ? cy.layout({
           name: 'cose',
           animate: true,
-          animationDuration: FOCUS_ANIMATION_DURATION,
-          nodeRepulsion: () => FOCUS_NODE_REPULSION,
-          idealEdgeLength: () => FOCUS_IDEAL_EDGE_LENGTH,
-          gravity: COSE_GRAVITY,
+          animationDuration: COSE_ANIMATION_DURATION,
+          nodeRepulsion: () => COSE_NODE_REPULSION * 1.5,
+          idealEdgeLength: () => COSE_IDEAL_EDGE_LENGTH * 1.35,
+          gravity: COSE_GRAVITY * 0.75,
           nodeDimensionsIncludeLabels: true,
           fit: true,
-          padding: FIT_PADDING,
+          padding: FIT_PADDING * 1.2,
           randomize: false,
+        })
+      : centerId
+      ? cy.layout({
+          name: 'concentric',
+          animate: true,
+          animationDuration: FOCUS_ANIMATION_DURATION,
+          fit: true,
+          padding: FIT_PADDING,
+          spacingFactor: FOCUS_SPACING_FACTOR,
+          avoidOverlap: true,
+          concentric: (node) => {
+            if (node.id() === centerId) return 3;
+            const neighborhood = node.closedNeighborhood();
+            if (neighborhood.some((ele) => ele.isNode() && ele.id() === centerId)) return 2;
+            return 1;
+          },
+          levelWidth: () => 1,
+          nodeDimensionsIncludeLabels: true,
         })
       : cy.layout({
           name: 'cose',
@@ -351,107 +421,122 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect, centerId }: UseGrap
           fit: true,
           padding: FIT_PADDING,
         });
+
     layout.on('layoutstop', () => {
-      const cy = cyRef.current;
-      if (!cy) return;
-
-      const nodes = cy.nodes();
-      const centerNode = cy.$('node.center');
-
+      const currentCy = cyRef.current;
+      if (!currentCy) return;
+      const centerNode = currentCy.$('node.center');
       if (centerNode.length > 0) {
         const neighborhood = centerNode.closedNeighborhood();
-        cy.fit(neighborhood, FIT_PADDING * 1.5);
-        if (cy.zoom() > 1.05) {
-          cy.zoom(1.05);
-          cy.center(centerNode);
+        currentCy.fit(neighborhood, FIT_PADDING * 1.5);
+        if (currentCy.zoom() < FOCUS_MIN_ZOOM) {
+          currentCy.zoom(FOCUS_MIN_ZOOM);
+          currentCy.center(centerNode);
         }
       } else {
-        // In global mode, center on the most-connected node or fit all
-        const { ele: mostConnected, value: maxDeg } = nodes.max((ele) => (ele as NodeSingular).degree(false));
-        if (maxDeg > 2 && nodes.length > 20) {
-          cy.animate({
-            center: { eles: mostConnected },
-            zoom: 1.2,
-            duration: 300,
-            easing: 'ease-out',
-          });
-        } else {
-          cy.fit(undefined, FIT_PADDING);
-        }
+        currentCy.fit(undefined, FIT_PADDING);
       }
+      applyGraphSelection(currentCy, selectedNodeId ?? null);
     });
     layout.run();
+  }, [centerId, centerNodeType, selectedNodeId]);
 
-    /* Node click — select and highlight neighborhood */
-    cy.on('tap', 'node', (evt) => {
-      const node = evt.target;
-      const d = node.data();
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
 
-      /* Clear previous fading */
-      cy.elements().removeClass('faded');
+    function tryInitialize(): void {
+      const rect = container.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0 || cyRef.current) return;
 
-      /* Fade everything that is not in the neighborhood */
-      const neighborhood = node.closedNeighborhood();
-      cy.elements().not(neighborhood).addClass('faded');
-
-      /* Brighten connected edges */
-      node.connectedEdges().style({
-        'line-opacity': EDGE_ACTIVE_OPACITY,
-        'text-opacity': 0.9,
-        width: 2,
+      const cy = cytoscape({
+        container,
+        elements: [],
+        style,
+        layout: { name: 'preset' },
+        userZoomingEnabled: true,
+        userPanningEnabled: true,
+        boxSelectionEnabled: false,
+        minZoom: 0.3,
+        maxZoom: 3,
       });
 
-      // Look up the full node from the original array to pass extended fields
-      const originalNode = nodeMap.get(d.id);
-      onNodeSelectRef.current?.(originalNode ?? { id: d.id, name: d.fullLabel ?? d.label, type: d.type });
-    });
+      cy.on('tap', 'node', (evt) => {
+        const node = evt.target;
+        const d = node.data();
+        const originalNode = nodeMap.get(d.id);
+        onNodeSelectRef.current?.(originalNode ?? { id: d.id, name: d.fullLabel ?? d.label, type: d.type });
+      });
 
-    /* Background click — clear selection and fading */
-    cy.on('tap', (evt) => {
-      if (evt.target === cy) {
-        cy.elements().removeClass('faded');
-        /* Reset edge styles */
-        cy.edges().style({
-          'line-opacity': EDGE_OPACITY,
-          'text-opacity': 0,
-          width: EDGE_WIDTH,
-        });
-        onNodeSelectRef.current?.(null);
+      cy.on('tap', (evt) => {
+        if (evt.target === cy) {
+          onNodeSelectRef.current?.(null);
+        }
+      });
+
+      cy.on('mouseover', 'edge', (evt) => {
+        evt.target.style('text-opacity', 1);
+        evt.target.style('line-opacity', EDGE_ACTIVE_OPACITY);
+      });
+      cy.on('mouseout', 'edge', (evt) => {
+        const selected = cy.$('node:selected');
+        if (selected.length > 0) {
+          const neighborhood = selected.connectedEdges();
+          if (neighborhood.contains(evt.target)) return;
+        }
+        evt.target.style('text-opacity', 0);
+        evt.target.style('line-opacity', EDGE_OPACITY);
+      });
+
+      cyRef.current = cy;
+    }
+
+    tryInitialize();
+    resizeObserverRef.current?.disconnect();
+    resizeObserverRef.current = new ResizeObserver(() => {
+      if (!cyRef.current) {
+        tryInitialize();
+      } else {
+        cyRef.current.resize();
       }
     });
+    resizeObserverRef.current.observe(container);
 
-    /* Edge hover — show label */
-    cy.on('mouseover', 'edge', (evt) => {
-      evt.target.style('text-opacity', 1);
-      evt.target.style('line-opacity', EDGE_ACTIVE_OPACITY);
-    });
-    cy.on('mouseout', 'edge', (evt) => {
-      /* Only reset if not connected to selected node */
-      const selected = cy.$('node:selected');
-      if (selected.length > 0) {
-        const neighborhood = selected.connectedEdges();
-        if (neighborhood.contains(evt.target)) return;
-      }
-      evt.target.style('text-opacity', 0);
-      evt.target.style('line-opacity', EDGE_OPACITY);
-    });
-
-    cyRef.current = cy;
     return () => {
-      cy.destroy();
+      resizeObserverRef.current?.disconnect();
+      resizeObserverRef.current = null;
+      cyRef.current?.destroy();
       cyRef.current = null;
     };
-  }, [nodes, edges, centerId]);
+  }, [nodeMap, style]);
+
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    const existingPositions = new Map<string, { x: number; y: number }>();
+    cy.nodes().forEach((node) => {
+      existingPositions.set(node.id(), { x: node.position('x'), y: node.position('y') });
+    });
+
+    cy.elements().remove();
+    cy.add(buildElements(existingPositions));
+
+    const centerChanged = prevCenterIdRef.current !== (centerId ?? null);
+    prevCenterIdRef.current = centerId ?? null;
+    runLayout(cy, centerChanged || existingPositions.size === 0);
+  }, [buildElements, centerId, runLayout]);
+
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    applyGraphSelection(cy, selectedNodeId ?? null);
+  }, [selectedNodeId]);
 
   const resetView = useCallback(() => {
     const cy = cyRef.current;
     if (!cy) return;
-    cy.elements().removeClass('faded');
-    cy.edges().style({
-      'line-opacity': EDGE_OPACITY,
-      'text-opacity': 0,
-      width: EDGE_WIDTH,
-    });
+    clearGraphSelection(cy);
     cy.fit(undefined, FIT_PADDING);
   }, []);
 

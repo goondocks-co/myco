@@ -61,7 +61,12 @@ collective-ui-dev:
 daemon-dev:
 	@proxy=$${MYCO_UI_DEV_PROXY_TARGET:-http://127.0.0.1:5173}; \
 	echo "Starting watched daemon with UI dev proxy $$proxy"; \
-	MYCO_UI_DEV_PROXY_TARGET="$$proxy" npx tsx watch packages/myco/src/entries/daemon.ts --vault "$(PWD)/.myco"
+	MYCO_UI_DEV_PROXY_TARGET="$$proxy" npx tsx watch \
+		--exclude ".myco/**" \
+		--exclude ".playwright-cli/**" \
+		--exclude "packages/myco/ui/**" \
+		--exclude "packages/myco/dist/**" \
+		packages/myco/src/entries/daemon.ts --vault "$(PWD)/.myco"
 
 dev:
 	@ui_port=$${MYCO_UI_DEV_PORT:-5173}; \
@@ -78,7 +83,12 @@ dev:
 	echo "Open http://127.0.0.1:$$daemon_port/ for integrated dev or http://127.0.0.1:$$ui_port/ for raw Vite"; \
 	trap 'kill $$vite_pid 2>/dev/null || true' EXIT INT TERM; \
 	(cd packages/myco/ui && MYCO_DAEMON_PORT=$$daemon_port npx vite dev --host 127.0.0.1 --port $$ui_port) & vite_pid=$$!; \
-	MYCO_UI_DEV_PROXY_TARGET="$$proxy" npx tsx watch packages/myco/src/entries/daemon.ts --vault "$(PWD)/.myco"
+	MYCO_UI_DEV_PROXY_TARGET="$$proxy" npx tsx watch \
+		--exclude ".myco/**" \
+		--exclude ".playwright-cli/**" \
+		--exclude "packages/myco/ui/**" \
+		--exclude "packages/myco/dist/**" \
+		packages/myco/src/entries/daemon.ts --vault "$(PWD)/.myco"
 
 dev-link:
 	npm run build
