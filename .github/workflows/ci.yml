@@ -15,6 +15,8 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      - run: npm ci --prefix packages/myco-team/worker
+      - run: npm ci --prefix packages/myco-collective/worker
       - run: npm run lint
       - run: npm run build
       - run: npm test
