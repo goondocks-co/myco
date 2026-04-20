@@ -547,7 +547,7 @@ function PhaseBreakdownTable({ phases }: { phases: PhaseBreakdownRow[] }) {
     );
   }
   return (
-    <div className="rounded-sm bg-surface-container-low/60 overflow-x-auto">
+    <div className="rounded-xs bg-surface-container-low/60 overflow-x-auto">
       <table className="w-full" aria-label="Phase breakdown">
         <thead>
           <tr className="border-b border-outline-variant/20">

@@ -207,7 +207,7 @@ export default function Layout({ collectiveName, onLogout }: LayoutProps) {
 
       {mobile.isMobile && mobile.open && (
         <>
-          <div className="fixed inset-0 z-40 bg-black/55 backdrop-blur-sm" onClick={mobile.close} />
+          <div className="fixed inset-0 z-40 bg-black/55 backdrop-blur-xs" onClick={mobile.close} />
           <aside className="fixed inset-y-0 left-0 z-50 w-[88vw] max-w-sm border-r border-[var(--ghost-border)] bg-surface-container-low px-4 py-5">
             <SidebarContent
               collectiveName={displayName}

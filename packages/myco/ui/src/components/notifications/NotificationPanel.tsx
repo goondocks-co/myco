@@ -208,7 +208,7 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
     <>
       {open && (
         <div
-          className="fixed inset-0 z-40 bg-surface-dim/40 backdrop-blur-sm transition-opacity"
+          className="fixed inset-0 z-40 bg-surface-dim/40 backdrop-blur-xs transition-opacity"
           onClick={onClose}
           aria-hidden="true"
         />

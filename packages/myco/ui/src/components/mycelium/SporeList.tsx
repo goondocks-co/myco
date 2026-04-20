@@ -62,7 +62,7 @@ function SporeRow({
       level={isSelected ? 'high' : 'low'}
       className={cn(
         'p-4 cursor-pointer transition-all duration-150 hover:bg-surface-container-high hover:shadow-[inset_3px_0_0_var(--primary)] rounded-lg',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+        'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40',
         isSelected && 'ring-1 ring-primary/30',
       )}
       onClick={onClick}

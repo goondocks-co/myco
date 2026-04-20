@@ -35,7 +35,7 @@ function CopyableField({ label, value, mono = true }: { label: string; value: st
         <button
           type="button"
           onClick={handleCopy}
-          className="flex-shrink-0 p-1 rounded text-on-surface-variant hover:text-on-surface opacity-0 group-hover:opacity-100 transition-opacity"
+          className="shrink-0 p-1 rounded text-on-surface-variant hover:text-on-surface opacity-0 group-hover:opacity-100 transition-opacity"
           title="Copy to clipboard"
         >
           {copied ? <Check className="h-3.5 w-3.5 text-primary" /> : <Copy className="h-3.5 w-3.5" />}
@@ -68,7 +68,7 @@ function RedactedField({ label, value }: { label: string; value: string }) {
         <button
           type="button"
           onClick={() => setVisible(!visible)}
-          className="flex-shrink-0 p-1 rounded text-on-surface-variant hover:text-on-surface transition-opacity"
+          className="shrink-0 p-1 rounded text-on-surface-variant hover:text-on-surface transition-opacity"
           title={visible ? 'Hide' : 'Reveal'}
         >
           {visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
@@ -76,7 +76,7 @@ function RedactedField({ label, value }: { label: string; value: string }) {
         <button
           type="button"
           onClick={handleCopy}
-          className="flex-shrink-0 p-1 rounded text-on-surface-variant hover:text-on-surface opacity-0 group-hover:opacity-100 transition-opacity"
+          className="shrink-0 p-1 rounded text-on-surface-variant hover:text-on-surface opacity-0 group-hover:opacity-100 transition-opacity"
           title="Copy to clipboard"
         >
           {copied ? <Check className="h-3.5 w-3.5 text-primary" /> : <Copy className="h-3.5 w-3.5" />}
@@ -240,7 +240,7 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
         <Surface level="low" ghostBorder className="p-4 border-l-2 border-l-ochre">
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <ArrowUpCircle className="h-5 w-5 text-ochre flex-shrink-0" />
+              <ArrowUpCircle className="h-5 w-5 text-ochre shrink-0" />
               <div>
                 <p className="text-sm font-medium text-on-surface">Worker update available</p>
                 <p className="text-xs text-on-surface-variant">

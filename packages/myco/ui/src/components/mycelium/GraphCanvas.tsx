@@ -35,7 +35,7 @@ export function GraphCanvas({ nodes, edges, onNodeSelect, centerId, isLoading }:
             <span>{edges.length} edges</span>
           </div>
         )}
-        <Button variant="ghost" size="sm" onClick={resetView} className="gap-1.5 h-7 text-[10px] px-2 bg-surface-container-high/40 backdrop-blur-sm">
+        <Button variant="ghost" size="sm" onClick={resetView} className="gap-1.5 h-7 text-[10px] px-2 bg-surface-container-high/40 backdrop-blur-xs">
           <RotateCcw className="h-3 w-3" />
           Reset View
         </Button>

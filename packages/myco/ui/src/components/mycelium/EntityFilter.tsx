@@ -76,7 +76,7 @@ export function EntityFilter({
               />
               <div
                 className={cn(
-                  'h-3 w-3 rounded-sm flex items-center justify-center transition-colors',
+                  'h-3 w-3 rounded-xs flex items-center justify-center transition-colors',
                   enabled ? 'bg-surface-container-high' : 'bg-surface-container-lowest',
                 )}
               >
@@ -118,7 +118,7 @@ export function EntityFilter({
                 />
                 <div
                   className={cn(
-                    'h-2.5 w-2.5 rounded-sm flex items-center justify-center transition-colors',
+                    'h-2.5 w-2.5 rounded-xs flex items-center justify-center transition-colors',
                     enabled ? 'bg-surface-container-high' : 'bg-surface-container-lowest',
                   )}
                 >
@@ -161,7 +161,7 @@ export function EntityFilter({
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="flex items-center gap-2 rounded-md bg-surface-container/90 backdrop-blur-sm px-3 py-2 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/90 transition-colors shadow-sm"
+          className="flex items-center gap-2 rounded-md bg-surface-container/90 backdrop-blur-xs px-3 py-2 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/90 transition-colors shadow-xs"
           aria-label="Open graph filters"
         >
           <Filter className="h-3.5 w-3.5" />

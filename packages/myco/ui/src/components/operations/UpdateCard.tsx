@@ -263,7 +263,7 @@ export function UpdateCard() {
       {/* Error row */}
       {(applyState === 'error' || status.error) && (
         <div className="flex items-start gap-2 text-tertiary">
-          <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+          <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
           <span className="font-sans text-sm">
             {errorMessage ?? status.error}
           </span>

@@ -12,7 +12,7 @@ import { normalizeSearchResult } from '../components/search/model';
 import { fetchProjects, runSearch } from '../lib/api';
 import { titleCaseFromSnake } from '../lib/format';
 
-const SELECT_BASE_CLASS = 'appearance-none h-9 w-full rounded-md border border-[var(--ghost-border)] bg-[var(--surface-container-lowest)] px-3 text-sm text-[var(--on-surface)] outline-none transition-colors focus:border-primary/40';
+const SELECT_BASE_CLASS = 'appearance-none h-9 w-full rounded-md border border-[var(--ghost-border)] bg-[var(--surface-container-lowest)] px-3 text-sm text-[var(--on-surface)] outline-hidden transition-colors focus:border-primary/40';
 
 export default function Search() {
   const projectsQuery = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
@@ -172,7 +172,7 @@ export default function Search() {
 
       {selectedResult && mobileInspectorOpen && (
         <>
-          <div className="fixed inset-0 z-40 bg-black/55 backdrop-blur-sm xl:hidden" onClick={() => setMobileInspectorOpen(false)} />
+          <div className="fixed inset-0 z-40 bg-black/55 backdrop-blur-xs xl:hidden" onClick={() => setMobileInspectorOpen(false)} />
           <div className="fixed inset-x-0 bottom-0 top-16 z-50 overflow-hidden rounded-t-3xl border border-[var(--ghost-border)] xl:hidden">
             <SearchInspector
               result={selectedResult}
