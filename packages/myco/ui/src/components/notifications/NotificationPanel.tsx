@@ -221,23 +221,29 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
         )}
       >
         <div className="border-b border-outline-variant/20 px-4 py-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1 space-y-1">
               <div className="flex items-center gap-2">
-                <Bell className="h-4 w-4 text-primary" />
-                <h2 className="text-sm font-medium text-on-surface">Notifications</h2>
+                <Bell className="h-4 w-4 shrink-0 text-primary" />
+                <h2 className="min-w-0 text-sm font-medium text-on-surface">Notifications</h2>
                 {unreadCount > 0 && (
-                  <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary/15 px-1.5 text-xs font-medium text-primary">
+                  <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-primary/15 px-1.5 text-xs font-medium text-primary">
                     {unreadCount}
                   </span>
                 )}
               </div>
-              <p className="text-xs text-on-surface-variant">
+              <p className="max-w-[22ch] text-xs leading-5 text-on-surface-variant">
                 New items stay here until read or dismissed.
               </p>
             </div>
 
-            <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1">
+            <Button variant="ghost" size="sm" onClick={onClose} className="h-7 shrink-0 px-2">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+
+          {(unreadCount > 0 || items.length > 0) && (
+            <div className="mt-3 flex flex-wrap items-center justify-end gap-1 border-t border-outline-variant/10 pt-3">
               {unreadCount > 0 && (
                 <Button
                   variant="ghost"
@@ -262,11 +268,8 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
                   Clear
                 </Button>
               )}
-              <Button variant="ghost" size="sm" onClick={onClose} className="h-7 shrink-0 px-2">
-                <X className="h-4 w-4" />
-              </Button>
             </div>
-          </div>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto">
