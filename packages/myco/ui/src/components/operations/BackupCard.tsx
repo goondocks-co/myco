@@ -162,14 +162,14 @@ export function BackupCard() {
       >
         {({ value, onChange, onBlur }) => (
           <div className="flex items-center gap-2">
-            <FolderOpen className="h-3.5 w-3.5 text-on-surface-variant flex-shrink-0" />
+            <FolderOpen className="h-3.5 w-3.5 text-on-surface-variant shrink-0" />
             <input
               type="text"
               value={value ?? ''}
               onChange={(e) => onChange(e.target.value)}
               onBlur={onBlur}
               placeholder=".myco/backups"
-              className="flex-1 bg-surface-container text-on-surface font-mono text-sm rounded px-3 py-1.5 outline-none border border-outline-variant/15 focus:border-primary/40 placeholder:text-on-surface-variant/50"
+              className="flex-1 bg-surface-container text-on-surface font-mono text-sm rounded px-3 py-1.5 outline-hidden border border-outline-variant/15 focus:border-primary/40 placeholder:text-on-surface-variant/50"
             />
           </div>
         )}
@@ -203,7 +203,7 @@ export function BackupCard() {
                 <Badge variant="secondary">{formatBytes(b.size_bytes)}</Badge>
                 <span className="text-xs text-on-surface-variant">{formatDate(b.modified_at)}</span>
               </div>
-              <div className="flex gap-2 flex-shrink-0 ml-3">
+              <div className="flex gap-2 shrink-0 ml-3">
                 <Button variant="ghost" size="sm" onClick={() => handlePreview(b.machine_id)}>
                   Preview
                 </Button>

@@ -81,7 +81,7 @@ const RunRowItem = memo(function RunRowItem({
 
   return (
     <tr
-      className="border-b border-outline-variant/20 last:border-0 hover:bg-surface-container-high/50 cursor-pointer transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40 hover:shadow-[inset_3px_0_0_var(--primary)]"
+      className="border-b border-outline-variant/20 last:border-0 hover:bg-surface-container-high/50 cursor-pointer transition-all duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40 hover:shadow-[inset_3px_0_0_var(--primary)]"
       onClick={onClick}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -117,7 +117,7 @@ const RunRowItem = memo(function RunRowItem({
           </span>
           {run.dry_run && (
             <span
-              className="inline-flex items-center rounded-sm bg-secondary/15 px-1.5 py-0.5 font-sans text-[10px] uppercase tracking-wide text-secondary"
+              className="inline-flex items-center rounded-xs bg-secondary/15 px-1.5 py-0.5 font-sans text-[10px] uppercase tracking-wide text-secondary"
               title="Dry run — writes were intercepted, no vault mutations"
             >
               Dry

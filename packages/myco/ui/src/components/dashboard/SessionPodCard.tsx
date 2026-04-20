@@ -86,7 +86,7 @@ export function SessionPodCard({ event }: { event: ActivityEvent }) {
     <div
       className={cn(
         'p-5 rounded-lg border-l-4 bg-surface-container/60 hover:bg-surface-container-high group hover-lift transition-colors',
-        route && 'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+        route && 'cursor-pointer focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40',
         BORDER_CLASSES[variant],
       )}
       onClick={() => route && navigate(route)}

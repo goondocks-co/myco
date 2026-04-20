@@ -164,7 +164,7 @@ function PhaseCard({ phase, index }: { phase: PhaseDefinition; index: number }) 
           {phase.tools.map((tool) => (
             <span
               key={tool}
-              className="font-mono text-xs px-1.5 py-0.5 rounded-sm bg-surface-container-high text-on-surface-variant"
+              className="font-mono text-xs px-1.5 py-0.5 rounded-xs bg-surface-container-high text-on-surface-variant"
             >
               {tool}
             </span>

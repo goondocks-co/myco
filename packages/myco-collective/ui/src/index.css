@@ -1,6 +1,54 @@
 @import "tailwindcss";
-@config '../tailwind.config.ts';
 @source './**/*.{ts,tsx}';
+
+@theme inline {
+  --font-serif: var(--font-heading, Newsreader), Georgia, serif;
+  --font-sans: var(--font-ui, Inter), system-ui, sans-serif;
+  --font-mono: var(--font-data, Geist Mono), ui-monospace, monospace;
+
+  --color-surface: var(--surface);
+  --color-surface-dim: var(--surface-dim);
+  --color-surface-bright: var(--surface-bright);
+  --color-surface-container-lowest: var(--surface-container-lowest);
+  --color-surface-container-low: var(--surface-container-low);
+  --color-surface-container: var(--surface-container);
+  --color-surface-container-high: var(--surface-container-high);
+  --color-surface-container-highest: var(--surface-container-highest);
+  --color-surface-variant: var(--surface-variant);
+  --color-on-surface: var(--on-surface);
+  --color-on-surface-variant: var(--on-surface-variant);
+  --color-outline: var(--outline);
+  --color-outline-variant: var(--outline-variant);
+  --color-primary: var(--primary);
+  --color-primary-container: var(--primary-container);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-on-primary: var(--on-primary);
+  --color-on-primary-container: var(--on-primary-container);
+  --color-secondary: var(--secondary);
+  --color-secondary-container: var(--secondary-container);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-tertiary: var(--tertiary);
+  --color-tertiary-container: var(--tertiary-container);
+  --color-destructive: var(--destructive, var(--tertiary));
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-lg: 0.5rem;
+  --radius-md: var(--radius);
+  --radius-sm: 0.25rem;
+
+  --shadow-ambient: 0 24px 48px rgba(var(--shadow-tint), 0.14);
+  --shadow-glow: 0 0 0 1px rgba(var(--shadow-tint), 0.12), 0 18px 48px rgba(var(--shadow-tint), 0.16);
+}
 
 @font-face {
   font-family: 'Newsreader';

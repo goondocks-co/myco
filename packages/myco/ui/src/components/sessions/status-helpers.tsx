@@ -37,7 +37,7 @@ export function StatusBadge({ status }: { status: string }) {
   const color = resolveStatusColor(status);
   const label = status.charAt(0).toUpperCase() + status.slice(1);
   return (
-    <span className={cn('inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 font-sans text-xs font-medium', STATUS_BADGE_CLASSES[color])}>
+    <span className={cn('inline-flex items-center gap-1.5 rounded-xs px-2 py-0.5 font-sans text-xs font-medium', STATUS_BADGE_CLASSES[color])}>
       <StatusDot status={status} />
       {label}
     </span>

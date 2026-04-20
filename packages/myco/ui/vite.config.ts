@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +15,7 @@ const mycoPackageJson = JSON.parse(
 ) as { version: string };
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [tailwindcss(), react()],
   base: '/',
   define: {
     __MYCO_UI_VERSION__: JSON.stringify(mycoPackageJson.version),

@@ -85,7 +85,7 @@ export function EvaluationList({ onSelect }: EvaluationListProps) {
               className={cn(
                 'border-b border-outline-variant/20 last:border-0',
                 'hover:bg-surface-container-high/50 cursor-pointer transition-all duration-150',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40',
+                'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40',
                 'hover:shadow-[inset_3px_0_0_var(--primary)]',
               )}
               onClick={() => onSelect(ev.id)}

@@ -235,7 +235,7 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
 
   return (
     <div className="space-y-3">
-      <div className="rounded-lg border border-outline-variant/20 bg-surface-container/72 px-4 py-3 shadow-sm">
+      <div className="rounded-lg border border-outline-variant/20 bg-surface-container/72 px-4 py-3 shadow-xs">
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative min-w-[260px] flex-1 max-w-[420px]">
             <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-on-surface-variant/60" />
@@ -247,13 +247,13 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
             />
           </div>
 
-          <div className="flex rounded-lg border border-outline-variant/10 bg-surface-container-high p-1 shadow-sm">
+          <div className="flex rounded-lg border border-outline-variant/10 bg-surface-container-high p-1 shadow-xs">
             <Button
               variant="ghost"
               size="sm"
               className={cn(
                 'h-8 px-3 gap-1.5 transition-all',
-                viewMode === 'global' ? 'bg-surface-container-lowest text-primary shadow-sm' : 'text-on-surface-variant hover:text-on-surface',
+                viewMode === 'global' ? 'bg-surface-container-lowest text-primary shadow-xs' : 'text-on-surface-variant hover:text-on-surface',
               )}
               onClick={handleShowOverview}
             >
@@ -266,7 +266,7 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
               disabled={!focusId && !selectedNode}
               className={cn(
                 'h-8 px-3 gap-1.5 transition-all',
-                viewMode === 'focus' ? 'bg-surface-container-lowest text-primary shadow-sm' : 'text-on-surface-variant hover:text-on-surface',
+                viewMode === 'focus' ? 'bg-surface-container-lowest text-primary shadow-xs' : 'text-on-surface-variant hover:text-on-surface',
                 !focusId && !selectedNode && 'cursor-not-allowed opacity-50',
               )}
               onClick={handleShowFocus}
@@ -277,7 +277,7 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
           </div>
 
           {viewMode === 'focus' && (
-            <div className="flex items-center gap-1 rounded-lg border border-outline-variant/10 bg-surface-container-high p-1 shadow-sm">
+            <div className="flex items-center gap-1 rounded-lg border border-outline-variant/10 bg-surface-container-high p-1 shadow-xs">
               <span className="px-2 font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">Depth</span>
               {[1, 2, 3].map((depth) => (
                 <Button
@@ -287,7 +287,7 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
                   className={cn(
                     'h-7 min-w-7 rounded-md border px-2 font-mono text-[10px] transition-all',
                     focusDepth === depth
-                      ? 'border-primary/40 bg-primary/15 text-primary shadow-sm font-bold'
+                      ? 'border-primary/40 bg-primary/15 text-primary shadow-xs font-bold'
                       : 'border-transparent text-on-surface-variant hover:border-outline-variant/20 hover:text-on-surface',
                   )}
                   onClick={() => setFocusDepth(depth)}
@@ -377,7 +377,7 @@ function GraphTab({ onNavigateToSpore }: { onNavigateToSpore?: (id: string) => v
       </div>
 
       {viewMode === 'global' && isLargeGraph && (
-        <div className={cn('absolute bottom-3 left-3 z-10 flex max-w-[280px] flex-col items-start gap-2 rounded-lg border border-warning/20 bg-warning-container/80 p-3 text-on-warning-container shadow-lg backdrop-blur-sm', selectedNode ? INSPECTOR_OFFSET_CLASS : 'right-3')}>
+        <div className={cn('absolute bottom-3 left-3 z-10 flex max-w-[280px] flex-col items-start gap-2 rounded-lg border border-warning/20 bg-warning-container/80 p-3 text-on-warning-container shadow-lg backdrop-blur-xs', selectedNode ? INSPECTOR_OFFSET_CLASS : 'right-3')}>
           <div className="flex items-center gap-2">
             <Info className="h-4 w-4 shrink-0 text-warning" />
             <span className="text-[11px] font-semibold uppercase tracking-wider">Overview Snapshot</span>

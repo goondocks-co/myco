@@ -83,7 +83,7 @@ export function StatusHero({ stats }: { stats: StatsResponse }) {
           {subtitle}
         </span>
 
-        <h1 className="font-serif text-5xl italic text-on-surface drop-shadow-sm">
+        <h1 className="font-serif text-5xl italic text-on-surface drop-shadow-xs">
           Myco
         </h1>
 

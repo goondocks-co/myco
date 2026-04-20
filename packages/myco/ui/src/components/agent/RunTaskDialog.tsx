@@ -474,7 +474,7 @@ export function RunTaskDialog({
               </span>
             </label>
             <textarea
-              className="w-full rounded-md bg-surface-container-lowest px-3 py-2 font-sans text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-50 resize-none"
+              className="w-full rounded-md bg-surface-container-lowest px-3 py-2 font-sans text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-hidden focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-50 resize-none"
               rows={3}
               placeholder="Additional instructions for this run..."
               value={instruction}
@@ -489,7 +489,7 @@ export function RunTaskDialog({
               <button
                 type="button"
                 onClick={() => setOverridesOpen((v) => !v)}
-                className="flex items-center gap-2 font-sans text-sm font-medium text-on-surface hover:text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/40 rounded"
+                className="flex items-center gap-2 font-sans text-sm font-medium text-on-surface hover:text-on-surface focus:outline-hidden focus:ring-2 focus:ring-primary/40 rounded"
               >
                 <ChevronDown
                   className={`h-4 w-4 transition-transform ${overridesOpen ? 'rotate-180' : ''}`}

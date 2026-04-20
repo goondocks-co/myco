@@ -40,7 +40,7 @@ export function Lightbox({ images, index, onClose, onNavigate }: LightboxProps) 
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-surface-dim/90 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-surface-dim/90 backdrop-blur-xs"
       onClick={onClose}
     >
       {/* Close */}

@@ -208,7 +208,7 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
     <>
       {open && (
         <div
-          className="fixed inset-0 z-40 bg-surface-dim/40 backdrop-blur-sm transition-opacity"
+          className="fixed inset-0 z-40 bg-surface-dim/40 backdrop-blur-xs transition-opacity"
           onClick={onClose}
           aria-hidden="true"
         />
@@ -222,51 +222,51 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
       >
         <div className="border-b border-outline-variant/20 px-4 py-4">
           <div className="flex items-start justify-between gap-3">
-            <div className="space-y-1">
+            <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <Bell className="h-4 w-4 text-primary" />
-                <h2 className="text-sm font-medium text-on-surface">Notifications</h2>
+                <Bell className="h-4 w-4 shrink-0 text-primary" />
+                <h2 className="min-w-0 text-sm font-medium text-on-surface">Notifications</h2>
                 {unreadCount > 0 && (
-                  <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary/15 px-1.5 text-xs font-medium text-primary">
+                  <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-primary/15 px-1.5 text-xs font-medium text-primary">
                     {unreadCount}
                   </span>
                 )}
               </div>
-              <p className="text-xs text-on-surface-variant">
-                New items stay here until read or dismissed.
-              </p>
             </div>
 
-            <div className="flex items-center gap-1">
-              {unreadCount > 0 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => markAllRead.mutate(undefined)}
-                  title="Mark all as read"
-                  className="h-7 gap-1 px-2 text-xs text-on-surface-variant"
-                >
-                  <MailCheck className="h-3.5 w-3.5" />
-                  Mark all read
-                </Button>
-              )}
-              {items.length > 0 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => dismissAll.mutate(undefined)}
-                  title="Clear all notifications"
-                  className="h-7 gap-1 px-2 text-xs text-on-surface-variant"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  Clear
-                </Button>
-              )}
-              <Button variant="ghost" size="sm" onClick={onClose} className="h-7 px-2">
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
+            <Button variant="ghost" size="sm" onClick={onClose} className="h-7 shrink-0 px-2">
+              <X className="h-4 w-4" />
+            </Button>
           </div>
+
+          {(unreadCount > 0 || items.length > 0) && (
+            <div className="mt-3 flex items-center justify-end gap-1 border-t border-outline-variant/10 pt-3">
+                {unreadCount > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => markAllRead.mutate(undefined)}
+                    title="Mark all as read"
+                    className="h-7 gap-1 px-2 text-xs text-on-surface-variant"
+                  >
+                    <MailCheck className="h-3.5 w-3.5" />
+                    Mark all read
+                  </Button>
+                )}
+                {items.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => dismissAll.mutate(undefined)}
+                    title="Clear all notifications"
+                    className="h-7 gap-1 px-2 text-xs text-on-surface-variant"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Clear
+                  </Button>
+                )}
+            </div>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto">

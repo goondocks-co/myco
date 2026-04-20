@@ -8,8 +8,8 @@ import { SectionHeader } from '../components/ui/section-header';
 import { fetchSettings, upsertSetting } from '../lib/api';
 import { formatTimestamp } from '../lib/format';
 
-const TEXTAREA_BASE_CLASS = 'appearance-none min-h-36 w-full rounded-md border border-[var(--ghost-border)] bg-[var(--surface-container-lowest)] px-3 py-3 font-mono text-sm text-[var(--on-surface)] outline-none transition-colors placeholder:text-[color-mix(in_srgb,var(--on-surface-variant),transparent_25%)] focus:border-primary/40';
-const SELECT_BASE_CLASS = 'appearance-none h-9 w-full rounded-md border border-[var(--ghost-border)] bg-[var(--surface-container-lowest)] px-3 text-sm text-[var(--on-surface)] outline-none transition-colors focus:border-primary/40';
+const TEXTAREA_BASE_CLASS = 'appearance-none min-h-36 w-full rounded-md border border-[var(--ghost-border)] bg-[var(--surface-container-lowest)] px-3 py-3 font-mono text-sm text-[var(--on-surface)] outline-hidden transition-colors placeholder:text-[color-mix(in_srgb,var(--on-surface-variant),transparent_25%)] focus:border-primary/40';
+const SELECT_BASE_CLASS = 'appearance-none h-9 w-full rounded-md border border-[var(--ghost-border)] bg-[var(--surface-container-lowest)] px-3 text-sm text-[var(--on-surface)] outline-hidden transition-colors focus:border-primary/40';
 
 export default function Settings() {
   const queryClient = useQueryClient();

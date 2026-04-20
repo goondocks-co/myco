@@ -423,7 +423,7 @@ export default function Layout() {
       {/* Mobile drawer overlay */}
       {drawer.isMobile && drawer.open && (
         <div
-          className="fixed inset-0 z-40 bg-surface-dim/60 backdrop-blur-sm transition-opacity"
+          className="fixed inset-0 z-40 bg-surface-dim/60 backdrop-blur-xs transition-opacity"
           onClick={drawer.close}
           aria-hidden="true"
         />

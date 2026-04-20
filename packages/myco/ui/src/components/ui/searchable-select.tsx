@@ -201,7 +201,7 @@ export function SearchableSelect({
         aria-expanded={isOpen}
         aria-controls={listboxId}
         className={cn(
-          'flex h-9 w-full items-center justify-between rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest px-3 py-2 text-left text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:border-primary/40 disabled:cursor-not-allowed disabled:opacity-50',
+          'flex h-9 w-full items-center justify-between rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest px-3 py-2 text-left text-sm shadow-xs transition-colors focus-visible:outline-hidden focus-visible:border-primary/40 disabled:cursor-not-allowed disabled:opacity-50',
           triggerClassName,
         )}
         onClick={() => setIsOpen((current) => !current)}
@@ -251,7 +251,7 @@ export function SearchableSelect({
                     role="option"
                     aria-selected={isSelected}
                     className={cn(
-                      'flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left text-sm text-on-surface outline-none transition-colors hover:bg-surface-bright focus-visible:bg-surface-bright',
+                      'flex w-full items-center justify-between rounded-xs px-2 py-1.5 text-left text-sm text-on-surface outline-hidden transition-colors hover:bg-surface-bright focus-visible:bg-surface-bright',
                       isSelected && 'bg-surface-bright',
                     )}
                     onClick={() => {
