@@ -3,6 +3,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { getActiveSessionIds } from '@myco/db/queries/sessions.js';
 import { getEmbeddingQueueDepth } from '@myco/db/queries/embeddings.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { isProcessAlive } from '@myco/cli/shared.js';
@@ -77,6 +78,14 @@ function countTable(db: ReturnType<typeof getDatabase>, table: string): number {
 export function gatherStats(vaultDir: string, options?: { active_sessions?: string[] }): V2Stats {
   const db = getDatabase();
 
+  // Active sessions can come from two sources:
+  // 1. the live daemon registry (sessions seen by this process)
+  // 2. persisted DB rows still marked active (survives daemon restarts)
+  const active_session_ids = Array.from(new Set([
+    ...getActiveSessionIds(),
+    ...(options?.active_sessions ?? []),
+  ]));
+
   // Load config for embedding provider info (sync — already on disk)
   const config = loadMergedConfig(vaultDir);
 
@@ -149,7 +158,7 @@ export function gatherStats(vaultDir: string, options?: { active_sessions?: stri
       port: daemonPort,
       version: daemonVersion,
       uptime_seconds: daemonUptimeSeconds,
-      active_sessions: options?.active_sessions ?? [],
+      active_sessions: active_session_ids,
     },
     vault: {
       path: vaultDir,
