@@ -427,12 +427,16 @@ export async function main(): Promise<void> {
 
   // Resolve dist/ui/ from the package root
   let uiDir: string | null = null;
+  const uiDevProxyTarget = process.env.MYCO_UI_DEV_PROXY_TARGET || null;
   {
     const root = findPackageRoot(path.dirname(new URL(import.meta.url).pathname));
     if (root) {
       const candidate = path.join(root, 'dist', 'ui');
       if (fs.existsSync(candidate)) uiDir = candidate;
     }
+  }
+  if (uiDevProxyTarget) {
+    logger.info(LOG_KINDS.DAEMON_START, 'UI dev proxy enabled', { target: uiDevProxyTarget });
   }
   if (uiDir) {
     logger.debug(LOG_KINDS.DAEMON_START, 'Static UI directory found', { path: uiDir });
@@ -457,6 +461,7 @@ export async function main(): Promise<void> {
     vaultDir,
     logger,
     uiDir: uiDir ?? undefined,
+    uiDevProxyTarget: uiDevProxyTarget ?? undefined,
     // Don't record activity on every HTTP request — UI polling (every 3-10s)
     // would prevent the PowerManager from ever reaching 'idle' state, blocking
     // all idle-only scheduled tasks (skill-survey, skill-generate, skill-evolve).
