@@ -11,7 +11,7 @@ description: |
   and fixing silent tag-publish failures caused by `[skip ci]` commit messages,
   and (5) applying the worktree delivery gate safely for multi-package
   experimental work. Also covers Node binary PATH resolution in Wrangler
-  sub-shell spawns. Apply this skill even if the user doesn't explicitly ask
+  sub-shell spawns. Apply this skill even if the user don't explicitly ask
   for "monorepo" or "release engineering" — it applies any time you're adding
   a new package, cutting a release, touching CI publish workflows, or
   investigating why a tag didn't publish.
@@ -167,6 +167,32 @@ git push origin myco-team/v0.3.1
 > **Critical:** Before tagging, verify the target commit does not carry a
 > `[skip ci]` message — see Procedure 4. A tag on a `[skip ci]` commit is
 > silently never published.
+
+### 2.4 — Nested non-workspace packages
+
+For packages that exist within the monorepo but are NOT part of the workspace
+(e.g., Cloudflare Workers in `/workers/*`), configure separate CI triggers:
+
+```yaml
+# For workers/collective-worker
+on:
+  push:
+    tags:
+      - 'worker-collective/v*'
+    paths:
+      - 'workers/collective-worker/**'
+```
+
+These packages maintain independent `package.json` files but don't participate
+in the root workspace linking. They require explicit `npm install` in their
+own directory during CI:
+
+```yaml
+- run: npm ci
+  working-directory: workers/collective-worker
+- run: npm run deploy
+  working-directory: workers/collective-worker
+```
 
 ## Procedure 3: Harden Tests Against Version Drift
 
@@ -341,6 +367,21 @@ the split upfront:
 If root `package.json` changes are needed in multiple worktrees, do them
 sequentially, not in parallel.
 
+### 5.5 — Quality gate integration for nested workers
+
+When the worktree contains nested workers (e.g., `/workers/collective-worker`),
+extend the quality gate to validate worker-specific concerns:
+
+```bash
+# In the worktree, before pushing to origin:
+make build                    # Standard monorepo build
+make test-workers            # Worker-specific tests
+wrangler deploy --dry-run    # Validate Worker deployment config
+```
+
+This prevents broken worker configs from reaching main branch where they could
+block other releases.
+
 ## Procedure 6: Node Binary Resolution in Sub-Process Spawns
 
 **When:** A script or build tool (e.g., Wrangler) spawns Node sub-processes,
@@ -382,6 +423,62 @@ grep -rn '"node "' src/ --include="*.ts"
 
 Replace any bare `node` spawn with `process.execPath`.
 
+## Procedure 7: UI Lockfile Mutation Prevention
+
+**When:** Running npm operations from the repo root that could affect UI package
+lockfiles, or debugging why UI builds are broken after root npm operations.
+
+### 7.1 — The mutation pattern
+
+Running certain npm commands from the monorepo root can mutate the lockfiles
+in nested packages, even when those packages are not part of the root workspace:
+
+```bash
+# From repo root - can mutate workers/*/package-lock.json
+npm install some-package
+npm audit fix
+npm update
+```
+
+This happens because npm's workspace resolution sometimes treats nested
+`package.json` files as implicit workspace members, even when they're not
+declared in the root `workspaces` array.
+
+### 7.2 — Safe operation patterns
+
+Always operate within the package directory for non-workspace packages:
+
+```bash
+# ❌ BAD — from repo root
+npm install --prefix workers/collective-worker some-package
+
+# ✅ GOOD — within the package directory  
+cd workers/collective-worker
+npm install some-package
+cd ../..
+```
+
+For workspace packages, root operations are safe and preferred:
+
+```bash
+# ✅ GOOD — for workspace members
+npm install --workspace=packages/myco-team some-package
+```
+
+### 7.3 — Lockfile audit after root operations
+
+After any root npm operation, check for unintended mutations:
+
+```bash
+# Check for any lockfile changes
+git status | grep package-lock.json
+
+# If workers/ lockfiles changed, reset them:
+git checkout -- workers/*/package-lock.json
+```
+
+Only commit lockfile changes for the specific package you intended to modify.
+
 ## Cross-Cutting Gotchas
 
 | Gotcha | Symptom | Fix |
@@ -392,3 +489,5 @@ Replace any bare `node` spawn with `process.execPath`.
 | Bare `node` in spawn calls | `env: node: No such file or directory` in Wrangler | Replace with `process.execPath` |
 | Merging worktree directly to local `main` | Incomplete features land in main, CI bypassed | Always deliver via PR: worktree → feature branch → PR |
 | Tagging before auditing test version strings | Tests fail on the release commit itself | Run version-string grep audit before pushing a release tag |
+| Root npm operations mutating nested lockfiles | UI builds break after unrelated npm operations | Operate within package directories for non-workspace packages |
+| Missing nested worker validation in worktree gate | Worker config errors reach main branch | Extend quality gate with `wrangler deploy --dry-run` |

@@ -9,7 +9,10 @@ description: >-
   phantom-session defenses, environment-variable injection, transcript
   path parsing failures, registration.mcpCwd field for portable MCP launch,
   SDK-specific MCP configuration requirements (Claude SDK auto-loading,
-  OpenAI strict function-calling, strictMcpConfig), and source==exec capture 
+  OpenAI strict function-calling, strictMcpConfig, settingSources control),
+  Runtime.command redirect mechanisms, substituteRuntimeCommand flag for
+  PATH collision handling, OpenCode SIGTERM layered fixes, scratchProbe()
+  session validation, installer skill discovery, and source==exec capture 
   filter for sub-agent phantom defense.
 managed_by: myco
 user-invocable: true
@@ -25,13 +28,13 @@ A **symbiont** is an agent or IDE integration (Claude Code, Codex, Cursor, Zed, 
 - Myco source is checked out and building (`pnpm build` passes)
 - You know the target agent's hook lifecycle events (session start, prompt, stop) and where it writes transcript/log files
 - You have at least one real session transcript from the target agent to test against
-- Familiarity with `src/capture/` directory layout: `manifest-schema.ts`, `parsers/`, `rules/`, `installer/`
+- Familiarity with `src/symbionts/` directory layout: `manifest-schema.ts`, `manifests/`, and `src/capture/` for parsers, rules, installer
 
 ---
 
 ## Procedure 1: Author the Capture Manifest
 
-The manifest is the authoritative description of a symbiont. It lives in `src/capture/manifests/<symbiont-id>.ts` and is validated against `CaptureManifestSchema` at load time.
+The manifest is the authoritative description of a symbiont. It lives in `src/symbionts/manifests/<symbiont-id>.yaml` and is validated against `CaptureManifestSchema` at load time.
 
 ### 1.4 registration.mcpCwd Field for Portable MCP Launch
 
@@ -39,10 +42,9 @@ The manifest is the authoritative description of a symbiont. It lives in `src/ca
 
 **Solution:** Add `registration.mcpCwd` to the manifest:
 
-```ts
-registration: {
-  mcpCwd: process.env.PROJECT_ROOT || '/absolute/path',  // absolute path
-}
+```yaml
+registration:
+  mcpCwd: /absolute/path  # absolute path, often PROJECT_ROOT
 ```
 
 This path is stored in the generated hook script at install time. When the MCP server spawns, the hook explicitly sets `cwd` to `mcpCwd` **before** spawning the child process:
@@ -79,23 +81,157 @@ const schema = z.string().refine(s => s.length > 0);
 const schema = z.string().min(1);
 ```
 
-### 2.3 Claude SDK strictMcpConfig Requirement
+### 2.3 Claude SDK strictMcpConfig and settingSources Control
 
-**Issue:** The Claude SDK requires `strictMcpConfig: true` in its configuration to properly validate MCP server registration and tool schemas.
+**Issue:** The Claude SDK requires `strictMcpConfig: true` in its configuration to properly validate MCP server registration and tool schemas. Additionally, the Claude SDK's `settingSources: []` controls which configuration sources are loaded.
 
-**Solution:** Ensure Claude SDK-based symbionts pass the `strictMcpConfig` flag:
+**Solution:** Ensure Claude SDK-based symbionts pass the correct flags:
 
 ```ts
 // Required for Claude SDK
 const config = {
   strictMcpConfig: true,
+  settingSources: [], // empty array prevents unwanted config loading
   // ... other config
 };
 ```
 
+The `settingSources: []` setting prevents the SDK from loading configuration that might conflict with Myco's MCP setup.
+
 ---
 
-## Procedure 3: source==exec Filter — 4th Phantom Defense Layer
+## Procedure 3: Runtime Command Redirection and PATH Collision Handling
+
+### 3.1 Runtime.command Redirect Mechanism
+
+**Issue:** Some agents (particularly OpenCode) need to redirect runtime commands through Myco's execution wrapper to ensure proper session context and capture pipeline integration.
+
+**Solution:** Use the Runtime.command redirect mechanism in `bin/myco-run`:
+
+```ts
+// In the agent's runtime configuration
+Runtime.command = 'myco-run';  // redirect through myco wrapper
+```
+
+This ensures that command execution goes through Myco's capture pipeline, maintaining session context and proper logging.
+
+### 3.2 substituteRuntimeCommand Flag for PATH Collision Issues
+
+**Issue:** GUI applications (like OpenCode) can have PATH collisions where the system `node` binary differs from the development `node` binary, causing runtime command failures.
+
+**Solution:** Use the `substituteRuntimeCommand` flag in the manifest:
+
+```yaml
+manifest:
+  substituteRuntimeCommand: true  # enable PATH collision handling
+  # ... other config
+```
+
+When this flag is enabled, Myco will substitute the runtime command with an absolute path to avoid PATH-based resolution issues.
+
+### 3.3 PATH Collision Gotchas with GUI Apps
+
+**Common Issue:** GUI applications don't inherit shell PATH modifications (nvm, volta, etc.), causing `node` command resolution to fail or use the wrong binary.
+
+**Symptoms:**
+- `env: node: No such file or directory`
+- Runtime using system Node instead of development Node
+- MCP server startup failures in GUI context
+
+**Fix:** Always use absolute paths for Node binary resolution in GUI-launched contexts:
+
+```ts
+const nodeBin = process.execPath;  // absolute path to current node
+spawn(nodeBin, ['script.js'], { ... });
+```
+
+---
+
+## Procedure 4: OpenCode SIGTERM Handling — Three-Layer Fix
+
+OpenCode has complex SIGTERM handling requirements due to registry rehydration, scope semantics, and buffer fallback behaviors.
+
+### 4.1 Layer 1 — Registry Rehydration
+
+**Issue:** OpenCode's symbiont registry can become stale across SIGTERM boundaries, causing hook lookup failures on restart.
+
+**Solution:** Implement registry rehydration in the hook startup sequence:
+
+```ts
+// Force registry refresh on SIGTERM recovery
+await rehydrateSymbiontRegistry();
+```
+
+### 4.2 Layer 2 — Scope Semantics
+
+**Issue:** SIGTERM can interrupt OpenCode mid-scope, leaving the capture pipeline in an inconsistent state with partially-written session data.
+
+**Solution:** Implement scope boundary detection and cleanup:
+
+```ts
+process.on('SIGTERM', async () => {
+  await flushPartialScope();  // complete any in-progress scope
+  await gracefulShutdown();
+});
+```
+
+### 4.3 Layer 3 — Buffer Fallback
+
+**Issue:** If SIGTERM occurs during buffer write operations, transcript data can be lost or corrupted.
+
+**Solution:** Implement buffer fallback with persistence:
+
+```ts
+// Persist buffer state across SIGTERM boundaries
+await persistBufferState();
+
+// On restart, recover from persisted state
+await recoverBufferState();
+```
+
+All three layers must be present for reliable OpenCode SIGTERM handling.
+
+---
+
+## Procedure 5: Session Validation with scratchProbe() and MYCO_AGENT_SESSION
+
+### 5.1 MYCO_AGENT_SESSION Environment Variable
+
+**Purpose:** The `MYCO_AGENT_SESSION` environment variable provides session context to sub-processes and helps validate session boundaries.
+
+**Usage:** Set during hook initialization:
+
+```bash
+export MYCO_AGENT_SESSION="<session-id>"
+# ... launch agent with session context
+```
+
+This ensures that all child processes inherit the session context, enabling proper session validation and preventing phantom session creation.
+
+### 5.2 scratchProbe() Helper for Session Validation
+
+**Purpose:** The `scratchProbe()` helper function validates session integrity and prevents corrupt session creation.
+
+**Usage:** Call during session startup to validate session state:
+
+```ts
+// Validate session before proceeding with capture
+const isValidSession = await scratchProbe(sessionId);
+if (!isValidSession) {
+  // Skip capture for invalid session
+  return;
+}
+```
+
+This helper checks for:
+- Session ID validity
+- Transcript path accessibility  
+- Hook registration status
+- Environment variable consistency
+
+---
+
+## Procedure 6: source==exec Filter — 4th Phantom Defense Layer
 
 **Problem:** Codex spawns sub-agent processes (e.g., to run `node` or `python` commands). These sub-agents also have hooks installed and fire their own `session_start` events. Without filtering, each sub-agent invocation creates phantom sessions.
 
@@ -118,6 +254,38 @@ When an agent is invoked as a sub-process (source=exec in the environment), this
 4. **Layer 4 — source==exec filter:** Block sub-agent invocations by source context
 
 All four layers must be present.
+
+---
+
+## Procedure 7: Installer Integration and Skill Discovery
+
+### 7.1 SymbiontInstaller Registration
+
+Register the new symbiont in the `SymbiontInstaller` class with install, update, remove, and doctor methods:
+
+```ts
+// In src/capture/installer/index.ts
+symbiont: {
+  install: async () => { /* implementation */ },
+  update: async () => { /* implementation */ }, 
+  remove: async () => { /* implementation */ },
+  doctor: async () => { /* implementation */ },
+}
+```
+
+### 7.2 Installer Skill Discovery Filtering
+
+**Issue:** The installer needs to discover available skills but should filter to only SKILL.md files to avoid false positives from other markdown files.
+
+**Solution:** Implement skill discovery filtering in the installer:
+
+```ts
+// Filter skill discovery to SKILL.md files only
+const skillFiles = await glob('**\/SKILL.md', { cwd: skillsDir });
+const skills = skillFiles.map(file => parseSkillFromPath(file));
+```
+
+This ensures that only properly-formatted skill files are discovered and registered, preventing the installer from picking up unrelated markdown files as skills.
 
 ---
 
@@ -165,4 +333,12 @@ Verify: stop the daemon, trigger a drop condition (e.g., null transcript_path, o
 
 **source==exec filter must be in capture rules config** — `source` is an environment-variable-based filter evaluated by the rules engine. Ensure the filter is present in the YAML manifest, not hardcoded in the hook.
 
-**SDK-specific MCP considerations are critical** — Claude SDK auto-loading, OpenAI strict function-calling limitations, and Claude SDK strictMcpConfig requirements all affect symbiont integration success. Test against target SDK behavior patterns, not just generic MCP specifications.
+**SDK-specific MCP considerations are critical** — Claude SDK auto-loading, OpenAI strict function-calling limitations, Claude SDK strictMcpConfig requirements, and settingSources control all affect symbiont integration success. Test against target SDK behavior patterns, not just generic MCP specifications.
+
+**Runtime command redirection prevents PATH collisions** — Use Runtime.command redirect and substituteRuntimeCommand flag for GUI applications to avoid NODE binary resolution issues.
+
+**OpenCode SIGTERM requires three-layer handling** — Registry rehydration, scope semantics, and buffer fallback must all be implemented for reliable OpenCode integration.
+
+**Session validation prevents phantom sessions** — Use MYCO_AGENT_SESSION env var and scratchProbe() helper to validate session integrity before capture.
+
+**Installer skill discovery must filter to SKILL.md** — Only discover properly-formatted skill files to prevent false positives from other markdown files.

@@ -96,6 +96,13 @@ Signs you need to split a phase into two:
 - The turn budget exhausts before reaching the second half
 - Phase failures are ambiguous — you can't tell which half broke
 
+### Multi-tier workflows
+
+Complex tasks may need tiered verification phases, such as the skill lifecycle
+pattern: `inventory → verify → assess → act`. The verify phase specifically
+validates skills against current codebase state and sets watermarks for
+rotation, requiring a dedicated read-only phase before assessment.
+
 ### Short-circuit conditions
 
 If Phase 1 finds nothing to process, it should exit early and signal the
@@ -221,6 +228,14 @@ const batches = await getUnprocessedBatches({ limit: MAX_BATCHES });
 Do NOT raise the budget to compensate for unbounded input — this creates
 unpredictable runtime and cost.
 
+### Batch size optimization for efficiency
+
+Recent skill-evolve task optimization found that reducing batch processing size
+from 20 to 12 skills significantly improves budget efficiency and reduces
+context window pressure. When designing phases that process multiple items,
+test smaller batch sizes first — often 8–12 items per batch yields better
+results than 15–20 items, especially for complex reasoning phases.
+
 ### Detecting budget exhaustion
 
 - Query `agent_runs`: if `exit_reason = 'budget_exhausted'`, the phase ran
@@ -245,6 +260,25 @@ is likely malformed.
 
 ## Procedure 5: Configure Scheduling and Session Gating
 
+### Session State Machine (Critical Foundation)
+
+Sessions in Myco follow a defined state machine with strict settlement conditions:
+
+```
+active  ──(SessionEnd hook or idle threshold)──►  completed
+  ▲                                                    │
+  └──────────(SessionStart on same session)────────────┘
+             (reactivates: status flips back to 'active')
+```
+
+**Settlement conditions** — a session is considered settled when either:
+1. A `SessionEnd` hook fires for that session, OR
+2. `last_prompt_at` is older than `settledSessionIdleMinutes` (default: 30 minutes)
+
+**Reactivation invariant** — when `SessionStart` fires on a session that is already
+`completed`, the daemon MUST flip `status` back to `'active'`. This prevents
+silent data loss where new prompts arrive under a completed session.
+
 ### isDefault vs. manual
 
 - `isDefault: true` — fires automatically on every settled session event.
@@ -266,8 +300,66 @@ triggers: {
 },
 ```
 
-Omit `requireSettledSessions` only for tasks that don't touch session data
-(e.g., cron-based maintenance tasks operating on already-processed records).
+**Why gating is non-negotiable**: If your task processes in-flight session data,
+it can extract half-formed spores from incomplete conversations, leading to
+duplicate observations when the session completes.
+
+### Vault Read Surface Gate Compliance
+
+The `requireSettledSessions` gate must be honored by **every** vault read surface
+your task uses. A gate applied to only some query paths creates split-brain where
+the agent sees settled data from one tool and in-flight data from another.
+
+**Complete list of surfaces that must honor the gate:**
+
+| Surface | Description | Gate Status |
+|---------|-------------|-------------|
+| `vault_unprocessed` | Prompt batches — must exclude active sessions | ✅ Gated |
+| `vault_spores` | Spore queries — must filter by session settlement state | ✅ Gated |
+| `vault_sessions` | Session list — must omit active sessions | ✅ Gated |
+| `vault_search_fts` | Full-text search — must exclude active-session content | ✅ Gated |
+| `vault_search_semantic` | Semantic search — must exclude active-session embeddings | ✅ Gated |
+
+When calling these tools in your task phases, they automatically respect the gate
+configuration — you don't need to implement session filtering yourself. However,
+any new read surface you add must implement the canonical settlement predicate:
+
+```sql
+WHERE s.status = 'completed'
+   OR s.last_prompt_at < datetime('now', '-' || :idleMinutes || ' minutes')
+```
+
+### Task Gate Configuration
+
+Tasks that analyze transcript semantics must inherit gate awareness:
+
+```ts
+// At the start of task execution logic:
+const gate = config.agent?.requireSettledSessions ?? false;
+if (gate) {
+  // Only pass settled session IDs to downstream query surfaces
+  // The vault read surfaces handle filtering automatically
+}
+```
+
+Document gate behavior in the task's YAML definition under `description` so
+operators know the task is gate-aware.
+
+### Configuration in myco.yaml
+
+```yaml
+# myco.yaml
+agent:
+  requireSettledSessions: true      # boolean; disable for dev/test only
+  settledSessionIdleMinutes: 30     # integer minutes; default 30
+```
+
+**When to set `requireSettledSessions: false`:**
+- Local development and testing where you inject synthetic session data
+- CI environments where you control session state directly
+
+**When to keep it `true` (production default):**
+- Any deployment where the coding agent is actively running
 
 ### Cron vs. event-triggered
 
@@ -315,6 +407,14 @@ const CONSOLIDATE_TOOLS = {
   ],
 };
 ```
+
+### Claude SDK tool isolation patterns
+
+When designing tool surfaces for tasks that integrate with Claude SDK workflows,
+be aware that tool isolation behaves differently. Claude SDK agents have
+stricter tool boundary enforcement and may not have access to certain MCP
+tools during isolated phases. Design fallback tool patterns or alternative
+data injection methods for phases that may run in SDK-isolated environments.
 
 ### readOnly annotation
 
@@ -376,6 +476,14 @@ LIMIT 20;
 | `completed_at IS NULL` | Phase crashed or daemon restarted mid-run |
 | Task never appears in `agent_runs` | Not registered in `ALL_TASKS` |
 
+### Cortex dry-run isolation debugging
+
+When debugging tasks that involve cortex dry-run patterns, be aware that
+isolated execution may suppress certain success hooks or completion signals.
+If a task appears to complete successfully but downstream effects don't trigger,
+check whether the task ran in isolation mode and verify that success indicators
+are properly propagated outside the isolation boundary.
+
 ### Adding telemetry
 
 To add a new column to `agent_runs`, create a schema migration in
@@ -401,3 +509,9 @@ rows — the harness reads the schema at startup.
   underperforming on judgment phases. Use the per-phase `advisor` field.
 - **Local model without budget multiplier** → phase exhausts before completing.
   Multiply all budgets by 3–4× for local Ollama models.
+- **Reactivation bypass** → If `SessionStart` on a completed session doesn't
+  flip status back to `active`, the gate silently loses live data. Always test
+  session reactivation alongside gate changes.
+- **Partial gate implementation** → If only some vault read surfaces honor
+  `requireSettledSessions`, the task sees split-brain data. All read surfaces
+  must respect the gate consistently.

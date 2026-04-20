@@ -41,7 +41,7 @@ Myco uses three Cloudflare Worker services: the **team-sync Worker** (cross-mach
 async function ensureKvNamespace(title: string): Promise<string> {
   try {
     const result = await runWrangler(['kv', 'namespace', 'create', title]);
-    const match = result.stdout.match(/"id":\s*"([^"]+)"/);
+    const match = result.stdout.match(/\"id\":\s*\"([^\"]+)\"/);
     if (!match) throw new Error('Could not parse KV namespace ID from create output');
     return match[1];
   } catch (err: any) {
@@ -50,7 +50,7 @@ async function ensureKvNamespace(title: string): Promise<string> {
     const listResult = await runWrangler(['kv', 'namespace', 'list', '--json']);
     const namespaces: Array<{ id: string; title: string }> = JSON.parse(listResult.stdout);
     const ns = namespaces.find(n => n.title === title);
-    if (!ns) throw new Error(`KV namespace "${title}" not found after "already exists" error`);
+    if (!ns) throw new Error(`KV namespace \"${title}\" not found after \"already exists\" error`);
     return ns.id;
   }
 }
@@ -144,18 +144,24 @@ Wrap the full upgrade sequence with `[UPGRADE START]` / `[UPGRADE COMPLETE]` / `
 
 Covered in Procedure A. Always use `ensureKvNamespace()` — never bare `wrangler kv namespace create` in upgrade paths.
 
-### Failure mode 3 — `fs.cpSync` overwrites wrangler.toml
+### Failure mode 3 — wrangler.toml overwrites or missing file handling
 
-Copying fresh worker source over an existing directory with `fs.cpSync` will overwrite `wrangler.toml`, losing `compatibility_flags`, KV bindings, D1 bindings, and any post-deploy edits.
+Copying fresh worker source over an existing directory with `fs.cpSync` will overwrite `wrangler.toml`, losing `compatibility_flags`, KV bindings, D1 bindings, and any post-deploy edits. Additionally, some worker packages may be missing `wrangler.toml` entirely and need creation.
 
-Fix — read → parse → merge → write:
+**For existing wrangler.toml — read → parse → merge → write:**
 
 ```typescript
-import * as TOML from '@iarna/toml';
+import { parse as parseToml, stringify as stringifyToml } from 'some-toml-library';
 
 function mergeWranglerToml(sourcePath: string, targetPath: string) {
-  const source = TOML.parse(fs.readFileSync(sourcePath, 'utf8')) as any;
-  const target = TOML.parse(fs.readFileSync(targetPath, 'utf8')) as any;
+  const source = parseToml(fs.readFileSync(sourcePath, 'utf8')) as any;
+  let target: any = {};
+  
+  // Handle case where target wrangler.toml might not exist
+  if (fs.existsSync(targetPath)) {
+    target = parseToml(fs.readFileSync(targetPath, 'utf8')) as any;
+  }
+  
   // Take runtime bindings and flags from target; code-level fields from source
   const merged = {
     ...source,
@@ -166,7 +172,22 @@ function mergeWranglerToml(sourcePath: string, targetPath: string) {
     compatibility_flags: target.compatibility_flags ?? source.compatibility_flags,
     compatibility_date:  target.compatibility_date  ?? source.compatibility_date,
   };
-  fs.writeFileSync(targetPath, TOML.stringify(merged));
+  fs.writeFileSync(targetPath, stringifyToml(merged));
+}
+```
+
+**For missing wrangler.toml — create with basic configuration:**
+
+```typescript
+function createWranglerToml(targetPath: string, workerName: string) {
+  const basicConfig = {
+    name: workerName,
+    main: "src/worker.ts",
+    compatibility_date: "2024-01-01",
+    compatibility_flags: ["nodejs_compat"]
+  };
+  
+  fs.writeFileSync(targetPath, stringifyToml(basicConfig));
 }
 ```
 
@@ -250,7 +271,7 @@ packages/
       fanout.ts       # project heartbeat fanout
     dist/
       ui/             # pre-built UI assets — ship this, NOT src/ui/
-    wrangler.toml     # may need creation if missing
+    wrangler.toml     # may need creation if missing during bootstrap
 ```
 
 ### Bootstrap (first deploy)
@@ -498,7 +519,7 @@ A missing flag causes runtime errors on the first request, not at deploy time. A
 | 2 | D1 migrations run on first request, not at deploy time | Design for lazy migration; don't assume schema is ready immediately post-deploy |
 | 3 | `fs.cpSync` overwrites `wrangler.toml`, losing bindings | Read-parse-merge-write pattern; never cpSync directories containing wrangler.toml |
 | 4 | Cron `[triggers]` block omitted → silent heartbeat disable | Verify triggers block before every Collective deploy |
-| 5 | `\|\| true` in build scripts → stale artifact deploys without error | Audit and remove from all build-critical scripts |
+| 5 | `\|\|\ true` in build scripts → stale artifact deploys without error | Audit and remove from all build-critical scripts |
 | 6 | Wrangler subprocess stderr discarded → errors invisible | Capture both stdout and stderr; re-emit during deployment |
 | 7 | Collective config stored under `.myco/` → invisible to other projects | Use home-scoped `~/.myco-collective/<name>/config.json` |
 | 8 | Token not threaded through upgrade template renderer → absent post-upgrade | Enumerate all tokens in upgrade checklist; pass each explicitly |
@@ -508,3 +529,4 @@ A missing flag causes runtime errors on the first request, not at deploy time. A
 | 12 | `make build` not run before Collective upgrade → stale UI deploys | Always run `make build` immediately before `wrangler deploy` |
 | 13 | Generic collective name in verify endpoint → branding not configured | Set `COLLECTIVE_NAME` environment variable via `wrangler secret put` |
 | 14 | Missing `wrangler.toml` in packages/myco-collective/ → deployment failure | Create wrangler.toml with basic Worker config during bootstrap if missing |
+| 15 | TOML parsing dependency removed from codebase → merge operations fail | Use alternative TOML library or implement basic TOML handling for wrangler.toml operations |
