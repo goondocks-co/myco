@@ -51,7 +51,7 @@ function LogEntry({ event, onClick }: { event: ActivityEvent; onClick?: () => vo
     <div
       className={cn(
         'flex gap-4 items-start border-b border-outline-variant/5 pb-2 font-mono text-[11px] transition-all duration-150',
-        onClick && 'cursor-pointer hover:bg-surface-container-high/50 hover:translate-x-1 -mx-2 px-2 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+        onClick && 'cursor-pointer hover:bg-surface-container-high/50 hover:translate-x-1 -mx-2 px-2 rounded focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40',
       )}
       onClick={onClick}
       onKeyDown={onClick ? (e) => {

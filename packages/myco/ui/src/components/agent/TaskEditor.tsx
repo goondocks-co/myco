@@ -101,7 +101,7 @@ export function TaskEditor({ taskId, onSaved }: TaskEditorProps) {
         readOnly={isReadOnly}
         rows={EDITOR_MIN_ROWS}
         spellCheck={false}
-        className={`w-full rounded-md bg-surface-container-lowest p-4 font-mono text-sm text-on-surface leading-relaxed resize-y focus:outline-none focus:ring-2 focus:ring-primary/40 ${
+        className={`w-full rounded-md bg-surface-container-lowest p-4 font-mono text-sm text-on-surface leading-relaxed resize-y focus:outline-hidden focus:ring-2 focus:ring-primary/40 ${
           isReadOnly ? 'opacity-75 cursor-not-allowed' : ''
         }`}
       />
