@@ -149,7 +149,7 @@ myco remove --remove-vault
 The canonical function for reading which symbionts are active in a project:
 
 ```typescript
-import { getEnabledSymbiontNames } from './src/config/loader.js';
+import { getEnabledSymbiontNames } from './src/config/loader.ts';
 
 const enabled = getEnabledSymbiontNames(config);
 // Returns string[] of symbiont names from myco.yaml symbionts list

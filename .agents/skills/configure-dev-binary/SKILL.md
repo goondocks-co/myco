@@ -80,6 +80,9 @@ Hooks run inside Claude Code's subprocess environment. Codex and other nested su
 **`~/.local/bin/myco-dev` symlink alone (second design — abandoned)**
 Shell PATH ordering is fragile. In some contexts the global `myco` resolved first; in others the symlink resolved first. The result was non-deterministic binary selection depending on how the shell was launched.
 
+**Shell alias approach (also fails)**
+Shell aliases like `alias myco=./dist/src/cli.js` work for interactive CLI use but fail when Node.js spawns child processes. When `myco` spawns itself via `child_process.spawn()`, Node.js bypasses shell aliases and resolves directly to the global PATH, leading to inconsistent behavior where some operations use the dev build while others silently fall back to the global install.
+
 **`.myco/runtime.command` file (current design)**
 The hook reads an explicit file path — there is no PATH lookup and no env var inheritance. The selection is deterministic regardless of shell, subprocess depth, or IDE.
 

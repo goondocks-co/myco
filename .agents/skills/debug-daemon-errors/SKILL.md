@@ -153,6 +153,58 @@ if (!existing) {
 
 The session ID (from the hook payload) is the source of truth. If the hook fires twice for the same session, the second fire should be a no-op, not a second insert.
 
+#### OpenCode Sub-Agent vs User Fork Detection
+
+**When:** Investigating phantom sessions that appear to be duplicates but have different parentID values, particularly when OpenCode sub-agents vs user forks are creating sessions through the same hook.
+
+OpenCode can create sessions in two scenarios:
+1. **Sub-agent spawn**: OpenCode creates a child session under an existing user session (`parentID` references the user session)
+2. **User fork**: User directly invokes OpenCode through the web interface (`parentID` is null, session appears independent)
+
+**Diagnostic pattern:**
+```bash
+# Query sessions with parentID relationships
+sqlite3 .myco/myco.db "
+SELECT id, parentId, title, status, created_at 
+FROM sessions 
+WHERE parentId IS NOT NULL 
+ORDER BY created_at DESC 
+LIMIT 20;"
+
+# Check for sessions created within seconds of each other
+sqlite3 .myco/myco.db "
+SELECT s1.id as session1, s2.id as session2, 
+       s1.parentId as parent1, s2.parentId as parent2,
+       s1.created_at, s2.created_at
+FROM sessions s1, sessions s2 
+WHERE abs(strftime('%s', s1.created_at) - strftime('%s', s2.created_at)) < 10
+  AND s1.id != s2.id 
+ORDER BY s1.created_at DESC;"
+```
+
+**Investigation markers:**
+- Sub-agent sessions have `parentId` pointing to a user session
+- User fork sessions have `parentId = NULL`  
+- Both may arrive within seconds but through different hook paths
+- Sub-agent sessions often have prefixed titles like `"[Sub-agent] ..."` 
+
+**Fix pattern:** Distinguish session creation context in hook handling:
+```typescript
+// In the hook payload processor
+if (payload.parentSessionId) {
+  // This is a sub-agent spawn - validate parent exists
+  const parent = await db.select().from(sessions).where(eq(sessions.id, payload.parentSessionId)).get();
+  if (!parent) {
+    logger.warn(`[Session] Sub-agent session references non-existent parent: ${payload.parentSessionId}`);
+    return;
+  }
+  logger.info(`[Session] Creating sub-agent session under parent ${payload.parentSessionId}`);
+} else {
+  // This is a user fork - independent session
+  logger.info(`[Session] Creating independent user session`);
+}
+```
+
 ---
 
 ### Session Maintenance — Over-Aggressive Dead-Session Cleanup
@@ -326,6 +378,118 @@ Write the smallest test that reproduces the failure. For FK violations, this is 
 
 ---
 
+## Step 6 — Diagnostic Logging for Session Type Disambiguation
+
+**When:** Adding logging to distinguish between different session creation scenarios, especially when investigating phantom session bugs or parent-child session relationships.
+
+### Session Type Logging Strategy
+
+Implement structured logging that captures session creation context and relationships:
+
+```typescript
+// Enhanced session creation logging
+function createSessionWithDiagnostics(payload: SessionPayload) {
+  const sessionType = payload.parentSessionId ? 'sub-agent' : 'user-fork';
+  const context = {
+    sessionId: payload.id,
+    sessionType,
+    parentId: payload.parentSessionId || null,
+    source: payload.source || 'unknown',
+    timestamp: new Date().toISOString(),
+  };
+
+  logger.info(`[Session:Create] ${sessionType} session`, context);
+  
+  if (payload.parentSessionId) {
+    logger.info(`[Session:Hierarchy] Sub-agent spawned under parent`, {
+      childId: payload.id,
+      parentId: payload.parentSessionId,
+      relationship: 'parent->child'
+    });
+  }
+}
+```
+
+### Diagnostic Query Patterns
+
+Add structured queries that help diagnose session relationship issues:
+
+```typescript
+// Query for sessions with suspicious timing patterns
+export async function findSuspiciousSessionTiming(withinSeconds: number = 30) {
+  return db.select({
+    id: sessions.id,
+    parentId: sessions.parentId,
+    title: sessions.title,
+    created_at: sessions.created_at,
+  })
+  .from(sessions)
+  .where(
+    sql`EXISTS (
+      SELECT 1 FROM sessions s2 
+      WHERE s2.id != ${sessions.id} 
+      AND abs(strftime('%s', s2.created_at) - strftime('%s', ${sessions.created_at})) < ${withinSeconds}
+    )`
+  )
+  .orderBy(desc(sessions.created_at));
+}
+
+// Query for orphaned child sessions
+export async function findOrphanedChildSessions() {
+  return db.select()
+    .from(sessions)
+    .where(
+      and(
+        isNotNull(sessions.parentId),
+        sql`NOT EXISTS (
+          SELECT 1 FROM sessions parent 
+          WHERE parent.id = ${sessions.parentId}
+        )`
+      )
+    );
+}
+```
+
+### Hook Payload Diagnostic Enhancement
+
+Add payload validation and logging at the hook entry point:
+
+```typescript
+// In hook processor
+function processSessionHook(payload: any) {
+  // Log the raw payload for debugging
+  logger.debug(`[Hook:Session] Raw payload received`, { 
+    payload: JSON.stringify(payload),
+    timestamp: new Date().toISOString()
+  });
+
+  // Validate payload structure
+  const validation = validateSessionPayload(payload);
+  if (!validation.valid) {
+    logger.warn(`[Hook:Session] Invalid payload structure`, {
+      errors: validation.errors,
+      payload
+    });
+    return;
+  }
+
+  // Check for duplicate processing within a short window
+  const recentSession = getSessionCreatedWithinSeconds(payload.id, 10);
+  if (recentSession) {
+    logger.warn(`[Hook:Session] Duplicate session creation attempt`, {
+      sessionId: payload.id,
+      previousCreation: recentSession.created_at,
+      timeDelta: Date.now() - recentSession.created_at
+    });
+    return;
+  }
+}
+```
+
+**Usage:** Enable these diagnostics temporarily when investigating session-related bugs. The structured logging helps distinguish between legitimate sub-agent spawns, user forks, and true phantom duplicates.
+
+---
+
 ## Quick Reference — Error to Fix Map
 
 | Error / Symptom | Likely Cause | Fix |
@@ -337,3 +501,5 @@ Write the smallest test that reproduces the failure. For FK violations, this is 
 | Sessions vanish mid-run, no explicit error | `findDeadSessionIds()` too aggressive | Set `DEAD_SESSION_MAX_PROMPTS = 0`; add `status != 'active'` filter |
 | Task shows "process aborted by user" without user action | **Phase-level OR task-level timeout** — one phase times out, next phase runs under dead AbortController (spore `1f76ffdd`) | Create fresh `AbortController` for each phase; don't reuse across phases; distinguish task-level timeout from phase timeout in error logging |
 | Task status = `complete`, no output | Exception swallowed in executor | Separate success path from catch block; mark failed on error |
+| Phantom sessions with different parentID values | OpenCode sub-agent vs user fork confusion | Use diagnostic logging to distinguish session creation context; validate parentID references |
+| Sessions created within seconds but unclear relationship | Missing session type context in logs | Implement structured session creation logging with type classification |
