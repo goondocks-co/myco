@@ -221,8 +221,8 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
         )}
       >
         <div className="border-b border-outline-variant/20 px-4 py-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="space-y-1">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 flex-1 space-y-1">
               <div className="flex items-center gap-2">
                 <Bell className="h-4 w-4 text-primary" />
                 <h2 className="text-sm font-medium text-on-surface">Notifications</h2>
@@ -237,7 +237,7 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
               </p>
             </div>
 
-            <div className="flex items-center gap-1">
+            <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1">
               {unreadCount > 0 && (
                 <Button
                   variant="ghost"
@@ -262,7 +262,7 @@ export function NotificationPanel({ open, onClose }: NotificationPanelProps) {
                   Clear
                 </Button>
               )}
-              <Button variant="ghost" size="sm" onClick={onClose} className="h-7 px-2">
+              <Button variant="ghost" size="sm" onClick={onClose} className="h-7 shrink-0 px-2">
                 <X className="h-4 w-4" />
               </Button>
             </div>
