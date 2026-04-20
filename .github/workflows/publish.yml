@@ -182,7 +182,7 @@ jobs:
           sed -i 's/^          //' release-notes.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2.6.1
+        uses: softprops/action-gh-release@v3.0.0
         with:
           name: ${{ needs.validate-tag.outputs.tag_name }}
           body_path: release-notes.md
