@@ -65,10 +65,19 @@ daemon-dev:
 
 dev:
 	@ui_port=$${MYCO_UI_DEV_PORT:-5173}; \
+	daemon_port=$${MYCO_DAEMON_PORT:-$$(node -e ' \
+		var fs=require("fs"),p=require("path"); \
+		var root=process.cwd(); \
+		var daemonJson=p.join(root,".myco","daemon.json"); \
+		var configPath=p.join(root,".myco","myco.yaml"); \
+		try{console.log(JSON.parse(fs.readFileSync(daemonJson,"utf-8")).port);process.exit(0)}catch{} \
+		try{var y=fs.readFileSync(configPath,"utf-8"),m=y.match(/^\s*port:\s*(\d+)/m);if(m){console.log(m[1]);process.exit(0)}}catch{} \
+		console.log(19200)')}; \
 	proxy=$${MYCO_UI_DEV_PROXY_TARGET:-http://127.0.0.1:$$ui_port}; \
-	echo "Starting Vite UI on $$proxy and watched daemon behind it"; \
+	echo "Starting watched daemon (expected port $$daemon_port) with UI proxy $$proxy"; \
+	echo "Open http://127.0.0.1:$$daemon_port/ for integrated dev or http://127.0.0.1:$$ui_port/ for raw Vite"; \
 	trap 'kill $$vite_pid 2>/dev/null || true' EXIT INT TERM; \
-	(cd packages/myco/ui && npx vite dev --host 127.0.0.1 --port $$ui_port) & vite_pid=$$!; \
+	(cd packages/myco/ui && MYCO_DAEMON_PORT=$$daemon_port npx vite dev --host 127.0.0.1 --port $$ui_port) & vite_pid=$$!; \
 	MYCO_UI_DEV_PROXY_TARGET="$$proxy" npx tsx watch packages/myco/src/entries/daemon.ts --vault "$(PWD)/.myco"
 
 dev-link:
