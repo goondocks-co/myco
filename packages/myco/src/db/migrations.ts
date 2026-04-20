@@ -57,6 +57,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 19, migrate: (db) => migrateV18ToV19(db) },
   { version: 20, migrate: (db, machineId) => migrateV19ToV20(db, machineId) },
   { version: 21, migrate: (db) => migrateV20ToV21(db) },
+  { version: 22, migrate: (db) => migrateV21ToV22(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1230,4 +1231,95 @@ function tableExists(db: Database, name: string): boolean {
     `SELECT count(*) AS c FROM sqlite_master WHERE type = 'table' AND name = ?`,
   ).get(name) as { c: number };
   return row.c > 0;
+}
+
+/**
+ * Migrate a version-21 database to version-22.
+ *
+ * Version 22 adds steering prompt nesting support:
+ *   - prompt_batches.parent_prompt_batch_id (nullable FK to prompt_batches.id)
+ *   - prompt_batches.kind (TEXT NOT NULL DEFAULT 'initial')
+ *   - idx_prompt_batches_parent
+ *
+ * Existing rows get kind='initial', parent_prompt_batch_id=NULL — they render
+ * exactly as before until the OpenCode backfill (Task 11) runs.
+ */
+function migrateV21ToV22(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    if (tableExists(db, 'prompt_batches')) {
+      const existing = getTableColumnSet(db, 'prompt_batches');
+
+      if (!existing.has('parent_prompt_batch_id')) {
+        db.prepare(
+          `ALTER TABLE prompt_batches ADD COLUMN parent_prompt_batch_id INTEGER REFERENCES prompt_batches(id)`,
+        ).run();
+      }
+
+      if (!existing.has('kind')) {
+        db.prepare(
+          `ALTER TABLE prompt_batches ADD COLUMN kind TEXT NOT NULL DEFAULT 'initial'`,
+        ).run();
+      }
+
+      db.prepare(
+        `CREATE INDEX IF NOT EXISTS idx_prompt_batches_parent ON prompt_batches (parent_prompt_batch_id)`,
+      ).run();
+
+      // OpenCode historical backfill: re-parent orphan steering-style batches.
+      // Only runs if the sessions table has an `agent` column. Scoped to sessions
+      // with agent='opencode'.
+      const sessionColumns = getTableColumnSet(db, 'sessions');
+      if (sessionColumns.has('agent')) {
+        const candidates = db.prepare(
+          `SELECT b.id AS child_id, b.session_id, b.started_at,
+                  p.id AS parent_id, p.started_at AS parent_started, p.ended_at AS parent_ended
+           FROM prompt_batches b
+           JOIN sessions s ON s.id = b.session_id
+           JOIN prompt_batches p
+             ON p.session_id = b.session_id
+            AND p.id < b.id
+            AND (p.ended_at IS NULL OR p.ended_at > b.started_at)
+           WHERE s.agent = 'opencode'
+             AND b.response_summary IS NULL
+             AND b.kind = 'initial'
+             AND b.parent_prompt_batch_id IS NULL
+           ORDER BY b.id ASC`,
+        ).all() as Array<{ child_id: number; parent_id: number }>;
+
+        const update = db.prepare(
+          `UPDATE prompt_batches SET kind = 'steering', parent_prompt_batch_id = ? WHERE id = ?`,
+        );
+
+        const chosenParentByChild = new Map<number, number>();
+        for (const row of candidates) {
+          const prev = chosenParentByChild.get(row.child_id);
+          if (prev === undefined || row.parent_id > prev) {
+            chosenParentByChild.set(row.child_id, row.parent_id);
+          }
+        }
+
+        let reclassified = 0;
+        for (const [childId, parentId] of chosenParentByChild) {
+          update.run(parentId, childId);
+          reclassified++;
+        }
+
+        if (reclassified > 0) {
+          console.log(`[myco] migrate v21→v22 OpenCode backfill: reclassified ${reclassified} batches`);
+        }
+      }
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(22, epochSeconds());
+
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
 }

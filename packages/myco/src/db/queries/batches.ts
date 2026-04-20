@@ -68,6 +68,8 @@ export interface BatchInsert {
 export interface BatchRow {
   id: number;
   session_id: string;
+  parent_prompt_batch_id: number | null;
+  kind: string;
   prompt_number: number | null;
   user_prompt: string | null;
   response_summary: string | null;
@@ -90,6 +92,8 @@ export interface BatchRow {
 const BATCH_COLUMNS = [
   'id',
   'session_id',
+  'parent_prompt_batch_id',
+  'kind',
   'prompt_number',
   'user_prompt',
   'response_summary',
@@ -116,6 +120,8 @@ function toBatchRow(row: Record<string, unknown>): BatchRow {
   return {
     id: row.id as number,
     session_id: row.session_id as string,
+    parent_prompt_batch_id: row.parent_prompt_batch_id as number | null,
+    kind: (row.kind as string) ?? 'initial',
     prompt_number: (row.prompt_number as number) ?? null,
     user_prompt: (row.user_prompt as string) ?? null,
     response_summary: (row.response_summary as string) ?? null,
@@ -375,6 +381,8 @@ export interface StatelessBatchInsert {
   started_at?: number | null;
   status?: string;
   machine_id?: string;
+  kind?: string;                            // defaults to 'initial'
+  parent_prompt_batch_id?: number | null;   // defaults to null
 }
 
 /**
@@ -391,11 +399,12 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
 
   const info = db.prepare(
     `INSERT INTO prompt_batches (
-       session_id, prompt_number, user_prompt, response_summary,
+       session_id, parent_prompt_batch_id, kind,
+       prompt_number, user_prompt, response_summary,
        classification, started_at, ended_at, status,
        activity_count, processed, content_hash, created_at, machine_id
      ) VALUES (
-       ?,
+       ?, ?, ?,
        (SELECT COALESCE(MAX(prompt_number), 0) + 1 FROM prompt_batches WHERE session_id = ?),
        ?, NULL,
        NULL, ?, NULL, ?,
@@ -403,6 +412,8 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
      )`,
   ).run(
     data.session_id,
+    data.parent_prompt_batch_id ?? null,
+    data.kind ?? 'initial',
     data.session_id,
     data.user_prompt ?? null,
     data.started_at ?? null,
@@ -514,6 +525,40 @@ export function listBatchesBySession(
   ).all(sessionId, limit, offset) as Record<string, unknown>[];
 
   return rows.map(toBatchRow);
+}
+
+/**
+ * Update the kind and parent_prompt_batch_id of an existing batch.
+ * Used by the transcript miner to reconcile batch kinds post-turn.
+ */
+export function updateBatchKind(
+  batchId: number,
+  kind: string,
+  parentPromptBatchId: number | null,
+): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE prompt_batches
+     SET kind = ?, parent_prompt_batch_id = ?
+     WHERE id = ?`,
+  ).run(kind, parentPromptBatchId, batchId);
+}
+
+/**
+ * Return the most recently opened parent (kind='initial') batch for a session
+ * whose turn has not yet completed (ended_at IS NULL). Returns null if none.
+ *
+ * Used by handleUserPrompt to decide whether an incoming prompt should be
+ * nested as a child or start a new parent.
+ */
+export function findOpenParentBatch(sessionId: string): BatchRow | null {
+  const db = getDatabase();
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM prompt_batches
+     WHERE session_id = ? AND ended_at IS NULL AND kind = 'initial'
+     ORDER BY id DESC LIMIT 1`,
+  ).get(sessionId) as Record<string, unknown> | undefined;
+  return row ? toBatchRow(row) : null;
 }
 
 /**

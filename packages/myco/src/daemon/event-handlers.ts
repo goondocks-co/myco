@@ -7,7 +7,7 @@
 
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getTeamMachineId } from './team-context.js';
-import { closeOpenBatches, insertBatchStateless, incrementActivityCount } from '@myco/db/queries/batches.js';
+import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch } from '@myco/db/queries/batches.js';
 import { insertActivityWithBatch } from '@myco/db/queries/activities.js';
 import { updateSession, incrementSessionToolCount } from '@myco/db/queries/sessions.js';
 import { createBatchLineage } from '@myco/db/queries/lineage.js';
@@ -55,40 +55,62 @@ function extractToolFilePath(toolInput: unknown): string | null {
 // Event handling helpers (exported for testing)
 // ---------------------------------------------------------------------------
 
+export interface UserPromptOptions {
+  kind?: string;
+  parentPromptBatchId?: number | null;
+}
+
 /**
- * Handle a UserPromptSubmit event: close previous batch, open new one.
+ * Handle a UserPromptSubmit event.
  *
- * Fully stateless — prompt_number is derived from an inline DB subquery,
- * and open batches are closed with a blind UPDATE (no prior SELECT).
+ * For initial prompts: closes open batches, opens a new initial batch.
+ * For steering/interrupt: nests under the open parent if one exists;
+ * falls back to initial if no open parent is found.
  *
  * @returns the new batch ID and prompt number
  */
 export function handleUserPrompt(
   sessionId: string,
   prompt: string | undefined,
+  options: UserPromptOptions = {},
 ): { batchId: number; promptNumber: number } {
   const now = epochSeconds();
+  const incomingKind = options.kind ?? 'initial';
 
-  // Close any open batches for this session — blind UPDATE, no prior read
-  closeOpenBatches(sessionId, now);
+  let parentId: number | null = options.parentPromptBatchId ?? null;
+  let effectiveKind = incomingKind;
 
-  // Insert new batch with prompt_number derived from DB
+  if (incomingKind === 'steering' || incomingKind === 'interrupt') {
+    const openParent = findOpenParentBatch(sessionId);
+    if (openParent) {
+      parentId = openParent.id;
+      // Keep parent open — do NOT call closeOpenBatches.
+    } else {
+      // No open parent — fall back to initial.
+      effectiveKind = 'initial';
+      parentId = null;
+    }
+  } else {
+    closeOpenBatches(sessionId, now);
+  }
+
   const batch = insertBatchStateless({
     session_id: sessionId,
     user_prompt: prompt ?? null,
     started_at: now,
     created_at: now,
     machine_id: getTeamMachineId(),
+    kind: effectiveKind,
+    parent_prompt_batch_id: parentId,
   });
 
-  // insertBatchStateless guarantees non-null prompt_number via COALESCE subquery
   const promptNumber = batch.prompt_number!;
 
-  // Create HAS_BATCH lineage edge (best-effort)
   try { createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now); } catch { /* lineage best-effort */ }
 
-  // Update session prompt count
-  updateSession(sessionId, { prompt_count: promptNumber });
+  if (effectiveKind === 'initial') {
+    updateSession(sessionId, { prompt_count: promptNumber });
+  }
 
   return { batchId: batch.id, promptNumber };
 }

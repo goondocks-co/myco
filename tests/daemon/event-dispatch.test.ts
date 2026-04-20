@@ -141,11 +141,12 @@ describe('createEventDispatcher', () => {
       pathname: '/events',
     });
 
-    expect(res.body).toEqual({ ok: true });
+    expect(res.body).toMatchObject({ ok: true });
 
     const batches = listBatchesBySession(sessionId);
     expect(batches).toHaveLength(1);
     expect(batches[0].user_prompt).toBe(prompt);
+    expect(res.body).toMatchObject({ batchId: batches[0].id });
 
     const plans = listPlansBySession(sessionId);
     expect(plans).toHaveLength(1);
@@ -199,7 +200,8 @@ describe('createEventDispatcher', () => {
         pathname: '/events',
       });
 
-      expect(res.body).toEqual({ ok: true });
+      expect(res.body).toMatchObject({ ok: true });
+      expect(res.body).toHaveProperty('batchId');
       expect(registry.getSession(sessionId)).toBeDefined();
 
       const batches = listBatchesBySession(sessionId);

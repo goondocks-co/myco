@@ -45,21 +45,23 @@ const SESSIONS_TABLE = `
 
 const PROMPT_BATCHES_TABLE = `
   CREATE TABLE IF NOT EXISTS prompt_batches (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id        TEXT NOT NULL REFERENCES sessions(id),
-    prompt_number     INTEGER,
-    user_prompt       TEXT,
-    response_summary  TEXT,
-    classification    TEXT,
-    started_at        INTEGER,
-    ended_at          INTEGER,
-    status            TEXT DEFAULT 'active',
-    activity_count    INTEGER DEFAULT 0,
-    processed         INTEGER DEFAULT 0,
-    content_hash      TEXT UNIQUE,
-    created_at        INTEGER NOT NULL,
-    machine_id        TEXT NOT NULL DEFAULT 'local',
-    synced_at         INTEGER
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id             TEXT NOT NULL REFERENCES sessions(id),
+    parent_prompt_batch_id INTEGER REFERENCES prompt_batches(id),
+    kind                   TEXT NOT NULL DEFAULT 'initial',
+    prompt_number          INTEGER,
+    user_prompt            TEXT,
+    response_summary       TEXT,
+    classification         TEXT,
+    started_at             INTEGER,
+    ended_at               INTEGER,
+    status                 TEXT DEFAULT 'active',
+    activity_count         INTEGER DEFAULT 0,
+    processed              INTEGER DEFAULT 0,
+    content_hash           TEXT UNIQUE,
+    created_at             INTEGER NOT NULL,
+    machine_id             TEXT NOT NULL DEFAULT 'local',
+    synced_at              INTEGER
   )`;
 
 const ACTIVITIES_TABLE = `
@@ -603,6 +605,7 @@ export const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_session_id ON prompt_batches (session_id)',
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_processed ON prompt_batches (processed)',
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_status ON prompt_batches (status)',
+  'CREATE INDEX IF NOT EXISTS idx_prompt_batches_parent ON prompt_batches (parent_prompt_batch_id)',
 
   // Activities
   'CREATE INDEX IF NOT EXISTS idx_activities_session_id ON activities (session_id)',

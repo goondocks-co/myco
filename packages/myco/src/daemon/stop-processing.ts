@@ -243,6 +243,23 @@ export function createStopProcessor(deps: StopProcessorDeps): {
 
     enrichTurnsWithToolMetadata(allTurns, bufferEvents);
 
+    // Reconcile batch kinds against the transcript now that we have a stable
+    // transcript path. This repairs any hook-race misclassifications (e.g.,
+    // two consecutive initial batches where the second should be steering).
+    if (hookTranscriptPath) {
+      const agent = getSession(sessionId)?.agent;
+      if (agent) {
+        try {
+          transcriptMiner.reconcileBatchKinds(sessionId, { agent, transcriptPath: hookTranscriptPath });
+        } catch (err) {
+          logger.warn(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'reconcileBatchKinds failed', {
+            session_id: sessionId,
+            error: (err as Error).message,
+          });
+        }
+      }
+    }
+
     const imageCount = allTurns.reduce((sum, t) => sum + (t.images?.length ?? 0), 0);
     logger.debug(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Transcript parsed', {
       session_id: sessionId,

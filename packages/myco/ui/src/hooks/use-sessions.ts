@@ -84,6 +84,8 @@ export interface BatchRow {
   processed: number;
   content_hash: string | null;
   created_at: number;
+  parent_prompt_batch_id: number | null;
+  kind: string;
 }
 
 export interface ActivityRow {

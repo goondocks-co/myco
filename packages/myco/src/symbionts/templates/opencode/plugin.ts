@@ -156,6 +156,11 @@ const activeOpencodeSessions = new Set<string>();
 /** Resume injections are process-local and should run at most once per session. */
 const resumeInjectedSessions = new Set<string>();
 
+/** Tracks the batchId of the most recent initial user_prompt, used to tag follow-up steering prompts. */
+let currentParentBatchId: number | null = null;
+/** True while a turn is in progress (between initial user_prompt and session.idle). */
+let turnInFlight = false;
+
 /** Read the Myco daemon port from .myco/daemon.json in the project directory. */
 function readDaemonPortFromDisk(directory: string): number | null {
   try {
@@ -297,11 +302,13 @@ async function postEventWithBuffer(
   directory: string,
   sessionId: string,
   event: Record<string, unknown>,
-): Promise<void> {
+): Promise<unknown> {
   const result = await postJson(directory, "/events", event);
   if (!result.ok || isIgnoredResponse(result.data)) {
     bufferEvent(directory, sessionId, event);
+    return undefined;
   }
+  return result.data;
 }
 
 /** True when the daemon returned 200 but signalled it dropped the event. */
@@ -341,20 +348,38 @@ async function mycoUnregisterSession(directory: string, sessionId: string): Prom
  * Falls back to the local buffer if the daemon is unreachable so events are
  * replayed on daemon restart (same resilience the other symbionts get via
  * src/hooks/send-event.ts).
+ *
+ * `kind` defaults to "steering" when a turn is already in flight, "initial" otherwise.
+ * `parent_prompt_batch_id` is set to `currentParentBatchId` for steering prompts so the
+ * daemon can link follow-up prompts back to the originating batch.
  */
 async function mycoPostUserPrompt(
   directory: string,
   sessionId: string,
   prompt: string,
   images: Array<{ data: string; mediaType: string }>,
-): Promise<void> {
-  await postEventWithBuffer(directory, sessionId, {
+  options: { kind?: string; parentPromptBatchId?: number | null } = {},
+): Promise<{ batchId?: number }> {
+  const kind = options.kind ?? (turnInFlight ? "steering" : "initial");
+  const parentPromptBatchId =
+    options.parentPromptBatchId ?? (kind !== "initial" ? currentParentBatchId : null);
+
+  const result = await postEventWithBuffer(directory, sessionId, {
     type: "user_prompt",
     session_id: sessionId,
     agent: "opencode",
     prompt,
+    kind,
+    parent_prompt_batch_id: parentPromptBatchId,
     ...(images.length > 0 ? { images } : {}),
   });
+
+  const batchId = (result as { batchId?: number } | undefined)?.batchId;
+  if (kind === "initial" && batchId != null) {
+    currentParentBatchId = batchId;
+    turnInFlight = true;
+  }
+  return { batchId };
 }
 
 /** Post a tool use event. Falls back to the local buffer on failure. */
@@ -635,6 +660,8 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
         }
 
         await mycoPostStop(directory, sessionId, responseSummary || undefined);
+        turnInFlight = false;
+        // currentParentBatchId stays set until the next initial prompt arrives.
         return;
       }
 

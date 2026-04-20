@@ -158,11 +158,18 @@ async function postEventWithBuffer(
   directory: string,
   sessionId: string,
   event: Record<string, unknown>,
-): Promise<void> {
+): Promise<unknown> {
   const result = await postJson(directory, "/events", event);
-  if (!result.ok) {
+  if (!result.ok || isIgnoredResponse(result.data)) {
     bufferEvent(directory, sessionId, event);
+    return undefined;
   }
+  return result.data;
+}
+
+function isIgnoredResponse(data: unknown): boolean {
+  if (data === null || typeof data !== "object") return false;
+  return typeof (data as Record<string, unknown>).ignored === "string";
 }
 
 // ---------------------------------------------------------------------------
@@ -189,14 +196,21 @@ async function mycoPostUserPrompt(
   sessionId: string,
   prompt: string,
   images: Array<{ data: string; mediaType: string }>,
-): Promise<void> {
-  await postEventWithBuffer(directory, sessionId, {
+  options: { kind?: string; parentPromptBatchId?: number | null } = {},
+): Promise<{ batchId?: number }> {
+  const kind = options.kind ?? "initial";
+  const parentPromptBatchId = options.parentPromptBatchId ?? null;
+  const result = await postEventWithBuffer(directory, sessionId, {
     type: "user_prompt",
     session_id: sessionId,
     agent: "pi",
     prompt,
+    kind,
+    parent_prompt_batch_id: parentPromptBatchId,
     ...(images.length > 0 ? { images } : {}),
   });
+  const batchId = (result as { batchId?: number } | undefined)?.batchId;
+  return { batchId };
 }
 
 async function mycoPostToolUse(
@@ -323,6 +337,8 @@ export default function (pi: ExtensionAPI) {
   let currentSessionId: string | null = null;
   let currentCwd: string = process.cwd();
   let lastAssistantMessage: string = "";
+  let turnInFlight = false;
+  let currentParentBatchId: number | null = null;
 
   // ── Session lifecycle ──────────────────────────────────────────────────
 
@@ -380,30 +396,54 @@ export default function (pi: ExtensionAPI) {
     lastAssistantMessage = "";
   });
 
-  // ── User prompt capture + context injection ────────────────────────────
-  //
-  // Single before_agent_start handler: captures the user prompt AND
-  // augments the system prompt with Myco context. This avoids registering
-  // two handlers for the same event (pi chains them, but the second
-  // handler's return value would overwrite the first).
+  // ── User prompt capture (turn_start) + steering (queue_update) ───────
 
-  pi.on("before_agent_start", async (event, _ctx) => {
+  pi.on("turn_start", async (event, _ctx) => {
     if (!currentSessionId) return;
-
-    // 1. Capture the user prompt
     const prompt = event.prompt ?? "";
     const images = extractImagesFromContent(event.images);
     if (prompt) {
-      // Fire-and-forget capture — don't block the agent start
-      mycoPostUserPrompt(currentCwd, currentSessionId, prompt, images);
+      const result = await mycoPostUserPrompt(
+        currentCwd,
+        currentSessionId,
+        prompt,
+        images,
+        { kind: "initial" },
+      );
+      if (result?.batchId != null) {
+        currentParentBatchId = result.batchId;
+      }
     }
+    turnInFlight = true;
+  });
 
-    // 2. Augment system prompt with Myco context
+  pi.on("turn_end", async () => {
+    turnInFlight = false;
+  });
+
+  pi.on("queue_update", async (event) => {
+    if (!currentSessionId) return;
+    if (!turnInFlight) return;
+    const steeringText = typeof event.steering === "string" ? event.steering : undefined;
+    if (!steeringText) return;
+    await mycoPostUserPrompt(
+      currentCwd,
+      currentSessionId,
+      steeringText,
+      [],
+      { kind: "steering", parentPromptBatchId: currentParentBatchId },
+    );
+  });
+
+  // ── Context injection ──────────────────────────────────────────────────
+  //
+  // before_agent_start augments the system prompt with Myco context each turn.
+
+  pi.on("before_agent_start", async (event, _ctx) => {
+    if (!currentSessionId) return;
     const contextText = await fetchMycoSessionContext(currentCwd, currentSessionId);
     if (contextText) {
-      return {
-        systemPrompt: event.systemPrompt + "\n\n" + contextText,
-      };
+      return { systemPrompt: event.systemPrompt + "\n\n" + contextText };
     }
     return undefined;
   });

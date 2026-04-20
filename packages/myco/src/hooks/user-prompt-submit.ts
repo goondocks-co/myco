@@ -6,6 +6,7 @@ import { readTranscriptMeta } from './transcript-meta.js';
 import { loadManifests } from '../symbionts/detect.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { resolveVaultDir } from '../vault/resolve.js';
+import { classifyPromptKind } from '../capture/classify-prompt-kind.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -54,6 +55,13 @@ export async function main() {
       process.stderr.write(`[myco] user-prompt-submit: rewritten (${decision.reason ?? 'rule'})\n`);
     }
 
+    // Classify the prompt kind by inspecting the transcript tail.
+    const kind = classifyPromptKind({
+      agent: input.agent,
+      transcriptPath: input.transcriptPath,
+      prompt,
+    });
+
     // Forward prompt as event for capture
     const eventResult = await client.post('/events', {
       type: 'user_prompt',
@@ -61,6 +69,7 @@ export async function main() {
       session_id: sessionId,
       agent: input.agent,
       transcript_path: input.transcriptPath,
+      kind,
     });
 
     // Buffer on transport failure OR server-side drop (200 with `ignored`).
@@ -68,7 +77,7 @@ export async function main() {
     // it lets reconcileBufferBatches recover the prompt once the rule is fixed.
     if (!eventResult.ok || isIgnoredEventResponse(eventResult.data)) {
       const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
-      buffer.append({ type: 'user_prompt', prompt, transcript_path: input.transcriptPath });
+      buffer.append({ type: 'user_prompt', prompt, transcript_path: input.transcriptPath, kind });
     }
 
     // Search for relevant spores to inject as context for this prompt.

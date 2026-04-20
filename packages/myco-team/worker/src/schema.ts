@@ -39,21 +39,23 @@ const SESSIONS_TABLE = `
 
 const PROMPT_BATCHES_TABLE = `
   CREATE TABLE IF NOT EXISTS prompt_batches (
-    id                INTEGER NOT NULL,
-    machine_id        TEXT NOT NULL,
-    session_id        TEXT NOT NULL,
-    prompt_number     INTEGER,
-    user_prompt       TEXT,
-    response_summary  TEXT,
-    classification    TEXT,
-    started_at        INTEGER,
-    ended_at          INTEGER,
-    status            TEXT DEFAULT 'active',
-    activity_count    INTEGER DEFAULT 0,
-    processed         INTEGER DEFAULT 0,
-    content_hash      TEXT,
-    created_at        INTEGER NOT NULL,
-    synced_at         INTEGER,
+    id                     INTEGER NOT NULL,
+    machine_id             TEXT NOT NULL,
+    session_id             TEXT NOT NULL,
+    parent_prompt_batch_id INTEGER,
+    kind                   TEXT NOT NULL DEFAULT 'initial',
+    prompt_number          INTEGER,
+    user_prompt            TEXT,
+    response_summary       TEXT,
+    classification         TEXT,
+    started_at             INTEGER,
+    ended_at               INTEGER,
+    status                 TEXT DEFAULT 'active',
+    activity_count         INTEGER DEFAULT 0,
+    processed              INTEGER DEFAULT 0,
+    content_hash           TEXT,
+    created_at             INTEGER NOT NULL,
+    synced_at              INTEGER,
     PRIMARY KEY (id, machine_id)
   )`;
 
@@ -270,6 +272,7 @@ const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_skill_records_status ON skill_records (status)',
   'CREATE INDEX IF NOT EXISTS idx_skill_records_name ON skill_records (name, machine_id)',
   'CREATE INDEX IF NOT EXISTS idx_skill_usage_skill_id ON skill_usage (skill_id)',
+  'CREATE INDEX IF NOT EXISTS idx_prompt_batches_parent ON prompt_batches (parent_prompt_batch_id)',
 ];
 
 const ALL_DDLS = [
@@ -305,6 +308,8 @@ export async function initD1Schema(db: D1Database): Promise<void> {
     'ALTER TABLE skill_usage ADD COLUMN synced_at INTEGER',
     'ALTER TABLE skill_candidates ADD COLUMN approved_at INTEGER',
     'ALTER TABLE skill_candidates ADD COLUMN supersedes TEXT',
+    'ALTER TABLE prompt_batches ADD COLUMN parent_prompt_batch_id INTEGER',
+    "ALTER TABLE prompt_batches ADD COLUMN kind TEXT NOT NULL DEFAULT 'initial'",
   ];
   for (const sql of migrations) {
     try {
