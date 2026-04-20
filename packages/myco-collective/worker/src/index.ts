@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-import { createMcpHandler } from 'agents/mcp';
 import { createMcpServerInstance } from './mcp/server';
 import {
   ensureBootstrapTokens,
@@ -166,7 +164,7 @@ async function handleAddProject(request: Request, env: Env): Promise<Response> {
     return jsonResponse({ error: 'name, worker_url, and api_key are required' }, 400);
   }
 
-  const projectId = randomUUID();
+  const projectId = crypto.randomUUID();
   const collectiveUrl = collectiveOrigin(request);
   await env.MYCO_SECRETS.put(`project:${projectId}:api_key`, body.api_key);
   await env.MYCO_COLLECTIVE_DB.prepare(
@@ -424,6 +422,7 @@ export default {
       const authError = await validateMcpAuth(request, env.MYCO_SECRETS);
       if (authError) return authError;
       const server = createMcpServerInstance(env);
+      const { createMcpHandler } = await import('agents/mcp');
       const handler = createMcpHandler(server);
       return handler(request, env, ctx);
     }

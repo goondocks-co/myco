@@ -60,6 +60,14 @@ interface VectorMatch {
   score: number;
 }
 
+function isTeamVectorMetadata(metadata: unknown): metadata is TeamVectorMetadata {
+  if (!metadata || typeof metadata !== 'object') return false;
+  const candidate = metadata as Record<string, unknown>;
+  return typeof candidate.table === 'string'
+    && typeof candidate.id === 'string'
+    && typeof candidate.machine_id === 'string';
+}
+
 function clampLimit(limit?: number): number {
   return Math.min(Math.max(limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
 }
@@ -143,13 +151,11 @@ export async function searchKnowledge(
   const queryVector = await embedText(ai, args.query);
   const matches = await vectorize.query(queryVector, { topK: queryTopK, returnMetadata: 'all' });
 
-  const validMatches = matches.matches
-    .filter((match) => match.metadata)
-    .map((match) => ({
-      metadata: match.metadata as TeamVectorMetadata,
-      score: match.score,
-    }))
-    .filter((match) => matchesFilters(match.metadata, args));
+  const validMatches: VectorMatch[] = matches.matches.flatMap((match) => {
+    if (!isTeamVectorMetadata(match.metadata)) return [];
+    if (!matchesFilters(match.metadata, args)) return [];
+    return [{ metadata: match.metadata, score: match.score }];
+  });
 
   const results = await hydrateVectorMatches(db, validMatches);
   return results.slice(0, limit);
