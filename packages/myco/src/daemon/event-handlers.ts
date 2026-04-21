@@ -7,7 +7,7 @@
 
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getTeamMachineId } from './team-context.js';
-import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch } from '@myco/db/queries/batches.js';
+import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, BATCH_KIND } from '@myco/db/queries/batches.js';
 import { insertActivityWithBatch } from '@myco/db/queries/activities.js';
 import { updateSession, incrementSessionToolCount } from '@myco/db/queries/sessions.js';
 import { createBatchLineage } from '@myco/db/queries/lineage.js';
@@ -57,7 +57,6 @@ function extractToolFilePath(toolInput: unknown): string | null {
 
 export interface UserPromptOptions {
   kind?: string;
-  parentPromptBatchId?: number | null;
 }
 
 /**
@@ -67,6 +66,9 @@ export interface UserPromptOptions {
  * For steering/interrupt: nests under the open parent if one exists;
  * falls back to initial if no open parent is found.
  *
+ * The parent linkage is resolved server-side via findOpenParentBatch — callers
+ * should not attempt to compute or pass a parent ID themselves.
+ *
  * @returns the new batch ID and prompt number
  */
 export function handleUserPrompt(
@@ -75,19 +77,17 @@ export function handleUserPrompt(
   options: UserPromptOptions = {},
 ): { batchId: number; promptNumber: number } {
   const now = epochSeconds();
-  const incomingKind = options.kind ?? 'initial';
+  const incomingKind = options.kind ?? BATCH_KIND.INITIAL;
 
-  let parentId: number | null = options.parentPromptBatchId ?? null;
+  let parentId: number | null = null;
   let effectiveKind = incomingKind;
 
-  if (incomingKind === 'steering' || incomingKind === 'interrupt') {
+  if (incomingKind === BATCH_KIND.STEERING || incomingKind === BATCH_KIND.INTERRUPT) {
     const openParent = findOpenParentBatch(sessionId);
     if (openParent) {
       parentId = openParent.id;
-      // Keep parent open — do NOT call closeOpenBatches.
     } else {
-      // No open parent — fall back to initial.
-      effectiveKind = 'initial';
+      effectiveKind = BATCH_KIND.INITIAL;
       parentId = null;
     }
   } else {
@@ -108,7 +108,7 @@ export function handleUserPrompt(
 
   try { createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now); } catch { /* lineage best-effort */ }
 
-  if (effectiveKind === 'initial') {
+  if (effectiveKind === BATCH_KIND.INITIAL) {
     updateSession(sessionId, { prompt_count: promptNumber });
   }
 

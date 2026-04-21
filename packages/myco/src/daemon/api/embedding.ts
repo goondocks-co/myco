@@ -121,8 +121,24 @@ export function handleEmbeddingDetails(manager: EmbeddingManager): RouteResponse
   return { body: details };
 }
 
-export async function handleEmbeddingRebuild(manager: EmbeddingManager): Promise<RouteResponse> {
+export async function handleEmbeddingRebuild(
+  manager: EmbeddingManager,
+  options: { async?: boolean } = {},
+): Promise<RouteResponse> {
   const result = manager.rebuildAll();
+  // Fire-and-forget path: return once records are marked pending, without
+  // waiting for the foreground drain. Used by `myco update`'s one-time
+  // metadata migration so the CLI doesn't hang on a large re-embed that
+  // the background reconcile job is already queued to handle.
+  if (options.async) {
+    return {
+      body: {
+        ...result,
+        queued_for_background: result.queued,
+        batch_size: FOREGROUND_EMBEDDING_BATCH_SIZE,
+      },
+    };
+  }
   const drained = await drainForegroundReconcile(manager);
   return {
     body: {

@@ -47,7 +47,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(22);
+      expect(SCHEMA_VERSION).toBe(23);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -1323,9 +1323,9 @@ describe('Database schema', () => {
         expect(() => runMigration(db, 19)).not.toThrow();
       });
 
-      it('full v13 -> v22 chain reaches SCHEMA_VERSION and is replay-safe', () => {
+      it('full v13 -> v23 chain reaches SCHEMA_VERSION and is replay-safe', () => {
         buildV13Db(db);
-        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22]) runMigration(db, v);
+        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23]) runMigration(db, v);
 
         const row = db.prepare(
           `SELECT MAX(version) AS v FROM schema_version`,

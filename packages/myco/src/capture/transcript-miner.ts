@@ -2,8 +2,50 @@ import { SymbiontRegistry } from '../symbionts/registry.js';
 import type { SymbiontAdapter } from '../symbionts/adapter.js';
 import { PROMPT_PREVIEW_CHARS } from '../constants.js';
 import fs from 'node:fs';
-import { listBatchesBySession, updateBatchKind } from '../db/queries/batches.js';
-import { extractUserPromptKinds } from './prompt-kind.js';
+import {
+  listBatchesBySession,
+  updateBatchKind,
+  insertBatchStateless,
+  setBatchPromptNumber,
+  PROMPT_PREFIX_MATCH_CHARS,
+  BATCH_KIND,
+  type BatchRow,
+} from '../db/queries/batches.js';
+import { extractUserPromptRecords, type UserPromptRecord } from './prompt-kind.js';
+import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
+import { createBatchLineage } from '../db/queries/lineage.js';
+import { getTeamMachineId } from '../daemon/team-context.js';
+
+function promptPrefix(text: string | null | undefined): string {
+  return (text ?? '').slice(0, PROMPT_PREFIX_MATCH_CHARS);
+}
+
+/**
+ * Bucket batches by prompt prefix. `consume(text)` pops the first batch whose
+ * prefix matches, letting callers match transcript order regardless of DB id order.
+ */
+function buildPrefixBuckets(batches: ReadonlyArray<BatchRow>): {
+  consume(text: string): BatchRow | null;
+  remaining(): BatchRow[];
+} {
+  const buckets = new Map<string, BatchRow[]>();
+  for (const b of batches) {
+    const key = promptPrefix(b.user_prompt);
+    const list = buckets.get(key) ?? [];
+    list.push(b);
+    buckets.set(key, list);
+  }
+  return {
+    consume(text: string) {
+      const bucket = buckets.get(promptPrefix(text));
+      if (!bucket || bucket.length === 0) return null;
+      return bucket.shift() ?? null;
+    },
+    remaining() {
+      return Array.from(buckets.values()).flat();
+    },
+  };
+}
 
 // Re-export TranscriptTurn from its canonical home in symbionts/adapter.ts
 export type { TranscriptTurn } from '../symbionts/adapter.js';
@@ -21,11 +63,46 @@ export interface ReconcileInput {
 
 export interface ReconcileResult {
   reclassified: number;
+  /** Batches created during reconciliation to recover prompts the hook dropped. */
+  inserted: number;
   errors: string[];
+}
+
+/** Head-bytes sampled to detect in-place overwrite with same inode + size. */
+const PARSE_CACHE_FINGERPRINT_BYTES = 256;
+
+/**
+ * Bound on the parse cache — daemons are long-lived and each entry holds the
+ * full parsed JSONL event array for a transcript. 32 covers concurrent
+ * sessions comfortably while keeping the resident set small; the typical
+ * steady-state is a handful of active sessions per daemon. LRU eviction keeps
+ * hot transcripts resident across reconcile calls.
+ */
+const PARSE_CACHE_MAX_ENTRIES = 32;
+
+/**
+ * `offset` points past the last newline parsed; `inode`+`fingerprint` detect
+ * rotation. `reconciledSize` is the file size observed on the last
+ * `reconcileBatchKinds` call for this path — when `stat.size` still equals
+ * it we can short-circuit because the transcript hasn't grown since we last
+ * reconciled against it.
+ */
+interface ParseCacheEntry {
+  inode: number;
+  fingerprint: string;
+  offset: number;
+  events: Array<Record<string, unknown>>;
+  reconciledSize: number;
 }
 
 export class TranscriptMiner {
   private registry: SymbiontRegistry;
+  /**
+   * Append-read cache keyed by path; avoids re-parsing the whole transcript
+   * per Stop. Bounded LRU: insertion order preserved via Map semantics,
+   * touch-on-access moves the entry to the end, eviction pops the head.
+   */
+  private parseCache = new Map<string, ParseCacheEntry>();
 
   constructor(config?: TranscriptConfig) {
     this.registry = new SymbiontRegistry(config?.additionalAdapters);
@@ -57,58 +134,229 @@ export class TranscriptMiner {
   }
 
   /**
-   * Walk the transcript in order, rebuild the intended (kind, parent_id) for
-   * each user prompt, and repair any batches whose kind drifted from reality.
+   * Align prompt_batches rows with the transcript by prompt-prefix + transcript
+   * order. Repairs kind/parent drift on existing rows and inserts rows for
+   * prompts the hook dropped (e.g., Claude's queued mid-turn prompts).
    */
   public reconcileBatchKinds(sessionId: string, input: ReconcileInput): ReconcileResult {
-    const batches = listBatchesBySession(sessionId).sort((a, b) => a.id - b.id);
-    const classifications = extractUserPromptKinds(input.agent, this.parseAllEvents(input.transcriptPath));
+    // Short-circuit: if we've already reconciled this transcript at its
+    // current size, nothing new to do. The cached `reconciledSize` is only
+    // set after a full reconcile pass at that size, so the DB state is
+    // already consistent with the events we'd re-parse. Stop fires after
+    // the assistant ends a turn, so any new prompts since the last Stop
+    // would have grown the file — zero-growth implies zero new work.
+    try {
+      const stat = fs.statSync(input.transcriptPath);
+      const cached = this.parseCache.get(input.transcriptPath);
+      if (
+        cached
+        && cached.reconciledSize === stat.size
+        && cached.offset === stat.size
+        && cached.inode === Number(stat.ino)
+      ) {
+        // Refresh LRU position on short-circuit so a quiet-but-active
+        // session doesn't get evicted while other transcripts churn.
+        this.parseCache.delete(input.transcriptPath);
+        this.parseCache.set(input.transcriptPath, cached);
+        return { reclassified: 0, inserted: 0, errors: [] };
+      }
+    } catch {
+      // statSync failure falls through to parseAllEvents, which handles it.
+    }
 
-    const n = Math.min(batches.length, classifications.length);
+    const records = extractUserPromptRecords(
+      input.agent,
+      this.parseAllEvents(input.transcriptPath),
+      input.transcriptPath,
+    );
+    const batches = listBatchesBySession(sessionId).sort((a, b) => a.id - b.id);
+
     let reclassified = 0;
+    let inserted = 0;
     const errors: string[] = [];
 
+    // Prefix bucketing keeps reconcile idempotent when DB id order diverges
+    // from transcript order after a recovery insert.
+    const buckets = buildPrefixBuckets(batches);
     let currentParentId: number | null = null;
 
-    for (let i = 0; i < n; i++) {
-      const batch = batches[i];
-      const wantKind = classifications[i];
+    for (const record of records) {
+      const existing = buckets.consume(record.text);
 
-      if (wantKind === 'initial') {
-        currentParentId = batch.id;
-        if (batch.kind !== 'initial' || batch.parent_prompt_batch_id !== null) {
-          updateBatchKind(batch.id, 'initial', null);
-          reclassified++;
-        }
-      } else {
-        if (currentParentId == null) {
-          errors.push(`batch ${batch.id} classified as ${wantKind} but no open parent`);
+      if (existing) {
+        const wantParent = record.kind === BATCH_KIND.INITIAL ? null : currentParentId;
+        if (record.kind !== BATCH_KIND.INITIAL && wantParent == null) {
+          errors.push(`batch ${existing.id} classified as ${record.kind} with no open parent`);
           continue;
         }
-        if (batch.kind !== wantKind || batch.parent_prompt_batch_id !== currentParentId) {
-          updateBatchKind(batch.id, wantKind, currentParentId);
+        if (existing.kind !== record.kind || existing.parent_prompt_batch_id !== wantParent) {
+          updateBatchKind(existing.id, record.kind, wantParent);
           reclassified++;
         }
+        if (record.kind === BATCH_KIND.INITIAL) currentParentId = existing.id;
+        continue;
+      }
+
+      const parentForNew = record.kind === BATCH_KIND.INITIAL ? null : currentParentId;
+      if (record.kind !== BATCH_KIND.INITIAL && parentForNew == null) {
+        errors.push(`transcript prompt classified as ${record.kind} with no open parent; inserting as initial instead`);
+      }
+      const effectiveKind = record.kind !== BATCH_KIND.INITIAL && parentForNew == null
+        ? BATCH_KIND.INITIAL
+        : record.kind;
+      const now = epochSeconds();
+      const created = insertBatchStateless({
+        session_id: sessionId,
+        user_prompt: record.text,
+        started_at: now,
+        created_at: now,
+        machine_id: getTeamMachineId(),
+        kind: effectiveKind,
+        parent_prompt_batch_id: effectiveKind === BATCH_KIND.INITIAL ? null : parentForNew,
+      });
+      inserted++;
+      try { createBatchLineage(DEFAULT_AGENT_ID, sessionId, created.id, now); } catch { /* lineage best-effort */ }
+      if (effectiveKind === BATCH_KIND.INITIAL) currentParentId = created.id;
+    }
+
+    const stranded = buckets.remaining().length;
+    if (stranded > 0) {
+      errors.push(`${stranded} DB batch(es) had no matching transcript prompt`);
+    }
+
+    // Stateless insert assigns MAX+1; renumber in transcript order for the UI.
+    if (inserted > 0) {
+      const renumber = buildPrefixBuckets(listBatchesBySession(sessionId).sort((a, b) => a.id - b.id));
+      let nextNumber = 1;
+      for (const record of records) {
+        const match = renumber.consume(record.text);
+        if (match && match.prompt_number !== nextNumber) {
+          setBatchPromptNumber(match.id, nextNumber);
+        }
+        if (match) nextNumber++;
       }
     }
 
-    if (batches.length !== classifications.length) {
-      errors.push(`batch/event count mismatch: ${batches.length} batches vs ${classifications.length} transcript prompts`);
+    // Mark this size as fully reconciled so a subsequent Stop with the same
+    // transcript size short-circuits before any DB scan.
+    const postCache = this.parseCache.get(input.transcriptPath);
+    if (postCache) {
+      this.parseCache.delete(input.transcriptPath);
+      this.parseCache.set(input.transcriptPath, {
+        ...postCache,
+        reconciledSize: postCache.offset,
+      });
     }
 
-    return { reclassified, errors };
+    return { reclassified, inserted, errors };
   }
 
   private parseAllEvents(transcriptPath: string): Array<Record<string, unknown>> {
+    let stat: fs.Stats;
     try {
-      const text = fs.readFileSync(transcriptPath, 'utf8');
-      return text.split('\n').filter((l) => l.trim()).map((l) => {
-        try { return JSON.parse(l) as Record<string, unknown>; } catch { return {}; }
-      });
+      stat = fs.statSync(transcriptPath);
     } catch {
       return [];
     }
+
+    const cached = this.parseCache.get(transcriptPath);
+    const inode = Number(stat.ino);
+    const fingerprint = this.readFromOffset(
+      transcriptPath,
+      0,
+      Math.min(stat.size, PARSE_CACHE_FINGERPRINT_BYTES),
+    );
+
+    // Reparse on: no cache, inode change (rotation), shrink (truncation),
+    // or head-bytes divergence (in-place overwrite).
+    const cacheStale = !cached
+      || cached.inode !== inode
+      || stat.size < cached.offset
+      || cached.fingerprint !== fingerprint;
+
+    if (cacheStale) {
+      const fullText = this.readFromOffset(transcriptPath, 0, stat.size);
+      const newline = fullText.lastIndexOf('\n');
+      const complete = newline === -1 ? '' : fullText.slice(0, newline + 1);
+      const events = parseJsonlLines(complete);
+      this.storeCacheEntry(transcriptPath, {
+        inode,
+        fingerprint,
+        offset: Buffer.byteLength(complete, 'utf8'),
+        events,
+        // Reset — reconcile hasn't run against this (possibly rotated) file yet.
+        reconciledSize: -1,
+      });
+      return events;
+    }
+
+    if (stat.size === cached.offset) {
+      // Touch LRU so the entry stays hot while we keep hitting the cache.
+      this.parseCache.delete(transcriptPath);
+      this.parseCache.set(transcriptPath, cached);
+      return cached.events;
+    }
+
+    // Incremental: read bytes added since last parse, up to the last newline.
+    const tail = this.readFromOffset(transcriptPath, cached.offset, stat.size - cached.offset);
+    const newline = tail.lastIndexOf('\n');
+    if (newline === -1) {
+      this.parseCache.delete(transcriptPath);
+      this.parseCache.set(transcriptPath, cached);
+      return cached.events;
+    }
+
+    const complete = tail.slice(0, newline + 1);
+    const newEvents = parseJsonlLines(complete);
+    const merged = [...cached.events, ...newEvents];
+    this.storeCacheEntry(transcriptPath, {
+      inode,
+      fingerprint,
+      offset: cached.offset + Buffer.byteLength(complete, 'utf8'),
+      events: merged,
+      // New bytes appeared — previous reconciledSize is now stale.
+      reconciledSize: cached.reconciledSize,
+    });
+    return merged;
   }
+
+  /**
+   * Store (or refresh) a parseCache entry, enforcing the LRU bound. Deleting
+   * before setting ensures the entry moves to the end of the Map's insertion
+   * order; once we exceed the cap we drop the least-recently-used key
+   * (Map.keys() yields insertion order).
+   */
+  private storeCacheEntry(transcriptPath: string, entry: ParseCacheEntry): void {
+    this.parseCache.delete(transcriptPath);
+    this.parseCache.set(transcriptPath, entry);
+    while (this.parseCache.size > PARSE_CACHE_MAX_ENTRIES) {
+      const oldest = this.parseCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.parseCache.delete(oldest);
+    }
+  }
+
+  private readFromOffset(path: string, offset: number, length: number): string {
+    if (length <= 0) return '';
+    const fd = fs.openSync(path, 'r');
+    try {
+      const buf = Buffer.alloc(length);
+      fs.readSync(fd, buf, 0, length, offset);
+      return buf.toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+}
+
+function parseJsonlLines(text: string): Array<Record<string, unknown>> {
+  return text
+    .split('\n')
+    .filter((l) => l.trim())
+    .map((l) => {
+      try { return JSON.parse(l) as Record<string, unknown>; }
+      catch { return {}; }
+    });
 }
 
 /**

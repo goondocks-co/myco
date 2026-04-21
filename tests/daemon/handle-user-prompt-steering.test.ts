@@ -1,11 +1,9 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
+import { nowSec, seedSession } from '../helpers/sessions.js';
 import { handleUserPrompt } from '@myco/daemon/event-handlers.js';
-import { upsertSession } from '@myco/db/queries/sessions.js';
 import { listBatchesBySession } from '@myco/db/queries/batches.js';
 import { getDatabase } from '@myco/db/client.js';
-
-const now = () => Math.floor(Date.now() / 1000);
 
 describe('handleUserPrompt steering nesting', () => {
   beforeAll(() => { setupTestDb(); });
@@ -13,7 +11,7 @@ describe('handleUserPrompt steering nesting', () => {
 
   beforeEach(() => {
     cleanTestDb();
-    upsertSession({ id: 's1', agent: 'claude-code', started_at: now(), created_at: now(), status: 'active' });
+    seedSession({ id: 's1' });
   });
 
   it('creates an initial batch with kind=initial and no parent', () => {
@@ -48,7 +46,7 @@ describe('handleUserPrompt steering nesting', () => {
     // Close any batches first by sending an initial and then closing it
     const { batchId: firstId } = handleUserPrompt('s1', 'first', { kind: 'initial' });
     const db = getDatabase();
-    db.prepare(`UPDATE prompt_batches SET ended_at = ? WHERE id = ?`).run(now(), firstId);
+    db.prepare(`UPDATE prompt_batches SET ended_at = ? WHERE id = ?`).run(nowSec(), firstId);
 
     // Now send steering — no open parent exists
     const { batchId: fallbackId } = handleUserPrompt('s1', 'steer with no parent', { kind: 'steering' });

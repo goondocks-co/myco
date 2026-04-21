@@ -4,17 +4,17 @@ description: |
   Use this skill when working on Myco's multi-package npm workspace structure,
   per-package CI release pipelines, or any task touching package publishing,
   version management, or release tag workflows across `packages/myco`,
-  `packages/myco-team`, and `packages/myco-collective`. Covers five distinct
+  `packages/myco-team`, and `packages/myco-collective`. Covers six distinct
   procedures: (1) bootstrapping the monorepo workspace, (2) configuring
   per-package OIDC publish workflows with tag-prefix triggers, (3) auditing
   and hardening test version assertions to avoid silent drift, (4) diagnosing
   and fixing silent tag-publish failures caused by `[skip ci]` commit messages,
-  and (5) applying the worktree delivery gate safely for multi-package
-  experimental work. Also covers Node binary PATH resolution in Wrangler
-  sub-shell spawns. Apply this skill even if the user don't explicitly ask
-  for "monorepo" or "release engineering" — it applies any time you're adding
-  a new package, cutting a release, touching CI publish workflows, or
-  investigating why a tag didn't publish.
+  (5) applying the worktree delivery gate safely for multi-package
+  experimental work, and (6) managing dependencies with Dependabot batching
+  workflows. Also covers Node binary PATH resolution in Wrangler sub-shell
+  spawns. Apply this skill even if the user don't explicitly ask for "monorepo"
+  or "release engineering" — it applies any time you're working with package
+  publishing, CI workflows, or dependency updates.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -479,6 +479,146 @@ git checkout -- workers/*/package-lock.json
 
 Only commit lockfile changes for the specific package you intended to modify.
 
+## Procedure 8: Dependency Management Patterns for Monorepos
+
+**When:** Managing Dependabot PRs, running dependency audits, or planning dependency updates across multiple packages.
+
+### 8.1 — Batching Dependabot PRs
+
+When multiple Dependabot PRs accumulate, batch them locally rather than merging individually:
+
+```bash
+# Fetch all open Dependabot branches
+git fetch origin
+
+# Create a batch branch
+git checkout -b dependabot-batch-$(date +%Y%m%d)
+
+# Merge each Dependabot branch (replace with actual branch names)
+git merge origin/dependabot/npm_and_yarn/eslint-9.15.0
+git merge origin/dependabot/npm_and_yarn/typescript-5.7.2
+git merge origin/dependabot/npm_and_yarn/prettier-3.4.1
+
+# Run full test suite
+npm test
+npm run build --workspaces
+
+# If tests pass, push and create PR
+git push origin dependabot-batch-$(date +%Y%m%d)
+```
+
+This approach runs tests once on the combined changes rather than individually, catching interaction issues between dependency updates.
+
+### 8.2 — Dependabot coverage gaps for nested packages
+
+Dependabot only monitors packages declared in the root `.github/dependabot.yml`. Nested packages outside the workspace (workers, UI apps) require explicit configuration:
+
+```yaml
+# .github/dependabot.yml
+version: 2
+updates:
+  # Root workspace packages (covered by default)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  
+  # Explicit nested package monitoring
+  - package-ecosystem: "npm"
+    directory: "/workers/collective-worker"
+    schedule:
+      interval: "weekly"
+  
+  - package-ecosystem: "npm"  
+    directory: "/ui-next"
+    schedule:
+      interval: "weekly"
+```
+
+Without explicit entries, these packages accumulate stale dependencies silently.
+
+### 8.3 — `npm audit fix` safety procedures
+
+Running `npm audit fix` across a monorepo requires careful scoping to avoid breaking changes:
+
+```bash
+# ❌ DANGEROUS — can introduce breaking changes across all packages
+npm audit fix
+
+# ✅ SAFE — audit each package individually
+npm audit fix --workspace=packages/myco
+npm audit fix --workspace=packages/myco-team
+npm audit fix --workspace=packages/myco-collective
+
+# For nested non-workspace packages
+cd workers/collective-worker && npm audit fix && cd ../..
+cd ui-next && npm audit fix && cd ../..
+```
+
+Always run the full test suite after any `npm audit fix`:
+
+```bash
+npm test
+npm run build --workspaces
+make test-workers  # if workers exist
+```
+
+### 8.4 — GitHub Action upgrade assessment patterns
+
+GitHub Actions in `.github/workflows/` also require dependency management. Use Dependabot for Actions:
+
+```yaml
+# .github/dependabot.yml (add to existing config)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+```
+
+When Actions are updated, verify they don't break the monorepo patterns:
+
+```bash
+# Test key workflows locally before merging
+act -j publish-myco        # Test main package publish
+act -j publish-team        # Test team package publish  
+act -j publish-collective  # Test collective package publish
+```
+
+Common Action upgrade impacts:
+- `actions/setup-node` changes can affect workspace resolution
+- `actions/checkout` changes can affect nested package detection
+- Cache action updates can invalidate existing cache keys
+
+### 8.5 — Dependency version alignment across packages
+
+Workspace packages should align on shared dependencies to avoid version conflicts:
+
+```bash
+# Check for version mismatches across workspace packages
+npm ls typescript --workspaces
+npm ls eslint --workspaces
+npm ls prettier --workspaces
+```
+
+If mismatches exist, align to the highest compatible version:
+
+```bash
+# Update all workspace packages to same version
+npm install typescript@5.7.2 --workspace=packages/myco
+npm install typescript@5.7.2 --workspace=packages/myco-team  
+npm install typescript@5.7.2 --workspace=packages/myco-collective
+```
+
+For development dependencies, consider hoisting to the root:
+
+```bash
+# Remove from individual packages
+npm uninstall typescript --workspace=packages/myco-team
+
+# Install at root (available to all workspace packages)  
+npm install --save-dev typescript@5.7.2
+```
+
 ## Cross-Cutting Gotchas
 
 | Gotcha | Symptom | Fix |
@@ -491,3 +631,7 @@ Only commit lockfile changes for the specific package you intended to modify.
 | Tagging before auditing test version strings | Tests fail on the release commit itself | Run version-string grep audit before pushing a release tag |
 | Root npm operations mutating nested lockfiles | UI builds break after unrelated npm operations | Operate within package directories for non-workspace packages |
 | Missing nested worker validation in worktree gate | Worker config errors reach main branch | Extend quality gate with `wrangler deploy --dry-run` |
+| Individual Dependabot PR merges | Interaction issues between dependency updates missed | Batch multiple Dependabot PRs locally and test combined changes |
+| Missing Dependabot config for nested packages | Workers and UI apps accumulate stale dependencies | Add explicit `.github/dependabot.yml` entries for all package directories |
+| Monorepo-wide `npm audit fix` | Breaking changes introduced across multiple packages | Run `npm audit fix` per workspace, test after each |
+| Version mismatches across workspace packages | Runtime conflicts between packages | Align shared dependency versions using `npm ls --workspaces` |

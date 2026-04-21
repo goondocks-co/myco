@@ -1,9 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
+import { nowSec, seedSession } from '../helpers/sessions.js';
 import { insertBatchStateless } from '@myco/db/queries/batches.js';
-import { upsertSession } from '@myco/db/queries/sessions.js';
-
-const now = () => Math.floor(Date.now() / 1000);
 
 describe('insertBatchStateless with steering fields', () => {
   beforeAll(() => { setupTestDb(); });
@@ -11,20 +9,20 @@ describe('insertBatchStateless with steering fields', () => {
 
   beforeEach(() => {
     cleanTestDb();
-    upsertSession({ id: 's1', agent: 'claude-code', started_at: now(), created_at: now(), status: 'active' });
+    seedSession({ id: 's1' });
   });
 
   it('defaults kind to "initial" and parent to null', () => {
-    const b = insertBatchStateless({ session_id: 's1', created_at: now() });
+    const b = insertBatchStateless({ session_id: 's1', created_at: nowSec() });
     expect(b.kind).toBe('initial');
     expect(b.parent_prompt_batch_id).toBeNull();
   });
 
   it('accepts explicit kind and parent_prompt_batch_id', () => {
-    const parent = insertBatchStateless({ session_id: 's1', created_at: now() });
+    const parent = insertBatchStateless({ session_id: 's1', created_at: nowSec() });
     const child = insertBatchStateless({
       session_id: 's1',
-      created_at: now(),
+      created_at: nowSec(),
       kind: 'steering',
       parent_prompt_batch_id: parent.id,
     });

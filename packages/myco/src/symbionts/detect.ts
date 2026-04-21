@@ -43,6 +43,12 @@ export function loadManifests(): SymbiontManifest[] {
   return [];
 }
 
+/** Find a loaded manifest by symbiont name, or undefined. */
+export function getManifestByName(name: string | undefined): SymbiontManifest | undefined {
+  if (!name) return undefined;
+  return loadManifests().find((m) => m.name === name);
+}
+
 /** Check if a binary is available on PATH. */
 function isBinaryOnPath(binary: string): boolean {
   try {

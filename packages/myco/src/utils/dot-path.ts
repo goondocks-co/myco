@@ -4,12 +4,24 @@
  * or `'tool_info.command_line'`.
  */
 
-/** Walk a dot-separated path and return the value, or `undefined` if any segment is missing. */
-export function getAtPath(obj: Record<string, unknown>, dotPath: string): unknown {
-  const parts = dotPath.split('.');
+/**
+ * Walk a dot-separated path and return the value, or `undefined` if any segment
+ * is missing. Accepts bracketed numeric indices (`foo[0].bar`) as a shorthand
+ * for array navigation — `foo.0.bar` works too.
+ */
+export function getAtPath(obj: unknown, dotPath: string): unknown {
+  if (!dotPath) return obj;
+  const parts = dotPath.replace(/\[(\d+)\]/g, '.$1').split('.').filter((s) => s.length > 0);
   let current: unknown = obj;
   for (const part of parts) {
-    if (current === null || current === undefined || typeof current !== 'object') return undefined;
+    if (current === null || current === undefined) return undefined;
+    if (Array.isArray(current)) {
+      const idx = Number(part);
+      if (!Number.isInteger(idx)) return undefined;
+      current = current[idx];
+      continue;
+    }
+    if (typeof current !== 'object') return undefined;
     current = (current as Record<string, unknown>)[part];
   }
   return current;

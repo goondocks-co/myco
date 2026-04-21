@@ -1,12 +1,10 @@
 import { DaemonClient, isIgnoredEventResponse } from './client.js';
-import { readStdin } from './read-stdin.js';
-import { normalizeHookInput } from './normalize.js';
+import { readHookInput } from './input.js';
 import { evaluateUserPromptRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
-import { loadManifests } from '../symbionts/detect.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { resolveVaultDir } from '../vault/resolve.js';
-import { classifyPromptKind } from '../capture/classify-prompt-kind.js';
+import { writeHookResponse } from './response.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -14,39 +12,33 @@ export async function main() {
   const VAULT_DIR = resolveVaultDir();
   if (!fs.existsSync(path.join(VAULT_DIR, 'myco.yaml'))) return;
 
+  let symbiont: string | undefined;
   try {
-    const rawInput = JSON.parse(await readStdin());
-    const input = normalizeHookInput(rawInput);
+    const input = await readHookInput();
+    symbiont = input.agent;
     const rawPrompt = input.prompt ?? '';
     const sessionId = input.sessionId;
+    if (!sessionId) return;
 
-    // Apply generic capture rules owned by each symbiont's manifest.
-    // The hook stays symbiont-agnostic — per-agent behavior lives in YAML.
-    // Pass structural context so rules can key on things like
-    // `transcript_path_missing` without doing their own text mining.
     const transcriptMeta = input.transcriptPath ? readTranscriptMeta(input.transcriptPath) : undefined;
-    const decision = evaluateUserPromptRules(loadManifests(), input.agent, {
+    const decision = evaluateUserPromptRules(input.agent, {
       prompt: rawPrompt,
       transcriptPath: input.transcriptPath,
       transcriptMeta: transcriptMeta ?? undefined,
     });
 
     const client = new DaemonClient(VAULT_DIR);
-    // Spawn daemon if needed but don't block on full health check backoff.
-    // The event POST will fail fast if daemon isn't ready — buffer absorbs it.
+    // Spawn without awaiting full health backoff; POST failure falls through to buffer.
     if (!(await client.isHealthy())) {
       client.spawnDaemon();
     }
 
     if (decision.action === 'drop') {
-      // A rule classified this prompt as a phantom sub-invocation (e.g., an
-      // agent's internal title-generation call). SessionStart already
-      // registered the session row; delete it so it doesn't linger as a
-      // zero-prompt ghost in the UI. Silently tolerate failures — the
-      // session-maintenance sweep will clean up stragglers within the
-      // stale threshold as a safety net.
+      // Drop rule fired — cascade-delete the session row SessionStart registered.
+      // Session-maintenance sweep catches any stragglers if this request fails.
       process.stderr.write(`[myco] user-prompt-submit: dropped (${decision.reason ?? 'rule'})\n`);
       await client.delete(`/api/sessions/${sessionId}`);
+      writeHookResponse(symbiont, 'user-prompt-submit');
       return;
     }
 
@@ -55,48 +47,36 @@ export async function main() {
       process.stderr.write(`[myco] user-prompt-submit: rewritten (${decision.reason ?? 'rule'})\n`);
     }
 
-    // Classify the prompt kind by inspecting the transcript tail.
-    const kind = classifyPromptKind({
-      agent: input.agent,
-      transcriptPath: input.transcriptPath,
-      prompt,
-    });
-
-    // Forward prompt as event for capture
+    // Kind classification happens on the daemon; Stop-time reconciler repairs it.
     const eventResult = await client.post('/events', {
       type: 'user_prompt',
       prompt,
       session_id: sessionId,
       agent: input.agent,
       transcript_path: input.transcriptPath,
-      kind,
     });
 
-    // Buffer on transport failure OR server-side drop (200 with `ignored`).
-    // A server-side drop means a capture rule discarded the event; buffering
-    // it lets reconcileBufferBatches recover the prompt once the rule is fixed.
+    // Buffer on transport failure OR server-side `ignored` so the event is
+    // recoverable by reconcileBufferBatches on the next daemon start.
     if (!eventResult.ok || isIgnoredEventResponse(eventResult.data)) {
       const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
-      buffer.append({ type: 'user_prompt', prompt, transcript_path: input.transcriptPath, kind });
+      buffer.append({ type: 'user_prompt', prompt, transcript_path: input.transcriptPath });
     }
 
-    // Search for relevant spores to inject as context for this prompt.
-    // The daemon does a vector search against the prompt text and returns
-    // any high-relevance spores. This is fast (~20ms) — no LLM call.
     const contextResult = await client.post('/context/prompt', {
       prompt,
       session_id: sessionId,
     });
 
-    // Always include the session ID so the agent can pass it to myco_remember.
-    // Uses Session:: format consistent with daemon context injection (Branch::, Session::).
+    // `Session::` line matches daemon context injection format (Branch::, Session::).
     const sessionLine = `Session:: \`${sessionId}\``;
     const contextText = contextResult.ok && contextResult.data?.text
       ? `${contextResult.data.text}\n${sessionLine}`
       : sessionLine;
 
-    process.stdout.write(contextText);
+    writeHookResponse(symbiont, 'user-prompt-submit', { additionalContext: contextText });
   } catch (error) {
     process.stderr.write(`[myco] user-prompt-submit error: ${(error as Error).message}\n`);
+    writeHookResponse(symbiont, 'user-prompt-submit');
   }
 }

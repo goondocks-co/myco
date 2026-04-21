@@ -9,7 +9,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { listBufferSessionIds, cleanStaleBuffers } from '@myco/capture/buffer.js';
-import { listBatchesBySession } from '@myco/db/queries/batches.js';
+import {
+  listBatchesBySession,
+  getLatestBatch,
+  setResponseSummary,
+} from '@myco/db/queries/batches.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import { STALE_BUFFER_MAX_AGE_MS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -21,7 +25,16 @@ import { isSystemMessage, handleUserPrompt, handleToolUse, handleToolFailure } f
 // ---------------------------------------------------------------------------
 
 /** Event types replayed during buffer reconciliation. */
-const REPLAYABLE_EVENT_TYPES: ReadonlySet<string> = new Set(['user_prompt', 'tool_use', 'tool_failure']);
+const REPLAYABLE_EVENT_TYPES: ReadonlySet<string> = new Set([
+  'user_prompt',
+  'tool_use',
+  'tool_failure',
+  // `stop` events carry the last assistant message and need to survive daemon
+  // downtime so response_summary isn't lost when the TUI fires idle during a
+  // restart window. Replay sets the summary on the session's latest batch
+  // without re-running full stop processing (which already ran live).
+  'stop',
+]);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -90,6 +103,17 @@ export function createReconciler({ bufferDir, logger }: ReconcilerDeps): Reconci
       );
       return 'activity';
     }
+    if (event.type === 'stop') {
+      const summary = typeof event.last_assistant_message === 'string'
+        ? event.last_assistant_message.trim()
+        : '';
+      if (!summary) return null;
+      const latest = getLatestBatch(sessionId);
+      if (latest && !latest.response_summary) {
+        setResponseSummary(latest.id, summary);
+        return 'activity';
+      }
+    }
     return null;
   }
 
@@ -131,6 +155,23 @@ export function createReconciler({ bufferDir, logger }: ReconcilerDeps): Reconci
 
     const allEvents: Array<Record<string, unknown>> = content.split('\n').map((line) => JSON.parse(line));
 
+    // Stop events can be dropped independently of prompt divergence — the
+    // daemon can accept a prompt live, then go down before that turn's stop
+    // arrives. Apply any buffered stops first; it's cheap and idempotent
+    // (setResponseSummary only writes when the column is still NULL).
+    let summariesRecovered = 0;
+    for (const event of allEvents) {
+      if (event.type !== 'stop') continue;
+      try {
+        if (replayEvent(sessionId, event) === 'activity') summariesRecovered++;
+      } catch (err) {
+        logger.warn(LOG_KINDS.LIFECYCLE_RECONCILE, 'Reconciliation: stop replay failed', {
+          session_id: sessionId,
+          error: String(err),
+        });
+      }
+    }
+
     // Find the divergence point: how many real prompts does the DB have?
     const existingBatchCount = listBatchesBySession(sessionId).length;
 
@@ -148,7 +189,15 @@ export function createReconciler({ bufferDir, logger }: ReconcilerDeps): Reconci
       }
     }
 
-    if (replayStartIndex === -1) return;
+    if (replayStartIndex === -1) {
+      if (summariesRecovered > 0) {
+        logger.info(LOG_KINDS.LIFECYCLE_RECONCILE, 'Buffer reconciliation recovered stop summaries', {
+          session_id: sessionId,
+          summaries_recovered: summariesRecovered,
+        });
+      }
+      return;
+    }
 
     // Replay full event stream from the divergence point
     const eventsToReplay = allEvents.slice(replayStartIndex).filter(

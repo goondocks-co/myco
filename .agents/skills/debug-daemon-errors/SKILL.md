@@ -57,7 +57,7 @@ Map your log output to one of these categories. If you're unsure, search the dae
 
 ```bash
 # Find where a log line originates
-grep -rn "your log text here" src/daemon/
+grep -rn "your log text here" packages/myco/src/daemon/
 ```
 
 ---
@@ -79,7 +79,7 @@ scheduler.wake(); // <-- ensure this exists in every insert path
 
 Search for all places that insert into the work/job table and confirm each one wakes the scheduler:
 ```bash
-grep -rn "insert.*work\|insert.*job\|insert.*task" src/daemon/ --include="*.ts"
+grep -rn "insert.*work\|insert.*job\|insert.*task" packages/myco/src/daemon/ --include="*.ts"
 ```
 
 ---
@@ -113,7 +113,7 @@ If the outbox drain processes a record, marks it as sent, but then the same reco
 
 **Trace:** Add a temporary log before the status update to confirm whether the record is being re-inserted or re-flagged:
 ```bash
-grep -rn "approved_at\|outbox.*status\|drain.*update" src/daemon/ --include="*.ts"
+grep -rn "approved_at\|outbox.*status\|drain.*update" packages/myco/src/daemon/ --include="*.ts"
 ```
 
 **Fix pattern:** Guard the status transition so it only applies on first promotion:
@@ -136,7 +136,7 @@ If a second session is created for the same conversation, look for a code path t
 
 **Trace:** Search for all session creation sites:
 ```bash
-grep -rn "createSession\|insertSession\|sessions.*insert" src/daemon/ --include="*.ts"
+grep -rn "createSession\|insertSession\|sessions.*insert" packages/myco/src/daemon/ --include="*.ts"
 ```
 
 For each creation site, check whether it guards against duplicates:
@@ -217,9 +217,9 @@ This failure mode has two independent compounding bugs (spore `1cf8bbc9`):
 
 2. **Missing `status != 'active'` filter** — `findDeadSessionIds()` ran against ALL sessions regardless of status. An active, in-progress session with few prompts could be selected. The filter must exclude any session where `status = 'active'`.
 
-**Trace:** Check `src/daemon/jobs/session-maintenance.ts` (or equivalent) for both issues:
+**Trace:** Check `packages/myco/src/daemon/jobs/session-maintenance.ts` (or equivalent) for both issues:
 ```bash
-grep -rn "DEAD_SESSION_MAX_PROMPTS\|findDeadSessionIds\|status.*active" src/daemon/ --include="*.ts"
+grep -rn "DEAD_SESSION_MAX_PROMPTS\|findDeadSessionIds\|status.*active" packages/myco/src/daemon/ --include="*.ts"
 ```
 
 **Fix pattern:**
@@ -268,7 +268,7 @@ If a task shows a misleading error like *"Claude Code process aborted by user"* 
 
 **Trace:** Check the executor's phase runner and task orchestrator for timeout handling:
 ```bash
-grep -rn "phaseTimeoutSeconds\|taskMaxDurationSeconds\|AbortController\|phase.*transition" src/daemon/executor/ --include="*.ts"
+grep -rn "phaseTimeoutSeconds\|taskMaxDurationSeconds\|AbortController\|phase.*transition" packages/myco/src/agent/ --include="*.ts"
 ```
 
 Look for:
@@ -329,7 +329,7 @@ If an executor task transitions to a terminal status (`complete`, `failed`) with
 
 **Trace:** Find the executor's task runner loop and look for broad `try/catch` blocks that swallow errors:
 ```bash
-grep -rn "catch\|status.*complete\|status.*failed" src/daemon/executor/ --include="*.ts"
+grep -rn "catch\|status.*complete\|status.*failed" packages/myco/src/agent/ --include="*.ts"
 ```
 
 **Fix pattern:** Distinguish between expected task completion and unexpected errors. Never record `complete` inside a `catch` block unless you're explicitly handling a known-recoverable error:
@@ -352,7 +352,7 @@ try {
 Before applying the fix, write a test that fails with the current code. This confirms you've correctly identified the root cause and gives you a green signal to trust after the fix.
 
 Tests for daemon subsystems live in:
-- `src/daemon/__tests__/` — unit tests for individual subsystem functions
+- `tests/daemon/` — unit tests for individual subsystem functions
 - `tests/integration/` — integration tests that spin up the daemon
 
 Write the smallest test that reproduces the failure. For FK violations, this is usually an in-memory SQLite test. For scheduler starvation, mock the wake signal and assert it's called.

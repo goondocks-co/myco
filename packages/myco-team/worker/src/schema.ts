@@ -258,7 +258,7 @@ const TEAM_CONFIG_TABLE = `
     value  TEXT NOT NULL
   )`;
 
-const SECONDARY_INDEXES = [
+const BASE_SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions (status)',
   'CREATE INDEX IF NOT EXISTS idx_sessions_content_hash ON sessions (content_hash)',
   'CREATE INDEX IF NOT EXISTS idx_spores_status ON spores (status)',
@@ -272,6 +272,10 @@ const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_skill_records_status ON skill_records (status)',
   'CREATE INDEX IF NOT EXISTS idx_skill_records_name ON skill_records (name, machine_id)',
   'CREATE INDEX IF NOT EXISTS idx_skill_usage_skill_id ON skill_usage (skill_id)',
+];
+
+const POST_MIGRATION_INDEXES = [
+  'CREATE INDEX IF NOT EXISTS idx_plans_logical_key ON plans (logical_key)',
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_parent ON prompt_batches (parent_prompt_batch_id)',
 ];
 
@@ -298,7 +302,7 @@ const ALL_DDLS = [
  * Includes ALTER TABLE migrations for columns added after initial deployment.
  */
 export async function initD1Schema(db: D1Database): Promise<void> {
-  const statements = [...ALL_DDLS, ...SECONDARY_INDEXES];
+  const statements = [...ALL_DDLS, ...BASE_SECONDARY_INDEXES];
   const batch = statements.map((sql) => db.prepare(sql));
   await db.batch(batch);
 
@@ -319,9 +323,9 @@ export async function initD1Schema(db: D1Database): Promise<void> {
     }
   }
 
-  await db.prepare(
-    'CREATE INDEX IF NOT EXISTS idx_plans_logical_key ON plans (logical_key)',
-  ).run();
+  for (const sql of POST_MIGRATION_INDEXES) {
+    await db.prepare(sql).run();
+  }
 
   // Backfill approved_at for already-synced historical rows so remote D1
   // mirrors the local SQLite v10 migration semantics. Idempotent via the

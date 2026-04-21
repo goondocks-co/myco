@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { DAEMON_CLIENT_TIMEOUT_MS, DAEMON_HEALTH_CHECK_TIMEOUT_MS, DAEMON_HEALTH_RETRY_DELAYS, DAEMON_STALE_GRACE_PERIOD_MS } from '../constants.js';
+import { DAEMON_CLIENT_TIMEOUT_MS, DAEMON_HEALTH_CHECK_TIMEOUT_MS, DAEMON_HEALTH_RETRY_DELAYS, DAEMON_SPAWN_COALESCE_MS, DAEMON_STALE_GRACE_PERIOD_MS } from '../constants.js';
 import { getPluginVersion } from '../version.js';
 
 interface DaemonInfo {
@@ -62,7 +62,7 @@ export class DaemonClient {
     this.vaultDir = vaultDir;
   }
 
-  async post(endpoint: string, body: unknown): Promise<ClientResult> {
+  async post(endpoint: string, body: unknown, options?: { timeoutMs?: number }): Promise<ClientResult> {
     try {
       const info = this.readDaemonJson();
       if (!info) return { ok: false };
@@ -71,7 +71,7 @@ export class DaemonClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
+        signal: AbortSignal.timeout(options?.timeoutMs ?? DAEMON_CLIENT_TIMEOUT_MS),
       });
 
       if (!res.ok) return { ok: false, data: await parseErrorBody(res) };
@@ -231,12 +231,33 @@ export class DaemonClient {
   }
 
   spawnDaemon(): void {
+    // Coalesce concurrent spawns: if daemon.json was written within the
+    // coalesce window AND its pid is still alive, another spawn is already in
+    // flight — defer to it instead of forking another process. The daemon's
+    // own step-aside guard backs this up, but collapsing the spawn here
+    // avoids the wasted fork + log noise in the common case.
+    if (this.spawnIsInFlight()) return;
+
     const { execPath, cliEntry } = resolveCliEntryPath();
     const child = spawn(execPath, [cliEntry, 'daemon', '--vault', this.vaultDir], {
       detached: true,
       stdio: 'ignore',
     });
     child.unref();
+  }
+
+  private spawnIsInFlight(): boolean {
+    try {
+      const jsonPath = path.join(this.vaultDir, 'daemon.json');
+      const stat = fs.statSync(jsonPath);
+      if (Date.now() - stat.mtimeMs >= DAEMON_SPAWN_COALESCE_MS) return false;
+      const info = this.readDaemonJson();
+      if (!info?.pid) return false;
+      try { process.kill(info.pid, 0); return true; }
+      catch { return false; }
+    } catch {
+      return false;
+    }
   }
 
   private readDaemonJson(): DaemonInfo | null {

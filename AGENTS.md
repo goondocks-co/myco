@@ -42,7 +42,7 @@ Myco captures project memory in a local vault and serves it back through context
 - Keep code DRY. Extract helpers or shared patterns when they remove real duplication.
 - Preserve clear domain ownership. Do not blur module boundaries without a reason.
 - Avoid magic literals for meaningful values. Use named constants or an existing shared pattern.
-- Keep comments lean. Add comments only when they clarify non-obvious code; do not use comments to preserve task history, PR context, or conversational state.
+- Keep comments lean. Add comments only when they clarify non-obvious code; DO NOT use comments to preserve task history, decisions, PR context, or conversational state.
 - Prefer explicit configuration and user choice over heuristic detection when both are viable.
 - When in doubt, ask whether the rule belongs here or should live in Myco context instead.
 

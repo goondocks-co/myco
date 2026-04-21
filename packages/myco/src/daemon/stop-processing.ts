@@ -22,6 +22,7 @@ import {
 } from './plan-capture.js';
 import {
   getLatestBatch,
+  getBatchById,
   setResponseSummary,
   populateBatchResponses,
   closeOpenBatches,
@@ -197,6 +198,22 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     return true;
   }
 
+  /**
+   * Walk parent pointers up to the first non-steering batch so the response
+   * summary lands on the turn's owning prompt card. Steering children never
+   * themselves become parents (see handleUserPrompt), so a single hop is the
+   * expected depth; the loop survives an unexpected multi-hop chain anyway.
+   */
+  function findOwningParent(child: BatchRow): BatchRow | null {
+    let current: BatchRow | null = child;
+    while (current?.parent_prompt_batch_id != null) {
+      const parent = getBatchById(current.parent_prompt_batch_id);
+      if (!parent || parent.id === current.id) break;
+      current = parent;
+    }
+    return current;
+  }
+
   async function processStopEvent(
     sessionId: string,
     user: string | undefined,
@@ -272,11 +289,28 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // Get the latest batch BEFORE closing — this is the batch for the current turn.
     const latestBatch = getLatestBatch(sessionId);
 
-    // Primary capture: put last_assistant_message directly on the latest batch.
-    // No positional mapping needed — the hook gives us the response directly.
-    if (lastAssistantMessage && latestBatch && !latestBatch.response_summary) {
-      try { setResponseSummary(latestBatch.id, lastAssistantMessage); }
-      catch (err) { logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to set response_summary on latest batch', { error: String(err) }); }
+    // Primary capture: put last_assistant_message on the TURN'S batch, not
+    // just the most recently inserted one. When a steering child nests under
+    // its parent, both batches belong to the same turn — there's only one
+    // combined assistant response, and it belongs on the parent so the UI's
+    // parent card renders it. The steering child's summary stays null
+    // (steering children never carry a response of their own).
+    // Fall back to the last parsed turn's aiResponse when the symbiont's stop
+    // payload omits `last_assistant_message` (e.g., Cursor), or when only the
+    // transcript carries the final text. Covers Cursor's per-turn transcript
+    // model, where the file is rewritten each turn and only contains the
+    // current one — we always want that single turn's response on the latest
+    // batch, regardless of prompt_number alignment.
+    const latestTurnResponse = allTurns.length > 0 ? allTurns[allTurns.length - 1]?.aiResponse : undefined;
+    const resolvedResponse = lastAssistantMessage || latestTurnResponse;
+    if (resolvedResponse && latestBatch && !latestBatch.response_summary) {
+      const summaryTarget = latestBatch.parent_prompt_batch_id
+        ? findOwningParent(latestBatch)
+        : latestBatch;
+      if (summaryTarget && !summaryTarget.response_summary) {
+        try { setResponseSummary(summaryTarget.id, resolvedResponse); }
+        catch (err) { logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to set response_summary on latest batch', { error: String(err) }); }
+      }
     }
 
     // Close open batches but do NOT close the session — the Stop hook fires
@@ -346,18 +380,15 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       }
     }
 
-    // Enhanced capture: populate response_summary on earlier batches from transcript.
-    // Maps by batch insertion order (id ASC) to transcript turn position.
-    // This is best-effort — the parser may skip empty-text turns, causing misalignment.
-    // The primary capture (above) handles the current turn reliably.
-    const responses: Array<{ turnIndex: number; response: string }> = [];
-    for (let i = 0; i < allTurns.length; i++) {
-      if (allTurns[i].aiResponse) {
-        responses.push({ turnIndex: i + 1, response: allTurns[i].aiResponse! });
-      }
-    }
-    if (responses.length > 0) {
-      try { populateBatchResponses(sessionId, responses); }
+    // Match transcript turns to batches by prompt-text prefix so earlier
+    // batches get their response_summary filled even when the transcript's
+    // turn order doesn't align with batch insertion order (Cursor starts its
+    // transcript mid-session, daemon restarts renumber prompts, etc.).
+    const transcriptResponses = allTurns
+      .filter((t) => t.prompt && t.aiResponse)
+      .map((t) => ({ prompt: t.prompt, response: t.aiResponse! }));
+    if (transcriptResponses.length > 0) {
+      try { populateBatchResponses(sessionId, transcriptResponses); }
       catch (err) { logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to populate batch responses', { error: String(err) }); }
     }
 

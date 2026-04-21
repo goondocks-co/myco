@@ -92,6 +92,29 @@ const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
 /** `hooksFormat` value selecting verbatim plugin-file install over JSON merge. */
 const HOOKS_FORMAT_PLUGIN_FILE = 'plugin-file';
 
+/**
+ * Marker pair delimiting the shared-helpers block inside plugin-file templates
+ * (e.g., opencode and pi plugins). At install time the region between these
+ * markers is replaced with the canonical snippet content from
+ * `_shared/plugin-helpers.ts.snippet`. The on-disk template files also carry
+ * an inline copy so they stay valid TypeScript for Vitest imports — a
+ * dedicated test enforces the inline copy matches the snippet.
+ */
+const PLUGIN_SHARED_HELPERS_START = '// <myco:shared-helpers>';
+const PLUGIN_SHARED_HELPERS_END = '// </myco:shared-helpers>';
+
+/** Relative path (from TEMPLATES_SUBDIR) to the shared-helpers snippet. */
+const PLUGIN_SHARED_HELPERS_SNIPPET = '_shared/plugin-helpers.ts.snippet';
+
+/**
+ * Placeholder substituted into cursor's hooks.json `command` fields at install
+ * time. Keeping the cd-to-project-root prefix in one place avoids the nine-way
+ * duplication the template used to carry — a single edit here updates every hook.
+ */
+const CURSOR_PROJECT_ROOT_PLACEHOLDER = '{{projectRootCd}}';
+const CURSOR_PROJECT_ROOT_CD =
+  'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo ${CURSOR_PROJECT_DIR:-.})"';
+
 /** Marker text used to identify unmodified instruction stubs. */
 const INSTRUCTIONS_STUB_MARKER = 'Edit AGENTS.md, not this file';
 
@@ -473,7 +496,10 @@ export class SymbiontInstaller {
     let hooks = false, mcp = false, settings = false;
 
     // Apply hooks transform
-    const hooksTemplate = reg.hooksTarget ? this.loadTemplate('hooks') : null;
+    const rawHooksTemplate = reg.hooksTarget ? this.loadTemplate('hooks') : null;
+    const hooksTemplate = rawHooksTemplate
+      ? this.resolveHookTemplatePlaceholders(rawHooksTemplate)
+      : null;
     if (hooksTemplate) {
       const existingHooks = (data.hooks ?? {}) as Record<string, unknown[]>;
       const mergedHooks: Record<string, unknown[]> = {};
@@ -818,8 +844,9 @@ export class SymbiontInstaller {
 
     if (reg.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE) return this.installPluginHookFile();
 
-    const template = this.loadTemplate('hooks');
-    if (!template) return false;
+    const rawTemplate = this.loadTemplate('hooks');
+    if (!rawTemplate) return false;
+    const template = this.resolveHookTemplatePlaceholders(rawTemplate);
 
     const targetPath = path.join(this.projectRoot, reg.hooksTarget);
     const settings = readJsonFile(targetPath);
@@ -844,8 +871,40 @@ export class SymbiontInstaller {
     }
 
     settings.hooks = mergedHooks;
+    if (reg.hooksConfigVersion !== undefined) {
+      settings.version = reg.hooksConfigVersion;
+    }
     writeJsonFile(targetPath, settings);
     return true;
+  }
+
+  /**
+   * Walk a JSON hooks template and substitute the cursor-style project-root
+   * `cd` prefix placeholder. Only cursor emits this placeholder today, but
+   * the substitution is generic so future symbionts can opt in by using
+   * `{{projectRootCd}}` at the head of any command string.
+   *
+   * Returns a new object — never mutates the input.
+   */
+  private resolveHookTemplatePlaceholders(
+    template: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const substitute = (value: unknown): unknown => {
+      if (typeof value === 'string') {
+        return value.includes(CURSOR_PROJECT_ROOT_PLACEHOLDER)
+          ? value.split(CURSOR_PROJECT_ROOT_PLACEHOLDER).join(CURSOR_PROJECT_ROOT_CD)
+          : value;
+      }
+      if (Array.isArray(value)) return value.map(substitute);
+      if (value && typeof value === 'object') {
+        return Object.fromEntries(
+          Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, substitute(v)]),
+        );
+      }
+      return value;
+    };
+
+    return substitute(template) as Record<string, unknown>;
   }
 
   /**
@@ -860,10 +919,44 @@ export class SymbiontInstaller {
     const templateContent = this.loadTemplateRaw('plugin.ts');
     if (templateContent === null) return false;
 
+    const resolved = this.injectSharedPluginHelpers(templateContent);
+
     return this.writeManagedFile(
       path.join(this.projectRoot, reg.hooksTarget),
-      templateContent,
+      resolved,
     );
+  }
+
+  /**
+   * Replace the `<myco:shared-helpers>` block in a plugin template with the
+   * canonical snippet content. When either the snippet or the markers are
+   * missing, return the input unchanged — plugin templates that don't use
+   * the shared-helpers pattern (future agents, older installs in flight)
+   * stay valid without needing to opt in.
+   */
+  private injectSharedPluginHelpers(templateContent: string): string {
+    const startIdx = templateContent.indexOf(PLUGIN_SHARED_HELPERS_START);
+    if (startIdx === -1) return templateContent;
+    const endIdx = templateContent.indexOf(PLUGIN_SHARED_HELPERS_END, startIdx);
+    if (endIdx === -1) return templateContent;
+
+    const snippet = this.readTemplateFile(PLUGIN_SHARED_HELPERS_SNIPPET);
+    if (snippet === null) return templateContent;
+
+    // Walk forward to the newline that ends the end-marker line so the
+    // replacement slots in cleanly between whole lines.
+    const endLine = templateContent.indexOf('\n', endIdx);
+    const afterEnd = endLine === -1 ? templateContent.length : endLine;
+
+    // Snippet is authored without surrounding markers — wrap it so the
+    // installed file retains the same self-describing boundary contributors
+    // use to navigate the source.
+    const replacement =
+      `${PLUGIN_SHARED_HELPERS_START}\n` +
+      `${snippet.trimEnd()}\n` +
+      `${PLUGIN_SHARED_HELPERS_END}`;
+
+    return templateContent.slice(0, startIdx) + replacement + templateContent.slice(afterEnd);
   }
 
   /**

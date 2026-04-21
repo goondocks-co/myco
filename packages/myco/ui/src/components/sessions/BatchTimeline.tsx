@@ -261,16 +261,20 @@ export function BatchTimeline({ sessionId }: BatchTimelineProps) {
         arr.push(a);
         byBatchId.set(a.prompt_batch_id, arr);
       }
-      const match = a.file_path?.match(/-t(\d+)-/);
-      if (match?.[1]) {
-        const turn = parseInt(match[1]);
-        const arr = byTurnNumber.get(turn) ?? [];
+      if (a.turn_number != null) {
+        const arr = byTurnNumber.get(a.turn_number) ?? [];
         arr.push(a);
-        byTurnNumber.set(turn, arr);
+        byTurnNumber.set(a.turn_number, arr);
       }
     }
     return { byBatchId, byTurnNumber };
   }, [allAttachments]);
+
+  // Sort by started_at ascending — prompt_number resets across daemon restarts.
+  const groups = useMemo(() => {
+    const sorted = [...(batches ?? [])].sort((a, b) => (a.started_at ?? 0) - (b.started_at ?? 0));
+    return groupBatches(sorted);
+  }, [batches]);
 
   if (batchesLoading) {
     return (
@@ -282,10 +286,7 @@ export function BatchTimeline({ sessionId }: BatchTimelineProps) {
     );
   }
 
-  // Sort by started_at ascending (chronological) — prompt_number can reset across daemon restarts
-  const batchList = [...(batches ?? [])].sort((a, b) => (a.started_at ?? 0) - (b.started_at ?? 0));
-
-  if (batchList.length === 0) {
+  if (groups.length === 0) {
     return (
       <div className="flex h-40 flex-col items-center justify-center gap-2 text-on-surface-variant">
         <MessageSquare className="h-8 w-8 opacity-30" />
@@ -293,8 +294,6 @@ export function BatchTimeline({ sessionId }: BatchTimelineProps) {
       </div>
     );
   }
-
-  const groups = groupBatches(batchList);
 
   return (
     <div>

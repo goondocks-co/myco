@@ -4,24 +4,14 @@ import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { loadConfig, getEnabledSymbiontNames } from '../config/loader.js';
 import { getPluginVersion } from '../version.js';
 import { UPDATE_STAMP_FILENAME } from '../constants/update.js';
-import { connectToDaemon } from './shared.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import semver from 'semver';
 
-const VECTOR_METADATA_REBUILD_VERSION = '0.21.1';
-
-function shouldTriggerEmbeddingRebuild(previousVersion: string | null, currentVersion: string): boolean {
-  if (!semver.valid(currentVersion) || semver.lt(currentVersion, VECTOR_METADATA_REBUILD_VERSION)) {
-    return false;
-  }
-  if (!previousVersion || !semver.valid(previousVersion)) {
-    return true;
-  }
-  return semver.lt(previousVersion, VECTOR_METADATA_REBUILD_VERSION);
-}
-
-// `myco update` is also the migration path for refreshing managed AGENTS.md content.
+// `myco update` regenerates managed config — .gitignore, symbiont hooks,
+// MCP entries, skills, settings. It does NOT trigger data migrations:
+// runtime migrations (vector reindex, etc.) are owned by the daemon and
+// gated by the `migration_tasks` ledger so they run exactly once per
+// vault regardless of update invocations.
 
 export async function run(args: string[]): Promise<void> {
   let projectRoot: string | undefined;
@@ -41,11 +31,7 @@ export async function run(args: string[]): Promise<void> {
   console.log(`Updating Myco vault at ${vaultDir}\n`);
 
   const stampPath = path.join(vaultDir, UPDATE_STAMP_FILENAME);
-  const previousVersion = fs.existsSync(stampPath)
-    ? fs.readFileSync(stampPath, 'utf-8').trim() || null
-    : null;
   const currentVersion = getPluginVersion();
-  const needsEmbeddingRebuild = shouldTriggerEmbeddingRebuild(previousVersion, currentVersion);
 
   let updatedCount = 0;
 
@@ -99,31 +85,12 @@ export async function run(args: string[]): Promise<void> {
     console.log('  \u2013 No configured agents found');
   }
 
-  let rebuildTriggeredSuccessfully = !needsEmbeddingRebuild;
-  if (needsEmbeddingRebuild) {
-    try {
-      const client = await connectToDaemon(vaultDir);
-      const response = await client.post('/embedding/rebuild', {});
-      if (response.ok) {
-        const data = response.data as { embedded?: number; remaining_queue_depth?: number } | undefined;
-        console.log(`  ✓ Triggered embedding rebuild for vector metadata refresh${data ? ` (${data.embedded ?? 0} embedded now, ${data.remaining_queue_depth ?? 0} remaining)` : ''}`);
-        updatedCount++;
-        rebuildTriggeredSuccessfully = true;
-      } else {
-        console.log('  !! Failed to trigger embedding rebuild after update');
-      }
-    } catch (error) {
-      console.log(`  !! Failed to trigger embedding rebuild after update: ${(error as Error).message}`);
-    }
-  }
-
   // --- Write version stamp ---
-  if (rebuildTriggeredSuccessfully) {
-    try {
-      fs.writeFileSync(stampPath, currentVersion, 'utf-8');
-    } catch {
-      // Non-fatal — stamp write failure shouldn't break the update
-    }
+  // Informational marker of the last-updated version; not a migration gate.
+  try {
+    fs.writeFileSync(stampPath, currentVersion, 'utf-8');
+  } catch {
+    // Non-fatal — stamp write failure shouldn't break the update
   }
 
   // --- Summary ---

@@ -110,4 +110,24 @@ describe('initD1Schema', () => {
       expect(pruneBatch, 'prune batch should not run when marker is already set').toBeUndefined();
     });
   });
+
+  it('defers parent_prompt_batch index creation until after prompt_batches migrations', async () => {
+    const fake = createFakeD1();
+
+    await initD1Schema(fake.db as never);
+
+    expect(fake.batchedSql).not.toContain(
+      'CREATE INDEX IF NOT EXISTS idx_prompt_batches_parent ON prompt_batches (parent_prompt_batch_id)',
+    );
+
+    const migrationIndex = fake.runs.findIndex(
+      (run) => run.sql === 'ALTER TABLE prompt_batches ADD COLUMN parent_prompt_batch_id INTEGER',
+    );
+    const postMigrationIndex = fake.runs.findIndex(
+      (run) => run.sql === 'CREATE INDEX IF NOT EXISTS idx_prompt_batches_parent ON prompt_batches (parent_prompt_batch_id)',
+    );
+
+    expect(migrationIndex).toBeGreaterThanOrEqual(0);
+    expect(postMigrationIndex).toBeGreaterThan(migrationIndex);
+  });
 });

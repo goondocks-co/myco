@@ -106,6 +106,18 @@ capture:
       action: drop
       reason: noninteractive-exec
 
+    # Codex injects AGENTS.md + the Myco cortex session context as the
+    # first `response_item/message/user` in every rollout. Structurally
+    # identical to a real user prompt, so we filter by the prefix the
+    # injection always carries. This rule runs at both hook time and
+    # transcript-mining time via the shared evaluateUserPromptRules path.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "# AGENTS.md instructions"
+      action: drop
+      reason: agents-md-context-injection
+
     # Codex Desktop wraps user prompts with a file-mention preamble when
     # screenshots or files are attached:
     #   "# Files mentioned by the user:\n## <filename>: <path>\n## My request for Codex:\n<actual prompt>"
@@ -123,6 +135,24 @@ capture:
     # Keying on the shared `## My request for Codex:` marker above
     # should handle both Desktop and VS Code variants. If the VS Code
     # preamble diverges, add a separate rule keyed on its specific marker.
+  prompts:
+    shapes:
+      - name: user_message
+        match:
+          type: response_item
+          fieldEquals:
+            payload.type: message
+            payload.role: user
+        textAt: payload.content[0].text
+    resetBoundaries:
+      # Codex emits `turn_context` events whenever the agent enters a new
+      # turn. Reset only fires when `payload.turn_id` changes from the
+      # previously-seen value — consecutive `turn_context` events that
+      # share a turn_id are the same turn, not a boundary.
+      - match:
+          type: turn_context
+        changeOn: payload.turn_id
+    interruptMarker: "<turn_aborted>"
 registration:
   hooksTarget: .codex/hooks.json
   mcpTarget: .codex/config.toml

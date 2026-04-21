@@ -1,4 +1,4 @@
-.PHONY: build build-fast build-only check check-fast test test-fast test-integration lint clean watch install dev-link dev-unlink ui-dev collective-ui-dev daemon-dev dev
+.PHONY: build build-fast build-only build-rebuild rebuild check check-fast test test-fast test-integration lint clean watch install dev-link dev-unlink ui-dev collective-ui-dev daemon-dev dev
 
 build:
 	$(MAKE) -j2 check
@@ -10,6 +10,16 @@ build-fast:
 
 build-only:
 	npm run build
+
+# Force-rebuild native modules (better-sqlite3, esbuild, etc.) before running
+# the full quality gate. Use this after switching branches when `make build`
+# segfaults — the compiled `.node` binaries in `node_modules` go stale across
+# branches with different Node versions or native-dep versions, and the
+# concurrent `-j2 check` step races them into a crash.
+build-rebuild: rebuild build
+
+rebuild:
+	npm rebuild
 
 check: lint test
 
@@ -102,12 +112,17 @@ dev-link:
 	@ln -sf $(PWD)/packages/myco/bin/myco-run $(HOME)/.local/bin/myco-run
 	@chmod +x $(HOME)/.local/bin/myco-run
 	@mkdir -p .myco
-	@printf 'myco-dev\n' > .myco/runtime.command
+	@# Write the absolute path of the dev binary so the hook guard can
+	@# exec it directly without a PATH lookup. GUI-launched agents run
+	@# under launchd's minimal PATH which excludes ~/.local/bin; baking
+	@# the absolute path at link time makes hook capture robust under
+	@# both GUI and shell launches.
+	@printf '%s/.local/bin/myco-dev\n' "$(HOME)" > .myco/runtime.command
 	@echo "✓ myco-dev symlinked to $(PWD)/packages/myco/dist/src/cli.js"
 	@echo "✓ myco-team-dev symlinked to $(PWD)/packages/myco-team/dist/main.js"
 	@echo "✓ myco-collective-dev symlinked to $(PWD)/packages/myco-collective/dist/main.js"
 	@echo "✓ myco-run symlinked to $(PWD)/packages/myco/bin/myco-run"
-	@echo "✓ .myco/runtime.command set to myco-dev"
+	@echo "✓ .myco/runtime.command set to $(HOME)/.local/bin/myco-dev"
 	@echo "  (the hook guard at .agents/myco-run.cjs reads this file)"
 	@# Regenerate symbiont configs so any that opt into
 	@# `substituteRuntimeCommand` (opencode today) get the runtime.command

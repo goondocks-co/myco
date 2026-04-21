@@ -21,6 +21,7 @@ import {
   DIGEST_EXTRACT_REVISIONS_TABLE,
   AGENT_RUN_EVALUATIONS_TABLE,
   CORTEX_INSTRUCTIONS_TABLE,
+  MIGRATION_TASKS_TABLE,
 } from './schema-ddl.js';
 import {
   buildPlanId,
@@ -58,6 +59,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 20, migrate: (db, machineId) => migrateV19ToV20(db, machineId) },
   { version: 21, migrate: (db) => migrateV20ToV21(db) },
   { version: 22, migrate: (db) => migrateV21ToV22(db) },
+  { version: 23, migrate: (db) => migrateV22ToV23(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1266,49 +1268,16 @@ function migrateV21ToV22(db: Database): void {
         `CREATE INDEX IF NOT EXISTS idx_prompt_batches_parent ON prompt_batches (parent_prompt_batch_id)`,
       ).run();
 
-      // OpenCode historical backfill: re-parent orphan steering-style batches.
-      // Only runs if the sessions table has an `agent` column. Scoped to sessions
-      // with agent='opencode'.
-      const sessionColumns = getTableColumnSet(db, 'sessions');
-      if (sessionColumns.has('agent')) {
-        const candidates = db.prepare(
-          `SELECT b.id AS child_id, b.session_id, b.started_at,
-                  p.id AS parent_id, p.started_at AS parent_started, p.ended_at AS parent_ended
-           FROM prompt_batches b
-           JOIN sessions s ON s.id = b.session_id
-           JOIN prompt_batches p
-             ON p.session_id = b.session_id
-            AND p.id < b.id
-            AND (p.ended_at IS NULL OR p.ended_at > b.started_at)
-           WHERE s.agent = 'opencode'
-             AND b.response_summary IS NULL
-             AND b.kind = 'initial'
-             AND b.parent_prompt_batch_id IS NULL
-           ORDER BY b.id ASC`,
-        ).all() as Array<{ child_id: number; parent_id: number }>;
-
-        const update = db.prepare(
-          `UPDATE prompt_batches SET kind = 'steering', parent_prompt_batch_id = ? WHERE id = ?`,
-        );
-
-        const chosenParentByChild = new Map<number, number>();
-        for (const row of candidates) {
-          const prev = chosenParentByChild.get(row.child_id);
-          if (prev === undefined || row.parent_id > prev) {
-            chosenParentByChild.set(row.child_id, row.parent_id);
-          }
-        }
-
-        let reclassified = 0;
-        for (const [childId, parentId] of chosenParentByChild) {
-          update.run(parentId, childId);
-          reclassified++;
-        }
-
-        if (reclassified > 0) {
-          console.log(`[myco] migrate v21→v22 OpenCode backfill: reclassified ${reclassified} batches`);
-        }
-      }
+      // Historical note: v22 originally contained an OpenCode backfill that
+      // reclassified batches with response_summary=NULL as steering children.
+      // That heuristic assumed missing summary implied mid-turn steering; in
+      // practice the missing summaries were a separate capture bug in the
+      // opencode plugin (stop events had no buffer fallback). The backfill
+      // was removed before shipping to avoid mass-mislabeling real turns as
+      // steering. Vaults that ran an intermediate build of v22 with the
+      // heuristic can be corrected via the historical-repair path (null
+      // response_summary recovery + parent/child reclassification run
+      // together).
     }
 
     db.prepare(
@@ -1316,6 +1285,25 @@ function migrateV21ToV22(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(22, epochSeconds());
+
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/** Migrate version 23: add `migration_tasks` ledger for runtime migrations. */
+function migrateV22ToV23(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(MIGRATION_TASKS_TABLE).run();
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(23, epochSeconds());
 
     db.prepare('COMMIT').run();
   } catch (err) {

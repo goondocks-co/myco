@@ -210,6 +210,17 @@ The rewritten skill passes all validation checks but is structurally degraded.
 
 **The standard for STALE:** A new behavior, a fixed bug, a changed API, or a discovered gotcha that the current skill gets factually wrong. Cosmetic phrasing differences are not sufficient.
 
+## skill-evolve Watermark Behavior
+
+**Pre-filtering and no-op semantics:** The skill-evolve system uses watermark timestamps to optimize runs and prevent redundant processing:
+
+- **Run-level deduplication:** Skills already assessed in the current run (matching `skill_evolve_last_run` timestamp) are automatically excluded from assessment to prevent duplicate analysis within a single execution
+- **Knowledge watermark filtering:** Only skills with new knowledge since their `last_assessed_at` timestamp are eligible for evolution, creating an efficient change-detection mechanism  
+- **No-op run detection:** When no skills qualify for evolution after pre-filtering (either due to recent assessment or lack of new knowledge), the entire run becomes a no-op — the agent reports completion without making any changes
+- **Watermark rotation:** The `last_assessed_at` watermark is updated even when a skill is classified as CURRENT, ensuring proper rotation coverage in subsequent runs and preventing the same skill from being unnecessarily re-assessed
+
+**Practical implications:** This watermark system explains why skill-evolve runs often complete quickly with "no changes needed" — either all candidate skills have been recently assessed, or new vault knowledge doesn't warrant updates. The system is designed to be efficient and avoid redundant work, making frequent skill-evolve runs safe and cost-effective.
+
 ## Budget Sizing for skill-evolve Runs
 
 skill-evolve runs are multiplicative in agent turn cost. Each STALE skill rewrite costs ~8–10 turns (read + knowledge searches + write). Size the budget for worst-case STALE count:

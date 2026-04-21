@@ -1,10 +1,8 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
+import { nowSec, seedSession } from '../helpers/sessions.js';
 import { handleUserPrompt } from '@myco/daemon/event-handlers.js';
-import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertActivityWithBatch } from '@myco/db/queries/activities.js';
-
-const now = () => Math.floor(Date.now() / 1000);
 
 describe('activity routing under steering nesting', () => {
   beforeAll(() => { setupTestDb(); });
@@ -12,7 +10,7 @@ describe('activity routing under steering nesting', () => {
 
   beforeEach(() => {
     cleanTestDb();
-    upsertSession({ id: 's1', agent: 'claude-code', started_at: now(), created_at: now(), status: 'active' });
+    seedSession({ id: 's1' });
   });
 
   it('activity attaches to steering child batch when both parent and child are open', () => {
@@ -22,8 +20,8 @@ describe('activity routing under steering nesting', () => {
     const activity = insertActivityWithBatch({
       session_id: 's1',
       tool_name: 'Read',
-      timestamp: now(),
-      created_at: now(),
+      timestamp: nowSec(),
+      created_at: nowSec(),
     });
 
     // Should attach to the most recently opened batch (the child)
@@ -37,8 +35,8 @@ describe('activity routing under steering nesting', () => {
     const activity = insertActivityWithBatch({
       session_id: 's1',
       tool_name: 'Write',
-      timestamp: now(),
-      created_at: now(),
+      timestamp: nowSec(),
+      created_at: nowSec(),
     });
 
     // No child exists — should attach to the only open batch (the parent)

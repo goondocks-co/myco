@@ -16,6 +16,13 @@ const SCHEMA_VERSION_TABLE = `
     applied_at INTEGER NOT NULL
   )`;
 
+/** Ledger for one-time runtime migrations. See `daemon/migration-tasks.ts`. */
+export const MIGRATION_TASKS_TABLE = `
+  CREATE TABLE IF NOT EXISTS migration_tasks (
+    name       TEXT PRIMARY KEY,
+    applied_at INTEGER NOT NULL
+  )`;
+
 // -- Capture Layer ----------------------------------------------------------
 
 const SESSIONS_TABLE = `
@@ -724,6 +731,7 @@ export const SECONDARY_INDEXES = [
 
 export const TABLE_DDLS = [
   SCHEMA_VERSION_TABLE,
+  MIGRATION_TASKS_TABLE,
   // Capture layer (order matters for FK references)
   SESSIONS_TABLE,
   PROMPT_BATCHES_TABLE,

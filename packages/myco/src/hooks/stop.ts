@@ -1,7 +1,7 @@
 import { DaemonClient } from './client.js';
-import { readStdin } from './read-stdin.js';
-import { normalizeHookInput } from './normalize.js';
+import { readHookInput } from './input.js';
 import { resolveVaultDir } from '../vault/resolve.js';
+import { writeHookResponse } from './response.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -9,9 +9,10 @@ export async function main() {
   const VAULT_DIR = resolveVaultDir();
   if (!fs.existsSync(path.join(VAULT_DIR, 'myco.yaml'))) return;
 
+  let symbiont: string | undefined;
   try {
-    const rawInput = JSON.parse(await readStdin());
-    const input = normalizeHookInput(rawInput);
+    const input = await readHookInput();
+    symbiont = input.agent;
     if (!input.sessionId) return;
 
     const client = new DaemonClient(VAULT_DIR);
@@ -29,5 +30,7 @@ export async function main() {
     });
   } catch (error) {
     process.stderr.write(`[myco] stop error: ${(error as Error).message}\n`);
+  } finally {
+    writeHookResponse(symbiont, 'stop');
   }
 }

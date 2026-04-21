@@ -226,10 +226,13 @@ function setupPackageRoot(): void {
   writeJson(path.join(claudeTemplateDir, 'settings.json'), {
     permissions: { allow: ['Bash(myco *)', 'Bash(myco:*)', 'Bash(myco-dev *)', 'Bash(myco-dev:*)'] },
   });
+  // Cursor's real hooks.json uses the `{{projectRootCd}}` placeholder that the
+  // installer substitutes with the git-root cd prefix at install time. The
+  // fixture mirrors that shape so the substitution path is exercised.
   writeJson(path.join(cursorTemplateDir, 'hooks.json'), {
-    sessionStart: [{ command: 'cd "${CURSOR_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont cursor', type: 'command', timeout: 10 }],
-    stop: [{ command: 'cd "${CURSOR_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook stop --symbiont cursor', type: 'command', timeout: 30 }],
-    preCompact: [{ command: 'cd "${CURSOR_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont cursor', type: 'command', timeout: 5 }],
+    sessionStart: [{ command: '{{projectRootCd}} && node .agents/myco-run.cjs hook session-start --symbiont cursor', type: 'command', timeout: 10 }],
+    stop: [{ command: '{{projectRootCd}} && node .agents/myco-run.cjs hook stop --symbiont cursor', type: 'command', timeout: 30 }],
+    preCompact: [{ command: '{{projectRootCd}} && node .agents/myco-run.cjs hook pre-compact --symbiont cursor', type: 'command', timeout: 5 }],
   });
   writeJson(path.join(cursorTemplateDir, 'mcp.json'), MCP_TEMPLATE);
   writeJson(path.join(cursorTemplateDir, 'settings.json'), {
@@ -478,7 +481,12 @@ describe('installHooks', () => {
     const preCompact = ((settings.hooks as Record<string, unknown[]>).preCompact as Array<{ command: string }>);
 
     expect(preCompact).toHaveLength(1);
-    expect(preCompact[0]?.command).toBe('cd "${CURSOR_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont cursor');
+    // The installer expands `{{projectRootCd}}` into the canonical git-root
+    // cd prefix — keeping the cd logic in one place rather than duplicated
+    // across nine hook entries in the template.
+    expect(preCompact[0]?.command).toBe('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo ${CURSOR_PROJECT_DIR:-.})" && node .agents/myco-run.cjs hook pre-compact --symbiont cursor');
+    // The raw placeholder must NOT leak through to the installed file.
+    expect(preCompact[0]?.command).not.toContain('{{projectRootCd}}');
   });
 
   it('installs pre-compact hook for Gemini CLI', () => {
@@ -2224,5 +2232,95 @@ describe('opencode (plugin-file hooks)', () => {
 
     const guardPath = path.join(projectRoot, '.agents/myco-run.cjs');
     expect(fs.existsSync(guardPath)).toBe(true);
+  });
+
+  describe('shared-helpers snippet injection', () => {
+    // When a plugin template carries the `<myco:shared-helpers>` markers,
+    // the installer replaces the block between them with the canonical
+    // snippet from `_shared/plugin-helpers.ts.snippet` at install time.
+    // Real opencode and pi plugins rely on this to keep BATCH_KIND,
+    // bufferEvent, isIgnoredResponse, and postEventWithBuffer in one place
+    // rather than duplicated inline in each plugin file.
+
+    function writeSharedSnippet(body: string): void {
+      const sharedDir = path.join(packageRoot, 'src/symbionts/templates/_shared');
+      fs.mkdirSync(sharedDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(sharedDir, 'plugin-helpers.ts.snippet'),
+        body,
+        'utf-8',
+      );
+    }
+
+    function writePluginWithMarkers(inner: string): void {
+      const body = [
+        '// myco:plugin-marker:opencode',
+        'export const MycoPlugin = async () => ({});',
+        '// <myco:shared-helpers>',
+        inner,
+        '// </myco:shared-helpers>',
+        'export default MycoPlugin;',
+        '',
+      ].join('\n');
+      fs.writeFileSync(
+        path.join(packageRoot, 'src/symbionts/templates/opencode/plugin.ts'),
+        body,
+        'utf-8',
+      );
+    }
+
+    it('replaces the marker block with the canonical snippet content', () => {
+      writeSharedSnippet('const BATCH_KIND = { STEERING: "steering" } as const;\n');
+      writePluginWithMarkers('// stale inlined copy — to be overwritten');
+
+      const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+      installer.install();
+
+      const installed = fs.readFileSync(
+        path.join(projectRoot, '.opencode/plugins/myco.ts'),
+        'utf-8',
+      );
+      expect(installed).toContain('const BATCH_KIND = { STEERING: "steering" } as const;');
+      expect(installed).not.toContain('stale inlined copy');
+      // Markers themselves are preserved so contributors can still navigate
+      // the installed file back to the snippet.
+      expect(installed).toContain('// <myco:shared-helpers>');
+      expect(installed).toContain('// </myco:shared-helpers>');
+    });
+
+    it('is a no-op when the template has no shared-helpers markers', () => {
+      // Default OPENCODE_PLUGIN_TEMPLATE_CONTENT has no markers — the
+      // installer must copy it verbatim. Proves the injection path is
+      // opt-in and doesn't damage non-participating templates.
+      writeSharedSnippet('SHOULD NOT LEAK INTO THE FILE');
+
+      const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+      installer.install();
+
+      const installed = fs.readFileSync(
+        path.join(projectRoot, '.opencode/plugins/myco.ts'),
+        'utf-8',
+      );
+      expect(installed).toBe(OPENCODE_PLUGIN_TEMPLATE_CONTENT);
+      expect(installed).not.toContain('SHOULD NOT LEAK');
+    });
+
+    it('falls back to the inlined marker block when the snippet file is absent', () => {
+      // Contributors who clone without running a full build have no
+      // _shared/plugin-helpers.ts.snippet on disk — the plugin still
+      // installs cleanly because the on-disk template already contains a
+      // valid inline copy between its markers.
+      writePluginWithMarkers('const INLINED = "still valid";');
+      // Deliberately no writeSharedSnippet()
+
+      const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+      installer.install();
+
+      const installed = fs.readFileSync(
+        path.join(projectRoot, '.opencode/plugins/myco.ts'),
+        'utf-8',
+      );
+      expect(installed).toContain('const INLINED = "still valid";');
+    });
   });
 });

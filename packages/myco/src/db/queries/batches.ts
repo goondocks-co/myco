@@ -34,8 +34,25 @@ const DEFAULT_PROCESSED = 0;
 /** Processed flag value indicating a batch has been processed. */
 const PROCESSED_FLAG = 1;
 
-/** Number of characters used for prompt prefix matching. */
-const PROMPT_PREFIX_MATCH_CHARS = 60;
+/**
+ * Number of characters used for prompt prefix matching. Shared across any
+ * code path that aligns captured batches against transcript events
+ * (reconcile, attachment linking, repair).
+ */
+export const PROMPT_PREFIX_MATCH_CHARS = 60;
+
+/**
+ * Discriminated vocabulary for `prompt_batches.kind`. The schema stores the
+ * raw string; using these constants + the `BatchKind` union keeps a typo from
+ * becoming an unknown kind silently.
+ */
+export const BATCH_KIND = {
+  INITIAL: 'initial',
+  STEERING: 'steering',
+  INTERRUPT: 'interrupt',
+} as const;
+
+export type BatchKind = typeof BATCH_KIND[keyof typeof BATCH_KIND];
 
 // ---------------------------------------------------------------------------
 // Types
@@ -213,35 +230,42 @@ export function closeBatch(
 }
 
 /**
- * Populate response_summary on batches from transcript turns.
- *
- * Matches transcript turns (ordered by position) to batches (ordered by id ASC).
- * This is resilient to prompt_number duplicates caused by daemon restarts.
- * Only updates batches that don't already have a response_summary.
- *
- * @param sessionId — the session to update
- * @param responses — array of { response } ordered by turn position (1-indexed)
+ * Populate response_summary on batches by matching transcript turns to
+ * batches by prompt-text prefix. Robust to transcripts that don't start at
+ * Myco's batch 1 (Cursor rewrites its transcript per conversation, not per
+ * session) and to daemon-restart prompt_number resets. Only fills batches
+ * whose response_summary is still NULL.
  */
 export function populateBatchResponses(
   sessionId: string,
-  responses: Array<{ turnIndex: number; response: string }>,
+  turns: Array<{ prompt: string; response: string }>,
 ): void {
   const db = getDatabase();
-
-  // Get all batches for this session ordered by id (insertion order = true order)
   const batches = db.prepare(
-    `SELECT id FROM prompt_batches WHERE session_id = ? ORDER BY id ASC`,
-  ).all(sessionId) as Array<{ id: number }>;
+    `SELECT id, user_prompt, response_summary
+       FROM prompt_batches
+      WHERE session_id = ?
+      ORDER BY id ASC`,
+  ).all(sessionId) as Array<{ id: number; user_prompt: string | null; response_summary: string | null }>;
 
-  // Map each response to the batch at the same position
-  for (const { turnIndex, response } of responses) {
-    const batchIndex = turnIndex - 1; // turns are 1-indexed
-    if (batchIndex >= 0 && batchIndex < batches.length) {
-      const batchId = batches[batchIndex].id;
-      db.prepare(
-        `UPDATE prompt_batches SET response_summary = ? WHERE id = ? AND response_summary IS NULL`,
-      ).run(response, batchId);
-    }
+  const prefixOf = (s: string | null | undefined) =>
+    (s ?? '').trim().slice(0, PROMPT_PREFIX_MATCH_CHARS);
+
+  const available = batches
+    .filter((b) => b.response_summary == null)
+    .map((b) => ({ id: b.id, key: prefixOf(b.user_prompt) }));
+
+  const update = db.prepare(
+    `UPDATE prompt_batches SET response_summary = ? WHERE id = ? AND response_summary IS NULL`,
+  );
+
+  for (const { prompt, response } of turns) {
+    const key = prefixOf(prompt);
+    if (!key) continue;
+    const idx = available.findIndex((b) => b.key === key);
+    if (idx === -1) continue;
+    update.run(response, available[idx].id);
+    available.splice(idx, 1);
   }
 }
 
@@ -334,6 +358,15 @@ export function markBatchProcessed(
   return toBatchRow(
     db.prepare(`SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE id = ?`).get(id) as Record<string, unknown>,
   );
+}
+
+/**
+ * Fetch a single batch by id. Returns null if not found.
+ */
+export function getBatchById(id: number): BatchRow | null {
+  const db = getDatabase();
+  const row = db.prepare(`SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+  return row ? toBatchRow(row) : null;
 }
 
 /**
@@ -468,10 +501,12 @@ export function setResponseSummary(
 }
 
 /**
- * Get the most recent batch for a session (by id DESC), regardless of status.
- *
- * Used by processStopEvent to attach the AI response and images to the
- * correct batch without positional turn mapping.
+ * Get the most recent batch for a session in transcript order, regardless
+ * of status. Orders by `prompt_number DESC` with `id DESC` as the tie-
+ * breaker — this matters when the Stop-time reconciler inserts recovered
+ * prompts that end up with high ids but earlier prompt_numbers, because
+ * the summary for the current turn belongs on the last transcript-order
+ * batch, not the last-inserted one.
  */
 export function getLatestBatch(
   sessionId: string,
@@ -481,7 +516,7 @@ export function getLatestBatch(
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM prompt_batches
      WHERE session_id = ?
-     ORDER BY id DESC LIMIT 1`,
+     ORDER BY prompt_number DESC, id DESC LIMIT 1`,
   ).get(sessionId) as Record<string, unknown> | undefined;
 
   if (!row) return null;
@@ -542,6 +577,18 @@ export function updateBatchKind(
      SET kind = ?, parent_prompt_batch_id = ?
      WHERE id = ?`,
   ).run(kind, parentPromptBatchId, batchId);
+}
+
+/**
+ * Set an explicit prompt_number on an existing batch.
+ *
+ * Used by the transcript-miner reconciler to renumber batches after inserting
+ * recovered prompts — `insertBatchStateless` assigns MAX+1, so a prompt that
+ * should land between two existing rows needs its number fixed up afterward.
+ */
+export function setBatchPromptNumber(batchId: number, promptNumber: number): void {
+  const db = getDatabase();
+  db.prepare(`UPDATE prompt_batches SET prompt_number = ? WHERE id = ?`).run(promptNumber, batchId);
 }
 
 /**
