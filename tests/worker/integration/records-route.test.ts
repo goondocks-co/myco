@@ -11,17 +11,14 @@
  * because none of them need to round-trip for a simple SELECT.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 
-// The worker imports `agents/mcp` for the /mcp routes. `agents` ships with
-// `cloudflare:` protocol imports (cloudflare:workers) that the default Node
-// ESM loader can't resolve; mock both the entry and the /mcp subpath because
-// the latter transitively imports the former. We don't exercise any /mcp
-// routes in this file.
-vi.mock('agents', () => ({ Agent: class {}, getAgentByName: () => null, getCurrentAgent: () => null }));
-vi.mock('agents/mcp', () => ({
-  createMcpHandler: () => async () => new Response('unused in these tests', { status: 200 }),
-}));
+// Runs in the Cloudflare Workers pool (`cloudflareTest` plugin in
+// vitest.config.ts), so `cloudflare:workers` and the transitive `agents/*`
+// imports resolve against a real workerd runtime. D1 / KV bindings are
+// ephemeral miniflare in-memory stores, but we still mock env at the call
+// site because this suite only exercises the `/records/:type/:id` HTTP
+// contract — not the D1 schema init or vector search paths.
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let worker: any;
@@ -81,15 +78,7 @@ function makeRequest(path: string, headers: Record<string, string> = {}): Reques
 
 const ctx = { waitUntil: () => {}, passThroughOnException: () => {} } as ExecutionContext;
 
-// The worker module graph transitively loads `agents/*` files that import
-// from `cloudflare:workers` — a protocol the default Node ESM loader can't
-// resolve. `vi.mock('agents')` doesn't fully short-circuit that at import
-// time. Running these cases correctly requires `@cloudflare/vitest-pool-workers`
-// or miniflare; until the pool is wired in, the suite is skipped so it
-// doesn't block CI. The contract it's meant to verify (auth on the new
-// `/records/:type/:id` route) is covered end-to-end via the daemon recall
-// fallback tests in `tests/daemon/api/sessions.test.ts`.
-describe.skip('GET /records/:type/:id', () => {
+describe('GET /records/:type/:id', () => {
   let env: Record<string, unknown>;
 
   beforeAll(async () => {
