@@ -1,16 +1,18 @@
 import { useState, useMemo } from 'react';
+import { Trash2 } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { MarkdownContent } from '../ui/markdown-content';
+import { ConfirmDialog } from '../ui/confirm-dialog';
 import { useDeletePlan, useSessionPlans, SessionPlanRow } from '../../hooks/use-sessions';
 import { formatEpochAgo, formatEpochAbsolute } from '../../lib/format';
 
 /* ---------- Constants ---------- */
 
 /** Unicode up-arrow for expanded card toggle. */
-const ARROW_UP = '\u25B2';
+const ARROW_UP = '▲';
 
 /** Unicode down-arrow for collapsed card toggle. */
-const ARROW_DOWN = '\u25BC';
+const ARROW_DOWN = '▼';
 
 /* ---------- Helpers ---------- */
 
@@ -60,10 +62,30 @@ function PlanCard({ plan, initialExpanded = false, isDeleting = false, onDelete 
   const hasChecklist = checklist !== null && checklist.total > 0;
   const progressPct = hasChecklist ? Math.round((checklist!.checked / checklist!.total) * 100) : 0;
 
+  const canExpand = Boolean(plan.content);
+  const toggleExpanded = () => {
+    if (canExpand) setExpanded(v => !v);
+  };
+
   return (
     <div className="rounded-lg border border-border bg-muted/50 overflow-hidden">
-      {/* Card header */}
-      <div className="flex items-start gap-3 p-4">
+      {/* Card header — clicking anywhere toggles expansion */}
+      <div
+        className={cn(
+          'flex items-start gap-3 p-4',
+          canExpand && 'cursor-pointer hover:bg-muted/70 transition-colors',
+        )}
+        onClick={canExpand ? toggleExpanded : undefined}
+        onKeyDown={canExpand ? (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            toggleExpanded();
+          }
+        } : undefined}
+        role={canExpand ? 'button' : undefined}
+        tabIndex={canExpand ? 0 : undefined}
+        aria-expanded={canExpand ? expanded : undefined}
+      >
         <div className="flex-1 min-w-0 space-y-1.5">
           <div className="flex items-center gap-2 flex-wrap">
             <PlanStatusBadge status={plan.status} />
@@ -106,12 +128,15 @@ function PlanCard({ plan, initialExpanded = false, isDeleting = false, onDelete 
           )}
         </div>
 
-        {/* Expand toggle */}
-        {(plan.content || onDelete) && (
+        {/* Action buttons — stopPropagation so they don't trigger header toggle */}
+        {(canExpand || onDelete) && (
           <div className="flex shrink-0 items-center gap-2">
             {onDelete && (
               <button
-                onClick={() => onDelete(plan.id)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete(plan.id);
+                }}
                 className="text-xs text-muted-foreground hover:text-destructive transition-colors cursor-pointer disabled:opacity-50"
                 disabled={isDeleting}
                 aria-label="Delete plan"
@@ -119,14 +144,13 @@ function PlanCard({ plan, initialExpanded = false, isDeleting = false, onDelete 
                 {isDeleting ? 'Deleting...' : 'Delete'}
               </button>
             )}
-            {plan.content && (
-              <button
-                onClick={() => setExpanded(v => !v)}
-                className="mt-0.5 text-xs text-muted-foreground hover:text-on-surface transition-colors cursor-pointer"
-                aria-label={expanded ? 'Collapse plan' : 'Expand plan'}
+            {canExpand && (
+              <span
+                className="mt-0.5 text-xs text-muted-foreground"
+                aria-hidden="true"
               >
                 {expanded ? ARROW_UP : ARROW_DOWN}
-              </button>
+              </span>
             )}
           </div>
         )}
@@ -152,15 +176,16 @@ export interface SessionPlansProps {
 export function SessionPlans({ sessionId, expandedPlanId }: SessionPlansProps) {
   const { data: plans, isLoading, isError } = useSessionPlans(sessionId);
   const deletePlan = useDeletePlan(sessionId);
-  const [deletingPlanId, setDeletingPlanId] = useState<string | null>(null);
+  const [pendingDeletePlan, setPendingDeletePlan] = useState<SessionPlanRow | null>(null);
 
-  async function handleDelete(planId: string): Promise<void> {
-    if (!window.confirm('Delete this captured plan from the session?')) return;
-    setDeletingPlanId(planId);
+  async function handleConfirmDelete(): Promise<void> {
+    if (!pendingDeletePlan) return;
     try {
-      await deletePlan.mutateAsync(planId);
-    } finally {
-      setDeletingPlanId(null);
+      await deletePlan.mutateAsync(pendingDeletePlan.id);
+      setPendingDeletePlan(null);
+    } catch {
+      // Leave dialog open on error; the banner below shows the failure.
+      setPendingDeletePlan(null);
     }
   }
 
@@ -200,10 +225,29 @@ export function SessionPlans({ sessionId, expandedPlanId }: SessionPlansProps) {
           key={plan.id}
           plan={plan}
           initialExpanded={String(plan.id) === expandedPlanId}
-          isDeleting={deletingPlanId === plan.id}
-          onDelete={handleDelete}
+          isDeleting={deletePlan.isPending && pendingDeletePlan?.id === plan.id}
+          onDelete={() => setPendingDeletePlan(plan)}
         />
       ))}
+
+      <ConfirmDialog
+        open={pendingDeletePlan !== null}
+        onOpenChange={(open) => { if (!open) setPendingDeletePlan(null); }}
+        title="Delete Plan"
+        description="This will permanently remove this captured plan from the session."
+        icon={<Trash2 className="h-4 w-4 text-tertiary" />}
+        meta={pendingDeletePlan ? [
+          { label: 'Status', value: pendingDeletePlan.status },
+          {
+            label: 'Title',
+            value: pendingDeletePlan.title || pendingDeletePlan.source_path || pendingDeletePlan.id,
+          },
+        ] : []}
+        confirmLabel="Delete Plan"
+        variant="destructive"
+        onConfirm={handleConfirmDelete}
+        isPending={deletePlan.isPending}
+      />
     </div>
   );
 }

@@ -10,6 +10,9 @@ hookFields:
   lastResponse: last_assistant_message
 capture:
   planDirs:
+    # Cursor's plan output lands in ~/.cursor/plans/ (global), not project-local.
+    # Watch both: home for agent-written plans, project-local for any committed plans.
+    - ~/.cursor/plans/
     - .cursor/plans/
 registration:
   hooksTarget: .cursor/hooks.json
