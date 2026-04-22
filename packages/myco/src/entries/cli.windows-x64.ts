@@ -10,13 +10,16 @@ import vec0Embed from 'sqlite-vec-windows-x64/vec0.dll' with { type: 'file' };
 import ripgrepEmbed from '@vscode/ripgrep/bin/rg.exe' with { type: 'file' };
 
 import { registerEmbeddedNativeDeps } from '../runtime/native-deps.js';
-import { getPluginVersion } from '../version.js';
+import { setPluginVersion } from '../version.js';
+import pkg from '../../package.json' with { type: 'json' };
+
+setPluginVersion(pkg.version);
 
 await registerEmbeddedNativeDeps({
   libsqliteEmbed,
   vec0Embed,
   ripgrepEmbed,
-  version: getPluginVersion(),
+  version: pkg.version,
 });
 
 await import('./cli.js');

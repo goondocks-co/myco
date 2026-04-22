@@ -25,12 +25,15 @@ if (!fs.existsSync(entry)) {
   process.exit(1);
 }
 
+const pkgJson = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf-8'));
+const mycoVersion = pkgJson.version;
+
 const outputDir = path.join(pkgRoot, 'vendor', target);
 fs.mkdirSync(outputDir, { recursive: true });
 const binaryName = target.startsWith('windows-') ? 'myco.exe' : 'myco';
 const outfile = path.join(outputDir, binaryName);
 
-process.stdout.write(`[build:binary] ${target} -> ${outfile}\n`);
+process.stdout.write(`[build:binary] ${target} -> ${outfile} (version ${mycoVersion})\n`);
 const result = spawnSync(
   'bun',
   ['build', '--compile', `--target=bun-${target}`, entry, '--outfile', outfile],

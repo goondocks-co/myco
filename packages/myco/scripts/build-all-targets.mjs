@@ -11,31 +11,19 @@
 // (dev-link already wires that path).
 
 import { spawnSync } from 'node:child_process';
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const TARGETS = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64', 'windows-x64'];
 
 const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const singleTargetScript = path.join(pkgRoot, 'scripts', 'build-single-target.mjs');
 
 for (const target of TARGETS) {
-  const entry = path.join(pkgRoot, 'src', 'entries', `cli.${target}.ts`);
-  if (!fs.existsSync(entry)) {
-    process.stderr.write(`[build:binaries] Missing entry: ${entry}\n`);
-    process.exit(1);
-  }
-
-  const outputDir = path.join(pkgRoot, 'vendor', target);
-  fs.mkdirSync(outputDir, { recursive: true });
-  const binaryName = target.startsWith('windows-') ? 'myco.exe' : 'myco';
-  const outfile = path.join(outputDir, binaryName);
-
-  process.stdout.write(`[build:binaries] ${target} -> ${outfile}\n`);
   const result = spawnSync(
-    'bun',
-    ['build', '--compile', `--target=bun-${target}`, entry, '--outfile', outfile],
-    { stdio: 'inherit', cwd: pkgRoot, env: process.env },
+    process.execPath,
+    [singleTargetScript],
+    { stdio: 'inherit', cwd: pkgRoot, env: { ...process.env, TARGET: target } },
   );
   if (result.status !== 0) {
     process.stderr.write(`[build:binaries] Failed building ${target} (status=${result.status ?? 'signal'})\n`);
