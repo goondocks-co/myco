@@ -105,6 +105,223 @@ describe('createStopProcessor session capture rules', () => {
     teardownTestDb();
   });
 
+  // Regression: when a steering child is the latest batch, the assistant
+  // response belongs on the turn's parent so the UI's parent card renders
+  // it. Previously setResponseSummary wrote to getLatestBatch, which was
+  // the steering child — leaving the parent with NULL summary.
+  it('routes response_summary to the parent batch when the latest batch is a steering child', async () => {
+    const sessionId = 'steering-summary-001';
+    const now = epochNow();
+    upsertSession({
+      id: sessionId,
+      agent: 'opencode',
+      status: 'active',
+      started_at: now,
+      created_at: now,
+    });
+    const parent = insertBatch({
+      session_id: sessionId,
+      prompt_number: 1,
+      user_prompt: 'parent prompt',
+      started_at: now,
+      created_at: now,
+    });
+    insertBatch({
+      session_id: sessionId,
+      prompt_number: 2,
+      user_prompt: 'mid-turn steering',
+      started_at: now + 1,
+      created_at: now + 1,
+    });
+    // Promote the second batch to steering + point it at the parent.
+    // (Using raw SQL — insertBatch doesn't carry kind/parent fields yet.)
+    const { getDatabase } = await import('@myco/db/client.js');
+    const db = getDatabase();
+    db.prepare(`UPDATE prompt_batches SET kind='steering', parent_prompt_batch_id=? WHERE session_id=? AND prompt_number=2`).run(parent.id, sessionId);
+
+    const stopProcessor = makeStopProcessor(vaultDir);
+    await stopProcessor.handleStopRoute({
+      body: {
+        session_id: sessionId,
+        agent: 'opencode',
+        last_assistant_message: 'combined turn reply',
+      },
+    } as never);
+
+    const batches = listBatchesBySession(sessionId);
+    const parentAfter = batches.find((b) => b.prompt_number === 1)!;
+    const childAfter = batches.find((b) => b.prompt_number === 2)!;
+    expect(parentAfter.response_summary).toBe('combined turn reply');
+    expect(childAfter.response_summary).toBeNull();
+  });
+
+  // Regression: Cursor's stop payload doesn't carry `last_assistant_message`
+  // and its transcript is rewritten per turn (always turn_count=1). The
+  // primary capture path must fall back to the last parsed turn's aiResponse
+  // so the current-turn batch gets its response_summary filled.
+  it('falls back to the transcript\'s last turn when last_assistant_message is absent', async () => {
+    const sessionId = 'cursor-fallback-001';
+    const now = epochNow();
+    upsertSession({
+      id: sessionId,
+      agent: 'cursor',
+      status: 'active',
+      started_at: now,
+      created_at: now,
+    });
+    insertBatch({
+      session_id: sessionId,
+      prompt_number: 1,
+      user_prompt: 'hello',
+      started_at: now,
+      created_at: now,
+    });
+    insertBatch({
+      session_id: sessionId,
+      prompt_number: 2,
+      user_prompt: 'tell me about the changes',
+      started_at: now + 1,
+      created_at: now + 1,
+    });
+    const { getDatabase } = await import('@myco/db/client.js');
+    const db = getDatabase();
+    // Batch 1 already has a response from its own stop cycle.
+    db.prepare(`UPDATE prompt_batches SET response_summary=? WHERE session_id=? AND prompt_number=1`)
+      .run('Hi there.', sessionId);
+
+    const stopProcessor = createStopProcessor({
+      registry: new SessionRegistry({ gracePeriod: 1, onEmpty: () => {} }),
+      sessionBuffers: new Map(),
+      transcriptMiner: {
+        getAllTurnsWithSource: vi.fn(() => ({
+          turns: [
+            {
+              // Transcript's turn 1 matches batch 2 by prompt text, not by
+              // position. Verifies prefix-matching beats positional mapping.
+              prompt: 'tell me about the changes',
+              toolCount: 3,
+              timestamp: '',
+              aiResponse: 'Here is the branch summary.',
+            },
+          ],
+          source: 'cursor:direct',
+        })),
+      } as never,
+      embeddingManager: { onRemoved: vi.fn() } as never,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
+      liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
+      vaultDir,
+      planTags: [],
+      planWatchConfig: { watchDirs: [], projectRoot: vaultDir },
+    });
+
+    await stopProcessor.handleStopRoute({
+      body: {
+        session_id: sessionId,
+        agent: 'cursor',
+        transcript_path: '/tmp/cursor-fake-transcript.jsonl',
+        // last_assistant_message deliberately omitted — Cursor never sends it.
+      },
+    } as never);
+
+    const batches = listBatchesBySession(sessionId);
+    const batch2 = batches.find((b) => b.prompt_number === 2)!;
+    expect(batch2.response_summary).toBe('Here is the branch summary.');
+    // Batch 1's prior response must NOT be overwritten.
+    const batch1 = batches.find((b) => b.prompt_number === 1)!;
+    expect(batch1.response_summary).toBe('Hi there.');
+  });
+
+  // Regression: populateBatchResponses used to map turn_index → batches[N-1]
+  // by insertion order. For Cursor, transcript turn 1 is not necessarily
+  // batch 1 (Cursor may start its per-conversation transcript mid-session),
+  // which wrote turn N's response onto the wrong batch. Now matched by
+  // prompt-text prefix, so each turn lands on the batch with the same prompt.
+  it('matches transcript responses to batches by prompt prefix even when order diverges', async () => {
+    const sessionId = 'cursor-prefix-match-001';
+    const now = epochNow();
+    upsertSession({
+      id: sessionId,
+      agent: 'cursor',
+      status: 'active',
+      started_at: now,
+      created_at: now,
+    });
+    insertBatch({
+      session_id: sessionId,
+      prompt_number: 1,
+      user_prompt: 'hello',
+      started_at: now,
+      created_at: now,
+    });
+    insertBatch({
+      session_id: sessionId,
+      prompt_number: 2,
+      user_prompt: 'tell me about the changes in this branch',
+      started_at: now + 1,
+      created_at: now + 1,
+    });
+    insertBatch({
+      session_id: sessionId,
+      prompt_number: 3,
+      user_prompt: 'Without doing anything, how would you break this up?',
+      started_at: now + 2,
+      created_at: now + 2,
+    });
+    const { getDatabase } = await import('@myco/db/client.js');
+    const db = getDatabase();
+    db.prepare(`UPDATE prompt_batches SET response_summary=? WHERE session_id=? AND prompt_number=1`)
+      .run('Hello.', sessionId);
+
+    const stopProcessor = createStopProcessor({
+      registry: new SessionRegistry({ gracePeriod: 1, onEmpty: () => {} }),
+      sessionBuffers: new Map(),
+      transcriptMiner: {
+        getAllTurnsWithSource: vi.fn(() => ({
+          // Cursor's transcript contains only the prompts it has seen
+          // locally. Turn 1 here is Myco's batch 2, turn 2 is batch 3.
+          turns: [
+            {
+              prompt: 'tell me about the changes in this branch',
+              toolCount: 3,
+              timestamp: '',
+              aiResponse: 'Concise branch summary.',
+            },
+            {
+              prompt: 'Without doing anything, how would you break this up?',
+              toolCount: 0,
+              timestamp: '',
+              aiResponse: 'Here is a practical slicing.',
+            },
+          ],
+          source: 'cursor:direct',
+        })),
+      } as never,
+      embeddingManager: { onRemoved: vi.fn() } as never,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
+      liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
+      vaultDir,
+      planTags: [],
+      planWatchConfig: { watchDirs: [], projectRoot: vaultDir },
+    });
+
+    await stopProcessor.handleStopRoute({
+      body: {
+        session_id: sessionId,
+        agent: 'cursor',
+        transcript_path: '/tmp/cursor-fake-transcript.jsonl',
+      },
+    } as never);
+
+    const batches = listBatchesBySession(sessionId);
+    const b1 = batches.find((b) => b.prompt_number === 1)!;
+    const b2 = batches.find((b) => b.prompt_number === 2)!;
+    const b3 = batches.find((b) => b.prompt_number === 3)!;
+    expect(b1.response_summary).toBe('Hello.');
+    expect(b2.response_summary).toBe('Concise branch summary.');
+    expect(b3.response_summary).toBe('Here is a practical slicing.');
+  });
+
   it('ignores a sub-agent transcript before any session row exists', async () => {
     const sessionId = 'codex-subagent-stop-001';
     const transcriptPath = writeCodexSubagentTranscript(sessionId);

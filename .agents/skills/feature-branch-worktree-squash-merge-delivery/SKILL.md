@@ -60,17 +60,17 @@ After implementation, run a structured quality review targeting four classes of 
 
 ```bash
 git diff --name-only main          # files changed in this branch
-grep -rn "\.slice(0, 8)" src/      # shortSession() candidates
+grep -rn "\.slice(0, 8)" src/      # session ID truncation patterns
 grep -rn "new Date().toLocaleString" src/  # date formatter candidates
 ```
 
-Any logic appearing 2+ times across changed files is a candidate for extraction. Shared helpers go in `src/lib/`. **Read `src/lib/format.ts` before adding anything** — re-extracting an existing helper creates a naming conflict and a second source of truth.
+Any logic appearing 2+ times across changed files is a candidate for extraction. Shared helpers go in `packages/myco/src/lib/` or `ui/src/lib/` or the appropriate utility module. **Check existing utility modules before adding anything** — re-extracting an existing helper creates a naming conflict and a second source of truth.
 
 ```typescript
 // Before: inline in two components
 const display = sessionId.slice(0, 8) + '...';
-// After: import from src/lib/format.ts
-import { shortSession } from '../lib/format';
+// After: import from utility module
+import { shortSession } from '../lib/utils';
 const display = shortSession(sessionId);
 ```
 
@@ -179,4 +179,4 @@ The single squashed commit becomes the PR commit.
 - **Design spec on `main` first** — commit the spec in `docs/superpowers/specs/` before switching to the worktree
 - **Run `npm rebuild` after branch switches involving native modules** — if the dependency tree includes native Node addons (e.g., `better-sqlite3`), switching between branches requires `npm rebuild` before running tests or the daemon; failures manifest as cryptic runtime errors, not build errors
 - **Stage untracked files before `/simplify` or code review** — Claude Code's review tools only see git-tracked files; new files that haven't been `git add`-ed are invisible; run `git add -N .` (intent-to-add) before any review pass
-- **Read `src/lib/format.ts` before extracting helpers** — re-extracting an existing helper creates a naming conflict during the simplify pass
+- **Check existing utility modules before extracting helpers** — re-extracting an existing helper creates a naming conflict during the simplify pass

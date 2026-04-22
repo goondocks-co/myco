@@ -84,6 +84,8 @@ export interface BatchRow {
   processed: number;
   content_hash: string | null;
   created_at: number;
+  parent_prompt_batch_id: number | null;
+  kind: string;
 }
 
 export interface ActivityRow {
@@ -111,6 +113,12 @@ export interface AttachmentRow {
   file_path: string;
   media_type: string | null;
   description: string | null;
+  /**
+   * Turn number parsed from the storage filename convention
+   * (`{sessionShort}-t{promptNumber}-{n}.{ext}`) server-side. Use this as a
+   * fallback grouping key when `prompt_batch_id` is null.
+   */
+  turn_number: number | null;
   created_at: number;
 }
 

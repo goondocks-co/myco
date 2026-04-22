@@ -528,6 +528,60 @@ The collective tools on the local MCP server are proxy tools. The actual logic l
 
 This routing model ensures collective features work natively without requiring agents to manage multiple MCP connections.
 
+## Procedure 7: Quality Gate Integration for Worker Packages
+
+Ensure nested Cloudflare worker packages are included in Myco's main quality gate to catch build and lint failures early.
+
+### Worker Package Quality Gate Setup
+
+The nested worker packages in `packages/myco-team/worker` and `packages/myco-collective/worker` have independent `package.json` files and must be included in the root repository quality gate:
+
+```bash
+# Root package.json lint script must include worker checks
+npm run check --prefix packages/myco-team/worker
+npm run check --prefix packages/myco-collective/worker
+```
+
+### Makefile Integration Pattern
+
+Update the root `Makefile` to include worker package builds:
+
+```makefile
+build: build-core build-workers
+
+build-workers:
+	cd packages/myco-team/worker && npm run build
+	cd packages/myco-collective/worker && npm run build
+	
+lint: lint-core lint-workers
+
+lint-workers:
+	cd packages/myco-team/worker && npm run check
+	cd packages/myco-collective/worker && npm run check
+```
+
+### Common Worker Package Failures
+
+Worker packages can hide failures that only surface when explicitly checked:
+
+- **Stale TypeScript casts**: Vectorize metadata type changes require manual cast updates
+- **Import resolution**: Worker bundles have different module resolution than the main package
+- **Environment binding types**: Cloudflare environment bindings drift with wrangler updates
+- **Build target mismatches**: Worker builds target different JavaScript versions
+
+### CI Integration
+
+Ensure GitHub Actions includes worker package verification:
+
+```yaml
+- name: Test worker packages
+  run: |
+    npm run check --prefix packages/myco-team/worker
+    npm run check --prefix packages/myco-collective/worker
+    npm run build --prefix packages/myco-team/worker  
+    npm run build --prefix packages/myco-collective/worker
+```
+
 ## Cross-Cutting Gotchas
 
 ### Silent Failure Patterns
@@ -539,8 +593,28 @@ The Collective V1 CE review identified critical patterns where failures appear a
 - **Fan-out stalls**: Missing per-project timeouts in `Promise.all` cause entire batches to hang
 - **Build script masking**: `|| true` in deploy scripts hides deployment failures
 - **Binary ENOENT**: Missing binaries exit 0 instead of failing loudly
+- **Quality gate gaps**: Nested worker packages outside main lint checks hide TypeScript and build failures
 
 Always prefer loud failures over silent success. If something went wrong, the system should make it obvious.
+
+### Vectorize Metadata Cast Gotcha
+
+The `packages/myco-collective/worker/src/index.ts` file contains Vectorize query code that requires manual maintenance when Cloudflare updates the Vectorize TypeScript definitions. Common failure:
+
+```typescript
+// This cast becomes stale when Vectorize metadata schema changes
+const results = response.matches.map(match => ({
+  id: match.id,
+  score: match.score,
+  metadata: match.metadata as MycoVectorMetadata  // <-- Stale cast
+}));
+```
+
+When the quality gate reports Vectorize TypeScript errors:
+
+1. Check the actual Vectorize metadata schema in Cloudflare docs
+2. Update the `MycoVectorMetadata` interface to match
+3. Verify the cast is still safe or replace with proper type guards
 
 ### Config Scope Boundaries
 

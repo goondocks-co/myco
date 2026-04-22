@@ -150,6 +150,8 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       timestamp: (validated as Record<string, unknown>).timestamp ?? new Date().toISOString(),
     } as Record<string, unknown> & { type: string; session_id: string; timestamp: string };
 
+    let userPromptBatchId: number | undefined;
+
     logger.debug(LOG_KINDS.HOOKS_EVENT, 'Event received', { type: event.type, session_id: event.session_id });
 
     // Ensure session is registered (idempotent — handles daemon restarts mid-session)
@@ -254,7 +256,9 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           });
         }
         try {
-          const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined);
+          const kind = typeof event.kind === 'string' ? event.kind : 'initial';
+          const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined, { kind });
+          userPromptBatchId = batchId;
           logger.debug(LOG_KINDS.CAPTURE_BATCH, 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });
 
           const taggedPlans = extractTaggedPlans(promptText, getPlanTagsForAgent(event.agent));
@@ -473,6 +477,6 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       }
     }
 
-    return { body: { ok: true } };
+    return { body: { ok: true, ...(userPromptBatchId != null ? { batchId: userPromptBatchId } : {}) } };
   };
 }

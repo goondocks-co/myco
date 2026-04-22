@@ -67,19 +67,6 @@ agent:
       schedule:
         enabled: true
         intervalSeconds: 1800
-    title-summary:
-      provider:
-        runtime: openai-agents
-        type: lmstudio
-        base_url: http://localhost:1234
-        model: google/gemma-4-26b-a4b
-        reasoning_map:
-          low: google/gemma-4-26b-a4b
-          default: google/gemma-4-26b-a4b
-          high: openai/gpt-oss-120b
-      runtime: openai-agents
-      maxTurns: 50
-      timeoutSeconds: 600
 context:
   digest_tier: 5000
   session_start_digest_enabled: false

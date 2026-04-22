@@ -150,6 +150,7 @@ import {
   handleTaskCompleted, handleCompact,
 } from './event-handlers.js';
 import { createReconciler } from './reconciliation.js';
+import { runPendingMigrationTasks } from './migration-tasks.js';
 import { createStopProcessor } from './stop-processing.js';
 import { createEventDispatcher } from './event-dispatch.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
@@ -161,6 +162,11 @@ export {
 } from './event-handlers.js';
 import { loadSecrets } from '../config/secrets.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
+import {
+  DAEMON_HEALTH_CHECK_TIMEOUT_MS,
+  DAEMON_STALE_GRACE_PERIOD_MS,
+} from '../constants.js';
+import { getPluginVersion } from '../version.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -170,28 +176,73 @@ import path from 'node:path';
 // ---------------------------------------------------------------------------
 
 /**
- * Kill any stale daemon process for this vault before starting a new one.
- * Reads daemon.json — if a live process exists with that PID, kill it.
- * This prevents orphaned daemons from accumulating across restarts.
+ * Reconcile with any existing daemon for this vault before starting a new one.
+ *
+ * - If no daemon.json or the recorded pid is dead → 'ok' (take over).
+ * - If the recorded daemon is recent, healthy, and running the same plugin
+ *   version → 'step-aside' (a sibling just started; don't kill it). The caller
+ *   exits cleanly. This is what stops the concurrent-spawn cascade where each
+ *   new process SIGTERMs the last one standing.
+ * - Otherwise (stale, unhealthy, or version-mismatch) → SIGTERM the old
+ *   daemon, unlink daemon.json, return 'ok' to proceed.
  */
-function killStaleDaemon(vaultDir: string, logger: DaemonLogger): void {
+export async function reconcileExistingDaemon(
+  vaultDir: string,
+  logger: DaemonLogger,
+): Promise<'ok' | 'step-aside'> {
   const daemonJsonPath = path.join(vaultDir, 'daemon.json');
+  let info: { pid?: number; port?: number };
+  let mtimeMs: number;
   try {
-    if (!fs.existsSync(daemonJsonPath)) return;
-    const info = JSON.parse(fs.readFileSync(daemonJsonPath, 'utf-8')) as { pid?: number };
-    if (!info.pid) return;
+    if (!fs.existsSync(daemonJsonPath)) return 'ok';
+    mtimeMs = fs.statSync(daemonJsonPath).mtimeMs;
+    info = JSON.parse(fs.readFileSync(daemonJsonPath, 'utf-8')) as { pid?: number; port?: number };
+  } catch {
+    // Unreadable daemon.json — treat as absent.
+    return 'ok';
+  }
 
-    // Don't kill ourselves
-    if (info.pid === process.pid) return;
+  if (!info.pid) return 'ok';
+  if (info.pid === process.pid) return 'ok';
 
+  // Is the recorded process actually alive?
+  try {
+    process.kill(info.pid, 0);
+  } catch {
+    // Dead — clean up and take over.
+    try { fs.unlinkSync(daemonJsonPath); } catch { /* already gone */ }
+    return 'ok';
+  }
+
+  // Alive. If it's recent AND healthy AND the same version, step aside rather
+  // than racing it. Without this guard, two concurrent spawns kill each other
+  // in sequence and the surviving PID is whichever one ran last.
+  const recent = Date.now() - mtimeMs < DAEMON_STALE_GRACE_PERIOD_MS;
+  if (recent && typeof info.port === 'number') {
     try {
-      process.kill(info.pid, 0);
-      process.kill(info.pid, 'SIGTERM');
-      logger.info(LOG_KINDS.DAEMON_START, 'Killed stale daemon', { pid: info.pid });
-    } catch { /* already dead */ }
+      const res = await fetch(`http://127.0.0.1:${info.port}/health`, {
+        signal: AbortSignal.timeout(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
+      });
+      if (res.ok) {
+        const data = await res.json() as { myco?: boolean; version?: string };
+        if (data.myco && data.version === getPluginVersion()) {
+          logger.info(LOG_KINDS.DAEMON_START, 'Sibling daemon already healthy — stepping aside', {
+            existing_pid: info.pid,
+            existing_port: info.port,
+          });
+          return 'step-aside';
+        }
+      }
+    } catch { /* health probe failed — fall through and replace */ }
+  }
 
-    fs.unlinkSync(daemonJsonPath);
-  } catch { /* daemon.json unreadable — ignore */ }
+  // Stale, unhealthy, or version mismatch: take over.
+  try {
+    process.kill(info.pid, 'SIGTERM');
+    logger.info(LOG_KINDS.DAEMON_START, 'Killed stale daemon', { pid: info.pid });
+  } catch { /* already dead */ }
+  try { fs.unlinkSync(daemonJsonPath); } catch { /* already gone */ }
+  return 'ok';
 }
 
 // ---------------------------------------------------------------------------
@@ -241,8 +292,14 @@ export async function main(): Promise<void> {
     process.env.MYCO_AGENT_DEBUG = '1';
   }
 
-  // Kill any stale daemon for this vault before starting
-  killStaleDaemon(vaultDir, logger);
+  // Reconcile with any existing daemon for this vault. If a recent sibling is
+  // already healthy on the same version, step aside — prevents the cascade
+  // where concurrent spawns (hooks, MCPs, user-prompt-submit) SIGTERM each
+  // other in sequence.
+  const reconcileResult = await reconcileExistingDaemon(vaultDir, logger);
+  if (reconcileResult === 'step-aside') {
+    process.exit(0);
+  }
 
   logger.info(LOG_KINDS.DAEMON_CONFIG, 'Config loaded', {
     vault: vaultDir,
@@ -486,6 +543,11 @@ export async function main(): Promise<void> {
 
   const reconciler = createReconciler({ bufferDir, logger });
   reconciler.runStartupReconciliation();
+
+  // Runtime migration tasks (vector reindex, file rewrites, etc.) — idempotent,
+  // gated by the migration_tasks ledger in the DB so each task runs once per
+  // vault regardless of how many times the daemon starts.
+  await runPendingMigrationTasks({ db: getDatabase(), embeddingManager, logger });
 
   // --- Stop processor (created early so triggerTitleSummary is available to /events route) ---
   const stopProcessor = createStopProcessor({
@@ -884,7 +946,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/activity', handleGetFeed);
   server.registerRoute('GET', '/api/embedding/status', async () => handleGetEmbeddingStatus(vaultDir));
   server.registerRoute('GET', '/api/embedding/details', async () => handleEmbeddingDetails(embeddingManager));
-  server.registerRoute('POST', '/api/embedding/rebuild', async () => handleEmbeddingRebuild(embeddingManager));
+  server.registerRoute('POST', '/api/embedding/rebuild', async (req) => handleEmbeddingRebuild(embeddingManager, { async: req.query.async === 'true' }));
   server.registerRoute('POST', '/api/embedding/reconcile', async () => handleEmbeddingReconcile(embeddingManager));
   server.registerRoute('POST', '/api/embedding/clean-orphans', async () => handleEmbeddingCleanOrphans(embeddingManager));
   server.registerRoute('POST', '/api/embedding/reembed-stale', async () => handleEmbeddingReembedStale(embeddingManager));
@@ -912,6 +974,28 @@ export async function main(): Promise<void> {
   }
   await server.start(resolvedPort);
   logger.info(LOG_KINDS.DAEMON_READY, 'Daemon ready', { vault: vaultDir, port: server.port });
+
+  // Pre-warm modules that are dynamically imported from daemon hot paths.
+  // tsup compiles `await import('@myco/...')` into a chunk filename with a
+  // content hash baked in (e.g. `./executor-ABC123.js`). When the bundle is
+  // rebuilt during dev, chunk hashes churn — but the running daemon still
+  // has the OLD filename baked into its code. The first late dynamic import
+  // at that path then fails with `Cannot find module './executor-<OLD>.js'`.
+  // Warming the imports now puts the resolved URLs into Node's ES module
+  // cache; every subsequent `import()` at those call sites returns the cached
+  // module without touching disk, so disk churn no longer matters.
+  void Promise.all([
+    import('../agent/executor.js'),
+    import('../agent/registry.js'),
+    import('../agent/tools/skill-staging.js'),
+    import('../db/queries/turns.js'),
+    import('../symbionts/installer.js'),
+    import('../cli/team.js'),
+  ]).catch((err) => {
+    logger.warn(LOG_KINDS.DAEMON_START, 'Pre-warm of dynamic imports failed', {
+      error: (err as Error).message,
+    });
+  });
 
   // Persist the resolved port to config if it was auto-derived
   if (config.daemon.port === null && resolvedPort !== 0) {

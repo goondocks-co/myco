@@ -2,22 +2,22 @@
   "hooks": {
     "pre_user_prompt": [
       {
-        "command": "cd \"$(git rev-parse --show-toplevel 2>/dev/null || echo .)\" && node .agents/myco-run.cjs hook user-prompt-submit --symbiont windsurf"
+        "command": "node .agents/myco-run.cjs hook user-prompt-submit --symbiont windsurf"
       }
     ],
     "post_run_command": [
       {
-        "command": "cd \"$(git rev-parse --show-toplevel 2>/dev/null || echo .)\" && node .agents/myco-run.cjs hook post-tool-use --symbiont windsurf"
+        "command": "node .agents/myco-run.cjs hook post-tool-use --symbiont windsurf"
       }
     ],
     "post_write_code": [
       {
-        "command": "cd \"$(git rev-parse --show-toplevel 2>/dev/null || echo .)\" && node .agents/myco-run.cjs hook post-tool-use --symbiont windsurf"
+        "command": "node .agents/myco-run.cjs hook post-tool-use --symbiont windsurf"
       }
     ],
     "post_cascade_response": [
       {
-        "command": "cd \"$(git rev-parse --show-toplevel 2>/dev/null || echo .)\" && node .agents/myco-run.cjs hook stop --symbiont windsurf"
+        "command": "node .agents/myco-run.cjs hook stop --symbiont windsurf"
       }
     ]
   }
