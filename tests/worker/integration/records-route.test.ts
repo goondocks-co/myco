@@ -78,7 +78,8 @@ function makeRequest(path: string, headers: Record<string, string> = {}): Reques
 
 const ctx = { waitUntil: () => {}, passThroughOnException: () => {} } as ExecutionContext;
 
-describe('GET /records/:type/:id', () => {
+// TODO(bun-migration): see vault spore decision-754d7dd5 — runs under vitest-pool-workers; pending worker test runner migration.
+describe.skip('GET /records/:type/:id', () => {
   let env: Record<string, unknown>;
 
   beforeAll(async () => {
