@@ -12,6 +12,7 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import { fetchTeamFallback, type TeamFallbackDeps } from './team-fallback.js';
 import { errorBody } from './error-envelope.js';
 
 const DEFAULT_LIST_LIMIT = 50;
@@ -42,17 +43,47 @@ export async function handleListSessions(req: RouteRequest): Promise<RouteRespon
   return { body: { sessions, total, offset, limit } };
 }
 
-export async function handleGetSession(req: RouteRequest): Promise<RouteResponse> {
-  const session = getSession(req.params.id);
-  if (!session) return { status: 404, body: { error: 'not_found' } };
+/**
+ * Factory form — supports team fallback when the record is missing locally.
+ *
+ * On a team hit we leave `prompt_count`/`tool_count` null because the
+ * derived-count queries only run against local SQLite.
+ */
+export function createGetSessionHandler(deps: TeamFallbackDeps = {}) {
+  return async function handleGetSession(req: RouteRequest): Promise<RouteResponse> {
+    const session = getSession(req.params.id);
+    if (session) {
+      // Derive counts from rows, not the cached prompt_count/tool_count.
+      const promptCount = countBatchesBySession(session.id);
+      const toolCount = countActivities(session.id);
+      return {
+        body: {
+          ...session,
+          prompt_count: promptCount,
+          tool_count: toolCount,
+          source: 'local',
+        },
+      };
+    }
 
-  // Derive counts from actual rows — the database is the authority,
-  // not the cached prompt_count/tool_count on the sessions row.
-  const promptCount = countBatchesBySession(session.id);
-  const toolCount = countActivities(session.id);
+    const fallback = await fetchTeamFallback(deps, 'sessions', req.params.id);
+    if (fallback) {
+      return {
+        body: {
+          ...fallback.record,
+          prompt_count: null,
+          tool_count: null,
+          source: fallback.source,
+        },
+      };
+    }
 
-  return { body: { ...session, prompt_count: promptCount, tool_count: toolCount } };
+    return { status: 404, body: { error: 'not_found' } };
+  };
 }
+
+/** Back-compat: no-team-fallback handler for existing call sites. */
+export const handleGetSession = createGetSessionHandler();
 
 export async function handleGetSessionBatches(req: RouteRequest): Promise<RouteResponse> {
   const batches = listBatchesBySession(req.params.id);

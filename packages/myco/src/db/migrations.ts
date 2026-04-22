@@ -19,7 +19,6 @@ import {
   NOTIFICATIONS_TABLE,
   AGENT_RUN_WRITE_INTENTS_TABLE,
   DIGEST_EXTRACT_REVISIONS_TABLE,
-  AGENT_RUN_EVALUATIONS_TABLE,
   CORTEX_INSTRUCTIONS_TABLE,
   MIGRATION_TASKS_TABLE,
 } from './schema-ddl.js';
@@ -60,6 +59,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 21, migrate: (db) => migrateV20ToV21(db) },
   { version: 22, migrate: (db) => migrateV21ToV22(db) },
   { version: 23, migrate: (db) => migrateV22ToV23(db) },
+  { version: 24, migrate: (db) => migrateV23ToV24(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1153,6 +1153,21 @@ function migrateV16ToV17(db: Database): void {
   }
 }
 
+// Inlined for historical migration-chain fidelity: the v24 migration
+// drops this table, but vaults stamped at v14 or below still need the
+// table created as part of their v15 step. The constant itself was
+// removed from schema-ddl.ts when the feature was retired.
+const AGENT_RUN_EVALUATIONS_TABLE_V15 = `
+  CREATE TABLE IF NOT EXISTS agent_run_evaluations (
+    id            TEXT PRIMARY KEY,
+    task_id       TEXT NOT NULL,
+    matrix_json   TEXT NOT NULL,
+    notes         TEXT,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    created_at    INTEGER NOT NULL,
+    completed_at  INTEGER
+  )`;
+
 function migrateV14ToV15(db: Database): void {
   const existing = getTableColumnSet(db, 'agent_runs');
   const columnAdds: Array<[string, string]> = [
@@ -1165,7 +1180,7 @@ function migrateV14ToV15(db: Database): void {
   try {
     db.exec(AGENT_RUN_WRITE_INTENTS_TABLE);
     db.exec(DIGEST_EXTRACT_REVISIONS_TABLE);
-    db.exec(AGENT_RUN_EVALUATIONS_TABLE);
+    db.exec(AGENT_RUN_EVALUATIONS_TABLE_V15);
 
     for (const [name, decl] of pendingAdds) {
       db.exec(`ALTER TABLE agent_runs ADD COLUMN ${name} ${decl}`);
@@ -1304,6 +1319,44 @@ function migrateV22ToV23(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(23, epochSeconds());
+
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Migrate version 24: retire the matrix-evaluation feature.
+ *
+ * Drops `idx_agent_runs_evaluation_id`, the `agent_run_evaluations`
+ * table, and the `agent_runs.evaluation_id` column. All other agent_runs
+ * data (including dry_run, reasoning_level, execution_overrides) is
+ * preserved.
+ *
+ * Requires SQLite >= 3.35 for `ALTER TABLE ... DROP COLUMN`. The bundled
+ * better-sqlite3 on supported platforms ships a modern SQLite, so the
+ * simple path is sufficient rather than the table-rebuild pattern.
+ * Idempotent via `IF EXISTS` guards + a column-presence check before
+ * DROP COLUMN.
+ */
+function migrateV23ToV24(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare('DROP INDEX IF EXISTS idx_agent_runs_evaluation_id').run();
+    db.prepare('DROP TABLE IF EXISTS agent_run_evaluations').run();
+
+    const cols = getTableColumnSet(db, 'agent_runs');
+    if (cols.has('evaluation_id')) {
+      db.prepare('ALTER TABLE agent_runs DROP COLUMN evaluation_id').run();
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(24, epochSeconds());
 
     db.prepare('COMMIT').run();
   } catch (err) {

@@ -269,7 +269,6 @@ export async function runAgent(
       provider: effectiveProvider?.type ?? null,
       usage_data: buildUsageData({}),
       dryRun: options?.dryRun ?? false,
-      evaluationId: options?.evaluationId ?? null,
       reasoningLevel:
         options?.executionOverrides?.reasoningLevel
         ?? config.reasoningLevel

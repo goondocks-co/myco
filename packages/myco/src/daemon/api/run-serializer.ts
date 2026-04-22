@@ -1,11 +1,10 @@
 /**
  * Shared serializer for agent_runs rows exposed via API.
  *
- * The list/detail handlers in `agent-runs.ts` and the evaluation detail
- * handler in `agent-evaluations.ts` both need to turn a `RunRow` into a
- * JSON-safe payload. This module centralizes that logic so both call sites
- * agree on field naming, optional field inclusion, and the embedded
- * phase-checkpoint projection.
+ * The list/detail handlers in `agent-runs.ts` turn a `RunRow` into a
+ * JSON-safe payload. This module centralizes that logic so field
+ * naming, optional field inclusion, and the embedded phase-checkpoint
+ * projection stay consistent across call sites.
  */
 
 import type { RunRow } from '@myco/db/queries/runs.js';
@@ -148,7 +147,6 @@ export function serializeRun(run: RunRow, opts: SerializeRunOptions = {}) {
     usage_data: run.usage_data,
     error: run.error,
     dry_run: run.dry_run,
-    evaluation_id: run.evaluation_id,
     reasoning_level: run.reasoning_level,
     // Strip `apiKey` from historical rows defensively — before this PR the
     // API accepted apiKey in executionOverrides and stored it unmasked.

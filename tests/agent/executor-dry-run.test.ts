@@ -321,24 +321,7 @@ describe('executor dry-run threading', () => {
     expect(run!.dry_run).toBe(false);
   });
 
-  // (d) evaluationId is persisted onto the agent_runs row
-  it('persists evaluationId onto agent_runs.evaluation_id', async () => {
-    const { runAgent } = await import('@myco/agent/executor.js');
-
-    const result = await runAgent(TEST_VAULT_DIR, {
-      dryRun: true,
-      evaluationId: 'eval-abc',
-      task: TEST_TASK_NAME,
-    });
-
-    expect(result.status).toBe('completed');
-
-    const run = getRun(result.runId);
-    expect(run).not.toBeNull();
-    expect(run!.evaluation_id).toBe('eval-abc');
-  });
-
-  // (e) dryRun:true is forwarded to the scoped tool server via toolSurface
+  // (d) dryRun:true is forwarded to the scoped tool server via toolSurface
   it('forwards dryRun:true to createScopedVaultToolServer options for phased tasks', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 

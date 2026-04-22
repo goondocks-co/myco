@@ -147,29 +147,6 @@ export interface ExecutionConfig {
 }
 
 /**
- * Describes the cartesian variants an evaluation run explores.
- * Serialized into `agent_run_evaluations.matrix_json` and used by the
- * CLI / daemon to enumerate cells.
- *
- * Every cell in the matrix executes the same task; the matrix dimensions
- * vary across runs so output can be compared side-by-side.
- *
- * All fields optional. Missing dimension = "use the task's default for that dimension".
- */
-export interface EvaluationMatrix {
-  /** Runtimes to vary. Typical: ['claude-sdk', 'openai-agents']. */
-  runtimes?: RuntimeId[];
-  /** Reasoning tiers to vary. Typical: ['low', 'default', 'high']. */
-  reasoningLevels?: ReasoningLevel[];
-  /** Models to vary. Provider-specific strings. */
-  models?: string[];
-  /** If true, every cell runs with dryRun enabled (the common case for tuning). */
-  dryRun?: boolean;
-  /** Optional notes to persist with the evaluation record. */
-  notes?: string;
-}
-
-/**
  * Extended config stored as JSON in the agent_tasks.config column.
  * Structural data that doesn't fit in flat columns.
  */
@@ -319,15 +296,11 @@ export interface RunOptions {
    */
   dryRun?: boolean;
   /**
-   * If set, this run is a cell in an evaluation matrix (see `agent_run_evaluations`).
-   * Persisted onto `agent_runs.evaluation_id`.
-   */
-  evaluationId?: string | null;
-  /**
-   * Per-cell overrides for evaluation matrix runs. When set, these overwrite
-   * the corresponding fields on the resolved EffectiveConfig before the
-   * executor enters the phase loop. Use cases: A/B testing runtimes,
-   * reasoning tiers, or models against the same task & vault snapshot.
+   * Per-run execution overrides. When set, these overwrite the
+   * corresponding fields on the resolved EffectiveConfig before the
+   * executor enters the phase loop. Used by the Compare Runs UI for
+   * A/B testing runtimes, reasoning tiers, or models against the same
+   * task & vault snapshot.
    */
   executionOverrides?: {
     runtime?: RuntimeId;

@@ -426,6 +426,10 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       ?? (sessionMeta?.started_at
         ? Math.floor(new Date(sessionMeta.started_at).getTime() / MILLISECONDS_PER_SECOND)
         : epochSeconds());
+    // File mtime on APFS has sub-millisecond precision but Date.now() rounds
+    // to whole ms. A plan file written in the same ms as the Stop event can
+    // end up with mtimeMs > Date.now() by a fraction. Quantize mtime to
+    // integer ms so the boundary check is stable across filesystems.
     const sessionStopMs = Date.now();
     const sessionBatches = listBatchesBySession(sessionId);
 
@@ -441,7 +445,8 @@ export function createStopProcessor(deps: StopProcessorDeps): {
         } catch {
           continue;
         }
-        if (stats.mtimeMs < sessionStartedAt * MILLISECONDS_PER_SECOND || stats.mtimeMs > sessionStopMs) {
+        const mtimeMs = Math.floor(stats.mtimeMs);
+        if (mtimeMs < sessionStartedAt * MILLISECONDS_PER_SECOND || mtimeMs > sessionStopMs) {
           continue;
         }
 

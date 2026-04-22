@@ -13,20 +13,17 @@ import { handleMycoRemember } from './tools/remember.js';
 import { handleMycoPlans } from './tools/plans.js';
 import { handleMycoSavePlan } from './tools/save-plan.js';
 import { handleMycoSessions } from './tools/sessions.js';
-import { handleMycoTeam } from './tools/team.js';
-import { handleMycoGraph } from './tools/graph.js';
 import { handleMycoSupersede } from './tools/supersede.js';
 import { handleMycoConsolidate } from './tools/consolidate.js';
 import { handleMycoContext } from './tools/context.js';
-import { handleMycoSkills, handleMycoSkillCandidates } from './tools/skills.js';
-import { handleCollectiveProject, handleCollectiveProjects, handleCollectiveSearch } from './tools/collective.js';
-import { handleMycoCortex } from './tools/cortex.js';
+import { handleMycoSkills } from './tools/skills.js';
+import {
+  handleCollectiveProject,
+  handleCollectiveProjects,
+  handleCollectiveSearch,
+  handleCollectiveSettings,
+} from './tools/collective.js';
 import { handleMycoRuns } from './tools/runs.js';
-import { handleMycoEvaluations } from './tools/evaluations.js';
-import { handleMycoWriteIntents } from './tools/write-intents.js';
-import { handleMycoPhaseAudit } from './tools/phase-audit.js';
-import { handleMycoResumeRun } from './tools/resume-run.js';
-import { handleMycoDigestRevisions } from './tools/digest-revisions.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { DaemonClient } from '../hooks/client.js';
 import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
@@ -34,11 +31,10 @@ import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 import {
   TOOL_DEFINITIONS,
   TOOL_SEARCH, TOOL_RECALL, TOOL_REMEMBER, TOOL_PLANS, TOOL_SAVE_PLAN, TOOL_SESSIONS,
-  TOOL_TEAM, TOOL_GRAPH, TOOL_SUPERSEDE, TOOL_CONSOLIDATE,
-  TOOL_CONTEXT, TOOL_SKILLS, TOOL_SKILL_CANDIDATES,
-  TOOL_COLLECTIVE_SEARCH, TOOL_COLLECTIVE_PROJECTS, TOOL_COLLECTIVE_PROJECT,
-  TOOL_CORTEX, TOOL_RUNS,
-  TOOL_EVALUATIONS, TOOL_WRITE_INTENTS, TOOL_PHASE_AUDIT, TOOL_RESUME_RUN, TOOL_DIGEST_REVISIONS,
+  TOOL_SUPERSEDE, TOOL_CONSOLIDATE,
+  TOOL_CONTEXT, TOOL_SKILLS,
+  TOOL_COLLECTIVE_SEARCH, TOOL_COLLECTIVE_PROJECTS, TOOL_COLLECTIVE_PROJECT, TOOL_COLLECTIVE_SETTINGS,
+  TOOL_RUNS,
   COLLECTIVE_TOOL_DEFINITIONS,
 } from './tool-definitions.js';
 
@@ -174,18 +170,6 @@ export function createMycoServer(vaultDir: string, client: DaemonClient): MycoSe
         logActivity(TOOL_SESSIONS, { count: result.length, duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
-      case TOOL_TEAM: {
-        const teamInput = input as Record<string, unknown>;
-        const result = await handleMycoTeam(teamInput, client);
-        logActivity(TOOL_TEAM, { count: result.length, duration_ms: Date.now() - start });
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-      }
-      case TOOL_GRAPH: {
-        const graphInput = input as { note_id: string; direction?: 'incoming' | 'outgoing' | 'both'; depth?: number };
-        const result = await handleMycoGraph(graphInput, client);
-        logActivity(TOOL_GRAPH, { note_id: graphInput.note_id, duration_ms: Date.now() - start });
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-      }
       case TOOL_SUPERSEDE: {
         const supersedeInput = input as { old_spore_id: string; new_spore_id: string; reason?: string };
         const result = await handleMycoSupersede(supersedeInput, client);
@@ -221,12 +205,6 @@ export function createMycoServer(vaultDir: string, client: DaemonClient): MycoSe
         logActivity(TOOL_SKILLS, { id: skillsInput.id, status: skillsInput.status, duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
-      case TOOL_SKILL_CANDIDATES: {
-        const candidatesInput = input as { id?: string; action?: 'list' | 'approve' | 'dismiss'; status?: string; limit?: number };
-        const result = await handleMycoSkillCandidates(candidatesInput, client);
-        logActivity(TOOL_SKILL_CANDIDATES, { id: candidatesInput.id, action: candidatesInput.action, duration_ms: Date.now() - start });
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-      }
       case TOOL_COLLECTIVE_SEARCH: {
         const collectiveInput = input as {
           query: string;
@@ -256,20 +234,9 @@ export function createMycoServer(vaultDir: string, client: DaemonClient): MycoSe
         logActivity(TOOL_COLLECTIVE_PROJECT, { project: collectiveInput.project, duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
-      case TOOL_CORTEX: {
-        const cortexInput = input as {
-          op: 'get' | 'refresh' | 'build_prompt' | 'get_prompt_result';
-          run_id?: string;
-          goal?: string;
-          symbiont?: string;
-        };
-        const result = await handleMycoCortex(cortexInput, client);
-        logActivity(TOOL_CORTEX, {
-          op: cortexInput.op,
-          run_id: cortexInput.run_id,
-          ok: result.ok,
-          duration_ms: Date.now() - start,
-        });
+      case TOOL_COLLECTIVE_SETTINGS: {
+        const result = await handleCollectiveSettings(client);
+        logActivity(TOOL_COLLECTIVE_SETTINGS, { duration_ms: Date.now() - start });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       case TOOL_RUNS: {
@@ -284,68 +251,6 @@ export function createMycoServer(vaultDir: string, client: DaemonClient): MycoSe
         logActivity(TOOL_RUNS, {
           op: runsInput.op ?? 'list',
           id: runsInput.id,
-          ok: result.ok,
-          duration_ms: Date.now() - start,
-        });
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-      }
-      case TOOL_EVALUATIONS: {
-        const evalInput = input as {
-          op?: 'list' | 'get' | 'create';
-          status?: string;
-          limit?: number;
-          id?: string;
-          task_id?: string;
-          matrix?: unknown;
-          notes?: string;
-        };
-        const result = await handleMycoEvaluations(evalInput, client);
-        logActivity(TOOL_EVALUATIONS, {
-          op: evalInput.op ?? 'list',
-          id: evalInput.id,
-          task_id: evalInput.task_id,
-          ok: result.ok,
-          duration_ms: Date.now() - start,
-        });
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-      }
-      case TOOL_WRITE_INTENTS: {
-        const wiInput = input as { run_id: string; limit?: number; offset?: number };
-        const result = await handleMycoWriteIntents(wiInput, client);
-        logActivity(TOOL_WRITE_INTENTS, {
-          run_id: wiInput.run_id,
-          ok: result.ok,
-          duration_ms: Date.now() - start,
-        });
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-      }
-      case TOOL_PHASE_AUDIT: {
-        const auditInput = input as { run_id: string };
-        const result = await handleMycoPhaseAudit(auditInput, client);
-        logActivity(TOOL_PHASE_AUDIT, {
-          run_id: auditInput.run_id,
-          ok: result.ok,
-          duration_ms: Date.now() - start,
-        });
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-      }
-      case TOOL_RESUME_RUN: {
-        const resumeInput = input as { id: string; mode?: 'manual' | 'scheduled' };
-        const result = await handleMycoResumeRun(resumeInput, client);
-        logActivity(TOOL_RESUME_RUN, {
-          id: resumeInput.id,
-          mode: resumeInput.mode,
-          ok: result.ok,
-          duration_ms: Date.now() - start,
-        });
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-      }
-      case TOOL_DIGEST_REVISIONS: {
-        const drInput = input as { agent_id?: string; tier?: number; limit?: number };
-        const result = await handleMycoDigestRevisions(drInput, client);
-        logActivity(TOOL_DIGEST_REVISIONS, {
-          agent_id: drInput.agent_id,
-          tier: drInput.tier,
           ok: result.ok,
           duration_ms: Date.now() - start,
         });

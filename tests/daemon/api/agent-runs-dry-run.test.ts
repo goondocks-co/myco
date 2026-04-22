@@ -55,7 +55,7 @@ describe('agent-runs API dry-run + write-intents', () => {
   });
 
   describe('handleRun — dry-run body plumbing', () => {
-    it('forwards dryRun and evaluationId into runAgent options', async () => {
+    it('forwards dryRun into runAgent options', async () => {
       const { handleRun } = makeHandlers();
       await handleRun(makeRequest({
         body: {
@@ -63,24 +63,21 @@ describe('agent-runs API dry-run + write-intents', () => {
           instruction: 'do the thing',
           agentId: 'myco-agent',
           dryRun: true,
-          evaluationId: 'eval-42',
         },
       }));
 
       expect(runAgentSpy).toHaveBeenCalledTimes(1);
-      const [, opts] = runAgentSpy.mock.calls[0] as [string, { dryRun?: boolean; evaluationId?: string }];
+      const [, opts] = runAgentSpy.mock.calls[0] as [string, { dryRun?: boolean }];
       expect(opts.dryRun).toBe(true);
-      expect(opts.evaluationId).toBe('eval-42');
     });
 
-    it('defaults dryRun / evaluationId to undefined when omitted', async () => {
+    it('defaults dryRun to undefined when omitted', async () => {
       const { handleRun } = makeHandlers();
       await handleRun(makeRequest({
         body: { task: 'vault-evolve', instruction: 'go', agentId: 'myco-agent' },
       }));
-      const [, opts] = runAgentSpy.mock.calls[0] as [string, { dryRun?: boolean; evaluationId?: string | null }];
+      const [, opts] = runAgentSpy.mock.calls[0] as [string, { dryRun?: boolean }];
       expect(opts.dryRun).toBeUndefined();
-      expect(opts.evaluationId).toBeUndefined();
     });
 
     it('forwards executionOverrides (top-level + phases) into runAgent', async () => {

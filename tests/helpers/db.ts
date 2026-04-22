@@ -21,7 +21,6 @@ const DELETE_TABLES = [
   'agent_reports',
   'agent_state',
   'agent_runs',
-  'agent_run_evaluations',
   'agent_tasks',
   'resolution_events',
   'entity_mentions',

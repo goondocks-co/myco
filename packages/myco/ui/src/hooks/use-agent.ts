@@ -127,12 +127,11 @@ export interface RunsResponse {
 
 /**
  * Run shape returned by `GET /agent/runs/:id` — a strict superset of
- * `RunRow` that always includes the evaluation-only `write_intents` and
- * `duration_ms` fields. The backend serializer populates both for single
- * detail fetches (see `run-serializer.ts`), so consumers reading from this
- * endpoint can rely on their presence. Matches `EvaluationRunSummary` on
- * the overlapping fields so `useRunsByIds` can reuse the same comparison
- * components.
+ * `RunRow` that always includes the `write_intents` and `duration_ms`
+ * fields. The backend serializer populates both for single detail fetches
+ * (see `run-serializer.ts`), so consumers reading from this endpoint can
+ * rely on their presence. Matches `RunCompareSummary` on the overlapping
+ * fields so `useRunsByIds` can reuse the shared comparison component.
  */
 export interface SerializedRunDetail extends RunRow {
   write_intents: WriteIntentsSummary;
@@ -250,44 +249,12 @@ export interface TriggerRunPayload {
   };
 }
 
-/* ---------- Evaluation types ---------- */
-
-export interface EvaluationMatrix {
-  runtimes?: string[];
-  reasoningLevels?: string[];
-  models?: string[];
-  dryRun?: boolean;
-  notes?: string;
-}
-
-export interface EvaluationRow {
-  id: string;
-  taskId: string;
-  matrix: EvaluationMatrix | null;
-  notes: string | null;
-  status: string;
-  createdAt: number;
-  completedAt: number | null;
-}
-
-export interface EvaluationsResponse {
-  evaluations: EvaluationRow[];
-  total: number;
-}
-
-export interface EvaluationAggregate {
-  total: number;
-  completed: number;
-  failed: number;
-  skipped: number;
-  totalTokens: number;
-  totalCostUsd: number;
-}
+/* ---------- Run compare types ---------- */
 
 /**
- * Aggregated write-intent counts for a single evaluation child run. `total`
- * is the sum across every tool. `by_tool` is the raw per-tool count map (safe
- * to feed into Object.entries for rendering). Non-dry-run children report
+ * Aggregated write-intent counts for a single comparison run. `total` is the
+ * sum across every tool. `by_tool` is the raw per-tool count map (safe to
+ * feed into Object.entries for rendering). Non-dry-run children report
  * `{ total: 0, by_tool: {} }`.
  */
 export interface WriteIntentsSummary {
@@ -295,8 +262,11 @@ export interface WriteIntentsSummary {
   by_tool: Record<string, number>;
 }
 
-/** Child-run summary returned by GET /api/agent/evaluations/:id. */
-export interface EvaluationRunSummary {
+/**
+ * Normalized run summary consumed by `ComparisonView`. Produced by
+ * `useRunsByIds` from the single-run detail endpoint.
+ */
+export interface RunCompareSummary {
   id: string;
   agent_id: string;
   task: string | null;
@@ -317,7 +287,6 @@ export interface EvaluationRunSummary {
   usage_data: string | null;
   error: string | null;
   dry_run: boolean;
-  evaluation_id: string | null;
   /**
    * Reasoning level the run actually used. Serialized from
    * `agent_runs.reasoning_level`. Null when the run inherited the task
@@ -342,12 +311,6 @@ export interface EvaluationRunSummary {
    * missing (run in-flight or never started).
    */
   duration_ms: number | null;
-}
-
-export interface EvaluationDetailResponse {
-  evaluation: EvaluationRow;
-  runs: EvaluationRunSummary[];
-  aggregate: EvaluationAggregate;
 }
 
 /* ---------- Write-intents / audit / revisions responses ---------- */
@@ -587,7 +550,7 @@ export function useResumeRun() {
   });
 }
 
-/* ---------- Dry-run / audit / digest-revisions / evaluation hooks ---------- */
+/* ---------- Dry-run / audit / digest-revisions hooks ---------- */
 
 /**
  * Fetch the write-intents recorded for a dry-run. When `runId` is null the
@@ -663,12 +626,12 @@ export function useRestoreDigestRevision() {
 
 /**
  * Coerce a `SerializedRunDetail` (the shape `/agent/runs/:id` returns) to
- * an `EvaluationRunSummary`. The server emits every required field, but the
+ * a `RunCompareSummary`. The server emits every required field, but the
  * two types still differ in `required` vs `optional` for a handful of
- * columns (dry_run, evaluation_id, reasoning_level, execution_overrides) —
- * this tiny normalizer absorbs that gap without an `as unknown as` cast.
+ * columns (dry_run, reasoning_level, execution_overrides) — this tiny
+ * normalizer absorbs that gap without an `as unknown as` cast.
  */
-function serializedRunToSummary(run: SerializedRunDetail): EvaluationRunSummary {
+function serializedRunToSummary(run: SerializedRunDetail): RunCompareSummary {
   return {
     id: run.id,
     agent_id: run.agent_id,
@@ -686,7 +649,6 @@ function serializedRunToSummary(run: SerializedRunDetail): EvaluationRunSummary 
     usage_data: run.usage_data,
     error: run.error,
     dry_run: run.dry_run ?? false,
-    evaluation_id: run.evaluation_id ?? null,
     reasoning_level: run.reasoning_level ?? null,
     execution_overrides: run.execution_overrides ?? null,
     write_intents: run.write_intents,
@@ -699,8 +661,8 @@ function serializedRunToSummary(run: SerializedRunDetail): EvaluationRunSummary 
  * plain `GET /agent/runs/:id` call (the single-run detail endpoint now
  * serializes `write_intents` + `duration_ms` alongside the usual fields).
  *
- * Returned shape matches `EvaluationRunSummary` so it can flow directly
- * into `ComparisonView` — the pivot's shared comparison component.
+ * Returned shape matches `RunCompareSummary` so it can flow directly into
+ * `ComparisonView` — the shared comparison component.
  *
  * Missing / failed / still-in-flight runs are filtered out of `runs`;
  * `isLoading` is true while any underlying query is pending; `errors` has
@@ -716,7 +678,7 @@ export function useRunsByIds(runIds: string[]) {
     })),
   });
 
-  const runs: EvaluationRunSummary[] = [];
+  const runs: RunCompareSummary[] = [];
   const errors: Error[] = [];
   let isLoading = false;
   for (const r of results) {
@@ -725,85 +687,13 @@ export function useRunsByIds(runIds: string[]) {
     const run = r.data?.run;
     if (run) {
       // `/agent/runs/:id` returns `SerializedRunDetail`, which is a strict
-      // superset of `EvaluationRunSummary` on the overlapping fields. We
-      // still go through `serializedRunToSummary` to resolve the
-      // required-vs-optional gap for fields the run shape leaves optional
-      // but the summary type requires (e.g. `dry_run`, `reasoning_level`).
+      // superset of `RunCompareSummary` on the overlapping fields. We still
+      // go through `serializedRunToSummary` to resolve the required-vs-
+      // optional gap for fields the run shape leaves optional but the
+      // summary type requires (e.g. `dry_run`, `reasoning_level`).
       runs.push(serializedRunToSummary(run));
     }
   }
 
   return { runs, isLoading, errors, isError: errors.length > 0 };
-}
-
-/** List past evaluations (newest first). */
-export function useEvaluations() {
-  return useQuery<EvaluationsResponse>({
-    queryKey: ['agent-evaluations'],
-    queryFn: ({ signal }) => fetchJson<EvaluationsResponse>('/agent/evaluations', { signal }),
-  });
-}
-
-/** Fetch a single evaluation's detail: metadata, child runs, and aggregate. */
-export function useEvaluation(evaluationId: string | undefined) {
-  return useQuery<EvaluationDetailResponse>({
-    queryKey: ['agent-evaluation', evaluationId],
-    queryFn: ({ signal }) =>
-      fetchJson<EvaluationDetailResponse>(`/agent/evaluations/${evaluationId}`, { signal }),
-    enabled: evaluationId !== undefined,
-  });
-}
-
-/**
- * Wire shape for the matrix POST body. Mirrors the daemon's
- * `CreateEvaluationBody.matrix` schema in `agent-evaluations.ts` — arrays
- * are optional (omitted dimension = task default for that axis), phase
- * overrides share across every cell.
- */
-export interface CreateEvaluationPayload {
-  taskId: string;
-  matrix: {
-    runtimes?: RuntimeId[];
-    reasoningLevels?: ReasoningLevel[];
-    models?: string[];
-    dryRun?: boolean;
-    notes?: string;
-    phases?: Record<string, {
-      reasoningLevel?: ReasoningLevel;
-      model?: string;
-      provider?: {
-        runtime?: RuntimeId;
-        type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible';
-        localBackend?: 'ollama' | 'lmstudio';
-        baseUrl?: string;
-        model?: string;
-        reasoningMap?: Partial<Record<ReasoningLevel, string>>;
-        contextLength?: number;
-      };
-      maxTurns?: number;
-    }>;
-  };
-  notes?: string;
-}
-
-export interface CreateEvaluationResponse {
-  evaluationId: string;
-  cellCount: number;
-}
-
-/**
- * Create an evaluation (matrix fan-out) via POST /api/agent/evaluations.
- * Responds immediately with `{evaluationId, cellCount}`; cells execute in
- * the background. The caller typically navigates to the evaluation detail
- * page on success — polling there will surface child runs as they finish.
- */
-export function useCreateEvaluation() {
-  const queryClient = useQueryClient();
-  return useMutation<CreateEvaluationResponse, Error, CreateEvaluationPayload>({
-    mutationFn: (payload) =>
-      postJson<CreateEvaluationResponse>('/agent/evaluations', payload),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['agent-evaluations'] });
-    },
-  });
 }

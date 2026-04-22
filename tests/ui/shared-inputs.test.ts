@@ -4,7 +4,7 @@
  * template-variable names from instruction and prompt text.
  *
  * Covers the two consumers' needs in one place:
- *  - `detectSharedInputs` in `evaluation-helpers.ts` (summarizes whether
+ *  - `detectSharedInputs` in `comparison-helpers.ts` (summarizes whether
  *    multiple runs targeted the same input).
  *  - `buildRerunPrefill` in `rerun-prefill.ts` (re-populates per-var inputs
  *    when rerunning a run).

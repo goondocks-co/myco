@@ -53,3 +53,16 @@ export async function handleCollectiveProject(
   if (!result.ok) return null;
   return (result.data?.project ?? null) as Record<string, unknown> | null;
 }
+
+export async function handleCollectiveSettings(
+  client: DaemonClient,
+): Promise<{ settings_overrides: Record<string, unknown> }> {
+  // Daemon returns { collective_enabled, settings, last_sync }; the Collective
+  // worker's MCP tool exposes the same key-value map under `settings_overrides`.
+  // Mirror the worker's shape so MCP consumers get a consistent name.
+  const result = await client.get('/api/collective/settings');
+  const settings = result.ok
+    ? (result.data as { settings?: Record<string, unknown> } | undefined)?.settings
+    : undefined;
+  return { settings_overrides: settings ?? {} };
+}

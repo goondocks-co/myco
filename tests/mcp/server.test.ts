@@ -18,7 +18,7 @@ describe('MCP Server', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('registers all 20 core tools', () => {
+  it('registers the consolidated 11-tool core surface', () => {
     const server = createMycoServer(tmpDir, client);
     const tools = server.getRegisteredTools();
     expect(tools).toContain('myco_search');
@@ -27,23 +27,31 @@ describe('MCP Server', () => {
     expect(tools).toContain('myco_plans');
     expect(tools).toContain('myco_save_plan');
     expect(tools).toContain('myco_sessions');
-    expect(tools).toContain('myco_team');
-    expect(tools).toContain('myco_graph');
     expect(tools).toContain('myco_supersede');
     expect(tools).toContain('myco_consolidate');
     expect(tools).toContain('myco_context');
     expect(tools).toContain('myco_skills');
-    expect(tools).toContain('myco_skill_candidates');
-    // Bundle D additions (pre-0.21.0 agent-native MCP parity).
-    expect(tools).toContain('myco_cortex');
     expect(tools).toContain('myco_runs');
-    // Bundle G additions (post-0.21.0 follow-ups — #95..#99).
-    expect(tools).toContain('myco_evaluations');
-    expect(tools).toContain('myco_write_intents');
-    expect(tools).toContain('myco_phase_audit');
-    expect(tools).toContain('myco_resume_run');
-    expect(tools).toContain('myco_digest_revisions');
-    expect(tools).toHaveLength(20);
+    expect(tools).toHaveLength(11);
+  });
+
+  it('no longer registers the retired MCP surfaces', () => {
+    const server = createMycoServer(tmpDir, client);
+    const tools = server.getRegisteredTools();
+    // These were retired in the 2026-04-22 MCP surface cleanup.
+    for (const retired of [
+      'myco_team',
+      'myco_graph',
+      'myco_skill_candidates',
+      'myco_cortex',
+      'myco_evaluations',
+      'myco_write_intents',
+      'myco_phase_audit',
+      'myco_resume_run',
+      'myco_digest_revisions',
+    ]) {
+      expect(tools).not.toContain(retired);
+    }
   });
 
   it('does not leak collective tools into the core registration', () => {
@@ -52,6 +60,7 @@ describe('MCP Server', () => {
     expect(tools).not.toContain('collective_search');
     expect(tools).not.toContain('collective_projects');
     expect(tools).not.toContain('collective_project');
+    expect(tools).not.toContain('collective_settings');
   });
 
   it('exports server name and version', () => {

@@ -264,6 +264,29 @@ export class TeamSyncClient {
     return res as T;
   }
 
+  /**
+   * Fetch a single record by id from the team worker.
+   *
+   * Used by the daemon's recall fallback: when `handleGetSession` /
+   * `handleGetSpore` returns a local miss we try the team's D1 copy before
+   * surfacing a 404. Fallback semantics — never throws; any failure (404,
+   * network, auth, malformed response) returns `null` so the caller can
+   * decide what to do with the miss.
+   */
+  async getRecord(
+    type: string,
+    id: string,
+  ): Promise<Record<string, unknown> | null> {
+    try {
+      const res = (await this.request('GET', `/records/${type}/${encodeURIComponent(id)}`)) as
+        | { record?: Record<string, unknown> }
+        | undefined;
+      return res?.record ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // MCP token accessors
   // ---------------------------------------------------------------------------

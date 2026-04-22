@@ -24,7 +24,6 @@ Commands:
   setup-llm [options]      Configure LLM and embedding providers
   setup-digest [options]   Configure digest and capture settings
   agent [options]          Run the intelligence agent
-  agent eval [options]    Run an evaluation matrix across runtime/reasoning/model variants
   task <subcommand>        Manage agent task definitions
   team <init|upgrade>      Provision or upgrade team sync infrastructure
   doctor [--fix]          Check vault health and repair issues
@@ -101,7 +100,10 @@ async function main(): Promise<void> {
     case 'setup-digest': return (await import('./cli/setup-digest.js')).run(args, vaultDir);
     case 'agent': {
       if (args[0] === 'eval') {
-        return (await import('./cli/agent-eval.js')).run(args.slice(1), vaultDir);
+        console.error(
+          'The `agent eval` command has been retired. Use the Compare Runs flow in the daemon UI.',
+        );
+        process.exit(2);
       }
       return (await import('./cli/agent-run.js')).run(args, vaultDir);
     }

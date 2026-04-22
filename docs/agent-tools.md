@@ -13,14 +13,14 @@ See the [Lifecycle docs](lifecycle.md) for more on how this works.
 
 ## Local MCP tools
 
-13 tools exposed through the local daemon over stdio. Available to any agent Myco has been installed into.
+11 tools exposed through the local daemon over stdio. Available to any agent Myco has been installed into. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also registered. The canonical list lives in `packages/myco/src/mcp/tool-definitions.ts`.
 
 ### Search & recall
 
 | Tool | Purpose |
 |------|---------|
-| `myco_search` | Semantic + keyword search across sessions, spores, and plans. Accepts an optional type filter. |
-| `myco_recall` | Context retrieval based on git branch and files. Returns relevant spores, session history, and plan progress for the current work. |
+| `myco_search` | Semantic + keyword search across sessions, spores, and plans. Fans out to the connected team's D1 and merges results by score. |
+| `myco_recall` | Look up a specific note by ID. Falls back to the connected team's D1 when the record isn't local. |
 | `myco_context` | On-demand digest extract at a specific token tier (1500, 5000, or 10000). |
 
 ### Knowledge capture
@@ -38,15 +38,13 @@ See the [Lifecycle docs](lifecycle.md) for more on how this works.
 |------|---------|
 | `myco_sessions` | Browse session history with filters for branch, user, or date range. |
 | `myco_plans` | List active plans and their progress, or read a specific plan. |
-| `myco_graph` | Traverse graph edges in either direction, with configurable depth. |
-| `myco_team` | See teammate activity, filtered by files or plan. |
+| `myco_runs` | Read agent run history — token budget, cost, reasoning level, and per-run details. |
 
 ### Skills
 
 | Tool | Purpose |
 |------|---------|
 | `myco_skills` | List, inspect, or read auto-generated skills with their full lineage. |
-| `myco_skill_candidates` | Browse the skill candidate approval queue. Also supports approve/dismiss actions. |
 
 ## Cloud MCP tools
 

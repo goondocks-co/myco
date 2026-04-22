@@ -53,55 +53,41 @@ describe('RETRIEVAL_GUIDANCE', () => {
     ]);
   });
 
-  // Anti-drift for Bundle D (pre-0.21.0 MCP parity).
-  // If someone removes one of these tools from TOOL_DEFINITIONS or strips
-  // its `cortex` entry, the brief would silently stop advertising the new
-  // parity surfaces and agents would lose the session-start guidance.
-  it('includes the Bundle D must-ship tools so the Cortex brief advertises them', () => {
+  // Keep presence checks for the survivors of the 2026-04-22 MCP surface cleanup
+  // so a future refactor can't silently drop them from the brief.
+  it('includes the canonical retrieval tools by name', () => {
     const names = RETRIEVAL_GUIDANCE.map((entry) => entry.tool);
-    expect(names).toContain('myco_cortex');
     expect(names).toContain('myco_runs');
-    // myco_plans has always been in the brief, but Bundle D extended its
-    // schema. Keep a presence check so a future refactor can't drop it.
     expect(names).toContain('myco_plans');
   });
 
-  it('injects Bundle D tool guidance into the brief body', () => {
+  it('injects canonical retrieval guidance into the brief body', () => {
     const lines = buildRetrievalGuidanceLines({
       teamEnabled: false,
       collectiveConnected: false,
       collectiveCapabilities: [],
     });
     const body = lines.join('\n');
-    expect(body).toContain('`myco_cortex`');
     expect(body).toContain('`myco_runs`');
   });
 
-  // Anti-drift for Bundle G (post-0.21 follow-ups). Every new MCP surface
-  // must show up in the Cortex brief by name — if a future refactor strips
-  // any tool's `cortex` entry, agents would silently lose the session-start
-  // guidance that tells them what the tool is for.
-  it('includes every Bundle G tool by name', () => {
+  // Anti-drift for the 2026-04-22 retirements — none of these tools must
+  // reappear in the Cortex brief. If one does, the MCP surface has drifted.
+  it('excludes every retired MCP surface from the brief', () => {
     const names = RETRIEVAL_GUIDANCE.map((entry) => entry.tool);
-    expect(names).toContain('myco_evaluations');
-    expect(names).toContain('myco_write_intents');
-    expect(names).toContain('myco_phase_audit');
-    expect(names).toContain('myco_resume_run');
-    expect(names).toContain('myco_digest_revisions');
-  });
-
-  it('injects Bundle G tool guidance into the brief body', () => {
-    const lines = buildRetrievalGuidanceLines({
-      teamEnabled: false,
-      collectiveConnected: false,
-      collectiveCapabilities: [],
-    });
-    const body = lines.join('\n');
-    expect(body).toContain('`myco_evaluations`');
-    expect(body).toContain('`myco_write_intents`');
-    expect(body).toContain('`myco_phase_audit`');
-    expect(body).toContain('`myco_resume_run`');
-    expect(body).toContain('`myco_digest_revisions`');
+    for (const retired of [
+      'myco_team',
+      'myco_graph',
+      'myco_cortex',
+      'myco_skill_candidates',
+      'myco_evaluations',
+      'myco_write_intents',
+      'myco_phase_audit',
+      'myco_resume_run',
+      'myco_digest_revisions',
+    ]) {
+      expect(names).not.toContain(retired);
+    }
   });
 });
 

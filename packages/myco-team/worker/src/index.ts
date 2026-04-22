@@ -12,6 +12,7 @@ import { createMcpHandler } from 'agents/mcp';
 import { createMcpServerInstance } from './mcp/server';
 import { authenticateMcpRequest, ensureMcpToken, rotateMcpToken, getMcpTokenHash, MCP_TOKEN_KEY } from './mcp/auth';
 import { searchKnowledge, embedText, type TeamVectorMetadata } from './search-helpers';
+import { fetchRecord, isAllowedRecordType } from './records';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -769,6 +770,17 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
   return jsonResponse({ results: results.map((r) => ({ table: r.type, ...r })) });
 }
 
+async function handleGetRecord(type: string, id: string, env: Env): Promise<Response> {
+  if (!isAllowedRecordType(type)) {
+    return errorResponse(`Unknown record type: ${type}`, 400);
+  }
+  const record = await fetchRecord(env, type, id);
+  if (!record) {
+    return jsonResponse({ error: 'not_found' }, 404);
+  }
+  return jsonResponse({ record });
+}
+
 async function handleGetConfig(env: Env): Promise<Response> {
   const config = await readTeamConfig(env);
 
@@ -952,6 +964,16 @@ export default {
       }
       if (method === 'GET' && path === '/search') {
         return await handleSearch(request, env);
+      }
+      // Single-record lookup used by the daemon's recall fallback (mirrors
+      // the fan-out pattern already in place for /search).
+      if (method === 'GET' && path.startsWith('/records/')) {
+        const segments = path.split('/').filter(Boolean);
+        // /records/:type/:id
+        if (segments.length === 3) {
+          return await handleGetRecord(segments[1], decodeURIComponent(segments[2]), env);
+        }
+        return errorResponse('Not found', 404);
       }
       if (method === 'POST' && path === '/vectors/reindex') {
         return await handleVectorReindex(request, env);

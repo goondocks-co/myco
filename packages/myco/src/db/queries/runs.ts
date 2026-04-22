@@ -73,8 +73,6 @@ export interface RunInsert {
   error?: string | null;
   /** Whether this run was executed in dry-run mode (intercepted writes). */
   dryRun?: boolean;
-  /** Evaluation matrix grouping id, if this run is part of a matrix. */
-  evaluationId?: string | null;
   /**
    * Reasoning level actually applied to this run (from override or resolved
    * config). Null when no explicit level was set.
@@ -116,8 +114,6 @@ export interface RunRow {
   error: string | null;
   /** True when the run was executed in dry-run mode. */
   dry_run: boolean;
-  /** Evaluation matrix this run belongs to, if any. */
-  evaluation_id: string | null;
   /** Reasoning level applied to this run, or null if unset. */
   reasoning_level: ReasoningLevel | null;
   /**
@@ -152,7 +148,6 @@ export interface RunUpdate {
   actions_taken?: string | null;
   error?: string | null;
   dryRun?: boolean;
-  evaluationId?: string | null;
   reasoningLevel?: ReasoningLevel | null;
   executionOverrides?: Record<string, unknown> | null;
 }
@@ -197,7 +192,6 @@ const RUN_COLUMNS = [
   'actions_taken',
   'error',
   'dry_run',
-  'evaluation_id',
   'reasoning_level',
   'execution_overrides',
 ] as const;
@@ -287,7 +281,6 @@ function toRunRow(row: Record<string, unknown>): RunRow {
     actions_taken: (row.actions_taken as string) ?? null,
     error: (row.error as string) ?? null,
     dry_run: Boolean(Number(row.dry_run ?? 0)),
-    evaluation_id: (row.evaluation_id as string) ?? null,
     reasoning_level: toReasoningLevelOrNull(row.reasoning_level),
     execution_overrides: parseJsonObjectColumn(row.execution_overrides),
   };
@@ -324,10 +317,9 @@ function buildRunsWhere(
 
 /**
  * Columns in RunUpdate that map 1:1 to a column name. Camel-cased keys
- * (`dryRun`, `evaluationId`, `reasoningLevel`, `executionOverrides`) are
- * handled separately below because their column names differ, `dryRun`
- * needs boolean->integer coercion, and `executionOverrides` serializes
- * to JSON.
+ * (`dryRun`, `reasoningLevel`, `executionOverrides`) are handled
+ * separately below because their column names differ, `dryRun` needs
+ * boolean->integer coercion, and `executionOverrides` serializes to JSON.
  */
 const UPDATE_COLUMNS: readonly (keyof RunUpdate)[] = [
   'status',
@@ -368,10 +360,6 @@ function buildUpdateClauses(update: RunUpdate): { setClauses: string[]; params: 
     setClauses.push('dry_run = ?');
     params.push(update.dryRun ? 1 : 0);
   }
-  if ('evaluationId' in update) {
-    setClauses.push('evaluation_id = ?');
-    params.push(update.evaluationId ?? null);
-  }
   if ('reasoningLevel' in update) {
     setClauses.push('reasoning_level = ?');
     params.push(update.reasoningLevel ?? null);
@@ -397,7 +385,7 @@ export function insertRun(data: RunInsert): RunRow {
        resume_status, resume_mode, resumed_at, checkpoints, usage_data,
        started_at, completed_at, tokens_used, cost_usd,
        actual_cost_usd, estimated_cost_usd, cost_source, cost_data,
-       actions_taken, error, dry_run, evaluation_id,
+       actions_taken, error, dry_run,
        reasoning_level, execution_overrides
      ) VALUES (
        ?, ?, ?, ?, ?,
@@ -405,7 +393,7 @@ export function insertRun(data: RunInsert): RunRow {
        ?, ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?,
-       ?, ?, ?, ?,
+       ?, ?, ?,
        ?, ?
      )`,
   ).run(
@@ -435,7 +423,6 @@ export function insertRun(data: RunInsert): RunRow {
     data.actions_taken ?? null,
     data.error ?? null,
     data.dryRun ? 1 : 0,
-    data.evaluationId ?? null,
     data.reasoningLevel ?? null,
     serializeExecutionOverrides(data.executionOverrides),
   );
@@ -579,24 +566,6 @@ export function getLatestResumableRunForTask(
      LIMIT 1`,
   ).get(agentId, taskName, STATUS_FAILED) as Record<string, unknown> | undefined;
   return row ? toRunRow(row) : null;
-}
-
-/**
- * Runs attached to a given evaluation, newest first. This lives in
- * `runs.ts` (rather than `evaluations.ts`) because it's fundamentally an
- * `agent_runs` query — which keeps the SELECT_COLUMNS + toRunRow
- * machinery local and breaks what would otherwise be a circular import
- * between the two query modules.
- */
-export function listRunsForEvaluation(evaluationId: string): RunRow[] {
-  const db = getDatabase();
-  const rows = db.prepare(
-    `SELECT ${SELECT_COLUMNS}
-     FROM agent_runs
-     WHERE evaluation_id = ?
-     ORDER BY started_at DESC NULLS LAST, id DESC`,
-  ).all(evaluationId) as Record<string, unknown>[];
-  return rows.map(toRunRow);
 }
 
 export function markRunningRunsInterrupted(message: string): number {

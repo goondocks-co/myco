@@ -2,7 +2,7 @@
  * Shared helpers for detecting input identifiers and template variables
  * embedded in a rendered instruction / prompt string.
  *
- * Extracted from `evaluation-helpers.ts` and `rerun-prefill.ts` so both the
+ * Extracted from `comparison-helpers.ts` and `rerun-prefill.ts` so both the
  * Comparison view (which summarizes whether multiple runs targeted the same
  * input) and the Rerun pre-fill path (which needs to re-populate per-var
  * inputs) parse the same keys with the same regex.

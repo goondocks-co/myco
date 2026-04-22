@@ -305,7 +305,6 @@ const AGENT_RUNS_TABLE = `
     actions_taken  TEXT,
     error          TEXT,
     dry_run        INTEGER NOT NULL DEFAULT 0,
-    evaluation_id  TEXT,
     reasoning_level      TEXT,
     execution_overrides  TEXT
   )`;
@@ -512,22 +511,6 @@ export const DIGEST_EXTRACT_REVISIONS_TABLE = `
     created_at          INTEGER NOT NULL
   )`;
 
-/**
- * Matrix grouping record for evaluation runs. Child runs link back via
- * `agent_runs.evaluation_id` — code-level integrity, no FK because child
- * runs are themselves normal agent_runs rows.
- */
-export const AGENT_RUN_EVALUATIONS_TABLE = `
-  CREATE TABLE IF NOT EXISTS agent_run_evaluations (
-    id            TEXT PRIMARY KEY,
-    task_id       TEXT NOT NULL,
-    matrix_json   TEXT NOT NULL,
-    notes         TEXT,
-    status        TEXT NOT NULL DEFAULT 'pending',
-    created_at    INTEGER NOT NULL,
-    completed_at  INTEGER
-  )`;
-
 // -- FTS5 Virtual Tables ----------------------------------------------------
 
 export const FTS_TABLES = [
@@ -724,7 +707,6 @@ export const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_write_intents_run_id ON agent_run_write_intents (run_id)',
   'CREATE INDEX IF NOT EXISTS idx_write_intents_run_id_tool ON agent_run_write_intents (run_id, tool_name)',
   'CREATE INDEX IF NOT EXISTS idx_digest_revisions_agent_tier ON digest_extract_revisions (agent_id, tier, created_at DESC)',
-  'CREATE INDEX IF NOT EXISTS idx_agent_runs_evaluation_id ON agent_runs (evaluation_id)',
 ];
 
 // -- Ordered table creation -------------------------------------------------
@@ -769,5 +751,4 @@ export const TABLE_DDLS = [
   // Eval harness layer
   AGENT_RUN_WRITE_INTENTS_TABLE,
   DIGEST_EXTRACT_REVISIONS_TABLE,
-  AGENT_RUN_EVALUATIONS_TABLE,
 ];

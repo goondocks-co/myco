@@ -10,7 +10,7 @@ The Cloud MCP server is **read-only by design**. It's a window into project inte
 
 ## Tools
 
-Seven tools, organized into three tiers.
+Five read-only tools. The Cloud MCP surface is deliberately narrower than the local MCP — it's for cloud agents that need to query project knowledge, not operate on it.
 
 ### Discovery — start here
 
@@ -24,23 +24,15 @@ Seven tools, organized into three tiers.
 
 ### Detail — retrieve specific items
 
-**`myco_get`** — Retrieve a full item by ID and type.
+**`myco_recall`** — Retrieve a full item by ID and type.
 - `id` (string, required)
 - `type` (enum, required) — `session`, `spore`, `plan`, `artifact`, `skill`
 
 **`myco_sessions`** — List and filter coding sessions.
 - `limit` (default 20, max 100), `status`, `agent`, `branch`, `since` (ISO date)
 
-### Structure — understand relationships
-
-**`myco_graph`** — Traverse the knowledge graph from an entity or note.
-- `node_id` (string, required)
-- `direction` (optional) — `incoming`, `outgoing`, `both` (default)
-
 **`myco_skills`** — List project skills (reusable patterns extracted from knowledge).
 - `status`, `limit` (default 50, max 100)
-
-**`myco_team`** — List team nodes with sync status and package versions.
 
 ## Setting it up
 

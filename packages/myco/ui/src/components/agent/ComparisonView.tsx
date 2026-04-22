@@ -3,14 +3,11 @@
  *
  * Renders an aggregate row, a drift annotation banner, a deltas summary,
  * and the per-run comparison table over an arbitrary set of runs. Used by
- * both the "Compare selected runs" flow off the Runs list and the matrix
- * evaluation detail view (`EvaluationDetail` wraps this component with its
- * evaluation-specific metadata).
+ * the "Compare selected runs" flow off the Runs list.
  *
  * Intentionally free of matrix / evaluation vocabulary — this is a
  * general-purpose "compare N runs" view. The runs come from
- * `useRunsByIds(...)` when ad-hoc, or from an evaluation's child run list
- * when matrix-sourced.
+ * `useRunsByIds(...)`.
  */
 
 import { memo, useCallback, useMemo, useState } from 'react';
@@ -28,7 +25,7 @@ import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
 import { StatCard } from '../ui/stat-card';
-import { useAgentTasks, type EvaluationRunSummary } from '../../hooks/use-agent';
+import { useAgentTasks, type RunCompareSummary } from '../../hooks/use-agent';
 import { formatDurationMs, capitalize } from '../../lib/format';
 import { formatCost, formatTokens, statusBadgeVariant } from './helpers';
 import {
@@ -50,13 +47,13 @@ import {
   type ColumnKey,
   type PhaseBreakdownRow,
   type RunSetAggregate,
-} from './evaluation-helpers';
+} from './comparison-helpers';
 
 /* ---------- Types ---------- */
 
 export interface ComparisonViewProps {
   /** Runs to display. May be empty while underlying fetch is pending. */
-  runs: EvaluationRunSummary[];
+  runs: RunCompareSummary[];
   isLoading?: boolean;
   isError?: boolean;
   errorMessage?: string;
@@ -70,15 +67,13 @@ export interface ComparisonViewProps {
   subtitle?: string;
   /**
    * Optional aggregate to render in the stat cards. When omitted the view
-   * computes one from the run set. Evaluation-backed comparisons pass the
-   * daemon-computed aggregate; ad-hoc run comparisons let the view derive
-   * its own.
+   * computes one from the run set.
    */
   aggregate?: RunSetAggregate;
   /**
-   * Evaluation-specific metadata slot rendered between the header and the
-   * aggregate row. `EvaluationDetail` uses this to show matrix dimensions
-   * + evaluation status. Left undefined in ad-hoc comparisons.
+   * Optional metadata slot rendered between the header and the aggregate
+   * row. Left undefined by the default ad-hoc comparison flow; kept as an
+   * extension point for future callers that want to render extra context.
    */
   metadataSlot?: React.ReactNode;
   /** Label for the back button (default: "Back"). */
@@ -407,7 +402,7 @@ function HeaderCell({ children }: { children: React.ReactNode }) {
 }
 
 interface ComparisonRowProps {
-  run: EvaluationRunSummary;
+  run: RunCompareSummary;
   expanded: boolean;
   onToggleExpanded: (runId: string) => void;
   onOpenRun: (runId: string) => void;
@@ -611,7 +606,7 @@ type TaskContext =
   | { kind: 'mixed'; count: number; tooltip: string };
 
 function summarizeTaskContext(
-  runs: ReadonlyArray<Pick<EvaluationRunSummary, 'task'>>,
+  runs: ReadonlyArray<Pick<RunCompareSummary, 'task'>>,
   displayNames: Map<string, string>,
 ): TaskContext {
   const distinct = new Set<string>();

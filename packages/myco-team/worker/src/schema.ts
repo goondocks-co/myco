@@ -357,4 +357,38 @@ export async function initD1Schema(db: D1Database): Promise<void> {
         .bind('semantic_graph_pruned', '1'),
     ]);
   }
+
+  // One-shot prune for the retired matrix-evaluation feature. Mirrors
+  // the local v24 migration. The tables/columns may never have been
+  // created on this D1 (the worker schema never carried them), so each
+  // step is IF EXISTS — the marker still gets written so we don't keep
+  // attempting the drops on every Worker invocation.
+  const evalMarker = await db
+    .prepare(`SELECT value FROM team_config WHERE key = ?`)
+    .bind('evaluation_feature_pruned')
+    .first<{ value: string }>();
+
+  if (!evalMarker) {
+    const evalDrops = [
+      'DROP INDEX IF EXISTS idx_agent_runs_evaluation_id',
+      'DROP TABLE IF EXISTS agent_run_evaluations',
+    ];
+    for (const sql of evalDrops) {
+      try {
+        await db.prepare(sql).run();
+      } catch {
+        // Missing table/index is the expected case for D1s that never
+        // carried the evaluation feature.
+      }
+    }
+    try {
+      await db.prepare('ALTER TABLE agent_runs DROP COLUMN evaluation_id').run();
+    } catch {
+      // Column or table absent — expected.
+    }
+    await db
+      .prepare(`INSERT INTO team_config (key, value) VALUES (?, ?)`)
+      .bind('evaluation_feature_pruned', '1')
+      .run();
+  }
 }
