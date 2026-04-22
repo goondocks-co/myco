@@ -66,3 +66,46 @@ describe('DaemonClient.spawnDaemon — coalesce guard', () => {
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 });
+
+// Every request method auto-spawns the daemon when it's unreachable, so any
+// hook activity — not just session-start — resurrects a dead daemon after a
+// reboot. The coalesce guard still dedupes per 3s window.
+describe('DaemonClient — auto-spawn on request failure', () => {
+  let vaultDir: string;
+
+  beforeEach(() => {
+    vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-auto-spawn-'));
+    spawnMock.mockClear();
+  });
+
+  afterEach(() => {
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+  });
+
+  it('post/get/put/delete each spawn when daemon.json is missing', async () => {
+    for (const call of [
+      (c: InstanceType<typeof DaemonClient>) => c.post('/x', {}),
+      (c: InstanceType<typeof DaemonClient>) => c.get('/x'),
+      (c: InstanceType<typeof DaemonClient>) => c.put('/x', {}),
+      (c: InstanceType<typeof DaemonClient>) => c.delete('/x'),
+    ]) {
+      spawnMock.mockClear();
+      const client = new DaemonClient(vaultDir);
+      const result = await call(client);
+      expect(result.ok).toBe(false);
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('post spawns after fetch failure to a stale daemon.json pointing at a dead port', async () => {
+    // Reserved pid + unbound high port so fetch throws ECONNREFUSED.
+    fs.writeFileSync(
+      path.join(vaultDir, 'daemon.json'),
+      JSON.stringify({ pid: 0x7fffffff, port: 1 }),
+    );
+    const client = new DaemonClient(vaultDir);
+    const result = await client.post('/x', {});
+    expect(result.ok).toBe(false);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+});
