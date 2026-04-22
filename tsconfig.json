@@ -16,6 +16,7 @@
     "paths": {
       "@myco/*": ["./packages/myco/src/*"],
       "@myco-team/*": ["./packages/myco-team/src/*"],
+      "@myco-team-worker/*": ["./packages/myco-team/worker/src/*"],
       "@myco-collective/*": ["./packages/myco-collective/src/*"],
       "@myco-deploy/*": ["./packages/myco-deploy/src/*"]
     }

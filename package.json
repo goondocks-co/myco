@@ -14,10 +14,10 @@
     "build:watch": "tsc --watch",
     "build:types": "tsc",
     "check:workers": "npm run check --prefix packages/myco-team/worker && npm run check --prefix packages/myco-collective/worker",
-    "test": "vitest run",
-    "test:fast": "MYCO_TEST_PROFILE=fast vitest run",
-    "test:integration": "MYCO_TEST_PROFILE=integration vitest run",
-    "test:watch": "vitest",
+    "test": "node scripts/run-bun-tests.mjs",
+    "test:fast": "MYCO_TEST_PROFILE=fast node scripts/run-bun-tests.mjs",
+    "test:integration": "MYCO_TEST_PROFILE=integration node scripts/run-bun-tests.mjs",
+    "test:watch": "bun test --watch",
     "lint": "tsc --noEmit && npm run check:workers"
   },
   "repository": {
@@ -55,7 +55,6 @@
     "sqlite-vec": "^0.1.8",
     "tailwind-merge": "^3.5.0",
     "tsx": "^4.0.0",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.4"
+    "typescript": "^6.0.3"
   }
 }

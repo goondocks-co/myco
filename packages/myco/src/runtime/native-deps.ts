@@ -73,7 +73,17 @@ export function resolveDevNativeDeps(): NativeDepsPaths {
   if (resolved) return resolved;
 
   const libsqlite = findDevLibsqlite();
-  if (libsqlite) Database.setCustomSQLite(libsqlite);
+  if (libsqlite) {
+    try {
+      Database.setCustomSQLite(libsqlite);
+    } catch (err) {
+      // Under `bun test --isolate`, each test file runs with a fresh module
+      // registry but shares the native SQLite library. A second call throws
+      // "SQLite already loaded" — benign, since the custom library is already
+      // registered from the first file that needed it.
+      if (!String(err).includes('SQLite already loaded')) throw err;
+    }
+  }
 
   const vec0 = findDevVec0();
   const ripgrep = findDevRipgrep();

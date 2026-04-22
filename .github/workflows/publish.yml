@@ -279,12 +279,8 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      # Run the DB test suite only (603 tests). The full suite is blocked on
-      # the vitest -> bun test runner swap (Phase 5 deferred work). DB tests
-      # are the load-bearing ones for the bun:sqlite migration; any schema or
-      # query regression lights up here.
-      - name: Run DB tests under Bun
-        run: bun --bun x vitest run --pool=forks tests/db
+      - name: Run test suite under Bun
+        run: npm test
 
       # For team/collective tags, run the normal build (tsup-based). For
       # myco tags, the binaries arrive from the cross-compile matrix —

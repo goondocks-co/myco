@@ -26,10 +26,10 @@
     "build:binary": "node scripts/build-single-target.mjs",
     "build:ui": "if [ -d ui ]; then cd ui && { test -d node_modules || npm ci; } && npx vite build; fi",
     "build:verify": "node scripts/verify-build.mjs",
-    "test": "vitest run",
-    "test:fast": "MYCO_TEST_PROFILE=fast vitest run",
-    "test:integration": "MYCO_TEST_PROFILE=integration vitest run",
-    "test:watch": "vitest",
+    "test": "cd ../.. && node scripts/run-bun-tests.mjs",
+    "test:fast": "cd ../.. && MYCO_TEST_PROFILE=fast node scripts/run-bun-tests.mjs",
+    "test:integration": "cd ../.. && MYCO_TEST_PROFILE=integration node scripts/run-bun-tests.mjs",
+    "test:watch": "cd ../.. && bun test --watch",
     "lint": "tsc --noEmit"
   },
   "publishConfig": {
@@ -76,7 +76,6 @@
     "@vscode/ripgrep": "^1.15.14",
     "sqlite-vec": "^0.1.8",
     "tsx": "^4.0.0",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.4"
+    "typescript": "^6.0.3"
   }
 }
