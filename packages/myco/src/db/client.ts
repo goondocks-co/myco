@@ -1,13 +1,14 @@
 /**
  * SQLite client -- connection lifecycle management.
  *
- * Provides init/get/close for a singleton better-sqlite3 instance.
- * The instance is synchronous and reused for the lifetime of the process.
+ * Provides init/get/close for a singleton bun:sqlite instance.
+ * Native-dep resolution (custom libsqlite3 for extension loading) happens
+ * lazily at first initDatabase / openReadonly call.
  */
 
-import Database from 'better-sqlite3';
-import type { Database as DatabaseType } from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import path from 'node:path';
+import { resolveDevNativeDeps } from '../runtime/native-deps.js';
 
 const NOT_INITIALIZED_MSG = 'Database not initialized -- call initDatabase() first';
 
@@ -15,25 +16,29 @@ const NOT_INITIALIZED_MSG = 'Database not initialized -- call initDatabase() fir
 export const SQLITE_DB_FILE = 'myco.db';
 
 /** Singleton Database instance. */
-let instance: DatabaseType | null = null;
+let instance: Database | null = null;
+
+function ensureNativeDepsResolved(): void {
+  resolveDevNativeDeps();
+}
+
+/** Re-export for callers that need the concrete type. */
+export type { Database };
 
 /**
  * Initialize (or return existing) SQLite instance with WAL mode.
- *
- * @param dbPath -- filesystem path for the database file. Omit for in-memory.
- * @returns the Database instance.
  */
-export function initDatabase(dbPath?: string): DatabaseType {
+export function initDatabase(dbPath?: string): Database {
   if (instance) return instance;
+  ensureNativeDepsResolved();
 
   instance = new Database(dbPath ?? ':memory:');
 
-  // Performance and safety PRAGMAs
-  instance.pragma('journal_mode = WAL');
-  instance.pragma('foreign_keys = ON');
-  instance.pragma('busy_timeout = 5000');
-  instance.pragma('cache_size = -64000');
-  instance.pragma('temp_store = MEMORY');
+  instance.run('PRAGMA journal_mode = WAL');
+  instance.run('PRAGMA foreign_keys = ON');
+  instance.run('PRAGMA busy_timeout = 5000');
+  instance.run('PRAGMA cache_size = -64000');
+  instance.run('PRAGMA temp_store = MEMORY');
 
   return instance;
 }
@@ -43,15 +48,13 @@ export function initDatabase(dbPath?: string): DatabaseType {
  *
  * @throws if `initDatabase()` has not been called.
  */
-export function getDatabase(): DatabaseType {
+export function getDatabase(): Database {
   if (!instance) throw new Error(NOT_INITIALIZED_MSG);
   return instance;
 }
 
 /**
  * Close the Database instance and reset the singleton.
- *
- * Safe to call when already closed or never initialized.
  */
 export function closeDatabase(): void {
   if (!instance) return;
@@ -61,13 +64,11 @@ export function closeDatabase(): void {
 
 /**
  * Open a read-only connection to a vault database.
- *
- * Used by CLI commands for direct reads without the daemon.
- * Caller is responsible for closing the returned instance.
  */
-export function openReadonly(dbPath: string): DatabaseType {
+export function openReadonly(dbPath: string): Database {
+  ensureNativeDepsResolved();
   const db = new Database(dbPath, { readonly: true });
-  db.pragma('busy_timeout = 5000');
+  db.run('PRAGMA busy_timeout = 5000');
   return db;
 }
 
@@ -76,4 +77,15 @@ export function openReadonly(dbPath: string): DatabaseType {
  */
 export function vaultDbPath(vaultDir: string): string {
   return path.join(vaultDir, SQLITE_DB_FILE);
+}
+
+/**
+ * Read a single-value PRAGMA as better-sqlite3's pragma(name, { simple: true }) did.
+ * Returns the first column of the first row.
+ */
+export function simplePragma(db: Database, name: string): string | number {
+  const row = db.prepare(`PRAGMA ${name}`).get() as Record<string, unknown> | undefined;
+  if (!row) return '';
+  const value = Object.values(row)[0];
+  return (value as string | number) ?? '';
 }

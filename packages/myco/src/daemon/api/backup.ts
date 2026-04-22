@@ -6,7 +6,7 @@
  * and POST /api/restore.
  */
 
-import type { Database } from 'better-sqlite3';
+import type { Database } from 'bun:sqlite';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { MycoConfig } from '../../config/schema.js';
 import {

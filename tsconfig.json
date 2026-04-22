@@ -8,6 +8,7 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "types": ["bun"],
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,

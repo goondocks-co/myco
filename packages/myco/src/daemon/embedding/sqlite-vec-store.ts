@@ -5,12 +5,12 @@
  *   - One vec0 virtual table per embeddable namespace (cosine distance metric)
  *   - A regular `embedding_metadata` table for provider/model/hash tracking
  *
- * All methods are synchronous (better-sqlite3 is sync).
+ * All methods are synchronous (bun:sqlite is sync).
  */
 
-import Database from 'better-sqlite3';
-import type { Database as DatabaseType, Statement } from 'better-sqlite3';
-import * as sqliteVec from 'sqlite-vec';
+import { Database } from 'bun:sqlite';
+import type { Statement } from 'bun:sqlite';
+import { getVec0Path, resolveDevNativeDeps } from '../../runtime/native-deps.js';
 import { EMBEDDING_DIMENSIONS } from '@myco/db/schema.js';
 import {
   EMBEDDABLE_NAMESPACES,
@@ -99,7 +99,7 @@ function vecTableDDL(namespace: EmbeddableNamespace): string {
 // ---------------------------------------------------------------------------
 
 export class SqliteVecVectorStore implements VectorStore {
-  private db: DatabaseType;
+  private db: Database;
 
   // Cached prepared statements (lazy-initialized per namespace)
   private deleteVecStmts = new Map<string, Statement>();
@@ -113,9 +113,11 @@ export class SqliteVecVectorStore implements VectorStore {
   private embeddedIdsStmt!: Statement;
 
   constructor(dbPath?: string) {
+    // Ensure Database.setCustomSQLite has fired (libsqlite3 with extension support).
+    resolveDevNativeDeps();
     this.db = new Database(dbPath ?? ':memory:');
-    sqliteVec.load(this.db);
-    this.db.pragma('journal_mode = WAL');
+    this.db.loadExtension(getVec0Path());
+    this.db.run('PRAGMA journal_mode = WAL');
     this.createSchema();
     this.prepareStatements();
   }
@@ -207,16 +209,17 @@ export class SqliteVecVectorStore implements VectorStore {
       this.deleteVecStmts.get(ns)!.run(id);
       this.insertVecStmts.get(ns)!.run(id, vec);
 
-      // Upsert metadata
+      // Upsert metadata. bun:sqlite requires the @-prefix in binding keys to
+      // match @name placeholders in the SQL (better-sqlite3 accepted either).
       this.upsertMetaStmt.run({
-        namespace: ns,
-        record_id: id,
-        model: (metadata?.['model'] as string) ?? DEFAULT_META_MODEL,
-        provider: (metadata?.['provider'] as string) ?? DEFAULT_META_PROVIDER,
-        dimensions: embedding.length,
-        content_hash: (metadata?.['content_hash'] as string) ?? DEFAULT_META_CONTENT_HASH,
-        embedded_at: (metadata?.['embedded_at'] as number) ?? Date.now(),
-        domain_metadata: metadata?.['domain_metadata']
+        '@namespace': ns,
+        '@record_id': id,
+        '@model': (metadata?.['model'] as string) ?? DEFAULT_META_MODEL,
+        '@provider': (metadata?.['provider'] as string) ?? DEFAULT_META_PROVIDER,
+        '@dimensions': embedding.length,
+        '@content_hash': (metadata?.['content_hash'] as string) ?? DEFAULT_META_CONTENT_HASH,
+        '@embedded_at': (metadata?.['embedded_at'] as number) ?? Date.now(),
+        '@domain_metadata': metadata?.['domain_metadata']
           ? JSON.stringify(metadata['domain_metadata'])
           : null,
       });
