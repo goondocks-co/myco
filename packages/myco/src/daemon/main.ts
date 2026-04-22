@@ -769,7 +769,8 @@ export async function main(): Promise<void> {
 
   server.registerRoute('GET', '/api/sessions', handleListSessions);
 
-  server.registerRoute('GET', '/api/sessions/:id', createGetSessionHandler({ getTeamClient: () => teamSync.getTeamClient(), machineId }));
+  const teamFallbackDeps = { getTeamClient: () => teamSync.getTeamClient(), machineId };
+  server.registerRoute('GET', '/api/sessions/:id', createGetSessionHandler(teamFallbackDeps));
   const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir, logger, liveConfig });
   server.registerRoute('GET', '/api/sessions/:id/impact', sessionMutations.handleGetSessionImpact);
   server.registerRoute('POST', '/api/sessions/:id/complete', sessionMutations.handleCompleteSession);
@@ -791,7 +792,7 @@ export async function main(): Promise<void> {
 
   // --- Mycelium API routes ---
   server.registerRoute('GET', '/api/spores', handleListSpores);
-  server.registerRoute('GET', '/api/spores/:id', createGetSporeHandler({ getTeamClient: () => teamSync.getTeamClient(), machineId }));
+  server.registerRoute('GET', '/api/spores/:id', createGetSporeHandler(teamFallbackDeps));
   server.registerRoute('GET', '/api/entities', handleListEntities);
   server.registerRoute('GET', '/api/graph/seeds', handleGetGraphSeeds);
   server.registerRoute('GET', '/api/graph', handleGetFullGraph);

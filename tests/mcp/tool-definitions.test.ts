@@ -309,47 +309,40 @@ describe('handler forwards every documented schema property', () => {
  * tool is added or renamed in one surface but not another.
  */
 describe('cross-surface tool-name drift', () => {
+  const TOOL_NAME_PATTERNS = {
+    'server.tool': /server\.tool\(\s*["']([^"']+)["']/g,
+    registerTool: /registerTool\(\{\s*name:\s*["']([^"']+)["']/g,
+  } as const;
+
+  function extractToolNames(relPath: string, pattern: keyof typeof TOOL_NAME_PATTERNS): string[] {
+    const source = fs.readFileSync(path.resolve(__dirname, '../..', relPath), 'utf-8');
+    return [...source.matchAll(TOOL_NAME_PATTERNS[pattern])].map((m) => m[1]);
+  }
+
   it('Pi symbiont registers exactly the canonical tool set', () => {
-    const piPath = path.resolve(
-      __dirname,
-      '../../packages/myco/src/symbionts/templates/pi/plugin.ts',
-    );
-    const piSource = fs.readFileSync(piPath, 'utf-8');
-    const piNames = new Set(
-      [...piSource.matchAll(/registerTool\(\{\s*name:\s*["']([^"']+)["']/g)].map((m) => m[1]),
-    );
+    const names = extractToolNames('packages/myco/src/symbionts/templates/pi/plugin.ts', 'registerTool');
+    expect(names.length).toBeGreaterThan(0);
     const expected = new Set([
       ...TOOL_DEFINITIONS.map((t) => t.name),
       ...COLLECTIVE_TOOL_DEFINITIONS.map((t) => t.name),
     ]);
-    expect(piNames).toEqual(expected);
+    expect(new Set(names)).toEqual(expected);
   });
 
   it('Collective worker exposes exactly COLLECTIVE_TOOL_DEFINITIONS', () => {
-    const workerPath = path.resolve(
-      __dirname,
-      '../../packages/myco-collective/worker/src/mcp/server.ts',
-    );
-    const source = fs.readFileSync(workerPath, 'utf-8');
-    const names = new Set(
-      [...source.matchAll(/server\.tool\(\s*["']([^"']+)["']/g)].map((m) => m[1]),
-    );
+    const names = extractToolNames('packages/myco-collective/worker/src/mcp/server.ts', 'server.tool');
+    expect(names.length).toBeGreaterThan(0);
     const expected = new Set(COLLECTIVE_TOOL_DEFINITIONS.map((t) => t.name));
-    expect(names).toEqual(expected);
+    expect(new Set(names)).toEqual(expected);
   });
 
   it('Team worker exposes a subset of canonical local tools', () => {
-    const teamPath = path.resolve(
-      __dirname,
-      '../../packages/myco-team/worker/src/mcp/server.ts',
-    );
-    const source = fs.readFileSync(teamPath, 'utf-8');
-    const names = [...source.matchAll(/server\.tool\(\s*["']([^"']+)["']/g)].map((m) => m[1]);
+    const names = extractToolNames('packages/myco-team/worker/src/mcp/server.ts', 'server.tool');
+    expect(names.length).toBeGreaterThan(0);
     const canonical = new Set(TOOL_DEFINITIONS.map((t) => t.name));
     for (const n of names) {
       expect(canonical.has(n), `Team worker tool ${n} not in canonical TOOL_DEFINITIONS`).toBe(true);
     }
-    // Sanity: worker should at minimum register recall, so the rename landed.
     expect(names).toContain('myco_recall');
     expect(names).not.toContain('myco_get');
     expect(names).not.toContain('myco_graph');

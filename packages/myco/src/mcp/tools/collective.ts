@@ -58,10 +58,8 @@ export async function handleCollectiveSettings(
   client: DaemonClient,
 ): Promise<{ settings_overrides: Record<string, unknown> }> {
   const result = await client.get('/api/collective/settings');
-  if (!result.ok || !result.data) return { settings_overrides: {} };
-  const overrides = (result.data as { settings_overrides?: unknown }).settings_overrides;
-  if (overrides && typeof overrides === 'object') {
-    return { settings_overrides: overrides as Record<string, unknown> };
-  }
-  return { settings_overrides: {} };
+  const overrides = result.ok
+    ? (result.data as { settings_overrides?: Record<string, unknown> } | undefined)?.settings_overrides
+    : undefined;
+  return { settings_overrides: overrides ?? {} };
 }
