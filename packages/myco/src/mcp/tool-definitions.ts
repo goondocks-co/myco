@@ -63,23 +63,15 @@ export const TOOL_REMEMBER = 'myco_remember';
 export const TOOL_PLANS = 'myco_plans';
 export const TOOL_SAVE_PLAN = 'myco_save_plan';
 export const TOOL_SESSIONS = 'myco_sessions';
-export const TOOL_TEAM = 'myco_team';
-export const TOOL_GRAPH = 'myco_graph';
 export const TOOL_SUPERSEDE = 'myco_supersede';
 export const TOOL_CONSOLIDATE = 'myco_consolidate';
 export const TOOL_CONTEXT = 'myco_context';
 export const TOOL_SKILLS = 'myco_skills';
-export const TOOL_SKILL_CANDIDATES = 'myco_skill_candidates';
 export const TOOL_COLLECTIVE_SEARCH = 'collective_search';
 export const TOOL_COLLECTIVE_PROJECTS = 'collective_projects';
 export const TOOL_COLLECTIVE_PROJECT = 'collective_project';
-export const TOOL_CORTEX = 'myco_cortex';
+export const TOOL_COLLECTIVE_SETTINGS = 'collective_settings';
 export const TOOL_RUNS = 'myco_runs';
-export const TOOL_EVALUATIONS = 'myco_evaluations';
-export const TOOL_WRITE_INTENTS = 'myco_write_intents';
-export const TOOL_PHASE_AUDIT = 'myco_phase_audit';
-export const TOOL_RESUME_RUN = 'myco_resume_run';
-export const TOOL_DIGEST_REVISIONS = 'myco_digest_revisions';
 
 // --- Shared property descriptions (used by multiple tools) ---
 const PROP_BRANCH = 'Git branch name to find related sessions and plans';
@@ -209,32 +201,6 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
-    name: TOOL_TEAM,
-    description: 'List team members registered in the vault. Returns id, user, role, joined, and tags per member. Phase-1 scope: no filters.',
-    cortex: {
-      guidance: 'Use for current team topology and shared project context.',
-      priority: 70,
-      requiresTeam: true,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {},
-    },
-  },
-  {
-    name: TOOL_GRAPH,
-    description: 'Traverse connections between records via graph edges — explore how sessions, spores, and plans relate to each other.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        note_id: { type: 'string', description: 'Note ID to start from (e.g., "session-abc123" or "decision-xyz789")' },
-        direction: { type: 'string', enum: ['incoming', 'outgoing', 'both'], description: 'Link direction to follow (default: both)' },
-        depth: { type: 'number', description: 'How many hops to traverse, 1-3 (default: 1)' },
-      },
-      required: ['note_id'],
-    },
-  },
-  {
     name: TOOL_SUPERSEDE,
     description: 'Mark a spore as outdated and replaced by a newer one. Use when a decision was reversed, a gotcha was fixed, a discovery was wrong, or the codebase changed and an observation no longer applies. The old spore is preserved but marked superseded.',
     cortex: {
@@ -301,46 +267,6 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
-    name: TOOL_SKILL_CANDIDATES,
-    description: 'List and manage skill candidates — observations identified as potential skills. Use to see pending candidates, approve, or dismiss them.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        id: { type: 'string', description: 'Get a specific candidate by ID' },
-        action: { type: 'string', enum: ['list', 'approve', 'dismiss'], description: "Action to perform (default: 'list')" },
-        status: { type: 'string', description: 'Filter by status: identified, approved, generated, dismissed' },
-        limit: { type: 'number', description: `Max results (default: ${MCP_SKILLS_DEFAULT_LIMIT})` },
-      },
-    },
-  },
-  {
-    name: TOOL_CORTEX,
-    description: 'Cortex instruction + prompt-builder surface. op: "get" returns the current session-start instructions snapshot. op: "refresh" triggers the cortex-instructions task to regenerate them. op: "build_prompt" starts the cortex-prompt-builder task for a goal (required) and optional symbiont. op: "get_prompt_result" polls a prompt-builder run by run_id. Refresh and build_prompt are not read-only — they start background runs.',
-    annotations: {
-      // Mixed: get/get_prompt_result are read-only, refresh/build_prompt kick
-      // off background work. Mark conservatively — consumers should not silently
-      // auto-run this tool.
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-    cortex: {
-      guidance: 'Use op: "get" to read your own session-start Cortex instructions; use op: "build_prompt" + "get_prompt_result" when you need the prompt-builder to draft a prompt for a specific goal.',
-      priority: 95,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        op: { type: 'string', enum: ['get', 'refresh', 'build_prompt', 'get_prompt_result'], description: 'Cortex operation' },
-        run_id: { type: 'string', description: 'Required for op: "get_prompt_result"' },
-        goal: { type: 'string', description: 'Required for op: "build_prompt" — the task the prompt will be built for' },
-        symbiont: { type: 'string', description: 'Optional symbiont/agent name the prompt should be tuned for; defaults to the first enabled symbiont' },
-      },
-      required: ['op'],
-    },
-  },
-  {
     name: TOOL_RUNS,
     description: 'Read agent run history. op: "list" (default) returns recent runs with runtime/provider/model/token/cost/reasoning fields — filter by task, agent_id, limit. op: "get" with id returns a single run including write_intents totals and duration_ms. Use after a run completes to check your own token budget, cost, and reasoning level — particularly useful when debugging a run that exhausted context.',
     annotations: {
@@ -362,129 +288,6 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         agent_id: { type: 'string', description: 'Filter op: "list" by agent id' },
         limit: { type: 'number', description: 'Max results for op: "list" (default: 50)' },
       },
-    },
-  },
-  {
-    name: TOOL_EVALUATIONS,
-    description: 'Create, list, or fetch agent evaluations. An evaluation fans out a single task across a cartesian product of (runtime × reasoning × model) cells so outputs can be compared side by side. op: "list" (default) returns newest-first summaries with an optional limit. op: "get" with id returns the evaluation + child runs + aggregate stats. op: "create" requires task_id and matrix; cells execute sequentially in the background — the response returns the evaluationId + cellCount. op: "create" is NOT read-only; it starts background runs.',
-    annotations: {
-      // Mixed ops: list/get are read-only, create kicks off background runs.
-      // Mark conservatively so clients confirm before auto-running with op: "create".
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-    cortex: {
-      guidance: 'Use op: "list" to see recent matrix evaluations, op: "get" to inspect cells + aggregate stats, and op: "create" to fan a task out across runtime/reasoning/model cells for side-by-side comparison.',
-      priority: 88,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        op: { type: 'string', enum: ['list', 'get', 'create'], description: 'Operation (default: "list")' },
-        status: { type: 'string', description: 'Filter op: "list" by status (reserved; currently ignored by the route)' },
-        limit: { type: 'number', description: 'Max results for op: "list" (default: 50)' },
-        id: { type: 'string', description: 'Required for op: "get" — the evaluation id' },
-        task_id: { type: 'string', description: 'Required for op: "create" — id of the agent task to evaluate' },
-        matrix: {
-          type: 'object',
-          description: 'Required for op: "create". Matrix payload: { runtimes?, reasoningLevels?, models?, dryRun?, notes?, phases? }. Empty arrays expand to defaults. See /api/agent/evaluations POST body for full shape.',
-        },
-        notes: { type: 'string', description: 'Optional notes stored alongside the evaluation row (op: "create" only)' },
-      },
-    },
-  },
-  {
-    name: TOOL_WRITE_INTENTS,
-    description: 'Inspect the write-intents recorded during a dry-run — what the agent would have done (tool_name, tool_input, synthetic_output) without actually writing. Paginated via limit (default 500, max 5000) and offset. Use with myco_runs to verify safety before re-running the same task without dry_run.',
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-    cortex: {
-      guidance: 'Use after a dry-run to inspect what writes the agent would have performed — close the "dry-run → verify → real-run" loop before repeating the task without dry_run.',
-      priority: 86,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        run_id: { type: 'string', description: 'The run id whose write-intents you want to inspect' },
-        limit: { type: 'number', description: 'Max results (default: 500, max: 5000)' },
-        offset: { type: 'number', description: 'Pagination offset (default: 0)' },
-      },
-      required: ['run_id'],
-    },
-  },
-  {
-    name: TOOL_PHASE_AUDIT,
-    description: 'Read the per-phase audit trail for an agent run — what each phase did, its cost, tool-call counts, reasoning level, and any write intents. Returns a joined view over agent_runs, agent_reports, agent_turns, usage_data, checkpoints, and (for dry runs) agent_run_write_intents. Essential for debugging a failed or mis-executing run.',
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-    cortex: {
-      guidance: 'Use when debugging a failed or mis-executing run — returns the per-phase cost, tool counts, reasoning level, and write intents in one payload.',
-      priority: 87,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        run_id: { type: 'string', description: 'The run id whose phase audit you want to inspect' },
-      },
-      required: ['run_id'],
-    },
-  },
-  {
-    name: TOOL_RESUME_RUN,
-    description: 'Resume a paused or interrupted agent run. The run must be in a resumable state (resumable=1 AND status="failed" per the route) — check status via myco_runs first. The resume starts a new background phase and returns immediately with {ok, message, runId}. NOT idempotent: each successful call starts a fresh phase.',
-    annotations: {
-      // Starts a new background phase; mark as mutating + non-idempotent so
-      // clients confirm before repeating. Not "destructive" (no data is
-      // removed) but also not "read-only".
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-    cortex: {
-      guidance: 'Use to resume a paused or interrupted agent run after verifying (via myco_runs) that its resumable flag is set and its status is "failed".',
-      priority: 89,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        id: { type: 'string', description: 'The run id to resume' },
-        mode: { type: 'string', enum: ['manual', 'scheduled'], description: 'Resume mode (default: "manual"). Scheduled is reserved for the daemon scheduler.' },
-      },
-      required: ['id'],
-    },
-  },
-  {
-    name: TOOL_DIGEST_REVISIONS,
-    description: 'List historical digest revisions for the given (agent_id, tier). Revisions are append-only, so this surface shows how the project\'s digest has evolved over time. tier is required; agent_id defaults to the primary agent on the daemon side. Restore (rolling a past revision back into the live digest) is intentionally UI-only and is NOT exposed via MCP.',
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-    cortex: {
-      guidance: 'Use to see how the project digest has evolved for a given tier — restore is UI-only.',
-      priority: 92,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        agent_id: { type: 'string', description: 'Optional — defaults to the primary agent on the daemon side' },
-        tier: { type: 'number', description: 'Required — the digest tier (for example 1500, 5000, 10000)' },
-        limit: { type: 'number', description: 'Max results (default: 50)' },
-      },
-      required: ['tier'],
     },
   },
 ];
@@ -544,6 +347,25 @@ export const COLLECTIVE_TOOL_DEFINITIONS: ToolDefinition[] = [
         include_digest: { type: 'boolean', description: 'Request digest information when available' },
       },
       required: ['project'],
+    },
+  },
+  {
+    name: TOOL_COLLECTIVE_SETTINGS,
+    description: 'Inspect the active Collective setting overrides applied to this project.',
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    cortex: {
+      guidance: 'Use to inspect active Collective setting overrides for this project.',
+      priority: 83,
+      requiresCollective: true,
+    },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
     },
   },
 ] as const;

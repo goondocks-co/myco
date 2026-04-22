@@ -1,13 +1,8 @@
 /**
  * `useTaskExecutionDefaults` — resolves the effective task-level defaults
  * (runtime, provider, model, reasoning) and the inputs the shared provider
- * draft hook needs, in one place.
- *
- * Previously this logic lived inline in both `RunTaskDialog` and
- * `MatrixRunDialog` with a subtle discrepancy (MatrixRunDialog was missing
- * the `fromTaskRowProvider(execution?.provider)` fallback in its
- * `taskDefaultProvider` chain). Consolidating here fixes that as a side
- * effect.
+ * draft hook needs, in one place. Kept centralized so `RunTaskDialog` (and
+ * any future dialog) stays consistent on the task-default resolution chain.
  */
 
 import { useMemo } from 'react';

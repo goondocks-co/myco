@@ -1,13 +1,12 @@
 /**
- * Pure helpers for EvaluationDetail's per-cell comparison table.
+ * Pure helpers backing the shared `ComparisonView` component.
  *
  * Extracted to a standalone module so they can be unit-tested without
- * spinning up a React renderer (we don't yet have a component-level test
- * harness for EvaluationDetail — see the "Tests" note in the feature plan).
+ * spinning up a React renderer (the component itself has no RTL harness).
  */
 
 import { tryParseJson } from '@myco/utils/json';
-import type { EvaluationRunSummary } from '../../hooks/use-agent';
+import type { RunCompareSummary } from '../../hooks/use-agent';
 import { extractSharedInputs, type SharedInputKey } from './shared-inputs';
 
 // ---------------------------------------------------------------------------
@@ -15,9 +14,8 @@ import { extractSharedInputs, type SharedInputKey } from './shared-inputs';
 // ---------------------------------------------------------------------------
 
 /**
- * Sentinel rendered in cells (not headers) when a dimension was not
- * specified on the evaluation matrix — i.e. the cell inherited the task's
- * default for that axis.
+ * Sentinel rendered in cells (not headers) when a dimension was left
+ * unspecified — i.e. the run inherited the task's default for that axis.
  */
 export const TASK_DEFAULT_LABEL = '(task default)';
 
@@ -30,12 +28,9 @@ export const TASK_DEFAULT_LABEL = '(task default)';
  * persisted `run.reasoning_level` column. Returns `TASK_DEFAULT_LABEL` when
  * the column is null — i.e. the run inherited the task default (no override
  * applied at submit time).
- *
- * This replaces the previous matrix-zip hack, which was fragile when runs
- * failed to start or the matrix shape was inconsistent with the run list.
  */
 export function deriveRunReasoning(
-  run: Pick<EvaluationRunSummary, 'reasoning_level'>,
+  run: Pick<RunCompareSummary, 'reasoning_level'>,
 ): string {
   return run.reasoning_level ?? TASK_DEFAULT_LABEL;
 }
@@ -101,7 +96,7 @@ export function computeCostPerWrite(
 
 export interface DeltaCell {
   /** The run that won this category (lowest cost / most writes / fastest). */
-  run: EvaluationRunSummary;
+  run: RunCompareSummary;
   /** Human-friendly label for the cell (runtime / reasoning / model). */
   label: string;
 }
@@ -122,7 +117,7 @@ export interface DeltasSummary {
  * Tie-break is "first wins" — stable ordering of runs preserves it.
  */
 export function computeDeltas(
-  runs: EvaluationRunSummary[],
+  runs: RunCompareSummary[],
   reasoningByIndex: Array<string | undefined>,
 ): DeltasSummary {
   let cheapest: DeltaCell | null = null;
@@ -244,7 +239,7 @@ export function sumPhaseTurns(usageData: string | null): number | null {
 /**
  * Column identifiers used by the comparison table. Kept as a discriminated
  * string union so the diff-only helper can switch on them without string
- * typos. Keep in sync with the `<thead>` render in EvaluationDetail.
+ * typos. Keep in sync with the `<thead>` render in ComparisonView.
  */
 export type ColumnKey =
   | 'runtime'
@@ -271,7 +266,7 @@ const ALWAYS_VISIBLE_COLUMNS: ReadonlySet<ColumnKey> = new Set<ColumnKey>(['stat
  * undefined !== null). Numeric columns stringify to a fixed precision so
  * floating-point jitter doesn't defeat the comparison.
  */
-function readColumnValue(run: EvaluationRunSummary, column: ColumnKey): string {
+function readColumnValue(run: RunCompareSummary, column: ColumnKey): string {
   switch (column) {
     case 'runtime':
       return run.runtime ?? '__missing__';
@@ -316,7 +311,7 @@ function readColumnValue(run: EvaluationRunSummary, column: ColumnKey): string {
  * helper still returns every candidate column when `runs.length < 2`.
  */
 export function selectVisibleColumns(
-  runs: EvaluationRunSummary[],
+  runs: RunCompareSummary[],
   candidates: ReadonlyArray<ColumnKey>,
 ): Set<ColumnKey> {
   if (runs.length < 2) {
@@ -386,7 +381,7 @@ const SYNTHETIC_RUN_PHASE_NAME = 'run';
  * sub-table is always non-empty.
  */
 export function buildPhaseBreakdown(
-  run: EvaluationRunSummary,
+  run: RunCompareSummary,
 ): PhaseBreakdownRow[] {
   const phases = parseUsagePhases(run.usage_data);
   const overrides = run.execution_overrides?.phases ?? {};
@@ -453,7 +448,7 @@ function parseUsagePhases(usageData: string | null): UsagePhase[] {
  * `execution_overrides` is null or `phases` is absent/empty. Used by the
  * row-level "Phases: N" badge.
  */
-export function countPhaseOverrides(run: Pick<EvaluationRunSummary, 'execution_overrides'>): number {
+export function countPhaseOverrides(run: Pick<RunCompareSummary, 'execution_overrides'>): number {
   const phases = run.execution_overrides?.phases;
   if (!phases) return 0;
   return Object.keys(phases).length;
@@ -465,7 +460,7 @@ export function countPhaseOverrides(run: Pick<EvaluationRunSummary, 'execution_o
  * when no overrides are set.
  */
 export function formatPhaseOverrideTooltip(
-  run: Pick<EvaluationRunSummary, 'execution_overrides'>,
+  run: Pick<RunCompareSummary, 'execution_overrides'>,
 ): string {
   const phases = run.execution_overrides?.phases;
   if (!phases) return '';
@@ -484,10 +479,8 @@ export function formatPhaseOverrideTooltip(
 // ---------------------------------------------------------------------------
 
 /**
- * Aggregated counters across an arbitrary run set. Matches the shape the
- * evaluation detail endpoint returns for `aggregate`, so ComparisonView can
- * feed either an evaluation-sourced aggregate or a computed-client-side
- * aggregate into the same StatCard row.
+ * Aggregated counters across an arbitrary run set. ComparisonView feeds a
+ * client-side-derived aggregate into the StatCard row.
  */
 export interface RunSetAggregate {
   total: number;
@@ -503,7 +496,7 @@ export interface RunSetAggregate {
  * are treated as 0 contribution. Status counts use exact-match on the
  * lowercase strings the daemon emits.
  */
-export function aggregateRunSet(runs: EvaluationRunSummary[]): RunSetAggregate {
+export function aggregateRunSet(runs: RunCompareSummary[]): RunSetAggregate {
   let completed = 0;
   let failed = 0;
   let skipped = 0;
@@ -556,7 +549,7 @@ export interface DriftAnnotation {
  * The banner is advisory only — the caller renders a neutral notice above
  * the table and does not block interaction.
  */
-export function detectDrift(runs: EvaluationRunSummary[]): DriftAnnotation {
+export function detectDrift(runs: RunCompareSummary[]): DriftAnnotation {
   if (runs.length < 2) {
     return { show: false, spanMinutes: 0, differentTasks: false };
   }
@@ -623,7 +616,7 @@ export type SharedInputResult =
  *     subset of runs parameterized). Callers warn inline.
  */
 export function detectSharedInputs(
-  runs: ReadonlyArray<Pick<EvaluationRunSummary, 'id' | 'instruction'>>,
+  runs: ReadonlyArray<Pick<RunCompareSummary, 'id' | 'instruction'>>,
 ): SharedInputResult {
   if (runs.length === 0) return { sameInput: null };
 

@@ -310,11 +310,10 @@ describe('P2 #14: listLineageForSkill LIMIT', () => {
 // ---------------------------------------------------------------------------
 // MCP tools registration
 // ---------------------------------------------------------------------------
-describe('MCP tools: myco_skills and myco_skill_candidates', () => {
-  it('tool definitions include skill tools', () => {
+describe('MCP tools: myco_skills', () => {
+  it('tool definitions include myco_skills', () => {
     const names = TOOL_DEFINITIONS.map(t => t.name);
     expect(names).toContain('myco_skills');
-    expect(names).toContain('myco_skill_candidates');
   });
 
   it('myco_skills has correct schema', () => {
@@ -323,14 +322,6 @@ describe('MCP tools: myco_skills and myco_skill_candidates', () => {
     expect(def!.inputSchema.properties).toHaveProperty('id');
     expect(def!.inputSchema.properties).toHaveProperty('status');
     expect(def!.inputSchema.properties).toHaveProperty('limit');
-  });
-
-  it('myco_skill_candidates has action enum', () => {
-    const def = TOOL_DEFINITIONS.find(t => t.name === 'myco_skill_candidates');
-    expect(def).toBeDefined();
-    const action = def!.inputSchema.properties.action as { enum?: string[] };
-    expect(action.enum).toContain('approve');
-    expect(action.enum).toContain('dismiss');
   });
 });
 

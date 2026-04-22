@@ -93,10 +93,7 @@ export interface RunTaskDialogProps {
 
 /**
  * Single-run "run a task" dialog. Posts to /agent/run with optional
- * `executionOverrides` — the per-run override path. Matrix / fan-out
- * creation now lives in its own dialog (`MatrixRunDialog`), reachable from
- * the Comparisons tab. See the product pivot: comparisons primary,
- * matrix as accelerator.
+ * `executionOverrides` — the per-run override path.
  */
 export function RunTaskDialog({
   open,

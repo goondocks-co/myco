@@ -13,9 +13,7 @@ import {
   insertWriteIntent,
   listWriteIntents,
   countWriteIntentsByTool,
-  countWriteIntentsByToolForEvaluation,
 } from '@myco/db/queries/write-intents.js';
-import { insertEvaluation } from '@myco/db/queries/evaluations.js';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
 const TEST_AGENT_ID = 'agent-write-intents-test';
@@ -147,65 +145,6 @@ describe('write intents query helpers', () => {
     it('returns an empty object when there are no intents', () => {
       seedRun('run-zero');
       expect(countWriteIntentsByTool('run-zero')).toEqual({});
-    });
-  });
-
-  describe('countWriteIntentsByToolForEvaluation', () => {
-    function seedRunInEval(runId: string, evaluationId: string) {
-      insertRun({
-        id: runId,
-        agent_id: TEST_AGENT_ID,
-        task: 'vault-evolve',
-        started_at: epochNow(),
-        evaluationId,
-      });
-    }
-
-    it('groups counts by run_id and tool_name across all runs in an evaluation', () => {
-      insertEvaluation({ id: 'eval-batch', taskId: 'vault-evolve', matrix: {} });
-      seedRunInEval('eval-batch-run-1', 'eval-batch');
-      seedRunInEval('eval-batch-run-2', 'eval-batch');
-
-      insertWriteIntent({ runId: 'eval-batch-run-1', toolName: 'vault_create_spore', toolInput: '{}', syntheticOutput: '{}' });
-      insertWriteIntent({ runId: 'eval-batch-run-1', toolName: 'vault_create_spore', toolInput: '{}', syntheticOutput: '{}' });
-      insertWriteIntent({ runId: 'eval-batch-run-1', toolName: 'vault_write_digest', toolInput: '{}', syntheticOutput: '{}' });
-
-      insertWriteIntent({ runId: 'eval-batch-run-2', toolName: 'vault_create_spore', toolInput: '{}', syntheticOutput: '{}' });
-
-      const byRun = countWriteIntentsByToolForEvaluation('eval-batch');
-      expect(byRun).toEqual({
-        'eval-batch-run-1': { vault_create_spore: 2, vault_write_digest: 1 },
-        'eval-batch-run-2': { vault_create_spore: 1 },
-      });
-    });
-
-    it('excludes runs that belong to other evaluations', () => {
-      insertEvaluation({ id: 'eval-iso-a', taskId: 'vault-evolve', matrix: {} });
-      insertEvaluation({ id: 'eval-iso-b', taskId: 'vault-evolve', matrix: {} });
-      seedRunInEval('iso-run-a', 'eval-iso-a');
-      seedRunInEval('iso-run-b', 'eval-iso-b');
-
-      insertWriteIntent({ runId: 'iso-run-a', toolName: 't1', toolInput: '{}', syntheticOutput: '{}' });
-      insertWriteIntent({ runId: 'iso-run-b', toolName: 't2', toolInput: '{}', syntheticOutput: '{}' });
-
-      expect(countWriteIntentsByToolForEvaluation('eval-iso-a')).toEqual({
-        'iso-run-a': { t1: 1 },
-      });
-    });
-
-    it('returns an empty object for an evaluation with no child runs', () => {
-      insertEvaluation({ id: 'eval-no-runs', taskId: 'vault-evolve', matrix: {} });
-      expect(countWriteIntentsByToolForEvaluation('eval-no-runs')).toEqual({});
-    });
-
-    it('omits runs that have no intents', () => {
-      insertEvaluation({ id: 'eval-mixed', taskId: 'vault-evolve', matrix: {} });
-      seedRunInEval('mixed-run-1', 'eval-mixed');
-      seedRunInEval('mixed-run-2', 'eval-mixed');
-      insertWriteIntent({ runId: 'mixed-run-1', toolName: 't', toolInput: '{}', syntheticOutput: '{}' });
-
-      const byRun = countWriteIntentsByToolForEvaluation('eval-mixed');
-      expect(byRun).toEqual({ 'mixed-run-1': { t: 1 } });
     });
   });
 

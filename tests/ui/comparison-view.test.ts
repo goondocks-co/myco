@@ -1,15 +1,12 @@
 /**
  * Tests for the pure helpers backing the shared `ComparisonView` component.
- * Mirrors `evaluation-helpers.test.ts` in style — the React component has
- * no RTL harness, so the non-trivial logic lives in the helpers module and
- * is covered here.
+ * The React component has no RTL harness, so the non-trivial logic lives in
+ * the helpers module and is covered here.
  *
  * Covered:
  *   - `aggregateRunSet` — aggregate counters over an arbitrary run set
  *   - `detectDrift`    — drift banner heuristic (span + task-diff)
  *   - `selectVisibleColumns` — diff-column visibility with mixed run sets
- *     (sanity check that the helper works on an ad-hoc run set, not just
- *     evaluation-sourced runs)
  */
 
 import { describe, expect, it } from 'vitest';
@@ -21,10 +18,10 @@ import {
   selectVisibleColumns,
   DRIFT_THRESHOLD_MINUTES,
   type ColumnKey,
-} from '../../packages/myco/ui/src/components/agent/evaluation-helpers';
-import type { EvaluationRunSummary } from '../../packages/myco/ui/src/hooks/use-agent';
+} from '../../packages/myco/ui/src/components/agent/comparison-helpers';
+import type { RunCompareSummary } from '../../packages/myco/ui/src/hooks/use-agent';
 
-function fakeRun(over: Partial<EvaluationRunSummary>): EvaluationRunSummary {
+function fakeRun(over: Partial<RunCompareSummary>): RunCompareSummary {
   return {
     id: 'run-x',
     agent_id: 'myco-agent',
@@ -42,7 +39,6 @@ function fakeRun(over: Partial<EvaluationRunSummary>): EvaluationRunSummary {
     usage_data: null,
     error: null,
     dry_run: false,
-    evaluation_id: null,
     reasoning_level: null,
     execution_overrides: null,
     write_intents: { total: 0, by_tool: {} },
@@ -64,7 +60,7 @@ describe('aggregateRunSet', () => {
   });
 
   it('counts statuses and sums tokens + cost across mixed runs', () => {
-    const runs: EvaluationRunSummary[] = [
+    const runs: RunCompareSummary[] = [
       fakeRun({ id: 'a', status: 'completed', tokens_used: 100, cost_usd: 0.02 }),
       fakeRun({ id: 'b', status: 'completed', tokens_used: 250, cost_usd: 0.05 }),
       fakeRun({ id: 'c', status: 'failed', tokens_used: 50 }),
@@ -81,7 +77,7 @@ describe('aggregateRunSet', () => {
   });
 
   it('ignores non-finite tokens and cost', () => {
-    const runs: EvaluationRunSummary[] = [
+    const runs: RunCompareSummary[] = [
       fakeRun({ id: 'a', tokens_used: Number.NaN, cost_usd: Number.POSITIVE_INFINITY }),
       fakeRun({ id: 'b', tokens_used: 100, cost_usd: 0.1 }),
     ];
@@ -91,7 +87,7 @@ describe('aggregateRunSet', () => {
   });
 
   it('treats unknown statuses as uncounted (not-completed / failed / skipped)', () => {
-    const runs: EvaluationRunSummary[] = [
+    const runs: RunCompareSummary[] = [
       fakeRun({ id: 'a', status: 'running' }),
       fakeRun({ id: 'b', status: 'pending' }),
     ];

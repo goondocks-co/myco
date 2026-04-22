@@ -1,12 +1,11 @@
 /**
- * Tests for myco_skills and myco_skill_candidates tool handlers.
+ * Tests for the myco_skills tool handler.
  *
- * Both handlers proxy through DaemonClient; skill candidates additionally
- * dispatches on the `action` field to approve/dismiss via PUT.
+ * The handler proxies through DaemonClient to /api/skill-records.
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { handleMycoSkills, handleMycoSkillCandidates } from '@myco/mcp/tools/skills.js';
+import { handleMycoSkills } from '@myco/mcp/tools/skills.js';
 import { DaemonClient } from '@myco/hooks/client.js';
 
 function mockClient(data: unknown = null, ok = true): DaemonClient {
@@ -56,51 +55,5 @@ describe('myco_skills', () => {
     const client = mockClient(null, false);
     const result = await handleMycoSkills({}, client);
     expect(result).toEqual([]);
-  });
-});
-
-describe('myco_skill_candidates', () => {
-  it('lists candidates with status + limit query', async () => {
-    const candidates = [{ id: 'c1', topic: 'demo', status: 'identified' }];
-    const client = mockClient({ candidates });
-
-    const result = await handleMycoSkillCandidates({ status: 'identified', limit: 10 }, client);
-
-    expect(result).toEqual(candidates);
-    expect(client.get).toHaveBeenCalledWith(expect.stringContaining('/api/skill-candidates'));
-    expect(client.get).toHaveBeenCalledWith(expect.stringContaining('status=identified'));
-  });
-
-  it('fetches a specific candidate by id', async () => {
-    const candidate = { id: 'c1', topic: 'demo' };
-    const client = mockClient(candidate);
-    const result = await handleMycoSkillCandidates({ id: 'c1' }, client);
-    expect(result).toEqual(candidate);
-    expect(client.get).toHaveBeenCalledWith('/api/skill-candidates/c1');
-  });
-
-  it('approves a candidate via PUT with status=approved', async () => {
-    const client = mockClient({ id: 'c1', status: 'approved' });
-    await handleMycoSkillCandidates({ action: 'approve', id: 'c1' }, client);
-    expect(client.put).toHaveBeenCalledWith('/api/skill-candidates/c1', { status: 'approved' });
-  });
-
-  it('dismisses a candidate via PUT with status=dismissed', async () => {
-    const client = mockClient({ id: 'c1', status: 'dismissed' });
-    await handleMycoSkillCandidates({ action: 'dismiss', id: 'c1' }, client);
-    expect(client.put).toHaveBeenCalledWith('/api/skill-candidates/c1', { status: 'dismissed' });
-  });
-
-  it('rejects approve/dismiss without an id', async () => {
-    const client = mockClient({});
-    const result = await handleMycoSkillCandidates({ action: 'approve' }, client);
-    expect(result).toEqual({ error: "Action 'approve' requires an id" });
-    expect(client.put).not.toHaveBeenCalled();
-  });
-
-  it('returns error shape when PUT fails', async () => {
-    const client = mockClient(null, false);
-    const result = await handleMycoSkillCandidates({ action: 'approve', id: 'c1' }, client);
-    expect(result).toEqual({ error: 'Failed to approve candidate' });
   });
 });

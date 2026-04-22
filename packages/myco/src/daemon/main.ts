@@ -52,7 +52,7 @@ import { handleGetModels } from './api/models.js';
 import { computeConfigHash, createLiveStatsHandler } from './api/stats.js';
 import {
   handleListSessions,
-  handleGetSession,
+  createGetSessionHandler,
   handleGetSessionBatches,
   handleGetBatchActivities,
   handleGetSessionAttachments,
@@ -61,7 +61,7 @@ import {
 } from './api/sessions.js';
 import {
   handleListSpores,
-  handleGetSpore,
+  createGetSporeHandler,
   handleListEntities,
   handleGetGraphSeeds,
   handleGetGraph,
@@ -124,7 +124,6 @@ import { createSchema } from '../db/schema.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
 import { createMcpProxyHandlers } from './api/mcp-proxy.js';
 import { createAgentRunHandlers } from './api/agent-runs.js';
-import { createAgentEvaluationHandlers } from './api/agent-evaluations.js';
 import { createDigestRevisionHandlers } from './api/digest-revisions.js';
 import { createAttachmentHandler } from './api/attachments.js';
 import { reconcileLogBuffer } from './log-reconcile.js';
@@ -770,7 +769,8 @@ export async function main(): Promise<void> {
 
   server.registerRoute('GET', '/api/sessions', handleListSessions);
 
-  server.registerRoute('GET', '/api/sessions/:id', handleGetSession);
+  const teamFallbackDeps = { getTeamClient: () => teamSync.getTeamClient(), machineId };
+  server.registerRoute('GET', '/api/sessions/:id', createGetSessionHandler(teamFallbackDeps));
   const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir, logger, liveConfig });
   server.registerRoute('GET', '/api/sessions/:id/impact', sessionMutations.handleGetSessionImpact);
   server.registerRoute('POST', '/api/sessions/:id/complete', sessionMutations.handleCompleteSession);
@@ -792,7 +792,7 @@ export async function main(): Promise<void> {
 
   // --- Mycelium API routes ---
   server.registerRoute('GET', '/api/spores', handleListSpores);
-  server.registerRoute('GET', '/api/spores/:id', handleGetSpore);
+  server.registerRoute('GET', '/api/spores/:id', createGetSporeHandler(teamFallbackDeps));
   server.registerRoute('GET', '/api/entities', handleListEntities);
   server.registerRoute('GET', '/api/graph/seeds', handleGetGraphSeeds);
   server.registerRoute('GET', '/api/graph', handleGetFullGraph);
@@ -817,11 +817,6 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/agent/runs/:id/turns', agentRunHandlers.handleGetRunTurns);
   server.registerRoute('GET', '/api/agent/runs/:id/write-intents', agentRunHandlers.handleGetRunWriteIntents);
   server.registerRoute('GET', '/api/agent/runs/:id/audit', agentRunHandlers.handleGetRunAudit);
-
-  const agentEvalHandlers = createAgentEvaluationHandlers({ vaultDir, embeddingManager, logger });
-  server.registerRoute('POST', '/api/agent/evaluations', agentEvalHandlers.handleCreate);
-  server.registerRoute('GET', '/api/agent/evaluations', agentEvalHandlers.handleList);
-  server.registerRoute('GET', '/api/agent/evaluations/:id', agentEvalHandlers.handleGet);
 
   const digestRevisionHandlers = createDigestRevisionHandlers({ vaultDir, logger });
   server.registerRoute('GET', '/api/digest/revisions', digestRevisionHandlers.handleList);

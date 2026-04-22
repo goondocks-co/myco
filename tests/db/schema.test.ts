@@ -47,7 +47,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(23);
+      expect(SCHEMA_VERSION).toBe(24);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -85,16 +85,19 @@ describe('Database schema', () => {
         createSchema(db);
         expect(tableExists(db, 'agent_run_write_intents')).toBe(true);
         expect(tableExists(db, 'digest_extract_revisions')).toBe(true);
-        expect(tableExists(db, 'agent_run_evaluations')).toBe(true);
+        // Matrix evaluations were retired in schema v24; fresh installs
+        // at v24+ must NOT carry the table or the agent_runs.evaluation_id
+        // column.
+        expect(tableExists(db, 'agent_run_evaluations')).toBe(false);
 
         expect(getColumnNames(db, 'agent_run_write_intents'))
           .toEqual(expect.arrayContaining(['run_id', 'phase_id', 'tool_name', 'tool_input', 'synthetic_output', 'stub_id', 'recorded_at']));
         expect(getColumnNames(db, 'digest_extract_revisions'))
           .toEqual(expect.arrayContaining(['agent_id', 'tier', 'content', 'metadata', 'run_id', 'parent_revision_id', 'created_at']));
-        expect(getColumnNames(db, 'agent_run_evaluations'))
-          .toEqual(expect.arrayContaining(['task_id', 'matrix_json', 'notes', 'status', 'created_at', 'completed_at']));
 
-        expect(getColumnNames(db, 'agent_runs')).toEqual(expect.arrayContaining(['dry_run', 'evaluation_id']));
+        const agentRunsCols = getColumnNames(db, 'agent_runs');
+        expect(agentRunsCols).toEqual(expect.arrayContaining(['dry_run']));
+        expect(agentRunsCols).not.toContain('evaluation_id');
       });
 
       it('creates cortex_instructions on fresh install', () => {
@@ -1268,6 +1271,9 @@ describe('Database schema', () => {
 
         expect(tableExists(db, 'agent_run_write_intents')).toBe(true);
         expect(tableExists(db, 'digest_extract_revisions')).toBe(true);
+        // agent_run_evaluations is created at v15 and later dropped at
+        // v24; at this checkpoint the migration chain has only reached
+        // v15 so the table should still be present.
         expect(tableExists(db, 'agent_run_evaluations')).toBe(true);
 
         const cols = getColumnNames(db, 'agent_runs');
@@ -1323,16 +1329,16 @@ describe('Database schema', () => {
         expect(() => runMigration(db, 19)).not.toThrow();
       });
 
-      it('full v13 -> v23 chain reaches SCHEMA_VERSION and is replay-safe', () => {
+      it('full v13 -> v24 chain reaches SCHEMA_VERSION and is replay-safe', () => {
         buildV13Db(db);
-        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23]) runMigration(db, v);
+        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]) runMigration(db, v);
 
         const row = db.prepare(
           `SELECT MAX(version) AS v FROM schema_version`,
         ).get() as { v: number };
         expect(row.v).toBe(SCHEMA_VERSION);
 
-        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22]) {
+        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]) {
           expect(() => runMigration(db, v), `v${v} replay`).not.toThrow();
         }
       });
@@ -1453,6 +1459,111 @@ describe('Database schema', () => {
 
         runMigration(db, 21);
         expect(() => runMigration(db, 21)).not.toThrow();
+      });
+    });
+
+    describe('v23 to v24: retire matrix-evaluation feature', () => {
+      function runMigration(target: Database, version: number) {
+        const m = MIGRATIONS.find((mm) => mm.version === version);
+        expect(m, `migration v${version} registered`).toBeDefined();
+        m!.migrate(target, 'local');
+      }
+
+      /** Bring the vault to v23-shape: run createSchema to get the full
+       *  modern table set, then re-create the evaluation artifacts that
+       *  v24 is responsible for dropping, and stamp the version back to 23
+       *  so the v24 migration step re-runs. */
+      function setupAtV23(target: Database): void {
+        createSchema(target);
+        target.prepare(`DELETE FROM schema_version WHERE version = ?`).run(SCHEMA_VERSION);
+        target.prepare(
+          `INSERT INTO schema_version (version, applied_at)
+           VALUES (23, 1000)
+           ON CONFLICT (version) DO NOTHING`,
+        ).run();
+        target.prepare(
+          `CREATE TABLE IF NOT EXISTS agent_run_evaluations (
+             id            TEXT PRIMARY KEY,
+             task_id       TEXT NOT NULL,
+             matrix_json   TEXT NOT NULL,
+             notes         TEXT,
+             status        TEXT NOT NULL DEFAULT 'pending',
+             created_at    INTEGER NOT NULL,
+             completed_at  INTEGER
+           )`,
+        ).run();
+        try {
+          target.prepare(`ALTER TABLE agent_runs ADD COLUMN evaluation_id TEXT`).run();
+        } catch {
+          // Column already present — acceptable for the test harness.
+        }
+        target.prepare(
+          `CREATE INDEX IF NOT EXISTS idx_agent_runs_evaluation_id ON agent_runs (evaluation_id)`,
+        ).run();
+      }
+
+      it('drops agent_run_evaluations, the evaluation_id column, and the index — preserving unrelated data', () => {
+        setupAtV23(db);
+
+        db.prepare(`INSERT INTO agents (id, name, created_at) VALUES ('agent-test', 'Test', 1000)`).run();
+        db.prepare(
+          `INSERT INTO agent_run_evaluations
+             (id, task_id, matrix_json, status, created_at)
+           VALUES ('eval-retire', 'vault-evolve', '{}', 'pending', 1000)`,
+        ).run();
+        db.prepare(
+          `INSERT INTO agent_runs (id, agent_id, task, status, evaluation_id, started_at)
+           VALUES ('run-eval', 'agent-test', 'vault-evolve', 'succeeded', 'eval-retire', 1000)`,
+        ).run();
+        db.prepare(
+          `INSERT INTO agent_runs (id, agent_id, task, status, started_at)
+           VALUES ('run-standalone', 'agent-test', 'vault-evolve', 'succeeded', 1100)`,
+        ).run();
+
+        expect(tableExists(db, 'agent_run_evaluations')).toBe(true);
+        expect(indexExists(db, 'idx_agent_runs_evaluation_id')).toBe(true);
+        expect(getColumnNames(db, 'agent_runs')).toContain('evaluation_id');
+
+        runMigration(db, 24);
+
+        expect(tableExists(db, 'agent_run_evaluations')).toBe(false);
+        expect(indexExists(db, 'idx_agent_runs_evaluation_id')).toBe(false);
+        expect(getColumnNames(db, 'agent_runs')).not.toContain('evaluation_id');
+
+        // Data preservation: both rows survive the drop — retiring a
+        // feature never destroys the underlying agent_runs records.
+        const runRows = db.prepare(
+          `SELECT id, task, status FROM agent_runs ORDER BY id`,
+        ).all() as Array<{ id: string; task: string; status: string }>;
+        expect(runRows).toEqual([
+          { id: 'run-eval', task: 'vault-evolve', status: 'succeeded' },
+          { id: 'run-standalone', task: 'vault-evolve', status: 'succeeded' },
+        ]);
+      });
+
+      it('records schema_version row 24 after migration', () => {
+        setupAtV23(db);
+        runMigration(db, 24);
+        const row = db.prepare(`SELECT version FROM schema_version WHERE version = 24`).get() as
+          | { version: number }
+          | undefined;
+        expect(row?.version).toBe(24);
+      });
+
+      it('is idempotent — running twice does not throw', () => {
+        setupAtV23(db);
+        runMigration(db, 24);
+        expect(() => runMigration(db, 24)).not.toThrow();
+      });
+
+      it('is safe when the table / column are already absent (fresh-install v24 replay)', () => {
+        // Fresh-install vaults stamped directly at v24 never had the
+        // table/column/index. A re-run of v24 against such a DB must
+        // no-op without throwing.
+        createSchema(db);
+        expect(tableExists(db, 'agent_run_evaluations')).toBe(false);
+        expect(getColumnNames(db, 'agent_runs')).not.toContain('evaluation_id');
+        expect(() => runMigration(db, 24)).not.toThrow();
       });
     });
   });
