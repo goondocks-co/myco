@@ -5,7 +5,7 @@
  * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
-import { getDatabase } from '@myco/db/client.js';
+import { getDatabase, changesSince } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
@@ -624,12 +624,16 @@ export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
   // Spores can also reference prompt_batches from a different session
   // (cross-session prompt_batch_id linkage). We must delete those spores
   // BEFORE deleting prompt_batches to avoid FK violations.
+  // bun:sqlite's `info.changes` includes trigger-induced writes; read
+  // `changes()` after each `.run()` to get the outer statement's affected
+  // rows only.
   const result = db.transaction(() => {
     db.prepare(`DELETE FROM activities WHERE session_id = ?`).run(sessionId);
-    const attachments = db.prepare(`DELETE FROM attachments WHERE session_id = ?`).run(sessionId);
+    db.prepare(`DELETE FROM attachments WHERE session_id = ?`).run(sessionId);
+    const attachments = changesSince(db);
     db.prepare(`DELETE FROM plans WHERE session_id = ?`).run(sessionId);
     db.prepare(`DELETE FROM skill_usage WHERE session_id = ?`).run(sessionId);
-    const resEvents = db.prepare(
+    db.prepare(
       `DELETE FROM resolution_events
        WHERE session_id = ?
           OR spore_id IN (
@@ -638,23 +642,28 @@ export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
                OR prompt_batch_id IN (SELECT id FROM prompt_batches WHERE session_id = ?)
           )`,
     ).run(sessionId, sessionId, sessionId);
-    const edges = db.prepare(`DELETE FROM graph_edges WHERE session_id = ?`).run(sessionId);
-    const spores = db.prepare(
+    const resEvents = changesSince(db);
+    db.prepare(`DELETE FROM graph_edges WHERE session_id = ?`).run(sessionId);
+    const edges = changesSince(db);
+    db.prepare(
       `DELETE FROM spores
        WHERE session_id = ?
           OR prompt_batch_id IN (SELECT id FROM prompt_batches WHERE session_id = ?)`,
     ).run(sessionId, sessionId);
-    const prompts = db.prepare(`DELETE FROM prompt_batches WHERE session_id = ?`).run(sessionId);
-    const session = db.prepare(`DELETE FROM sessions WHERE id = ?`).run(sessionId);
+    const spores = changesSince(db);
+    db.prepare(`DELETE FROM prompt_batches WHERE session_id = ?`).run(sessionId);
+    const prompts = changesSince(db);
+    db.prepare(`DELETE FROM sessions WHERE id = ?`).run(sessionId);
+    const sessionDeleted = changesSince(db) > 0;
 
     return {
-      deleted: session.changes > 0,
+      deleted: sessionDeleted,
       counts: {
-        prompts: prompts.changes,
-        spores: spores.changes,
-        attachments: attachments.changes,
-        graphEdges: edges.changes,
-        resolutionEvents: resEvents.changes,
+        prompts,
+        spores,
+        attachments,
+        graphEdges: edges,
+        resolutionEvents: resEvents,
       },
     };
   })();

@@ -5,7 +5,7 @@
  * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
-import { getDatabase } from '@myco/db/client.js';
+import { getDatabase, changesSince } from '@myco/db/client.js';
 import { LEVEL_ORDER, type LogLevel } from '@myco/daemon/logger.js';
 import { parseCsvList } from '@myco/utils/parse-csv-list.js';
 
@@ -302,12 +302,8 @@ export function getLogEntry(id: number): LogEntryRow | null {
  */
 export function deleteOldLogs(beforeTimestamp: string): number {
   const db = getDatabase();
-
-  const info = db.prepare(
-    `DELETE FROM log_entries WHERE timestamp < ?`,
-  ).run(beforeTimestamp);
-
-  return info.changes;
+  db.prepare(`DELETE FROM log_entries WHERE timestamp < ?`).run(beforeTimestamp);
+  return changesSince(db);
 }
 
 /**

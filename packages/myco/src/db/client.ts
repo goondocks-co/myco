@@ -89,3 +89,17 @@ export function simplePragma(db: Database, name: string): string | number {
   const value = Object.values(row)[0];
   return (value as string | number) ?? '';
 }
+
+/**
+ * Read the affected-row count of the MOST RECENT statement.
+ *
+ * bun:sqlite's `info.changes` from `.run()` includes trigger-induced writes,
+ * which matches SQL's `total_changes()`. better-sqlite3 returned the outer
+ * statement's affected rows only (SQL's `changes()`). Callers that need the
+ * outer count — typically after DELETEs that fire FTS-sync triggers — must
+ * use this helper immediately after `.run()` on the same connection.
+ */
+export function changesSince(db: Database): number {
+  const row = db.prepare('SELECT changes() AS c').get() as { c: number };
+  return row.c;
+}
